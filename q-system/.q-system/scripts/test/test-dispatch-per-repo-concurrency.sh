@@ -155,6 +155,32 @@ echo "$SEL_ONE" | grep -q 'every dispatchable repo has a live run' \
   && ok "the fallback says it is a fallback" \
   || bad "the fallback was silent"
 
+echo "== 3b. the fallback is BOUNDED: no THIRD agent stacks on one repo =="
+# codex major r3, describing the live configuration: preflight refuses one repo
+# and another has nothing ready, so the sole candidate is a busy repo. Unbounded,
+# cap 3 would put three unattended agents there and hand back conflicting PRs.
+# The ceiling is 2 because 14g requires a repo with ONE live run to still yield
+# its fresh pick -- so 1 would break the suite and 2 is the tightest legal bound.
+PID_S1="$(spawn_fake_converge ASK-810)"
+PID_S2="$(spawn_fake_converge ASK-811)"
+record_live_run "$PID_S1" "ASK-810" "/repos/stack"
+record_live_run "$PID_S2" "ASK-811" "/repos/stack"
+SEL_ST="$(run_selection "$(printf 'stack\t/repos/stack\n')")"
+echo "$SEL_ST" | grep -q 'PICKED=stack' \
+  && bad "a THIRD run was stacked on one repo" "unattended same-repo agents produce conflicting PRs (got: $SEL_ST)" \
+  || ok "two live runs is the ceiling; a third is refused"
+echo "$SEL_ST" | grep -q 'per-repo ceiling' \
+  && ok "the refusal names the ceiling, so the log explains the idle cycle" \
+  || bad "the ceiling refusal was silent"
+
+# 3b-neg: with only ONE live there, the fallback must still fire (that is 14g).
+kill "$PID_S2" 2>/dev/null; wait "$PID_S2" 2>/dev/null
+SEL_ST1="$(run_selection "$(printf 'stack\t/repos/stack\n')")"
+echo "$SEL_ST1" | grep -q 'PICKED=stack' \
+  && ok "3b-neg one live run still yields the fresh pick (14g preserved)" \
+  || bad "3b-neg the ceiling over-tightened" "a repo with one live run was starved (got: $SEL_ST1)"
+kill "$PID_S1" 2>/dev/null; wait "$PID_S1" 2>/dev/null
+
 echo "== 4. MUTATION: break the skip and case 2 must go RED =="
 MUT="$WORK/loop-mutant.sh"
 sed 's/^    continue$/    :/' "$LOOPF" > "$MUT"

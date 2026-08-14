@@ -936,12 +936,34 @@ done <<PICKEOF
 $PICKS
 PICKEOF
 
-# Every candidate was busy. Take the first rather than idling: an idle cycle here
-# is the starvation 14g forbids.
-if [ -z "$TARGET_NAME" ] && [ -n "$FALLBACK_NAME" ]; then
-  say "every dispatchable repo has a live run; proceeding in $FALLBACK_NAME (the per-issue duplicate guard still applies)"
+# Every candidate was busy. Take the first rather than idling -- an idle cycle
+# here is the starvation 14g forbids -- but the fallback is BOUNDED.
+#
+# THE UNBOUNDED VERSION WAS A REAL EXPOSURE (codex major, PR #163 r3), and it
+# described tonight's actual configuration rather than a hypothetical: preflight
+# REFUSES interview-coach on a dirty tree, so only two repos are available, and if
+# ktlyst has nothing ready the sole candidate is the home repo. At cap 3 an
+# unbounded fallback would put THREE unattended agents in one repo and hand back a
+# pile of conflicting PRs for a human to untangle. My earlier "the cap is sized to
+# the number of dispatchable repos" reasoning assumed all of them are AVAILABLE;
+# preflight collapses that at runtime and the cap does not adapt.
+#
+# 2 IS DERIVED FROM THE TESTS, NOT CHOSEN. test-ci-redrive 14g requires that a
+# repo with ONE live run still yield its fresh pick, so a per-repo ceiling of 1
+# would break the suite. 2 is therefore the tightest bound the existing contract
+# allows, and every run past the second buys nothing 14g asked for while adding
+# exactly the collision risk the plist documents.
+FALLBACK_LIVE=0
+if [ -n "$FALLBACK_PATH" ] && [ -n "$LIVE_REPOS" ]; then
+  FALLBACK_LIVE="$(printf '%s\n' "$LIVE_REPOS" | grep -cxF -- "$FALLBACK_PATH" || true)"
+  FALLBACK_LIVE="${FALLBACK_LIVE:-0}"
+fi
+if [ -z "$TARGET_NAME" ] && [ -n "$FALLBACK_NAME" ] && [ "$FALLBACK_LIVE" -lt 2 ]; then
+  say "every dispatchable repo has a live run; proceeding in $FALLBACK_NAME (${FALLBACK_LIVE} live there, ceiling 2; the per-issue duplicate guard still applies)"
   TARGET_NAME="$FALLBACK_NAME"
   TARGET_PATH="$FALLBACK_PATH"
+elif [ -z "$TARGET_NAME" ] && [ -n "$FALLBACK_NAME" ]; then
+  say "skip: $FALLBACK_NAME already has $FALLBACK_LIVE live run(s), the per-repo ceiling; not stacking a third unattended agent on one repo"
 fi
 # --- END REPO SELECTION ---
 # The marker is load-bearing. The test cuts this whole block out and sources it,
