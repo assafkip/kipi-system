@@ -160,6 +160,43 @@ def _is_github(url: str | None) -> bool:
     return bool(url) and "github.com" in url
 
 
+# gh is Go/cobra, so a bool flag accepts BOTH `--admin` and `--admin=<value>`, and
+# the value is read by strconv.ParseBool. Measured against the real binary before
+# fixing (Codex major, PR #155):
+#
+#   $ gh pr merge --admin=notabool 999999
+#   invalid argument "notabool" for "--admin" flag: strconv.ParseBool: ...
+#   $ gh pr merge --admin=true 999999 --squash
+#   GraphQL: Could not resolve to a PullRequest with the number of 999999.
+#
+# The first proves the `=` spelling is accepted; the second proves `--admin=true`
+# clears flag parsing and reaches the merge. Matching the bare token `--admin` let
+# every truthy spelling through the gate whose whole job is to refuse them.
+#
+# ParseBool's exact vocabulary, not a lowercase-and-compare: `T` and `t` are true
+# while `TrUe` is an ERROR to gh, so treating any case-fold of "true" as truthy
+# would be a different set than the one the tool implements.
+_PARSEBOOL_TRUE = {"1", "t", "T", "TRUE", "true", "True"}
+_PARSEBOOL_FALSE = {"0", "f", "F", "FALSE", "false", "False"}
+
+
+def _admin_requested(args: list[str]) -> bool:
+    """True when these argv words ask gh to merge with admin privileges.
+
+    `--admin=false` is deliberately NOT a request: it explicitly declines admin,
+    and denying it would be a false positive on a correct command. A value outside
+    ParseBool IS refused -- gh would reject it anyway, so nothing legitimate is
+    lost, and "the command would have failed regardless" is not a reason for this
+    gate to hand it through.
+    """
+    for tok in args:
+        if tok == "--admin":
+            return True
+        if tok.startswith("--admin="):
+            return tok.split("=", 1)[1] not in _PARSEBOOL_FALSE
+    return False
+
+
 def _merge_verdict(seg: list[str]) -> str | None:
     """`gh pr merge ... --admin` -> reason. Anything else -> None."""
     if not seg or Path(seg[0]).name != "gh":
@@ -167,7 +204,7 @@ def _merge_verdict(seg: list[str]) -> str | None:
     rest = [t for t in seg[1:] if not t.startswith("-")]
     if rest[:2] != ["pr", "merge"]:
         return None
-    if "--admin" not in seg[1:]:
+    if not _admin_requested(seg[1:]):
         return None
     return ("`gh pr merge --admin` merges past the required checks on this repo. "
             "Measured: branch protection requires ['validate', 'kipi/reviewer-approved'] "
