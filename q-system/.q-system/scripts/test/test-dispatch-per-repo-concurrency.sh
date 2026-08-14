@@ -26,7 +26,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 # --- extract the helpers from the shipped script -----------------------------
 HELPERS="$WORK/helpers.sh"
-sed -n '/^LIVE_LEDGER=/,/^}$/p' "$DISPATCH" > "$HELPERS"
+sed -n '/^LIVE_LEDGER=/,/^# --- END PER-REPO CONCURRENCY ---$/p' "$DISPATCH" > "$HELPERS"
 grep -q 'live_repos()' "$HELPERS" \
   && grep -q 'record_live_run()' "$HELPERS" \
   && grep -q 'compact_live_ledger()' "$HELPERS" \
@@ -39,8 +39,14 @@ export KIPI_DISPATCH_LIVE_LEDGER="$WORK/live.tsv"
 # A stand-in for a converge run: a real process whose argv carries `--issue N`,
 # so the pid-reuse guard has something true to match on. `sleep` alone would not
 # carry the issue id and every guard below would read as a false negative.
+#
+# STDOUT AND STDERR GO TO /dev/null, AND THAT IS NOT TIDINESS. This function is
+# called inside `$( )`, so a backgrounded child inheriting the substitution pipe
+# keeps it open and the substitution blocks until the child exits -- a 60s hang
+# per spawn, which is what the first run of this file did. Detaching the fds is
+# what makes the pid readable immediately.
 spawn_fake_converge() {
-  bash -c 'exec -a "converge.sh --issue '"$1"' --max-rounds 3" sleep 60' &
+  bash -c 'exec -a "converge.sh --issue '"$1"' --max-rounds 3" sleep 60' >/dev/null 2>&1 &
   echo $!
 }
 

@@ -374,6 +374,11 @@ compact_live_ledger() {
   done < "$LIVE_LEDGER"
   mv -f "$tmp" "$LIVE_LEDGER" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
 }
+# --- END PER-REPO CONCURRENCY ---
+# The marker is load-bearing, not decoration. test-dispatch-per-repo-concurrency.sh
+# cuts this block out of THIS file and sources it, so the test exercises shipped
+# code instead of a copy that can drift green. Delimiting on `^}$` would have
+# ended the cut at the first function; it silently captured one of three.
 
 # --- FLEET SELECTION (finding-8 and finding-9) ----------------------------
 # 18 ready owner:sana issues sit across 14 projects and no worker can pick them up,

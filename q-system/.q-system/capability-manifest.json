@@ -626,6 +626,11 @@
     {
       "path": "test_dispatch_pinned.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-per-repo-concurrency.sh",
+      "runner": "bash",
+      "timeout_s": 180
     }
   ],
   "required_data": [],
