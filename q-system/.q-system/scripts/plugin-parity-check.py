@@ -45,13 +45,12 @@ USAGE
     --installed FILE        installed_plugins.json, the record the LOADER reads
                             (default: $KIPI_INSTALLED_PLUGINS, else
                              ~/.claude/plugins/installed_plugins.json)
-    --project DIR           resolve project-scoped installs for this project
-                            (default: the current working directory, because the
-                             loader answers "which version runs" relative to
-                             where you are)
-    --user-scope            ignore project-scoped installs entirely
     --marketplace-name NAME marketplace key in the record (default: kipi)
 
+Every RECORDED INSTALL is checked, not just the one believed to be live. A plugin
+installed under several scopes produces several rows and the run fails if any of
+them lags. There is no --project or --user-scope: picking "the live one" needs the
+loader's real resolution rule, which is not knowable from these files.
 There is deliberately no --marketplace option. It was removed when this check
 stopped reading the clone, and argparse's prefix matching then silently folded a
 leftover `--marketplace DIR` into `--marketplace-name=DIR` -- which made every
@@ -140,30 +139,32 @@ def read_installed(record_path):
     return plugins
 
 
-def resolve_live_entry(entries, project):
-    """Pick the entry the LOADER would use, or None if the plugin is not installed.
-
-    The value under "<plugin>@<marketplace>" is a LIST, and each entry carries a
-    scope. A project-scoped install pins a version for one projectPath only; a
-    user-scoped install is the fallback everywhere else. So "the version Claude
-    executes" is a question that cannot be answered without naming a project,
-    which is why --project exists rather than a default guess.
-
-    Checking only the user entry (the simpler option considered and rejected)
-    would rebuild the very hole this fix closes: it would report parity for a
-    project that pins something older, one level further down.
-    """
-    project_entries = [e for e in entries if e.get("scope") == "project"]
-    if project is not None:
-        target = os.path.abspath(project)
-        for entry in project_entries:
-            recorded = entry.get("projectPath")
-            if recorded and os.path.abspath(recorded) == target:
-                return entry
-    for entry in entries:
-        if entry.get("scope") == "user":
-            return entry
-    return None
+# THERE IS DELIBERATELY NO resolve_live_entry() HERE.
+#
+# It used to pick "the entry the loader would use" and it was removed after four
+# consecutive review rounds found a new way that guess was wrong: exact-path
+# matching only (round 3), a default that resolved user scope and undid its own
+# argument (round 4), and descendant directories falling back to the user install
+# while the session there loads the project one (round 5).
+#
+# The pattern is not a series of missed edge cases. It is that the VERSION half of
+# this check is grounded and the RESOLUTION half never was. The cache key was
+# verified against two independent sources -- installed_plugins.json and
+# `claude plugin list` agreeing -- which is why it has been stable. How the loader
+# chooses among several scoped entries was inferred from the shape of a JSON file.
+# The loader is closed-source, so there is no oracle to converge on, and each
+# round was one guess meeting a different guess.
+#
+# So this file no longer claims to know which install is live. It enumerates EVERY
+# install and fails if ANY of them lags. "An install of prd-os at <path>
+# (scope=project, projectPath=X) is stale" is true whatever the resolution rule
+# turns out to be, and it still answers the question this check exists for: is the
+# fleet silently split.
+#
+# What is lost is the sentence "the plugin YOU are running right now is stale."
+# That sentence needs the loader's real behaviour, established by experiment
+# (install two versions, launch from different directories, observe which loads),
+# not by reading a manifest. That is a separate piece of work.
 
 
 class ManifestUnreadable(Exception):
@@ -248,15 +249,73 @@ def content_drift(skeleton_dir, clone_dir):
     return {"differing": differing, "missing": missing, "clone_only": extra}
 
 
-def compare(skeleton_root, installed, marketplace_name="kipi", project=None):
-    """One row per plugin in the skeleton. Rows are the whole result.
+def row_for_entry(name, skel_dir, skel_version, entry, scopes=None, project_paths=None):
+    """Judge ONE distinct install TARGET of one plugin.
 
-    `installed` is the parsed plugins map from read_installed. Every row names
-    the install_path it judged, because the defect this check exists to catch
-    appeared three times in one day (2026-08-14) in three different places, and
-    each time the tell was the same: a parity claim that did not say which
-    artifact it read. Printing the path makes the next wrong answer obvious
-    instead of ambient.
+    Every row names the install_path it judged. The defect this check exists to
+    catch showed up repeatedly on 2026-08-14, and each time the tell was the
+    same: a parity claim that did not say which artifact it read.
+    """
+    live_version = entry.get("version")
+    install_path = entry.get("installPath")
+
+    runtime_version = None
+    if not install_path or not os.path.isdir(install_path):
+        # A record naming a directory that is not there is NOT parity, even when
+        # the version string matches. There would be nothing to load.
+        status = "PATH_MISSING"
+    else:
+        # THE DIRECTORY IS THE TRUTH; THE RECORD IS A CLAIM ABOUT IT. Trusting
+        # entry["version"] without opening the manifest it points at repeats, one
+        # level in, the mistake that produced this branch: believing a claim
+        # instead of reading the artifact.
+        try:
+            runtime_version = read_version(install_path)
+        except ManifestUnreadable:
+            runtime_version = None
+
+        if runtime_version is None:
+            status = "UNREADABLE"
+        elif live_version is not None and runtime_version != live_version:
+            # Its own state, not folded into MISMATCH: the two mean different
+            # repairs. MISMATCH is "update the plugin", RECORD_DRIFT is "the
+            # bookkeeping disagrees with the disk".
+            status = "RECORD_DRIFT"
+        elif runtime_version == skel_version:
+            status = "MATCH"
+        else:
+            status = "MISMATCH"
+
+    drift = {"differing": 0, "missing": 0, "clone_only": 0}
+    if install_path and os.path.isdir(install_path):
+        drift = content_drift(skel_dir, install_path)
+
+    return {
+        "plugin": name,
+        "skeleton_version": skel_version,
+        "installed_version": live_version,
+        "runtime_manifest_version": runtime_version,
+        "install_path": install_path,
+        "scopes": sorted(scopes) if scopes else [entry.get("scope")],
+        "project_paths": sorted(pp for pp in (project_paths or []) if pp),
+        "status": status,
+        "advisory_content": drift,
+    }
+
+
+def compare(skeleton_root, installed, marketplace_name="kipi"):
+    """One row per RECORDED INSTALL -- not one per plugin.
+
+    A plugin can be installed several times under different scopes. This used to
+    pick the one it believed the loader would run, which is a question it could
+    not answer (see the note where resolve_live_entry used to be). So it no
+    longer picks: every recorded install is judged, and the run fails if ANY of
+    them lags the skeleton.
+
+    That claim survives whatever the loader's resolution rule turns out to be,
+    and it is strictly more sensitive for the thing this check exists for -- it
+    catches a stale project-scoped install even from outside that project, which
+    the resolving version could not.
     """
     plugins_dir = os.path.join(skeleton_root, "plugins")
     if not os.path.isdir(plugins_dir):
@@ -269,85 +328,58 @@ def compare(skeleton_root, installed, marketplace_name="kipi", project=None):
             continue
         skel_version = read_version(skel_dir)
         if skel_version is None:
-            # Not a plugin (no manifest). Not this check's business.
-            # A manifest that EXISTS and will not parse raises instead of
-            # landing here -- see read_version.
+            # Not a plugin (no manifest). Not this check's business. A manifest
+            # that EXISTS and will not parse raises instead -- see read_version.
             continue
 
         entries = installed.get(f"{name}@{marketplace_name}") or []
-        entry = resolve_live_entry(entries, project) if entries else None
-
-        if entry is None:
+        if not entries:
             rows.append(
                 {
                     "plugin": name,
                     "skeleton_version": skel_version,
                     "installed_version": None,
+                    "runtime_manifest_version": None,
                     "install_path": None,
                     "scope": None,
+                    "project_path": None,
                     "status": "NOT_INSTALLED",
                     "advisory_content": {"differing": 0, "missing": 0, "clone_only": 0},
                 }
             )
             continue
 
-        live_version = entry.get("version")
-        install_path = entry.get("installPath")
-
-        # A record that names a directory which is not there is NOT parity, even
-        # when the version string matches. The loader would have nothing to load.
-        runtime_version = None
-        if not install_path or not os.path.isdir(install_path):
-            status = "PATH_MISSING"
-        else:
-            # THE DIRECTORY IS THE TRUTH; THE RECORD IS A CLAIM ABOUT IT (Codex
-            # review of #152 round 3, minor). Trusting entry["version"] and never
-            # opening the manifest it points at repeats, one level in, the exact
-            # mistake that produced this whole branch: believing a claim instead
-            # of reading the artifact. A record saying 0.27.2 over a directory
-            # whose manifest says 0.16.5 reported MATCH.
-            try:
-                runtime_version = read_version(install_path)
-            except ManifestUnreadable:
-                runtime_version = None
-
-            if runtime_version is None:
-                status = "UNREADABLE"
-            elif live_version is not None and runtime_version != live_version:
-                # Report this as its own state rather than folding it into
-                # MISMATCH: the two mean different repairs. MISMATCH is "update
-                # the plugin", RECORD_DRIFT is "the bookkeeping disagrees with
-                # the disk", and calling both by one name loses that.
-                status = "RECORD_DRIFT"
-            elif runtime_version == skel_version:
-                status = "MATCH"
-            else:
-                status = "MISMATCH"
-
-        drift = {"differing": 0, "missing": 0, "clone_only": 0}
-        if install_path and os.path.isdir(install_path):
-            drift = content_drift(skel_dir, install_path)
-
-        rows.append(
-            {
-                "plugin": name,
-                "skeleton_version": skel_version,
-                "installed_version": live_version,
-                "runtime_manifest_version": runtime_version,
-                "install_path": install_path,
-                "scope": entry.get("scope"),
-                "status": status,
-                "advisory_content": drift,
-            }
-        )
+        # COLLAPSE ENTRIES THAT NAME THE SAME TARGET. kipi-core is recorded once
+        # per project it was installed into -- 9 identical rows on this box, same
+        # installPath, same version, same verdict. Printing all of them is noise
+        # by construction, which is the failure this branch has fixed twice
+        # already (.in_use drift, permanently-red tests): a reader who learns to
+        # skim the output stops seeing the one row that matters.
+        #
+        # Collapsing is safe precisely BECAUSE resolution was dropped: identical
+        # target plus identical version is one fact however many scopes point at
+        # it. The scopes and project paths are kept on the row so nothing about
+        # WHO references it is lost.
+        groups = {}
+        for entry in entries:
+            key = (entry.get("installPath"), entry.get("version"))
+            groups.setdefault(key, []).append(entry)
+        for group in groups.values():
+            rows.append(
+                row_for_entry(
+                    name, skel_dir, skel_version, group[0],
+                    scopes={e.get("scope") for e in group},
+                    project_paths=[e.get("projectPath") for e in group],
+                )
+            )
     return rows
 
 
-def render(rows, skeleton_root, record_path, project=None):
+def render(rows, skeleton_root, record_path):
     lines = []
     lines.append(f"skeleton  : {skeleton_root}")
     lines.append(f"installed : {record_path}")
-    lines.append(f"project   : {project or '(user scope)'}")
+    lines.append(f"installs  : {len(rows)} recorded")
     lines.append("")
     lines.append(f"{'PLUGIN':<18} {'SKELETON':<12} {'RUNNING':<12} STATUS")
     for row in rows:
@@ -374,7 +406,7 @@ def render(rows, skeleton_root, record_path, project=None):
             f"skeleton={row['skeleton_version']} "
             f"running={row.get('runtime_manifest_version') or 'absent'} "
             f"record={row['installed_version'] or 'absent'} "
-            f"scope={row['scope'] or '-'} "
+            f"scopes={','.join(row['scopes']) or '-'} "
             f"read={row['install_path'] or 'no install path recorded'} "
             f"(advisory: {drift['differing']} files differ, "
             f"{drift['missing']} absent from runtime, "
@@ -419,41 +451,16 @@ def main(argv=None):
         default=None,
         help="path to installed_plugins.json (what the loader actually reads)",
     )
-    parser.add_argument(
-        "--project",
-        default=None,
-        help=(
-            "resolve project-scoped installs for this project path "
-            "(default: the current working directory)"
-        ),
-    )
-    parser.add_argument(
-        "--user-scope",
-        action="store_true",
-        help="ignore project-scoped installs and check only the user install",
-    )
     parser.add_argument("--marketplace-name", default="kipi")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     record_path = args.installed or default_installed_record()
 
-    # DEFAULT TO THE CWD, NOT TO USER SCOPE (Codex review of #152 round 4, major).
-    # A bare run inside a project that pins its own older build resolved the USER
-    # entry and printed MATCH, while the session in that directory loaded the
-    # stale project-scoped one. That is precisely the hole I named when rejecting
-    # "just read the user entry" last round, reintroduced as the default -- the
-    # argument existed and its default undid it.
-    #
-    # The loader answers "which version runs" relative to where you are, so the
-    # faithful default is here. --user-scope is the explicit opt-out; silence now
-    # means "resolve like the loader would", not "skip the harder question".
-    effective_project = None if args.user_scope else (args.project or os.getcwd())
-
     try:
         installed = read_installed(record_path)
         rows = compare(
-            args.skeleton, installed, args.marketplace_name, effective_project
+            args.skeleton, installed, args.marketplace_name
         )
     # ManifestUnreadable joins FileNotFoundError here because they are the same
     # answer to the operator: the check could not establish a baseline, so it is
@@ -471,14 +478,13 @@ def main(argv=None):
                 {
                     "skeleton": args.skeleton,
                     "installed_record": record_path,
-                    "project": effective_project,
                     "plugins": rows,
                 },
                 indent=2,
             )
         )
     else:
-        print(render(rows, args.skeleton, record_path, effective_project))
+        print(render(rows, args.skeleton, record_path))
 
     # ZERO ROWS IS NOT PARITY (Codex review of #142, minor). `any([])` is False,
     # so an empty result set used to exit 0 -- the check reported success in the

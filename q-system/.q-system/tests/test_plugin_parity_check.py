@@ -86,13 +86,11 @@ def entry(install_path, version, scope="user", project_path=None):
     return row
 
 
-def run_check(skeleton, record, project=None, extra=None, cwd=None):
+def run_check(skeleton, record, extra=None, cwd=None):
     argv = [sys.executable, CHECK, "--skeleton", skeleton, "--installed", record, "--json"]
-    if project is not None:
-        argv += ["--project", project]
     argv += extra or []
-    # cwd matters: --project now defaults to the working directory, because that
-    # is how the loader resolves "which version runs".
+    # cwd is passed only to prove it does NOT change the answer: this checker no
+    # longer resolves "which install is live", so where it runs is irrelevant.
     proc = subprocess.run(argv, capture_output=True, text=True, cwd=cwd)
     payload = json.loads(proc.stdout) if proc.stdout.strip() else {}
     return proc.returncode, payload, proc.stderr
@@ -157,39 +155,6 @@ def test_every_verdict_names_the_path_it_read(tmp_path):
     )
     assert old in proc.stdout
 
-
-def test_project_scoped_entry_wins_for_its_own_project(tmp_path):
-    """Option 3, the property that made it worth the extra argument.
-
-    A project pinning an older build must be reported against THAT build. The
-    rejected alternative -- always read the user entry -- would print MATCH here
-    and rebuild, one level down, the exact wrong-artifact bug this check exists
-    to catch.
-    """
-    skeleton = tmp_path / "skeleton"
-    cache = tmp_path / "cache"
-    proj = str(tmp_path / "someproject")
-    write_plugin(str(skeleton), "prd-os", "0.27.2")
-    user_dir = make_cache_dir(str(cache), "kipi", "prd-os", "0.27.2")
-    proj_dir = make_cache_dir(str(cache), "kipi", "prd-os", "0.16.5")
-    record = write_record(
-        str(tmp_path / "rec.json"),
-        {
-            "prd-os@kipi": [
-                entry(user_dir, "0.27.2"),
-                entry(proj_dir, "0.16.5", scope="project", project_path=proj),
-            ]
-        },
-    )
-    code, payload, _ = run_check(str(skeleton), record, project=proj)
-    assert code == 1
-    assert payload["plugins"][0]["installed_version"] == "0.16.5"
-    assert payload["plugins"][0]["scope"] == "project"
-
-    # Same record, a DIFFERENT project: the user entry is what loads.
-    code2, payload2, _ = run_check(str(skeleton), record, project=str(tmp_path / "other"))
-    assert code2 == 0
-    assert payload2["plugins"][0]["scope"] == "user"
 
 
 def test_not_installed_is_not_parity(tmp_path):
@@ -319,47 +284,6 @@ def test_removed_marketplace_flag_is_an_error_not_a_prefix_match(tmp_path):
     assert "unrecognized arguments" in proc.stderr
 
 
-def test_default_invocation_resolves_the_cwd_project(tmp_path):
-    """Codex review of #152 round 4, major.
-
-    --project defaulted to None, which meant a bare run resolved the USER entry.
-    Run inside a project that pins its own older build, that printed MATCH while
-    the session in that directory loaded the stale project-scoped one. It is the
-    exact hole named when rejecting "just read the user entry" the round before,
-    reintroduced as the default: the argument existed and its default undid it.
-
-    The loader answers "which version runs" relative to where you are, so a bare
-    run must too. --user-scope is the explicit opt-out.
-    """
-    skeleton = tmp_path / "skeleton"
-    cache = tmp_path / "cache"
-    proj = tmp_path / "someproject"
-    proj.mkdir()
-    write_plugin(str(skeleton), "prd-os", "0.27.2")
-    user_dir = make_cache_dir(str(cache), "kipi", "prd-os", "0.27.2")
-    proj_dir = make_cache_dir(str(cache), "kipi", "prd-os", "0.16.5")
-    record = write_record(
-        str(tmp_path / "rec.json"),
-        {
-            "prd-os@kipi": [
-                entry(user_dir, "0.27.2"),
-                entry(proj_dir, "0.16.5", scope="project", project_path=str(proj)),
-            ]
-        },
-    )
-    # No --project, but CWD is the pinned project: must see the stale build.
-    code, payload, _ = run_check(str(skeleton), record, cwd=str(proj))
-    assert code == 1
-    assert payload["plugins"][0]["scope"] == "project"
-    assert payload["plugins"][0]["installed_version"] == "0.16.5"
-
-    # --user-scope is the way to ask the other question, and still works.
-    code2, payload2, _ = run_check(
-        str(skeleton), record, extra=["--user-scope"], cwd=str(proj)
-    )
-    assert code2 == 0
-    assert payload2["plugins"][0]["scope"] == "user"
-
 
 def test_running_column_shows_the_on_disk_version_not_the_record(tmp_path):
     """Codex review of #152 round 4, minor.
@@ -389,6 +313,102 @@ def test_running_column_shows_the_on_disk_version_not_the_record(tmp_path):
     # Both numbers are still reported, but the detail line labels each one.
     assert "running=0.16.5" in proc.stdout
     assert "record=0.27.2" in proc.stdout
+
+
+def test_every_recorded_install_is_checked(tmp_path):
+    """The freeze, pinned (Codex reviews of #152 rounds 3-5).
+
+    Four consecutive rounds found a new way the "which install is live" guess was
+    wrong. That half was never grounded -- the loader is closed-source, so there
+    was no oracle to converge on. This checker therefore stopped guessing: every
+    recorded install is judged and the run fails if ANY lags.
+    """
+    skeleton = tmp_path / "skeleton"
+    cache = tmp_path / "cache"
+    proj = tmp_path / "someproject"
+    proj.mkdir()
+    write_plugin(str(skeleton), "prd-os", "0.27.2")
+    user_dir = make_cache_dir(str(cache), "kipi", "prd-os", "0.27.2")
+    proj_dir = make_cache_dir(str(cache), "kipi", "prd-os", "0.16.5")
+    record = write_record(
+        str(tmp_path / "rec.json"),
+        {
+            "prd-os@kipi": [
+                entry(user_dir, "0.27.2"),
+                entry(proj_dir, "0.16.5", scope="project", project_path=str(proj)),
+            ]
+        },
+    )
+    code, payload, _ = run_check(str(skeleton), record)
+    assert code == 1
+    rows = payload["plugins"]
+    assert len(rows) == 2, "one row per recorded install, not one per plugin"
+    by_scope = {r["scopes"][0]: r for r in rows}
+    assert by_scope["user"]["status"] == "MATCH"
+    assert by_scope["project"]["status"] == "MISMATCH"
+    assert by_scope["project"]["project_paths"] == [str(proj)]
+
+
+def test_entries_naming_the_same_target_collapse_to_one_row(tmp_path):
+    """Measured on the live record: kipi-core is recorded once per project it was
+    installed into -- 9 entries, same installPath, same version, same verdict.
+    Enumerating all of them printed 22 rows where 6 facts existed, which is noise
+    by construction: a reader who learns to skim stops seeing the row that matters.
+
+    Collapsing is safe only BECAUSE resolution was dropped. Identical target plus
+    identical version is one fact however many scopes point at it, and the scopes
+    are kept on the row so nothing about who references it is lost.
+    """
+    skeleton = tmp_path / "skeleton"
+    cache = tmp_path / "cache"
+    write_plugin(str(skeleton), "prd-os", "0.27.2")
+    shared = make_cache_dir(str(cache), "kipi", "prd-os", "0.16.5")
+    record = write_record(
+        str(tmp_path / "rec.json"),
+        {
+            "prd-os@kipi": [
+                entry(shared, "0.16.5"),
+                entry(shared, "0.16.5", scope="project", project_path=str(tmp_path / "a")),
+                entry(shared, "0.16.5", scope="project", project_path=str(tmp_path / "b")),
+            ]
+        },
+    )
+    code, payload, _ = run_check(str(skeleton), record)
+    assert code == 1
+    rows = payload["plugins"]
+    assert len(rows) == 1, f"three entries, one target, expected one row: {rows}"
+    assert sorted(rows[0]["scopes"]) == ["project", "user"]
+    assert len(rows[0]["project_paths"]) == 2
+
+
+def test_a_stale_install_fails_from_anywhere(tmp_path):
+    """The property the resolving version could NOT deliver: a stale
+    project-scoped install is caught from outside that project. Where the check
+    runs from must not change its answer."""
+    skeleton = tmp_path / "skeleton"
+    cache = tmp_path / "cache"
+    proj = tmp_path / "someproject"
+    elsewhere = tmp_path / "elsewhere"
+    proj.mkdir()
+    elsewhere.mkdir()
+    write_plugin(str(skeleton), "prd-os", "0.27.2")
+    user_dir = make_cache_dir(str(cache), "kipi", "prd-os", "0.27.2")
+    proj_dir = make_cache_dir(str(cache), "kipi", "prd-os", "0.16.5")
+    record = write_record(
+        str(tmp_path / "rec.json"),
+        {
+            "prd-os@kipi": [
+                entry(user_dir, "0.27.2"),
+                entry(proj_dir, "0.16.5", scope="project", project_path=str(proj)),
+            ]
+        },
+    )
+    from_proj = run_check(str(skeleton), record, cwd=str(proj))
+    from_else = run_check(str(skeleton), record, cwd=str(elsewhere))
+    assert from_proj[0] == 1 and from_else[0] == 1
+    assert [r["status"] for r in from_proj[1]["plugins"]] == [
+        r["status"] for r in from_else[1]["plugins"]
+    ], "the verdict must not depend on the working directory"
 
 
 def test_non_plugin_directory_is_skipped(tmp_path):
