@@ -1485,23 +1485,54 @@ PY
         { [ "$DRY_RUN" != "--dry-run" ] || [ "$MODEL_RUN" = "1" ]; }; then
       say "  Committing ${#sys_owned_dirty[@]} system-written file(s) so they do not block the sync:"
       printf '    %s\n' "${sys_owned_dirty[@]}"
-      # PATHSPEC-limited commit, and NO `git add`. Both matter: `git commit`
-      # with no pathspec commits everything ALREADY STAGED, so a founder with
-      # staged work would have had it swept into this infra commit -- the exact
-      # thing the guard below exists to prevent, reintroduced by the fix for it
-      # (Codex review, PR #98). With a pathspec, only these paths are committed
-      # no matter what else sits in the index.
+      # PATHSPEC-limited commit. `git commit` with no pathspec commits everything
+      # ALREADY STAGED, so a founder with staged work would have had it swept into
+      # this infra commit -- the exact thing the guard below exists to prevent,
+      # reintroduced by the fix for it (Codex review, PR #98). With a pathspec,
+      # only these paths are committed no matter what else sits in the index.
       #
+      # THE ADD IS REQUIRED, AND IT IS SAFE (ASK-775). This block used to carry
+      # "NO `git add`" as a rule, which quietly broke the whole carve-out: the
+      # list MIXES tracked and untracked paths -- the classifier above pulls in
+      # untracked machine exhaust on purpose -- and
+      #
+      #     git commit -- <tracked> <untracked>
+      #     error: pathspec '<untracked>' did not match any file(s) known to git
+      #
+      # commits NOTHING. One untracked artifact therefore left the TRACKED
+      # skeleton-owned dirt uncommitted too, and the guard below then refused the
+      # instance over the very files this block had just announced it handled.
+      # With `2>/dev/null || true` the failure was invisible while the
+      # "Committing N system-written file(s)" line printed either way.
+      #
+      # Measured 2026-08-14, full dry sweep of 23 instances: 11 refusals, 10 of
+      # them preceded by that announcement. ktlyst-website named 3 files, 2 of
+      # them untracked, and refused with all 3 still dirty.
+      #
+      # The add is pathspec-limited to sys_owned_dirty, the same list the commit
+      # uses, so it cannot reach founder work -- it stages exactly what was
+      # already going to be committed and nothing else. The PR #98 rule was
+      # protecting against a BARE add; this is not one.
+      git add -- "${sys_owned_dirty[@]}" 2>/dev/null || true
       # `[no-issue: ...]` rather than --no-verify: the instance's commit-msg
       # gate wants a Linear id, and this is the sanctioned hatch that gets
       # LOGGED to linear-bypass.jsonl. Bypassing an instance's hooks wholesale
       # to land a commit in their repo is not ours to do.
-      git commit -q -m "chore: commit system-written state before skeleton sync [no-issue: fleet updater system-state commit]
+      #
+      # NOT SILENT ANY MORE. The old `2>/dev/null || true` is what let this run
+      # for months: a carve-out that cannot fail loudly cannot be noticed when it
+      # does. The run still continues on failure -- the guard below is the real
+      # decision and it fails closed -- but it says what happened first.
+      if ! sys_commit_err="$(git commit -q -m "chore: commit system-written state before skeleton sync [no-issue: fleet updater system-state commit]
 
 These files are written by the fleet itself (sycophancy stamp, integrity
 baseline, hook state, skeleton-shipped plugins). Committing them here keeps the
 updater from being blocked by its own exhaust; founder work is never included
-because this commit is pathspec-limited." -- "${sys_owned_dirty[@]}" 2>/dev/null || true
+because this commit is pathspec-limited." -- "${sys_owned_dirty[@]}" 2>&1)"; then
+        echo "  WARNING: the system-state commit FAILED; this instance will very"
+        echo "  likely be refused below over dirt that is not founder work:"
+        printf '%s\n' "$sys_commit_err" | sed 's/^/    /'
+      fi
     fi
 
     # Refuse tracked work in progress. The updater owns only its scoped sync
