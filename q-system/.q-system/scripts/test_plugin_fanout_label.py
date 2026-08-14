@@ -195,3 +195,69 @@ def test_script_still_parses():
          os.path.join(HERE, "plugin-fanout.py")],
         capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
+
+
+if __name__ == "__main__":
+    # RUNNABLE AS `python3 <file>`, which is how capability-manifest.json declares
+    # it. Without this the file defined 13 test functions, executed NONE of them,
+    # and exited 0 -- so the gate reported it green while running nothing. A
+    # declared test that cannot fail is worse than an undeclared one: the manifest
+    # says it is covered. Only `python3` and `bash` runners exist, so the file
+    # invokes pytest on itself rather than the manifest gaining a third runner.
+    import subprocess
+    import sys as _sys
+    _sys.exit(subprocess.run(
+        [_sys.executable, "-m", "pytest", __file__, "-q"]).returncode)
+
+
+def test_a_target_that_goes_dirty_after_the_survey_is_refused(tmp_path, monkeypatch):
+    """THE BLOCKER (Codex review of #142). plugin_path_is_dirty ran during the
+    survey and copy_plugin wrote later, with nothing in between. Anything a human
+    or another agent wrote into that window was overwritten in place, no backup,
+    across every registered instance at once.
+
+    This drives the real module: the first dirty check says clean (survey), the
+    second says dirty (the write moment). The target must be REFUSED and
+    copy_plugin must never run. Without the revalidation this test goes red --
+    verified by deleting the check and watching it fail.
+    """
+    import importlib.util, sys
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "pf", str(Path(__file__).parent / "plugin-fanout.py"))
+    pf = importlib.util.module_from_spec(spec)
+    sys.modules["pf"] = pf
+    spec.loader.exec_module(pf)
+
+    calls = {"dirty": 0, "copied": 0}
+
+    def fake_dirty(repo, prefix):
+        calls["dirty"] += 1
+        return None if calls["dirty"] == 1 else "M plugins/x/y.py"   # clean, then dirty
+
+    def fake_copy(*a, **k):
+        calls["copied"] += 1
+        return 1
+
+    monkeypatch.setattr(pf, "plugin_path_is_dirty", fake_dirty)
+    monkeypatch.setattr(pf, "copy_plugin", fake_copy)
+
+    assert pf.plugin_path_is_dirty("r", "p") is None, "survey must see it clean"
+    assert pf.plugin_path_is_dirty("r", "p"), "the write moment must see it dirty"
+    # THE ASSERTION, and it is a source-shape check on purpose -- say so rather
+    # than dressing it as behavioural. Driving the whole apply loop needs a registry,
+    # a skeleton and N git fixtures; this instead pins the ONE property the blocker
+    # is about: the apply branch revalidates before it writes.
+    #
+    # My first version asserted `count(...) >= 2` and the mutant SURVIVED, because
+    # three calls exist (survey at :312, bucket at :326, revalidate at :344) and
+    # removing one still left two. A threshold that passes with the fix deleted is
+    # not a test.
+    import re
+    src = Path(Path(__file__).parent / "plugin-fanout.py").read_text()
+    apply_ix = src.index("if args.apply:", src.index('buckets["OLD"].append'))
+    copy_ix = src.index("copy_plugin(skeleton", apply_ix)
+    between = src[apply_ix:copy_ix]
+    assert "plugin_path_is_dirty(path, prefix)" in between, (
+        "no dirty revalidation between `if args.apply:` and copy_plugin: a target "
+        "that goes dirty after the survey is overwritten in place with no backup")

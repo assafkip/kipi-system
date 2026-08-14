@@ -330,6 +330,21 @@ def main(argv=None):
 
         buckets["OLD"].append((name, f"ancestor {matched_rev[:8] if matched_rev else '?'}"))
         if args.apply:
+            # REVALIDATE IMMEDIATELY BEFORE WRITING (Codex review of #142, blocker).
+            # The dirty check above ran while other targets were still being surveyed,
+            # and copy_plugin overwrites in place with no backup. Anything a human or
+            # another agent wrote into this tree in that window was destroyed with no
+            # undo -- across every registered instance at once, which is the blast
+            # radius the fleet updater's delete flag is hook-blocked for.
+            #
+            # A second check does not make this atomic; nothing here can. It shrinks
+            # the window from "the whole survey" to "one stat", and it REFUSES rather
+            # than proceeding, so the failure mode is a skipped instance a human can
+            # see instead of lost work nobody can recover.
+            if plugin_path_is_dirty(path, prefix):
+                buckets["DIRTY"].append(
+                    (name, f"went dirty under {prefix} between survey and write; refused"))
+                continue
             extras = stale_extras(path, prefix, head_map)
             count = copy_plugin(skeleton, path, prefix, head_map)
             actions.append((name, count, extras))
