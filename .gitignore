@@ -109,6 +109,16 @@ q-system/output/.update-check-*
 q-system/output/capability-maps/
 .runs/
 
+# Lock files beside the prd-os ledgers. flock targets, recreated on every
+# resolve/reclassify, and they were standing untracked-and-unignored inside a
+# TRACKED directory. sp-a21cb27c predicted an unattended auto-commit would sweep
+# them in; measured 2026-08-14 that is false -- auto-commit.py's NEVER list
+# already refuses any .lock, so system_state_paths returns [] for both. What was
+# left was permanent noise in `git status`, which is its own cost: a status that
+# is never clean is a status nobody reads.
+.prd-os/*.lock
+.prd-os/.judgments.lock
+
 # THE STANZA BETWEEN THESE MARKERS IS SHIPPED TO EVERY INSTANCE (sp-097d2e23).
 # kipi-update-gitignore-block.py parses it out of this file and writes it into
 # each instance's root .gitignore as a managed block. Root .gitignore is not in
