@@ -41,6 +41,9 @@ STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
 REVIEWS_DIR="$STATE_DIR/pr-reviews"
 LOG="$STATE_DIR/linear-worker.log"
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
+# THE ONE SLUG DERIVATION (ASK-738). gh binds to cwd and ignores every path
+# variable here, so every gh call below is scoped with -R from this lib.
+. "$SCRIPT_DIR/repo-slug-lib.sh"
 
 # The worker command is injectable ONLY so the test suite can drive this loop
 # against a fake that returns scripted verdicts. Testing convergence against the
@@ -65,7 +68,19 @@ TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 say() { echo "$(TS) converge[$ISSUE] $*" | tee -a "$LOG"; }
 
 BRANCH="sana/$(echo "$ISSUE" | tr 'A-Z' 'a-z')"
-pr_for_branch() { gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null; }
+# SCOPED TO THE REPO THE WORK IS IN, not to cwd (ASK-738). This driver runs
+# from the dispatcher's cwd (the home checkout), so an unqualified `gh pr list`
+# asked the HOME repo whether the TARGET's branch had a PR: after the worker
+# opened one in the target, converge found none and stopped -- or worse, found
+# an unrelated PR of the same branch name at home and drove rounds against it.
+# KIPI_TARGET_REPO is the carrier kipi-dispatch.sh uses; it forwards only its
+# own arguments to the worker, so the target crosses that boundary by
+# inheritance. Derived ONCE, through the shared lib, same as the worker.
+TARGET_REPO="${KIPI_TARGET_REPO:-$SKEL}"
+KIPI_GH_REPO_ARGS="$(gh_repo_args "$(slug_for_repo "$TARGET_REPO" "${KIPI_SLUG_REGISTRY:-$SKEL/instance-registry.json}")")"
+export KIPI_GH_REPO_ARGS
+# shellcheck disable=SC2086
+pr_for_branch() { gh pr list $KIPI_GH_REPO_ARGS --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null; }
 # The head sha comes from pr_head_sha in the shared lib, not a local copy of the
 # same `gh pr view`: this driver and linear-worker.sh now BOTH compare it against
 # the sha a review pinned, and two private readers of one input is how those two
@@ -73,7 +88,7 @@ pr_for_branch() { gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/
 
 if [ "$DRY" = "1" ]; then
   PR="$(pr_for_branch)"
-  V=""; [ -n "$PR" ] && V="$(verdict_from_record "$REVIEWS_DIR/pr-$PR.verdict.json")"
+  V=""; [ -n "$PR" ] && V="$(verdict_from_record "$(verdict_record_path "$REVIEWS_DIR" "$(slug_for_repo "$TARGET_REPO" "${KIPI_SLUG_REGISTRY:-$SKEL/instance-registry.json}")" "$PR")")"
   say "[dry] branch=$BRANCH pr=${PR:-none} verdict=${V:-none} would run up to $MAX_ROUNDS round(s)"
   exit 0
 fi

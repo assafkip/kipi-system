@@ -96,6 +96,9 @@ LOG="$STATE_DIR/linear-worker.log"
 REVIEWS_DIR="$STATE_DIR/pr-reviews"
 # Verdict semantics shared with pr-review-agent.sh -- one extractor, one gate.
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
+# THE ONE SLUG DERIVATION (ASK-738). gh binds to cwd and ignores every path
+# variable here, so every gh call below is scoped with -R from this lib.
+. "$SCRIPT_DIR/repo-slug-lib.sh"
 
 MAX_ATTEMPTS=3
 # Conflict rounds are capped SEPARATELY from failed attempts (ASK-212).
@@ -184,6 +187,18 @@ if [ ! -d "$TARGET_REPO" ]; then
 fi
 TARGET_REPO="$(cd "$TARGET_REPO" && pwd)"
 export TARGET_REPO
+
+# --- WHICH REPO EVERY `gh` CALL ASKS ABOUT (ASK-738) ----------------------
+# `git -C "$TARGET_REPO"` redirects the git half of this script. It does NOT
+# redirect `gh`, which resolves its repo from the PROCESS CWD -- and
+# kipi-dispatch.sh:205 leaves that cwd in the HOME checkout. Measured: the
+# existing-PR lookup below answered about kipi-system while the work happened
+# in the target. Derived ONCE, here, and spliced into every gh call as -R.
+# Empty for a repo with no pinned remote and no origin: the calls then behave
+# exactly as they did before, which is correct only because that case is the
+# dispatcher's own checkout.
+KIPI_GH_REPO_ARGS="$(gh_repo_args "$(slug_for_repo "$TARGET_REPO" "${KIPI_SLUG_REGISTRY:-$SKEL/instance-registry.json}")")"
+export KIPI_GH_REPO_ARGS
 
 export SCRIPT_DIR
 mkdir -p "$STATE_DIR"
@@ -899,16 +914,17 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
   # BEFORE the claim and the Linear progress note on purpose -- a "Picked up"
   # note on a permanent Linear object followed by an immediate skip is a false
   # alarm, and false alarms train the reader to ignore the real notes.
-  EXISTING_PR="$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
+  # shellcheck disable=SC2086  # unquoted on purpose: empty must expand to nothing
+  EXISTING_PR="$(gh pr list $KIPI_GH_REPO_ARGS --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
   REWORK=""
   CONFLICT_ROUND=""
   DRIFT_ROUND=""
   if [ -n "$EXISTING_PR" ]; then
-    PR_VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$EXISTING_PR.verdict.json")"
+    PR_VERDICT="$(verdict_from_record "$(verdict_record_path "$REVIEWS_DIR" "$(slug_for_repo "$TARGET_REPO" "${KIPI_SLUG_REGISTRY:-$SKEL/instance-registry.json}")" "$EXISTING_PR")")"
     if [ -z "$PR_VERDICT" ]; then
       # Fallback for PRs reviewed before the verdict record existed: extract
       # from the newest review .md with the SAME extractor the reviewer uses.
-      LATEST_REVIEW="$(ls -t "$REVIEWS_DIR/pr-$EXISTING_PR-"*.md 2>/dev/null | head -1)"
+      LATEST_REVIEW="$(ls -t "$REVIEWS_DIR/$(artifact_key "$(slug_for_repo "$TARGET_REPO" "${KIPI_SLUG_REGISTRY:-$SKEL/instance-registry.json}")" "$EXISTING_PR")-"*.md "$REVIEWS_DIR/pr-$EXISTING_PR-"*.md 2>/dev/null | head -1)"
       [ -n "$LATEST_REVIEW" ] && PR_VERDICT="$(extract_verdict "$LATEST_REVIEW")"
     fi
     # MERGEABILITY IS HALF THE GATE (ASK-212). Read once, through the shared lib,
