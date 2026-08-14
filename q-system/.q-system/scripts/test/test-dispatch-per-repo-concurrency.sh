@@ -65,7 +65,7 @@ export KIPI_DISPATCH_LIVE_LEDGER="$WORK/live.tsv"
 # counting cases went red against correct code. Every fixture below carries the
 # FIXTURETAG marker and the counter is scoped to it, so this suite measures only
 # processes it started.
-export KIPI_DISPATCH_LIVE_PATTERN="FIXTURETAG.*--issue"
+export KIPI_DISPATCH_LIVE_PATTERN="FIXTURETAG converge"
 # shellcheck disable=SC1090
 . "$HELPERS"
 
@@ -249,30 +249,36 @@ echo "$SEL_U" | grep -q 'PICKED=beta' \
 kill "$PID_H" 2>/dev/null; wait "$PID_H" 2>/dev/null
 
 kill_all_fakes
-echo "== 10. a RE-REVIEW child counts against the concurrency cap =="
-# A dispatch does not always launch a converge. On a reviewer redrive it runs
-#   bash .../pr-review-agent.sh <PR> --issue ASK-nnn --post
-# which the old `converge.sh --issue` pattern never matched, so re-review
-# children spent a `claude -p` pair outside the cap entirely.
+echo "== 10. dispatch's OWN re-review child counts; a stranger's review does NOT =="
+# Widening the pgrep pattern to catch re-reviews stopped dispatch in production:
+#   2026-08-14T23:46:15Z skip: 5 converge run(s) live, cap 3
+# with ZERO converges -- all five were an interactive session's pr-review-agent
+# processes. pgrep cannot tell dispatch's child from anyone else's, so the two
+# populations are counted from the two sources that can: converges by pgrep,
+# re-reviews by the LEDGER, which only dispatch writes.
 spawn_fake_rereview() {
   bash -c 'exec -a "FIXTURETAG bash /x/pr-review-agent.sh 163 --issue '"$1"' --post" sleep 60' >/dev/null 2>&1 &
   echo $! >> "$WORK/pids"
   echo $!
 }
 BASE="$(live_converges)"; BASE="${BASE:-0}"
-PID_R="$(spawn_fake_rereview ASK-600)"
-sleep 1
-NOW="$(live_converges)"; NOW="${NOW:-0}"
-[ "$NOW" -gt "$BASE" ] \
-  && ok "a live re-review child is counted by live_converges ($BASE -> $NOW)" \
-  || bad "a re-review child is invisible to the cap" "count stayed $BASE; it would run outside the spend bound"
 
-# T10-neg: the OLD pattern must NOT see it, or case 10 proves nothing.
-OLD="$(pgrep -f 'FIXTURETAG converge\.sh --issue' 2>/dev/null | grep -c . || true)"; OLD="${OLD:-0}"
-[ "$OLD" -eq "$BASE" ] \
-  && ok "T10-neg the old converge-only pattern is blind to it (the gap was real)" \
-  || bad "T10-neg the assertion CAN fail" "the old pattern already matched, so nothing was fixed"
-kill "$PID_R" 2>/dev/null; wait "$PID_R" 2>/dev/null
+# A stranger's review: live, matching pr-review-agent, but NOT in the ledger.
+PID_X="$(spawn_fake_rereview ASK-900)"
+sleep 1
+STRANGER="$(live_converges)"; STRANGER="${STRANGER:-0}"
+[ "$STRANGER" -eq "$BASE" ] \
+  && ok "a review this dispatch never launched does NOT count ($BASE unchanged)" \
+  || bad "an unrelated review counted against the cap ($BASE -> $STRANGER)" \
+        "this is the 5-live-0-converges production stall"
+
+# The same process, once ATTRIBUTED to dispatch, does count.
+record_live_run "$PID_X" "ASK-900" "/repos/rr"
+MINE="$(live_converges)"; MINE="${MINE:-0}"
+[ "$MINE" -gt "$BASE" ] \
+  && ok "dispatch's own re-review child DOES count ($BASE -> $MINE)" \
+  || bad "a dispatch-launched re-review escaped the cap" "it spends a claude -p pair unbounded"
+kill "$PID_X" 2>/dev/null; wait "$PID_X" 2>/dev/null
 
 echo "== 11. a FAILED ledger write is loud, not silently successful =="
 # An unwritten row silently disables per-repo exclusion for that repo. Point the
