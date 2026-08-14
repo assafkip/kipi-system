@@ -7,7 +7,16 @@
 
 	<key>EnvironmentVariables</key>
 	<dict>
-		<key>KIPI_REPO</key>
+		<!-- NO KIPI_REPO HERE, DELIBERATELY (codex major, PR #122 r1).
+		     ProgramArguments below runs kipi-dispatch-pinned.sh, and the wrapper
+		     SETS KIPI_REPO to its own dedicated checkout before exec'ing
+		     dispatch. Declaring it here would override that with the shared
+		     checkout humans park on -- which is the 22.5h outage the wrapper
+		     exists to end, reintroduced through the config instead of the code.
+		     The wrapper reads KIPI_REPO_MAIN (defaulting to ~/projects/kipi-system)
+		     for the fetch and the object store; that is a different variable on
+		     purpose so the two roles cannot be confused. -->
+		<key>KIPI_REPO_MAIN</key>
 		<string>__KIPI_REPO__</string>
 		<!-- Same PATH as com.kipi.openloops-heartbeat, which is the proven
 		     working `claude -p` under launchd. gh and claude both live in
@@ -50,10 +59,15 @@
 		<string>7</string>
 	</dict>
 
+	<!-- THE WRAPPER, NOT kipi-dispatch.sh DIRECTLY (codex major, PR #122 r1).
+	     Without this line the pinned checkout is dead code: the scheduler keeps
+	     running dispatch out of the shared checkout humans park on, stale_check()
+	     keeps refusing, and merging the wrapper fixes nothing. kipi-dispatch-pinned.sh
+	     builds/advances its own checkout and exec's kipi-dispatch.sh from THERE. -->
 	<key>ProgramArguments</key>
 	<array>
 		<string>/bin/bash</string>
-		<string>__KIPI_REPO__/kipi-dispatch.sh</string>
+		<string>__KIPI_REPO__/kipi-dispatch-pinned.sh</string>
 	</array>
 
 	<!-- Every 15 minutes. The heartbeat only TOPS UP to the concurrency cap;
