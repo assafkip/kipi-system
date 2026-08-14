@@ -162,6 +162,17 @@ done
 # control code lives. Every git read that asks "does this tree hold the PR"
 # targets REVIEW_REPO; every gh call is scoped to its slug. Defaults to $SKEL, so
 # every existing caller behaves exactly as before.
+# WHAT MODE THIS RUN IS IN, DERIVED ONCE (ASK-758). Every side effect below --
+# the PR comment, the commit status, the Linear post -- is inside `if POST=1`,
+# but the verdict line and the closing line are not, so a default invocation
+# printed `verdict: APPROVE` and `done` having moved no gate and written nothing
+# a human or a required check can see. The dry transcript and the real approving
+# transcript were the same text; the difference was only discoverable by going
+# and proving zero statuses exist. One derivation, appended at both places a
+# reader forms a belief, so the two can never disagree about the mode.
+DRY_NOTE=""
+[ "$POST" = "1" ] || DRY_NOTE=" (DRY RUN -- nothing posted, no gate moved; re-run with --post)"
+
 REVIEW_REPO="${TARGET_REPO_ARG:-${KIPI_TARGET_REPO:-$SKEL}}"
 [ -d "$REVIEW_REPO" ] || { echo "--repo: no such directory: $REVIEW_REPO" >&2; exit 1; }
 REVIEW_REPO="$(cd "$REVIEW_REPO" && pwd)"
@@ -782,7 +793,7 @@ else
   VERDICT="$STATED_VERDICT"
   echo "  NOTE: no FINDINGS block; verdict read from prose (weaker)"
 fi
-echo "  verdict: ${VERDICT:-unstated}"
+echo "  verdict: ${VERDICT:-unstated}$DRY_NOTE"
 
 # Single writer for verdict state. The worker's rework gate reads THIS record,
 # never the review prose. Keyed by PR number, latest round wins; history stays
@@ -1083,5 +1094,5 @@ Sana: reply to this comment on THIS issue. For each finding, either the file:lin
   fi
 fi
 
-echo "$(TS) done"
+echo "$(TS) done$DRY_NOTE"
 exit 0
