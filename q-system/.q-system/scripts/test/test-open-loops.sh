@@ -7,6 +7,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 S="$ROOT/q-system/.q-system/scripts/open-loops.py"
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
+# No fixture in this file may reach the Linear API. The pointer cache refresh is
+# report-mode-only and already opt-out; pinning it OFF here keeps the suite
+# deterministic and free, and keeps a real API key out of a test's blast radius.
+export KIPI_OPEN_LOOPS_OFFLINE=1
+
 # 1. report mode runs clean against the live registry (STRUCTURAL check only).
 # Was: grep for two hardcoded loop titles ("cc-spex closeout-gate PR", ...).
 # That pinned live, legitimately-changing registry content into a test — the
@@ -89,4 +94,80 @@ OUT7B="$(CLAUDE_PROJECT_DIR="$T4" python3 "$S" --report 2>&1)"
 echo "$OUT7B" | grep -q "2 deferred prd-os finding(s) not auto-classified" \
   || fail "ledger-absent case must count both findings (check is decorative otherwise): $OUT7B"
 
-echo "PASS: surfaces registry loops (incl seeded OSS PRs) + genuine deferred findings, excludes closed + folded bookkeeping + spillover-captured, catch-all guarantees zero silent-fall, valid SessionStart JSON, never blocks on empty"
+# ---------------------------------------------------------------------------
+# Pointer-style deferrals (ASK-759). A rationale that NAMES its owner is not a
+# keyword guess: the named tracker row's state is the answer. Before this, such a
+# rationale fell to FUTURE_WORK_RE keyword luck and usually landed in the
+# uncountable "N not auto-classified" bucket that no action clears (sp-30a109ad,
+# hit 2026-07-27 on findings 3/7/9).
+# ---------------------------------------------------------------------------
+
+mk_ptr_fixture() {  # $1=dir  $2=prd status line ('' = no spec file at all)
+  mkdir -p "$1/q-system/memory" "$1/.prd-os/findings" "$1/.prd-os/prds"
+  echo '{"loops":[]}' > "$1/q-system/memory/open-loops.json"
+  printf '%s\n' \
+   '{"id":"p1","disposition":"deferred","body":"pointer parked item","rationale":"owned by prd-pointer-demo-2026-08-14, not this issue"}' \
+   > "$1/.prd-os/findings/r.jsonl"
+  if [ -n "$2" ]; then
+    printf -- '---\nid: prd-pointer-demo-2026-08-14\nstatus: %s\n---\n' "$2" \
+      > "$1/.prd-os/prds/prd-pointer-demo-2026-08-14.md"
+  fi
+}
+
+# 8. pointer target resolvable and CLOSED (archived PRD) -> dropped from the
+#    count AND not surfaced. The work is done; re-reporting it is the nag.
+T5="$(mktemp -d)"; mk_ptr_fixture "$T5" archived
+OUT8="$(CLAUDE_PROJECT_DIR="$T5" python3 "$S" --report 2>&1)"
+echo "$OUT8" | grep -qi "not auto-classified" && fail "closed pointer target still counted in catch-all: $OUT8" || true
+echo "$OUT8" | grep -qi "pointer parked item" && fail "closed pointer target wrongly surfaced: $OUT8" || true
+
+# 8b. mutation guard: same finding, NO spec on disk -> unresolvable -> it must
+#     stay in the catch-all. Proves 8 drops on resolved state, not on the mere
+#     presence of a pointer (a pointer-swallowing bug would pass 8 and fail here).
+T5B="$(mktemp -d)"; mk_ptr_fixture "$T5B" ""
+OUT8B="$(CLAUDE_PROJECT_DIR="$T5B" python3 "$S" --report 2>&1)"
+echo "$OUT8B" | grep -q "1 deferred prd-os finding(s) not auto-classified" \
+  || fail "unresolvable pointer must fail OPEN into the catch-all, never drop: $OUT8B"
+
+# 9. pointer target resolvable and OPEN -> a real loop line carrying the id, not
+#    a nameless number. The id is what makes the line actionable.
+T6="$(mktemp -d)"; mk_ptr_fixture "$T6" approved
+OUT9="$(CLAUDE_PROJECT_DIR="$T6" python3 "$S" --report 2>&1)"
+echo "$OUT9" | grep -qi "pointer parked item" || fail "open pointer target not surfaced as a loop: $OUT9"
+echo "$OUT9" | grep -q "prd-pointer-demo-2026-08-14" || fail "surfaced loop does not carry the pointer id: $OUT9"
+echo "$OUT9" | grep -qi "not auto-classified" && fail "open pointer target also counted in catch-all: $OUT9" || true
+
+# 9b. mutation guard: flip that same spec to archived -> the line disappears.
+#     Proves 9 reads the target's STATE; a presence-only check stays green in 9
+#     and goes red here.
+printf -- '---\nid: prd-pointer-demo-2026-08-14\nstatus: archived\n---\n' \
+  > "$T6/.prd-os/prds/prd-pointer-demo-2026-08-14.md"
+OUT9B="$(CLAUDE_PROJECT_DIR="$T6" python3 "$S" --report 2>&1)"
+echo "$OUT9B" | grep -qi "pointer parked item" && fail "archived target still surfaced (state ignored): $OUT9B" || true
+
+# 10. Linear pointers resolve from the on-disk cache only -- SessionStart never
+#     makes a network call. `folded into ASK-...` is deliberate: FOLDED_RE used to
+#     silently drop it, so an OPEN owner vanished. Pointer resolution outranks it.
+T7="$(mktemp -d)"; mkdir -p "$T7/q-system/memory" "$T7/q-system/output" "$T7/.prd-os/findings"
+echo '{"loops":[]}' > "$T7/q-system/memory/open-loops.json"
+printf '%s\n' \
+ '{"id":"l1","disposition":"deferred","body":"linear open owner","rationale":"folded into ASK-419"}' \
+ '{"id":"l2","disposition":"deferred","body":"linear closed owner","rationale":"owned by ASK-420"}' \
+ > "$T7/.prd-os/findings/s.jsonl"
+cat > "$T7/q-system/output/linear-issue-cache.json" <<'JSON'
+{"issues":{"ASK-419":{"state":"open"},"ASK-420":{"state":"closed"}}}
+JSON
+OUT10="$(CLAUDE_PROJECT_DIR="$T7" python3 "$S" --report 2>&1)"
+echo "$OUT10" | grep -q "ASK-419" || fail "open Linear pointer not surfaced with its id: $OUT10"
+echo "$OUT10" | grep -qi "linear closed owner" && fail "closed Linear pointer wrongly surfaced: $OUT10" || true
+echo "$OUT10" | grep -qi "not auto-classified" && fail "cached Linear pointers still counted in catch-all: $OUT10" || true
+
+# 10b. mutation guard: delete the cache -> BOTH become unresolvable and must land
+#      in the catch-all. A cache-blind resolver that guessed would stay green in
+#      10 and go red here.
+rm "$T7/q-system/output/linear-issue-cache.json"
+OUT10B="$(CLAUDE_PROJECT_DIR="$T7" python3 "$S" --report 2>&1)"
+echo "$OUT10B" | grep -q "2 deferred prd-os finding(s) not auto-classified" \
+  || fail "cache-absent Linear pointers must both fail open into the catch-all: $OUT10B"
+
+echo "PASS: surfaces registry loops (incl seeded OSS PRs) + genuine deferred findings, excludes closed + folded bookkeeping + spillover-captured, resolves pointer-style deferrals (closed drops, open surfaces with its id, unresolvable fails open), catch-all guarantees zero silent-fall, valid SessionStart JSON, never blocks on empty"
