@@ -212,5 +212,79 @@ class TestTheNegativeControl:
             "stanza left the reproducer green")
 
 
+class TestTheWiringIntoTheUpdater:
+    """The block is useless unwired, and worse than useless wired in the wrong
+    order. Both halves are asserted here rather than trusted."""
+
+    UPDATER = os.path.join(REPO, "kipi-update.sh")
+
+    def text(self):
+        with open(self.UPDATER, encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_the_updater_actually_calls_it(self):
+        assert "kipi-update-gitignore-block.py" in self.text(), (
+            "the writer is not called from the updater -- a built, tested, "
+            "wired-to-nothing engine (the sp-0f773063 class)")
+
+    def test_it_runs_BEFORE_the_untrack_migration(self):
+        """ORDER IS THE WHOLE POINT. `git rm --cached` leaves the file on disk
+        untracked; if it is not yet ignored at that moment, git reports it and
+        the next auto-commit puts it straight back."""
+        text = self.text()
+        block_at = text.index("kipi-update-gitignore-block.py")
+        untrack_at = text.index('for sys_path in "${SYSTEM_NEVER_COMMIT[@]}"')
+        assert block_at < untrack_at, (
+            "the .gitignore block is written AFTER the untrack migration, so "
+            "every untracked marker is visible to auto-commit until the next run")
+
+    def test_the_updater_still_parses(self):
+        r = subprocess.run(["bash", "-n", self.UPDATER],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+
+
+class TestUntrackingWithoutIgnoringRegresses:
+    """The behavioural half of the ordering argument, run for real."""
+
+    def track_the_marker(self, root):
+        rel = "q-system/.q-system/.claude-integrity-armed"
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text("armed 2026-08-14T20:13:59Z\n")
+        git(str(root), "add", "-f", rel)
+        git(str(root), "commit", "-qm", "the state five instances were in")
+        assert git(str(root), "ls-files", "--error-unmatch", rel).returncode == 0
+        return rel
+
+    def test_untrack_alone_hands_the_marker_straight_back_to_auto_commit(self, tmp_path):
+        """NEGATIVE CONTROL for the ordering. Untracking without the block
+        leaves the marker untracked AND unignored, which is exactly the state
+        auto-commit sweeps."""
+        root = make_instance(tmp_path)
+        rel = self.track_the_marker(root)
+
+        git(str(root), "rm", "--cached", "--quiet", "--", rel)
+        git(str(root), "commit", "-qm", "untrack")
+
+        assert (root / rel).exists(), "the untrack must never delete the file"
+        assert rel in untracked(root)
+        assert auto_commit.system_state_paths(untracked(root)) == [rel], (
+            "if this is empty the regression closed some other way -- find out "
+            "where before deleting this test")
+
+    def test_block_then_untrack_ends_clean(self, tmp_path):
+        """The wired order. Same fixture, block first."""
+        root = make_instance(tmp_path)
+        rel = self.track_the_marker(root)
+
+        blockmod.main(["--skeleton", REPO, "--instance", str(root)])
+        git(str(root), "rm", "--cached", "--quiet", "--", rel)
+        git(str(root), "commit", "-qm", "untrack")
+
+        assert (root / rel).exists(), "the untrack must never delete the file"
+        assert rel not in untracked(root)
+        assert auto_commit.system_state_paths(untracked(root)) == []
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

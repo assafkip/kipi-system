@@ -1610,6 +1610,40 @@ PY
       git merge --abort 2>/dev/null || true
     fi
 
+    # THE OTHER HALF OF THE UNTRACK BELOW, and it must run FIRST (sp-097d2e23).
+    #
+    # `git rm --cached` leaves the file on disk, UNTRACKED. In the skeleton that
+    # is invisible, because root .gitignore has covered these paths since
+    # .gitignore:123. No instance has ever had those lines: root .gitignore is
+    # not in this script's sync set (q-system/, .claude/{agents,output-styles,
+    # rules}/*.md, .claude/settings.json, plugins/). So on an instance the
+    # untracked marker is REPORTED by git status, auto-commit.py classifies
+    # q-system/.q-system/ as `chore` exhaust, and the next ordinary session
+    # commits it straight back. The migration below would then have to run
+    # again, and again, forever.
+    #
+    # That is not a prediction. SYSTEM_NEVER_COMMIT closes this script's own
+    # commit path; the commit that re-added the marker to an instance at
+    # 2026-08-14 14:22 carried auto-commit.py's subject ("chore: update system
+    # infrastructure"), not this script's ("...before skeleton sync"). Two
+    # writers, and the array only ever guarded one of them.
+    #
+    # Ignoring the path guards every writer at once -- this script, the Stop
+    # hook, a stray `git add -A`, the founder's own commit -- because it works
+    # at the layer all of them read. The stanza is PARSED from the skeleton's
+    # own .gitignore, so adding a fourth never-commit path there reaches all 22
+    # instances without touching this file.
+    #
+    # Advisory: an instance that cannot take the block is not a reason to
+    # abandon an otherwise good update, and the untrack below still runs.
+    GITIGNORE_BLOCK="$SCRIPT_DIR/kipi-update-gitignore-block.py"
+    if [ -f "$GITIGNORE_BLOCK" ]; then
+      python3 "$GITIGNORE_BLOCK" --skeleton "$SCRIPT_DIR" --instance "$path" ||
+        echo "    WARN: could not write the .gitignore managed block; never-commit paths stay visible to auto-commit here"
+    else
+      echo "    WARN: .gitignore block writer missing; never-commit paths stay visible to auto-commit here"
+    fi
+
     # ONE-TIME MIGRATION, and it must run BEFORE the block below (measured 2026-08-14, 6 instances).
     #
     # The chokepoint stops the baseline from BECOMING tracked. It does nothing for
