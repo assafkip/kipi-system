@@ -41,6 +41,7 @@ import argparse
 import contextlib
 import fcntl
 import json
+import tempfile
 import os
 import re
 import sys
@@ -1679,17 +1680,143 @@ def _print_spillover_groups(items: list, field: str, heading: str) -> None:
         print(f"  {count:5d}  {value}")
 
 
+# Severities the standing gate blocks on. These are WORK, so they carry a DoR and
+# become a Linear issue at file time. Everything else is a note.
+SPILLOVER_BLOCKING_SEVERITIES = ("major", "blocker")
+
+
+def _spillover_read_dor(args):
+    """The DoR text from --dor or --dor-file, or None."""
+    if getattr(args, "dor_file", None):
+        return Path(args.dor_file).read_text(encoding="utf-8").strip()
+    return (getattr(args, "dor", None) or "").strip() or None
+
+
+def _spillover_autopromote(cfg: Config, sid: str, args, dor: str) -> dict:
+    """File the Linear issue immediately. Never route through the founder.
+
+    why (founder, 2026-08-13, verbatim): "notification dont work for me. I get a ton
+    of notifications and all id do is open an instance and say 'make an issue for it'.
+    whats the point of having me in the middle". A ping that only produces that
+    sentence is a router, not a signal.
+
+    And when this fails, the answer is still not him: "if an engineering decision
+    needs to be made, it can and should be made by Sana, not wait for me". So a
+    failure here prints the exact command that completes the job and names Sana as
+    its owner. The ITEM IS ALREADY RECORDED before this runs, so a promotion failure
+    can never lose the finding -- it degrades to the pre-2026-08-13 behaviour, which
+    was the whole system a day ago.
+    """
+    import subprocess
+    root = Path(cfg.repo_root) if hasattr(cfg, "repo_root") else Path.cwd()
+    promoter = root / "q-system" / ".q-system" / "scripts" / "spillover-promote.py"
+    if not promoter.exists():
+        return {"status": "skipped", "reason": f"no promoter at {promoter}"}
+
+    title = getattr(args, "title", None) or args.desc.strip().split(". ")[0][:110]
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+        fh.write(dor)
+        dor_path = fh.name
+    cmd = ["python3", str(promoter), sid, "--title", title, "--dor-file", dor_path]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=90,
+                             cwd=str(root))
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "failed", "reason": str(exc)[:200],
+                "owner": "sana", "rerun": " ".join(cmd)}
+    if res.returncode == 0:
+        try:
+            return {"status": "promoted", **json.loads(res.stdout.strip().splitlines()[-1])}
+        except Exception:  # noqa: BLE001
+            return {"status": "promoted", "raw": res.stdout.strip()[-200:]}
+    # A refusal is an ENGINEERING problem (usually the Linear project mapping,
+    # sp-421fa27d), so it is addressed to Sana with the command that finishes it.
+    return {"status": "not_promoted",
+            "reason": (res.stderr or res.stdout).strip()[-300:],
+            "owner": "sana",
+            "rerun": " ".join(cmd),
+            "note": "item IS recorded and the gate is RED; only the Linear issue is missing"}
+
+
 def cmd_spillover(cfg: Config, args) -> int:
     """add | list | check | resolve | triage — the out-of-scope finding ledger."""
     import hashlib as _hashlib
     sub = args.spillover_cmd
     if sub == "add":
         sid = args.id or f"sp-{_hashlib.sha256((args.source + args.desc).encode()).hexdigest()[:8]}"
-        _spillover_append(cfg, {
+        dor = _spillover_read_dor(args)
+        blocking = args.severity in SPILLOVER_BLOCKING_SEVERITIES
+        # REFUSED AT THE DOOR, not later. The founder's words, 2026-08-13: "all id do
+        # is open an instance and say 'make an issue for it'. whats the point of having
+        # me in the middle". A notification turns him into a router between two agents.
+        #
+        # The DoR cannot be deferred to whoever picks the item up, because
+        # spillover-promote.py's own header says it "is written by the agent that
+        # CONFIRMED the finding" -- that agent has the context and a later one guesses,
+        # and "guessing is worse". So the moment to demand it is the moment of filing,
+        # when the context is still in the room.
+        #
+        # Minor and untriaged items are untouched: they are notes, not work, and
+        # demanding a DoR for every passing observation is how the ledger stops being
+        # written to at all.
+        # NOT a refusal. The first version of this raised, and broke 34 tests -- which
+        # was the design telling the truth: many spillover items are created by
+        # MACHINERY (a `deferred` finding auto-creates one in both findings systems,
+        # sp-5bcfbfe8), where no agent holds the context a DoR needs. Refusing there
+        # would break the auto-capture that exists to stop orphans, which is a worse
+        # failure than a missing DoR.
+        #
+        # So a blocking item with no DoR is HANDED OFF, never dropped and never routed
+        # to the founder. His rule, 2026-08-13: "if an engineering decision needs to be
+        # made, it can and should be made by Sana, not wait for me." Writing a DoR from
+        # a confirmed finding is an engineering decision. `spillover needs-dor` lists
+        # them so a Sana run can drain the queue.
+        record = {
             "id": sid, "source": args.source, "description": args.desc,
             "severity": args.severity, "status": "open", "created_at": _now_iso(),
-        })
-        print(json.dumps({"id": sid, "status": "open"}))
+        }
+        # STORE THE DoR (Codex review of #147, major). The --no-promote path replied
+        # "DoR recorded; no Linear issue created" while this record discarded it, so
+        # the DoR existed only in the caller's argv and `needs-dor` could never use
+        # it. A status naming an artifact that was never written is the exact defect
+        # this whole mechanism was built to stop, committed inside it.
+        if dor:
+            record["dor"] = dor
+        _spillover_append(cfg, record)
+        out = {"id": sid, "status": "open"}
+        if dor and not getattr(args, "no_promote", False):
+            out["promotion"] = _spillover_autopromote(cfg, sid, args, dor)
+        elif dor:
+            # A DoR WAS supplied and promotion was suppressed by the caller. Say that
+            # explicitly: the first version fell through to "needs_dor" here, which
+            # reported the opposite of the truth -- the one defect class this whole
+            # ledger exists to catch.
+            out["promotion"] = {"status": "suppressed", "reason": "--no-promote",
+                                "note": "DoR recorded; no Linear issue created"}
+        elif blocking:
+            out["promotion"] = {
+                "status": "needs_dor", "owner": "sana",
+                "note": ("blocking severity with no DoR: no Linear issue was created. "
+                         "Drain with `prd_runner.py spillover needs-dor`."),
+            }
+        print(json.dumps(out))
+        return 0
+    if sub == "needs-dor":
+        # SANA'S QUEUE. Blocking items with no Linear issue: they turn the standing
+        # gate red but nothing can pick them up. Writing the DoR is an engineering
+        # decision, so it goes to Sana rather than waiting on the founder.
+        rows = _spillover_open(cfg)
+        pending = [r for r in rows
+                   if r.get("status") == "open"
+                   and r.get("severity") in SPILLOVER_BLOCKING_SEVERITIES
+                   and not r.get("linear")]
+        for r in pending:
+            print(f"{r['id']} [{r.get('severity')}] src={r.get('source')}")
+            print(f"    {(r.get('description') or '')[:200]}")
+        print(f"\n{len(pending)} blocking item(s) need a DoR. Each one: write the DoR "
+              f"(allowed files, a reproducer that fails first, acceptance), then\n"
+              f"    python3 q-system/.q-system/scripts/spillover-promote.py <id> "
+              f"--title '...' --dor-file <f>")
         return 0
     if sub == "reclassify":
         # Correct a severity through a NEW EVENT, never a mutation. Approved
@@ -2115,6 +2242,13 @@ def main(argv: list[str] | None = None) -> int:
     # than storing it and letting the gate mis-bucket it (Codex, PR #110 r2).
     sp_add.add_argument("--severity", default="minor",
                         choices=SPILLOVER_KNOWN_SEVERITIES)
+    # A DoR AT FILE TIME for anything the gate blocks on. See `_spillover_autopromote`.
+    sp_add.add_argument("--dor", help="Definition of Ready, inline")
+    sp_add.add_argument("--dor-file", dest="dor_file",
+                        help="Definition of Ready, from a file")
+    sp_add.add_argument("--title", help="issue title used when auto-promoting")
+    sp_add.add_argument("--no-promote", dest="no_promote", action="store_true",
+                        help="record only; skip the automatic Linear issue")
     sp_list = spill_sub.add_parser("list")
     sp_list.add_argument("--open", dest="open_only", action="store_true", help="only open items")
     sp_list.add_argument("--json", dest="as_json", action="store_true")
@@ -2125,6 +2259,8 @@ def main(argv: list[str] | None = None) -> int:
     sp_recl.add_argument("--reason", required=True,
                          help="why the severity is wrong; recorded on the event")
 
+    spill_sub.add_parser(
+        "needs-dor", help="open blocking items with no Linear issue yet (Sana's queue)")
     spill_sub.add_parser("check")
     spill_sub.add_parser("triage", help="read-only: open items grouped by severity and by source")
     sp_res = spill_sub.add_parser("resolve")
