@@ -862,32 +862,48 @@ TARGET_PATH=""
 # early `exit 0` here would leave the cap at 1 by another name.
 LIVE_REPOS="$(live_repos)"
 
-# AN UNATTRIBUTED RUN MAKES DISJOINTNESS UNPROVABLE, SO WE STOP.
+# A PREFERENCE, NOT AN EXCLUSION -- AND THE DIFFERENCE IS A TESTED CONTRACT.
 #
-# live_repos() can only see runs THIS script recorded. A converge started any
-# other way -- a founder running `kipi converge --issue X` by hand, an agent
-# session, a run launched by dispatch before the ledger existed -- is live in the
-# process table and absent from the ledger. Picking a repo then is guessing: the
-# hand-run could be in the very repo about to be entered, which is precisely the
-# same-file collision the per-repo rule exists to prevent.
+# The first cut of this made "one live run per repo" absolute: a repo with a live
+# converge was skipped, full stop. CI caught two tests that say otherwise, and
+# both are right:
 #
-# So the two counts must agree. pgrep is the ground truth for "how many are
-# running"; the ledger is the only source of "and where". When ledger < pgrep,
-# the missing ones could be anywhere and the safe answer is to enter nothing this
-# cycle. The next 900s tick re-checks and proceeds by itself once they finish --
-# no marker, no human, nothing to unstick.
-LIVE_TOTAL="$(live_converges)"; LIVE_TOTAL="${LIVE_TOTAL:-0}"
-LIVE_KNOWN="$(printf '%s' "$LIVE_REPOS" | grep -c . || true)"; LIVE_KNOWN="${LIVE_KNOWN:-0}"
-if [ "$LIVE_TOTAL" -gt "$LIVE_KNOWN" ]; then
-  say "skip: $LIVE_TOTAL converge run(s) live but only $LIVE_KNOWN attributed to a repo; cannot prove disjointness, entering nothing this cycle"
-  exit 0
-fi
+#   test-ci-redrive 14g "a live converge does not cost the fresh pick its slot"
+#     exists BECAUSE a live converge used to starve the ready queue: a redrive
+#     offered the already-live issue, NEXT was overwritten with it, and the issue
+#     that WAS dispatchable was thrown away every heartbeat for the whole run.
+#   test-dispatch-liveness 6a requires the per-ISSUE duplicate guard to fire on
+#     every attempt -- it cannot fire if selection exits before reaching it.
+#
+# Both scenarios are one repo with one live run, which an absolute rule refuses,
+# so it re-created the exact starvation 14g was written to prevent. Same-issue
+# collision is already handled downstream by the duplicate guard; what this rule
+# adds is SPREAD.
+#
+# So: prefer a repo with nothing live, and fall back to a busy one only when it
+# is the only candidate. With several dispatchable repos the work spreads one per
+# repo, which is the whole throughput win. With exactly one, behaviour is
+# unchanged from before this change.
+#
+# THIS IS DELIBERATELY WEAKER THAN "never two runs in one repo". A single-repo
+# fleet at cap 3 can still put two agents on one repo, which is the file-conflict
+# risk the plist documents. That is why KIPI_DISPATCH_MAX is sized to the number
+# of dispatchable repos rather than to appetite: the cap, not this loop, is what
+# bounds same-repo overlap. Making it absolute needs the starvation answered
+# first, and that is ASK-811.
+#
+# Unattributed runs (a hand-run `kipi converge`, anything this script did not
+# launch) are simply not known-busy. An earlier version halted the cycle on them;
+# that also broke 6a by exiting before the duplicate guard, and it turned a
+# hand-run converge into a fleet-wide stall.
+FALLBACK_NAME=""; FALLBACK_PATH=""
 while IFS=$'\t' read -r PNAME PPATH; do
   [ -n "$PNAME" ] || continue
   # Exact line match. A substring test would let ~/projects/foo suppress
   # ~/projects/foo-bar, silently starving a repo nothing is running in.
   if [ -n "$LIVE_REPOS" ] && printf '%s\n' "$LIVE_REPOS" | grep -qxF -- "$PPATH"; then
-    say "skip $PNAME: a converge run is already live in $PPATH (one run per repo)"
+    say "deprioritising $PNAME: a converge run is already live in $PPATH"
+    [ -n "$FALLBACK_NAME" ] || { FALLBACK_NAME="$PNAME"; FALLBACK_PATH="$PPATH"; }
     continue
   fi
   TARGET_NAME="$PNAME"
@@ -896,6 +912,20 @@ while IFS=$'\t' read -r PNAME PPATH; do
 done <<PICKEOF
 $PICKS
 PICKEOF
+
+# Every candidate was busy. Take the first rather than idling: an idle cycle here
+# is the starvation 14g forbids.
+if [ -z "$TARGET_NAME" ] && [ -n "$FALLBACK_NAME" ]; then
+  say "every dispatchable repo has a live run; proceeding in $FALLBACK_NAME (the per-issue duplicate guard still applies)"
+  TARGET_NAME="$FALLBACK_NAME"
+  TARGET_PATH="$FALLBACK_PATH"
+fi
+# --- END REPO SELECTION ---
+# The marker is load-bearing. The test cuts this whole block out and sources it,
+# and a cut that ended at PICKEOF stopped one line before the fallback -- so the
+# suite tested a selection loop that could never fall back and reported the
+# missing behaviour as a failure of the code rather than of the cut. That is the
+# fourth incomplete-extract in this file's history; delimit explicitly.
 
 if [ -z "$TARGET_NAME" ]; then
   say "no dispatchable repo this cycle"

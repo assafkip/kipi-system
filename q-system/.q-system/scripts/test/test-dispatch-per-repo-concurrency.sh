@@ -107,9 +107,14 @@ printf '%s\n' "$OUT" | grep -qxF -- "/repos/beta" \
 echo "== 2. the selection loop SKIPS a busy repo and picks the next (the throughput win) =="
 # The real loop, cut from the shipped script by its own marker comment.
 LOOPF="$WORK/loop.sh"
-sed -n '/^LIVE_REPOS="\$(live_repos)"$/,/^PICKEOF$/p' "$DISPATCH" > "$LOOPF"
-grep -q 'one run per repo' "$LOOPF" \
-  || { echo "FATAL: could not extract the selection loop from $DISPATCH" >&2; exit 1; }
+sed -n '/^LIVE_REPOS="\$(live_repos)"$/,/^# --- END REPO SELECTION ---$/p' "$DISPATCH" > "$LOOPF"
+# Ending the cut at PICKEOF stopped one line short of the fallback, so the suite
+# tested a loop that could never fall back and blamed the code. Assert both
+# halves are present -- the skip AND the fallback.
+for sym in deprioritising FALLBACK_NAME 'every dispatchable repo has a live run'; do
+  grep -q "$sym" "$LOOPF" \
+    || { echo "FATAL: '$sym' missing from the selection-loop extract of $DISPATCH" >&2; exit 1; }
+done
 
 run_selection() {
   PICKS="$1" bash -c '
@@ -126,15 +131,22 @@ SEL="$(run_selection "$(printf 'alpha\t/repos/alpha\nbeta\t/repos/beta\n')")"
 echo "$SEL" | grep -q 'PICKED=beta' \
   && ok "alpha is busy, so beta is dispatched -- the fleet does not stall" \
   || bad "the busy repo was not skipped to the next one (got: $SEL)"
-echo "$SEL" | grep -q 'one run per repo' \
+echo "$SEL" | grep -q 'deprioritising' \
   && ok "the skip states WHY, so the log explains the decision" \
   || bad "the skip was silent"
 
-echo "== 3. the SAME repo is still serialized (the cap-1 guarantee is kept) =="
+echo "== 3. a LONE busy repo is still taken (starvation is worse than overlap) =="
+# test-ci-redrive 14g exists because a live converge used to starve the ready
+# queue. An absolute one-run-per-repo rule re-creates exactly that, so the rule
+# is a PREFERENCE: fall back to the busy repo when it is the only candidate. The
+# per-ISSUE duplicate guard downstream still stops a second run of the SAME issue.
 SEL_ONE="$(run_selection "$(printf 'alpha\t/repos/alpha\n')")"
-echo "$SEL_ONE" | grep -q 'PICKED=$' || echo "$SEL_ONE" | grep -qv 'PICKED=alpha' \
-  && ok "alpha alone and busy yields no pick -- no second run in one repo" \
-  || bad "a second concurrent run was allowed in the SAME repo (got: $SEL_ONE)"
+echo "$SEL_ONE" | grep -q 'PICKED=alpha' \
+  && ok "alpha alone and busy is still dispatched -- the ready queue is not starved" \
+  || bad "a lone busy repo yielded no pick, which is the 14g starvation (got: $SEL_ONE)"
+echo "$SEL_ONE" | grep -q 'every dispatchable repo has a live run' \
+  && ok "the fallback says it is a fallback" \
+  || bad "the fallback was silent"
 
 echo "== 4. MUTATION: break the skip and case 2 must go RED =="
 MUT="$WORK/loop-mutant.sh"
@@ -191,26 +203,16 @@ grep -qF -- "/repos/dead" "$KIPI_DISPATCH_LIVE_LEDGER" \
 kill "$PID_E" 2>/dev/null; wait "$PID_E" 2>/dev/null
 
 kill_all_fakes   # cases 9 and 10 read COUNTS; start them from a known floor
-echo "== 9. an UNATTRIBUTED live run stops the cycle (disjointness is unprovable) =="
-# live_repos() only sees runs THIS script recorded. A hand-run `kipi converge`
-# is live in the process table and absent from the ledger, and it could be in the
-# very repo about to be entered. The two counts must agree or we enter nothing.
+echo "== 9. an UNATTRIBUTED live run does NOT stall the fleet =="
+# An earlier cut halted the whole cycle when pgrep exceeded the attributed count.
+# That broke test-dispatch-liveness 6a (it exited before the per-issue duplicate
+# guard could fire) and turned one hand-run converge into a fleet-wide stall.
+# Unattributed simply means "not known-busy".
 PID_H="$(spawn_fake_converge ASK-500)"       # live, deliberately NOT recorded
 SEL_U="$(run_selection "$(printf 'beta\t/repos/beta\n')")"
 echo "$SEL_U" | grep -q 'PICKED=beta' \
-  && bad "an unattributed live run did not stop the cycle" "dispatch entered a repo while a run it cannot see is live (got: $SEL_U)" \
-  || ok "an unattributed live run stops the cycle"
-echo "$SEL_U" | grep -q 'cannot prove disjointness' \
-  && ok "the refusal says WHY, so the log is not a mystery" \
-  || bad "the refusal explains itself" "no reason logged (got: $SEL_U)"
-
-# T9-neg: record that same run, and the cycle must proceed again. Without this,
-# case 9 could not tell "stopped because unattributed" from "stopped always".
-record_live_run "$PID_H" "ASK-500" "/repos/gamma"
-SEL_K="$(run_selection "$(printf 'beta\t/repos/beta\n')")"
-echo "$SEL_K" | grep -q 'PICKED=beta' \
-  && ok "T9-neg once the run IS attributed, an unrelated repo is entered again" \
-  || bad "T9-neg the assertion CAN fail" "attributing the run did not unblock selection (got: $SEL_K)"
+  && ok "a run this script never launched does not stop an unrelated repo" \
+  || bad "an unattributed run stalled the fleet (got: $SEL_U)"
 kill "$PID_H" 2>/dev/null; wait "$PID_H" 2>/dev/null
 
 kill_all_fakes
