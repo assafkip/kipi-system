@@ -28,8 +28,16 @@
 #   2  REFUSED. Protection unchanged. `off` refuses when the audit ledger cannot
 #      be written, or when no reason was given -- an override nobody can see is
 #      the thing this switch exists to prevent, so it does not happen.
-#   3  the state DID change, but an audit signal failed. Read the warnings: the
-#      hatch may be open with nobody told. Announce it by hand.
+#   3  the state DID (or probably did) change, but something about it is not
+#      trustworthy. Two causes, both loud on stderr:
+#        - an audit signal failed, so the change happened with nobody told; or
+#        - the verification read failed, so the new state is UNCONFIRMED.
+#      Never read 3 as "unchanged". Run `status` and announce it by hand.
+#
+# NOTHING here reads state and then decides. Both `off` and `on` act
+# unconditionally on an idempotent API call, because a read-then-decide has a
+# window: a concurrent call lands between the read and the report, and the
+# operator is told the opposite of what is true.
 #
 # `off` writes its intent row BEFORE touching protection, so an unwritable ledger
 # stops the override instead of being discovered once it is already open. `on` is
@@ -122,12 +130,12 @@ cmd_off() {
   fi
   local before
   local after
+  # Read for the ledger and the refusal message, NEVER for control flow. The old
+  # short-circuit returned "already OFF, nothing to do" on a stale read, so a
+  # concurrent `on` landing right after it told the operator the hatch was open
+  # while it was closing. Same TOCTOU as `on`, opposite direction. The DELETE is
+  # idempotent, so the fix is the same: stop asking, just do it.
   before="$(_read_state)"
-  if [ "$before" = "false" ]; then
-    echo "already OFF (hatch is open). Nothing to do."
-    _log "off" "$reason" "noop-already-off" || true
-    return 0
-  fi
 
   # THE AUDIT ROW GOES FIRST, AND ITS FAILURE REFUSES THE OVERRIDE.
   #
@@ -159,6 +167,20 @@ cmd_off() {
     return 1
   fi
   after="$(_read_state)"
+  # THREE OUTCOMES, NOT TWO. The first version folded "the read failed" into
+  # "the setting is still true" and returned 1 -- which this script's own exit
+  # table promises means PROTECTION UNCHANGED. But the DELETE had already
+  # succeeded, so protection was OFF, the operator was told it was not, and no
+  # Slack fired. Same silent-open class as the finding that started this file,
+  # one branch further in (Codex round 7).
+  if [ -z "$after" ]; then
+    _log "off" "$reason" "disabled-but-unverifiable" || true
+    _notify "BREAK-GLASS: enforce_admins was DISABLED on $REPO@$BRANCH by ${USER:-unknown} but the verification read FAILED -- treat protection as OFF until confirmed. Reason: $reason" || true
+    echo "The disable call SUCCEEDED but the verification read failed." >&2
+    echo "  TREAT PROTECTION AS OFF. Confirm with: $0 status" >&2
+    echo "  Close it as soon as you can: $0 on" >&2
+    return 3
+  fi
   if [ "$after" != "false" ]; then
     echo "API call returned success but the setting reads '$after'. NOT trusting the call." >&2
     _log "off" "$reason" "verify-failed:$after" || true
@@ -190,12 +212,15 @@ cmd_off() {
 
 cmd_on() {
   local before after
+  # NO read-then-decide. The old short-circuit read the state and returned
+  # "already ON, nothing to do" -- but a concurrent `off` still in flight lands
+  # right after that read, so the operator is told the hatch is closed while it
+  # is opening (Codex round 7, TOCTOU). Enabling is idempotent at the API, so
+  # the fix is to stop asking and just do it: there is no window between a
+  # decision and an action if there is no decision.
+  #
+  # `before` is still read for the ledger, never for control flow.
   before="$(_read_state)"
-  if [ "$before" = "true" ]; then
-    echo "already ON. Nothing to do."
-    _log "on" "" "noop-already-on"
-    return 0
-  fi
   if ! gh api -X POST "$API" >/dev/null 2>&1; then
     echo "FAILED to enable enforce_admins. Protection is STILL OFF -- retry or fix by hand:" >&2
     echo "  gh api -X POST $API" >&2
@@ -203,6 +228,15 @@ cmd_on() {
     return 1
   fi
   after="$(_read_state)"
+  # Same three outcomes as `off`. An unverifiable read here is far less dangerous
+  # -- the POST that just succeeded moves TOWARD protected -- but reporting rc=1
+  # would still promise "unchanged" about a call that probably did change it.
+  if [ -z "$after" ]; then
+    _log "on" "" "enabled-but-unverifiable"
+    echo "The enable call SUCCEEDED but the verification read failed." >&2
+    echo "  Protection is PROBABLY on. Confirm with: $0 status" >&2
+    return 3
+  fi
   if [ "$after" != "true" ]; then
     echo "API call returned success but the setting reads '$after'. NOT trusting the call." >&2
     _log "on" "" "verify-failed:$after"

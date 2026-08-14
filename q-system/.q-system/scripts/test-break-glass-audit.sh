@@ -129,6 +129,45 @@ ck; RC="$(run_off true "$LEDGER7" "$OK_NOTIFY" "")"
 ck; [ "$(cat "$STATE")" = "true" ] || fail "opened the hatch with no reason"
 ck; [ ! -s "$LEDGER7" ] || fail "wrote a row for a refused-before-anything call"
 
+echo "8. disable SUCCEEDS but the verification read fails -> rc=3, loud, and announced"
+# Codex round 7 major. The old code folded "the read failed" into "still true"
+# and returned 1 -- which this script's own exit table promises means PROTECTION
+# UNCHANGED. It was OFF, and nobody was told. A second stub whose DELETE removes
+# the state file reproduces exactly that: the disable lands, the read cannot.
+COPY_UNVERIF="$WORK/bg-unverifiable.sh"
+# Anchored on the ALREADY-STUBBED delete, not the original `gh api` line: $COPY
+# has been through the first sed, so the raw pattern is long gone. The harness
+# self-check below caught this rather than silently producing a copy that behaved
+# like the normal one and a case that passed for the wrong reason.
+sed -e "s|echo false > '$STATE'|rm -f '$STATE'|" "$COPY" > "$COPY_UNVERIF"
+grep -qF "rm -f '$STATE'" "$COPY_UNVERIF" || { echo "HARNESS BROKEN: unverifiable stub not applied" >&2; exit 2; }
+LEDGER8="$WORK/l8.jsonl"; NOTELOG="$WORK/note8.log"
+NOTIFY8="$WORK/notify8.sh"; printf '#!/bin/bash\necho "$1" >> "%s"\nexit 0\n' "$NOTELOG" > "$NOTIFY8"; chmod +x "$NOTIFY8"
+echo "true" > "$STATE"
+BREAK_GLASS_LEDGER="$LEDGER8" KIPI_NOTIFY="$NOTIFY8" bash "$COPY_UNVERIF" off "verify read dies" >"$WORK/out" 2>"$WORK/err"
+RC=$?
+ck; [ "$RC" = "3" ] || fail "expected rc=3 (disabled, unverifiable), got $RC"
+ck; grep -q "TREAT PROTECTION AS OFF" "$WORK/err" || fail "operator not told to treat protection as off"
+ck; [ -s "$NOTELOG" ] && grep -q "verification read FAILED" "$NOTELOG" || fail "no Slack alert for an unverifiable disable"
+ck; grep -q "disabled-but-unverifiable" "$LEDGER8" || fail "no ledger row for an unverifiable disable"
+
+echo "9. \`on\` does not read-then-decide (TOCTOU): it acts even when already true"
+# The old short-circuit returned "already ON, nothing to do" on a stale read, so
+# a concurrent off landing right after it told the operator the hatch was closed
+# while it was opening. Acting unconditionally removes the window.
+LEDGER9="$WORK/l9.jsonl"
+ck; RC="$(run_on true "$LEDGER9" "$OK_NOTIFY")"
+[ "$RC" = "0" ] || fail "expected rc=0, got $RC"
+ck; grep -q "noop-already-on" "$LEDGER9" && fail "still short-circuiting on a stale read" || true
+ck; grep -q '"action":"on"' "$LEDGER9" || fail "no row written when already on"
+
+echo "10. \`off\` does not read-then-decide either (same race, opposite direction)"
+LEDGER10="$WORK/l10.jsonl"
+ck; RC="$(run_off false "$LEDGER10" "$OK_NOTIFY" "already open, act anyway")"
+[ "$RC" = "0" ] || fail "expected rc=0, got $RC"
+ck; grep -q "noop-already-off" "$LEDGER10" && fail "still short-circuiting on a stale read" || true
+ck; grep -q "off-intent" "$LEDGER10" || fail "no intent row when already off"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ok  $CHECKS/$CHECKS break-glass audit checks passed"
