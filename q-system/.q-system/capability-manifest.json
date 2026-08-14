@@ -457,6 +457,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_break_glass_audit.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_capability_gate.py",
       "runner": "python3",
       "timeout_s": 180

@@ -171,6 +171,15 @@ authenticated, nothing else.
 Ledger: `~/.claude/audit/break-glass-main-protection.jsonl` (one row per action,
 with the reason). Slack fires on `off` and on `on`.
 
+**If `off` exits 2, it did nothing on purpose.** The audit row is written BEFORE
+protection is touched, so an unwritable ledger REFUSES the override rather than
+being discovered once the hatch is already open. Fix the ledger path (or point
+`BREAK_GLASS_LEDGER` at a writable file) and re-run. **Exit 3 means the state DID
+change but an audit signal failed** — read the warnings and announce it by hand,
+because nobody has been told. Closing is never refused for a bookkeeping failure:
+refusing to close would strand protection in the OFF state, which is worse than an
+incomplete log.
+
 **Why a switch instead of the old escape.** Before ASK-798 the escape was
 `gh pr merge --admin`: silent, always available, indistinguishable from a normal
 merge. The capability has not been removed, it has been made *visible* — the same
