@@ -129,6 +129,15 @@ NEVER_AUTO_COMMIT_DIRS = (
     ".prd-os/findings/",     # review findings are authored
 )
 
+# Executable source, in ANY area. See the note in `classify`: the AREA_MAP rows
+# `plugins/` and `q-system/.q-system/` are named for directories that happen to
+# contain Python, so code was still being swept under a generic subject with no
+# Linear id after ASK-498 supposedly ended that. Extension is the durable axis --
+# a new code directory appears far more often than a new language does.
+SOURCE_EXTENSIONS = (
+    ".py", ".sh", ".bash", ".zsh", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
+)
+
 
 def classify(filepath):
     """(type, message) for an auto-committable file, else a SKIP_* reason string.
@@ -140,6 +149,25 @@ def classify(filepath):
     """
     if filepath.endswith(NEVER_AUTO_COMMIT) or \
             filepath.startswith(NEVER_AUTO_COMMIT_DIRS):
+        return SKIP_UNCLASSIFIED
+    # EXECUTABLE SOURCE IS NEVER SWEPT, whatever area it lands in (2026-08-13).
+    #
+    # ASK-498 removed the generic fallback and this file's own comment says source
+    # trees are "deliberately absent: code is what an agent commits deliberately".
+    # Two AREA_MAP rows still contradicted that, because they are named for
+    # DIRECTORIES that happen to contain code: `plugins/` (the kipi-core plugin,
+    # which is a Python package) and `q-system/.q-system/` (which holds scripts/).
+    #
+    # Measured 2026-08-13 on this instance, in one session: `test_length_axis.py`
+    # was committed as "feat: update plugins" and `voice-dna-loader.py` as "chore:
+    # update system infrastructure", both while the agent was still working on them
+    # and before it could write a real message with a Linear id. That is the same
+    # race and the same generic-subject outcome ASK-498 was opened to end; the fix
+    # was scoped by directory when the real axis is WHAT THE FILE IS.
+    #
+    # Extension, not directory, because a new code directory is added far more often
+    # than a new language is.
+    if filepath.endswith(SOURCE_EXTENSIONS):
         return SKIP_UNCLASSIFIED
     for prefix, commit_type, msg in AREA_MAP:
         if filepath.startswith(prefix):
@@ -197,108 +225,29 @@ def group_files(files):
     return groups, unclassified
 
 
-# An unchanged set of uncommitted files speaks again after this long, so a file
-# left behind for a week is not permanently silent. 12h, not 1h: this is a Stop
-# hook, so "once per turn" means once every couple of minutes.
-REMIND_AFTER_HOURS = 12
-
-
-def notify_state_path(proj_dir):
-    """Where this project's last-notified fingerprint lives.
-
-    OUTSIDE the repo, always. why (ASK-603): state written into the project
-    becomes an uncommitted file, which is exactly what this hook reports on,
-    which rewrites the state, which reports again. The cache would be its own
-    alarm. Hashed basename so two projects never share a slot and never
-    silence each other -- consulting and Pure_spectrum_Q were both flooding.
-    """
-    slot = hashlib.sha256(proj_dir.encode()).hexdigest()[:16]
-    # KIPI_CACHE_HOME so a test can never write the REAL cache. Without it the
-    # suite recorded a live digest on first run and then SUPPRESSED itself on
-    # the second, turning a green test red with no code change -- a test
-    # touching a live data path, which is the one habit the fable-discipline
-    # lint exists to block.
-    home = os.environ.get("KIPI_CACHE_HOME") or os.path.join(
-        os.path.expanduser("~"), ".cache")
-    return os.path.join(home, "kipi", "auto-commit-notify", f"{slot}.json")
-
-
-def should_notify(unclassified, now=None, path=None):
-    """(say?, digest) -- speak on a CHANGED file set, or after the remind window.
-
-    why (ASK-603): 41 of 60 #general messages inside ONE 75-minute window were
-    this notification, naming the identical two files every time. Posted into
-    that same hour: a job dead for 16 days and four security reverts. Nobody
-    could see them. Reporting an unchanged condition on a Stop hook is how a
-    channel stops being read.
-    """
-    now = time.time() if now is None else now
-    digest = hashlib.sha256(
-        "\n".join(sorted(unclassified)).encode()).hexdigest()[:16]
-    try:
-        with open(path) as fh:
-            prev = json.load(fh)
-    except (OSError, ValueError):
-        return True, digest        # no cache, or a broken one: speak, never swallow
-    if prev.get("digest") != digest:
-        return True, digest
-    return (now - prev.get("at", 0)) >= REMIND_AFTER_HOURS * 3600, digest
-
-
-def record_notified(digest, now=None, path=None):
-    """Remember what was said. Never raises: a Stop hook does not fail on a cache."""
-    now = time.time() if now is None else now
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as fh:
-            json.dump({"digest": digest, "at": now}, fh)
-    except OSError:
-        pass
-
-
-def _notify_slack(unclassified):
-    """One line to Slack naming what was left uncommitted. Never raises."""
-    script = os.path.join(PROJ_DIR, "q-system", ".q-system", "scripts", "slack-notify.sh")
-    if not os.path.isfile(script):
-        return
-    state = notify_state_path(PROJ_DIR)
-    say, digest = should_notify(unclassified, path=state)
-    if not say:
-        return
-    head = ", ".join(unclassified[:3])
-    more = f" (+{len(unclassified) - 3} more)" if len(unclassified) > 3 else ""
-    # ASK-604: ONE source for the project name. The prefix slack-notify.sh adds
-    # and the name in this body used to be derived independently -- the body from
-    # PROJ_DIR, the prefix from the script's ambient cwd -- so a message could
-    # read "[qep_agent]" while naming consulting's files. abspath first, because
-    # PROJ_DIR defaults to "." and basename(".") is ".".
-    project = os.path.basename(os.path.abspath(PROJ_DIR)) or "unknown-project"
-    env = dict(os.environ, KIPI_NOTIFY_LABEL=project)
-    try:
-        subprocess.run(["bash", script,
-                        f"auto-commit left {len(unclassified)} file(s) uncommitted "
-                        f"in {project}: {head}{more}"],
-                       capture_output=True, timeout=10, cwd=PROJ_DIR, env=env)
-        record_notified(digest, path=state)
-    except (OSError, subprocess.SubprocessError):
-        pass                       # a Stop hook never fails because Slack did
-
-
 def report_skipped(unclassified):
     """Say out loud what was left uncommitted, and why.
 
-    Silence here would recreate the original defect in reverse: work sitting
-    uncommitted with nobody told. The hook prints to the Stop transcript, which is
-    where the operator or the next session sees it.
+    TRANSCRIPT ONLY. This hook does NOT alert. Founder-directed 2026-08-10 after
+    reading #general: 51 of 100 messages in one 4.5-hour window were this
+    notification, and the four security reverts and one dead job posted into the
+    same window were unreadable underneath them.
+
+    An earlier round (ASK-603) tried to fix that with a throttle -- speak on a
+    CHANGED file set, otherwise stay quiet for 12h. It did not work, and the
+    reason is structural rather than a tuning miss: during active work the file
+    set changes on nearly every turn, so the digest changes on nearly every turn,
+    so the throttle passes. The condition being reported (files are uncommitted
+    right now) is TRUE almost continuously while someone is working, and a
+    continuously-true condition is not an event. No throttle value fixes that;
+    only not alerting does.
+
+    The information is not lost. It prints below, which is where the operator or
+    the next session reads it. Anything here that genuinely needs a human is
+    caught by the commit gates, not by a Stop-hook ping.
     """
     if not unclassified:
         return
-    # ROUTE IT SOMEWHERE READ (adversarial review finding-4). This hook is wired
-    # `async` and the fleet template appends `2>/dev/null`, so a bare print() goes
-    # nowhere an operator will look -- the same silently-dropped-notification scar
-    # that founder-notifications.md exists for. Slack is that file's single sanctioned
-    # channel and no-ops when the webhook is unset, so this can never break a Stop.
-    _notify_slack(unclassified)
     print(f"auto-commit: {len(unclassified)} file(s) NOT committed "
           f"(unclassified path, commit these yourself with a real message + issue id):")
     for f in unclassified[:20]:

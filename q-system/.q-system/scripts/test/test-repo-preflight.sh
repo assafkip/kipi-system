@@ -102,7 +102,23 @@ case "$1 ${2:-}" in
 esac
 case "${*}" in
   *"/protection"*)
-    [ "${STUB_GH_PROTECTION:-ok}" = "ok" ] || { echo "Branch not protected" >&2; exit 1; }
+    # FOUR MODES, because the three failure shapes are NOT interchangeable and the
+    # script used to collapse two of them into one sentence (ASK-755).
+    case "${STUB_GH_PROTECTION:-ok}" in
+      toothless)
+        # Real protection object, no review and no check required.
+        echo '{"url":"x","enforce_admins":{"enabled":false},"allow_force_pushes":{"enabled":false}}'; exit 0 ;;
+      apierror)
+        # EXACTLY what the real gh does on a refused request: the GitHub JSON
+        # error body on STDOUT, its own line on stderr, non-zero exit. The
+        # caller discards stderr, so STDOUT is all the script ever sees --
+        # which is how a 403 got read as a protection object.
+        echo '{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature.","documentation_url":"https://docs.github.com/rest","status":"403"}'
+        echo "gh: Upgrade to GitHub Pro (HTTP 403)" >&2
+        exit 1 ;;
+      ok) : ;;
+      *) echo "Branch not protected" >&2; exit 1 ;;
+    esac
     echo '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"strict":true,"contexts":["ci"]}}'; exit 0 ;;
   "repo view"*)
     [ "${STUB_GH_REPOVIEW:-ok}" = "ok" ] || { echo "could not resolve to a Repository" >&2; exit 1; }
@@ -120,7 +136,17 @@ export PATH="$STUBBIN:$PATH"
 # A repo that passes ALL SEVEN items. Every failing fixture below is this one with
 # exactly one thing broken, so a failure names one cause and not a pile.
 SKEL_WORKER="$REPO/q-system/.q-system/scripts/linear-worker.sh"
-SKEL_SETTINGS="$REPO/.claude/settings.json"
+# THE FIXTURE MODELS AN INSTANCE, SO IT IS BUILT FROM settings-template.json
+# (ASK-755). The fleet updater renders every instance's .claude/settings.json from
+# the TEMPLATE; the skeleton's own runtime settings.json is what the skeleton runs
+# ON ITSELF and it deliberately carries hooks that never ship. Cloning the runtime
+# file built a "compliant instance" no real instance can ever be -- it carried
+# settings-template-sync-check.py (SKELETON_ONLY by that script's own design) and
+# lacked instance-automation-guard.py (FLEET_ONLY). Both errors pointed the same
+# way: the control fixture was easier to satisfy than the fleet, so the gate looked
+# green here and was unsatisfiable everywhere.
+SKEL_SETTINGS="$REPO/settings-template.json"
+[ -f "$SKEL_SETTINGS" ] || SKEL_SETTINGS="$REPO/.claude/settings.json"
 
 # EVERY fixture git mutation goes through here. THE SCAR, and it is this file's
 # own: before make_good_repo's `local` bug was fixed it returned an EMPTY path,
@@ -755,17 +781,255 @@ printf '%s' "$GOUT" | grep -q 'absent=' \
   || bad "the refusal does not distinguish absent files from unwired ones: $GOUT"
 
 echo
-echo "== 18. a non-home repo is NOT entered while gh scoping is unfinished =="
-# The rotation still offers it a turn, and the dispatcher still refuses to run an
-# agent in it. Selection being correct is not the same as execution being safe.
-grep -q 'sp-9421b9b7' "$DISPATCH" \
-  && ok "cross-repo entry is held against a captured spillover item" \
-  || bad "cross-repo entry has no captured blocker reference"
-HOLD_LINE="$(grep -n 'HOLD \$TARGET_NAME' "$DISPATCH" | head -1 | cut -d: -f1)"
+echo "== 18. a non-home repo IS entered, and only downstream of preflight (ASK-738) =="
+# THIS CASE WAS INVERTED BY ASK-738, DELIBERATELY. It used to assert the presence of
+# the sp-9421b9b7 HOLD ("cross-repo gh scoping is unfinished"), which refused every
+# non-home repo unconditionally. That hold existed because `gh` binds to the process
+# cwd and ignored the target repo, so three call sites acted on kipi-system while
+# `git -C` worked in the target. That is fixed, so the hold is gone -- and a test
+# still asserting it would pin the defect the issue was chartered to remove.
+#
+# What replaces it is not "nothing". Entry is now gated by pick_list running the REAL
+# preflight (every check in this file) before any repo reaches the worker, and the
+# behavioural proof that a client repo is still refused with the hold gone lives in
+# test-dispatch-client-refusal-after-hold.sh, which drives the dispatcher for real and
+# asserts on argv. This case holds the SOURCE-SHAPE half: the wiring exists, and
+# nothing reaches the worker ahead of the gate.
+grep -q 'HOLD \$TARGET_NAME' "$DISPATCH" \
+  && bad "the sp-9421b9b7 HOLD is still in kipi-dispatch.sh; ASK-738 removed it" \
+  || ok "the sp-9421b9b7 blanket hold is gone"
+
+# THE HOLD WAS ALSO CARRYING WIRING THAT WAS NEVER POPULATED. WORK_ARGS was declared
+# empty and the hold exited above it, so deleting the hold alone would have dispatched
+# the TARGET's turn against the HOME repo -- consuming a client's rotation slot to run
+# kipi-system's queue. Both carriers are required: --repo is what the worker parses,
+# KIPI_TARGET_REPO is what crosses converge.sh (which forwards only its own args).
+grep -q 'WORK_ARGS="--repo' "$DISPATCH" \
+  && ok "cross-repo entry passes --repo to the worker" \
+  || bad "the hold is gone but WORK_ARGS is never populated, so a target's turn would run the HOME repo's queue"
+grep -q 'export KIPI_TARGET_REPO=' "$DISPATCH" \
+  && ok "cross-repo entry exports KIPI_TARGET_REPO for converge" \
+  || bad "KIPI_TARGET_REPO is not exported, so the worker targets the repo and converge does not"
+
+# ORDER IS THE SAFETY PROPERTY, and it is the one thing the old case got right.
+PFLINE="$(grep -n 'bash "\$PREFLIGHT"' "$DISPATCH" | head -1 | cut -d: -f1)"
 WORKLINE="$(grep -n 'bash ./kipi work' "$DISPATCH" | head -1 | cut -d: -f1)"
-{ [ -n "$HOLD_LINE" ] && [ -n "$WORKLINE" ] && [ "$HOLD_LINE" -lt "$WORKLINE" ]; } \
-  && ok "the hold is reached BEFORE any worker is invoked" \
-  || bad "the hold does not precede the worker call, so an agent could still start"
+{ [ -n "$PFLINE" ] && [ -n "$WORKLINE" ] && [ "$PFLINE" -lt "$WORKLINE" ]; } \
+  && ok "the preflight is reached BEFORE any worker is invoked" \
+  || bad "the preflight does not precede the worker call, so an agent could start in an unvetted repo"
+
+echo "== 19. a CLIENT ENGAGEMENT repo is refused even when opted in (ASK-741) =="
+# Founder decision 2026-08-13: "no. unattended agents should not reach a client repo."
+#
+# The property under test is NOT "client repos are off by default" -- case 5 already
+# covers default-off, and a default is not a refusal. It is that an engagement repo
+# carrying dispatch.enabled: true, and passing all seven other items, is STILL
+# absent from the pick list. Opt-in is what this has to survive.
+#
+# EVERY NAME HERE IS INVENTED. This repo is public (102 stars, 23 forks) and
+# client-name-guard.py blocks client names reaching it; a fixture named after a real
+# engagement would be the leak the guard exists to stop. The test is about the PATH
+# SHAPE, so invented names test it exactly as well as real ones would -- which is
+# itself the evidence that the derivation is not a name list.
+
+# make_good_repo builds at $WORK/$name and pins origin to that same name, so it
+# cannot build a NESTED path whose registry row name differs. Engagement-ness is a
+# property of the path and nothing else, so the two have to be separable here.
+make_good_repo_at() {
+  local rowname="$1"
+  local sub="$2"
+  local dir
+  dir="$(make_good_repo "$sub")"
+  fixture_git "$dir" remote set-url origin "https://github.com/assafkip/$rowname.git" >/dev/null 2>&1
+  printf '%s' "$dir"
+}
+
+# A client that DOES NOT EXIST TODAY. If this is refused, the refusal cannot be
+# coming from a list of the twelve engagements currently in the registry -- which is
+# the only durable proof that onboarding client thirteen needs no code change.
+NEWCLIENT="$(make_good_repo_at newclient consulting/projects/zzz-new-client)"
+# The negative control, built by the SAME builder, differing ONLY in path shape.
+# Without this the section could pass by refusing everything.
+OWNPROJ="$(make_good_repo_at ownproj cole-gtm/projects/own-thing)"
+INTELCLIENT="$(make_good_repo_at intelclient intel/projects/zzz-other-client)"
+
+OUT="$(run_preflight "$NEWCLIENT" "https://github.com/assafkip/newclient.git")"
+{ [ "$(pf_rc "$NEWCLIENT" "https://github.com/assafkip/newclient.git")" != "0" ] \
+    && printf '%s' "$OUT" | grep -q 'client-repo'; } \
+  && ok "an engagement repo that does not exist today is refused, and names client-repo" \
+  || bad "THE DEFECT: a not-yet-existing client repo was accepted: $OUT"
+
+printf '%s' "$OUT" | grep -q 'even when dispatch.enabled is true' \
+  && ok "the refusal states WHY, naming opt-in explicitly" \
+  || bad "the refusal does not say why, so it reads like any other skip: $OUT"
+
+OUT="$(run_preflight "$INTELCLIENT" "https://github.com/assafkip/intelclient.git")"
+{ [ "$(pf_rc "$INTELCLIENT" "https://github.com/assafkip/intelclient.git")" != "0" ] \
+    && printf '%s' "$OUT" | grep -q 'client-repo'; } \
+  && ok "the second engagement root is refused too, not just the first" \
+  || bad "an engagement root was not covered: $OUT"
+
+# THE OTHER DIRECTION. A check that refuses everything is not a check, and the
+# founder's own projects/ dirs are the same SHAPE one level up -- so this is the
+# case that proves the derivation discriminates rather than pattern-matching
+# "/projects/".
+[ "$(pf_rc "$OWNPROJ" "https://github.com/assafkip/ownproj.git")" = "0" ] \
+  && ok "a NON-engagement repo under the founder's own root still passes" \
+  || bad "the guard over-matched and refused one of the founder's own repos: $(run_preflight "$OWNPROJ" "https://github.com/assafkip/ownproj.git")"
+
+# THE ENGAGEMENT ROOT ITSELF IS REFUSED (ASK-754). THIS ASSERTION IS INVERTED.
+#
+# It used to assert the opposite -- "the engagement ROOT itself is not treated as a
+# client engagement" -- on the reading that the founder meant only "the engagement
+# instances NESTED UNDER consulting/projects/*". Inverting it is part of the fix, not
+# collateral: while the suite pinned the old behaviour, the hole could not be closed
+# without a red test, and a green suite read as proof the root was safe on purpose.
+#
+# What changed is evidence, not taste. Measured 2026-08-14 on the one repo that
+# reading admits -- the ASK_AI_consultant row, whose path IS the consulting
+# engagement root: 12 TRACKED files under clients/, all 11 engagement repos nested
+# beneath it, and q-consult/ (998 files) is the live publishing engine.
+# (No absolute home path here on purpose: the skeleton sweep greps this tree for
+# an absolute home-directory prefix, and this test ships to every instance.)
+# The founder's condition for this call was "if it holds client material, it should
+# be refused" -- it holds client material in its own git history.
+ROOTREPO="$(make_good_repo_at rootrepo consulting)"
+OUT="$(run_preflight "$ROOTREPO" "https://github.com/assafkip/rootrepo.git")"
+{ [ "$(pf_rc "$ROOTREPO" "https://github.com/assafkip/rootrepo.git")" != "0" ] \
+    && printf '%s' "$OUT" | grep -q 'client-repo'; } \
+  && ok "the engagement ROOT itself is refused, and names client-repo" \
+  || bad "THE DEFECT: the engagement root -- which holds tracked client material and every nested engagement -- was accepted: $OUT"
+
+# THE DISCRIMINATION CASE FOR THE NEW GLOB, kept adjacent to it. */<root> must match
+# only when <root> is the LAST component. A founder root that merely CONTAINS an
+# engagement root name as a prefix or suffix is not an engagement root, and a rule
+# that refused those would be the over-match that gets a gate switched off.
+NEARMISS="$(make_good_repo_at nearmiss consulting-notes)"
+[ "$(pf_rc "$NEARMISS" "https://github.com/assafkip/nearmiss.git")" = "0" ] \
+  && ok "a path whose last component merely CONTAINS an engagement root name still passes" \
+  || bad "the new root glob over-matched on a substring: $(run_preflight "$NEARMISS" "https://github.com/assafkip/nearmiss.git")"
+
+# NO BYPASS SURFACE, same rule the dispatcher is held to by case 8.
+grep -qE '^ENGAGEMENT_ROOTS="[a-z ]+"$' "$PREFLIGHT" \
+  && ok "the engagement roots are a literal in the script, not an override" \
+  || bad "the engagement roots are not a plain literal, so they may be overridable"
+grep -nE 'ENGAGEMENT_ROOTS="?\$\{|KIPI_[A-Z_]*ENGAGEMENT|KIPI_[A-Z_]*CLIENT' "$PREFLIGHT" \
+  && bad "an env var can redefine what counts as a client repo" \
+  || ok "no env var can redefine what counts as a client repo"
+
+echo
+echo "== 20. the client-repo refusal is ABSENT from the pick list, and SAID (ASK-741) =="
+# End to end through the dispatcher's own selection, not the preflight in isolation.
+# Both rows are opted in; only the shape differs.
+REG5="$WORK/reg5.json"
+mk_registry "$REG5" "newclient|$NEWCLIENT|true" "ownproj|$OWNPROJ|true"
+# stdout is the SELECTION; stderr carries say(). Merging them makes `grep newclient`
+# match the refusal REASON, which reports a correctly-refused repo as selected.
+PICKS5="$(KIPI_DISPATCH_REGISTRY="$REG5" KIPI_DISPATCH_CURSOR="$WORK/cursor5" bash "$HARNESS" 2>"$WORK/say5.log")"
+printf '%s' "$PICKS5" | grep -q 'ownproj' \
+  && ok "the opted-in NON-client repo IS selected (so the absence below means something)" \
+  || bad "the non-client control never reached the pick list, so this section proves nothing"
+printf '%s' "$PICKS5" | grep -q 'newclient' \
+  && bad "THE DEFECT: an opted-in client engagement repo is SELECTED for unattended dispatch" \
+  || ok "an opted-in client engagement repo is ABSENT from the pick list"
+
+# A SILENT REFUSAL IS THE DEFECT, NOT THE FIX. The founder has to be able to tell a
+# refusal from an empty queue, so the reason is asserted, not just the absence.
+grep -q 'FAIL client-repo' "$WORK/say5.log" \
+  && ok "the run output states WHY the repo was refused" \
+  || bad "the refusal is silent in the run output: $(cat "$WORK/say5.log")"
+# The counted shape daily-linear-digest.py's third section scrapes.
+grep -qE '[0-9]+ repo\(s\) REFUSED as client engagement repos' "$WORK/say5.log" \
+  && ok "the run output carries the counted line the daily digest reads" \
+  || bad "no counted line, so the digest's third section cannot show this: $(cat "$WORK/say5.log")"
+
+echo
+echo "== 21. MUTATION: break the derivation and case 20 must go RED (ASK-741) =="
+# A guard whose test stays green with the guard removed is decoration.
+# THE MUTANT MUST SIT AT THE SAME DEPTH AS THE REAL SCRIPT. repo-preflight.sh
+# derives SKELETON from its own ${BASH_SOURCE[0]} as "../../.." -- deliberately, so
+# the control-code reference follows the code rather than $PWD. A mutant dropped at
+# $WORK/mutant-preflight.sh therefore resolves SKELETON to a directory three levels
+# above mktemp, finds no linear-worker.sh there, and refuses on CONTROL-CODE. It was
+# measured doing exactly that: the mutant "still refused the client repo" and the
+# case read SURVIVED, when in truth the derivation under test had never run. A false
+# SURVIVED is worse than a false KILL -- it reports a load-bearing guard as
+# decorative. So the mutant gets a skeleton of its own, at the right depth.
+MUTSKEL="$WORK/mutskel"
+mkdir -p "$MUTSKEL/q-system/.q-system/scripts" "$MUTSKEL/.claude"
+cp "$SKEL_WORKER" "$MUTSKEL/q-system/.q-system/scripts/linear-worker.sh"
+cp "$SKEL_SETTINGS" "$MUTSKEL/.claude/settings.json"
+copy_guards "$MUTSKEL"
+MUTPF="$MUTSKEL/q-system/.q-system/scripts/repo-preflight.sh"
+sed 's|^ENGAGEMENT_ROOTS=.*|ENGAGEMENT_ROOTS="zzzz-no-such-root"|' "$PREFLIGHT" > "$MUTPF"
+# VALIDATE THE MUTANT APPLIED. A sed that matched nothing produces a byte-identical
+# file and a "SURVIVED" that means the edit never happened, not that the guard is weak.
+if cmp -s "$MUTPF" "$PREFLIGHT"; then
+  bad "the mutation changed nothing -- the mutant is not a mutant, so this proves nothing"
+elif grep -q '^ENGAGEMENT_ROOTS="zzzz-no-such-root"$' "$MUTPF"; then
+  ok "the mutant applied (the engagement roots were replaced with a root nothing is under)"
+  MUTH2="$WORK/select-mutant-pf.sh"
+  {
+    echo 'set -uo pipefail'
+    echo 'say() { printf "SAY %s\n" "$*" >&2; }'
+    echo "REPO=\"$REPO\""
+    echo "PREFLIGHT=\"$MUTPF\""
+    awk '/^cursor_get\(\) \{/,/^\}/'       "$DISPATCH"
+    awk '/^cursor_set\(\) \{/,/^\}/'       "$DISPATCH"
+    awk '/^fleet_candidates\(\) \{/,/^\}/' "$DISPATCH"
+    awk '/^rotation\(\) \{/,/^\}/'         "$DISPATCH"
+    awk '/^pick_list\(\) \{/,/^\}/'        "$DISPATCH"
+    echo 'pick_list'
+  } > "$MUTH2"
+  MP="$(KIPI_DISPATCH_REGISTRY="$REG5" KIPI_DISPATCH_CURSOR="$WORK/cursorM2" bash "$MUTH2" 2>/dev/null)"
+  printf '%s' "$MP" | grep -q 'newclient' \
+    && ok "with the derivation broken the client repo REAPPEARS -- case 20 is load-bearing" \
+    || bad "the mutant still refused the client repo, so case 20 is not driven by the derivation"
+else
+  bad "the mutant was written but does not carry the expected replacement"
+fi
+
+echo
+echo "== 22. an API REFUSAL and a TOOTHLESS branch are different refusals (ASK-755) =="
+# The two used to print the same sentence. Both still refuse -- that part was
+# never wrong -- but "requires NO review and NO status check" names a GitHub
+# setting somebody can go and change, and saying it about a 403 sent a whole
+# founder-directed run hunting a toggle that does not exist on a private repo on
+# a personal plan. The pair is asserted TOGETHER on purpose: a fix that made the
+# 403 honest by making every protection failure vague would pass a test that only
+# looked at the 403.
+BP="$(make_good_repo bprot)"
+
+OUT_ERR="$(STUB_GH_PROTECTION=apierror run_preflight "$BP")"
+case "$OUT_ERR" in
+  *"GitHub refused the protection query"*"Upgrade to GitHub Pro"*)
+    ok "403: the refusal quotes GitHub own words" ;;
+  *) bad "403 was not reported as an API refusal: $OUT_ERR" ;;
+esac
+case "$OUT_ERR" in
+  *"requires NO review and NO status check"*)
+    bad "403 still claims the branch is protected-but-toothless, the false sentence" ;;
+  *) ok "403: the false protected-but-toothless sentence is gone" ;;
+esac
+[ "$(STUB_GH_PROTECTION=apierror pf_rc "$BP")" != "0" ] \
+  && ok "403: still REFUSES (fail closed is unchanged)" \
+  || bad "403 was allowed through -- the fix turned a gate into a filter"
+
+OUT_TOOTH="$(STUB_GH_PROTECTION=toothless run_preflight "$BP")"
+case "$OUT_TOOTH" in
+  *"requires NO review and NO status check"*)
+    ok "toothless: still named as protected-but-toothless" ;;
+  *) bad "the real toothless case lost its specific reason: $OUT_TOOTH" ;;
+esac
+[ "$(STUB_GH_PROTECTION=toothless pf_rc "$BP")" != "0" ] \
+  && ok "toothless: still REFUSES" \
+  || bad "a branch with no required review and no required check was allowed through"
+
+# The positive control. Without it, a change that refused EVERYTHING would pass
+# every assertion above (the or-across-signals shape).
+[ "$(STUB_GH_PROTECTION=ok pf_rc "$BP")" = "0" ] \
+  && ok "control: a genuinely gated branch still PASSES" \
+  || bad "a genuinely gated branch is now refused -- $(run_preflight "$BP")"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"

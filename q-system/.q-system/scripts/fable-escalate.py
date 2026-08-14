@@ -296,29 +296,59 @@ def log_row(row):
 
 
 def notify_channel_configured():
-    """True when a page could actually leave this machine.
-
-    slack-notify.sh resolves its webhook from $KIPI_SLACK_WEBHOOK then
-    ~/.config/kipi/slack-webhook, and its own header states: "No webhook
-    configured -> silent no-op (exit 0), so callers never break." So its exit
-    code cannot distinguish a delivered message from a swallowed one; the
-    webhook has to be checked separately or delivery is unknowable.
+    """True when an alert could actually leave this machine.
 
     An explicit KIPI_FABLE_NOTIFY_CMD means the caller supplied its own
     notifier and owns its delivery semantics, so its channel is not ours to
     judge.
+
+    Scar (sp-7773af84, measured 2026-08-14, the reason this reads Linear and not
+    a webhook): on 2026-08-10 slack-notify.sh's destination changed from Slack to
+    Linear -- it now shells alert-to-linear.py and never resolves a webhook at
+    all. This function was left behind still gating on $KIPI_SLACK_WEBHOOK and
+    ~/.config/kipi/slack-webhook, which by then decided NOTHING about whether an
+    alert could be filed. Two failures came out of that, in opposite directions:
+
+      1. Production: a machine holding a valid Linear key but no leftover webhook
+         file answered False here, so `send_ping` returned False WITHOUT EVER
+         RUNNING THE NOTIFIER. The watchdog's page was suppressed by a channel
+         that no longer exists.
+      2. CI: test_launchd_health_check.py set a webhook to a refused port and
+         asserted "not delivered". The webhook was inert, so the assertion was
+         really measuring whether the runner had a Linear key -- it failed on
+         `refuses -> NOT delivered` on a keyed machine and on the opposite
+         assertion, `accepts -> delivered`, in CI. It could not be green anywhere,
+         and on a keyed machine it filed REAL tickets (ASK-736 repeats, ASK-744,
+         ASK-745, all canceled).
+
+    So the channel is asked about the destination that exists. The key lookup is
+    borrowed from linear-sync.py -- the fleet's single writer for how it talks to
+    Linear, and the same module alert-to-linear.py loads -- rather than re-derived
+    here, because a copy is exactly what drifted above. KIPI_ALERT_CAPTURE is a
+    genuine configured destination too: the message is appended to that file and
+    nothing is dropped, which is what the bash and python suites redirect into.
+
+    A load failure or a missing key answers False -- "no channel" -- which the
+    callers read as NOT delivered. That costs a duplicate alert, never a missed
+    one. It is the same trade the rest of this path makes.
     """
     if os.environ.get("KIPI_FABLE_NOTIFY_CMD"):
         return True
-    if (os.environ.get("KIPI_SLACK_WEBHOOK") or "").strip():
+    if (os.environ.get("KIPI_ALERT_CAPTURE") or "").strip():
         return True
-    path = os.path.join(os.path.expanduser("~"), ".config", "kipi",
-                        "slack-webhook")
     try:
-        with open(path, encoding="utf-8") as fh:
-            return bool(fh.read().strip())
-    except OSError:
+        spec = importlib.util.spec_from_file_location(
+            "kipi_linear_sync_channel",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "linear-sync.py"))
+        if spec is None or spec.loader is None:
+            return False
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.linear_api_key()
+    except Exception:  # noqa: BLE001
         return False
+    return True
 
 
 # slack-notify.sh's EXIT CONTRACT (ASK-534), transcribed once. Read it as a

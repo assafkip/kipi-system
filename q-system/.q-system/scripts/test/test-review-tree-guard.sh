@@ -52,10 +52,15 @@ mkdir -p "$S/test" "$W/bin" "$W/home"
 # The two scripts under test, from the working tree or from a ref. Both come from
 # the SAME source: the reviewer sources the lib, and mixing an old reviewer with a
 # new lib would test a combination that never shipped.
-for f in pr-review-agent.sh pr-verdict-lib.sh; do
+for f in pr-review-agent.sh pr-verdict-lib.sh repo-slug-lib.sh; do
   if [ -n "$REF" ]; then
-    git -C "$ROOT" show "$REF:q-system/.q-system/scripts/$f" > "$S/$f" \
-      || fail "cannot read $f at ref $REF"
+    # repo-slug-lib.sh did not exist before ASK-738, so a ref older than it has
+    # nothing to show. Fall back to the working-tree copy rather than failing:
+    # the hatch exists to run an OLD reviewer, and an old reviewer never sources
+    # this file, so the extra copy is inert there.
+    git -C "$ROOT" show "$REF:q-system/.q-system/scripts/$f" > "$S/$f" 2>/dev/null \
+      || cp "$SRC_SCRIPTS/$f" "$S/$f" \
+      || fail "cannot read $f at ref $REF or from the working tree"
   else
     cp "$SRC_SCRIPTS/$f" "$S/$f" || fail "cannot copy $f from the working tree"
   fi
