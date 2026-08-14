@@ -92,10 +92,28 @@ page() {
       return 0
     fi
   fi
-  [ -f "$NOTIFY" ] && bash "$NOTIFY" "$msg" >/dev/null 2>&1
-  # Stamped AFTER the send attempt, so a notifier that is down does not burn the
-  # window and swallow the first real page once it recovers.
-  printf '%s' "$now" > "$mark" 2>/dev/null || true
+  # ONLY A DELIVERED PAGE BURNS THE WINDOW (codex major, PR #122 r3).
+  #
+  # Round 2 stamped the marker after the send ATTEMPT and the comment claimed
+  # that protected a down notifier. It did not: "after the attempt" is not "on
+  # success", so a Slack outage wrote a 24h mute and the dispatch outage went
+  # unreported for a day after the notifier came back. That is the same
+  # comment-says-one-thing-code-does-another shape this session already fixed in
+  # the fleet drift detector, rebuilt here by the fix for the previous finding.
+  #
+  # So the exit status decides. A notifier that is absent or fails leaves NO
+  # marker, and the next tick 900s later tries again. The cost of getting this
+  # wrong is asymmetric: an extra page is noise, a swallowed page is the silent
+  # outage the whole file exists to end.
+  if [ ! -f "$NOTIFY" ]; then
+    say "page NOT sent ($key): no notifier at $NOTIFY -- not recording a dedupe window"
+    return 0
+  fi
+  if bash "$NOTIFY" "$msg" >/dev/null 2>&1; then
+    printf '%s' "$now" > "$mark" 2>/dev/null || true
+  else
+    say "page FAILED to send ($key): leaving the window open so the next tick retries"
+  fi
 }
 
 # A recovery clears the markers, so the NEXT time this breaks it pages

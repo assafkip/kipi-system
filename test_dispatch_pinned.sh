@@ -227,5 +227,43 @@ ls "$R5"/pinned-paged-* >/dev/null 2>&1 \
   && bad "T8 a successful run clears the page markers" "a marker survived recovery and will mute the next outage" \
   || ok "T8 a successful run clears the page markers"
 
+# ---------------------------------------------------------------------------
+# TEST 9: a FAILED notification must not burn the dedupe window (codex major r3).
+# ---------------------------------------------------------------------------
+# Round 2 stamped the marker after the send ATTEMPT, so a Slack outage wrote a
+# 24h mute and the dispatch outage stayed unreported for a day after the notifier
+# recovered. The notifier here always exits non-zero, then recovers.
+R7="$(build_fixture)"; : >"$R7/pinned"; NOTE5="$R7/paged.txt"
+cat >"$R7/notify-broken.sh" <<'BROKEN'
+#!/bin/bash
+exit 1
+BROKEN
+chmod +x "$R7/notify-broken.sh"
+PAGE_SINK="$NOTE5" KIPI_NOTIFY="$R7/notify-broken.sh" run_wrapper "$R7" "$WRAPPER" >/dev/null 2>&1
+ls "$R7"/pinned-paged-* >/dev/null 2>&1 \
+  && bad "T9 a failed send leaves no dedupe marker" "the window was burned by a page that never arrived" \
+  || ok "T9 a failed send leaves no dedupe marker"
+
+# Now the notifier recovers. The very next tick must page, not inherit a mute.
+cp "$R3/notify.sh" "$R7/notify.sh"
+PAGE_SINK="$NOTE5" KIPI_NOTIFY="$R7/notify.sh" run_wrapper "$R7" "$WRAPPER" >/dev/null 2>&1
+[ -s "$NOTE5" ] \
+  && ok "T9 the first tick after the notifier recovers DOES page" \
+  || bad "T9 the first tick after recovery pages" "the outage stayed silent after the notifier came back"
+
+# T9-neg: stamp unconditionally (the round-2 shape) and T9 must go red.
+R2SHAPE="$R7/wrapper-r2.sh"
+sed 's|^  if bash "\$NOTIFY" "\$msg" >/dev/null 2>&1; then$|  bash "$NOTIFY" "$msg" >/dev/null 2>\&1; if true; then|' \
+  "$WRAPPER" > "$R2SHAPE"
+chmod +x "$R2SHAPE"
+grep -q 'if true; then' "$R2SHAPE" \
+  || bad "T9-neg the mutant was actually applied" "the unconditional-stamp variant was not produced"
+R8="$(build_fixture)"; : >"$R8/pinned"
+cp "$R7/notify-broken.sh" "$R8/notify-broken.sh"
+KIPI_NOTIFY="$R8/notify-broken.sh" run_wrapper "$R8" "$R2SHAPE" >/dev/null 2>&1
+ls "$R8"/pinned-paged-* >/dev/null 2>&1 \
+  && ok "T9-neg the round-2 shape DOES burn the window (T9 is load-bearing)" \
+  || bad "T9-neg the assertion CAN fail" "the mutant behaved like the fix, so T9 proves nothing"
+
 [ "$fails" -eq 0 ] && { echo "PASS: dispatch-pinned"; exit 0; }
 echo "FAIL: $fails check(s)"; exit 1
