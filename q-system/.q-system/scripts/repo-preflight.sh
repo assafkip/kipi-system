@@ -98,7 +98,7 @@ for _root in $ENGAGEMENT_ROOTS; do
       # the earlier reading of the founder's wording was "the engagement instances
       # NESTED UNDER consulting/projects/*", so <root>/projects/<x> refused and
       # <root> did not. Measured 2026-08-14 against the repo that reading lets in,
-      # ASK_AI_consultant at /Users/assafkipnis/projects/consulting:
+      # the ASK_AI_consultant row, whose path IS the consulting engagement root:
       #   - `git ls-files clients/` -> 12 TRACKED files under clients/alma,
       #     clients/portant, clients/restaurent. Client material is in this repo's
       #     own history, so an agent-authored PR here is a client-facing diff.
@@ -117,8 +117,16 @@ for _root in $ENGAGEMENT_ROOTS; do
       #
       # STILL DERIVED FROM SHAPE, STILL NO LIST. Same ENGAGEMENT_ROOTS constant,
       # one extra glob. It discriminates: only a path whose LAST component is an
-      # engagement root matches, so the founder's own roots (cole-gtm, micro-saas,
-      # ktlyst-saas, personal) are untouched -- which the OWNPROJ case asserts.
+      # engagement root matches, so the founder's own persona and product roots are
+      # untouched -- which the OWNPROJ and NEARMISS cases both assert.
+      #
+      # NO ABSOLUTE HOME PATHS AND NO INSTANCE NAMES IN THIS COMMENT. The skeleton
+      # sweep in validate-separation.py greps every q-system/ file for an absolute
+      # home-directory prefix and for a fleet instance name, and this file ships to
+      # every instance. The first draft of this comment spelled out both and turned
+      # CI red; the second spelled them out again while explaining not to, because a
+      # text check cannot tell a rule from a mention of the rule. Describe, do not
+      # quote.
       */"$_root"|*/"$_root"/projects/*)
         # The reason is stated in full, because this line is what the founder reads
         # in the run log and in the daily digest's "tried, could not be worked"

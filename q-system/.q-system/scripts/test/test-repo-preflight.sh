@@ -860,9 +860,11 @@ OUT="$(run_preflight "$INTELCLIENT" "https://github.com/assafkip/intelclient.git
 # without a red test, and a green suite read as proof the root was safe on purpose.
 #
 # What changed is evidence, not taste. Measured 2026-08-14 on the one repo that
-# reading admits, ASK_AI_consultant at /Users/assafkipnis/projects/consulting:
-# 12 TRACKED files under clients/ (alma, portant, restaurent), all 11 engagement
-# repos nested beneath it, and q-consult/ (998 files) is the live publishing engine.
+# reading admits -- the ASK_AI_consultant row, whose path IS the consulting
+# engagement root: 12 TRACKED files under clients/, all 11 engagement repos nested
+# beneath it, and q-consult/ (998 files) is the live publishing engine.
+# (No absolute home path here on purpose: the skeleton sweep greps this tree for
+# an absolute home-directory prefix, and this test ships to every instance.)
 # The founder's condition for this call was "if it holds client material, it should
 # be refused" -- it holds client material in its own git history.
 ROOTREPO="$(make_good_repo_at rootrepo consulting)"
