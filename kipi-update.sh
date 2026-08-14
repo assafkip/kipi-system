@@ -1529,14 +1529,49 @@ PY
       # Without the classifier present we add nothing new -- the tracked entries
       # still stage, which is what unblocks the sync, and unclassifiable
       # untracked content is left for the guard below to refuse honestly.
+      # TRACKED EDITS NEED A DIFFERENT TEST THAN UNTRACKED ONES (Codex review of
+      # #151 round 2, major). `git add -u -- plugins/<name>` stages every tracked
+      # modification under the directory, so a founder editing a .py inside a
+      # managed plugin had it committed under a chore message.
+      #
+      # But the obvious fix -- run tracked files through auto-commit.py too --
+      # breaks the thing this PR exists to fix. That classifier refuses source by
+      # extension, and the file blocking 7 of the 11 instances is
+      # plugins/prd-os/tests/test_judgment_compiler.py. Classify it and it is
+      # refused, never committed, and the instance stays blocked forever.
+      #
+      # The distinguisher is not the extension, it is AUTHORSHIP, and the skeleton
+      # can answer that directly: if the instance's working-tree content for a
+      # managed-plugin file is byte-identical to the SKELETON's current content,
+      # that content came from the fleet -- an earlier fanout wrote it and failed
+      # to commit (ASK-728 did exactly this). Committing it records what is
+      # already there. If it differs from the skeleton, someone local wrote it,
+      # and it is not ours to take at any extension; it is left dirty so the guard
+      # below refuses this instance and protects it.
+      #
+      # Fail-closed both ways: a file we cannot read on either side is treated as
+      # founder work and left alone.
       sys_add_paths=()
       for sys_path in "${sys_owned_dirty[@]}"; do
         if [ -d "$path/$sys_path" ]; then
+          # Tracked modifications: skeleton-content equality decides.
+          while IFS= read -r dirty_rel; do
+            [ -n "$dirty_rel" ] || continue
+            if [ -f "$SCRIPT_DIR/$dirty_rel" ] && [ -f "$path/$dirty_rel" ] &&
+                cmp -s "$SCRIPT_DIR/$dirty_rel" "$path/$dirty_rel"; then
+              sys_add_paths+=("$dirty_rel")
+            else
+              say "  keeping local edit, not the fleet's to commit: $dirty_rel"
+            fi
+          done < <(git diff --name-only -- "$sys_path" 2>/dev/null
+                   git diff --cached --name-only -- "$sys_path" 2>/dev/null)
+          # Untracked content: the classifier decides, as before.
           while IFS= read -r dirty_rel; do
             [ -n "$dirty_rel" ] || continue
             sys_add_paths+=("$dirty_rel")
           done < <(
-            git status --porcelain -uall -- "$sys_path" 2>/dev/null | cut -c4- \
+            git status --porcelain -uall -- "$sys_path" 2>/dev/null \
+              | grep '^??' | cut -c4- \
               | { if [ -f "$sys_classifier" ]; then
                     python3 "$sys_classifier" --system-state 2>/dev/null
                   else
@@ -1545,9 +1580,12 @@ PY
                     true
                   fi; }
           )
-          # The directory itself still goes to the COMMIT pathspec: tracked
-          # modifications under it need no staging and must not be dropped.
-          sys_add_paths+=()
+          # The directory is deliberately NOT added to sys_add_paths. It was, in
+          # round 2, "so tracked modifications are not dropped" -- and that single
+          # line put the directory back into the commit pathspec, which is how the
+          # founder-edit path survived the first fix. The expansion above is now
+          # the ONLY way a path under a managed plugin reaches the commit.
+          :
         else
           sys_add_paths+=("$sys_path")
         fi
@@ -1555,9 +1593,12 @@ PY
       if [ "${#sys_add_paths[@]}" -gt 0 ]; then
         git add -- "${sys_add_paths[@]}" 2>/dev/null || true
       fi
-      # Tracked-but-unstaged content under the directory entries, staged with
-      # `-u` so no untracked file can ride along.
-      git add -u -- "${sys_owned_dirty[@]}" 2>/dev/null || true
+      # NO `git add -u -- "${sys_owned_dirty[@]}"` here. Round 2 had one, to catch
+      # tracked-but-unstaged content, and `-u` scoped to a DIRECTORY stages every
+      # tracked modification under it -- founder edits to a managed plugin
+      # included. sys_add_paths already carries the tracked files that passed the
+      # skeleton-equality test, and `git add` stages them whether or not they were
+      # staged before, so nothing is lost by dropping this line.
       # `[no-issue: ...]` rather than --no-verify: the instance's commit-msg
       # gate wants a Linear id, and this is the sanctioned hatch that gets
       # LOGGED to linear-bypass.jsonl. Bypassing an instance's hooks wholesale
@@ -1567,12 +1608,20 @@ PY
       # for months: a carve-out that cannot fail loudly cannot be noticed when it
       # does. The run still continues on failure -- the guard below is the real
       # decision and it fails closed -- but it says what happened first.
-      if ! sys_commit_err="$(git commit -q -m "chore: commit system-written state before skeleton sync [no-issue: fleet updater system-state commit]
+      #
+      # GUARDED ON NON-EMPTY, and this is not defensive padding. `git commit --`
+      # with an EMPTY pathspec is not a no-op: it commits everything already
+      # staged, which is precisely the founder-sweeping behaviour the PR #98 rule
+      # exists to stop. sys_add_paths is empty exactly when every dirty path was
+      # judged a local edit, i.e. the case where sweeping would be worst.
+      if [ "${#sys_add_paths[@]}" -eq 0 ]; then
+        say "  nothing to commit: every dirty system-owned path is a local edit"
+      elif ! sys_commit_err="$(git commit -q -m "chore: commit system-written state before skeleton sync [no-issue: fleet updater system-state commit]
 
 These files are written by the fleet itself (sycophancy stamp, integrity
 baseline, hook state, skeleton-shipped plugins). Committing them here keeps the
 updater from being blocked by its own exhaust; founder work is never included
-because this commit is pathspec-limited." -- "${sys_owned_dirty[@]}" 2>&1)"; then
+because this commit is pathspec-limited." -- "${sys_add_paths[@]}" 2>&1)"; then
         echo "  WARNING: the system-state commit FAILED; this instance will very"
         echo "  likely be refused below over dirt that is not founder work:"
         printf '%s\n' "$sys_commit_err" | sed 's/^/    /'

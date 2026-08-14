@@ -105,9 +105,14 @@ JSON
   ( cd "$inst" && G init -q -b main && G add -A -f && G commit -qm inst )
 
   # The live shape, both halves:
-  #   TRACKED and modified -- a skeleton-owned plugin file. This is what the
-  #   guard reads, and what the carve-out is supposed to clear.
-  printf 'plugin v1-locally-rewritten\n' > "$inst/plugins/demo/content.txt"
+  #   TRACKED and modified -- a skeleton-owned plugin file, dirty because an
+  #   EARLIER FANOUT WROTE IT AND FAILED TO COMMIT. That is the real shape on the
+  #   fleet (ASK-728 did exactly this to plugins/prd-os), and the signature is
+  #   that the working-tree content equals the SKELETON's, not that it is some
+  #   arbitrary local rewrite. Corrected 2026-08-14: the first version of this
+  #   fixture used a local rewrite, which the authorship rule added in round 3
+  #   correctly refuses -- so it was testing a case the code is right to block.
+  cp "$sk/plugins/demo/content.txt" "$inst/plugins/demo/content.txt"
   #   UNTRACKED -- the integrity artifacts the tripwire writes into the synced
   #   tree. Invisible to the guard, fatal to the carve-out's pathspec.
   printf 'armed\n' > "$inst/q-system/.q-system/.claude-integrity-armed"
@@ -211,8 +216,70 @@ assert_untracked_source_in_a_managed_plugin_is_never_staged() {
   echo "PASS: untracked source inside a managed plugin is neither staged nor committed"
 }
 
+# ------------------------------------------------------------------ property 4
+# TRACKED founder edits inside a managed plugin, the mirror of property 3.
+# Codex review of #151 round 2: `git add -u -- plugins/<name>` stages every
+# tracked modification under the directory, so a founder editing a .py in a
+# managed plugin had it committed under a chore message. Property 3 could not
+# catch it (untracked only) and the founder-work fixture put its edit at
+# q-system/tracked.md, outside the plugin dir.
+#
+# Both halves in ONE run, because they are the same decision made twice and a
+# fix that gets one right by breaking the other is not a fix:
+#
+#   FLEET-WRITTEN  content byte-identical to the skeleton's, i.e. an earlier
+#                  fanout wrote it and failed to commit. MUST be committed --
+#                  this is what unblocks the instances, and on the real fleet it
+#                  is plugins/prd-os/tests/test_judgment_compiler.py, a .py the
+#                  extension classifier would refuse.
+#   LOCAL EDIT     content differs from the skeleton's. MUST be left alone at any
+#                  extension, so the guard below refuses and protects it.
+assert_tracked_plugin_edits_split_by_authorship() {
+  local work sk inst carve; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"
+
+  # A second managed-plugin file, tracked on both sides, so the run has one of
+  # each to sort.
+  printf 'def fleet_written():\n    return 1\n' > "$sk/plugins/demo/shipped.py"
+  printf 'def fleet_written():\n    return 0\n' > "$inst/plugins/demo/shipped.py"
+  printf 'def local():\n    return 0\n' > "$sk/plugins/demo/edited.py"
+  printf 'def local():\n    return 0\n' > "$inst/plugins/demo/edited.py"
+  ( cd "$sk" && G add -A -f && G commit -qm "skeleton ships two plugin files" )
+  ( cd "$inst" && G add -A -f && G commit -qm "instance has both" )
+
+  # FLEET-WRITTEN: instance working tree now matches the SKELETON exactly, the
+  # signature of a fanout that wrote and never committed.
+  cp "$sk/plugins/demo/shipped.py" "$inst/plugins/demo/shipped.py"
+  # LOCAL EDIT: differs from the skeleton. Founder work, .py, same directory.
+  printf 'def local():\n    return "founder was here"\n' > "$inst/plugins/demo/edited.py"
+
+  bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
+
+  carve="$(G -C "$inst" log --format='%H %s' 2>/dev/null \
+             | grep -F 'commit system-written state' | head -1 | cut -d' ' -f1)"
+  [ -n "$carve" ] || fail "no system-state commit was made at all: $(cat "$work/out")"
+
+  G -C "$inst" show --name-only --format= "$carve" 2>/dev/null \
+    | grep -qx "plugins/demo/shipped.py" || \
+    fail "the FLEET-WRITTEN plugin file was not committed, so the instance stays blocked"
+
+  if G -C "$inst" show --name-only --format= "$carve" 2>/dev/null \
+       | grep -qx "plugins/demo/edited.py"; then
+    fail "a tracked founder edit inside a managed plugin was committed by the carve-out"
+  fi
+  if G -C "$inst" diff --cached --name-only 2>/dev/null \
+       | grep -qx "plugins/demo/edited.py"; then
+    fail "a tracked founder edit inside a managed plugin was left STAGED"
+  fi
+  grep -q 'founder was here' "$inst/plugins/demo/edited.py" || \
+    fail "the founder's edit was destroyed"
+
+  echo "PASS: fleet-written plugin files commit; tracked founder edits in the same dir do not"
+}
+
 assert_a_mixed_pathspec_commit_commits_nothing
 assert_the_carve_out_clears_tracked_system_dirt
 assert_founder_work_is_never_swept
 assert_untracked_source_in_a_managed_plugin_is_never_staged
+assert_tracked_plugin_edits_split_by_authorship
 echo "PASS: the system-state carve-out cannot be defeated by an untracked path"
