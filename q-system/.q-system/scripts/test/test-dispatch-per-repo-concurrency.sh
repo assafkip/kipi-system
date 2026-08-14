@@ -265,6 +265,23 @@ grep -q '^PAGE:' "$SAID" 2>/dev/null \
   && ok "the failure pages, because a disabled guard is not a log-only event" \
   || bad "the ledger failure pages" "nobody would learn the guard went blind"
 
+kill_all_fakes
+echo "== 12. an issue id is matched WHOLE: ASK-10 is not ASK-100 (codex minor) =="
+# A plain substring match let a live ASK-100 converge satisfy the identity check
+# for a dead ASK-10 row, marking the wrong repo busy until the real run exited.
+PID_P="$(spawn_fake_converge ASK-100)"
+record_live_run "$PID_P" "ASK-10" "/repos/prefix"     # DIFFERENT issue, same prefix
+live_repos | grep -qxF -- "/repos/prefix" \
+  && bad "ASK-10 accepted an ASK-100 process" "a prefix collision marks the wrong repo busy" \
+  || ok "ASK-10 does not accept an ASK-100 process"
+
+# T12-neg: the exact id must still match, or the guard rejects everything.
+record_live_run "$PID_P" "ASK-100" "/repos/exact"
+live_repos | grep -qxF -- "/repos/exact" \
+  && ok "T12-neg the exact id still matches (the guard did not go blind)" \
+  || bad "T12-neg the assertion CAN fail" "bounding the match broke legitimate identity"
+kill "$PID_P" 2>/dev/null; wait "$PID_P" 2>/dev/null
+
 echo
 echo "-------- $PASS passed, $FAIL failed --------"
 [ "$FAIL" -eq 0 ] || exit 1

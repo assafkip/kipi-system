@@ -380,7 +380,11 @@ live_repos() {
     case "$pid" in ''|*[!0-9]*) continue ;; esac
     [ -n "$repo" ] || continue
     kill -0 "$pid" 2>/dev/null || continue
-    ps -p "$pid" -o args= 2>/dev/null | grep -q -- "--issue $issue" || continue
+    # BOUNDED, because ASK-10 is a prefix of ASK-100 (codex minor, PR #163).
+    # A plain substring match let a live ASK-100 converge satisfy the identity
+    # check for a dead ASK-10 row, marking the wrong repo busy until the real
+    # process exited. The id must be followed by whitespace or end-of-line.
+    ps -p "$pid" -o args= 2>/dev/null | grep -qE -- "--issue $issue([[:space:]]|\$)" || continue
     printf '%s\n' "$repo"
   done < "$LIVE_LEDGER"
 }
@@ -418,7 +422,11 @@ compact_live_ledger() {
   while IFS=$'\t' read -r pid issue repo; do
     case "$pid" in ''|*[!0-9]*) continue ;; esac
     kill -0 "$pid" 2>/dev/null || continue
-    ps -p "$pid" -o args= 2>/dev/null | grep -q -- "--issue $issue" || continue
+    # BOUNDED, because ASK-10 is a prefix of ASK-100 (codex minor, PR #163).
+    # A plain substring match let a live ASK-100 converge satisfy the identity
+    # check for a dead ASK-10 row, marking the wrong repo busy until the real
+    # process exited. The id must be followed by whitespace or end-of-line.
+    ps -p "$pid" -o args= 2>/dev/null | grep -qE -- "--issue $issue([[:space:]]|\$)" || continue
     printf '%s\t%s\t%s\n' "$pid" "$issue" "$repo" >> "$tmp"
   done < "$LIVE_LEDGER"
   mv -f "$tmp" "$LIVE_LEDGER" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
