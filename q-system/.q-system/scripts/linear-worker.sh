@@ -218,21 +218,74 @@ AGENT="sana"
 # unless coreutils is installed, and the old fallback here was an empty string --
 # i.e. silently no wall clock at all, which is the runaway-agent case this exit
 # exists for. Never degrade a safety exit to a warning: implement it in bash.
+#
+# THE JOB GETS ITS OWN PROCESS GROUP, and nothing it started outlives it (Codex
+# round 3 on PR #141, major). `kill -TERM "$job"` signals ONE pid -- the
+# `bash -c` wrapper -- and the agent runs as its GRANDchild, so the wrapper died
+# on time and `claude` kept running. Worse, `wait "$job"` returns the instant
+# that wrapper dies, and the next line cancels the watchdog, so the TERM ->
+# sleep 5 -> KILL escalation never reached the process that was actually stuck.
+#
+# What that costs is not a stray process, it is a WRONG LINEAR COMMENT. The
+# leaked agent still holds the worktree, and worktrees are reused across issues
+# by design: it writes `.sana-blocked-capability` minutes later, after the next
+# dispatch has cleared the sentinels and while its own agent is running. The
+# worker reads a refusal the current issue's agent never wrote, labels the wrong
+# issue blocked:capability, and copies the previous issue's reason into Linear.
+# The clear one round earlier cannot help -- a clear cannot outrun a writer that
+# is still running.
+#
+# `set -m` is load-bearing, not decoration. Without job control a background job
+# INHERITS the worker's own process group, so `kill -- -$job` would either fail
+# (no such group) or signal the worker itself. With it, the job is the leader of
+# a group of its own and the whole tree under it can be signalled by pgid.
 run_bounded() {  # run_bounded <seconds> <cmd...>
   local secs="$1"; shift
+  set -m
   "$@" &
   local job=$!
+  set +m
   ( sleep "$secs"; kill -0 "$job" 2>/dev/null && {
-      echo "$(TS) TIMEOUT after ${secs}s; killing pid $job" >>"$LOG"
-      kill -TERM "$job" 2>/dev/null
+      echo "$(TS) TIMEOUT after ${secs}s; killing process group $job" >>"$LOG"
+      kill -TERM -"$job" 2>/dev/null
       sleep 5
-      kill -KILL "$job" 2>/dev/null
+      kill -KILL -"$job" 2>/dev/null
     } ) &
   local watchdog=$!
   wait "$job"; local rc=$?
   kill "$watchdog" 2>/dev/null   # cancel the watchdog if the job finished first
   wait "$watchdog" 2>/dev/null
+  # SYNCHRONOUS, and on the success path too: a job that exited 0 can still have
+  # left a child behind, and the caller's next act is to dispatch another agent
+  # into the same tree. run_bounded returning is the promise that the previous
+  # run is over.
+  reap_group "$job"
   return "$rc"
+}
+
+# reap_group <pgid>: return only when that process group is empty.
+#
+# `kill -0 -- -<pgid>` is the read, not `ps`: it answers "does any process in
+# this group still exist" with the same permission check the kills use. The
+# common case is an already-empty group, which costs one syscall and no wait.
+#
+# TERM first with the same 5s grace the watchdog uses -- a child mid-write gets
+# the same chance to flush it had before -- then KILL, which cannot be ignored.
+# Both loops are bounded: this runs on the worker's critical path, and a reaper
+# that can hang is a worse failure than the leak it fixes.
+reap_group() {
+  local pgid="$1" i=0
+  kill -0 -- -"$pgid" 2>/dev/null || return 0
+  echo "$(TS) reaping leftover process group $pgid" >>"$LOG"
+  kill -TERM -- -"$pgid" 2>/dev/null
+  while [ "$i" -lt 20 ] && kill -0 -- -"$pgid" 2>/dev/null; do sleep 0.25; i=$((i+1)); done
+  kill -0 -- -"$pgid" 2>/dev/null || return 0
+  kill -KILL -- -"$pgid" 2>/dev/null
+  i=0
+  while [ "$i" -lt 20 ] && kill -0 -- -"$pgid" 2>/dev/null; do sleep 0.1; i=$((i+1)); done
+  if kill -0 -- -"$pgid" 2>/dev/null; then
+    echo "$(TS) WARNING: process group $pgid survived SIGKILL" >>"$LOG"
+  fi
 }
 
 # --- FETCH ONCE, BEFORE ANY WORKTREE EXISTS ---------------------------------
@@ -1491,6 +1544,30 @@ Work here. Never `cd` to $TARGET_REPO and never switch this branch -- the founde
 Anything real you find and are not fixing: capture it, never just mention it:
   python3 $SKEL/plugins/prd-os/scripts/prd_runner.py spillover add --source $ISSUE --desc \"...\""
 
+  # CLEAR BEFORE DISPATCH, so presence AFTER the run means exactly one thing:
+  # THIS run wrote it (Codex round 2 on PR #141, major).
+  #
+  # The sentinel protocol always assumed that and never established it. The
+  # consumption below deletes the file, but only on a run that REACHES it -- a
+  # SIGKILL, a timeout, a slept laptop or a reboot in the window between the
+  # agent writing the sentinel and the worker reading it leaves the file in a
+  # worktree that is reused across runs by design. The next issue dispatched
+  # into that tree is then blocked by a refusal about a different issue, and its
+  # Linear comment carries the other issue's reason text.
+  #
+  # UNTIL NOW AN ACCIDENT COVERED HALF OF IT: a leftover sentinel was untracked,
+  # so `git status --porcelain` read the tree dirty and position_tree_on_pr_head
+  # declined the round. Gitignoring the sentinels (the fix one round earlier on
+  # this same branch) makes them invisible to `status`, so the tree reads clean
+  # and the round proceeds. That is why the fix is here and not a restored
+  # dirty-tree wedge: the wedge only ever stalled the issue, and it depended on
+  # a side effect of the sentinels being un-ignored, which is the property that
+  # let one get committed in the first place.
+  #
+  # `.codex-blocked-capability` already had exactly this clear immediately
+  # before the Codex dispatch. This is the same move at the Sana dispatch, so
+  # both runners establish the freshness their own readers assume.
+  rm -f "$TREE/.sana-needs-scope" "$TREE/.sana-blocked-capability"
   if run_bounded "$TIMEOUT_SECONDS" bash -c "cd '$TREE' && KIPI_AGENT='$AGENT' claude -p \"\$1\" </dev/null >>'$LOG' 2>&1" _ "$PROMPT"; then
     say "ok $ISSUE"
     python3 "$SYNC" progress "$ISSUE" "Worker run completed. See the branch/PR for the diff." \

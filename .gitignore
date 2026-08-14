@@ -128,3 +128,19 @@ q-system/.q-system/.claude-integrity-armed
 .pr*rev*/
 .review-scratch/
 .fable-wt/
+
+# Agent refusal sentinels. These are TRANSIENT and worktree-local: the agent
+# writes one, the worker reads it, labels the issue, and deletes it. Committing
+# one is a live defect, not clutter -- on merge it lands at the root of main, so
+# every worktree cut from main afterwards materializes it at checkout BEFORE any
+# agent runs. The worker then reads a sentinel it did not write and refuses an
+# unrelated issue, carrying the previous issue's reason text into that issue's
+# Linear comment and needs-scope label.
+#
+# Observed on PR #141 (ASK-700): a refusal was written here and swept in by
+# `git add -A`. The ignore is the fix rather than a review checklist -- a path
+# `git add -A` cannot stage cannot be committed by any future agent on any
+# future branch. Asserted by case 13 of test-worker-refusal.sh.
+.sana-needs-scope
+.sana-blocked-capability
+.codex-blocked-capability
