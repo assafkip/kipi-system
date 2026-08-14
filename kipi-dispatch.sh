@@ -749,13 +749,20 @@ if [ "$TARGET_PATH" != "$REPO" ]; then
   # Setting one and not the other dispatches the work to the target and then
   # converges against home, which is the defect wearing the other hat.
   #
-  # WHITESPACE REFUSES. $WORK_ARGS is spliced unquoted into `bash ./kipi work`
-  # below (it must be, so that empty expands to nothing), so a path with a space
-  # would split into two wrong arguments and the worker would run against the
-  # home repo with a garbage --repo. Loud refusal beats a silent wrong target.
+  # WHITESPACE **AND GLOB CHARACTERS** REFUSE. $WORK_ARGS is spliced unquoted into
+  # `bash ./kipi work` below (it must be, so that empty expands to nothing), which
+  # means the shell does BOTH word-splitting and pathname expansion on it:
+  #   - a space splits the path into two wrong arguments, and the worker runs
+  #     against the home repo with a garbage --repo;
+  #   - a `*`, `?` or `[` is glob-expanded against the CWD, so --repo silently
+  #     becomes some unrelated matching path, or the literal path if nothing
+  #     matches. Either way the agent is aimed somewhere nobody chose.
+  # The glob half was missed on the first cut and caught by codex on PR #146
+  # (sp-b2f0627e). Loud refusal beats a silent wrong target: this decides which
+  # repository an unattended self-merging loop enters.
   case "$TARGET_PATH" in
-    *[[:space:]]*)
-      say "REFUSING $TARGET_NAME: its registry path contains whitespace ($TARGET_PATH), which cannot be passed safely as --repo; not entering"
+    *[[:space:]]*|*'*'*|*'?'*|*'['*|*']'*)
+      say "REFUSING $TARGET_NAME: its registry path contains whitespace or a glob character ($TARGET_PATH), which cannot be passed safely as an unquoted --repo; not entering"
       exit 0 ;;
   esac
   WORK_ARGS="--repo $TARGET_PATH"
