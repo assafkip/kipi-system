@@ -188,11 +188,37 @@ fi
 # Compared against the SKELETON'S OWN settings rather than a hand-written list of
 # event names, for the same reason Piece B enumerates exits from source: a hand
 # list cannot notice the day a seventh event class is added.
+#
+# THE REFERENCE IS settings-template.json, NOT THE SKELETON'S RUNTIME settings.json
+# (ASK-755). Those two files are not the same claim. `kipi update` builds every
+# instance's settings.json from the TEMPLATE; the skeleton's own runtime file is
+# what the skeleton runs on itself, and it deliberately carries hooks that must
+# never ship -- settings-template-sync-check.py is SKELETON_ONLY by its own
+# design, because it compares the two settings files and an instance has no
+# template to compare against.
+#
+# Measured 2026-08-14, both opted-in repos: against the runtime file each was
+# "missing" exactly settings-template-sync-check.py, and against the template each
+# was at FULL parity. So this check was unsatisfiable for every instance in the
+# fleet at once -- no `kipi update` run could ever have cleared it, because the
+# thing it demanded is the one hook update refuses to ship. A gate nothing can
+# pass is not strict, it is broken, and it reads as a fleet-wide instance defect.
+#
+# NOT A WEAKENING, AND THE NUMBERS ARE THE ARGUMENT. The two guard sets are 41 and
+# 41. Switching the reference DROPS one requirement (settings-template-sync-check.py,
+# which can never be satisfied) and ADDS one (instance-automation-guard.py, which
+# is FLEET_ONLY: it ships to instances and the skeleton self-detects and no-ops, so
+# the old reference could not require it and the new one does). The hook EVENT sets
+# of the two files are identical, so nothing changes there.
 SETTINGS_REL=".claude/settings.json"
+# Fall back to the runtime file when no template exists, so a skeleton that has
+# not adopted the template still gets a comparison rather than a silent pass.
+SKEL_SETTINGS="$SKELETON/settings-template.json"
+[ -f "$SKEL_SETTINGS" ] || SKEL_SETTINGS="$SKELETON/$SETTINGS_REL"
 if [ ! -f "$REPO_PATH/$SETTINGS_REL" ]; then
   refuse "hooks" "$REPO_PATH/$SETTINGS_REL is missing, so no hook fires in this repo"
 else
-  MISSING="$(python3 - "$SKELETON/$SETTINGS_REL" "$REPO_PATH/$SETTINGS_REL" "$SKELETON" "$REPO_PATH" <<'PY' 2>/dev/null
+  MISSING="$(python3 - "$SKEL_SETTINGS" "$REPO_PATH/$SETTINGS_REL" "$SKELETON" "$REPO_PATH" <<'PY' 2>/dev/null
 import json, sys
 try:
     skel = json.load(open(sys.argv[1])).get("hooks", {})
@@ -359,12 +385,45 @@ if d.get("required_pull_request_reviews") is not None:
 rsc = d.get("required_status_checks") or {}
 if rsc.get("contexts") or rsc.get("checks"):
     g.append("checks")
+# AN ERROR BODY IS NOT A PROTECTION OBJECT (ASK-755).
+#
+# NO APOSTROPHE AND NO BACKTICK BELOW THIS LINE. This heredoc sits inside $( ),
+# and bash tracks quotes while scanning for the closing paren even though the
+# heredoc is quoted -- one apostrophe in a PYTHON COMMENT here took the whole
+# script to "unexpected EOF while looking for matching quote" at line 429, with
+# the error pointing 200 lines away from the character that caused it. The file
+# already carries this scar once, a few lines up, for the inline -c form.
+#
+# The gh CLI prints the GitHub JSON error to STDOUT and its own message to
+# stderr, and the caller discards stderr -- so a refused request arrived here as
+# a perfectly parseable dict with
+# no protection keys in it, and came out the far end as "protected but requires
+# NO review and NO status check". That sentence is FALSE and it is the expensive
+# kind of false: it names a fixable GitHub setting, so it sent a founder-directed
+# run hunting a toggle. Measured on both opted-in repos, which are PRIVATE on a
+# personal plan: GET .../protection AND GET .../rulesets both return
+#   403 {"message": "Upgrade to GitHub Pro or make this repository public..."}
+# There is no setting to change. The refusal was right; only its reason was
+# invented. Detected by SHAPE, not by a status allowlist -- any body carrying a
+# message and none of the protection keys is an error, whatever its code.
+if not g and "message" in d and not any(
+    k in d for k in ("required_pull_request_reviews", "required_status_checks",
+                     "enforce_admins", "url")
+):
+    print("APIERROR:%s" % str(d.get("message", "")).replace("\n", " ")[:200])
+    raise SystemExit(0)
 print(",".join(g))
 PY
 )"
       case "$PROT_GATES" in
         UNPARSEABLE)
           refuse "branch-protection" "the protection response for $SLUG@$DEFAULT_BRANCH could not be parsed" ;;
+        APIERROR:*)
+          # Still a refusal -- fail closed is the whole posture of this file, and
+          # "I could not read the protection" is never permission to enter. What
+          # changes is that the reason is now GitHub's own words, so the reader
+          # can tell an unset toggle from a plan that has no toggle to set.
+          refuse "branch-protection" "GitHub refused the protection query for $SLUG@$DEFAULT_BRANCH: ${PROT_GATES#APIERROR:}" ;;
         "")
           refuse "branch-protection" "$SLUG@$DEFAULT_BRANCH is protected but requires NO review and NO status check; auto-merge would still land code with nothing in its way" ;;
       esac
