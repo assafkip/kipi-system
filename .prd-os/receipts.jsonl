@@ -125,3 +125,4 @@
 {"commit_sha": "20cbf72b9db116453c0ace4bd83a6d1f0c110bb6", "issue_id": "ASK-457", "receipts": {"reviewed": "2026-08-10T11:51:03Z"}, "reviewed_at": "2026-08-10T11:51:03Z"}
 {"commit_sha": "f590ed790ee23d5d076c6d943a75ebf63c4714b8", "issue_id": "ASK-291", "receipts": {"reviewed": "2026-08-10T16:24:51Z"}, "reviewed_at": "2026-08-10T16:24:51Z"}
 {"commit_sha": "22a5e26299635a9de3a958ab742e82e514a2a7cf", "issue_id": "ASK-700", "receipts": {"reviewed": "2026-08-13T16:41:18Z"}, "reviewed_at": "2026-08-13T16:41:18Z"}
+{"commit_sha": "db125e5cce0f2995e302d5f89245e1d7c9c0d753", "issue_id": "ASK-700", "receipts": {"reviewed": "2026-08-14T17:49:34Z"}, "reviewed_at": "2026-08-14T17:49:34Z"}
