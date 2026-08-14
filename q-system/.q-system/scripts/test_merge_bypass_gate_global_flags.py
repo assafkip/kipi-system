@@ -22,9 +22,11 @@ cases below therefore assert the PROPERTY (anything but the safe shape is refuse
 rather than a list of known-bad spellings, so a grammar feature invented next year
 is covered by construction.
 
-REF HATCH -- watch it fail against the code that shipped the hole:
+REF HATCH (a TAG, not a branch sha: PR #155 was SQUASH-merged, so every
+pre-fix commit is unreachable from main and dies with the branch)
+-- watch it fail against the code that shipped the hole:
 
-    MERGE_GATE_REF=09beb939 python3 test_merge_bypass_gate_global_flags.py   # RED
+    MERGE_GATE_REF=pre-fix/ask-791-round2 python3 test_merge_bypass_gate_global_flags.py   # RED
     python3 test_merge_bypass_gate_global_flags.py                          # GREEN
 """
 

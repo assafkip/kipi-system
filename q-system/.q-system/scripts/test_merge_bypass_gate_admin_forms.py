@@ -19,7 +19,7 @@ line in a run that was already green, and a case added after its fix has never b
 watched fail. This file carries a REF HATCH so it can be pointed at the pre-fix
 code and observed going red:
 
-    MERGE_GATE_REF=9092c61e python3 test_merge_bypass_gate_admin_forms.py   # RED
+    MERGE_GATE_REF=pre-fix/ask-791-round1 python3 test_merge_bypass_gate_admin_forms.py   # RED
     python3 test_merge_bypass_gate_admin_forms.py                          # GREEN
 
 ROUND 3 FLIPPED THE FALSY CASES from ALLOW to DENY, and the flip is recorded here

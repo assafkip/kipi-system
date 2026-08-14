@@ -29,9 +29,11 @@ at all. Both had the same failure direction, which is the thing worth
 remembering: every part of a gate needs to fail closed, not just the part that
 looked like the gate.
 
-REF HATCH -- watch it fail against the code that shipped the hole:
+REF HATCH (a TAG, not a branch sha: PR #155 was SQUASH-merged, so every
+pre-fix commit is unreachable from main and dies with the branch)
+-- watch it fail against the code that shipped the hole:
 
-    MERGE_GATE_REF=676798c8 python3 test_merge_bypass_gate_wrappers.py   # RED
+    MERGE_GATE_REF=pre-fix/ask-791-round3 python3 test_merge_bypass_gate_wrappers.py   # RED
     python3 test_merge_bypass_gate_wrappers.py                          # GREEN
 """
 
