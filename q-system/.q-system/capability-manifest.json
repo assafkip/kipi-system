@@ -622,6 +622,11 @@
       "path": "q-system/.q-system/tests/test_token_guard_cache_race.py",
       "runner": "python3",
       "timeout_s": 120
+    },
+    {
+      "path": "q-system/.q-system/tests/test_fleet_drift_no_answer.py",
+      "runner": "python3",
+      "timeout_s": 60
     }
   ],
   "required_data": [],
