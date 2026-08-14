@@ -176,7 +176,15 @@ else
   if [ -z "$have" ] || [ -z "$want" ]; then
     refuse "control-code" "could not hash the worker on both sides, so drift is unknown"
   elif [ "$have" != "$want" ]; then
-    refuse "control-code" "linear-worker.sh differs from the skeleton (${have:0:12} vs ${want:0:12}); run kipi update on this repo first"
+    # THE REMEDY NAMED HERE USED TO BE THE FLEET UPDATER, AND THAT WAS WRONG
+    # (ASK-755). The updater is a fleet-wide rsync WITH a delete flag: to fix one
+    # file in one repo it walks every registered instance and can remove anything
+    # on the way (2026-08-07: voicekit deleted from 19 instances). A refusal that
+    # names a tool with a blast radius three orders of magnitude wider than the
+    # defect is an invitation to overcorrect at 2am. control-file-propagate.py
+    # does the same hash classification for ONE file in ONE repo, copy only, and
+    # refuses anything it cannot prove came from this skeleton.
+    refuse "control-code" "linear-worker.sh differs from the skeleton (${have:0:12} vs ${want:0:12}); fix with: python3 $SKELETON/q-system/.q-system/scripts/control-file-propagate.py --target $REPO_PATH --file $WORKER_REL --apply"
   fi
 fi
 
