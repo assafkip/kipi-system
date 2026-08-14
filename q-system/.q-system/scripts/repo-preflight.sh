@@ -255,18 +255,59 @@ missing_scripts = sorted(scripts(skel) - scripts(repo))
 # green fixture in this test suite was itself that shape. Resolve each guard the
 # skeleton wires and require the file to actually be present in the target.
 import os
+# A GUARD IS ABSENT ONLY IF NO SKELETON PATH FOR IT EXISTS IN THE TARGET.
+#
+# The previous rule took hits[:1] -- the first os.walk hit anywhere under the
+# skeleton -- and demanded THAT exact relative path in the instance. The skeleton
+# root also holds PR review worktrees (.pr31rev/, .pr25rev/) and template-repo/,
+# none of which ship to any instance, so the first hit routinely resolved to a
+# path no instance could ever have.
+#
+# Measured 2026-08-14 against both dispatch-enabled repos by replicating this block
+# verbatim: each reported 36 guards absent, 35 of them PHANTOM -- present in the
+# instance at a different skeleton path, e.g. a lint script resolving to its copy
+# inside a PR review worktree instead of its shipped location. Exactly ONE was
+# real. os.walk order is not stable across machines either, so the same repo could
+# pass or fail depending on directory iteration.
+#
+# NO INSTANCE NAMES ABOVE, DELIBERATELY. This file ships to every instance, so
+# validate-separation Gate 1.2 sweeps it for live instance names and the first cut
+# of this comment named the two repos and turned CI red. The measurement is the
+# durable part; the names belong in the PR body. A text check cannot tell a rule
+# from a mention of one, which is why this warning names no repo either.
+#
+# This is NOT a loosening. The check still demands the guard file exist in the
+# target; it stops demanding it exist at a path that only ever existed inside a
+# scratch worktree. After this fix both repos still REFUSE -- on the one real
+# absence -- which is the proof it did not go soft.
+SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', '.pytest_cache',
+             'template-repo', 'worktrees'}
+
+
+def _shipping(dirname):
+    """Directories that never reach an instance, so never define the guard path."""
+    if dirname in SKIP_DIRS:
+        return False
+    # Review/scratch worktrees this repo creates at its own root. `.q-system` is a
+    # real shipped directory, so dotted names are filtered by prefix, not wholesale.
+    for junk in ('.pr', '.wt-', '.fable-wt', '.sana-tmp'):
+        if dirname.startswith(junk):
+            return False
+    return True
+
+
 skel_root, repo_root = sys.argv[3], sys.argv[4]
 absent = []
 for rel in sorted(scripts(skel)):
     hits = []
-    for base, _dirs, files in os.walk(skel_root):
-        if '/.git' in base:
-            continue
+    for base, dirs, files in os.walk(skel_root):
+        dirs[:] = [d for d in dirs if _shipping(d)]
         if rel in files:
             hits.append(os.path.relpath(os.path.join(base, rel), skel_root))
-    for h in hits[:1]:
-        if not os.path.isfile(os.path.join(repo_root, h)):
-            absent.append(h)
+    # Sorted so the reported path is deterministic rather than walk-order dependent.
+    hits.sort()
+    if hits and not any(os.path.isfile(os.path.join(repo_root, h)) for h in hits):
+        absent.append(hits[0])
 parts = []
 if missing_events:
     parts.append("events=" + "/".join(missing_events))
