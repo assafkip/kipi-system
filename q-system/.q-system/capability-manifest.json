@@ -450,6 +450,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_launchd_roster.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_linear_sync_comments.py",
       "runner": "python3"
     },
@@ -479,6 +483,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_memory_scores_surface.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_plugin_fanout_label.py",
       "runner": "python3"
     },
     {
