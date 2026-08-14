@@ -52,6 +52,59 @@ refuse() { FAILED=1; printf 'FAIL %s: %s\n' "$1" "$2"; }
 [ -n "$REPO_PATH" ] || { printf 'FAIL usage: repo-preflight.sh <repo-path> <expected-remote>\n'; exit 2; }
 [ -d "$REPO_PATH" ] || { printf 'FAIL repo-path: %s is not a directory\n' "$REPO_PATH"; exit 1; }
 
+# --- 0. client engagement repo -------------------------------------------
+# Founder decision 2026-08-13, verbatim: "no. unattended agents should not reach
+# a client repo."
+#
+# THIS REFUSES EVEN WHEN THE ROW IS OPTED IN, WHICH IS THE WHOLE POINT.
+# `dispatch.enabled` defaulting to absent is a DEFAULT, and a default is not a
+# refusal: it records that nobody has switched a repo on yet, and it evaporates
+# the moment anyone -- a person editing the registry, or some later script that
+# opts rows in automatically -- writes `true`. What is on the other side of that
+# edit is a self-merging loop (converge, code, PR, review rounds, auto-merge) with
+# no human in the path, pointed at work the founder is accountable to a CLIENT
+# for, where there is a person on the other end and no undo. So this is checked
+# ahead of the kill-switch and ahead of every network call: it is the one refusal
+# that no state of the target repo, and no registry field, can argue with.
+#
+# DERIVED FROM PATH SHAPE, NEVER FROM A LIST OF CLIENTS. Measured 2026-08-13
+# against instance-registry.json: 12 of 25 rows sit under an engagement root.
+# Naming those twelve here would be a list that goes stale the day the thirteenth
+# client is onboarded -- and the failure mode of a stale allowlist is that the new
+# client is the one that gets dispatched into. The shape is the fact: the founder's
+# own systems live at <root>/projects/<thing> under roots he owns, and client
+# engagements live under exactly these two. A repo added under one of them next
+# month is refused with no code change, which is the only property that makes this
+# hold over time.
+#
+# NOT AN ENV VAR, NOT A REGISTRY FIELD. Same reason `gh` is taken from PATH and the
+# dispatcher hardcodes $PREFLIGHT off $REPO: a knob here would be a documented way
+# to aim the client-repo gate at nothing while every log line still read normally.
+ENGAGEMENT_ROOTS="consulting intel"
+
+# BOTH THE REGISTRY'S PATH AND ITS RESOLVED TARGET ARE TESTED, AND EITHER ONE
+# MATCHING REFUSES. A symlink is the obvious way this check gets walked around by
+# accident: a row pointing at an innocent-looking path that resolves into an
+# engagement dir, or an engagement-shaped path that resolves elsewhere. Refusing on
+# either side means the answer does not depend on which of the two a later reader
+# happens to think is "the" path. Fail closed, like every other item in this file.
+RESOLVED_PATH="$(cd "$REPO_PATH" 2>/dev/null && pwd -P)" || RESOLVED_PATH=""
+for _root in $ENGAGEMENT_ROOTS; do
+  for _cand in "$REPO_PATH" "$RESOLVED_PATH"; do
+    [ -n "$_cand" ] || continue
+    case "$_cand" in
+      */"$_root"/projects/*)
+        # The reason is stated in full, because this line is what the founder reads
+        # in the run log and in the daily digest's "tried, could not be worked"
+        # section. A refusal he cannot tell apart from an empty queue is the defect
+        # this whole change is about.
+        printf 'FAIL client-repo: %s is a client engagement repo (under %s/projects/); unattended dispatch is not allowed there, even when dispatch.enabled is true -- a supervised founder-initiated run is the way in\n' "$REPO_PATH" "$_root"
+        printf 'REFUSED %s\n' "$REPO_PATH"
+        exit 1 ;;
+    esac
+  done
+done
+
 # --- 1. kill-switch -------------------------------------------------------
 # Checked FIRST and short-circuits everything, including the network calls. A
 # founder or a client dropping this file is saying "stay out of here", and the

@@ -138,6 +138,73 @@ def build_context(voice_dna_path, samples_path):
     return "".join(parts)
 
 
+def build_context_from_corpus():
+    """The one voice corpus, through voicekit. Returns None when unavailable.
+
+    why this replaced the 40KB dump (2026-08-13): this hook read
+    `founder-voice/references/voice-dna.md` + `writing-samples.md`, 40,527 bytes of
+    voice prose that the 2026-08-13 consolidation had already retired. The skill
+    pointed at the consulting corpus while the RUNTIME kept loading the private
+    copies, so the two-source drift that consolidation removed was still live on
+    every writing request. An adversarial review found it; the docs said it was gone.
+
+    Two things were wrong with the old payload regardless of which source it read:
+    55K of voice prose was MEASURED making output worse, and a fixed dump cannot
+    match the channel or the length of the piece, which is what produced a formal
+    long-form X draft that same day.
+    """
+    root = find_project_root()
+    if not root:
+        return None
+    sys.path.insert(0, str(root / "plugins" / "kipi-core"))
+    try:
+        from voicekit import corpus, selector
+    except Exception:
+        return None
+
+    voice_dir = os.environ.get("KIPI_VOICE_DIR") or str(
+        Path.home() / "projects" / "consulting" / "q-consult" / "voice")
+    if not Path(voice_dir, "exemplars.jsonl").exists():
+        return None
+    try:
+        voice = corpus.load(voice_dir)
+        rows = voice.active_exemplars()
+    except Exception:
+        return None
+    if not rows:
+        return None
+
+    # Small and deliberately NOT length-matched: this hook cannot know the channel or
+    # the target length from a prompt, and guessing is the thing the selector exists
+    # to stop. It ships identity plus three rows as an anchor and names the command
+    # that does the matching. Do not grow this into a second selector.
+    picked = selector.select(rows, "x", 0, k=3)
+    parts = [
+        "[voice-dna-loader] Writing request detected. The voice corpus is "
+        f"{voice_dir}. This hook reads that corpus only; the "
+        "founder-voice/references copies are retired and are no longer loaded.\n\n"
+        "Before drafting anything another person reads, run the selector so the "
+        "exemplars match the CHANNEL and the LENGTH of the piece:\n\n"
+        f"    KIPI_VOICE_DIR={voice_dir} python3 "
+        f"{root}/plugins/kipi-core/voicekit/voice_ref.py --channel x --words <target>\n\n"
+        "Length is a real axis: the x corpus runs 5 to 55 words with one 479-word "
+        "row, so a long piece written against short rows comes out formal. "
+        "Substance over cadence: with no scar, named thing, test or evidence, the "
+        "shape of the voice still reads as AI. voice-lint catches part of it.\n",
+        f"\n=== WHO IS WRITING ===\n\n{voice.identity.strip()}\n",
+    ]
+    corrections = voice.active_corrections()
+    if corrections:
+        parts.append("\n=== CORRECTIONS (these override anything older) ===\n\n")
+        for c in corrections[-4:]:
+            parts.append(f"- [{c.get('date', '?')}] {c.get('instruction', '').strip()}\n")
+    parts.append("\n=== A FEW REAL ROWS (anchor only, NOT length-matched) ===\n")
+    for r in picked:
+        words = r.get("words") or len((r.get("text") or "").split())
+        parts.append(f"\n--- [{r.get('id')}] {words} words\n{(r.get('text') or '').strip()}\n")
+    return "".join(parts)
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -146,9 +213,14 @@ def main():
     user_prompt = payload.get("prompt", "")
     if not user_prompt or not looks_like_writing_request(user_prompt):
         sys.exit(0)
-    voice_dna_path = resolve_path(VOICE_DNA_REL_PATH)
-    samples_path = resolve_path(WRITING_SAMPLES_REL_PATH)
-    context = build_context(voice_dna_path, samples_path)
+    # The corpus path first. The legacy dump stays reachable ONLY when voicekit or the
+    # corpus is absent, so this cannot leave an instance with no voice anchor at all;
+    # it is no longer the normal path anywhere that has both.
+    context = build_context_from_corpus()
+    if context is None:
+        voice_dna_path = resolve_path(VOICE_DNA_REL_PATH)
+        samples_path = resolve_path(WRITING_SAMPLES_REL_PATH)
+        context = build_context(voice_dna_path, samples_path)
     output = {"hookSpecificOutput": {"additionalContext": context}}
     sys.stdout.write(json.dumps(output))
     sys.exit(0)

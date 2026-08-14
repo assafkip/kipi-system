@@ -560,6 +560,26 @@
       "timeout_s": 120
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-gh-repo-scope-worker.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-gh-repo-scope-converge.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-gh-repo-scope-reviewer.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-artifact-repo-keyed.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-client-refusal-after-hold.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_dispatch_reachability.py",
       "runner": "python3"
     }
