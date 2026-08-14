@@ -712,8 +712,18 @@ try: d=json.load(open(sys.argv[1]))
 except Exception: sys.exit(0)
 print(len(d.get("instances",[])))' "${KIPI_DISPATCH_REGISTRY:-$REPO/instance-registry.json}" 2>/dev/null)"
 FLEET_OPTED="$(fleet_candidates 2>/dev/null | awk -F'\t' -v h="$REPO" 'NF && $2 != h' | wc -l | tr -d ' ')"
-FLEET_HELD="$(printf '%s\n' "$PICKS" | awk -F'\t' -v h="$REPO" 'NF && $2 != h' | wc -l | tr -d ' ')"
-say "dispatch: ${FLEET_HELD:-0} repo(s) HELD (cross-repo gh scoping unfinished, sp-9421b9b7); ${FLEET_OPTED:-0} of ${FLEET_TOTAL:-0} registered repo(s) opted in for dispatch"
+# NO "HELD" COUNT ANY MORE. This line was written while kipi-dispatch.sh:726 held
+# every non-home target on unfinished cross-repo gh scoping, and it counted each
+# such pick as held. ASK-738 (#146) scoped every gh call and DROPPED that hold, so
+# the same number now describes repos the run ENTERS. Reporting them as held while
+# entering them is worse than the silence this line replaced: a reader would take
+# it as the reason nothing ran. Caught by the Codex review of #143 after the two
+# branches merged; each was correct alone.
+#
+# The opted-in count survives because it is the useful half: "0 of 25 opted in" is
+# still the single most useful fact about why no other repo is being served, and a
+# line that only appears when something happens cannot say it.
+say "dispatch: ${FLEET_OPTED:-0} of ${FLEET_TOTAL:-0} registered repo(s) opted in for cross-repo dispatch"
 
 TARGET_NAME=""
 TARGET_PATH=""
