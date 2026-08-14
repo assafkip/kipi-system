@@ -388,6 +388,67 @@ if [ "$LEAK_RC" -ne 0 ]; then
   exit 1
 fi
 
+# Preflight: the bytes fanned out must be the bytes that were reviewed.
+#
+# q-system/ is copied with `git archive` from HEAD, and the two checks above
+# refuse when the index and HEAD disagree. `.claude/` and `plugins/` get no
+# such protection: they rsync from $SCRIPT_DIR -- the WORKING TREE, on whatever
+# branch it is checked out on. Nothing asked which branch that was.
+#
+# Scar 2026-08-14 (sp-ea9c1628): kipi-system sat on sana/ask-728-plugin-parity
+# holding an uncommitted partial forward-port of voicekit/selector.py -- the
+# nearest-length ranking without the anchor-survives fix Codex caught in #147
+# and main already carried. A run from that state writes code strictly OLDER
+# than main into every config-sync instance and prints PASS. Silent, plausible,
+# and 23 repos wide; hence a preflight rather than a habit.
+#
+# Two halves, deliberately different in what they need:
+#
+#   DIRTY runs always. Staleness against HEAD needs no remote to be wrong, and
+#   an untracked file under plugins/ rsyncs just as happily as a tracked one --
+#   `git diff` is blind to it, so it is asked for by name.
+#
+#   BRANCH arms only when an `origin` remote exists. SKELETON_BRANCH names a
+#   branch ON origin; a repo with no origin has no main to be stale against,
+#   and every kipi-update fixture in q-system/.q-system/scripts/test/ is
+#   exactly that repo. It announces the disarm rather than going quiet, because
+#   a silent guard is indistinguishable from one that passed.
+#
+# Pinned by test-kipi-update-source-provenance.sh.
+SYNC_SCOPE_DIRTY="$(
+  {
+    git -C "$SCRIPT_DIR" status --porcelain -- .claude plugins 2>/dev/null || true
+  } | sed 's/^...//'
+)"
+if [ -n "$SYNC_SCOPE_DIRTY" ]; then
+  echo ""
+  echo "ABORT: the skeleton's .claude/ or plugins/ is not committed."
+  echo "These rsync from the working tree, so every line below would reach all"
+  echo "registered instances without ever having passed a review:"
+  printf '%s\n' "$SYNC_SCOPE_DIRTY" | sed 's/^/  /'
+  echo "Commit them, or restore them from ${SKELETON_BRANCH}, before propagating."
+  exit 1
+fi
+
+if git -C "$SCRIPT_DIR" remote get-url origin >/dev/null 2>&1; then
+  SKELETON_HEAD_BRANCH="$(git -C "$SCRIPT_DIR" symbolic-ref --short -q HEAD || true)"
+  if [ "$SKELETON_HEAD_BRANCH" != "$SKELETON_BRANCH" ]; then
+    echo ""
+    echo "ABORT: the skeleton is not on $SKELETON_BRANCH."
+    if [ -z "$SKELETON_HEAD_BRANCH" ]; then
+      echo "  HEAD is detached."
+    else
+      echo "  HEAD is on $SKELETON_HEAD_BRANCH."
+    fi
+    echo ".claude/ and plugins/ rsync from this working tree, so a feature"
+    echo "branch fans its unmerged -- or merely older -- copy to every instance."
+    echo "Check out $SKELETON_BRANCH and pull before propagating."
+    exit 1
+  fi
+else
+  echo "skeleton branch check: DISARMED (no origin remote; nothing to be stale against)"
+fi
+
 PASS=0
 FAIL=0
 SKIP=0
