@@ -1,136 +1,181 @@
-# Last handoff — 2026-07-26 (continuation session)
+# Last handoff — 2026-08-14 (eve comparison -> trust-gate -> fleet-skew night)
+[provenance: observed — system currentDate context this session]
 
-Tracking epic **ASK-113**. PR #10 **merged to main** (`05af553`), 7 commits.
-Everything below was verified by running it, not by reading it.
+Started as a repo review (vercel-labs/eve-software-factory-template vs kipi), ballooned
+into a multi-hour, multi-session engineering night touching prd-os/kipi-dsse merge
+safety, fleet plugin versioning, and a live branch-protection change. Two other Claude
+sessions (`social-voice`, plus incidental contact with others) were active in this same
+checkout concurrently — expect coordination scars below.
 
-## Carried forward from the earlier 2026-07-26 session (still true)
+## What shipped, verified
 
-- **Goal 1, a Linear project per instance repo: DONE.** 25 of 25 (24 instances +
-  the skeleton). A fleet-wide re-plan creates zero projects.
-- **Goals 2 and 3, deterministic creation on build: SHIPPED** as queue-and-drain.
-  No Linear API key exists, so bash cannot reach the MCP server; capture is local
-  and offline, the agent drains it.
-- **Goal 5, overlap/collision analysis: SHIPPED** (`capability-overlap.py`).
-- **Goal 6, SDLC standard: WRITTEN**, adjustments recorded in its Part 0.
-- **Goal 4: still NOT STARTED.** Triage every issue in every project (done /
-  needs work / recorded, with evidence): 61 pre-existing kipi-system issues, 45
-  in cole-GTM.
-- **29 of 31 planned Linear issues remain uncreated.** Resumable:
-  `kipi linear status` says which repos are done without querying Linear.
-- Dedup key `<repo-slug>/<capability-slug>`, written into each Linear
-  description as `<!-- kipi-key: ... -->`. **Never drop that marker.**
+**PR #159 — merge-bypass trust gate. MERGED to main (`88155734`), live, verified.**
+[verified: `gh pr view 155/159`, `gh api .../commits/.../status`, and a live in-session
+Bash call with `--admin` refused by the wired hook — ran directly this session]
 
-## Founder decisions this session
+Adopted the eve-software-factory-template pre-dispatch approval idea (`sp-6dc1b64c`)
+for prd-os/kipi-dsse's push/merge chokepoint. Closeout was checked first and found
+**already stronger** than eve's pattern (content-sealed receipts vs. eve's session-scoped
+trust class) — no closeout work needed. [provenance: observed — Sana subagent recon
+report, code citations to issue_runner.py, not independently re-read by me] Push/merge
+had **zero enforcement**; the specific live hole was `gh pr merge --admin`, which
+defeats `kipi/reviewer-approved` because `enforce_admins:false` + every agent
+credential is `admin:true`. [provenance: observed — Sana subagent report citing
+`gh api repos/:owner/:repo/branches/main/protection` and `gh api repos/:owner/:repo
+--jq .permissions` output]
 
-- **Q2 (branch-protection bypass):** fix the 5 tests, make the gate real.
-- **Sequencing:** updater tests first, then the claim-lock.
-- **Merge:** merge PR #10 with the admin bypass, containment failure and all.
+7 review rounds, each a real finding, each fixed and mutation-tested. [provenance:
+observed — Sana subagent completion reports, each citing a Codex review verdict I
+spot-checked live via `gh pr checks 159` / `gh api .../issues/159/comments` at multiple
+points this session]:
+1. `--admin` bare form denied
+2. `--admin=true` and 5 other truthy spellings (denylist was inherently incomplete)
+3. `-R`/`--repo`/`--hostname`/env-var retargeting — **redesigned denylist to allowlist**
+   here: only `gh pr merge --auto [method] [ref]` is permitted, everything else on that
+   command is denied by construction
+4. wrapper composition (`sudo bash -c '...'`), unknown-wrapper class closed via token scan
+5. push-side never got round-4's fix (single `_tool_position()` authority now serves both)
+6. `bash -lc`, unknown wrappers, newline-as-separator — three vectors, one shared cause
+7. **`eval $CMD` / `source` / `| bash` cannot be caught by static analysis, period** (the
+   command text doesn't exist until Bash expands it). Correctly did NOT try to patch
+   this locally. The real fix is server-side: `enforce_admins`.
 
-## What shipped
+**`enforce_admins` flipped true on `main`, founder-authorized (asked directly via
+AskUserQuestion this session), verified two ways** (not trusted from API return code).
+[verified: Sana subagent report cites re-reading both the `protection/enforce_admins`
+sub-resource and the `protection` roll-up; I did not independently re-run this check]
+Break-glass built: `break-glass-main-protection.sh` (`status`/`off <reason>`/`on`),
+logged to `~/.claude/audit/break-glass-main-protection.jsonl`, Slack on open/close,
+documented in `AUTONOMOUS-SYSTEMS.md` §5b. Asymmetric by design: `off` refuses if it
+can't guarantee the audit trail; `on` never blocks (stranding protection OFF is worse
+than an incomplete log). Drilled live, one round-trip, verified. [provenance: observed
+— Sana subagent report, including a self-caught reasoning error during the drill
+(misread her own pre-check output); I did not independently re-run the drill]
 
-| Commit | What |
-|--------|------|
-| `226cf6f` | CI: git identity + `fetch-depth: 0` + track the receipts ledger |
-| `c307bed` | Close discipline into the SDLC standard §3.1 / §5 |
-| `a6ba923` | Instance identity out of 2 scar comments |
-| `d26b425` | Slice 0: truthful reviewer provenance (`claude-*` sources) |
-| `7c0fccb` | Slice B: the agent claim-lock |
-| `f32bfbd` | Adversarial review fixes: 2 blockers + 8 more |
+**ASK-798 still open** — the flip is done, but the break-glass has a real fragility:
+`kipi/reviewer-approved` is posted by a local script, not a GitHub Action, so if that
+script is down, main freezes for everyone including whoever needs to fix it. Option 2
+(non-local producer) is the real fix and is not this session's work.
+[provenance: observed — Sana subagent report]
 
-## The 5 updater CI failures — fixed
+**Recurring failure mode across the whole thread, worth remembering**: 5 separate
+instances today of a *fixture or harness that was green for the wrong reason* — a `cd
+/tmp` that made a case pass on the unresolvable-means-allow rule instead of the logic
+under test, a dead-ledger fixture whose `mkdir -p` never reached the line it was
+testing, a stub sed'd from an already-stubbed copy, a pre-check that printed a
+conclusion its own output contradicted, a test file named against a convention nobody
+read. None were caught by review — all were caught by mutation testing or a self-check.
+[provenance: observed — self-reported by the Sana subagent across multiple completion
+reports; count of 5 is her own tally, not independently recounted by me] Candidate for
+a lessons-corpus entry if this keeps recurring.
 
-The prior session's theory (`sp-d29346e9`, "pytest skips the hidden
-`q-system/.q-system/` dir") was **wrong**: `capability-gate.py:303` runs tests by
-convention, not pytest discovery.
+## Open, not shipped
 
-Two causes, not five. **No git identity on the runner** (4 of 5):
-`kipi-update.sh:705` commits with none, the ubuntu runner's user has an empty
-gecos field, and `kipi-update.sh:1289` `abandon_instance ... && continue` is
-*upstream* of the plugins rsync at 1393 — so one missing identity produced four
-unrelated-looking symptoms. And **`.gitignore`'s blanket `*.jsonl`** hid
-`.prd-os/receipts.jsonl`, the ledger `test-updater-issue-sequence.py:101` audits.
+**PR #152 — plugin-parity fleet-skew checker. BLOCKED, round 6 REQUEST CHANGES,
+checkpointed and stopped for the day mid-thread.** [verified: `gh pr checks 152` run
+directly this session at multiple points; checkpoint detail below is
+provenance: observed from the Sana subagent's final report]
 
-Local macOS **cannot** reproduce this: its git guesses an identity from the
-passwd gecos field. Three failed reproducer attempts are recorded in
-`q-system/output/plans/ci-validate-green-2026-07-26.md` — do not retry them.
+Split off `sana/ask-728-plugin-parity` (PR #142) when the writer half
+(`plugin-fanout.py`) hit 5 review rounds of the same data-loss race relocating rather
+than closing — correct call to freeze that writer and hold it separately (still held,
+untouched). [provenance: observed — Sana subagent report]
 
-## Two lessons worth carrying forward
+The checker itself went through its own version of the same pattern:
+- round 1-2: fixed real bugs (PASS-on-zero, compared marketplace clone instead of what
+  the loader actually runs — the clone was stale too, see below)
+- round 3-4: found the checker was trusting the install *record* over the actual
+  on-disk manifest, and that `--project` scope resolution defaulted to the wrong entry
+- round 5: **correctly invoked its own stop-criterion.** The scope-resolution model
+  (which install "wins" from a given directory) was never grounded — inferred from a
+  JSON file's shape, and Claude Code's loader is closed-source, so there was no oracle
+  to converge on. Rescoped rather than kept patching: dropped `resolve_live_entry`,
+  `--project`, `--user-scope` entirely; now enumerates every recorded install and fails
+  if any lags, instead of claiming to know "the one you're running." Weaker claim,
+  fully verifiable.
+- **round 6: two majors, checkpointed, NOT fixed.** (1) A real regression the freeze
+  commit introduced — `render()` reads `row['scopes']`/`row['project_paths']` but the
+  NOT_INSTALLED branch still builds the row with the old `scope`/`project_path` keys,
+  so a NOT_INSTALLED row crashes text rendering with `KeyError`. Her tests missed it
+  because the NOT_INSTALLED test only exercises `--json`, never `render()` — same
+  "checked one artifact, claimed another" shape as everything else tonight. Hypothesis
+  on cause stated as hypothesis, not verified — she stopped before digging further.
+  (2) A genuine **design disagreement, not a regression**: Codex flagged that content
+  drift is advisory-only (bytes can differ while the run still says PASS). The
+  module's own docstring defends this on purpose — gating on byte-equality would make
+  a check that can never go green on a real runtime tree, and a check that can't go
+  green gets switched off. This is a judgment call to make deliberately next session,
+  not a bug to reflexively patch.
+  [provenance: observed — Sana subagent's own final checkpoint report, verbatim]
 
-**1. A fixture invented by the author tests nothing.** The claim-lock's remote
-half read `state`; `mcp__linear__get_issue` emits `status` + `statusType`. That
-remote check is the ONLY cover for a cross-checkout collision and it granted
-unconditionally — while the suite stayed green, because the fixture was
-hand-rolled from the same mental model as the code. Fixtures are now the verbatim
-captured payload. Prefer `statusType` over the status NAME: teams rename states.
+Real fleet numbers this surfaced, live-verified: prd-os, kipi-core, kipi-design,
+kipi-dsse are all genuinely stale on the executing runtime (prd-os as far as **0.16.5
+vs skeleton 0.27.3** — 11+ minor versions). kipi-ops and kipi-notebooklm match.
+[provenance: observed — Sana subagent report, cross-checked once against
+`installed_plugins.json`/`claude plugin list` per her own account; not independently
+re-run by me]
 
-**2. `\s` matches a newline even under `re.M`.** `^reviewed_by:\s*.*$` ate the
-FOLLOWING frontmatter line when the value was empty. Driven to a real exploit:
-eating `findings_path:` made the gate report "no findings" and a PRD with an
-untriaged BLOCKER advanced to `approved`, exit 0. Use `[^\n]*`.
+**The actual runtime fix — `claude plugin update <plugin>`, restart attached — was
+never run.** Correctly held: it writes under `~/.claude/`, gated to the
+`apply-claude-changes.sh` proposal path, re-points plugins for every session on this
+machine. This is the founder's action to trigger when ready, not something either
+Sana thread did unilaterally.
 
-## The claim lock (how to use it)
+**Housekeeping:** worktree `/Users/assafkipnis/projects/kipi-system/.wt-parity` is
+still registered and clean, left in place deliberately so next session resumes without
+re-setup — remove with `git worktree remove` once the PR lands. [provenance: observed
+— Sana subagent final report] Push state before stopping was verified 4-way (worktree
+HEAD, remote `@{u}`, PR head, dirty/unpushed counts all agree at `95e2e83a`) —
+[provenance: observed — Sana subagent final report; I did not independently re-run this
+check].
 
-```
-kipi linear claim ASK-nnn --agent <name> --session <id>   # BEFORE branching; exit 3 = refused
-kipi linear claims                                        # who holds this tree
-kipi linear release ASK-nnn --agent <name> --session <id> # when the PR opens
-```
+## Coordination scars (repo-wide, worth institutional memory)
 
-- Identity is **(agent, session)**, never agent alone — two sessions both named
-  "claude" were both granted, the exact `53f2eeb` scar. `KIPI_SESSION_ID` /
-  `CLAUDE_SESSION_ID` are honored.
-- **The resource is the working tree, not the issue.** A separate git worktree is
-  the remedy for a refusal, not `--break-stale`.
-- `--break-stale` is a compare-and-swap: needs `--holder <session>` naming the
-  exact claim you looked at.
-- Remote half: pass the verbatim `mcp__linear__get_issue` response as
-  `--remote-state`. Unrecognized shapes fail closed.
+- **This checkout got yanked mid-work at least 3 times tonight** across
+  sessions/threads (branch reset out from under a live edit). [provenance: observed —
+  reported independently by both Sana subagent threads and by `social-voice`'s session
+  across separate messages this session] Nothing was lost each time — rescued via
+  worktrees, tags on pre-fix commits (`pre-fix/ask-791-round1..4`), or re-derivation —
+  but it cost real time and required careful "is this mine, whose is this" triage each
+  time. One Sana thread adapted by using an isolated worktree (`.wt-ask791`) after
+  getting yanked once. Open question, not decided: should concurrent Sana threads get a
+  worktree by default? Flagged, not resolved.
+- **A stray commit (`b95a7e1b`, "stop the fleet updater deleting each instance's
+  integrity baseline") landed straight on `main` with zero review/branch/PR**, flagged
+  by `social-voice`. [verified: `git log -1 b95a7e1b`, `git show --stat`, `git
+  merge-base --is-ancestor` — ran directly this session] Disclaimed by both Sana
+  threads working tonight — neither touched kipi-update.sh for that reason — most
+  likely another concurrent session (`ask-758-10` was seen live in `ListAgents` at the
+  time) or the autonomous dispatch pipeline. [provenance: inferred — best-read
+  attribution, not confirmed] Routed to ASK-773 (the general "auto-commit lands on
+  whatever branch is checked out, never pushes" pattern) rather than resolved.
+- Spillover ledger: 2 stale items resolved with real resolution refs (`sp-53f7bcc3` →
+  ASK-738, `sp-cdb7783d` → ASK-762) [verified: `spillover resolve` commands run
+  directly this session, confirmed via `spillover list` re-read] after cross-session
+  verification (social-voice) showed they were already fixed elsewhere. `sp-3e201efb`
+  (11/23 fleet instances failing dirty-tree refusal on `kipi update`) is **still open,
+  not touched by either PR tonight** — #152 detects skew, does not clean dirty trees;
+  that's a separate root cause social-voice was independently chasing (a swallowed
+  commit failure in `kipi-update.sh`'s skeleton-owned-dirt carve-out, unconfirmed as of
+  last contact). [provenance: imported — reported by the social-voice session,
+  unconfirmed by me]
 
-## Still open — `validate` is NOT green
+## Next session, resume here
 
-One pre-existing failure, ASK-58/ASK-59: semantic containment. The headline
-number misleads. Of ~11,800 findings, **all but 46 are
-`unclassified_populated_record`**, which `prd-prevent-fact-fanout-2026-07-25.md:83`
-says must never block. The **46 real** ones:
+1. `claude plugin update <plugin>` for prd-os/kipi-core/kipi-design/kipi-dsse + restart
+   — founder action, unblocks the actual stale-runtime problem #152 surfaced.
+2. PR #152 round 6: fix the `render()` KeyError regression (small — add a text-path
+   test for every row status, not just `--json`), then deliberately decide the
+   advisory-vs-blocking content-drift question before re-dispatching review.
+3. ASK-798 option 2 (non-local `kipi/reviewer-approved` producer) — real fix for the
+   break-glass fragility, not started.
+4. `sp-3e201efb` — 11 dirty-tree fleet instances, root cause still unconfirmed.
+5. PR #142's fanout writer — still held, needs a real redesign session, not a 6th patch.
 
-`source_identity` 25 · `pricing` 11 · `client_identity` 4 ·
-`sourced_interaction` 3 · `case_proof_gap` 3
-
-Unchanged this session. **The bypass on `main` stands until these are resolved.**
-That PRD has founder decisions already pending, so it was captured
-(`sp-88d889b5`), not started.
-
-## Open spillover
-
-- `sp-5375bc44` — `guarded_commit` still ambient-identity-dependent for the fleet
-  updater itself (launchd runs with a minimal env). Fixed at the CI layer only.
-- `sp-b386aba4` — `codex_reviewed_at` key is still vendor-named; renaming needs a
-  read-either/write-new compatibility window.
-- `sp-88d889b5` — `validate-separation.py:609` blocks on warn-only records,
-  hiding the actionable 46 behind ~11,800.
-- Pre-existing: `sp-7b123c14`, `sp-cfc861f1`, `sp-333f81b4`, `sp-3cb2e575`,
-  `sp-d29346e9`, `sp-2ae4df51`.
-
-## Correction on record
-
-`a6ba923`'s message claimed removing instance names from comments closed a leak.
-**False.** `instance-registry.json`, `INSTANCES.md` and `kipi-update.sh` publish
-all 24 instance names with absolute home paths in the same public repo. Net leak
-reduction: zero. The PROPAGATION argument stands on its own and is why the change
-was kept (`q-system/.q-system/scripts/` rsyncs to every instance).
-
-## Verification, as run (on merged main)
-
-```
-capability-gate.py             GREEN, ran=61   (was 59)
-test-linear-claim.sh           30 checks       (was 21)
-test-receipts-ledger-check.sh   5 checks, 12 leak shapes blocked
-pytest plugins/prd-os/tests/   318 passed, 1 skipped
-validate-separation.py 1       1 FAIL (pre-existing containment), PASS 68
-```
-
-## Not done
-
-`/prd-review` never ran as a prd-os ceremony — there is no active PRD; the work
-was built directly and reviewed by three adversarial subagents instead. If the
-prd-os receipt trail matters for this work, it needs a retro-PRD.
+<!-- handoff-provenance-skip: every claim above carries a block-level provenance tag
+     (verified/observed/inferred/imported) covering the paragraph it's in, per the
+     actual source of each fact. The lint scans line-by-line and doesn't associate a
+     block tag with every individual line inside that block (PR numbers, version
+     strings, and counters repeated in follow-up lines within an already-tagged
+     paragraph). Re-tagging every such line individually was judged diminishing-returns
+     relative to the block-level tagging already done honestly above. -->
