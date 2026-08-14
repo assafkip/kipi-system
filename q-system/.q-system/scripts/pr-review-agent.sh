@@ -128,25 +128,7 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # THE ONE SLUG DERIVATION (ASK-738).
 . "$SCRIPT_DIR/repo-slug-lib.sh"
 
-# REVIEW_REPO is the repo UNDER REVIEW. $SKEL stays what it always was: where the
-# control code lives. Every git read that asks "does this tree hold the PR"
-# targets REVIEW_REPO; every gh call is scoped to its slug. Defaults to $SKEL, so
-# every existing caller behaves exactly as before.
-REVIEW_REPO="${TARGET_REPO_ARG:-${KIPI_TARGET_REPO:-$SKEL}}"
-[ -d "$REVIEW_REPO" ] || { echo "--repo: no such directory: $REVIEW_REPO" >&2; exit 1; }
-REVIEW_REPO="$(cd "$REVIEW_REPO" && pwd)"
-REVIEW_SLUG="$(slug_for_repo "$REVIEW_REPO" "${KIPI_SLUG_REGISTRY:-$SKEL/instance-registry.json}")"
-KIPI_GH_REPO_ARGS="$(gh_repo_args "$REVIEW_SLUG")"
-export KIPI_GH_REPO_ARGS
-# The prompt below tells the MODEL to run `gh pr view` / `gh pr diff` itself. An
-# unscoped instruction there reads another repository's diff no matter what this
-# script does, so the scope has to travel INTO the prompt text too.
-GH_R_PROMPT=""
-[ -n "$REVIEW_SLUG" ] && GH_R_PROMPT="-R $REVIEW_SLUG "
-# `gh api` cannot take -R (see post_status). Empty slug keeps the placeholder
-# form, which is what every pre-ASK-738 caller and fixture already relies on.
-STATUS_REPO_PATH="{owner}/{repo}"
-[ -n "$REVIEW_SLUG" ] && STATUS_REPO_PATH="$REVIEW_SLUG"
+
 
 # CODEX BY DEFAULT. Env-overridable so a codex outage long enough to matter is a
 # config change (`KIPI_REVIEW_ENGINE=claude`), not an edit to the script that
@@ -168,6 +150,33 @@ while [ $# -gt 0 ]; do
   esac
   shift || true
 done
+
+# RESOLVED AFTER THE ARGUMENT LOOP, and that placement is the whole point.
+# This block first sat above the loop, so it read TARGET_REPO_ARG before the
+# loop had parsed it AND before line "PR=\"\"; ISSUE=..." reset it to empty --
+# `--repo` was a DEAD FLAG that silently fell through to $SKEL. Caught by codex
+# on PR #146; my own test missed it because it drove the env form
+# (KIPI_TARGET_REPO), which resolves the same either way. A flag with no test
+# that exercises the FLAG is an untested flag.
+# REVIEW_REPO is the repo UNDER REVIEW. $SKEL stays what it always was: where the
+# control code lives. Every git read that asks "does this tree hold the PR"
+# targets REVIEW_REPO; every gh call is scoped to its slug. Defaults to $SKEL, so
+# every existing caller behaves exactly as before.
+REVIEW_REPO="${TARGET_REPO_ARG:-${KIPI_TARGET_REPO:-$SKEL}}"
+[ -d "$REVIEW_REPO" ] || { echo "--repo: no such directory: $REVIEW_REPO" >&2; exit 1; }
+REVIEW_REPO="$(cd "$REVIEW_REPO" && pwd)"
+REVIEW_SLUG="$(slug_for_repo "$REVIEW_REPO" "${KIPI_SLUG_REGISTRY:-$SKEL/instance-registry.json}")"
+KIPI_GH_REPO_ARGS="$(gh_repo_args "$REVIEW_SLUG")"
+export KIPI_GH_REPO_ARGS
+# The prompt below tells the MODEL to run `gh pr view` / `gh pr diff` itself. An
+# unscoped instruction there reads another repository's diff no matter what this
+# script does, so the scope has to travel INTO the prompt text too.
+GH_R_PROMPT=""
+[ -n "$REVIEW_SLUG" ] && GH_R_PROMPT="-R $REVIEW_SLUG "
+# `gh api` cannot take -R (see post_status). Empty slug keeps the placeholder
+# form, which is what every pre-ASK-738 caller and fixture already relies on.
+STATUS_REPO_PATH="{owner}/{repo}"
+[ -n "$REVIEW_SLUG" ] && STATUS_REPO_PATH="$REVIEW_SLUG"
 [ -n "$PR" ] || { echo "usage: pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post] [--engine claude|codex]" >&2; exit 1; }
 
 # WHAT THE ENGINE CHANGES. Everything else below this block is shared, which is

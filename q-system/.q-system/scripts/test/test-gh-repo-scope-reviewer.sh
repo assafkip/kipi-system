@@ -195,4 +195,43 @@ LEAKED="$(awk -F'\t' -v h="$HOME_SLUG" '$1 == h' "$GH_LOG")"
 $(printf '%s\n' "$LEAKED" | sed 's/^/        /')"
 ok "no gh call in the reviewer fell back to cwd"
 
+# ===========================================================================
+# CASE 2 -- THE --repo FLAG, not the env var (PR #146 review, codex minor)
+# ===========================================================================
+# Case 1 drives KIPI_TARGET_REPO. Both forms feed one expression, so a bug that
+# breaks only the FLAG is invisible to it -- and there was one: the resolution
+# block sat ABOVE the argument loop, so it read TARGET_REPO_ARG before the loop
+# parsed it and before the initialiser reset it to empty. `--repo` fell through
+# to $SKEL silently. A flag with no test that exercises the flag is untested.
+#
+# The env var is explicitly UNSET here. Left set, this case would pass on the
+# broken order for exactly the reason case 1 did.
+: > "$GH_LOG"
+( cd "$WORK/skel" \
+  && env -u KIPI_TARGET_REPO \
+     HOME="$WORK/home2" KIPI_STATE_DIR="$WORK/state2" KIPI_NOTIFY="/usr/bin/true" \
+     bash "$AGENT" 42 --issue ASK-AAA --engine codex --repo "$WORK/target" \
+) >"$WORK/run-flag.out" 2>&1
+RC2=$?
+echo "  [ctx] --repo flag run (KIPI_TARGET_REPO unset), rc=$RC2"
+
+FLAG_SLUGS="$(awk -F'\t' '$2 ~ /pr view/ {print $1}' "$GH_LOG" | sort -u)"
+[ -n "$FLAG_SLUGS" ] \
+  || fail "the --repo run made no 'gh pr view' call (rc=$RC2):
+$(tail -20 "$WORK/run-flag.out")"
+if printf '%s\n' "$FLAG_SLUGS" | grep -qx "$HOME_SLUG"; then
+  fail "DEAD FLAG: --repo $WORK/target was accepted and IGNORED -- the run resolved to the HOME repo ($HOME_SLUG).
+      The resolution reads TARGET_REPO_ARG before the argument loop assigns it.
+      gh calls:
+$(sed 's/^/        /' "$GH_LOG")"
+fi
+[ "$FLAG_SLUGS" = "$TARGET_SLUG" ] \
+  || fail "the --repo run resolved to '$FLAG_SLUGS', expected $TARGET_SLUG"
+ok "the --repo FLAG scopes the review to the target ($TARGET_SLUG)"
+
+PINNED2="$(grep -o 'head sha under review: [0-9a-f]*' "$WORK/run-flag.out" | awk '{print $5}' | head -1)"
+[ "$PINNED2" = "$SHA_TARGET" ] \
+  || fail "the --repo run pinned '$PINNED2', expected the target's head $SHA_TARGET"
+ok "the --repo run pins the TARGET repo's commit"
+
 echo "PASS ($PASS checks) test-gh-repo-scope-reviewer.sh"
