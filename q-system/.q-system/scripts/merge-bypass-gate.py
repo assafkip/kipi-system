@@ -176,40 +176,99 @@ def _is_github(url: str | None) -> bool:
 # ParseBool's exact vocabulary, not a lowercase-and-compare: `T` and `t` are true
 # while `TrUe` is an ERROR to gh, so treating any case-fold of "true" as truthy
 # would be a different set than the one the tool implements.
-_PARSEBOOL_TRUE = {"1", "t", "T", "TRUE", "true", "True"}
-_PARSEBOOL_FALSE = {"0", "f", "F", "FALSE", "false", "False"}
+#
+# ROUND 3 CHANGED THE RULE, NOT THE PATTERN LIST. Two reviews found two evasions
+# of the denylist above, and the probe written to confirm the second found a third
+# that was never reported:
+#
+#   gh pr merge --admin                        DENY    round 1 shipped this
+#   gh pr merge --admin=true                   ALLOW   round 2, the = spelling
+#   gh -R owner/repo pr merge --admin          ALLOW   round 3, reported
+#   gh --repo owner/repo pr merge --admin      ALLOW   round 3, same class
+#   gh --hostname github.com pr merge --admin  ALLOW   found by the probe
+#
+# The last three are not more flags to add. ANY gh global flag taking a SEPARATE
+# value pushes that value into the positional stream and shifts the subcommand out
+# from under a positional check. That is gh's grammar: this repo neither owns it
+# nor can enumerate it. Three spellings in three rounds is the signal to stop
+# patching and invert the rule.
+#
+# A DENYLIST fails OPEN on the shape you did not think of. An ALLOWLIST fails
+# CLOSED. Anything that is not exactly the safe invocation is refused, so a
+# grammar feature nobody here has heard of is denied by construction rather than
+# by having been anticipated. Same principle as the capability token: authority
+# granted narrowly and explicitly, never inferred from the absence of a known-bad
+# marker.
+#
+# THE SAFE SHAPE:  gh pr merge --auto [method] [pr-ref]
+# No global flags, no env prefix. `--auto` is REQUIRED because it is the only
+# merge that defers to the required checks -- GitHub holds the PR until they pass.
+# It is also exactly what linear-worker.sh and converge.sh already run, so
+# requiring it breaks no measured caller.
+#
+# HONEST COST: a gh command carrying a bare `merge` token that is not this shape
+# is refused and must be rephrased. That is a real false positive. It is the right
+# direction for the most irreversible action in the fleet, and the deny message
+# names the shape to use.
+_GH_MERGE_ALLOWED_FLAGS = {
+    "--auto",                       # required: the deferral to required checks
+    "--squash", "-s", "--merge", "-m", "--rebase", "-r",
+    "--delete-branch", "-d",
+}
+# Used ONLY to keep non-merge pr commands out of the trigger. Listing one wrong or
+# missing one costs a false DENY, never a false ALLOW.
+_GH_PR_OTHER_SUBCOMMANDS = {
+    "create", "list", "view", "checkout", "close", "comment", "diff", "edit",
+    "ready", "reopen", "status", "lock", "unlock", "review", "update-branch",
+}
+_PR_REF = re.compile(r"^(?:\d+|https://github\.com/[^/]+/[^/]+/pull/\d+)$")
+
+_SAFE_SHAPE = ("the only merge this gate permits is:\n"
+               "    gh pr merge --auto [--squash] [<n>]\n"
+               "  no global flags (-R / --repo / --hostname), no env prefix, "
+               "no other flags.")
 
 
-def _admin_requested(args: list[str]) -> bool:
-    """True when these argv words ask gh to merge with admin privileges.
+def _merge_verdict(seg: list[str], had_env_prefix: bool = False) -> str | None:
+    """An unsafe `gh ... merge` invocation -> reason. Anything else -> None.
 
-    `--admin=false` is deliberately NOT a request: it explicitly declines admin,
-    and denying it would be a false positive on a correct command. A value outside
-    ParseBool IS refused -- gh would reject it anyway, so nothing legitimate is
-    lost, and "the command would have failed regardless" is not a reason for this
-    gate to hand it through.
+    The trigger is deliberately broad (a bare `merge` token anywhere in a gh
+    command) because over-triggering costs a rephrase while under-triggering costs
+    an unchecked merge into main.
     """
-    for tok in args:
-        if tok == "--admin":
-            return True
-        if tok.startswith("--admin="):
-            return tok.split("=", 1)[1] not in _PARSEBOOL_FALSE
-    return False
-
-
-def _merge_verdict(seg: list[str]) -> str | None:
-    """`gh pr merge ... --admin` -> reason. Anything else -> None."""
     if not seg or Path(seg[0]).name != "gh":
         return None
-    rest = [t for t in seg[1:] if not t.startswith("-")]
-    if rest[:2] != ["pr", "merge"]:
+    args = seg[1:]
+    if "merge" not in args:
         return None
-    if not _admin_requested(seg[1:]):
+    # `gh pr list --search merge` and friends: a different pr subcommand in the
+    # subcommand slot means this was never a merge. Recognised only in the
+    # no-global-flag form; with a global flag present it falls through to the
+    # shape check and is refused, which is the safe direction.
+    if len(args) >= 2 and args[0] == "pr" and args[1] in _GH_PR_OTHER_SUBCOMMANDS:
         return None
-    return ("`gh pr merge --admin` merges past the required checks on this repo. "
-            "Measured: branch protection requires ['validate', 'kipi/reviewer-approved'] "
-            "but enforce_admins is false and this credential is an admin, so --admin "
-            "defeats both.")
+
+    if had_env_prefix:
+        return ("an environment prefix on a gh merge can redirect it (GH_REPO, "
+                "GH_HOST) without changing a single argument.\n  " + _SAFE_SHAPE)
+    if args[:2] != ["pr", "merge"]:
+        return ("this is not the plain `gh pr merge` form. A global flag that "
+                "takes a value (-R, --repo, --hostname) shifts the subcommand, "
+                "which is how two earlier bypasses worked, so every form but the "
+                "plain one is refused.\n  " + _SAFE_SHAPE)
+
+    rest = args[2:]
+    unknown = [t for t in rest
+               if t not in _GH_MERGE_ALLOWED_FLAGS and not _PR_REF.match(t)]
+    if unknown:
+        return (f"unrecognised argument(s) on a merge: {unknown}. Refusing rather "
+                "than guessing what they do -- `--admin` in every spelling lands "
+                "here.\n  " + _SAFE_SHAPE)
+    if "--auto" not in rest:
+        return ("a merge without --auto does not defer to the required checks. "
+                "--auto lets GitHub hold the PR until 'validate' and "
+                "'kipi/reviewer-approved' pass.\n  " + _SAFE_SHAPE)
+    return None
 
 
 def _push_verdict(seg: list[str], cwd: str) -> str | None:
@@ -302,15 +361,19 @@ def classify(command: str, cwd: str) -> tuple[str, str]:
         parsed = False
 
     cur_dir = cwd
-    for seg in _split_segments(tokens):
-        seg = _strip_env_prefix(seg)
+    for raw_seg in _split_segments(tokens):
+        seg = _strip_env_prefix(raw_seg)
         if not seg:
             continue
+        # An env prefix is not cosmetic on a merge: GH_REPO / GH_HOST retarget gh
+        # without changing one argument, so the same argv can merge in a different
+        # repo. The prefix was previously stripped and forgotten.
+        had_env_prefix = len(seg) != len(raw_seg)
         if Path(seg[0]).name == "cd" and len(seg) > 1:
             resolved = _resolve_dir(seg[1], cur_dir)
             cur_dir = resolved if resolved else cur_dir
             continue
-        reason = _merge_verdict(seg)
+        reason = _merge_verdict(seg, had_env_prefix)
         if reason:
             return "deny", reason
         reason = _push_verdict(seg, cur_dir)

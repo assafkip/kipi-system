@@ -22,9 +22,13 @@ code and observed going red:
     MERGE_GATE_REF=9092c61e python3 test_merge_bypass_gate_admin_forms.py   # RED
     python3 test_merge_bypass_gate_admin_forms.py                          # GREEN
 
-`--admin=false` is asserted ALLOW on purpose. Denying it would be a false positive
-on a command that explicitly declines admin, and a gate that refuses correct
-commands is one somebody switches off.
+ROUND 3 FLIPPED THE FALSY CASES from ALLOW to DENY, and the flip is recorded here
+rather than quietly edited. Under the round-2 DENYLIST, `--admin=false` had to be
+allowed: it declines admin, so denying it would have been a false positive. Under
+the round-3 ALLOWLIST the question is different -- `--admin=false` is not in the
+permitted set and the command carries no `--auto`, so it is refused like any other
+shape that is not the safe one. That is not a regression; it is the inversion
+working. The safe shape is small on purpose.
 """
 
 from __future__ import annotations
@@ -78,15 +82,26 @@ CASES: list[tuple[str, str, str]] = [
 for v in TRUTHY:
     CASES.append((f"--admin={v} (truthy)", f"gh pr merge 999 --squash --admin={v}", "deny"))
 for v in FALSY:
-    CASES.append((f"--admin={v} (falsy, must NOT be a false positive)",
-                  f"gh pr merge 999 --squash --admin={v}", "allow"))
+    # Refused by the allowlist: not a permitted flag, and no --auto. See the
+    # docstring -- this expectation was ALLOW under the denylist and the change is
+    # deliberate.
+    CASES.append((f"--admin={v} (falsy, refused by the allowlist)",
+                  f"gh pr merge 999 --squash --admin={v}", "deny"))
 CASES += [
     ("--admin=garbage (gh would reject it; refuse anyway)",
      "gh pr merge 999 --admin=notabool", "deny"),
     ("--admin=true first, before the PR number",
      "gh pr merge --admin=true --squash 999", "deny"),
-    ("--admin=true quoted inside a body stays allowed",
-     "gh pr merge 9 --auto --body 'never --admin=true this'", "allow"),
+    # Same allowlist consequence as the falsy cases: --body is not permitted on a
+    # merge. What this case still pins is that the refusal comes from the ARGUMENT
+    # not matching the safe set, never from the string "--admin=true" appearing
+    # inside a quoted value -- the reason text names --body, not the quoted text.
+    ("--admin=true quoted in a body: refused for --body, not for the quoted text",
+     "gh pr merge 9 --auto --body 'never --admin=true this'", "deny"),
+    # The argv-not-raw-string property, kept alive on a command the allowlist
+    # never touches: a quoted --admin inside a pr CREATE must stay allowed.
+    ("--admin=true quoted in a pr create body stays allowed",
+     "gh pr create --title x --body 'never --admin=true this'", "allow"),
     ("--auto is still allowed", "gh pr merge --auto --squash 999", "allow"),
 ]
 
