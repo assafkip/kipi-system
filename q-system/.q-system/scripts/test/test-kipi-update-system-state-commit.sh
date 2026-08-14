@@ -369,8 +369,53 @@ assert_a_staged_founder_edit_is_never_overwritten() {
   echo "PASS: a staged founder edit survives a working tree overwritten with skeleton content"
 }
 
+# ------------------------------------------------------------------ property 7
+# A staged founder edit must survive even when the file is DELETED from both the
+# skeleton and the working tree.
+#
+# Codex review of #151 round 5, BLOCKER, and the hole was created by round 5's
+# own fix: putting the deletion test before the index check meant "absent from
+# both" never consulted the index at all, so a committed deletion landed straight
+# on top of a staged founder blob. Two fixes in a row each opened the other's
+# case, which is why the index is now asked once, up front.
+assert_a_staged_edit_survives_deletion_from_both_sides() {
+  local work sk inst staged carve; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"
+
+  printf 'def doomed():\n    return 1\n' > "$sk/plugins/demo/doomed.py"
+  printf 'def doomed():\n    return 1\n' > "$inst/plugins/demo/doomed.py"
+  ( cd "$sk" && G add -A -f && G commit -qm "skeleton ships it" )
+  ( cd "$inst" && G add -A -f && G commit -qm "instance has it" )
+
+  # Founder stages an edit.
+  printf 'def doomed():\n    return "founder staged this"\n' > "$inst/plugins/demo/doomed.py"
+  ( cd "$inst" && G add plugins/demo/doomed.py )
+  # The skeleton retires the file and the copy removes it from the working tree.
+  rm -f "$sk/plugins/demo/doomed.py"
+  ( cd "$sk" && G add -A && G commit -qm "skeleton retires it" )
+  rm -f "$inst/plugins/demo/doomed.py"
+
+  bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
+
+  staged="$(G -C "$inst" show ":plugins/demo/doomed.py" 2>/dev/null || true)"
+  case "$staged" in
+    *"founder staged this"*) : ;;
+    *) fail "the founder's STAGED blob was destroyed by the deletion path; index holds: '$staged'" ;;
+  esac
+
+  carve="$(G -C "$inst" log --format='%H %s' 2>/dev/null \
+             | grep -F 'commit system-written state' | head -1 | cut -d' ' -f1 || true)"
+  if [ -n "$carve" ] && G -C "$inst" show --name-only --format= "$carve" 2>/dev/null \
+       | grep -qx "plugins/demo/doomed.py"; then
+    fail "a deletion was committed over a staged founder edit"
+  fi
+
+  echo "PASS: a staged founder edit survives deletion from both the skeleton and the working tree"
+}
+
 assert_a_mixed_pathspec_commit_commits_nothing
 assert_a_staged_founder_edit_is_never_overwritten
+assert_a_staged_edit_survives_deletion_from_both_sides
 assert_deletions_split_by_authorship
 assert_the_carve_out_clears_tracked_system_dirt
 assert_founder_work_is_never_swept

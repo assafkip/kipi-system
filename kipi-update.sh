@@ -1659,17 +1659,34 @@ PY
             #   no staged change          -> index is just HEAD, nothing to lose
             #   staged change == skeleton -> the fleet staged its own write
             #   staged change != skeleton -> founder work in the index. Leave it.
-            # Deletion is tested FIRST, before the index. Gone from both sides is
-            # unambiguous, and the staged-blob test cannot express it: `git show
-            # :path` fails for a staged deletion, so the comparison below would
-            # read "differs from the skeleton" and refuse a deletion the fleet
-            # itself made -- re-blocking the instance for the case round 3 fixed.
-            if [ ! -e "$SCRIPT_DIR/$dirty_rel" ] && [ ! -e "$path/$dirty_rel" ]; then
-              sys_add_paths+=("$dirty_rel")
-            elif ! git diff --cached --quiet -- "$dirty_rel" 2>/dev/null &&
-                ! git show ":$dirty_rel" 2>/dev/null \
-                    | cmp -s - "$SCRIPT_DIR/$dirty_rel" 2>/dev/null; then
+            # ONE index question, asked BEFORE any content or deletion reasoning
+            # (Codex review of #151 round 5, blocker). Round 5 put the deletion
+            # test first so a staged deletion by the fleet would not be misread --
+            # and that ordering made deletion skip the index check entirely. A
+            # founder stages an edit, the skeleton drops the file, the copy
+            # removes it, and "absent from both" committed a deletion straight
+            # over the staged blob. I introduced that hole while fixing round 4's.
+            #
+            # Ordering cannot resolve this, because the two cases need different
+            # index facts. So the index is consulted once, up front, and the
+            # question is precise:
+            #
+            #   no staged change            -> index is HEAD, nothing to lose
+            #   staged change, NO index entry -> the fleet staged its own deletion
+            #   staged change, entry == skeleton -> the fleet staged its own write
+            #   staged change, entry != skeleton -> founder work. Stop here.
+            staged_is_founders=0
+            if ! git diff --cached --quiet -- "$dirty_rel" 2>/dev/null; then
+              if git show ":$dirty_rel" >/dev/null 2>&1 &&
+                  ! git show ":$dirty_rel" 2>/dev/null \
+                      | cmp -s - "$SCRIPT_DIR/$dirty_rel" 2>/dev/null; then
+                staged_is_founders=1
+              fi
+            fi
+            if [ "$staged_is_founders" = "1" ]; then
               say "  keeping STAGED local edit, not the fleet's to commit: $dirty_rel"
+            elif [ ! -e "$SCRIPT_DIR/$dirty_rel" ] && [ ! -e "$path/$dirty_rel" ]; then
+              sys_add_paths+=("$dirty_rel")
             elif [ -f "$SCRIPT_DIR/$dirty_rel" ] && [ -f "$path/$dirty_rel" ] &&
                 cmp -s "$SCRIPT_DIR/$dirty_rel" "$path/$dirty_rel"; then
               sys_add_paths+=("$dirty_rel")
