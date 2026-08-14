@@ -263,12 +263,18 @@ import os
 # none of which ship to any instance, so the first hit routinely resolved to a
 # path no instance could ever have.
 #
-# Measured 2026-08-14 against ktlyst and interview-coach by replicating this block
-# verbatim: 36 guards reported absent, 35 of them PHANTOM -- present in the
-# instance at a different skeleton path, e.g. audhd-lint.py resolved to
-# .pr31rev/r2/tree/q-system/.q-system/scripts/audhd-lint.py. Exactly ONE was real
-# (merge-bypass-gate.py). os.walk order is not stable across machines either, so
-# the same repo could pass or fail depending on directory iteration.
+# Measured 2026-08-14 against both dispatch-enabled repos by replicating this block
+# verbatim: each reported 36 guards absent, 35 of them PHANTOM -- present in the
+# instance at a different skeleton path, e.g. a lint script resolving to its copy
+# inside a PR review worktree instead of its shipped location. Exactly ONE was
+# real. os.walk order is not stable across machines either, so the same repo could
+# pass or fail depending on directory iteration.
+#
+# NO INSTANCE NAMES ABOVE, DELIBERATELY. This file ships to every instance, so
+# validate-separation Gate 1.2 sweeps it for live instance names and the first cut
+# of this comment named the two repos and turned CI red. The measurement is the
+# durable part; the names belong in the PR body. A text check cannot tell a rule
+# from a mention of one, which is why this warning names no repo either.
 #
 # This is NOT a loosening. The check still demands the guard file exist in the
 # target; it stops demanding it exist at a path that only ever existed inside a
