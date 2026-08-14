@@ -43,7 +43,18 @@ REPO="${KIPI_REPO:-/Users/assafkipnis/projects/kipi-system}"
 # prepending to PATH instead, which adds no knob to the shipped code.
 PREFLIGHT="$REPO/q-system/.q-system/scripts/repo-preflight.sh"
 LOG="$HOME/.config/kipi/dispatch.log"
-MAX_CONCURRENT="${KIPI_DISPATCH_MAX:-2}"
+# THE GLOBAL CAP IS NOW A SPEND CEILING, NOT THE CONFLICT GUARD (ASK-804).
+# One-run-per-repo is enforced structurally in the selection loop below, so this
+# number no longer decides whether two agents can collide on a file -- it decides
+# how many `claude -p` pairs may be in flight at once.
+#
+# 3 IS DERIVED, NOT PICKED. Measured from instance-registry.json 2026-08-14:
+# exactly two instances carry dispatch.enabled true, plus the home repo this
+# script runs out of, which the selection loop treats as its own dispatchable
+# target. Three repos, one run each, so a fourth slot could never be filled by a
+# conflict-free pick anyway. Raising it past the number of dispatchable repos
+# buys nothing and only loosens the spend bound.
+MAX_CONCURRENT="${KIPI_DISPATCH_MAX:-3}"
 MAX_ROUNDS="${KIPI_DISPATCH_ROUNDS:-3}"
 NOTIFY="${KIPI_NOTIFY:-$REPO/q-system/.q-system/scripts/slack-notify.sh}"
 # Founder decision 2026-08-01: the converge/worker claude -p calls inherit this;
