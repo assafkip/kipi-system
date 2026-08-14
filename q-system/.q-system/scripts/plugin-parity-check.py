@@ -41,10 +41,21 @@ USAGE
     python3 q-system/.q-system/scripts/plugin-parity-check.py
     python3 q-system/.q-system/scripts/plugin-parity-check.py --json
 
-    --skeleton DIR     repo holding plugins/ (default: this repo)
-    --marketplace DIR  the clone the runtime loads
-                       (default: $KIPI_MARKETPLACE_ROOT, else
-                        ~/.claude/plugins/marketplaces/kipi)
+    --skeleton DIR          repo holding plugins/ (default: this repo)
+    --installed FILE        installed_plugins.json, the record the LOADER reads
+                            (default: $KIPI_INSTALLED_PLUGINS, else
+                             ~/.claude/plugins/installed_plugins.json)
+    --project DIR           resolve project-scoped installs for this project.
+                            Omit to check the user-scoped install.
+    --marketplace-name NAME marketplace key in the record (default: kipi)
+
+There is deliberately no --marketplace option. It was removed when this check
+stopped reading the clone, and argparse's prefix matching then silently folded a
+leftover `--marketplace DIR` into `--marketplace-name=DIR` -- which made every
+lookup key `<plugin>@DIR`, so the run reported EVERY plugin NOT_INSTALLED and
+exited 1. A confident false alarm from a documented flag (Codex review of #152
+round 3, major). The parser now runs with allow_abbrev=False so that spelling is
+a hard error instead of a wrong answer.
 
 Exit: 0 every plugin in parity, 1 any mismatch/missing, 2 the check itself could
 not run (no plugins dir, unreadable manifest).
@@ -282,14 +293,33 @@ def compare(skeleton_root, installed, marketplace_name="kipi", project=None):
 
         # A record that names a directory which is not there is NOT parity, even
         # when the version string matches. The loader would have nothing to load.
+        runtime_version = None
         if not install_path or not os.path.isdir(install_path):
             status = "PATH_MISSING"
-        elif live_version is None:
-            status = "UNREADABLE"
-        elif live_version == skel_version:
-            status = "MATCH"
         else:
-            status = "MISMATCH"
+            # THE DIRECTORY IS THE TRUTH; THE RECORD IS A CLAIM ABOUT IT (Codex
+            # review of #152 round 3, minor). Trusting entry["version"] and never
+            # opening the manifest it points at repeats, one level in, the exact
+            # mistake that produced this whole branch: believing a claim instead
+            # of reading the artifact. A record saying 0.27.2 over a directory
+            # whose manifest says 0.16.5 reported MATCH.
+            try:
+                runtime_version = read_version(install_path)
+            except ManifestUnreadable:
+                runtime_version = None
+
+            if runtime_version is None:
+                status = "UNREADABLE"
+            elif live_version is not None and runtime_version != live_version:
+                # Report this as its own state rather than folding it into
+                # MISMATCH: the two mean different repairs. MISMATCH is "update
+                # the plugin", RECORD_DRIFT is "the bookkeeping disagrees with
+                # the disk", and calling both by one name loses that.
+                status = "RECORD_DRIFT"
+            elif runtime_version == skel_version:
+                status = "MATCH"
+            else:
+                status = "MISMATCH"
 
         drift = {"differing": 0, "missing": 0, "clone_only": 0}
         if install_path and os.path.isdir(install_path):
@@ -300,6 +330,7 @@ def compare(skeleton_root, installed, marketplace_name="kipi", project=None):
                 "plugin": name,
                 "skeleton_version": skel_version,
                 "installed_version": live_version,
+                "runtime_manifest_version": runtime_version,
                 "install_path": install_path,
                 "scope": entry.get("scope"),
                 "status": status,
@@ -363,7 +394,13 @@ def render(rows, skeleton_root, record_path, project=None):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    # allow_abbrev=False: argparse otherwise accepts any unambiguous PREFIX, so
+    # the removed `--marketplace DIR` was silently absorbed by
+    # `--marketplace-name` and produced a confident all-NOT_INSTALLED run. An
+    # unknown flag must fail loudly, never be guessed into a neighbour.
+    parser = argparse.ArgumentParser(
+        description=__doc__.split("\n")[0], allow_abbrev=False
+    )
     here = os.path.dirname(os.path.abspath(__file__))
     repo_default = os.path.abspath(os.path.join(here, "..", "..", ".."))
     parser.add_argument("--skeleton", default=repo_default)

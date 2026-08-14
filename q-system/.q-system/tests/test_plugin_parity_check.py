@@ -263,6 +263,60 @@ def test_in_use_bookkeeping_is_not_counted_as_drift(tmp_path):
     }
 
 
+def test_record_version_is_not_trusted_over_the_directory(tmp_path):
+    """Codex review of #152 round 3, minor.
+
+    The record is a CLAIM about the directory; the directory is what loads. This
+    trusted entry["version"] and never opened the manifest it pointed at, so a
+    record saying 0.27.2 over a tree whose manifest says 0.16.5 reported MATCH --
+    repeating one level in the exact mistake that produced this branch: believing
+    a claim instead of reading the artifact.
+    """
+    skeleton = tmp_path / "skeleton"
+    cache = tmp_path / "cache"
+    write_plugin(str(skeleton), "prd-os", "0.27.2")
+    stale = make_cache_dir(str(cache), "kipi", "prd-os", "0.16.5")
+    record = write_record(
+        str(tmp_path / "rec.json"),
+        {"prd-os@kipi": [entry(stale, "0.27.2")]},  # record LIES about the tree
+    )
+    code, payload, _ = run_check(str(skeleton), record)
+    assert code == 1
+    row = payload["plugins"][0]
+    assert row["status"] == "RECORD_DRIFT"
+    assert row["installed_version"] == "0.27.2"
+    assert row["runtime_manifest_version"] == "0.16.5"
+
+
+def test_removed_marketplace_flag_is_an_error_not_a_prefix_match(tmp_path):
+    """Codex review of #152 round 3, major.
+
+    argparse accepts any unambiguous PREFIX, so the removed `--marketplace DIR`
+    was silently folded into `--marketplace-name=DIR`. Every lookup key became
+    `<plugin>@DIR`, so the run reported EVERY plugin NOT_INSTALLED and exited 1 --
+    a confident false alarm from a spelling the docs still carried. An unknown
+    flag must fail loudly rather than be guessed into a neighbour.
+    """
+    skeleton = tmp_path / "skeleton"
+    cache = tmp_path / "cache"
+    write_plugin(str(skeleton), "prd-os", "0.27.0")
+    live = make_cache_dir(str(cache), "kipi", "prd-os", "0.27.0")
+    record = write_record(
+        str(tmp_path / "rec.json"), {"prd-os@kipi": [entry(live, "0.27.0")]}
+    )
+    proc = subprocess.run(
+        [
+            sys.executable, CHECK, "--skeleton", str(skeleton),
+            "--installed", record, "--marketplace", "/some/clone",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 2
+    assert "NOT_INSTALLED" not in proc.stdout
+    assert "unrecognized arguments" in proc.stderr
+
+
 def test_non_plugin_directory_is_skipped(tmp_path):
     """A directory under plugins/ with no manifest is not a plugin."""
     skeleton = tmp_path / "skeleton"
