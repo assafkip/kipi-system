@@ -232,6 +232,61 @@ PLUGIN_COPY_EXCLUDES=(
   ".env.*::(^|/)\.env\."
 )
 
+# Was this exact content EVER shipped by the skeleton for this path? (Codex
+# review of #151 round 6, major.)
+#
+# Comparing only against the CURRENT skeleton attributes nothing on the real
+# fleet. Instances hold what an earlier fanout wrote -- ASK-728 pushed prd-os
+# 0.27.1 -- while the skeleton has since moved to 0.27.3. Measured on a live
+# blocked instance 2026-08-14: both plugins/prd-os/.claude-plugin/plugin.json and
+# plugins/prd-os/tests/test_judgment_compiler.py DIFFER from the current
+# skeleton, so a current-only test calls both founder work and the instance stays
+# blocked on every unattended update. The fix would have unblocked zero
+# instances, which is the same trap that killed ASK-775's first theory.
+#
+# The honest question is not "is this the newest skeleton content" but "did this
+# content come from the fleet at all". A blob the skeleton ever committed at this
+# path did. A founder edit essentially never collides with a historical skeleton
+# blob, because it would have to reproduce a shipped revision byte for byte.
+#
+# Bounded on purpose: only paths already known dirty reach here (a handful per
+# instance), and the walk is limited to commits touching that one path.
+# "SHIPPED" IS THE FAN-OUT BRANCH, NOT EVERY REF IN THE CLONE (Codex review of
+# #151 round 7, major). The first version walked `rev-list --all`, which includes
+# unmerged feature branches, other people's work, and anything else this clone
+# happens to hold. A blob that only ever existed on a branch was never shipped to
+# any instance, so accepting it lets an unattended update commit over founder
+# work that merely resembles someone's WIP. The fleet fans out from
+# $SKELETON_BRANCH and only from there, so that is the boundary.
+#
+# origin/<branch> is preferred over the local branch deliberately: the ASK-762
+# preflight already refuses to run unless HEAD equals origin/$SKELETON_BRANCH, so
+# the remote ref is the one with a proven meaning. The local fallbacks exist for
+# fixtures and clones with no origin, where there is no remote to disagree with.
+fleet_ship_ref() {
+  local ref
+  for ref in "refs/remotes/origin/$SKELETON_BRANCH" "refs/heads/$SKELETON_BRANCH" HEAD; do
+    if git -C "$SCRIPT_DIR" rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
+      printf '%s\n' "$ref"
+      return 0
+    fi
+  done
+  return 1
+}
+
+fleet_authored_blob() {
+  local rel="$1" file="$2" blob candidate commit ship_ref
+  ship_ref="$(fleet_ship_ref)" || return 1
+  blob="$(git -C "$SCRIPT_DIR" hash-object -- "$file" 2>/dev/null || true)"
+  [ -n "$blob" ] || return 1
+  while IFS= read -r commit; do
+    [ -n "$commit" ] || continue
+    candidate="$(git -C "$SCRIPT_DIR" rev-parse "$commit:$rel" 2>/dev/null || true)"
+    [ "$candidate" = "$blob" ] && return 0
+  done < <(git -C "$SCRIPT_DIR" rev-list "$ship_ref" -- "$rel" 2>/dev/null || true)
+  return 1
+}
+
 plugin_copy_rsync_flags() {
   local entry
   for entry in "${PLUGIN_COPY_EXCLUDES[@]}"; do
@@ -1556,23 +1611,211 @@ PY
         { [ "$DRY_RUN" != "--dry-run" ] || [ "$MODEL_RUN" = "1" ]; }; then
       say "  Committing ${#sys_owned_dirty[@]} system-written file(s) so they do not block the sync:"
       printf '    %s\n' "${sys_owned_dirty[@]}"
-      # PATHSPEC-limited commit, and NO `git add`. Both matter: `git commit`
-      # with no pathspec commits everything ALREADY STAGED, so a founder with
-      # staged work would have had it swept into this infra commit -- the exact
-      # thing the guard below exists to prevent, reintroduced by the fix for it
-      # (Codex review, PR #98). With a pathspec, only these paths are committed
-      # no matter what else sits in the index.
+      # PATHSPEC-limited commit. `git commit` with no pathspec commits everything
+      # ALREADY STAGED, so a founder with staged work would have had it swept into
+      # this infra commit -- the exact thing the guard below exists to prevent,
+      # reintroduced by the fix for it (Codex review, PR #98). With a pathspec,
+      # only these paths are committed no matter what else sits in the index.
       #
+      # THE ADD IS REQUIRED, AND IT IS SAFE (ASK-775). This block used to carry
+      # "NO `git add`" as a rule, which quietly broke the whole carve-out: the
+      # list MIXES tracked and untracked paths -- the classifier above pulls in
+      # untracked machine exhaust on purpose -- and
+      #
+      #     git commit -- <tracked> <untracked>
+      #     error: pathspec '<untracked>' did not match any file(s) known to git
+      #
+      # commits NOTHING. One untracked artifact therefore left the TRACKED
+      # skeleton-owned dirt uncommitted too, and the guard below then refused the
+      # instance over the very files this block had just announced it handled.
+      # With `2>/dev/null || true` the failure was invisible while the
+      # "Committing N system-written file(s)" line printed either way.
+      #
+      # Measured 2026-08-14, full dry sweep of 23 instances: 11 refusals, 10 of
+      # them preceded by that announcement. One instance named 3 files, 2 of
+      # them untracked, and refused with all 3 still dirty. (Instance NAMED in
+      # the sweep log, not here: the skeleton ships to every instance, so an
+      # instance name in a skeleton script is a propagation leak, which Gate 1
+      # refuses. Learned the hard way on this very commit.)
+      #
+      # FILES, NEVER DIRECTORIES (Codex review of #151, major). "Pathspec-limited"
+      # was not the safety I claimed it was: sys_owned_dirty carries DIRECTORY
+      # entries -- `plugins/<name>` for every managed plugin, from
+      # system_owned_paths_for_run -- and `git add <dir>` recursively stages every
+      # untracked file beneath it. That includes untracked SOURCE a founder is
+      # mid-edit on inside a managed plugin. Measured on this repo: 91 such paths
+      # under plugins/kipi-core, 47 under plugins/prd-os.
+      #
+      # auto-commit.py:170 refuses source by extension precisely so the fleet
+      # never commits founder code (ASK-712). Handing `git add` a directory walks
+      # straight past that file-level decision. The fix for a silent commit
+      # failure must not become a silent commit of the wrong thing.
+      #
+      # So each entry is expanded to the paths that are ACTUALLY dirty under it,
+      # and every one of those is re-classified by the same auto-commit.py the
+      # untracked loop above uses. A path the classifier will not call system
+      # state is dropped here even though its parent directory is system-owned.
+      # Without the classifier present we add nothing new -- the tracked entries
+      # still stage, which is what unblocks the sync, and unclassifiable
+      # untracked content is left for the guard below to refuse honestly.
+      # TRACKED EDITS NEED A DIFFERENT TEST THAN UNTRACKED ONES (Codex review of
+      # #151 round 2, major). `git add -u -- plugins/<name>` stages every tracked
+      # modification under the directory, so a founder editing a .py inside a
+      # managed plugin had it committed under a chore message.
+      #
+      # But the obvious fix -- run tracked files through auto-commit.py too --
+      # breaks the thing this PR exists to fix. That classifier refuses source by
+      # extension, and the file blocking 7 of the 11 instances is
+      # plugins/prd-os/tests/test_judgment_compiler.py. Classify it and it is
+      # refused, never committed, and the instance stays blocked forever.
+      #
+      # The distinguisher is not the extension, it is AUTHORSHIP, and the skeleton
+      # can answer that directly: if the instance's working-tree content for a
+      # managed-plugin file is byte-identical to the SKELETON's current content,
+      # that content came from the fleet -- an earlier fanout wrote it and failed
+      # to commit (ASK-728 did exactly this). Committing it records what is
+      # already there. If it differs from the skeleton, someone local wrote it,
+      # and it is not ours to take at any extension; it is left dirty so the guard
+      # below refuses this instance and protects it.
+      #
+      # Fail-closed both ways: a file we cannot read on either side is treated as
+      # founder work and left alone.
+      sys_add_paths=()
+      for sys_path in "${sys_owned_dirty[@]}"; do
+        if [ -d "$path/$sys_path" ]; then
+          # Tracked modifications: skeleton-content equality decides.
+          while IFS= read -r dirty_rel; do
+            [ -n "$dirty_rel" ] || continue
+            # DELETIONS ARE AUTHORED TOO (Codex review of #151 round 3, major).
+            # `cmp` needs both sides to exist, so a file the fleet DELETED read as
+            # a local edit and blocked the instance permanently -- the very
+            # deadlock this PR exists to break, reintroduced for the one case the
+            # equality test could not express. The skeleton answers deletion the
+            # same way it answers content: if the skeleton no longer ships the
+            # file AND the instance no longer has it, the copy removed it and the
+            # deletion is the fleet's to record. A file the skeleton still ships
+            # is NOT this case -- someone local deleted it, and the sync will put
+            # it back, so it stays a local edit.
+            # THE INDEX IS A THIRD VERSION, AND `git add` DESTROYS IT (Codex
+            # review of #151 round 4, major). Comparing only worktree-to-skeleton
+            # misses this sequence: a founder STAGES an edit, a later fanout
+            # overwrites the working tree with the skeleton's copy, the equality
+            # test then says "fleet-written", and `git add` replaces the staged
+            # blob with the skeleton content. The founder's staged work is gone,
+            # with no diff left to show it ever existed.
+            #
+            # Every path here therefore has to clear the index before content is
+            # even considered. NOT "index == skeleton", which would break the
+            # whole fix: in the ordinary fanout case the index equals HEAD, the
+            # instance is behind, so index != skeleton and every legitimate path
+            # would be refused. The question is narrower -- is there a staged
+            # CHANGE, and if so is that staged content itself the skeleton's?
+            #
+            #   no staged change          -> index is just HEAD, nothing to lose
+            #   staged change == skeleton -> the fleet staged its own write
+            #   staged change != skeleton -> founder work in the index. Leave it.
+            # ONE index question, asked BEFORE any content or deletion reasoning
+            # (Codex review of #151 round 5, blocker). Round 5 put the deletion
+            # test first so a staged deletion by the fleet would not be misread --
+            # and that ordering made deletion skip the index check entirely. A
+            # founder stages an edit, the skeleton drops the file, the copy
+            # removes it, and "absent from both" committed a deletion straight
+            # over the staged blob. I introduced that hole while fixing round 4's.
+            #
+            # Ordering cannot resolve this, because the two cases need different
+            # index facts. So the index is consulted once, up front, and the
+            # question is precise:
+            #
+            #   no staged change            -> index is HEAD, nothing to lose
+            #   staged change, NO index entry -> the fleet staged its own deletion
+            #   staged change, entry == skeleton -> the fleet staged its own write
+            #   staged change, entry != skeleton -> founder work. Stop here.
+            staged_is_founders=0
+            if ! git diff --cached --quiet -- "$dirty_rel" 2>/dev/null; then
+              if git show ":$dirty_rel" >/dev/null 2>&1 &&
+                  ! git show ":$dirty_rel" 2>/dev/null \
+                      | cmp -s - "$SCRIPT_DIR/$dirty_rel" 2>/dev/null; then
+                staged_is_founders=1
+              fi
+            fi
+            if [ "$staged_is_founders" = "1" ]; then
+              say "  keeping STAGED local edit, not the fleet's to commit: $dirty_rel"
+            elif [ ! -e "$SCRIPT_DIR/$dirty_rel" ] && [ ! -e "$path/$dirty_rel" ]; then
+              sys_add_paths+=("$dirty_rel")
+            elif [ -f "$path/$dirty_rel" ] &&
+                { { [ -f "$SCRIPT_DIR/$dirty_rel" ] &&
+                    cmp -s "$SCRIPT_DIR/$dirty_rel" "$path/$dirty_rel"; } ||
+                  fleet_authored_blob "$dirty_rel" "$path/$dirty_rel"; }; then
+              # Current-skeleton equality first as the cheap path; the history
+              # walk only runs when that fails, which on the real fleet is the
+              # common case (instances hold an older fanout's bytes).
+              sys_add_paths+=("$dirty_rel")
+            else
+              say "  keeping local edit, not the fleet's to commit: $dirty_rel"
+            fi
+          done < <(git diff --name-only -- "$sys_path" 2>/dev/null
+                   git diff --cached --name-only -- "$sys_path" 2>/dev/null)
+          # Untracked content: the classifier decides, as before.
+          while IFS= read -r dirty_rel; do
+            [ -n "$dirty_rel" ] || continue
+            sys_add_paths+=("$dirty_rel")
+          done < <(
+            git status --porcelain -uall -- "$sys_path" 2>/dev/null \
+              | grep '^??' | cut -c4- \
+              | { if [ -f "$sys_classifier" ]; then
+                    python3 "$sys_classifier" --system-state 2>/dev/null
+                  else
+                    # No classifier, no new untracked staging. `true` consumes
+                    # stdin and emits nothing, which is the fail-closed answer.
+                    true
+                  fi; }
+          )
+          # The directory is deliberately NOT added to sys_add_paths. It was, in
+          # round 2, "so tracked modifications are not dropped" -- and that single
+          # line put the directory back into the commit pathspec, which is how the
+          # founder-edit path survived the first fix. The expansion above is now
+          # the ONLY way a path under a managed plugin reaches the commit.
+          :
+        else
+          sys_add_paths+=("$sys_path")
+        fi
+      done
+      if [ "${#sys_add_paths[@]}" -gt 0 ]; then
+        git add -- "${sys_add_paths[@]}" 2>/dev/null || true
+      fi
+      # NO `git add -u -- "${sys_owned_dirty[@]}"` here. Round 2 had one, to catch
+      # tracked-but-unstaged content, and `-u` scoped to a DIRECTORY stages every
+      # tracked modification under it -- founder edits to a managed plugin
+      # included. sys_add_paths already carries the tracked files that passed the
+      # skeleton-equality test, and `git add` stages them whether or not they were
+      # staged before, so nothing is lost by dropping this line.
       # `[no-issue: ...]` rather than --no-verify: the instance's commit-msg
       # gate wants a Linear id, and this is the sanctioned hatch that gets
       # LOGGED to linear-bypass.jsonl. Bypassing an instance's hooks wholesale
       # to land a commit in their repo is not ours to do.
-      git commit -q -m "chore: commit system-written state before skeleton sync [no-issue: fleet updater system-state commit]
+      #
+      # NOT SILENT ANY MORE. The old `2>/dev/null || true` is what let this run
+      # for months: a carve-out that cannot fail loudly cannot be noticed when it
+      # does. The run still continues on failure -- the guard below is the real
+      # decision and it fails closed -- but it says what happened first.
+      #
+      # GUARDED ON NON-EMPTY, and this is not defensive padding. `git commit --`
+      # with an EMPTY pathspec is not a no-op: it commits everything already
+      # staged, which is precisely the founder-sweeping behaviour the PR #98 rule
+      # exists to stop. sys_add_paths is empty exactly when every dirty path was
+      # judged a local edit, i.e. the case where sweeping would be worst.
+      if [ "${#sys_add_paths[@]}" -eq 0 ]; then
+        say "  nothing to commit: every dirty system-owned path is a local edit"
+      elif ! sys_commit_err="$(git commit -q -m "chore: commit system-written state before skeleton sync [no-issue: fleet updater system-state commit]
 
 These files are written by the fleet itself (sycophancy stamp, integrity
 baseline, hook state, skeleton-shipped plugins). Committing them here keeps the
 updater from being blocked by its own exhaust; founder work is never included
-because this commit is pathspec-limited." -- "${sys_owned_dirty[@]}" 2>/dev/null || true
+because this commit is pathspec-limited." -- "${sys_add_paths[@]}" 2>&1)"; then
+        echo "  WARNING: the system-state commit FAILED; this instance will very"
+        echo "  likely be refused below over dirt that is not founder work:"
+        printf '%s\n' "$sys_commit_err" | sed 's/^/    /'
+      fi
     fi
 
     # Refuse tracked work in progress. The updater owns only its scoped sync
