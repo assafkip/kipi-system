@@ -485,37 +485,6 @@ MODULE_REF_RE = re.compile(
 DATED_SNAPSHOT_RE = re.compile(r"\.\d{4}-\d{2}-\d{2}$")
 
 
-def _normalize_engine_name(s: str) -> str:
-    """`-` and `_` are used interchangeably across this fleet; leading underscores
-    are a private-name convention, not part of the identity."""
-    return s.strip("_").replace("_", "-").lower()
-
-
-def _names_this_engine(stem: str, test_name: str) -> bool:
-    """True when test_name is the test FOR stem, not merely a name containing it.
-
-    EXACT, NOT A BOUNDARY MATCH. A word-boundary rule cannot separate
-    `test_sync_all.py` from `test_sync_all_helpers.py` -- `sync_all` is a
-    complete token in both -- so it would still hand `_sync_all` a test that
-    belongs to a different engine. Strip the `test` prefix and the extension,
-    and require what is left to EQUAL the engine name.
-
-    (A boundary regex was tried first and was worse than wrong: `_` is a word
-    character, so `(?:^|[^\\w])sync_all` did not even match `test_sync_all`,
-    and every engine would have read UNWIRED.)
-    """
-    name = test_name
-    for suffix in (".py", ".sh"):
-        if name.endswith(suffix):
-            name = name[: -len(suffix)]
-            break
-    for prefix in ("test_", "test-", "test"):
-        if name.startswith(prefix):
-            name = name[len(prefix):]
-            break
-    return bool(name) and _normalize_engine_name(name) == _normalize_engine_name(stem)
-
-
 def _is_test_file(p: Path) -> bool:
     return p.name.startswith(("test_", "test-")) or "test" in p.parts or "tests" in p.parts
 
@@ -620,9 +589,20 @@ def collect_engines(root: Path) -> list:
     #   2. The substring made `_sync_all` match `test_sync_all_helpers.md`, so
     #      unwired copies of _sync_all.py reported LIVE.
     #
-    # So: only executable test files count, and the engine's stem must appear as
-    # a whole token rather than as a substring of a longer word. Same principle
-    # the skill-hook-pairing rule states as "a name is not an executable".
+    # So only EXECUTABLE test files count. The substring match itself is kept
+    # deliberately -- see the scar below.
+    #
+    # TIGHTENING THE MATCH TO EXACT WAS TRIED AND REVERTED (codex, PR #164 r2).
+    # Requiring the test filename to equal the engine stem looks obviously right
+    # and is wrong: plugins/kipi-core/voicekit/echo.py is genuinely tested by
+    # voicekit/tests/test_voicekit.py, which imports echo and exercises
+    # echo.prompt_echo and echo.opener_echo across ~20 lines. Its stem is
+    # "voicekit", not "echo", so exact matching flipped a real, covered engine to
+    # UNWIRED -- a false alarm eligible for a permanent Linear issue, which is
+    # worse than the false LIVE it was meant to fix. One test file legitimately
+    # covers several engines, so filename equality cannot be the rule. The real
+    # signal is the CONTENT reference (test_sources); making that reliable is
+    # ASK-810, not a filename heuristic.
     TEST_SUFFIXES = {".py", ".sh"}
     tests = {p.name for p in root.rglob("test*")
              if p.is_file() and p.suffix in TEST_SUFFIXES
@@ -663,9 +643,7 @@ def collect_engines(root: Path) -> list:
         # sounds: the citation is the only part a human re-checks.
         test_sources = sorted((s for s in sources if _is_test_file(s)), key=_witness_rank)
         wiring_sources = sorted((s for s in sources if not _is_test_file(s)), key=_witness_rank)
-        # Token match, not substring. `p.stem in t` made every engine whose name
-        # is a prefix of another engine's inherit its neighbour's test file.
-        has_test = any(_names_this_engine(p.stem, t) for t in tests) or bool(test_sources)
+        has_test = any(p.stem in t for t in tests) or bool(test_sources)
         referenced = bool(wiring_sources)
         status = "LIVE" if (has_test or referenced) else "UNWIRED"
         bits = []

@@ -61,29 +61,46 @@ class ScratchTreesAreNotCapabilities(unittest.TestCase):
                              f"{part} is a real wiring surface and must not be excluded")
 
 
-class AMentionIsNotAPairing(unittest.TestCase):
+class OneTestFileMayCoverManyEngines(unittest.TestCase):
+    """The scar from PR #164 round 2, kept as an executable guard.
+
+    Tightening has_test from a substring to an EXACT stem match looks obviously
+    right and is wrong. plugins/kipi-core/voicekit/echo.py is genuinely tested by
+    voicekit/tests/test_voicekit.py, which imports echo and exercises
+    echo.prompt_echo and echo.opener_echo. That file's stem is "voicekit", not
+    "echo", so exact matching flipped a real, covered engine to UNWIRED -- a
+    false alarm eligible for a permanent Linear issue, which is worse than the
+    false LIVE it replaced.
+
+    One test file legitimately covers several engines. Filename equality can
+    never be the rule; the content reference is the real signal (ASK-810).
+    """
+
     def setUp(self):
         if not SCRIPT.exists():
             self.skipTest(f"no capability-map-gen.py at {SCRIPT}")
-        self.m = load()
 
-    def test_a_real_paired_test_still_counts(self):
-        # Guarding the fix against being its own bug: tighten too far and every
-        # engine reads UNWIRED.
-        self.assertTrue(self.m._names_this_engine("_sync_all", "test_sync_all.py"))
-        self.assertTrue(self.m._names_this_engine("linear-worker", "test-linear-worker.sh"))
+    def test_the_substring_match_is_still_in_place(self):
+        src = SCRIPT.read_text()
+        self.assertIn("has_test = any(p.stem in t for t in tests)", src,
+                      "the exact-stem match was reintroduced; it flips voicekit/echo.py to UNWIRED")
 
-    def test_a_longer_name_does_not_adopt_a_shorter_engines_test(self):
-        self.assertFalse(
-            self.m._names_this_engine("_sync_all", "test_sync_all_helpers.py"),
-            "an engine inherited a neighbour's test by substring match")
-
-    def test_markdown_fixtures_are_not_collected_as_tests(self):
-        # The suffix filter is what stops a document from certifying a script.
+    def test_markdown_fixtures_are_still_excluded(self):
+        # The half of the fix that WAS correct: a document is not a test.
         src = SCRIPT.read_text()
         self.assertIn("TEST_SUFFIXES", src)
-        self.assertIn('p.suffix in TEST_SUFFIXES', src,
-                      "the tests set no longer filters by executable extension")
+        self.assertIn("p.suffix in TEST_SUFFIXES", src)
+
+    def test_the_real_world_case_this_protects_still_exists(self):
+        # If voicekit's test stops importing echo, this guard is stale and should
+        # be re-derived rather than trusted.
+        root = SCRIPT.parents[3]
+        t = root / "plugins" / "kipi-core" / "voicekit" / "tests" / "test_voicekit.py"
+        if not t.exists():
+            self.skipTest("voicekit tests not present in this checkout")
+        body = t.read_text()
+        self.assertIn("echo", body,
+                      "the engine this scar is about is no longer covered there")
 
 
 if __name__ == "__main__":
