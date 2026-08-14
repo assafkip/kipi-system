@@ -43,7 +43,18 @@ REPO="${KIPI_REPO:-/Users/assafkipnis/projects/kipi-system}"
 # prepending to PATH instead, which adds no knob to the shipped code.
 PREFLIGHT="$REPO/q-system/.q-system/scripts/repo-preflight.sh"
 LOG="$HOME/.config/kipi/dispatch.log"
-MAX_CONCURRENT="${KIPI_DISPATCH_MAX:-2}"
+# THE GLOBAL CAP IS NOW A SPEND CEILING, NOT THE CONFLICT GUARD (ASK-804).
+# One-run-per-repo is enforced structurally in the selection loop below, so this
+# number no longer decides whether two agents can collide on a file -- it decides
+# how many `claude -p` pairs may be in flight at once.
+#
+# 3 IS DERIVED, NOT PICKED. Measured from instance-registry.json 2026-08-14:
+# exactly two instances carry dispatch.enabled true, plus the home repo this
+# script runs out of, which the selection loop treats as its own dispatchable
+# target. Three repos, one run each, so a fourth slot could never be filled by a
+# conflict-free pick anyway. Raising it past the number of dispatchable repos
+# buys nothing and only loosens the spend bound.
+MAX_CONCURRENT="${KIPI_DISPATCH_MAX:-3}"
 MAX_ROUNDS="${KIPI_DISPATCH_ROUNDS:-3}"
 NOTIFY="${KIPI_NOTIFY:-$REPO/q-system/.q-system/scripts/slack-notify.sh}"
 # Founder decision 2026-08-01: the converge/worker claude -p calls inherit this;
@@ -305,7 +316,141 @@ stale_check || exit 0
 
 # `pgrep -c` exits 1 with no match, which under `set -e` would look like failure
 # and under a bare assignment yields an empty string. Force a number.
-live_converges() { pgrep -f "converge.sh --issue" 2>/dev/null | grep -c . || true; }
+# COUNTS RE-REVIEW CHILDREN TOO (codex major, PR #163 r1).
+#
+# A dispatch does not always launch a converge. On a reviewer redrive it launches
+#   bash .../pr-review-agent.sh <PR> --issue ASK-nnn --post
+# which the old `converge.sh --issue` pattern never matched. So a re-review child
+# was invisible to the concurrency cap: at cap 3, three converges plus any number
+# of live re-reviews could run at once, each spending a `claude -p` pair. The cap
+# is the spend bound, and it was bounding only half of what it launches.
+#
+# It also made the two counters speak about DIFFERENT POPULATIONS. live_repos()
+# matches on `--issue <id>`, which a re-review child DOES carry, so the ledger
+# counted it while pgrep did not -- and the attributed-vs-total comparison below
+# was comparing apples to oranges. One population, both counters.
+# The pattern is overridable ONLY so the test suite can be hermetic. This counts
+# by scanning the machine-wide process table, so a real review running in another
+# terminal is indistinguishable from a fixture -- which made the counting cases
+# fail against a correct implementation (observed: three live pr-review-agent
+# processes from an interactive session). Production never sets this.
+LIVE_PATTERN="${KIPI_DISPATCH_LIVE_PATTERN:-converge\.sh --issue|pr-review-agent\.sh .*--issue}"
+live_converges() {
+  pgrep -f "$LIVE_PATTERN" 2>/dev/null | grep -c . || true
+}
+
+# --- PER-REPO CONCURRENCY (sp-e45251f7) --------------------------------------
+# WHY THE GLOBAL CAP WAS 1, AND WHY THIS IS THE HONEST WAY TO RAISE IT.
+#
+# com.kipi.dispatch pinned KIPI_DISPATCH_MAX=1 with a written precondition:
+# "Raise this only once dispatch is file-disjointness aware." That was correct.
+# The dispatcher picks by READINESS and has no idea which files an issue touches,
+# so two concurrent runs IN ONE REPO can land on the same file -- observed
+# 2026-07-28, ASK-223 editing the same linear-worker.sh region as the live
+# ASK-222. Unattended, that yields conflicted PRs, which is worse than half the
+# throughput.
+#
+# TWO RUNS IN DIFFERENT REPOS CANNOT CONFLICT. They share no working tree, no
+# branch namespace and no file. So the conflict argument -- the whole reason the
+# cap was 1 -- says nothing about cross-repo concurrency. This makes the rule
+# structural instead of numeric: the GLOBAL cap becomes a spend ceiling, and
+# a BUSY-REPO PREFERENCE is applied where a repo is chosen: a repo with a live
+# run is deprioritised, and taken only when it is the only candidate.
+#
+# NOT A GUARANTEE, AND THE WORDING MATTERS (codex major, PR #163 r2). An earlier
+# version of this comment said "at most ONE live run per repo is enforced", which
+# the fallback below plainly does not do. A safety claim in a comment that the
+# code does not keep is how the next person reasons themselves into raising the
+# cap. What is enforced is the preference plus the GLOBAL cap; same-repo overlap
+# is possible when only one repo is dispatchable, and that is ASK-811.
+#
+# This deliberately does NOT unlock same-repo concurrency. File-disjointness is
+# still unbuilt, and sp-f3a2ad81 shows why the obvious version is not enough:
+# capability-manifest.json is a magnet file every test-adding issue appends to,
+# so a naive disjointness rule would serialize the whole board on it anyway
+# (sp-4caf5d7b measured 19 of 22 conflicting PRs conflicting on that one file).
+# Cross-repo is the slice that is safe TODAY, on the conflict argument's own terms.
+#
+# WHY A LEDGER AND NOT pgrep. The converge argv is `./kipi converge --issue N`;
+# the target repo crosses as the KIPI_TARGET_REPO env var, which converge.sh
+# inherits. Environment is not in the process command line, so pgrep can count
+# live runs but CANNOT attribute one to a repo. Recording the pair at launch is
+# what makes the question answerable at all.
+LIVE_LEDGER="${KIPI_DISPATCH_LIVE_LEDGER:-$HOME/.config/kipi/dispatch-live.tsv}"
+
+# A pid alone is not proof: pids are reused, and a recycled pid pointing at some
+# unrelated process would hold a repo hostage forever. Both halves must agree --
+# the pid is alive AND that pid is still the converge for that issue.
+live_repos() {
+  [ -f "$LIVE_LEDGER" ] || return 0
+  local pid issue repo
+  while IFS=$'\t' read -r pid issue repo; do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    [ -n "$repo" ] || continue
+    kill -0 "$pid" 2>/dev/null || continue
+    # BOUNDED, because ASK-10 is a prefix of ASK-100 (codex minor, PR #163).
+    # A plain substring match let a live ASK-100 converge satisfy the identity
+    # check for a dead ASK-10 row, marking the wrong repo busy until the real
+    # process exited. The id must be followed by whitespace or end-of-line.
+    ps -p "$pid" -o args= 2>/dev/null | grep -qE -- "--issue $issue([[:space:]]|\$)" || continue
+    printf '%s\n' "$repo"
+  done < "$LIVE_LEDGER"
+}
+
+# Append-only at launch; compacted here so a long-lived box does not grow the
+# file without bound. Compaction rewrites via temp+rename so a reader never sees
+# a torn file.
+# A FAILED LEDGER WRITE IS NOT A SUCCESSFUL ONE (codex major, PR #163 r1).
+#
+# This ended in `|| true`, which is the right instinct for a notifier and the
+# wrong one here. An unwritten row means the run is invisible to live_repos(),
+# which silently DISABLES the per-repo exclusion for that repo -- the guard is
+# off and nothing says so. Read-only .config, a full disk, or a bad permission
+# all produce exactly that, quietly.
+#
+# It still must not take dispatch down: the run has already been launched and
+# killing the script here would strand it. So the write is checked, and a failure
+# is made LOUD instead of fatal.
+#
+# AND THE PAGE SAYS WHAT IS ACTUALLY TRUE (codex major, PR #163 r2). An earlier
+# version of this text promised "dispatch will refuse to enter any repo until it
+# finishes", which was true of the unattributed-run HALT that used to sit in the
+# selection loop. That halt was removed -- it broke test-dispatch-liveness 6a and
+# turned one hand-run converge into a fleet-wide stall -- and the promise was left
+# behind. A page that describes a guard which no longer exists is worse than no
+# page: it is read at the exact moment someone is deciding whether to act. The
+# honest consequence is that the repo may be picked again.
+record_live_run() {
+  local pid="$1" issue="$2" repo="$3"
+  mkdir -p "$(dirname "$LIVE_LEDGER")" 2>/dev/null || true
+  if ! printf '%s\t%s\t%s\n' "$pid" "$issue" "$repo" >> "$LIVE_LEDGER" 2>/dev/null; then
+    say "LEDGER WRITE FAILED for $issue in $repo ($LIVE_LEDGER): this run is unattributed, so the busy-repo preference cannot see it and that repo may be picked again"
+    page "kipi dispatch: could not record a live run to $LIVE_LEDGER. The busy-repo preference is blind to $issue, so its repo can be picked again and two agents may land on the same files. Do: check permissions and free space on that path."
+    return 1
+  fi
+}
+
+compact_live_ledger() {
+  [ -f "$LIVE_LEDGER" ] || return 0
+  local tmp pid issue repo
+  tmp="$(mktemp "${LIVE_LEDGER}.XXXXXX")" || return 0
+  while IFS=$'\t' read -r pid issue repo; do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    kill -0 "$pid" 2>/dev/null || continue
+    # BOUNDED, because ASK-10 is a prefix of ASK-100 (codex minor, PR #163).
+    # A plain substring match let a live ASK-100 converge satisfy the identity
+    # check for a dead ASK-10 row, marking the wrong repo busy until the real
+    # process exited. The id must be followed by whitespace or end-of-line.
+    ps -p "$pid" -o args= 2>/dev/null | grep -qE -- "--issue $issue([[:space:]]|\$)" || continue
+    printf '%s\t%s\t%s\n' "$pid" "$issue" "$repo" >> "$tmp"
+  done < "$LIVE_LEDGER"
+  mv -f "$tmp" "$LIVE_LEDGER" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+}
+# --- END PER-REPO CONCURRENCY ---
+# The marker is load-bearing, not decoration. test-dispatch-per-repo-concurrency.sh
+# cuts this block out of THIS file and sources it, so the test exercises shipped
+# code instead of a copy that can drift green. Delimiting on `^}$` would have
+# ended the cut at the first function; it silently captured one of three.
 
 # --- FLEET SELECTION (finding-8 and finding-9) ----------------------------
 # 18 ready owner:sana issues sit across 14 projects and no worker can pick them up,
@@ -733,14 +878,99 @@ say "dispatch: ${FLEET_OPTED:-0} of ${FLEET_TOTAL:-0} registered repo(s) opted i
 
 TARGET_NAME=""
 TARGET_PATH=""
+# THE PER-REPO RULE IS ENFORCED HERE, WHERE A REPO IS CHOSEN (sp-e45251f7).
+# A repo that already has a live converge is SKIPPED rather than aborting the
+# cycle, so the rotation continues to the next repo instead of the whole fleet
+# stalling behind one busy one -- skipping is the entire throughput win, and an
+# early `exit 0` here would leave the cap at 1 by another name.
+LIVE_REPOS="$(live_repos)"
+
+# A PREFERENCE, NOT AN EXCLUSION -- AND THE DIFFERENCE IS A TESTED CONTRACT.
+#
+# The first cut of this made "one live run per repo" absolute: a repo with a live
+# converge was skipped, full stop. CI caught two tests that say otherwise, and
+# both are right:
+#
+#   test-ci-redrive 14g "a live converge does not cost the fresh pick its slot"
+#     exists BECAUSE a live converge used to starve the ready queue: a redrive
+#     offered the already-live issue, NEXT was overwritten with it, and the issue
+#     that WAS dispatchable was thrown away every heartbeat for the whole run.
+#   test-dispatch-liveness 6a requires the per-ISSUE duplicate guard to fire on
+#     every attempt -- it cannot fire if selection exits before reaching it.
+#
+# Both scenarios are one repo with one live run, which an absolute rule refuses,
+# so it re-created the exact starvation 14g was written to prevent. Same-issue
+# collision is already handled downstream by the duplicate guard; what this rule
+# adds is SPREAD.
+#
+# So: prefer a repo with nothing live, and fall back to a busy one only when it
+# is the only candidate. With several dispatchable repos the work spreads one per
+# repo, which is the whole throughput win. With exactly one, behaviour is
+# unchanged from before this change.
+#
+# THIS IS DELIBERATELY WEAKER THAN "never two runs in one repo". A single-repo
+# fleet at cap 3 can still put two agents on one repo, which is the file-conflict
+# risk the plist documents. That is why KIPI_DISPATCH_MAX is sized to the number
+# of dispatchable repos rather than to appetite: the cap, not this loop, is what
+# bounds same-repo overlap. Making it absolute needs the starvation answered
+# first, and that is ASK-811.
+#
+# Unattributed runs (a hand-run `kipi converge`, anything this script did not
+# launch) are simply not known-busy. An earlier version halted the cycle on them;
+# that also broke 6a by exiting before the duplicate guard, and it turned a
+# hand-run converge into a fleet-wide stall.
+FALLBACK_NAME=""; FALLBACK_PATH=""
 while IFS=$'\t' read -r PNAME PPATH; do
   [ -n "$PNAME" ] || continue
+  # Exact line match. A substring test would let ~/projects/foo suppress
+  # ~/projects/foo-bar, silently starving a repo nothing is running in.
+  if [ -n "$LIVE_REPOS" ] && printf '%s\n' "$LIVE_REPOS" | grep -qxF -- "$PPATH"; then
+    say "deprioritising $PNAME: a converge run is already live in $PPATH"
+    [ -n "$FALLBACK_NAME" ] || { FALLBACK_NAME="$PNAME"; FALLBACK_PATH="$PPATH"; }
+    continue
+  fi
   TARGET_NAME="$PNAME"
   TARGET_PATH="$PPATH"
   break
 done <<PICKEOF
 $PICKS
 PICKEOF
+
+# Every candidate was busy. Take the first rather than idling -- an idle cycle
+# here is the starvation 14g forbids -- but the fallback is BOUNDED.
+#
+# THE UNBOUNDED VERSION WAS A REAL EXPOSURE (codex major, PR #163 r3), and it
+# described tonight's actual configuration rather than a hypothetical: preflight
+# REFUSES interview-coach on a dirty tree, so only two repos are available, and if
+# ktlyst has nothing ready the sole candidate is the home repo. At cap 3 an
+# unbounded fallback would put THREE unattended agents in one repo and hand back a
+# pile of conflicting PRs for a human to untangle. My earlier "the cap is sized to
+# the number of dispatchable repos" reasoning assumed all of them are AVAILABLE;
+# preflight collapses that at runtime and the cap does not adapt.
+#
+# 2 IS DERIVED FROM THE TESTS, NOT CHOSEN. test-ci-redrive 14g requires that a
+# repo with ONE live run still yield its fresh pick, so a per-repo ceiling of 1
+# would break the suite. 2 is therefore the tightest bound the existing contract
+# allows, and every run past the second buys nothing 14g asked for while adding
+# exactly the collision risk the plist documents.
+FALLBACK_LIVE=0
+if [ -n "$FALLBACK_PATH" ] && [ -n "$LIVE_REPOS" ]; then
+  FALLBACK_LIVE="$(printf '%s\n' "$LIVE_REPOS" | grep -cxF -- "$FALLBACK_PATH" || true)"
+  FALLBACK_LIVE="${FALLBACK_LIVE:-0}"
+fi
+if [ -z "$TARGET_NAME" ] && [ -n "$FALLBACK_NAME" ] && [ "$FALLBACK_LIVE" -lt 2 ]; then
+  say "every dispatchable repo has a live run; proceeding in $FALLBACK_NAME (${FALLBACK_LIVE} live there, ceiling 2; the per-issue duplicate guard still applies)"
+  TARGET_NAME="$FALLBACK_NAME"
+  TARGET_PATH="$FALLBACK_PATH"
+elif [ -z "$TARGET_NAME" ] && [ -n "$FALLBACK_NAME" ]; then
+  say "skip: $FALLBACK_NAME already has $FALLBACK_LIVE live run(s), the per-repo ceiling; not stacking a third unattended agent on one repo"
+fi
+# --- END REPO SELECTION ---
+# The marker is load-bearing. The test cuts this whole block out and sources it,
+# and a cut that ended at PICKEOF stopped one line before the fallback -- so the
+# suite tested a selection loop that could never fall back and reported the
+# missing behaviour as a failure of the code rather than of the cut. That is the
+# fourth incomplete-extract in this file's history; delimit explicitly.
 
 if [ -z "$TARGET_NAME" ]; then
   say "no dispatchable repo this cycle"
@@ -1095,6 +1325,18 @@ print(p.pid)
 PY
 )"
 RC=$?
+# RECORD BEFORE THE LIVENESS WAIT, NOT AFTER (sp-e45251f7). The assert below
+# watches the child for 10 seconds. Recording after it would leave a window in
+# which this repo has a live run that live_repos() cannot see, and a concurrent
+# tick landing in that window would pick the same repo -- rebuilding the very
+# same-file collision the per-repo rule exists to prevent. A row for a child that
+# dies immediately costs nothing: live_repos() drops it on the next read, because
+# the pid is gone.
+case "$CHILD_PID" in
+  ''|*[!0-9]*) : ;;
+  *) record_live_run "$CHILD_PID" "$NEXT" "${TARGET_PATH:-$REPO}" ;;
+esac
+compact_live_ledger
 if [ "$RC" -ne 0 ]; then
   # A launch that failed must NOT report success -- that is the same shape as
   # the bug above. The budget slot is already spent, so say so plainly.

@@ -628,6 +628,11 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-per-repo-concurrency.sh",
+      "runner": "bash",
+      "timeout_s": 180
+    },
+    {
       "path": "q-system/.q-system/tests/test_capmap_scratch_and_mention.py",
       "runner": "python3",
       "timeout_s": 60
