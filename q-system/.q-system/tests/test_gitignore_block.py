@@ -238,6 +238,26 @@ class TestTheWiringIntoTheUpdater:
             "the .gitignore block is written AFTER the untrack migration, so "
             "every untracked marker is visible to auto-commit until the next run")
 
+    def test_it_also_runs_before_the_updater_scans_for_system_state(self):
+        """Belt and braces, and worth pinning.
+
+        SYSTEM_NEVER_COMMIT already stops the updater committing the three
+        integrity paths, so this ordering is not what protects them today. It is
+        what protects the NEXT path added to the stanza: a path that is ignored
+        before `git status` runs is never offered to the classifier at all, so it
+        needs no second entry in a hand-kept array to be safe. Ignoring is the
+        layer every writer reads; the array is one writer's opt-out list."""
+        text = self.text()
+        block_at = text.index("kipi-update-gitignore-block.py")
+        # The INVOCATION, not the first mention. `--system-state` appears in a
+        # comment ~1300 lines above the call site, and anchoring on that made
+        # this test pass for the wrong reason on its first run.
+        scan_at = text.index('"$sys_classifier" --system-state')
+        assert block_at < scan_at, (
+            "the .gitignore block is written after the updater scans for "
+            "system state, so a newly-stanza'd path is still offered to the "
+            "classifier on the run that introduces it")
+
     def test_the_updater_still_parses(self):
         r = subprocess.run(["bash", "-n", self.UPDATER],
                            capture_output=True, text=True)
