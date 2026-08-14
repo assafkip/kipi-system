@@ -1557,7 +1557,19 @@ PY
           # Tracked modifications: skeleton-content equality decides.
           while IFS= read -r dirty_rel; do
             [ -n "$dirty_rel" ] || continue
-            if [ -f "$SCRIPT_DIR/$dirty_rel" ] && [ -f "$path/$dirty_rel" ] &&
+            # DELETIONS ARE AUTHORED TOO (Codex review of #151 round 3, major).
+            # `cmp` needs both sides to exist, so a file the fleet DELETED read as
+            # a local edit and blocked the instance permanently -- the very
+            # deadlock this PR exists to break, reintroduced for the one case the
+            # equality test could not express. The skeleton answers deletion the
+            # same way it answers content: if the skeleton no longer ships the
+            # file AND the instance no longer has it, the copy removed it and the
+            # deletion is the fleet's to record. A file the skeleton still ships
+            # is NOT this case -- someone local deleted it, and the sync will put
+            # it back, so it stays a local edit.
+            if [ ! -e "$SCRIPT_DIR/$dirty_rel" ] && [ ! -e "$path/$dirty_rel" ]; then
+              sys_add_paths+=("$dirty_rel")
+            elif [ -f "$SCRIPT_DIR/$dirty_rel" ] && [ -f "$path/$dirty_rel" ] &&
                 cmp -s "$SCRIPT_DIR/$dirty_rel" "$path/$dirty_rel"; then
               sys_add_paths+=("$dirty_rel")
             else

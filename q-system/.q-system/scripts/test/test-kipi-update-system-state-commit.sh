@@ -162,8 +162,15 @@ assert_founder_work_is_never_swept() {
   # over a flat log guesses at which commit a filename belongs to and was
   # reporting a false positive on the sync commit two entries away.
   local carve
+  # `|| true` inside the substitution is load-bearing. Under `set -e` a FAILING
+  # command substitution kills the script AT the assignment, printing nothing --
+  # so when no carve-out commit exists (exactly the case an assertion below wants
+  # to report) this file exited silently mid-run and looked like a pass with
+  # fewer lines. Caught 2026-08-14 while running this very test against a
+  # deliberately broken updater. Same silent-failure class the code under test
+  # has; a test that dies quietly cannot police one.
   carve="$(G -C "$inst" log --format='%H %s' 2>/dev/null \
-             | grep -F 'commit system-written state' | head -1 | cut -d' ' -f1)"
+             | grep -F 'commit system-written state' | head -1 | cut -d' ' -f1 || true)"
   if [ -n "$carve" ]; then
     if G -C "$inst" show --name-only --format= "$carve" 2>/dev/null \
          | grep -qx "q-system/tracked.md"; then
@@ -196,7 +203,7 @@ assert_untracked_source_in_a_managed_plugin_is_never_staged() {
   bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
 
   carve="$(G -C "$inst" log --format='%H %s' 2>/dev/null \
-             | grep -F 'commit system-written state' | head -1 | cut -d' ' -f1)"
+             | grep -F 'commit system-written state' | head -1 | cut -d' ' -f1 || true)"
   if [ -n "$carve" ]; then
     if G -C "$inst" show --name-only --format= "$carve" 2>/dev/null \
          | grep -qx "plugins/demo/scratch_wip.py"; then
@@ -256,7 +263,7 @@ assert_tracked_plugin_edits_split_by_authorship() {
   bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
 
   carve="$(G -C "$inst" log --format='%H %s' 2>/dev/null \
-             | grep -F 'commit system-written state' | head -1 | cut -d' ' -f1)"
+             | grep -F 'commit system-written state' | head -1 | cut -d' ' -f1 || true)"
   [ -n "$carve" ] || fail "no system-state commit was made at all: $(cat "$work/out")"
 
   G -C "$inst" show --name-only --format= "$carve" 2>/dev/null \
@@ -277,7 +284,55 @@ assert_tracked_plugin_edits_split_by_authorship() {
   echo "PASS: fleet-written plugin files commit; tracked founder edits in the same dir do not"
 }
 
+# ------------------------------------------------------------------ property 5
+# Deletions are authored too. Codex review of #151 round 3: the equality test
+# needs both sides to exist, so a file the FLEET deleted read as a local edit and
+# blocked the instance permanently -- the same deadlock this file exists to
+# break, reintroduced for the one case `cmp` could not express.
+#
+# Both halves again, because "commit every deletion" is as wrong as "commit none":
+#   FLEET DELETION  skeleton no longer ships it, instance no longer has it.
+#                   Record it.
+#   LOCAL DELETION  skeleton still ships it. Someone local removed it and the sync
+#                   will put it back. Not ours to record.
+assert_deletions_split_by_authorship() {
+  local work sk inst carve; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"
+
+  # Two files tracked in BOTH, so each can be deleted independently.
+  printf 'dropped by a later skeleton\n' > "$sk/plugins/demo/retired.txt"
+  printf 'dropped by a later skeleton\n' > "$inst/plugins/demo/retired.txt"
+  printf 'still shipped\n' > "$sk/plugins/demo/kept.txt"
+  printf 'still shipped\n' > "$inst/plugins/demo/kept.txt"
+  ( cd "$sk" && G add -A -f && G commit -qm "skeleton ships both" )
+  ( cd "$inst" && G add -A -f && G commit -qm "instance has both" )
+
+  # FLEET DELETION: the skeleton dropped it and the copy removed it.
+  rm -f "$sk/plugins/demo/retired.txt" "$inst/plugins/demo/retired.txt"
+  ( cd "$sk" && G add -A && G commit -qm "skeleton retires the file" )
+  # LOCAL DELETION: the skeleton still ships kept.txt; someone local removed it.
+  rm -f "$inst/plugins/demo/kept.txt"
+
+  bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
+
+  carve="$(G -C "$inst" log --format='%H %s' 2>/dev/null \
+             | grep -F 'commit system-written state' | head -1 | cut -d' ' -f1 || true)"
+  [ -n "$carve" ] || fail "no system-state commit was made: $(cat "$work/out")"
+
+  G -C "$inst" show --name-only --format= "$carve" 2>/dev/null \
+    | grep -qx "plugins/demo/retired.txt" || \
+    fail "the FLEET's deletion was not recorded, so the instance stays blocked"
+
+  if G -C "$inst" show --name-only --format= "$carve" 2>/dev/null \
+       | grep -qx "plugins/demo/kept.txt"; then
+    fail "a local deletion of a still-shipped file was recorded as the fleet's"
+  fi
+
+  echo "PASS: a fleet deletion is recorded; a local deletion of a shipped file is not"
+}
+
 assert_a_mixed_pathspec_commit_commits_nothing
+assert_deletions_split_by_authorship
 assert_the_carve_out_clears_tracked_system_dirt
 assert_founder_work_is_never_swept
 assert_untracked_source_in_a_managed_plugin_is_never_staged
