@@ -127,11 +127,19 @@ for _root in $ENGAGEMENT_ROOTS; do
       # CI red; the second spelled them out again while explaining not to, because a
       # text check cannot tell a rule from a mention of the rule. Describe, do not
       # quote.
-      */"$_root"|*/"$_root"/projects/*)
-        # The reason is stated in full, because this line is what the founder reads
-        # in the run log and in the daily digest's "tried, could not be worked"
-        # section. A refusal he cannot tell apart from an empty queue is the defect
-        # this whole change is about.
+      # TWO SHAPES, TWO REASONS, BECAUSE THE REASON IS READ BY A HUMAN. The root and
+      # the repos nested under it are both refused, but they are refused for
+      # different facts, and one message cannot state both without lying about one
+      # of them. Codex round 2 caught the first cut telling the founder that
+      # <root> is "under <root>/projects/", which is false and unfalsifiable-looking
+      # in a log. This line is what he reads in the daily digest's "tried, could not
+      # be worked" section, so a refusal he cannot tell from an empty queue -- or one
+      # that misdescribes itself -- is the defect this whole change is about.
+      */"$_root")
+        printf 'FAIL client-repo: %s IS the %s engagement root; it holds the client engagement repos plus client material of its own, so unattended dispatch is not allowed there, even when dispatch.enabled is true -- a supervised founder-initiated run is the way in\n' "$REPO_PATH" "$_root"
+        printf 'REFUSED %s\n' "$REPO_PATH"
+        exit 1 ;;
+      */"$_root"/projects/*)
         printf 'FAIL client-repo: %s is a client engagement repo (under %s/projects/); unattended dispatch is not allowed there, even when dispatch.enabled is true -- a supervised founder-initiated run is the way in\n' "$REPO_PATH" "$_root"
         printf 'REFUSED %s\n' "$REPO_PATH"
         exit 1 ;;

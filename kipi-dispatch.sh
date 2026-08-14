@@ -404,9 +404,15 @@ cursor_get() {
 #
 # OPT-IN IS DEFAULT OFF, AND STRICTLY SO: a row joins the fleet only when it
 # carries dispatch.enabled === true (JSON boolean). A missing dispatch key, false,
-# the string "true", or 1 all mean NO. Every one of the 23 rows in the shipped
-# registry is therefore off, which is the correct state to ship the dangerous piece
-# in -- the fleet stays exactly as it is today until a human opts a repo in by hand.
+# the string "true", or 1 all mean NO.
+#
+# The registry shipped with all 23 rows off, which was the correct state to ship the
+# dangerous piece in. Two are now on: ktlyst and interview-coach (ASK-754). Stating
+# the count here was a comment that had to be edited the first time anyone used the
+# feature it describes, so it names the opted-in rows instead -- and the authority is
+# the registry, not this line. Opt-in is still consent and never safety:
+# repo-preflight.sh is what decides whether entering one is safe NOW, and it refuses
+# a client engagement repo and the engagement root even when the row says true.
 fleet_candidates() {
   local registry="${KIPI_DISPATCH_REGISTRY:-$REPO/instance-registry.json}"
   printf '%s\t%s\t%s\n' "$(basename "$REPO")" "$REPO" ""
