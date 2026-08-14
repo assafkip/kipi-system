@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 """Block a client name from reaching a PUBLIC repo, in staged content or the message.
 
-Scar (2026-08-13): a pre-push scan of 15 commits found "[4_points_consulting]
-huntkit sync BLOCKED: /Users/assafkipnis/projects/huntkit" sitting in an alert
-test fixture, plus two commit subjects naming clients. This repo is public with
-102 stars and 23 forks. gitleaks passed all of it, because a client name is not
-a secret in the credential sense. Nothing else looked.
+Scar (2026-08-13): a pre-push scan of 15 commits found a captured production
+alert sitting in a test fixture that carried a CLIENT NAME and the founder's
+absolute home path, plus two commit subjects naming clients. This repo is public
+with 102 stars and 23 forks. gitleaks passed all of it, because a client name is
+not a secret in the credential sense. Nothing else looked.
+
+The offending strings are described by CLASS above and deliberately NOT quoted
+here. Quoting them would republish the exact data this file exists to keep out
+of a public repo -- and this file is on the guard's own exclusion list, so
+nothing would have stopped it. That is not hypothetical: for one commit this
+docstring did quote them verbatim, which put a client name and a real home path
+back into the public tree and tripped validate-separation.py's skeleton sweep
+(caught 2026-08-14, ASK-746). A privacy exclusion names the data class, never
+the data.
 
 Two of those were already public and could not be recalled: rewriting history
 does not remove objects that 23 forks already hold, and GitHub keeps dangling

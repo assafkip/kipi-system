@@ -423,11 +423,16 @@ def notify_channel_configured():
     """True when a page could actually leave this machine.
 
     Borrowed, not re-derived: `fable-escalate.py` already owns the Python read of
-    slack-notify.sh's webhook resolution order ($KIPI_SLACK_WEBHOOK, then
-    ~/.config/kipi/slack-webhook), and a second copy here is the drift
-    `fleet-homogeneity` exists to stop. Loaded through the same lazy-importlib
-    shape as `_fleet_health` / `_intent_module`, so its absence cannot stop the
-    watchdog.
+    whether slack-notify.sh has a destination to write to, and a second copy here
+    is the drift `fleet-homogeneity` exists to stop. Loaded through the same
+    lazy-importlib shape as `_fleet_health` / `_intent_module`, so its absence
+    cannot stop the watchdog.
+
+    That destination is LINEAR, not Slack, since 2026-08-10. This paragraph used
+    to name the webhook resolution order ($KIPI_SLACK_WEBHOOK, then
+    ~/.config/kipi/slack-webhook) and it outlived the channel by four days --
+    which is the same way sp-7773af84 stayed invisible. The resolution order is
+    deliberately NOT restated here; it belongs to the function being borrowed.
 
     A load failure answers False -- "delivery unknown". The caller reads that as
     NOT delivered, which costs a repeated ping and never costs a missed one. That

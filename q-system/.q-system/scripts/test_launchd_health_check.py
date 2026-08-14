@@ -8,13 +8,12 @@ verified manually on wiring; these tests guard the logic that a refactor could b
 Run: python3 test_launchd_health_check.py   (exit 0 = pass, 1 = fail)
 """
 import contextlib
-import http.server
 import importlib.util
 import io
 import os
 import subprocess
 import sys
-import threading
+import tempfile
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location(
@@ -890,56 +889,65 @@ try:
 finally:
     wd.notify_channel_configured = _saved_channel
 
-# --- a CONFIGURED webhook is not a delivered one (PR #134 review round 5) -----
-# The check above only covers the case where no channel exists at all. The scar
-# is the other one: a webhook IS configured, curl cannot reach it, slack-notify.sh
-# exits 0 anyway, and send_ping used to return `proc.returncode == 0` -> True.
-# Measured before the fix with the webhook on a refused port: send_ping True,
-# nothing sent, the run committed, 13 scheduled runs silent.
+# --- a CONFIGURED channel is not a delivered one (PR #134 r5; sp-7773af84) ----
+# The check above only covers the case where no channel exists at all. This is
+# the other one: a channel IS configured, the send does not land, and send_ping
+# must still answer False. Both directions are asserted on purpose -- without the
+# delivered case a send_ping hardcoded to False would pass and page nobody, ever.
 #
-# Both directions are asserted here on purpose. Without the delivered case, a
-# send_ping hardcoded to False would pass this section and page nobody, ever.
-# Endpoints are on 127.0.0.1 only; the suite never contacts Slack.
-def _send_ping_verdict(webhook):
-    """send_ping's answer for one webhook, with the environment restored after."""
-    saved_hook = os.environ.get("KIPI_SLACK_WEBHOOK")
-    saved_api = os.environ.get("KIPI_LINEAR_API_URL")
-    os.environ["KIPI_SLACK_WEBHOOK"] = webhook
-    # The loopback fixture guard would refuse before curl ever runs, which is a
-    # different verdict than the one under test here.
+# SCAR, sp-7773af84, measured 2026-08-14. This block used to drive a
+# $KIPI_SLACK_WEBHOOK on a refused port. On 2026-08-10 slack-notify.sh's
+# destination changed from Slack to Linear and it stopped reading a webhook at
+# all, so the knob these assertions turned was inert and they were really
+# measuring whether the RUNNER HAD A LINEAR KEY. That cannot be green anywhere:
+# CI (no key) failed `accepts -> delivered`, a keyed machine failed
+# `refuses -> NOT delivered`, and on a keyed machine the "assertion" filed REAL
+# tickets -- ASK-736 repeats, plus ASK-744/ASK-745, all canceled. Main's Skeleton
+# Validation had been red on it since 2026-08-10.
+#
+# The lesson is the one already written into alert-to-linear.py's capture hatch:
+# switching a chokepoint's destination silently invalidates every stub aimed at
+# the old one, and those stubs keep passing their own assertions right up until
+# they write to production. So delivery is now driven through the seam that
+# BELONGS to the current destination -- KIPI_ALERT_CAPTURE, which alert-to-linear
+# built for exactly this -- and never through a webhook. Measured directly before
+# these were written: a writable capture path exits 0 (verdict `delivered`), an
+# unopenable one exits 1 (verdict `send-failed`). Neither touches Linear.
+def _send_ping_verdict(capture_path):
+    """send_ping's answer for one capture destination, environment restored after.
+
+    KIPI_LINEAR_API_URL is popped because the loopback fixture guard in
+    slack-notify.sh would exit 4 before the writer ever runs, which is a
+    different verdict than the one under test here.
+    """
+    saved = {k: os.environ.get(k)
+             for k in ("KIPI_ALERT_CAPTURE", "KIPI_LINEAR_API_URL")}
+    os.environ["KIPI_ALERT_CAPTURE"] = capture_path
     os.environ.pop("KIPI_LINEAR_API_URL", None)
     try:
-        return wd.send_ping("probe: local endpoints only, ASK-447")
+        return wd.send_ping(_PROBE_MESSAGE)
     finally:
-        os.environ.pop("KIPI_SLACK_WEBHOOK", None)
-        if saved_hook is not None:
-            os.environ["KIPI_SLACK_WEBHOOK"] = saved_hook
-        if saved_api is not None:
-            os.environ["KIPI_LINEAR_API_URL"] = saved_api
+        for key, value in saved.items():
+            os.environ.pop(key, None)
+            if value is not None:
+                os.environ[key] = value
 
 
-class _PostSink(http.server.BaseHTTPRequestHandler):
-    def do_POST(self):  # noqa: N802
-        self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"ok")
+_PROBE_MESSAGE = "probe: captured locally, never filed (sp-7773af84)"
 
-    def log_message(self, *args):  # keep the suite output readable
-        pass
+with tempfile.TemporaryDirectory() as _capdir:
+    # NOT delivered: the writer cannot open its destination, so nothing was
+    # recorded anywhere. The parent directory does not exist and is not created.
+    check("configured channel the alert cannot be written to -> NOT delivered",
+          _send_ping_verdict(os.path.join(_capdir, "absent", "cap.txt")), False)
 
-
-check("configured webhook that refuses the connection -> NOT delivered",
-      _send_ping_verdict("http://127.0.0.1:9/services/dead"), False)
-
-_sink = http.server.HTTPServer(("127.0.0.1", 0), _PostSink)
-threading.Thread(target=_sink.serve_forever, daemon=True).start()
-try:
-    check("webhook that accepts the POST -> delivered",
-          _send_ping_verdict("http://127.0.0.1:%d/hook" % _sink.server_address[1]),
-          True)
-finally:
-    _sink.shutdown()
+    # delivered: the write lands. Asserting the boolean alone would pass against
+    # a send_ping that returns True without sending, so the FILE is the evidence.
+    _landed = os.path.join(_capdir, "cap.txt")
+    check("channel that accepts the alert -> delivered",
+          _send_ping_verdict(_landed), True)
+    check("the delivered alert is actually in the destination",
+          _PROBE_MESSAGE in Path(_landed).read_text(encoding="utf-8"), True)
 
 # ---------------------------------------------------------------------------
 # The legacy watchdog may not record a page that never left (PR #134 round 6)
