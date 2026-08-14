@@ -331,7 +331,46 @@ assert_deletions_split_by_authorship() {
   echo "PASS: a fleet deletion is recorded; a local deletion of a shipped file is not"
 }
 
+# ------------------------------------------------------------------ property 6
+# A STAGED founder edit must survive, even when the working tree has since been
+# overwritten with the skeleton's copy.
+#
+# Codex review of #151 round 4, major. The sequence is nastier than the unstaged
+# case because it leaves no trace: founder stages an edit; a later fanout writes
+# the skeleton's version over the working tree; the worktree-to-skeleton equality
+# test says "fleet-written"; `git add` replaces the staged blob with the skeleton
+# content. The staged work is gone and there is no diff left to show it existed.
+assert_a_staged_founder_edit_is_never_overwritten() {
+  local work sk inst staged; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"
+
+  printf 'def shipped():\n    return 1\n' > "$sk/plugins/demo/shipped.py"
+  printf 'def shipped():\n    return 0\n' > "$inst/plugins/demo/shipped.py"
+  ( cd "$sk" && G add -A -f && G commit -qm "skeleton ships it" )
+  ( cd "$inst" && G add -A -f && G commit -qm "instance has it" )
+
+  # Founder stages an edit...
+  printf 'def shipped():\n    return "founder staged this"\n' > "$inst/plugins/demo/shipped.py"
+  ( cd "$inst" && G add plugins/demo/shipped.py )
+  # ...then a fanout overwrites the WORKING TREE with the skeleton's copy. The
+  # index still holds the founder's blob; only the file on disk was replaced.
+  cp "$sk/plugins/demo/shipped.py" "$inst/plugins/demo/shipped.py"
+
+  bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
+
+  # The staged blob must still be the founder's. This is the whole assertion:
+  # a passing run leaves the index untouched, a failing one silently rewrites it.
+  staged="$(G -C "$inst" show ":plugins/demo/shipped.py" 2>/dev/null || true)"
+  case "$staged" in
+    *"founder staged this"*) : ;;
+    *) fail "the founder's STAGED blob was overwritten by the carve-out; index now holds: $staged" ;;
+  esac
+
+  echo "PASS: a staged founder edit survives a working tree overwritten with skeleton content"
+}
+
 assert_a_mixed_pathspec_commit_commits_nothing
+assert_a_staged_founder_edit_is_never_overwritten
 assert_deletions_split_by_authorship
 assert_the_carve_out_clears_tracked_system_dirt
 assert_founder_work_is_never_swept

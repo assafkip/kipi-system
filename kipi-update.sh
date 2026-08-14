@@ -1641,8 +1641,35 @@ PY
             # deletion is the fleet's to record. A file the skeleton still ships
             # is NOT this case -- someone local deleted it, and the sync will put
             # it back, so it stays a local edit.
+            # THE INDEX IS A THIRD VERSION, AND `git add` DESTROYS IT (Codex
+            # review of #151 round 4, major). Comparing only worktree-to-skeleton
+            # misses this sequence: a founder STAGES an edit, a later fanout
+            # overwrites the working tree with the skeleton's copy, the equality
+            # test then says "fleet-written", and `git add` replaces the staged
+            # blob with the skeleton content. The founder's staged work is gone,
+            # with no diff left to show it ever existed.
+            #
+            # Every path here therefore has to clear the index before content is
+            # even considered. NOT "index == skeleton", which would break the
+            # whole fix: in the ordinary fanout case the index equals HEAD, the
+            # instance is behind, so index != skeleton and every legitimate path
+            # would be refused. The question is narrower -- is there a staged
+            # CHANGE, and if so is that staged content itself the skeleton's?
+            #
+            #   no staged change          -> index is just HEAD, nothing to lose
+            #   staged change == skeleton -> the fleet staged its own write
+            #   staged change != skeleton -> founder work in the index. Leave it.
+            # Deletion is tested FIRST, before the index. Gone from both sides is
+            # unambiguous, and the staged-blob test cannot express it: `git show
+            # :path` fails for a staged deletion, so the comparison below would
+            # read "differs from the skeleton" and refuse a deletion the fleet
+            # itself made -- re-blocking the instance for the case round 3 fixed.
             if [ ! -e "$SCRIPT_DIR/$dirty_rel" ] && [ ! -e "$path/$dirty_rel" ]; then
               sys_add_paths+=("$dirty_rel")
+            elif ! git diff --cached --quiet -- "$dirty_rel" 2>/dev/null &&
+                ! git show ":$dirty_rel" 2>/dev/null \
+                    | cmp -s - "$SCRIPT_DIR/$dirty_rel" 2>/dev/null; then
+              say "  keeping STAGED local edit, not the fleet's to commit: $dirty_rel"
             elif [ -f "$SCRIPT_DIR/$dirty_rel" ] && [ -f "$path/$dirty_rel" ] &&
                 cmp -s "$SCRIPT_DIR/$dirty_rel" "$path/$dirty_rel"; then
               sys_add_paths+=("$dirty_rel")
