@@ -96,7 +96,9 @@ def main() -> int:
     pool = selector.resolved_pool(rows, args.channel, args.slot_kind, args.k,
                                   args.words)
     band = selector.length_band(pool, args.words)
-    kind = "long" if args.words >= selector.LONG_WORDS else "short"
+    # No long/short label: length_band SORTS, it does not filter, so calling the
+    # pool "long-form" would name a partition that no longer exists.
+    kind = f"nearest to {args.words}w"
 
     print(f"# VOICE REFERENCE ({args.channel}, {kind}-form, target {args.words} words)\n")
     print(f"> pool: {len(band)} {kind}-form {args.channel} row(s) eligible; "

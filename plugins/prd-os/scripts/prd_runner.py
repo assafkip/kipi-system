@@ -1771,10 +1771,18 @@ def cmd_spillover(cfg: Config, args) -> int:
         # made, it can and should be made by Sana, not wait for me." Writing a DoR from
         # a confirmed finding is an engineering decision. `spillover needs-dor` lists
         # them so a Sana run can drain the queue.
-        _spillover_append(cfg, {
+        record = {
             "id": sid, "source": args.source, "description": args.desc,
             "severity": args.severity, "status": "open", "created_at": _now_iso(),
-        })
+        }
+        # STORE THE DoR (Codex review of #147, major). The --no-promote path replied
+        # "DoR recorded; no Linear issue created" while this record discarded it, so
+        # the DoR existed only in the caller's argv and `needs-dor` could never use
+        # it. A status naming an artifact that was never written is the exact defect
+        # this whole mechanism was built to stop, committed inside it.
+        if dor:
+            record["dor"] = dor
+        _spillover_append(cfg, record)
         out = {"id": sid, "status": "open"}
         if dor and not getattr(args, "no_promote", False):
             out["promotion"] = _spillover_autopromote(cfg, sid, args, dor)

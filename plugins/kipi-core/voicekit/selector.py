@@ -160,7 +160,14 @@ def select(rows, channel, counter, slot_index=0, k=DEFAULT_K, slot_kind="post",
     # rather than starving -- exhaustion must not become starvation.
     if target_words is not None:
         ranked = length_band(pool, target_words)
-        pool = ranked[:max(k, 1)] or pool
+        near = ranked[:max(k, 1)]
+        # ANCHORS SURVIVE THE TRUNCATION (Codex review of #147, minor). Truncating to
+        # the nearest k could drop every anchor, and the rotation below promises one
+        # anchor is always included when any exists. A guarantee the step above can
+        # silently delete is not a guarantee.
+        if not any(r.get("anchor") for r in near):
+            near = near + [r for r in ranked if r.get("anchor")][:1]
+        pool = near or pool
     if not pool:
         return []
     offset = (int(counter) + int(slot_index)) % len(pool)
