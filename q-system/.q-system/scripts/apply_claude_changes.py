@@ -74,6 +74,14 @@ its line count passes. Marker placement is checked at heading granularity only:
 moving it between two headings of the same file is invisible here. That is the
 deliberate trade: a ratchet that judged prose would refuse the honest
 corrections this op exists to enable.
+
+And one more, added deliberately by ASK-290: a route is a census member only
+when it RESOLVES to a real file, so a route this repo cannot see is not
+protected. Resolution is repo-only, which means a rule pointing at a hook
+outside the repo (~/.claude/hooks/destructive-op-deny.sh) is unprotected prose a
+replace could drop -- captured as sp-f4e9682b rather than silently accepted.
+The alternative was worse: counting unresolvable routes is what made correcting
+a FALSE enforcement claim impossible, which is the single job this op exists for.
 """
 import contextlib
 import importlib.util
@@ -101,8 +109,10 @@ ANCHOR_OPS = ("insert_after", "insert_before", "replace")
 
 RULES_DIR = os.path.join(".claude", "rules")
 
-# A rule's pointer to the thing that actually enforces it. Census member, so a
-# replace cannot quietly cut a reader's route to the enforcer.
+# A rule's pointer to the thing that actually enforces it. Census member WHEN IT
+# RESOLVES TO A REAL FILE (see _exec_ref_resolves), so a replace cannot quietly
+# cut a reader's route to the enforcer -- and can still correct a route to an
+# enforcer that was never there.
 #
 # The DIRECTORY PREFIX is part of the mark, not decoration. Matching the
 # basename alone let a replace keep `existing-lint.py` while moving its route to
@@ -624,8 +634,70 @@ def _frontmatter(text):
     return match.group(0) if match else ""
 
 
-def _rule_marks(rules_dir):
-    """Read every rule ONCE and return (token_marks, line_marks).
+# Directories the script index never walks. .git holds thousands of blobs and no
+# routable script; node_modules is the same shape. Every OTHER dot-directory is
+# walked on purpose -- see _script_index.
+_INDEX_PRUNE = frozenset({".git", "node_modules"})
+
+_SCRIPT_INDEX = {}
+
+
+def _script_index(root):
+    """Every .py/.sh under root, indexed by repo-relative path AND by basename.
+
+    os.walk, NOT glob("**"): glob's ** skips dot-directories, and every script
+    this repo's rules route a reader to lives under `q-system/.q-system/scripts/`
+    -- a dot-directory. A glob-based index would report all of them missing, and
+    since a missing script means "not a census member", that would silently empty
+    the named_executables census instead of merely narrowing it. The blinding
+    version of this check looks identical to the working one from the outside,
+    which is why the index is walked and not globbed.
+
+    Cached per root. Both censuses of one run resolve against the same real tree,
+    computed before any write, so the tree cannot move between them.
+    """
+    key = os.path.abspath(root)
+    if key in _SCRIPT_INDEX:
+        return _SCRIPT_INDEX[key]
+    rels, names = set(), set()
+    for dirpath, dirnames, filenames in os.walk(key):
+        dirnames[:] = [d for d in dirnames if d not in _INDEX_PRUNE]
+        for filename in filenames:
+            if not filename.endswith((".py", ".sh")):
+                continue
+            names.add(filename)
+            rels.add(os.path.relpath(os.path.join(dirpath, filename), key))
+    _SCRIPT_INDEX[key] = (rels, names)
+    return _SCRIPT_INDEX[key]
+
+
+def _exec_ref_resolves(ref, index):
+    """Does this written route point at a file that is actually there?
+
+    The existence qualifier is load-bearing in the PERMISSIVE direction, and that
+    is the whole of ASK-290: a rule naming a script that does not exist is a
+    LIE, not enforcement. Counting it as a census member made deleting the lie
+    look like deleting enforcement, so the engine refused the single edit
+    `replace` was built for. Measured on the fixture: correcting
+    `retired-lint.py` exited `REFUSED: enforcement ratchet: 1 rule_marks
+    entr(ies) would disappear`.
+
+    It cannot weaken anything, because BOTH censuses resolve against the same
+    real tree: rerouting a live enforcer to a dead path still drops the old
+    member and adds none, so the set difference refuses it exactly as before.
+
+    A route with a directory prefix must exist AT THAT PATH -- resolving it by
+    basename would undo PR #70 round 4, where moving `existing-lint.py` under
+    `q-system/retired/hooks/` kept the reader's route dead and the census happy.
+    """
+    rels, names = index
+    if os.sep in ref:
+        return os.path.normpath(ref) in rels
+    return ref in names
+
+
+def _rule_marks(rules_dir, script_index):
+    """Read every rule ONCE and return (enforced_marks, exec_marks, line_marks).
 
     One walk and one read per file on purpose. Two functions each opening the
     same rules is two readers free to drift -- the defect class round 2 found in
@@ -640,14 +712,17 @@ def _rule_marks(rules_dir):
     Two token classes are countable without judgement, which is the bar for a
     ratchet member:
 
-      enforced : the file claims (ENFORCED anywhere. Demoting a rule to advisory
-                 is enforcement-weakening whether or not the prose is honest. If
-                 the claim is genuinely false, the fix is to correct the SCOPE
-                 (which replace now allows) or to take the marker off through a
-                 different tool and a real conversation -- same standing as
-                 removing a hook.
-      exec     : a named .py/.sh the rule routes a reader to. A rule whose
-                 pointer to its enforcer vanishes is a rule nobody can act on.
+      enforced_claims   : the file claims (ENFORCED anywhere. Demoting a rule to
+                 advisory is enforcement-weakening whether or not the prose is
+                 honest. If the claim is genuinely false, the fix is to correct
+                 the SCOPE (which replace now allows) or to take the marker off
+                 through a different tool and a real conversation -- same
+                 standing as removing a hook.
+      named_executables : a named .py/.sh the rule routes a reader to, AND that
+                 resolves to a real file (_exec_ref_resolves). A rule whose
+                 pointer to its enforcer vanishes is a rule nobody can act on;
+                 a rule pointing at a file that was never there is prose, and
+                 correcting it is the one job `replace` exists to do.
 
     Deliberately NOT counted: prose meaning and tone. A ratchet that tried to
     judge those would refuse the honest corrections this op exists to enable.
@@ -669,10 +744,11 @@ def _rule_marks(rules_dir):
     residue is named in the module docstring rather than papered over: a rewrite
     that keeps the shape and hollows out the meaning still passes.
     """
-    token_marks = set()
+    enforced_marks = set()
+    exec_marks = set()
     line_marks = set()
     if not os.path.isdir(rules_dir):
-        return token_marks, line_marks
+        return enforced_marks, exec_marks, line_marks
     # os.walk, not os.listdir. rule_text_only permits a rule at any depth under
     # rules/, so a one-level census left a subdirectory rule inside replace's
     # reach and outside every content check at once (PR #70 round 4, minor). The
@@ -691,7 +767,9 @@ def _rule_marks(rules_dir):
             except (OSError, UnicodeDecodeError):
                 continue
             for ref in set(_EXEC_REF.findall(text)):
-                token_marks.add("%s|exec|%s" % (name, ref))
+                if not _exec_ref_resolves(ref, script_index):
+                    continue
+                exec_marks.add("%s|exec|%s" % (name, ref))
             # (ENFORCED is counted twice, and the second count is the one that
             # closes the hole. A whole-file presence boolean let a replace lift
             # the marker off the heading that DECLARES the rule enforced and park
@@ -705,20 +783,29 @@ def _rule_marks(rules_dir):
             # survives both. Same encode-a-count-as-a-set trick as line marks,
             # for the same reason -- ratchet_check compares sets.
             for index in range(text.count("(ENFORCED")):
-                token_marks.add("%s|enforced|%d" % (name, index))
+                enforced_marks.add("%s|enforced|%d" % (name, index))
             lines = text.splitlines()
             headings = sum(1 for line in lines
                            if _HEADING.match(line) and "(ENFORCED" in line)
             for index in range(headings):
-                token_marks.add("%s|enforced-heading|%d" % (name, index))
+                enforced_marks.add("%s|enforced-heading|%d" % (name, index))
             substantive = sum(1 for line in lines if line.strip())
             for index in range(substantive):
                 line_marks.add("%s|line|%d" % (name, index))
-    return token_marks, line_marks
+    return enforced_marks, exec_marks, line_marks
 
 
-def census(root):
-    """Count the live enforcement points. Enforcement may only grow."""
+def census(root, resolve_root=None):
+    """Count the live enforcement points. Enforcement may only grow.
+
+    resolve_root is where a rule's named script is looked for, and it is NOT
+    always `root`. The "after" census reads a copy tree that holds `.claude/`
+    and nothing else, so resolving there would find zero scripts and report the
+    whole named_executables census as gone -- turning the qualifier into a
+    blanket amnesty on exec routes. Both censuses of a run therefore resolve
+    against the REAL repo root, which is also what makes the comparison mean
+    anything: the two sides differ only in rule TEXT.
+    """
     c = {}
     settings_path = os.path.join(root, ".claude", "settings.json")
     settings = {}
@@ -732,7 +819,9 @@ def census(root):
     perms = settings.get("permissions") or {}
     c["deny"] = set(perms.get("deny") or [])
     c["rules"] = _dir_names(os.path.join(root, ".claude", "rules"))
-    c["rule_marks"], c["rule_lines"] = _rule_marks(os.path.join(root, ".claude", "rules"))
+    c["enforced_claims"], c["named_executables"], c["rule_lines"] = _rule_marks(
+        os.path.join(root, ".claude", "rules"),
+        _script_index(resolve_root if resolve_root is not None else root))
     c["agents"] = _dir_names(os.path.join(root, ".claude", "agents"))
     c["output_styles"] = _dir_names(os.path.join(root, ".claude", "output-styles"))
 
@@ -1048,13 +1137,17 @@ def main(argv):
                 fh.write(content)
 
         before_census = census(root)
-        after_census = census(copy_root)
+        # resolve_root=root, not copy_root: the copy holds only .claude/, so
+        # every named script would resolve to nothing there. See census().
+        after_census = census(copy_root, resolve_root=root)
         ratchet_check(before_census, after_census)
-        log.append("ratchet ok: hooks %d->%d, rules %d->%d, rule-marks %d->%d, deny %d->%d" % (
-            len(before_census["hooks"]), len(after_census["hooks"]),
-            len(before_census["rules"]), len(after_census["rules"]),
-            len(before_census["rule_marks"]), len(after_census["rule_marks"]),
-            len(before_census["deny"]), len(after_census["deny"])))
+        log.append("ratchet ok: hooks %d->%d, rules %d->%d, enforced %d->%d, "
+                   "execs %d->%d, deny %d->%d" % (
+                       len(before_census["hooks"]), len(after_census["hooks"]),
+                       len(before_census["rules"]), len(after_census["rules"]),
+                       len(before_census["enforced_claims"]), len(after_census["enforced_claims"]),
+                       len(before_census["named_executables"]), len(after_census["named_executables"]),
+                       len(before_census["deny"]), len(after_census["deny"])))
 
         if settings_key is not None:
             permission_surface_check(root, staged[settings_key])
