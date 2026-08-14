@@ -388,6 +388,145 @@ if [ "$LEAK_RC" -ne 0 ]; then
   exit 1
 fi
 
+# Preflight: the bytes fanned out must be the bytes that were reviewed.
+#
+# q-system/ is copied with `git archive` from HEAD, and the two checks above
+# refuse when the index and HEAD disagree. `.claude/` and `plugins/` get no
+# such protection: they rsync from $SCRIPT_DIR -- the WORKING TREE, on whatever
+# branch it is checked out on. Nothing asked which branch that was.
+#
+# Scar 2026-08-14 (sp-ea9c1628): kipi-system sat on sana/ask-728-plugin-parity
+# holding an uncommitted partial forward-port of voicekit/selector.py -- the
+# nearest-length ranking without the anchor-survives fix Codex caught in #147
+# and main already carried. A run from that state writes code strictly OLDER
+# than main into every config-sync instance and prints PASS. Silent, plausible,
+# and 23 repos wide; hence a preflight rather than a habit.
+#
+# Two halves, deliberately different in what they need:
+#
+#   DIRTY runs always. Staleness against HEAD needs no remote to be wrong, and
+#   an untracked file under plugins/ rsyncs just as happily as a tracked one --
+#   `git diff` is blind to it, so it is asked for by name.
+#
+#   BRANCH arms only when an `origin` remote exists. SKELETON_BRANCH names a
+#   branch ON origin; a repo with no origin has no main to be stale against,
+#   and every kipi-update fixture in q-system/.q-system/scripts/test/ is
+#   exactly that repo. It announces the disarm rather than going quiet, because
+#   a silent guard is indistinguishable from one that passed.
+#
+# Pinned by test-kipi-update-source-provenance.sh.
+# SCOPED TO WHAT ACTUALLY RSYNCS, not to `.claude/` wholesale. The config sync
+# copies .claude/{agents,output-styles,rules}/*.md and .claude/settings.json --
+# nothing else under .claude/ ever reaches an instance. A wholesale check would
+# abort on .claude/worktrees/ and settings.local.json, which protect nothing and
+# would get the guard switched off. (The worktrees dir is ignored only in this
+# clone's .git/info/exclude, so on a fresh clone the wholesale form fires on the
+# repo's own worktree convention.) plugins/ stays whole: the syncer walks each
+# managed plugin with `find`, so an untracked file inside one is copied too.
+# IGNORED IS NOT ABSENT (Codex review of #149 round 3, major). `git status` hides
+# ignored files by default, but rsync does not: the plugin copy excludes only
+# .git/, __pycache__/, *.pyc, .venv/ and .pytest_cache/, so a gitignored
+# plugins/<name>/.env goes to all 23 instances. That is not hypothetical --
+# `.gitignore:3` is `*.env` and kipi-design's cip/generate.py reads a plugin-root
+# .env for API keys. A guard that claims to cover what rsyncs has to look where
+# rsync looks, so plugins/ is scanned with --ignored=matching and then filtered
+# by the SAME five exclusions the rsync uses. Measured on this repo the day it
+# was written: 0 such files, so the guard arrives green and fires on the next one.
+#
+# The .claude half is the mirror-image mistake, caught as a minor in the same
+# round: it was recursive where the copy is a flat `*.md` glob, so a nested or
+# non-md file raised an alarm nothing could act on. `:(glob)` makes `*` stop at
+# the directory separator; a bare pathspec would let it match subdirectories and
+# re-widen the very scope this narrows.
+SYNC_SCOPE_DIRTY="$(
+  {
+    git -C "$SCRIPT_DIR" status --porcelain -- \
+      ':(glob).claude/agents/*.md' \
+      ':(glob).claude/output-styles/*.md' \
+      ':(glob).claude/rules/*.md' \
+      .claude/settings.json 2>/dev/null || true
+    git -C "$SCRIPT_DIR" status --porcelain --ignored=matching -- plugins \
+      2>/dev/null || true
+  } | sed 's/^...//' \
+    | grep -vE '(^|/)(\.git|__pycache__|\.venv|\.pytest_cache)/|\.pyc$' || true
+)"
+if [ -n "$SYNC_SCOPE_DIRTY" ]; then
+  echo ""
+  echo "ABORT: the skeleton's .claude/ or plugins/ is not committed."
+  echo "These rsync from the working tree, so every line below would reach all"
+  echo "registered instances without ever having passed a review:"
+  printf '%s\n' "$SYNC_SCOPE_DIRTY" | sed 's/^/  /'
+  echo "Commit them, or restore them from ${SKELETON_BRANCH}, before propagating."
+  exit 1
+fi
+
+if git -C "$SCRIPT_DIR" remote get-url origin >/dev/null 2>&1; then
+  SKELETON_HEAD_BRANCH="$(git -C "$SCRIPT_DIR" symbolic-ref --short -q HEAD || true)"
+  if [ "$SKELETON_HEAD_BRANCH" != "$SKELETON_BRANCH" ]; then
+    echo ""
+    echo "ABORT: the skeleton is not on $SKELETON_BRANCH."
+    if [ -z "$SKELETON_HEAD_BRANCH" ]; then
+      echo "  HEAD is detached."
+    else
+      echo "  HEAD is on $SKELETON_HEAD_BRANCH."
+    fi
+    echo ".claude/ and plugins/ rsync from this working tree, so a feature"
+    echo "branch fans its unmerged -- or merely older -- copy to every instance."
+    echo "Check out $SKELETON_BRANCH and pull before propagating."
+    exit 1
+  fi
+
+  # THE NAME IS NOT THE COMMIT (Codex review of #149, major). Being ON main says
+  # nothing about being AT main: a local main 15 commits behind origin passes a
+  # name check and fans a reviewed-months-ago copy to 23 instances, which is the
+  # exact failure this preflight exists to stop, one level up. It also catches
+  # the mirror case -- local commits that were never pushed, so the bytes going
+  # out were never reviewed by anyone.
+  #
+  # Measured 2026-08-14 on this very repo: the ask-728 checkout was 2 ahead and
+  # 15 behind origin, carrying an unattended auto-commit that never left the
+  # machine (rescued as PR #150).
+  #
+  # Fail closed when the comparison cannot be made. GIT_TERMINAL_PROMPT=0 is
+  # exported at the top of this script, so an unreachable origin errors out
+  # rather than hanging on credentials. Fanning to 23 repos on an unproven
+  # source is worse than not fanning at all.
+  if ! git -C "$SCRIPT_DIR" fetch origin "$SKELETON_BRANCH" --quiet 2>/dev/null; then
+    echo ""
+    echo "ABORT: could not fetch origin/$SKELETON_BRANCH."
+    echo "Without it there is no way to prove this working tree matches what was"
+    echo "reviewed. Fix connectivity, or propagate later; do not fan 23 repos"
+    echo "from an unverified source."
+    exit 1
+  fi
+  SKELETON_LOCAL_SHA="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+  SKELETON_REMOTE_SHA="$(
+    git -C "$SCRIPT_DIR" rev-parse "refs/remotes/origin/$SKELETON_BRANCH" 2>/dev/null || true
+  )"
+  if [ -z "$SKELETON_LOCAL_SHA" ] || [ -z "$SKELETON_REMOTE_SHA" ]; then
+    echo ""
+    echo "ABORT: could not resolve HEAD or origin/$SKELETON_BRANCH to a commit."
+    exit 1
+  fi
+  if [ "$SKELETON_LOCAL_SHA" != "$SKELETON_REMOTE_SHA" ]; then
+    SKELETON_DRIFT="$(
+      git -C "$SCRIPT_DIR" rev-list --left-right --count \
+        "HEAD...refs/remotes/origin/$SKELETON_BRANCH" 2>/dev/null || printf '? ?'
+    )"
+    echo ""
+    echo "ABORT: the skeleton is on $SKELETON_BRANCH but not AT origin/$SKELETON_BRANCH."
+    echo "  local:  $SKELETON_LOCAL_SHA"
+    echo "  origin: $SKELETON_REMOTE_SHA"
+    echo "  ahead/behind: $SKELETON_DRIFT"
+    echo "Ahead means bytes nobody reviewed; behind means bytes that were"
+    echo "superseded. Either way the fleet would get something other than"
+    echo "$SKELETON_BRANCH. Push or pull before propagating."
+    exit 1
+  fi
+else
+  echo "skeleton branch check: DISARMED (no origin remote; nothing to be stale against)"
+fi
+
 PASS=0
 FAIL=0
 SKIP=0

@@ -159,6 +159,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-kipi-update-source-provenance.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-kipi-update-unmanaged-instance.sh",
       "runner": "bash"
     },
@@ -600,6 +604,7 @@
     "q-system/.q-system/scripts/test/test-kipi-update-leak-preflight.sh",
     "q-system/.q-system/scripts/test/test-kipi-update-preservation-failure.sh",
     "q-system/.q-system/scripts/test/test-kipi-update-safety.sh",
+    "q-system/.q-system/scripts/test/test-kipi-update-source-provenance.sh",
     "q-system/.q-system/scripts/test/test-lessons-push-guard.sh",
     "q-system/.q-system/scripts/test/test-propagation-entrypoints.py",
     "q-system/.q-system/scripts/test/test-propagation-leak-baseline.py",
