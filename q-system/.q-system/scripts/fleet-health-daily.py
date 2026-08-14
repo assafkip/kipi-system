@@ -1244,17 +1244,56 @@ def detect_fleet_drift(_ctx) -> list:
     cmd = [sys.executable, str(scan), "--json", "--skeleton", str(REPO_ROOT)]
     if baseline.exists():
         cmd += ["--baseline", str(baseline)]
+
+    # A SCAN THAT DID NOT RUN IS NOT A CLEAN FLEET (codex major, PR #158 r1).
+    #
+    # Both failure paths below used to `return []`, which is byte-identical to
+    # the answer "I looked at 23 instances and every one is clean". The docstring
+    # above already said that guessing green makes this detector's silence
+    # meaningless -- the code did the opposite of its own comment. Worse, an empty
+    # list reads to the caller as a detector that RAN, so the blind-detector
+    # notification that exists to catch a detector producing nothing stays quiet
+    # too. A crashed scanner was therefore invisible twice over.
+    #
+    # So a no-answer becomes a LOUD finding instead of a silent green. This
+    # detector is report-only by construction and blocks nothing, so the cost of
+    # a false alarm is one issue a human closes; the cost of a false green is the
+    # ASK-795 shape going unseen for another cycle, which is what it exists for.
+    def _no_answer(reason: str) -> list:
+        return [{
+            "subject": "fleet-drift-scan:no-answer",
+            "title": "the fleet drift scan did not produce a verdict",
+            "body": (
+                f"`fleet-drift-scan.py` did not return a readable verdict: {reason}\n\n"
+                "**This is not a clean fleet.** No instance was cleared. The scan "
+                "failed to run or its output could not be parsed, so the ASK-795 "
+                "class (skeleton-owned bytes committed in an instance that "
+                "`origin/main` never shipped) is currently UNCHECKED.\n\n"
+                "## Action\n"
+                "- Run `python3 fleet-drift-scan.py --json --skeleton .` from the "
+                "skeleton and read the error.\n"
+                "- This detector reports only; nothing is blocked by it. The issue "
+                "closes when the scan produces a verdict again.\n"
+            ),
+        }]
+
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
-    except (subprocess.TimeoutExpired, OSError):
-        return []
+    except subprocess.TimeoutExpired:
+        return _no_answer("the scan exceeded its 900s timeout")
+    except OSError as e:
+        return _no_answer(f"the scan could not be executed ({e})")
     # Exit 1 means drift FOUND, which is a normal result here, not an error. Only a
     # verdict we cannot parse is treated as no-answer -- guessing green would make
     # this detector's silence meaningless, which is the failure mode it exists for.
     try:
         payload = json.loads(res.stdout)
-    except json.JSONDecodeError:
-        return []
+    except json.JSONDecodeError as e:
+        tail = (res.stderr or "").strip()[-400:]
+        return _no_answer(
+            f"its stdout was not JSON ({e})"
+            + (f"; stderr tail: `{tail}`" if tail else "")
+        )
 
     findings = []
     for row in payload.get("drift", []):
