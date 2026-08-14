@@ -67,11 +67,15 @@ def _linear():
     return mod
 
 
+# PAGINATED. `first: 100` with no cursor silently dropped everything past the
+# hundredth updated issue, so a busy day reported a short list as if it were the
+# whole day -- a silent cap inside the tool whose job is saying what happened.
 ISSUES_Q = """
-query($after: DateTimeOrDuration!) {
-  issues(filter: {updatedAt: {gte: $after}}, first: 100) {
+query($after: DateTimeOrDuration!, $cursor: String) {
+  issues(filter: {updatedAt: {gte: $after}}, first: 100, after: $cursor) {
     nodes { identifier title url createdAt completedAt canceledAt
             state { name type } }
+    pageInfo { hasNextPage endCursor }
   }
 }
 """
@@ -84,12 +88,25 @@ def fetch(since_iso: str):
     that cannot tell "nothing happened" from "I could not look" will report the
     first when it means the second.
     """
+    nodes, cursor, pages = [], None, 0
     try:
         ls = _linear()
-        data = ls.graphql(ISSUES_Q, {"after": since_iso})
+        while True:
+            data = ls.graphql(ISSUES_Q, {"after": since_iso, "cursor": cursor})
+            block = (data or {}).get("issues") or {}
+            nodes.extend(block.get("nodes") or [])
+            info = block.get("pageInfo") or {}
+            pages += 1
+            # A bound, because an unbounded loop against a paging API is its own
+            # outage. 20 pages is 2000 issues; past that the digest says so rather
+            # than truncating quietly.
+            if not info.get("hasNextPage") or pages >= 20:
+                if info.get("hasNextPage"):
+                    return [], [], f"more than {len(nodes)} issues updated today; digest would be partial"
+                break
+            cursor = info.get("endCursor")
     except Exception as exc:  # noqa: BLE001
         return [], [], f"{type(exc).__name__}: {str(exc)[:180]}"
-    nodes = ((data or {}).get("issues") or {}).get("nodes") or []
     closed = [n for n in nodes if n.get("completedAt", "") and n["completedAt"] >= since_iso]
     opened = [n for n in nodes if n.get("createdAt", "") and n["createdAt"] >= since_iso]
     return closed, opened, None
