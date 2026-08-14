@@ -26,11 +26,16 @@ trap 'rm -rf "$WORK"' EXIT
 
 # --- extract the helpers from the shipped script -----------------------------
 HELPERS="$WORK/helpers.sh"
-sed -n '/^LIVE_LEDGER=/,/^# --- END PER-REPO CONCURRENCY ---$/p' "$DISPATCH" > "$HELPERS"
-grep -q 'live_repos()' "$HELPERS" \
-  && grep -q 'record_live_run()' "$HELPERS" \
-  && grep -q 'compact_live_ledger()' "$HELPERS" \
-  || { echo "FATAL: could not extract the per-repo helpers from $DISPATCH" >&2; exit 1; }
+# Starts at live_converges(), NOT at LIVE_LEDGER=. The selection loop calls
+# live_converges to compare the pgrep total against the attributed count, so a
+# cut that began one line lower produced a loop that died on
+# "live_converges: command not found" -- and the surrounding `||` made that read
+# as a PASS on the case it was meant to fail. Extract everything the loop calls.
+sed -n '/^live_converges()/,/^# --- END PER-REPO CONCURRENCY ---$/p' "$DISPATCH" > "$HELPERS"
+for fn in live_converges live_repos record_live_run compact_live_ledger; do
+  grep -q "$fn" "$HELPERS" \
+    || { echo "FATAL: $fn missing from the extract of $DISPATCH" >&2; exit 1; }
+done
 
 export KIPI_DISPATCH_LIVE_LEDGER="$WORK/live.tsv"
 # shellcheck disable=SC1090
@@ -146,6 +151,28 @@ grep -qF -- "/repos/dead" "$KIPI_DISPATCH_LIVE_LEDGER" \
   && bad "compaction kept a dead row, so the ledger grows without bound" \
   || ok "compaction drops the dead row"
 kill "$PID_E" 2>/dev/null; wait "$PID_E" 2>/dev/null
+
+echo "== 9. an UNATTRIBUTED live run stops the cycle (disjointness is unprovable) =="
+# live_repos() only sees runs THIS script recorded. A hand-run `kipi converge`
+# is live in the process table and absent from the ledger, and it could be in the
+# very repo about to be entered. The two counts must agree or we enter nothing.
+PID_H="$(spawn_fake_converge ASK-500)"       # live, deliberately NOT recorded
+SEL_U="$(run_selection "$(printf 'beta\t/repos/beta\n')")"
+echo "$SEL_U" | grep -q 'PICKED=beta' \
+  && bad "an unattributed live run did not stop the cycle" "dispatch entered a repo while a run it cannot see is live (got: $SEL_U)" \
+  || ok "an unattributed live run stops the cycle"
+echo "$SEL_U" | grep -q 'cannot prove disjointness' \
+  && ok "the refusal says WHY, so the log is not a mystery" \
+  || bad "the refusal explains itself" "no reason logged (got: $SEL_U)"
+
+# T9-neg: record that same run, and the cycle must proceed again. Without this,
+# case 9 could not tell "stopped because unattributed" from "stopped always".
+record_live_run "$PID_H" "ASK-500" "/repos/gamma"
+SEL_K="$(run_selection "$(printf 'beta\t/repos/beta\n')")"
+echo "$SEL_K" | grep -q 'PICKED=beta' \
+  && ok "T9-neg once the run IS attributed, an unrelated repo is entered again" \
+  || bad "T9-neg the assertion CAN fail" "attributing the run did not unblock selection (got: $SEL_K)"
+kill "$PID_H" 2>/dev/null; wait "$PID_H" 2>/dev/null
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"

@@ -823,6 +823,27 @@ TARGET_PATH=""
 # stalling behind one busy one -- skipping is the entire throughput win, and an
 # early `exit 0` here would leave the cap at 1 by another name.
 LIVE_REPOS="$(live_repos)"
+
+# AN UNATTRIBUTED RUN MAKES DISJOINTNESS UNPROVABLE, SO WE STOP.
+#
+# live_repos() can only see runs THIS script recorded. A converge started any
+# other way -- a founder running `kipi converge --issue X` by hand, an agent
+# session, a run launched by dispatch before the ledger existed -- is live in the
+# process table and absent from the ledger. Picking a repo then is guessing: the
+# hand-run could be in the very repo about to be entered, which is precisely the
+# same-file collision the per-repo rule exists to prevent.
+#
+# So the two counts must agree. pgrep is the ground truth for "how many are
+# running"; the ledger is the only source of "and where". When ledger < pgrep,
+# the missing ones could be anywhere and the safe answer is to enter nothing this
+# cycle. The next 900s tick re-checks and proceeds by itself once they finish --
+# no marker, no human, nothing to unstick.
+LIVE_TOTAL="$(live_converges)"; LIVE_TOTAL="${LIVE_TOTAL:-0}"
+LIVE_KNOWN="$(printf '%s' "$LIVE_REPOS" | grep -c . || true)"; LIVE_KNOWN="${LIVE_KNOWN:-0}"
+if [ "$LIVE_TOTAL" -gt "$LIVE_KNOWN" ]; then
+  say "skip: $LIVE_TOTAL converge run(s) live but only $LIVE_KNOWN attributed to a repo; cannot prove disjointness, entering nothing this cycle"
+  exit 0
+fi
 while IFS=$'\t' read -r PNAME PPATH; do
   [ -n "$PNAME" ] || continue
   # Exact line match. A substring test would let ~/projects/foo suppress
