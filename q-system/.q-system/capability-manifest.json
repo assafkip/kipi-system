@@ -39,6 +39,10 @@
       "timeout_s": 120
     },
     {
+      "path": "q-system/.q-system/scripts/test-break-glass-audit.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test-ripple.py",
       "runner": "python3"
     },
@@ -531,6 +535,14 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_merge_bypass_gate_global_flags.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_merge_bypass_gate_hidden_tool.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_merge_bypass_gate_wrappers.py",
       "runner": "python3"
     },
     {

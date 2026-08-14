@@ -56,6 +56,33 @@ variable is script-local, a `-C` path that does not exist), it allows. Lesson
 whose failure mode is "block everything" also blocks the tools needed to repair it.
 The residual hole is named in section 6 of the plan rather than papered over.
 
+WHAT THIS GATE CANNOT DO, AND WHY IT IS NOT WORTH TRYING (round 6, measured)
+
+    eval "git push origin main"                  ALLOW
+    eval $CMD                                    ALLOW
+    source /tmp/script.sh                        ALLOW
+    echo "git push origin main" | bash           ALLOW
+    python3 -c "import os; os.system(...)"       ALLOW
+    `echo git` push origin main                  ALLOW
+
+8 of 11 payload-executing constructs walk straight through, and `eval $CMD` is
+the one that ends the argument: the command string does not exist until Bash
+expands the variable, so NO amount of static analysis of the tool-call text can
+see it. Deciding what an arbitrary shell string will execute is undecidable, and
+the only way to close `eval` here would be to deny every eval, source, and
+`| bash` -- which breaks ordinary work and gets the gate switched off.
+
+So this gate is a FAST LOCAL SPEED BUMP, not the authority. It catches the
+shapes an agent actually types, immediately, with an explanation. It does not
+and cannot catch a determined bypass.
+
+THE AUTHORITY BELONGS ON THE SERVER. `enforce_admins: true` on the protected
+branch makes `--admin` fail at the GitHub API no matter how the command was
+spelled, wrapped, evaled or generated. That is one setting, it cannot be evaded
+by any shell trick, and it is the single-authority answer this file spent five
+rounds approximating. Measured 2026-08-14: enforce_admins is currently false and
+the agent credential is an admin, which is what makes `--admin` work at all.
+
 Contract: PreToolUse hook JSON on stdin. Deny = permissionDecision JSON on stdout,
 exit 0 (the same shape as destructive-op-deny.sh emit_deny). Allow = exit 0, silent.
 Self-test: python3 test_merge_bypass_gate.py
@@ -79,7 +106,125 @@ PROTECTED_BRANCHES = {"main", "master"}
 
 # Shell separators that start a new command. `|` is included so `foo | git push ...`
 # is examined rather than swallowed as an argument of foo.
-_SEPARATORS = {";", "&&", "||", "|", "\n"}
+_SEPARATORS = {";", ";;", "&&", "||", "|", "|&", "&", "\n"}
+
+# Wrappers that run another command. Stripping them is not cosmetic: `sudo gh pr
+# merge --admin` was ALLOW because the gate asked whether token 0 was `gh`.
+_WRAPPERS = {"sudo", "doas", "nohup", "command", "stdbuf", "nice", "ionice",
+             "time", "timeout", "xargs", "setsid", "script", "caffeinate"}
+# Shells that take a whole command as a single quoted argument.
+_DASH_C_SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
+
+
+def _tokenize(command: str) -> tuple[list[str], bool]:
+    """Tokens with shell OPERATORS as tokens in their own right.
+
+    `shlex.split` does NOT separate `;`, so `true;gh pr merge --admin` came back
+    as ['true;gh', 'pr', 'merge', '--admin'] and a gate keyed on token 0 never saw
+    a gh command at all. One character defeated the whole thing (Codex round 4,
+    filed minor, measured here as a full bypass on BOTH the merge and push sides).
+    `punctuation_chars` is exactly the shlex mode for this and it is what the
+    segment splitter always assumed it was being handed.
+
+    Falls back on an unbalanced quote to a split that at least breaks on the
+    operators, so a malformed command cannot launder a bypass through a broken
+    tokenizer.
+    """
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        return list(lex), True
+    except ValueError:
+        rough = command
+        for op in (";", "&", "|"):
+            rough = rough.replace(op, f" {op} ")
+        return rough.split(), False
+
+
+def _dash_c_payload(seg: list[str]) -> str | None:
+    """The command string inside `bash -c '<command>'`, or None."""
+    if not seg or Path(seg[0]).name not in _DASH_C_SHELLS:
+        return None
+    for i, tok in enumerate(seg[1:], start=1):
+        # `-lc`, `-ic`, `-xc` are ONE flag cluster ending in c, and each carries a
+        # command payload exactly like `-c`. Matching only the exact token `-c`
+        # meant `bash -lc '<cmd>'` was never recognised as a shell payload, which
+        # defeated BOTH the merge and push sides (Codex round 5).
+        if (tok.startswith("-") and not tok.startswith("--")
+                and tok.endswith("c") and i + 1 < len(seg)):
+            return seg[i + 1]
+    return None
+
+
+# Commands that PRINT or READ their arguments and cannot execute them. `echo git
+# push` and `ls git push` were both DENIED (Codex round 6, minor) because the
+# token scan asks only whether the word appears. Being wrong about a name here
+# costs a false DENY, never a bypass, so the list stays short and obvious --
+# anything that can run a child (find -exec, sed -e, xargs, awk) is NOT on it.
+_NON_EXECUTING = {
+    "echo", "printf", "ls", "cat", "grep", "egrep", "fgrep", "rg", "man",
+    "head", "tail", "wc", "which", "type", "basename", "dirname", "file",
+    "stat", "less", "more", "sort", "uniq", "diff", "jq", "column", "tee",
+}
+
+
+def _tool_position(seg: list[str], tool: str) -> str:
+    """THE ONE authority on whether this gate can see a tool's arguments.
+
+    'absent' | 'plain' (tool is the command) | 'hidden' (tool is in there but
+    something else is the command, so the real argv is not visible here).
+
+    WHY ONE FUNCTION. Round 4 gave the MERGE side a token scan so a wrapper could
+    not hide `gh`, and left the PUSH side keyed on token 0. Round 5 then found
+    exactly that: `myrunner git push origin main` was ALLOW while the same shape
+    with gh was DENY. The rule was right and it was implemented at one of the two
+    places that needed it. A safety property maintained at N sites is waiting for
+    the round that finds the N+1th, so both verdicts now ask this.
+    """
+    if not any(Path(t).name == tool for t in seg):
+        return "absent"
+    if Path(seg[0]).name == tool:
+        return "plain"
+    if Path(seg[0]).name in _NON_EXECUTING:
+        # The word is an argument to something that prints or reads it. Not a
+        # hidden invocation.
+        return "absent"
+    return "hidden"
+
+
+def _logical_lines(command: str) -> list[str]:
+    """Split on real newlines, honouring backslash continuations.
+
+    A newline is WHITESPACE to shlex, never a separator token, so
+    `true\ngit push origin main` tokenized as one segment beginning with `true`
+    and the push check (which asked about token 0) never fired. Splitting before
+    tokenizing is what makes each line its own command.
+    """
+    joined = re.sub(r"\\\n", " ", command)
+    return [ln for ln in joined.split("\n") if ln.strip()]
+
+
+def _strip_wrappers(seg: list[str]) -> tuple[list[str], str | None]:
+    """Peel leading wrapper commands, returning the inner argv and the wrapper.
+
+    The wrapper NAME is returned rather than discarded, because a wrapped merge is
+    refused for being wrapped -- `sudo gh pr merge --auto` is not the plain form,
+    and nobody sudos gh. Reporting which wrapper was seen makes the refusal
+    explainable instead of mysterious.
+    """
+    found = None
+    i = 0
+    while i < len(seg):
+        name = Path(seg[i]).name
+        if name not in _WRAPPERS:
+            break
+        found = found or name
+        i += 1
+        # Consume the wrapper's own options and any bare numeric argument
+        # (`timeout 5 gh ...`), so the inner command lands at position 0.
+        while i < len(seg) and (seg[i].startswith("-") or seg[i].replace(".", "", 1).isdigit()):
+            i += 1
+    return seg[i:], found
 
 # git flags taking a separate value, so the value is never mistaken for a positional
 # (`git push --repo X origin main` must read origin as the remote, not X).
@@ -229,18 +374,25 @@ _SAFE_SHAPE = ("the only merge this gate permits is:\n"
                "no other flags.")
 
 
-def _merge_verdict(seg: list[str], had_env_prefix: bool = False) -> str | None:
+def _merge_verdict(seg: list[str], note: str | None = None) -> str | None:
     """An unsafe `gh ... merge` invocation -> reason. Anything else -> None.
 
-    The trigger is deliberately broad (a bare `merge` token anywhere in a gh
-    command) because over-triggering costs a rephrase while under-triggering costs
-    an unchecked merge into main.
+    The trigger is deliberately broad -- a `gh` token ANYWHERE plus a `merge`
+    token -- because over-triggering costs a rephrase while under-triggering costs
+    an unchecked merge into main. Keying it on token 0 was the round-4 hole: any
+    wrapper or an unsplit `;` moved gh off position 0 and the trigger went quiet.
+    Scanning for the token and THEN demanding position 0 keeps the fail-closed
+    direction: being unable to see the shape is a refusal, not a pass.
     """
-    if not seg or Path(seg[0]).name != "gh":
+    if not seg:
         return None
+    where = _tool_position(seg, "gh")
+    if where == "absent" or "merge" not in seg:
+        return None
+    if where == "hidden":
+        return ("a `gh ... merge` appears here but not as the command itself, so "
+                "this gate cannot see its real arguments.\n  " + _SAFE_SHAPE)
     args = seg[1:]
-    if "merge" not in args:
-        return None
     # `gh pr list --search merge` and friends: a different pr subcommand in the
     # subcommand slot means this was never a merge. Recognised only in the
     # no-global-flag form; with a global flag present it falls through to the
@@ -248,9 +400,10 @@ def _merge_verdict(seg: list[str], had_env_prefix: bool = False) -> str | None:
     if len(args) >= 2 and args[0] == "pr" and args[1] in _GH_PR_OTHER_SUBCOMMANDS:
         return None
 
-    if had_env_prefix:
-        return ("an environment prefix on a gh merge can redirect it (GH_REPO, "
-                "GH_HOST) without changing a single argument.\n  " + _SAFE_SHAPE)
+    if note:
+        return (f"{note} on a gh merge can change what it does without changing a "
+                "single argument (GH_REPO / GH_HOST retarget it; a wrapper hides "
+                f"it).\n  " + _SAFE_SHAPE)
     if args[:2] != ["pr", "merge"]:
         return ("this is not the plain `gh pr merge` form. A global flag that "
                 "takes a value (-R, --repo, --hostname) shifts the subcommand, "
@@ -273,8 +426,18 @@ def _merge_verdict(seg: list[str], had_env_prefix: bool = False) -> str | None:
 
 def _push_verdict(seg: list[str], cwd: str) -> str | None:
     """`git push` landing on a protected branch of a GitHub remote -> reason."""
-    if not seg or Path(seg[0]).name != "git":
+    if not seg:
         return None
+    # Same authority the merge side uses. Round 5 found this side still keyed on
+    # token 0, so a wrapper hid the push while the identical shape with gh was
+    # already refused. One rule, asked in both places.
+    where = _tool_position(seg, "git")
+    if where == "absent" or "push" not in seg:
+        return None
+    if where == "hidden":
+        return ("a `git ... push` appears here but not as the command itself, so "
+                "this gate cannot see which branch it targets.\n  "
+                "Run the push as the command itself, without a wrapper.")
 
     repo_dir = cwd
     args: list[str] = []
@@ -341,7 +504,7 @@ def _push_verdict(seg: list[str], cwd: str) -> str | None:
             "request, and both required checks live on the PR.")
 
 
-def classify(command: str, cwd: str) -> tuple[str, str]:
+def classify(command: str, cwd: str, _depth: int = 0) -> tuple[str, str]:
     """THE decision. One constructor, so the property has one place to be wrong.
 
     Lesson `a-safety-property-enforced-at-n-sites-is-not-a-chokepoint`: a rule
@@ -350,30 +513,57 @@ def classify(command: str, cwd: str) -> tuple[str, str]:
     """
     if not command or not command.strip():
         return "allow", ""
-    try:
-        tokens = shlex.split(command, comments=False, posix=True)
-        parsed = True
-    except ValueError:
-        # An unbalanced quote must not launder a bypass. Fall back to the raw
-        # string, which over-matches (destructive-op-deny.sh's trade) but only for
-        # commands that were already unparseable.
-        tokens = command.split()
-        parsed = False
+    if _depth > 4:
+        # A wrapper chain deep enough to hit this is not a command anyone types.
+        return "deny", ("nested shell wrappers too deep to analyse.\n  " + _SAFE_SHAPE)
+
+    # Newlines first: shlex treats a newline as WHITESPACE, never a separator, so
+    # a two-line command arrived as ONE segment whose first token was line 1's
+    # command and neither verdict ever saw line 2 (Codex round 5).
+    parsed = True
+    segments: list[list[str]] = []
+    for line in _logical_lines(command):
+        toks, ok = _tokenize(line)
+        parsed = parsed and ok
+        segments.extend(_split_segments(toks))
 
     cur_dir = cwd
-    for raw_seg in _split_segments(tokens):
+    for raw_seg in segments:
         seg = _strip_env_prefix(raw_seg)
         if not seg:
             continue
         # An env prefix is not cosmetic on a merge: GH_REPO / GH_HOST retarget gh
         # without changing one argument, so the same argv can merge in a different
         # repo. The prefix was previously stripped and forgotten.
-        had_env_prefix = len(seg) != len(raw_seg)
+        note = "an environment prefix" if len(seg) != len(raw_seg) else None
+
+        # ORDER IS LOAD-BEARING: strip wrappers BEFORE looking for a `-c` payload.
+        # The first version checked the payload first, so `sudo bash -c '<cmd>'`
+        # found no shell at position 0 (it found `sudo`), stripped the wrapper, and
+        # never looked again -- ALLOW. Caught by this file's own reproducer, not by
+        # the probe that only tried each evasion on its own. Evasions compose.
+        seg, wrapper = _strip_wrappers(seg)
+        if not seg:
+            continue
+        if wrapper:
+            note = f"a `{wrapper}` wrapper"
+
+        # `bash -c '<command>'` hides an entire command inside one quoted token.
+        # Recurse on the payload instead of pretending the outer word is the whole
+        # story. Found by Codex round 4, filed minor, measured as a full bypass:
+        # `bash -c 'gh pr merge 155 --admin'` was ALLOW.
+        payload = _dash_c_payload(seg)
+        if payload is not None:
+            decision, reason = classify(payload, cur_dir, _depth + 1)
+            if decision == "deny":
+                return "deny", reason
+            continue
+
         if Path(seg[0]).name == "cd" and len(seg) > 1:
             resolved = _resolve_dir(seg[1], cur_dir)
             cur_dir = resolved if resolved else cur_dir
             continue
-        reason = _merge_verdict(seg, had_env_prefix)
+        reason = _merge_verdict(seg, note)
         if reason:
             return "deny", reason
         reason = _push_verdict(seg, cur_dir)
