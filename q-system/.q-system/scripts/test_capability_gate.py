@@ -223,6 +223,46 @@ def sec_wiring():
         (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
         rc, out = run_gate(root, "--check-only")
         check("wiring: declared_inert passes with note", rc == 0 and "DECLARED-INERT" in out)
+    # ASK-746 neighbour: the candidate filter said `"__main__" in text`, a bare
+    # substring over the whole file. conftest.py has no exec bit and no guard --
+    # its only `__main__` is one line of PROSE in its docstring telling future
+    # authors to guard their exits. That sentence promoted it to a candidate, and
+    # since pytest loads conftest BY NAME it could never prove itself wired, so
+    # main's Skeleton Validation carried `inert-engine: conftest.py` from
+    # 2026-08-10 to 2026-08-14. The tempting "fix" is a fake reference on a
+    # wiring surface; the real one is that this was never an engine.
+    #
+    # The control for these lives above: "wiring: unwired engine RED". If a
+    # loosened filter ever stops seeing real dead engines, that case goes green
+    # and these three cannot tell you, so they are read together.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        c = root / "q-system/.q-system/scripts/conftest.py"
+        c.parent.mkdir(parents=True, exist_ok=True)
+        c.write_text('"""Prose only: guard exits under '
+                     '`if __name__ == "__main__":` so it stays importable."""\n')
+        rc, out = run_gate(root, "--check-only")
+        check("ASK-746: conftest.py mentioning __main__ in PROSE is not inert",
+              rc == 0 and "conftest.py" not in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        c = root / "q-system/.q-system/scripts/conftest.py"
+        c.parent.mkdir(parents=True, exist_ok=True)
+        c.write_text('if __name__ == "__main__":\n    print("hi")\n')
+        c.chmod(0o755)
+        rc, out = run_gate(root, "--check-only")
+        check("ASK-746: conftest.py is runner-loaded, inert even with a real guard"
+              " + exec bit", rc == 0 and "conftest.py" not in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        p = root / "q-system/.q-system/scripts/talks_about_main.py"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('"""A library. See `if __name__ == "__main__":` elsewhere."""\n'
+                     "def helper():\n    return 1\n")
+        rc, out = run_gate(root, "--check-only")
+        check("ASK-746: a library that only TALKS about __main__ is not an engine",
+              rc == 0 and "talks_about_main" not in out)
+
     # ASK-517: an engine wired by a PYTHON IMPORT must not read as inert.
     # The matcher was `p.name in surface`, i.e. "loops_path.py" WITH the
     # extension, while an import names the module by its stem -- so
@@ -454,6 +494,8 @@ def sec_negative_proof():
         rc, out = run_gate(root, "--check-only")
         check("vanished: declared-but-missing RED", rc == 1 and "declared-but-missing" in out)
     # Required data: in-scope missing file MUST fail; out-of-scope must not.
+    # spillover-skip: "out-of-scope" here is a required_data `scope` field that
+    # does not name this instance, not deferred work. Nothing to capture.
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         m = base_manifest(required_data=[{"path": "q-system/canonical/x.json", "scope": "all"}])
@@ -471,7 +513,7 @@ def sec_negative_proof():
         m["required_data"][0]["scope"] = ["some-other-instance"]
         (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
         rc, out = run_gate(root, "--check-only")
-        check("required_data: out-of-scope not demanded", rc == 0)
+        check("required_data: out-of-scope not demanded", rc == 0)  # spillover-skip
     # Token-guard fixes are part of the pre-propagation matrix (finding-7):
     # the paired suite must be green, executed here, not assumed.
     tg_test = pathlib.Path(__file__).resolve().parent / "test_token_guard_observation.py"
