@@ -234,9 +234,17 @@ def main():
     parser.add_argument("--skeleton", default=str(SKELETON))
     parser.add_argument("--only", action="append", default=[],
                         help="limit to these instance names (repeatable)")
+    # The [no-issue:] token is NOT a bypass added to get past a gate. One client
+    # engagement's instance requires every commit to name a Linear issue in THAT
+    # instance's project, and this commit is fleet exhaust: it has no issue there
+    # and should not be given a fake one, which is the failure mode that gate's
+    # own presence-check invites. Its script carries a first-class hatch
+    # (BYPASS_RE, reason required), and the updater's own system-state commits
+    # already use it. Instances without the gate ignore the token.
     parser.add_argument("--message", default=(
-        "chore(fleet): commit updater exhaust its writer never committed\n\n"
-        "Written by kipi update, never committed, so the dirty-tree guard "
+        "chore(fleet): commit updater exhaust its writer never committed "
+        "[no-issue: fleet updater exhaust, no issue in this instance]\n\n"
+        "Written by the fleet updater, never committed, so the dirty-tree guard "
         "refused every later sync. Attributed by fleet-unblock.py: each blob "
         "here is one the skeleton itself held at this exact path."))
     args = parser.parse_args()
