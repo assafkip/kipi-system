@@ -237,6 +237,26 @@ if _notify:
           "osascript" in src, False)
 
 
+# THE GHOST-LABEL REGRESSION (Codex review of #142, major). The healthy-run
+# cleanup cleared the WHOLE ping-state dict, and run_roster_check writes
+# ROSTER_STATE_KEY earlier in the same run. discover_problems() does not judge the
+# roster, so a run with a ghost label but no per-job problem wiped the record that
+# the ghost had been paged, and it paged again every cycle for ever.
+#
+# A source assertion, and said plainly rather than dressed as behavioural: driving
+# it needs a live launchctl and a real state file. It pins the one property that
+# was wrong -- the cleanup must not blindly write an empty dict.
+_HC = Path(__file__).parent / "launchd-health-check.py"
+_hc_src = _HC.read_text() if _HC.exists() else ""
+if "write_state({})  # everything recovered" in _hc_src:
+    failures.append(
+        "healthy-run cleanup writes an empty dict, erasing ROSTER_STATE_KEY banked "
+        "earlier in the same run: a ghost label re-pages every cycle")
+elif _hc_src and "ROSTER_STATE_KEY" not in _hc_src.split("everything recovered")[0][-800:] \
+        and "kept = load_state().get(ROSTER_STATE_KEY)" not in _hc_src:
+    failures.append("healthy-run cleanup does not preserve ROSTER_STATE_KEY")
+
+
 def _report() -> int:
     if failures:
         print("FAIL:")

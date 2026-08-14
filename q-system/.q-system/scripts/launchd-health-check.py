@@ -978,7 +978,15 @@ def run(dry_run):
         if dry_run:
             print("all watched launchd jobs healthy (loaded, exit 0)")
         elif STATE_FILE.exists():
-            write_state({})  # everything recovered; clear ping history
+            # PRESERVE THE ROSTER'S BANKED STATE. This cleared the WHOLE dict, and
+            # run_roster_check() writes ROSTER_STATE_KEY earlier in this same run.
+            # discover_problems() does not judge the roster, so a run with a ghost
+            # label but no per-job problem wiped the record that the ghost had
+            # already been paged -- and it paged again on the next cycle, every
+            # cycle, for ever. "Everything recovered" was true of the jobs and false
+            # of the roster.
+            kept = load_state().get(ROSTER_STATE_KEY)
+            write_state({ROSTER_STATE_KEY: kept} if kept else {})
         return
 
     for label, kind, detail in problems:

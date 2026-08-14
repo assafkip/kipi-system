@@ -261,3 +261,15 @@ def test_a_target_that_goes_dirty_after_the_survey_is_refused(tmp_path, monkeypa
     assert "plugin_path_is_dirty(path, prefix)" in between, (
         "no dirty revalidation between `if args.apply:` and copy_plugin: a target "
         "that goes dirty after the survey is overwritten in place with no backup")
+
+    # BOTH WRITE PATHS, because there are two. The first version of this test pinned
+    # only the OLD branch, so the LABEL branch shipped with the identical race and
+    # Codex caught it on the next round -- the test proved the instance, not the
+    # class. LABEL writes one manifest file, which is still a file somebody may have
+    # edited in that window.
+    label_ix = src.index('if status == "LABEL":')
+    label_copy = src.index("shutil.copy2(src, dst)", label_ix)
+    label_between = src[label_ix:label_copy]
+    assert label_between.count("plugin_path_is_dirty(path, prefix)") >= 2, (
+        "the LABEL apply path does not revalidate before shutil.copy2: an "
+        "uncommitted manifest edit made after the survey is overwritten")

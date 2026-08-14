@@ -316,6 +316,16 @@ def main(argv=None):
             buckets["LABEL"].append(
                 (name, f"HEAD code mislabelled {matched_rev}, manifest only"))
             if args.apply:
+                # SAME REVALIDATION AS THE OLD PATH. I fixed that branch first and
+                # left this one open, which is fixing the instance and not the class
+                # -- the defect this fleet's own meta-RCA is about. Codex caught it
+                # on the next round. One file is still a file: overwriting a
+                # manifest somebody edited in the survey-to-write window destroys it
+                # with no backup, exactly like overwriting the tree would.
+                if plugin_path_is_dirty(path, prefix):
+                    buckets["DIRTY"].append(
+                        (name, f"went dirty under {prefix} between survey and write; refused"))
+                    continue
                 src = os.path.join(skeleton, prefix, MANIFEST_REL)
                 dst = os.path.join(path, prefix, MANIFEST_REL)
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
