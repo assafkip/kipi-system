@@ -19,6 +19,8 @@ usage() {
   echo "  kipi migrate <path> --dry-run  Preview migration without changes"
   echo "  kipi cluster add <path> <name> <role>  Plug an instance into the KTLYST cluster"
   echo "  kipi cluster sync    Re-run all bridge writers (push latest state to all instances)"
+  echo "  kipi install-jobs    Install every committed launchd job on this machine"
+  echo "                       (run once per machine; without it nothing is scheduled)"
   echo "  kipi list            Show all registered projects"
   echo ""
   echo "  kipi linear issue \"<title>\"   Open a Linear issue for work you are ABOUT to start"
@@ -106,6 +108,17 @@ case "${1:-help}" in
     # It opens a PR and stops: it cannot merge and cannot close an issue.
     shift || true
     bash "$KIPI_HOME/q-system/.q-system/scripts/linear-worker.sh" "$@"
+    ;;
+  install-jobs)
+    # Install every committed launchd template so this machine actually runs the
+    # scheduled jobs. Added 2026-08-14 (ASK-729): six com.kipi.*.plist templates were
+    # committed and NOTHING invoked the installer, so a fresh checkout ran none of
+    # them and each job existed only where somebody had typed the command by hand.
+    # The first fix wrote `install-plist.sh --all` and stopped there, which moved the
+    # gap up a level rather than closing it -- a caller nobody calls is the same
+    # defect wearing a different name. This is the call site.
+    shift || true
+    bash "$KIPI_HOME/q-system/.q-system/scripts/install-plist.sh" --all "$@"
     ;;
   dor)
     # Bounded nightly DoR drafter. The autonomous worker only picks up issues that
