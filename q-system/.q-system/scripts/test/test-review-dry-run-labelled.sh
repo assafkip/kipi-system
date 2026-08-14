@@ -145,11 +145,13 @@ case "$VERDICT_LINE" in
   *) fail "the fixture no longer derives an approving verdict (got '$VERDICT_LINE'); the defect is only costly on an approving run" ;;
 esac
 
-# THE DEFECT ITSELF: an approving verdict, and no gate moved anywhere.
+# THE DEFECT ITSELF: an approving verdict, and nothing posted outward. Scoped
+# deliberately to the OUTWARD surfaces -- case 3 measures the verdict record,
+# which a no-post run does write, so "no gate moved" would be false here.
 [ "$STATUS_CALLS" = "0" ] \
   || fail "the no-post run posted a commit status; POST=0 is supposed to post nothing:
 $(sed 's/^/        /' "$GH_LOG")"
-ok "the no-post run moved no gate (0 commit statuses posted)"
+ok "the no-post run posted nothing outward (0 commit statuses)"
 
 # ...so the transcript MUST say so. This is the assertion that was red before
 # the fix: the run said APPROVE and said nothing about having done nothing.
@@ -210,5 +212,72 @@ case "$POST_DONE" in
   *"$MARKER"*) fail "the --post run's closing line is labelled '$MARKER': '$POST_DONE'" ;;
   *) ok "the --post closing line carries no dry-run marker" ;;
 esac
+
+# ===========================================================================
+# CASE 3 -- THE LABEL MUST MATCH WHAT THE RUN ACTUALLY DID (ASK-758 round 2).
+#
+# The first version of the marker read "nothing posted, no gate moved". The
+# second half was false. The verdict record `pr-<N>.verdict.json` is written at
+# pr-review-agent.sh:876, and the `if [ "$POST" = "1" ]` guard does not open
+# until :974 -- so the record is written on EVERY run, dry ones included. That
+# record is exactly what the loop gates on: converge.sh:748 and
+# linear-worker.sh:1054 both read it to decide whether a PR is approved or goes
+# to rework. A dry run therefore moves the one gate that matters most, while the
+# marker told the reader no gate had moved. A marker that is trusted and wrong
+# is worse than no marker: it is the same silent-dry-run defect aimed at the
+# reader who DID read the label.
+#
+# SO THIS CASE MEASURES FIRST AND ASSERTS AGAINST THE MEASUREMENT, rather than
+# pinning one sentence. If the record write ever moves inside the POST guard,
+# the else-branch turns red and forces the label to be corrected in the other
+# direction too. The claim is coupled to the behaviour, not to a string.
+# ===========================================================================
+
+# Negative self-test for the finder itself. Without it, "0 records found" below
+# could mean the find expression is broken rather than that nothing was written.
+EMPTY_DIR="$WORK/no-records"; mkdir -p "$EMPTY_DIR"
+[ "$(find "$EMPTY_DIR" -name '*.verdict.json' 2>/dev/null | wc -l | tr -d ' ')" = "0" ] \
+  || fail "negative self-test: the record finder reported records in an empty directory"
+# The record lands under $OUT_DIR, which pr-review-agent.sh:111 derives from
+# HOME ("$HOME/.config/kipi/pr-reviews") -- NOT from KIPI_STATE_DIR. Reading the
+# derivation rather than assuming it is the point: the first draft of this case
+# looked in the state dir, found nothing, and would have concluded "no record is
+# written" -- the exact false-green this self-test exists to refuse.
+[ "$(find "$WORK/home-post" -name '*.verdict.json' 2>/dev/null | wc -l | tr -d ' ')" -ge 1 ] \
+  || fail "negative self-test: the record finder found no record even after the --post run, so it cannot detect one"
+ok "negative self-test: the verdict-record finder distinguishes present from absent"
+
+DRY_RECORDS="$(find "$WORK/home-dry" -name '*.verdict.json' 2>/dev/null | wc -l | tr -d ' ')"
+echo "  [ctx] verdict records written by the no-post run: $DRY_RECORDS"
+
+if [ "$DRY_RECORDS" -ge 1 ]; then
+  ok "measured: the no-post run DID write the gating verdict record ($DRY_RECORDS)"
+
+  # The false claim, named exactly. This is the assertion that was red.
+  case "$VERDICT_LINE" in
+    *"no gate moved"*) fail "the dry-run label claims 'no gate moved', but the run wrote $DRY_RECORDS verdict record(s):
+      $VERDICT_LINE
+      $(find "$WORK/home-dry" -name '*.verdict.json')
+      converge.sh:748 and linear-worker.sh:1054 gate on that record. The run moved the loop's gate and told the reader it had not." ;;
+    *) ok "the dry-run label does not claim 'no gate moved'" ;;
+  esac
+
+  # Deleting the false clause is not enough -- silence about the write is the
+  # original defect again. The label has to say what the run DID do.
+  case "$VERDICT_LINE" in
+    *"verdict record"*) ok "the dry-run label discloses that the verdict record was still written" ;;
+    *) fail "the dry-run label says nothing about the verdict record, which this run wrote and the loop gates on:
+      $VERDICT_LINE
+      Dropping the false clause without disclosing the write leaves the reader with the same wrong belief." ;;
+  esac
+else
+  # The other direction: if the record write is ever moved behind --post, a
+  # label that still mentions it becomes the new false claim.
+  case "$VERDICT_LINE" in
+    *"verdict record"*) fail "the label mentions a verdict record, but the no-post run wrote none. The claim and the behaviour have drifted apart:
+      $VERDICT_LINE" ;;
+    *) ok "the no-post run wrote no verdict record and the label claims none" ;;
+  esac
+fi
 
 echo "PASS ($PASS checks) test-review-dry-run-labelled.sh"
