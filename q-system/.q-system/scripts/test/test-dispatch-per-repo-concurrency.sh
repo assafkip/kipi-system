@@ -2,8 +2,15 @@
 # Pairs with the PER-REPO CONCURRENCY block in kipi-dispatch.sh (sp-e45251f7).
 #
 # The claim under test: dispatch may run several converges at once ACROSS repos,
-# and never two in ONE repo. That is what lets KIPI_DISPATCH_MAX rise above 1
-# without rebuilding the same-file collision the cap was set to 1 to avoid.
+# and PREFERS a repo with nothing live. That is what lets KIPI_DISPATCH_MAX rise
+# above 1 without rebuilding the same-file collision the cap was set to 1 to
+# avoid.
+#
+# IT IS NOT "never two in ONE repo", and this file used to say that it was. When
+# only one repo is dispatchable, dispatch takes it anyway -- case 3 asserts
+# exactly that -- because an absolute rule re-created the ready-queue starvation
+# test-ci-redrive 14g exists to prevent. A test file that overstates its own
+# guarantee is how a reader concludes the cap is safer than it is (ASK-811).
 #
 # THIS TEST READS THE REAL SCRIPT, IT DOES NOT RESTATE IT. Both the helper
 # functions and the selection loop are cut out of kipi-dispatch.sh by marker and

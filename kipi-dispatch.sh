@@ -354,7 +354,15 @@ live_converges() {
 # branch namespace and no file. So the conflict argument -- the whole reason the
 # cap was 1 -- says nothing about cross-repo concurrency. This makes the rule
 # structural instead of numeric: the GLOBAL cap becomes a spend ceiling, and
-# AT MOST ONE live run per repo is enforced here, where a repo is chosen.
+# a BUSY-REPO PREFERENCE is applied where a repo is chosen: a repo with a live
+# run is deprioritised, and taken only when it is the only candidate.
+#
+# NOT A GUARANTEE, AND THE WORDING MATTERS (codex major, PR #163 r2). An earlier
+# version of this comment said "at most ONE live run per repo is enforced", which
+# the fallback below plainly does not do. A safety claim in a comment that the
+# code does not keep is how the next person reasons themselves into raising the
+# cap. What is enforced is the preference plus the GLOBAL cap; same-repo overlap
+# is possible when only one repo is dispatchable, and that is ASK-811.
 #
 # This deliberately does NOT unlock same-repo concurrency. File-disjointness is
 # still unbuilt, and sp-f3a2ad81 shows why the obvious version is not enough:
@@ -402,15 +410,22 @@ live_repos() {
 #
 # It still must not take dispatch down: the run has already been launched and
 # killing the script here would strand it. So the write is checked, and a failure
-# is made LOUD instead of fatal. The unattributed-run guard below then does the
-# rest of the work -- pgrep will exceed the attributed count on the next tick and
-# selection stops, which is the fail-safe direction.
+# is made LOUD instead of fatal.
+#
+# AND THE PAGE SAYS WHAT IS ACTUALLY TRUE (codex major, PR #163 r2). An earlier
+# version of this text promised "dispatch will refuse to enter any repo until it
+# finishes", which was true of the unattributed-run HALT that used to sit in the
+# selection loop. That halt was removed -- it broke test-dispatch-liveness 6a and
+# turned one hand-run converge into a fleet-wide stall -- and the promise was left
+# behind. A page that describes a guard which no longer exists is worse than no
+# page: it is read at the exact moment someone is deciding whether to act. The
+# honest consequence is that the repo may be picked again.
 record_live_run() {
   local pid="$1" issue="$2" repo="$3"
   mkdir -p "$(dirname "$LIVE_LEDGER")" 2>/dev/null || true
   if ! printf '%s\t%s\t%s\n' "$pid" "$issue" "$repo" >> "$LIVE_LEDGER" 2>/dev/null; then
-    say "LEDGER WRITE FAILED for $issue in $repo ($LIVE_LEDGER): this run is unattributed, so per-repo exclusion cannot see it"
-    page "kipi dispatch: could not record a live run to $LIVE_LEDGER. The per-repo concurrency guard is blind to $issue, and dispatch will refuse to enter any repo until it finishes. Do: check permissions and free space on that path."
+    say "LEDGER WRITE FAILED for $issue in $repo ($LIVE_LEDGER): this run is unattributed, so the busy-repo preference cannot see it and that repo may be picked again"
+    page "kipi dispatch: could not record a live run to $LIVE_LEDGER. The busy-repo preference is blind to $issue, so its repo can be picked again and two agents may land on the same files. Do: check permissions and free space on that path."
     return 1
   fi
 }

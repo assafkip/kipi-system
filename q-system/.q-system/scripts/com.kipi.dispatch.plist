@@ -33,13 +33,18 @@
 		     only once dispatch is file-disjointness aware. That condition has
 		     been MET IN PART and the number reflects exactly the part.
 
-		     ASK-804 made the rule structural instead of numeric: at most ONE
-		     live run PER REPO, enforced where a repo is chosen. Two runs in
-		     different repos share no working tree, no branch namespace and no
-		     file, so the conflict argument says nothing about them. Same-repo
-		     concurrency is still 1 and is NOT unlocked here; full
-		     file-disjointness remains unbuilt, and sp-f3a2ad81 / sp-4caf5d7b
-		     show why the obvious version is not enough on its own.
+		     ASK-804 made the rule structural rather than numeric: a repo with
+		     a live run is DEPRIORITISED, so with several dispatchable repos the
+		     work spreads one per repo. Two runs in different repos share no
+		     working tree, no branch namespace and no file, so the conflict
+		     argument says nothing about them.
+
+		     IT IS A PREFERENCE, NOT A GUARANTEE. When only one repo is
+		     dispatchable, dispatch takes it anyway rather than idling -- an
+		     absolute rule re-created the ready-queue starvation that
+		     test-ci-redrive 14g exists to prevent. So same-repo overlap is
+		     still POSSIBLE at this cap, and this number is what bounds it.
+		     The open decision is ASK-811.
 
 		     3 IS DERIVED, NOT PICKED. instance-registry.json carries exactly
 		     two dispatch.enabled instances, plus the home repo, which selection
