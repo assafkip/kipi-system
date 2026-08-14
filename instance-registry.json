@@ -18,7 +18,11 @@
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
-      "has_git": true
+      "has_git": true,
+      "dispatch": {
+        "enabled": true,
+        "expected_remote": "https://github.com/assafkip/ktlyst-saas-product.git"
+      }
     },
     {
       "name": "ASK_AI_consultant",
@@ -134,7 +138,11 @@
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
-      "has_git": true
+      "has_git": true,
+      "dispatch": {
+        "enabled": true,
+        "expected_remote": "https://github.com/assafkip/kipi-interview-coach.git"
+      }
     },
     {
       "name": "negotiator",

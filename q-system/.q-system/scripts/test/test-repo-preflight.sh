@@ -851,13 +851,35 @@ OUT="$(run_preflight "$INTELCLIENT" "https://github.com/assafkip/intelclient.git
   && ok "a NON-engagement repo under the founder's own root still passes" \
   || bad "the guard over-matched and refused one of the founder's own repos: $(run_preflight "$OWNPROJ" "https://github.com/assafkip/ownproj.git")"
 
-# The engagement ROOT itself is the founder's own instance, not an engagement. The
-# founder's wording was "the engagement instances NESTED UNDER consulting/projects/*",
-# so <root>/projects/<x> refuses and <root> does not.
+# THE ENGAGEMENT ROOT ITSELF IS REFUSED (ASK-754). THIS ASSERTION IS INVERTED.
+#
+# It used to assert the opposite -- "the engagement ROOT itself is not treated as a
+# client engagement" -- on the reading that the founder meant only "the engagement
+# instances NESTED UNDER consulting/projects/*". Inverting it is part of the fix, not
+# collateral: while the suite pinned the old behaviour, the hole could not be closed
+# without a red test, and a green suite read as proof the root was safe on purpose.
+#
+# What changed is evidence, not taste. Measured 2026-08-14 on the one repo that
+# reading admits, ASK_AI_consultant at /Users/assafkipnis/projects/consulting:
+# 12 TRACKED files under clients/ (alma, portant, restaurent), all 11 engagement
+# repos nested beneath it, and q-consult/ (998 files) is the live publishing engine.
+# The founder's condition for this call was "if it holds client material, it should
+# be refused" -- it holds client material in its own git history.
 ROOTREPO="$(make_good_repo_at rootrepo consulting)"
-[ "$(pf_rc "$ROOTREPO" "https://github.com/assafkip/rootrepo.git")" = "0" ] \
-  && ok "the engagement ROOT itself is not treated as a client engagement" \
-  || bad "the guard swallowed the persona root, which is the founder's own instance"
+OUT="$(run_preflight "$ROOTREPO" "https://github.com/assafkip/rootrepo.git")"
+{ [ "$(pf_rc "$ROOTREPO" "https://github.com/assafkip/rootrepo.git")" != "0" ] \
+    && printf '%s' "$OUT" | grep -q 'client-repo'; } \
+  && ok "the engagement ROOT itself is refused, and names client-repo" \
+  || bad "THE DEFECT: the engagement root -- which holds tracked client material and every nested engagement -- was accepted: $OUT"
+
+# THE DISCRIMINATION CASE FOR THE NEW GLOB, kept adjacent to it. */<root> must match
+# only when <root> is the LAST component. A founder root that merely CONTAINS an
+# engagement root name as a prefix or suffix is not an engagement root, and a rule
+# that refused those would be the over-match that gets a gate switched off.
+NEARMISS="$(make_good_repo_at nearmiss consulting-notes)"
+[ "$(pf_rc "$NEARMISS" "https://github.com/assafkip/nearmiss.git")" = "0" ] \
+  && ok "a path whose last component merely CONTAINS an engagement root name still passes" \
+  || bad "the new root glob over-matched on a substring: $(run_preflight "$NEARMISS" "https://github.com/assafkip/nearmiss.git")"
 
 # NO BYPASS SURFACE, same rule the dispatcher is held to by case 8.
 grep -qE '^ENGAGEMENT_ROOTS="[a-z ]+"$' "$PREFLIGHT" \

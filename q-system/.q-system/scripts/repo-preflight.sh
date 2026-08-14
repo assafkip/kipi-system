@@ -93,7 +93,33 @@ for _root in $ENGAGEMENT_ROOTS; do
   for _cand in "$REPO_PATH" "$RESOLVED_PATH"; do
     [ -n "$_cand" ] || continue
     case "$_cand" in
-      */"$_root"/projects/*)
+      # THE ROOT ITSELF, NOT ONLY WHAT IS NESTED UNDER IT (ASK-754).
+      # This case previously PASSED, and the test suite asserted that it should:
+      # the earlier reading of the founder's wording was "the engagement instances
+      # NESTED UNDER consulting/projects/*", so <root>/projects/<x> refused and
+      # <root> did not. Measured 2026-08-14 against the repo that reading lets in,
+      # ASK_AI_consultant at /Users/assafkipnis/projects/consulting:
+      #   - `git ls-files clients/` -> 12 TRACKED files under clients/alma,
+      #     clients/portant, clients/restaurent. Client material is in this repo's
+      #     own history, so an agent-authored PR here is a client-facing diff.
+      #   - projects/ holds all 11 engagement repos as nested SEPARATE git repos,
+      #     and the root tracks 0 files under projects/ -- so check 5 (dirty) is
+      #     structurally blind to them while the agent still has filesystem reach.
+      #   - q-consult/ is 998 tracked files: the LIVE social publishing engine.
+      # The root is not a neutral parent, it is the container of every engagement
+      # plus a live outbound path. Refusing the nested repos while admitting the
+      # directory that holds them is a gate with a door beside it.
+      #
+      # WHY THIS WAS ONLY LATENT: preflight already refused this repo today, but on
+      # control-code/hooks/dirty/branch-protection -- every one of them curable by a
+      # `kipi update`, a commit, and a protection toggle. An incidental refusal is
+      # not a rule, and it evaporates the day somebody tidies the repo.
+      #
+      # STILL DERIVED FROM SHAPE, STILL NO LIST. Same ENGAGEMENT_ROOTS constant,
+      # one extra glob. It discriminates: only a path whose LAST component is an
+      # engagement root matches, so the founder's own roots (cole-gtm, micro-saas,
+      # ktlyst-saas, personal) are untouched -- which the OWNPROJ case asserts.
+      */"$_root"|*/"$_root"/projects/*)
         # The reason is stated in full, because this line is what the founder reads
         # in the run log and in the daily digest's "tried, could not be worked"
         # section. A refusal he cannot tell apart from an empty queue is the defect
