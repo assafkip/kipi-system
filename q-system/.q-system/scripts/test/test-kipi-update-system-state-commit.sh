@@ -19,7 +19,7 @@
 # had handled.
 #
 # Measured 2026-08-14, full dry sweep of 23 instances: 11 refusals, 10 of them
-# preceded by that announcement. ktlyst-website announced 3 files (plugins/prd-os,
+# preceded by that announcement. One instance announced 3 files (plugins/prd-os,
 # .claude-integrity-armed, claude-integrity-baseline.json) and then refused with
 # all 3 still dirty. Two of the three were untracked, which is what poisoned the
 # commit that would have cleared the third.

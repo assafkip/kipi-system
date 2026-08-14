@@ -1506,8 +1506,11 @@ PY
       # "Committing N system-written file(s)" line printed either way.
       #
       # Measured 2026-08-14, full dry sweep of 23 instances: 11 refusals, 10 of
-      # them preceded by that announcement. ktlyst-website named 3 files, 2 of
-      # them untracked, and refused with all 3 still dirty.
+      # them preceded by that announcement. One instance named 3 files, 2 of
+      # them untracked, and refused with all 3 still dirty. (Instance NAMED in
+      # the sweep log, not here: the skeleton ships to every instance, so an
+      # instance name in a skeleton script is a propagation leak, which Gate 1
+      # refuses. Learned the hard way on this very commit.)
       #
       # FILES, NEVER DIRECTORIES (Codex review of #151, major). "Pathspec-limited"
       # was not the safety I claimed it was: sys_owned_dirty carries DIRECTORY
