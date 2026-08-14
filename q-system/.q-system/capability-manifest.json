@@ -661,7 +661,7 @@
     },
     {
       "path": "q-system/.q-system/scripts/stat-verify.py",
-      "reason": "802-line stat verification engine; zero hook wiring and its stat-registry.json data file exists in exactly one instance \u2014 wiring it is a founder product decision",
+      "reason": "802-line stat verification engine; zero hook wiring and its stat-registry.json data file exists in exactly one instance — wiring it is a founder product decision",
       "spillover_id": "sp-72b60bff"
     },
     {
@@ -678,11 +678,19 @@
       "path": "q-system/.q-system/scripts/verify-containment-export.py",
       "reason": "built for prd-skeleton-data-containment's export/quarantine flow and never wired",
       "spillover_id": "sp-0f773063"
+    },
+    {
+      "path": "q-system/.q-system/scripts/plugin-parity-check.py",
+      "reason": "operator tool: compares the RUNTIME marketplace clone against the skeleton. That clone lives outside the repo, so no repo surface can call it and CI cannot see the thing it inspects; wiring it to one would be a fake reference. It is how the 34-version prd-os drift was found (ASK-721)."
+    },
+    {
+      "path": "q-system/.q-system/scripts/plugin-fanout.py",
+      "reason": "operator tool: propagates a skeleton plugin into OTHER checkouts, hash-classified and without delete, as the bounded alternative to the fleet updater whose delete flag removed voicekit from 19 instances on 2026-08-07. Its targets are other repos, so nothing here calls it."
     }
   ],
   "uncovered_known": [
-    "plugins/*/tests \u2014 prd-os plugin suite, run by the plugin's own harness; outside v1 scan roots (finding-9 deferred)",
+    "plugins/*/tests — prd-os plugin suite, run by the plugin's own harness; outside v1 scan roots (finding-9 deferred)",
     "repo-root *.sh utilities are wiring surfaces, not test artifacts",
-    "stat-registry.json: NOT expressible as required_data in v1 \u2014 the one instance holding it keeps canonical under its own instance_q_dir (not q-system/) and its registry name differs from its dir basename, so a scoped entry could never fire (grounded 2026-07-23). Declared gap; owning decision + instance detail in spillover sp-72b60bff"
+    "stat-registry.json: NOT expressible as required_data in v1 — the one instance holding it keeps canonical under its own instance_q_dir (not q-system/) and its registry name differs from its dir basename, so a scoped entry could never fire (grounded 2026-07-23). Declared gap; owning decision + instance detail in spillover sp-72b60bff"
   ]
 }
