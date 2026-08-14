@@ -176,14 +176,22 @@ def _section(title, rows, error, fmt):
 
 
 def build(now: dt.datetime):
-    day = now.strftime("%Y-%m-%d")
+    # MATCH THE LOG'S OWN CLOCK. `linear-worker.log` and `dispatch.log` prefix every
+    # line with a UTC stamp (`date -u`), and this compared them against the LOCAL
+    # date. Measured 2026-08-13 21:5x PDT: local said 2026-08-13 while the logs were
+    # already writing 2026-08-14, so the "could not be worked" section matched zero
+    # lines and printed "nothing" on a day full of them. A silent empty, inside the
+    # tool built to stop silent empties. The header keeps the LOCAL date because that
+    # is the day the reader is having.
+    day = now.astimezone(dt.timezone.utc).strftime("%Y-%m-%d")
+    local_day = now.strftime("%Y-%m-%d")
     since = now.replace(hour=0, minute=0, second=0, microsecond=0)
     since_iso = since.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
     closed, opened, api_err = fetch(since_iso)
     blocked, log_err = blocked_today(day)
 
-    lines = [f"*Linear daily* {day} (as of {now.strftime('%H:%M %Z')})", ""]
+    lines = [f"*Linear daily* {local_day} (as of {now.strftime('%H:%M %Z')})", ""]
     lines += _section("Closed today", closed, api_err,
                       lambda n: f"{n['identifier']} {n['title'][:90]}")
     lines.append("")
