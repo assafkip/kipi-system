@@ -22,22 +22,43 @@ ok()  { echo "  PASS: $*"; PASS=$((PASS+1)); }
 bad() { echo "  FAIL: $*"; FAIL=$((FAIL+1)); }
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'kill_all_fakes 2>/dev/null; rm -rf "$WORK"' EXIT
+
+# THE NOTIFIER IS STUBBED FOR THE WHOLE SUITE, AND NOT AS A FORMALITY.
+# Case 10's fixture carries `pr-review-agent.sh ... --issue` in its argv (via
+# exec -a) so that live_converges has a realistic re-review shape to count. It is
+# a renamed `sleep` and executes nothing -- but a test that merely LOOKS like it
+# can reach the founder's phone is one edit away from actually doing it. Scar
+# 2026-08-01: a suite reporting 14/14 green paged the founder twice.
+export KIPI_NOTIFY=/usr/bin/true
 
 # --- extract the helpers from the shipped script -----------------------------
 HELPERS="$WORK/helpers.sh"
-# Starts at live_converges(), NOT at LIVE_LEDGER=. The selection loop calls
-# live_converges to compare the pgrep total against the attributed count, so a
-# cut that began one line lower produced a loop that died on
-# "live_converges: command not found" -- and the surrounding `||` made that read
-# as a PASS on the case it was meant to fail. Extract everything the loop calls.
-sed -n '/^live_converges()/,/^# --- END PER-REPO CONCURRENCY ---$/p' "$DISPATCH" > "$HELPERS"
-for fn in live_converges live_repos record_live_run compact_live_ledger; do
-  grep -q "$fn" "$HELPERS" \
-    || { echo "FATAL: $fn missing from the extract of $DISPATCH" >&2; exit 1; }
+# THE CUT MUST START AT THE TOP OF THE BLOCK, AND THIS HAS BITTEN THREE TIMES.
+#   - `/^LIVE_LEDGER=/,/^}$/` ended at the FIRST closing brace: 1 of 3 functions.
+#   - `/^live_converges()/` missed the LIVE_PATTERN= assignment one line above it,
+#     so every sourced copy died on "LIVE_PATTERN: unbound variable".
+# Each time the harness CRASHED and the `cmd && ok || bad` idiom reported the
+# crash as a PASS. So the extract is anchored at the first line of the block and
+# every symbol the loop needs is asserted present -- a missing one is a loud
+# FATAL, never a silent green.
+sed -n '/^LIVE_PATTERN=/,/^# --- END PER-REPO CONCURRENCY ---$/p' "$DISPATCH" > "$HELPERS"
+for sym in LIVE_PATTERN live_converges LIVE_LEDGER live_repos record_live_run compact_live_ledger; do
+  grep -q "$sym" "$HELPERS" \
+    || { echo "FATAL: $sym missing from the extract of $DISPATCH" >&2; exit 1; }
 done
+# A sourced extract that cannot even run is not a test. Prove it executes before
+# any case depends on it.
+bash -c "set -u; . '$HELPERS'; live_converges >/dev/null" \
+  || { echo "FATAL: the extracted helper block does not execute cleanly" >&2; exit 1; }
 
 export KIPI_DISPATCH_LIVE_LEDGER="$WORK/live.tsv"
+# HERMETIC COUNTING. live_converges() scans the machine-wide process table, so a
+# real pr-review-agent running in another terminal counted as a fixture and the
+# counting cases went red against correct code. Every fixture below carries the
+# FIXTURETAG marker and the counter is scoped to it, so this suite measures only
+# processes it started.
+export KIPI_DISPATCH_LIVE_PATTERN="FIXTURETAG.*--issue"
 # shellcheck disable=SC1090
 . "$HELPERS"
 
@@ -51,8 +72,25 @@ export KIPI_DISPATCH_LIVE_LEDGER="$WORK/live.tsv"
 # per spawn, which is what the first run of this file did. Detaching the fds is
 # what makes the pid readable immediately.
 spawn_fake_converge() {
-  bash -c 'exec -a "converge.sh --issue '"$1"' --max-rounds 3" sleep 60' >/dev/null 2>&1 &
+  bash -c 'exec -a "FIXTURETAG converge.sh --issue '"$1"' --max-rounds 3" sleep 60' >/dev/null 2>&1 &
+  echo $! >> "$WORK/pids"
   echo $!
+}
+
+# live_converges() reads the GLOBAL process table, so any fake left behind by an
+# earlier case is counted by a later one. That is not a nit: cases 9 and 10 read
+# counts, and a leftover turns a correct implementation red (observed -- case 9
+# saw "4 live, 1 attributed" from three stragglers). Every spawn is registered
+# above and reaped here, so each counting case starts from a known floor.
+kill_all_fakes() {
+  [ -f "$WORK/pids" ] || return 0
+  while read -r fp; do kill "$fp" 2>/dev/null || true; done < "$WORK/pids"
+  : > "$WORK/pids"
+  # Give the table a moment to actually drop them, or the next count races.
+  for _ in 1 2 3 4 5; do
+    [ "$(pgrep -f 'FIXTURETAG.*--issue' 2>/dev/null | grep -c . || true)" = "0" ] && break
+    sleep 1
+  done
 }
 
 echo "== 1. a live run in one repo does not hide the others =="
@@ -152,6 +190,7 @@ grep -qF -- "/repos/dead" "$KIPI_DISPATCH_LIVE_LEDGER" \
   || ok "compaction drops the dead row"
 kill "$PID_E" 2>/dev/null; wait "$PID_E" 2>/dev/null
 
+kill_all_fakes   # cases 9 and 10 read COUNTS; start them from a known floor
 echo "== 9. an UNATTRIBUTED live run stops the cycle (disjointness is unprovable) =="
 # live_repos() only sees runs THIS script recorded. A hand-run `kipi converge`
 # is live in the process table and absent from the ledger, and it could be in the
@@ -173,6 +212,56 @@ echo "$SEL_K" | grep -q 'PICKED=beta' \
   && ok "T9-neg once the run IS attributed, an unrelated repo is entered again" \
   || bad "T9-neg the assertion CAN fail" "attributing the run did not unblock selection (got: $SEL_K)"
 kill "$PID_H" 2>/dev/null; wait "$PID_H" 2>/dev/null
+
+kill_all_fakes
+echo "== 10. a RE-REVIEW child counts against the concurrency cap =="
+# A dispatch does not always launch a converge. On a reviewer redrive it runs
+#   bash .../pr-review-agent.sh <PR> --issue ASK-nnn --post
+# which the old `converge.sh --issue` pattern never matched, so re-review
+# children spent a `claude -p` pair outside the cap entirely.
+spawn_fake_rereview() {
+  bash -c 'exec -a "FIXTURETAG bash /x/pr-review-agent.sh 163 --issue '"$1"' --post" sleep 60' >/dev/null 2>&1 &
+  echo $! >> "$WORK/pids"
+  echo $!
+}
+BASE="$(live_converges)"; BASE="${BASE:-0}"
+PID_R="$(spawn_fake_rereview ASK-600)"
+sleep 1
+NOW="$(live_converges)"; NOW="${NOW:-0}"
+[ "$NOW" -gt "$BASE" ] \
+  && ok "a live re-review child is counted by live_converges ($BASE -> $NOW)" \
+  || bad "a re-review child is invisible to the cap" "count stayed $BASE; it would run outside the spend bound"
+
+# T10-neg: the OLD pattern must NOT see it, or case 10 proves nothing.
+OLD="$(pgrep -f 'FIXTURETAG converge\.sh --issue' 2>/dev/null | grep -c . || true)"; OLD="${OLD:-0}"
+[ "$OLD" -eq "$BASE" ] \
+  && ok "T10-neg the old converge-only pattern is blind to it (the gap was real)" \
+  || bad "T10-neg the assertion CAN fail" "the old pattern already matched, so nothing was fixed"
+kill "$PID_R" 2>/dev/null; wait "$PID_R" 2>/dev/null
+
+echo "== 11. a FAILED ledger write is loud, not silently successful =="
+# An unwritten row silently disables per-repo exclusion for that repo. Point the
+# ledger at an unwritable path and require a non-zero return plus a said reason.
+SAID="$WORK/said.txt"
+RC_OUT="$(
+  KIPI_DISPATCH_LIVE_LEDGER=/dev/null/impossible/live.tsv bash -c '
+    set -uo pipefail
+    say()  { echo "SAY: $*" >> "'"$SAID"'"; }
+    page() { echo "PAGE: $*" >> "'"$SAID"'"; }
+    export KIPI_DISPATCH_LIVE_LEDGER=/dev/null/impossible/live.tsv
+    . "'"$HELPERS"'"
+    record_live_run 1234 ASK-700 /repos/delta && echo "RETURNED_OK" || echo "RETURNED_FAIL"
+  '
+)"
+echo "$RC_OUT" | grep -q RETURNED_FAIL \
+  && ok "an unwritable ledger returns failure instead of a silent success" \
+  || bad "a failed ledger write reported success" "per-repo exclusion would be off with nothing saying so"
+grep -q 'LEDGER WRITE FAILED' "$SAID" 2>/dev/null \
+  && ok "the failure is said, so the log names it" \
+  || bad "the ledger failure is logged" "no reason recorded"
+grep -q '^PAGE:' "$SAID" 2>/dev/null \
+  && ok "the failure pages, because a disabled guard is not a log-only event" \
+  || bad "the ledger failure pages" "nobody would learn the guard went blind"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"

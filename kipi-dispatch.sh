@@ -316,7 +316,28 @@ stale_check || exit 0
 
 # `pgrep -c` exits 1 with no match, which under `set -e` would look like failure
 # and under a bare assignment yields an empty string. Force a number.
-live_converges() { pgrep -f "converge.sh --issue" 2>/dev/null | grep -c . || true; }
+# COUNTS RE-REVIEW CHILDREN TOO (codex major, PR #163 r1).
+#
+# A dispatch does not always launch a converge. On a reviewer redrive it launches
+#   bash .../pr-review-agent.sh <PR> --issue ASK-nnn --post
+# which the old `converge.sh --issue` pattern never matched. So a re-review child
+# was invisible to the concurrency cap: at cap 3, three converges plus any number
+# of live re-reviews could run at once, each spending a `claude -p` pair. The cap
+# is the spend bound, and it was bounding only half of what it launches.
+#
+# It also made the two counters speak about DIFFERENT POPULATIONS. live_repos()
+# matches on `--issue <id>`, which a re-review child DOES carry, so the ledger
+# counted it while pgrep did not -- and the attributed-vs-total comparison below
+# was comparing apples to oranges. One population, both counters.
+# The pattern is overridable ONLY so the test suite can be hermetic. This counts
+# by scanning the machine-wide process table, so a real review running in another
+# terminal is indistinguishable from a fixture -- which made the counting cases
+# fail against a correct implementation (observed: three live pr-review-agent
+# processes from an interactive session). Production never sets this.
+LIVE_PATTERN="${KIPI_DISPATCH_LIVE_PATTERN:-converge\.sh --issue|pr-review-agent\.sh .*--issue}"
+live_converges() {
+  pgrep -f "$LIVE_PATTERN" 2>/dev/null | grep -c . || true
+}
 
 # --- PER-REPO CONCURRENCY (sp-e45251f7) --------------------------------------
 # WHY THE GLOBAL CAP WAS 1, AND WHY THIS IS THE HONEST WAY TO RAISE IT.
@@ -367,10 +388,27 @@ live_repos() {
 # Append-only at launch; compacted here so a long-lived box does not grow the
 # file without bound. Compaction rewrites via temp+rename so a reader never sees
 # a torn file.
+# A FAILED LEDGER WRITE IS NOT A SUCCESSFUL ONE (codex major, PR #163 r1).
+#
+# This ended in `|| true`, which is the right instinct for a notifier and the
+# wrong one here. An unwritten row means the run is invisible to live_repos(),
+# which silently DISABLES the per-repo exclusion for that repo -- the guard is
+# off and nothing says so. Read-only .config, a full disk, or a bad permission
+# all produce exactly that, quietly.
+#
+# It still must not take dispatch down: the run has already been launched and
+# killing the script here would strand it. So the write is checked, and a failure
+# is made LOUD instead of fatal. The unattributed-run guard below then does the
+# rest of the work -- pgrep will exceed the attributed count on the next tick and
+# selection stops, which is the fail-safe direction.
 record_live_run() {
-  local pid="$1" issue="$2" repo="$3" tmp
+  local pid="$1" issue="$2" repo="$3"
   mkdir -p "$(dirname "$LIVE_LEDGER")" 2>/dev/null || true
-  printf '%s\t%s\t%s\n' "$pid" "$issue" "$repo" >> "$LIVE_LEDGER" 2>/dev/null || true
+  if ! printf '%s\t%s\t%s\n' "$pid" "$issue" "$repo" >> "$LIVE_LEDGER" 2>/dev/null; then
+    say "LEDGER WRITE FAILED for $issue in $repo ($LIVE_LEDGER): this run is unattributed, so per-repo exclusion cannot see it"
+    page "kipi dispatch: could not record a live run to $LIVE_LEDGER. The per-repo concurrency guard is blind to $issue, and dispatch will refuse to enter any repo until it finishes. Do: check permissions and free space on that path."
+    return 1
+  fi
 }
 
 compact_live_ledger() {
