@@ -79,7 +79,72 @@ PROTECTED_BRANCHES = {"main", "master"}
 
 # Shell separators that start a new command. `|` is included so `foo | git push ...`
 # is examined rather than swallowed as an argument of foo.
-_SEPARATORS = {";", "&&", "||", "|", "\n"}
+_SEPARATORS = {";", ";;", "&&", "||", "|", "|&", "&", "\n"}
+
+# Wrappers that run another command. Stripping them is not cosmetic: `sudo gh pr
+# merge --admin` was ALLOW because the gate asked whether token 0 was `gh`.
+_WRAPPERS = {"sudo", "doas", "nohup", "command", "stdbuf", "nice", "ionice",
+             "time", "timeout", "xargs", "setsid", "script", "caffeinate"}
+# Shells that take a whole command as a single quoted argument.
+_DASH_C_SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
+
+
+def _tokenize(command: str) -> tuple[list[str], bool]:
+    """Tokens with shell OPERATORS as tokens in their own right.
+
+    `shlex.split` does NOT separate `;`, so `true;gh pr merge --admin` came back
+    as ['true;gh', 'pr', 'merge', '--admin'] and a gate keyed on token 0 never saw
+    a gh command at all. One character defeated the whole thing (Codex round 4,
+    filed minor, measured here as a full bypass on BOTH the merge and push sides).
+    `punctuation_chars` is exactly the shlex mode for this and it is what the
+    segment splitter always assumed it was being handed.
+
+    Falls back on an unbalanced quote to a split that at least breaks on the
+    operators, so a malformed command cannot launder a bypass through a broken
+    tokenizer.
+    """
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        return list(lex), True
+    except ValueError:
+        rough = command
+        for op in (";", "&", "|"):
+            rough = rough.replace(op, f" {op} ")
+        return rough.split(), False
+
+
+def _dash_c_payload(seg: list[str]) -> str | None:
+    """The command string inside `bash -c '<command>'`, or None."""
+    if not seg or Path(seg[0]).name not in _DASH_C_SHELLS:
+        return None
+    for i, tok in enumerate(seg[1:], start=1):
+        if tok == "-c" and i + 1 < len(seg):
+            return seg[i + 1]
+    return None
+
+
+def _strip_wrappers(seg: list[str]) -> tuple[list[str], str | None]:
+    """Peel leading wrapper commands, returning the inner argv and the wrapper.
+
+    The wrapper NAME is returned rather than discarded, because a wrapped merge is
+    refused for being wrapped -- `sudo gh pr merge --auto` is not the plain form,
+    and nobody sudos gh. Reporting which wrapper was seen makes the refusal
+    explainable instead of mysterious.
+    """
+    found = None
+    i = 0
+    while i < len(seg):
+        name = Path(seg[i]).name
+        if name not in _WRAPPERS:
+            break
+        found = found or name
+        i += 1
+        # Consume the wrapper's own options and any bare numeric argument
+        # (`timeout 5 gh ...`), so the inner command lands at position 0.
+        while i < len(seg) and (seg[i].startswith("-") or seg[i].replace(".", "", 1).isdigit()):
+            i += 1
+    return seg[i:], found
 
 # git flags taking a separate value, so the value is never mistaken for a positional
 # (`git push --repo X origin main` must read origin as the remote, not X).
@@ -229,18 +294,26 @@ _SAFE_SHAPE = ("the only merge this gate permits is:\n"
                "no other flags.")
 
 
-def _merge_verdict(seg: list[str], had_env_prefix: bool = False) -> str | None:
+def _merge_verdict(seg: list[str], note: str | None = None) -> str | None:
     """An unsafe `gh ... merge` invocation -> reason. Anything else -> None.
 
-    The trigger is deliberately broad (a bare `merge` token anywhere in a gh
-    command) because over-triggering costs a rephrase while under-triggering costs
-    an unchecked merge into main.
+    The trigger is deliberately broad -- a `gh` token ANYWHERE plus a `merge`
+    token -- because over-triggering costs a rephrase while under-triggering costs
+    an unchecked merge into main. Keying it on token 0 was the round-4 hole: any
+    wrapper or an unsplit `;` moved gh off position 0 and the trigger went quiet.
+    Scanning for the token and THEN demanding position 0 keeps the fail-closed
+    direction: being unable to see the shape is a refusal, not a pass.
     """
-    if not seg or Path(seg[0]).name != "gh":
+    if not seg:
         return None
+    if not any(Path(t).name == "gh" for t in seg):
+        return None
+    if "merge" not in seg:
+        return None
+    if Path(seg[0]).name != "gh":
+        return ("a `gh ... merge` appears here but not as the command itself, so "
+                "this gate cannot see its real arguments.\n  " + _SAFE_SHAPE)
     args = seg[1:]
-    if "merge" not in args:
-        return None
     # `gh pr list --search merge` and friends: a different pr subcommand in the
     # subcommand slot means this was never a merge. Recognised only in the
     # no-global-flag form; with a global flag present it falls through to the
@@ -248,9 +321,10 @@ def _merge_verdict(seg: list[str], had_env_prefix: bool = False) -> str | None:
     if len(args) >= 2 and args[0] == "pr" and args[1] in _GH_PR_OTHER_SUBCOMMANDS:
         return None
 
-    if had_env_prefix:
-        return ("an environment prefix on a gh merge can redirect it (GH_REPO, "
-                "GH_HOST) without changing a single argument.\n  " + _SAFE_SHAPE)
+    if note:
+        return (f"{note} on a gh merge can change what it does without changing a "
+                "single argument (GH_REPO / GH_HOST retarget it; a wrapper hides "
+                f"it).\n  " + _SAFE_SHAPE)
     if args[:2] != ["pr", "merge"]:
         return ("this is not the plain `gh pr merge` form. A global flag that "
                 "takes a value (-R, --repo, --hostname) shifts the subcommand, "
@@ -341,7 +415,7 @@ def _push_verdict(seg: list[str], cwd: str) -> str | None:
             "request, and both required checks live on the PR.")
 
 
-def classify(command: str, cwd: str) -> tuple[str, str]:
+def classify(command: str, cwd: str, _depth: int = 0) -> tuple[str, str]:
     """THE decision. One constructor, so the property has one place to be wrong.
 
     Lesson `a-safety-property-enforced-at-n-sites-is-not-a-chokepoint`: a rule
@@ -350,15 +424,11 @@ def classify(command: str, cwd: str) -> tuple[str, str]:
     """
     if not command or not command.strip():
         return "allow", ""
-    try:
-        tokens = shlex.split(command, comments=False, posix=True)
-        parsed = True
-    except ValueError:
-        # An unbalanced quote must not launder a bypass. Fall back to the raw
-        # string, which over-matches (destructive-op-deny.sh's trade) but only for
-        # commands that were already unparseable.
-        tokens = command.split()
-        parsed = False
+    if _depth > 4:
+        # A wrapper chain deep enough to hit this is not a command anyone types.
+        return "deny", ("nested shell wrappers too deep to analyse.\n  " + _SAFE_SHAPE)
+
+    tokens, parsed = _tokenize(command)
 
     cur_dir = cwd
     for raw_seg in _split_segments(tokens):
@@ -368,12 +438,35 @@ def classify(command: str, cwd: str) -> tuple[str, str]:
         # An env prefix is not cosmetic on a merge: GH_REPO / GH_HOST retarget gh
         # without changing one argument, so the same argv can merge in a different
         # repo. The prefix was previously stripped and forgotten.
-        had_env_prefix = len(seg) != len(raw_seg)
+        note = "an environment prefix" if len(seg) != len(raw_seg) else None
+
+        # ORDER IS LOAD-BEARING: strip wrappers BEFORE looking for a `-c` payload.
+        # The first version checked the payload first, so `sudo bash -c '<cmd>'`
+        # found no shell at position 0 (it found `sudo`), stripped the wrapper, and
+        # never looked again -- ALLOW. Caught by this file's own reproducer, not by
+        # the probe that only tried each evasion on its own. Evasions compose.
+        seg, wrapper = _strip_wrappers(seg)
+        if not seg:
+            continue
+        if wrapper:
+            note = f"a `{wrapper}` wrapper"
+
+        # `bash -c '<command>'` hides an entire command inside one quoted token.
+        # Recurse on the payload instead of pretending the outer word is the whole
+        # story. Found by Codex round 4, filed minor, measured as a full bypass:
+        # `bash -c 'gh pr merge 155 --admin'` was ALLOW.
+        payload = _dash_c_payload(seg)
+        if payload is not None:
+            decision, reason = classify(payload, cur_dir, _depth + 1)
+            if decision == "deny":
+                return "deny", reason
+            continue
+
         if Path(seg[0]).name == "cd" and len(seg) > 1:
             resolved = _resolve_dir(seg[1], cur_dir)
             cur_dir = resolved if resolved else cur_dir
             continue
-        reason = _merge_verdict(seg, had_env_prefix)
+        reason = _merge_verdict(seg, note)
         if reason:
             return "deny", reason
         reason = _push_verdict(seg, cur_dir)

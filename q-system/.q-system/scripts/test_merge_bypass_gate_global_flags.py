@@ -115,7 +115,7 @@ REASON_CASES: list[tuple[str, str, str]] = [
      "does not defer to the required checks"),
     ("an env prefix is explained as a retarget",
      "GH_REPO=other/repo gh pr merge 155 --auto --squash",
-     "can redirect it"),
+     "an environment prefix"),
 ]
 
 
