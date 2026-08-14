@@ -151,6 +151,10 @@
       "timeout_s": 300
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-kipi-update-plugin-excludes.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-kipi-update-preservation-failure.sh",
       "runner": "bash"
     },
@@ -606,6 +610,7 @@
     "q-system/.q-system/scripts/test/test-kipi-update-dry-final-state.sh",
     "q-system/.q-system/scripts/test/test-kipi-update-hook-contract.sh",
     "q-system/.q-system/scripts/test/test-kipi-update-leak-preflight.sh",
+    "q-system/.q-system/scripts/test/test-kipi-update-plugin-excludes.sh",
     "q-system/.q-system/scripts/test/test-kipi-update-preservation-failure.sh",
     "q-system/.q-system/scripts/test/test-kipi-update-safety.sh",
     "q-system/.q-system/scripts/test/test-kipi-update-source-provenance.sh",
