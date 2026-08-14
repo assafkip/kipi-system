@@ -106,9 +106,13 @@ def main() -> int:
         check("admin quoted in a body string",
               "gh pr create --title x --body 'never use --admin here'",
               gh_feature, "allow")
-        check("admin quoted in a merge body",
+        # DENY under the allowlist. --body takes a value, and admitting
+        # value-taking flags is where grammar modelling creeps back in on the
+        # side that can produce a bypass. Keeping the permitted set minimal
+        # costs a rare rephrase; the deny message names the shape to use.
+        check("body flag on a merge is not in the permitted set",
               "gh pr merge 9 --auto --body 'do not --admin this'",
-              gh_feature, "allow")
+              gh_feature, "deny")
 
         # THE carve-out that keeps this repo's own test scripts green: a local
         # origin is not GitHub, so pushing main there is nobody's bypass.
