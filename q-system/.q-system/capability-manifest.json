@@ -526,6 +526,14 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_merge_bypass_gate_admin_forms.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_merge_bypass_gate_global_flags.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_plugin_version_bump_check.py",
       "runner": "python3"
     },
