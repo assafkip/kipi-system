@@ -232,6 +232,37 @@ PLUGIN_COPY_EXCLUDES=(
   ".env.*::(^|/)\.env\."
 )
 
+# Was this exact content EVER shipped by the skeleton for this path? (Codex
+# review of #151 round 6, major.)
+#
+# Comparing only against the CURRENT skeleton attributes nothing on the real
+# fleet. Instances hold what an earlier fanout wrote -- ASK-728 pushed prd-os
+# 0.27.1 -- while the skeleton has since moved to 0.27.3. Measured on a live
+# blocked instance 2026-08-14: both plugins/prd-os/.claude-plugin/plugin.json and
+# plugins/prd-os/tests/test_judgment_compiler.py DIFFER from the current
+# skeleton, so a current-only test calls both founder work and the instance stays
+# blocked on every unattended update. The fix would have unblocked zero
+# instances, which is the same trap that killed ASK-775's first theory.
+#
+# The honest question is not "is this the newest skeleton content" but "did this
+# content come from the fleet at all". A blob the skeleton ever committed at this
+# path did. A founder edit essentially never collides with a historical skeleton
+# blob, because it would have to reproduce a shipped revision byte for byte.
+#
+# Bounded on purpose: only paths already known dirty reach here (a handful per
+# instance), and the walk is limited to commits touching that one path.
+fleet_authored_blob() {
+  local rel="$1" file="$2" blob candidate commit
+  blob="$(git -C "$SCRIPT_DIR" hash-object -- "$file" 2>/dev/null || true)"
+  [ -n "$blob" ] || return 1
+  while IFS= read -r commit; do
+    [ -n "$commit" ] || continue
+    candidate="$(git -C "$SCRIPT_DIR" rev-parse "$commit:$rel" 2>/dev/null || true)"
+    [ "$candidate" = "$blob" ] && return 0
+  done < <(git -C "$SCRIPT_DIR" rev-list --all -- "$rel" 2>/dev/null || true)
+  return 1
+}
+
 plugin_copy_rsync_flags() {
   local entry
   for entry in "${PLUGIN_COPY_EXCLUDES[@]}"; do
@@ -1687,8 +1718,13 @@ PY
               say "  keeping STAGED local edit, not the fleet's to commit: $dirty_rel"
             elif [ ! -e "$SCRIPT_DIR/$dirty_rel" ] && [ ! -e "$path/$dirty_rel" ]; then
               sys_add_paths+=("$dirty_rel")
-            elif [ -f "$SCRIPT_DIR/$dirty_rel" ] && [ -f "$path/$dirty_rel" ] &&
-                cmp -s "$SCRIPT_DIR/$dirty_rel" "$path/$dirty_rel"; then
+            elif [ -f "$path/$dirty_rel" ] &&
+                { { [ -f "$SCRIPT_DIR/$dirty_rel" ] &&
+                    cmp -s "$SCRIPT_DIR/$dirty_rel" "$path/$dirty_rel"; } ||
+                  fleet_authored_blob "$dirty_rel" "$path/$dirty_rel"; }; then
+              # Current-skeleton equality first as the cheap path; the history
+              # walk only runs when that fails, which on the real fleet is the
+              # common case (instances hold an older fanout's bytes).
               sys_add_paths+=("$dirty_rel")
             else
               say "  keeping local edit, not the fleet's to commit: $dirty_rel"

@@ -413,7 +413,62 @@ assert_a_staged_edit_survives_deletion_from_both_sides() {
   echo "PASS: a staged founder edit survives deletion from both the skeleton and the working tree"
 }
 
+# ------------------------------------------------------------------ property 8
+# Content from an OLDER skeleton version is still the fleet's.
+#
+# Codex review of #151 round 6, major, and it was the difference between this PR
+# working and doing nothing. Instances hold what an earlier fanout wrote while
+# the skeleton has moved on, so a current-skeleton-only equality test attributes
+# real fleet content to the founder and leaves the instance blocked forever.
+# Measured on a live blocked instance: both prd-os files DIFFER from the current
+# skeleton, so the current-only rule would have unblocked zero of them.
+#
+# The founder half is in the same run, because "accept anything that was ever
+# shipped" must not become "accept anything".
+assert_older_fleet_content_is_attributed_to_the_fleet() {
+  local work sk inst carve; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"
+
+  # v1 of a plugin file, shipped and committed by the skeleton.
+  printf 'def api():\n    return "v1"\n' > "$sk/plugins/demo/api.py"
+  printf 'def api():\n    return "v1"\n' > "$inst/plugins/demo/api.py"
+  ( cd "$sk" && G add -A -f && G commit -qm "skeleton ships v1" )
+  ( cd "$inst" && G add -A -f && G commit -qm "instance commits v1" )
+
+  # An earlier fanout wrote v2 into the instance and failed to commit...
+  printf 'def api():\n    return "v2"\n' > "$sk/plugins/demo/api.py"
+  ( cd "$sk" && G add -A && G commit -qm "skeleton ships v2" )
+  cp "$sk/plugins/demo/api.py" "$inst/plugins/demo/api.py"
+  # ...and the skeleton has since MOVED ON to v3. The instance's dirty content
+  # now matches no current skeleton file -- only a historical one.
+  printf 'def api():\n    return "v3"\n' > "$sk/plugins/demo/api.py"
+  ( cd "$sk" && G add -A && G commit -qm "skeleton ships v3" )
+
+  # A founder edit that was never any skeleton revision, in the same directory.
+  printf 'def local():\n    return "never shipped"\n' > "$inst/plugins/demo/local.py"
+  ( cd "$inst" && G add plugins/demo/local.py && G commit -qm "instance adds its own" )
+  printf 'def local():\n    return "founder changed it"\n' > "$inst/plugins/demo/local.py"
+
+  bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
+
+  carve="$(G -C "$inst" log --format='%H %s' 2>/dev/null \
+             | grep -F 'commit system-written state' | head -1 | cut -d' ' -f1 || true)"
+  [ -n "$carve" ] || fail "no system-state commit: older fleet content stayed blocked: $(cat "$work/out")"
+
+  G -C "$inst" show --name-only --format= "$carve" 2>/dev/null \
+    | grep -qx "plugins/demo/api.py" || \
+    fail "content from an OLDER skeleton version was not attributed to the fleet"
+
+  if G -C "$inst" show --name-only --format= "$carve" 2>/dev/null \
+       | grep -qx "plugins/demo/local.py"; then
+    fail "a founder edit that was never a skeleton revision was committed"
+  fi
+
+  echo "PASS: content from any shipped skeleton revision is the fleet's; never-shipped content is not"
+}
+
 assert_a_mixed_pathspec_commit_commits_nothing
+assert_older_fleet_content_is_attributed_to_the_fleet
 assert_a_staged_founder_edit_is_never_overwritten
 assert_a_staged_edit_survives_deletion_from_both_sides
 assert_deletions_split_by_authorship
