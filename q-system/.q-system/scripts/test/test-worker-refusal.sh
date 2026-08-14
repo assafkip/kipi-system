@@ -785,6 +785,112 @@ else
       "$STALE_TREE has no seed file -- 14b is vacuous"
 fi
 
+# --- 15. NOTHING THIS RUN STARTED OUTLIVES IT (codex round 3 on PR #141) -----
+# THE HOLE LEFT BY CASE 14'S FIX. Clearing the sentinels before dispatch removes
+# every file that existed AT the clear. It says nothing about a file created
+# AFTER it, and `run_bounded` leaks exactly the process that can create one.
+#
+# On timeout the watchdog signals the job and the parent's `wait` returns the
+# moment that direct child dies -- so the parent cancels the watchdog BEFORE its
+# TERM-grace-KILL escalation finishes. A grandchild that outlives the TERM (an
+# ignored signal, a flushing write, a slow network call) is simply left running.
+# The next dispatch then clears the sentinels and starts its own agent while the
+# PREVIOUS issue's agent is still alive in the same reusable worktree, and the
+# write lands after the clear and before the read. The worker labels the wrong
+# issue blocked:capability and copies the other issue's reason into Linear.
+#
+# THE FIX IS TO REAP THE PROCESS GROUP, not to widen the clear: a clear cannot
+# outrun a writer that is still running. `set -m` puts the job in its own group
+# so the whole tree can be signalled without touching the worker itself, and the
+# parent escalates TERM -> KILL and waits for the group to be EMPTY before it
+# returns. Only then does presence-after-run mean "this run wrote it".
+#
+# THE FUNCTION UNDER TEST IS EXTRACTED FROM THE WORKER, never retyped here. A
+# copy of run_bounded would prove that the copy reaps, which is the one thing
+# nobody needs to know.
+extract_fn() {  # extract_fn <name> <file>
+  awk -v fn="$1" 'index($0, fn "() {") == 1 { p = 1 } p { print } p && $0 == "}" { exit }' "$2"
+}
+PG_SRC="$(extract_fn run_bounded "$WORKER")
+$(extract_fn reap_group "$WORKER")"
+
+# 15a. SELF-TEST FOR THE EXTRACTION. An awk that matched nothing evals to an
+# empty string, every call below becomes "command not found", and the absence
+# assertions all pass on a test that ran no worker code at all.
+if printf '%s' "$PG_SRC" | grep -q 'run_bounded() {' && [ "$(printf '%s\n' "$PG_SRC" | wc -l)" -gt 5 ]; then
+  ok "self-test: run_bounded was extracted from the worker (not an empty eval)"
+else
+  bad "self-test: run_bounded was extracted from the worker" \
+      "extract_fn returned $(printf '%s\n' "$PG_SRC" | wc -l) line(s) -- case 15 is vacuous"
+fi
+
+# The worker's own dependencies, since the function is being run outside it.
+TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+LOG="$WORK/pg.log"; : > "$LOG"
+eval "$PG_SRC"
+
+# The agent that will not die politely: it ignores SIGTERM, outlives its parent
+# shell, and writes a sentinel-shaped file long after the run that started it
+# returned. `& wait` reproduces the production shape -- run_bounded's direct
+# child is a `bash -c`, and the process that writes is its GRANDchild.
+ORPHAN_CODE='import signal,time,pathlib,sys; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(10); pathlib.Path(sys.argv[1]).write_text("a previous issue wrote this")'
+LATE_MARK="$WORK/late-sentinel"
+
+# 15b. SELF-TEST FOR THE ORPHAN. If the child cannot write at all -- wrong
+# python, wrong path, wrong quoting -- the real assertion below passes for free.
+# Run the identical command with NOBODY reaping it and require the write.
+bash -c "python3 -c '$ORPHAN_CODE' '$LATE_MARK.control' & wait" >/dev/null 2>&1 &
+CONTROL_PID=$!
+sleep 1
+# ...and while that control is provably alive, prove `pgrep -f` can SEE it. 15d
+# below asserts pgrep finds nothing; a pattern that matches nothing ever would
+# satisfy it without any reaping happening.
+if pgrep -f "a previous issue wrote this" >/dev/null 2>&1; then
+  ok "self-test: pgrep -f finds a live orphan (15d's absence is a real absence)"
+else
+  bad "self-test: pgrep -f finds a live orphan" \
+      "pgrep cannot match the running control process -- 15d is vacuous"
+fi
+sleep 11
+if [ -e "$LATE_MARK.control" ]; then
+  ok "self-test: the orphan really does write when nothing reaps it"
+else
+  bad "self-test: the orphan really does write when nothing reaps it" \
+      "no $LATE_MARK.control after 12s -- case 15's absence assertion is vacuous"
+fi
+wait "$CONTROL_PID" 2>/dev/null
+
+# 15c. THE ASSERTION. Time out a run whose grandchild ignores TERM, then do
+# exactly what the next dispatch does -- clear the sentinels -- and wait past
+# the moment the leaked process would have written. A file appearing here is a
+# refusal the current issue's agent never wrote.
+run_bounded 1 bash -c "python3 -c '$ORPHAN_CODE' '$LATE_MARK' & wait" >/dev/null 2>&1
+python3 -c "import os,sys; os.path.exists(sys.argv[1]) and os.remove(sys.argv[1])" "$LATE_MARK"
+
+# 15d. FIRST, the cause, read independently: is anything from that run still
+# running the moment the next dispatch's clear completes? This has to be asked
+# HERE and not after the wait below -- the leaked process exits on its own once
+# it has written, so ten seconds later pgrep finds nothing whether it leaked or
+# was reaped, and the assertion would pass in exactly the state it exists to
+# catch.
+if pgrep -f "a previous issue wrote this" >/dev/null 2>&1; then
+  bad "no process from the timed-out run is alive when the next dispatch starts" \
+      "THE DEFECT: pgrep still finds the leaked agent process after run_bounded returned"
+else
+  ok "no process from the timed-out run is alive when the next dispatch starts"
+fi
+
+# 15e. THEN the effect: wait past the moment the leaked process would have
+# written. A file appearing here is a refusal the current issue's agent never
+# wrote, which is what the worker would read and put in Linear.
+sleep 12
+if [ -e "$LATE_MARK" ]; then
+  bad "a timed-out run leaves nothing alive to write a sentinel after the clear" \
+      "THE DEFECT: a process from the previous dispatch wrote $LATE_MARK after the next dispatch cleared it"
+else
+  ok "a timed-out run leaves nothing alive to write a sentinel after the clear"
+fi
+
 # --- 7. NEGATIVE SELF-TEST --------------------------------------------------
 # Every assertion above greps a combined output blob. Prove the greps can miss:
 # a worker that refuses NOTHING must fail assertion 1. Without this, an empty

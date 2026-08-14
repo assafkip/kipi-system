@@ -218,21 +218,74 @@ AGENT="sana"
 # unless coreutils is installed, and the old fallback here was an empty string --
 # i.e. silently no wall clock at all, which is the runaway-agent case this exit
 # exists for. Never degrade a safety exit to a warning: implement it in bash.
+#
+# THE JOB GETS ITS OWN PROCESS GROUP, and nothing it started outlives it (Codex
+# round 3 on PR #141, major). `kill -TERM "$job"` signals ONE pid -- the
+# `bash -c` wrapper -- and the agent runs as its GRANDchild, so the wrapper died
+# on time and `claude` kept running. Worse, `wait "$job"` returns the instant
+# that wrapper dies, and the next line cancels the watchdog, so the TERM ->
+# sleep 5 -> KILL escalation never reached the process that was actually stuck.
+#
+# What that costs is not a stray process, it is a WRONG LINEAR COMMENT. The
+# leaked agent still holds the worktree, and worktrees are reused across issues
+# by design: it writes `.sana-blocked-capability` minutes later, after the next
+# dispatch has cleared the sentinels and while its own agent is running. The
+# worker reads a refusal the current issue's agent never wrote, labels the wrong
+# issue blocked:capability, and copies the previous issue's reason into Linear.
+# The clear one round earlier cannot help -- a clear cannot outrun a writer that
+# is still running.
+#
+# `set -m` is load-bearing, not decoration. Without job control a background job
+# INHERITS the worker's own process group, so `kill -- -$job` would either fail
+# (no such group) or signal the worker itself. With it, the job is the leader of
+# a group of its own and the whole tree under it can be signalled by pgid.
 run_bounded() {  # run_bounded <seconds> <cmd...>
   local secs="$1"; shift
+  set -m
   "$@" &
   local job=$!
+  set +m
   ( sleep "$secs"; kill -0 "$job" 2>/dev/null && {
-      echo "$(TS) TIMEOUT after ${secs}s; killing pid $job" >>"$LOG"
-      kill -TERM "$job" 2>/dev/null
+      echo "$(TS) TIMEOUT after ${secs}s; killing process group $job" >>"$LOG"
+      kill -TERM -"$job" 2>/dev/null
       sleep 5
-      kill -KILL "$job" 2>/dev/null
+      kill -KILL -"$job" 2>/dev/null
     } ) &
   local watchdog=$!
   wait "$job"; local rc=$?
   kill "$watchdog" 2>/dev/null   # cancel the watchdog if the job finished first
   wait "$watchdog" 2>/dev/null
+  # SYNCHRONOUS, and on the success path too: a job that exited 0 can still have
+  # left a child behind, and the caller's next act is to dispatch another agent
+  # into the same tree. run_bounded returning is the promise that the previous
+  # run is over.
+  reap_group "$job"
   return "$rc"
+}
+
+# reap_group <pgid>: return only when that process group is empty.
+#
+# `kill -0 -- -<pgid>` is the read, not `ps`: it answers "does any process in
+# this group still exist" with the same permission check the kills use. The
+# common case is an already-empty group, which costs one syscall and no wait.
+#
+# TERM first with the same 5s grace the watchdog uses -- a child mid-write gets
+# the same chance to flush it had before -- then KILL, which cannot be ignored.
+# Both loops are bounded: this runs on the worker's critical path, and a reaper
+# that can hang is a worse failure than the leak it fixes.
+reap_group() {
+  local pgid="$1" i=0
+  kill -0 -- -"$pgid" 2>/dev/null || return 0
+  echo "$(TS) reaping leftover process group $pgid" >>"$LOG"
+  kill -TERM -- -"$pgid" 2>/dev/null
+  while [ "$i" -lt 20 ] && kill -0 -- -"$pgid" 2>/dev/null; do sleep 0.25; i=$((i+1)); done
+  kill -0 -- -"$pgid" 2>/dev/null || return 0
+  kill -KILL -- -"$pgid" 2>/dev/null
+  i=0
+  while [ "$i" -lt 20 ] && kill -0 -- -"$pgid" 2>/dev/null; do sleep 0.1; i=$((i+1)); done
+  if kill -0 -- -"$pgid" 2>/dev/null; then
+    echo "$(TS) WARNING: process group $pgid survived SIGKILL" >>"$LOG"
+  fi
 }
 
 # --- FETCH ONCE, BEFORE ANY WORKTREE EXISTS ---------------------------------
