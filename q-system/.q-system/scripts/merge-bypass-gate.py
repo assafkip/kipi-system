@@ -56,6 +56,33 @@ variable is script-local, a `-C` path that does not exist), it allows. Lesson
 whose failure mode is "block everything" also blocks the tools needed to repair it.
 The residual hole is named in section 6 of the plan rather than papered over.
 
+WHAT THIS GATE CANNOT DO, AND WHY IT IS NOT WORTH TRYING (round 6, measured)
+
+    eval "git push origin main"                  ALLOW
+    eval $CMD                                    ALLOW
+    source /tmp/script.sh                        ALLOW
+    echo "git push origin main" | bash           ALLOW
+    python3 -c "import os; os.system(...)"       ALLOW
+    `echo git` push origin main                  ALLOW
+
+8 of 11 payload-executing constructs walk straight through, and `eval $CMD` is
+the one that ends the argument: the command string does not exist until Bash
+expands the variable, so NO amount of static analysis of the tool-call text can
+see it. Deciding what an arbitrary shell string will execute is undecidable, and
+the only way to close `eval` here would be to deny every eval, source, and
+`| bash` -- which breaks ordinary work and gets the gate switched off.
+
+So this gate is a FAST LOCAL SPEED BUMP, not the authority. It catches the
+shapes an agent actually types, immediately, with an explanation. It does not
+and cannot catch a determined bypass.
+
+THE AUTHORITY BELONGS ON THE SERVER. `enforce_admins: true` on the protected
+branch makes `--admin` fail at the GitHub API no matter how the command was
+spelled, wrapped, evaled or generated. That is one setting, it cannot be evaded
+by any shell trick, and it is the single-authority answer this file spent five
+rounds approximating. Measured 2026-08-14: enforce_admins is currently false and
+the agent credential is an admin, which is what makes `--admin` work at all.
+
 Contract: PreToolUse hook JSON on stdin. Deny = permissionDecision JSON on stdout,
 exit 0 (the same shape as destructive-op-deny.sh emit_deny). Allow = exit 0, silent.
 Self-test: python3 test_merge_bypass_gate.py
@@ -129,6 +156,18 @@ def _dash_c_payload(seg: list[str]) -> str | None:
     return None
 
 
+# Commands that PRINT or READ their arguments and cannot execute them. `echo git
+# push` and `ls git push` were both DENIED (Codex round 6, minor) because the
+# token scan asks only whether the word appears. Being wrong about a name here
+# costs a false DENY, never a bypass, so the list stays short and obvious --
+# anything that can run a child (find -exec, sed -e, xargs, awk) is NOT on it.
+_NON_EXECUTING = {
+    "echo", "printf", "ls", "cat", "grep", "egrep", "fgrep", "rg", "man",
+    "head", "tail", "wc", "which", "type", "basename", "dirname", "file",
+    "stat", "less", "more", "sort", "uniq", "diff", "jq", "column", "tee",
+}
+
+
 def _tool_position(seg: list[str], tool: str) -> str:
     """THE ONE authority on whether this gate can see a tool's arguments.
 
@@ -144,7 +183,13 @@ def _tool_position(seg: list[str], tool: str) -> str:
     """
     if not any(Path(t).name == tool for t in seg):
         return "absent"
-    return "plain" if Path(seg[0]).name == tool else "hidden"
+    if Path(seg[0]).name == tool:
+        return "plain"
+    if Path(seg[0]).name in _NON_EXECUTING:
+        # The word is an argument to something that prints or reads it. Not a
+        # hidden invocation.
+        return "absent"
+    return "hidden"
 
 
 def _logical_lines(command: str) -> list[str]:

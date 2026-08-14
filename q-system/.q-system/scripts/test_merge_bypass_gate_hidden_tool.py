@@ -111,6 +111,23 @@ CASES: list[tuple[str, str, str]] = [
     ("shell -c around something harmless", "bash -lc 'echo hello'", "allow"),
     ("plain status", "git status", "allow"),
     ("git merge is local, still not our business", "git merge origin/main", "allow"),
+
+    # --- FALSE POSITIVES the token scan introduced (Codex round 6, minor) ---
+    # Every round widened the trigger, and round 6 is where the widening started
+    # refusing ordinary commands. A gate that denies `echo git push` is one
+    # somebody switches off, and a gate that is off protects nothing. These pin
+    # the narrowing so a future round cannot widen it back silently.
+    ("echo is not an invocation", "echo git push", "allow"),
+    ("ls is not an invocation", "ls git push", "allow"),
+    ("grep over a file that mentions it", "grep push git-notes.txt", "allow"),
+    ("cat with those words as filenames", "cat git push notes.txt", "allow"),
+    ("prose in a quoted echo", 'echo "git push is how you publish"', "allow"),
+    ("printf is not an invocation", "printf 'git push'", "allow"),
+    # The narrowing must not reach a command that CAN run a child. Being wrong
+    # about a name in the non-executing list costs a false deny; being wrong in
+    # this direction costs a bypass, which is why the list excludes these.
+    ("xargs can run a child, so it is not 'non-executing'",
+     "xargs git push origin main", "deny"),
 ]
 
 
