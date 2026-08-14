@@ -677,6 +677,24 @@ if [ "${KIPI_DISPATCH_PICK_DRY:-0}" = "1" ]; then
   exit 0
 fi
 
+# FLEET POSTURE, STATED EVERY RUN (ASK-729). The HOLD line below only prints when
+# a non-home repo actually wins a turn, and `dispatch.enabled` is true for 0 of the
+# 23 registry rows -- so the rotation reaches nothing, the HOLD never fires, and
+# the whole cross-repo gap has been invisible in this log since 2026-08-01. That
+# silence is what let sp-09c61b20 stay the record for 13 days while the code had
+# already moved past it.
+#
+# Both numbers, unconditionally, even when they are zero: "0 opted in" is the
+# single most useful fact about why no client repo is being served, and a line
+# that only appears when something happens cannot say it.
+FLEET_TOTAL="$(python3 -c 'import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: sys.exit(0)
+print(len(d.get("instances",[])))' "${KIPI_DISPATCH_REGISTRY:-$REPO/instance-registry.json}" 2>/dev/null)"
+FLEET_OPTED="$(fleet_candidates 2>/dev/null | awk -F'\t' -v h="$REPO" 'NF && $2 != h' | wc -l | tr -d ' ')"
+FLEET_HELD="$(printf '%s\n' "$PICKS" | awk -F'\t' -v h="$REPO" 'NF && $2 != h' | wc -l | tr -d ' ')"
+say "dispatch: ${FLEET_HELD:-0} repo(s) HELD (cross-repo gh scoping unfinished, sp-9421b9b7); ${FLEET_OPTED:-0} of ${FLEET_TOTAL:-0} registered repo(s) opted in for dispatch"
+
 TARGET_NAME=""
 TARGET_PATH=""
 while IFS=$'\t' read -r PNAME PPATH; do
