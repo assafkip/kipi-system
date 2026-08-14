@@ -307,6 +307,39 @@ SYSTEM_OWNED_PATHS=(
   "q-system/.q-system/claude-integrity-baseline.json"
   ".claude/state/stop-gate-firings.json"
 )
+
+# INSTANCE-LOCAL, AND COMMITTING IT IS WHAT DESTROYS IT (measured 2026-08-14, 6 instances).
+#
+# Measured 2026-08-14: 6 instances lost their integrity baseline to `kipi update`
+# and the tripwire then refused EVERY tool call on them
+# (claude-integrity-tripwire.py: "BASELINE MISSING on an armed tree", exit 2).
+# The chain is a loop this file closes on itself:
+#
+#   1. the block below COMMITS the baseline, so it becomes tracked;
+#   2. the skeleton's `git archive HEAD` does not contain it (.gitignore:116 --
+#      it is instance-local by ASK-282, and a shared baseline can never match a
+#      per-instance .claude/settings.json);
+#   3. kipi-update-preserve-scan.py rule 3 protects only paths the skeleton NEVER
+#      tracked. The skeleton DID track this one (e25734cb / 629d01b2) and then
+#      deleted it, so the scan reads a deliberate skeleton deletion and correctly
+#      lets `rsync --delete` propagate it.
+#
+# Step 3 is not the bug and must not be "fixed": a never-delete exemption there
+# would make preserve-scan lie about its own rule, which exists so real skeleton
+# deletions reach the fleet. The two instances that escaped did so only because
+# their baseline was still untracked, which is the state this list restores.
+#
+# It is a SEPARATE list applied AFTER both feeders, not an edit to the array
+# above, and that is the whole point. Two independent things append to
+# sys_owned_dirty: this hand list, and auto-commit.py --system-state, which
+# classifies the entire tree. Removing the path from the array alone leaves the
+# classifier free to re-add it -- and the classifier demonstrably does exactly
+# that, having committed .claude-integrity-armed (a path this array never named)
+# during the same 2026-08-14 sweep. One filter, past both, or it is not a fix.
+SYSTEM_NEVER_COMMIT=(
+  "q-system/.q-system/claude-integrity-baseline.json"
+  "q-system/.q-system/claude-integrity-baseline.json.lock"
+)
 # Skeleton-managed plugin dirs are appended at run time from the SAME
 # enumeration the sync itself uses (managed_plugin_names), never as a blanket
 # "plugins" entry. The blanket version classified the WHOLE tree as system-owned
@@ -1554,6 +1587,61 @@ PY
       git merge --abort 2>/dev/null || true
     fi
 
+    # ONE-TIME MIGRATION, and it must run BEFORE the block below (measured 2026-08-14, 6 instances).
+    #
+    # The chokepoint stops the baseline from BECOMING tracked. It does nothing for
+    # the 6 instances where it already is: on those, preserve-scan rule 3 still
+    # hands the committed copy to `rsync --delete` on the very next run. Untracking
+    # is the only thing that moves them into the state the two healthy instances
+    # are already in.
+    #
+    # Idempotent by construction: `ls-files --error-unmatch` is the test, so once
+    # the path is untracked every later run skips it and this costs one git call.
+    #
+    # NEVER a working-tree delete. `git rm --cached` unstages the file and leaves
+    # the instance's real baseline on disk, which is the whole point -- deleting it
+    # would cause by hand the exact outage this is repairing.
+    #
+    # THE PATHSPEC TRAP, and it is the reason for the assert. `git commit -- <path>`
+    # commits WORKTREE content and disregards the index, so the obvious
+    #
+    #     git rm --cached X && git commit -- X
+    #
+    # silently RE-ADDS X and undoes the untrack. The commit here therefore takes no
+    # pathspec -- which is only safe because the index was proved to hold nothing
+    # else, first by refusing outright when the founder has staged work (not ours to
+    # package, same rule as the dirty guard below), then by asserting the staged set
+    # is exactly this one path before committing.
+    for sys_path in "${SYSTEM_NEVER_COMMIT[@]}"; do
+      git ls-files --error-unmatch -- "$sys_path" >/dev/null 2>&1 || continue
+      if [ -n "$(git diff --cached --name-only 2>/dev/null)" ]; then
+        say "  WARNING: $sys_path is tracked, but the index already holds staged work."
+        say "           Leaving it. It will be deleted by this sync until it is untracked."
+        continue
+      fi
+      if ! git rm --cached --quiet -- "$sys_path" 2>/dev/null; then
+        say "  WARNING: could not untrack $sys_path"
+        continue
+      fi
+      sys_staged="$(git diff --cached --name-only 2>/dev/null)"
+      if [ "$sys_staged" != "$sys_path" ]; then
+        say "  WARNING: staging $sys_path produced an unexpected index; backing out"
+        git reset --quiet -q -- "$sys_path" >/dev/null 2>&1 || true
+        continue
+      fi
+      if git commit -q -m "chore: untrack instance-local $sys_path [no-issue: fleet updater instance-local untrack]
+
+This file is instance-local (ASK-282) and gitignored by policy. While it was
+tracked, the skeleton sync deleted it -- the skeleton once tracked the path and
+then removed it, so preserve-scan correctly treats it as a propagating deletion.
+The file itself is untouched on disk." 2>/dev/null; then
+        say "  untracking instance-local file: $sys_path"
+      else
+        say "  WARNING: could not commit the untrack of $sys_path; backing out"
+        git reset --quiet -q -- "$sys_path" >/dev/null 2>&1 || true
+      fi
+    done
+
     # Clear the system's OWN artifacts first, so the guard below judges founder
     # work only. Each path is committed individually and only if it is actually
     # dirty; nothing outside SYSTEM_OWNED_PATHS is ever touched here.
@@ -1598,6 +1686,33 @@ PY
       # against a scratch repo rather than by reading it.
       done < <(git status --porcelain -uall 2>/dev/null | cut -c4- \
                  | python3 "$sys_classifier" --system-state 2>/dev/null)
+    fi
+
+    # THE CHOKEPOINT (measured 2026-08-14, 6 instances). Both feeders have now run; this is the only place
+    # that can see everything either of them produced. See SYSTEM_NEVER_COMMIT for
+    # why committing these paths is what gets them deleted.
+    #
+    # `${arr[@]+"${arr[@]}"}` and the explicit empty branch are not style. This is
+    # /bin/bash 3.2 on macOS under `set -u`, where expanding an EMPTY array errors
+    # out (ASK-607 aborted a sync exactly this way), and where
+    # `arr=("${maybe_empty[@]:-}")` silently builds a ONE-element array holding the
+    # empty string -- which would then be printed as a committed file and handed to
+    # `git add ""`.
+    if [ "${#sys_owned_dirty[@]}" -gt 0 ]; then
+      sys_kept=()
+      for sys_path in ${sys_owned_dirty[@]+"${sys_owned_dirty[@]}"}; do
+        case " ${SYSTEM_NEVER_COMMIT[*]} " in
+          *" $sys_path "*)
+            say "  Leaving instance-local file uncommitted: $sys_path"
+            ;;
+          *) sys_kept+=("$sys_path") ;;
+        esac
+      done
+      if [ "${#sys_kept[@]}" -eq 0 ]; then
+        sys_owned_dirty=()
+      else
+        sys_owned_dirty=("${sys_kept[@]}")
+      fi
     fi
 
     # sp-46c73c76. This read `[ "$DRY_RUN" != "1" ]`, and DRY_RUN is only ever ""
