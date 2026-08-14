@@ -298,28 +298,56 @@ fi
 # guard below rather than as a silently empty queue, but still wrong.
 #
 # Order: explicit env override, then the registry, then basename.
-REPO_PROJECT="${KIPI_LINEAR_PROJECT:-}"
-if [ -z "$REPO_PROJECT" ]; then
-  # The path being looked UP is the target; the registry doing the looking up is
-  # always the skeleton's. An instance carries no instance-registry.json, so
-  # reading it from the target would fall through to basename for every repo and
-  # quietly re-break the filter for exactly the three instances named below.
-  REPO_PROJECT="$(SKEL_PATH="$TARGET_REPO" REG="$SKEL/instance-registry.json" python3 - <<'PY' 2>/dev/null
+# ONE REGISTRY READ, TWO FACTS (ASK-729). sp-421fa27d already records that the
+# project-name derivation is duplicated between this script and
+# spillover-promote.py. Reachability needs the SAME registry, so the fix was
+# either a second reader here or one read that answers both questions. This is
+# the second: it returns this repo identity AND the set of project names whose
+# checkout exists on this machine, from a single parse.
+#
+# The path being looked UP is the target; the registry doing the looking up is
+# always the skeleton. An instance carries no instance-registry.json, so
+# reading it from the target would fall through to basename for every repo and
+# quietly re-break the filter for exactly the three instances named below.
+#
+# registry_ok is carried explicitly and is NOT the same as an empty list. An
+# unreadable registry means reachability is UNKNOWN, and reporting unknown as
+# unreachable would fire a loud false alarm on every project at once -- the
+# failure mode this issue exists to remove, pointed the other way.
+REGISTRY_FACTS="$(SKEL_PATH="$TARGET_REPO" REG="$SKEL/instance-registry.json" python3 - <<'PY' 2>/dev/null
 import json, os
 skel = os.path.realpath(os.environ["SKEL_PATH"])
+ok = True
 try:
     reg = json.load(open(os.environ["REG"]))
 except Exception:
-    reg = []
+    reg, ok = [], False
 entries = reg.get("instances", reg) if isinstance(reg, dict) else reg
+name = ""
+local = []
 for e in entries if isinstance(entries, list) else []:
-    if isinstance(e, dict) and e.get("path") and os.path.realpath(e["path"]) == skel:
-        print(e.get("name", "")); break
+    if not isinstance(e, dict):
+        continue
+    p, n = e.get("path"), e.get("name") or ""
+    if not p:
+        continue
+    if not name and os.path.realpath(p) == skel:
+        name = n
+    if n and os.path.isdir(p):
+        local.append(n)
+print(json.dumps({"name": name, "local_projects": sorted(set(local)), "ok": ok}))
 PY
 )"
-fi
+_facts_get() { printf '%s' "$REGISTRY_FACTS" | python3 -c "import json,sys;d=json.load(sys.stdin);v=d.get('$1');print('\n'.join(v) if isinstance(v,list) else v)" 2>/dev/null; }
+
+REPO_PROJECT="${KIPI_LINEAR_PROJECT:-}"
+[ -n "$REPO_PROJECT" ] || REPO_PROJECT="$(_facts_get name)"
 [ -n "$REPO_PROJECT" ] || REPO_PROJECT="$(basename "$TARGET_REPO")"
 export REPO_PROJECT
+
+LOCAL_PROJECTS="$(_facts_get local_projects)"
+REGISTRY_OK="$(_facts_get ok)"
+export LOCAL_PROJECTS REGISTRY_OK
 
 # --- pick ready issues ------------------------------------------------------
 PICKED="$(python3 - "$ONLY_ISSUE" <<'PY'
@@ -345,6 +373,9 @@ while True:
     after = p["pageInfo"]["endCursor"]
 
 repo_project = os.environ["REPO_PROJECT"]
+# Reachability, from the SAME registry read that produced repo_project (ASK-729).
+local_projects = {p for p in os.environ.get("LOCAL_PROJECTS", "").splitlines() if p}
+registry_ok = os.environ.get("REGISTRY_OK", "") == "True"
 
 def project_of(i):
     return (i.get("project") or {}).get("name")
@@ -391,6 +422,32 @@ def ready_ignoring_project(i):
             and "Definition of Ready" in (i.get("description") or ""))
 
 dropped = [i for i in issues if ready_ignoring_project(i) and not in_this_repo(i)]
+
+# TWO POPULATIONS, NOT ONE (ASK-729). Every out-of-repo issue used to be reported
+# on a single "skipped as out-of-repo" line. On 2026-08-13 that line read 45 and
+# it hid the distinction that decides whether anyone can do anything:
+#
+#   SKIPPED     the project has a checkout on this machine, just not the one this
+#               run is in. The dispatcher rotation reaches it on a later turn.
+#   UNREACHABLE no checkout exists for it anywhere here. No rotation, no cursor
+#               and no amount of waiting reaches it. Someone must clone the repo
+#               or register it before any machine can pick that work up.
+#
+# Reporting the second as the first is why 45 issues read as a filter doing its
+# job for 13 days. An unset project is UNREACHABLE, not skipped: "target unknown"
+# is not "target is elsewhere", and it needs a human to set the project.
+def has_local_checkout(i):
+    name = project_of(i)
+    return bool(name) and name in local_projects
+
+# An unreadable registry means reachability is UNKNOWN. Calling every project
+# unreachable there would be a false alarm on the whole board at once, so the
+# classification collapses back to the old single bucket and the shell says why.
+if registry_ok:
+    skipped_local = [i for i in dropped if has_local_checkout(i)]
+    unreachable = [i for i in dropped if not has_local_checkout(i)]
+else:
+    skipped_local, unreachable = dropped, []
 def held_with(label):
     return [i for i in issues
             if label in {l["name"] for l in i["labels"]["nodes"]} and in_this_repo(i)]
@@ -416,6 +473,13 @@ print(json.dumps({
     "total_open": len(issues),
     "dropped_out_of_repo": len(dropped),
     "dropped_projects": sorted({project_of(i) or "(unset)" for i in dropped}),
+    # ASK-729: the same population, split by whether anyone here can act on it.
+    "skipped_local": len(skipped_local),
+    "skipped_local_projects": sorted({project_of(i) or "(unset)" for i in skipped_local}),
+    "unreachable": len(unreachable),
+    "unreachable_projects": sorted({project_of(i) or "(unset)" for i in unreachable}),
+    "unreachable_ids": [i["identifier"] for i in unreachable],
+    "registry_ok": registry_ok,
     "deferred_needs_scope": len(deferred),
     "blocked_capability": len(blocked_cap),
     "blocked_capability_ids": [i["identifier"] for i in blocked_cap],
@@ -454,14 +518,25 @@ if [ "$PROJECT_KNOWN" = "False" ]; then
   exit 9
 fi
 
-DROPPED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("dropped_out_of_repo",0))' 2>/dev/null)"
-DROPPED_IN="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(", ".join(json.load(sys.stdin).get("dropped_projects",[])))' 2>/dev/null)"
+DROPPED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("skipped_local",0))' 2>/dev/null)"
+DROPPED_IN="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(", ".join(json.load(sys.stdin).get("skipped_local_projects",[])))' 2>/dev/null)"
+UNREACH="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("unreachable",0))' 2>/dev/null)"
+UNREACH_IN="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(", ".join(json.load(sys.stdin).get("unreachable_projects",[])))' 2>/dev/null)"
+REG_OK="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("registry_ok",True))' 2>/dev/null)"
 DEFERRED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("deferred_needs_scope",0))' 2>/dev/null)"
 
 say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf, project=$REPO_PROJECT)"
 # Accounted for, never silently dropped. These two lines are what let an operator
 # tell a working filter from a broken query without re-querying Linear by hand.
 [ "${DROPPED:-0}" != "0" ] && say "worker: $DROPPED ready-shaped issue(s) skipped as out-of-repo (other project: $DROPPED_IN) -- this checkout is $REPO_PROJECT and cannot check those out"
+# UNREACHABLE IS NOT A ROUTINE SKIP, AND NEVER SHARES ITS LINE (ASK-729). A skip
+# resolves itself on a later rotation turn; this does not resolve at all until a
+# human clones or registers the repo. It is stated separately, with the project
+# names and the count, on every run -- because the failure being fixed here is
+# 13 days of a real backlog reading as normal filter output.
+[ "${UNREACH:-0}" != "0" ] && say "worker: $UNREACH ready-shaped issue(s) UNREACHABLE: no local checkout for $UNREACH_IN -- no dispatcher on this machine can reach them until those repos are cloned and registered"
+# Fail loud rather than classify on a guess (see registry_ok in the picker).
+[ "$REG_OK" = "False" ] && say "worker: WARNING instance-registry.json could not be read, so reachability is UNKNOWN this run and every out-of-repo issue is reported as a routine skip"
 [ "${DEFERRED:-0}" != "0" ] && say "worker: $DEFERRED issue(s) held at needs-scope (refused as unexecutable; the DoR drafter re-scopes them)"
 
 BLOCKED_CAP="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("blocked_capability",0))' 2>/dev/null)"

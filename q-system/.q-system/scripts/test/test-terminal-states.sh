@@ -1,4 +1,20 @@
 #!/usr/bin/env bash
+# NEVER LET THIS TEST REACH THE FOUNDER PHONE (ASK-729).
+#
+# This file passes $SRC (linear-worker.sh) to validate.py and to python mutation
+# helpers as a FILE ARGUMENT; it never executes the worker, so today nothing here
+# can page. That is a property of the current code, not a guarantee about the next
+# edit: the worker is pager-capable, and the moment any assertion here decides to
+# RUN it, an unstubbed run rings the founder actual phone at whatever hour the
+# suite happens to fire.
+#
+# So the seam is stubbed once, up front, for the whole file rather than argued
+# about per call site. The fable-discipline lint also reads $SRC being handed to
+# python3 as "this test drives the runner" and blocks on it; this export answers
+# that honestly instead of bypassing the gate with a skip marker, which would
+# switch the check off for every future edit to this file too.
+export KIPI_NOTIFY=/usr/bin/true
+
 # test-terminal-states.sh -- the gate that stops a tenth dead end shipping.
 #
 # Pairs with q-system/.q-system/terminal-states.json (Piece B,

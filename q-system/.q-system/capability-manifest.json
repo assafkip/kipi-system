@@ -586,6 +586,14 @@
     {
       "path": "q-system/.q-system/scripts/test/test-dispatch-client-refusal-after-hold.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_dispatch_reachability.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-control-file-propagate.sh",
+      "runner": "bash"
     }
   ],
   "required_data": [],

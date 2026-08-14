@@ -404,9 +404,15 @@ cursor_get() {
 #
 # OPT-IN IS DEFAULT OFF, AND STRICTLY SO: a row joins the fleet only when it
 # carries dispatch.enabled === true (JSON boolean). A missing dispatch key, false,
-# the string "true", or 1 all mean NO. Every one of the 23 rows in the shipped
-# registry is therefore off, which is the correct state to ship the dangerous piece
-# in -- the fleet stays exactly as it is today until a human opts a repo in by hand.
+# the string "true", or 1 all mean NO.
+#
+# The registry shipped with all 23 rows off, which was the correct state to ship the
+# dangerous piece in. Two are now on: ktlyst and interview-coach (ASK-754). Stating
+# the count here was a comment that had to be edited the first time anyone used the
+# feature it describes, so it names the opted-in rows instead -- and the authority is
+# the registry, not this line. Opt-in is still consent and never safety:
+# repo-preflight.sh is what decides whether entering one is safe NOW, and it refuses
+# a client engagement repo and the engagement root even when the row says true.
 fleet_candidates() {
   local registry="${KIPI_DISPATCH_REGISTRY:-$REPO/instance-registry.json}"
   printf '%s\t%s\t%s\n' "$(basename "$REPO")" "$REPO" ""
@@ -696,6 +702,34 @@ if [ "${KIPI_DISPATCH_PICK_DRY:-0}" = "1" ]; then
   printf '%s\n' "$PICKS"
   exit 0
 fi
+
+# FLEET POSTURE, STATED EVERY RUN (ASK-729). The HOLD line below only prints when
+# a non-home repo actually wins a turn, and `dispatch.enabled` is true for 0 of the
+# 23 registry rows -- so the rotation reaches nothing, the HOLD never fires, and
+# the whole cross-repo gap has been invisible in this log since 2026-08-01. That
+# silence is what let sp-09c61b20 stay the record for 13 days while the code had
+# already moved past it.
+#
+# Both numbers, unconditionally, even when they are zero: "0 opted in" is the
+# single most useful fact about why no client repo is being served, and a line
+# that only appears when something happens cannot say it.
+FLEET_TOTAL="$(python3 -c 'import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: sys.exit(0)
+print(len(d.get("instances",[])))' "${KIPI_DISPATCH_REGISTRY:-$REPO/instance-registry.json}" 2>/dev/null)"
+FLEET_OPTED="$(fleet_candidates 2>/dev/null | awk -F'\t' -v h="$REPO" 'NF && $2 != h' | wc -l | tr -d ' ')"
+# NO "HELD" COUNT ANY MORE. This line was written while kipi-dispatch.sh:726 held
+# every non-home target on unfinished cross-repo gh scoping, and it counted each
+# such pick as held. ASK-738 (#146) scoped every gh call and DROPPED that hold, so
+# the same number now describes repos the run ENTERS. Reporting them as held while
+# entering them is worse than the silence this line replaced: a reader would take
+# it as the reason nothing ran. Caught by the Codex review of #143 after the two
+# branches merged; each was correct alone.
+#
+# The opted-in count survives because it is the useful half: "0 of 25 opted in" is
+# still the single most useful fact about why no other repo is being served, and a
+# line that only appears when something happens cannot say it.
+say "dispatch: ${FLEET_OPTED:-0} of ${FLEET_TOTAL:-0} registered repo(s) opted in for cross-repo dispatch"
 
 TARGET_NAME=""
 TARGET_PATH=""
