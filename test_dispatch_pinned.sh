@@ -149,8 +149,8 @@ STRIPPED="$R3/wrapper-nopage.sh"
 # while the call sits at four, so the "mutant" was byte-identical to the real
 # wrapper and T5-neg passed a page it had not removed. A negative self-test that
 # fails to mutate reports the opposite of the truth.
-sed 's/^[[:space:]]*page "kipi dispatch: STOPPED\. The pinned.*$/  :/' "$WRAPPER" > "$STRIPPED"
-grep -q 'STOPPED. The pinned' "$STRIPPED" \
+sed 's/^[[:space:]]*page create-failed "kipi dispatch: STOPPED\..*$/  :/' "$WRAPPER" > "$STRIPPED"
+grep -q 'page create-failed' "$STRIPPED" \
   && bad "T5-neg the mutant was actually applied" "the page call survived the strip, so the negative test is inert" \
   || :
 chmod +x "$STRIPPED"
@@ -180,6 +180,52 @@ if [ -f "$PLIST" ]; then
 else
   bad "T6 the plist is present" "no plist at $PLIST"
 fi
+
+# ---------------------------------------------------------------------------
+# TEST 7: a PERSISTENT refusal pages once, not every 15 minutes (codex major r2).
+# ---------------------------------------------------------------------------
+# The refusals are persistent by nature -- a checkout that cannot be created at
+# 09:00 still cannot at 09:15 -- so an undeduped page is 96 identical Slack lines
+# a day. That does not inform the operator, it trains them to swipe it away.
+R5="$(build_fixture)"
+: >"$R5/pinned"
+NOTE3="$R5/paged.txt"
+cp "$R3/notify.sh" "$R5/notify.sh"
+for _ in 1 2 3; do
+  PAGE_SINK="$NOTE3" KIPI_NOTIFY="$R5/notify.sh" run_wrapper "$R5" "$WRAPPER" >/dev/null 2>&1
+done
+n="$(wc -l < "$NOTE3" | tr -d ' ')"
+[ "$n" = "1" ] \
+  && ok "T7 three ticks of the same refusal produced exactly ONE page" \
+  || bad "T7 the persistent refusal is deduped" "3 ticks produced $n pages; at 900s that is ~96/day"
+grep -q 'page suppressed' "$R5/log" 2>/dev/null \
+  && ok "T7 the suppressed ticks are still in the LOG, so nothing is lost" \
+  || bad "T7 suppression is recorded in the log" "a suppressed page left no trace"
+
+# T7-neg: with the TTL set to 0 the dedupe window closes instantly, so all three
+# ticks must page. Without this, T7 could not tell "deduped" from "the notifier
+# was only ever called once for some unrelated reason".
+R6="$(build_fixture)"; : >"$R6/pinned"; NOTE4="$R6/paged.txt"
+cp "$R3/notify.sh" "$R6/notify.sh"
+for _ in 1 2 3; do
+  PAGE_SINK="$NOTE4" KIPI_NOTIFY="$R6/notify.sh" KIPI_DISPATCH_PAGE_TTL=0 \
+    run_wrapper "$R6" "$WRAPPER" >/dev/null 2>&1
+done
+n2="$(wc -l < "$NOTE4" | tr -d ' ')"
+[ "$n2" = "3" ] \
+  && ok "T7-neg with the window at 0 all three ticks page (the dedupe is what suppressed them)" \
+  || bad "T7-neg the assertion CAN fail" "expected 3 pages with TTL=0, got $n2"
+
+# ---------------------------------------------------------------------------
+# TEST 8: a RECOVERY clears the suppressor, so the next break pages at once.
+# ---------------------------------------------------------------------------
+# Otherwise the first outage's 24h window is inherited by an unrelated second
+# outage, and the page that matters is the one that gets swallowed.
+rm -f "$R5/pinned"                     # let the checkout succeed this time
+PAGE_SINK="$NOTE3" KIPI_NOTIFY="$R5/notify.sh" run_wrapper "$R5" "$WRAPPER" >/dev/null 2>&1
+ls "$R5"/pinned-paged-* >/dev/null 2>&1 \
+  && bad "T8 a successful run clears the page markers" "a marker survived recovery and will mute the next outage" \
+  || ok "T8 a successful run clears the page markers"
 
 [ "$fails" -eq 0 ] && { echo "PASS: dispatch-pinned"; exit 0; }
 echo "FAIL: $fails check(s)"; exit 1
