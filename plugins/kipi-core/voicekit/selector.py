@@ -110,22 +110,30 @@ def length_band(rows, target_words):
     """Rows written at the same scale as the piece being written.
 
     THE FOURTH AXIS (2026-08-13). channel, kind and anchor were all matched; length
-    was not, and length is the axis a reader feels first. Measured on the live
-    corpus: 28 of 29 x exemplars are 55 words or fewer and exactly one is 479, so a
-    long-form x post drew its whole prompt from 20-word tweets and came back in the
-    wrong register. The founder's words: "This is not in my voiccc".
+    was not, and length is the axis a reader feels first. A long-form post drew its
+    whole prompt from 20-word tweets and came back in the wrong register.
 
-    Data already carried the answer -- every row declares `words` -- and nothing
-    read it. This is that read, not a new source of truth.
+    NEAREST-LENGTH, NOT A THRESHOLD (2026-08-14). The first version split the corpus
+    at LONG_WORDS=150. That was defensible when the x corpus ran 5..55 with a single
+    479-word outlier: any cut inside that gap gave the same partition. Then the
+    founder banked a 139-word post, and 150 put it in the same band as a 5-word
+    tweet -- so asking for exactly that register still returned tweets. The corpus
+    has THREE registers now (tweets, ~139, long-form) and a binary cannot hold three.
 
-    Empty band returns EMPTY, never a silent fallback: the caller decides whether to
-    widen, because a caller that cannot tell "matched" from "nothing matched" is how
-    a wrong-register prompt looks like a right one.
+    Ranking by distance needs no constant, so there is nothing to re-measure and
+    nothing to tune toward whatever was banked last. It also degrades correctly: a
+    corpus with one length returns that length, and a target between two clusters
+    returns the closer one rather than a band edge's arbitrary answer.
+
+    `target_words=None` returns every row, unchanged, which is what every pre-2026
+    caller and pinned test relies on.
     """
     if target_words is None:
         return list(rows)
-    want_long = target_words >= LONG_WORDS
-    return [r for r in rows if (_words(r) >= LONG_WORDS) == want_long]
+    # Stable: ties break on id, so the same corpus and target always give the same
+    # order. Determinism is a property this module promises and a sort by float
+    # alone would quietly break it.
+    return sorted(rows, key=lambda r: (abs(_words(r) - target_words), str(r.get("id"))))
 
 
 def select(rows, channel, counter, slot_index=0, k=DEFAULT_K, slot_kind="post",
@@ -147,8 +155,12 @@ def select(rows, channel, counter, slot_index=0, k=DEFAULT_K, slot_kind="post",
     # kinds are eligible; length filters that result, never replaces it. A band that
     # matches nothing widens back to the pool rather than starving the prompt -- the
     # same exhaustion-must-not-become-starvation rule `resolved_pool` states.
-    banded = length_band(pool, target_words)
-    pool = banded or pool
+    # length_band now ORDERS by nearness instead of filtering, so the nearest k are
+    # the band. Keeping the whole pool behind them means a thin corpus still fills k
+    # rather than starving -- exhaustion must not become starvation.
+    if target_words is not None:
+        ranked = length_band(pool, target_words)
+        pool = ranked[:max(k, 1)] or pool
     if not pool:
         return []
     offset = (int(counter) + int(slot_index)) % len(pool)

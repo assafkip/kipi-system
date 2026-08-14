@@ -45,11 +45,14 @@ def test_none_target_is_unchanged_behaviour():
             selector.select(r, "x", counter, k=4, target_words=None)
 
 
-def test_long_target_returns_only_long_rows():
-    picked = selector.select(rows(), "x", 0, k=4, target_words=480)
-    assert picked, "a long target must not return an empty selection"
-    for row in picked:
-        assert row["words"] >= selector.LONG_WORDS, ids(picked)
+def test_the_nearest_length_row_ranks_first():
+    """Replaced a threshold test 2026-08-14. The old contract was "a long target
+    returns ONLY long rows", which a binary band could promise and three registers
+    could not: a 139-word post landed in the same band as a 5-word tweet."""
+    picked = selector.select(rows(), "x", 0, k=4, target_words=400)
+    assert picked[0]["id"] == "p-long", ids(picked)
+    picked = selector.select(rows(), "x", 0, k=4, target_words=20)
+    assert picked[0]["words"] == 20, ids(picked)
 
 
 def test_short_target_never_returns_the_long_row():
@@ -77,21 +80,31 @@ def test_short_target_keeps_the_2026_08_09_scar_closed():
             assert row["kind"] != "article-excerpt", ids(picked)
 
 
-def test_length_band_returns_empty_rather_than_silently_widening():
-    """The caller decides whether to widen. A band that quietly falls back is how a
-    wrong-register prompt looks identical to a right one."""
-    short_only = [{"id": "s", "kind": "post", "channel": "x",
-                   "text": "word " * 10, "words": 10}]
-    assert selector.length_band(short_only, 480) == []
-    assert selector.length_band(short_only, None) == short_only
+def test_length_band_orders_and_never_drops_a_row():
+    """It ranks now instead of filtering, so nothing is silently discarded and a
+    thin corpus still answers. `select` takes the nearest k off the front."""
+    r = rows()
+    ranked = selector.length_band(r, 400)
+    assert len(ranked) == len(r), "ranking must not drop rows"
+    assert ranked[0]["id"] == "p-long"
+    assert selector.length_band(r, None) == list(r)
 
 
 def test_words_falls_back_to_measuring_when_the_field_is_absent():
-    """Instances whose corpus predates the `words` field must still band correctly."""
-    legacy = [{"id": "legacy", "kind": "post", "channel": "x",
-               "text": "word " * 300}]
-    assert selector.length_band(legacy, 480) == legacy
-    assert selector.length_band(legacy, 25) == []
+    """Instances whose corpus predates the `words` field must still rank correctly."""
+    legacy = [{"id": "legacy", "kind": "post", "channel": "x", "text": "word " * 300},
+              {"id": "tiny", "kind": "post", "channel": "x", "text": "word " * 5}]
+    assert selector.length_band(legacy, 300)[0]["id"] == "legacy"
+    assert selector.length_band(legacy, 5)[0]["id"] == "tiny"
+
+
+def test_ties_break_deterministically():
+    """Sorting on distance alone would let equal-distance rows come back in any
+    order, quietly breaking the determinism this module promises."""
+    same = [{"id": f"e-{i}", "kind": "post", "channel": "x",
+             "text": "word " * 20, "words": 20} for i in range(5)]
+    assert selector.length_band(same, 20) == selector.length_band(same, 20)
+    assert [r["id"] for r in selector.length_band(same, 20)] == sorted(r["id"] for r in same)
 
 
 def test_selection_stays_deterministic_with_a_target():
