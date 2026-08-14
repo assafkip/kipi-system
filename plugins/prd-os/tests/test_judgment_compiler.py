@@ -29,6 +29,34 @@ import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = PLUGIN_ROOT / "scripts"
+
+# The `kipi` CLI dispatcher lives at the REPO ROOT and is skeleton-only by design
+# (kipi-system owns the fleet CLI; instances are its targets, not copies of it).
+# Four tests below read it to hold the Python subparsers and the bash allowlist in
+# agreement.
+#
+# SCAR (ASK-727, measured 2026-08-13): this plugin is fanned out verbatim to every
+# registered instance, so those four raised FileNotFoundError in all 24 of them --
+# 4 failed / 627 passed, forever, from a suite that is otherwise green. A gate that
+# is permanently red protects nothing and costs attention: it teaches everyone to
+# stop reading the result, which is how a real regression in the other 627 ships
+# unnoticed.
+#
+# The fix is a skip keyed on the dispatcher's PRESENCE, not on an instance/skeleton
+# name check. The alternative -- keep the file skeleton-only and exclude it from the
+# fanout -- was rejected: plugin-fanout.py classifies by byte-identical tree, so a
+# permanent skeleton/instance divergence would make every instance classify OTHER
+# and refuse every future release (ASK-728 is what that costs). One file, one copy,
+# and the tests still RUN and can still FAIL where the dispatcher exists.
+KIPI_DISPATCHER = PLUGIN_ROOT.parents[1] / "kipi"
+
+requires_kipi_dispatcher = pytest.mark.skipif(
+    not KIPI_DISPATCHER.is_file(),
+    reason=(
+        f"no `kipi` dispatcher at {KIPI_DISPATCHER}: it is skeleton-only, so CLI "
+        "parity is unverifiable here and is enforced in kipi-system (ASK-727)"
+    ),
+)
 JUDGMENT = SCRIPTS_DIR / "judgment_compiler.py"
 
 REASON_CODES = (
@@ -37,7 +65,7 @@ REASON_CODES = (
     "duplicate",
     "owned-by-other-prd",
     "scope-removed",
-    "out-of-scope",
+    "out-of-scope",  # spillover-skip  (ASK-734: disposition value, not a deferral)
     "superseded",
     "defer-dependency",
     "defer-ordering",
@@ -735,7 +763,7 @@ class TestChainIntegrity:
 
 class TestEvidenceGate:
     @pytest.mark.parametrize("code", ["duplicate", "already-remediated",
-                                      "scope-removed", "out-of-scope",
+                                      "scope-removed", "out-of-scope",  # spillover-skip  (ASK-734: disposition value, not a deferral)
                                       "owned-by-other-prd", "superseded"])
     def test_human_decision_without_evidence_fails(self, judgment_repo, code):
         packet_path, _ = assemble_packet(judgment_repo)
@@ -1294,6 +1322,7 @@ class TestLedgerRoot:
         assert str(judgment_repo) in payload["path"]
 
 
+@requires_kipi_dispatcher
 class TestCliParity:
     """The Python subparsers and the `kipi judgment` bash allowlist are two
     lists of the same thing, edited by hand, in different files. Codex review
@@ -2124,6 +2153,7 @@ RECEIPT_POPULATING_FLAGS = {
 }
 
 
+@requires_kipi_dispatcher
 def test_every_receipt_populating_flag_has_a_production_caller():
     """MECHANICAL detector for a class that has now produced a defect twice.
 
@@ -2915,7 +2945,7 @@ class TestCitationProvenance:
         """THE over-strictness half. `scope:` is ambient and legitimate: the
         claim is 'this falls outside that documented scope', not 'this is the
         same thing as that entity'. A rule keyed on always-exists would have
-        broken `scope-removed` / `out-of-scope` and scored nothing."""
+        broken `scope-removed` / `out-of-scope` and scored nothing."""  # spillover-skip  (ASK-734: disposition value, not a deferral)
         jc = _load_jc("jc_prov")
         _view, citable = jc.judge_view(_maximal_packet(jc))
         assert "scope:docs/scope.md#s1" in citable

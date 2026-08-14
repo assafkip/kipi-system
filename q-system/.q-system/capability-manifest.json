@@ -450,6 +450,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_launchd_roster.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_linear_sync_comments.py",
       "runner": "python3"
     },
@@ -479,6 +483,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_memory_scores_surface.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_plugin_fanout_label.py",
       "runner": "python3"
     },
     {
@@ -698,6 +706,16 @@
       "path": "q-system/.q-system/scripts/verify-containment-export.py",
       "reason": "built for prd-skeleton-data-containment's export/quarantine flow and never wired",
       "spillover_id": "sp-0f773063"
+    },
+    {
+      "path": "q-system/.q-system/scripts/plugin-parity-check.py",
+      "reason": "operator tool: compares the RUNTIME marketplace clone against the skeleton. That clone lives outside the repo, so no repo surface can call it and CI cannot see the thing it inspects; wiring it to one would be a fake reference. It is how the 34-version prd-os drift was found (ASK-721).",
+      "spillover_id": "sp-ff11d191"
+    },
+    {
+      "path": "q-system/.q-system/scripts/plugin-fanout.py",
+      "reason": "operator tool: propagates a skeleton plugin into OTHER checkouts, hash-classified and without delete, as the bounded alternative to the fleet updater whose delete flag removed voicekit from 19 instances on 2026-08-07. Its targets are other repos, so nothing here calls it.",
+      "spillover_id": "sp-89be8c6d"
     }
   ],
   "uncovered_known": [
