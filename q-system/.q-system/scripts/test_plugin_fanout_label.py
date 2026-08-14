@@ -273,3 +273,25 @@ def test_a_target_that_goes_dirty_after_the_survey_is_refused(tmp_path, monkeypa
     assert label_between.count("plugin_path_is_dirty(path, prefix)") >= 2, (
         "the LABEL apply path does not revalidate before shutil.copy2: an "
         "uncommitted manifest edit made after the survey is overwritten")
+
+
+def test_a_late_refusal_is_not_counted_as_reached_and_is_not_exit_zero():
+    """Codex review of #142, major. The apply-time revalidation refused correctly,
+    then the summary counted the target as REACHED and main() returned 0 -- because
+    `reached` was derived from the OLD/LABEL buckets, which a target enters during
+    the SURVEY, before the refusal moves it to DIRTY.
+
+    A refusal reported as a success is the defect the revalidation exists to
+    prevent, reintroduced one line below it. Source-shape assertion, said plainly:
+    driving it needs N git fixtures racing a copy.
+    """
+    from pathlib import Path
+    src = Path(Path(__file__).parent / "plugin-fanout.py").read_text()
+
+    assert "reached = len(actions)" in src, (
+        "`reached` is derived from the buckets, so a target refused at write time is "
+        "still counted as reached")
+    tail = src[src.index("REACHED {reached}"):]
+    assert "return 1" in tail, (
+        "a late concurrency refusal still exits 0: a scheduled caller cannot tell a "
+        "clean fan-out from one that skipped somebody's uncommitted work")

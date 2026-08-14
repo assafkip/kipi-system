@@ -378,12 +378,26 @@ def main(argv=None):
             note = f", {len(extras)} stale extra file(s) left in place" if extras else ""
             print(f"wrote {count} files -> {name}{note}")
     print()
-    reached = (len(buckets["OLD"]) + len(buckets["LABEL"])) if args.apply else 0
+    # REACHED IS DERIVED FROM WHAT WAS WRITTEN, not from the buckets. A target lands
+    # in OLD or LABEL during the survey, and the apply-time revalidation moves it to
+    # DIRTY AFTER that -- so counting the buckets reported a refused instance as
+    # reached, and `return 0` called the run a success. That is a status describing
+    # an action that did not happen, which is the exact defect the revalidation was
+    # added to prevent, reintroduced one line below it. `actions` holds only targets
+    # that were actually copied.
+    reached = len(actions) if args.apply else 0
     skipped = len(targets) - reached
+    refused_late = [n for n, r in buckets["DIRTY"] if "between survey and write" in r]
     print(f"REACHED {reached} / SKIPPED {skipped} "
           f"(NEW={len(buckets['NEW'])} LABEL={len(buckets['LABEL'])} "
           f"OTHER={len(buckets['OTHER'])} "
           f"DIRTY={len(buckets['DIRTY'])} MISSING={len(buckets['MISSING'])})")
+    if refused_late:
+        # Non-zero, so a caller and a scheduled job can both see it. A concurrency
+        # refusal is not a clean run: somebody's uncommitted work stopped the write.
+        print(f"REFUSED LATE: {len(refused_late)} target(s) went dirty between survey "
+              f"and write: {', '.join(refused_late)}")
+        return 1
     return 0
 
 
