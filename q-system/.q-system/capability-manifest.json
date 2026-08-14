@@ -39,6 +39,10 @@
       "timeout_s": 120
     },
     {
+      "path": "q-system/.q-system/scripts/test-break-glass-audit.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test-ripple.py",
       "runner": "python3"
     },
@@ -455,10 +459,6 @@
     {
       "path": "q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py",
       "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test_break_glass_audit.sh",
-      "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test_capability_gate.py",
