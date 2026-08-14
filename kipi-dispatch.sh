@@ -723,28 +723,51 @@ fi
 # which forwards only its own arguments to the worker.
 WORK_ARGS=""
 if [ "$TARGET_PATH" != "$REPO" ]; then
-  # HELD: cleared preflight, and STILL not entered (sp-9421b9b7).
+  # THE HOLD IS GONE (ASK-738). It was here from sp-9421b9b7 because `gh`
+  # resolves its repository from the process cwd and ignores every path variable
+  # this script carries -- and line 205 cd's into the home checkout and stays. So
+  # `git -C` worked in the target while `gh` answered about kipi-system. Three
+  # paths did that; the worst, pr-review-agent.sh, would review the wrong repo's
+  # code and post `kipi/reviewer-approved` on it, so the wrong-repo failure ran
+  # through the gate itself. All three are now scoped with -R from ONE derivation
+  # (repo-slug-lib.sh), and review artifacts are keyed by repo AND PR so two
+  # repos' PR #42 cannot consume each other's records.
   #
-  # The worker's --repo argument redirects `git -C`, and that part is built and
-  # tested. It does NOT redirect `gh`, and codex found three paths that silently
-  # bind to the home checkout anyway:
-  #   1. the worker's existing-PR lookup, merge-state/head queries and reviewer
-  #      invocation are unqualified `gh` calls;
-  #   2. converge.sh runs pr_for_branch / pr_head_sha from the home checkout, so
-  #      after the worker opens a PR in the target it finds none and stops;
-  #   3. pr-review-agent.sh derives its repo from its own location, so an external
-  #      PR number resolves against the HOME repo -- and if that number exists,
-  #      the wrong code is reviewed and gets the verdict.
-  # Review artifacts are also keyed pr-<number>.* in one shared state dir, so two
-  # repos with PR #42 consume each other's records.
+  # WHAT PROTECTS CLIENT REPOS IS NOT THIS LINE, AND NEVER WAS. Founder,
+  # 2026-08-13: "no. unattended agents should not reach a client repo." That is
+  # enforced by repo-preflight.sh check 0, which #144 landed and which pick_list
+  # above runs BEFORE any repo reaches this point -- a client-shaped path is
+  # refused there even when its registry row says dispatch.enabled: true. This
+  # HOLD was a blunt stand-in for a gate that did not exist yet. It exists now,
+  # upstream, and it fails closed. Removing a stand-in is only safe because the
+  # real thing landed first; if check 0 is ever weakened, that is the line that
+  # matters, not this one.
   #
-  # Any one of those is enough to act on the wrong repository, and two of the
-  # three files are outside this issue's contract. A gate that lets an agent into
-  # a client repo on that footing is worse than the gap it closes, so entry stays
-  # shut until the gh-scoping issue lands. The rotation still OFFERS the turn and
-  # advances past it, so nothing starves behind this.
-  say "HOLD $TARGET_NAME: cleared preflight, but cross-repo gh scoping is unfinished (sp-9421b9b7); not entering"
-  exit 0
+  # TWO CARRIERS FOR ONE FACT, as the comment above says: --repo is the explicit
+  # argument the worker parses, and KIPI_TARGET_REPO crosses the converge.sh
+  # boundary by inheritance because converge forwards only its own arguments.
+  # Setting one and not the other dispatches the work to the target and then
+  # converges against home, which is the defect wearing the other hat.
+  #
+  # WHITESPACE **AND GLOB CHARACTERS** REFUSE. $WORK_ARGS is spliced unquoted into
+  # `bash ./kipi work` below (it must be, so that empty expands to nothing), which
+  # means the shell does BOTH word-splitting and pathname expansion on it:
+  #   - a space splits the path into two wrong arguments, and the worker runs
+  #     against the home repo with a garbage --repo;
+  #   - a `*`, `?` or `[` is glob-expanded against the CWD, so --repo silently
+  #     becomes some unrelated matching path, or the literal path if nothing
+  #     matches. Either way the agent is aimed somewhere nobody chose.
+  # The glob half was missed on the first cut and caught by codex on PR #146
+  # (sp-b2f0627e). Loud refusal beats a silent wrong target: this decides which
+  # repository an unattended self-merging loop enters.
+  case "$TARGET_PATH" in
+    *[[:space:]]*|*'*'*|*'?'*|*'['*|*']'*)
+      say "REFUSING $TARGET_NAME: its registry path contains whitespace or a glob character ($TARGET_PATH), which cannot be passed safely as an unquoted --repo; not entering"
+      exit 0 ;;
+  esac
+  WORK_ARGS="--repo $TARGET_PATH"
+  export KIPI_TARGET_REPO="$TARGET_PATH"
+  say "entering $TARGET_NAME ($TARGET_PATH) -- cleared preflight, gh scoped to its own remote"
 fi
 # Consume the turn HERE, not after a successful dispatch. A repo that took its turn
 # and had nothing ready must still hand the next turn on, or an idle home repo
