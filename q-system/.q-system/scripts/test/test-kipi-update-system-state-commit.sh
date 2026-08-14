@@ -169,7 +169,50 @@ assert_founder_work_is_never_swept() {
   echo "PASS: founder work is not swept into the system-state commit"
 }
 
+# ------------------------------------------------------------------ property 3
+# The add must never reach untracked SOURCE inside a managed plugin.
+#
+# Codex review of #151, major. sys_owned_dirty carries DIRECTORY entries --
+# `plugins/<name>` for every managed plugin -- and `git add <dir>` recursively
+# stages everything untracked beneath it, walking straight past the
+# source-by-extension refusal at auto-commit.py:170 (ASK-712). On this repo that
+# is 91 candidate paths under plugins/kipi-core alone.
+#
+# The shape that matters: a plugin that IS dirty for a legitimate system reason,
+# with a founder's untracked .py sitting next to the dirt. The carve-out must
+# take the first and leave the second.
+assert_untracked_source_in_a_managed_plugin_is_never_staged() {
+  local work sk inst carve; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"
+
+  # Founder's work in progress, untracked, inside the managed plugin dir.
+  printf 'def half_written():\n    pass\n' > "$inst/plugins/demo/scratch_wip.py"
+
+  bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
+
+  carve="$(G -C "$inst" log --format='%H %s' 2>/dev/null \
+             | grep -F 'commit system-written state' | head -1 | cut -d' ' -f1)"
+  if [ -n "$carve" ]; then
+    if G -C "$inst" show --name-only --format= "$carve" 2>/dev/null \
+         | grep -qx "plugins/demo/scratch_wip.py"; then
+      fail "untracked founder source was staged and committed by the carve-out"
+    fi
+  fi
+  # Committed is the headline, but STAGED is the real line: a staged file would
+  # be swept by the next commit in that repo, by us or by anyone.
+  if G -C "$inst" diff --cached --name-only 2>/dev/null \
+       | grep -qx "plugins/demo/scratch_wip.py"; then
+    fail "untracked founder source was left STAGED by the carve-out"
+  fi
+  # And it must still be there, untouched.
+  [ -f "$inst/plugins/demo/scratch_wip.py" ] || \
+    fail "the founder's untracked source file was destroyed"
+
+  echo "PASS: untracked source inside a managed plugin is neither staged nor committed"
+}
+
 assert_a_mixed_pathspec_commit_commits_nothing
 assert_the_carve_out_clears_tracked_system_dirt
 assert_founder_work_is_never_swept
+assert_untracked_source_in_a_managed_plugin_is_never_staged
 echo "PASS: the system-state carve-out cannot be defeated by an untracked path"

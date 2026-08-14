@@ -1509,11 +1509,55 @@ PY
       # them preceded by that announcement. ktlyst-website named 3 files, 2 of
       # them untracked, and refused with all 3 still dirty.
       #
-      # The add is pathspec-limited to sys_owned_dirty, the same list the commit
-      # uses, so it cannot reach founder work -- it stages exactly what was
-      # already going to be committed and nothing else. The PR #98 rule was
-      # protecting against a BARE add; this is not one.
-      git add -- "${sys_owned_dirty[@]}" 2>/dev/null || true
+      # FILES, NEVER DIRECTORIES (Codex review of #151, major). "Pathspec-limited"
+      # was not the safety I claimed it was: sys_owned_dirty carries DIRECTORY
+      # entries -- `plugins/<name>` for every managed plugin, from
+      # system_owned_paths_for_run -- and `git add <dir>` recursively stages every
+      # untracked file beneath it. That includes untracked SOURCE a founder is
+      # mid-edit on inside a managed plugin. Measured on this repo: 91 such paths
+      # under plugins/kipi-core, 47 under plugins/prd-os.
+      #
+      # auto-commit.py:170 refuses source by extension precisely so the fleet
+      # never commits founder code (ASK-712). Handing `git add` a directory walks
+      # straight past that file-level decision. The fix for a silent commit
+      # failure must not become a silent commit of the wrong thing.
+      #
+      # So each entry is expanded to the paths that are ACTUALLY dirty under it,
+      # and every one of those is re-classified by the same auto-commit.py the
+      # untracked loop above uses. A path the classifier will not call system
+      # state is dropped here even though its parent directory is system-owned.
+      # Without the classifier present we add nothing new -- the tracked entries
+      # still stage, which is what unblocks the sync, and unclassifiable
+      # untracked content is left for the guard below to refuse honestly.
+      sys_add_paths=()
+      for sys_path in "${sys_owned_dirty[@]}"; do
+        if [ -d "$path/$sys_path" ]; then
+          while IFS= read -r dirty_rel; do
+            [ -n "$dirty_rel" ] || continue
+            sys_add_paths+=("$dirty_rel")
+          done < <(
+            git status --porcelain -uall -- "$sys_path" 2>/dev/null | cut -c4- \
+              | { if [ -f "$sys_classifier" ]; then
+                    python3 "$sys_classifier" --system-state 2>/dev/null
+                  else
+                    # No classifier, no new untracked staging. `true` consumes
+                    # stdin and emits nothing, which is the fail-closed answer.
+                    true
+                  fi; }
+          )
+          # The directory itself still goes to the COMMIT pathspec: tracked
+          # modifications under it need no staging and must not be dropped.
+          sys_add_paths+=()
+        else
+          sys_add_paths+=("$sys_path")
+        fi
+      done
+      if [ "${#sys_add_paths[@]}" -gt 0 ]; then
+        git add -- "${sys_add_paths[@]}" 2>/dev/null || true
+      fi
+      # Tracked-but-unstaged content under the directory entries, staged with
+      # `-u` so no untracked file can ride along.
+      git add -u -- "${sys_owned_dirty[@]}" 2>/dev/null || true
       # `[no-issue: ...]` rather than --no-verify: the instance's commit-msg
       # gate wants a Linear id, and this is the sanctioned hatch that gets
       # LOGGED to linear-bypass.jsonl. Bypassing an instance's hooks wholesale
