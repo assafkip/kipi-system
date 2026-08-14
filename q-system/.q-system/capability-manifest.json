@@ -80,7 +80,15 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-control-file-propagate.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-converge.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-client-refusal-after-hold.sh",
       "runner": "bash"
     },
     {
@@ -108,6 +116,18 @@
     {
       "path": "q-system/.q-system/scripts/test/test-gate-13b-scope.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-gh-repo-scope-converge.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-gh-repo-scope-reviewer.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-gh-repo-scope-worker.sh",
+      "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-install-plist.sh",
@@ -301,6 +321,10 @@
       "timeout_s": 600
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-review-artifact-repo-keyed.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-review-comment-body.sh",
       "runner": "bash"
     },
@@ -446,6 +470,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_dispatch_reachability.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_evidence_ledger.py",
       "runner": "python3"
     },
@@ -491,6 +519,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_memory_scores_surface.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_merge_bypass_gate.py",
       "runner": "python3"
     },
     {
@@ -570,34 +602,6 @@
       "path": "q-system/.q-system/tests/test_token_guard_cache_race.py",
       "runner": "python3",
       "timeout_s": 120
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-gh-repo-scope-worker.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-gh-repo-scope-converge.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-gh-repo-scope-reviewer.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-review-artifact-repo-keyed.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-dispatch-client-refusal-after-hold.sh",
-      "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test_dispatch_reachability.py",
-      "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-control-file-propagate.sh",
-      "runner": "bash"
     }
   ],
   "required_data": [],
