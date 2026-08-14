@@ -132,7 +132,18 @@ echo "=== guard and restore must share one scope ==="
 # A drift check, not a behaviour check. If someone re-broadens either site the
 # two stop matching and this fails, which is the cheapest available defence
 # against the restore silently going back to discarding the whole worktree.
-if grep -q 'checkout -q -- "\$CHECKPOINT_PREFIX/" \.claude/ plugins/' "$REAL/kipi-update.sh" &&
+#
+# The restore half used to grep the literal
+# `checkout -q -- "$CHECKPOINT_PREFIX/" .claude/ plugins/`. ASK-740 had to change
+# that line: `git checkout -- A B C` is ALL-OR-NOTHING, so an instance tracking no
+# .claude/ or plugins/ made it error and restore NOTHING, which is what left
+# `M q-system/tracked.md` behind and pre-refused every later run. The specs are
+# now filtered through `ls-files` before being passed. So this greps the line that
+# DEFINES the restore scope instead of the line that spends it -- same property,
+# and it still fails the moment either site is re-broadened. The unscoped-checkout
+# assertion is kept explicit rather than implied by the first grep.
+if grep -q 'for spec in "\$CHECKPOINT_PREFIX/" \.claude/ plugins/; do' "$REAL/kipi-update.sh" &&
+   ! grep -qE 'checkout -q -- \.( |$)|checkout -q -- "\$target"' "$REAL/kipi-update.sh" &&
    grep -q 'diff --quiet -- "\$prefix/" \.claude/ plugins/' "$REAL/kipi-update.sh"; then
   echo "  OK [scope-pairing]: guard and restore both pathspec-limited"
 else
