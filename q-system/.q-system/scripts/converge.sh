@@ -77,7 +77,8 @@ BRANCH="sana/$(echo "$ISSUE" | tr 'A-Z' 'a-z')"
 # own arguments to the worker, so the target crosses that boundary by
 # inheritance. Derived ONCE, through the shared lib, same as the worker.
 TARGET_REPO="${KIPI_TARGET_REPO:-$SKEL}"
-KIPI_GH_REPO_ARGS="$(gh_repo_args "$(slug_for_repo "$TARGET_REPO" "${KIPI_SLUG_REGISTRY:-$SKEL/instance-registry.json}")")"
+TARGET_SLUG="$(slug_for_repo "$TARGET_REPO" "${KIPI_SLUG_REGISTRY:-$SKEL/instance-registry.json}")"
+KIPI_GH_REPO_ARGS="$(gh_repo_args "$TARGET_SLUG")"
 export KIPI_GH_REPO_ARGS
 # shellcheck disable=SC2086
 pr_for_branch() { gh pr list $KIPI_GH_REPO_ARGS --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null; }
@@ -88,7 +89,7 @@ pr_for_branch() { gh pr list $KIPI_GH_REPO_ARGS --head "$BRANCH" --json number -
 
 if [ "$DRY" = "1" ]; then
   PR="$(pr_for_branch)"
-  V=""; [ -n "$PR" ] && V="$(verdict_from_record "$(verdict_record_path "$REVIEWS_DIR" "$(slug_for_repo "$TARGET_REPO" "${KIPI_SLUG_REGISTRY:-$SKEL/instance-registry.json}")" "$PR")")"
+  V=""; [ -n "$PR" ] && V="$(verdict_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR")")"
   say "[dry] branch=$BRANCH pr=${PR:-none} verdict=${V:-none} would run up to $MAX_ROUNDS round(s)"
   exit 0
 fi
@@ -744,9 +745,9 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     exit 7
   fi
 
-  VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$PR.verdict.json")"
+  VERDICT="$(verdict_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR")")"
   SHA="$(pr_head_sha "$PR")"
-  REVIEWED_SHA="$(head_sha_from_record "$REVIEWS_DIR/pr-$PR.verdict.json")"
+  REVIEWED_SHA="$(head_sha_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR")")"
 
   # ARGUMENT 2 IS THE MERGE STATE, and this driver still does not read it: ASK-212
   # scoped mergeability to the worker, which runs first inside every round here.
@@ -798,9 +799,9 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # It runs before the auto-merge report because auto-merge lands the PR the
     # moment `validate` goes green, and `validate` is the job that reads this
     # receipt.
-    receipt_ensure "$SHA" "$REVIEWS_DIR/pr-$PR.verdict.json" "$REVIEWED_SHA" "$PR"
+    receipt_ensure "$SHA" "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR")" "$REVIEWED_SHA" "$PR"
 
-    AUTOMERGE="$(automerge_from_record "$REVIEWS_DIR/pr-$PR.automerge")"
+    AUTOMERGE="$(automerge_from_record "$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$PR").automerge")"
     case "$AUTOMERGE" in
       armed)
         MERGE_LOG="Auto-merge is armed -- GitHub merges it once every required check is green. If it sits green: gh pr merge --auto --squash $PR"
