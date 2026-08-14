@@ -202,11 +202,35 @@ assert_ignored_plugin_files_abort_but_pruned_ones_do_not() {
     fail "the guard fired on classes the plugin rsync excludes: $out"
   fi
 
-  # The secret: ignored, and copied anyway.
+  # REVERSED 2026-08-14 BY ASK-772, deliberately, and the reversal is the point.
+  # This used to assert that an ignored plugins/<name>/.env ABORTS. That was
+  # correct while the rsync copied it: the guard's contract is "alarm on anything
+  # that reaches an instance", and a .env reached all 23.
+  #
+  # ASK-772 added `.env` / `.env.*` to PLUGIN_COPY_EXCLUDES, so the copy no
+  # longer carries it. The same contract now requires SILENCE -- alarming over a
+  # file that cannot leak would halt every fleet update forever, which is a
+  # denial of service dressed as security.
+  #
+  # This is not the guard being weakened. The leak moved from "detected" to
+  # "impossible", which is strictly better, and test-kipi-update-plugin-excludes.sh
+  # is what holds the impossibility. If that file ever goes green while a .env
+  # lands in an instance, THIS assertion is wrong again and must flip back.
   printf 'ANTHROPIC_API_KEY=sk-not-a-real-key\n' > "$sk/plugins/demo/.env"
-  assert_aborts_untouched "$sk" "$inst" "ignored plugin .env" "plugins/demo/.env"
+  printf 'OPENAI_API_KEY=sk-also-not-real\n' > "$sk/plugins/demo/.env.local"
+  out="$(bash "$sk/kipi-update.sh" 2>&1)" || true
+  if echo "$out" | grep -q "ABORT: the skeleton"; then
+    fail "the guard fired on a .env the plugin copy now excludes: $out"
+  fi
+  rm -f "$sk/plugins/demo/.env" "$sk/plugins/demo/.env.local"
 
-  echo "PASS: an ignored plugin .env aborts; rsync-excluded classes stay silent"
+  # An untracked plugin file that IS still copied must abort, or the assertion
+  # above would be satisfied by a guard that had simply stopped working.
+  printf 'unreviewed, and rsync WILL copy this\n' > "$sk/plugins/demo/scratch.md"
+  assert_aborts_untouched "$sk" "$inst" "copied untracked plugin file" "plugins/demo/scratch.md"
+  rm -f "$sk/plugins/demo/scratch.md"
+
+  echo "PASS: rsync-excluded classes stay silent; a file the copy DOES carry still aborts"
 }
 
 # ---------------------------------------------------------------- property 2

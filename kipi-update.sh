@@ -198,6 +198,55 @@ is_managed_plugin_path() {
 # plugins/ tree an EARLIER update staged and never committed). The fleet updater
 # was blocked by itself, silently. This list is deliberately narrow and explicit:
 # anything not named here is treated as founder work and still refuses.
+# THE ONE plugin-copy exclusion set (ASK-772). Two consumers derive from it and
+# they answer halves of a single question:
+#
+#   the per-plugin rsync         -- "never copy this into an instance"
+#   the source-provenance preflight -- "never alarm about this, because it is
+#                                       never copied"
+#
+# Writing the set down twice is how a secret shipped. `.gitignore:3` is `*.env`
+# and kipi-design's cip/generate.py reads a plugin-root .env for API keys, so a
+# gitignored plugins/<name>/.env was invisible to `git status` and copied happily
+# by rsync into all 23 instances (Codex, PR #149 round 3).
+#
+# Adding it to ONE consumer swaps one failure for another: rsync-only leaves the
+# preflight aborting the whole fleet over a file that can no longer leak (a
+# denial of service on every update), preflight-only leaves the leak open and
+# silent. Hence one list.
+#
+# Each entry is "<rsync --exclude pattern>::<regex matching the same paths>".
+# Two representations, adjacent, because rsync globs and grep regexes are not
+# interconvertible in bash without a converter more fragile than the duplication
+# it removes. `::` is the delimiter, not `|`, because the regexes contain `|`.
+# test-kipi-update-plugin-excludes.sh drives BOTH consumers off this list and
+# fails if they disagree, so agreement is proven behaviourally rather than by
+# the two strings having been typed the same.
+PLUGIN_COPY_EXCLUDES=(
+  "/.git/::(^|/)\.git/"
+  "__pycache__/::(^|/)__pycache__/"
+  "*.pyc::\.pyc\$"
+  ".venv/::(^|/)\.venv/"
+  ".pytest_cache/::(^|/)\.pytest_cache/"
+  ".env::(^|/)\.env\$"
+  ".env.*::(^|/)\.env\."
+)
+
+plugin_copy_rsync_flags() {
+  local entry
+  for entry in "${PLUGIN_COPY_EXCLUDES[@]}"; do
+    printf -- '--exclude=%s\n' "${entry%%::*}"
+  done
+}
+
+plugin_copy_filter_regex() {
+  local entry out=""
+  for entry in "${PLUGIN_COPY_EXCLUDES[@]}"; do
+    out="${out:+$out|}${entry#*::}"
+  done
+  printf '%s\n' "$out"
+}
+
 SYSTEM_OWNED_PATHS=(
   "q-system/memory/.sycophancy-monthly-stamp"
   "q-system/.q-system/claude-integrity-baseline.json"
@@ -448,7 +497,7 @@ SYNC_SCOPE_DIRTY="$(
     git -C "$SCRIPT_DIR" status --porcelain --ignored=matching -- plugins \
       2>/dev/null || true
   } | sed 's/^...//' \
-    | grep -vE '(^|/)(\.git|__pycache__|\.venv|\.pytest_cache)/|\.pyc$' || true
+    | grep -vE "$(plugin_copy_filter_regex)" || true
 )"
 if [ -n "$SYNC_SCOPE_DIRTY" ]; then
   echo ""
@@ -895,14 +944,36 @@ stage_config_sync() {
     # syncer now walk the same list, so the stager can no longer name a path
     # the syncer will not write -- which is what the old post-hoc [ -d ] filter
     # was patching around. See managed_plugin_names for the scar.
+    # THE THIRD CONSUMER of PLUGIN_COPY_EXCLUDES, and the one that made the
+    # duplication expensive rather than merely untidy (ASK-772). This walk had
+    # its OWN hardcoded prune list -- .git, __pycache__, .pytest_cache, .venv,
+    # *.pyc -- a third copy of the same value. Excluding `.env` from the rsync
+    # without teaching the stager left it naming a path the syncer no longer
+    # writes, and `git add` on a missing path is fatal:
+    #
+    #     fatal: pathspec 'plugins/demo/.env.local' did not match any files
+    #     ERROR: config sync did not reach a complete committed state
+    #
+    # which is the exact class the comment above already warns about, arriving
+    # from the one direction it did not cover. The find still prunes cheaply so
+    # it never descends into a .venv; the shared regex is what decides.
+    plugin_excl_re="$(plugin_copy_filter_regex)"
     while IFS= read -r -d '' plugin_name; do
       while IFS= read -r -d '' source; do
-        plugin_paths+=("${source#"$SCRIPT_DIR/"}")
+        relative="${source#"$SCRIPT_DIR/"}"
+        # Matched on the path RELATIVE to the plugin dir, the same thing rsync
+        # matches its --exclude patterns against. Matching the repo-relative path
+        # would let a `.env` anywhere above the plugin root change the answer.
+        case "${source#"$SKELETON_PLUGIN_ROOT/$plugin_name/"}" in
+          *) printf '%s' "${source#"$SKELETON_PLUGIN_ROOT/$plugin_name/"}" \
+               | grep -qE "$plugin_excl_re" && continue ;;
+        esac
+        plugin_paths+=("$relative")
       done < <(
         find "$SKELETON_PLUGIN_ROOT/$plugin_name" \
           \( -type d -name .git -o -type d -name __pycache__ \
              -o -type d -name .pytest_cache -o -type d -name .venv \) -prune -o \
-          \( -type f ! -name '*.pyc' -o -type l \) -print0
+          \( -type f -o -type l \) -print0
       )
     done < <(managed_plugin_names)
     # A path the INSTANCE ignores cannot be staged, and `git add` treats that
@@ -1888,9 +1959,14 @@ print("\n".join(mod.EXTRA_WATCHED))
         # It was 107MB of the 112MB plugin tree, copied into 23 instances
         # where it could never work. --delete-excluded also clears the stale
         # copies already there. Pairs with test-kipi-update-build-artifacts.sh.
+        # Flags derived from PLUGIN_COPY_EXCLUDES, never hand-listed here: this
+        # site and the preflight filter are the two consumers that must agree,
+        # and a hand-listed copy is how a plugin-root .env shipped fleet-wide
+        # (ASK-772). Word-splitting the generator output is intended -- every
+        # pattern is a shell-safe token by construction.
+        # shellcheck disable=SC2046
         if ! rsync -a --delete --delete-excluded \
-            --exclude="/.git/" --exclude="__pycache__/" --exclude="*.pyc" \
-            --exclude=".venv/" --exclude=".pytest_cache/" \
+            $(plugin_copy_rsync_flags) \
             "$SKELETON_PLUGIN_ROOT/$plugin_name/" \
             "$path/plugins/$plugin_name/" 2>/dev/null; then
           CONFIG_FAILED=1
