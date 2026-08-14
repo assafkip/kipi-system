@@ -138,9 +138,57 @@ step is "ran X, got Y".
 
 ---
 
+## 5b. BREAK GLASS — main is frozen and nothing can merge
+
+**Symptom:** every PR sits `BLOCKED`. `kipi/reviewer-approved` is missing or red on
+every head, and re-running the reviewer does not post a status.
+
+**Why it can happen:** `main` requires `validate` **and** `kipi/reviewer-approved`,
+and since ASK-798 `enforce_admins: true` — so admins are subject to those checks
+too. `kipi/reviewer-approved` is posted by a LOCAL script (`pr-review-agent.sh`),
+not a GitHub Action. If that script's path is down, the required context is never
+posted and **nobody can merge, including the person landing the fix for it.**
+
+**The hatch (one command, reversible, logged, Slack-announced):**
+
+```bash
+# 1. confirm the freeze is what you think it is
+bash q-system/.q-system/scripts/break-glass-main-protection.sh status
+
+# 2. open the hatch (a reason is REQUIRED and goes in the ledger)
+bash q-system/.q-system/scripts/break-glass-main-protection.sh off \
+  "reviewer posting path down, landing the fix for it"
+
+# 3. merge only what unblocks the situation
+
+# 4. CLOSE IT AGAIN. Immediately.
+bash q-system/.q-system/scripts/break-glass-main-protection.sh on
+```
+
+Who can run it: anyone with admin on the repo (today: `assafkip`). It needs `gh`
+authenticated, nothing else.
+
+Ledger: `~/.claude/audit/break-glass-main-protection.jsonl` (one row per action,
+with the reason). Slack fires on `off` and on `on`.
+
+**Why a switch instead of the old escape.** Before ASK-798 the escape was
+`gh pr merge --admin`: silent, always available, indistinguishable from a normal
+merge. The capability has not been removed, it has been made *visible* — the same
+override now leaves a ledger row and a Slack message. If you find the hatch open
+and nobody remembers opening it, that is exactly the signal the old design could
+never produce.
+
+**Leaving it open is the failure mode.** An always-open hatch is identical to no
+gate at all, which is the thing ASK-798 existed to fix.
+
+---
+
 ## 6. Operate / verify
 
 ```bash
+# is the merge gate armed, and is the break-glass hatch closed?
+bash q-system/.q-system/scripts/break-glass-main-protection.sh status
+
 # see every kipi job's health
 python3 q-system/.q-system/scripts/launchd-health-check.py --dry
 
