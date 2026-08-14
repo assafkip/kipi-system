@@ -46,7 +46,9 @@ import argparse
 import hashlib
 import json
 import os
+import filecmp
 import shutil
+import time
 import subprocess
 import sys
 
@@ -248,13 +250,38 @@ def stale_extras(instance_dir, prefix, head_map):
     return sorted(set(live) - set(head_map))
 
 
-def copy_plugin(skeleton, instance_dir, prefix, head_map):
-    """Overwrite + create. No delete, ever. Returns files written."""
+def backup_dir_for(instance_dir):
+    """Where an overwritten file is kept. One dir per run, under the instance."""
+    return os.path.join(instance_dir, ".plugin-fanout-backup")
+
+
+def copy_plugin(skeleton, instance_dir, prefix, head_map, stamp="run"):
+    """Overwrite + create. No delete, ever. Returns files written.
+
+    EVERY OVERWRITE IS BACKED UP FIRST (Codex review of #142, blocker). The
+    apply-time revalidation shrinks the survey-to-write window; it cannot close it,
+    because a check followed by a copy is not atomic and nothing available here
+    makes it so. My own comment said as much and then treated the window as
+    acceptable -- but the blocker's word was UNRECOVERABLE, and that is the part
+    that was actually fixable.
+
+    So a differing destination is copied aside before it is replaced. A race still
+    loses the file from its original path; it no longer loses the CONTENT. The
+    operator gets a path to recover from instead of an apology.
+
+    Only differing files are banked: an identical copy would fill the backup dir
+    with noise and bury the one file that mattered.
+    """
     written = 0
+    bdir = os.path.join(backup_dir_for(instance_dir), stamp)
     for rel in head_map:
         src = os.path.join(skeleton, prefix, rel)
         dst = os.path.join(instance_dir, prefix, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if os.path.exists(dst) and not filecmp.cmp(src, dst, shallow=False):
+            keep = os.path.join(bdir, prefix, rel)
+            os.makedirs(os.path.dirname(keep), exist_ok=True)
+            shutil.copy2(dst, keep)
         shutil.copy2(src, dst)
         written += 1
     return written
@@ -282,6 +309,7 @@ def main(argv=None):
     with open(registry, encoding="utf-8") as handle:
         targets = json.load(handle)["instances"]
 
+    run_stamp = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
     buckets = {"NEW": [], "OLD": [], "OTHER": [], "MISSING": [], "DIRTY": [], "LABEL": []}
     actions = []
 
@@ -326,11 +354,15 @@ def main(argv=None):
                     buckets["DIRTY"].append(
                         (name, f"went dirty under {prefix} between survey and write; refused"))
                     continue
-                src = os.path.join(skeleton, prefix, MANIFEST_REL)
-                dst = os.path.join(path, prefix, MANIFEST_REL)
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copy2(src, dst)
-                actions.append((name, 1, []))
+                # Through copy_plugin so the LABEL path gets the SAME backup as the
+                # OLD path. Writing with a bare copy2 here is how this branch missed
+                # the revalidation a round ago; routing both writes through one
+                # function is what stops the next protection landing on only one of
+                # them.
+                count = copy_plugin(skeleton, path, prefix,
+                                    {MANIFEST_REL: head_map.get(MANIFEST_REL, "")},
+                                    stamp=run_stamp)
+                actions.append((name, count, []))
             continue
 
         dirty = plugin_path_is_dirty(path, prefix)
@@ -356,7 +388,7 @@ def main(argv=None):
                     (name, f"went dirty under {prefix} between survey and write; refused"))
                 continue
             extras = stale_extras(path, prefix, head_map)
-            count = copy_plugin(skeleton, path, prefix, head_map)
+            count = copy_plugin(skeleton, path, prefix, head_map, stamp=run_stamp)
             actions.append((name, count, extras))
 
     print(f"plugin      : {args.plugin}")

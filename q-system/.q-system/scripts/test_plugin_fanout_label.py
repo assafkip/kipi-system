@@ -267,12 +267,16 @@ def test_a_target_that_goes_dirty_after_the_survey_is_refused(tmp_path, monkeypa
     # Codex caught it on the next round -- the test proved the instance, not the
     # class. LABEL writes one manifest file, which is still a file somebody may have
     # edited in that window.
+    # Anchored on the WRITE, whichever call performs it. The first version pinned
+    # `shutil.copy2(src, dst)` inside this branch, and then broke when both writes
+    # were routed through copy_plugin -- an improvement the test could not see,
+    # because it asserted the shape instead of the property.
     label_ix = src.index('if status == "LABEL":')
-    label_copy = src.index("shutil.copy2(src, dst)", label_ix)
-    label_between = src[label_ix:label_copy]
-    assert label_between.count("plugin_path_is_dirty(path, prefix)") >= 2, (
-        "the LABEL apply path does not revalidate before shutil.copy2: an "
-        "uncommitted manifest edit made after the survey is overwritten")
+    label_end = src.index('continue', src.index("actions.append", label_ix))
+    label_block = src[label_ix:label_end]
+    assert label_block.count("plugin_path_is_dirty(path, prefix)") >= 2, (
+        "the LABEL apply path does not revalidate before it writes: an uncommitted "
+        "manifest edit made after the survey is overwritten")
 
 
 def test_a_late_refusal_is_not_counted_as_reached_and_is_not_exit_zero():
@@ -295,3 +299,56 @@ def test_a_late_refusal_is_not_counted_as_reached_and_is_not_exit_zero():
     assert "return 1" in tail, (
         "a late concurrency refusal still exits 0: a scheduled caller cannot tell a "
         "clean fan-out from one that skipped somebody's uncommitted work")
+
+
+def test_an_overwritten_file_is_recoverable(tmp_path):
+    """THE BLOCKER'S ACTUAL WORD WAS UNRECOVERABLE (Codex review of #142).
+
+    A check followed by a copy is not atomic and nothing here makes it so; my own
+    comment said that and then treated the residual window as acceptable. The part
+    that WAS fixable is recoverability. A race still loses the file from its path;
+    it must not lose the content.
+
+    Real files, not a source assertion.
+    """
+    import importlib.util, sys
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "pf_recover", str(Path(__file__).parent / "plugin-fanout.py"))
+    pf = importlib.util.module_from_spec(spec)
+    sys.modules["pf_recover"] = pf
+    spec.loader.exec_module(pf)
+
+    skel, inst = tmp_path / "skel", tmp_path / "inst"
+    (skel / "plugins/p").mkdir(parents=True)
+    (inst / "plugins/p").mkdir(parents=True)
+    (skel / "plugins/p/a.py").write_text("SKELETON VERSION\n")
+    (inst / "plugins/p/a.py").write_text("PRECIOUS UNCOMMITTED WORK\n")
+
+    pf.copy_plugin(str(skel), str(inst), "plugins/p", {"a.py": "x"}, stamp="t1")
+
+    assert (inst / "plugins/p/a.py").read_text() == "SKELETON VERSION\n"
+    kept = Path(pf.backup_dir_for(str(inst))) / "t1" / "plugins/p/a.py"
+    assert kept.exists(), "the overwritten file was not banked: the loss is unrecoverable"
+    assert kept.read_text() == "PRECIOUS UNCOMMITTED WORK\n", "backup does not hold the original content"
+
+
+def test_an_identical_file_is_not_banked(tmp_path):
+    """Banking identical copies fills the backup dir with noise and buries the one
+    file that mattered."""
+    import importlib.util, sys
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location(
+        "pf_same", str(Path(__file__).parent / "plugin-fanout.py"))
+    pf = importlib.util.module_from_spec(spec)
+    sys.modules["pf_same"] = pf
+    spec.loader.exec_module(pf)
+
+    skel, inst = tmp_path / "s", tmp_path / "i"
+    (skel / "plugins/p").mkdir(parents=True)
+    (inst / "plugins/p").mkdir(parents=True)
+    for d in (skel, inst):
+        (d / "plugins/p/a.py").write_text("SAME\n")
+
+    pf.copy_plugin(str(skel), str(inst), "plugins/p", {"a.py": "x"}, stamp="t2")
+    assert not (Path(pf.backup_dir_for(str(inst))) / "t2" / "plugins/p/a.py").exists()
