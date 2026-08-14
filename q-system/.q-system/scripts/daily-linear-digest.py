@@ -134,7 +134,7 @@ BLOCKED_PATTERNS = (
 BLOCKED_SOURCES = (WORKER_LOG, DISPATCH_LOG)
 
 
-def blocked_today(day: str):
+def blocked_today(window: tuple):
     """(lines, error). Reads the producers own logs; invents no state of its own."""
     # The WORKER log staying required is deliberate: it is the one that always
     # exists on a healthy machine, so its absence is a real fault worth shouting
@@ -156,7 +156,19 @@ def blocked_today(day: str):
     # and "45 skipped" as if they were two facts. They are one fact, measured twice.
     latest = {}
     for line in text.splitlines():
-        if not line.startswith(day):
+        # A TIME RANGE, not a date prefix. Two clocks were in play and neither was
+        # wrong alone: the logs stamp UTC, the reader lives in local time. Matching a
+        # UTC prefix while labelling the message with the local date reported a
+        # window spanning two local days under one local heading. Matching a local
+        # prefix found nothing at all, because the log never writes that string.
+        # One definition wins: the reader's own day, expressed as UTC bounds.
+        stamp = line[:20]
+        try:
+            ts = dt.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=dt.timezone.utc)
+        except ValueError:
+            continue
+        if not (window[0] <= ts <= window[1]):
             continue
         for i, pat in enumerate(BLOCKED_PATTERNS):
             m = pat.search(line)
@@ -183,13 +195,15 @@ def build(now: dt.datetime):
     # lines and printed "nothing" on a day full of them. A silent empty, inside the
     # tool built to stop silent empties. The header keeps the LOCAL date because that
     # is the day the reader is having.
-    day = now.astimezone(dt.timezone.utc).strftime("%Y-%m-%d")
     local_day = now.strftime("%Y-%m-%d")
     since = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # The reader's day, in UTC bounds, so the filter and the heading describe the
+    # same span of time.
+    window = (since.astimezone(dt.timezone.utc), now.astimezone(dt.timezone.utc))
     since_iso = since.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
     closed, opened, api_err = fetch(since_iso)
-    blocked, log_err = blocked_today(day)
+    blocked, log_err = blocked_today(window)
 
     lines = [f"*Linear daily* {local_day} (as of {now.strftime('%H:%M %Z')})", ""]
     lines += _section("Closed today", closed, api_err,
