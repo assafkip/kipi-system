@@ -156,12 +156,57 @@ assert_unsynced_claude_paths_do_not_abort() {
   printf 'a whole checkout lives here\n' > "$sk/.claude/worktrees/some-branch/file.md"
   printf '{"permissions":{"allow":["Read"]}}\n' > "$sk/.claude/settings.local.json"
 
+  # Recursive-vs-flat: the copy is a flat `*.md` glob, so a nested file and a
+  # non-md file in the synced dirs are both unreachable by it. Round 3 of the
+  # Codex review of #149 caught the guard alarming on them.
+  mkdir -p "$sk/.claude/rules/nested" "$sk/.claude/agents"
+  printf 'unreachable by the flat glob\n' > "$sk/.claude/rules/nested/deep.md"
+  printf 'not markdown\n' > "$sk/.claude/agents/notes.txt"
+
   out="$(bash "$sk/kipi-update.sh" 2>&1)" || true
   if echo "$out" | grep -q "ABORT: the skeleton"; then
     fail "the guard fired on .claude/ paths that never rsync: $out"
   fi
 
   echo "PASS: dirty .claude/ paths outside the synced set do not abort"
+}
+
+# ------------------------------------------------------- ignored is not absent
+# `git status` hides ignored files by default; rsync does not. The plugin copy
+# excludes only .git/, __pycache__/, *.pyc, .venv/ and .pytest_cache/, so a
+# gitignored plugins/<name>/.env reaches all 23 instances unseen.
+#
+# Round 3 of the Codex review of #149, major, and not hypothetical: this repo's
+# .gitignore line 3 is `*.env`, and kipi-design's cip/generate.py reads a
+# plugin-root .env for API keys. Round 3 found it on round-1 code, which means
+# rounds 1 and 2 both missed an entire input class -- ignored files.
+#
+# The pruned classes must stay silent in the same breath. A guard that abends on
+# every __pycache__ is a guard somebody switches off, and then the .env ships.
+assert_ignored_plugin_files_abort_but_pruned_ones_do_not() {
+  local work sk inst out
+  work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build_skeleton "$work"
+  printf '*.env\n__pycache__/\n*.pyc\n.venv/\n.pytest_cache/\n' > "$sk/.gitignore"
+  ( cd "$sk" && G add .gitignore && G commit -qm ignore )
+
+  # The five rsync-excluded classes: ignored AND never copied, so silent.
+  mkdir -p "$sk/plugins/demo/__pycache__" "$sk/plugins/demo/.venv" \
+           "$sk/plugins/demo/.pytest_cache"
+  printf 'cache\n' > "$sk/plugins/demo/__pycache__/x.pyc"
+  printf 'venv\n' > "$sk/plugins/demo/.venv/pyvenv.cfg"
+  printf 'cache\n' > "$sk/plugins/demo/.pytest_cache/CACHEDIR.TAG"
+  printf 'compiled\n' > "$sk/plugins/demo/stale.pyc"
+  out="$(bash "$sk/kipi-update.sh" 2>&1)" || true
+  if echo "$out" | grep -q "ABORT: the skeleton"; then
+    fail "the guard fired on classes the plugin rsync excludes: $out"
+  fi
+
+  # The secret: ignored, and copied anyway.
+  printf 'ANTHROPIC_API_KEY=sk-not-a-real-key\n' > "$sk/plugins/demo/.env"
+  assert_aborts_untouched "$sk" "$inst" "ignored plugin .env" "plugins/demo/.env"
+
+  echo "PASS: an ignored plugin .env aborts; rsync-excluded classes stay silent"
 }
 
 # ---------------------------------------------------------------- property 2
@@ -259,6 +304,7 @@ assert_no_origin_disarms_the_branch_half_loudly() {
 
 assert_dirty_sync_scope_aborts
 assert_unsynced_claude_paths_do_not_abort
+assert_ignored_plugin_files_abort_but_pruned_ones_do_not
 assert_off_branch_aborts
 assert_main_that_is_not_at_origin_aborts
 assert_no_origin_disarms_the_branch_half_loudly

@@ -423,12 +423,32 @@ fi
 # clone's .git/info/exclude, so on a fresh clone the wholesale form fires on the
 # repo's own worktree convention.) plugins/ stays whole: the syncer walks each
 # managed plugin with `find`, so an untracked file inside one is copied too.
+# IGNORED IS NOT ABSENT (Codex review of #149 round 3, major). `git status` hides
+# ignored files by default, but rsync does not: the plugin copy excludes only
+# .git/, __pycache__/, *.pyc, .venv/ and .pytest_cache/, so a gitignored
+# plugins/<name>/.env goes to all 23 instances. That is not hypothetical --
+# `.gitignore:3` is `*.env` and kipi-design's cip/generate.py reads a plugin-root
+# .env for API keys. A guard that claims to cover what rsyncs has to look where
+# rsync looks, so plugins/ is scanned with --ignored=matching and then filtered
+# by the SAME five exclusions the rsync uses. Measured on this repo the day it
+# was written: 0 such files, so the guard arrives green and fires on the next one.
+#
+# The .claude half is the mirror-image mistake, caught as a minor in the same
+# round: it was recursive where the copy is a flat `*.md` glob, so a nested or
+# non-md file raised an alarm nothing could act on. `:(glob)` makes `*` stop at
+# the directory separator; a bare pathspec would let it match subdirectories and
+# re-widen the very scope this narrows.
 SYNC_SCOPE_DIRTY="$(
   {
     git -C "$SCRIPT_DIR" status --porcelain -- \
-      .claude/agents .claude/output-styles .claude/rules .claude/settings.json \
-      plugins 2>/dev/null || true
-  } | sed 's/^...//'
+      ':(glob).claude/agents/*.md' \
+      ':(glob).claude/output-styles/*.md' \
+      ':(glob).claude/rules/*.md' \
+      .claude/settings.json 2>/dev/null || true
+    git -C "$SCRIPT_DIR" status --porcelain --ignored=matching -- plugins \
+      2>/dev/null || true
+  } | sed 's/^...//' \
+    | grep -vE '(^|/)(\.git|__pycache__|\.venv|\.pytest_cache)/|\.pyc$' || true
 )"
 if [ -n "$SYNC_SCOPE_DIRTY" ]; then
   echo ""
