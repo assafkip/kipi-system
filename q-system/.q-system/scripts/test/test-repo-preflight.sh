@@ -173,6 +173,26 @@ fixture_git() {
 # guards it did not have -- and codex used that fixture as the proof that basename
 # comparison was hollow. A control repo has to be genuinely compliant, or every
 # refusal measured against it is measuring the wrong thing.
+#
+# THE FIXTURE MUST WALK THE SKELETON THE SAME WAY THE GATE DOES (sp-505140ae).
+# repo-preflight.sh grew a _shipping() filter in ASK-798 so a guard resolves to a
+# path an instance could actually have; this builder kept the old walk -- `/.git`
+# filtered, first os.walk hit, `break`. In a checkout holding PR-review scratch
+# dirs the two disagree: the builder writes .pr31rev/r2/tree/.../audhd-lint.py and
+# the gate looks only at the shipped path, so the CONTROL repo reads as absent.
+#
+# Measured 2026-08-14 in the primary checkout at 1830a72e: 60 passed / 10 failed,
+# every failure the same "absent=audhd-lint.py/auto-commit.py/auto-update.sh/..."
+# string -- and those names are exactly the guards whose first walk hit lands in
+# .pr31rev/ and .pr25rev/. The same commit in a clean worktree passes 70/70,
+# because a clean tree has no scratch dirs for the walk to find first. CI clones
+# clean, so CI is structurally blind to this and can never catch it.
+#
+# NOT A LOOSENING. Case 17's "noguards" fixture still builds a repo with no guard
+# files at all and is still REFUSED, which is what proves the gate kept its teeth.
+# This only stops the compliant fixture from being non-compliant by accident.
+# Copies EVERY shipping hit, not hits[0], because the gate accepts the guard if
+# ANY resolved path exists -- matching that removes the tie-break as a variable.
 copy_guards() {
   python3 - "$SKEL_SETTINGS" "$REPO" "$1" <<'GPY'
 import json, os, re, shutil, sys
@@ -183,16 +203,31 @@ for arr in hooks.values():
     for m in arr or []:
         for hk in m.get("hooks", []) or []:
             names |= set(re.findall(r"[\w.-]+\.(?:py|sh)", hk.get("command", "") or ""))
+
+# Kept byte-identical in intent to repo-preflight.sh's _shipping(). If that list
+# changes, this one changes with it or the control fixture silently rots again.
+SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', '.pytest_cache',
+             'template-repo', 'worktrees'}
+
+
+def _shipping(dirname):
+    if dirname in SKIP_DIRS:
+        return False
+    for junk in ('.pr', '.wt-', '.fable-wt', '.sana-tmp'):
+        if dirname.startswith(junk):
+            return False
+    return True
+
+
 for rel in sorted(names):
-    for base, _dirs, files in os.walk(skel):
-        if "/.git" in base:
+    for base, dirs, files in os.walk(skel):
+        dirs[:] = [d for d in dirs if _shipping(d)]
+        if rel not in files:
             continue
-        if rel in files:
-            r = os.path.relpath(os.path.join(base, rel), skel)
-            t = os.path.join(dst, r)
-            os.makedirs(os.path.dirname(t), exist_ok=True)
-            shutil.copy2(os.path.join(base, rel), t)
-            break
+        r = os.path.relpath(os.path.join(base, rel), skel)
+        t = os.path.join(dst, r)
+        os.makedirs(os.path.dirname(t), exist_ok=True)
+        shutil.copy2(os.path.join(base, rel), t)
 GPY
 }
 
