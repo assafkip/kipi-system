@@ -755,19 +755,43 @@ printf '%s' "$GOUT" | grep -q 'absent=' \
   || bad "the refusal does not distinguish absent files from unwired ones: $GOUT"
 
 echo
-echo "== 18. a non-home repo is NOT entered while gh scoping is unfinished =="
-# The rotation still offers it a turn, and the dispatcher still refuses to run an
-# agent in it. Selection being correct is not the same as execution being safe.
-grep -q 'sp-9421b9b7' "$DISPATCH" \
-  && ok "cross-repo entry is held against a captured spillover item" \
-  || bad "cross-repo entry has no captured blocker reference"
-HOLD_LINE="$(grep -n 'HOLD \$TARGET_NAME' "$DISPATCH" | head -1 | cut -d: -f1)"
-WORKLINE="$(grep -n 'bash ./kipi work' "$DISPATCH" | head -1 | cut -d: -f1)"
-{ [ -n "$HOLD_LINE" ] && [ -n "$WORKLINE" ] && [ "$HOLD_LINE" -lt "$WORKLINE" ]; } \
-  && ok "the hold is reached BEFORE any worker is invoked" \
-  || bad "the hold does not precede the worker call, so an agent could still start"
+echo "== 18. a non-home repo IS entered, and only downstream of preflight (ASK-738) =="
+# THIS CASE WAS INVERTED BY ASK-738, DELIBERATELY. It used to assert the presence of
+# the sp-9421b9b7 HOLD ("cross-repo gh scoping is unfinished"), which refused every
+# non-home repo unconditionally. That hold existed because `gh` binds to the process
+# cwd and ignored the target repo, so three call sites acted on kipi-system while
+# `git -C` worked in the target. That is fixed, so the hold is gone -- and a test
+# still asserting it would pin the defect the issue was chartered to remove.
+#
+# What replaces it is not "nothing". Entry is now gated by pick_list running the REAL
+# preflight (every check in this file) before any repo reaches the worker, and the
+# behavioural proof that a client repo is still refused with the hold gone lives in
+# test-dispatch-client-refusal-after-hold.sh, which drives the dispatcher for real and
+# asserts on argv. This case holds the SOURCE-SHAPE half: the wiring exists, and
+# nothing reaches the worker ahead of the gate.
+grep -q 'HOLD \$TARGET_NAME' "$DISPATCH" \
+  && bad "the sp-9421b9b7 HOLD is still in kipi-dispatch.sh; ASK-738 removed it" \
+  || ok "the sp-9421b9b7 blanket hold is gone"
 
-echo
+# THE HOLD WAS ALSO CARRYING WIRING THAT WAS NEVER POPULATED. WORK_ARGS was declared
+# empty and the hold exited above it, so deleting the hold alone would have dispatched
+# the TARGET's turn against the HOME repo -- consuming a client's rotation slot to run
+# kipi-system's queue. Both carriers are required: --repo is what the worker parses,
+# KIPI_TARGET_REPO is what crosses converge.sh (which forwards only its own args).
+grep -q 'WORK_ARGS="--repo' "$DISPATCH" \
+  && ok "cross-repo entry passes --repo to the worker" \
+  || bad "the hold is gone but WORK_ARGS is never populated, so a target's turn would run the HOME repo's queue"
+grep -q 'export KIPI_TARGET_REPO=' "$DISPATCH" \
+  && ok "cross-repo entry exports KIPI_TARGET_REPO for converge" \
+  || bad "KIPI_TARGET_REPO is not exported, so the worker targets the repo and converge does not"
+
+# ORDER IS THE SAFETY PROPERTY, and it is the one thing the old case got right.
+PFLINE="$(grep -n 'bash "\$PREFLIGHT"' "$DISPATCH" | head -1 | cut -d: -f1)"
+WORKLINE="$(grep -n 'bash ./kipi work' "$DISPATCH" | head -1 | cut -d: -f1)"
+{ [ -n "$PFLINE" ] && [ -n "$WORKLINE" ] && [ "$PFLINE" -lt "$WORKLINE" ]; } \
+  && ok "the preflight is reached BEFORE any worker is invoked" \
+  || bad "the preflight does not precede the worker call, so an agent could start in an unvetted repo"
+
 echo "== 19. a CLIENT ENGAGEMENT repo is refused even when opted in (ASK-741) =="
 # Founder decision 2026-08-13: "no. unattended agents should not reach a client repo."
 #
