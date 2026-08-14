@@ -455,6 +455,54 @@ if git -C "$SCRIPT_DIR" remote get-url origin >/dev/null 2>&1; then
     echo "Check out $SKELETON_BRANCH and pull before propagating."
     exit 1
   fi
+
+  # THE NAME IS NOT THE COMMIT (Codex review of #149, major). Being ON main says
+  # nothing about being AT main: a local main 15 commits behind origin passes a
+  # name check and fans a reviewed-months-ago copy to 23 instances, which is the
+  # exact failure this preflight exists to stop, one level up. It also catches
+  # the mirror case -- local commits that were never pushed, so the bytes going
+  # out were never reviewed by anyone.
+  #
+  # Measured 2026-08-14 on this very repo: the ask-728 checkout was 2 ahead and
+  # 15 behind origin, carrying an unattended auto-commit that never left the
+  # machine (rescued as PR #150).
+  #
+  # Fail closed when the comparison cannot be made. GIT_TERMINAL_PROMPT=0 is
+  # exported at the top of this script, so an unreachable origin errors out
+  # rather than hanging on credentials. Fanning to 23 repos on an unproven
+  # source is worse than not fanning at all.
+  if ! git -C "$SCRIPT_DIR" fetch origin "$SKELETON_BRANCH" --quiet 2>/dev/null; then
+    echo ""
+    echo "ABORT: could not fetch origin/$SKELETON_BRANCH."
+    echo "Without it there is no way to prove this working tree matches what was"
+    echo "reviewed. Fix connectivity, or propagate later; do not fan 23 repos"
+    echo "from an unverified source."
+    exit 1
+  fi
+  SKELETON_LOCAL_SHA="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+  SKELETON_REMOTE_SHA="$(
+    git -C "$SCRIPT_DIR" rev-parse "refs/remotes/origin/$SKELETON_BRANCH" 2>/dev/null || true
+  )"
+  if [ -z "$SKELETON_LOCAL_SHA" ] || [ -z "$SKELETON_REMOTE_SHA" ]; then
+    echo ""
+    echo "ABORT: could not resolve HEAD or origin/$SKELETON_BRANCH to a commit."
+    exit 1
+  fi
+  if [ "$SKELETON_LOCAL_SHA" != "$SKELETON_REMOTE_SHA" ]; then
+    SKELETON_DRIFT="$(
+      git -C "$SCRIPT_DIR" rev-list --left-right --count \
+        "HEAD...refs/remotes/origin/$SKELETON_BRANCH" 2>/dev/null || printf '? ?'
+    )"
+    echo ""
+    echo "ABORT: the skeleton is on $SKELETON_BRANCH but not AT origin/$SKELETON_BRANCH."
+    echo "  local:  $SKELETON_LOCAL_SHA"
+    echo "  origin: $SKELETON_REMOTE_SHA"
+    echo "  ahead/behind: $SKELETON_DRIFT"
+    echo "Ahead means bytes nobody reviewed; behind means bytes that were"
+    echo "superseded. Either way the fleet would get something other than"
+    echo "$SKELETON_BRANCH. Push or pull before propagating."
+    exit 1
+  fi
 else
   echo "skeleton branch check: DISARMED (no origin remote; nothing to be stale against)"
 fi

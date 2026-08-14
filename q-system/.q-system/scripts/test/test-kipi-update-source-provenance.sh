@@ -191,6 +191,53 @@ assert_off_branch_aborts() {
   echo "PASS: a skeleton off SKELETON_BRANCH, attached or detached, aborts before any instance is touched"
 }
 
+# --------------------------------------------------- the name is not the commit
+# Being ON main says nothing about being AT main. Round 2 of the Codex review of
+# #149 caught this: the first version checked only the branch NAME, so a local
+# main behind origin passed and fanned a superseded copy to every instance --
+# the exact failure the preflight exists to stop, one level up.
+#
+# Both directions are wrong for the same reason. BEHIND ships bytes that were
+# superseded; AHEAD ships bytes nobody reviewed. Measured 2026-08-14 on the real
+# repo: 2 ahead, 15 behind, carrying an unattended auto-commit that never left
+# the machine (PR #150).
+assert_main_that_is_not_at_origin_aborts() {
+  local work sk inst bare out
+  work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"; bare="$work/origin.git"
+  build_skeleton "$work"
+  G init -q --bare "$bare"
+  ( cd "$sk" && G remote add origin "$bare" && G push -q origin HEAD:refs/heads/main \
+    && G checkout -q -B main && G fetch -q origin main )
+
+  # In sync: must pass. Without this the two aborts below prove nothing, since a
+  # guard that always fires would satisfy them.
+  out="$(bash "$sk/kipi-update.sh" 2>&1)" || true
+  if echo "$out" | grep -q "ABORT: the skeleton"; then
+    fail "the guard fired on a main that IS at origin/main: $out"
+  fi
+
+  # AHEAD: a local commit that was never pushed.
+  printf 'never pushed\n' >> "$sk/plugins/demo/README.md"
+  # Named path, not `add -A`: instance-registry.json is deliberately untracked in
+  # this fixture, and sweeping it into a local-only commit means the `reset
+  # --hard origin/main` below deletes it out from under the updater.
+  ( cd "$sk" && G add plugins/demo/README.md && G commit -qm "local only" )
+  assert_aborts_untouched "$sk" "$inst" "main ahead of origin" "ahead/behind"
+
+  # BEHIND: origin moves on without this checkout. Built by pushing from a
+  # second clone, so the skeleton's own ref genuinely lags rather than being
+  # hand-edited into looking like it does.
+  ( cd "$sk" && G reset -q --hard origin/main )
+  # -b main explicitly: the bare repo's HEAD still points at the default branch
+  # name, which nothing ever created here, so a plain clone checks out nothing.
+  G clone -q -b main "$bare" "$work/other"
+  printf 'landed on origin after this checkout\n' > "$work/other/plugins/demo/LATER.md"
+  ( cd "$work/other" && G add -A && G commit -qm "moved on" && G push -q origin HEAD:main )
+  assert_aborts_untouched "$sk" "$inst" "main behind origin" "ahead/behind"
+
+  echo "PASS: a main that is ahead of or behind origin/main aborts before any instance is touched"
+}
+
 # ---------------------------------------------------------------- no-origin
 # Every other kipi-update fixture is a repo with no origin. The branch half
 # must stay disarmed there -- and must SAY it is disarmed, because a guard that
@@ -213,5 +260,6 @@ assert_no_origin_disarms_the_branch_half_loudly() {
 assert_dirty_sync_scope_aborts
 assert_unsynced_claude_paths_do_not_abort
 assert_off_branch_aborts
+assert_main_that_is_not_at_origin_aborts
 assert_no_origin_disarms_the_branch_half_loudly
 echo "PASS: kipi update refuses to fan bytes that were never reviewed"
