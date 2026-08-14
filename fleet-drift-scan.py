@@ -156,6 +156,8 @@ def main() -> int:
                     help="also list files that are merely behind main")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--no-fetch", action="store_true")
+    ap.add_argument("--baseline", default=None,
+                    help="JSON file of accepted drift; matches are not reported")
     args = ap.parse_args()
 
     skeleton = args.skeleton
@@ -197,6 +199,26 @@ def main() -> int:
             scan_instance(inst, skeleton, args.ship_ref, paths, head_blobs, index)
         )
 
+    # ACCEPTED DRIFT IS SUBTRACTED BY EXACT (instance, path, blob), never by
+    # instance name. Muting a whole instance would hide the NEXT unreviewed blob to
+    # land in it, which is the only thing this scan exists to catch. Keyed on the
+    # blob, an accepted entry stops matching the moment the content changes.
+    #
+    # Why a baseline exists at all: on arrival this scan reports 8 drift, all in the
+    # three instances the founder has accepted as-is. An alerting detector that is
+    # RED on day one gets muted, and then it is worth nothing -- the same lesson the
+    # settings.json false positive taught while this script was being calibrated.
+    accepted_keys = set()
+    if args.baseline:
+        with open(args.baseline) as fh:
+            for row in json.load(fh).get("accepted", []):
+                accepted_keys.add((row["instance"], row["path"], row["blob"]))
+
+    accepted = [f for f in findings
+                if (f["instance"], f["path"], f["detail"]) in accepted_keys]
+    findings = [f for f in findings
+                if (f["instance"], f["path"], f["detail"]) not in accepted_keys]
+
     drift = [f for f in findings if f["kind"] == "DRIFT"]
     missing = [f for f in findings if f["kind"] == "instance-missing"]
     lag = [f for f in findings if f["kind"] == "lag"]
@@ -214,7 +236,8 @@ def main() -> int:
         for f in drift:
             print(f"  DRIFT    {f['instance']:22} {f['path']} (blob {f['detail']} "
                   f"was never shipped at this path)")
-        print(f"  summary: {len(drift)} drift, {len(lag)} lag, {len(missing)} missing")
+        print(f"  summary: {len(drift)} drift, {len(lag)} lag, "
+              f"{len(missing)} missing, {len(accepted)} accepted")
         if drift:
             print("\nDRIFT means the instance committed bytes origin/main never "
                   "shipped at that path.\nThat is unreviewed content living in a "

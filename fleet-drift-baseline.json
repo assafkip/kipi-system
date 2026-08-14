@@ -1,0 +1,53 @@
+{
+  "_why": "Accepted drift, subtracted by exact (instance, path, blob). Never mute an instance by name -- that hides the next unreviewed blob to land in it.",
+  "accepted": [
+    {
+      "instance": "gtm-partner",
+      "path": "plugins/kipi-core/voicekit/selector.py",
+      "blob": "5888ffa5",
+      "reason": "Founder accepted these three instances as-is on 2026-08-14 (\"THAT IS FINE - they dont need it\"). Each refuses to sync on real local work: gtm-partner on unrelated dirt, fractional-cxo and negotiator on instance-authored plugins/memory-lifecycle. Keyed on the exact blob, so if any of these files CHANGES the entry stops matching and the drift is reported again. Tracked as sp-c9bbb589."
+    },
+    {
+      "instance": "gtm-partner",
+      "path": "plugins/prd-os/.claude-plugin/plugin.json",
+      "blob": "f9cf2110",
+      "reason": "Founder accepted these three instances as-is on 2026-08-14 (\"THAT IS FINE - they dont need it\"). Each refuses to sync on real local work: gtm-partner on unrelated dirt, fractional-cxo and negotiator on instance-authored plugins/memory-lifecycle. Keyed on the exact blob, so if any of these files CHANGES the entry stops matching and the drift is reported again. Tracked as sp-c9bbb589."
+    },
+    {
+      "instance": "gtm-partner",
+      "path": "plugins/prd-os/scripts/prd_runner.py",
+      "blob": "079e6b74",
+      "reason": "Founder accepted these three instances as-is on 2026-08-14 (\"THAT IS FINE - they dont need it\"). Each refuses to sync on real local work: gtm-partner on unrelated dirt, fractional-cxo and negotiator on instance-authored plugins/memory-lifecycle. Keyed on the exact blob, so if any of these files CHANGES the entry stops matching and the drift is reported again. Tracked as sp-c9bbb589."
+    },
+    {
+      "instance": "gtm-partner",
+      "path": "plugins/prd-os/tests/test_judgment_compiler.py",
+      "blob": "7f42be38",
+      "reason": "Founder accepted these three instances as-is on 2026-08-14 (\"THAT IS FINE - they dont need it\"). Each refuses to sync on real local work: gtm-partner on unrelated dirt, fractional-cxo and negotiator on instance-authored plugins/memory-lifecycle. Keyed on the exact blob, so if any of these files CHANGES the entry stops matching and the drift is reported again. Tracked as sp-c9bbb589."
+    },
+    {
+      "instance": "fractional-cxo",
+      "path": "plugins/prd-os/.claude-plugin/plugin.json",
+      "blob": "2c84ea60",
+      "reason": "Founder accepted these three instances as-is on 2026-08-14 (\"THAT IS FINE - they dont need it\"). Each refuses to sync on real local work: gtm-partner on unrelated dirt, fractional-cxo and negotiator on instance-authored plugins/memory-lifecycle. Keyed on the exact blob, so if any of these files CHANGES the entry stops matching and the drift is reported again. Tracked as sp-c9bbb589."
+    },
+    {
+      "instance": "fractional-cxo",
+      "path": "plugins/prd-os/scripts/prd_runner.py",
+      "blob": "079e6b74",
+      "reason": "Founder accepted these three instances as-is on 2026-08-14 (\"THAT IS FINE - they dont need it\"). Each refuses to sync on real local work: gtm-partner on unrelated dirt, fractional-cxo and negotiator on instance-authored plugins/memory-lifecycle. Keyed on the exact blob, so if any of these files CHANGES the entry stops matching and the drift is reported again. Tracked as sp-c9bbb589."
+    },
+    {
+      "instance": "negotiator",
+      "path": "plugins/prd-os/.claude-plugin/plugin.json",
+      "blob": "2c84ea60",
+      "reason": "Founder accepted these three instances as-is on 2026-08-14 (\"THAT IS FINE - they dont need it\"). Each refuses to sync on real local work: gtm-partner on unrelated dirt, fractional-cxo and negotiator on instance-authored plugins/memory-lifecycle. Keyed on the exact blob, so if any of these files CHANGES the entry stops matching and the drift is reported again. Tracked as sp-c9bbb589."
+    },
+    {
+      "instance": "negotiator",
+      "path": "plugins/prd-os/scripts/prd_runner.py",
+      "blob": "079e6b74",
+      "reason": "Founder accepted these three instances as-is on 2026-08-14 (\"THAT IS FINE - they dont need it\"). Each refuses to sync on real local work: gtm-partner on unrelated dirt, fractional-cxo and negotiator on instance-authored plugins/memory-lifecycle. Keyed on the exact blob, so if any of these files CHANGES the entry stops matching and the drift is reported again. Tracked as sp-c9bbb589."
+    }
+  ]
+}

@@ -1225,7 +1225,75 @@ def detect_stale_runtime_plugins(_ctx) -> list:
     }]
 
 
+def detect_fleet_drift(_ctx) -> list:
+    """An instance COMMITTED skeleton-owned bytes origin/main never shipped.
+
+    The dirty-tree guard watches worktrees, so it only ever sees the loud half.
+    Scar (ASK-795, 2026-08-14): PR #142 fanned prd-os 0.27.1 from an unmerged
+    branch; 11 instances went dirty and refused to sync, and TEN more had the same
+    blob already at HEAD -- committed, clean `git status`, no gate complaining.
+    The silent ten were found by hand-diffing blobs across all 23 instances.
+
+    Report-only by construction: this files an issue, it blocks nothing. The scan
+    itself opens no instance for writing.
+    """
+    scan = REPO_ROOT / "fleet-drift-scan.py"
+    baseline = REPO_ROOT / "fleet-drift-baseline.json"
+    if not scan.exists():
+        return []
+    cmd = [sys.executable, str(scan), "--json", "--skeleton", str(REPO_ROOT)]
+    if baseline.exists():
+        cmd += ["--baseline", str(baseline)]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    # Exit 1 means drift FOUND, which is a normal result here, not an error. Only a
+    # verdict we cannot parse is treated as no-answer -- guessing green would make
+    # this detector's silence meaningless, which is the failure mode it exists for.
+    try:
+        payload = json.loads(res.stdout)
+    except json.JSONDecodeError:
+        return []
+
+    findings = []
+    for row in payload.get("drift", []):
+        inst, path, blob = row["instance"], row["path"], row["detail"]
+        findings.append({
+            "subject": f"{inst}:{path}",
+            "title": f"unreviewed bytes committed in {inst}: {path}",
+            "body": (
+                f"`{inst}` has `{path}` committed at blob `{blob}`, which "
+                "`origin/main` **never shipped at that path**.\n\n"
+                "The instance reports clean, so no dirty-tree guard will ever "
+                "mention it. That is the ASK-795 shape: content fanned from an "
+                "unmerged branch and then committed locally.\n\n"
+                "## Action\n"
+                "- Confirm with `python3 fleet-drift-scan.py --only "
+                f"{inst}` from the skeleton.\n"
+                "- If the bytes are fleet residue, let a normal `kipi update` "
+                "overwrite them (the syncer rewrites managed plugin paths).\n"
+                "- If they are deliberate local work, record them in "
+                "`fleet-drift-baseline.json` with a reason. Baseline entries are "
+                "keyed on the exact blob, so an accepted file that later CHANGES "
+                "is reported again rather than staying muted."
+            ),
+        })
+    return findings
+
+
 DETECTORS = [
+    {
+        "id": "fleet-drift",
+        "description": "an instance committed skeleton-owned bytes origin/main never shipped",
+        "detect": detect_fleet_drift,
+        "action": "file_issue",
+        "lesson_waived": (
+            "The lesson corpus has no entry for this class yet because nothing "
+            "detected it until now -- it was found by hand. The detector plus its "
+            "baseline IS the durable answer; a lesson would only restate it."
+        ),
+    },
     {
         "id": "runtime-plugin-stale",
         "description": "the RUNNING plugin copy is older than the merged one, or hand-edited",
