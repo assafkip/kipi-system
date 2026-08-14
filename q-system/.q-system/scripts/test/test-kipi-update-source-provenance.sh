@@ -137,6 +137,33 @@ assert_dirty_sync_scope_aborts() {
   echo "PASS: a dirty, staged, or untracked .claude/ or plugins/ aborts before any instance is touched"
 }
 
+# ------------------------------------------------------- scope, not wholesale
+# The config sync copies .claude/{agents,output-styles,rules}/*.md and
+# .claude/settings.json. NOTHING else under .claude/ reaches an instance, so
+# nothing else may abort the fleet.
+#
+# This is the half that keeps the guard switched ON. `.claude/worktrees/` is the
+# repo's own convention and is ignored only in a clone's .git/info/exclude, not
+# in the committed .gitignore -- a wholesale `.claude` check fires on a fresh
+# clone the first time anyone makes a worktree. A guard that cries wolf on the
+# workflow it ships with gets deleted, and then it protects nothing.
+assert_unsynced_claude_paths_do_not_abort() {
+  local work sk out
+  work="$(mktemp -d)"; sk="$work/skel"
+  build_skeleton "$work"
+
+  mkdir -p "$sk/.claude/worktrees/some-branch"
+  printf 'a whole checkout lives here\n' > "$sk/.claude/worktrees/some-branch/file.md"
+  printf '{"permissions":{"allow":["Read"]}}\n' > "$sk/.claude/settings.local.json"
+
+  out="$(bash "$sk/kipi-update.sh" 2>&1)" || true
+  if echo "$out" | grep -q "ABORT: the skeleton"; then
+    fail "the guard fired on .claude/ paths that never rsync: $out"
+  fi
+
+  echo "PASS: dirty .claude/ paths outside the synced set do not abort"
+}
+
 # ---------------------------------------------------------------- property 2
 # The branch half. Arming needs an origin remote, so the fixture grows one --
 # a bare repo, no network.
@@ -184,6 +211,7 @@ assert_no_origin_disarms_the_branch_half_loudly() {
 }
 
 assert_dirty_sync_scope_aborts
+assert_unsynced_claude_paths_do_not_abort
 assert_off_branch_aborts
 assert_no_origin_disarms_the_branch_half_loudly
 echo "PASS: kipi update refuses to fan bytes that were never reviewed"

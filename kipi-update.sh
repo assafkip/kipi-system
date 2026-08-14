@@ -415,9 +415,19 @@ fi
 #   a silent guard is indistinguishable from one that passed.
 #
 # Pinned by test-kipi-update-source-provenance.sh.
+# SCOPED TO WHAT ACTUALLY RSYNCS, not to `.claude/` wholesale. The config sync
+# copies .claude/{agents,output-styles,rules}/*.md and .claude/settings.json --
+# nothing else under .claude/ ever reaches an instance. A wholesale check would
+# abort on .claude/worktrees/ and settings.local.json, which protect nothing and
+# would get the guard switched off. (The worktrees dir is ignored only in this
+# clone's .git/info/exclude, so on a fresh clone the wholesale form fires on the
+# repo's own worktree convention.) plugins/ stays whole: the syncer walks each
+# managed plugin with `find`, so an untracked file inside one is copied too.
 SYNC_SCOPE_DIRTY="$(
   {
-    git -C "$SCRIPT_DIR" status --porcelain -- .claude plugins 2>/dev/null || true
+    git -C "$SCRIPT_DIR" status --porcelain -- \
+      .claude/agents .claude/output-styles .claude/rules .claude/settings.json \
+      plugins 2>/dev/null || true
   } | sed 's/^...//'
 )"
 if [ -n "$SYNC_SCOPE_DIRTY" ]; then
