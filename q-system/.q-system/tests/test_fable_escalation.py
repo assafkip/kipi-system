@@ -688,6 +688,12 @@ def test_cap_row_does_not_claim_a_page_that_was_never_sent(actor, env, tmp_path)
     del e["KIPI_FABLE_NOTIFY_CMD"]          # use the real slack-notify.sh
     e["HOME"] = str(tmp_path / "emptyhome")
     e["KIPI_SLACK_WEBHOOK"] = ""
+    # Every input to notify_channel_configured has to be pinned here, or this
+    # asserts nothing. KIPI_ALERT_CAPTURE is one since ASK-746 (the channel is
+    # Linear now, and a capture file is a real destination), and it is inherited
+    # from the caller's environment -- so an operator running the suite with a
+    # capture set turned this red while the code was fine. Measured 2026-08-14.
+    e["KIPI_ALERT_CAPTURE"] = ""
     e["KIPI_FABLE_CAP"] = "1"
     os.makedirs(e["HOME"], exist_ok=True)
 

@@ -36,9 +36,20 @@ AUTOCOMMIT = [
     "[consulting] auto-commit left 9 file(s) uncommitted in consulting: .prd-os/issues/lane-h-presented-is-not-contacted.md, .prd-os/judgments-tip.json, q-consult/.q-system/apify-rules.md (+6 more) [2026-08-10 12:35:45 PDT]",
 ]
 
+# The home directory is a PLACEHOLDER, and it has to stay one. This repo is
+# public, and validate-separation.py's full skeleton sweep fails on the founder's
+# real home prefix appearing anywhere under q-system/. What these two strings
+# need to exercise is the SHAPE -- two path-shaped tokens that differ only by
+# timestamp -- because fingerprint() scrubs any `\S*/\S*` token before hashing.
+# The real username was never load-bearing; it was just what got pasted in.
+#
+# This comment does not spell that prefix out, and that is the point: the first
+# version of it did, so the comment explaining the ban tripped the ban. A text
+# rule that scans comments as well as code has to be written about the data
+# class, never with a sample of the data.
 CARVEOUT = [
-    "[cole-gtm] Daily X tool post (2026-07-17): CARVE-OUT ACTIVE: /Users/assafkipnis/.config/kipi/cole.OFF is ON (the fleet is paused) but /Users/assafkipnis/.config/kipi/podcast-social.ON opts THIS lane back in. [2026-08-10 14:05:24 PDT]",
-    "[cole-gtm] Daily X tool post (2026-07-17): CARVE-OUT ACTIVE: /Users/assafkipnis/.config/kipi/cole.OFF is ON (the fleet is paused) but /Users/assafkipnis/.config/kipi/podcast-social.ON opts THIS lane back in. [2026-08-10 13:48:02 PDT]",
+    "[cole-gtm] Daily X tool post (2026-07-17): CARVE-OUT ACTIVE: /Users/founder/.config/kipi/cole.OFF is ON (the fleet is paused) but /Users/founder/.config/kipi/podcast-social.ON opts THIS lane back in. [2026-08-10 14:05:24 PDT]",
+    "[cole-gtm] Daily X tool post (2026-07-17): CARVE-OUT ACTIVE: /Users/founder/.config/kipi/cole.OFF is ON (the fleet is paused) but /Users/founder/.config/kipi/podcast-social.ON opts THIS lane back in. [2026-08-10 13:48:02 PDT]",
 ]
 
 
