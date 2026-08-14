@@ -102,7 +102,23 @@ case "$1 ${2:-}" in
 esac
 case "${*}" in
   *"/protection"*)
-    [ "${STUB_GH_PROTECTION:-ok}" = "ok" ] || { echo "Branch not protected" >&2; exit 1; }
+    # FOUR MODES, because the three failure shapes are NOT interchangeable and the
+    # script used to collapse two of them into one sentence (ASK-755).
+    case "${STUB_GH_PROTECTION:-ok}" in
+      toothless)
+        # Real protection object, no review and no check required.
+        echo '{"url":"x","enforce_admins":{"enabled":false},"allow_force_pushes":{"enabled":false}}'; exit 0 ;;
+      apierror)
+        # EXACTLY what the real gh does on a refused request: the GitHub JSON
+        # error body on STDOUT, its own line on stderr, non-zero exit. The
+        # caller discards stderr, so STDOUT is all the script ever sees --
+        # which is how a 403 got read as a protection object.
+        echo '{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature.","documentation_url":"https://docs.github.com/rest","status":"403"}'
+        echo "gh: Upgrade to GitHub Pro (HTTP 403)" >&2
+        exit 1 ;;
+      ok) : ;;
+      *) echo "Branch not protected" >&2; exit 1 ;;
+    esac
     echo '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"strict":true,"contexts":["ci"]}}'; exit 0 ;;
   "repo view"*)
     [ "${STUB_GH_REPOVIEW:-ok}" = "ok" ] || { echo "could not resolve to a Repository" >&2; exit 1; }
@@ -120,7 +136,17 @@ export PATH="$STUBBIN:$PATH"
 # A repo that passes ALL SEVEN items. Every failing fixture below is this one with
 # exactly one thing broken, so a failure names one cause and not a pile.
 SKEL_WORKER="$REPO/q-system/.q-system/scripts/linear-worker.sh"
-SKEL_SETTINGS="$REPO/.claude/settings.json"
+# THE FIXTURE MODELS AN INSTANCE, SO IT IS BUILT FROM settings-template.json
+# (ASK-755). The fleet updater renders every instance's .claude/settings.json from
+# the TEMPLATE; the skeleton's own runtime settings.json is what the skeleton runs
+# ON ITSELF and it deliberately carries hooks that never ship. Cloning the runtime
+# file built a "compliant instance" no real instance can ever be -- it carried
+# settings-template-sync-check.py (SKELETON_ONLY by that script's own design) and
+# lacked instance-automation-guard.py (FLEET_ONLY). Both errors pointed the same
+# way: the control fixture was easier to satisfy than the fleet, so the gate looked
+# green here and was unsatisfiable everywhere.
+SKEL_SETTINGS="$REPO/settings-template.json"
+[ -f "$SKEL_SETTINGS" ] || SKEL_SETTINGS="$REPO/.claude/settings.json"
 
 # EVERY fixture git mutation goes through here. THE SCAR, and it is this file's
 # own: before make_good_repo's `local` bug was fixed it returned an EMPTY path,
@@ -851,13 +877,37 @@ OUT="$(run_preflight "$INTELCLIENT" "https://github.com/assafkip/intelclient.git
   && ok "a NON-engagement repo under the founder's own root still passes" \
   || bad "the guard over-matched and refused one of the founder's own repos: $(run_preflight "$OWNPROJ" "https://github.com/assafkip/ownproj.git")"
 
-# The engagement ROOT itself is the founder's own instance, not an engagement. The
-# founder's wording was "the engagement instances NESTED UNDER consulting/projects/*",
-# so <root>/projects/<x> refuses and <root> does not.
+# THE ENGAGEMENT ROOT ITSELF IS REFUSED (ASK-754). THIS ASSERTION IS INVERTED.
+#
+# It used to assert the opposite -- "the engagement ROOT itself is not treated as a
+# client engagement" -- on the reading that the founder meant only "the engagement
+# instances NESTED UNDER consulting/projects/*". Inverting it is part of the fix, not
+# collateral: while the suite pinned the old behaviour, the hole could not be closed
+# without a red test, and a green suite read as proof the root was safe on purpose.
+#
+# What changed is evidence, not taste. Measured 2026-08-14 on the one repo that
+# reading admits -- the ASK_AI_consultant row, whose path IS the consulting
+# engagement root: 12 TRACKED files under clients/, all 11 engagement repos nested
+# beneath it, and q-consult/ (998 files) is the live publishing engine.
+# (No absolute home path here on purpose: the skeleton sweep greps this tree for
+# an absolute home-directory prefix, and this test ships to every instance.)
+# The founder's condition for this call was "if it holds client material, it should
+# be refused" -- it holds client material in its own git history.
 ROOTREPO="$(make_good_repo_at rootrepo consulting)"
-[ "$(pf_rc "$ROOTREPO" "https://github.com/assafkip/rootrepo.git")" = "0" ] \
-  && ok "the engagement ROOT itself is not treated as a client engagement" \
-  || bad "the guard swallowed the persona root, which is the founder's own instance"
+OUT="$(run_preflight "$ROOTREPO" "https://github.com/assafkip/rootrepo.git")"
+{ [ "$(pf_rc "$ROOTREPO" "https://github.com/assafkip/rootrepo.git")" != "0" ] \
+    && printf '%s' "$OUT" | grep -q 'client-repo'; } \
+  && ok "the engagement ROOT itself is refused, and names client-repo" \
+  || bad "THE DEFECT: the engagement root -- which holds tracked client material and every nested engagement -- was accepted: $OUT"
+
+# THE DISCRIMINATION CASE FOR THE NEW GLOB, kept adjacent to it. */<root> must match
+# only when <root> is the LAST component. A founder root that merely CONTAINS an
+# engagement root name as a prefix or suffix is not an engagement root, and a rule
+# that refused those would be the over-match that gets a gate switched off.
+NEARMISS="$(make_good_repo_at nearmiss consulting-notes)"
+[ "$(pf_rc "$NEARMISS" "https://github.com/assafkip/nearmiss.git")" = "0" ] \
+  && ok "a path whose last component merely CONTAINS an engagement root name still passes" \
+  || bad "the new root glob over-matched on a substring: $(run_preflight "$NEARMISS" "https://github.com/assafkip/nearmiss.git")"
 
 # NO BYPASS SURFACE, same rule the dispatcher is held to by case 8.
 grep -qE '^ENGAGEMENT_ROOTS="[a-z ]+"$' "$PREFLIGHT" \
@@ -938,6 +988,48 @@ elif grep -q '^ENGAGEMENT_ROOTS="zzzz-no-such-root"$' "$MUTPF"; then
 else
   bad "the mutant was written but does not carry the expected replacement"
 fi
+
+echo
+echo "== 22. an API REFUSAL and a TOOTHLESS branch are different refusals (ASK-755) =="
+# The two used to print the same sentence. Both still refuse -- that part was
+# never wrong -- but "requires NO review and NO status check" names a GitHub
+# setting somebody can go and change, and saying it about a 403 sent a whole
+# founder-directed run hunting a toggle that does not exist on a private repo on
+# a personal plan. The pair is asserted TOGETHER on purpose: a fix that made the
+# 403 honest by making every protection failure vague would pass a test that only
+# looked at the 403.
+BP="$(make_good_repo bprot)"
+
+OUT_ERR="$(STUB_GH_PROTECTION=apierror run_preflight "$BP")"
+case "$OUT_ERR" in
+  *"GitHub refused the protection query"*"Upgrade to GitHub Pro"*)
+    ok "403: the refusal quotes GitHub own words" ;;
+  *) bad "403 was not reported as an API refusal: $OUT_ERR" ;;
+esac
+case "$OUT_ERR" in
+  *"requires NO review and NO status check"*)
+    bad "403 still claims the branch is protected-but-toothless, the false sentence" ;;
+  *) ok "403: the false protected-but-toothless sentence is gone" ;;
+esac
+[ "$(STUB_GH_PROTECTION=apierror pf_rc "$BP")" != "0" ] \
+  && ok "403: still REFUSES (fail closed is unchanged)" \
+  || bad "403 was allowed through -- the fix turned a gate into a filter"
+
+OUT_TOOTH="$(STUB_GH_PROTECTION=toothless run_preflight "$BP")"
+case "$OUT_TOOTH" in
+  *"requires NO review and NO status check"*)
+    ok "toothless: still named as protected-but-toothless" ;;
+  *) bad "the real toothless case lost its specific reason: $OUT_TOOTH" ;;
+esac
+[ "$(STUB_GH_PROTECTION=toothless pf_rc "$BP")" != "0" ] \
+  && ok "toothless: still REFUSES" \
+  || bad "a branch with no required review and no required check was allowed through"
+
+# The positive control. Without it, a change that refused EVERYTHING would pass
+# every assertion above (the or-across-signals shape).
+[ "$(STUB_GH_PROTECTION=ok pf_rc "$BP")" = "0" ] \
+  && ok "control: a genuinely gated branch still PASSES" \
+  || bad "a genuinely gated branch is now refused -- $(run_preflight "$BP")"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"
