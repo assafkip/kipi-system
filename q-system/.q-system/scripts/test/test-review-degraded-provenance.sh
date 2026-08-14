@@ -25,6 +25,10 @@
 # assertion and it is the one a careless consumer would break.
 set -uo pipefail
 
+# _SD locates the scripts dir for the lib the extracted writer block needs.
+_SD="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS="$(cd "$HERE/.." && pwd)"
 WORK="$(mktemp -d)"
@@ -86,6 +90,12 @@ run_writer() {  # run_writer <engine> <degraded> <verdict-dir> [writer-file]
     # silently record `usable: false` for every case and nobody would notice the
     # test had stopped matching the shipped arg list.
     REVIEW_USABLE=1
+    # The shipped script sources this before the writer block runs; the extracted
+    # copy needs it too or verdict_record_write_path is undefined and the record
+    # is never written (ASK-738). REVIEW_SLUG stays empty here, which is the
+    # legacy pr-<N> key -- repo keying has its own suite.
+    REVIEW_SLUG=""
+    . "$_SD/repo-slug-lib.sh"
     . "$writer"
   ) >/dev/null 2>&1
 }
