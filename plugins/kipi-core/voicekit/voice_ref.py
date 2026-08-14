@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 # LIVES BESIDE THE ENGINE, and that placement is the fix (ASK-710, 2026-08-14).
-# It used to sit at social-voice/scripts/voice_ref.py while voice-dna-loader.py --
+# It used to sit in ONE instance's own scripts/ dir while voice-dna-loader.py --
 # which ships to EVERY instance via the skeleton -- told agents to run
 # "<project root>/scripts/voice_ref.py". That path exists in exactly one repo, so
 # on every other instance the runtime named a selector that was not there and the
@@ -40,7 +40,12 @@ sys.path.insert(0, str(PLUGIN_ROOT))
 
 from voicekit import assemble, corpus, selector  # noqa: E402
 
-DEFAULT_CORPUS = Path.home() / "projects" / "consulting" / "q-consult" / "voice"
+# NO DEFAULT CORPUS PATH, deliberately. voicekit ships to every instance and
+# `test_no_founder_data.py` fails the build on a founder-specific string in this
+# tree -- it caught exactly that when this file was moved in carrying one founder's
+# hardcoded corpus directory. The plugin takes a path; the INSTANCE
+# supplies it, the same split `pipeline/voice.py` already uses for `corpus.load`.
+CORPUS_ENV = "KIPI_VOICE_DIR"
 
 
 def main() -> int:
@@ -55,7 +60,12 @@ def main() -> int:
     ap.add_argument("--ids-only", action="store_true")
     args = ap.parse_args()
 
-    path = Path(os.environ.get("KIPI_VOICE_DIR") or DEFAULT_CORPUS)
+    path_env = os.environ.get(CORPUS_ENV)
+    if not path_env:
+        sys.exit(f"set ${CORPUS_ENV} to the voice corpus directory.\n"
+                 "This ships to every instance, so it carries no default path: a "
+                 "hardcoded one would be one founder's corpus on everyone's machine.")
+    path = Path(path_env)
     if not (path / "exemplars.jsonl").exists():
         # Loud, never an empty reference. A blank voice section still produces
         # writing; it just produces it in nobody's voice, and nothing would say so.
