@@ -119,9 +119,44 @@ def _dash_c_payload(seg: list[str]) -> str | None:
     if not seg or Path(seg[0]).name not in _DASH_C_SHELLS:
         return None
     for i, tok in enumerate(seg[1:], start=1):
-        if tok == "-c" and i + 1 < len(seg):
+        # `-lc`, `-ic`, `-xc` are ONE flag cluster ending in c, and each carries a
+        # command payload exactly like `-c`. Matching only the exact token `-c`
+        # meant `bash -lc '<cmd>'` was never recognised as a shell payload, which
+        # defeated BOTH the merge and push sides (Codex round 5).
+        if (tok.startswith("-") and not tok.startswith("--")
+                and tok.endswith("c") and i + 1 < len(seg)):
             return seg[i + 1]
     return None
+
+
+def _tool_position(seg: list[str], tool: str) -> str:
+    """THE ONE authority on whether this gate can see a tool's arguments.
+
+    'absent' | 'plain' (tool is the command) | 'hidden' (tool is in there but
+    something else is the command, so the real argv is not visible here).
+
+    WHY ONE FUNCTION. Round 4 gave the MERGE side a token scan so a wrapper could
+    not hide `gh`, and left the PUSH side keyed on token 0. Round 5 then found
+    exactly that: `myrunner git push origin main` was ALLOW while the same shape
+    with gh was DENY. The rule was right and it was implemented at one of the two
+    places that needed it. A safety property maintained at N sites is waiting for
+    the round that finds the N+1th, so both verdicts now ask this.
+    """
+    if not any(Path(t).name == tool for t in seg):
+        return "absent"
+    return "plain" if Path(seg[0]).name == tool else "hidden"
+
+
+def _logical_lines(command: str) -> list[str]:
+    """Split on real newlines, honouring backslash continuations.
+
+    A newline is WHITESPACE to shlex, never a separator token, so
+    `true\ngit push origin main` tokenized as one segment beginning with `true`
+    and the push check (which asked about token 0) never fired. Splitting before
+    tokenizing is what makes each line its own command.
+    """
+    joined = re.sub(r"\\\n", " ", command)
+    return [ln for ln in joined.split("\n") if ln.strip()]
 
 
 def _strip_wrappers(seg: list[str]) -> tuple[list[str], str | None]:
@@ -306,11 +341,10 @@ def _merge_verdict(seg: list[str], note: str | None = None) -> str | None:
     """
     if not seg:
         return None
-    if not any(Path(t).name == "gh" for t in seg):
+    where = _tool_position(seg, "gh")
+    if where == "absent" or "merge" not in seg:
         return None
-    if "merge" not in seg:
-        return None
-    if Path(seg[0]).name != "gh":
+    if where == "hidden":
         return ("a `gh ... merge` appears here but not as the command itself, so "
                 "this gate cannot see its real arguments.\n  " + _SAFE_SHAPE)
     args = seg[1:]
@@ -347,8 +381,18 @@ def _merge_verdict(seg: list[str], note: str | None = None) -> str | None:
 
 def _push_verdict(seg: list[str], cwd: str) -> str | None:
     """`git push` landing on a protected branch of a GitHub remote -> reason."""
-    if not seg or Path(seg[0]).name != "git":
+    if not seg:
         return None
+    # Same authority the merge side uses. Round 5 found this side still keyed on
+    # token 0, so a wrapper hid the push while the identical shape with gh was
+    # already refused. One rule, asked in both places.
+    where = _tool_position(seg, "git")
+    if where == "absent" or "push" not in seg:
+        return None
+    if where == "hidden":
+        return ("a `git ... push` appears here but not as the command itself, so "
+                "this gate cannot see which branch it targets.\n  "
+                "Run the push as the command itself, without a wrapper.")
 
     repo_dir = cwd
     args: list[str] = []
@@ -428,10 +472,18 @@ def classify(command: str, cwd: str, _depth: int = 0) -> tuple[str, str]:
         # A wrapper chain deep enough to hit this is not a command anyone types.
         return "deny", ("nested shell wrappers too deep to analyse.\n  " + _SAFE_SHAPE)
 
-    tokens, parsed = _tokenize(command)
+    # Newlines first: shlex treats a newline as WHITESPACE, never a separator, so
+    # a two-line command arrived as ONE segment whose first token was line 1's
+    # command and neither verdict ever saw line 2 (Codex round 5).
+    parsed = True
+    segments: list[list[str]] = []
+    for line in _logical_lines(command):
+        toks, ok = _tokenize(line)
+        parsed = parsed and ok
+        segments.extend(_split_segments(toks))
 
     cur_dir = cwd
-    for raw_seg in _split_segments(tokens):
+    for raw_seg in segments:
         seg = _strip_env_prefix(raw_seg)
         if not seg:
             continue
