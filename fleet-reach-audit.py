@@ -61,11 +61,40 @@ def instance_owned_subtrees(updater):
     return subs
 
 
-def guard_pathspec(prefix, owned):
-    """The exact pathspec the dirty-tree guard uses."""
+def never_commit_paths(updater):
+    """SYSTEM_NEVER_COMMIT, parsed from kipi-update.sh.
+
+    Feeds --after. Parsed rather than transcribed for the same reason the
+    subtree list is: a second copy is how the projection would start crediting
+    a fix the updater does not actually apply.
+    """
+    text = updater.read_text(encoding="utf-8")
+    match = re.search(r"^SYSTEM_NEVER_COMMIT=\(\n(.*?)^\)", text, re.S | re.M)
+    if not match:
+        raise RuntimeError(f"SYSTEM_NEVER_COMMIT not found in {updater}")
+    paths = []
+    for line in match.group(1).splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        paths.append(line.strip('"').strip("'"))
+    return paths
+
+
+def guard_pathspec(prefix, owned, cleared=()):
+    """The exact pathspec the dirty-tree guard uses.
+
+    `cleared` is how --after models the one-time untrack migration. Excluding a
+    path from the pathspec makes git answer the question the migration creates
+    -- "would this instance sync if that path were not tracked?" -- and GIT
+    answers it, against the real repo. Subtracting the paths by hand from the
+    blocking list would be arithmetic on my own classifier instead, which is
+    the part most likely to be wrong.
+    """
     spec = [f"{prefix}/", ".claude/", "plugins/"] if prefix else [".claude/", "plugins/"]
     if prefix:
         spec += [f":(exclude){prefix}/{sub}/" for sub in owned]
+    spec += [f":(exclude){path}" for path in cleared]
     return spec
 
 
@@ -150,7 +179,7 @@ def classify(repo, path, staged, skel_blobs):
     return "founder"
 
 
-def audit_instance(entry, owned, skel_blobs):
+def audit_instance(entry, owned, skel_blobs, cleared=()):
     path = pathlib.Path(entry["path"])
     prefix = entry.get("subtree_prefix") or ""
     result = {
@@ -167,7 +196,7 @@ def audit_instance(entry, owned, skel_blobs):
         result["verdict"] = "NOT-A-REPO"
         return result
 
-    spec = guard_pathspec(prefix, owned)
+    spec = guard_pathspec(prefix, owned, cleared)
     rows = ([(s, p, True) for s, p in name_status(path, spec, cached=True)] +
             [(s, p, False) for s, p in name_status(path, spec, cached=False)])
     if not rows:
@@ -193,6 +222,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="machine-readable")
     parser.add_argument("--skeleton", default=str(SKELETON))
+    parser.add_argument(
+        "--after", action="store_true",
+        help="model the SYSTEM_NEVER_COMMIT untrack migration: report reach "
+             "as if those paths were no longer tracked in each instance")
     args = parser.parse_args()
 
     skeleton = pathlib.Path(args.skeleton).resolve()
@@ -206,7 +239,13 @@ def main():
         if not str(i.get("status", "")).startswith("merged")
         and i.get("skeleton_managed") is not False
     ]
-    results = [audit_instance(e, owned, skel_blobs) for e in entries]
+    cleared = never_commit_paths(updater) if args.after else ()
+    if cleared:
+        print("MODE: --after, modelling the untrack migration for:")
+        for path in cleared:
+            print(f"  {path}")
+        print()
+    results = [audit_instance(e, owned, skel_blobs, cleared) for e in entries]
 
     if args.json:
         print(json.dumps(results, indent=2))
