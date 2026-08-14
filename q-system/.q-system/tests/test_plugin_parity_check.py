@@ -230,6 +230,39 @@ def test_content_drift_is_advisory_and_does_not_fail(tmp_path):
     assert payload["plugins"][0]["advisory_content"]["differing"] == 1
 
 
+def test_in_use_bookkeeping_is_not_counted_as_drift(tmp_path):
+    """Codex review of #152 round 2, major.
+
+    `.in_use` is the loader's own lock directory, living INSIDE the installed
+    cache dir with one PID-named file per live session. It is absent from the
+    skeleton by construction and present at runtime by construction, so counting
+    it made a perfectly synchronized plugin print advisory drift -- and the count
+    moved between two runs of an unchanged tree. Noise by construction teaches
+    the reader to stop reading, which is how the one real finding gets missed.
+    """
+    skeleton = tmp_path / "skeleton"
+    cache = tmp_path / "cache"
+    write_plugin(str(skeleton), "prd-os", "0.27.0", {"scripts/r.py": "same\n"})
+    live = make_cache_dir(
+        str(cache), "kipi", "prd-os", "0.27.0",
+        {
+            "scripts/r.py": "same\n",
+            ".in_use/25941": "pid lock\n",
+            ".in_use/2414.tmp.6cad4abf": "stale lock\n",
+        },
+    )
+    record = write_record(
+        str(tmp_path / "rec.json"), {"prd-os@kipi": [entry(live, "0.27.0")]}
+    )
+    code, payload, _ = run_check(str(skeleton), record)
+    assert code == 0
+    assert payload["plugins"][0]["advisory_content"] == {
+        "differing": 0,
+        "missing": 0,
+        "clone_only": 0,
+    }
+
+
 def test_non_plugin_directory_is_skipped(tmp_path):
     """A directory under plugins/ with no manifest is not a plugin."""
     skeleton = tmp_path / "skeleton"

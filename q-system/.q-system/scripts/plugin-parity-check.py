@@ -58,7 +58,24 @@ import sys
 # Files that exist in a working checkout and never in a released tree. Excluded
 # from the ADVISORY content hash only -- they cannot affect the verdict, which is
 # version-only. Kept narrow: an unknown stray file SHOULD show up in the count.
-NOISE_DIRS = {"__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache"}
+# `.in_use` is the loader's own bookkeeping, not plugin content (Codex review of
+# #152 round 2, major). It lives INSIDE the installed cache directory and holds
+# one PID-named lock file per live session, so it is guaranteed absent from the
+# skeleton and guaranteed present at runtime. Measured 2026-08-14: 26 files,
+# mtime moving while the check ran.
+#
+# Counting it meant a perfectly synchronized plugin still printed advisory drift,
+# and the count changed between two runs of an unchanged tree. That is the same
+# failure as the permanently-red test gate this branch also fixes: output that is
+# noisy by construction teaches the reader to stop reading it, and then the one
+# real finding goes past unnoticed.
+NOISE_DIRS = {
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
+    ".in_use",
+}
 NOISE_SUFFIXES = (".pyc", ".pyo")
 
 
