@@ -2364,10 +2364,24 @@ print("\n".join(mod.EXTRA_WATCHED))
           git rm -r -q --cached plugins/memory-lifecycle
         fi &&
         { stage_config_sync "$path" || { unstage_scope "$path" .claude/ plugins/; false; }; } &&
-        if ! git diff --cached --quiet 2>/dev/null; then
-          guarded_commit "$path" \
-            "chore: sync .claude config + plugins from skeleton $(date +%Y-%m-%d)"
-        fi
+        # THE COMMIT HALF NEEDS THE SAME UNWIND AS THE STAGING HALF (ASK-797).
+        # unstage_scope was wired to stage_config_sync's failure only, so a
+        # staging error unwound cleanly and a COMMIT error did not -- it left the
+        # index fully staged and abandoned the instance. The comment on
+        # unstage_scope already describes what that costs ("EVERY later run
+        # aborts at the dirty-tree guard, because that guard reads `git diff
+        # --cached`"); it just did not cover this exit.
+        #
+        # Measured 2026-08-14: 2 instances were carrying 10 staged additions each
+        # under a plugin the skeleton had already dropped, byte-identical across
+        # both repos, with clean worktrees. Nothing but this path produces that
+        # shape, and no later run could clear it -- a worktree checkout does not
+        # touch the index, so it looked like founder work forever.
+        { if ! git diff --cached --quiet 2>/dev/null; then
+            guarded_commit "$path" \
+              "chore: sync .claude config + plugins from skeleton $(date +%Y-%m-%d)" ||
+              { unstage_scope "$path" .claude/ plugins/; false; }
+          fi; }
       ); then
         CONFIG_FAILED=1
       fi
