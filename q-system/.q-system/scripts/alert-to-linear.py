@@ -42,6 +42,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import sys
 import time
 
@@ -197,14 +198,74 @@ def _write_state(fp: str, data: dict) -> None:
         pass
 
 
+# The fleet convention for where the skeleton sits when nothing else can say.
+# Same constant voice-dna-loader.py:63 already falls back to, deliberately: two
+# scripts guessing the skeleton two different ways is a derivation split waiting
+# to be found. LAST rung, never first -- see _registry_path.
+CANONICAL_SKELETON = os.path.join(os.path.expanduser("~"), "projects",
+                                  "kipi-system")
+
+
 def _registry_path() -> str:
-    """instance-registry.json, which lives at the SKELETON ROOT, three levels up
-    from this scripts/ directory. KIPI_INSTANCE_REGISTRY is the test seam."""
+    """instance-registry.json. KIPI_INSTANCE_REGISTRY is the test seam.
+
+    THE REGISTRY LIVES ONLY AT THE SKELETON ROOT, AND THIS SCRIPT SHIPS TO EVERY
+    INSTANCE (ASK-839, PR #191 review round 4). The fleet updater copies
+    `q-system/` and nothing at the repo root, so three-levels-up from an
+    INSTANCE's scripts/ named a file that is not there. `_registry_rows()` then
+    returned [] and rungs 2 (repo path), 3 (label vs registry name) and 5 (own
+    checkout) were dead at once -- in the instances, which is where alerts are
+    raised. Measured 2026-08-15 against the live registry: 24 of 25 instances
+    ship this writer, 25 of 25 lack the registry, and 8 have a basename that is
+    not their board alias (strategy/KTLYST_strategy, consulting/ASK Consulting,
+    product/ktlyst, website/ktlyst-website, lawyer/ktlyst_lawyer,
+    kipi-investigations/investigations, cole-gtm/cole-GTM, and one client
+    engagement this public repo does not name).
+    For those 8, rung 4 offers the bare directory name, no project carries it,
+    and the alert files unset -- the defect this issue is about, still live in
+    every instance after three rounds fixed it in the skeleton.
+
+    A LADDER, and the first rung that EXISTS wins:
+
+    1. The path beside this script. FIRST so a skeleton checkout always reads its
+       own registry and can never be answered by a stale copy under the canonical
+       home path -- including this repo's own worktrees and CI clones.
+    2. The `kipi` CLI on PATH, resolved through its symlink. A derivation from
+       how the CLI is actually installed, not a constant, so it is correct for a
+       skeleton at any location. `shutil.which` reads PATH in-process: no
+       subprocess on the never-raises alert path, the same rule
+       `_common_repo_root()` follows.
+    3. CANONICAL_SKELETON. This is what covers a launchd job, whose PATH carries
+       no `/opt/homebrew` -- 3 of this repo's 5 plists set no PATH at all and
+       inherit the minimal one, and those are alert producers.
+
+    NO RUNG INVENTS A NAME. When every rung misses, this returns the in-place
+    path so `_registry_rows()` reads nothing and the candidate list is whatever
+    the caller's own label supplied. A ladder that ended in a guess would file
+    every instance's alerts under one wrong project and look fixed
+    (test_an_instance_with_no_registry_anywhere_invents_nothing).
+    """
     env = os.environ.get("KIPI_INSTANCE_REGISTRY")
     if env:
         return env
     here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(here, "..", "..", "..", "instance-registry.json")
+    in_place = os.path.join(here, "..", "..", "..", "instance-registry.json")
+    candidates = [in_place]
+    try:
+        cli = shutil.which("kipi")
+        if cli:
+            candidates.append(os.path.join(
+                os.path.dirname(os.path.realpath(cli)), "instance-registry.json"))
+    except OSError:
+        pass
+    candidates.append(os.path.join(CANONICAL_SKELETON, "instance-registry.json"))
+    for candidate in candidates:
+        try:
+            if os.path.isfile(candidate):
+                return candidate
+        except OSError:
+            continue
+    return in_place
 
 
 def _registry_rows() -> list:

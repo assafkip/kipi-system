@@ -499,7 +499,24 @@ def project_of(i):
 ALERT_MARKER = "kipi-alert-fingerprint"
 
 def is_fleet_alert(i):
-    return ALERT_MARKER in (i.get("description") or "")
+    # MATCHED IN THE WRITERS OWN STRUCTURAL FORM (ASK-839, PR #191 round 4):
+    # alert-to-linear.py:515 emits <!-- kipi-alert-fingerprint: <fp> -->. The
+    # bare-name test matched any issue whose body merely DISCUSSES the alert
+    # mechanism and silently dropped it from this queue -- ASK-839 itself is one,
+    # since its description says the tickets carry that marker. Fixed at all three
+    # readers together (here, and both call sites in linear-dor-drafter.py):
+    # leaving one behind splits the predicate, so the drafter would write a DoR
+    # onto an issue this side still refuses to pick.
+    #
+    # Parsed rather than regexed because there is no re import in this heredoc and
+    # adding one is a wider edit than the fix. A comment key must be the WHOLE key,
+    # so prose inside some other HTML comment cannot match either.
+    for chunk in (i.get("description") or "").split("<!--")[1:]:
+        head = chunk.split("-->", 1)[0]
+        name, sep, _rest = head.partition(":")
+        if sep and name.strip() == ALERT_MARKER:
+            return True
+    return False
 
 def in_this_repo(i):
     # Unset project is NOT this repo. "Target unknown" and "target is here" are

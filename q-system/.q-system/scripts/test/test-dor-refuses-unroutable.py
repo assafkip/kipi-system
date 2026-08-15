@@ -115,6 +115,37 @@ def run(mod, label):
             f"selection_mode returned {mod.selection_mode(unset)!r} -- drafting "
             "onto an unroutable ticket promotes it into a queue nothing serves")
 
+    # AN ISSUE THAT TALKS ABOUT ALERTS IS NOT AN ALERT (ASK-839, PR #191 round 4).
+    # The exclusion matched the bare marker NAME anywhere in the body, so any
+    # issue whose prose merely names the mechanism was dropped from drafting
+    # forever, silently. The body below is copied out of ASK-839's own live
+    # description -- the issue that BUILT this exclusion is excluded by it, which
+    # is how the defect was found. Same class as the bare "Definition of Ready"
+    # substring that removed a founder's issue from this drafter (sp-b784a19a): a
+    # comment marker is structure, a sentence naming it is not.
+    about_alerts = issue(
+        "ASK-805", project="kipi-system",
+        desc="| Population | Count |\n| -- | -- |\n"
+             "| Open project-unset alert tickets (carry `kipi-alert-fingerprint`) | 81 |\n\n"
+             "The writer stamps kipi-alert-fingerprint into every ticket it files.")
+    if mod.selection_mode(about_alerts) == "draft":
+        ok("drafts an ordinary issue that only DISCUSSES the alert marker (ASK-805)")
+    else:
+        bad("drafts an ordinary issue that only DISCUSSES the alert marker (ASK-805)",
+            f"selection_mode returned {mod.selection_mode(about_alerts)!r} -- "
+            "matching the bare name silently excludes real work from drafting")
+
+    # The other half of the same predicate: the writer's real stamp still has to
+    # be caught. Asserting only the new case would let the fix be "delete the
+    # exclusion", which is the original defect back.
+    odd_spacing = issue("ASK-806", project="kipi-system",
+                        desc="alert body\n\n<!--kipi-alert-fingerprint:abc123-->")
+    if mod.selection_mode(odd_spacing) is None:
+        ok("still refuses the writer's stamp with no spaces around it (ASK-806)")
+    else:
+        bad("still refuses the writer's stamp with no spaces around it (ASK-806)",
+            f"selection_mode returned {mod.selection_mode(odd_spacing)!r}")
+
     # The redrive path runs BEFORE the project test in selection_mode, so it has
     # its own case: an issue Sana refused is re-scoped by this job, and losing
     # that path would silently strand every needs-scope issue.

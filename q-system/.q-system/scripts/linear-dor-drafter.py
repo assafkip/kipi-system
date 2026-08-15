@@ -90,7 +90,26 @@ FAILURE_MARKER = f"<!-- kipi-key: {FAILURE_KEY} -->"
 # marker rather than the title prefix or the owner label: the prefix is prose a
 # human can edit and the label is shared with every other Sana issue, while this
 # is the writer's own machine-readable claim about what the ticket IS.
+#
+# MATCHED IN THE WRITER'S STRUCTURAL FORM, NOT AS A BARE NAME (ASK-839, PR #191
+# review round 4). alert-to-linear.py:515 emits
+# `<!-- kipi-alert-fingerprint: <fp> -->`; testing for the bare name matched any
+# issue whose body merely DISCUSSES the alert mechanism, and dropped it from
+# drafting forever with no counter and no line of output. ASK-839 itself is that
+# issue -- its own description says the tickets "carry `kipi-alert-fingerprint`",
+# so the issue that built this exclusion was excluded by it. Same class as the
+# bare "Definition of Ready" substring that removed a founder's issue from this
+# drafter (sp-b784a19a): a comment marker is structure, a sentence naming it is
+# not.
 ALERT_FINGERPRINT_MARKER = "kipi-alert-fingerprint"
+ALERT_FINGERPRINT_RE = re.compile(r"<!--\s*" + re.escape(ALERT_FINGERPRINT_MARKER)
+                                  + r"\s*:")
+
+
+def is_alert_ticket(description: str) -> bool:
+    """ONE definition of "alert-to-linear.py filed this", used by the selector and
+    by the reporting count. Two substring tests in two places is how they drift."""
+    return bool(ALERT_FINGERPRINT_RE.search(description or ""))
 
 # The single founder-ping channel (.claude/rules/founder-notifications.md).
 # Used ONLY when the report itself could not reach the board -- an open Linear
@@ -545,7 +564,7 @@ def selection_mode(issue: dict) -> str | None:
     # board 2026-08-15: 81 open alert tickets, 19 already drafted onto, and all 19
     # sat in the permanently-UNREACHABLE bucket. This drip is what converted them,
     # at the rate of one batch a night, out of the remaining 62.
-    if ALERT_FINGERPRINT_MARKER in desc:
+    if is_alert_ticket(desc):
         return None
 
     # AN UNROUTABLE ISSUE MUST NOT BE PROMOTED (ASK-839, the second question the
@@ -723,7 +742,7 @@ def fetch_draftable(ls, team_id: str) -> list:
     # is read in a digest, and a list that can reach 60 buries it.
     unrouted = [i for i in issues
                 if not ((i.get("project") or {}).get("name") or "").strip()
-                and ALERT_FINGERPRINT_MARKER not in (i.get("description") or "")
+                and not is_alert_ticket(i.get("description") or "")
                 and (i.get("state") or {}).get("type") in DRAFTABLE_STATE_TYPES
                 and not has_dor_section(i.get("description") or "")]
     if unrouted:
