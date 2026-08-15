@@ -17,6 +17,21 @@ is parsed out of kipi-update.sh rather than transcribed, because a
 hand-transcribed copy is how the audit and the guard would come to disagree
 about what is blocking.
 
+IT MODELS ONE PRECONDITION AND SAYS SO (ASK-831). The updater can abandon an
+instance at 25 different sites; this script reads the input of exactly one of
+them. So "not blocked by the guard I model" is NOT "will sync", and printing it
+as WOULD-SYNC is how this file reported "REACH: 22 of 22" on 2026-08-15 while a
+real --dry-run refused KTLYST_strategy over an untracked-WIP collision. Instead
+the refusal sites are PARSED out of the updater, checked against
+MODELLED_REFUSALS, and anything unmodelled downgrades the optimistic verdict to
+UNKNOWN. The pessimistic verdicts are untouched: a BLOCKED answer is a positive
+finding about state this script did read.
+
+The registry does not hold the audit honest by itself -- an unrun claim never
+does. `q-system/.q-system/tests/test_reach_audit_divergence.py` runs the real
+`kipi-update.sh --dry-run` against fixture instances and fails whenever an
+outcome disagrees with a verdict here.
+
 Writes nothing anywhere. Every git call is a read.
 """
 
@@ -28,6 +43,23 @@ import subprocess
 import sys
 
 SKELETON = pathlib.Path(__file__).resolve().parent
+
+# Every way kipi-update.sh gives up on one instance, as it spells the message.
+# Two shapes reach the same place: `abandon_instance "  ERROR: ..."`, and an
+# `echo "  ERROR: ..."` whose caller abandons a few lines later. Both are
+# quoted strings carrying an indented ERROR:, which is what this matches.
+REFUSAL_RE = re.compile(r'"\s{2,}ERROR: ([^"]*)"')
+
+# The refusal sites this script actually reads the input of. ONE, today.
+#
+# Membership is a claim that an instance tripping that site comes back BLOCKED
+# here rather than green -- not that the message was noticed. Adding a line
+# without adding the read is how the audit would go back to being optimistic
+# in exactly the cases that matter, so the divergence test is what admits new
+# entries: it runs the real updater and compares.
+MODELLED_REFUSALS = frozenset({
+    "dirty working tree; refusing to commit unrelated work",
+})
 
 
 def git(repo, *args, check=False):
@@ -79,6 +111,51 @@ def never_commit_paths(updater):
             continue
         paths.append(line.strip('"').strip("'"))
     return paths
+
+
+def refusal_sites(updater):
+    """Every per-instance refusal message in kipi-update.sh, in file order.
+
+    Derived, never transcribed, for the same reason INSTANCE_OWNED_SUBTREES is:
+    a hand-kept list would go stale the moment somebody adds a precondition,
+    and going stale here means going OPTIMISTIC, which is the whole defect.
+
+    The `$` truncation makes the identity stable: half these messages end in an
+    interpolated path, and the site is the same site whichever file tripped it.
+    """
+    sites = []
+    for line in updater.read_text(encoding="utf-8").splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        for match in REFUSAL_RE.finditer(line):
+            message = match.group(1).split("$")[0].strip().rstrip(":").strip()
+            if message and message not in sites:
+                sites.append(message)
+    if not sites:
+        raise RuntimeError(
+            f"no refusal sites parsed from {updater}; the audit cannot tell "
+            "what it fails to model and refuses to assume the answer is none"
+        )
+    return sites
+
+
+def unmodelled_refusals(updater):
+    """Refusal sites with nothing behind them here. Empty means full coverage.
+
+    Also fails loudly when a MODELLED entry no longer exists in the updater. A
+    reworded message would otherwise leave the registry claiming coverage of a
+    site that is gone while the real, renamed one sits unmodelled and silent --
+    the same blind spot with a fresh coat of paint.
+    """
+    sites = refusal_sites(updater)
+    missing = sorted(MODELLED_REFUSALS - set(sites))
+    if missing:
+        raise RuntimeError(
+            f"MODELLED_REFUSALS names sites absent from {updater}: {missing}. "
+            "They were renamed or removed; re-point the registry before "
+            "trusting any verdict from this script."
+        )
+    return [site for site in sites if site not in MODELLED_REFUSALS]
 
 
 def guard_pathspec(prefix, owned, cleared=()):
@@ -198,7 +275,16 @@ def classify(repo, path, staged, skel_blobs):
     return "founder"
 
 
-def audit_instance(entry, owned, skel_blobs, cleared=()):
+def audit_instance(entry, owned, skel_blobs, cleared=(), unmodelled=None):
+    """One verdict per instance, and the optimistic one is conditional.
+
+    `unmodelled` is the refusal sites this script does not read the input of.
+    Non-empty (or None, meaning the caller never established coverage) turns
+    the clean answer into UNKNOWN: nothing here looked at those sites, so
+    "clean by the guard I model" is the only claim available and WOULD-SYNC is
+    a bigger one. None defaults to the pessimistic side on purpose -- an
+    optimistic default is exactly the failure this parameter exists to stop.
+    """
     path = pathlib.Path(entry["path"])
     prefix = entry.get("subtree_prefix") or ""
     result = {
@@ -219,7 +305,8 @@ def audit_instance(entry, owned, skel_blobs, cleared=()):
     rows = ([(s, p, True) for s, p in name_status(path, spec, cached=True)] +
             [(s, p, False) for s, p in name_status(path, spec, cached=False)])
     if not rows:
-        result["verdict"] = "WOULD-SYNC"
+        fully_modelled = unmodelled is not None and not unmodelled
+        result["verdict"] = "WOULD-SYNC" if fully_modelled else "UNKNOWN"
         return result
 
     seen = {}
@@ -245,6 +332,13 @@ def main():
         "--after", action="store_true",
         help="model the SYSTEM_NEVER_COMMIT untrack migration: report reach "
              "as if those paths were no longer tracked in each instance")
+    parser.add_argument(
+        "--assume-full-coverage", action="store_true",
+        help="pretend every refusal site in kipi-update.sh is modelled here, "
+             "so a clean instance reports WOULD-SYNC again. This is the "
+             "overclaim of 2026-08-15 and exists only so the divergence test "
+             "can provoke it and prove the guard bites. Never use it to read "
+             "a reach number.")
     args = parser.parse_args()
 
     skeleton = pathlib.Path(args.skeleton).resolve()
@@ -264,13 +358,16 @@ def main():
         for path in cleared:
             print(f"  {path}")
         print()
-    results = [audit_instance(e, owned, skel_blobs, cleared) for e in entries]
+    unmodelled = [] if args.assume_full_coverage else unmodelled_refusals(updater)
+    results = [audit_instance(e, owned, skel_blobs, cleared, unmodelled)
+               for e in entries]
 
     if args.json:
         print(json.dumps(results, indent=2))
         return 0
 
-    order = {"WOULD-SYNC": 0, "BLOCKED-FLEET": 1, "BLOCKED-FOUNDER": 2}
+    order = {"WOULD-SYNC": 0, "UNKNOWN": 1, "BLOCKED-FLEET": 2,
+             "BLOCKED-FOUNDER": 3}
     counts = {}
     for row in results:
         counts[row["verdict"]] = counts.get(row["verdict"], 0) + 1
@@ -279,11 +376,31 @@ def main():
     for verdict in sorted(counts, key=lambda v: order.get(v, 9)):
         print(f"  {verdict:16s} {counts[verdict]}")
     print()
-    print(f"REACH: {counts.get('WOULD-SYNC', 0)} of {len(results)} would sync now")
+
+    unknown = counts.get("UNKNOWN", 0)
+    if unknown:
+        # NOT a bare reach line while anything is unknown. "REACH: 22 of 22"
+        # is precisely what got quoted into commits and PR bodies all session
+        # on 2026-08-15 while one instance was in fact refused. A reader who
+        # takes one line from this output has to take the caveat with it.
+        print(f"REACH: {counts.get('WOULD-SYNC', 0)} of {len(results)} would "
+              f"sync now; {unknown} cannot tell from here")
+    else:
+        print(f"REACH: {counts.get('WOULD-SYNC', 0)} of {len(results)} would sync now")
     print()
 
+    if unmodelled:
+        # Named, not counted. A count says "trust me less"; the names say which
+        # refusal the next reader has to go model to shrink the unknown bucket.
+        print(f"UNMODELLED PRECONDITIONS ({len(unmodelled)}) -- any instance "
+              "clean by the guard above is UNKNOWN, not green, because none of "
+              "these was read:")
+        for site in unmodelled:
+            print(f"  {site}")
+        print()
+
     for row in sorted(results, key=lambda r: (order.get(r["verdict"], 9), r["name"])):
-        if row["verdict"] == "WOULD-SYNC":
+        if row["verdict"] in ("WOULD-SYNC", "UNKNOWN"):
             continue
         print(f"{row['name']}  [{row['verdict']}]")
         for item in row["blocked_by"]:
