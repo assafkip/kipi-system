@@ -133,7 +133,26 @@ class SkeletonBlobs:
     def shas_for(self, path):
         if path not in self._cache:
             shas = set()
-            commits = git(self.skeleton, "rev-list", "--all", "--", path).split()
+            # HEAD, NOT --all (PR #165 review round 5, major).
+            #
+            # `--all` is EVERY local ref: unmerged feature branches, remote-
+            # tracking refs, tags, the review worktrees. This repo carries dozens
+            # of in-flight sana/* branches at any moment. So a blob that never
+            # shipped -- one living only on somebody's experiment -- counted as
+            # "the skeleton wrote this", and fleet-unblock would commit it over
+            # founder content in an instance. The next real sync then overwrites
+            # it with what the shipped line actually says, so the founder's bytes
+            # are gone and the thing that replaced them was never skeleton
+            # content either.
+            #
+            # HEAD is the line the updater actually syncs from (`git archive
+            # HEAD`), and its ancestry is every version this skeleton could
+            # legitimately have written into an instance. An unrelated branch is
+            # not in that ancestry and now proves nothing.
+            #
+            # Reproducer: test_a_blob_that_only_exists_on_an_unmerged_branch_is_not_fleet_authored
+            # Control:    test_a_blob_on_the_shipped_line_is_still_fleet_authored
+            commits = git(self.skeleton, "rev-list", "HEAD", "--", path).split()
             for commit in commits:
                 sha = git(self.skeleton, "rev-parse", "-q", "--verify",
                           f"{commit}:{path}").strip()
