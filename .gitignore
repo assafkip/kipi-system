@@ -109,6 +109,27 @@ q-system/output/.update-check-*
 q-system/output/capability-maps/
 .runs/
 
+# Lock files beside the prd-os ledgers. flock targets, recreated on every
+# resolve/reclassify, and they were standing untracked-and-unignored inside a
+# TRACKED directory. sp-a21cb27c predicted an unattended auto-commit would sweep
+# them in; measured 2026-08-14 that is false -- auto-commit.py's NEVER list
+# already refuses any .lock, so system_state_paths returns [] for both. What was
+# left was permanent noise in `git status`, which is its own cost: a status that
+# is never clean is a status nobody reads.
+.prd-os/*.lock
+.prd-os/.judgments.lock
+
+# THE STANZA BETWEEN THESE MARKERS IS SHIPPED TO EVERY INSTANCE (sp-097d2e23).
+# kipi-update-gitignore-block.py parses it out of this file and writes it into
+# each instance's root .gitignore as a managed block. Root .gitignore is not in
+# the updater's sync set, so until 2026-08-14 these rules existed only here --
+# and an instance that does not ignore these paths has git report them, which
+# hands them straight to auto-commit.py (q-system/.q-system/ classifies as
+# "chore", which the fleet sync commits unattended). Five of 22 instances had
+# already committed their own baseline or armed marker, the most recent that
+# same day. Add a path here and every instance gets it on the next update; the
+# writer refuses rather than guessing if these markers ever go missing.
+# >>> kipi-instance-local-stanza >>>
 # .claude/ integrity baseline is INSTANCE-LOCAL (ASK-282). Never commit it:
 # kipi update propagates the skeleton, but each instance regenerates
 # .claude/settings.json from settings-template.json, so a shared baseline can
@@ -121,6 +142,11 @@ q-system/output/claude-integrity/
 # update, so every fresh instance would claim prior arming, refuse to arm, and
 # Slack-page SECURITY on its first run -- the round-2 outage exactly.
 q-system/.q-system/.claude-integrity-armed
+# Daily update stamps. Pure updater exhaust, and the reason this line moved
+# into the shipped stanza: instances carry hundreds of them, many already
+# committed by the pre-ASK-498 generic-fallback sweep.
+q-system/output/.update-check-*
+# <<< kipi-instance-local-stanza <<<
 
 # PR-review scratch trees. 537 of these files were swept into the repo by an
 # unattended `chore: update project files` auto-commit (ec5efddf). Removing them
