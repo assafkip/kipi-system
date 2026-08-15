@@ -136,6 +136,31 @@ def decide(repo, row, audit, rescued):
         )
 
     if row["kind"] == "fleet-written":
+        # BOTH SIDES OF THE PATH, NOT ONE (PR #165 review, major).
+        #
+        # The index can hold a blob the skeleton really did ship while the
+        # WORKTREE holds bytes it never had -- a founder edit on top of a staged
+        # skeleton write. This branch used to match on the index alone and
+        # schedule a commit. `git commit` takes the INDEX, so the run would clear
+        # the dirty-tree guard, report the path repaired, and leave the founder's
+        # edit uncommitted for the next sync to overwrite. Founder work destroyed
+        # by the tool whose entire job is avoiding exactly that.
+        #
+        # One side matching the skeleton is not attribution, it is half of one.
+        # Reproducer: test_a_staged_skeleton_blob_with_a_founder_worktree_edit_is_refused.
+        #
+        # Scoped to the WORKTREE differing from the index, deliberately. In the
+        # ordinary case nothing is staged, so the index still holds the HEAD blob
+        # -- which the skeleton never wrote and never should have -- and
+        # demanding both sides be skeleton blobs would refuse every real repair.
+        # What matters is what is LEFT BEHIND after committing the index.
+        if work_sha and work_sha != index_sha and not audit_wrote(audit, path, work_sha):
+            return "refuse", (
+                f"index holds skeleton blob {index_sha[:12]} but the worktree "
+                f"holds {work_sha[:12]}, which the skeleton never wrote; "
+                "committing the index would leave that edit for the next sync "
+                "to overwrite"
+            )
         which = index_sha if audit_wrote(audit, path, index_sha) else work_sha
         return "commit", (
             f"blob {which[:12]} is one the skeleton itself held at {path}"
@@ -265,6 +290,7 @@ def main():
 
     print(f"MODE: {'APPLY' if args.apply else 'dry run'}\n")
     refused = 0
+    failed = 0
     acted = 0
     for entry in entries:
         result = audit.audit_instance(entry, owned, audit.SKEL_BLOBS)
@@ -285,12 +311,30 @@ def main():
         for action, path, reason in actionable:
             print(f"    {action:12s} {path}\n              {reason}")
         for action, path, outcome in apply_instance(repo, actionable, args.apply, args.message):
-            acted += 1
+            # A REFUSED outcome is not an action (PR #165 review, major).
+            # Counting it toward `acted` made "acted on 3 path(s)" the printed
+            # result of a run that repaired nothing.
+            if outcome.startswith("REFUSED"):
+                failed += 1
+            else:
+                acted += 1
             print(f"    -> {action:12s} {path}: {outcome}")
         print()
 
-    print(f"acted on {acted} path(s); refused {refused} path(s)")
-    return 0
+    print(f"acted on {acted} path(s); refused {refused} path(s)"
+          + (f"; {failed} action(s) FAILED" if failed else ""))
+    # NON-ZERO WHEN AN ACTION WE ACCEPTED THEN FAILED (PR #165 review, major).
+    #
+    # `refused` is a decision and is a SUCCESSFUL outcome: the script looked,
+    # could not attribute the change, and correctly left it alone. `failed` is
+    # different -- the script accepted the path, tried, and the repair did not
+    # happen (a pre-commit hook rejected it). Exiting 0 there tells an unattended
+    # fleet job the run succeeded while every instance stays blocked, which is
+    # the silent-success class this whole effort exists to end.
+    #
+    # Reproducers: test_a_refused_commit_does_not_report_success, and its
+    # negative control test_a_clean_successful_run_still_exits_zero.
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
