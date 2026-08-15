@@ -40,6 +40,19 @@ NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
 STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
 REVIEWS_DIR="$STATE_DIR/pr-reviews"
 LOG="$STATE_DIR/linear-worker.log"
+# THE SAME LEDGER THE WORKER WRITES, AND DELIBERATELY NOT A SECOND ONE (ASK-833).
+# The 3-attempt cap keys on this file. converge stops at exit-7 without the worker
+# having recorded anything whenever the worker did not RUN TO COMPLETION -- the
+# account's usage limit, a timeout, a SIGTERM. The worker's own "exited 0 but
+# opened no PR" bump cannot cover that: it is a line inside the worker, and a
+# killed worker never reaches its own lines. With no entry the cap never trips, so
+# the issue is re-picked every cycle it wins the rotation, spending a budget slot
+# each time and producing nothing. Measured 2026-08-15: ASK-128 stopped at exit-7
+# twice in one hour and was absent from the ledger entirely; ASK-734, ASK-747 and
+# ASK-833 each reached attempt 4 of a 3-attempt cap on empty branches.
+ATTEMPTS="$STATE_DIR/linear-worker-attempts.json"
+LEDGER="$SCRIPT_DIR/attempts-ledger.py"
+attempt_count() { python3 "$LEDGER" "$ATTEMPTS" get "$1" count 0 2>/dev/null || echo 0; }
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
 # THE ONE SLUG DERIVATION (ASK-738). gh binds to cwd and ignores every path
 # variable here, so every gh call below is scoped with -R from this lib.
@@ -753,11 +766,58 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   # One full round: work phase, then the adversarial review, both bounded inside
   # the worker. A nonzero rc is the worker's own failure handling (it already
   # bumped attempts and pinged); the verdict check below decides what to do.
+  # READ THE COUNTER FIRST so the exit-7 branch below can tell "the worker
+  # recorded this failure" from "nobody did" (ASK-833).
+  ATT_BEFORE="$(attempt_count "$ISSUE")"
+  # CLEAR THE REFUSAL MARKER FIRST so only THIS round's worker can set it. A
+  # marker left behind by an earlier round (converge killed between the worker
+  # setting it and the exit-7 branch reading it) would otherwise suppress a real
+  # failure's attempt forever, which is the bug this file is fixing, inverted.
+  # Best-effort on purpose: the safety-critical write is the bump below, and an
+  # unwritable ledger is caught there with exit 8 rather than twice.
+  python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" refused_no_pr >>"$LOG" 2>&1 \
+    || say "note: could not clear the stale refusal marker for $ISSUE; see $LOG"
   $WORKER_CMD --apply --limit 1 --issue "$ISSUE" >>"$LOG" 2>&1
   WRC=$?
 
   PR="$(pr_for_branch)"
   if [ -z "$PR" ]; then
+    # CHARGE THE ATTEMPT ONLY IF THE WORKER DID NOT (ASK-833). Comparing the
+    # counter across the run is what makes this idempotent: the worker's own
+    # "exited 0 but opened no PR" bump already moved it, and charging a second
+    # one for the same round would mark a retryable issue stuck after two
+    # failures instead of three -- the same starvation bug pointed the other way.
+    # A refusal is NOT counted here for the same reason the worker does not count
+    # it: a correctly-refused issue is labelled and left, never marked stuck.
+    ATT_AFTER="$(attempt_count "$ISSUE")"
+    # A REFUSAL IS A CORRECT TERMINAL OUTCOME, NOT A FAILED ATTEMPT (PR #192
+    # review round 2, major). An unchanged counter cannot on its own tell "the
+    # worker refused this spec" from "the worker was interrupted": both leave no
+    # PR and touch nothing. Charging the first would let three CORRECT refusals
+    # reach the 3-attempt cap and falsely mark the issue stuck -- the founder-queue
+    # routing ASK-275 removed, re-entering from the driver instead of the worker.
+    # The worker now records the refusal in the shared ledger; this reads it.
+    REFUSED_MARK="$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" refused_no_pr "" 2>/dev/null || echo "")"
+    if [ -n "$REFUSED_MARK" ] && [ "$REFUSED_MARK" != "None" ]; then
+      say "$ISSUE was REFUSED by the worker and left no PR. A refusal is a correct terminal outcome, so it costs no attempt; the issue is held at its refusal label, not marked stuck."
+    elif [ "$ATT_AFTER" = "$ATT_BEFORE" ]; then
+      # A FAILED BUMP IS NOT A DETAIL TO SWALLOW (PR #192 review, major).
+      # The first cut ended this call in `|| true`. That converts an unwritable
+      # ledger into a silent success, the counter stays put, and the retry-forever
+      # bug this whole change closes comes straight back -- now with a fix in
+      # place that reads as working. Reproduced by the reviewer against a ledger
+      # path that cannot be written: before=0 after=0 final=0, branch reported
+      # success. An attempt that was not PERSISTED did not happen, so the run
+      # says so and stops on its own exit code rather than blending into the
+      # ordinary no-PR case that the dispatcher expects to see repeatedly.
+      if ! python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$ISSUE" \
+           "converge stopped at exit-7: no PR on $BRANCH after round $ROUND (worker rc=$WRC, recorded nothing itself)" \
+           >>"$LOG" 2>&1; then
+        say "STOP exit-8: could not record the attempt in $ATTEMPTS. The 3-attempt cap keys on that file, so it cannot trip while the write fails and this issue would retry forever. Fix the ledger before re-dispatching; see $LOG"
+        bash "$NOTIFY" "converge $ISSUE: attempts ledger unwritable -- the retry cap is not enforceable until it is fixed" 2>/dev/null || true
+        exit 8
+      fi
+    fi
     say "STOP exit-7: no PR on $BRANCH after round $ROUND (worker rc=$WRC). Sana could not open one; see $LOG"
     bash "$NOTIFY" "converge $ISSUE: stopped, no PR after round $ROUND" 2>/dev/null || true
     exit 7
