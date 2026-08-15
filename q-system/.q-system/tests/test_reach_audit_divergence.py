@@ -3,11 +3,17 @@
 
 THE SCAR (ASK-831, sp-940bcf47). On 2026-08-15 `fleet-reach-audit.py` printed
 "REACH: 22 of 22 would sync now". A `kipi-update.sh --dry-run` minutes later
-printed "Failed: 1 / NOT UPDATED: KTLYST_strategy / ERROR: untracked WIP
-collides with skeleton path". The audit modelled the dirty-tree guard and
-nothing else, so an instance blocked SOLELY by a precondition it did not model
-was reported green. That number was quoted all session, in commits and PR
-bodies, and nobody caught it until the founder ran the updater.
+printed "Failed: 1", naming one instance with "ERROR: untracked WIP collides
+with skeleton path". The audit modelled the dirty-tree guard and nothing else,
+so an instance blocked SOLELY by a precondition it did not model was reported
+green. That number was quoted all session, in commits and PR bodies, and nobody
+caught it until the founder ran the updater.
+
+This file deliberately does NOT name that instance. It lives under q-system/,
+which `kipi update` ships to every instance, and validate-separation.py fails
+the build on an instance name in skeleton code -- a skeleton that names one
+customer leaks it to all of them. The shape is what the test needs; the name
+adds nothing it can assert on.
 
 WHY THIS FILE IS THE FIX AND NOT A SECOND COPY OF THE UPDATER. Teaching the
 audit each precondition one at a time is the repair that rots: it drifts the
@@ -118,7 +124,7 @@ def fleet(tmp_path):
     dirty  a tracked edit inside the sync's write set -- the ONE precondition
            the audit models.
     wip    an untracked file colliding with a skeleton path, carrying bytes the
-           skeleton never shipped. This is the KTLYST_strategy shape: invisible
+           skeleton never shipped. This is the shape from the scar: invisible
            to the audit's model, fatal to the updater.
     """
     skel = build_skeleton(tmp_path)
@@ -303,3 +309,15 @@ def test_the_coverage_registry_is_derived_from_the_updater_not_transcribed(fleet
         capture_output=True, text=True,
     )
     assert "brand new precondition" in proc.stdout, proc.stdout
+
+
+if __name__ == "__main__":
+    # capability-manifest.json runs this file as `python3 <file>`. A pure pytest
+    # module has no main, so without this block that command exits 0 having run
+    # ZERO tests -- and a declared test that is vacuously green is worse than an
+    # undeclared one, because the manifest then reports coverage that does not
+    # exist. Delegating to pytest.main makes the declared runner and the real
+    # suite the same thing (Codex major, PR #187 round 2).
+    import sys
+
+    sys.exit(pytest.main([__file__, "-q"]))
