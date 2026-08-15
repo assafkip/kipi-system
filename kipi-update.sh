@@ -1634,14 +1634,34 @@ PY
     # own .gitignore, so adding a fourth never-commit path there reaches all 22
     # instances without touching this file.
     #
-    # Advisory: an instance that cannot take the block is not a reason to
-    # abandon an otherwise good update, and the untrack below still runs.
+    # ADVISORY FOR THE UPDATE, A HARD PRECONDITION FOR THE UNTRACK
+    # (PR #165 review round 6, major -- a defect in this block's first version).
+    #
+    # That version said: "an instance that cannot take the block is not a reason
+    # to abandon an otherwise good update, and the untrack below still runs."
+    # The first half is right and the second half is the bug. `git rm --cached`
+    # leaves the marker on disk UNTRACKED; if the ignore rules are not in place
+    # at that moment, git reports it and the next ordinary session's auto-commit
+    # puts it straight back. So a failed block turned the untrack from a repair
+    # into the exact regression the ordering exists to prevent -- and it would do
+    # it again on every run, because the marker's one line is a timestamp the
+    # tripwire rewrites on every arm.
+    #
+    # Leaving the marker TRACKED is the stable state. It is where 5 instances
+    # already sit, the sync still works, and the next run can retry. Untracking
+    # without ignoring is strictly worse than not untracking at all.
+    #
+    # So: the sync continues (advisory), the untrack does not (gated).
     GITIGNORE_BLOCK="$SCRIPT_DIR/kipi-update-gitignore-block.py"
+    GITIGNORE_BLOCK_OK=0
     if [ -f "$GITIGNORE_BLOCK" ]; then
-      python3 "$GITIGNORE_BLOCK" --skeleton "$SCRIPT_DIR" --instance "$path" ||
-        echo "    WARN: could not write the .gitignore managed block; never-commit paths stay visible to auto-commit here"
+      if python3 "$GITIGNORE_BLOCK" --skeleton "$SCRIPT_DIR" --instance "$path"; then
+        GITIGNORE_BLOCK_OK=1
+      else
+        echo "    WARN: could not write the .gitignore managed block; skipping the never-commit untrack so the marker is not left untracked AND unignored"
+      fi
     else
-      echo "    WARN: .gitignore block writer missing; never-commit paths stay visible to auto-commit here"
+      echo "    WARN: .gitignore block writer missing; skipping the never-commit untrack so the marker is not left untracked AND unignored"
     fi
 
     # ONE-TIME MIGRATION, and it must run BEFORE the block below (measured 2026-08-14, 6 instances).
@@ -1670,6 +1690,11 @@ PY
     # package, same rule as the dirty guard below), then by asserting the staged set
     # is exactly this one path before committing.
     for sys_path in "${SYSTEM_NEVER_COMMIT[@]}"; do
+      # Gated on the managed block being in place -- see the WARN above. A first
+      # attempt at this guard used ${GITIGNORE_BLOCK_OK:+...} on the array, which
+      # is wrong: the flag is 0 or 1 and "0" is non-empty, so it expanded on
+      # failure exactly as before. Plain and readable beats clever here.
+      [ "$GITIGNORE_BLOCK_OK" = "1" ] || continue
       git ls-files --error-unmatch -- "$sys_path" >/dev/null 2>&1 || continue
       if [ -n "$(git diff --cached --name-only 2>/dev/null)" ]; then
         say "  WARNING: $sys_path is tracked, but the index already holds staged work."

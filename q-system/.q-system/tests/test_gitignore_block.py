@@ -258,6 +258,47 @@ class TestTheWiringIntoTheUpdater:
             "system state, so a newly-stanza'd path is still offered to the "
             "classifier on the run that introduces it")
 
+    def test_the_untrack_is_GATED_on_the_block_being_written(self):
+        """PR #165 review round 6, major -- a defect in this wiring's first cut.
+
+        That version was advisory both ways: if the block could not be written
+        the updater warned and ran the untrack anyway. `git rm --cached` leaves
+        the marker on disk UNTRACKED, so without the ignore rules in place git
+        reports it and the next session's auto-commit puts it straight back --
+        turning the repair into the exact regression the ordering exists to
+        prevent, on every run.
+
+        Leaving the marker TRACKED is the stable state: 5 instances already sit
+        there, the sync still works, and the next run can retry. Untracking
+        without ignoring is strictly worse than not untracking at all.
+        """
+        text = self.text()
+        loop = text.index('for sys_path in "${SYSTEM_NEVER_COMMIT[@]}"')
+        body_end = text.index("\n    done", loop)
+        body = text[loop:body_end]
+        assert 'GITIGNORE_BLOCK_OK' in body, (
+            "the untrack loop no longer checks whether the managed block was "
+            "written, so a failed block leaves the marker untracked AND "
+            "unignored for auto-commit to re-add")
+
+    def test_the_gate_uses_an_explicit_value_test_not_a_set_test(self):
+        """Mutation control for the gate above, and a real bug I shipped for one
+        edit. The first attempt gated the loop with ${GITIGNORE_BLOCK_OK:+...},
+        which expands whenever the variable is NON-EMPTY -- and the flag is 0 or
+        1, so "0" expanded exactly like "1" and the gate did nothing. A gate that
+        is present but always open reads as coverage."""
+        # CODE lines only. The scar comment beside the gate quotes the broken
+        # form on purpose, and a naive substring check flagged that comment --
+        # the same "a gate that reads its own documentation" false positive this
+        # repo keeps hitting elsewhere.
+        code = "\n".join(line for line in self.text().splitlines()
+                         if not line.lstrip().startswith("#"))
+        assert '${GITIGNORE_BLOCK_OK:+' not in code, (
+            "the gate tests whether the flag is SET, not whether it is 1; "
+            "'0' is non-empty so this passes on failure")
+        assert '[ "$GITIGNORE_BLOCK_OK" = "1" ]' in code, (
+            "the gate no longer compares the flag against 1")
+
     def test_the_updater_still_parses(self):
         r = subprocess.run(["bash", "-n", self.UPDATER],
                            capture_output=True, text=True)
