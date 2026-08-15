@@ -769,6 +769,14 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   # READ THE COUNTER FIRST so the exit-7 branch below can tell "the worker
   # recorded this failure" from "nobody did" (ASK-833).
   ATT_BEFORE="$(attempt_count "$ISSUE")"
+  # CLEAR THE REFUSAL MARKER FIRST so only THIS round's worker can set it. A
+  # marker left behind by an earlier round (converge killed between the worker
+  # setting it and the exit-7 branch reading it) would otherwise suppress a real
+  # failure's attempt forever, which is the bug this file is fixing, inverted.
+  # Best-effort on purpose: the safety-critical write is the bump below, and an
+  # unwritable ledger is caught there with exit 8 rather than twice.
+  python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" refused_no_pr >>"$LOG" 2>&1 \
+    || say "note: could not clear the stale refusal marker for $ISSUE; see $LOG"
   $WORKER_CMD --apply --limit 1 --issue "$ISSUE" >>"$LOG" 2>&1
   WRC=$?
 
@@ -782,7 +790,17 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # A refusal is NOT counted here for the same reason the worker does not count
     # it: a correctly-refused issue is labelled and left, never marked stuck.
     ATT_AFTER="$(attempt_count "$ISSUE")"
-    if [ "$ATT_AFTER" = "$ATT_BEFORE" ]; then
+    # A REFUSAL IS A CORRECT TERMINAL OUTCOME, NOT A FAILED ATTEMPT (PR #192
+    # review round 2, major). An unchanged counter cannot on its own tell "the
+    # worker refused this spec" from "the worker was interrupted": both leave no
+    # PR and touch nothing. Charging the first would let three CORRECT refusals
+    # reach the 3-attempt cap and falsely mark the issue stuck -- the founder-queue
+    # routing ASK-275 removed, re-entering from the driver instead of the worker.
+    # The worker now records the refusal in the shared ledger; this reads it.
+    REFUSED_MARK="$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" refused_no_pr "" 2>/dev/null || echo "")"
+    if [ -n "$REFUSED_MARK" ] && [ "$REFUSED_MARK" != "None" ]; then
+      say "$ISSUE was REFUSED by the worker and left no PR. A refusal is a correct terminal outcome, so it costs no attempt; the issue is held at its refusal label, not marked stuck."
+    elif [ "$ATT_AFTER" = "$ATT_BEFORE" ]; then
       # A FAILED BUMP IS NOT A DETAIL TO SWALLOW (PR #192 review, major).
       # The first cut ended this call in `|| true`. That converts an unwritable
       # ledger into a silent success, the counter stays put, and the retry-forever

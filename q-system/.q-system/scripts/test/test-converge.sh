@@ -338,6 +338,35 @@ grep -q 'exit-8' "$WORK/out" || fail "exit-8 produced no operator-readable line"
 ok "a ledger that cannot be written stops the run loudly, it is not swallowed"
 rm -rf "$ATT"
 
+# A REFUSAL COSTS NO ATTEMPT (PR #192 review round 2, major).
+# An unchanged counter cannot by itself tell "the worker refused this spec" from
+# "the worker was interrupted": both leave no PR and touch nothing. Charging the
+# first would let three CORRECT refusals reach the cap and falsely mark the issue
+# stuck -- the founder-queue routing ASK-275 removed, re-entering from the driver.
+# This worker refuses the way the real one does: it records the refusal marker in
+# the shared ledger and opens no PR.
+cat > "$WORK/bin/refusingworker" <<'EOF'
+#!/usr/bin/env bash
+python3 "$REAL_LEDGER" "$KIPI_STATE_DIR/linear-worker-attempts.json" \
+  claim-flag "$ISSUE_UNDER_TEST" refused_no_pr >/dev/null 2>&1
+exit 0
+EOF
+chmod +x "$WORK/bin/refusingworker"
+export REAL_LEDGER="$ROOT/q-system/.q-system/scripts/attempts-ledger.py"
+export ISSUE_UNDER_TEST=ASK-T836
+rm -f "$ATT"
+echo "" > "$FAKE_PR_FILE"; echo "0" > "$FAKE_ROUND_FILE"
+set +e
+KIPI_CONVERGE_WORKER="$WORK/bin/refusingworker" \
+  bash "$CONV" --issue ASK-T836 --max-rounds 4 >"$WORK/out" 2>&1
+RC=$?
+set -e
+[ "$RC" = "7" ] || fail "a refusal still ends the run at exit 7, got rc=$RC"
+[ "$(att_count ASK-T836)" = "0" ] \
+  || fail "a REFUSAL was charged as a failed attempt; three would falsely mark the issue stuck (ASK-275): count=$(att_count ASK-T836)"
+ok "a refusal costs no attempt, so correct refusals never accumulate into stuck"
+unset REAL_LEDGER ISSUE_UNDER_TEST
+
 # --- wiring ------------------------------------------------------------------
 grep -q 'pr-verdict-lib.sh' "$CONV" || fail "converge.sh must use the shared verdict lib"
 grep -q 'rework_gate'       "$CONV" || fail "converge.sh must gate on rework_gate, not its own regex"

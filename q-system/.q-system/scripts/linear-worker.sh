@@ -2204,6 +2204,15 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # ASK-275 removed.
     if [ -n "$REFUSED" ]; then
       say "$ISSUE: refused ($REFUSED) and left no PR -- nothing to review, and a refusal is not a failed attempt"
+      # SAY SO WHERE converge CAN READ IT (PR #192 review round 2). converge
+      # stops at exit-7 on "no PR" and charges an attempt when nothing else did.
+      # It cannot tell this refusal from an interrupted worker: both leave the
+      # counter untouched and no PR. Without a durable marker three CORRECT
+      # refusals reach the 3-attempt cap and the issue is falsely marked stuck --
+      # the founder-queue routing ASK-275 removed, re-entering from the driver.
+      # The sentinel files cannot carry it: they are deleted before this line.
+      # The ledger can -- both scripts already share it, through one locked writer.
+      python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" refused_no_pr >/dev/null 2>&1 || true
     else
       bump_attempt "$ISSUE" "run exited 0 but opened no PR on $BRANCH (no output)"
     fi
