@@ -501,9 +501,30 @@ if registry_ok:
     unreachable = [i for i in dropped if not has_local_checkout(i)]
 else:
     skipped_local, unreachable = dropped, []
+# HELD IS A STATEMENT ABOUT OPEN WORK (ASK-841). The team fetch above is the whole
+# board, closed rows included, and this helper used to select on label + project
+# alone. A refusal label is never removed when the issue finishes -- grep confirms
+# nothing in this file calls issueRemoveLabel -- so every issue that was ever
+# refused stayed in these counts after it was Done, and the counts could only rise.
+# Measured 2026-08-15: the run said "2 issue(s) held at blocked:capability
+# (ASK-284 ASK-281)" while ASK-281 was Done. The true number was 1.
+#
+# That matters because the blocked:capability count is the ONLY signal that this
+# loop is starving on a capability nobody granted (see its reporting site below).
+# A number that never falls reports the same alarm whether or not anything is
+# blocked, which is the same as reporting nothing.
+#
+# TERMINAL types are excluded rather than open types allowlisted, deliberately.
+# An allowlist of (backlog, unstarted, started) would silently drop an issue
+# parked in `triage` -- still open, still refused, still needing someone -- and a
+# held issue missing from the count is invisible in a way an extra one is not.
+# ASK-288 owns re-testing whether a block still applies; this is only the count.
+TERMINAL_STATES = ("completed", "canceled")
+
 def held_with(label):
     return [i for i in issues
-            if label in {l["name"] for l in i["labels"]["nodes"]} and in_this_repo(i)]
+            if label in {l["name"] for l in i["labels"]["nodes"]} and in_this_repo(i)
+            and i["state"]["type"] not in TERMINAL_STATES]
 deferred = held_with("needs-scope")
 # Counted SEPARATELY from needs-scope. A rising blocked:capability count is a
 # claim about the ENVIRONMENT, and averaging it into "held" would hide the one
