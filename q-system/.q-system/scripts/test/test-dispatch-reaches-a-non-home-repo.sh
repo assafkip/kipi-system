@@ -50,6 +50,52 @@ done
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# --- observability precondition ---------------------------------------------
+# "Cannot observe here" and "observed bad" are different answers and this test
+# must never conflate them. The property is about ENTERING a real checkout, so it
+# is only observable where an opted-in checkout exists on disk. CI is
+# ubuntu-latest with a fresh clone: instance-registry.json ships its rows, but
+# none of their paths exist and neither does the home repo, so preflight refuses
+# every candidate for the trivial reason that there is nothing there. Declaring
+# this test in the capability manifest makes CI RUN it, and without this gate it
+# reported the fleet unreachable on every PR -- measured, exit 1, before this
+# block existed. That is a false red: it says "dispatch is broken" when the truth
+# is "this machine has no fleet".
+#
+# The gate is deliberately narrow: it asks only whether an opted-in checkout is
+# present, using the dispatcher's own opt-in rule (dispatch.enabled === true). A
+# preflight REFUSAL with checkouts present is still a hard FAIL below -- that is
+# the regression this exists to catch, and it is never skipped.
+#
+# Honest boundary: on the dispatch host itself, deleting every opted-in checkout
+# would turn this green rather than red. That case is genuinely unobservable
+# (dispatch has nothing to enter either), and registry-vs-disk drift is
+# repo-preflight's job, not this test's.
+OBSERVABLE="$(python3 - "$REGISTRY" "$HOME_REPO" <<'PY'
+import json, os, sys
+reg, home = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(reg))
+except Exception:
+    print(0); raise SystemExit(0)
+n = 0
+for e in data.get("instances", []):
+    d = e.get("dispatch")
+    if not isinstance(d, dict) or d.get("enabled") is not True:
+        continue
+    p = e.get("path", "")
+    if p and p != home and os.path.isdir(p):
+        n += 1
+print(n)
+PY
+)"
+
+if [ "${OBSERVABLE:-0}" -eq 0 ]; then
+  printf 'n/a  no opted-in instance checkout exists in this environment; the property is unobservable here, not violated\n'
+  printf '     registry: %s\n' "$REGISTRY"
+  exit 0
+fi
+
 HARNESS="$WORK/select.sh"
 {
   echo 'set -uo pipefail'
