@@ -7,9 +7,15 @@
 # cross-repo issue the search was guaranteed to miss, the receipt was skipped,
 # and the PR went green and sat with nothing proving it was reviewed.
 #
-# Measured on the first real cross-repo run, 2026-08-15T00:21:54Z, ASK-144 in
-# ktlyst. It was unreachable before that: dispatch was capped at 1 and bound to
-# the home repo, so no cross-repo run had ever completed.
+# Measured on the first real cross-repo run, 2026-08-15T00:21:54Z, ASK-144 in a
+# non-home dispatch repo. It was unreachable before that: dispatch was capped at
+# 1 and bound to the home repo, so no cross-repo run had ever completed.
+#
+# NO INSTANCE IS NAMED HERE, DELIBERATELY. This file ships to every instance and
+# validate-separation Gate 1.2 sweeps skeleton files for live instance names. The
+# founder flagged this exact trap before I started and I walked into it anyway:
+# the first cut named the repo in both this file and converge.sh, and CI refused
+# the PR. A text check cannot tell a rule from a mention of one.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONVERGE="$HERE/../converge.sh"

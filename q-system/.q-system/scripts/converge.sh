@@ -204,8 +204,11 @@ trap 'on_interrupt HUP  129' HUP
 # was skipped, and the PR went green and sat with nothing proving it was reviewed.
 #
 # Measured on the first real cross-repo run, 2026-08-15T00:21:54Z, ASK-144 in
-# ktlyst: "no worktree under .../dispatch-checkout is on sana/ask-144" while the
-# branch was sitting in ktlyst's worktrees the whole time. Post-ASK-447 $SKEL is
+# a non-home dispatch repo: "no worktree under .../dispatch-checkout is on
+# sana/ask-144" while the branch was sitting in THAT repo's worktrees the whole
+# time. (No instance is named here on purpose: this file ships to every instance
+# and validate-separation Gate 1.2 refuses a live instance name. The measurement
+# is the durable part; the repo name belongs in the PR body.) Post-ASK-447 $SKEL is
 # the PINNED kipi-system checkout, so this was guaranteed to miss for every
 # cross-repo issue -- and it was unreachable before, because dispatch was capped
 # at 1 and bound to the home repo, so no cross-repo run had ever finished.
