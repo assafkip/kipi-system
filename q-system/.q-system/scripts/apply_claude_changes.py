@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """apply-claude-changes engine: land agent-authored edits inside .claude/ without
-any human reading a diff, and without a path that can weaken enforcement.
+any human reading a diff, and without a MECHANICALLY DETECTABLE path that can
+weaken enforcement -- which means REMOVAL, never meaning.
+
+Read that line no wider than it is written. Text that leaves every enforcement
+point intact and appends a paragraph mooting it is accepted at exit 0, on
+purpose and with a decision behind it: see APPEND-NEGATION IS ACCEPTED at the
+end of this docstring before treating this tool as a semantic gate.
 
 WHY THIS SHAPE (measured 2026-08-01, do not "simplify" any of it away):
 
@@ -74,6 +80,55 @@ its line count passes. Marker placement is checked at heading granularity only:
 moving it between two headings of the same file is invisible here. That is the
 deliberate trade: a ratchet that judged prose would refuse the honest
 corrections this op exists to enable.
+
+APPEND-NEGATION IS ACCEPTED, DELIBERATELY (ASK-293, decided 2026-08-03). This is
+the sharpest instance of the residue above and it has a decision, not an
+oversight. Keep every censused line byte-identical and APPEND a paragraph saying
+the rules above are retired, and the tool applies it at exit 0: nothing is
+removed, no marker moves, no route dies, the line count GROWS. The census is
+membership-only by construction, so it cannot see it. Reproducer:
+scripts/test/ask293-append-negation-repro.sh. Pinned by 16a-16d in the suite.
+
+  Why not a negation-phrase detector. Built and measured, not reasoned about
+  (scripts/test/ask293-decision-evidence.sh). An 11-phrase list refuses the
+  literal payload and applies a paraphrase carrying none of its vocabulary while
+  saying the same thing. The guard matches vocabulary; the attacker picks the
+  vocabulary. This is the token-check class this repo has already shipped and
+  holed twice (the #68 census, the unbounded exec-ref pattern).
+
+  Why not a cap on append position. Also built and measured. Refusing text after
+  a rule's last substantive line refuses the literal payload and the paraphrase,
+  and then the SAME sentence anchored on the H1 lands ABOVE the rules it moots --
+  a strictly stronger position for the reader. Position is a proxy for authority
+  and the top of a document is not the weaker end.
+
+  Why not a body digest with an opt-in field. A field the PROPOSAL declares is
+  worth nothing here: point 3 above says there is no privileged caller, so the
+  proposer is the threat model, and a self-declared `intent` is exactly the
+  `disables_enforcement: true` smuggle that ALLOWED_PROPOSAL_KEYS exists to
+  refuse, wearing a permitted name. A digest pinned in a file this tool cannot
+  write IS a real defense -- and its cost is a second actor on EVERY rule edit,
+  which is the diff review the founder rejected (point 1) and the additive-only
+  paralysis ASK-289 existed to end. It buys back the bottleneck to close a hole
+  the honest edits share a door with.
+
+  What the acceptance rests on. Semantic negation is not mechanically separable
+  from honest clarification -- both are text added to a rule that changes how a
+  reader weighs the text around it. Every guard that claims otherwise is
+  matching a proxy (words, position), and a proxy the attacker controls is
+  decoration that reads as coverage. The residual risk is real and is stated
+  here rather than papered over: rules fan out to every instance from HEAD via
+  kipi update's `git archive`, and the only gate on that path is
+  propagation-leak-gate.py, which scans for secrets and never reads meaning. The
+  narrowing that does exist is incidental, not a defense: this engine writes the
+  WORKING TREE, kipi update propagates HEAD, so a negation has to be committed
+  before it fans out, and the commit-msg gate checks for an issue id, not intent.
+
+  What would change the decision. A defense that refuses ALL THREE payloads in
+  the evidence script (literal, paraphrased, hoisted) without refusing the
+  clarifying append in case 16d. Cases 16a-16c go red together the moment such a
+  guard lands, which is the point: they make the next change deliberate rather
+  than silent.
 """
 import contextlib
 import importlib.util
