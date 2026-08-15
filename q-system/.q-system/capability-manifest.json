@@ -619,6 +619,11 @@
       "timeout_s": 180
     },
     {
+      "path": "q-system/.q-system/tests/test_reach_audit_divergence.py",
+      "runner": "python3",
+      "timeout_s": 300
+    },
+    {
       "path": "q-system/.q-system/tests/test_grounding_manifest_health.py",
       "runner": "python3"
     },
