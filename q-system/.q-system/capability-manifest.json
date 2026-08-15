@@ -640,6 +640,11 @@
       "path": "q-system/.q-system/tests/test_capmap_scratch_and_mention.py",
       "runner": "python3",
       "timeout_s": 60
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-converge-crossrepo-receipt.sh",
+      "runner": "bash",
+      "timeout_s": 120
     }
   ],
   "required_data": [],
