@@ -13,7 +13,38 @@ paths:
 
 # AUDHD Coding Rules (ENFORCED)
 
+## Enforcement pairing (read before trusting the word ENFORCED above)
+
+| Piece | Path |
+|---|---|
+| Detector | `q-system/.q-system/scripts/wiring-check.py` |
+| Wiring | PostToolUse on Edit/Write, `.claude/settings.json` + `settings-template.json` |
+| Test | `q-system/.q-system/scripts/test_wiring_check.py` |
+
+**ADVISORY DETECTION, not prevention.** `wiring-check.py` inspects the written
+file and reports max nesting, max function length, debug leftovers
+(`print`/`console.log`/`debugger`/`breakpoint`/TODO), bare `except`, unused
+imports, orphaned function defs, and hardcoded URLs/ports. It **exits 0 on every
+path**, violations included. Findings arrive as feedback to Claude and the write
+still lands. ENFORCED here means detected-and-surfaced. It does not mean blocked
+and it does not mean prevented.
+
+Flipping it to exit 2 is a founder decision made in the open, never a silent one:
+the hook ships via `settings-template.json`, so a hard block would land on every
+code Edit/Write across every instance (ASK-132).
+
+**What no detector covers:** Presentation, Error Communication, Session
+Structure, and the banned-language list below are model behaviour, not
+file-inspectable. They stay interpretive, per `skill-hook-pairing.md`'s decision
+rule: a judgment rule lives in the instruction, not in a hook. Nothing checks
+them mechanically, so if the model drifts there, no gate will say so.
+
 ## Code Structure (Working Memory)
+
+*Detected by `wiring-check.py`, advisory only: the 2-level nesting cap and the
+30-line function cap. The other three bullets below are read by you, not by any
+script.*
+
 - Functions do one thing. If the description has "and," split it.
 - Max nesting: 2 levels. Extract inner blocks into named functions.
 - Early returns over nested else chains. Happy path reads top to bottom.
