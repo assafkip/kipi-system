@@ -33,8 +33,14 @@ on-a-missing-script-blocks-the-fix-too).
 
 ## Bypass
 
-Intentional (a public case study with recorded permission): put
-`client-name-guard-skip` in the commit message.
+Intentional (a public case study with recorded permission): put the bypass
+token on its OWN LINE in the commit message, optionally with a reason:
+
+    client-name-guard-skip: case study, permission recorded 2026-08-01
+
+Merely naming the token in prose does not bypass anything -- the guard reads a
+trailer, not a mention. Both stages read the bypass from the commit message; the
+staged stage never reads it from the diff, or editing this file would disarm it.
 
 Usage:
     client-name-guard.py --staged            # staged diff content (pre-commit)
@@ -50,6 +56,59 @@ from pathlib import Path
 
 TOKENS_FILE = Path.home() / ".config" / "kipi" / "client-tokens"
 SKIP = "client-name-guard-skip"
+
+# A BYPASS IS AN ACT, NOT A WORD (ASK-747).
+#
+# This used to be `if SKIP in text`. That cannot tell an author INVOKING the
+# bypass from prose that merely NAMES it, and the guard's own introducing commit
+# proved it: that message documented the token, both hook stages printed
+# `bypassed`, and the guard never scanned the commit that introduced it.
+#
+# So the token must now be a TRAILER -- alone on its line, or `token: reason`.
+# That form cannot occur by accident in a sentence, and it is the shape git
+# itself uses for authorial metadata.
+#
+# Comment lines are skipped. Git strips them from the final message, so a token
+# inside the commented template would authorise a bypass that never appears in
+# the recorded message -- a bypass with no audit trail is the thing this gate is.
+_BYPASS_LINE = re.compile(
+    rf"^\s*{re.escape(SKIP)}\s*(?::\s*\S.*)?\s*$", re.IGNORECASE)
+
+
+def bypass_reason(text):
+    """The trailer that authorises a bypass, or None. Prose mentioning the token
+    is NOT a bypass -- that distinction is the whole point of this function."""
+    for line in (text or "").splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        if _BYPASS_LINE.match(line):
+            return line.strip()
+    return None
+
+
+def commit_message_text():
+    """The message being written, for the --staged stage.
+
+    THE BYPASS LIVES IN THE COMMIT MESSAGE, NEVER IN THE CONTENT (ASK-747).
+    --staged used to test its own DIFF for the token, so any commit that touched
+    a file CONTAINING the token disarmed the staged scan -- and the file that
+    contains it is this one. The guard was structurally unable to see its own
+    changes. Content is not consent: a diff can say anything, only the author's
+    message can authorise.
+    """
+    path = os.environ.get("LEFTHOOK_COMMIT_MSG_FILE")
+    if not path:
+        try:
+            git_dir = subprocess.run(
+                ["git", "rev-parse", "--git-dir"],
+                capture_output=True, text=True, check=True).stdout.strip()
+        except Exception:  # noqa: BLE001 - no git dir means no message, not a crash
+            return ""
+        path = os.path.join(git_dir, "COMMIT_EDITMSG")
+    try:
+        return Path(path).read_text()
+    except Exception:  # noqa: BLE001 - absent message means no bypass, fail closed
+        return ""
 
 
 def load_tokens():
@@ -102,8 +161,10 @@ def main() -> int:
                          if l.startswith("+") and not l.startswith("+++"))
         where = "staged content"
 
-    if SKIP in text:
-        print(f"client-name-guard: bypassed via {SKIP}")
+    # Read the bypass from the MESSAGE in both stages. See commit_message_text().
+    reason = bypass_reason(text if args.message else commit_message_text())
+    if reason:
+        print(f"client-name-guard: bypassed via trailer {reason!r}")
         return 0
 
     found = hits(text, tokens)
