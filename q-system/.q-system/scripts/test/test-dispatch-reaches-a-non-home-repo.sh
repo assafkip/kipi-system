@@ -98,13 +98,23 @@ trap 'rm -rf "$WORK"' EXIT
 # would turn this green rather than red. That case is genuinely unobservable
 # (dispatch has nothing to enter either), and registry-vs-disk drift is
 # repo-preflight's job, not this test's.
+#
+# The counter itself is checked for the same reason the workspace above is. A
+# failure here does not mean "no fleet", it means the count is unknown, and
+# `${OBSERVABLE:-0}` would have read every unknown as zero and taken the n/a
+# exit. Measured on the real host with the fleet present: a python3 that exits
+# non-zero printed the n/a line and EXIT 0 -- the precondition working as an off
+# switch that swallows the defect, which is exactly what the paragraph above
+# says it must never be. A registry that will not parse is the same answer
+# (unknown, not zero), so it exits non-zero here instead of printing 0.
 OBSERVABLE="$(python3 - "$REGISTRY" "$HOME_REPO" <<'PY'
 import json, os, sys
 reg, home = sys.argv[1], sys.argv[2]
 try:
     data = json.load(open(reg))
-except Exception:
-    print(0); raise SystemExit(0)
+except Exception as exc:
+    sys.stderr.write("cannot read registry %s: %s\n" % (reg, exc))
+    raise SystemExit(2)
 n = 0
 for e in data.get("instances", []):
     d = e.get("dispatch")
@@ -116,8 +126,16 @@ for e in data.get("instances", []):
 print(n)
 PY
 )"
+OBSERVABLE_RC=$?
+case "$OBSERVABLE" in
+  ''|*[!0-9]*) OBSERVABLE_RC=1 ;;
+esac
+if [ "$OBSERVABLE_RC" -ne 0 ]; then
+  bad "could not count opted-in checkouts in $REGISTRY; the count is unknown, which is not the same as zero"
+  exit 1
+fi
 
-if [ "${OBSERVABLE:-0}" -eq 0 ]; then
+if [ "$OBSERVABLE" -eq 0 ]; then
   printf 'n/a  no opted-in instance checkout exists in this environment; the property is unobservable here, not violated\n'
   printf '     registry: %s\n' "$REGISTRY"
   exit 0
