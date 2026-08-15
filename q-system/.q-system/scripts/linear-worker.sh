@@ -367,6 +367,21 @@ fi
 # unreadable registry means reachability is UNKNOWN, and reporting unknown as
 # unreachable would fire a loud false alarm on every project at once -- the
 # failure mode this issue exists to remove, pointed the other way.
+#
+# THE ALIAS IS A FIELD, NOT A GUESS (ASK-840). The row's `name` was read as if it
+# WERE the Linear project name. Nothing ever required those two namespaces to
+# agree, and measured against the live board on 2026-08-15 they do not: two rows
+# whose checkouts were on disk that minute carried registry names spelled
+# differently from their board projects, and 17 of the 44 issues reported
+# UNREACHABLE were on them. The log told the operator to clone repos he already
+# had. `linear_project` states the mapping instead of deriving it, because a
+# name-derivation guess is what produced the bug and a smarter guess would only
+# move the day it breaks.
+#
+# ONE DERIVATION, BOTH QUESTIONS. linear_project() below answers "what is this
+# row called on the board" for the repo-identity lookup AND for the reachability
+# set. Deriving the same logical value two ways is how the two sides drifted in
+# the first place, so there is exactly one function and both callers use it.
 REGISTRY_FACTS="$(SKEL_PATH="$TARGET_REPO" REG="$SKEL/instance-registry.json" python3 - <<'PY' 2>/dev/null
 import json, os
 skel = os.path.realpath(os.environ["SKEL_PATH"])
@@ -378,29 +393,46 @@ except Exception:
 entries = reg.get("instances", reg) if isinstance(reg, dict) else reg
 name = ""
 local = []
+
+
+def linear_project(entry):
+    """The name this row carries ON THE BOARD. Explicit field first, name second."""
+    return (entry.get("linear_project") or entry.get("name") or "").strip()
+
+
 for e in entries if isinstance(entries, list) else []:
     if not isinstance(e, dict):
         continue
-    p, n = e.get("path"), e.get("name") or ""
+    p = e.get("path")
     if not p:
         continue
+    proj = linear_project(e)
     if not name and os.path.realpath(p) == skel:
-        name = n
-    if n and os.path.isdir(p):
-        local.append(n)
-print(json.dumps({"name": name, "local_projects": sorted(set(local)), "ok": ok}))
+        name = proj
+    if proj and os.path.isdir(p):
+        # The pinned remote travels WITH the row, because repo-preflight needs it
+        # and re-reading the registry to find it is the second reader ASK-729
+        # already refused to add.
+        d = e.get("dispatch") if isinstance(e.get("dispatch"), dict) else {}
+        local.append({"project": proj, "path": p,
+                      "remote": d.get("expected_remote") or ""})
+local.sort(key=lambda r: r["project"])
+print(json.dumps({"name": name, "local_repos": local, "ok": ok}))
 PY
 )"
 _facts_get() { printf '%s' "$REGISTRY_FACTS" | python3 -c "import json,sys;d=json.load(sys.stdin);v=d.get('$1');print('\n'.join(v) if isinstance(v,list) else v)" 2>/dev/null; }
+# Structured facts travel as JSON. _facts_get flattens a list to newlines, which
+# silently mangles a list of objects into the string "[object]"-shaped nonsense.
+_facts_json() { printf '%s' "$REGISTRY_FACTS" | python3 -c "import json,sys;print(json.dumps(json.load(sys.stdin).get('$1')))" 2>/dev/null; }
 
 REPO_PROJECT="${KIPI_LINEAR_PROJECT:-}"
 [ -n "$REPO_PROJECT" ] || REPO_PROJECT="$(_facts_get name)"
 [ -n "$REPO_PROJECT" ] || REPO_PROJECT="$(basename "$TARGET_REPO")"
 export REPO_PROJECT
 
-LOCAL_PROJECTS="$(_facts_get local_projects)"
+LOCAL_REPOS="$(_facts_json local_repos)"
 REGISTRY_OK="$(_facts_get ok)"
-export LOCAL_PROJECTS REGISTRY_OK
+export LOCAL_REPOS REGISTRY_OK
 
 # --- pick ready issues ------------------------------------------------------
 PICKED="$(python3 - "$ONLY_ISSUE" <<'PY'
@@ -426,8 +458,13 @@ while True:
     after = p["pageInfo"]["endCursor"]
 
 repo_project = os.environ["REPO_PROJECT"]
-# Reachability, from the SAME registry read that produced repo_project (ASK-729).
-local_projects = {p for p in os.environ.get("LOCAL_PROJECTS", "").splitlines() if p}
+# Reachability, from the SAME registry read that produced repo_project (ASK-729),
+# now carrying the board name, the path and the pinned remote per row (ASK-840).
+try:
+    local_repos = json.loads(os.environ.get("LOCAL_REPOS") or "[]") or []
+except Exception:
+    local_repos = []
+local_by_project = {r["project"]: r for r in local_repos if r.get("project")}
 registry_ok = os.environ.get("REGISTRY_OK", "") == "True"
 
 def project_of(i):
@@ -489,18 +526,45 @@ dropped = [i for i in issues if ready_ignoring_project(i) and not in_this_repo(i
 # Reporting the second as the first is why 45 issues read as a filter doing its
 # job for 13 days. An unset project is UNREACHABLE, not skipped: "target unknown"
 # is not "target is elsewhere", and it needs a human to set the project.
+#
+# A THIRD BUCKET, BECAUSE TWO OF THEM WERE BOTH WRONG FOR THE SAME REPOS
+# (ASK-840). Resolving the alias moves 17 issues out of UNREACHABLE, and the
+# tempting next step -- drop them in with the routine skips -- swaps one false
+# sentence for another. "The rotation reaches it on a later turn" is false
+# FOREVER for a client engagement repo: repo-preflight check 0 refuses it whether
+# or not its name resolves, and no waiting changes that. So reachability answers
+# only "is there a checkout", and the preflight verdict (taken from the REAL
+# script, in the shell, never re-implemented here) splits what is left.
 def has_local_checkout(i):
     name = project_of(i)
-    return bool(name) and name in local_projects
+    return bool(name) and name in local_by_project
 
 # An unreadable registry means reachability is UNKNOWN. Calling every project
 # unreachable there would be a false alarm on the whole board at once, so the
 # classification collapses back to the old single bucket and the shell says why.
 if registry_ok:
-    skipped_local = [i for i in dropped if has_local_checkout(i)]
+    reachable = [i for i in dropped if has_local_checkout(i)]
     unreachable = [i for i in dropped if not has_local_checkout(i)]
 else:
-    skipped_local, unreachable = dropped, []
+    reachable, unreachable = dropped, []
+
+# One row per reachable project, carrying what the shell needs to run preflight
+# against it: the path, the pinned remote, and how many issues ride on the answer.
+# An empty path means "no registry row backs this" -- the unreadable-registry
+# collapse above -- and the shell treats that as the routine skip it reports
+# today, rather than calling a gate it has no target for. NO APOSTROPHE IN THIS
+# HEREDOC: it sits inside a $( ) and bash tracks quote state straight through a
+# quoted heredoc there, so one in a PYTHON COMMENT takes the whole script to
+# "unexpected EOF" 800 lines away. The file carries this scar twice already.
+def reachable_rows():
+    rows = {}
+    for i in reachable:
+        proj = project_of(i) or "(unset)"
+        row = local_by_project.get(proj) or {}
+        r = rows.setdefault(proj, {"project": proj, "path": row.get("path", ""),
+                                   "remote": row.get("remote", ""), "count": 0})
+        r["count"] += 1
+    return [rows[k] for k in sorted(rows)]
 # HELD IS A STATEMENT ABOUT OPEN WORK (ASK-841). The team fetch above is the whole
 # board, closed rows included, and this helper used to select on label + project
 # alone. A refusal label is never removed when the issue finishes -- grep confirms
@@ -548,8 +612,10 @@ print(json.dumps({
     "dropped_out_of_repo": len(dropped),
     "dropped_projects": sorted({project_of(i) or "(unset)" for i in dropped}),
     # ASK-729: the same population, split by whether anyone here can act on it.
-    "skipped_local": len(skipped_local),
-    "skipped_local_projects": sorted({project_of(i) or "(unset)" for i in skipped_local}),
+    # ASK-840: the reachable half is emitted as rows, not a count, because the
+    # shell has to ask repo-preflight about each one before it can say which of
+    # them a later rotation turn actually reaches.
+    "reachable_rows": reachable_rows(),
     "unreachable": len(unreachable),
     "unreachable_projects": sorted({project_of(i) or "(unset)" for i in unreachable}),
     "unreachable_ids": [i["identifier"] for i in unreachable],
@@ -592,8 +658,52 @@ if [ "$PROJECT_KNOWN" = "False" ]; then
   exit 9
 fi
 
-DROPPED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("skipped_local",0))' 2>/dev/null)"
-DROPPED_IN="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(", ".join(json.load(sys.stdin).get("skipped_local_projects",[])))' 2>/dev/null)"
+# THE REACHABLE HALF IS SPLIT BY THE REAL GATE, NOT BY A COPY OF ITS RULES
+# (ASK-840). A project with a checkout is not therefore dispatchable, and the
+# difference is exactly what repo-preflight.sh already decides. Re-implementing
+# its client-repo test here would be a second copy of the one refusal the founder
+# said must hold everywhere -- and the copy is what goes stale. So preflight is
+# executed, once per distinct project, and its own words become the reason.
+#
+# CHEAP FOR THE CASE THAT MATTERS: check 0 is decided on path shape and exits
+# before any network call, so every client repo costs a fork and nothing else.
+# The handful that get past it pay a few gh calls once per run, not per issue.
+PREFLIGHT="$SCRIPT_DIR/repo-preflight.sh"
+# UNIT SEPARATOR, NOT TAB. Tab is an IFS WHITESPACE character, so bash collapses
+# runs of it however IFS is set -- and an unpinned row has an EMPTY remote, which
+# is the common case here (only two registry rows pin one). Measured with a probe
+# on a 4-field row whose third field was empty: read landed the COUNT in $_remote
+# and left $_cnt unset, so every reachable project scored 0 issues and both report
+# lines below vanished entirely. \037 is not IFS whitespace, so an empty field
+# stays an empty field. kipi-dispatch.sh:640 reads its rotation rows the same way
+# and carries the same latent hole (captured as spillover, not fixed here).
+REACH_ROWS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys
+for r in json.load(sys.stdin).get("reachable_rows", []):
+    print("\037".join([r.get("project",""), r.get("path",""), r.get("remote",""), str(r.get("count",0))]))' 2>/dev/null)"
+
+DROPPED=0; DROPPED_IN=""; REFUSED_N=0; REFUSED_IN=""
+while IFS=$'\037' read -r _proj _path _remote _cnt; do
+  [ -n "${_proj:-}" ] || continue
+  _cnt="${_cnt:-0}"
+  # No path means no registry row backs this project (the unreadable-registry
+  # collapse). Reporting it as today's routine skip is the honest answer: we
+  # cannot ask the gate anything without a target.
+  if [ -z "${_path:-}" ] || _pf_out="$(bash "$PREFLIGHT" "$_path" "${_remote:-}" 2>&1)"; then
+    DROPPED=$((DROPPED + _cnt))
+    DROPPED_IN="${DROPPED_IN:+$DROPPED_IN, }$_proj"
+  else
+    REFUSED_N=$((REFUSED_N + _cnt))
+    # THE CHECK NAMES, NOT THE FULL MESSAGES. One failed check carries a fix
+    # command long enough to bury the line it is on, and this is read in a daily
+    # digest. The class of refusal is what tells a permanent one (client-repo)
+    # from a curable one (control-code), which is the decision being supported.
+    _why="$(printf '%s' "$_pf_out" | grep '^FAIL' | sed 's/^FAIL \([^:]*\):.*/\1/' | tr '\n' ',' | sed 's/,$//')"
+    REFUSED_IN="${REFUSED_IN:+$REFUSED_IN; }$_proj (${_why:-refused})"
+  fi
+done <<REACHEOF
+$REACH_ROWS
+REACHEOF
+
 UNREACH="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("unreachable",0))' 2>/dev/null)"
 UNREACH_IN="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(", ".join(json.load(sys.stdin).get("unreachable_projects",[])))' 2>/dev/null)"
 REG_OK="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("registry_ok",True))' 2>/dev/null)"
@@ -603,6 +713,13 @@ say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf
 # Accounted for, never silently dropped. These two lines are what let an operator
 # tell a working filter from a broken query without re-querying Linear by hand.
 [ "${DROPPED:-0}" != "0" ] && say "worker: $DROPPED ready-shaped issue(s) skipped as out-of-repo (other project: $DROPPED_IN) -- this checkout is $REPO_PROJECT and cannot check those out"
+# THE THIRD BUCKET (ASK-840). Reachable, and refused anyway. Stated on its own
+# line for the same reason UNREACHABLE was: the response differs. A routine skip
+# resolves itself on a later rotation turn, an unreachable repo needs a clone, and
+# this one needs either a cure (control-code drift) or nothing at all ever
+# (client-repo, which no rotation and no cure will change). Collapsing it into the
+# skip line promises the operator a turn that is never coming.
+[ "${REFUSED_N:-0}" != "0" ] && say "worker: $REFUSED_N ready-shaped issue(s) REFUSED by preflight: the checkout exists but the gate will not let a dispatcher in -- $REFUSED_IN"
 # UNREACHABLE IS NOT A ROUTINE SKIP, AND NEVER SHARES ITS LINE (ASK-729). A skip
 # resolves itself on a later rotation turn; this does not resolve at all until a
 # human clones or registers the repo. It is stated separately, with the project
