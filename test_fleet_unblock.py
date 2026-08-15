@@ -96,6 +96,21 @@ def seed_skeleton_blob(skel, rel, text):
     git(skel, "commit", "-qm", f"skeleton bumps {rel}")
 
 
+def load_script():
+    """Import fleet-unblock.py as a module, for the pure helpers.
+
+    Everything else here drives the script as a subprocess against real repos,
+    which is right for git behaviour. `succeeded()` is a pure string predicate
+    and deserves a direct test rather than one that has to provoke a rare IO
+    failure to observe it.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fleet_unblock", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def run(skel, *args):
     proc = subprocess.run(
         ["python3", str(skel / "fleet-unblock.py"), "--skeleton", str(skel), *args],
@@ -419,6 +434,99 @@ def test_a_clean_successful_run_still_exits_zero(world):
     rc, out = run(skel, "--apply")
     assert rc == 0, out
     assert not is_dirty(inst, rel), out
+
+
+def test_the_unwind_restores_content_the_founder_had_already_staged(world):
+    """PR #165 review round 2, major #1.
+
+    The unwind skipped every path that was ALREADY staged before the run, on the
+    reasoning that the tool did not stage it so the tool should not unstage it.
+    But `git add` has already overwritten that index entry with the worktree
+    content by then. So a founder who had staged their own version of the path
+    lost it, and the tool printed 'index unwound' while saying so.
+
+    Skipping a path is not restoring it. The unwind now records the exact index
+    entry -- mode and blob -- and puts it back.
+    """
+    skel, inst = world
+    rel = "plugins/prd-os/runner.py"
+    seed_skeleton_blob(skel, rel, "v1\n")
+    write(inst, rel, "old\n")
+    git(inst, "add", "-A")
+    git(inst, "commit", "-qm", "instance base")
+
+    write(inst, rel, "founder staged this\n")
+    git(inst, "add", rel)
+    staged_before = git(inst, "rev-parse", ":" + rel)
+    write(inst, rel, "v1\n")            # worktree: the skeleton's own blob
+
+    hook = inst / ".git/hooks/pre-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+
+    rc, out = run(skel, "--apply")
+
+    staged_after = git(inst, "rev-parse", ":" + rel)
+    assert staged_after == staged_before, (
+        "the founder's staged version was overwritten by git add and never "
+        "restored, while the tool reported the index unwound\n" + out)
+
+
+def test_a_failed_add_or_restore_is_not_counted_as_success(world):
+    """PR #165 review round 2, major #2 -- a hole in my own round-1 fix.
+
+    Round 1 made a REFUSED commit exit non-zero, but it tested the outcome
+    string with startswith('REFUSED'). The other producers emit 'FAILED add: ',
+    'FAILED <err>' and 'STILL <mode>', none of which start with REFUSED, so
+    every one of them still counted as a successful action and still exited 0.
+
+    A denylist of failure strings is the wrong shape for something an unattended
+    job reads as its exit code. Success is now an allowlist: an outcome counts
+    only if it SAYS it succeeded.
+
+    Tested against the predicate directly rather than by provoking a rare IO
+    failure: an earlier draft chmod'ed .git/index read-only, git rewrote it
+    anyway, and the test SKIPPED. A skipped test proves nothing, and this is
+    about which strings count, which is exactly what a predicate test settles.
+    """
+    mod = load_script()
+
+    # Every outcome string the shipped code can emit, taken from the source so
+    # a new producer cannot quietly land on the success side.
+    failures = [
+        "FAILED add: fatal: unable to write new index file",
+        "FAILED fatal: could not restore",
+        "STILL 100644",
+        "REFUSED (index unwound): ['gate says no']",
+    ]
+    successes = ["clean", "committed", "would chmod to 100755",
+                 "would restore --staged", "would stage + commit"]
+
+    for outcome in failures:
+        assert not mod.succeeded(outcome), f"{outcome!r} counted as success"
+    for outcome in successes:
+        assert mod.succeeded(outcome), f"{outcome!r} counted as failure"
+
+
+def test_every_outcome_the_code_emits_is_classified(world):
+    """The allowlist must cover what the code actually produces, not what I
+    remembered it producing. Derived from the source, so a new outcome string
+    with no classification fails here instead of silently counting as success."""
+    import re
+    src = SCRIPT.read_text(encoding="utf-8")
+    mod = load_script()
+    # Third element of every `done.append((action, path, <outcome>))` and the
+    # outcome in each `return [(...)]` in commit_with_unwind.
+    literals = set(re.findall(r'"(clean|committed|would [^"]*|STILL [^"]*|FAILED[^"]*|REFUSED[^"]*)"', src))
+    literals |= set(re.findall(r'f"(FAILED[^"]*|STILL [^"]*|REFUSED[^"]*)"', src))
+    assert literals, "no outcome literals found; the shape of the code moved"
+    for literal in literals:
+        probe = literal.replace("{", "").replace("}", "")
+        # Every literal must land on one side deliberately; the assertion is
+        # that succeeded() has an opinion, and that failures are not successes.
+        if probe.startswith(("FAILED", "STILL", "REFUSED")):
+            assert not mod.succeeded(probe), f"{probe!r} counted as success"
 
 
 def test_the_unwind_test_would_notice_a_missing_unwind(world):
