@@ -787,20 +787,70 @@ engine_never_answered() {   # engine_never_answered <review-file>
 # THE LOCK EXPIRES RATHER THAN WEDGING. A run killed between mkdir and rmdir
 # would otherwise silence the notifier forever, and a notifier that never fires
 # again is a worse failure than the duplicate page this lock exists to stop. So
-# after ~10s the waiter takes the lock anyway and accepts that risk explicitly.
+# the holder gets a deadline, and after it the lock is TAKEN OVER.
+#
+# TAKEN OVER, NOT WALKED PAST (codex round 4 on PR #86, major). The first version
+# of that expiry was a `break` out of the wait loop, which left the waiter in the
+# critical section holding nothing. That does not recover from a dead holder, it
+# reschedules the round-3 race -- and an outage makes it worse rather than
+# better, because one dead API queues every reviewer behind the same corpse on
+# the same deadline, so they fall through it together instead of one at a time.
+# Measured on the unfixed function, waiters released from a single barrier:
+# 20 reviewers, one transition, 2 pages.
+#
+# `mv` is the test-and-set for the takeover exactly as `mkdir` is for the
+# acquire. rename(2) is atomic, so of N waiters that try to displace the SAME
+# lock directory at once, exactly one succeeds; the losers get ENOENT, go back to
+# waiting, and find the lock either free or freshly and legitimately held, which
+# is the serialisation the lock was for. Nothing is ever written inside the lock,
+# so the displaced directory is empty and `rmdir` retires it.
+#
+# THE TAKEOVER TARGET COMES FROM `mktemp -d`, NOT FROM `$$`. These waiters are
+# subshells of one reviewer, where `$$` is the PARENT's pid and so is IDENTICAL
+# across all of them; `mv a b` with b already present moves a INSIDE b, so a
+# colliding name would nest the lock rather than displace it and the takeover
+# would silently do nothing.
+transition_lock_acquire() {   # transition_lock_acquire <lock-dir> -> 0 held, 1 gave up
+  local lock="$1" waited=0 steals=0 stale
+  while :; do
+    mkdir "$lock" 2>/dev/null && return 0
+    waited=$((waited + 1))
+    if [ "$waited" -lt "${KIPI_LOCK_WAIT_TICKS:-100}" ]; then
+      sleep "${KIPI_LOCK_TICK_SECONDS:-0.1}"
+      continue
+    fi
+    # The holder has had its whole deadline, so it is presumed dead. Losing a
+    # takeover means somebody live got there first, which is bounded on purpose:
+    # a lock that stays continuously held across this many full deadlines is not
+    # a corpse, and stealing harder cannot make it one.
+    steals=$((steals + 1))
+    if [ "$steals" -gt "${KIPI_LOCK_STEAL_LIMIT:-3}" ]; then
+      return 1
+    fi
+    if stale="$(mktemp -d "$lock.stale.XXXXXX" 2>/dev/null)"; then
+      if mv "$lock" "$stale/held" 2>/dev/null; then
+        rmdir "$stale/held" 2>/dev/null || true
+      fi
+      rmdir "$stale" 2>/dev/null || true
+    fi
+    waited=0
+  done
+}
 note_degraded_transition() {   # note_degraded_transition <0|1> [reason]
-  local now="$1" reason="${2:-}" prev="" msg lock waited=0
+  local now="$1" reason="${2:-}" prev="" msg lock held=1
   mkdir -p "$(dirname "$DEGRADED_STATE")"
   lock="$DEGRADED_STATE.lock"
-  until mkdir "$lock" 2>/dev/null; do
-    waited=$((waited + 1))
-    [ "$waited" -ge 100 ] && break
-    sleep 0.1
-  done
+  # Giving up on the lock still does the transition. This function exists so the
+  # operator HEARS the change, and a notifier that goes quiet is the failure the
+  # expiry was written to avoid; the duplicate-page risk is the lesser one and is
+  # taken explicitly. It now costs three lost takeovers to reach, not one timeout.
+  transition_lock_acquire "$lock" || held=0
   [ -f "$DEGRADED_STATE" ] && prev="$(tr -dc '01' < "$DEGRADED_STATE" 2>/dev/null | head -c1)"
   [ -n "$prev" ] || prev=0
   printf '%s\n' "$now" > "$DEGRADED_STATE"
-  rmdir "$lock" 2>/dev/null || true
+  # Only the owner releases. Releasing a lock this run never acquired is how the
+  # old fall-through path let a THIRD run in while the holder was still inside.
+  [ "$held" = "1" ] && { rmdir "$lock" 2>/dev/null || true; }
   [ "$now" = "$prev" ] && return 0
   if [ "$now" = "1" ]; then
     msg="reviewer: codex is not producing an independent review (PR #$PR): $reason. $STATUS_CONTEXT stops being a second lab's opinion until codex is back."

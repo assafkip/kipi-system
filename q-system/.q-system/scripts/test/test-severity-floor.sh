@@ -365,9 +365,13 @@ ok "derive: tightening the transcript test did not reopen the echoed-template de
 # runs top-to-bottom and cannot be sourced, so the slice is the only way to drive
 # the real function.
 DEG_FN="$WORK/note-degraded.sh"
-awk '/^note_degraded_transition\(\) \{/,/^\}$/' "$REVIEWER" > "$DEG_FN"
+awk '/^transition_lock_acquire\(\) \{/,/^\}$/'  "$REVIEWER" >  "$DEG_FN"
+awk '/^note_degraded_transition\(\) \{/,/^\}$/' "$REVIEWER" >> "$DEG_FN"
 grep -q '^note_degraded_transition() {' "$DEG_FN" \
   || fail "could not slice note_degraded_transition out of $REVIEWER"
+grep -q '^transition_lock_acquire() {' "$DEG_FN" \
+  || fail "could not slice transition_lock_acquire out of $REVIEWER -- the sliced transition would
+      call a function that is not there, and every trial below would pass by not locking at all"
 grep -q '^}$' "$DEG_FN" || fail "the sliced note_degraded_transition has no closing brace"
 
 printf '%s\n' 'printf "%s\n" "$1" >> "$KIPI_TEST_PAGES"' > "$WORK/notify-stub.sh"
@@ -402,8 +406,8 @@ ok "degraded transition: 20 concurrent outage reviews page exactly once"
 # least one must double-page; a mutant that never doubles means the assertion
 # above is carried by something other than the lock.
 DEG_MUTANT="$WORK/note-degraded-unlocked.sh"
-sed '/^  until mkdir "\$lock"/,/^  done$/d; /^  rmdir "\$lock"/d' "$DEG_FN" > "$DEG_MUTANT"
-grep -q 'mkdir "\$lock"' "$DEG_MUTANT" \
+sed 's|^  transition_lock_acquire "\$lock" .*|  held=0|' "$DEG_FN" > "$DEG_MUTANT"
+grep -q 'transition_lock_acquire "\$lock"' "$DEG_MUTANT" \
   && fail "the mutation did not remove the lock, so it proves nothing"
 MUTANT_DOUBLED=0
 for _ in 1 2 3; do
@@ -413,6 +417,88 @@ done
   || fail "mutation did not kill it: with the lock removed, 20 concurrent transitions still paged once
       across three trials. The assertion above is therefore not testing the lock."
 ok "mutation kills it: remove the lock and one transition pages more than once"
+
+# --- A STALE LOCK IS TAKEN OVER, NOT WALKED PAST ------------------------------
+# (ASK-287, PR #86 round 4, major.) The expiry above was `break` out of the wait
+# loop, which recovers from a dead holder by giving up on the lock entirely. That
+# is not a slower lock, it is the round-3 race rescheduled: an outage puts every
+# reviewer on the SAME 10s deadline, so a lock left behind by one killed reviewer
+# makes all N fall through together and page together. Worse than no lock, because
+# it looks like one.
+#
+# The corpse is the fixture: a lock directory with no owner, which is exactly what
+# a run killed between `mkdir` and `rmdir` leaves on disk.
+#
+# THE BARRIER IS THE WHOLE REPRODUCER, and the first version of this test proved
+# it by passing against the unfixed code. Without it the waiters are started by a
+# sequential `for` loop and each drifts by its own sleep overhead, so they reach
+# the deadline milliseconds apart -- and the first one through `rmdir`s the stale
+# lock on its way out, which hands real exclusion back to everyone still asleep.
+# The defect only shows when the waiters expire TOGETHER, which is exactly what an
+# outage does: one dead API, every reviewer queued behind the same corpse on the
+# same deadline. So every child is parked on a barrier file, released at once, and
+# the tick is shortened so accumulated drift cannot re-hide the race.
+run_stale_lock_trial() {
+  local fn="$1" n="$2" i
+  : > "$WORK/pages.log"
+  rm -rf "$WORK/deg"; mkdir -p "$WORK/deg"
+  mkdir -p "$WORK/deg/degraded.state.lock"
+  rm -f "$WORK/go"
+  for i in $(seq 1 "$n"); do
+    ( export KIPI_TEST_PAGES="$WORK/pages.log"
+      export KIPI_LOCK_WAIT_TICKS=3 KIPI_LOCK_TICK_SECONDS=0.01
+      DEGRADED_STATE="$WORK/deg/degraded.state"
+      PR=86; STATUS_CONTEXT="kipi/reviewer-approved"; NOTIFY="$WORK/notify-stub.sh"
+      # shellcheck disable=SC1090
+      . "$fn"
+      while [ ! -f "$WORK/go" ]; do sleep 0.005; done
+      note_degraded_transition 1 "the same outage, behind one dead reviewer's lock" ) &
+  done
+  sleep 0.5          # every child reaches the barrier before any of them starts
+  : > "$WORK/go"
+  wait
+  wc -l < "$WORK/pages.log" | tr -d ' '
+}
+
+for _ in 1 2 3; do
+  STALE_PAGES="$(run_stale_lock_trial "$DEG_FN" 20)"
+  [ "$STALE_PAGES" = "1" ] \
+    || fail "one dead reviewer left a lock behind, and the next 20 reviewers paged $STALE_PAGES times
+      for ONE transition. A lock whose expiry is 'stop waiting and proceed anyway' does not survive
+      the failure it was written for -- it hands every waiter the same deadline and lets them all
+      through it together, which is the round-3 race with a ten-second delay in front of it."
+done
+ok "degraded transition: a stale lock is taken over, so 20 simultaneous waiters still page exactly once"
+
+# The other half of the takeover: it must not WEDGE either. A reviewer that
+# waits, takes over, and then leaves its own lock behind has moved the corpse
+# rather than buried it, and the next run pays the same 10s and the same race.
+[ -d "$WORK/deg/degraded.state.lock" ] \
+  && fail "the transition finished but left its own lock behind. The next run inherits the wedge."
+STALE_LEFTOVERS="$(find "$WORK/deg" -maxdepth 1 -name 'degraded.state.lock.stale.*' | wc -l | tr -d ' ')"
+[ "$STALE_LEFTOVERS" = "0" ] \
+  || fail "the takeover left $STALE_LEFTOVERS displaced lock director(ies) in $WORK/deg. Takeover has to
+      retire the corpse, not accumulate one per outage."
+ok "degraded transition: the takeover releases its own lock and retires the corpse"
+
+# NEGATIVE SELF-TEST for the takeover specifically. The mutation restores the
+# ORIGINAL defect rather than removing locking wholesale: on timeout, report the
+# lock as held and walk into the critical section anyway, which is what `break`
+# out of the wait loop did. If the barrier trial above still pages once against
+# that, then it is being carried by something other than the takeover.
+DEG_NOSTEAL="$WORK/note-degraded-nosteal.sh"
+sed 's|^    steals=\$((steals + 1))|    return 0|' "$DEG_FN" > "$DEG_NOSTEAL"
+grep -q 'steals=\$((steals + 1))' "$DEG_NOSTEAL" \
+  && fail "the mutation did not disable the takeover, so it proves nothing"
+NOSTEAL_DOUBLED=0
+for _ in 1 2 3; do
+  [ "$(run_stale_lock_trial "$DEG_NOSTEAL" 20)" -gt 1 ] && NOSTEAL_DOUBLED=1
+done
+[ "$NOSTEAL_DOUBLED" = "1" ] \
+  || fail "mutation did not kill it: with the takeover reverted to 'time out and proceed unlocked',
+      20 simultaneous waiters behind a stale lock still paged once across three trials. The
+      assertion above is therefore not testing the takeover."
+ok "mutation kills it: revert the takeover to a bare timeout and a stale lock double-pages again"
 
 # The disagreement case the reviewer must not be trusted on: prose says APPROVE
 # while its own labels carry a major. Derivation has to win, or a reviewer can
