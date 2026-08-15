@@ -218,6 +218,26 @@ def apply_instance(repo, plan, apply, message):
     return done
 
 
+# SUCCESS IS AN ALLOWLIST (PR #165 review round 2, major).
+#
+# Round 1 made a REFUSED commit exit non-zero by testing
+# `outcome.startswith("REFUSED")`. The other producers emit "FAILED add: ",
+# "FAILED <err>" and "STILL <mode>" -- none of which start with REFUSED -- so
+# every one of them still counted as a successful action and still exited 0.
+#
+# A denylist of failure strings is the wrong shape for the thing an unattended
+# job reads as its exit code: the next outcome string anyone adds lands on the
+# success side by default. Fail closed instead. An outcome counts as success
+# only if it says so, and "would ..." is the dry run, which succeeds by writing
+# nothing.
+#
+# Pinned by test_a_failed_add_or_restore_is_not_counted_as_success and
+# test_every_outcome_the_code_emits_is_classified, the second of which derives
+# the outcome literals from this file so a new one cannot arrive unclassified.
+def succeeded(outcome):
+    return outcome in ("clean", "committed") or outcome.startswith("would ")
+
+
 def commit_with_unwind(repo, paths, message):
     """Stage and commit `paths`, restoring the prior index if the commit fails.
 
@@ -230,15 +250,35 @@ def commit_with_unwind(repo, paths, message):
     Never --no-verify. A hook that refuses this commit is a hook doing its job,
     and the correct outcome is a refusal that says so.
     """
-    was_staged = set()
+    # RECORD THE ENTRY, NOT JUST THE FACT (PR #165 review round 2, major).
+    #
+    # This used to be a set of "was already staged" paths, and unwind() SKIPPED
+    # them: the tool did not stage it, so the tool should not unstage it. By the
+    # time unwind runs, `git add` has already overwritten that index entry with
+    # the worktree content -- so a founder who had staged their own version of
+    # the path lost it, and the run printed "index unwound" while saying so.
+    #
+    # Skipping a path is not restoring it. Keep the exact index entry (mode and
+    # blob) and put it back.
+    # Reproducer: test_the_unwind_restores_content_the_founder_had_already_staged.
+    was_staged = {}
     for path in paths:
         if git(repo, "diff", "--cached", "--quiet", "--", path)[0] != 0:
-            was_staged.add(path)
+            rc, out, _ = git(repo, "ls-files", "--stage", "--", path)
+            entry = out.strip().splitlines()
+            if rc == 0 and entry:
+                meta = entry[0].split("\t", 1)[0].split()
+                if len(meta) >= 2:
+                    was_staged[path] = (meta[0], meta[1])   # (mode, blob sha)
 
     def unwind():
         for path in paths:
-            if path not in was_staged:
+            entry = was_staged.get(path)
+            if entry is None:
                 git(repo, "restore", "--staged", "--", path)
+            else:
+                mode, sha = entry
+                git(repo, "update-index", "--cacheinfo", f"{mode},{sha},{path}")
 
     rc, _, err = git(repo, "add", "--", *paths)
     if rc != 0:
@@ -311,13 +351,10 @@ def main():
         for action, path, reason in actionable:
             print(f"    {action:12s} {path}\n              {reason}")
         for action, path, outcome in apply_instance(repo, actionable, args.apply, args.message):
-            # A REFUSED outcome is not an action (PR #165 review, major).
-            # Counting it toward `acted` made "acted on 3 path(s)" the printed
-            # result of a run that repaired nothing.
-            if outcome.startswith("REFUSED"):
-                failed += 1
-            else:
+            if succeeded(outcome):
                 acted += 1
+            else:
+                failed += 1
             print(f"    -> {action:12s} {path}: {outcome}")
         print()
 
