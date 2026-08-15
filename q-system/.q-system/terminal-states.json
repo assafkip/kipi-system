@@ -164,6 +164,15 @@
       "rationale": "A correct exclusion, not a dead end. An issue in any other state either has an owner working it or is finished. Consuming this would mean re-opening closed work."
     },
     {
+      "id": "fleet-alert-not-a-spec",
+      "class": "selection-filter",
+      "marker": "is_fleet_alert(i):",
+      "sites": 1,
+      "what": "The issue is a ticket alert-to-linear.py filed, identified by the <!-- kipi-alert-fingerprint: ... --> marker the writer itself stamps.",
+      "terminal": true,
+      "rationale": "A notification is not work, so refusing it here is the correct end and not a dead end. The body is a raw alert line, not a spec anyone scoped; drafting a DoR onto one would only make it READY-SHAPED and admit it to this queue. Measured on the live board 2026-08-15: 81 open alert tickets, and all 19 already drafted onto sat in the permanently-UNREACHABLE bucket. The consumer of an alert is the operator who reads it; the paired refusal in linear-dor-drafter.py stops the conversion at source. Registered with its own marker rather than left under state-not-open, whose row it would otherwise silently inflate to two sites -- which is exactly how this was caught."
+    },
+    {
       "id": "out-of-repo",
       "class": "selection-filter",
       "marker": "not in_this_repo(i)",

@@ -279,6 +279,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-notify-supplies-repo-path.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-open-loops-heartbeat-exit.sh",
       "runner": "bash"
     },
@@ -658,6 +662,10 @@
       "path": "q-system/.q-system/scripts/test/test-converge-crossrepo-receipt.sh",
       "runner": "bash",
       "timeout_s": 120
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-dor-refuses-unroutable.py",
+      "runner": "python3"
     }
   ],
   "required_data": [],

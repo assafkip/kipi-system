@@ -81,9 +81,31 @@ def worker_predicates(repo_project: str):
 
     tree = ast.parse(hits[0])
     want = {"project_of", "in_this_repo", "ready"}
+    # KEEP EVERY FUNCTION, NOT AN ALLOWLIST OF THREE (ASK-839, PR #191).
+    # This used to keep only `want`. ready() then grew one helper call
+    # (is_fleet_alert, reading the module-level ALERT_MARKER) and this extractor
+    # silently dropped both, so the shipped predicate raised NameError from
+    # inside the test -- three suites red on a fix that was itself correct. An
+    # allowlist of callees is a second copy of the consumer's call graph, and it
+    # goes stale the first time the consumer adds a line. Defining a function
+    # does not run its body, so carrying the unused ones costs nothing.
+    #
+    # Module-level names are carried only when they are literal constants. The
+    # heredoc also assigns `here`/`ls`/`pool`/`dropped` from Calls and
+    # comprehensions over names that only exist mid-run; exec-ing those would
+    # run the worker instead of extracting from it.
+    def _is_literal(node):
+        if isinstance(node, ast.Constant):
+            return True
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            return all(isinstance(e, ast.Constant) for e in node.elts)
+        return False
+
     keep = [n for n in tree.body
-            if isinstance(n, ast.FunctionDef) and n.name in want]
-    missing = want - {n.name for n in keep}
+            if isinstance(n, ast.FunctionDef)
+            or (isinstance(n, ast.Assign) and _is_literal(n.value))]
+    got = {n.name for n in keep if isinstance(n, ast.FunctionDef)}
+    missing = want - got
     if missing:
         raise AssertionError(f"linear-worker.sh no longer defines {missing}")
 

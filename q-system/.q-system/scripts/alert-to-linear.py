@@ -42,6 +42,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import sys
 import time
 
@@ -197,6 +198,303 @@ def _write_state(fp: str, data: dict) -> None:
         pass
 
 
+# The fleet convention for where the skeleton sits when nothing else can say.
+# Same constant voice-dna-loader.py:63 already falls back to, deliberately: two
+# scripts guessing the skeleton two different ways is a derivation split waiting
+# to be found. LAST rung, never first -- see _registry_path.
+CANONICAL_SKELETON = os.path.join(os.path.expanduser("~"), "projects",
+                                  "kipi-system")
+
+
+def _registry_path() -> str:
+    """instance-registry.json. KIPI_INSTANCE_REGISTRY is the test seam.
+
+    THE REGISTRY LIVES ONLY AT THE SKELETON ROOT, AND THIS SCRIPT SHIPS TO EVERY
+    INSTANCE (ASK-839, PR #191 review round 4). The fleet updater copies
+    `q-system/` and nothing at the repo root, so three-levels-up from an
+    INSTANCE's scripts/ named a file that is not there. `_registry_rows()` then
+    returned [] and rungs 2 (repo path), 3 (label vs registry name) and 5 (own
+    checkout) were dead at once -- in the instances, which is where alerts are
+    raised. Measured 2026-08-15 against the live registry: 24 of 25 instances
+    ship this writer, 25 of 25 lack the registry, and 8 have a basename that is
+    not their board alias. The shapes: an alias that adds a brand prefix the
+    directory lacks, one written as spaced prose, one that drops a prefix the
+    directory keeps, and one client engagement. The live pairs stay in
+    instance-registry.json and are deliberately not copied here -- this file
+    ships to every instance of a PUBLIC repo, so naming them is the leak
+    validate-separation Gate 1.2 exists to refuse.
+    For those 8, rung 4 offers the bare directory name, no project carries it,
+    and the alert files unset -- the defect this issue is about, still live in
+    every instance after three rounds fixed it in the skeleton.
+
+    A LADDER, and the first rung that EXISTS wins:
+
+    1. The path beside this script. FIRST so a skeleton checkout always reads its
+       own registry and can never be answered by a stale copy under the canonical
+       home path -- including this repo's own worktrees and CI clones.
+    2. The `kipi` CLI on PATH, resolved through its symlink. A derivation from
+       how the CLI is actually installed, not a constant, so it is correct for a
+       skeleton at any location. `shutil.which` reads PATH in-process: no
+       subprocess on the never-raises alert path, the same rule
+       `_common_repo_root()` follows.
+    3. CANONICAL_SKELETON. This is what covers a launchd job, whose PATH carries
+       no `/opt/homebrew` -- 3 of this repo's 5 plists set no PATH at all and
+       inherit the minimal one, and those are alert producers.
+
+    NO RUNG INVENTS A NAME. When every rung misses, this returns the in-place
+    path so `_registry_rows()` reads nothing and the candidate list is whatever
+    the caller's own label supplied. A ladder that ended in a guess would file
+    every instance's alerts under one wrong project and look fixed
+    (test_an_instance_with_no_registry_anywhere_invents_nothing).
+    """
+    env = os.environ.get("KIPI_INSTANCE_REGISTRY")
+    if env:
+        return env
+    here = os.path.dirname(os.path.abspath(__file__))
+    in_place = os.path.join(here, "..", "..", "..", "instance-registry.json")
+    candidates = [in_place]
+    try:
+        cli = shutil.which("kipi")
+        if cli:
+            candidates.append(os.path.join(
+                os.path.dirname(os.path.realpath(cli)), "instance-registry.json"))
+    except OSError:
+        pass
+    candidates.append(os.path.join(CANONICAL_SKELETON, "instance-registry.json"))
+    for candidate in candidates:
+        try:
+            if os.path.isfile(candidate):
+                return candidate
+        except OSError:
+            continue
+    return in_place
+
+
+def _registry_rows() -> list:
+    """Every registry row, or [] when it cannot be read. Never raises.
+
+    THE SKELETON IS A ROW TOO, and reading only `instances` dropped it (ASK-839,
+    PR #191 review round 3). The skeleton is not an instance: it is the
+    registry's own top-level `skeleton` key, and it is the checkout this script
+    LIVES in and the fleet's single biggest alert producer. Both rungs that
+    search these rows -- the repo path (2) and this script's own checkout (5) --
+    were therefore dead for it, so an alert raised from kipi-system or any of its
+    worktrees resolved to no project at all unless its bare `[label]` happened to
+    name a board project.
+
+    Measured on the live board 2026-08-15, 82 open alert tickets: 22 labelled `/`
+    (a cwd with no repo, so nothing is exported and no label resolves -- rung 5
+    is their only cover) and 18 labelled with a kipi-system worktree directory,
+    whose --git-common-dir path is the skeleton -- rung 2. 40 of 82 had no live
+    rung.
+
+    `standalone` rows stay out on purpose rather than by oversight: they carry
+    `has_skeleton: false`, so they ship no slack-notify.sh and cannot reach this
+    code path at all. Adding them would lengthen the candidate list with names no
+    alert can ever arrive under.
+    """
+    try:
+        with open(_registry_path(), encoding="utf-8") as fh:
+            reg = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(reg, dict):
+        entries = reg
+        return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+    entries = reg.get("instances", reg)
+    rows = [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+    skeleton = reg.get("skeleton")
+    if isinstance(skeleton, dict) and skeleton.get("path"):
+        # Tagged rather than positional so a caller can ask "which row is the
+        # skeleton" without counting on it being first.
+        rows = [dict(skeleton, is_skeleton=True)] + rows
+    return rows
+
+
+def _linear_project_of(entry: dict) -> str:
+    """The name this row carries ON THE BOARD.
+
+    THE ALIAS IS A FIELD, NOT A GUESS -- the same rule linear-worker.sh applies
+    (ASK-840), and the same order: explicit `linear_project` first, `name`
+    second. Deriving the board name from the directory is what produced that bug,
+    and a smarter derivation would only move the day it breaks. Measured on the
+    live board 2026-08-15: of the 81 unset alert tickets, only 33 carried a
+    `[label]` prefix that is an exact project name.
+    """
+    return (entry.get("linear_project") or entry.get("name") or "").strip()
+
+
+def project_candidates(message: str) -> list[str]:
+    """Board-project names to try for this alert, best evidence FIRST.
+
+    A LIST, not one answer, and that is the load-bearing part. The first cut
+    returned a single name and the `[/]` case proved it wrong immediately: 22 of
+    the 81 unset tickets carry the prefix `[/]` (a cwd of `/`), and another 16
+    carry a worktree directory (`.wt-ask791`, `kipi-wt-ask729`, `cleanmain`).
+    Each of those is a plausible-looking label that matches no project, so
+    returning it as THE answer filed the ticket unset all over again while
+    looking like a fix. Returning candidates lets an unresolvable label fall
+    through to the fallback instead of consuming the decision.
+
+    1. KIPI_ALERT_PROJECT -- an explicit statement by the caller.
+    2. The repo PATH the alert was raised from, through the registry. This is the
+       only rung that survives a worktree or a renamed directory, which is why
+       slack-notify.sh resolves the path rather than passing its own label.
+    3. The `[label]` prefix matched against a registry row's own name. Covers a
+       caller that set KIPI_INSTANCE_NAME but no path.
+    4. The `[label]` prefix taken at face value, resolved case-insensitively
+       against the board later (`cole-gtm` is `cole-GTM` there).
+    5. The checkout THIS SCRIPT runs from. 22 of the 81 unset tickets were raised
+       from a cwd of `/` with no repo at all; the code that raised them still ran
+       out of a registered checkout, so this is a derivation and not an invention.
+    """
+    out: list[str] = []
+
+    def offer(name: str) -> None:
+        name = (name or "").strip()
+        if name and name not in out:
+            out.append(name)
+
+    offer(os.environ.get("KIPI_ALERT_PROJECT") or "")
+
+    rows = _registry_rows()
+    path = (os.environ.get("KIPI_ALERT_REPO_PATH") or "").strip()
+    if path:
+        try:
+            want = os.path.realpath(path)
+        except OSError:
+            want = ""
+        for row in rows:
+            row_path = row.get("path")
+            if not row_path:
+                continue
+            try:
+                if want and os.path.realpath(row_path) == want:
+                    offer(_linear_project_of(row))
+            except OSError:
+                continue
+
+    match = re.match(r"^\[([^\]]+)\]", message.strip())
+    label = (match.group(1).strip() if match else "")
+    if label:
+        for row in rows:
+            if (row.get("name") or "").strip().lower() == label.lower():
+                offer(_linear_project_of(row))
+        offer(label)
+
+    offer(os.environ.get("KIPI_ALERT_FALLBACK_PROJECT") or "")
+    offer(_own_checkout_project(rows))
+    return out
+
+
+def _own_checkout_root() -> str:
+    """The directory three levels up from this scripts/ dir. The test seam for
+    the rung below, so a worktree layout can be exercised without one."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "..", "..", "..")
+
+
+def _common_repo_root(root: str) -> str:
+    """`root`, or the repo it is a linked worktree OF.
+
+    A worktree is never its own registry row, and the fleet's agents all run in
+    one -- 18 of the 82 live alert tickets on 2026-08-15 were labelled with a
+    worktree directory. Without this, rung 5 misses in exactly the checkouts that
+    raise the most alerts.
+
+    Read from the `.git` FILE rather than shelled out to `git rev-parse
+    --git-common-dir`: this function is on the never-raises alert path, where a
+    subprocess is a new way to lose the ticket, and the file is the same fact.
+    slack-notify.sh does shell out, and that is not a second derivation of one
+    value -- it answers a different question (the repo the CALLER was in) at a
+    point where git is already required.
+    """
+    try:
+        with open(os.path.join(root, ".git"), encoding="utf-8") as fh:
+            head = fh.read(4096).strip()
+    except (OSError, ValueError):
+        return root
+    if not head.startswith("gitdir:"):
+        return root
+    gitdir = head.split(":", 1)[1].strip()
+    marker = os.path.join(".git", "worktrees")
+    if marker not in gitdir:
+        return root
+    common = gitdir.split(marker)[0]
+    return common or root
+
+
+def _own_checkout_project(rows: list) -> str:
+    """The board project of the checkout THIS SCRIPT lives in.
+
+    The last rung, and a derivation rather than a guess: an alert raised from a
+    cwd of `/` still came from code executing out of a registered checkout, and
+    that checkout is the one honest thing left to say about its origin.
+
+    It is also the ONLY rung covering the 22 `[/]` tickets, since no path is
+    exported and no label resolves for them. KIPI_ALERT_FALLBACK_PROJECT is not
+    that cover: nothing in this repo sets it (one reader, no writer), so a case
+    that supplies it by hand is testing an invention.
+    """
+    try:
+        root = os.path.realpath(_common_repo_root(_own_checkout_root()))
+    except OSError:
+        return ""
+    for row in rows:
+        row_path = row.get("path")
+        if not row_path:
+            continue
+        try:
+            if os.path.realpath(row_path) == root:
+                return _linear_project_of(row)
+        except OSError:
+            continue
+    return ""
+
+
+# This file already keeps its own copies of TEAM_QUERY and LABELS_QUERY rather
+# than reaching into linear-sync for them, and this follows that shape. Reaching
+# for `ln.TEAM_PROJECTS_QUERY` was tried first and failed silently in exactly the
+# way this path must never fail: the attribute read sits inside the never-raises
+# try, so a stub without that constant returned "no project" instead of erroring,
+# and the reproducer stayed red with the fix already in place.
+PROJECTS_QUERY = """
+query($teamId: String!) {
+  team(id: $teamId) { projects(first: 250) { nodes { id name } } }
+}
+"""
+
+
+def _project_id_for(ln, team_id: str, names: list) -> str | None:
+    """First of `names` that resolves to a board project id, or None.
+
+    Matched case-insensitively on purpose: registry names and board names differ
+    only by case for real rows (`cole-gtm` vs `cole-GTM`), and a case-sensitive
+    compare would file those tickets unset -- the exact defect being fixed.
+
+    NEVER RAISES, for the same reason _owner_label_id does not: a ticket with no
+    project is worth far more than a dropped alert. The alert path exists because
+    a swallowed alert is the worst outcome available here.
+    """
+    if not names:
+        return None
+    try:
+        team = (ln.graphql(PROJECTS_QUERY, {"teamId": team_id}) or {}).get("team") or {}
+        nodes = ((team.get("projects") or {}).get("nodes")) or []
+    except Exception:
+        return None
+    by_lower = {}
+    for node in nodes:
+        key = (node.get("name") or "").strip().lower()
+        if key and key not in by_lower:
+            by_lower[key] = node.get("id")
+    for name in names:
+        found = by_lower.get(name.strip().lower())
+        if found:
+            return found
+    return None
+
+
 def _owner_label_id(ln, team_id: str) -> str | None:
     """The owner:sana label id, created once if the team lacks it.
 
@@ -283,6 +581,20 @@ def file_alert(message: str, now: float | None = None) -> tuple[int, str]:
         label_id = _owner_label_id(ln, team_id)
         if label_id:
             payload["labelIds"] = [label_id]
+
+        # A PROJECT IS ROUTING, NOT DECORATION (ASK-839). This payload carried
+        # teamId + labelIds and nothing else, so every alert landed project-unset.
+        # An unset project cannot route to any checkout: linear-worker.sh's
+        # in_this_repo() is false for it in every repo at once, so no rotation, no
+        # cursor and no clone reaches it. Measured on the live board 2026-08-15:
+        # 81 open alert tickets, all unset, and the DoR drafter had already
+        # promoted 19 of them into ready-shaped work that was therefore
+        # permanently UNREACHABLE -- 43% of that whole bucket. The `[repo]` prefix
+        # this file already writes into the TITLE was that same fact, sitting in a
+        # field no query can filter on.
+        project_id = _project_id_for(ln, team_id, project_candidates(message))
+        if project_id:
+            payload["projectId"] = project_id
 
         data = ln.graphql(ISSUE_CREATE, {"input": payload})
         issue = ((data or {}).get("issueCreate") or {}).get("issue") or {}
