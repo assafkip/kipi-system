@@ -1246,7 +1246,7 @@ is_instance_wip() {
       [ -f "$instance_file" ] && cmp -s "$instance_file" "$skeleton_file"; then
     return 1
   fi
-  # AN OLDER SKELETON BLOB IS ALSO NOT WORK (sp-940bcf47, measured 2026-08-15).
+  # AN OLDER SKELETON BLOB IS ALSO NOT WORK (sp-940bcf47, measured 2026-08-14 PT).
   #
   # The byte-identical test above only recognises THIS sync's own output. An
   # untracked file written by an EARLIER sync, differing from the current

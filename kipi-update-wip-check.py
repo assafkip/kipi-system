@@ -6,7 +6,8 @@ Exit 0 = the skeleton itself once shipped this exact blob at this exact path,
 Exit 1 = no such blob in the skeleton's shipped history. Treat it as work.
 Exit 2 = the question could not be answered. Treat it as work (fail closed).
 
-WHY (sp-940bcf47, measured 2026-08-15 on a real --dry-run).
+WHY (sp-940bcf47, measured 2026-08-14 PT on a real --dry-run; the run's own
+log lines read 2026-08-15T01:xxZ, which is the same evening in UTC).
 
 kipi-update.sh refuses an instance when an untracked file collides with a
 skeleton path, on the reasoning that overwriting somebody's work-in-progress is

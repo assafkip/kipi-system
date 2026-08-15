@@ -7,7 +7,7 @@ Right instinct. But the only non-work it could recognise was a file byte-identic
 to the skeleton's CURRENT copy -- this same sync's own output. An OLDER skeleton
 blob looked like work and refused the instance forever.
 
-Measured 2026-08-15 on a real --dry-run: KTLYST_strategy carried an untracked
+Measured 2026-08-14 PT on a real --dry-run: KTLYST_strategy carried an untracked
 q-system/.q-system/scripts/merge-bypass-gate.py from an earlier sync and failed
 with "untracked WIP collides with skeleton path" -- while fleet-reach-audit.py
 reported WOULD-SYNC for it, because the audit does not model this check. Real
