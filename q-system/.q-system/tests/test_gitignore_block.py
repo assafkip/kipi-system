@@ -267,16 +267,27 @@ class TestTheWiringIntoTheUpdater:
 class TestTheFileTheWriterCreatesCanActuallyBeCommitted:
     """A defect in THIS fix, found by running it against real instances.
 
-    Dry-checked on three live instances 2026-08-14: none of them has a root
-    .gitignore AT ALL, so the writer does not edit a file, it CREATES one. Git
-    honours an untracked .gitignore, so the ignore rules work either way -- but
-    an untracked file is one nobody committed, in a repo nobody looks at, and
-    auto-commit.py classified `.gitignore` as `unclassified`.
+    Measured 2026-08-14 by copying a real instance and running the writer on the
+    copy: every instance already HAS a root .gitignore (70-76 lines) and it is
+    TRACKED, and none of them carries these rules. So the writer MODIFIES a
+    tracked file, landing as ` M .gitignore`.
 
-    Unclassified means REPORTED, never committed (ASK-498). So the fix would
-    have left every one of the 22 instances printing the same unclassifiable
-    path on every single run, forever, and the file itself unversioned -- not in
-    the instance's history, not recoverable if something removed it.
+    (The first version of this docstring said instances have no root .gitignore
+    at all. That came from a malformed `grep -c` whose output was misread, and
+    it was wrong. The class below is unchanged and still needed; only the reason
+    was wrong. Recorded rather than quietly edited, because the same mistake --
+    trusting a grep over looking at the thing -- is what this whole PR chain
+    keeps finding in other people's notes.)
+
+    auto-commit.py classified `.gitignore` as `unclassified`, which means
+    REPORTED, never committed (ASK-498). So every one of the 22 instances would
+    carry a permanently modified, never-committable tracked file and print the
+    same unclassifiable path on every run, forever.
+
+    It does NOT block the sync. The dirty-tree guard is scoped to
+    `$prefix/ .claude/ plugins/` (kipi-update.sh ~L2012) and root .gitignore is
+    in none of them. Checked, because the first guess was that this self-blocked
+    all 22 instances, and that guess was wrong too.
 
     That is the exact shape this whole PR is about: state the system writes for
     itself that nothing is allowed to commit, sitting dirty until it becomes
@@ -292,6 +303,23 @@ class TestTheFileTheWriterCreatesCanActuallyBeCommitted:
         assert auto_commit.system_state_paths([".gitignore"]) == [".gitignore"], (
             "the writer creates a file the fleet sync is not allowed to commit, "
             "so it stays untracked and unclassified on every instance forever")
+
+    def test_a_tracked_gitignore_the_writer_modified_is_offered(self, tmp_path):
+        """THE REAL-WORLD SHAPE, and the one the first version of this class got
+        wrong. Instances ship a tracked .gitignore, so the writer modifies it
+        rather than creating it, and a modified tracked file is a different
+        git state from an untracked one. Both must be committable."""
+        root = make_instance(tmp_path)
+        (root / ".gitignore").write_text("# the instance's own\nnode_modules/\n")
+        git(str(root), "add", "-f", ".gitignore")
+        git(str(root), "commit", "-qm", "instance ships a gitignore")
+
+        blockmod.main(["--skeleton", REPO, "--instance", str(root)])
+
+        status = git(str(root), "status", "--porcelain", "--", ".gitignore").stdout
+        assert status.strip().startswith("M"), (
+            f"expected a tracked modification, got {status!r}")
+        assert auto_commit.system_state_paths([".gitignore"]) == [".gitignore"]
 
     def test_it_is_chore_not_founder_content(self):
         """It must be `chore`. system_state_paths narrows to chore precisely so

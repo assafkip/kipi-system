@@ -40,15 +40,25 @@ AREA_MAP = [
     (".claude/output-styles/",        "chore",    "update output styles"),
     (".claude/settings",              "chore",    "update settings"),
     # sp-097d2e23. The updater writes a managed never-commit block into every
-    # instance's root .gitignore, and dry-checked on three live instances none
-    # of them HAS a root .gitignore -- so the updater creates the file. Git
-    # honours an untracked .gitignore, so the rules bite either way, but this
-    # classifier answered `unclassified` for it, which means REPORTED and never
-    # committed (ASK-498). Left alone, all 22 instances would print the same
-    # unclassifiable path on every run forever and the file would stay
-    # unversioned: absent from the instance's history and unrecoverable if
-    # anything removed it. Exactly the state-the-system-writes-for-itself-that-
-    # nothing-may-commit shape that sp-097d2e23 exists to end.
+    # instance's root .gitignore. Every instance HAS one already (70-76 lines)
+    # and it is TRACKED, so the writer MODIFIES a tracked file -- measured on a
+    # real copy of an instance, where it lands as ` M .gitignore`.
+    #
+    # (An earlier version of this comment said instances have no root .gitignore
+    # at all. That was a misread of a malformed `grep -c` check, corrected the
+    # same day by copying a real instance and looking. The fix below was right;
+    # the reason written beside it was not, which is worse than no reason --
+    # a wrong scar comment is read as coverage, so nobody goes looking.)
+    #
+    # This classifier answered `unclassified` for .gitignore, which means
+    # REPORTED and never committed (ASK-498). So every one of the 22 instances
+    # would carry a permanently modified, never-committable tracked file and
+    # print the same unclassifiable path on every run, forever.
+    #
+    # It does NOT block the sync: the dirty-tree guard is scoped to
+    # `$prefix/ .claude/ plugins/` (kipi-update.sh ~L2012) and root .gitignore
+    # is in none of them. Checked rather than assumed, because the first guess
+    # was that this self-blocked the whole fleet.
     #
     # `chore`, so the fleet sync may take it: system exhaust, not authored
     # content. Config, never source, so the executable-source refusal above
