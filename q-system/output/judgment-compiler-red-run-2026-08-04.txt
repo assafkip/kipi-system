@@ -1,0 +1,2 @@
+FAILED plugins/prd-os/tests/test_judgment_compiler.py::TestReadOnly::test_verify_evaluate_selftest_survive_read_only_repo
+46 failed, 2 passed in 4.23s

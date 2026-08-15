@@ -44,8 +44,16 @@ If these files are empty/template, the voice skill cannot run. Ask the founder t
 - Questions should make the reader uncomfortable, not curious
 
 ### 7. Ending Pattern
-- Social posts: end with a direct question or sharp statement. Never "Thoughts?" or "Agree?"
-- Articles: end with a reflective question that reframes the whole piece
+- Social posts (LinkedIn, X, Substack): end on a VERDICT. NEVER a question.
+  Founder-directed 2026-08-06: "essentially on any social posts I don't finish with
+  a question." Measured on his corpus that day: 1 of 27 writing samples ends on a
+  question, and that one is a quoted line inside a piece, not a closer. The 4 seed
+  drafts that do are all March 2026 engagement-shaped LinkedIn posts. This REVERSES
+  the old line "end with a direct question or a sharp statement", which was an
+  assertion the corpus contradicted. Enforced by `ending_gate._closing_question_signals`
+  in the content engine, not by this bullet.
+- Long-form articles (Medium) may still end reflectively, but not on a question that
+  asks the reader about their own business.
 - Emails/DMs: end with one clear ask or one specific question
 
 ## Pre-Publish Check (BLOCKING)

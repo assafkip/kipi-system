@@ -418,5 +418,60 @@
     "instance": "gtm-partner",
     "status": "published",
     "date": "2026-07-27"
+  },
+  "b7fc665c696fff32": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-08-10"
+  },
+  "21adae04175692b9": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-08-10"
+  },
+  "82829085275a9678": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-08-10"
+  },
+  "a89c06acec16bad5": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-08-10"
+  },
+  "00474a5901980b31": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-08-10"
+  },
+  "03b27124e8d82fd8": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-08-10"
+  },
+  "90490fa76fead715": {
+    "instance": "Alice",
+    "status": "published",
+    "date": "2026-08-10"
+  },
+  "4c063c17572c568a": {
+    "instance": "Prodigy_Gold",
+    "status": "published",
+    "date": "2026-08-10"
+  },
+  "5d60b3dd8d685bae": {
+    "instance": "Prodigy_Gold",
+    "status": "published",
+    "date": "2026-08-10"
+  },
+  "01650f45f8a8d447": {
+    "instance": "Prodigy_Gold",
+    "status": "published",
+    "date": "2026-08-10"
+  },
+  "adcc35de84c53cee": {
+    "instance": "Prodigy_Gold",
+    "status": "published",
+    "date": "2026-08-10"
   }
 }
