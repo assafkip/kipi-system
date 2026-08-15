@@ -57,7 +57,24 @@ for f in "$DISPATCH" "$PREFLIGHT" "$REGISTRY"; do
   [ -f "$f" ] || { bad "missing $f"; exit 1; }
 done
 
-WORK="$(mktemp -d)"
+# The temp workspace is not optional: the extracted harness, the captured
+# refusals and the empty-registry fixture all live in it. `set -u` without `-e`
+# does not stop an assignment from a failed command, so an unchecked mktemp
+# leaves WORK empty and every path below resolves to /-something. Both shapes
+# were measured before this guard existed (ASK-757, codex finding on PR #184):
+#   * observable host, / not writable -> exit 1 reading "pick_list returned the
+#     home repo only", a FALSE red blaming dispatch for a broken mktemp, and the
+#     mutation case below still printed ok because an empty result is what IT
+#     wants -- so the load-bearing check certified the broken run;
+#   * CI shape -> exit 0 via the n/a branch, the failure never noticed at all;
+#   * and where / IS writable (root in a container) it would write /select.sh,
+#     /err.real and /empty-registry.json outside any sandbox.
+# This is a hard error and never the n/a branch: "the test could not run" is a
+# different answer from "the property is unobservable here".
+if ! WORK="$(mktemp -d)" || [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
+  bad "could not create a temp workspace (mktemp -d failed); the detector cannot run here"
+  exit 1
+fi
 trap 'rm -rf "$WORK"' EXIT
 
 # --- observability precondition ---------------------------------------------
