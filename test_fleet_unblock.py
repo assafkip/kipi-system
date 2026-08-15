@@ -140,6 +140,11 @@ def test_mode_only_drift_is_chmodded_not_committed(world):
     """
     skel, inst = world
     body = "#!/usr/bin/env python3\nprint('hi')\n"
+    # SEEDED (PR #165 review round 3). This test used to build the file only in
+    # the instance, so it was exercising restore-mode on a blob the skeleton
+    # never shipped -- encoding the very bug that review found. The real scar is
+    # a SKELETON file whose +x rsync dropped, which is what this now models.
+    seed_skeleton_blob(skel, "plugins/kipi-core/tool.py", body)
     write(inst, "plugins/kipi-core/tool.py", body, mode=0o755)
     git(inst, "add", "-A")
     git(inst, "commit", "-qm", "instance base")
@@ -173,6 +178,9 @@ def test_a_mode_change_carrying_content_drift_is_not_a_mode_fix(world):
     """
     skel, inst = world
     rel = "plugins/kipi-core/tool.py"
+    # Seeded for the same reason as the mode tests above (review round 3):
+    # without it this exercises a blob the skeleton never shipped.
+    seed_skeleton_blob(skel, rel, "#!/usr/bin/env python3\nprint('hi')\n")
     write(inst, rel, "#!/usr/bin/env python3\nprint('hi')\n", mode=0o755)
     git(inst, "add", "-A")
     git(inst, "commit", "-qm", "instance base")
@@ -200,6 +208,9 @@ def test_the_mode_refusal_would_notice_if_the_same_blob_proof_were_dropped(world
     """
     skel, inst = world
     rel = "plugins/kipi-core/tool.py"
+    # Seeded for the same reason as the mode tests above (review round 3):
+    # without it this exercises a blob the skeleton never shipped.
+    seed_skeleton_blob(skel, rel, "#!/usr/bin/env python3\nprint('hi')\n")
     write(inst, rel, "#!/usr/bin/env python3\nprint('hi')\n", mode=0o755)
     git(inst, "add", "-A")
     git(inst, "commit", "-qm", "instance base")
@@ -213,9 +224,62 @@ def test_the_mode_refusal_would_notice_if_the_same_blob_proof_were_dropped(world
         + out)
 
 
+def test_a_founder_chmod_on_a_file_the_skeleton_never_shipped_is_refused(world):
+    """PR #165 review round 3, major.
+
+    decide() checks mode FIRST, before it looks at the row's kind at all. That
+    ordering is deliberate for the fleet case -- a mode-only row also classifies
+    as fleet-written, and committing it would bake the broken mode in. But it
+    swallowed the founder case with it: a script the founder wrote and
+    deliberately made executable has an unchanged blob and a changed mode, which
+    is exactly the shape the restore-mode branch matches. The tool would chmod
+    it back and report the instance repaired.
+
+    The scar this branch exists for (KTLYST_strategy) was a SKELETON file whose
+    +x rsync had dropped. Attribution is what separates the two, and mode-first
+    ordering skipped it.
+    """
+    skel, inst = world
+    # INSIDE the guard's pathspec (plugins/), or the audit never produces a row
+    # and decide() is never called. A first draft used scripts/, which is
+    # outside it, and both assertions passed while exercising nothing.
+    rel = "plugins/kipi-core/founders-own-tool.sh"   # never seeded into skeleton
+    write(inst, rel, "#!/bin/sh\necho mine\n", mode=0o644)
+    git(inst, "add", "-A")
+    git(inst, "commit", "-qm", "instance base")
+
+    (inst / rel).chmod(0o755)                     # the founder makes it runnable
+    assert is_dirty(inst, rel)
+
+    rc, out = run(skel, "--apply")
+
+    assert "restore-mode" not in out, (
+        "reverted a mode change on a file the skeleton never shipped\n" + out)
+    assert os.access(inst / rel, os.X_OK), "the founder's +x was taken away"
+
+
+def test_the_skeleton_owned_mode_fix_still_fires(world):
+    """Negative control for the test above. If restore-mode stopped firing
+    entirely, that assertion would pass while the KTLYST_strategy scar -- the
+    whole reason this branch exists -- silently regressed."""
+    skel, inst = world
+    rel = "plugins/kipi-core/tool.py"
+    seed_skeleton_blob(skel, rel, "#!/usr/bin/env python3\nprint('hi')\n")
+    write(inst, rel, "#!/usr/bin/env python3\nprint('hi')\n", mode=0o755)
+    git(inst, "add", "-A")
+    git(inst, "commit", "-qm", "instance base")
+    (inst / rel).chmod(0o644)
+
+    rc, out = run(skel, "--apply")
+    assert "restore-mode" in out, out
+    assert os.access(inst / rel, os.X_OK), "+x not restored on a skeleton file"
+
+
 def test_mode_fix_is_not_applied_on_a_dry_run(world):
     """Negative self-test for the dry run: the default must write nothing."""
     skel, inst = world
+    # Seeded for the same reason as the test above (review round 3).
+    seed_skeleton_blob(skel, "plugins/kipi-core/tool.py", "x\n")
     write(inst, "plugins/kipi-core/tool.py", "x\n", mode=0o755)
     git(inst, "add", "-A")
     git(inst, "commit", "-qm", "base")

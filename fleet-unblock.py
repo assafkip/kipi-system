@@ -129,7 +129,23 @@ def decide(repo, row, audit, rescued):
     # Mode first. A mode-only row also classifies as fleet-written (the blob IS
     # a skeleton blob), and committing it would bake the broken mode in. Order
     # matters here; this is not an arbitrary sequence.
-    if index_sha and index_sha == work_sha and index_mode != work_mode:
+    #
+    # BUT MODE-FIRST IS NOT ATTRIBUTION-FREE (PR #165 review round 3, major).
+    # Running before the kind check meant this branch also swallowed the FOUNDER
+    # case: a script the founder wrote and deliberately made executable has an
+    # unchanged blob and a changed mode, which is precisely the shape matched
+    # here. The tool chmod'ed it back and reported the instance repaired --
+    # silently undoing a deliberate change, on a file the skeleton has never
+    # heard of.
+    #
+    # The scar this branch exists for (KTLYST_strategy, skill-trigger-eval.py)
+    # was a SKELETON file whose +x rsync had dropped. Requiring the blob to be
+    # one the skeleton actually wrote keeps that case and drops the founder's.
+    # A non-skeleton blob falls through to the kind checks and is refused.
+    # Reproducer: test_a_founder_chmod_on_a_file_the_skeleton_never_shipped_is_refused
+    # Control:    test_the_skeleton_owned_mode_fix_still_fires
+    if (index_sha and index_sha == work_sha and index_mode != work_mode
+            and audit_wrote(audit, path, index_sha)):
         return "restore-mode", (
             f"same blob {index_sha[:12]}, mode {work_mode or '?'} on disk vs "
             f"{index_mode} in index; chmod back, never commit the broken mode"
