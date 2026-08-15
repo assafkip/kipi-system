@@ -906,48 +906,34 @@ TARGET_PATH=""
 # early `exit 0` here would leave the cap at 1 by another name.
 LIVE_REPOS="$(live_repos)"
 
-# A PREFERENCE, NOT AN EXCLUSION -- AND THE DIFFERENCE IS A TESTED CONTRACT.
+# ONE LIVE RUN PER REPO. ABSOLUTE. Founder decision 2026-08-15 [USER-DIRECTED],
+# recorded in ASK-811: asked whether two agents may work one repo at once, the
+# answer was "no, only one per repo".
 #
-# The first cut of this made "one live run per repo" absolute: a repo with a live
-# converge was skipped, full stop. CI caught two tests that say otherwise, and
-# both are right:
+# A repo with a live run is SKIPPED and the rotation continues to the next repo.
+# If every dispatchable repo is busy, this cycle enters nothing and the next
+# 900s tick tries again. There is no fallback; that is the point of the decision.
 #
-#   test-ci-redrive 14g "a live converge does not cost the fresh pick its slot"
-#     exists BECAUSE a live converge used to starve the ready queue: a redrive
-#     offered the already-live issue, NEXT was overwritten with it, and the issue
-#     that WAS dispatchable was thrown away every heartbeat for the whole run.
-#   test-dispatch-liveness 6a requires the per-ISSUE duplicate guard to fire on
-#     every attempt -- it cannot fire if selection exits before reaching it.
+# WHAT THIS COSTS, STATED PLAINLY. test-ci-redrive 14g was written because a live
+# converge used to starve the ready queue: a redrive offered the already-live
+# issue, NEXT was overwritten with it, and the issue that WAS dispatchable was
+# thrown away every heartbeat. Under this rule a busy repo genuinely does defer
+# its other ready issues. The difference from that scar is that the deferral is
+# now DELIBERATE, LOGGED, and costs no budget -- the issue stays ready and is
+# picked up as soon as the repo frees. 14g is updated to assert exactly that,
+# because the protection worth keeping is "nothing is silently consumed", not
+# "something is always dispatched".
 #
-# Both scenarios are one repo with one live run, which an absolute rule refuses,
-# so it re-created the exact starvation 14g was written to prevent. Same-issue
-# collision is already handled downstream by the duplicate guard; what this rule
-# adds is SPREAD.
-#
-# So: prefer a repo with nothing live, and fall back to a busy one only when it
-# is the only candidate. With several dispatchable repos the work spreads one per
-# repo, which is the whole throughput win. With exactly one, behaviour is
-# unchanged from before this change.
-#
-# THIS IS DELIBERATELY WEAKER THAN "never two runs in one repo". A single-repo
-# fleet at cap 3 can still put two agents on one repo, which is the file-conflict
-# risk the plist documents. That is why KIPI_DISPATCH_MAX is sized to the number
-# of dispatchable repos rather than to appetite: the cap, not this loop, is what
-# bounds same-repo overlap. Making it absolute needs the starvation answered
-# first, and that is ASK-811.
-#
-# Unattributed runs (a hand-run `kipi converge`, anything this script did not
-# launch) are simply not known-busy. An earlier version halted the cycle on them;
-# that also broke 6a by exiting before the duplicate guard, and it turned a
-# hand-run converge into a fleet-wide stall.
-FALLBACK_NAME=""; FALLBACK_PATH=""
+# The conflict risk this removes is the reason: the dispatcher picks by readiness
+# and has NO idea which files an issue touches, so two runs in one repo can edit
+# the same region (observed 2026-07-28, ASK-223 vs live ASK-222) and hand back
+# conflicting PRs for a human to untangle.
 while IFS=$'\t' read -r PNAME PPATH; do
   [ -n "$PNAME" ] || continue
   # Exact line match. A substring test would let ~/projects/foo suppress
   # ~/projects/foo-bar, silently starving a repo nothing is running in.
   if [ -n "$LIVE_REPOS" ] && printf '%s\n' "$LIVE_REPOS" | grep -qxF -- "$PPATH"; then
-    say "deprioritising $PNAME: a converge run is already live in $PPATH"
-    [ -n "$FALLBACK_NAME" ] || { FALLBACK_NAME="$PNAME"; FALLBACK_PATH="$PPATH"; }
+    say "skip $PNAME: a converge run is already live in $PPATH (one run per repo, ASK-811)"
     continue
   fi
   TARGET_NAME="$PNAME"
@@ -957,34 +943,8 @@ done <<PICKEOF
 $PICKS
 PICKEOF
 
-# Every candidate was busy. Take the first rather than idling -- an idle cycle
-# here is the starvation 14g forbids -- but the fallback is BOUNDED.
-#
-# THE UNBOUNDED VERSION WAS A REAL EXPOSURE (codex major, PR #163 r3), and it
-# described tonight's actual configuration rather than a hypothetical: preflight
-# REFUSES interview-coach on a dirty tree, so only two repos are available, and if
-# ktlyst has nothing ready the sole candidate is the home repo. At cap 3 an
-# unbounded fallback would put THREE unattended agents in one repo and hand back a
-# pile of conflicting PRs for a human to untangle. My earlier "the cap is sized to
-# the number of dispatchable repos" reasoning assumed all of them are AVAILABLE;
-# preflight collapses that at runtime and the cap does not adapt.
-#
-# 2 IS DERIVED FROM THE TESTS, NOT CHOSEN. test-ci-redrive 14g requires that a
-# repo with ONE live run still yield its fresh pick, so a per-repo ceiling of 1
-# would break the suite. 2 is therefore the tightest bound the existing contract
-# allows, and every run past the second buys nothing 14g asked for while adding
-# exactly the collision risk the plist documents.
-FALLBACK_LIVE=0
-if [ -n "$FALLBACK_PATH" ] && [ -n "$LIVE_REPOS" ]; then
-  FALLBACK_LIVE="$(printf '%s\n' "$LIVE_REPOS" | grep -cxF -- "$FALLBACK_PATH" || true)"
-  FALLBACK_LIVE="${FALLBACK_LIVE:-0}"
-fi
-if [ -z "$TARGET_NAME" ] && [ -n "$FALLBACK_NAME" ] && [ "$FALLBACK_LIVE" -lt 2 ]; then
-  say "every dispatchable repo has a live run; proceeding in $FALLBACK_NAME (${FALLBACK_LIVE} live there, ceiling 2; the per-issue duplicate guard still applies)"
-  TARGET_NAME="$FALLBACK_NAME"
-  TARGET_PATH="$FALLBACK_PATH"
-elif [ -z "$TARGET_NAME" ] && [ -n "$FALLBACK_NAME" ]; then
-  say "skip: $FALLBACK_NAME already has $FALLBACK_LIVE live run(s), the per-repo ceiling; not stacking a third unattended agent on one repo"
+if [ -z "$TARGET_NAME" ]; then
+  say "no free repo this cycle: every dispatchable repo already has a live run; nothing entered, nothing claimed, retrying next tick"
 fi
 # --- END REPO SELECTION ---
 # The marker is load-bearing. The test cuts this whole block out and sources it,

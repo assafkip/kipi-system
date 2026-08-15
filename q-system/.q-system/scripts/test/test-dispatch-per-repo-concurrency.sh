@@ -118,7 +118,7 @@ sed -n '/^LIVE_REPOS="\$(live_repos)"$/,/^# --- END REPO SELECTION ---$/p' "$DIS
 # Ending the cut at PICKEOF stopped one line short of the fallback, so the suite
 # tested a loop that could never fall back and blamed the code. Assert both
 # halves are present -- the skip AND the fallback.
-for sym in deprioritising FALLBACK_NAME 'every dispatchable repo has a live run'; do
+for sym in 'one run per repo' 'no free repo this cycle'; do
   grep -q "$sym" "$LOOPF" \
     || { echo "FATAL: '$sym' missing from the selection-loop extract of $DISPATCH" >&2; exit 1; }
 done
@@ -138,48 +138,22 @@ SEL="$(run_selection "$(printf 'alpha\t/repos/alpha\nbeta\t/repos/beta\n')")"
 echo "$SEL" | grep -q 'PICKED=beta' \
   && ok "alpha is busy, so beta is dispatched -- the fleet does not stall" \
   || bad "the busy repo was not skipped to the next one (got: $SEL)"
-echo "$SEL" | grep -q 'deprioritising' \
+echo "$SEL" | grep -q 'one run per repo' \
   && ok "the skip states WHY, so the log explains the decision" \
   || bad "the skip was silent"
 
-echo "== 3. a LONE busy repo is still taken (starvation is worse than overlap) =="
-# test-ci-redrive 14g exists because a live converge used to starve the ready
-# queue. An absolute one-run-per-repo rule re-creates exactly that, so the rule
-# is a PREFERENCE: fall back to the busy repo when it is the only candidate. The
-# per-ISSUE duplicate guard downstream still stops a second run of the SAME issue.
+echo "== 3. a LONE busy repo is NOT taken -- one run per repo is absolute =="
+# Founder decision 2026-08-15 (ASK-811): asked whether two agents may work one
+# repo at once, the answer was "no, only one per repo". The fallback that used to
+# take a busy repo when it was the only candidate is GONE. A cycle that finds
+# every repo busy enters nothing and retries on the next tick.
 SEL_ONE="$(run_selection "$(printf 'alpha\t/repos/alpha\n')")"
 echo "$SEL_ONE" | grep -q 'PICKED=alpha' \
-  && ok "alpha alone and busy is still dispatched -- the ready queue is not starved" \
-  || bad "a lone busy repo yielded no pick, which is the 14g starvation (got: $SEL_ONE)"
-echo "$SEL_ONE" | grep -q 'every dispatchable repo has a live run' \
-  && ok "the fallback says it is a fallback" \
-  || bad "the fallback was silent"
-
-echo "== 3b. the fallback is BOUNDED: no THIRD agent stacks on one repo =="
-# codex major r3, describing the live configuration: preflight refuses one repo
-# and another has nothing ready, so the sole candidate is a busy repo. Unbounded,
-# cap 3 would put three unattended agents there and hand back conflicting PRs.
-# The ceiling is 2 because 14g requires a repo with ONE live run to still yield
-# its fresh pick -- so 1 would break the suite and 2 is the tightest legal bound.
-PID_S1="$(spawn_fake_converge ASK-810)"
-PID_S2="$(spawn_fake_converge ASK-811)"
-record_live_run "$PID_S1" "ASK-810" "/repos/stack"
-record_live_run "$PID_S2" "ASK-811" "/repos/stack"
-SEL_ST="$(run_selection "$(printf 'stack\t/repos/stack\n')")"
-echo "$SEL_ST" | grep -q 'PICKED=stack' \
-  && bad "a THIRD run was stacked on one repo" "unattended same-repo agents produce conflicting PRs (got: $SEL_ST)" \
-  || ok "two live runs is the ceiling; a third is refused"
-echo "$SEL_ST" | grep -q 'per-repo ceiling' \
-  && ok "the refusal names the ceiling, so the log explains the idle cycle" \
-  || bad "the ceiling refusal was silent"
-
-# 3b-neg: with only ONE live there, the fallback must still fire (that is 14g).
-kill "$PID_S2" 2>/dev/null; wait "$PID_S2" 2>/dev/null
-SEL_ST1="$(run_selection "$(printf 'stack\t/repos/stack\n')")"
-echo "$SEL_ST1" | grep -q 'PICKED=stack' \
-  && ok "3b-neg one live run still yields the fresh pick (14g preserved)" \
-  || bad "3b-neg the ceiling over-tightened" "a repo with one live run was starved (got: $SEL_ST1)"
-kill "$PID_S1" 2>/dev/null; wait "$PID_S1" 2>/dev/null
+  && bad "a second run was allowed in the SAME repo" "the founder's rule is one per repo (got: $SEL_ONE)" \
+  || ok "alpha alone and busy yields no pick -- no second agent in one repo"
+echo "$SEL_ONE" | grep -q 'no free repo this cycle' \
+  && ok "the idle cycle says WHY, so it is a deferral and not a silent stall" \
+  || bad "the idle cycle was silent" "an operator cannot tell it from a hang (got: $SEL_ONE)"
 
 echo "== 4. MUTATION: break the skip and case 2 must go RED =="
 MUT="$WORK/loop-mutant.sh"
