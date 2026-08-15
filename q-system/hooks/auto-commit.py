@@ -39,6 +39,21 @@ AREA_MAP = [
     (".claude/agents/",               "chore",    "update agent definitions"),
     (".claude/output-styles/",        "chore",    "update output styles"),
     (".claude/settings",              "chore",    "update settings"),
+    # sp-097d2e23. The updater writes a managed never-commit block into every
+    # instance's root .gitignore, and dry-checked on three live instances none
+    # of them HAS a root .gitignore -- so the updater creates the file. Git
+    # honours an untracked .gitignore, so the rules bite either way, but this
+    # classifier answered `unclassified` for it, which means REPORTED and never
+    # committed (ASK-498). Left alone, all 22 instances would print the same
+    # unclassifiable path on every run forever and the file would stay
+    # unversioned: absent from the instance's history and unrecoverable if
+    # anything removed it. Exactly the state-the-system-writes-for-itself-that-
+    # nothing-may-commit shape that sp-097d2e23 exists to end.
+    #
+    # `chore`, so the fleet sync may take it: system exhaust, not authored
+    # content. Config, never source, so the executable-source refusal above
+    # does not reach it.
+    (".gitignore",                    "chore",    "update gitignore"),
     ("sites/",                        "feat",     "update site pages"),
     ("memory/",                       "chore",    "update auto-memory"),
 ]

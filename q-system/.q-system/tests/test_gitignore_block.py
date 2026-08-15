@@ -264,6 +264,46 @@ class TestTheWiringIntoTheUpdater:
         assert r.returncode == 0, r.stderr
 
 
+class TestTheFileTheWriterCreatesCanActuallyBeCommitted:
+    """A defect in THIS fix, found by running it against real instances.
+
+    Dry-checked on three live instances 2026-08-14: none of them has a root
+    .gitignore AT ALL, so the writer does not edit a file, it CREATES one. Git
+    honours an untracked .gitignore, so the ignore rules work either way -- but
+    an untracked file is one nobody committed, in a repo nobody looks at, and
+    auto-commit.py classified `.gitignore` as `unclassified`.
+
+    Unclassified means REPORTED, never committed (ASK-498). So the fix would
+    have left every one of the 22 instances printing the same unclassifiable
+    path on every single run, forever, and the file itself unversioned -- not in
+    the instance's history, not recoverable if something removed it.
+
+    That is the exact shape this whole PR is about: state the system writes for
+    itself that nothing is allowed to commit, sitting dirty until it becomes
+    background noise. Fixing it in the same breath rather than filing it.
+    """
+
+    def test_a_created_gitignore_is_offered_to_the_fleet_sync(self, tmp_path):
+        root = make_instance(tmp_path)
+        assert not (root / ".gitignore").exists()
+        blockmod.main(["--skeleton", REPO, "--instance", str(root)])
+
+        assert ".gitignore" in untracked(root), "precondition: it is untracked"
+        assert auto_commit.system_state_paths([".gitignore"]) == [".gitignore"], (
+            "the writer creates a file the fleet sync is not allowed to commit, "
+            "so it stays untracked and unclassified on every instance forever")
+
+    def test_it_is_chore_not_founder_content(self):
+        """It must be `chore`. system_state_paths narrows to chore precisely so
+        an unattended fleet-wide sweep never takes founder-authored content."""
+        assert auto_commit.classify(".gitignore")[0] == "chore"
+
+    def test_an_instance_gitignore_is_not_swept_as_unclassified(self):
+        """The negative half: `unclassified` is what REPORTS a path instead of
+        committing it. If this regresses, the noise comes straight back."""
+        assert auto_commit.classify(".gitignore") != auto_commit.SKIP_UNCLASSIFIED
+
+
 class TestUntrackingWithoutIgnoringRegresses:
     """The behavioural half of the ordering argument, run for real."""
 
@@ -303,7 +343,14 @@ class TestUntrackingWithoutIgnoringRegresses:
 
         assert (root / rel).exists(), "the untrack must never delete the file"
         assert rel not in untracked(root)
-        assert auto_commit.system_state_paths(untracked(root)) == []
+        # Names the MARKER rather than asserting the offered list is empty.
+        # The broad version was written before .gitignore itself became
+        # committable, and it then failed for the right reason: the writer
+        # creates a root .gitignore, which IS now offered to the fleet sync on
+        # purpose (see TestTheFileTheWriterCreatesCanActuallyBeCommitted). An
+        # assertion that breaks when an unrelated path is correctly added was
+        # testing the wrong thing.
+        assert rel not in auto_commit.system_state_paths(untracked(root))
 
 
 if __name__ == "__main__":
