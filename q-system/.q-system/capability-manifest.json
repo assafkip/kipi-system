@@ -769,6 +769,11 @@
       "path": "q-system/.q-system/scripts/verify-containment-export.py",
       "reason": "built for prd-skeleton-data-containment's export/quarantine flow and never wired",
       "spillover_id": "sp-0f773063"
+    },
+    {
+      "path": "q-system/.q-system/scripts/plugin-parity-check.py",
+      "reason": "operator tool: compares the RUNTIME marketplace clone against the skeleton. That clone lives outside the repo, so no repo surface can call it and CI cannot see the thing it inspects; wiring it to one would be a fake reference. It is how the 34-version prd-os drift was found (ASK-721), and it read 0.25.1 against a skeleton at 0.27.2 on 2026-08-14.",
+      "spillover_id": "sp-ff11d191"
     }
   ],
   "uncovered_known": [
