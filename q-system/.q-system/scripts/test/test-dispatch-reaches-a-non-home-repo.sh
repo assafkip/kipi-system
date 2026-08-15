@@ -37,7 +37,17 @@ DISPATCH="$ROOT/kipi-dispatch.sh"
 PREFLIGHT="$ROOT/q-system/.q-system/scripts/repo-preflight.sh"
 REGISTRY="${KIPI_DISPATCH_REGISTRY:-$ROOT/instance-registry.json}"
 # The home repo pick_list short-circuits on. Never touched on disk by the home row.
-HOME_REPO="${KIPI_REPO:-/Users/assafkipnis/projects/kipi-system}"
+# The default is READ OUT OF the dispatcher rather than copied from it. Two reasons,
+# and the second is a gate: a second copy would drift silently from kipi-dispatch.sh:38,
+# and validate-separation.py's full skeleton sweep (validate-separation.py:975) greps
+# every file under q-system/ for a hardcoded founder home-directory prefix (and for
+# the old instance brand name) and fails the build on a single hit -- measured in CI,
+# the full-skeleton-sweep check reported 1 file and the Phase 1 gate failed.
+# kipi-dispatch.sh itself lives at the repo root, outside the swept tree, so it may
+# carry that literal and this file may not. The sweep matches a SUBSTRING and reads
+# comments like any other line, so neither pattern is spelled out anywhere above --
+# quoting one to explain it trips the gate exactly like using it would.
+HOME_REPO="${KIPI_REPO:-$(sed -n 's/^REPO="${KIPI_REPO:-\(.*\)}"$/\1/p' "$DISPATCH")}"
 
 FAILED=0
 ok()  { printf 'ok   %s\n' "$*"; }
