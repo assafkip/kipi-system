@@ -18,11 +18,39 @@ CONVERGE="$HERE/../converge.sh"
 PASS=0; FAIL=0
 ok()  { echo "  PASS: $*"; PASS=$((PASS+1)); }
 bad() { echo "  FAIL: $*"; FAIL=$((FAIL+1)); }
-# PHYSICAL path. On macOS /var is a symlink to /private/var, so mktemp hands
-# back /var/... while `git worktree list` reports the RESOLVED /private/var/...
+# THE TEMP DIR IS VALIDATED BEFORE IT IS EVER RESOLVED, AND THE CLEANUP REFUSES
+# ANYTHING THAT IS NOT A TEMP DIR (codex blocker, PR #181).
+#
+# The first cut was  WORK="$(cd "$(mktemp -d)" && pwd -P)"  which is a repo
+# shredder waiting for a bad day. In bash, cd with an empty operand SUCCEEDS as a
+# no-op. So if mktemp ever failed -- full disk, TMPDIR pointing somewhere
+# unwritable -- the substitution collapsed to a cd that went nowhere followed by
+# pwd -P, WORK became the CURRENT DIRECTORY (this checkout), and the EXIT trap
+# recursively deleted the founder's working tree along with any uncommitted work.
+#
+# So: capture, prove it is a real temp directory, and only then resolve it. The
+# cleanup re-checks at DELETION TIME rather than trusting the assignment, because
+# a guard that runs only once cannot protect against anything that reassigns WORK
+# later.
+WORK="$(mktemp -d)" || { echo "FATAL: mktemp failed" >&2; exit 1; }
+case "$WORK" in
+  /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*) : ;;
+  *) echo "FATAL: mktemp returned an unexpected path: '$WORK'" >&2; exit 1 ;;
+esac
+[ -d "$WORK" ] || { echo "FATAL: mktemp path is not a directory: '$WORK'" >&2; exit 1; }
+# PHYSICAL path. On macOS /var is a symlink to /private/var, so mktemp hands back
+# /var/... while `git worktree list` reports the RESOLVED /private/var/...
 # Comparing the two made a correct fix read as a failure on the first run.
-WORK="$(cd "$(mktemp -d)" && pwd -P)"
-cleanup() { [ -n "${WORK:-}" ] && [ -d "$WORK" ] && /bin/rm -rf -- "$WORK"; }
+WORK="$(cd "$WORK" && pwd -P)" || { echo "FATAL: could not resolve temp dir" >&2; exit 1; }
+
+cleanup() {
+  # Re-checked HERE, because this is the line that actually deletes.
+  case "${WORK:-}" in
+    /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*)
+      [ -d "$WORK" ] && /bin/rm -rf -- "$WORK" ;;
+    *) echo "cleanup refused: WORK is not a temp dir ('${WORK:-unset}')" >&2 ;;
+  esac
+}
 trap cleanup EXIT
 
 # Two throwaway repos: a stand-in skeleton and a stand-in target. The branch
