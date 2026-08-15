@@ -180,3 +180,29 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
   this; they get decided by an agent with evidence rather than escalated as questions.
 - **Date:** 2026-08-05
 - **Revisit:** Permanent
+
+### RULE-016: A Root That Holds Nested Repos Is Not Dispatchable, Even Outside An Engagement Root
+- **Origin:** [SYSTEM-INFERRED]
+- **Decision:** ASK-842 option (b). `cole-gtm` (registry `gtm-partner`) and
+  `reddit-build-radar` stay OFF for unattended dispatch. Their 4 issues (ASK-127,
+  ASK-717, ASK-718, ASK-146) are worked as supervised founder-initiated runs. The
+  decision is stored as `dispatch.enabled: false` carrying its issue id and reason,
+  not as an absent key, and `test-ask842-dispatch-decision.sh` turns red if either
+  row is flipped without editing the record.
+- **Reason:** Measured 2026-08-14. `cole-gtm` tracks **0 files under `projects/`**
+  while holding **9 nested separate git repos** there, and tracks 3001 files under
+  `gtm/`, the live outbound engine. That is the identical shape ASK-754 refused at
+  the consulting root: preflight check 5 (dirty) is structurally blind to all nine
+  nested repos while a dispatched agent still has filesystem reach into them, so an
+  `OK` from the gate would be an OK the gate cannot back. Check 0 does not catch it
+  because `cole-gtm` is a persona root, not an engagement root, so the blast-radius
+  property is present with no refusal in front of it. `reddit-build-radar` was filed
+  as curable control-code *drift*; it is *absence* -- no `linear-worker.sh` and no
+  `.claude/settings.json` at all, which follows from its deliberate
+  `skeleton_managed: false` (ASK-117). Curing it reverses ASK-117 rather than
+  clearing drift, so option (c) is the expensive path, not the cheap one.
+  Explicitly NOT decided on cost: every remaining `cole-gtm` preflight failure is
+  curable. The reason is blast radius.
+- **Date:** 2026-08-14
+- **Revisit:** When preflight can see into nested repos a dispatch root does not
+  track (`sp` captured), or when the 4 issues are worked and the surfaces go quiet
