@@ -328,13 +328,97 @@ def test_a_refusing_pre_commit_hook_leaves_the_index_as_it_found_it(world):
     head_before = git(inst, "rev-parse", "HEAD")
 
     rc, out = run(skel, "--apply")
-    assert rc == 0, out
+    # Was `rc == 0`, asserting the exit code the PR #165 review found wrong: a
+    # run that repaired nothing reported success. The unwind is still the point
+    # of this test; the exit code now says the repair did not happen. See
+    # test_a_refused_commit_does_not_report_success.
+    assert rc != 0, out
     assert "REFUSED" in out, out
     assert git(inst, "rev-parse", "HEAD") == head_before, "commit landed despite the hook"
     assert git(inst, "diff", "--cached", "--name-only") == staged_before, (
         "index left staged by a commit that failed"
     )
     assert (inst / "plugins/prd-os/runner.py").read_text() == "v1\n", "content lost"
+
+
+def test_a_staged_skeleton_blob_with_a_founder_worktree_edit_is_refused(world):
+    """PR #165 review, major #1. The mixed staged/worktree case.
+
+    The index holds a blob the skeleton really did ship, so the fleet-written
+    branch of decide() matches and schedules a commit. But the WORKTREE holds
+    founder bytes the skeleton never had. Committing the index clears the
+    dirty-tree guard while leaving the founder's edit uncommitted, and the very
+    next sync overwrites it -- founder work destroyed by the tool whose entire
+    job is to avoid exactly that.
+
+    Attribution has to hold for BOTH sides of a path. One side matching the
+    skeleton is not attribution, it is half of one.
+    """
+    skel, inst = world
+    rel = "plugins/prd-os/runner.py"
+    seed_skeleton_blob(skel, rel, "v1\n")
+    write(inst, rel, "old\n")
+    git(inst, "add", "-A")
+    git(inst, "commit", "-qm", "instance base")
+
+    write(inst, rel, "v1\n")          # index: the skeleton's own blob
+    git(inst, "add", rel)
+    write(inst, rel, "founder was here\n")   # worktree: bytes the skeleton never had
+
+    head_before = git(inst, "rev-parse", "HEAD")
+    rc, out = run(skel, "--apply")
+
+    assert "REFUSE" in out, out
+    assert git(inst, "rev-parse", "HEAD") == head_before, (
+        "committed the staged skeleton blob while a founder edit sat in the "
+        "worktree; the next sync overwrites that edit")
+    assert (inst / rel).read_text() == "founder was here\n", "founder bytes lost"
+
+
+def test_a_refused_commit_does_not_report_success(world):
+    """PR #165 review, major #2.
+
+    main() returned 0 unconditionally and counted a REFUSED commit toward
+    `acted`, so a run that repaired nothing printed a success line and exited
+    clean. This is the script an unattended fleet job calls: an exit code that
+    cannot distinguish "repaired" from "refused and gave up" makes the job
+    report green while every instance stays blocked -- the same silent-success
+    class the fleet reach work exists to end.
+    """
+    skel, inst = world
+    rel = "plugins/prd-os/runner.py"
+    seed_skeleton_blob(skel, rel, "v1\n")
+    write(inst, rel, "old\n")
+    git(inst, "add", "-A")
+    git(inst, "commit", "-qm", "instance base")
+    write(inst, rel, "v1\n")
+
+    hook = inst / ".git/hooks/pre-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+
+    rc, out = run(skel, "--apply")
+    assert "REFUSED" in out, out
+    assert rc != 0, (
+        "exited 0 after repairing nothing; an unattended caller cannot tell "
+        "this from a successful run")
+
+
+def test_a_clean_successful_run_still_exits_zero(world):
+    """Negative control for the test above. If every run exited non-zero the
+    assertion would pass while telling the caller nothing."""
+    skel, inst = world
+    rel = "plugins/prd-os/runner.py"
+    seed_skeleton_blob(skel, rel, "v1\n")
+    write(inst, rel, "old\n")
+    git(inst, "add", "-A")
+    git(inst, "commit", "-qm", "instance base")
+    write(inst, rel, "v1\n")
+
+    rc, out = run(skel, "--apply")
+    assert rc == 0, out
+    assert not is_dirty(inst, rel), out
 
 
 def test_the_unwind_test_would_notice_a_missing_unwind(world):
