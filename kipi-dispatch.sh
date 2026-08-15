@@ -906,9 +906,19 @@ TARGET_PATH=""
 # early `exit 0` here would leave the cap at 1 by another name.
 LIVE_REPOS="$(live_repos)"
 
-# ONE LIVE RUN PER REPO. ABSOLUTE. Founder decision 2026-08-15 [USER-DIRECTED],
-# recorded in ASK-811: asked whether two agents may work one repo at once, the
-# answer was "no, only one per repo".
+# ONE LIVE RUN PER REPO, for every run DISPATCH LAUNCHES. Founder decision
+# 2026-08-15 [USER-DIRECTED], recorded in ASK-811: asked whether two agents may
+# work one repo at once, the answer was "no, only one per repo".
+#
+# NOT THE WORD "ABSOLUTE", AND THE PRECISION IS THE POINT (codex major, PR #178).
+# This binds what dispatch itself starts, because the ledger is the only thing
+# that can say WHICH REPO a run is in. A converge started by hand carries its
+# target repo in an env var; environment is not in the process table, so no
+# pgrep can attribute it, and such a run does not mark its repo busy. A failed
+# ledger write leaves the same hole, loudly -- record_live_run pages when it
+# cannot record. Calling the rule absolute would promise a guarantee the
+# mechanism cannot keep, which is how someone later raises the cap believing
+# they are safe. The residual is ASK-824.
 #
 # A repo with a live run is SKIPPED and the rotation continues to the next repo.
 # If every dispatchable repo is busy, this cycle enters nothing and the next

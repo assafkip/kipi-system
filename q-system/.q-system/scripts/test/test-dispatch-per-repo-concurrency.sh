@@ -2,15 +2,22 @@
 # Pairs with the PER-REPO CONCURRENCY block in kipi-dispatch.sh (sp-e45251f7).
 #
 # The claim under test: dispatch may run several converges at once ACROSS repos,
-# and PREFERS a repo with nothing live. That is what lets KIPI_DISPATCH_MAX rise
-# above 1 without rebuilding the same-file collision the cap was set to 1 to
-# avoid.
+# and never puts a SECOND RUN OF ITS OWN into a repo that already has one. That
+# is what lets KIPI_DISPATCH_MAX rise above 1 without rebuilding the same-file
+# collision the cap was set to 1 to avoid. Founder decision, ASK-811.
 #
-# IT IS NOT "never two in ONE repo", and this file used to say that it was. When
-# only one repo is dispatchable, dispatch takes it anyway -- case 3 asserts
-# exactly that -- because an absolute rule re-created the ready-queue starvation
-# test-ci-redrive 14g exists to prevent. A test file that overstates its own
-# guarantee is how a reader concludes the cap is safer than it is (ASK-811).
+# READ THAT SCOPE LITERALLY: "a second run OF ITS OWN". The rule binds runs
+# DISPATCH LAUNCHED, because the ledger is the only thing that can say which repo
+# a run is in. A converge someone starts by hand carries its target repo in an
+# ENV VAR, and environment is not in the process table, so no pgrep can attribute
+# it. Such a run does not mark its repo busy and dispatch may still enter there.
+# A failed ledger write has the same effect, loudly (record_live_run pages).
+#
+# This header previously said "PREFERS a repo with nothing live", which was true
+# of the superseded fallback design and is now wrong; and an earlier version
+# claimed "never two in ONE repo", which overstated the guarantee in the other
+# direction. Both are recorded because a test file that misdescribes its own
+# scope is how a reader concludes the cap is safer than it is.
 #
 # THIS TEST READS THE REAL SCRIPT, IT DOES NOT RESTATE IT. Both the helper
 # functions and the selection loop are cut out of kipi-dispatch.sh by marker and
