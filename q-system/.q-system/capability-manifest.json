@@ -635,6 +635,11 @@
       "path": "q-system/.q-system/tests/test_capmap_scratch_and_mention.py",
       "runner": "python3",
       "timeout_s": 60
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-converge-crossrepo-receipt.sh",
+      "runner": "bash",
+      "timeout_s": 120
     }
   ],
   "required_data": [],
@@ -655,7 +660,10 @@
     "q-system/.q-system/scripts/test/test-propagation-leak-sources.py",
     "q-system/.q-system/scripts/test/test-token-guard-template-wiring.sh",
     "q-system/.q-system/scripts/test/test-updater-issue-sequence.py",
-    "q-system/.q-system/scripts/test_autocapture_wiring.py"
+    "q-system/.q-system/scripts/test_autocapture_wiring.py",
+    "q-system/.q-system/scripts/test/test-kipi-update-plugin-excludes.sh",
+    "q-system/.q-system/scripts/test/test-kipi-update-source-provenance.sh",
+    "q-system/.q-system/scripts/test/test-kipi-update-system-state-commit.sh"
   ],
   "declared_inert": [
     {
@@ -742,6 +750,11 @@
       "path": "q-system/.q-system/scripts/verify-containment-export.py",
       "reason": "built for prd-skeleton-data-containment's export/quarantine flow and never wired",
       "spillover_id": "sp-0f773063"
+    },
+    {
+      "path": "q-system/.q-system/scripts/lessons_recall.py",
+      "reason": "retrieval + de-duplication over the lessons corpus: exec bit, real __main__, four subcommands, and ZERO references anywhere in the repo outside its own usage docstring. A genuine true positive, not a gate defect. Built to fix a measured decay in q-system/hooks/lessons-index.py (122 lessons, only the 20 most recent ever surfaced, title-only, evicting), which is also the obvious wiring destination -- but arming a retrieval engine at SessionStart changes behaviour on every governed instance, so it is a deliberate decision and not a side effect of a CI-green fix. Declared inert rather than given fake wiring. Wire it or retire it.",
+      "spillover_id": "sp-067205d3"
     }
   ],
   "uncovered_known": [
