@@ -101,6 +101,11 @@
       "timeout_s": 120
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-reaches-a-non-home-repo.sh",
+      "runner": "bash",
+      "timeout_s": 240
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-dispatch-stale-checkout.sh",
       "runner": "bash",
       "timeout_s": 120
