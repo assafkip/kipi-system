@@ -43,7 +43,47 @@
 set -uo pipefail
 
 REPO_MAIN="${KIPI_REPO_MAIN:-$HOME/projects/kipi-system}"
-PINNED="${KIPI_DISPATCH_CHECKOUT:-$HOME/.local/state/kipi/dispatch-checkout}"
+
+# THE CHECKOUT'S DIRECTORY NAME IS LOAD-BEARING, AND NAMING IT "dispatch-checkout"
+# SILENTLY KILLED HOME-REPO DISPATCH (ASK-829).
+#
+# linear-worker.sh resolves which Linear project an issue belongs to like this:
+#     KIPI_LINEAR_PROJECT  ->  registry lookup by path  ->  basename $TARGET_REPO
+# The pinned checkout is not in instance-registry.json, so resolution fell all the
+# way through to basename, which was "dispatch-checkout" -- a name matching no
+# Linear project. Every home-repo issue was filtered out:
+#
+#   MISCONFIG: repo identity 'dispatch-checkout' matches NO Linear project
+#   MISCONFIG: every issue would be filtered out, so this run picked nothing
+#              for a config reason, not an empty board.
+#
+# Measured 2026-08-15: 25 ready issues unpickable, while the DISPATCH log said
+# only "nothing ready ()" -- indistinguishable from an empty board, because the
+# MISCONFIG lines land in linear-worker.log, a different file. Cross-repo was
+# unaffected: it passes --repo and resolves through the registry, so only the
+# home repo was dead and the fleet looked half-alive.
+#
+# So the name is DERIVED from the repo's own identity rather than invented. The
+# origin URL is the one thing that always knows what this repository is; the
+# containing directory does not (KIPI_REPO_MAIN is itself a worktree here, named
+# dispatch-main). A machine-local env override would have worked too and is what
+# unblocked it on the night; it is not the fix, because a fresh install or a
+# re-render of the plist silently reintroduces the filtering.
+_repo_ident() {
+  local url base
+  url="$(git -C "$REPO_MAIN" remote get-url origin 2>/dev/null)" || return 1
+  [ -n "$url" ] || return 1
+  base="${url##*/}"; base="${base%.git}"
+  [ -n "$base" ] || return 1
+  printf '%s' "$base"
+}
+_IDENT="$(_repo_ident || true)"
+# Fall back to the old literal ONLY if the remote cannot be read. That is worse
+# than useless for project resolution, so it is announced rather than silent.
+if [ -z "$_IDENT" ]; then
+  _IDENT="dispatch-checkout"
+fi
+PINNED="${KIPI_DISPATCH_CHECKOUT:-$HOME/.local/state/kipi/dispatch/$_IDENT}"
 LOG="${KIPI_DISPATCH_LOG:-$HOME/.config/kipi/dispatch.log}"
 
 say() { printf '%s %s\n' "$(date -u +%FT%TZ)" "pinned: $*" >>"$LOG" 2>/dev/null || true; }
@@ -53,10 +93,16 @@ say() { printf '%s %s\n' "$(date -u +%FT%TZ)" "pinned: $*" >>"$LOG" 2>/dev/null 
 # because a nonzero exit would make launchd throttle a job that is behaving
 # correctly. But a clean launchd record plus a line in a log nobody reads is
 # exactly the shape of the 22.5h outage above: dispatch stopped, and the only
-# evidence was a file. So a refusal PAGES, and the log line stops being the only
-# copy. Routed through slack-notify.sh because it is the one channel that reaches
-# the founder's phone from a headless launchd context; osascript is silently
-# dropped there (founder-notifications rule).
+# evidence was a file. So a refusal RAISES AN ALERT, and the log line stops being
+# the only copy.
+#
+# WHERE THAT ALERT ACTUALLY GOES (corrected, sp-d9212e22). An earlier version of
+# this comment -- mine -- said it "reaches the founder's phone". It does not.
+# slack-notify.sh keeps its name for ~30 callers but its header is explicit:
+# "THE FLEET ALERT PATH. Files a Linear ticket for Sana. Pages nobody." Nothing
+# in it sends to Slack. That is the founder's stated routing, not a degradation:
+# things needing attention go to Sana. Saying "pages the founder" in a comment
+# would set the wrong expectation about who is watching at 3am.
 NOTIFY="${KIPI_NOTIFY:-$REPO_MAIN/q-system/.q-system/scripts/slack-notify.sh}"
 
 # AND IT PAGES ONCE, NOT 96 TIMES A DAY (codex major, PR #122 r2).
