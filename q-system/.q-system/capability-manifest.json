@@ -325,6 +325,10 @@
       "timeout_s": 600
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-ask842-dispatch-decision.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-review-artifact-repo-keyed.sh",
       "runner": "bash"
     },
