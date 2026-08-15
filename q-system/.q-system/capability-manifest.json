@@ -337,6 +337,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-review-dry-run-labelled.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
       "runner": "bash"
     },

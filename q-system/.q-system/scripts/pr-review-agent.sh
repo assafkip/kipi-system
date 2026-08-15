@@ -162,6 +162,26 @@ done
 # control code lives. Every git read that asks "does this tree hold the PR"
 # targets REVIEW_REPO; every gh call is scoped to its slug. Defaults to $SKEL, so
 # every existing caller behaves exactly as before.
+# WHAT MODE THIS RUN IS IN, DERIVED ONCE (ASK-758). The OUTWARD side effects --
+# the PR comment, the commit status, the Linear post -- are inside `if POST=1`,
+# but the verdict line and the closing line are not, so a default invocation
+# printed `verdict: APPROVE` and `done` with nothing a human or a required check
+# could see. The dry transcript and the real approving transcript were the same
+# text; the difference was only discoverable by going and proving zero statuses
+# exist. One derivation, appended at both places a reader forms a belief, so the
+# two can never disagree about the mode.
+#
+# THE NOTE SAYS WHAT IS AND IS NOT TRUE, and the first draft got the second half
+# wrong: it read "no gate moved". A dry run DOES move a gate. The verdict record
+# is written below at the `verdict_record_write_path` call, ~100 lines ABOVE the
+# `if [ "$POST" = "1" ]` block -- so it is written on every run -- and that
+# record is the one converge.sh:748 and linear-worker.sh:1054 read to decide
+# approve-vs-rework. Telling a reader no gate moved is the same silent-dry-run
+# defect aimed at the reader who did read the label, and worse, because they
+# trusted it. So the note names both halves: what was withheld, and what landed.
+DRY_NOTE=""
+[ "$POST" = "1" ] || DRY_NOTE=" (DRY RUN -- nothing posted to GitHub or Linear; the verdict record WAS written and the loop still gates on it; re-run with --post)"
+
 REVIEW_REPO="${TARGET_REPO_ARG:-${KIPI_TARGET_REPO:-$SKEL}}"
 [ -d "$REVIEW_REPO" ] || { echo "--repo: no such directory: $REVIEW_REPO" >&2; exit 1; }
 REVIEW_REPO="$(cd "$REVIEW_REPO" && pwd)"
@@ -782,7 +802,7 @@ else
   VERDICT="$STATED_VERDICT"
   echo "  NOTE: no FINDINGS block; verdict read from prose (weaker)"
 fi
-echo "  verdict: ${VERDICT:-unstated}"
+echo "  verdict: ${VERDICT:-unstated}$DRY_NOTE"
 
 # Single writer for verdict state. The worker's rework gate reads THIS record,
 # never the review prose. Keyed by PR number, latest round wins; history stays
@@ -1083,5 +1103,5 @@ Sana: reply to this comment on THIS issue. For each finding, either the file:lin
   fi
 fi
 
-echo "$(TS) done"
+echo "$(TS) done$DRY_NOTE"
 exit 0
