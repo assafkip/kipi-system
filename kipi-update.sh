@@ -1251,7 +1251,7 @@ is_instance_wip() {
   # The byte-identical test above only recognises THIS sync's own output. An
   # untracked file written by an EARLIER sync, differing from the current
   # skeleton copy, looked like work-in-progress and refused the instance on
-  # every run afterwards. KTLYST_strategy sat exactly there with an untracked
+  # every run afterwards. one registered instance sat exactly there with an untracked
   # q-system/.q-system/scripts/merge-bypass-gate.py, and fleet-reach-audit.py
   # reported WOULD-SYNC for it the whole time because the audit does not model
   # this check. Real reach was 21 of 22 while the number on screen said 22.

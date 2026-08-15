@@ -15,7 +15,7 @@ unrecoverable. Correct instinct. But `is_instance_wip` could only recognise ONE
 kind of non-work: a file byte-identical to the skeleton's CURRENT copy, i.e.
 this same sync's own output from a run that died before committing.
 
-An OLDER skeleton blob looks like work to that check and is not. KTLYST_strategy
+An OLDER skeleton blob looks like work to that check and is not. one registered instance
 carried an untracked `q-system/.q-system/scripts/merge-bypass-gate.py` written by
 some earlier sync and never committed, differing from the current skeleton copy.
 The updater refused it on every run, so the instance could never sync -- and
