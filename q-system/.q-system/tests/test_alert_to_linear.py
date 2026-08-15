@@ -7,6 +7,7 @@ evidence, not an invention -- an invented fixture would let the dedup pass here
 and still flood Linear on the first real run.
 """
 import importlib.util
+import json
 import os
 import sys
 import time
@@ -111,6 +112,12 @@ class FakeLinear:
         self.state_type = state_type
         self.created = 0
         self.comments = 0
+        # The payload the last issueCreate actually sent. ASK-839 is a defect in
+        # a FIELD OF THE PAYLOAD, so the fixture has to keep the payload; a test
+        # that only reads the returned identifier cannot see the field at all.
+        self.create_input = None
+        self.projects = [{"id": "proj-kipi", "name": "kipi-system",
+                          "description": ""}]
 
     def linear_api_key(self):
         return "stub"
@@ -122,8 +129,11 @@ class FakeLinear:
         if "labels(first" in query:
             return {"team": {"labels": {"nodes": [
                 {"id": "lab-1", "name": "owner:sana"}]}}}
+        if "projects(first" in query:
+            return {"team": {"projects": {"nodes": self.projects}}}
         if "issueCreate" in query:
             self.created += 1
+            self.create_input = variables["input"]
             return {"issueCreate": {"success": True, "issue": {
                 "id": f"iss-{self.created}", "identifier": f"ASK-{100 + self.created}",
                 "url": "https://linear.app/x"}}}
@@ -252,6 +262,93 @@ def test_punctuation_alone_never_decides_a_ticket():
     for variant in (base + ".", base + "!", base.replace(":", " --"),
                     base.replace("BLOCKED:", "BLOCKED --"), '"' + base + '"'):
         assert mod.fingerprint(variant) == mod.fingerprint(base), variant
+
+
+# --- ASK-839: every filed ticket carries a project ---------------------------
+#
+# THE DEFECT. issueCreate was built with teamId + labelIds and no projectId, so
+# every alert landed project-unset. Measured against the live board 2026-08-15:
+# 81 open alert tickets, all unset; the DoR drafter had already promoted 19 of
+# them into ready-shaped work, and an unset project cannot route to any checkout,
+# so those 19 were 43% of the worker's permanently-UNREACHABLE bucket.
+#
+# Asserted on the PAYLOAD, not on the returned identifier. The old fixture read
+# only the identifier back, which is why a suite of 15 cases could not see a
+# missing field in the input it never inspected.
+
+def test_a_filed_ticket_carries_the_project_of_the_alerting_repo(isolated_state, monkeypatch, tmp_path):
+    fake = FakeLinear()
+    monkeypatch.setattr(mod, "_load_linear", lambda: fake)
+    repo = tmp_path / "some-checkout"
+    repo.mkdir()
+    reg = tmp_path / "instance-registry.json"
+    reg.write_text(json.dumps([{"name": "kipi-system", "path": str(repo)}]))
+    monkeypatch.setenv("KIPI_INSTANCE_REGISTRY", str(reg))
+    monkeypatch.setenv("KIPI_ALERT_REPO_PATH", str(repo))
+
+    code, _ = mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    assert code == mod.EXIT_OK
+    assert fake.create_input.get("projectId") == "proj-kipi", (
+        "the ticket was filed with no project, so no checkout can ever route it")
+
+
+def test_the_registry_alias_decides_the_project_not_the_directory_name(
+        isolated_state, monkeypatch, tmp_path):
+    """A registry row's board name and its directory routinely differ (ASK-840).
+
+    Measured on the live board: of 81 unset alert tickets, only 33 carried a
+    `[label]` prefix that is an exact project name. `consulting` lives on the
+    board as another name entirely, so deriving from the directory would file
+    those into nothing."""
+    fake = FakeLinear()
+    fake.projects = [{"id": "proj-cons", "name": "ASK Consulting", "description": ""}]
+    monkeypatch.setattr(mod, "_load_linear", lambda: fake)
+    repo = tmp_path / "consulting"
+    repo.mkdir()
+    reg = tmp_path / "instance-registry.json"
+    reg.write_text(json.dumps(
+        [{"name": "consulting", "linear_project": "ASK Consulting", "path": str(repo)}]))
+    monkeypatch.setenv("KIPI_INSTANCE_REGISTRY", str(reg))
+    monkeypatch.setenv("KIPI_ALERT_REPO_PATH", str(repo))
+
+    mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    assert fake.create_input.get("projectId") == "proj-cons"
+
+
+def test_an_unresolvable_repo_still_gets_a_project_and_still_files(
+        isolated_state, monkeypatch, tmp_path):
+    """22 of the 81 were raised from a cwd of `/` with no repo at all.
+
+    They must not go back to being unset, and they must never be dropped: losing
+    an alert is the failure this whole path exists to prevent. The fallback is
+    the checkout this script itself runs from, which is a derivation, not a guess.
+    """
+    fake = FakeLinear()
+    monkeypatch.setattr(mod, "_load_linear", lambda: fake)
+    reg = tmp_path / "instance-registry.json"
+    reg.write_text(json.dumps([]))
+    monkeypatch.setenv("KIPI_INSTANCE_REGISTRY", str(reg))
+    monkeypatch.delenv("KIPI_ALERT_REPO_PATH", raising=False)
+    monkeypatch.setenv("KIPI_ALERT_FALLBACK_PROJECT", "kipi-system")
+
+    code, _ = mod.file_alert("[/] Meeting loop could not run: token missing", now=1000.0)
+    assert code == mod.EXIT_OK
+    assert fake.create_input.get("projectId") == "proj-kipi"
+
+
+def test_a_broken_project_lookup_never_costs_the_alert(isolated_state, monkeypatch):
+    """Same posture as the label: a ticket with no project is worth far more than
+    a dropped alert, so a lookup failure degrades rather than raises."""
+    class NoProjects(FakeLinear):
+        def graphql(self, query, variables):
+            if "projects(first" in query:
+                raise RuntimeError("no project read perms")
+            return FakeLinear.graphql(self, query, variables)
+
+    fake = NoProjects()
+    monkeypatch.setattr(mod, "_load_linear", lambda: fake)
+    code, _ = mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    assert code == mod.EXIT_OK and fake.created == 1
 
 
 def test_the_punctuation_strip_did_not_collapse_everything():

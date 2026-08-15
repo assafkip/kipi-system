@@ -197,6 +197,170 @@ def _write_state(fp: str, data: dict) -> None:
         pass
 
 
+def _registry_path() -> str:
+    """instance-registry.json, which lives at the SKELETON ROOT, three levels up
+    from this scripts/ directory. KIPI_INSTANCE_REGISTRY is the test seam."""
+    env = os.environ.get("KIPI_INSTANCE_REGISTRY")
+    if env:
+        return env
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(here, "..", "..", "..", "instance-registry.json")
+
+
+def _registry_rows() -> list:
+    """Every registry row, or [] when it cannot be read. Never raises."""
+    try:
+        with open(_registry_path(), encoding="utf-8") as fh:
+            reg = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    entries = reg.get("instances", reg) if isinstance(reg, dict) else reg
+    return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+
+
+def _linear_project_of(entry: dict) -> str:
+    """The name this row carries ON THE BOARD.
+
+    THE ALIAS IS A FIELD, NOT A GUESS -- the same rule linear-worker.sh applies
+    (ASK-840), and the same order: explicit `linear_project` first, `name`
+    second. Deriving the board name from the directory is what produced that bug,
+    and a smarter derivation would only move the day it breaks. Measured on the
+    live board 2026-08-15: of the 81 unset alert tickets, only 33 carried a
+    `[label]` prefix that is an exact project name.
+    """
+    return (entry.get("linear_project") or entry.get("name") or "").strip()
+
+
+def project_candidates(message: str) -> list[str]:
+    """Board-project names to try for this alert, best evidence FIRST.
+
+    A LIST, not one answer, and that is the load-bearing part. The first cut
+    returned a single name and the `[/]` case proved it wrong immediately: 22 of
+    the 81 unset tickets carry the prefix `[/]` (a cwd of `/`), and another 16
+    carry a worktree directory (`.wt-ask791`, `kipi-wt-ask729`, `cleanmain`).
+    Each of those is a plausible-looking label that matches no project, so
+    returning it as THE answer filed the ticket unset all over again while
+    looking like a fix. Returning candidates lets an unresolvable label fall
+    through to the fallback instead of consuming the decision.
+
+    1. KIPI_ALERT_PROJECT -- an explicit statement by the caller.
+    2. The repo PATH the alert was raised from, through the registry. This is the
+       only rung that survives a worktree or a renamed directory, which is why
+       slack-notify.sh resolves the path rather than passing its own label.
+    3. The `[label]` prefix matched against a registry row's own name. Covers a
+       caller that set KIPI_INSTANCE_NAME but no path.
+    4. The `[label]` prefix taken at face value, resolved case-insensitively
+       against the board later (`cole-gtm` is `cole-GTM` there).
+    5. The checkout THIS SCRIPT runs from. 22 of the 81 unset tickets were raised
+       from a cwd of `/` with no repo at all; the code that raised them still ran
+       out of a registered checkout, so this is a derivation and not an invention.
+    """
+    out: list[str] = []
+
+    def offer(name: str) -> None:
+        name = (name or "").strip()
+        if name and name not in out:
+            out.append(name)
+
+    offer(os.environ.get("KIPI_ALERT_PROJECT") or "")
+
+    rows = _registry_rows()
+    path = (os.environ.get("KIPI_ALERT_REPO_PATH") or "").strip()
+    if path:
+        try:
+            want = os.path.realpath(path)
+        except OSError:
+            want = ""
+        for row in rows:
+            row_path = row.get("path")
+            if not row_path:
+                continue
+            try:
+                if want and os.path.realpath(row_path) == want:
+                    offer(_linear_project_of(row))
+            except OSError:
+                continue
+
+    match = re.match(r"^\[([^\]]+)\]", message.strip())
+    label = (match.group(1).strip() if match else "")
+    if label:
+        for row in rows:
+            if (row.get("name") or "").strip().lower() == label.lower():
+                offer(_linear_project_of(row))
+        offer(label)
+
+    offer(os.environ.get("KIPI_ALERT_FALLBACK_PROJECT") or "")
+    offer(_own_checkout_project(rows))
+    return out
+
+
+def _own_checkout_project(rows: list) -> str:
+    """The board project of the checkout THIS SCRIPT lives in.
+
+    The last rung, and a derivation rather than a guess: an alert raised from a
+    cwd of `/` still came from code executing out of a registered checkout, and
+    that checkout is the one honest thing left to say about its origin.
+    """
+    try:
+        root = os.path.realpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+    except OSError:
+        return ""
+    for row in rows:
+        row_path = row.get("path")
+        if not row_path:
+            continue
+        try:
+            if os.path.realpath(row_path) == root:
+                return _linear_project_of(row)
+        except OSError:
+            continue
+    return ""
+
+
+# This file already keeps its own copies of TEAM_QUERY and LABELS_QUERY rather
+# than reaching into linear-sync for them, and this follows that shape. Reaching
+# for `ln.TEAM_PROJECTS_QUERY` was tried first and failed silently in exactly the
+# way this path must never fail: the attribute read sits inside the never-raises
+# try, so a stub without that constant returned "no project" instead of erroring,
+# and the reproducer stayed red with the fix already in place.
+PROJECTS_QUERY = """
+query($teamId: String!) {
+  team(id: $teamId) { projects(first: 250) { nodes { id name } } }
+}
+"""
+
+
+def _project_id_for(ln, team_id: str, names: list) -> str | None:
+    """First of `names` that resolves to a board project id, or None.
+
+    Matched case-insensitively on purpose: registry names and board names differ
+    only by case for real rows (`cole-gtm` vs `cole-GTM`), and a case-sensitive
+    compare would file those tickets unset -- the exact defect being fixed.
+
+    NEVER RAISES, for the same reason _owner_label_id does not: a ticket with no
+    project is worth far more than a dropped alert. The alert path exists because
+    a swallowed alert is the worst outcome available here.
+    """
+    if not names:
+        return None
+    try:
+        team = (ln.graphql(PROJECTS_QUERY, {"teamId": team_id}) or {}).get("team") or {}
+        nodes = ((team.get("projects") or {}).get("nodes")) or []
+    except Exception:
+        return None
+    by_lower = {}
+    for node in nodes:
+        key = (node.get("name") or "").strip().lower()
+        if key and key not in by_lower:
+            by_lower[key] = node.get("id")
+    for name in names:
+        found = by_lower.get(name.strip().lower())
+        if found:
+            return found
+    return None
+
+
 def _owner_label_id(ln, team_id: str) -> str | None:
     """The owner:sana label id, created once if the team lacks it.
 
@@ -283,6 +447,20 @@ def file_alert(message: str, now: float | None = None) -> tuple[int, str]:
         label_id = _owner_label_id(ln, team_id)
         if label_id:
             payload["labelIds"] = [label_id]
+
+        # A PROJECT IS ROUTING, NOT DECORATION (ASK-839). This payload carried
+        # teamId + labelIds and nothing else, so every alert landed project-unset.
+        # An unset project cannot route to any checkout: linear-worker.sh's
+        # in_this_repo() is false for it in every repo at once, so no rotation, no
+        # cursor and no clone reaches it. Measured on the live board 2026-08-15:
+        # 81 open alert tickets, all unset, and the DoR drafter had already
+        # promoted 19 of them into ready-shaped work that was therefore
+        # permanently UNREACHABLE -- 43% of that whole bucket. The `[repo]` prefix
+        # this file already writes into the TITLE was that same fact, sitting in a
+        # field no query can filter on.
+        project_id = _project_id_for(ln, team_id, project_candidates(message))
+        if project_id:
+            payload["projectId"] = project_id
 
         data = ln.graphql(ISSUE_CREATE, {"input": payload})
         issue = ((data or {}).get("issueCreate") or {}).get("issue") or {}
