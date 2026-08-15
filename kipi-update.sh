@@ -1246,6 +1246,32 @@ is_instance_wip() {
       [ -f "$instance_file" ] && cmp -s "$instance_file" "$skeleton_file"; then
     return 1
   fi
+  # AN OLDER SKELETON BLOB IS ALSO NOT WORK (sp-940bcf47, measured 2026-08-15).
+  #
+  # The byte-identical test above only recognises THIS sync's own output. An
+  # untracked file written by an EARLIER sync, differing from the current
+  # skeleton copy, looked like work-in-progress and refused the instance on
+  # every run afterwards. KTLYST_strategy sat exactly there with an untracked
+  # q-system/.q-system/scripts/merge-bypass-gate.py, and fleet-reach-audit.py
+  # reported WOULD-SYNC for it the whole time because the audit does not model
+  # this check. Real reach was 21 of 22 while the number on screen said 22.
+  #
+  # The exemption is EXACTLY as narrow as fleet-unblock's `commit` proof, and
+  # for the same reason: a founder hand-edit does not produce bytes that collide
+  # with a blob the skeleton itself once held at the same path. Anything the
+  # skeleton never wrote there is still work and still refuses.
+  #
+  # Fail closed. The helper exits 2 when it cannot decide, and only exit 0 --
+  # "the skeleton demonstrably shipped this blob here" -- excuses the file. A
+  # missing helper therefore refuses, which is the behaviour before this change.
+  local skeleton_repo_path="${4:-}"
+  if [ -n "$skeleton_repo_path" ] && [ -f "$instance_file" ] &&
+      [ -f "$SCRIPT_DIR/kipi-update-wip-check.py" ] &&
+      python3 "$SCRIPT_DIR/kipi-update-wip-check.py" \
+        --skeleton "$SCRIPT_DIR" --skeleton-path "$skeleton_repo_path" \
+        --file "$instance_file" 2>/dev/null; then
+    return 1
+  fi
   return 0
 }
 
@@ -2109,8 +2135,13 @@ because this commit is pathspec-limited." -- "${sys_add_paths[@]}" 2>&1)"; then
           source_path="$ARCHIVE_TMP/q-system/$relative"
           # No third argument: this rsync is a plain --delete with no filters,
           # so a build artifact here is content, not debris.
+          # 4th arg: the path as the SKELETON REPO spells it. The archive is
+          # `git archive HEAD` extracted with q-system/ inside, so a file the
+          # instance keeps at <prefix>/<relative> is q-system/<relative> in the
+          # skeleton. Passed per call site rather than derived inside the
+          # helper, because the plugins call site maps differently.
           if { [ -e "$source_path" ] || [ -L "$source_path" ]; } &&
-              is_instance_wip "$uf" "$source_path" ""; then
+              is_instance_wip "$uf" "$source_path" "" "q-system/$relative"; then
             echo "  ERROR: untracked WIP collides with skeleton path: $uf"
             COLLISION=1
           fi
