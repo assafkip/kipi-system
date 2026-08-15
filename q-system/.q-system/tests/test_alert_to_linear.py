@@ -520,3 +520,132 @@ def test_the_punctuation_strip_did_not_collapse_everything():
         "[a] huntkit sync BLOCKED: not a git repo",
     ]
     assert len({mod.fingerprint(m) for m in distinct}) == len(distinct)
+
+
+# --- the registry lives at the SKELETON root; this script ships to instances ---
+# ASK-839, PR #191 review round 4. The fleet updater copies q-system/ and nothing
+# at the repo root, so three-levels-up from an INSTANCE's scripts/ names a file
+# that is not there. Measured 2026-08-15 against the live registry: 24 of 25
+# instances ship this writer, 25 of 25 lack the registry, and 8 have a basename
+# that is not their board alias -- so rungs 2, 3 and 5 were dead in every instance
+# at once and rung 4 handed back a name no project carries.
+#
+# These cases load the writer FROM the copied instance tree rather than patching a
+# path, because the defect is a property of where the running copy sits.
+
+import shutil as _shutil
+
+
+def _instance_checkout(tmp_path, name):
+    """A kipi instance as the fleet updater leaves it: q-system/ copied in, and
+    no instance-registry.json at the repo root."""
+    scripts = tmp_path / name / "q-system" / ".q-system" / "scripts"
+    scripts.mkdir(parents=True)
+    _shutil.copy2(os.path.join(SCRIPTS, "alert-to-linear.py"),
+                  scripts / "alert-to-linear.py")
+    _shutil.copy2(os.path.join(SCRIPTS, "linear-sync.py"), scripts / "linear-sync.py")
+    return tmp_path / name, scripts / "alert-to-linear.py"
+
+
+def _load_at(path, tag):
+    spec = importlib.util.spec_from_file_location(f"alert_at_{tag}", str(path))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def _kipi_on_path(tmp_path, skeleton, monkeypatch):
+    """The CLI as it is actually installed: a symlink on PATH whose realpath is
+    the skeleton root (measured on this machine, /opt/homebrew/bin/kipi)."""
+    # The executable bit is load-bearing, not housekeeping: shutil.which tests
+    # X_OK, so a 0644 stand-in makes this fixture answer "no CLI on PATH" and the
+    # case would pass or fail for a reason that has nothing to do with the rung.
+    (skeleton / "kipi").write_text("#!/bin/sh\n", encoding="utf-8")
+    os.chmod(skeleton / "kipi", 0o755)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    os.symlink(str(skeleton / "kipi"), str(bindir / "kipi"))
+    monkeypatch.setenv("PATH", str(bindir))
+
+
+@pytest.fixture
+def no_registry_env(monkeypatch, tmp_path):
+    """Nothing about the real machine may decide these cases."""
+    for var in ("KIPI_INSTANCE_REGISTRY", "KIPI_ALERT_PROJECT",
+                "KIPI_ALERT_REPO_PATH", "KIPI_ALERT_FALLBACK_PROJECT"):
+        monkeypatch.delenv(var, raising=False)
+    empty_home = tmp_path / "home"
+    empty_home.mkdir()
+    monkeypatch.setenv("HOME", str(empty_home))
+    monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))
+    return empty_home
+
+
+def test_an_instance_alert_resolves_its_board_alias_through_the_cli(
+        no_registry_env, monkeypatch, tmp_path):
+    """`consulting` is `ASK Consulting` on the board. Rung 4 offers the bare
+    label and no project carries it, so the registry is the only thing that can
+    answer -- and from an instance it is only reachable off the skeleton."""
+    inst, writer = _instance_checkout(tmp_path, "consulting")
+    skel = tmp_path / "skel"
+    skel.mkdir()
+    (skel / "instance-registry.json").write_text(json.dumps({
+        "skeleton": {"path": str(skel), "linear_project": "kipi-system"},
+        "instances": [{"name": "ASK_AI_consultant",
+                       "linear_project": "ASK Consulting", "path": str(inst)}],
+    }), encoding="utf-8")
+    _kipi_on_path(tmp_path, skel, monkeypatch)
+    m = _load_at(writer, "cli")
+    got = m.project_candidates("[consulting] auto-commit left 3 file(s)")
+    assert "ASK Consulting" in got, got
+
+
+def test_a_launchd_alert_finds_the_registry_with_no_cli_on_path(
+        no_registry_env, tmp_path):
+    """3 of this repo's 5 plists set no PATH, so they inherit the minimal one and
+    /opt/homebrew is absent. The canonical-home rung is what covers them."""
+    inst, writer = _instance_checkout(tmp_path, "strategy")
+    skel = no_registry_env / "projects" / "kipi-system"
+    skel.mkdir(parents=True)
+    (skel / "instance-registry.json").write_text(json.dumps({
+        "skeleton": {"path": str(skel), "linear_project": "kipi-system"},
+        "instances": [{"name": "KTLYST_strategy", "path": str(inst)}],
+    }), encoding="utf-8")
+    m = _load_at(writer, "launchd")
+    got = m.project_candidates("[strategy] harvest failed")
+    assert "KTLYST_strategy" in got, got
+
+
+def test_an_instance_with_no_registry_anywhere_invents_nothing(
+        no_registry_env, tmp_path):
+    """THE NEGATIVE SELF-TEST. A ladder that ends in a guess is worse than the
+    dead rung it replaces: it would file every instance's alerts under one wrong
+    project and still look fixed. With no registry on any rung, the only candidate
+    left is the bare label the caller supplied."""
+    _inst, writer = _instance_checkout(tmp_path, "website")
+    m = _load_at(writer, "nothing")
+    assert m.project_candidates("[website] deploy failed") == ["website"]
+
+
+def test_a_skeleton_checkout_still_reads_the_registry_beside_it(
+        no_registry_env, tmp_path):
+    """The in-place rung stays FIRST: a skeleton checkout must read its own
+    registry, never a stale one under the canonical home path."""
+    root = tmp_path / "skelroot"
+    scripts = root / "q-system" / ".q-system" / "scripts"
+    scripts.mkdir(parents=True)
+    _shutil.copy2(os.path.join(SCRIPTS, "alert-to-linear.py"),
+                  scripts / "alert-to-linear.py")
+    _shutil.copy2(os.path.join(SCRIPTS, "linear-sync.py"), scripts / "linear-sync.py")
+    (root / "instance-registry.json").write_text(json.dumps({
+        "skeleton": {"path": str(root), "linear_project": "in-place"}}),
+        encoding="utf-8")
+    stale = no_registry_env / "projects" / "kipi-system"
+    stale.mkdir(parents=True)
+    (stale / "instance-registry.json").write_text(json.dumps({
+        "skeleton": {"path": str(root), "linear_project": "stale"}}),
+        encoding="utf-8")
+    m = _load_at(scripts / "alert-to-linear.py", "inplace")
+    got = m.project_candidates("[skelroot] auto-commit left 1 file(s)")
+    assert "in-place" in got, got
+    assert "stale" not in got, got
