@@ -98,6 +98,16 @@ def in_head(repo, path):
     return git(repo, "cat-file", "-e", f"HEAD:{path}")[0] == 0
 
 
+def head_blob(repo, path):
+    """Blob sha at HEAD for `path`, or "" when the path is not in HEAD.
+
+    Needed to tell "nothing is staged, so the index still mirrors HEAD" from
+    "somebody deliberately staged something". The index alone cannot say which.
+    """
+    rc, out, _ = git(repo, "rev-parse", f"HEAD:{path}")
+    return out.strip() if rc == 0 else ""
+
+
 class RescuedBlobs:
     """Blobs the skeleton has COMMITTED under rescued/, by sha.
 
@@ -176,6 +186,32 @@ def decide(repo, row, audit, rescued):
                 f"holds {work_sha[:12]}, which the skeleton never wrote; "
                 "committing the index would leave that edit for the next sync "
                 "to overwrite"
+            )
+        # THE MIRROR OF THE GUARD ABOVE (PR #165 review round 4, major).
+        #
+        # That one asks whether the WORKTREE is attributable. This asks the same
+        # of the INDEX, and the case it catches is the reverse: the founder
+        # STAGED their own version and the worktree happens to hold a skeleton
+        # blob. The guard above passes, `git add` then replaces the founder's
+        # staged entry with the worktree blob, and the commit SUCCEEDS -- so the
+        # unwind added in round 2 never runs, because nothing failed. The
+        # founder's staged version is committed away and gone.
+        #
+        # "Attributable" for the index means the skeleton wrote it, or nothing
+        # was staged at all -- an unstaged path still has the HEAD blob in its
+        # index, which is why this compares against HEAD rather than just
+        # checking for skeleton authorship.
+        #
+        # Scoped inside the fleet-written branch on purpose: a staged ADD is not
+        # in HEAD at all, and that case has its own rescued/ proof further down.
+        # Reproducer: test_founder_staged_content_under_a_skeleton_worktree_blob_is_refused.
+        if (in_head(repo, path) and index_sha
+                and index_sha != head_blob(repo, path)
+                and not audit_wrote(audit, path, index_sha)):
+            return "refuse", (
+                f"the index holds {index_sha[:12]}, which the skeleton never "
+                "wrote and which differs from HEAD, so the founder staged it "
+                "deliberately; committing would replace it with the worktree copy"
             )
         which = index_sha if audit_wrote(audit, path, index_sha) else work_sha
         return "commit", (

@@ -454,6 +454,44 @@ def test_a_staged_skeleton_blob_with_a_founder_worktree_edit_is_refused(world):
     assert (inst / rel).read_text() == "founder was here\n", "founder bytes lost"
 
 
+def test_founder_staged_content_under_a_skeleton_worktree_blob_is_refused(world):
+    """PR #165 review round 4, major. The MIRROR of the round-1 finding.
+
+    Round 1 was: index holds a skeleton blob, worktree holds a founder edit.
+    Guarded. This is the other way round -- the founder STAGED their own version
+    and the worktree happens to hold a skeleton blob. The round-1 guard passes,
+    because it only asks whether the WORKTREE is attributable.
+
+    Then `git add` replaces the founder's staged entry with the worktree blob and
+    the commit succeeds. Round 2's unwind restores the staged entry only when the
+    commit FAILS; on the success path the founder's staged version is committed
+    away and gone.
+
+    Both sides of a path have to be attributable, and 'attributable' for the
+    index means either the skeleton wrote it or nothing was staged at all.
+    """
+    skel, inst = world
+    rel = "plugins/prd-os/runner.py"
+    seed_skeleton_blob(skel, rel, "v1\n")
+    write(inst, rel, "old\n")
+    git(inst, "add", "-A")
+    git(inst, "commit", "-qm", "instance base")
+
+    write(inst, rel, "founder staged this\n")
+    git(inst, "add", rel)                     # index: founder's own content
+    staged_before = git(inst, "rev-parse", ":" + rel)
+    write(inst, rel, "v1\n")                  # worktree: the skeleton's blob
+
+    head_before = git(inst, "rev-parse", "HEAD")
+    rc, out = run(skel, "--apply")
+
+    assert "REFUSE" in out, out
+    assert git(inst, "rev-parse", "HEAD") == head_before, (
+        "committed over content the founder had staged\n" + out)
+    assert git(inst, "rev-parse", ":" + rel) == staged_before, (
+        "the founder's staged version was replaced by git add\n" + out)
+
+
 def test_a_refused_commit_does_not_report_success(world):
     """PR #165 review, major #2.
 
