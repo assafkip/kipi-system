@@ -524,6 +524,117 @@
     {
       "path": "q-system/.q-system/scripts/test/test-prompt-echo-not-a-review.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test-break-glass-audit.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-control-file-propagate.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-client-refusal-after-hold.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-gh-repo-scope-converge.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-gh-repo-scope-reviewer.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-gh-repo-scope-worker.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-kipi-update-plugin-excludes.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-kipi-update-source-provenance.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-kipi-update-system-state-commit.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-notify-exit-contract.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-artifact-repo-keyed.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-dry-run-labelled.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_dispatch_reachability.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_launchd_intent_verify.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_merge_bypass_gate.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_merge_bypass_gate_admin_forms.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_merge_bypass_gate_global_flags.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_merge_bypass_gate_hidden_tool.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_merge_bypass_gate_wrappers.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_spillover_promote_selection.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_spillover_ratchet.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/tests/test_fable_cap_page_deleted.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/tests/test_grounding_manifest_health.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/tests/test_token_guard_cache_race.py",
+      "runner": "python3",
+      "timeout_s": 120
+    },
+    {
+      "path": "test_dispatch_pinned.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-per-repo-concurrency.sh",
+      "runner": "bash",
+      "timeout_s": 180
+    },
+    {
+      "path": "q-system/.q-system/tests/test_capmap_scratch_and_mention.py",
+      "runner": "python3",
+      "timeout_s": 60
     }
   ],
   "required_data": [],

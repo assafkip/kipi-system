@@ -36,6 +36,16 @@ pre-commit:
     receipts-ledger:
       run: python3 q-system/.q-system/scripts/receipts-ledger-check.py
 
+    # Client names are not secrets in the credential sense, so gitleaks passes
+    # them and nothing else looked. This repo is PUBLIC (102 stars, 23 forks) and
+    # a name that reaches it cannot be recalled: rewriting history leaves the
+    # objects in every fork and reachable by SHA. Measured 2026-08-13, the list
+    # carries 0 false positives across 59 real posts and 133 lessons. The token
+    # list is LOCAL (~/.config/kipi/client-tokens), never ships, and an absent
+    # list warns and passes so a fresh clone is never blocked.
+    client-names:
+      run: python3 q-system/.q-system/scripts/client-name-guard.py --staged
+
     blocked-paths:
       run: |
         # Block .env, .envrc, .env.<env>, *.pem/*.key (incl. rotations like key.pem.old), *.jsonl,
@@ -93,6 +103,11 @@ commit-msg:
     linear-issue-ref:
       run: python3 q-system/.q-system/scripts/linear-issue-ref-check.py {1}
       fail_text: "Commit names no Linear issue. Add the id (ASK-nn) or [no-issue: reason]."
+
+    # Both client names that reached this public repo did so in commit SUBJECTS,
+    # which no content gate reads. The staged-content half lives in pre-commit.
+    client-names-msg:
+      run: python3 q-system/.q-system/scripts/client-name-guard.py --message {1}
 
 post-commit:
   commands:

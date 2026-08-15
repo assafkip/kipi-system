@@ -96,6 +96,9 @@ LOG="$STATE_DIR/linear-worker.log"
 REVIEWS_DIR="$STATE_DIR/pr-reviews"
 # Verdict semantics shared with pr-review-agent.sh -- one extractor, one gate.
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
+# THE ONE SLUG DERIVATION (ASK-738). gh binds to cwd and ignores every path
+# variable here, so every gh call below is scoped with -R from this lib.
+. "$SCRIPT_DIR/repo-slug-lib.sh"
 
 MAX_ATTEMPTS=3
 # Conflict rounds are capped SEPARATELY from failed attempts (ASK-212).
@@ -184,6 +187,21 @@ if [ ! -d "$TARGET_REPO" ]; then
 fi
 TARGET_REPO="$(cd "$TARGET_REPO" && pwd)"
 export TARGET_REPO
+# The target's slug, resolved ONCE. Every gh scope and every artifact path in
+# this script reads it from here (ASK-738).
+TARGET_SLUG="$(slug_for_repo "$TARGET_REPO" "${KIPI_SLUG_REGISTRY:-$SKEL/instance-registry.json}")"
+
+# --- WHICH REPO EVERY `gh` CALL ASKS ABOUT (ASK-738) ----------------------
+# `git -C "$TARGET_REPO"` redirects the git half of this script. It does NOT
+# redirect `gh`, which resolves its repo from the PROCESS CWD -- and
+# kipi-dispatch.sh:205 leaves that cwd in the HOME checkout. Measured: the
+# existing-PR lookup below answered about kipi-system while the work happened
+# in the target. Derived ONCE, here, and spliced into every gh call as -R.
+# Empty for a repo with no pinned remote and no origin: the calls then behave
+# exactly as they did before, which is correct only because that case is the
+# dispatcher's own checkout.
+KIPI_GH_REPO_ARGS="$(gh_repo_args "$TARGET_SLUG")"
+export KIPI_GH_REPO_ARGS
 
 export SCRIPT_DIR
 mkdir -p "$STATE_DIR"
@@ -200,21 +218,74 @@ AGENT="sana"
 # unless coreutils is installed, and the old fallback here was an empty string --
 # i.e. silently no wall clock at all, which is the runaway-agent case this exit
 # exists for. Never degrade a safety exit to a warning: implement it in bash.
+#
+# THE JOB GETS ITS OWN PROCESS GROUP, and nothing it started outlives it (Codex
+# round 3 on PR #141, major). `kill -TERM "$job"` signals ONE pid -- the
+# `bash -c` wrapper -- and the agent runs as its GRANDchild, so the wrapper died
+# on time and `claude` kept running. Worse, `wait "$job"` returns the instant
+# that wrapper dies, and the next line cancels the watchdog, so the TERM ->
+# sleep 5 -> KILL escalation never reached the process that was actually stuck.
+#
+# What that costs is not a stray process, it is a WRONG LINEAR COMMENT. The
+# leaked agent still holds the worktree, and worktrees are reused across issues
+# by design: it writes `.sana-blocked-capability` minutes later, after the next
+# dispatch has cleared the sentinels and while its own agent is running. The
+# worker reads a refusal the current issue's agent never wrote, labels the wrong
+# issue blocked:capability, and copies the previous issue's reason into Linear.
+# The clear one round earlier cannot help -- a clear cannot outrun a writer that
+# is still running.
+#
+# `set -m` is load-bearing, not decoration. Without job control a background job
+# INHERITS the worker's own process group, so `kill -- -$job` would either fail
+# (no such group) or signal the worker itself. With it, the job is the leader of
+# a group of its own and the whole tree under it can be signalled by pgid.
 run_bounded() {  # run_bounded <seconds> <cmd...>
   local secs="$1"; shift
+  set -m
   "$@" &
   local job=$!
+  set +m
   ( sleep "$secs"; kill -0 "$job" 2>/dev/null && {
-      echo "$(TS) TIMEOUT after ${secs}s; killing pid $job" >>"$LOG"
-      kill -TERM "$job" 2>/dev/null
+      echo "$(TS) TIMEOUT after ${secs}s; killing process group $job" >>"$LOG"
+      kill -TERM -"$job" 2>/dev/null
       sleep 5
-      kill -KILL "$job" 2>/dev/null
+      kill -KILL -"$job" 2>/dev/null
     } ) &
   local watchdog=$!
   wait "$job"; local rc=$?
   kill "$watchdog" 2>/dev/null   # cancel the watchdog if the job finished first
   wait "$watchdog" 2>/dev/null
+  # SYNCHRONOUS, and on the success path too: a job that exited 0 can still have
+  # left a child behind, and the caller's next act is to dispatch another agent
+  # into the same tree. run_bounded returning is the promise that the previous
+  # run is over.
+  reap_group "$job"
   return "$rc"
+}
+
+# reap_group <pgid>: return only when that process group is empty.
+#
+# `kill -0 -- -<pgid>` is the read, not `ps`: it answers "does any process in
+# this group still exist" with the same permission check the kills use. The
+# common case is an already-empty group, which costs one syscall and no wait.
+#
+# TERM first with the same 5s grace the watchdog uses -- a child mid-write gets
+# the same chance to flush it had before -- then KILL, which cannot be ignored.
+# Both loops are bounded: this runs on the worker's critical path, and a reaper
+# that can hang is a worse failure than the leak it fixes.
+reap_group() {
+  local pgid="$1" i=0
+  kill -0 -- -"$pgid" 2>/dev/null || return 0
+  echo "$(TS) reaping leftover process group $pgid" >>"$LOG"
+  kill -TERM -- -"$pgid" 2>/dev/null
+  while [ "$i" -lt 20 ] && kill -0 -- -"$pgid" 2>/dev/null; do sleep 0.25; i=$((i+1)); done
+  kill -0 -- -"$pgid" 2>/dev/null || return 0
+  kill -KILL -- -"$pgid" 2>/dev/null
+  i=0
+  while [ "$i" -lt 20 ] && kill -0 -- -"$pgid" 2>/dev/null; do sleep 0.1; i=$((i+1)); done
+  if kill -0 -- -"$pgid" 2>/dev/null; then
+    echo "$(TS) WARNING: process group $pgid survived SIGKILL" >>"$LOG"
+  fi
 }
 
 # --- FETCH ONCE, BEFORE ANY WORKTREE EXISTS ---------------------------------
@@ -280,28 +351,56 @@ fi
 # guard below rather than as a silently empty queue, but still wrong.
 #
 # Order: explicit env override, then the registry, then basename.
-REPO_PROJECT="${KIPI_LINEAR_PROJECT:-}"
-if [ -z "$REPO_PROJECT" ]; then
-  # The path being looked UP is the target; the registry doing the looking up is
-  # always the skeleton's. An instance carries no instance-registry.json, so
-  # reading it from the target would fall through to basename for every repo and
-  # quietly re-break the filter for exactly the three instances named below.
-  REPO_PROJECT="$(SKEL_PATH="$TARGET_REPO" REG="$SKEL/instance-registry.json" python3 - <<'PY' 2>/dev/null
+# ONE REGISTRY READ, TWO FACTS (ASK-729). sp-421fa27d already records that the
+# project-name derivation is duplicated between this script and
+# spillover-promote.py. Reachability needs the SAME registry, so the fix was
+# either a second reader here or one read that answers both questions. This is
+# the second: it returns this repo identity AND the set of project names whose
+# checkout exists on this machine, from a single parse.
+#
+# The path being looked UP is the target; the registry doing the looking up is
+# always the skeleton. An instance carries no instance-registry.json, so
+# reading it from the target would fall through to basename for every repo and
+# quietly re-break the filter for exactly the three instances named below.
+#
+# registry_ok is carried explicitly and is NOT the same as an empty list. An
+# unreadable registry means reachability is UNKNOWN, and reporting unknown as
+# unreachable would fire a loud false alarm on every project at once -- the
+# failure mode this issue exists to remove, pointed the other way.
+REGISTRY_FACTS="$(SKEL_PATH="$TARGET_REPO" REG="$SKEL/instance-registry.json" python3 - <<'PY' 2>/dev/null
 import json, os
 skel = os.path.realpath(os.environ["SKEL_PATH"])
+ok = True
 try:
     reg = json.load(open(os.environ["REG"]))
 except Exception:
-    reg = []
+    reg, ok = [], False
 entries = reg.get("instances", reg) if isinstance(reg, dict) else reg
+name = ""
+local = []
 for e in entries if isinstance(entries, list) else []:
-    if isinstance(e, dict) and e.get("path") and os.path.realpath(e["path"]) == skel:
-        print(e.get("name", "")); break
+    if not isinstance(e, dict):
+        continue
+    p, n = e.get("path"), e.get("name") or ""
+    if not p:
+        continue
+    if not name and os.path.realpath(p) == skel:
+        name = n
+    if n and os.path.isdir(p):
+        local.append(n)
+print(json.dumps({"name": name, "local_projects": sorted(set(local)), "ok": ok}))
 PY
 )"
-fi
+_facts_get() { printf '%s' "$REGISTRY_FACTS" | python3 -c "import json,sys;d=json.load(sys.stdin);v=d.get('$1');print('\n'.join(v) if isinstance(v,list) else v)" 2>/dev/null; }
+
+REPO_PROJECT="${KIPI_LINEAR_PROJECT:-}"
+[ -n "$REPO_PROJECT" ] || REPO_PROJECT="$(_facts_get name)"
 [ -n "$REPO_PROJECT" ] || REPO_PROJECT="$(basename "$TARGET_REPO")"
 export REPO_PROJECT
+
+LOCAL_PROJECTS="$(_facts_get local_projects)"
+REGISTRY_OK="$(_facts_get ok)"
+export LOCAL_PROJECTS REGISTRY_OK
 
 # --- pick ready issues ------------------------------------------------------
 PICKED="$(python3 - "$ONLY_ISSUE" <<'PY'
@@ -327,6 +426,9 @@ while True:
     after = p["pageInfo"]["endCursor"]
 
 repo_project = os.environ["REPO_PROJECT"]
+# Reachability, from the SAME registry read that produced repo_project (ASK-729).
+local_projects = {p for p in os.environ.get("LOCAL_PROJECTS", "").splitlines() if p}
+registry_ok = os.environ.get("REGISTRY_OK", "") == "True"
 
 def project_of(i):
     return (i.get("project") or {}).get("name")
@@ -373,6 +475,32 @@ def ready_ignoring_project(i):
             and "Definition of Ready" in (i.get("description") or ""))
 
 dropped = [i for i in issues if ready_ignoring_project(i) and not in_this_repo(i)]
+
+# TWO POPULATIONS, NOT ONE (ASK-729). Every out-of-repo issue used to be reported
+# on a single "skipped as out-of-repo" line. On 2026-08-13 that line read 45 and
+# it hid the distinction that decides whether anyone can do anything:
+#
+#   SKIPPED     the project has a checkout on this machine, just not the one this
+#               run is in. The dispatcher rotation reaches it on a later turn.
+#   UNREACHABLE no checkout exists for it anywhere here. No rotation, no cursor
+#               and no amount of waiting reaches it. Someone must clone the repo
+#               or register it before any machine can pick that work up.
+#
+# Reporting the second as the first is why 45 issues read as a filter doing its
+# job for 13 days. An unset project is UNREACHABLE, not skipped: "target unknown"
+# is not "target is elsewhere", and it needs a human to set the project.
+def has_local_checkout(i):
+    name = project_of(i)
+    return bool(name) and name in local_projects
+
+# An unreadable registry means reachability is UNKNOWN. Calling every project
+# unreachable there would be a false alarm on the whole board at once, so the
+# classification collapses back to the old single bucket and the shell says why.
+if registry_ok:
+    skipped_local = [i for i in dropped if has_local_checkout(i)]
+    unreachable = [i for i in dropped if not has_local_checkout(i)]
+else:
+    skipped_local, unreachable = dropped, []
 def held_with(label):
     return [i for i in issues
             if label in {l["name"] for l in i["labels"]["nodes"]} and in_this_repo(i)]
@@ -398,6 +526,13 @@ print(json.dumps({
     "total_open": len(issues),
     "dropped_out_of_repo": len(dropped),
     "dropped_projects": sorted({project_of(i) or "(unset)" for i in dropped}),
+    # ASK-729: the same population, split by whether anyone here can act on it.
+    "skipped_local": len(skipped_local),
+    "skipped_local_projects": sorted({project_of(i) or "(unset)" for i in skipped_local}),
+    "unreachable": len(unreachable),
+    "unreachable_projects": sorted({project_of(i) or "(unset)" for i in unreachable}),
+    "unreachable_ids": [i["identifier"] for i in unreachable],
+    "registry_ok": registry_ok,
     "deferred_needs_scope": len(deferred),
     "blocked_capability": len(blocked_cap),
     "blocked_capability_ids": [i["identifier"] for i in blocked_cap],
@@ -436,14 +571,25 @@ if [ "$PROJECT_KNOWN" = "False" ]; then
   exit 9
 fi
 
-DROPPED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("dropped_out_of_repo",0))' 2>/dev/null)"
-DROPPED_IN="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(", ".join(json.load(sys.stdin).get("dropped_projects",[])))' 2>/dev/null)"
+DROPPED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("skipped_local",0))' 2>/dev/null)"
+DROPPED_IN="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(", ".join(json.load(sys.stdin).get("skipped_local_projects",[])))' 2>/dev/null)"
+UNREACH="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("unreachable",0))' 2>/dev/null)"
+UNREACH_IN="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(", ".join(json.load(sys.stdin).get("unreachable_projects",[])))' 2>/dev/null)"
+REG_OK="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("registry_ok",True))' 2>/dev/null)"
 DEFERRED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("deferred_needs_scope",0))' 2>/dev/null)"
 
 say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf, project=$REPO_PROJECT)"
 # Accounted for, never silently dropped. These two lines are what let an operator
 # tell a working filter from a broken query without re-querying Linear by hand.
 [ "${DROPPED:-0}" != "0" ] && say "worker: $DROPPED ready-shaped issue(s) skipped as out-of-repo (other project: $DROPPED_IN) -- this checkout is $REPO_PROJECT and cannot check those out"
+# UNREACHABLE IS NOT A ROUTINE SKIP, AND NEVER SHARES ITS LINE (ASK-729). A skip
+# resolves itself on a later rotation turn; this does not resolve at all until a
+# human clones or registers the repo. It is stated separately, with the project
+# names and the count, on every run -- because the failure being fixed here is
+# 13 days of a real backlog reading as normal filter output.
+[ "${UNREACH:-0}" != "0" ] && say "worker: $UNREACH ready-shaped issue(s) UNREACHABLE: no local checkout for $UNREACH_IN -- no dispatcher on this machine can reach them until those repos are cloned and registered"
+# Fail loud rather than classify on a guess (see registry_ok in the picker).
+[ "$REG_OK" = "False" ] && say "worker: WARNING instance-registry.json could not be read, so reachability is UNKNOWN this run and every out-of-repo issue is reported as a routine skip"
 [ "${DEFERRED:-0}" != "0" ] && say "worker: $DEFERRED issue(s) held at needs-scope (refused as unexecutable; the DoR drafter re-scopes them)"
 
 BLOCKED_CAP="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("blocked_capability",0))' 2>/dev/null)"
@@ -769,7 +915,7 @@ arm_automerge() {
   # to tell the operator who merges this PR and cannot re-probe without becoming
   # a second reader of one input; asserting instead is what put "no human merge
   # needed" on PRs nothing had armed.
-  record_automerge "$REVIEWS_DIR/pr-$pr.automerge" "$AUTOMERGE"
+  record_automerge "$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$pr").automerge" "$AUTOMERGE"
   return 0
 }
 
@@ -899,16 +1045,17 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
   # BEFORE the claim and the Linear progress note on purpose -- a "Picked up"
   # note on a permanent Linear object followed by an immediate skip is a false
   # alarm, and false alarms train the reader to ignore the real notes.
-  EXISTING_PR="$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
+  # shellcheck disable=SC2086  # unquoted on purpose: empty must expand to nothing
+  EXISTING_PR="$(gh pr list $KIPI_GH_REPO_ARGS --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
   REWORK=""
   CONFLICT_ROUND=""
   DRIFT_ROUND=""
   if [ -n "$EXISTING_PR" ]; then
-    PR_VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$EXISTING_PR.verdict.json")"
+    PR_VERDICT="$(verdict_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$EXISTING_PR")")"
     if [ -z "$PR_VERDICT" ]; then
       # Fallback for PRs reviewed before the verdict record existed: extract
       # from the newest review .md with the SAME extractor the reviewer uses.
-      LATEST_REVIEW="$(ls -t "$REVIEWS_DIR/pr-$EXISTING_PR-"*.md 2>/dev/null | head -1)"
+      LATEST_REVIEW="$(ls -t "$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$EXISTING_PR")-"*.md "$REVIEWS_DIR/pr-$EXISTING_PR-"*.md 2>/dev/null | head -1)"
       [ -n "$LATEST_REVIEW" ] && PR_VERDICT="$(extract_verdict "$LATEST_REVIEW")"
     fi
     # MERGEABILITY IS HALF THE GATE (ASK-212). Read once, through the shared lib,
@@ -929,7 +1076,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     #
     # APPENDED, NEVER INSERTED: $MERGE_STATE keeps argument 2. Reordering it would
     # silently stop ASK-212's rebase rounds from ever firing again.
-    REVIEWED_SHA="$(head_sha_from_record "$REVIEWS_DIR/pr-$EXISTING_PR.verdict.json")"
+    REVIEWED_SHA="$(head_sha_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$EXISTING_PR")")"
     CURRENT_SHA="$(pr_head_sha "$EXISTING_PR")"
     GATE_NOTE="$(rework_gate "$PR_VERDICT" "$MERGE_STATE" "$REVIEWED_SHA" "$CURRENT_SHA")"; GATE=$?
     [ -n "$GATE_NOTE" ] && say "$GATE_NOTE"
@@ -1397,6 +1544,30 @@ Work here. Never `cd` to $TARGET_REPO and never switch this branch -- the founde
 Anything real you find and are not fixing: capture it, never just mention it:
   python3 $SKEL/plugins/prd-os/scripts/prd_runner.py spillover add --source $ISSUE --desc \"...\""
 
+  # CLEAR BEFORE DISPATCH, so presence AFTER the run means exactly one thing:
+  # THIS run wrote it (Codex round 2 on PR #141, major).
+  #
+  # The sentinel protocol always assumed that and never established it. The
+  # consumption below deletes the file, but only on a run that REACHES it -- a
+  # SIGKILL, a timeout, a slept laptop or a reboot in the window between the
+  # agent writing the sentinel and the worker reading it leaves the file in a
+  # worktree that is reused across runs by design. The next issue dispatched
+  # into that tree is then blocked by a refusal about a different issue, and its
+  # Linear comment carries the other issue's reason text.
+  #
+  # UNTIL NOW AN ACCIDENT COVERED HALF OF IT: a leftover sentinel was untracked,
+  # so `git status --porcelain` read the tree dirty and position_tree_on_pr_head
+  # declined the round. Gitignoring the sentinels (the fix one round earlier on
+  # this same branch) makes them invisible to `status`, so the tree reads clean
+  # and the round proceeds. That is why the fix is here and not a restored
+  # dirty-tree wedge: the wedge only ever stalled the issue, and it depended on
+  # a side effect of the sentinels being un-ignored, which is the property that
+  # let one get committed in the first place.
+  #
+  # `.codex-blocked-capability` already had exactly this clear immediately
+  # before the Codex dispatch. This is the same move at the Sana dispatch, so
+  # both runners establish the freshness their own readers assume.
+  rm -f "$TREE/.sana-needs-scope" "$TREE/.sana-blocked-capability"
   if run_bounded "$TIMEOUT_SECONDS" bash -c "cd '$TREE' && KIPI_AGENT='$AGENT' claude -p \"\$1\" </dev/null >>'$LOG' 2>&1" _ "$PROMPT"; then
     say "ok $ISSUE"
     python3 "$SYNC" progress "$ISSUE" "Worker run completed. See the branch/PR for the diff." \
@@ -1796,7 +1967,7 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # Read back the verdict RECORD the reviewer just wrote (never re-grep the
     # review prose) and state what happens next in plain terms. Rework itself
     # fires on the NEXT run, through the severity-floor gate above.
-    FINAL_VERDICT="$(verdict_from_record "$REVIEWS_DIR/pr-$PR_NUM.verdict.json")"
+    FINAL_VERDICT="$(verdict_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR_NUM")")"
     # RE-GATE THE RECORD BEFORE REPORTING ON IT (PR #30 review round 2, major 3).
     # The reviewer above can fail -- it is a `|| say WARN` line, not a hard stop --
     # and when it does, this read returns the SAME record the gate at the top of
@@ -1810,7 +1981,7 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # so the values from the top of the loop describe a state that no longer
     # exists. The gate is the ONE reader of the comparison -- deriving it here
     # would be a second reader with drifting semantics.
-    FINAL_REVIEWED_SHA="$(head_sha_from_record "$REVIEWS_DIR/pr-$PR_NUM.verdict.json")"
+    FINAL_REVIEWED_SHA="$(head_sha_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR_NUM")")"
     FINAL_CURRENT_SHA="$(pr_head_sha "$PR_NUM")"
     # AND THE GATE'S NOTE IS SAID, NOT SWALLOWED (PR #30 review round 3, minor 2).
     # converge.sh's own call site states the rule this line broke: "Swallowing it

@@ -652,17 +652,18 @@ def test_escalations_stop_at_the_cap_and_page_once(actor, env):
     assert REQUEST_NOTE not in r.stderr, "escalated past the cap"
     assert "cap" in r.stderr.lower()
 
-    log = settle(lambda: open(env["_notify_log"]).read()
-                 if os.path.exists(env["_notify_log"]) else "")
-    assert "stuck" in log.lower(), f"the founder was not paged at the cap: {log!r}"
+    # THE CAP MUST NOT PAGE (ASK-504). This assertion was INVERTED until
+    # 2026-08-08: it required a page, so the suite pinned the noise as correct
+    # and the defect could never be "fixed" without turning the suite red. The
+    # cap path returns before call_fable, so that page was always content-free
+    # (6/6 capped ledger rows had diagnosis None).
+    settle(lambda: None, timeout=2.0)
+    log = open(env["_notify_log"]).read() if os.path.exists(env["_notify_log"]) else ""
+    assert log == "", f"the cap paged the founder with no diagnosis to carry: {log!r}"
     assert quiet_after_cap(env), "the model was called past the cap"
 
-    # a fourth block must not page again — one page per episode, not per call
-    seed(actor, edit_targets={"/tmp/spiral-target.py": EDIT_FAIL_LIMIT - 1},
-         fable_escalations=2, fable_capped_notified=True)
-    run_guard(edit_payload(actor), e)
-    settle(lambda: None, timeout=2.0)
-    assert open(env["_notify_log"]).read().count("\n") == 1, "paged twice"
+    # what the cap DOES still do: refuse, and leave an auditable row.
+    assert settled_rows(env)[-1]["capped"] is True, "the cap episode went unrecorded"
 
 
 def test_cap_row_does_not_claim_a_page_that_was_never_sent(actor, env, tmp_path):
@@ -687,6 +688,12 @@ def test_cap_row_does_not_claim_a_page_that_was_never_sent(actor, env, tmp_path)
     del e["KIPI_FABLE_NOTIFY_CMD"]          # use the real slack-notify.sh
     e["HOME"] = str(tmp_path / "emptyhome")
     e["KIPI_SLACK_WEBHOOK"] = ""
+    # Every input to notify_channel_configured has to be pinned here, or this
+    # asserts nothing. KIPI_ALERT_CAPTURE is one since ASK-746 (the channel is
+    # Linear now, and a capture file is a real destination), and it is inherited
+    # from the caller's environment -- so an operator running the suite with a
+    # capture set turned this red while the code was fine. Measured 2026-08-14.
+    e["KIPI_ALERT_CAPTURE"] = ""
     e["KIPI_FABLE_CAP"] = "1"
     os.makedirs(e["HOME"], exist_ok=True)
 
@@ -709,9 +716,13 @@ def test_cap_row_does_not_claim_a_page_that_was_never_sent(actor, env, tmp_path)
 
 
 def test_cap_row_records_delivery_when_a_channel_exists(actor, env):
-    """The paired positive. Without it the assertion above would still pass if
-    notify_delivered were hardcoded False, which would make the field useless in
-    the one case it exists to report."""
+    """A CONFIGURED CHANNEL IS STILL NOT PAGED (ASK-504).
+
+    This is the case that actually reaches the founder's phone, so it is the one
+    worth pinning: a working webhook must NOT turn the cap into a page. The row
+    still reports the channel as configured, because that is a true fact about
+    the machine and suppressing it would hide why no page went out.
+    """
     e = guard_env(env)
     e["KIPI_FABLE_CAP"] = "1"
     seed(actor, edit_targets={"/tmp/spiral-target.py": EDIT_FAIL_LIMIT - 1},
@@ -721,13 +732,14 @@ def test_cap_row_records_delivery_when_a_channel_exists(actor, env):
 
     row = settled_rows(env)[0]
     assert row["capped"] is True
-    assert row["notify_channel_configured"] is True
-    assert row["notify_attempted"] is True
-    assert row["notify_exit"] == 0
-    assert row["notify_delivered"] is True
-    log = settle(lambda: open(env["_notify_log"]).read()
-                 if os.path.exists(env["_notify_log"]) else "")
-    assert "stuck" in log.lower()
+    assert row["notify_channel_configured"] is True, \
+        "the stub channel is not wired, so 'no page' here would prove nothing"
+    assert row["notify_attempted"] is False
+    assert row["notify_delivered"] is False
+    assert "ASK-504" in (row["notify_note"] or ""), "the row must say why no page"
+    settle(lambda: None, timeout=2.0)
+    log = open(env["_notify_log"]).read() if os.path.exists(env["_notify_log"]) else ""
+    assert log == "", f"a configured channel still got paged: {log!r}"
 
 
 def quiet_after_cap(env, grace=2.0):

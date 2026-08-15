@@ -79,8 +79,8 @@ ANTIPATTERN_TEMPLATES = {
 ACCEPTED_SEVERITIES = {"blocker", "major"}
 # Every source that represents a real independent review pass, not just Codex's
 # standard one. Was the single literal "codex-review", which silently dropped
-# `codex-adversarial` too. Found by adversarial review 2026-07-26: with Codex
-# out of credits until 2026-08-24, 100% of reviews are `claude-*`, so this loop
+# `codex-adversarial` too. Found by adversarial review 2026-07-26: during a spell
+# when Codex was unavailable, 100% of reviews were `claude-*`, so this loop
 # was discarding every finding and printing "Nothing to learn from this round"
 # -- a false claim, not an empty one.
 ACCEPTED_SOURCES = (

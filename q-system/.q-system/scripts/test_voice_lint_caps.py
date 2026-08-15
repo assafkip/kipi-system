@@ -172,5 +172,91 @@ class RuleIsBlocking(unittest.TestCase):
         self.assertNotIn("capitalization", voice_lint.WARN_RULES)
 
 
+class RepairFirstFixesProseAndLeavesIdentifiersAlone(unittest.TestCase):
+    """The repair-first contract (founder 2026-08-03, restated 2026-08-10:
+    "the rule was that you dont reject - you fix until it can come out").
+
+    Two defects hide under one rule and need OPPOSITE treatments. Both halves are
+    asserted here, because a repairer that only does one of them is the bug: fixing
+    identifiers corrupts tool names, and refusing to fix prose burns the retry
+    budget until the job ships nothing.
+    """
+
+    def test_a_genuine_lowercase_english_sentence_is_REPAIRED(self):
+        text = "The form is live.\n\nthanks for sending it over this morning.\n"
+        repaired, fixed, left = voice_lint.repair_capitalization(text)
+        self.assertIn("Thanks for sending", repaired)
+        self.assertEqual(fixed, ["thanks"])
+        self.assertEqual(left, [])
+
+    def test_an_identifier_is_LEFT_ALONE_never_capitalized(self):
+        """The negative half. Capitalizing a tool name corrupts it, which is a worse
+        outcome than the block it was trying to avoid."""
+        text = ("Today's AI news.\n\n"
+                "pi-from-scratch: a working coding agent in 600 lines.\n\n"
+                "phone-harness: native iPhone control for a coding agent.\n")
+        repaired, fixed, left = voice_lint.repair_capitalization(text)
+        self.assertIn("pi-from-scratch:", repaired)
+        self.assertIn("phone-harness:", repaired)
+        self.assertNotIn("Pi-from-scratch", repaired)
+        self.assertNotIn("Phone-harness", repaired)
+        self.assertEqual(fixed, [])
+        self.assertEqual(sorted(left), ["phone-harness", "pi-from-scratch"])
+
+    def test_BOTH_in_one_file_are_split_correctly(self):
+        """The case that proves the split is real rather than a global on/off."""
+        text = ("Today's AI news.\n\n"
+                "pi-from-scratch: a working coding agent.\n\n"
+                "thanks for reading this roundup.\n")
+        repaired, fixed, left = voice_lint.repair_capitalization(text)
+        self.assertIn("pi-from-scratch:", repaired)
+        self.assertIn("Thanks for reading", repaired)
+        self.assertEqual(fixed, ["thanks"])
+        self.assertEqual(left, ["pi-from-scratch"])
+
+    def test_repair_actually_CLEARS_the_block_it_was_repairing(self):
+        """End to end: the whole point is that the gate stops holding afterwards.
+
+        Without this the repairer could 'fix' something the checker still flags and
+        the loop would keep dying with a green-looking repair step.
+        """
+        text = "The form is live.\n\nthanks for sending it over.\n"
+        self.assertTrue(lint_text(text), "control: it must block BEFORE repair")
+        repaired, _, _ = voice_lint.repair_capitalization(text)
+        self.assertFalse(lint_text(repaired), "it must be clean AFTER repair")
+
+    def test_repair_does_not_touch_a_file_it_cannot_improve(self):
+        text = "The form is live.\n\npi-from-scratch: a coding agent.\n"
+        repaired, fixed, _ = voice_lint.repair_capitalization(text)
+        self.assertEqual(repaired, text, "an identifier-only file is returned byte-identical")
+        self.assertEqual(fixed, [])
+
+
+class TheFixModeExitCodeIsUsable(unittest.TestCase):
+    """Scar 2026-08-10: --fix did not exist, the call hit the usage branch and
+    exited 1, and make_social.py discarded the result. A repair step that never ran
+    once looked exactly like one that worked, for a week."""
+
+    def _tmp(self, text):
+        import tempfile
+        path = Path(tempfile.mkdtemp()) / "draft.md"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_fix_mode_exits_0_when_it_repairs(self):
+        path = self._tmp("The form is live.\n\nthanks for sending.\n")
+        self.assertEqual(voice_lint.fix_mode(str(path)), 0)
+        self.assertIn("Thanks for sending", path.read_text())
+
+    def test_fix_mode_exits_0_when_there_is_NOTHING_to_repair(self):
+        """"Nothing to fix" is success. A caller treating it as failure would hold
+        every clean draft, which is the opposite of repair-first."""
+        path = self._tmp("The form is live.\n\nIt went out this morning.\n")
+        self.assertEqual(voice_lint.fix_mode(str(path)), 0)
+
+    def test_fix_mode_exits_1_on_a_real_fault(self):
+        self.assertEqual(voice_lint.fix_mode("/nonexistent/draft.md"), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

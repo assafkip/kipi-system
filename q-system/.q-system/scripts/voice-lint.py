@@ -152,6 +152,29 @@ LINE_PREFIX_RE = re.compile(r"^[\s>]*(?:#{1,6}\s+)?(?:(?:[-*+]|\d+[.)])\s+)?[*_]
 URL_LINE_RE = re.compile(r"^\s*(?:https?://|www\.|!?\[)")
 LIST_OR_HEADING_RE = re.compile(r"^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)")
 TABLE_ROW_RE = re.compile(r"^\s*\|")
+# A code-ish identifier: two or more lowercase alphanumeric segments joined by a
+# hyphen or an underscore. Repo slugs, package names, CLI tools, skill names.
+#
+# THIS IS THE REPAIRER'S "LEAVE IT ALONE" TEST AND NOTHING ELSE. It does not exempt
+# anything from the capitalization CHECK -- `check_capitalization` is untouched and
+# every channel still blocks on a lowercase sentence start exactly as before.
+#
+# WHY THE SPLIT (2026-08-10, founder-directed): two different defects hide under one
+# rule and they need opposite treatments. Conflating them is why this rule kept
+# burning the retry budget.
+#
+#   - A correctly-lowercase IDENTIFIER ('pi-from-scratch', 'phone-harness',
+#     'reverse-skill'). Capitalizing it CORRUPTS the tool's name, so it must never be
+#     repaired. What it needs is a lane-level relaxation, which lives in the send
+#     path's registry (voice_send_gate.DIGEST_DOWNGRADE), not in this fleet linter.
+#   - A genuine lowercase ENGLISH sentence start. One correct answer exists and a
+#     machine can produce it, so it is repaired in place and never costs a
+#     regeneration.
+#
+# A shape, not a name list: a list needs an edit for every new tool, which is the
+# same outage one release later.
+CODE_ISH_TOKEN_RE = re.compile(r"^[a-z0-9]+(?:[-_][a-z0-9]+)+$")
+
 # "i" alone. i.e. is excluded; inline code is already stripped upstream.
 BARE_I_RE = re.compile(r"\bi\b(?!\.e\.)")
 # A period that ends a sentence, not one inside an abbreviation or a decimal.
@@ -737,6 +760,71 @@ def check_rhetorical_qa(text):
     return violations
 
 
+_LOWERCASE_START_RE = re.compile(r"sentence starts lowercase: \'([^\']+)\'")
+
+
+def repair_capitalization(text):
+    """(repaired_text, [words_fixed], [words_left_alone]). Pure: no file IO.
+
+    REPAIR-FIRST (founder 2026-08-03: "we need to fix that earlier in the loop so
+    things get capitalized and not blocked ... and not continuously blocked because
+    the capitalization doesn't work", restated 2026-08-10: "the rule was that you
+    dont reject - you fix until it can come out").
+
+    That directive lived for a week as a CODE COMMENT above a call to a `--fix` mode
+    that did not exist, whose exit code was discarded. The loop quietly went back to
+    reject-and-regenerate and nobody could see it. This is the executable.
+
+    It repairs exactly what `check_capitalization` FLAGS -- the violation list is the
+    input -- so the repairer can never disagree with the checker about what a
+    sentence start is. Two derivations of one rule is how a repair loop starts fixing
+    things the gate does not care about and missing the ones it does.
+
+    It edits by LINE NUMBER, which `strip_code_preserving_lines` preserves on
+    purpose, and never by character offset, which that function does NOT preserve
+    (it blanks fences to newlines and swaps inline code for a different-length
+    token). An offset-based repair would land in the wrong place in any file
+    containing a code fence.
+
+    SCOPED to the first flagged word on its line. A mid-line sentence start is left
+    for the gate rather than rewritten, because editing inside a line is where a URL
+    or a code span would get corrupted, and a repairer that is sometimes wrong is
+    worse than one that is sometimes silent.
+    """
+    lines = text.split("\n")
+    fixed, left = [], []
+    for violation in check_capitalization(text):
+        found = _LOWERCASE_START_RE.search(violation.get("detail", ""))
+        if not found:
+            continue
+        word = found.group(1)
+        # THE SPLIT. An identifier is correct as written; capitalizing it would
+        # corrupt a tool name, which is a worse outcome than the block.
+        if CODE_ISH_TOKEN_RE.match(word):
+            left.append(word)
+            continue
+        index = violation.get("line", 0) - 1
+        if not 0 <= index < len(lines):
+            continue
+        pattern = re.compile(r"(?<![\w'-])" + re.escape(word) + r"(?![\w'-])")
+        replaced, count = pattern.subn(word[0].upper() + word[1:], lines[index], 1)
+        if count:
+            lines[index] = replaced
+            fixed.append(word)
+    return "\n".join(lines), fixed, left
+
+
+def fix_file(file_path):
+    """Repair casing in place. Returns (fixed, left_alone). Writes only on a change."""
+    with open(file_path, encoding="utf-8") as handle:
+        text = handle.read()
+    repaired, fixed, left = repair_capitalization(text)
+    if repaired != text:
+        with open(file_path, "w", encoding="utf-8") as handle:
+            handle.write(repaired)
+    return fixed, left
+
+
 def lint_file(file_path):
     try:
         text = Path(file_path).read_text(encoding="utf-8")
@@ -831,11 +919,39 @@ def cli_mode(file_path):
     sys.exit(2 if blocking else 0)
 
 
+def fix_mode(file_path):
+    """`--fix`: repair what can be repaired, report what was deliberately not.
+
+    Exit 0 on success, whether or not anything needed repairing -- "nothing to fix"
+    is a success, and a caller that treats it as failure would hold every clean
+    draft. Exit 1 only when the file cannot be read or written, which is a real
+    fault the caller must see. Scar 2026-08-10: this mode did not exist, the call
+    hit the usage branch, exited 1, and the caller discarded it, so a repair step
+    that never ran once looked identical to one that worked.
+    """
+    try:
+        fixed, left = fix_file(file_path)
+    except OSError as exc:
+        print(f"voice-lint --fix: cannot repair {file_path}: {exc}", file=sys.stderr)
+        return 1
+    if fixed:
+        print(f"voice-lint --fix: capitalized {len(fixed)} sentence start(s): "
+              f"{', '.join(fixed)}")
+    if left:
+        print(f"voice-lint --fix: left {len(left)} identifier(s) alone (correct as "
+              f"written): {', '.join(left)}")
+    if not fixed and not left:
+        print(f"voice-lint --fix: nothing to repair ({file_path})")
+    return 0
+
+
 if __name__ == "__main__":
     if len(sys.argv) == 1:
         hook_mode()
     elif len(sys.argv) == 2:
         cli_mode(sys.argv[1])
+    elif len(sys.argv) == 3 and sys.argv[1] == "--fix":
+        sys.exit(fix_mode(sys.argv[2]))
     else:
-        print("Usage: voice-lint.py <file_path>", file=sys.stderr)
+        print("Usage: voice-lint.py [--fix] <file_path>", file=sys.stderr)
         sys.exit(1)
