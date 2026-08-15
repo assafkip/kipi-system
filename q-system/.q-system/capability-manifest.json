@@ -486,6 +486,11 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_dispatch_alias_reachability.py",
+      "runner": "python3",
+      "timeout_s": 180
+    },
+    {
       "path": "q-system/.q-system/scripts/test_evidence_ledger.py",
       "runner": "python3"
     },

@@ -26,6 +26,7 @@
     },
     {
       "name": "ASK_AI_consultant",
+      "linear_project": "ASK Consulting",
       "path": "/Users/assafkipnis/projects/consulting",
       "subtree_prefix": "q-system",
       "instance_q_dir": "q-consult",
@@ -110,6 +111,7 @@
     },
     {
       "name": "gtm-partner",
+      "linear_project": "cole-GTM",
       "path": "/Users/assafkipnis/projects/cole-gtm",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,

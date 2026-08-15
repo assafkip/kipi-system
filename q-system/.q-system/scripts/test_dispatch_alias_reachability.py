@@ -219,3 +219,38 @@ def test_resolved_name_does_not_promote_a_client_repo_into_the_queue(client_repo
         f"a client repo can never be reached by a later rotation turn: {skipped}")
     assert "Board Side Name" not in _line(out, "UNREACHABLE"), (
         "the checkout exists; calling it unreachable sends the operator to clone it")
+
+
+def test_digest_can_see_the_refused_line(client_repo):
+    """A third bucket nobody surfaces is the state this issue started in.
+
+    The daily digest is the one place the founder reads this, and its patterns are
+    matched against REAL worker output rather than a hand-typed sample -- a sample
+    would only prove the pattern agrees with my idea of the wording. sp-123bc141
+    already records the same gap for the DISPATCHER refusal line, which is a
+    different producer and stays captured rather than fixed here.
+    """
+    digest = SCRIPTS / "daily-linear-digest.py"
+    if not digest.exists():
+        pytest.skip("daily-linear-digest.py not present in this checkout")
+
+    import re
+    pats = re.findall(r're\.compile\(r"([^"]+)"\)', digest.read_text())
+    assert pats, "no BLOCKED_PATTERNS found in daily-linear-digest.py"
+
+    line = _line(client_repo(), "REFUSED by preflight")
+    assert line, "worker wrote no REFUSED line"
+    assert any(re.search(p, line) for p in pats), (
+        "the digest recognises no pattern for the worker's REFUSED line, so the "
+        f"third bucket stays invisible in the daily report:\n  {line}")
+
+
+if __name__ == "__main__":
+    # THE MANIFEST RUNNER IS `python3 <file>`, AND THE ALLOWED SET IS python3|bash
+    # (capability-gate.py:127). A pytest module with no __main__ collects nothing
+    # under that runner and exits 0, so the manifest reports coverage that never
+    # ran -- sp-bbdcf57b, verified across 12 declared tests. Fixing those twelve is
+    # not this issue; not adding a thirteenth is free, so this file runs itself.
+    import sys
+    raise SystemExit(subprocess.call(
+        [sys.executable, "-m", "pytest", "-q", os.path.abspath(__file__)]))

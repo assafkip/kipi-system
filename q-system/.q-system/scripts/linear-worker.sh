@@ -669,12 +669,20 @@ fi
 # before any network call, so every client repo costs a fork and nothing else.
 # The handful that get past it pay a few gh calls once per run, not per issue.
 PREFLIGHT="$SCRIPT_DIR/repo-preflight.sh"
+# UNIT SEPARATOR, NOT TAB. Tab is an IFS WHITESPACE character, so bash collapses
+# runs of it however IFS is set -- and an unpinned row has an EMPTY remote, which
+# is the common case here (only two registry rows pin one). Measured with a probe
+# on a 4-field row whose third field was empty: read landed the COUNT in $_remote
+# and left $_cnt unset, so every reachable project scored 0 issues and both report
+# lines below vanished entirely. \037 is not IFS whitespace, so an empty field
+# stays an empty field. kipi-dispatch.sh:640 reads its rotation rows the same way
+# and carries the same latent hole (captured as spillover, not fixed here).
 REACH_ROWS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys
 for r in json.load(sys.stdin).get("reachable_rows", []):
-    print("\t".join([r.get("project",""), r.get("path",""), r.get("remote",""), str(r.get("count",0))]))' 2>/dev/null)"
+    print("\037".join([r.get("project",""), r.get("path",""), r.get("remote",""), str(r.get("count",0))]))' 2>/dev/null)"
 
 DROPPED=0; DROPPED_IN=""; REFUSED_N=0; REFUSED_IN=""
-while IFS="$(printf '\t')" read -r _proj _path _remote _cnt; do
+while IFS=$'\037' read -r _proj _path _remote _cnt; do
   [ -n "${_proj:-}" ] || continue
   _cnt="${_cnt:-0}"
   # No path means no registry row backs this project (the unreadable-registry
