@@ -319,6 +319,25 @@ set -e
 ok "an attempt the worker already recorded is not charged twice"
 unset REAL_LEDGER ISSUE_UNDER_TEST
 
+# AN ATTEMPT THAT WAS NOT PERSISTED DID NOT HAPPEN (PR #192 review, major).
+# The first cut of the fix above ended its bump in `|| true`, so an unwritable
+# ledger became a silent success: counter unmoved, run reports the ordinary
+# exit-7, and the retry-forever bug returns with a fix in place that reads as
+# working. The cap keys on this file; if the write fails the cap cannot trip, so
+# that case gets its own exit code instead of blending into the no-PR case the
+# dispatcher expects to see repeatedly.
+# A DIRECTORY where the ledger file belongs is the portable unwritable path --
+# no chmod, no root, and it fails the same way on every platform.
+rm -rf "$ATT"; mkdir -p "$ATT"
+echo "" > "$FAKE_PR_FILE"; echo "0" > "$FAKE_ROUND_FILE"
+export FAKE_SEQ="REQUEST CHANGES;sha1"
+set +e; bash "$CONV" --issue ASK-T835 --max-rounds 4 >"$WORK/out" 2>&1; RC=$?; set -e
+[ "$RC" = "8" ] \
+  || fail "an unrecordable attempt must exit 8, not blend into exit-7: got rc=$RC"
+grep -q 'exit-8' "$WORK/out" || fail "exit-8 produced no operator-readable line"
+ok "a ledger that cannot be written stops the run loudly, it is not swallowed"
+rm -rf "$ATT"
+
 # --- wiring ------------------------------------------------------------------
 grep -q 'pr-verdict-lib.sh' "$CONV" || fail "converge.sh must use the shared verdict lib"
 grep -q 'rework_gate'       "$CONV" || fail "converge.sh must gate on rework_gate, not its own regex"

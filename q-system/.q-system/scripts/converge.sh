@@ -783,9 +783,22 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # it: a correctly-refused issue is labelled and left, never marked stuck.
     ATT_AFTER="$(attempt_count "$ISSUE")"
     if [ "$ATT_AFTER" = "$ATT_BEFORE" ]; then
-      python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$ISSUE" \
-        "converge stopped at exit-7: no PR on $BRANCH after round $ROUND (worker rc=$WRC, recorded nothing itself)" \
-        >/dev/null 2>&1 || true
+      # A FAILED BUMP IS NOT A DETAIL TO SWALLOW (PR #192 review, major).
+      # The first cut ended this call in `|| true`. That converts an unwritable
+      # ledger into a silent success, the counter stays put, and the retry-forever
+      # bug this whole change closes comes straight back -- now with a fix in
+      # place that reads as working. Reproduced by the reviewer against a ledger
+      # path that cannot be written: before=0 after=0 final=0, branch reported
+      # success. An attempt that was not PERSISTED did not happen, so the run
+      # says so and stops on its own exit code rather than blending into the
+      # ordinary no-PR case that the dispatcher expects to see repeatedly.
+      if ! python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$ISSUE" \
+           "converge stopped at exit-7: no PR on $BRANCH after round $ROUND (worker rc=$WRC, recorded nothing itself)" \
+           >>"$LOG" 2>&1; then
+        say "STOP exit-8: could not record the attempt in $ATTEMPTS. The 3-attempt cap keys on that file, so it cannot trip while the write fails and this issue would retry forever. Fix the ledger before re-dispatching; see $LOG"
+        bash "$NOTIFY" "converge $ISSUE: attempts ledger unwritable -- the retry cap is not enforceable until it is fixed" 2>/dev/null || true
+        exit 8
+      fi
     fi
     say "STOP exit-7: no PR on $BRANCH after round $ROUND (worker rc=$WRC). Sana could not open one; see $LOG"
     bash "$NOTIFY" "converge $ISSUE: stopped, no PR after round $ROUND" 2>/dev/null || true
