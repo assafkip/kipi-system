@@ -232,6 +232,56 @@ def decide(repo, row, audit, rescued):
     return "refuse", f"kind={row['kind']}; not attributable to the fleet"
 
 
+def plan_for_instance(repo, rows, audit, rescued):
+    """One verdict per PATH, strictest wins. Returns [(action, path, reason)].
+
+    THE STRUCTURAL FIX the PR #165 round-1 reviewer asked for, done after round 6
+    rather than after round 1 -- and rounds 1 and 4 are both what not doing it
+    cost. Those two findings were the SAME defect seen from opposite sides:
+    round 1 was an unattributable worktree under an attributable index, round 4
+    the mirror. Each got its own guard inside decide(). A third asymmetry would
+    have needed a third.
+
+    The cause is that a single path can produce SEVERAL rows -- audit_instance
+    reports the staged state and the worktree state separately -- and decide()
+    only ever saw one row at a time. So each row was judged on its own half of
+    the truth, and whichever half looked attributable won. Reproduced in the
+    round-4 fixture: one file, two rows, "acted on 2 path(s)" for a single path
+    (sp-511e994a).
+
+    Judging the PATH instead of the ROW makes the asymmetry unrepresentable:
+
+      any row refuses            -> the path refuses, carrying every reason
+      rows disagree on an action -> refuse; the tool cannot be sure, and this
+                                    writes to 22 repos
+      all rows agree             -> that action, ONCE
+
+    The per-side guards inside decide() stay. They are now belt and braces
+    rather than the only thing standing between a founder's staged edit and a
+    commit, and each still has its own reproducer from the round it came from.
+    """
+    by_path = {}
+    for row in rows:
+        by_path.setdefault(row["path"], []).append(row)
+
+    plan = []
+    for path, path_rows in by_path.items():
+        verdicts = [decide(repo, row, audit, rescued) for row in path_rows]
+        refusals = [reason for action, reason in verdicts if action == "refuse"]
+        if refusals:
+            plan.append(("refuse", path, "; ".join(dict.fromkeys(refusals))))
+            continue
+        actions = {action for action, _ in verdicts}
+        if len(actions) > 1:
+            plan.append(("refuse", path, (
+                "this path produced conflicting verdicts across its staged and "
+                f"worktree rows ({', '.join(sorted(actions))}); refusing rather "
+                "than picking one")))
+            continue
+        plan.append((verdicts[0][0], path, verdicts[0][1]))
+    return plan
+
+
 def audit_wrote(audit, path, sha):
     return audit.SKEL_BLOBS.wrote(path, sha) if sha else False
 
@@ -389,10 +439,7 @@ def main():
         if result["verdict"] not in ("BLOCKED-FLEET", "BLOCKED-FOUNDER"):
             continue
         repo = pathlib.Path(entry["path"])
-        plan = []
-        for row in result["blocked_by"]:
-            action, reason = decide(repo, row, audit, rescued)
-            plan.append((action, row["path"], reason))
+        plan = plan_for_instance(repo, result["blocked_by"], audit, rescued)
 
         print(f"{entry['name']}  [{result['verdict']}]")
         for action, path, reason in plan:

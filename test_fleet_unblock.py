@@ -371,6 +371,83 @@ def test_a_blob_on_the_shipped_line_is_still_fleet_authored(world):
     assert not is_dirty(inst, rel), out
 
 
+def test_one_path_produces_one_action_not_one_per_row(world):
+    """sp-511e994a, and the structural half of the round-1 review note.
+
+    audit_instance reports the staged state and the worktree state as SEPARATE
+    rows, so a single file could produce two, and the run counted each as its
+    own action -- 'acted on 2 path(s)' for one file, observed in the round-4
+    fixture. The counts an unattended job reads were inflated, and any per-row
+    action that is not idempotent ran twice on the same path.
+
+    Uses the round-4 shape, which is the one that demonstrably produces two
+    rows: founder content staged under a skeleton worktree blob. A first draft
+    staged the skeleton blob itself and passed WITHOUT the collapse, because
+    that shape yields a single row -- it asserted nothing. This shape emitted
+    two lines for one file before the collapse and emits one after.
+    """
+    skel, inst = world
+    rel = "plugins/prd-os/runner.py"
+    seed_skeleton_blob(skel, rel, "v1\n")
+    write(inst, rel, "old\n")
+    git(inst, "add", "-A")
+    git(inst, "commit", "-qm", "instance base")
+    write(inst, rel, "founder staged this\n")
+    git(inst, "add", rel)          # staged AND worktree differ -> two rows
+    write(inst, rel, "v1\n")
+
+    rc, out = run(skel, "--apply")
+    assert out.count("REFUSE  " + rel) == 1, (
+        "one path produced more than one verdict line\n" + out)
+    assert "refused 1 path(s)" in out, out
+
+
+def test_a_refusal_on_any_row_refuses_the_whole_path(world):
+    """Strictest verdict wins. Judging the PATH rather than the ROW is what
+    makes the round-1 / round-4 asymmetry unrepresentable: neither half of a
+    path's truth can carry it past the other."""
+    mod = load_script()
+    rows = [{"path": "a", "kind": "fleet-written", "staged": False},
+            {"path": "a", "kind": "founder", "staged": False}]
+
+    def fake_decide(repo, row, audit, rescued):
+        return ("commit", "looks fine") if row["kind"] == "fleet-written" \
+            else ("refuse", "founder wrote it")
+
+    mod.decide = fake_decide
+    plan = mod.plan_for_instance("/repo", rows, None, None)
+    assert plan == [("refuse", "a", "founder wrote it")], plan
+
+
+def test_conflicting_actions_on_one_path_are_refused(world):
+    """Two rows, two DIFFERENT actions, neither a refusal. The tool cannot be
+    sure which is right and this writes to 22 repos, so it refuses."""
+    mod = load_script()
+    rows = [{"path": "a", "kind": "x", "staged": False},
+            {"path": "a", "kind": "y", "staged": False}]
+    actions = iter(["commit", "unstage"])
+
+    def fake_decide(repo, row, audit, rescued):
+        return (next(actions), "because")
+
+    mod.decide = fake_decide
+    plan = mod.plan_for_instance("/repo", rows, None, None)
+    assert len(plan) == 1
+    assert plan[0][0] == "refuse", plan
+    assert "conflicting verdicts" in plan[0][2], plan
+
+
+def test_agreeing_rows_still_act_once(world):
+    """Negative control for the two above: collapsing must not collapse to
+    'refuse everything'. Two rows that agree still produce their action."""
+    mod = load_script()
+    rows = [{"path": "a", "kind": "fleet-written", "staged": False},
+            {"path": "a", "kind": "fleet-written", "staged": True}]
+    mod.decide = lambda repo, row, audit, rescued: ("commit", "attributable")
+    plan = mod.plan_for_instance("/repo", rows, None, None)
+    assert plan == [("commit", "a", "attributable")], plan
+
+
 def test_founder_edit_is_refused(world):
     """NEGATIVE: bytes the skeleton never shipped stay exactly where they are.
 
