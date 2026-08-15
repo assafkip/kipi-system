@@ -316,27 +316,48 @@ stale_check || exit 0
 
 # `pgrep -c` exits 1 with no match, which under `set -e` would look like failure
 # and under a bare assignment yields an empty string. Force a number.
-# COUNTS RE-REVIEW CHILDREN TOO (codex major, PR #163 r1).
+# COUNTS DISPATCH'S OWN RE-REVIEW CHILDREN -- AND ONLY ITS OWN.
 #
 # A dispatch does not always launch a converge. On a reviewer redrive it launches
 #   bash .../pr-review-agent.sh <PR> --issue ASK-nnn --post
-# which the old `converge.sh --issue` pattern never matched. So a re-review child
-# was invisible to the concurrency cap: at cap 3, three converges plus any number
-# of live re-reviews could run at once, each spending a `claude -p` pair. The cap
-# is the spend bound, and it was bounding only half of what it launches.
+# which a `converge.sh --issue` pattern never matched, so those children spent a
+# `claude -p` pair outside the cap.
 #
-# It also made the two counters speak about DIFFERENT POPULATIONS. live_repos()
-# matches on `--issue <id>`, which a re-review child DOES carry, so the ledger
-# counted it while pgrep did not -- and the attributed-vs-total comparison below
-# was comparing apples to oranges. One population, both counters.
-# The pattern is overridable ONLY so the test suite can be hermetic. This counts
-# by scanning the machine-wide process table, so a real review running in another
-# terminal is indistinguishable from a fixture -- which made the counting cases
-# fail against a correct implementation (observed: three live pr-review-agent
-# processes from an interactive session). Production never sets this.
-LIVE_PATTERN="${KIPI_DISPATCH_LIVE_PATTERN:-converge\.sh --issue|pr-review-agent\.sh .*--issue}"
+# WIDENING THE pgrep PATTERN TO MATCH THEM WAS WRONG, AND IT STOPPED DISPATCH IN
+# PRODUCTION. Measured 2026-08-14T23:46:15Z, first tick after arming:
+#   skip: 5 converge run(s) live, cap 3
+# There were ZERO converges. All five were pr-review-agent processes belonging to
+# an interactive session reviewing PRs by hand. pgrep reads the machine-wide
+# process table and cannot tell dispatch's child from anyone else's, so ordinary
+# review work became a hard block on the whole loop. That is strictly worse than
+# the under-count it replaced: the old bug leaked some spend, this one dispatched
+# nothing at all.
+#
+# So the two populations are counted from the two sources that can actually
+# identify them:
+#   - CONVERGES via pgrep, because a hand-run converge SHOULD count -- it is real
+#     work in a repo and the cap exists to bound exactly that;
+#   - RE-REVIEWS via the ledger, because only dispatch writes it, so a row there
+#     is by construction a child dispatch launched.
+# A third party's review is in neither, which is the point.
+LIVE_PATTERN="${KIPI_DISPATCH_LIVE_PATTERN:-converge\.sh --issue}"
+
 live_converges() {
-  pgrep -f "$LIVE_PATTERN" 2>/dev/null | grep -c . || true
+  local conv rr pid issue repo
+  conv="$(pgrep -f "$LIVE_PATTERN" 2>/dev/null | grep -c . || true)"
+  conv="${conv:-0}"
+  rr=0
+  if [ -f "$LIVE_LEDGER" ]; then
+    while IFS=$'\t' read -r pid issue repo; do
+      case "$pid" in ''|*[!0-9]*) continue ;; esac
+      kill -0 "$pid" 2>/dev/null || continue
+      # Only the re-review shape; a dispatch-launched converge is already in conv.
+      ps -p "$pid" -o args= 2>/dev/null | grep -q 'pr-review-agent' || continue
+      ps -p "$pid" -o args= 2>/dev/null | grep -qE -- "--issue $issue([[:space:]]|\$)" || continue
+      rr=$((rr + 1))
+    done < "$LIVE_LEDGER"
+  fi
+  printf '%s' "$((conv + rr))"
 }
 
 # --- PER-REPO CONCURRENCY (sp-e45251f7) --------------------------------------
