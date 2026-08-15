@@ -198,8 +198,26 @@ trap 'on_interrupt HUP  129' HUP
 # Read from git rather than rebuilt from linear-worker.sh's path convention: a
 # convention with two implementations is a convention with two meanings, and this
 # one already burned ASK-210 (the gate carrying its own copy of the branch regex).
+# THE TARGET REPO, NOT THE SKELETON (ASK-821). linear-worker.sh cuts the issue
+# branch in the repo the work is FOR, so a cross-repo run's branch never exists in
+# the skeleton's worktree list. Searching $SKEL there found nothing, the receipt
+# was skipped, and the PR went green and sat with nothing proving it was reviewed.
+#
+# Measured on the first real cross-repo run, 2026-08-15T00:21:54Z, ASK-144 in
+# a non-home dispatch repo: "no worktree under .../dispatch-checkout is on
+# sana/ask-144" while the branch was sitting in THAT repo's worktrees the whole
+# time. (No instance is named here on purpose: this file ships to every instance
+# and validate-separation Gate 1.2 refuses a live instance name. The measurement
+# is the durable part; the repo name belongs in the PR body.) Post-ASK-447 $SKEL is
+# the PINNED kipi-system checkout, so this was guaranteed to miss for every
+# cross-repo issue -- and it was unreachable before, because dispatch was capped
+# at 1 and bound to the home repo, so no cross-repo run had ever finished.
+#
+# TARGET_REPO is already derived at the top of this file from KIPI_TARGET_REPO,
+# the carrier kipi-dispatch.sh sets. The information was here; this line was
+# reading the wrong variable.
 receipt_tree() {
-  git -C "$SKEL" worktree list --porcelain 2>/dev/null \
+  git -C "$TARGET_REPO" worktree list --porcelain 2>/dev/null \
     | awk -v want="branch refs/heads/$1" \
         '/^worktree /{p=substr($0,10)} $0==want{print p; exit}'
 }
@@ -563,9 +581,9 @@ receipt_ensure() {
   fi
   tree="$(receipt_tree "$BRANCH")"
   if [ -z "$tree" ]; then
-    say "receipt: no worktree under $SKEL is on $BRANCH, so there is no tree to commit a receipt into. Write one by hand or PR #23's gate will refuse this PR."
-    RECEIPT_MISS="no worktree under $SKEL is on $BRANCH, so there was no tree to commit into"
-    RECEIPT_FIX="git -C $SKEL worktree add <path> $BRANCH, then write a receipt for $ISSUE at $sha and push it"
+    say "receipt: no worktree under $TARGET_REPO is on $BRANCH, so there is no tree to commit a receipt into. Write one by hand or PR #23's gate will refuse this PR."
+    RECEIPT_MISS="no worktree under $TARGET_REPO is on $BRANCH, so there was no tree to commit into"
+    RECEIPT_FIX="git -C $TARGET_REPO worktree add <path> $BRANCH, then write a receipt for $ISSUE at $sha and push it"
     return 0
   fi
   # Everything from the ledger read through the push is ONE transaction under one
