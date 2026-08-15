@@ -217,10 +217,12 @@ def _registry_path() -> str:
     checkout) were dead at once -- in the instances, which is where alerts are
     raised. Measured 2026-08-15 against the live registry: 24 of 25 instances
     ship this writer, 25 of 25 lack the registry, and 8 have a basename that is
-    not their board alias (strategy/KTLYST_strategy, consulting/ASK Consulting,
-    product/ktlyst, website/ktlyst-website, lawyer/ktlyst_lawyer,
-    kipi-investigations/investigations, cole-gtm/cole-GTM, and one client
-    engagement this public repo does not name).
+    not their board alias. The shapes: an alias that adds a brand prefix the
+    directory lacks, one written as spaced prose, one that drops a prefix the
+    directory keeps, and one client engagement. The live pairs stay in
+    instance-registry.json and are deliberately not copied here -- this file
+    ships to every instance of a PUBLIC repo, so naming them is the leak
+    validate-separation Gate 1.2 exists to refuse.
     For those 8, rung 4 offers the bare directory name, no project carries it,
     and the alert files unset -- the defect this issue is about, still live in
     every instance after three rounds fixed it in the skeleton.

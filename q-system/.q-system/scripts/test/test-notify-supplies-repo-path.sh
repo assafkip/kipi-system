@@ -15,10 +15,10 @@
 # rung 4 (basename as a project) to rung 5 -- the checkout THIS SCRIPT lives in
 # -- and the alert is filed against kipi-system's project instead of the repo
 # that raised it. Measured against the live instance-registry.json 2026-08-15:
-# 7 of 25 registered instances have basename != alias (`strategy`/
-# `KTLYST_strategy`, `consulting`/`ASK Consulting`, `product`/`ktlyst`,
-# `kipi-investigations`/`investigations`, ...). Every git worktree is the same
-# shape, which is how the fleet's own agents run.
+# 7 of 25 registered instances have basename != alias (aliases that add a brand
+# prefix, spell the name as spaced prose, or drop a prefix the directory keeps).
+# The live pairs are read from the registry, never copied into a shipped file.
+# Every git worktree is the same shape, which is how the fleet's own agents run.
 #
 # WHY THE MAIN CHECKOUT AND NOT `--show-toplevel`. From a worktree,
 # --show-toplevel returns the WORKTREE path, which equals no registry row, so

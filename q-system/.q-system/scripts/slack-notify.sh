@@ -60,9 +60,10 @@ MSG="[$LABEL] $MSG"
 # on rung 5 -- the checkout alert-to-linear.py itself lives in -- so the ticket is
 # filed against kipi-system instead of the repo that raised the alert. Measured
 # against the live registry 2026-08-15: 7 of 25 instances are that shape
-# (`strategy`/`KTLYST_strategy`, `consulting`/`ASK Consulting`, `product`/
-# `ktlyst`, `kipi-investigations`/`investigations`, ...), plus every worktree,
-# which is how the fleet's own agents run.
+# (an alias that adds a brand prefix the directory lacks, one written as spaced
+# prose, one that drops a prefix the directory keeps), plus every worktree,
+# which is how the fleet's own agents run. The live pairs stay in
+# instance-registry.json: this script ships to every instance of a PUBLIC repo.
 #
 # --git-common-dir, NOT --show-toplevel. From a worktree, --show-toplevel returns
 # the WORKTREE, which equals no registry row, so rung 2 would still match nothing

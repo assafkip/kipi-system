@@ -609,11 +609,14 @@ def test_a_launchd_alert_finds_the_registry_with_no_cli_on_path(
     skel.mkdir(parents=True)
     (skel / "instance-registry.json").write_text(json.dumps({
         "skeleton": {"path": str(skel), "linear_project": "kipi-system"},
-        "instances": [{"name": "KTLYST_strategy", "path": str(inst)}],
+        # Synthetic alias, not a live instance name: this repo is public and
+        # validate-separation Gate 1.2 refuses a shipped file that names one.
+        # What the case needs is only basename != alias, which this has.
+        "instances": [{"name": "Brandprefix_strategy", "path": str(inst)}],
     }), encoding="utf-8")
     m = _load_at(writer, "launchd")
     got = m.project_candidates("[strategy] harvest failed")
-    assert "KTLYST_strategy" in got, got
+    assert "Brandprefix_strategy" in got, got
 
 
 def test_an_instance_with_no_registry_anywhere_invents_nothing(
