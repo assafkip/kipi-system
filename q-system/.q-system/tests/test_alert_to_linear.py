@@ -351,6 +351,166 @@ def test_a_broken_project_lookup_never_costs_the_alert(isolated_state, monkeypat
     assert code == mod.EXIT_OK and fake.created == 1
 
 
+# --- the skeleton is a registry row too (ASK-839, PR #191 review round 3) ----
+#
+# `_registry_rows()` read only `reg["instances"]`, and the skeleton -- the
+# checkout this script itself lives in and the single biggest alert producer on
+# the board -- is NOT an instances row. It is the registry's own top-level
+# `skeleton` key. So the skeleton was absent from the rows that rung 2 (repo
+# path) and rung 5 (own checkout) both search, and both rungs were dead for it.
+#
+# Measured on the live board 2026-08-15, 82 open alert tickets: 22 carry the
+# label `/` (a cwd with no repo, so no path is exported and no label resolves --
+# rung 5 is their ONLY cover) and 18 carry a kipi-system worktree directory
+# (`.wt-ask791`, `kipi-wt-ask729`, `cleanmain`, `dispatch-checkout`, ...), whose
+# --git-common-dir path is the skeleton -- rung 2. 40 of 82 had no live rung at
+# all.
+#
+# The registry fixture below carries the REAL file's shape, top-level `skeleton`
+# alongside `instances`, because that shape IS the defect. A fixture shaped as a
+# bare list -- which is what every earlier case in this file uses -- cannot see
+# it, which is how a 21-case suite stayed green over a dead production path.
+
+SKELETON_REGISTRY_SHAPE = {
+    "skeleton": {"path": "/tmp/skel", "remote": "https://example.invalid/x.git",
+                 "linear_project": "kipi-system"},
+    "instances": [{"name": "consulting", "linear_project": "ASK Consulting",
+                   "path": "/tmp/consulting"}],
+}
+
+
+def _registry_with_skeleton(tmp_path, skel_path, **skel_extra):
+    reg = tmp_path / "instance-registry.json"
+    body = json.loads(json.dumps(SKELETON_REGISTRY_SHAPE))
+    body["skeleton"]["path"] = str(skel_path)
+    body["skeleton"].update(skel_extra)
+    reg.write_text(json.dumps(body))
+    return reg
+
+
+def test_the_skeleton_is_one_of_the_registry_rows(monkeypatch, tmp_path):
+    """Rungs 2 and 5 both search `_registry_rows()`. A skeleton missing from that
+    list is a skeleton neither rung can ever resolve."""
+    reg = _registry_with_skeleton(tmp_path, tmp_path / "skel")
+    monkeypatch.setenv("KIPI_INSTANCE_REGISTRY", str(reg))
+
+    paths = {r.get("path") for r in mod._registry_rows()}
+    assert str(tmp_path / "skel") in paths, (
+        "the skeleton is absent from the rows, so an alert raised from it "
+        "resolves to no project at all")
+
+
+def test_an_alert_raised_from_the_skeleton_carries_the_skeleton_project(
+        isolated_state, monkeypatch, tmp_path):
+    """Rung 2, for the 18 worktree-labelled tickets.
+
+    slack-notify.sh exports --git-common-dir, so a worktree alert arrives with
+    the SKELETON path and a label (`.wt-ask791`) that names no project. Rung 2 is
+    the whole answer for that shape."""
+    fake = FakeLinear()
+    monkeypatch.setattr(mod, "_load_linear", lambda: fake)
+    skel = tmp_path / "kipi-system"
+    skel.mkdir()
+    monkeypatch.setenv("KIPI_INSTANCE_REGISTRY",
+                       str(_registry_with_skeleton(tmp_path, skel)))
+    monkeypatch.setenv("KIPI_ALERT_REPO_PATH", str(skel))
+    monkeypatch.delenv("KIPI_ALERT_FALLBACK_PROJECT", raising=False)
+
+    code, _ = mod.file_alert(
+        "[.wt-ask791] auto-commit left 3 file(s) uncommitted", now=1000.0)
+    assert code == mod.EXIT_OK
+    assert fake.create_input.get("projectId") == "proj-kipi"
+
+
+def test_the_last_resort_rung_works_without_an_env_production_never_sets(
+        isolated_state, monkeypatch, tmp_path):
+    """Rung 5, for the 22 `[/]` tickets.
+
+    The existing `[/]` case sets KIPI_ALERT_FALLBACK_PROJECT by hand, and NOTHING
+    in this repo sets it -- grep finds one reader and no writer. So that case was
+    passing on an invented fixture while the rung it claims to cover returned "".
+    This one removes the env and leaves rung 5 to do the work it documents."""
+    fake = FakeLinear()
+    monkeypatch.setattr(mod, "_load_linear", lambda: fake)
+    # Through _common_repo_root, so this case reads the same root the rung does
+    # whether the suite runs in the skeleton or in a worktree of it. Hardcoding
+    # SCRIPTS/../../.. passed only in the skeleton and is a false RED elsewhere.
+    own_root = os.path.realpath(mod._common_repo_root(mod._own_checkout_root()))
+    monkeypatch.setenv("KIPI_INSTANCE_REGISTRY",
+                       str(_registry_with_skeleton(tmp_path, own_root)))
+    monkeypatch.delenv("KIPI_ALERT_REPO_PATH", raising=False)
+    monkeypatch.delenv("KIPI_ALERT_FALLBACK_PROJECT", raising=False)
+
+    code, _ = mod.file_alert("[/] Meeting loop could not run: token missing",
+                             now=1000.0)
+    assert code == mod.EXIT_OK
+    assert fake.create_input.get("projectId") == "proj-kipi"
+
+
+def test_a_skeleton_row_with_no_alias_offers_nothing_rather_than_a_guess(
+        monkeypatch, tmp_path):
+    """The negative self-test. Including the skeleton row must not smuggle in a
+    basename derivation -- that is the ASK-840 defect this file's own docstring
+    refuses. A skeleton with no `linear_project` contributes no candidate."""
+    reg = tmp_path / "instance-registry.json"
+    reg.write_text(json.dumps({
+        "skeleton": {"path": str(tmp_path / "kipi-system"),
+                     "remote": "https://example.invalid/x.git"},
+        "instances": []}))
+    monkeypatch.setenv("KIPI_INSTANCE_REGISTRY", str(reg))
+    monkeypatch.setenv("KIPI_ALERT_REPO_PATH", str(tmp_path / "kipi-system"))
+    monkeypatch.delenv("KIPI_ALERT_PROJECT", raising=False)
+    monkeypatch.delenv("KIPI_ALERT_FALLBACK_PROJECT", raising=False)
+
+    assert "kipi-system" not in mod.project_candidates("[x] something broke")
+
+
+def test_rung_five_survives_running_out_of_a_worktree(
+        isolated_state, monkeypatch, tmp_path):
+    """A worktree is never its own registry row, and the fleet's agents all run
+    in one -- 18 of the 82 live alert tickets are labelled with a worktree
+    directory. The last-resort rung has to reach the common repo root, the same
+    fact slack-notify.sh resolves with --git-common-dir, or it is dead in exactly
+    the checkouts that raise the most alerts."""
+    fake = FakeLinear()
+    monkeypatch.setattr(mod, "_load_linear", lambda: fake)
+    skel = tmp_path / "kipi-system"
+    (skel / ".git" / "worktrees" / "wt").mkdir(parents=True)
+    wt = tmp_path / "wt-ask999"
+    wt.mkdir()
+    # The real shape git writes for a linked worktree: .git is a FILE naming the
+    # common dir, and the common dir's parent is the skeleton.
+    (wt / ".git").write_text(f"gitdir: {skel}/.git/worktrees/wt\n")
+    monkeypatch.setenv("KIPI_INSTANCE_REGISTRY",
+                       str(_registry_with_skeleton(tmp_path, skel)))
+    monkeypatch.setattr(mod, "_own_checkout_root", lambda: str(wt))
+    monkeypatch.delenv("KIPI_ALERT_REPO_PATH", raising=False)
+    monkeypatch.delenv("KIPI_ALERT_FALLBACK_PROJECT", raising=False)
+
+    code, _ = mod.file_alert("[/] Meeting loop could not run: token missing",
+                             now=1000.0)
+    assert code == mod.EXIT_OK
+    assert fake.create_input.get("projectId") == "proj-kipi"
+
+
+def test_the_shipped_registry_states_its_own_board_name(monkeypatch):
+    """The data half, which the code half cannot supply.
+
+    The board alias is a FIELD, never derived (ASK-840), so the skeleton row has
+    to carry one or the rung stays dead with the code correct. Reading the real
+    file on purpose: a fixture would pass while the shipped registry drifted.
+
+    Asserted on the SKELETON row, not on "the checkout this test runs from" --
+    the first draft did the latter and it is false by construction in a worktree,
+    which is where the fleet's agents run."""
+    monkeypatch.delenv("KIPI_INSTANCE_REGISTRY", raising=False)
+    skel = [r for r in mod._registry_rows() if r.get("is_skeleton")]
+    assert skel, "the shipped registry contributes no skeleton row"
+    assert mod._linear_project_of(skel[0]), (
+        "the skeleton row names no board project, so rungs 2 and 5 resolve "
+        "nothing for the checkout this script lives in")
+
+
 def test_the_punctuation_strip_did_not_collapse_everything():
     """Re-guards the negative case at the new, more aggressive normalization."""
     distinct = [

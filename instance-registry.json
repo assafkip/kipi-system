@@ -1,7 +1,8 @@
 {
   "skeleton": {
     "path": "/Users/assafkipnis/projects/kipi-system",
-    "remote": "https://github.com/assafkip/kipi-system.git"
+    "remote": "https://github.com/assafkip/kipi-system.git",
+    "linear_project": "kipi-system"
   },
   "instances": [
     {

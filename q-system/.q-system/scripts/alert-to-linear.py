@@ -208,14 +208,44 @@ def _registry_path() -> str:
 
 
 def _registry_rows() -> list:
-    """Every registry row, or [] when it cannot be read. Never raises."""
+    """Every registry row, or [] when it cannot be read. Never raises.
+
+    THE SKELETON IS A ROW TOO, and reading only `instances` dropped it (ASK-839,
+    PR #191 review round 3). The skeleton is not an instance: it is the
+    registry's own top-level `skeleton` key, and it is the checkout this script
+    LIVES in and the fleet's single biggest alert producer. Both rungs that
+    search these rows -- the repo path (2) and this script's own checkout (5) --
+    were therefore dead for it, so an alert raised from kipi-system or any of its
+    worktrees resolved to no project at all unless its bare `[label]` happened to
+    name a board project.
+
+    Measured on the live board 2026-08-15, 82 open alert tickets: 22 labelled `/`
+    (a cwd with no repo, so nothing is exported and no label resolves -- rung 5
+    is their only cover) and 18 labelled with a kipi-system worktree directory,
+    whose --git-common-dir path is the skeleton -- rung 2. 40 of 82 had no live
+    rung.
+
+    `standalone` rows stay out on purpose rather than by oversight: they carry
+    `has_skeleton: false`, so they ship no slack-notify.sh and cannot reach this
+    code path at all. Adding them would lengthen the candidate list with names no
+    alert can ever arrive under.
+    """
     try:
         with open(_registry_path(), encoding="utf-8") as fh:
             reg = json.load(fh)
     except (OSError, ValueError):
         return []
-    entries = reg.get("instances", reg) if isinstance(reg, dict) else reg
-    return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+    if not isinstance(reg, dict):
+        entries = reg
+        return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+    entries = reg.get("instances", reg)
+    rows = [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+    skeleton = reg.get("skeleton")
+    if isinstance(skeleton, dict) and skeleton.get("path"):
+        # Tagged rather than positional so a caller can ask "which row is the
+        # skeleton" without counting on it being first.
+        rows = [dict(skeleton, is_skeleton=True)] + rows
+    return rows
 
 
 def _linear_project_of(entry: dict) -> str:
@@ -294,16 +324,57 @@ def project_candidates(message: str) -> list[str]:
     return out
 
 
+def _own_checkout_root() -> str:
+    """The directory three levels up from this scripts/ dir. The test seam for
+    the rung below, so a worktree layout can be exercised without one."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "..", "..", "..")
+
+
+def _common_repo_root(root: str) -> str:
+    """`root`, or the repo it is a linked worktree OF.
+
+    A worktree is never its own registry row, and the fleet's agents all run in
+    one -- 18 of the 82 live alert tickets on 2026-08-15 were labelled with a
+    worktree directory. Without this, rung 5 misses in exactly the checkouts that
+    raise the most alerts.
+
+    Read from the `.git` FILE rather than shelled out to `git rev-parse
+    --git-common-dir`: this function is on the never-raises alert path, where a
+    subprocess is a new way to lose the ticket, and the file is the same fact.
+    slack-notify.sh does shell out, and that is not a second derivation of one
+    value -- it answers a different question (the repo the CALLER was in) at a
+    point where git is already required.
+    """
+    try:
+        with open(os.path.join(root, ".git"), encoding="utf-8") as fh:
+            head = fh.read(4096).strip()
+    except (OSError, ValueError):
+        return root
+    if not head.startswith("gitdir:"):
+        return root
+    gitdir = head.split(":", 1)[1].strip()
+    marker = os.path.join(".git", "worktrees")
+    if marker not in gitdir:
+        return root
+    common = gitdir.split(marker)[0]
+    return common or root
+
+
 def _own_checkout_project(rows: list) -> str:
     """The board project of the checkout THIS SCRIPT lives in.
 
     The last rung, and a derivation rather than a guess: an alert raised from a
     cwd of `/` still came from code executing out of a registered checkout, and
     that checkout is the one honest thing left to say about its origin.
+
+    It is also the ONLY rung covering the 22 `[/]` tickets, since no path is
+    exported and no label resolves for them. KIPI_ALERT_FALLBACK_PROJECT is not
+    that cover: nothing in this repo sets it (one reader, no writer), so a case
+    that supplies it by hand is testing an invention.
     """
     try:
-        root = os.path.realpath(os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+        root = os.path.realpath(_common_repo_root(_own_checkout_root()))
     except OSError:
         return ""
     for row in rows:
