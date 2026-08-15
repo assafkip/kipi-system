@@ -311,6 +311,66 @@ def test_fleet_written_content_is_committed(world):
     assert (inst / "plugins/prd-os/runner.py").read_text() == "v1\n", "bytes changed"
 
 
+def test_a_blob_that_only_exists_on_an_unmerged_branch_is_not_fleet_authored(world):
+    """PR #165 review round 5, major.
+
+    SkeletonBlobs proved authorship with `git rev-list --all -- <path>`. `--all`
+    is EVERY local ref: unmerged feature branches, remote-tracking refs, tags,
+    the review worktrees. This very repo carries dozens of in-flight sana/*
+    branches at any moment.
+
+    So a blob that never shipped -- one that exists only on somebody's
+    experiment -- counted as "the skeleton wrote this", and the tool would
+    commit it over founder content in an instance. The next real sync then
+    overwrites it with what main actually says, so the founder's bytes are gone
+    and the replacement was never skeleton content either.
+
+    This is a different class from the round 1-4 findings. Those were about
+    applying the proof to the right side of a path. This is about what the proof
+    MEANS: authorship has to be the shipped line, not anything anyone ever
+    committed anywhere.
+    """
+    skel, inst = world
+    rel = "plugins/prd-os/experimental.py"
+
+    # A blob that lives ONLY on an unmerged branch of the skeleton.
+    git(skel, "checkout", "-q", "-b", "someones-experiment")
+    write(skel, rel, "never shipped\n")
+    git(skel, "add", "-A")
+    git(skel, "commit", "-qm", "experiment")
+    git(skel, "checkout", "-q", "main")
+    assert not (skel / rel).exists(), "the experiment must not be on main"
+
+    write(inst, rel, "founder wrote this\n")
+    git(inst, "add", "-A")
+    git(inst, "commit", "-qm", "instance base")
+    write(inst, rel, "never shipped\n")     # the unmerged branch's bytes
+
+    head_before = git(inst, "rev-parse", "HEAD")
+    rc, out = run(skel, "--apply")
+
+    assert "REFUSE" in out, out
+    assert git(inst, "rev-parse", "HEAD") == head_before, (
+        "committed a blob that only ever existed on an unmerged branch\n" + out)
+    assert is_dirty(inst, rel), "the path was cleared on unshipped authorship"
+
+
+def test_a_blob_on_the_shipped_line_is_still_fleet_authored(world):
+    """Negative control for the test above. Narrowing authorship must not
+    narrow it to nothing -- the ordinary repair has to keep working."""
+    skel, inst = world
+    rel = "plugins/prd-os/runner.py"
+    seed_skeleton_blob(skel, rel, "v1\n")
+    write(inst, rel, "old\n")
+    git(inst, "add", "-A")
+    git(inst, "commit", "-qm", "instance base")
+    write(inst, rel, "v1\n")
+
+    rc, out = run(skel, "--apply")
+    assert rc == 0, out
+    assert not is_dirty(inst, rel), out
+
+
 def test_founder_edit_is_refused(world):
     """NEGATIVE: bytes the skeleton never shipped stay exactly where they are.
 
