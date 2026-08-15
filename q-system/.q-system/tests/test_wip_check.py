@@ -144,6 +144,40 @@ class TestTheWiringIntoTheUpdater:
         assert 'is_instance_wip "$uf" "$source_path" "" "q-system/$relative"' \
             in self.text(), "the collision call site no longer passes the mapping"
 
+    def test_the_config_collision_site_also_gets_the_exemption(self):
+        """PR #185 review, major. Wiring one call site and not the other.
+
+        The first cut wired the exemption into the q-system collision path only,
+        so updater residue under .claude/ or plugins/ from an EARLIER sync still
+        aborted the instance on every run -- same defect, same blast radius, one
+        call site further down.
+        """
+        text = self.text()
+        assert 'is_instance_wip "$target/$relative" "$counterpart" ' \
+            'clears-build-artifacts \\\n          "$skeleton_rel"' in text, (
+            "the .claude/plugins collision site does not pass a skeleton path, "
+            "so the historical-blob exemption never runs there")
+
+    def test_settings_json_keeps_its_carve_out_from_BOTH_checks(self):
+        """.claude/settings.json is GENERATED from settings-template.json, so no
+        blob in skeleton history is what belongs in an instance. Excusing a file
+        because the skeleton once shipped that content would excuse a copy this
+        sync never produced and never will. It must pass an EMPTY skeleton path,
+        not its own."""
+        text = self.text()
+        assert '.claude/settings.json) counterpart=""; skeleton_rel="" ;;' in text, (
+            "settings.json no longer opts out of the historical-blob check")
+
+    def test_the_two_call_sites_pass_DIFFERENT_mappings(self):
+        """The reason the argument is per-call-site rather than derived inside
+        the helper. q-system content is q-system/<rel> in the skeleton repo;
+        .claude/ and plugins/ live at the root and map identically. A helper
+        that guessed would be right for one and silently wrong for the other --
+        and wrong here means 'no match', which reads as 'this is work'."""
+        text = self.text()
+        assert '"q-system/$relative"' in text, "the q-system mapping is gone"
+        assert '"$skeleton_rel"' in text, "the config mapping is gone"
+
     def test_the_updater_still_parses(self):
         r = subprocess.run(["bash", "-n", str(self.UPDATER)],
                            capture_output=True, text=True)
