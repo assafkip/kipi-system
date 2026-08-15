@@ -53,10 +53,16 @@ cat > "$WORK/fixture-server.py" <<'PY'
 import json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-def issue(ident, project, labels, dor=True, state="backlog"):
+def issue(ident, project, labels, dor=True, state="backlog", alert=False):
+    body = "## Definition of Ready\nOutcome: x" if dor else "no readiness heading here"
+    # ASK-839: what alert-to-linear.py stamps into every ticket IT files. The
+    # DoR text is deliberately present too -- the defect is precisely an alert
+    # ticket the drafter had already made ready-shaped.
+    if alert:
+        body += "\n\n<!-- kipi-alert-fingerprint: deadbeefdeadbeef -->"
     return {
         "id": ident, "identifier": ident, "title": "fixture " + ident,
-        "description": "## Definition of Ready\nOutcome: x" if dor else "no readiness heading here",
+        "description": body,
         "state": {"name": state, "type": state},
         "project": ({"name": project} if project else None),
         "labels": {"nodes": [{"name": n} for n in labels]},
@@ -86,6 +92,16 @@ BOARD = [
     issue("ASK-907", "kipi-system", ["owner:sana", "blocked:capability"], state="completed"),
     issue("ASK-908", "kipi-system", ["owner:sana", "blocked:capability"], state="canceled"),
     issue("ASK-909", "kipi-system", ["owner:sana", "needs-scope"], state="completed"),
+    # ASK-839: a fleet alert ticket the DoR drafter already made ready-shaped,
+    # project-unset because the writer never set one. On the live board
+    # 2026-08-15 there were 19 of exactly this, and they were 100% of the
+    # ready-shaped unset population and 43% of the whole UNREACHABLE bucket.
+    issue("ASK-910", None, ["owner:sana"], alert=True),
+    # An alert ticket that DOES carry a project. It must still be excluded: the
+    # decision is "an alert is not dispatch work", not "an alert is unroutable".
+    # Without this case the exclusion could be implemented as a project test and
+    # nothing here would notice.
+    issue("ASK-911", "kipi-system", ["owner:sana"], alert=True),
 ]
 
 class H(BaseHTTPRequestHandler):
@@ -199,7 +215,9 @@ for pair in "ASK-901:foreign project (accountant)" \
             "ASK-906:blocked:capability" \
             "ASK-907:blocked:capability and completed" \
             "ASK-908:blocked:capability and canceled" \
-            "ASK-909:needs-scope and completed"; do
+            "ASK-909:needs-scope and completed" \
+            "ASK-910:fleet alert ticket, project-unset (ASK-839)" \
+            "ASK-911:fleet alert ticket, project set (ASK-839)"; do
   id="${pair%%:*}"; why="${pair#*:}"
   if printf '%s\n' "$PICKED" | grep -q "$id"; then
     bad "excludes $id -- $why" "it was picked"
@@ -314,6 +332,28 @@ PICKED_OVR="$(printf '%s\n' "$OUT_OVR" | grep -o 'would work ASK-[0-9]*' | sed '
 case "$PICKED_OVR" in
   "ASK-900 ") ok "KIPI_LINEAR_PROJECT still outranks the registry" ;;
   *)          bad "KIPI_LINEAR_PROJECT still outranks the registry" "picked: [$PICKED_OVR] -- expected [ASK-900 ]" ;;
+esac
+
+# --- case 4c: alert tickets leave the UNREACHABLE bucket too (ASK-839) -------
+# Excluding them from ready() alone would be half a fix: they would stop being
+# WORKED and keep being COUNTED, so the same 19-issue UNREACHABLE line would run
+# every night describing work the loop has already decided it will never take.
+# Run against SKEL_REG because it is the only skel here carrying a registry, and
+# without one reachability is UNKNOWN and the whole classification collapses.
+#
+# The expected number is 2, not 0, and that is deliberate. ASK-902 is a genuine
+# non-alert unset issue and ASK-900 is a foreign project with no checkout -- both
+# are really unreachable and must keep being reported. Only the two alert tickets
+# leave. An assertion of 0 would pass for a worker that stopped reporting at all.
+OUT_ALERT="$(run_worker "$SKEL_REG")"
+UNREACH_N="$(printf '%s\n' "$OUT_ALERT" | sed -n 's/.*worker: \([0-9]*\) ready-shaped issue(s) UNREACHABLE.*/\1/p' | head -1)"
+case "${UNREACH_N:-none}" in
+  2)    ok "alert tickets leave the UNREACHABLE bucket (2 left, not 4)" ;;
+  4)    bad "alert tickets leave the UNREACHABLE bucket" \
+            "still 4 -- ASK-910/ASK-911 are counted as unreachable dispatch work" ;;
+  none) bad "alert tickets leave the UNREACHABLE bucket" \
+            "no UNREACHABLE line at all: $(printf '%s' "$OUT_ALERT" | tr '\n' '|' | cut -c1-300)" ;;
+  *)    bad "alert tickets leave the UNREACHABLE bucket" "count reads '$UNREACH_N', expected 2" ;;
 esac
 
 # --- case 5: NEGATIVE SELF-TEST ---------------------------------------------

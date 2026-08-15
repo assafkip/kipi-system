@@ -86,6 +86,12 @@ FAILURE_TITLE = "linear-dor: nightly DoR drafter reported failures"
 # items and a DoR helps them. (PR #12 round-2 review, nit.)
 FAILURE_MARKER = f"<!-- kipi-key: {FAILURE_KEY} -->"
 
+# The marker alert-to-linear.py stamps into every ticket it files. Matched on the
+# marker rather than the title prefix or the owner label: the prefix is prose a
+# human can edit and the label is shared with every other Sana issue, while this
+# is the writer's own machine-readable claim about what the ticket IS.
+ALERT_FINGERPRINT_MARKER = "kipi-alert-fingerprint"
+
 # The single founder-ping channel (.claude/rules/founder-notifications.md).
 # Used ONLY when the report itself could not reach the board -- an open Linear
 # issue is the signal on a normal failing night, and a nightly Slack line on top
@@ -179,7 +185,7 @@ REDRAFT_CAP = 3
 
 # The redraft counter lives in the ISSUE DESCRIPTION, not in the state file and
 # not in attempts-ledger.py.
-#   - not the ledger: out of scope by founder deferral (sp-626e9452), and a
+#   - not the ledger: out of scope by founder deferral (sp-626e9452), and a  # spillover-skip
 #     read-then-write from a second process is the race that file exists to stop.
 #   - not ~/.config/kipi/linear-dor-state.json: that is one machine's scratch. A
 #     cap whose count evaporates on a new laptop is not a cap, and the terminal
@@ -530,6 +536,28 @@ def selection_mode(issue: dict) -> str | None:
     if FAILURE_MARKER in desc:
         return None
 
+    # A FLEET ALERT IS A NOTIFICATION, NOT A SPEC (ASK-839).
+    #
+    # alert-to-linear.py files these; their body is a raw alert line ("auto-commit
+    # left 3 file(s) uncommitted"), not work anyone scoped. Writing a Definition
+    # of Ready onto one does not make it executable -- it makes it READY-SHAPED,
+    # which is what admits it to linear-worker.sh's queue. Measured on the live
+    # board 2026-08-15: 81 open alert tickets, 19 already drafted onto, and all 19
+    # sat in the permanently-UNREACHABLE bucket. This drip is what converted them,
+    # at the rate of one batch a night, out of the remaining 62.
+    if ALERT_FINGERPRINT_MARKER in desc:
+        return None
+
+    # AN UNROUTABLE ISSUE MUST NOT BE PROMOTED (ASK-839, the second question the
+    # issue asked in so many words). A project is how the worker decides which
+    # checkout can serve an issue; with none set, in_this_repo() is false in every
+    # repo at once, so drafting a DoR moves the issue from "not ready" to "ready
+    # and reachable by nobody". The first state is honest and the second is not.
+    # Refused rather than drafted, and counted at the call site so a legitimately
+    # unrouted issue is visible instead of silently skipped forever.
+    if not ((issue.get("project") or {}).get("name") or "").strip():
+        return None
+
     if NEEDS_SCOPE_LABEL in label_names(issue):
         done, terminal = redraft_state(desc)
         if terminal:
@@ -684,6 +712,26 @@ def fetch_draftable(ls, team_id: str) -> list:
         if not page["pageInfo"]["hasNextPage"]:
             break
         after = page["pageInfo"]["endCursor"]
+
+    # REFUSALS ARE REPORTED, NOT SILENT (ASK-839). Two shapes now leave this
+    # selection: fleet alert tickets and project-unset issues. An alert ticket
+    # never coming back is the intended end state, but a REAL issue that nobody
+    # gave a project to would otherwise sit unqueued and unmentioned forever --
+    # the drip would look healthy while that issue was invisible to every run.
+    # So the second class is counted and named on stdout, which is where this
+    # job's nightly digest reads from. Bounded to the first few ids: this line
+    # is read in a digest, and a list that can reach 60 buries it.
+    unrouted = [i for i in issues
+                if not ((i.get("project") or {}).get("name") or "").strip()
+                and ALERT_FINGERPRINT_MARKER not in (i.get("description") or "")
+                and (i.get("state") or {}).get("type") in DRAFTABLE_STATE_TYPES
+                and not has_dor_section(i.get("description") or "")]
+    if unrouted:
+        shown = " ".join(i["identifier"] for i in unrouted[:8])
+        more = f" (+{len(unrouted) - 8} more)" if len(unrouted) > 8 else ""
+        print(f"dor-drafter: {len(unrouted)} issue(s) NOT drafted -- no project, "
+              f"so no checkout could ever be routed one: {shown}{more}")
+
     return [i for i in issues if needs_dor(i)]
 
 

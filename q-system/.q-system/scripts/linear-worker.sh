@@ -470,6 +470,37 @@ registry_ok = os.environ.get("REGISTRY_OK", "") == "True"
 def project_of(i):
     return (i.get("project") or {}).get("name")
 
+# A FLEET ALERT IS A NOTIFICATION, NOT DISPATCH WORK (ASK-839).
+#
+# alert-to-linear.py files these and stamps this marker into every one. Their
+# body is a raw alert line -- "auto-commit left 3 file(s) uncommitted" -- and
+# nobody scoped it. The DoR drafter was writing a Definition of Ready onto them
+# anyway, which does not make one executable; it makes it READY-SHAPED, and that
+# is the only thing this queue checks.
+#
+# Measured against the live board 2026-08-15: 19 issues were ready-shaped AND
+# project-unset, and ALL 19 were alert tickets -- 43 percent of the whole
+# UNREACHABLE bucket, growing by one drafter batch a night out of the remaining
+# 62. THE FORK THIS ANSWERS: backfill a project onto the 81, or declare them not
+# dispatch work. Backfill was refused on the measurement -- only 33 of the 81
+# carry a label that names a real project, 22 were raised from a cwd of / and 16
+# from a worktree directory, so a backfill invents routing for the majority and
+# then hands a worker an alert line as if it were a spec. They stay on the board,
+# labelled and now project-attributed, for a human or a triage pass to convert
+# into a real issue; they do not enter the automatic queue.
+#
+# Keyed on the MARKER THE WRITER ITSELF STAMPS, not the title prefix (prose a
+# human edits) and not owner:sana (shared with every real Sana issue).
+# NO APOSTROPHE IN THIS HEREDOC. It sits inside a $( ) and bash tracks quote
+# state straight through a quoted heredoc there, so one apostrophe in a PYTHON
+# COMMENT takes the whole script to "unexpected EOF" 800 lines away. This comment
+# is the third time that scar has been earned in this file; the first draft of it
+# wrote WRITER-apostrophe-S and the suite went from 24 green to 11 failures.
+ALERT_MARKER = "kipi-alert-fingerprint"
+
+def is_fleet_alert(i):
+    return ALERT_MARKER in (i.get("description") or "")
+
 def in_this_repo(i):
     # Unset project is NOT this repo. "Target unknown" and "target is here" are
     # different claims, and treating the first as the second is how 18 foreign
@@ -496,6 +527,7 @@ def ready(i):
     # missing tool). Excluded for the same reason, routed somewhere different.
     if "blocked:capability" in labels: return False
     if i["state"]["type"] not in ("backlog", "unstarted"): return False
+    if is_fleet_alert(i):            return False   # ASK-839, see ALERT_MARKER
     if not in_this_repo(i):          return False
     d = i.get("description") or ""
     return "## Definition of Ready" in d or "Definition of Ready" in d
@@ -508,8 +540,16 @@ def ready_ignoring_project(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
     return ("owner:assaf" not in labels and "owner:sana" in labels
             and "needs-scope" not in labels and "blocked:capability" not in labels
+            and not is_fleet_alert(i)
             and i["state"]["type"] in ("backlog", "unstarted")
             and "Definition of Ready" in (i.get("description") or ""))
+
+# BOTH SELECTORS, OR THE FIX IS HALF DONE. ready() alone would stop an alert
+# ticket being WORKED while leaving it in `dropped`, so it would keep being
+# reported UNREACHABLE forever -- the same 19-issue line, now describing work the
+# loop has already decided it will never take. A bucket nobody can act on and
+# nobody intends to act on is not a backlog, it is noise on the one line an
+# operator reads at 3am.
 
 dropped = [i for i in issues if ready_ignoring_project(i) and not in_this_repo(i)]
 
