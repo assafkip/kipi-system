@@ -202,6 +202,22 @@
       "instance_q_dir": null,
       "type": "subtree",
       "has_git": true
+    },
+    {
+      "name": "the_garden",
+      "path": "/Users/assafkipnis/projects/consulting/projects/the_garden",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
+    },
+    {
+      "name": "social-voice",
+      "path": "/Users/assafkipnis/projects/social-voice",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
     }
   ],
   "standalone": [
