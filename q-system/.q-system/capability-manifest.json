@@ -470,6 +470,11 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-worker-env-halt.sh",
+      "runner": "bash",
+      "timeout_s": 300
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
       "runner": "bash"
     },
