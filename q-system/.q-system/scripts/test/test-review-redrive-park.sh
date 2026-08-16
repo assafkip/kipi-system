@@ -268,7 +268,7 @@ RCM3="$(run_mark ASK-905 rework 94 eeee5555)"
   || bad "the second claim returned '$RCM3' -- the one-attempt cap is broken"
 
 # 5. an unreadable park state at the claim fails CLOSED, with its own code.
-RCM4="$(RR_URL="http://127.0.0.1:1/graphql" run_mark ASK-905 rereview 94 ffff6666)"
+RCM4="$(RR_URL="http://127.0.0.1:1/graphql" run_mark ASK-905 re-review 94 ffff6666)"
 [ "$RCM4" = "3" ] && ok "an unreadable park state at the claim exits 3, not 0" \
   || bad "an unreadable park state at the claim exited '$RCM4' -- it would dispatch"
 
