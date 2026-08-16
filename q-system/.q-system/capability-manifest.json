@@ -51,6 +51,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-ask842-dispatch-decision.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-attempts-ledger.py",
       "runner": "python3"
     },
@@ -80,12 +84,21 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-client-name-guard.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-containment-gitlink.py",
       "runner": "python3"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-control-file-propagate.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-converge-crossrepo-receipt.sh",
+      "runner": "bash",
+      "timeout_s": 120
     },
     {
       "path": "q-system/.q-system/scripts/test/test-converge.sh",
@@ -101,9 +114,18 @@
       "timeout_s": 120
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-per-repo-concurrency.sh",
+      "runner": "bash",
+      "timeout_s": 180
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-dispatch-stale-checkout.sh",
       "runner": "bash",
       "timeout_s": 120
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-dor-refuses-unroutable.py",
+      "runner": "python3"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-findings-block-reader.sh",
@@ -329,10 +351,6 @@
       "timeout_s": 600
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-ask842-dispatch-decision.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-review-artifact-repo-keyed.sh",
       "runner": "bash"
     },
@@ -486,13 +504,13 @@
       "runner": "python3"
     },
     {
-      "path": "q-system/.q-system/scripts/test_dispatch_reachability.py",
-      "runner": "python3"
-    },
-    {
       "path": "q-system/.q-system/scripts/test_dispatch_alias_reachability.py",
       "runner": "python3",
       "timeout_s": 180
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_dispatch_reachability.py",
+      "runner": "python3"
     },
     {
       "path": "q-system/.q-system/scripts/test_evidence_ledger.py",
@@ -627,6 +645,11 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/tests/test_capmap_scratch_and_mention.py",
+      "runner": "python3",
+      "timeout_s": 60
+    },
+    {
       "path": "q-system/.q-system/tests/test_fable_cap_page_deleted.py",
       "runner": "python3"
     },
@@ -647,25 +670,6 @@
     {
       "path": "test_dispatch_pinned.sh",
       "runner": "bash"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-dispatch-per-repo-concurrency.sh",
-      "runner": "bash",
-      "timeout_s": 180
-    },
-    {
-      "path": "q-system/.q-system/tests/test_capmap_scratch_and_mention.py",
-      "runner": "python3",
-      "timeout_s": 60
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-converge-crossrepo-receipt.sh",
-      "runner": "bash",
-      "timeout_s": 120
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-dor-refuses-unroutable.py",
-      "runner": "python3"
     }
   ],
   "required_data": [],
