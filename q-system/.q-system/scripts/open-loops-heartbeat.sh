@@ -47,15 +47,28 @@ ENV_HALT=""
 # stays narrow on purpose. A loose pattern here silently converts ordinary
 # per-instance failures into a fleet-wide halt, which is worse than the noise
 # this replaces: the sweep would stop on one instance's ordinary bad day.
+# ANCHORED AT THE START OF A LINE, NOT MATCHED ANYWHERE (PR #198 review, minor).
+# The runner emits this as a line of its own; an AGENT that merely writes about
+# limits emits it inside a sentence or a bullet. Matched as a bare substring, an
+# agent discussing this very issue and then exiting non-zero would halt the whole
+# fleet and report the runner as dead -- a false halt is worse than the noise this
+# replaces, because it stops work that could have run.
+#
+# This is the same shape as ASK-747, fixed the same way: content that MENTIONS a
+# marker is not the marker being raised. There the fix was a column-0 trailer;
+# here it is a line anchor. Leading whitespace is tolerated (up to 3) because the
+# CLI pads some of these, but an indented quote inside agent prose does not reach
+# that far left.
+ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]+-hour) limit|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login"
+
 is_environmental() {  # is_environmental <agent-output>
-  printf '%s' "${1:-}" | grep -qiE \
-    "hit your (weekly|usage|session|[0-9]+-hour) limit|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login"
+  printf '%s' "${1:-}" | grep -qiE "^[[:space:]]{0,3}($ENV_MARKERS)"
 }
 
 environmental_reason() {  # environmental_reason <agent-output> -> one line
   printf '%s' "${1:-}" \
-    | grep -iEo "hit your (weekly|usage|session|[0-9]+-hour) limit[^|]*|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login" \
-    | head -1 | cut -c1-120
+    | grep -iE "^[[:space:]]{0,3}($ENV_MARKERS)" \
+    | head -1 | tr -d '\n' | cut -c1-120
 }
 
 log_step() {  # log_step <instance-name> <completed|skipped|failed> [note]
@@ -180,7 +193,12 @@ echo "$(TS) heartbeat: fleet sweep complete" >> "$LOG"
 # the loop has finished skipping them. One condition, one ticket, and it names
 # what a human would otherwise have to reconstruct from ten identical ones.
 if [ -n "$ENV_HALT" ]; then
-  ENV_SKIPPED="$(grep -c '"status": "skipped"' "$RUNLOG_TMP" 2>/dev/null || echo 0)"
+  # COUNT ONLY WHAT THE HALT SKIPPED (PR #198 review, minor). Counting every
+  # `skipped` row swept in registry drift (missing path, pre-propagation) and the
+  # instance that actually failed, so the one alert overstated itself -- reported
+  # 5 where the truth was 2. A number a human cannot reconcile against the run-log
+  # is worse than no number: it is the ticket arguing with its own evidence.
+  ENV_SKIPPED="$(grep -c 'not attempted' "$RUNLOG_TMP" 2>/dev/null || echo 0)"
   bash "$SKEL/q-system/.q-system/scripts/slack-notify.sh" \
     "heartbeat: sweep HALTED, the runner itself is unavailable ($ENV_HALT). $ENV_SKIPPED instance(s) not attempted -- this is one machine-wide condition, not one fault per instance. Nothing to fix per repo; the sweep resumes on its own when the runner is available." \
     2>/dev/null || true
@@ -214,7 +232,17 @@ rm -f "$RUNLOG_TMP" "$RUNLOG_TMP.expected" 2>/dev/null || true
 # A `skipped` step (missing instance path, pre-propagation instance) is registry
 # drift, not a job failure, and is deliberately NOT counted here -- paging weekly
 # on known drift is the alert-fatigue that teaches the founder to ignore the
-# channel. Only a dead agent run or a step-audit mismatch reaches Linear.
+# channel. A dead agent run, a step-audit mismatch, or an environmental halt
+# reaches Linear.
+#
+# THE ENVIRONMENTAL HALT IS THE ONE EXCEPTION TO THE SENTENCE ABOVE (ASK-869, and
+# PR #198 review caught this comment still claiming otherwise). That branch logs
+# its instances `skipped` AND increments SWEEP_FAILURES, which reads as a
+# contradiction until you separate the two questions the row and the counter
+# answer. The row says what happened to that INSTANCE: nothing, nobody attempted
+# it. The counter says whether the SWEEP did its job: it did not, it stopped
+# early. Both are true at once, and ASK-184 requires the second to reach launchd
+# or fleet-health's launchd-failing detector goes blind to this job.
 if [ "$SWEEP_FAILURES" -gt 0 ]; then
   echo "$(TS) heartbeat: $SWEEP_FAILURES failure(s) this sweep -> exit 1" >> "$LOG"
   exit 1

@@ -219,6 +219,34 @@ else
 fi
 rm -rf "$TMP2"
 
+# AGENT PROSE IS NOT THE RUNNER SPEAKING (PR #198 review, minor).
+# An agent working on THIS issue writes the marker into its own transcript. If the
+# classifier matches anywhere in the output, that agent plus a non-zero exit halts
+# the whole fleet and blames a dead runner. A false halt is worse than the noise
+# being removed: it stops work that could have run, and it lies about why.
+# Same shape as ASK-747 -- mentioning a marker is not raising it.
+TMP3="$(build_env_fixture)"
+cat > "$TMP3/bin/claude" <<EOF
+#!/bin/bash
+echo "\$PWD" >> "$TMP3/claude-calls"
+echo "I reviewed ASK-869. The log line was: You've hit your weekly limit - resets Aug 18."
+echo "  quoted indented: You've hit your weekly limit"
+echo "TypeError: unrelated crash"
+exit 7
+EOF
+chmod +x "$TMP3/bin/claude"
+PATH="$TMP3/bin:$PATH" KIPI_REPO="$TMP3/skel" \
+  bash "$TMP3/skel/q-system/.q-system/scripts/open-loops-heartbeat.sh" >/dev/null 2>&1
+PROSE_CALLS="$(wc -l < "$TMP3/claude-calls" 2>/dev/null | tr -d ' ')"
+if [ "${PROSE_CALLS:-0}" = "3" ]; then
+  echo "PASS  agent prose quoting the marker does not halt the fleet (calls=$PROSE_CALLS)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL  agent prose halted the sweep: only $PROSE_CALLS instance(s) attempted, want 3"
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$TMP3"
+
 echo "---"
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
