@@ -119,6 +119,39 @@ def _files(spec: dict) -> set[str]:
     return {f for e in spec.values() for f in e["required"] + e["optional"]}
 
 
+WRITE_VERB = re.compile(r"write|written|merge into|save|output to|emit|append|store", re.I)
+
+
+def extract_producers(agent_text: str) -> tuple[set[str], set[str]]:
+    """Return (produced, mentioned) from agent prompt text.
+
+    A FUNCTION and not inline in main() so the self-test can drive it. Codex
+    PR #202 round 2: the deleted-writer mutant fed `produced`/`mentioned`
+    straight into find_drift, so reverting this split left the self-test green.
+    A green test over the pure rule proves nothing about the code that BUILDS
+    its inputs -- the same could-not-fire class this whole issue is about.
+
+    Two writer conventions, and either one alone is wrong. Most agents write a
+    {{BUS_DIR}}-qualified path; some bus files come from a SCRIPT the
+    orchestrator shells out to, described as "writes X.json" (compliance.json,
+    via compliance-check.py). Matching every *.json instead over-claimed,
+    calling settings.json a bus artifact.
+
+    Per LINE, so a write verb only credits names on its own line: agents both
+    `Read {{BUS_DIR}}/calendar.json` and `Write log to {{BUS_DIR}}/x.json`.
+    """
+    produced: set[str] = set()
+    mentioned: set[str] = set()
+    for line in agent_text.splitlines():
+        names = {m.rsplit("/", 1)[-1]
+                 for m in re.findall(r"\{\{BUS_DIR\}\}/[A-Za-z0-9._-]+\.json", line)}
+        names |= set(re.findall(r"writes\s+([A-Za-z0-9._-]+\.json)", line))
+        mentioned |= names
+        if WRITE_VERB.search(line):
+            produced |= names
+    return produced, mentioned
+
+
 # ------------------------------------------------------------- the drift rules
 # Pure function over already-extracted sets, so --self-test can drive it with
 # synthetic input. A checker that can only run against the live tree cannot be
@@ -254,7 +287,29 @@ def self_test() -> int:
             return 1
         print(f"  ok  {name}: caught")
 
-    print(f"SELF-TEST PASS: clean input is silent, all {len(cases)} mutants caught.")
+    # Drive the REAL extractor over real agent-prompt phrasing. Without this the
+    # write/read split could be reverted with every case above still green,
+    # because they hand find_drift its inputs directly (Codex PR #202 round 2).
+    sample = (
+        "1. Read `{{BUS_DIR}}/reader-only.json` and parse it\n"
+        "2. Write results to {{BUS_DIR}}/written.json\n"
+        "3. Run the script - writes script-made.json\n"
+        "4. Update settings.json with the new key\n"
+    )
+    got_produced, got_mentioned = extract_producers(sample)
+    for label, actual, expected in (
+        ("produced", got_produced, {"written.json", "script-made.json"}),
+        ("mentioned", got_mentioned, {"reader-only.json", "written.json", "script-made.json"}),
+    ):
+        if actual != expected:
+            print(f"SELF-TEST FAIL: extractor {label} was {sorted(actual)}, "
+                  f"expected {sorted(expected)}")
+            return 1
+    print("  ok  extractor: read-only line is mentioned but NOT produced; "
+          "settings.json ignored")
+
+    print(f"SELF-TEST PASS: clean input is silent, all {len(cases)} mutants caught, "
+          "extractor verified.")
     return 0
 
 
@@ -287,35 +342,7 @@ def main() -> int:
 
     agent_text = "\n".join(p.read_text(errors="ignore") for p in AGENT_DIR.glob("*.md")) \
         if AGENT_DIR.is_dir() else ""
-    # Match the agents' own convention for a bus artifact: a {{BUS_DIR}}-qualified
-    # path. Two earlier shapes were both wrong. Deriving the candidates from
-    # (bridge | verifier) made producer-only structurally unable to fire, since a
-    # file no map lists could never enter the set - green self-test, dead in
-    # production. Widening to every *.json in the prompts then over-claimed,
-    # reporting settings.json and morning-log.json as bus artifacts an agent
-    # "writes". "An agent writes X" is a strong claim, so it is keyed on the
-    # qualified path and nothing looser.
-    # Two writer conventions, and keying on either one alone is wrong. Most
-    # agents write a {{BUS_DIR}}-qualified path, but some bus files are produced
-    # by a SCRIPT the orchestrator shells out to, described as "writes X.json"
-    # (compliance.json comes from compliance-check.py that way). Keying on the
-    # qualified path alone reported compliance.json as having no producer, which
-    # is simply false - and a checker that states a false thing is worse than no
-    # checker, because someone will act on it.
-    # Per LINE, so a write verb only credits the names on its own line. Verified
-    # against every required bus file: each one that is mentioned also has write
-    # evidence, and energy.json / dp-pipeline.json have neither. Zero false
-    # required-without-producer at the time of writing.
-    write_verb = re.compile(r"write|written|merge into|save|output to|emit|append|store", re.I)
-    produced: set[str] = set()
-    mentioned: set[str] = set()
-    for line in agent_text.splitlines():
-        names = {m.rsplit("/", 1)[-1]
-                 for m in re.findall(r"\{\{BUS_DIR\}\}/[A-Za-z0-9._-]+\.json", line)}
-        names |= set(re.findall(r"writes\s+([A-Za-z0-9._-]+\.json)", line))
-        mentioned |= names
-        if write_verb.search(line):
-            produced |= names
+    produced, mentioned = extract_producers(agent_text)
 
     findings = find_drift(bridge, mcp, vbus, schemas, produced, mentioned)
 
