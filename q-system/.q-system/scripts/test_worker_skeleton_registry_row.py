@@ -61,6 +61,34 @@ printf 'OK %s\\n' "${1:-}"
 exit 0
 '''
 
+# THE STUB ABOVE SWALLOWS $2, WHICH IS WHY THE FIRST CUT OF THIS SUITE COULD NOT
+# SEE THE REMOTE DEFECT AT ALL (PR #205 codex round 1, major). Promoting the
+# skeleton into local_repos without translating its pin only moved it from the
+# UNREACHABLE bucket to the REFUSED one. This stub records argv and mirrors ONE
+# branch of the shipped gate -- repo-preflight.sh check 4, "the registry row pins
+# no expected_remote; an unpinned repo is never entered" -- because the real
+# script reaches gh and the GitHub API in checks 6 and 7 and cannot run hermetic.
+# Only that branch is mirrored, and the ARGV log is what the assertions lean on,
+# so a drift in the gate's wording cannot make this suite pass or fail for the
+# wrong reason.
+STUB_PREFLIGHT_RECORDS_REMOTE = '''#!/usr/bin/env bash
+printf '%s\\037%s\\n' "${1:-}" "${2:-}" >> "$PREFLIGHT_ARGV_LOG"
+if [ -z "${2:-}" ]; then
+  printf 'FAIL remote: the registry row pins no expected_remote; an unpinned repo is never entered\\n'
+  printf 'REFUSED %s\\n' "${1:-}"
+  exit 1
+fi
+printf 'OK %s\\n' "${1:-}"
+exit 0
+'''
+
+# The skeleton's pin, as the live registry states it: a TOP-LEVEL `remote` key on
+# the `skeleton` object. Instance rows state theirs at `dispatch.expected_remote`
+# instead, and the fixture below carries both shapes so the translation cannot be
+# written as "read one field everywhere".
+SKEL_REMOTE = "https://example.invalid/skeleton-pin.git"
+TARGET_REMOTE = "https://example.invalid/target-pin.git"
+
 # The skeleton's board name is deliberately NOT its directory basename. If those
 # two agreed, the basename fallback would answer correctly and this suite would
 # pass against the unfixed code -- which is the whole reason the live fleet never
@@ -97,7 +125,7 @@ def _git_repo(path, origin):
                    check=True)
 
 
-def _build(tmp_path, registry, board, preflight_stub=None):
+def _build(tmp_path, registry, board, preflight_stub=None, extra_env=None):
     """A skeleton that is itself a checkout, a second target repo, a stubbed Linear.
 
     Returns (run, skel, target): `run(repo)` drives the shipped worker against
@@ -133,6 +161,7 @@ def _build(tmp_path, registry, board, preflight_stub=None):
             "FIXTURE_ISSUES": str(fixture),
             "KIPI_NOTIFY": "/bin/true",
         })
+        env.update(extra_env or {})
         # KIPI_LINEAR_PROJECT would short-circuit the registry read this suite is
         # about, so it is cleared rather than assumed absent from the caller.
         env.pop("KIPI_LINEAR_PROJECT", None)
@@ -214,6 +243,109 @@ def test_skeleton_checkout_counts_as_locally_present(skeleton_only_in_its_own_ke
         "a standalone row has no skeleton and can never be dispatched to; "
         f"promoting it would only lengthen the queue with unreachable work: "
         f"{unreachable}")
+
+
+@pytest.fixture()
+def registry_pins_two_shapes(tmp_path):
+    """Both pin shapes in one registry, plus a row that pins nothing.
+
+    The skeleton states its pin at top-level `remote`; an instance states its at
+    `dispatch.expected_remote`. A translation written as "read one field" gets
+    one of the two wrong, so both travel here. The unpinned row is the negative
+    half: it must keep arriving EMPTY.
+    """
+    pinned = tmp_path / "pinned-dir"
+    unpinned = tmp_path / "unpinned-dir"
+    stray = tmp_path / "stray-dir"
+    for d in (pinned, unpinned, stray):
+        d.mkdir()
+    registry = {
+        "skeleton": {"linear_project": SKEL_PROJECT, "remote": SKEL_REMOTE},
+        "instances": [
+            {"name": "targetproj", "path": str(tmp_path / "target")},
+            {"name": "dispatchpinproj", "path": str(pinned),
+             "dispatch": {"expected_remote": TARGET_REMOTE}},
+            {"name": "unpinnedproj", "path": str(unpinned)},
+            # An INSTANCE carrying the skeleton's field name. No live row looks
+            # like this today; it exists so the scoping decision is testable
+            # rather than a claim in a comment.
+            {"name": "strayremoteproj", "path": str(stray),
+             "remote": "https://example.invalid/stray.git"},
+        ],
+    }
+    board = [
+        _issue("ASK-900", "targetproj", ("owner:assaf",)),
+        _issue("ASK-901", SKEL_PROJECT),
+        _issue("ASK-903", "dispatchpinproj"),
+        _issue("ASK-904", "unpinnedproj"),
+        _issue("ASK-905", "strayremoteproj"),
+    ]
+    argv_log = tmp_path / "preflight-argv.log"
+    run, skel, target = _build(
+        tmp_path, registry, board,
+        preflight_stub=STUB_PREFLIGHT_RECORDS_REMOTE,
+        extra_env={"PREFLIGHT_ARGV_LOG": str(argv_log)})
+    return run, skel, target, pinned, unpinned, stray, argv_log
+
+
+def _argv_rows(log):
+    if not log.exists():
+        return []
+    return [ln.split("\x1f") for ln in log.read_text().splitlines() if ln]
+
+
+def test_the_skeletons_pinned_remote_reaches_preflight(registry_pins_two_shapes):
+    """Reproducer 3. RED after the ASK-881 fix, before this one.
+
+    Promoting the skeleton into local_repos gave the gate a row it could finally
+    be asked about -- and then handed it an empty remote, because the row builder
+    reads `dispatch.expected_remote` and the skeleton pins at top-level `remote`.
+    The gate refuses an unpinned row by design, so the skeleton simply moved from
+    UNREACHABLE to REFUSED and every other repo's run reported the skeleton off
+    limits for a pin that is right there in the registry.
+    """
+    run, skel, target, pinned, unpinned, stray, argv_log = registry_pins_two_shapes
+    rc, out = run(target)
+    assert rc == 0, f"expected a clean run, got exit {rc}:\n{out}"
+
+    seen = dict((row[0], row[1]) for row in _argv_rows(argv_log) if len(row) == 2)
+    assert seen.get(str(skel)) == SKEL_REMOTE, (
+        "the registry pins the skeleton's remote at its top-level `remote` key. "
+        "The worker read only `dispatch.expected_remote`, so the gate was asked "
+        f"about an unpinned repo. preflight saw: {seen!r}")
+
+    # The OTHER shape must not regress. A translation that replaced the dispatch
+    # read instead of adding to it would pass the assertion above and break every
+    # instance row that actually pins one.
+    assert seen.get(str(pinned)) == TARGET_REMOTE, (
+        "an instance row still states its pin at dispatch.expected_remote; "
+        f"preflight saw: {seen!r}")
+
+    # NEGATIVE SELF-TEST. "Unpinned is never entered" is the gate's rule, so a fix
+    # that defaulted to the checkout's own git origin -- or to any non-empty
+    # string -- would satisfy both assertions above while quietly admitting every
+    # repo nobody ever pinned.
+    assert seen.get(str(unpinned)) == "", (
+        "a row that pins nothing must still arrive empty; inventing a remote for "
+        f"it hands the gate a pin the registry never stated. preflight saw: {seen!r}")
+
+    # KILLS THE WIDER MUTANT. A bare `or e.get("remote")` on every row passes
+    # every assertion above, and it is the version that softens the rule: a stray
+    # `remote` on an instance nobody opted into dispatch would start reading as a
+    # pin, turning a refusal into an entry. Top-level `remote` is the SKELETON
+    # object's shape and is only honoured there.
+    assert seen.get(str(stray)) == "", (
+        "top-level `remote` is the skeleton object's field. Honouring it on an "
+        "instance row would promote a value nobody wrote as a dispatch pin into "
+        f"one. preflight saw: {seen!r}")
+
+    refused = _line(out, "REFUSED by preflight")
+    assert SKEL_PROJECT not in refused, (
+        f"the skeleton pins {SKEL_REMOTE} and must clear the remote check:\n  {refused}")
+    assert "dispatchpinproj" not in refused, f"pinnedproj pins a remote too:\n  {refused}"
+    assert "unpinnedproj" in refused, (
+        "the unpinned row is the one the gate is supposed to refuse; if it is "
+        f"missing here the stub never ran and the argv assertions are hollow:\n{out}")
 
 
 if __name__ == "__main__":

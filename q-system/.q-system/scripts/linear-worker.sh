@@ -442,9 +442,26 @@ for e in rows:
         # The pinned remote travels WITH the row, because repo-preflight needs it
         # and re-reading the registry to find it is the second reader ASK-729
         # already refused to add.
+        #
+        # TWO FIELD NAMES FOR ONE FACT, because the registry states them that way
+        # (PR #205 codex round 1, major). An instance pins at
+        # `dispatch.expected_remote`; the skeleton object pins at a TOP-LEVEL
+        # `remote` and carries no dispatch block at all. Promoting the skeleton
+        # into this list without translating its pin only moved it from the
+        # UNREACHABLE bucket to the REFUSED one -- repo-preflight check 4 refuses
+        # an empty remote outright ("an unpinned repo is never entered"), so every
+        # OTHER repo's run would report the skeleton off limits for a pin sitting
+        # in the file it just read.
+        #
+        # SCOPED TO THE SKELETON ROW, not a general `or e.get("remote")`. The
+        # top-level key is the skeleton object's documented shape; reading it on
+        # any row would silently start treating a stray `remote` on an instance as
+        # a dispatch pin, which is the one direction that turns a refusal into an
+        # entry. An instance that pins nothing still arrives empty and is still
+        # refused, which is the rule this must not soften.
         d = e.get("dispatch") if isinstance(e.get("dispatch"), dict) else {}
-        local.append({"project": proj, "path": p,
-                      "remote": d.get("expected_remote") or ""})
+        pin = d.get("expected_remote") or (e.get("remote") if e.get("is_skeleton") else "")
+        local.append({"project": proj, "path": p, "remote": pin or ""})
 local.sort(key=lambda r: r["project"])
 print(json.dumps({"name": name, "local_repos": local, "ok": ok}))
 PY
