@@ -65,10 +65,20 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # import cannot express the state the defect lives in.
 LABELS_FILE = os.environ["LABELS_FILE"]
 
+# TWO SENTINELS INSTEAD OF A LABEL LIST, because Linear can answer a lookup
+# without answering the question. `__null__` is the alias present and null (the
+# id resolved to no issue); `__omit__` is the alias absent from `data` entirely.
+# Both arrive with NO `errors` key, so `graphql` returns normally and the reader
+# is holding a response that says nothing about the park.
+NULL = "__null__"
+OMIT = "__omit__"
+
 def issue(ident):
-    labels = json.load(open(LABELS_FILE))
+    labels = json.load(open(LABELS_FILE)).get(ident, [])
+    if labels == NULL:
+        return None
     return {"id": ident, "identifier": ident,
-            "labels": {"nodes": [{"name": n} for n in labels.get(ident, [])]}}
+            "labels": {"nodes": [{"name": n} for n in labels]}}
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -80,6 +90,8 @@ class H(BaseHTTPRequestHandler):
         # accidentally teach the reader an ordering it does not have live.
         data = {}
         for alias, ident in _aliases(req.get("query") or ""):
+            if json.load(open(LABELS_FILE)).get(ident) == OMIT:
+                continue          # the alias never appears in the response
             data[alias] = issue(ident)
         out = json.dumps({"data": data}).encode()
         self.send_response(200); self.send_header("Content-Type", "application/json")
@@ -271,6 +283,56 @@ RCM3="$(run_mark ASK-905 rework 94 eeee5555)"
 RCM4="$(RR_URL="http://127.0.0.1:1/graphql" run_mark ASK-905 re-review 94 ffff6666)"
 [ "$RCM4" = "3" ] && ok "an unreadable park state at the claim exits 3, not 0" \
   || bad "an unreadable park state at the claim exited '$RCM4' -- it would dispatch"
+
+# --- a lookup that answers nothing ------------------------------------------
+# FINDING 2 (PR #201 review round 2, minor). `graphql` raises on an `errors`
+# array, so the reader only ever sees a clean response -- but a clean response
+# can still say nothing about an issue. Linear answers `null` for an id it does
+# not resolve, and an alias can be absent from `data` outright. Both were read
+# as "no park labels found", which is the module's stated defect one layer down:
+# I COULD NOT ASK is not NOTHING IS PARKED.
+echo
+echo "== a lookup that answers nothing is unreadable, not unparked =="
+
+printf '[%s]\n' "$(pr_entry 95 ask-906 99996666)" > "$WORK/board.json"
+record 95 ASK-906 99996666
+
+# The discrimination first, on the same PR: without it "exit 3 whenever the
+# response is not a full label set" would pass every case below.
+set_labels '{"ASK-906": ["owner:sana"]}'
+RCP="$(run_select)"
+if printf '%s' "$(cat "$WORK/out.txt")" | awk -F'\t' '$3 == "95" {f=1} END {exit !f}'; then
+  ok "PR #95 is offered while ASK-906 answers normally"
+else
+  bad "PR #95 was not offered on a normal answer (rc=$RCP) -- the cases below prove nothing"
+fi
+
+set_labels '{"ASK-906": "__null__"}'
+RCN="$(run_select)"
+[ "$RCN" = "3" ] && ok "a null issue lookup exits 3, not 0" \
+  || bad "a null issue lookup exited '$RCN' -- an unverifiable park reads as unparked"
+[ -z "$(cat "$WORK/out.txt")" ] && ok "a null issue lookup offers nothing" \
+  || bad "a null issue lookup still offered: $(cat "$WORK/out.txt")"
+case "$(cat "$WORK/err.txt")" in
+  *ASK-906*) ok "the refusal names the issue Linear did not answer for" ;;
+  *) bad "nothing in stderr names ASK-906 -- the operator cannot tell which id failed" ;;
+esac
+
+set_labels '{"ASK-906": "__omit__"}'
+RCO="$(run_select)"
+[ "$RCO" = "3" ] && ok "an alias missing from the response exits 3, not 0" \
+  || bad "a missing alias exited '$RCO' -- a dropped alias reads as unparked"
+
+# THE SAME AT THE CLAIM, which is where the attempt is at stake.
+set_labels '{"ASK-906": "__null__"}'
+RCMN="$(run_mark ASK-906 rework 95 99996666)"
+[ "$RCMN" = "3" ] && ok "a null lookup at the claim exits 3, not 0" \
+  || bad "a null lookup at the claim exited '$RCMN' -- it would dispatch"
+
+set_labels '{"ASK-906": ["owner:sana"]}'
+RCMU="$(run_mark ASK-906 rework 95 99996666)"
+[ "$RCMU" = "0" ] && ok "the null-lookup refusal left the attempt unspent" \
+  || bad "after a readable answer the claim returned '$RCMU' -- the refusal spent the attempt"
 
 echo
 echo "  $PASS passed, $FAIL failed"

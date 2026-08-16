@@ -530,16 +530,43 @@ def parked(issues, graphql=None):
             data = graphql(_park_query(batch), {})
         except Exception as exc:            # transport, auth, GraphQL errors alike
             raise ParkUnavailable(str(exc)[:200]) from exc
-        for node in (data or {}).values():
+        data = data or {}
+        # READ BY THE ALIAS THIS RUN ASKED UNDER, never by iterating the values.
+        # `graphql` raises on an `errors` array, so everything arriving here is a
+        # clean 200 -- and a clean 200 can still fail to answer: Linear returns
+        # `null` for an id it does not resolve, and an alias can be missing from
+        # `data` outright. Iterating values() saw neither: a null was skipped and
+        # an omission was never looked for, so both left the issue absent from
+        # `out`, which every caller reads as NOT PARKED (PR #201 review round 2).
+        #
+        # That is this module's own defect one layer down. The docstring above
+        # commits to "an unreadable source is never read as permission", and an
+        # answer that says nothing about the issue is unreadable. It raises.
+        #
+        # THE COST OF FAILING CLOSED HERE IS NAMED, NOT HIDDEN: a PR whose branch
+        # carries an identifier Linear does not know now blocks the redrive at rc
+        # 3 every heartbeat instead of being dispatched. That is the intended
+        # trade -- the operator sees a line naming the exact id, where the old
+        # branch dispatched silently on a park it could not verify.
+        for n, ident in enumerate(batch):
+            node = data.get("i%d" % n)
             if not isinstance(node, dict):
-                # A null alias is an issue Linear does not know. Not parked, and
-                # not an outage either -- the redrive simply proceeds on it.
-                continue
-            names = [n.get("name") for n in
+                raise ParkUnavailable(
+                    "Linear answered no issue for %s -- the park state for it is "
+                    "unknown, which is not the same as unparked" % ident)
+            got = node.get("identifier")
+            if got and got != ident:
+                # An alias answering about a different issue would file THAT
+                # issue's park state under this one. Cheap to check, and silently
+                # answering the wrong question is the same class of defect.
+                raise ParkUnavailable(
+                    "Linear answered for %s under the alias asked for %s"
+                    % (got, ident))
+            names = [x.get("name") for x in
                      ((node.get("labels") or {}).get("nodes") or [])]
             reason = PARK.parked_reason(names)
             if reason:
-                out[node.get("identifier")] = reason
+                out[ident] = reason
     return out
 
 
@@ -733,6 +760,33 @@ def cmd_mark_dispatched(issue, action, pr, head_sha, graphql=None):
     park would spend that attempt on work that never ran, and lifting the park
     later would not give it back -- the next redrive would skip the PR for having
     "already had its one attempt". Refusing first leaves the attempt unspent.
+
+    THE RESIDUAL WINDOW IS REAL AND IS NOT CLOSED BY REORDERING (PR #201 review
+    round 2, major: "a label applied after the Linear response but before the
+    ledger claim is ignored"). True, and it stays true after any reorder, because
+    the exposure is measured from THE LAST READ to the launch, not from the read
+    to the claim. Writing both orderings on one clock, with `r` a Linear round
+    trip and `w` the local ledger write:
+
+        this ordering    read -> [w] claim -> [e] launch   missed: labels in (read, launch]   = w + e
+        claim-then-verify   claim -> [r] read -> [e] launch   missed: labels in (read, launch]   = e
+
+    Each design catches everything up to its own last read and misses everything
+    after it; both place that read as late as they can, so the exposure differs
+    by `w`, one local file write. What the reorder buys is not a smaller window,
+    it is the same window shifted across the claim -- and it is paid for with a
+    release path: a crash between the claim and the release spends the attempt
+    permanently on work that never launched, which is the exact harm the
+    paragraph above exists to prevent. A durability hole traded for a write's
+    worth of race is a worse deal than the race.
+
+    The window is irreducible here because the two facts live in two systems --
+    the park in Linear, the attempt in a local ledger -- with no transaction
+    across them. The last read that could shrink it further is not in this
+    process at all: it is inside the agent this dispatch launches, which does not
+    re-read the park today. That is captured as spillover against this issue
+    rather than smuggled in, because it lands in `pr-review-agent.sh` and
+    `converge`, and the ASK-872 DoR scopes neither.
     """
     try:
         state = parked([issue], graphql=graphql)
