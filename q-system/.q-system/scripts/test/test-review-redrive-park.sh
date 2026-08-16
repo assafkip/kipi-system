@@ -55,58 +55,12 @@ chmod +x "$BIN/gh"
 # --- fixture Linear: one label set per issue --------------------------------
 # The four issues are byte-identical except for `labels`, which is the only
 # field the park check may read.
-cat > "$WORK/fixture-server.py" <<'PY'
-import json, os
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
-# RE-READ PER REQUEST, from a file the cases rewrite. The board is not a
-# constant in life: the whole point of the mark-dispatched cases below is that a
-# label lands BETWEEN two reads, so a fixture that answers from a dict frozen at
-# import cannot express the state the defect lives in.
-LABELS_FILE = os.environ["LABELS_FILE"]
-
-# TWO SENTINELS INSTEAD OF A LABEL LIST, because Linear can answer a lookup
-# without answering the question. `__null__` is the alias present and null (the
-# id resolved to no issue); `__omit__` is the alias absent from `data` entirely.
-# Both arrive with NO `errors` key, so `graphql` returns normally and the reader
-# is holding a response that says nothing about the park.
-NULL = "__null__"
-OMIT = "__omit__"
-
-def issue(ident):
-    labels = json.load(open(LABELS_FILE)).get(ident, [])
-    if labels == NULL:
-        return None
-    return {"id": ident, "identifier": ident,
-            "labels": {"nodes": [{"name": n} for n in labels]}}
-
-class H(BaseHTTPRequestHandler):
-    def log_message(self, *a): pass
-    def do_POST(self):
-        body = self.rfile.read(int(self.headers["Content-Length"])).decode()
-        req = json.loads(body)
-        # The reader asks for a batch of aliased issues. Answer whichever
-        # identifiers it named, under the alias it used, so the fixture cannot
-        # accidentally teach the reader an ordering it does not have live.
-        data = {}
-        for alias, ident in _aliases(req.get("query") or ""):
-            if json.load(open(LABELS_FILE)).get(ident) == OMIT:
-                continue          # the alias never appears in the response
-            data[alias] = issue(ident)
-        out = json.dumps({"data": data}).encode()
-        self.send_response(200); self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(out))); self.end_headers()
-        self.wfile.write(out)
-
-def _aliases(query):
-    # `i0: issue(id: "ASK-901") { ... }` -> ("i0", "ASK-901")
-    import re
-    return re.findall(r'(\w+)\s*:\s*issue\(\s*id\s*:\s*"([^"]+)"', query)
-
-srv = HTTPServer(("127.0.0.1", 0), H)
-print(srv.server_port, flush=True)
-srv.serve_forever()
-PY
+#
+# THE SERVER IS A COMMITTED FILE, NOT A HEREDOC. test-ci-redrive.sh drives the
+# real dispatcher against the same reader and needs the same board, and a second
+# copy of this fixture would drift exactly like a second copy of the label list.
+FIXTURE_SRV="$(dirname "${BASH_SOURCE[0]}")/linear-park-fixture.py"
+[ -f "$FIXTURE_SRV" ] || { echo "FATAL: fixture server not found at $FIXTURE_SRV" >&2; exit 1; }
 LABELS_FILE="$WORK/labels.json"
 set_labels() { printf '%s' "$1" > "$LABELS_FILE"; }
 set_labels '{"ASK-901": ["owner:sana", "owner:assaf"],
@@ -115,7 +69,7 @@ set_labels '{"ASK-901": ["owner:sana", "owner:assaf"],
              "ASK-904": ["owner:sana"],
              "ASK-905": ["owner:sana"]}'
 export LABELS_FILE
-python3 "$WORK/fixture-server.py" > "$WORK/port" 2> "$WORK/server.err" &
+python3 "$FIXTURE_SRV" > "$WORK/port" 2> "$WORK/server.err" &
 SRV_PID=$!
 for _ in $(seq 1 100); do PORT="$(cat "$WORK/port" 2>/dev/null)"; [ -n "${PORT:-}" ] && break; sleep 0.1; done
 [ -n "${PORT:-}" ] || { echo "fixture server did not start"; cat "$WORK/server.err"; exit 1; }
@@ -307,10 +261,18 @@ else
   bad "PR #95 was not offered on a normal answer (rc=$RCP) -- the cases below prove nothing"
 fi
 
+# THE UNIT OF REFUSAL IS THE ISSUE, NOT THE RUN (PR #201 review round 4, major).
+# Round 2 raised for the whole batch on a null lookup, which is why these two
+# cases used to assert rc 3. That was over-wide: the id comes off the PR (branch
+# tail, else title), so ONE badly-titled PR made the reader refuse the entire
+# board, every heartbeat, permanently. The property is unchanged -- an
+# unverifiable park is never read as unparked -- but it is enforced against the
+# candidate that could not be verified, and nothing else. With a one-PR board
+# that leaves nothing to offer, which is rc 1: nothing red, not a Linear outage.
 set_labels '{"ASK-906": "__null__"}'
 RCN="$(run_select)"
-[ "$RCN" = "3" ] && ok "a null issue lookup exits 3, not 0" \
-  || bad "a null issue lookup exited '$RCN' -- an unverifiable park reads as unparked"
+[ "$RCN" = "1" ] && ok "a null issue lookup leaves nothing offerable (rc 1)" \
+  || bad "a null issue lookup exited '$RCN' -- want 1: the candidate is dropped, the run is not"
 [ -z "$(cat "$WORK/out.txt")" ] && ok "a null issue lookup offers nothing" \
   || bad "a null issue lookup still offered: $(cat "$WORK/out.txt")"
 case "$(cat "$WORK/err.txt")" in
@@ -320,8 +282,10 @@ esac
 
 set_labels '{"ASK-906": "__omit__"}'
 RCO="$(run_select)"
-[ "$RCO" = "3" ] && ok "an alias missing from the response exits 3, not 0" \
-  || bad "a missing alias exited '$RCO' -- a dropped alias reads as unparked"
+[ "$RCO" = "1" ] && ok "an alias missing from the response leaves nothing offerable (rc 1)" \
+  || bad "a missing alias exited '$RCO' -- want 1: a dropped alias drops its candidate"
+[ -z "$(cat "$WORK/out.txt")" ] && ok "a missing alias offers nothing" \
+  || bad "a missing alias still offered: $(cat "$WORK/out.txt")"
 
 # THE SAME AT THE CLAIM, which is where the attempt is at stake.
 set_labels '{"ASK-906": "__null__"}'
@@ -333,6 +297,136 @@ set_labels '{"ASK-906": ["owner:sana"]}'
 RCMU="$(run_mark ASK-906 rework 95 99996666)"
 [ "$RCMU" = "0" ] && ok "the null-lookup refusal left the attempt unspent" \
   || bad "after a readable answer the claim returned '$RCMU' -- the refusal spent the attempt"
+
+# --- one bad id must not suppress the batch ----------------------------------
+# FINDING (PR #201 review round 4, major): "One invalid title-derived issue ID
+# aborts the entire batched park lookup, suppressing every valid reviewer-redrive
+# candidate."
+#
+# THE ID IS DERIVED FROM THE PR, so it is attacker-free but not trustworthy:
+# ci-redrive's attribute() takes the branch tail when it is an issue id, else the
+# ONE id the title names via `\b[A-Za-z]{2,6}-\d+\b`. "convert the log writer to
+# UTF-8" satisfies that pattern. So a PR nobody wrote carelessly -- just titled
+# in English -- yields the identifier `UTF-8`, Linear resolves nothing for it,
+# and round 2's whole-batch raise then took the reviewer redrive offline for
+# every OTHER PR on the board. Not transient: that title does not heal.
+#
+# The fixture uses that exact title rather than a sentinel id, because the id
+# under test has to be one the producer really emits (fixtures-from-producers).
+echo
+echo "== one unresolvable id drops its own candidate, not the batch =="
+
+# ask-907 on the branch tail -> a normal, verifiable candidate.
+# A branch tail that is NOT an issue id -> attribute() falls through to the title.
+cat > "$WORK/board.json" <<EOS
+[$(pr_entry 96 ask-907 77771111),
+ {"number": 97, "headRefName": "sana/encoding-fix", "headRefOid": "88882222",
+  "url": "https://example.invalid/pr/97",
+  "title": "convert the log writer to UTF-8 (no issue id here)",
+  "isDraft": false,
+  "statusCheckRollup": [
+    {"__typename": "StatusContext", "context": "kipi/reviewer-approved", "state": "FAILURE"},
+    {"__typename": "CheckRun", "name": "validate", "status": "COMPLETED", "conclusion": "SUCCESS"}
+  ]}]
+EOS
+record 96 ASK-907 77771111
+record 97 UTF-8 88882222
+
+set_labels '{"ASK-907": ["owner:sana"], "UTF-8": "__null__"}'
+RCB="$(run_select)"
+OUTB="$(cat "$WORK/out.txt")"; ERRB="$(cat "$WORK/err.txt")"
+[ "$RCB" = "0" ] && ok "a batch holding one unresolvable id still answers (rc 0)" \
+  || bad "the batch exited '$RCB' -- one bad PR title suppressed every valid candidate"
+if printf '%s' "$OUTB" | awk -F'\t' '$3 == "96" {f=1} END {exit !f}'; then
+  ok "the valid candidate PR #96 survives a sibling Linear cannot resolve"
+else
+  bad "PR #96 was suppressed by PR #97's unresolvable id -- the finding, unfixed"
+fi
+if printf '%s' "$OUTB" | awk -F'\t' '$3 == "97" {f=1} END {exit !f}'; then
+  bad "PR #97 was offered on a park nobody could verify"
+else
+  ok "PR #97, whose park state is unknown, is not offered"
+fi
+case "$ERRB" in
+  *UTF-8*) ok "the run names UTF-8 as the id it could not resolve" ;;
+  *) bad "nothing in stderr names UTF-8 -- the operator cannot find the mistitled PR" ;;
+esac
+
+# THE OTHER DIRECTION, and without it "drop the ones you cannot read" passes by
+# reading nothing. A batch-level failure is still a batch-level refusal: the
+# whole response is missing, so no candidate in it was verified.
+RCB2="$(RR_URL="http://127.0.0.1:1/graphql" run_select)"
+[ "$RCB2" = "3" ] && ok "a Linear outage still refuses the whole batch (rc 3)" \
+  || bad "a Linear outage exited '$RCB2' -- per-issue isolation swallowed a real outage"
+[ -z "$(cat "$WORK/out.txt")" ] && ok "a Linear outage offers nothing from the batch" \
+  || bad "a Linear outage still offered: $(cat "$WORK/out.txt")"
+
+# AND A RESPONSE THAT MIS-FILES ONE ALIAS IS ALSO BATCH-WIDE, deliberately: a
+# bad INPUT id makes one issue unknown, but an alias answering about a different
+# issue means the response mapping itself cannot be trusted, so nothing in it may
+# be filed. Two failure shapes, two blast radii, and the split is the whole fix.
+set_labels '{"ASK-907": "__wrong__", "UTF-8": "__null__"}'
+RCB3="$(run_select)"
+[ "$RCB3" = "3" ] && ok "an alias answering for another issue refuses the batch (rc 3)" \
+  || bad "a mis-filed alias exited '$RCB3' -- park state was filed under the wrong issue"
+
+# --- park-check: the read-only answer the dispatcher asks for ----------------
+# FINDING (PR #201 review round 4, major): "Park labels do not stop the
+# higher-priority red-CI redrive, so a parked issue with red CI is still
+# dispatched." kipi-dispatch.sh runs ci-redrive.py FIRST and only reaches the
+# reviewer redrive when it offered nothing, so everything this file proves about
+# select/mark-dispatched was bypassed whenever a parked issue also had red CI.
+#
+# The dispatcher needs the park answer for an issue it did not select here, so
+# this is a subcommand and not a flag on select. READ-ONLY: it must never touch
+# the attempts ledger, or asking the question would spend the answer.
+echo
+echo "== park-check: one issue, one answer, no writes =="
+
+run_check() {   # run_check <issue>
+  env PATH="$BIN:$PATH" KIPI_NOTIFY="$BIN/notify.sh" KIPI_ATTEMPTS="$LEDGER" \
+    KIPI_LINEAR_API_URL="${RR_URL:-http://127.0.0.1:$PORT/graphql}" \
+    KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+    python3 "$SEL" park-check --issue "$1" \
+    > "$WORK/cout.txt" 2> "$WORK/cerr.txt"
+  echo $?
+}
+
+set_labels '{"ASK-910": ["owner:sana"],
+             "ASK-911": ["owner:sana", "owner:assaf"],
+             "ASK-912": ["owner:sana", "blocked:capability"],
+             "ASK-913": "__null__"}'
+
+LEDGER_BEFORE="$(cat "$LEDGER" 2>/dev/null || echo absent)"
+
+RCC="$(run_check ASK-910)"
+[ "$RCC" = "0" ] && ok "an unparked issue answers 0 -- the redrive may proceed" \
+  || bad "an unparked issue exited '$RCC' (stderr: $(cat "$WORK/cerr.txt"))"
+
+RCC2="$(run_check ASK-911)"
+[ "$RCC2" = "4" ] && ok "an issue parked by owner:assaf answers 4" \
+  || bad "a parked issue exited '$RCC2' -- the dispatcher would redrive it"
+case "$(cat "$WORK/cout.txt")" in
+  *owner:assaf*) ok "park-check prints the label on stdout so the say line can name it" ;;
+  *) bad "park-check printed no label -- dispatch.log would say 'parked' and not by what" ;;
+esac
+
+RCC3="$(run_check ASK-912)"
+[ "$RCC3" = "4" ] && ok "an issue parked by blocked:capability answers 4" \
+  || bad "blocked:capability exited '$RCC3' -- the sharpest case, an agent that cannot finish"
+
+RCC4="$(run_check ASK-913)"
+[ "$RCC4" = "3" ] && ok "an id Linear cannot resolve answers 3, not 0" \
+  || bad "an unresolvable id exited '$RCC4' -- the dispatcher would read that as unparked"
+
+RCC5="$(RR_URL="http://127.0.0.1:1/graphql" run_check ASK-910)"
+[ "$RCC5" = "3" ] && ok "a Linear outage answers 3, not 0" \
+  || bad "a Linear outage exited '$RCC5' -- an unreadable source read as permission"
+
+LEDGER_AFTER="$(cat "$LEDGER" 2>/dev/null || echo absent)"
+[ "$LEDGER_BEFORE" = "$LEDGER_AFTER" ] \
+  && ok "five park-checks wrote nothing to the attempts ledger" \
+  || bad "park-check moved the ledger -- asking the question spent an attempt"
 
 echo
 echo "  $PASS passed, $FAIL failed"
