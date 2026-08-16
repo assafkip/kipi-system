@@ -440,6 +440,12 @@ import importlib.util, json, os, sys, pathlib
 here = pathlib.Path(os.environ["SCRIPT_DIR"])
 spec = importlib.util.spec_from_file_location("ls", here / "linear-sync.py")
 ls = importlib.util.module_from_spec(spec); spec.loader.exec_module(ls)
+# park_labels.py: the three labels that park an issue, shared with
+# review-redrive.py (ASK-872). Loaded by FILENAME like linear-sync.py above --
+# the capability gate scans wiring surfaces for a script filename, and a module
+# imported without its .py reads as a dead engine there (ASK-230).
+_pspec = importlib.util.spec_from_file_location("park_labels", here / "park_labels.py")
+park = importlib.util.module_from_spec(_pspec); _pspec.loader.exec_module(park)
 only = (sys.argv[1] or "").strip()
 
 Q = """query($t:ID!,$a:String){issues(filter:{team:{id:{eq:$t}}},first:250,after:$a){
@@ -555,8 +561,7 @@ def ready(i):
 # this filter could most easily cause.
 def ready_ignoring_project(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
-    return ("owner:assaf" not in labels and "owner:sana" in labels
-            and "needs-scope" not in labels and "blocked:capability" not in labels
+    return (not park.parked_reason(labels) and "owner:sana" in labels
             and not is_fleet_alert(i)
             and i["state"]["type"] in ("backlog", "unstarted")
             and "Definition of Ready" in (i.get("description") or ""))
