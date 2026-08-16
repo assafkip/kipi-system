@@ -497,6 +497,24 @@ def self_test() -> int:
             schemas={"a.json", "d.json"},
             produced={"a.json", "d.json"},
             day_rules_by_verifier={VBUS_LABEL: {"tuesday": {"0": ["d.json"]}}}),
+        # BOTH verifiers promote on the same weekday/phase, different files.
+        # The case above does NOT pin the original defect: with only one
+        # verifier key present, re-merging the sources before the comparison is
+        # a no-op, so a mutant that put the union back SURVIVED it. Union only
+        # erases the split when there are two sides to collapse. Measured, not
+        # assumed -- the surviving mutant is what asked for this case.
+        "verifier-disagreement-when-verifiers-promote-different-files": dict(
+            clean,
+            bridge={"a.json", "d.json", "e.json"},
+            mcp={0: {"required": ["a.json"], "optional": ["d.json", "e.json"],
+                     "checks": []}},
+            vbus={0: {"required": ["a.json"], "optional": ["d.json", "e.json"],
+                      "checks": []}},
+            schemas={"a.json", "d.json", "e.json"},
+            produced={"a.json", "d.json", "e.json"},
+            day_rules_by_verifier={
+                MCP_LABEL: {"tuesday": {"0": ["e.json"]}},
+                VBUS_LABEL: {"tuesday": {"0": ["d.json"]}}}),
         }
     for name, kwargs in cases.items():
         # The mutant NAME may describe a scenario; the class it must emit is the
