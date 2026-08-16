@@ -26,8 +26,16 @@ structure. They are three different relations that happen to share a filename
 vocabulary. Unifying them is a refactor of live morning-pipeline infra to buy
 consistency in the one dimension a reader can check for free.
 
-Read-only. Never a blocking gate: this script ships to every instance via
-`kipi update`, and a hard block here would land on all of them at once.
+Read-only, and never a gate in the PER-INSTANCE check suite. The fleet is the
+wrong venue: this script's subject is skeleton-owned code, and the updater does
+not preserve plugins/, verify-bus.py or agent-pipeline/agents/ in an instance,
+so an instance cannot fix anything reported here -- a local edit is erased on
+the next sync. A gate its population cannot satisfy gets switched off.
+
+It IS intended to gate the skeleton's own validate workflow, where the party
+who can fix a finding is the party the gate stops. That arming rides ASK-874's
+fix, because the script exits 1 today and a gate nobody can pass blocks the
+very PR that would make it pass. Until then it is declared inert on purpose.
 
 Usage:
   python3 q-system/.q-system/scripts/bus-vocabulary-drift.py
@@ -117,7 +125,18 @@ def _files(spec: dict) -> set[str]:
 # shown to go red for the reason you think it does.
 
 def find_drift(bridge: set[str], mcp: dict, vbus: dict,
-               schemas: set[str], produced: set[str]) -> list[dict]:
+               schemas: set[str], produced: set[str],
+               mentioned: set[str] | None = None) -> list[dict]:
+    """`produced` = a WRITE was found. `mentioned` = the name appears at all.
+
+    Codex PR #202 (major): keying the producer classes on mere mention treated
+    every read as a write, so deleting a real writer left
+    required-without-producer silent as long as some agent still READ the file.
+    Agents both `Read {{BUS_DIR}}/calendar.json` and `Write log to
+    {{BUS_DIR}}/daily-checklists.json`, so the two facts are separate inputs.
+    """
+    if mentioned is None:
+        mentioned = produced
     findings: list[dict] = []
 
     # D1 - a structure check registered for a file the loop never visits.
@@ -148,8 +167,8 @@ def find_drift(bridge: set[str], mcp: dict, vbus: dict,
             for f in sorted(set(entry["required"]) - produced):
                 findings.append({
                     "class": "required-without-producer",
-                    "detail": f"{label} phase {phase} requires {f}, "
-                              f"but no agent prompt names it - phase cannot pass",
+                    "detail": f"{label} phase {phase} requires {f}, but no agent prompt "
+                              f"shows a WRITE of it - phase cannot pass",
                 })
 
     # D4 - bridge and verifier vocabularies diverge.
@@ -165,18 +184,18 @@ def find_drift(bridge: set[str], mcp: dict, vbus: dict,
     for f in sorted((bridge | verifier_all) - schemas):
         findings.append({"class": "no-schema", "detail": f"{f} has no JSON schema"})
 
-    # D6 - a file an agent WRITES that neither map knows about.
-    # Codex PR #199: the candidate set used to be (bridge | verifier), so a
-    # producer-only artifact was invisible to every rule above - the scanner
-    # could not report the one direction that has a real writer behind it.
-    for f in sorted(produced - bridge - verifier_all):
+    # D6 - a bus artifact the agents reference that neither map knows about.
+    # Codex PR #199: the candidate set used to be (bridge | verifier), so this
+    # direction was invisible. Keyed on MENTION, and says so: proving a write
+    # from prose is not reliable, and the class does not need it to be useful.
+    for f in sorted(mentioned - bridge - verifier_all):
         findings.append({
-            "class": "producer-only",
-            "detail": f"an agent writes {f}, but no verifier and no bridge entry knows it",
+            "class": "unmapped-artifact",
+            "detail": f"agent prompts reference {f}, but no verifier and no bridge entry knows it",
         })
 
     # D7 - a schema with no consumer on any map. Same blind spot, other end.
-    for f in sorted(schemas - bridge - verifier_all - produced):
+    for f in sorted(schemas - bridge - verifier_all - mentioned):
         findings.append({
             "class": "schema-only",
             "detail": f"{f} has a schema but no producer, verifier or bridge entry",
@@ -217,15 +236,23 @@ def self_test() -> int:
                               vbus={0: {"required": ["a.json", "b.json"], "optional": [], "checks": []}},
                               schemas={"a.json", "b.json"}, produced={"a.json", "b.json"}),
         "no-schema": dict(clean, schemas=set()),
-        "producer-only": dict(clean, produced={"a.json", "p.json"}),
+        "unmapped-artifact": dict(clean, mentioned={"a.json", "p.json"}),
+        # The deleted-writer case: still READ (so mentioned), no longer written.
+        # This is the mutant that was silent before the write/mention split.
+        "required-without-producer-when-only-read": dict(
+            clean, produced=set(), mentioned={"a.json"}),
         "schema-only": dict(clean, schemas={"a.json", "y.json"}),
     }
-    for want, kwargs in cases.items():
+    for name, kwargs in cases.items():
+        # The mutant NAME may describe a scenario; the class it must emit is the
+        # name up to the first "-when-". Asserting a specific class matters: an
+        # assertion that accepts "any finding" passes for the wrong reason.
+        want = name.split("-when-")[0]
         classes = {f["class"] for f in find_drift(**kwargs)}
         if want not in classes:
-            print(f"SELF-TEST FAIL: mutant for {want!r} was not caught (got {classes or 'none'})")
+            print(f"SELF-TEST FAIL: mutant {name!r} did not emit {want!r} (got {classes or 'none'})")
             return 1
-        print(f"  ok  {want}: caught")
+        print(f"  ok  {name}: caught")
 
     print(f"SELF-TEST PASS: clean input is silent, all {len(cases)} mutants caught.")
     return 0
@@ -249,8 +276,14 @@ def main() -> int:
         print(f"bus-vocabulary-drift: cannot read a source: {e}", file=sys.stderr)
         return 2
 
-    schemas = {p.name.replace(".schema.json", ".json") for p in SCHEMA_DIR.glob("*.schema.json")
-               if not p.name.startswith("_")} if SCHEMA_DIR.is_dir() else set()
+    # Not every schema in this directory describes a BUS file. schedule-data is
+    # written to {{QROOT}}/output/schedule-data-{{DATE}}.json by 07-synthesize,
+    # so it has no bus entry by design and flagging it was a false alarm on every
+    # run (Codex PR #202, major). An alert that is wrong every time trains the
+    # reader to skip the whole report.
+    NON_BUS_SCHEMAS = {"schedule-data.json"}
+    schemas = ({p.name.replace(".schema.json", ".json") for p in SCHEMA_DIR.glob("*.schema.json")
+                if not p.name.startswith("_")} - NON_BUS_SCHEMAS) if SCHEMA_DIR.is_dir() else set()
 
     agent_text = "\n".join(p.read_text(errors="ignore") for p in AGENT_DIR.glob("*.md")) \
         if AGENT_DIR.is_dir() else ""
@@ -269,11 +302,22 @@ def main() -> int:
     # qualified path alone reported compliance.json as having no producer, which
     # is simply false - and a checker that states a false thing is worse than no
     # checker, because someone will act on it.
-    produced = {m.rsplit("/", 1)[-1]
-                for m in re.findall(r"\{\{BUS_DIR\}\}/[A-Za-z0-9._-]+\.json", agent_text)}
-    produced |= set(re.findall(r"writes\s+([A-Za-z0-9._-]+\.json)", agent_text))
+    # Per LINE, so a write verb only credits the names on its own line. Verified
+    # against every required bus file: each one that is mentioned also has write
+    # evidence, and energy.json / dp-pipeline.json have neither. Zero false
+    # required-without-producer at the time of writing.
+    write_verb = re.compile(r"write|written|merge into|save|output to|emit|append|store", re.I)
+    produced: set[str] = set()
+    mentioned: set[str] = set()
+    for line in agent_text.splitlines():
+        names = {m.rsplit("/", 1)[-1]
+                 for m in re.findall(r"\{\{BUS_DIR\}\}/[A-Za-z0-9._-]+\.json", line)}
+        names |= set(re.findall(r"writes\s+([A-Za-z0-9._-]+\.json)", line))
+        mentioned |= names
+        if write_verb.search(line):
+            produced |= names
 
-    findings = find_drift(bridge, mcp, vbus, schemas, produced)
+    findings = find_drift(bridge, mcp, vbus, schemas, produced, mentioned)
 
     if args.json:
         print(json.dumps({"findings": findings, "count": len(findings)}, indent=2))
