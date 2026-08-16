@@ -249,6 +249,37 @@ select_one() {
       KIPI_NOTIFY="$BIN/notify.sh" "${LINEAR_ENV[@]}" \
     python3 "$SEL" --repo-dir "$WORK" --records-dir "$RECORDS" select 2>/dev/null
 }
+
+# THE CLAIM GOES THROUGH ONE DOOR TOO, for the same reason `select` does.
+#
+# This was two bare `env KIPI_ATTEMPTS=` lines until PR #201 review round 3
+# (major). They were written when `mark-dispatched` did nothing but touch the
+# ledger, so no fixture was needed. Then the claim started re-reading the park
+# labels, and those two lines quietly began asking the REAL Linear board, with
+# the real key, about ASK-298 and ASK-301. Nothing failed: both issues exist and
+# are unparked, so the live answer happened to match the fixture's. On a machine
+# with no key or no network the same lines exit 3, claim nothing, and take five
+# unrelated cases down with them.
+#
+# A helper rather than two more copies of the env: the defect was per-call-site
+# and a third call site would reintroduce it. `test-review-redrive-isolation.sh`
+# is what makes a future omission fail out loud instead of going live.
+mark_dispatched() {   # mark_dispatched <issue> <action> <pr> <sha>
+  env KIPI_ATTEMPTS="$LEDGER" "${LINEAR_ENV[@]}" python3 "$SEL" mark-dispatched \
+    --issue "$1" --action "$2" --pr "$3" --head-sha "$4" >/dev/null 2>&1
+}
+
+# rc IS CHECKED, and that is half the fix. Both call sites discarded it, so a
+# claim that refused was indistinguishable from one that landed -- the assertion
+# that followed just read "the pick is still offered" and blamed the cap. A
+# refused claim now says so where it happened, not three lines later under
+# another name.
+claims() {   # claims <issue> <action> <pr> <sha> <what-it-is-for>
+  mark_dispatched "$1" "$2" "$3" "$4"
+  local rc=$?
+  [ "$rc" = "0" ] && ok "the claim for $1/$2 landed ($5)" \
+    || bad "mark-dispatched exited $rc for $1/$2 -- it claimed nothing, so every assertion after this one is testing the wrong thing"
+}
 printf '[%s]\n' "$(pr_entry 98 ask-298 cccc9999)" > "$WORK/board.json"
 record 98 "REQUEST CHANGES" "REQUEST CHANGES" true cccc9999
 
@@ -269,8 +300,7 @@ PICK2="$(select_one)"
 
 # And the claim, when it is made deliberately, DOES suppress the next offer.
 # Without this the case above is satisfied by a cap that never fires at all.
-env KIPI_ATTEMPTS="$LEDGER" python3 "$SEL" mark-dispatched \
-  --issue ASK-298 --action rework --pr 98 --head-sha cccc9999 >/dev/null 2>&1
+claims ASK-298 rework 98 cccc9999 "the suppression case below depends on it"
 [ -z "$(select_one)" ] && ok "after mark-dispatched the pick is suppressed -- the cap is real" \
   || bad "the pick survived mark-dispatched -- the cap never fires"
 
@@ -394,8 +424,7 @@ PICK4="$(select_ps "$WORK/ps-idle.txt")"
 
 # Now the page. The flag is claimed exactly as the dispatcher claims it, one
 # breath before the reviewer starts, which is the state that produced the bug.
-env KIPI_ATTEMPTS="$LEDGER" python3 "$SEL" mark-dispatched \
-  --issue ASK-301 --action re-review --pr 101 --head-sha ffff9999 >/dev/null 2>&1
+claims ASK-301 re-review 101 ffff9999 "the escalation cases below depend on it"
 PAGES_BEFORE="$(pages_count)"
 select_ps "$WORK/ps-live.txt" >/dev/null
 [ "$(pages_count)" = "$PAGES_BEFORE" ] \

@@ -388,6 +388,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-review-redrive-isolation.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-review-redrive-park.sh",
       "runner": "bash"
     },
