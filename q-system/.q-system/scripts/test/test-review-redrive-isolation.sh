@@ -49,7 +49,14 @@ run_isolated() {   # run_isolated <suite.sh> <outfile>
     bash "$HERE/$1" > "$2" 2>&1
 }
 
-for SUITE in test-review-redrive.sh test-review-redrive-park.sh; do
+# test-ci-redrive.sh JOINED THIS LIST IN ROUND 4, and for the same reason the
+# other two are in it: the dispatcher's red-CI path now asks review-redrive.py for
+# the park labels, so that suite -- which drives the REAL kipi-dispatch.sh -- began
+# making Linear calls it never used to make. A suite that acquires a live data path
+# through a script it merely CALLS is precisely the leak this launcher exists to
+# catch, and it is the quiet kind: the ids it would ask about are real, so a leaked
+# call would answer correctly and nothing would fail.
+for SUITE in test-review-redrive.sh test-review-redrive-park.sh test-ci-redrive.sh; do
   [ -f "$HERE/$SUITE" ] || { bad "$SUITE is missing"; continue; }
   OUT="$(mktemp)"
   run_isolated "$SUITE" "$OUT"

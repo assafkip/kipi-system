@@ -501,12 +501,23 @@ D_LEDGER="$DROOT/attempts.json"
 D_PAGES="$DROOT/pages.txt"
 D_PRS="$DROOT/prs.json"
 
+# THE REVIEWER SLOT IS POSTED AND GREEN, DELIBERATELY. This world is now read by
+# TWO selectors: ci-redrive (which excludes reviewer slots from red CI, so the
+# failing `validate` still makes it red) and review-redrive, which the dispatcher
+# reaches whenever ci-redrive offers nothing. With no reviewer slot at all,
+# review-redrive reads the slot as NEVER POSTED and offers a first re-review
+# (sp-d87c5416) -- so case 14g stopped asserting ci-redrive's behaviour and
+# started asserting the reviewer path's. A posted SUCCESS means "a newer review
+# already landed", which takes review-redrive out of every case here and leaves
+# each case measuring the one selector it was written for.
 RED_WORLD="[{\"number\":91,\"headRefName\":\"$RED_BRANCH\",\"isDraft\":false,
   \"headRefOid\":\"9999999999999999999999999999999999999999\",
   \"url\":\"https://x/91\",\"title\":\"t ($RED_ISS)\",
   \"statusCheckRollup\":[{\"__typename\":\"CheckRun\",\"name\":\"validate\",
    \"status\":\"COMPLETED\",\"conclusion\":\"FAILURE\",
-   \"workflowName\":\"Skeleton Validation\"}]}]"
+   \"workflowName\":\"Skeleton Validation\"},
+   {\"__typename\":\"StatusContext\",\"context\":\"kipi/reviewer-approved\",
+    \"state\":\"SUCCESS\"}]}]"
 
 run_dispatch() {  # run_dispatch [GH_RC]
   ( cd "$FAKE_REPO" && HOME="$DROOT/home" PATH="$DROOT/bin:$PATH" \

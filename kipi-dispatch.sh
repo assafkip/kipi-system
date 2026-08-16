@@ -1214,7 +1214,9 @@ fi
 # pr-review-agent.sh now persists, and answers with the action.
 #
 # rc 2 (gh could not answer) leaves the fresh pick standing, same as above.
-REVIEW_REDRIVE="$REPO/q-system/.q-system/scripts/review-redrive.py"
+# $REVIEW_REDRIVE is assigned once, above the red-CI block, which now asks this
+# same script for the park answer. One assignment and not two: a second copy of
+# the path is how a file gets moved and only one of its callers follows.
 REVIEW_ACTION=""; REVIEW_NEXT=""; REVIEW_PR=""; REVIEW_SHA=""
 if [ -z "$REDRIVE_NEXT" ] && [ -f "$REVIEW_REDRIVE" ]; then
   REVIEW_LINE="$(python3 "$REVIEW_REDRIVE" --repo-dir "$TARGET_PATH" select 2>>"$LOG")"
