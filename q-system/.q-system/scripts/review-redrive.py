@@ -142,6 +142,31 @@ def _load_ci_redrive():
 
 CI = _load_ci_redrive()
 
+
+def _load(name, modname):
+    """Load a sibling script by FILENAME, never by import path.
+
+    Two of the three things this file must agree with live next to it and are not
+    importable by name (`review-redrive.py`, `linear-sync.py`, hyphens). Naming
+    the file literally also keeps the capability gate's inert-engine scan able to
+    see the dependency -- a module imported without its `.py` reads as a dead
+    engine to that scan even with live callers (ASK-230).
+    """
+    spec = importlib.util.spec_from_file_location(modname, os.path.join(HERE, name))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# The three park labels, IMPORTED, NOT COPIED -- see park_labels.py. This script
+# was the third consumer of that vocabulary and the only one that never read it
+# (ASK-872).
+PARK = _load("park_labels.py", "park_labels")
+
+
+class ParkUnavailable(Exception):
+    """The park state could not be read. Not the same as nothing being parked."""
+
 # Verdicts that mean a human-equivalent reviewer objected and left a spec behind.
 # Kept as a literal set rather than "not an approval": an EMPTY verdict is not an
 # objection, it is an unstated one, and routing empty to rework is precisely the
@@ -450,6 +475,84 @@ def candidates(repo_dir, records_dir):
     return out
 
 
+# One GraphQL call per BATCH, not per PR. Aliasing N `issue(id:)` lookups into a
+# single query is what keeps the cost of this check flat: a redrive run makes ONE
+# call for every candidate it holds, and only when it holds at least one. Chunked
+# so a pathological board cannot post a query of unbounded size.
+PARK_BATCH = 50
+
+
+def _park_query(issues):
+    """One aliased GraphQL document for a batch of issue identifiers.
+
+    Aliased rather than filtered because `issue(id:)` is the only lookup that
+    takes the identifier the PR branch carries. A label-side filter would answer
+    "which issues on the board are parked", which is a different and much larger
+    question than "are THESE four parked".
+    """
+    parts = ['i%d: issue(id: "%s") { identifier labels { nodes { name } } }'
+             % (n, ident) for n, ident in enumerate(issues)]
+    return "query { %s }" % " ".join(parts)
+
+
+def parked(issues, graphql=None):
+    """{issue: (label, why)} for every parked issue in `issues`.
+
+    Raises ParkUnavailable if the labels cannot be read. THAT IS NOT THE SAME AS
+    AN EMPTY DICT and the caller must not fold the two together: "the board says
+    nothing is parked" and "I could not ask the board" have opposite consequences,
+    and the second one dispatching is how a `blocked:capability` issue gets handed
+    to an agent that provably cannot finish it, once per heartbeat.
+
+    Same direction main() already takes for GhUnavailable (rc 2, nothing claimed):
+    an unreadable source is never read as permission.
+    """
+    if not issues:
+        return {}
+    if graphql is None:
+        graphql = _load("linear-sync.py", "linear_sync").graphql
+    out = {}
+    ordered = sorted(set(issues))
+    for start in range(0, len(ordered), PARK_BATCH):
+        batch = ordered[start:start + PARK_BATCH]
+        try:
+            data = graphql(_park_query(batch), {})
+        except Exception as exc:            # transport, auth, GraphQL errors alike
+            raise ParkUnavailable(str(exc)[:200]) from exc
+        for node in (data or {}).values():
+            if not isinstance(node, dict):
+                # A null alias is an issue Linear does not know. Not parked, and
+                # not an outage either -- the redrive simply proceeds on it.
+                continue
+            names = [n.get("name") for n in
+                     ((node.get("labels") or {}).get("nodes") or [])]
+            reason = PARK.parked_reason(names)
+            if reason:
+                out[node.get("identifier")] = reason
+    return out
+
+
+def drop_parked(cands, graphql=None):
+    """The candidates whose issue is not parked, saying which label stopped each.
+
+    OUTSIDE candidates() on purpose. candidates() reads the PR board and nothing
+    else, and test-review-redrive-absent.py calls it in-process precisely because
+    it is that pure; putting a Linear round trip inside it would put a live data
+    path into that suite.
+    """
+    state = parked([c["issue"] for c in cands], graphql=graphql)
+    keep = []
+    for c in cands:
+        reason = state.get(c["issue"])
+        if reason:
+            sys.stderr.write(
+                "review-redrive: %s PR #%s is parked by %s (%s) -- not "
+                "redriving it.\n" % (c["issue"], c["pr"], reason[0], reason[1]))
+            continue
+        keep.append(c)
+    return keep
+
+
 def flag(cand):
     """One attempt per PR per action per head sha. See the module docstring."""
     return "review_%s_pr%s_%s" % (cand["action"].replace("-", ""),
@@ -629,6 +732,17 @@ def main(argv):
         # rc 2 is NOT "nothing to do": the caller must keep its fresh pick rather
         # than read an unreadable board as an empty one.
         sys.stderr.write("review-redrive: %s -- nothing was claimed.\n" % exc)
+        return 2
+    try:
+        cands = drop_parked(cands)
+    except ParkUnavailable as exc:
+        # rc 2 for the same reason GhUnavailable is rc 2: the run could not read
+        # a source it needs, so it must not report an answer. Reading "I cannot
+        # see the labels" as "nothing is parked" re-dispatches every parked issue
+        # on the board at once, and blocked:capability is guaranteed to fail.
+        sys.stderr.write(
+            "review-redrive: could not read the park labels (%s) -- refusing to "
+            "treat that as nothing being parked. Nothing was claimed.\n" % exc)
         return 2
     return cmd_select(cands, args.all)
 

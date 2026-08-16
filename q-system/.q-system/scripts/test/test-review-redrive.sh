@@ -50,6 +50,45 @@ cat "$BOARD"
 EOS
 chmod +x "$BIN/gh"
 
+# --- Linear, stubbed at the API seam (ASK-872) -------------------------------
+# `select` now reads the three park labels off each candidate's issue before it
+# offers anything, so this suite acquired a Linear dependency it did not have.
+# Left alone it would reach the REAL board with the real key -- a live data path
+# in a test, and one whose answers change as issues get labelled, so a case here
+# could start failing because someone parked ASK-317 in the morning.
+#
+# The fixture answers every issue with an EMPTY label set, which is what every
+# case in this file already assumed. No assertion below changes. The park
+# behaviour itself is held by test-review-redrive-park.sh.
+cat > "$WORK/linear-fixture.py" <<'PY'
+import json, re
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers["Content-Length"])).decode()
+        query = (json.loads(body).get("query") or "")
+        data = {alias: {"identifier": ident, "labels": {"nodes": []}}
+                for alias, ident in
+                re.findall(r'(\w+)\s*:\s*issue\(\s*id\s*:\s*"([^"]+)"', query)}
+        out = json.dumps({"data": data}).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out))); self.end_headers()
+        self.wfile.write(out)
+
+srv = HTTPServer(("127.0.0.1", 0), H)
+print(srv.server_port, flush=True)
+srv.serve_forever()
+PY
+python3 "$WORK/linear-fixture.py" > "$WORK/port" 2> "$WORK/linear.err" &
+SRV_PID=$!
+trap 'kill "${SRV_PID:-}" 2>/dev/null; rm -rf "$WORK"' EXIT
+for _ in $(seq 1 100); do PORT="$(cat "$WORK/port" 2>/dev/null)"; [ -n "${PORT:-}" ] && break; sleep 0.1; done
+[ -n "${PORT:-}" ] || { echo "FATAL: linear fixture did not start" >&2; exit 1; }
+LINEAR_ENV=(KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql"
+            KIPI_LINEAR_API_KEY="fixture-key-not-a-secret")
+
 # A PR entry with a failing reviewer slot. Everything except pr/branch/sha is
 # fixed, so a difference in outcome can only come from the verdict record.
 pr_entry() {   # pr_entry <number> <issue-lower> <sha>
@@ -79,6 +118,7 @@ PY
 
 select_all() {
   env PATH="$BIN:$PATH" BOARD="$WORK/board.json" KIPI_NOTIFY="$BIN/notify.sh" \
+      "${LINEAR_ENV[@]}" \
     python3 "$SEL" --repo-dir "$WORK" --records-dir "$RECORDS" select --all 2>/dev/null
 }
 action_for() {   # action_for <pr>
@@ -206,7 +246,7 @@ A42="$(action_for 42)"
 LEDGER="$WORK/attempts.json"; echo '{}' > "$LEDGER"
 select_one() {
   env PATH="$BIN:$PATH" BOARD="$WORK/board.json" KIPI_ATTEMPTS="$LEDGER" \
-      KIPI_NOTIFY="$BIN/notify.sh" \
+      KIPI_NOTIFY="$BIN/notify.sh" "${LINEAR_ENV[@]}" \
     python3 "$SEL" --repo-dir "$WORK" --records-dir "$RECORDS" select 2>/dev/null
 }
 printf '[%s]\n' "$(pr_entry 98 ask-298 cccc9999)" > "$WORK/board.json"
@@ -317,7 +357,7 @@ A99="$(action_for 99)"; A100="$(action_for 100)"
 # process is spawned and nothing reads the real one.
 select_ps() {   # select_ps <ps-table-file>
   env PATH="$BIN:$PATH" BOARD="$WORK/board.json" KIPI_ATTEMPTS="$LEDGER" \
-      KIPI_NOTIFY="$BIN/notify.sh" KIPI_PS="cat $1" \
+      KIPI_NOTIFY="$BIN/notify.sh" KIPI_PS="cat $1" "${LINEAR_ENV[@]}" \
     python3 "$SEL" --repo-dir "$WORK" --records-dir "$RECORDS" select 2>/dev/null
 }
 printf '[%s]\n' "$(pr_entry 101 ask-301 ffff9999)" > "$WORK/board.json"

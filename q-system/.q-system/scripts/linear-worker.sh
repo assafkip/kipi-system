@@ -526,23 +526,23 @@ def in_this_repo(i):
 
 def ready(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
-    if "owner:assaf" in labels:      return False   # founder decision, hands off
-    if "owner:sana" not in labels:   return False
-    # A REJECTION BY SANA, MADE MACHINE-READABLE (ASK-275).
+    # THE THREE PARK LABELS COME FROM park_labels.py (ASK-872), not from three
+    # string literals here. owner:assaf is a founder decision, needs-scope is a
+    # rejection by Sana made machine-readable (ASK-275) and blocked:capability is
+    # a runner that lacks something it cannot grant itself -- each routes
+    # somewhere different, all three mean not this one, and the module carries
+    # both the names and the reasons.
+    #
+    # It is a MODULE because this file was one of three consumers and the third,
+    # review-redrive.py, had none of them: a park stopped the fresh pick and not
+    # the redrive. A fourth copy is that defect again.
+    #
     # NOTE: no apostrophes anywhere in this heredoc. It sits inside a $( )
     # command substitution, and bash tracks quote state through a quoted
     # heredoc there -- one apostrophe in a PYTHON COMMENT swallowed the rest of
     # the substitution and the whole script died at "unexpected EOF".
-    # Before this label the only way to get a correctly-refused issue out of the
-    # queue was to relabel it `owner:assaf` -- the FOUNDER queue -- which is how
-    # ASK-149 got there on 2026-07-30. Routing an engineering re-scope to the
-    # founder is the thing this loop exists to avoid, so the refusal needed a
-    # label of its own that means "re-scope this", not "the founder decides".
-    if "needs-scope" in labels:      return False
-    # blocked:capability is the OTHER terminal refusal: the spec is fine, the
-    # runner lacks something it cannot grant itself (a harness permission, a
-    # missing tool). Excluded for the same reason, routed somewhere different.
-    if "blocked:capability" in labels: return False
+    if park.parked_reason(labels):   return False
+    if "owner:sana" not in labels:   return False
     if i["state"]["type"] not in ("backlog", "unstarted"): return False
     if is_fleet_alert(i):            return False   # ASK-839, see ALERT_MARKER
     if not in_this_repo(i):          return False
