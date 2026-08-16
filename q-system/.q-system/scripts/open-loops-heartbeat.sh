@@ -156,7 +156,16 @@ work_instance() {
   # </dev/null: claude -p reads stdin; without this it drains the while-read loop's
   # process-substitution feed (lines below) and truncates the sweep after the first
   # agent-waking instance. See rca-heartbeat-tail-skip-2026-07-05.md.
-  if ( cd "$path" && KIPI_INSTANCE_NAME="$name" $TO claude -p "$prompt" </dev/null >> "$LOG" 2>&1 ); then
+  # A PRIVATE COPY OF THIS RUN'S OUTPUT (PR #198 review round 3, major).
+  # Classifying from a byte-offset window into the SHARED log was wrong: two
+  # heartbeats overlapping -- each instance is bounded at 1800s and a wide sweep
+  # can outlive the 12h gap to the next fire -- puts one run's limit message
+  # inside the other's window, so an ordinary error gets read as a fleet-wide
+  # halt. `tee` keeps the live streaming the log is there for while giving the
+  # classifier a file only this invocation writes. pipefail is already set above,
+  # so the `if` still tests claude's status and not tee's.
+  local agent_tmp; agent_tmp="$(mktemp)"
+  if ( cd "$path" && KIPI_INSTANCE_NAME="$name" $TO claude -p "$prompt" </dev/null 2>&1 | tee -a "$LOG" > "$agent_tmp" ); then
     log_step "$name" completed "agent ran ($count loops)"
   else
     # WHOSE FAILURE IS IT (ASK-869). An exhausted account is not a property of
@@ -170,7 +179,8 @@ work_instance() {
     # `.claude/rules/self-healing-retry.md` step 5 already states the rule --
     # environmental failures stop on attempt 1 and surface immediately, because
     # retrying cannot fix an environment. The heartbeat simply never applied it.
-    local agent_out; agent_out="$(tail -c +$((log_before + 1)) "$LOG" 2>/dev/null)"
+    local agent_out; agent_out="$(cat "$agent_tmp" 2>/dev/null)"
+    rm -f "$agent_tmp" 2>/dev/null || true
     if is_environmental "$agent_out"; then
       ENV_HALT="$(environmental_reason "$agent_out")"
       echo "$(TS) heartbeat[$name]: environmental failure ($ENV_HALT) -- halting the sweep" >> "$LOG"
@@ -233,9 +243,25 @@ if [ -n "$ENV_HALT" ]; then
   # 5 where the truth was 2. A number a human cannot reconcile against the run-log
   # is worse than no number: it is the ticket arguing with its own evidence.
   ENV_SKIPPED="$(grep -c 'not attempted' "$RUNLOG_TMP" 2>/dev/null || echo 0)"
-  bash "$SKEL/q-system/.q-system/scripts/slack-notify.sh" \
-    "heartbeat: sweep HALTED, the runner itself is unavailable ($ENV_HALT). $ENV_SKIPPED instance(s) not attempted -- this is one machine-wide condition, not one fault per instance. Nothing to fix per repo; the sweep resumes on its own when the runner is available." \
-    2>/dev/null || true
+  # EXIT 0 IS EARNED BY THE ALERT LANDING, NOT ASSUMED (PR #198 review round 3,
+  # major). The halt exits 0 on the grounds that it is not SILENT -- it files a
+  # named alert instead. If that filing fails and the failure is swallowed with
+  # `|| true`, the run is silent AND reports success: no Linear alert, and no
+  # launchd signal either, which is strictly worse than the two-ticket problem
+  # this exit-0 was introduced to fix.
+  #
+  # So the claim is checked rather than trusted. Alert filed -> exit 0, one
+  # ticket. Alert failed -> fall back to the exit code, because a vague ticket
+  # beats none at all. Same reasoning as ASK-833's exit-8: a report that was not
+  # PERSISTED did not happen.
+  if bash "$SKEL/q-system/.q-system/scripts/slack-notify.sh" \
+       "heartbeat: sweep HALTED, the runner itself is unavailable ($ENV_HALT). $ENV_SKIPPED instance(s) not attempted -- this is one machine-wide condition, not one fault per instance. Nothing to fix per repo; the sweep resumes on its own when the runner is available." \
+       >>"$LOG" 2>&1; then
+    :
+  else
+    echo "$(TS) heartbeat: the halt alert FAILED to file -- falling back to a non-zero exit so the halt is not silent" >> "$LOG"
+    SWEEP_FAILURES=$((SWEEP_FAILURES + 1))
+  fi
 fi
 
 # Post-sweep self-audit: expected (registry + skeleton) vs logged. Catches the
@@ -269,14 +295,20 @@ rm -f "$RUNLOG_TMP" "$RUNLOG_TMP.expected" 2>/dev/null || true
 # channel. A dead agent run, a step-audit mismatch, or an environmental halt
 # reaches Linear.
 #
-# THE ENVIRONMENTAL HALT IS THE ONE EXCEPTION TO THE SENTENCE ABOVE (ASK-869, and
-# PR #198 review caught this comment still claiming otherwise). That branch logs
-# its instances `skipped` AND increments SWEEP_FAILURES, which reads as a
-# contradiction until you separate the two questions the row and the counter
-# answer. The row says what happened to that INSTANCE: nothing, nobody attempted
-# it. The counter says whether the SWEEP did its job: it did not, it stopped
-# early. Both are true at once, and ASK-184 requires the second to reach launchd
-# or fleet-health's launchd-failing detector goes blind to this job.
+# THE ENVIRONMENTAL HALT DELIBERATELY DOES NOT REACH HERE (ASK-869). It logs its
+# instances `skipped` and does NOT increment SWEEP_FAILURES, because a non-zero
+# exit trips the launchd-failing detector under a separate dedupe key and files a
+# second, vaguer ticket beside the halt's own named one -- the two-ticket problem
+# this change exists to remove.
+#
+# ASK-184 still holds where it was aimed: it guards against a SILENT failure, and
+# a halt that filed a named alert is not silent. The one case where the halt DOES
+# increment is when that alert failed to file, which is the only way it can become
+# silent -- see the fallback above. An ordinary per-instance failure increments as
+# it always did.
+#
+# (An earlier draft of this comment described the opposite behaviour and survived
+# a round of review; it is easier to change code than the paragraph explaining it.)
 if [ "$SWEEP_FAILURES" -gt 0 ]; then
   echo "$(TS) heartbeat: $SWEEP_FAILURES failure(s) this sweep -> exit 1" >> "$LOG"
   exit 1

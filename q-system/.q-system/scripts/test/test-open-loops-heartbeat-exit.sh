@@ -265,6 +265,26 @@ else
 fi
 rm -rf "$TMP3"
 
+# THE HALT'S EXIT 0 IS EARNED, NOT ASSUMED (PR #198 review round 3, major).
+# The halt exits 0 on the grounds that it is not silent -- it files a named alert
+# instead. If that filing FAILS and the failure is swallowed, the run is silent
+# AND reports success: no Linear ticket and no launchd signal, which is strictly
+# worse than the two-ticket problem exit-0 was introduced to fix. So a notify that
+# cannot file must push the run back to a non-zero exit.
+TMP4="$(build_env_fixture)"
+printf '#!/bin/bash\nexit 1\n' > "$TMP4/skel/q-system/.q-system/scripts/slack-notify.sh"
+PATH="$TMP4/bin:$PATH" KIPI_REPO="$TMP4/skel" \
+  bash "$TMP4/skel/q-system/.q-system/scripts/open-loops-heartbeat.sh" >/dev/null 2>&1
+FAILED_ALERT_RC=$?
+if [ "$FAILED_ALERT_RC" -ne 0 ]; then
+  echo "PASS  a halt whose alert could not file exits non-zero, so it is never silent (exit $FAILED_ALERT_RC)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL  the alert failed to file AND the run reported success: no ticket, no launchd signal, nobody told"
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$TMP4"
+
 echo "---"
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
