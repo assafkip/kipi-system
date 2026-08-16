@@ -506,28 +506,38 @@ def write_pending(path, trigger, triage, actor=""):
     written even when empty so it always exists, since an absent addressee and a
     wrong one are the same fact to that check (sp-39c0d7bd).
 
-    The file is created 0600. It lands in /tmp (mode 1777) with a name derived
-    from a session id, so the mode is the only thing standing between a triage
-    and any other local account reading a slice of this session's transcript
-    back out of it (sp-3caa724d).
+    The file is created 0600 inside a directory created 0700, and the guard
+    picks that directory precisely because only this uid may write into it
+    (ASK-877, `pending_dir()` in token-guard.py). Both layers are kept: the mode
+    is what stops another local account reading a slice of this session's
+    transcript back out of the file (sp-3caa724d), and the private directory is
+    what stops one PARKING a file at this name that can never be displaced.
+
+    Returns whether the triage actually landed at `path`. It used to return
+    nothing and swallow every OSError, which is how the squat above stayed
+    silent: os.replace() onto a foreign-owned file in sticky /tmp raises EACCES,
+    and an unchecked exception made a permanently dead channel look exactly like
+    a model that had nothing to say.
     """
     if not path:
-        return
+        return False
     tmp = "%s.%d.tmp" % (path, os.getpid())
     try:
         directory = os.path.dirname(path)
         if directory:
-            os.makedirs(directory, exist_ok=True)
+            os.makedirs(directory, mode=0o700, exist_ok=True)
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump({"trigger": trigger, "triage": triage, "ts": _now(),
                        "actor": actor or ""}, fh)
         os.replace(tmp, path)
+        return True
     except OSError:
         try:
             os.remove(tmp)
         except OSError:
             pass
+        return False
 
 
 def escalate(trigger, reason, transcript_path, count, capped_notified,

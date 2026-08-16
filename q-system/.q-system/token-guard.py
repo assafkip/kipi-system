@@ -590,7 +590,32 @@ def _int_env(name, default):
 #
 # The refusal is therefore printed immediately and unchanged, and the model call
 # runs DETACHED. Its answer is picked up by whichever later hook fire finds it.
-FABLE_PENDING_TEMPLATE = "/tmp/claude-fable-pending-%s.json"
+# --- Where the hand-off lives, and why it is not a shared /tmp name ----------
+# (ASK-877, PR #203 Codex major. Follow-on to sp-3caa724d / sp-39c0d7bd.)
+#
+# This used to be "/tmp/claude-fable-pending-%s.json". /tmp is mode 1777 and
+# STICKY, and the earlier fix only taught the READER to distrust a file owned by
+# another uid. That leaves a stronger move untouched: a foreign-owned file
+# PARKED at the predictable name can never be displaced. os.replace() in the
+# writer fails with EACCES (sticky /tmp refuses to replace another uid's file),
+# write_pending swallows the error, the reader refuses the contents and — being
+# unable to unlink a foreign file — leaves it there. Measured on a real
+# root-owned squat: two consecutive write+read attempts both returned None and
+# the squat survived both. Delivery for that actor was off for good, silently.
+#
+# So the name stops being shared. The hand-off lives in a per-uid directory that
+# only this uid may write, created 0700. Inside it, no other account can create
+# a file, replace one, or park an undisplaceable squat, so the class is closed at
+# the directory rather than re-litigated per file.
+#
+# The squat then has one place left to stand: the DIRECTORY name itself. That is
+# why pending_dir() steps to the next candidate instead of giving up. A name we
+# cannot own is a name we skip, so an obstruction costs at most the triage that
+# was in flight — never every future one.
+FABLE_PENDING_ROOT = "/tmp"
+FABLE_PENDING_DIR_TEMPLATE = "claude-fable-%d"
+FABLE_PENDING_NAME_TEMPLATE = "pending-%s.json"
+FABLE_PENDING_DIR_ATTEMPTS = 8
 
 # --- What the hand-off file must prove before a word of it is believed --------
 # (sp-3caa724d + sp-39c0d7bd, RCA rca-claude-tampering-investigation-2026-08-16)
@@ -629,9 +654,79 @@ FABLE_BANNER = (
     "command before acting on it. ---")
 
 
+def _adopt_pending_dir(path):
+    """Whether `path` is already a directory only this uid can write into.
+
+    lstat, not stat: a symlink parked at the candidate name would otherwise be
+    judged by its TARGET's ownership, which is the same swap the reader's
+    O_NOFOLLOW exists to refuse.
+
+    A directory we own but that is group- or world-writable is tightened rather
+    than abandoned — it is ours, so chmod is the repair. One we do NOT own is
+    never chmod-able and never becomes usable; say so and let the caller move.
+    """
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        return False
+    if not info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        return True
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        return False
+    return True
+
+
+def _own_pending_dir(path):
+    """Create `path` as a 0700 directory owned by us, or adopt an existing one.
+
+    The chmod after mkdir is not redundant: mkdir applies the umask, so a
+    session running under a hostile-enough umask would otherwise get a directory
+    it cannot write to and no signal that anything is wrong.
+    """
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        return _adopt_pending_dir(path)
+    except OSError:
+        return False
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        return False
+    return True
+
+
+def pending_dir():
+    """The private directory this uid's hand-off files live in, or "".
+
+    Stepping through candidate names is the self-healing half of ASK-877: an
+    obstruction that cannot be owned is skipped, so it costs the triage in
+    flight and not every future one. "" means every candidate was obstructed,
+    which callers treat as "no hand-off channel" — a lost proposal, never a
+    block, since request_escalation's refusal goes out regardless.
+    """
+    root = os.environ.get("KIPI_FABLE_PENDING_ROOT") or FABLE_PENDING_ROOT
+    base = FABLE_PENDING_DIR_TEMPLATE % os.getuid()
+    for attempt in range(FABLE_PENDING_DIR_ATTEMPTS):
+        name = base if not attempt else "%s-%d" % (base, attempt)
+        candidate = os.path.join(root, name)
+        if _own_pending_dir(candidate):
+            return candidate
+    return ""
+
+
 def pending_path(actor):
-    return os.environ.get("KIPI_FABLE_PENDING") or (
-        FABLE_PENDING_TEMPLATE % actor)
+    override = os.environ.get("KIPI_FABLE_PENDING")
+    if override:
+        return override
+    directory = pending_dir()
+    if not directory:
+        return ""
+    return os.path.join(directory, FABLE_PENDING_NAME_TEMPLATE % actor)
 
 
 def _unlink_quietly(path):
