@@ -35,7 +35,18 @@ readings of it.
 
 IT FLAGS, IT NEVER CLOSES. GitHub's stale-bot pattern is the reference and the
 warning: a bot that silently closes real work teaches people the tracker lies.
-A dormant issue gets ONE comment and a label. Closing stays a judgment call.
+A dormant issue gets ONE COMMENT. Closing stays a judgment call.
+
+The comment is the ONLY mutation this script makes -- it writes no label. This
+line used to promise "a comment and a label" while no label mutation existed
+anywhere in the file (Codex minor round 2, PR #204). The promise was corrected
+rather than implemented, because the comment already carries the whole message
+and a second write would double the ways a flag can half-land: nothing here
+needs to query BY the flag, which is the only thing a label would buy.
+
+The `dormant` LABEL is still READ, and that asymmetry is deliberate. A human who
+disagrees with a flag can apply the label by hand to suppress future sweeps, so
+the label is a human-owned override this script honours and never sets.
 
 WHY IT EXCLUDES ITS OWN TICKETS
 
@@ -53,8 +64,15 @@ EXIT CODES -- this script never lies about failure
   5  a threshold was breached and the alert did NOT send. The numbers are good;
      nobody was told. Printing the failure and exiting 0 made launchd record a
      silent 3am success, so the delivery result reaches the exit code.
+  6  --apply ran and at least one dormancy write did not land. Same rule as 5,
+     one layer down: the per-issue outcome decides the code, never the print.
+  7  --apply refused because another --apply run holds the lock. Nothing was
+     written and nothing was corrupted; re-run when the other finishes.
   9  the run could not complete its measurement (API failure mid-walk). Partial
      numbers are still printed, but the exit code says they are partial.
+
+Precedence when several apply: 9 (the measurement is untrustworthy) then 5 then
+6. A run reports its worst outcome, and stderr names every one of them.
 
 Deliberately not `exit 0 always`: that shape is its own defect class in this repo
 (ASK-213, three silent-success bugs shipped in one day).
@@ -68,11 +86,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import importlib.util
 import json
 import os
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 
 EXIT_OK = 0
@@ -80,6 +101,8 @@ EXIT_USAGE = 1
 EXIT_NO_KEY = 3
 EXIT_REFUSED_FIXTURE = 4
 EXIT_ALERT_FAILED = 5
+EXIT_WRITE_FAILED = 6
+EXIT_LOCKED = 7
 EXIT_INCOMPLETE = 9
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -273,16 +296,30 @@ def find_dormant(issues: list, now: datetime, threshold_days: int) -> list:
     the first place. Dormancy is a question about work someone routed and then
     nobody touched.
 
-    Also skips anything already carrying `needs-triage` (it is inflow that has
-    not been decided yet, not work that stalled) and anything already labelled
-    dormant (the flag is not re-applied).
+    Also skips anything still AWAITING TRIAGE (it is inflow that has not been
+    decided yet, not work that stalled) and anything already labelled dormant
+    (the flag is not re-applied).
+
+    THE TRIAGE SKIP CALLS `is_awaiting_triage()` RATHER THAN RE-TESTING THE
+    LABEL, and that is the fix for a hole this function opened by disagreeing
+    with the count beside it. `is_awaiting_triage()` was narrowed to "label AND
+    unrouted" because nothing removes the label when a human routes an issue.
+    This skip kept the OLD, label-only definition, so a routed issue carrying a
+    stale `needs-triage` label matched NEITHER predicate: not awaiting triage
+    (it has a project), not dormancy-eligible (it has the label). It fell out of
+    both readings of the same page and was invisible at any age. Reproduced on
+    the PR head: a 100-day-old routed issue gave awaiting_triage=False and
+    dormant_matches=0 (Codex major round 2, PR #204).
+
+    Two predicates deciding one question is how they drift apart, so there is
+    now one definition and this is a caller of it, not a copy.
     """
     out = []
     for issue in issues:
         if is_unrouted(issue):
             continue
         labels = label_names(issue)
-        if TRIAGE_LABEL in labels or DORMANT_LABEL in labels:
+        if is_awaiting_triage(issue) or DORMANT_LABEL in labels:
             continue
         days = age_days(issue.get("updatedAt") or "", now)
         if days is not None and days >= threshold_days:
@@ -322,6 +359,17 @@ def fetch_open_issues(ln, team_id: str) -> tuple:
             return issues, False
 
 
+class FlagCheckFailed(Exception):
+    """The already-flagged READ failed, so the flagged state is UNKNOWN.
+
+    A distinct type, and not a bool, because the two safe answers to "is this
+    already flagged" are yes and no -- and "I could not find out" is neither.
+    Raising makes the unknown state impossible to ignore: a caller that forgets
+    it gets a traceback, where a sentinel return value would be silently
+    truthy-or-falsy and pick one of the two wrong answers by accident.
+    """
+
+
 def already_flagged(ln, issue_id: str) -> bool:
     """True when a dormancy comment is already on the issue.
 
@@ -329,14 +377,23 @@ def already_flagged(ln, issue_id: str) -> bool:
     removed by a human who disagrees, and re-adding a comment they already read
     is the comment-stack failure this marker exists to prevent.
 
-    On an API failure this returns True -- skip rather than risk a duplicate.
-    Erring toward silence is right here: a missed flag costs one issue staying
-    quiet, a duplicated flag costs trust in every flag.
+    RAISES `FlagCheckFailed` WHEN THE READ ITSELF FAILS, and does not answer
+    True. Returning True on an API error meant a Linear timeout was reported to
+    the operator as `already-flagged` -- a sentence about work someone else had
+    already done, produced by a run that in fact learned nothing and wrote
+    nothing. The run then looked complete. Reproduced on the PR head: a raising
+    comments-read returned `already-flagged` with zero mutations attempted
+    (Codex major round 2, PR #204).
+
+    Erring toward silence is still right -- the caller must NOT write on an
+    unknown -- but silence has to be reported as a failure rather than as a
+    skip. A missed flag costs one issue staying quiet; a missed flag the run
+    calls "already handled" costs the operator the ability to notice.
     """
     try:
         issue = (ln.graphql(ISSUE_COMMENTS_QUERY, {"id": issue_id}) or {}).get("issue") or {}
-    except Exception:
-        return True
+    except Exception as exc:
+        raise FlagCheckFailed(str(exc)) from exc
     for node in ((issue.get("comments") or {}).get("nodes") or []):
         if DORMANT_MARKER in (node.get("body") or ""):
             return True
@@ -360,6 +417,68 @@ def dormancy_comment(days: float, threshold: int) -> str:
     )
 
 
+def apply_lock_path() -> str:
+    """One lock per INSTALLED COPY of this script.
+
+    Keyed on the script's own directory rather than a fixed name so that a copy
+    running out of a tmpdir (the suite does exactly this) cannot contend with
+    the real installation, while two runs of the SAME installation -- the
+    launchd job and a founder's manual run, which is the actual collision --
+    resolve to the same path. Lives in the system temp dir, not in the repo:
+    `kipi update` rsyncs this tree, and a lock file inside it would be fleet
+    cargo.
+    """
+    override = os.environ.get("KIPI_TRIAGE_HEALTH_LOCK")
+    if override:
+        return override
+    key = hashlib.sha256(HERE.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(tempfile.gettempdir(), f"kipi-triage-health-{key}.lock")
+
+
+def acquire_apply_lock():
+    """Take the exclusive --apply lock, or return None if another run holds it.
+
+    THE CHECK AND THE WRITE ARE NOT ONE OPERATION, which is the whole reason
+    this exists. `already_flagged()` reads Linear, then `flag_dormant()` writes
+    to Linear, and nothing links them: two concurrent --apply runs both read
+    "no marker", both write, and the issue carries two permanent dormancy
+    comments. Permanent is the operative word -- there is no undo on a comment,
+    and a duplicate flag costs trust in every flag. Reproduced on the PR head:
+    two overlapping --apply processes landed 2 comment mutations on one issue
+    (Codex major round 2, PR #204).
+
+    NON-BLOCKING ON PURPOSE. The loser refuses and says so rather than queueing:
+    this runs daily against a 75-day threshold, so skipping one sweep costs
+    nothing, while a launchd job silently waiting on a founder's interactive run
+    is a job that looks hung.
+
+    `fcntl.flock` and not a pid/token file, following `attempts-ledger.py`,
+    which paid for that lesson: liveness-by-pid asks whether SOME process has
+    that number, not whether it holds this lock, and pids wrap. The kernel
+    releases this on process exit however the process dies, so there is no
+    corpse to break. This lock file is never unlinked, so unlike the ledger's it
+    also needs no inode re-check -- nothing can swap the path underneath it.
+
+    HONEST BOUNDARY: this is one machine. Two runs on two hosts against the same
+    Linear workspace would still race, because the only authority that could
+    stop that is Linear, and `commentCreate` has no idempotency key. The named
+    threat (a manual run overlapping the scheduled one) is same-host.
+    """
+    path = apply_lock_path()
+    try:
+        handle = open(path, "a")
+    except OSError as exc:
+        print(f"WARN: cannot open the --apply lock at {path} ({exc})",
+              file=sys.stderr)
+        return None
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
 def flag_dormant(ln, issue: dict, days: float, threshold: int) -> str:
     """Write one dormancy comment. Returns a short outcome for the report.
 
@@ -375,8 +494,14 @@ def flag_dormant(ln, issue: dict, days: float, threshold: int) -> str:
     different animals: the exception is a call that failed, this is a call that
     succeeded and declined.
     """
-    if already_flagged(ln, issue["id"]):
-        return "already-flagged"
+    try:
+        if already_flagged(ln, issue["id"]):
+            return "already-flagged"
+    except FlagCheckFailed as exc:
+        # UNKNOWN is not "no", so nothing is written; and it is not
+        # "already-flagged" either, so the run does not claim this issue was
+        # handled. It lands in `failed=` and reaches the exit code.
+        return f"FAILED (already-flagged check did not complete: {exc})"
     try:
         res = ln.graphql(COMMENT_CREATE, {"input": {
             "issueId": issue["id"],
@@ -473,6 +598,33 @@ def main(argv: list) -> int:
         print("linear-triage-health: REFUSED under pytest.", file=sys.stderr)
         return EXIT_REFUSED_FIXTURE
 
+    # Taken BEFORE the key lookup and the paginated walk: a run that cannot
+    # write should not spend the API calls to work out what it would have
+    # written. Report-only runs never take it -- they mutate nothing, so two of
+    # them are harmless and serialising them would be a cost with no buyer.
+    lock = None
+    if args.apply:
+        lock = acquire_apply_lock()
+        if lock is None:
+            print(f"REFUSED: another --apply run holds {apply_lock_path()}. "
+                  f"Nothing was written; re-run when it finishes.",
+                  file=sys.stderr)
+            return EXIT_LOCKED
+    try:
+        return _run(args, lock is not None)
+    finally:
+        if lock is not None:
+            lock.close()  # the kernel drops the flock with the last fd
+
+
+def _run(args, holding_lock: bool) -> int:
+    """The measurement and the writes, inside the lock when --apply is set."""
+    # Fail closed. The lock is acquired by the caller, so this function could be
+    # reached by a future caller that forgot it; the write path must refuse
+    # rather than proceed unguarded.
+    if args.apply and not holding_lock:
+        raise RuntimeError("refusing to write dormancy comments without the "
+                           "--apply lock")
     ln = _load_linear()
     try:
         ln.linear_api_key()
@@ -514,6 +666,12 @@ def main(argv: list) -> int:
               f"{m['oldest_triage_id']}")
         print(f"  dormant (>={args.dormant_days}d)      : {m['dormant']}")
 
+    # Declared out here, not inside `if dormant:`, because the exit code below
+    # reads it. A per-issue result that only the display loop can see is exactly
+    # how a refused write reached the operator as a printed line and reached
+    # launchd as success.
+    outcomes = {}
+
     if dormant:
         # The WRITE loop is separate from the DISPLAY loop on purpose, and this
         # separation is the fix for a real defect, not a style preference. Both
@@ -523,7 +681,6 @@ def main(argv: list) -> int:
         # 2026-08-16: 193 dormant at a 7-day threshold, so 173 would have been
         # silently skipped. A display bound must never decide what gets written.
         to_flag = select_to_flag(dormant, args.limit)
-        outcomes = {}
         if args.apply:
             for issue, days in to_flag:
                 outcomes[issue["identifier"]] = flag_dormant(
@@ -575,6 +732,18 @@ def main(argv: list) -> int:
     else:
         print("\nno threshold breached; staying quiet")
 
+    # A REFUSED WRITE IS A FAILED RUN, and the per-issue result is the only
+    # place that fact exists. `flag_dormant()` was fixed to stop reporting a
+    # declined mutation as "flagged", and then main() threw that answer away
+    # when it chose its exit code: a run where EVERY commentCreate came back
+    # success=false still returned 0, so launchd recorded a clean sweep that
+    # wrote nothing. Reproduced on the PR head: failed=3, RETURN_CODE 0 (Codex
+    # major round 2, PR #204). The same shape as the alert bug beside it, one
+    # layer down, which is why both now terminate in a code and not a print.
+    failed_writes = sorted(k for k, v in outcomes.items() if v.startswith("FAILED"))
+
+    # Precedence is worst-measurement-first: a partial walk means the dormancy
+    # set itself is untrustworthy, so it outranks what happened to the writes.
     if not complete:
         print("INCOMPLETE: the issue walk did not finish; numbers are partial.",
               file=sys.stderr)
@@ -583,6 +752,10 @@ def main(argv: list) -> int:
         print("ALERT FAILED: a threshold was breached and the alert did not send.",
               file=sys.stderr)
         return EXIT_ALERT_FAILED
+    if failed_writes:
+        print(f"WRITE FAILED: {len(failed_writes)} of {len(outcomes)} dormancy "
+              f"write(s) did not land: {', '.join(failed_writes)}", file=sys.stderr)
+        return EXIT_WRITE_FAILED
     return EXIT_OK
 
 

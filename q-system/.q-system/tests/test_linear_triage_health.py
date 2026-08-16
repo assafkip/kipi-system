@@ -9,6 +9,7 @@ Every fixture here is shaped like a real Linear GraphQL node (the keys the actua
 OPEN_ISSUES_QUERY selects), not like a convenient dict. A fixture I invent tests
 my assumption; this one at least tests the query's own shape.
 """
+import argparse
 import importlib.util
 import os
 import shutil
@@ -129,12 +130,19 @@ def test_dormant_finds_only_routed_quiet_work():
         issue("ASK-2", project="kipi-system", days_old=10),    # recent
         issue("ASK-3", days_old=200),                          # unrouted, skipped
         issue("ASK-4", project="kipi-system", days_old=200,
-              labels=["needs-triage"]),                        # inflow, skipped
+              labels=["needs-triage"]),                        # ROUTED, stale label
         issue("ASK-5", project="kipi-system", days_old=200,
               labels=["dormant"]),                             # already flagged
+        issue("ASK-6", days_old=200, labels=["needs-triage"]), # real inflow, skipped
     ]
     found = health.find_dormant(issues, NOW, 75)
-    assert [i["identifier"] for i, _ in found] == ["ASK-1"]
+    # ASK-4 was asserted as "inflow, skipped" until round 2 of the PR #204
+    # review. That was this suite pinning the defect: the issue is ROUTED, so it
+    # is not inflow at all -- nothing removes the label when a human routes an
+    # issue. It counted as neither awaiting-triage nor dormant, at any age.
+    # ASK-6 is the genuine inflow case that exclusion was reaching for, and it
+    # is still skipped. Oldest first, so ASK-4 (200d) precedes ASK-1 (100d).
+    assert [i["identifier"] for i, _ in found] == ["ASK-4", "ASK-1"]
 
 
 def test_dormant_threshold_boundary_is_inclusive_and_configurable():
@@ -479,20 +487,37 @@ def graphql(query, variables):
 FAKE_NOTIFY = '#!/usr/bin/env bash\nexit "${FAKE_NOTIFY_EXIT:-0}"\n'
 
 
-def _run_health_copy(tmp_path, notify_exit):
-    """Run a copy of the script whose alert path exits `notify_exit`."""
+def _stage_health_copy(tmp_path, fake_sync=FAKE_LINEAR_SYNC):
+    """Lay a runnable copy of the script beside fake neighbours. Returns its path.
+
+    The copy resolves `linear-sync.py` and `slack-notify.sh` from its OWN
+    directory, so staging them here is what makes the run unable to reach the
+    real board. It is also what keeps the --apply lock scoped to this tmp_path
+    rather than to the installed script.
+    """
     shutil.copy(os.path.join(SCRIPTS, "linear-triage-health.py"),
                 tmp_path / "linear-triage-health.py")
-    (tmp_path / "linear-sync.py").write_text(FAKE_LINEAR_SYNC)
+    (tmp_path / "linear-sync.py").write_text(fake_sync)
     notify = tmp_path / "slack-notify.sh"
     notify.write_text(FAKE_NOTIFY)
     notify.chmod(0o755)
+    return tmp_path / "linear-triage-health.py"
 
+
+def _health_env(**extra):
     env = dict(os.environ)
     env.pop("PYTEST_CURRENT_TEST", None)
-    env["FAKE_NOTIFY_EXIT"] = str(notify_exit)
-    return subprocess.run([sys.executable, str(tmp_path / "linear-triage-health.py")],
-                          capture_output=True, text=True, env=env, timeout=120)
+    env.update({k: str(v) for k, v in extra.items()})
+    return env
+
+
+def _run_health_copy(tmp_path, notify_exit, *, fake_sync=FAKE_LINEAR_SYNC, args=()):
+    """Run a copy of the script whose alert path exits `notify_exit`."""
+    script = _stage_health_copy(tmp_path, fake_sync)
+    return subprocess.run([sys.executable, str(script)] + list(args),
+                          capture_output=True, text=True,
+                          env=_health_env(FAKE_NOTIFY_EXIT=notify_exit),
+                          timeout=120)
 
 
 def test_a_failed_alert_exits_nonzero(tmp_path):
@@ -524,3 +549,349 @@ def test_a_delivered_alert_still_exits_zero(tmp_path):
     assert res.returncode == health.EXIT_OK, res.stdout + res.stderr
     assert "alert FAILED" not in res.stdout
     assert "alerted (exit 0)" in res.stdout
+
+
+# --- PR #204 Codex review ROUND 2: five findings, each with its reproducer ---
+
+def test_a_routed_issue_with_a_stale_triage_label_can_go_dormant():
+    """ROUND 2 FINDING 1. The issue that fell into NEITHER bucket.
+
+    `is_awaiting_triage()` was narrowed to "label AND unrouted" (round 1), but
+    `find_dormant()` kept excluding on the label alone. A routed issue still
+    carrying a stale `needs-triage` label was therefore not awaiting triage (it
+    has a project) and not dormancy-eligible (it has the label) -- invisible to
+    both readings of the same page, at any age. Reproduced on the PR head: a
+    100-day-old routed issue gave awaiting_triage=False, dormant_matches=0.
+
+    Asserted literally, never against a baseline recomputed from the same
+    helper: a baseline captured from this code cannot see a change moving both
+    sides.
+    """
+    routed_stale = issue("ASK-1", project="kipi-system",
+                         labels=["owner:sana", "needs-triage"], days_old=100)
+
+    found = health.find_dormant([routed_stale], NOW, 75)
+    assert len(found) == 1, "the routed issue with a stale label must be eligible"
+    assert found[0][0]["identifier"] == "ASK-1"
+    # and it really is absent from the other bucket, so this is the only one
+    assert health.measure([routed_stale], NOW)["needs_triage"] == 0
+
+
+def test_dormancy_still_skips_real_inflow_and_the_human_override():
+    """The negative control for the test above.
+
+    Deleting the exclusion entirely would satisfy that test while flagging the
+    unrouted inflow queue -- putting dormancy comments on exactly the noise this
+    system exists to stop filing. Both survivors are pinned here.
+    """
+    unrouted_marked = issue("ASK-2", labels=["owner:sana", "needs-triage"],
+                            days_old=100)
+    routed_overridden = issue("ASK-3", project="kipi-system",
+                              labels=["dormant"], days_old=100)
+
+    # still-unrouted inflow is counted as triage depth, never as stalled work
+    assert health.find_dormant([unrouted_marked], NOW, 75) == []
+    assert health.measure([unrouted_marked], NOW)["needs_triage"] == 1
+    # a human who disagrees applies the label by hand; the sweep honours it
+    assert health.find_dormant([routed_overridden], NOW, 75) == []
+
+
+class BrokenReadLinear:
+    """A Linear whose comments READ raises and whose commentCreate succeeds.
+
+    Both halves matter: the mutation must be able to succeed, so a test that
+    sees no write is seeing a refusal to write rather than a broken fixture.
+    """
+
+    def __init__(self):
+        self.mutations = 0
+
+    def graphql(self, query, variables):
+        if "comments(first" in query:
+            raise RuntimeError("Linear timeout reading comments")
+        if "commentCreate" in query:
+            self.mutations += 1
+            return {"commentCreate": {"success": True}}
+        raise AssertionError(f"unexpected query: {query[:60]}")
+
+
+def test_a_failed_flag_check_is_not_reported_as_already_flagged():
+    """ROUND 2 FINDING 3. An unknown state reported as work someone else did.
+
+    `already_flagged()` returned True on ANY exception, so a Linear timeout
+    reached the operator as `already-flagged` -- a sentence about a comment that
+    exists, produced by a run that learned nothing and wrote nothing. The run
+    then looked complete. Reproduced on the PR head: outcome 'already-flagged',
+    zero mutations attempted.
+    """
+    ln = BrokenReadLinear()
+    out = health.flag_dormant(ln, {"id": "uuid-1", "identifier": "ASK-1"}, 120.0, 75)
+
+    assert out != "already-flagged"
+    assert out.startswith("FAILED")
+    # unknown is not "no": it must not have gambled a write
+    assert ln.mutations == 0
+
+
+def test_a_genuine_already_flagged_issue_is_still_skipped():
+    """The negative control. Returning FAILED on every read would pass the above.
+
+    A real marker present must still produce `already-flagged` and no write, or
+    the nightly sweep grows a comment stack on every dormant issue.
+    """
+
+    class Flagged:
+        def __init__(self):
+            self.mutations = 0
+
+        def graphql(self, query, variables):
+            if "comments(first" in query:
+                return {"issue": {"comments": {"nodes": [
+                    {"body": f"{health.DORMANT_MARKER}\nolder flag"}]}}}
+            self.mutations += 1
+            return {"commentCreate": {"success": True}}
+
+    ln = Flagged()
+    out = health.flag_dormant(ln, {"id": "uuid-1", "identifier": "ASK-1"}, 120.0, 75)
+    assert out == "already-flagged"
+    assert ln.mutations == 0
+
+
+def test_already_flagged_raises_rather_than_answering_on_a_broken_read():
+    """The predicate itself, so a caller added later cannot inherit the old bug.
+
+    A bool return type has no room for "I could not find out", and both of its
+    values are wrong answers. The distinct exception is what makes the unknown
+    impossible to consume by accident.
+    """
+    with pytest.raises(health.FlagCheckFailed):
+        health.already_flagged(BrokenReadLinear(), "uuid-1")
+
+
+# --- ROUND 2 FINDING 2: a refused write has to reach the exit code ----------
+
+FAKE_SYNC_ROUTED_DORMANT = '''
+import os
+TEAM_QUERY = "query teams"
+SUCCESS = os.environ.get("FAKE_COMMENT_SUCCESS", "1") == "1"
+
+
+def linear_api_key():
+    return "fake-key-never-sent-anywhere"
+
+
+def graphql(query, variables):
+    if "issues(filter" in query:
+        nodes = [{
+            "id": f"u{n}", "identifier": f"ASK-{n}", "title": f"work {n}",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z",
+            "state": {"name": "Backlog", "type": "backlog"},
+            "project": {"id": "p-1", "name": "kipi-system"},
+            "labels": {"nodes": []},
+        } for n in range(3)]
+        return {"issues": {"nodes": nodes, "pageInfo": {"hasNextPage": False}}}
+    if "comments(first" in query:
+        return {"issue": {"comments": {"nodes": []}}}
+    if "commentCreate" in query:
+        return {"commentCreate": {"success": SUCCESS}}
+    return {"teams": {"nodes": [{"id": "team-1", "key": "ASK"}]}}
+'''
+
+
+def _run_apply(tmp_path, comment_success):
+    script = _stage_health_copy(tmp_path, FAKE_SYNC_ROUTED_DORMANT)
+    return subprocess.run(
+        [sys.executable, str(script), "--apply", "--no-notify",
+         "--dormant-days", "30"],
+        capture_output=True, text=True, timeout=120,
+        env=_health_env(FAKE_COMMENT_SUCCESS=1 if comment_success else 0))
+
+
+def test_an_apply_run_whose_writes_were_all_refused_exits_nonzero(tmp_path):
+    """ROUND 2 FINDING 2. flag_dormant said FAILED; main() returned 0 anyway.
+
+    Round 1 stopped `flag_dormant()` reporting a declined mutation as "flagged".
+    main() then discarded that per-issue answer when choosing its exit code, so
+    a run where EVERY commentCreate came back success=false still returned 0 --
+    launchd recorded a clean nightly sweep that wrote nothing. The same shape as
+    the alert bug beside it, one layer down. Reproduced on the PR head:
+    failed=3, RETURN_CODE 0.
+    """
+    res = _run_apply(tmp_path, comment_success=False)
+    assert res.returncode == health.EXIT_WRITE_FAILED, res.stdout + res.stderr
+    assert "failed=3" in res.stdout
+    assert "WRITE FAILED" in res.stderr
+
+
+def test_an_apply_run_whose_writes_landed_exits_zero(tmp_path):
+    """The negative control. `return EXIT_WRITE_FAILED` unconditionally would
+    satisfy the test above while making every successful sweep look broken --
+    on a launchd job, the same defect wearing the other sign.
+    """
+    res = _run_apply(tmp_path, comment_success=True)
+    assert res.returncode == health.EXIT_OK, res.stdout + res.stderr
+    assert "flagged=3" in res.stdout
+    assert "WRITE FAILED" not in res.stderr
+
+
+# --- ROUND 2 FINDING 4: check-then-write needs one lock ---------------------
+
+FAKE_SYNC_RACY = '''
+import os, time
+TEAM_QUERY = "query teams"
+LEDGER = os.environ["FAKE_WRITE_LEDGER"]
+
+
+def linear_api_key():
+    return "fake-key-never-sent-anywhere"
+
+
+def graphql(query, variables):
+    if "issues(filter" in query:
+        return {"issues": {"nodes": [{
+            "id": "u1", "identifier": "ASK-1", "title": "routed work",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z",
+            "state": {"name": "Backlog", "type": "backlog"},
+            "project": {"id": "p-1", "name": "kipi-system"},
+            "labels": {"nodes": []},
+        }], "pageInfo": {"hasNextPage": False}}}
+    if "comments(first" in query:
+        try:
+            with open(LEDGER) as fh:
+                n = len([l for l in fh if l.strip()])
+        except OSError:
+            n = 0
+        # Widen the check-to-write window so an unlocked build loses the race
+        # deterministically rather than on timing luck.
+        time.sleep(1.0)
+        return {"issue": {"comments": {"nodes": [
+            {"body": "<!-- kipi-dormancy-flag -->"} for _ in range(n)]}}}
+    if "commentCreate" in query:
+        with open(LEDGER, "a") as fh:
+            fh.write("wrote\\n")
+        return {"commentCreate": {"success": True}}
+    return {"teams": {"nodes": [{"id": "team-1", "key": "ASK"}]}}
+'''
+
+
+def _apply_procs(tmp_path, count):
+    """Launch `count` --apply runs of one staged copy inside the same window."""
+    script = _stage_health_copy(tmp_path, FAKE_SYNC_RACY)
+    ledger = tmp_path / "writes.log"
+    env = _health_env(FAKE_WRITE_LEDGER=str(ledger))
+    cmd = [sys.executable, str(script), "--apply", "--no-notify",
+           "--dormant-days", "30"]
+    procs = [subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True)
+             for _ in range(count)]
+    for proc in procs:
+        proc.communicate(timeout=180)
+    writes = len([l for l in ledger.read_text().splitlines() if l.strip()]) \
+        if ledger.exists() else 0
+    return writes, sorted(p.returncode for p in procs)
+
+
+def test_two_concurrent_apply_runs_comment_once(tmp_path):
+    """ROUND 2 FINDING 4. Nothing linked the check to the write.
+
+    `already_flagged()` reads, `flag_dormant()` writes, and two concurrent
+    --apply runs (the launchd sweep and a founder's manual run) both read "no
+    marker" and both wrote. A comment is permanent and there is no undo, and a
+    duplicated flag costs trust in every flag. Reproduced on the PR head: 2
+    comment mutations on one issue.
+
+    The loser refuses rather than queueing: this runs daily against a 75-day
+    threshold, so a skipped sweep costs nothing while a launchd job silently
+    waiting on an interactive run looks hung.
+    """
+    writes, codes = _apply_procs(tmp_path, 2)
+    assert writes == 1, f"one issue took {writes} dormancy comments"
+    assert codes == [health.EXIT_OK, health.EXIT_LOCKED], codes
+
+
+def test_a_single_apply_run_still_writes(tmp_path):
+    """The negative control, and it is load-bearing here.
+
+    A lock that never grants would make the test above pass with ZERO writes,
+    turning the nightly sweep into a no-op that reports success. This pins that
+    the uncontended path still comments.
+    """
+    writes, codes = _apply_procs(tmp_path, 1)
+    assert writes == 1
+    assert codes == [health.EXIT_OK]
+
+
+def test_report_only_runs_take_no_lock(tmp_path):
+    """A run that mutates nothing must not serialise against anything.
+
+    Two report-only runs are harmless, so making them queue would be a cost with
+    no buyer -- and would make an interactive check fail while the nightly sweep
+    holds the lock.
+    """
+    script = _stage_health_copy(tmp_path, FAKE_SYNC_RACY)
+    env = _health_env(FAKE_WRITE_LEDGER=str(tmp_path / "writes.log"))
+    cmd = [sys.executable, str(script), "--no-notify", "--dormant-days", "30"]
+    procs = [subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True) for _ in range(2)]
+    for proc in procs:
+        proc.communicate(timeout=180)
+    assert [p.returncode for p in procs] == [health.EXIT_OK, health.EXIT_OK]
+    assert not (tmp_path / "writes.log").exists(), "report-only wrote to Linear"
+
+
+def test_the_apply_lock_is_scoped_to_the_installed_copy(tmp_path):
+    """Two DIFFERENT installations must not block each other.
+
+    Keyed on the script's own directory, so the suite's tmp copies and the real
+    installation never contend -- while two runs of one installation, the actual
+    collision, resolve to the same path.
+    """
+    mine = health.apply_lock_path()
+    assert mine.endswith(".lock")
+    # not inside the repo: `kipi update` rsyncs this tree and would ship it
+    assert not mine.startswith(SCRIPTS)
+    # two runs of ONE installation agree, which is the collision that matters
+    assert health.apply_lock_path() == mine
+
+    # the override wins, so a caller can pin it explicitly
+    os.environ["KIPI_TRIAGE_HEALTH_LOCK"] = str(tmp_path / "pinned.lock")
+    try:
+        assert health.apply_lock_path() == str(tmp_path / "pinned.lock")
+    finally:
+        os.environ.pop("KIPI_TRIAGE_HEALTH_LOCK", None)
+    assert health.apply_lock_path() == mine
+
+
+def test_the_write_path_refuses_without_the_lock():
+    """Fail closed. `_run` is reachable by a future caller that forgot the lock.
+
+    The guard exists because the alternative is a second write path with no
+    chokepoint, which is the defect this finding already cost once.
+    """
+    args = argparse.Namespace(apply=True, dormant_days=75, no_notify=True,
+                              json=False, limit=0)
+    with pytest.raises(RuntimeError, match="without the --apply lock"):
+        health._run(args, holding_lock=False)
+
+
+# --- ROUND 2 FINDING 5: the promise has to match the mutations --------------
+
+def test_the_module_promises_only_the_mutation_it_makes():
+    """ROUND 2 FINDING 5. The header sold "a comment and a label"; no label
+    mutation existed anywhere in the file.
+
+    Pinned against the PROMISE literal rather than the words, because the
+    corrected docstring QUOTES the old promise in order to explain it -- a text
+    check its own documentation satisfies is broken in the direction that never
+    passes. This also fails if someone adds a label write without saying so.
+    """
+    src = open(os.path.join(SCRIPTS, "linear-triage-health.py")).read()
+    writes_label = "issueUpdate" in src or "labelIds" in src
+
+    assert "gets ONE comment and a label" not in src, "the old promise is back"
+    assert not writes_label, "a label mutation appeared; update the header"
+    assert "gets ONE COMMENT" in src
+    # the label is still READ, and that asymmetry is deliberate, not a leftover
+    assert health.DORMANT_LABEL in src
