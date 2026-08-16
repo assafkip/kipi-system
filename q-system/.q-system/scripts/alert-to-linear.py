@@ -124,6 +124,91 @@ def title_for(message: str) -> str:
     return line[:110] + ("..." if len(line) > 110 else "")
 
 
+# Alert shapes that are pure all-clear / no-op confirmations: nothing is broken
+# and nothing needs Sana's attention, so filing+closing a ticket for each one is
+# pure overhead. Evidence: the Linear cleanup on 2026-08-16 found 50 open
+# tickets matching these exact shapes, none carrying content beyond the
+# confirmation itself. An EXPLICIT allowlist, not a heuristic -- a message that
+# matches nothing here still files a ticket, so widening this list is a
+# deliberate decision, not drift.
+_NOISE_PATTERNS = [
+    # "kipi heartbeat: RESUMED after 99 min down" (ASK-771/807/813) -- the
+    # outage already ended by the time this fires; nothing is left to fix.
+    re.compile(r"heartbeat:\s*RESUMED after \d+\s*min down", re.IGNORECASE),
+    # "armed .claude/ integrity tripwire: 45 file(s) baselined" (ASK-862/790/
+    # 703/814) -- establishing a baseline, not a detected change. The
+    # unsanctioned/reverted override below is what keeps this from ever
+    # matching a real detection like ASK-870.
+    re.compile(r"armed .*tripwire.*baselined", re.IGNORECASE),
+    # "Reddit paste-list ...: nothing due to paste. Job ran fine" (ASK-720) --
+    # explicit no-op, the job's own text says nothing happened.
+    re.compile(r"nothing due to paste\.?\s*Job ran fine", re.IGNORECASE),
+    # "Daily X tool post scheduled for ... (auto-posted, cancel in Publer if
+    # off)" (ASK-704) -- confirms a routine scheduled action already
+    # completed successfully.
+    re.compile(r"scheduled for .*\(auto-posted", re.IGNORECASE),
+    # "converge ASK-700: APPROVE, PR #141 auto-merge armed" (ASK-706) -- a
+    # SUCCESS confirmation. Contrast with "converge ... stalled at 'BLOCK'",
+    # which must still file (ASK-702).
+    re.compile(r"converge .*:\s*APPROVE.*auto-merge armed", re.IGNORECASE),
+    # "delivery self-heal tier 3 STARTED on ...: dispatching a fix-agent"
+    # (ASK-723) -- the self-heal loop already owns this; a STARTED notice is
+    # not a thing for Sana to act on. A tier that FAILED or gave up still
+    # files, since this pattern only matches STARTED.
+    re.compile(r"delivery self-heal tier \d+ STARTED", re.IGNORECASE),
+    # "probe: local endpoints only, ASK-447" (ASK-737/739) -- a routine probe
+    # result with no failure described.
+    re.compile(r"probe: local endpoints only", re.IGNORECASE),
+    # "kipi dispatch: hit the daily cap of 10 issues (~60 agent sessions). Not
+    # an error -- the loop is resting until 7am..." (ASK-884) -- a rate limit
+    # working as designed. The alert's own text says "Not an error", and the
+    # loop resumes by itself at the reset hour, so there is nothing to act on.
+    # Filed 21:17 on 2026-08-16, AFTER this list shipped earlier the same day:
+    # the shape was simply unseen, not excluded.
+    #
+    # NARROW ON PURPOSE. kipi-dispatch.sh pages about three other things
+    # (:449 could not record a live run, :1335 could not launch, :1379 launched
+    # but died immediately) and every one of those is a real problem from the
+    # SAME emitter. Anchoring on the literal cap phrase plus the digits means a
+    # dispatch FAILURE can never ride in behind the routine cap notice; a
+    # bare "dispatch:" prefix match would have swallowed all three.
+    re.compile(r"dispatch:\s*hit the daily cap of \d+ issues", re.IGNORECASE),
+]
+
+
+def is_noise(message: str) -> bool:
+    """True for a pure all-clear/no-op alert that should never become a ticket.
+
+    THE OVERRIDE COMES FIRST AND WINS. ASK-870 ("SECURITY: unsanctioned
+    .claude/ change -- 1 modified ... reverted 1") was wrongly canceled during
+    the 2026-08-16 cleanup by a reviewer that treated it as the same shape as
+    the routine "armed tripwire: N baselined" tickets. A real detected change
+    always carries "unsanctioned" or "reverted" or "SECURITY" in its text; a
+    routine baseline-arm never does. Checking that first means a future
+    pattern added to _NOISE_PATTERNS can never repeat that mistake by
+    accident -- the override applies to every pattern above, not just the
+    tripwire one.
+    """
+    if re.search(r"unsanctioned|reverted|SECURITY", message, re.IGNORECASE):
+        return False
+    return any(p.search(message) for p in _NOISE_PATTERNS)
+
+
+def _noise_log_path() -> str:
+    return os.path.join(_state_dir(), "noise.log")
+
+
+def _log_noise(message: str, now: float) -> None:
+    """Never drop an alert silently -- log it locally instead of filing a
+    ticket. Never raises, same posture as every other write on this path."""
+    try:
+        os.makedirs(_state_dir(), exist_ok=True)
+        with open(_noise_log_path(), "a", encoding="utf-8") as fh:
+            fh.write(f"{now:.0f} {message}\n")
+    except OSError:
+        pass
+
+
 def _load_linear():
     """Import linear-sync.py for its auth + graphql. Hyphen forces importlib.
 
@@ -517,6 +602,9 @@ def _owner_label_id(ln, team_id: str) -> str | None:
 def file_alert(message: str, now: float | None = None) -> tuple[int, str]:
     """(exit_code, human line). The whole job, in one place."""
     now = time.time() if now is None else now
+    if is_noise(message):
+        _log_noise(message, now)
+        return EXIT_OK, f"suppressed (noise, logged not filed): {title_for(message)}"
     fp = fingerprint(message)
     ln = _load_linear()
 

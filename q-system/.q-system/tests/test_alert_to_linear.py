@@ -238,6 +238,110 @@ def test_title_is_one_bounded_line():
     assert "\n" not in title and len(title) <= 113
 
 
+# --- noise suppression: pure all-clear pings never become a ticket -----------
+#
+# THE SCAR. The 2026-08-16 Linear cleanup found 50 open tickets that were pure
+# status confirmations -- heartbeat resumed, tripwire baselined, a scheduled
+# post posted -- filed by this script alongside real problems, indistinguishable
+# without opening each one. The founder asked for the source fixed so it stops
+# happening, not just cleaned up once.
+#
+# Every message string below is a REAL line read directly from a live Linear
+# ticket during that cleanup (get_issue, not paraphrased), same evidence
+# standard as the AUTOCOMMIT fixtures above.
+
+NOISE_EXAMPLES = [
+    "[kipi-system] kipi heartbeat: RESUMED after 885 min down",
+    "[dryco] kipi heartbeat: RESUMED after 99 min down",
+    "[assafkip_kipi-system__pr-191] armed .claude/ integrity tripwire: 45 file(s) baselined",
+    "[cole-gtm] Reddit paste-list 2026-08-13: nothing due to paste. Job ran fine",
+    "[/] Daily X tool post scheduled for 2026-08-13T14:00:00-04:00. Tags: "
+    "@guillaumemeyer @cathrynlavery @dillon_mulroy. (auto-posted, cancel in Publer if off)",
+    "[kipi-system] converge ASK-700: APPROVE, PR #141 auto-merge armed",
+    "[/] delivery self-heal tier 3 STARTED on build-radar-needs: build-radar-needs: "
+    "log stale 440h (> 72h) -- the delivery job may have stopped running entirely. "
+    "— dispatching a fix-agent (reproduce → fix → test → commit).",
+    "[kipi-wt-729base] probe: local endpoints only, ASK-447",
+    # ASK-884, filed 2026-08-16T21:17 AFTER the classifier shipped earlier the
+    # same day -- a shape nobody had seen when the list above was built. Text
+    # read from the ticket (get_issue) and matched byte for byte against its
+    # producer, kipi-dispatch.sh:818.
+    "[kipi-system] kipi dispatch: hit the daily cap of 10 issues (~60 agent "
+    "sessions). Not an error -- the loop is resting until 7am, then it picks "
+    "up again on its own. Do: nothing, or raise KIPI_DISPATCH_DAILY_MAX in "
+    "com.kipi.dispatch.plist to go faster.",
+]
+
+
+def test_every_noise_example_is_recognized_as_noise():
+    for msg in NOISE_EXAMPLES:
+        assert mod.is_noise(msg), f"should be suppressed, was not: {msg}"
+
+
+def test_real_problems_are_never_suppressed():
+    """The negative self-test. A classifier broad enough to catch the noise
+    examples above must not also catch messages describing an actual problem
+    -- these are REAL lines from tickets that had to stay filed."""
+    real_problems = [
+        "[/] Daily podcast failed (2026-08-12): candidate contract failed "
+        "(invented URL or missing evidence)",
+        "[/] BLOCK daily-podcast: uncaught exit rc=1",
+        "[kipi-system] review-redrive: ASK-294 PR #72 still has "
+        "kipi/reviewer-approved failing after the machine tier.",
+        "[kipi-system] converge ASK-701: stalled at 'BLOCK', no code change in round 2",
+        "[kipi-system] SECURITY: unsanctioned .claude/ change -- 1 modified, "
+        "0 added, 0 removed: .claude/rules/skill-hook-pairing.md | reverted 1, "
+        "quarantined at q-system/output/claude-integrity/quarantine/20260816T173315Z",
+        # The two OTHER things kipi-dispatch.sh can page about (its own
+        # kipi-dispatch.sh:1335 and :1379 strings). The daily-cap pattern is
+        # written narrowly so a dispatch FAILURE never rides in behind the
+        # routine cap notice -- these are the same emitter, opposite meaning.
+        "[kipi-system] kipi dispatch: could not launch the converge run for "
+        "ASK-884, so NO work is happening even though the loop looks alive. "
+        "Do: run `bash kipi-dispatch.sh` by hand and read the error.",
+        "[kipi-system] kipi dispatch: ASK-884 was launched but died immediately "
+        "-- the loop is spending budget and doing no work. Do: check "
+        "~/.config/kipi/converge-ASK-884.log and whether launchd is reaping the child.",
+    ]
+    for msg in real_problems:
+        assert not mod.is_noise(msg), f"a real problem was suppressed: {msg}"
+
+
+def test_the_security_override_beats_every_noise_pattern():
+    """THE ASK-870 REGRESSION TEST. A tripwire message that both mentions
+    'armed'/'tripwire' (the noise shape) AND 'unsanctioned'/'reverted' (a real
+    detection) must file, every time. This is the exact confusion that caused
+    ASK-870 to be wrongly canceled by a reviewer during the 2026-08-16 cleanup."""
+    real_detection = (
+        "[kipi-system] SECURITY: unsanctioned .claude/ change -- 1 modified, "
+        "0 added, 0 removed: .claude/rules/skill-hook-pairing.md | reverted 1, "
+        "quarantined at q-system/output/claude-integrity/quarantine/20260816T173315Z"
+    )
+    assert not mod.is_noise(real_detection)
+    # Also guard the inverse shape directly, independent of the fixture above
+    # drifting: "armed" + "tripwire" alone is noise, the same message plus
+    # "reverted" must not be.
+    baseline_only = "[x] armed .claude/ integrity tripwire: 3 file(s) baselined"
+    with_revert = baseline_only + " | 1 unsanctioned change reverted"
+    assert mod.is_noise(baseline_only)
+    assert not mod.is_noise(with_revert)
+
+
+def test_noise_is_logged_locally_not_filed_as_a_ticket(isolated_state, monkeypatch):
+    """A suppressed alert is never dropped -- it goes to a local log instead of
+    Linear, so nothing here can accidentally hide a message that should have
+    filed. Linear is never touched: no fake client is even wired up, so a
+    regression that stopped checking is_noise would fail this test by trying
+    to load the real module and hitting the missing-key path, not by a mock
+    silently accepting a create call."""
+    code, line = mod.file_alert(NOISE_EXAMPLES[0], now=1000.0)
+    assert code == mod.EXIT_OK
+    assert "suppressed" in line.lower()
+    with open(mod._noise_log_path(), encoding="utf-8") as fh:
+        logged = fh.read()
+    assert NOISE_EXAMPLES[0] in logged
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
 
