@@ -122,6 +122,24 @@ def _files(spec: dict) -> set[str]:
 WRITE_VERB = re.compile(r"write|written|merge into|save|output to|emit|append|store", re.I)
 
 
+def declared_writes(agent_text: str) -> set[str]:
+    """Names under an agent's `## Writes` heading - the DECLARED producer signal.
+
+    Preferred over inferring from prose, but it cannot stand alone: measured
+    2026-08-16, only 26 of 38 agents carry the section, and the 9 without it
+    include 01-crm-pull.md, the canonical writer of crm.json. Trusting the
+    declaration alone would invent 10 false "no producer" findings. So this is
+    unioned with the verb heuristic rather than replacing it, and the union is
+    what makes both halves safe: each covers names the other misses, and the
+    three genuinely unproduced files (energy, dp-pipeline, tl-content) appear
+    in NEITHER, so the true positives survive.
+    """
+    out: set[str] = set()
+    for m in re.finditer(r"^## Writes\b(.*?)(?=^## |\Z)", agent_text, re.S | re.M):
+        out |= set(re.findall(r"[A-Za-z0-9][A-Za-z0-9._-]*\.json", m.group(1)))
+    return out
+
+
 def extract_producers(agent_text: str) -> tuple[set[str], set[str]]:
     """Return (produced, mentioned) from agent prompt text.
 
@@ -149,7 +167,8 @@ def extract_producers(agent_text: str) -> tuple[set[str], set[str]]:
         mentioned |= names
         if WRITE_VERB.search(line):
             produced |= names
-    return produced, mentioned
+    declared = declared_writes(agent_text)
+    return produced | declared, mentioned | declared
 
 
 WEEKDAYS = {"monday", "tuesday", "wednesday", "thursday",
@@ -282,7 +301,14 @@ def find_drift(bridge: set[str], mcp: dict, vbus: dict,
                 })
 
     # D4 - bridge and verifier vocabularies diverge.
-    verifier_all = _files(mcp) | _files(vbus)
+    # A day-rule file IS known to a verifier, just conditionally. Leaving these
+    # out made D6 call content-intel.json "unknown" while verify-bus requires it
+    # every Monday - the detector contradicting data it had already loaded
+    # (Codex PR #202 round 4). Fixing the day-rule blind spot in D3b relocated
+    # the defect into the neighbouring rule instead of closing it.
+    day_rule_files = {f for phases in day_rules.values()
+                      for files in phases.values() for f in files}
+    verifier_all = _files(mcp) | _files(vbus) | day_rule_files
     for f in sorted(bridge - verifier_all):
         findings.append({"class": "bridge-only",
                          "detail": f"{f} is mapped to morning-log steps but no verifier knows it"})
@@ -388,15 +414,24 @@ def self_test() -> int:
     # write/read split could be reverted with every case above still green,
     # because they hand find_drift its inputs directly (Codex PR #202 round 2).
     sample = (
+        "## Instructions\n"
         "1. Read `{{BUS_DIR}}/reader-only.json` and parse it\n"
         "2. Write results to {{BUS_DIR}}/written.json\n"
         "3. Run the script - writes script-made.json\n"
         "4. Update settings.json with the new key\n"
+        "\n"
+        "## Writes\n"
+        "- declared-only.json (no verb, no BUS_DIR - the declaration is the signal)\n"
+        "\n"
+        "## Reads\n"
+        "- not-a-write.json\n"
     )
     got_produced, got_mentioned = extract_producers(sample)
+    expect_p = {"written.json", "script-made.json", "declared-only.json"}
+    expect_m = expect_p | {"reader-only.json"}
     for label, actual, expected in (
-        ("produced", got_produced, {"written.json", "script-made.json"}),
-        ("mentioned", got_mentioned, {"reader-only.json", "written.json", "script-made.json"}),
+        ("produced", got_produced, expect_p),
+        ("mentioned", got_mentioned, expect_m),
     ):
         if actual != expected:
             print(f"SELF-TEST FAIL: extractor {label} was {sorted(actual)}, "
