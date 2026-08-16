@@ -446,6 +446,10 @@ def create_issue(ls, args, root: Path, body: str):
         "teamId": tid, "title": args.title, "description": body,
         "priority": args.priority,
         "labelIds": label_ids, "projectId": pid}})
+    # linear-filer: human-in-the-loop -- one confirmed finding per invocation,
+    # and validate_dor refuses to create without a human-authored title and a
+    # Definition of Ready carrying allowed-files + acceptance. A person decided
+    # this issue exists, so needs-triage would mark work that is already routed.
     ident = ((res.get("issueCreate") or {}).get("issue") or {}).get("identifier")
     if not ident:
         sys.stderr.write(f"Linear create failed: {json.dumps(res)[:300]}\n")

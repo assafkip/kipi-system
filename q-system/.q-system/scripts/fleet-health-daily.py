@@ -1871,6 +1871,11 @@ def _create_one(ls, finding: dict, apply: bool, team_id: str, project,
     if project:
         payload["projectId"] = project["id"]
     data = ls.graphql(ls.ISSUE_CREATE, {"input": payload})
+    # linear-filer-lint-skip: AUTOMATED and currently unmarked. A nightly launchd
+    # detector sweep files one issue per finding, so this SHOULD attach
+    # TRIAGE_LABEL. Captured as sp-1306aca4 (see also sp-2ea6e19c, which named the
+    # same five-writer class) rather than changed here -- relabelling live inflow
+    # is a behaviour change, not a lint fix.
     node = (data.get("issueCreate") or {}).get("issue") or {}
     if not node.get("id"):
         # A create that returned no issue is a FAILURE, not a quiet zero. The
