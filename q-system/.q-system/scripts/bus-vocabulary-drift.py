@@ -152,6 +152,77 @@ def extract_producers(agent_text: str) -> tuple[set[str], set[str]]:
     return produced, mentioned
 
 
+WEEKDAYS = {"monday", "tuesday", "wednesday", "thursday",
+            "friday", "saturday", "sunday"}
+
+
+def _day_promotion_test(test: ast.expr) -> tuple[int | None, list[str]]:
+    """Read `phase == N and <day> in ("tuesday", ...)` into (N, [days])."""
+    phase, days = None, []
+    parts = (test.values if isinstance(test, ast.BoolOp)
+             and isinstance(test.op, ast.And) else [test])
+    for part in parts:
+        if not isinstance(part, ast.Compare) or len(part.ops) != 1:
+            continue
+        op, comp = part.ops[0], part.comparators[0]
+        if (isinstance(op, ast.Eq) and isinstance(comp, ast.Constant)
+                and isinstance(comp.value, int) and not isinstance(comp.value, bool)):
+            phase = comp.value
+        elif isinstance(op, ast.In) and isinstance(comp, (ast.Tuple, ast.List)):
+            days = [e.value.lower() for e in comp.elts
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str)
+                    and e.value.lower() in WEEKDAYS]
+        elif (isinstance(op, ast.Eq) and isinstance(comp, ast.Constant)
+                and isinstance(comp.value, str) and comp.value.lower() in WEEKDAYS):
+            days = [comp.value.lower()]
+    return phase, days
+
+
+def read_hardcoded_day_rules(path: Path) -> dict:
+    """Extract day-of-week promotions written as LITERALS in a verifier's source.
+
+    WHY (scar, ASK-874 PR #202 round 4): round 3 taught the detector to read
+    `day_rules` from `_cadence-config.json` and called that the declared source
+    of truth. It is not the only one. The MCP `bus_verifier` never opens that
+    config at all -- it hardcodes `phase == 4 and day_name in ("tuesday",
+    "thursday")` -- and `verify-bus.py` keeps the same literal as its fallback
+    for when the config is missing. Measured on a copy: delete `day_rules` from
+    the config and the detector reports NO day-rule finding while both verifiers
+    still promote tl-content.json at runtime. Reading one of three sources is
+    how a checker reports GREEN on an unsatisfiable phase.
+
+    Reachability is deliberately NOT considered: a literal a verifier can act on
+    is a requirement the detector must model, fallback branch included.
+    """
+    rules: dict = {}
+    for node in ast.walk(ast.parse(path.read_text())):
+        if not isinstance(node, ast.If):
+            continue
+        phase, days = _day_promotion_test(node.test)
+        if phase is None or not days:
+            continue
+        files = sorted({
+            c.value for c in ast.walk(node)
+            if isinstance(c, ast.Constant) and isinstance(c.value, str)
+            and c.value.endswith(".json")
+        })
+        for day in days:
+            bucket = rules.setdefault(day, {}).setdefault(str(phase), [])
+            bucket.extend(f for f in files if f not in bucket)
+    return rules
+
+
+def merge_day_rules(*sources: dict) -> dict:
+    """Union day->phase->files across every source that can promote at runtime."""
+    merged: dict = {}
+    for src in sources:
+        for day, phases in (src or {}).items():
+            for phase, files in (phases or {}).items():
+                bucket = merged.setdefault(str(day).lower(), {}).setdefault(str(phase), [])
+                bucket.extend(f for f in files if f not in bucket)
+    return merged
+
+
 # ------------------------------------------------------------- the drift rules
 # Pure function over already-extracted sets, so --self-test can drive it with
 # synthetic input. A checker that can only run against the live tree cannot be
@@ -160,7 +231,7 @@ def extract_producers(agent_text: str) -> tuple[set[str], set[str]]:
 def find_drift(bridge: set[str], mcp: dict, vbus: dict,
                schemas: set[str], produced: set[str],
                mentioned: set[str] | None = None,
-               day_rules: dict | None = None) -> list[dict]:
+               *, day_rules: dict) -> list[dict]:
     """`produced` = a WRITE was found. `mentioned` = the name appears at all.
 
     Codex PR #202 (major): keying the producer classes on mere mention treated
@@ -171,7 +242,11 @@ def find_drift(bridge: set[str], mcp: dict, vbus: dict,
     """
     if mentioned is None:
         mentioned = produced
-    day_rules = day_rules or {}
+    # day_rules is keyword-ONLY and has no default on purpose (ASK-874 round 4).
+    # It used to default to {}, so a caller that forgot it got a detector that
+    # silently skipped D3b and reported GREEN on a phase that cannot pass. The
+    # reviewer's own reproducer did exactly that. A missing argument is now a
+    # loud TypeError instead of a quiet false negative.
     findings: list[dict] = []
 
     # D1 - a structure check registered for a file the loop never visits.
@@ -264,6 +339,7 @@ def self_test() -> int:
         vbus={0: {"required": ["a.json"], "optional": [], "checks": ["a.json"]}},
         schemas={"a.json"},
         produced={"a.json"},
+        day_rules={},
     )
     got = find_drift(**clean)
     if got:
@@ -329,8 +405,47 @@ def self_test() -> int:
     print("  ok  extractor: read-only line is mentioned but NOT produced; "
           "settings.json ignored")
 
+    # Drive the REAL day-rule source readers over the REAL verifier sources.
+    # Every mutant above hands find_drift a synthetic day_rules dict, so all of
+    # them stayed green while the detector read only _cadence-config.json and
+    # was blind to the literals both verifiers carry (ASK-874 round 4). Measured
+    # on a copy: removing day_rules from the config silenced the finding
+    # entirely. This case is the one that goes red for that reason.
+    for src, label in ((MCP_VERIFIER_PY, "mcp:bus_verifier"),
+                       (VERIFY_BUS_PY, "verify-bus.py")):
+        if not src.is_file():
+            print(f"SELF-TEST FAIL: cannot read day rules from missing {label}")
+            return 1
+        got = read_hardcoded_day_rules(src)
+        for day in ("tuesday", "thursday"):
+            promoted = got.get(day, {}).get("4", [])
+            if "tl-content.json" not in promoted:
+                print(f"SELF-TEST FAIL: {label} hardcodes a {day} phase-4 promotion "
+                      f"of tl-content.json that the reader missed (got {promoted or 'none'})")
+                return 1
+    print("  ok  day-rule reader: both verifiers' hardcoded Tue/Thu promotions parsed")
+
+    # The union must survive the DECLARED source going missing, because the MCP
+    # verifier never opens that config and promotes anyway.
+    config_gone = merge_day_rules({}, read_hardcoded_day_rules(MCP_VERIFIER_PY))
+    promoted_without_config = config_gone.get("tuesday", {}).get("4", [])
+    if "tl-content.json" not in promoted_without_config:
+        print("SELF-TEST FAIL: with no config day_rules the union lost the "
+              "tuesday promotion the MCP verifier still performs")
+        return 1
+    day_promoted_findings = [
+        f for f in find_drift(**dict(clean, day_rules=config_gone))
+        if f["class"] == "required-without-producer" and "tl-content.json" in f["detail"]
+    ]
+    if not day_promoted_findings:
+        print("SELF-TEST FAIL: a runtime-promoted file with no producer emitted "
+              "no required-without-producer finding")
+        return 1
+    print("  ok  day-rule union: survives a config with no day_rules, still flags "
+          "the unproduced promotion")
+
     print(f"SELF-TEST PASS: clean input is silent, all {len(cases)} mutants caught, "
-          "extractor verified.")
+          "extractor + day-rule readers verified.")
     return 0
 
 
@@ -365,13 +480,27 @@ def main() -> int:
         if AGENT_DIR.is_dir() else ""
     produced, mentioned = extract_producers(agent_text)
 
+    # Three independent sources can promote a file to required at RUNTIME, so
+    # all three are read and unioned. The config is the DECLARED source; it is
+    # not the only one, and it is the only one that can go missing (ASK-874
+    # round 4 -- see read_hardcoded_day_rules for the measurement).
     cadence = AGENT_DIR / "_cadence-config.json"
     try:
-        day_rules = json.loads(cadence.read_text()).get("day_rules", {}) if cadence.is_file() else {}
+        config_day_rules = json.loads(cadence.read_text()).get("day_rules", {}) \
+            if cadence.is_file() else {}
     except (OSError, json.JSONDecodeError):
-        day_rules = {}
+        config_day_rules = {}
 
-    findings = find_drift(bridge, mcp, vbus, schemas, produced, mentioned, day_rules)
+    hardcoded_day_rules = {}
+    for src in (MCP_VERIFIER_PY, VERIFY_BUS_PY):
+        if src.is_file():
+            hardcoded_day_rules = merge_day_rules(
+                hardcoded_day_rules, read_hardcoded_day_rules(src))
+
+    day_rules = merge_day_rules(config_day_rules, hardcoded_day_rules)
+
+    findings = find_drift(bridge, mcp, vbus, schemas, produced, mentioned,
+                          day_rules=day_rules)
 
     if args.json:
         print(json.dumps({"findings": findings, "count": len(findings)}, indent=2))
