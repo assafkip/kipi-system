@@ -34,6 +34,30 @@ SWEEP_FAILURES=0
 # Single-writer chokepoint for the structured run-log (2026-07-01: the freeform
 # .log was unauditable -- a sweep could miss instances and nothing diffed
 # expected-vs-actual; run-step-audit.py now does, post-sweep).
+# --- environmental classification (ASK-869) ---------------------------------
+# Set once the machine-wide condition is seen; every later instance is then
+# skipped without waking an agent. Empty means the sweep is healthy.
+ENV_HALT=""
+
+# DERIVED FROM WHAT THE LOG ACTUALLY CARRIED, not from what an exhausted CLI
+# might plausibly print. The observed line, once per failing instance, was:
+#   You've hit your weekly limit - resets Aug 18 at 2pm (America/Los_Angeles)
+# The auth siblings are included because they are the same CLASS -- the runner
+# cannot run at all, and no instance can fix that for another -- but the match
+# stays narrow on purpose. A loose pattern here silently converts ordinary
+# per-instance failures into a fleet-wide halt, which is worse than the noise
+# this replaces: the sweep would stop on one instance's ordinary bad day.
+is_environmental() {  # is_environmental <agent-output>
+  printf '%s' "${1:-}" | grep -qiE \
+    "hit your (weekly|usage|session|[0-9]+-hour) limit|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login"
+}
+
+environmental_reason() {  # environmental_reason <agent-output> -> one line
+  printf '%s' "${1:-}" \
+    | grep -iEo "hit your (weekly|usage|session|[0-9]+-hour) limit[^|]*|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login" \
+    | head -1 | cut -c1-120
+}
+
 log_step() {  # log_step <instance-name> <completed|skipped|failed> [note]
   python3 -c '
 import json, sys
@@ -67,6 +91,13 @@ PROMPT_EOF
 work_instance() {
   local name="$1" path="$2"
   if [ ! -d "$path" ]; then log_step "$name" skipped "path missing"; return 0; fi
+  # ONCE THE MACHINE HAS REFUSED, EVERY LATER INSTANCE IS UNATTEMPTED (ASK-869).
+  # Not failed -- nobody tried it. This is the line that turns N tickets into one
+  # and stops the sweep burning ~6s per instance on runs that cannot succeed.
+  if [ -n "$ENV_HALT" ]; then
+    log_step "$name" skipped "not attempted: $ENV_HALT"
+    return 0
+  fi
   local script qroot
   if [ -f "$path/q-system/q-system/.q-system/scripts/open-loops.py" ]; then
     script="$path/q-system/q-system/.q-system/scripts/open-loops.py"; qroot="$path/q-system/q-system"
@@ -86,12 +117,39 @@ work_instance() {
   fi
   echo "$(TS) heartbeat[$name]: $count open loop(s) -> waking headless agent" >> "$LOG"
   local prompt; prompt="$(build_prompt "$script" "$qroot")"
+  # Byte offset BEFORE the run so the classifier below reads exactly this
+  # instance's output. Reading a fixed tail of $LOG instead would let a previous
+  # SWEEP's limit line -- the log persists across runs -- halt a healthy sweep,
+  # which is this bug pointed the other way.
+  local log_before; log_before="$(wc -c < "$LOG" 2>/dev/null || echo 0)"
   # </dev/null: claude -p reads stdin; without this it drains the while-read loop's
   # process-substitution feed (lines below) and truncates the sweep after the first
   # agent-waking instance. See rca-heartbeat-tail-skip-2026-07-05.md.
   if ( cd "$path" && KIPI_INSTANCE_NAME="$name" $TO claude -p "$prompt" </dev/null >> "$LOG" 2>&1 ); then
     log_step "$name" completed "agent ran ($count loops)"
   else
+    # WHOSE FAILURE IS IT (ASK-869). An exhausted account is not a property of
+    # this instance; it is a property of the MACHINE, and it is identical for
+    # every instance the sweep has not reached yet. Measured 2026-08-15: the
+    # weekly limit killed ten runs in one sweep and this branch filed ten
+    # tickets, plus a step-audit ticket for the ten "failed" steps, plus the
+    # job's own exit-1 ticket. Twelve tickets for one fact, and the sweep kept
+    # waking agents for ~6s each after the answer was already known.
+    #
+    # `.claude/rules/self-healing-retry.md` step 5 already states the rule --
+    # environmental failures stop on attempt 1 and surface immediately, because
+    # retrying cannot fix an environment. The heartbeat simply never applied it.
+    local agent_out; agent_out="$(tail -c +$((log_before + 1)) "$LOG" 2>/dev/null)"
+    if is_environmental "$agent_out"; then
+      ENV_HALT="$(environmental_reason "$agent_out")"
+      echo "$(TS) heartbeat[$name]: environmental failure ($ENV_HALT) -- halting the sweep" >> "$LOG"
+      # skipped, NOT failed: the environment refused the run, the instance did
+      # not fail at anything. Recording it as a failure is what put a step-audit
+      # ticket on top of the pile.
+      log_step "$name" skipped "environmental: $ENV_HALT"
+      SWEEP_FAILURES=$((SWEEP_FAILURES + 1))
+      return 0
+    fi
     echo "$(TS) heartbeat[$name]: agent run failed/timeout" >> "$LOG"
     log_step "$name" failed "agent run failed/timeout"
     SWEEP_FAILURES=$((SWEEP_FAILURES + 1))
@@ -116,6 +174,17 @@ try:
 except Exception: pass
 " 2>/dev/null)
 echo "$(TS) heartbeat: fleet sweep complete" >> "$LOG"
+
+# THE ONE ALERT (ASK-869). Fired here rather than at the point of detection so it
+# can state how many instances went unattempted -- the number is only known once
+# the loop has finished skipping them. One condition, one ticket, and it names
+# what a human would otherwise have to reconstruct from ten identical ones.
+if [ -n "$ENV_HALT" ]; then
+  ENV_SKIPPED="$(grep -c '"status": "skipped"' "$RUNLOG_TMP" 2>/dev/null || echo 0)"
+  bash "$SKEL/q-system/.q-system/scripts/slack-notify.sh" \
+    "heartbeat: sweep HALTED, the runner itself is unavailable ($ENV_HALT). $ENV_SKIPPED instance(s) not attempted -- this is one machine-wide condition, not one fault per instance. Nothing to fix per repo; the sweep resumes on its own when the runner is available." \
+    2>/dev/null || true
+fi
 
 # Post-sweep self-audit: expected (registry + skeleton) vs logged. Catches the
 # case launchd-health cannot: the sweep exits 0 but never reached an instance.
