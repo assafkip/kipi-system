@@ -17,8 +17,11 @@ WHAT IT MEASURES (the three numbers, and why these three)
                   as "not this repo", so an unrouted issue is unreachable by every
                   checkout at once. It is the count that best predicts work that
                   can never be picked up.
-  needs-triage    open issues carrying the mark an automated filer left. Depth of
-                  the queue nobody has routed yet.
+  needs-triage    open issues carrying the mark an automated filer left AND
+                  still holding no project. Depth of the queue nobody has routed
+                  yet. Both halves are required: nothing removes the label when
+                  an issue is routed, so counting the label alone counted routed
+                  work as untriaged forever.
   oldest          age in days of the oldest untouched issue in that queue. A
                   count alone hides the shape: 40 issues filed this morning and
                   40 filed in June are the same number and different problems.
@@ -43,10 +46,13 @@ monitor would inflate the backlog it reports and then report the inflation. The
 exclusion is by title marker and is tested; see SELF_MARKER.
 
 EXIT CODES -- this script never lies about failure
-  0  measured cleanly (whether or not it alerted)
+  0  measured cleanly, and any alert it owed was delivered
   1  usage error
   3  no Linear API key configured -- a setup state, not an error
   4  refused: running under pytest
+  5  a threshold was breached and the alert did NOT send. The numbers are good;
+     nobody was told. Printing the failure and exiting 0 made launchd record a
+     silent 3am success, so the delivery result reaches the exit code.
   9  the run could not complete its measurement (API failure mid-walk). Partial
      numbers are still printed, but the exit code says they are partial.
 
@@ -73,6 +79,7 @@ EXIT_OK = 0
 EXIT_USAGE = 1
 EXIT_NO_KEY = 3
 EXIT_REFUSED_FIXTURE = 4
+EXIT_ALERT_FAILED = 5
 EXIT_INCOMPLETE = 9
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -213,6 +220,25 @@ def is_unrouted(issue: dict) -> bool:
     return not ((issue.get("project") or {}).get("id"))
 
 
+def is_awaiting_triage(issue: dict) -> bool:
+    """Carrying the filer's mark AND still unrouted.
+
+    BOTH halves, and the second one is a fix, not a refinement. `alert-to-linear
+    .py` sets `projectId` and the `needs-triage` label in the SAME issueCreate
+    payload, and NOTHING anywhere removes that label once a human routes the
+    issue. So a label-only count reported every routed alert ticket as still
+    awaiting triage, forever -- a queue that can only grow, reported by the
+    script whose whole job is noticing a queue that only grows (Codex major on
+    PR #204, reproduced: one routed ticket, needs_triage=1).
+
+    Routing is the event that ends the wait, so routing is what the measurement
+    reads. The alternative was a label-removal writer, which needs a mutation,
+    a second write path, and something to run it; a predicate needs neither and
+    cannot drift out of sync with the board.
+    """
+    return TRIAGE_LABEL in label_names(issue) and is_unrouted(issue)
+
+
 def measure(issues: list, now: datetime) -> dict:
     """The three numbers, over already-filtered open non-self issues.
 
@@ -221,7 +247,7 @@ def measure(issues: list, now: datetime) -> dict:
     asserting a value it computed the same way the code did.
     """
     unrouted = [i for i in issues if is_unrouted(i)]
-    triage = [i for i in issues if TRIAGE_LABEL in label_names(i)]
+    triage = [i for i in issues if is_awaiting_triage(i)]
 
     oldest_days, oldest_id = 0.0, ""
     for issue in triage:
@@ -335,16 +361,31 @@ def dormancy_comment(days: float, threshold: int) -> str:
 
 
 def flag_dormant(ln, issue: dict, days: float, threshold: int) -> str:
-    """Write one dormancy comment. Returns a short outcome for the report."""
+    """Write one dormancy comment. Returns a short outcome for the report.
+
+    THE MUTATION'S OWN `success` FIELD IS THE EVIDENCE, not the absence of an
+    exception. `COMMENT_CREATE` selects `success` and this used to discard it,
+    so a `commentCreate: {success: false}` reply came back through a clean call
+    and was reported as "flagged" -- the run counted a write that never landed
+    and the summary line said flagged=N (Codex major on PR #204, reproduced).
+    A monitoring script that overstates its own writes is the failure it was
+    built to catch, one layer up.
+
+    `graphql()` already raises on Linear's `errors` array, so the two paths are
+    different animals: the exception is a call that failed, this is a call that
+    succeeded and declined.
+    """
     if already_flagged(ln, issue["id"]):
         return "already-flagged"
     try:
-        ln.graphql(COMMENT_CREATE, {"input": {
+        res = ln.graphql(COMMENT_CREATE, {"input": {
             "issueId": issue["id"],
             "body": dormancy_comment(days, threshold),
         }})
     except Exception as exc:
         return f"FAILED ({exc})"
+    if not (((res or {}).get("commentCreate") or {}).get("success")):
+        return "FAILED (commentCreate returned success=false)"
     return "flagged"
 
 
@@ -514,12 +555,21 @@ def main(argv: list) -> int:
                   f"not-attempted={len(dormant) - len(to_flag)}")
 
     hits = breaches(m)
+    alert_failed = False
     if hits and not args.no_notify:
         line = (f"{SELF_MARKER} " + "; ".join(hits) +
                 f". {m['dormant']} dormant >={args.dormant_days}d. "
                 f"Drain is owner:sana -> kipi-dispatch.sh.")
         rc = notify(line)
-        print(f"\nalerted (exit {rc}): {line}")
+        # A NONZERO HERE IS A DELIVERY FAILURE AND MUST REACH THE EXIT CODE.
+        # This printed `alerted (exit 1)` and then returned 0, so a 3am launchd
+        # run recorded success for a breach nobody was told about -- the one
+        # state this script exists to make impossible (Codex major, PR #204).
+        # `notify()` never raises by design, which is exactly why its return
+        # value is the only signal there is.
+        alert_failed = rc != 0
+        verb = "alert FAILED" if alert_failed else "alerted"
+        print(f"\n{verb} (exit {rc}): {line}")
     elif hits:
         print(f"\nwould alert (suppressed by --no-notify): {'; '.join(hits)}")
     else:
@@ -529,6 +579,10 @@ def main(argv: list) -> int:
         print("INCOMPLETE: the issue walk did not finish; numbers are partial.",
               file=sys.stderr)
         return EXIT_INCOMPLETE
+    if alert_failed:
+        print("ALERT FAILED: a threshold was breached and the alert did not send.",
+              file=sys.stderr)
+        return EXIT_ALERT_FAILED
     return EXIT_OK
 
 

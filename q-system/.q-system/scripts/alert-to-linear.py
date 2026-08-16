@@ -576,9 +576,42 @@ def _label_ids(ln, team_id: str, wanted: list) -> list:
             if new_id:
                 found[name] = new_id
         except Exception:
+            # LOSING THE CREATE RACE IS NOT THE SAME AS HAVING NO LABEL. Two
+            # filers running at once both read the team before either created
+            # `needs-triage`; the loser's create fails because the label now
+            # EXISTS, and dropping the name here filed that ticket unmarked and
+            # invisible to the health script -- the failure mode being silent is
+            # what made it worth a fix (Codex major, PR #204).
+            #
+            # The recheck is a refetch, not a parse of Linear's error prose: the
+            # question "does this label exist now" is answerable directly, and
+            # an answer beats matching a message string this fleet has never
+            # measured. A create that failed for any OTHER reason finds nothing
+            # and falls through to the old behaviour unchanged.
+            existing = _refetch_label_id(ln, team_id, name)
+            if existing:
+                found[name] = existing
             continue
 
     return [found[n] for n in wanted if n in found]
+
+
+def _refetch_label_id(ln, team_id: str, name: str) -> str | None:
+    """The team's id for `name`, read fresh. None when it is still absent.
+
+    Its own function so the create loop keeps one level of nesting, and so the
+    "never let a lookup cost the ticket" rule holds here too: this runs on a
+    path that is ALREADY failing, so it swallows and returns None rather than
+    turning a missing label into a lost alert.
+    """
+    try:
+        team = (ln.graphql(LABELS_QUERY, {"teamId": team_id}) or {}).get("team") or {}
+    except Exception:
+        return None
+    for node in ((team.get("labels") or {}).get("nodes") or []):
+        if (node.get("name") or "").lower() == name.lower():
+            return node.get("id")
+    return None
 
 
 def file_alert(message: str, now: float | None = None) -> tuple[int, str]:

@@ -11,6 +11,9 @@ my assumption; this one at least tests the query's own shape.
 """
 import importlib.util
 import os
+import shutil
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -320,3 +323,204 @@ def test_negative_limit_is_refused_rather_than_silently_emptying():
     """
     with pytest.raises(ValueError):
         health.select_to_flag([(issue("ASK-1", project="p"), 30.0)], -1)
+
+
+# --- PR #204 Codex review: the four majors, each with its reproducer ---------
+
+def test_a_routed_ticket_is_no_longer_awaiting_triage():
+    """FINDING 1. The filer sets projectId and needs-triage in ONE payload.
+
+    Nothing anywhere removes the label when a human routes the issue, so a
+    label-only count reported every routed alert ticket as untriaged forever --
+    a permanently growing number, printed by the script whose job is spotting a
+    permanently growing number. Reproduced on the PR head: needs_triage=1 for
+    the routed ticket below.
+
+    Both directions are pinned. Dropping the `is_unrouted` half turns the first
+    assert red; dropping the label half turns the third one red.
+    """
+    routed = issue("ASK-1", project="kipi-system",
+                   labels=["owner:sana", "needs-triage"])
+    unrouted_marked = issue("ASK-2", labels=["owner:sana", "needs-triage"])
+    routed_unmarked = issue("ASK-3", project="kipi-system", labels=["owner:sana"])
+
+    assert health.measure([routed], NOW)["needs_triage"] == 0
+    assert health.measure([unrouted_marked], NOW)["needs_triage"] == 1
+    assert health.measure([routed_unmarked], NOW)["needs_triage"] == 0
+    # and the predicate itself, so a caller added later reads one definition
+    assert health.is_awaiting_triage(routed) is False
+    assert health.is_awaiting_triage(unrouted_marked) is True
+
+
+class CommentLinear:
+    """A Linear that answers commentCreate with whatever `success` it was given.
+
+    Modelled on the real reply shape: COMMENT_CREATE selects `success`, and
+    Linear returns HTTP 200 with success=false rather than raising.
+    """
+
+    def __init__(self, success):
+        self.success = success
+        self.bodies = []
+
+    def graphql(self, query, variables):
+        if "comments(first" in query:
+            return {"issue": {"comments": {"nodes": []}}}
+        if "commentCreate" in query:
+            self.bodies.append(variables["input"]["body"])
+            return {"commentCreate": {"success": self.success}}
+        raise AssertionError(f"unexpected query: {query[:60]}")
+
+
+def test_a_refused_comment_is_not_reported_as_flagged():
+    """FINDING 2. success=false came back through a clean call and read as written.
+
+    The run then counted it in `flagged=N`. A monitoring script that overstates
+    its own writes is the exact failure it exists to catch, one layer up.
+    Reproduced on the PR head: flag_dormant returned 'flagged'.
+    """
+    ln = CommentLinear(success=False)
+    out = health.flag_dormant(ln, {"id": "uuid-1", "identifier": "ASK-1"}, 120.0, 75)
+
+    assert out != "flagged"
+    assert out.startswith("FAILED")
+    # the call really was attempted -- this is a refused write, not a skipped one
+    assert len(ln.bodies) == 1
+
+
+def test_an_accepted_comment_is_still_reported_as_flagged():
+    """The positive control for the test above.
+
+    Without it, `return "FAILED"` unconditionally would pass the success=false
+    case and the suite would be green on a script that can never flag anything.
+    """
+    ln = CommentLinear(success=True)
+    out = health.flag_dormant(ln, {"id": "uuid-1", "identifier": "ASK-1"}, 120.0, 75)
+    assert out == "flagged"
+    assert health.DORMANT_MARKER in ln.bodies[0]
+
+
+def test_a_conflicted_label_create_recovers_the_existing_id():
+    """FINDING 4 (alert-to-linear.py). Losing the create race is not having no label.
+
+    Two filers read the team before either created `needs-triage`; the loser's
+    create fails BECAUSE the label now exists, and the old code dropped the name
+    and filed the ticket unmarked -- invisible to the health script, silently.
+    Reproduced on the PR head: ids came back as ['id-owner:sana'].
+    """
+
+    class Conflict:
+        def __init__(self):
+            self.label_queries = 0
+
+        def graphql(self, query, variables):
+            if "labels(first" in query:
+                self.label_queries += 1
+                # the rival process wins between the first read and the refetch
+                names = (["owner:sana"] if self.label_queries == 1
+                         else ["owner:sana", "needs-triage"])
+                return {"team": {"labels": {"nodes": [
+                    {"id": f"id-{n}", "name": n} for n in names]}}}
+            if "issueLabelCreate" in query:
+                raise RuntimeError('[{"message":"Entity with that name already exists"}]')
+            raise AssertionError(f"unexpected query: {query[:60]}")
+
+    ln = Conflict()
+    ids = alerts._label_ids(ln, "team", [alerts.OWNER_LABEL, alerts.TRIAGE_LABEL])
+
+    assert ids == ["id-owner:sana", "id-needs-triage"]
+    assert ln.label_queries == 2, "the recovery must actually re-read the team"
+
+
+def test_a_create_that_fails_for_another_reason_still_finds_nothing():
+    """The negative control for the recovery above.
+
+    The refetch must not invent an id. A create refused for permissions leaves
+    the label genuinely absent, so this run comes away with only the label it
+    really resolved -- the same posture the pre-existing failed-create test
+    pins, kept honest now that a second lookup happens.
+    """
+    ln = FakeLinear(existing=["owner:sana"], fail_create_for=["needs-triage"])
+    ids = alerts._label_ids(ln, "team", [alerts.OWNER_LABEL, alerts.TRIAGE_LABEL])
+    assert ids == ["id-owner:sana"]
+
+
+# --- FINDING 3: the alert result has to reach the exit code ------------------
+#
+# main() refuses under pytest on purpose, and that chokepoint is worth more than
+# this test is. So this drives a COPY of the script in a subprocess with the
+# guard's env var cleared, beside a fake linear-sync.py and a fake
+# slack-notify.sh. Nothing here can reach the real board: the copy resolves its
+# neighbours from its OWN directory, which is a tmp_path. Clearing the var on
+# the real module in-process would disarm the guard for every test after it.
+
+FAKE_LINEAR_SYNC = '''
+TEAM_QUERY = "query teams"
+
+
+def linear_api_key():
+    return "fake-key-never-sent-anywhere"
+
+
+def graphql(query, variables):
+    if "issues(filter" in query:
+        nodes = [{
+            "id": f"u{n}", "identifier": f"ASK-{n}", "title": f"work {n}",
+            "createdAt": "2026-08-16T00:00:00Z",
+            "updatedAt": "2026-08-16T00:00:00Z",
+            "state": {"name": "Backlog", "type": "backlog"},
+            "project": None,
+            "labels": {"nodes": []},
+        } for n in range(60)]
+        return {"issues": {"nodes": nodes, "pageInfo": {"hasNextPage": False}}}
+    return {"teams": {"nodes": [{"id": "team-1", "key": "ASK"}]}}
+'''
+
+FAKE_NOTIFY = '#!/usr/bin/env bash\nexit "${FAKE_NOTIFY_EXIT:-0}"\n'
+
+
+def _run_health_copy(tmp_path, notify_exit):
+    """Run a copy of the script whose alert path exits `notify_exit`."""
+    shutil.copy(os.path.join(SCRIPTS, "linear-triage-health.py"),
+                tmp_path / "linear-triage-health.py")
+    (tmp_path / "linear-sync.py").write_text(FAKE_LINEAR_SYNC)
+    notify = tmp_path / "slack-notify.sh"
+    notify.write_text(FAKE_NOTIFY)
+    notify.chmod(0o755)
+
+    env = dict(os.environ)
+    env.pop("PYTEST_CURRENT_TEST", None)
+    env["FAKE_NOTIFY_EXIT"] = str(notify_exit)
+    return subprocess.run([sys.executable, str(tmp_path / "linear-triage-health.py")],
+                          capture_output=True, text=True, env=env, timeout=120)
+
+
+def test_a_failed_alert_exits_nonzero(tmp_path):
+    """FINDING 3. `alerted (exit 1)` printed, then `return EXIT_OK`.
+
+    launchd reads the exit code, not stdout, so a 3am run whose alert never
+    reached anyone was recorded as a clean success -- a breach measured, printed
+    into a log nobody opens, and reported as fine. Reproduced on the PR head:
+    main() returned 0 after notify failed.
+
+    The fixture breaches UNROUTED_ALERT_AT (60 unrouted against a 50 threshold),
+    so the alert is genuinely owed rather than skipped.
+    """
+    res = _run_health_copy(tmp_path, notify_exit=1)
+    assert res.returncode == health.EXIT_ALERT_FAILED, res.stdout + res.stderr
+    assert "alert FAILED" in res.stdout
+    # the measurement itself is still printed: the numbers are good, the send failed
+    assert "unrouted (no project) : 60" in res.stdout
+
+
+def test_a_delivered_alert_still_exits_zero(tmp_path):
+    """The negative control. Same breach, same code path, a working alert path.
+
+    Without it, `return EXIT_ALERT_FAILED` unconditionally would satisfy the test
+    above while making every successful run look like a failure -- which on a
+    launchd job is the same bug wearing the other sign.
+    """
+    res = _run_health_copy(tmp_path, notify_exit=0)
+    assert res.returncode == health.EXIT_OK, res.stdout + res.stderr
+    assert "alert FAILED" not in res.stdout
+    assert "alerted (exit 0)" in res.stdout
