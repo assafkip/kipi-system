@@ -828,6 +828,27 @@ echo "  verdict: ${VERDICT:-unstated}$DRY_NOTE"
 # reviewer's own `git show <sha>:<path>` invocations and its tip declaration.
 # Those are the reviewer telling you which tree it opened.
 #
+# WHY IT GROUPS BY PATH AND NOT BY SHA (ASK-830 round 2 review, PR #197).
+# The first version refused on the FIRST declared sha that was not the head, and
+# that is too strong in a way that costs more than the defect: a correct review
+# doing before/after verification runs BOTH `git show <head>:f` and
+# `git show <base>:f` to show the fix landed, and it was refused with no status
+# and no comment -- wedging the PR behind this required check.
+#
+# The naive repair ("pass if the head appears in ANY show position") is wrong on
+# the measured payload, which is why it is not what this does. Round 2's body
+# carries `git show c87245b0:test_fleet_unblock.py` -- it read the TEST from the
+# right tree while reading fleet-unblock.py and fleet-reach-audit.py, the files
+# its findings are about, from 0880859e. Under the any-match rule the live defect
+# passes. Measured, not reasoned: round2 declares c87245b0 once and 0880859e nine
+# times, split by path.
+#
+# So the unit is the PATH. A path the review opened at the head is fine no matter
+# what else it opened alongside (that is a comparison). A path it opened ONLY
+# from another tree is the contradiction: its findings about that file describe a
+# commit nobody is merging. A bare sha with no path (`git checkout <sha>`, the
+# prose tip declaration) is a whole-tree claim and gets its own bucket.
+#
 # WHAT THIS DOES AND DOES NOT PROVE, stated plainly because a REQUIRED check with
 # enforce_admins on main earns the honesty: it detects a CONTRADICTION, not a
 # match. A review that declares no tree at all is not refused -- there is nothing
@@ -836,28 +857,67 @@ echo "  verdict: ${VERDICT:-unstated}$DRY_NOTE"
 # false refusal costs every correct PR in the fleet at once, escapable only via
 # break-glass-main-protection.sh, which disables protection fleet-wide.
 #
+# KNOWN RESIDUAL, not a surprise: a text scan cannot tell "I ran this" from "I am
+# quoting this". A review that QUOTES a `git show <sha>:<path>` line out of the
+# diff under review -- which the fixtures in this very directory contain -- is
+# read as having opened that path at that sha, and is refused. Narrowed from
+# "any second sha" to "a path opened only off-head", not eliminated. Captured as
+# spillover against ASK-830 rather than left in a comment.
+#
 # analysed_tree_conflict <review-file> <head-sha>
-# Prints the first sha the review declares it READ that is not $head, or nothing.
-# A short sha is matched by PREFIX on purpose: the reviewer writes 8 characters,
-# gh reports 40, and treating that as drift would refuse every review.
+# Prints the first off-head sha for a path the review never opened at the head,
+# or nothing. A short sha is matched by PREFIX on purpose: the reviewer writes 8
+# characters, gh reports 40, and treating that as drift would refuse every review.
 analysed_tree_conflict() {
-  local f="${1:-}" head="${2:-}" tok
+  local f="${1:-}" head="${2:-}"
   [ -s "$f" ] || return 0
   [ -n "$head" ] || return 0
-  head="$(printf '%s' "$head" | tr '[:upper:]' '[:lower:]')"
-  # Two shapes, both taken from the real payload: the shell form
-  # `git show 0880859e:fleet-unblock.py`, the python form
-  # `"git","show","0880859e:fleet-unblock.py"`, and the prose tip declaration
-  # "the review used the locally available PR tip `0880859e`".
-  for tok in $(grep -oiE '(show[^0-9a-fA-F]{1,6}|tip[^0-9a-fA-F]{1,4})[0-9a-fA-F]{7,40}' "$f" 2>/dev/null \
-                 | grep -oiE '[0-9a-fA-F]{7,40}$' \
-                 | tr '[:upper:]' '[:lower:]' \
-                 | sort -u); do
-    case "$head" in
-      "$tok"*) ;;
-      *) printf '%s' "$tok"; return 0 ;;
-    esac
-  done
+  python3 - "$f" "$head" <<'ANALYSED_TREE_PY'
+import re
+import sys
+
+review_path, head = sys.argv[1], sys.argv[2].strip().lower()
+try:
+    with open(review_path, encoding="utf-8", errors="replace") as fh:
+        body = fh.read()
+except OSError:
+    sys.exit(0)
+
+# Shapes taken from the real payload, all four of them:
+#   shell        git show 0880859e:fleet-unblock.py
+#   flagged      git show --stat 0880859e     (the 6-char window missed this; the
+#                                              flag run below is why it no longer does)
+#   python-quoted "git","show","0880859e:fleet-unblock.py"
+#   prose tip    the review used the locally available PR tip `0880859e`
+# `git` is required in front of show/checkout so ordinary prose ("the diff shows
+# 1234567 rows") cannot manufacture a declaration and refuse a correct review.
+DECLARATION = re.compile(
+    r"(?:git[^\w]{1,4}(?:show|checkout)|\btip\b)"      # what opened a tree
+    r"(?:[^\w]{0,3}--?[A-Za-z][\w-]*(?:=[^\s]*)?)*"    # any run of flags
+    r"[^\w]{1,4}"
+    r"([0-9a-fA-F]{7,40})(?![0-9a-fA-F])"              # the sha it names
+    r"(?::([^\s\"'`,;)]+))?",                          # the path, when it names one
+    re.IGNORECASE,
+)
+
+WHOLE_TREE = ""  # the bucket for a declaration that names no path
+
+
+def is_head(sha):
+    return head.startswith(sha) or sha.startswith(head)
+
+
+shas_by_path = {}
+for match in DECLARATION.finditer(body):
+    sha = match.group(1).lower()
+    shas_by_path.setdefault(match.group(2) or WHOLE_TREE, []).append(sha)
+
+for path, shas in shas_by_path.items():
+    if any(is_head(sha) for sha in shas):
+        continue  # opened at the head; a second sha alongside it is a comparison
+    sys.stdout.write(shas[0])
+    break
+ANALYSED_TREE_PY
 }
 
 FOREIGN_TREE="$(analysed_tree_conflict "$REVIEW" "$HEAD_SHA")"

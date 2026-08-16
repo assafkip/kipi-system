@@ -20,11 +20,17 @@
 # see it. Case 4 below asserts that older guard still fires, because this issue
 # adds a check and must not replace one.
 #
-# NEGATIVE SELF-TEST (case 2). A guard that refuses everything would pass case 1
-# while wedging every correct PR in the fleet behind a required check whose only
-# documented escape disables branch protection fleet-wide. Case 2 drives the SAME
-# harness with the round-3 review of the same PR at the same head and asserts the
-# status IS posted. Case 1 without case 2 is not evidence.
+# NEGATIVE SELF-TEST (case 5, and why case 2 is NOT it). A guard that refuses
+# everything would pass case 1 while wedging every correct PR in the fleet behind
+# a required check whose only documented escape disables branch protection
+# fleet-wide. Case 2 was written as that self-test and does not do the job: the
+# round-3 fixture declares NO tree at all, so for this guard it is byte-equivalent
+# to case 3's silence. Measured on PR #197 round 2 -- with the head-sha exemption
+# deleted, so the guard refuses EVERY review that names a tree, the suite still
+# reported PASS (10 checks). Case 5 is the real one: a review that runs
+# `git show <head>:<path>` and must still post. Case 5m re-runs it against a
+# mutant with that exemption removed and requires it to go RED, so the suite
+# cannot report a passing guard it never exercised.
 #
 # Point it at an older copy to watch case 1 fail:
 #   KIPI_TEST_REVIEWER_REF=85f556dc bash test-review-analysed-tree.sh
@@ -221,5 +227,188 @@ grep -q "head moved between two reads" "$CASE_DIR/err.txt" \
 $(sed 's/^/        /' "$CASE_DIR/err.txt")"
 status_posted "$CASE_DIR" && fail "REGRESSION: a status was posted after the head moved mid-review"
 ok "the ASK-221 head-moved refusal still fires (both guards live, neither replaced)"
+
+# mkbody <outfile>; stdin is the review body, @HEAD@/@WRONG@ substituted. Bodies
+# are written here rather than added as fixtures because these are SHAPES, not
+# payloads -- the two real payloads are the .md fixtures, and inventing a fixture
+# to stand in for a real one is the failure this repo keeps finding.
+mkbody() {
+  local out="$1" raw
+  raw="$(cat)"
+  raw="${raw//@HEAD@/$HEAD_SHA}"
+  raw="${raw//@WRONG@/$WRONG_TREE}"
+  printf '%s\n' "$raw" > "$out"
+}
+
+# --- case 5: THE negative self-test -- a review that opens the head must post --
+# The one case 2 cannot be. This body declares a tree, and it declares the RIGHT
+# one, so it drives the head-sha exemption that case 2 never reaches.
+mkbody "$W/declares-head.md" <<'EOF'
+## VERDICT: APPROVE
+
+Reproduced against the PR tip `@HEAD@`.
+
+```
+git show @HEAD@:fleet-unblock.py > "$tmp/fleet-unblock.py"
+python3 -m pytest -q "$tmp/fleet-unblock.py" || true
+```
+
+FINDINGS:
+END FINDINGS
+EOF
+run_case declares_head "$W/declares-head.md" "$HEAD_SHA"
+[ "$RC" -eq 0 ] \
+  || fail "THE GUARD REFUSES A REVIEW OF ITS OWN HEAD. The body runs
+      \`git show ${HEAD_SHA:0:8}:fleet-unblock.py\` and nothing else, so there is nothing to
+      contradict. Every correct PR in the fleet wedges behind a required check. stderr:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+status_posted "$CASE_DIR" \
+  || fail "no commit status posted for a review that opened the head. gh calls were:
+$(sed 's/^/        /' "$CASE_DIR/gh-calls.log")"
+ok "a review that opens the HEAD tree posts its status (the exemption is exercised)"
+
+# --- case 5m: and that case can actually go RED --------------------------------
+# Delete the head-sha exemption on a copy and case 5 must fail. Without this the
+# suite cannot distinguish the shipped guard from one that refuses everything --
+# which is exactly how the fleet-wedging version shipped green.
+MUT="$W/mutant"
+mkdir -p "$MUT"
+cp "$S"/pr-review-agent.sh "$S"/pr-verdict-lib.sh "$S"/repo-slug-lib.sh "$MUT/" \
+  || fail "cannot stage the mutant copy"
+python3 - "$MUT/pr-review-agent.sh" <<'PY'
+import sys
+path = sys.argv[1]
+with open(path) as fh:
+    src = fh.read()
+target = "    if any(is_head(sha) for sha in shas):"
+if target not in src:
+    sys.exit(3)
+with open(path, "w") as fh:
+    fh.write(src.replace(target, "    if False:  # MUTANT: head-sha exemption removed", 1))
+PY
+MUT_RC=$?
+# A mutation that silently no-ops turns this case into decoration that always
+# passes, so a missing target is fatal -- EXCEPT under an explicit historical ref,
+# where the reviewer under test predates the line and legitimately does not carry
+# it. That exemption is keyed on $REF and nothing else: on the working tree a
+# missing target is still a hard failure.
+if [ "$MUT_RC" -eq 3 ] && [ -n "$REF" ]; then
+  echo "  skip: mutation target absent in $REF (the exemption postdates it); working-tree runs still enforce it"
+elif [ "$MUT_RC" -ne 0 ]; then
+  fail "the mutation did not apply (rc=$MUT_RC). Its target line is gone from the guard, so this
+      case would report green while exercising nothing"
+else
+  REVIEWER_REAL="$REVIEWER"
+  REVIEWER="$MUT/pr-review-agent.sh"
+  run_case mutant "$W/declares-head.md" "$HEAD_SHA"
+  REVIEWER="$REVIEWER_REAL"
+  [ "$RC" -ne 0 ] \
+    || fail "MUTATION SURVIVED: with the head-sha exemption deleted -- a guard that refuses every
+      review naming any tree -- case 5 still passed. The suite cannot see the difference, so its
+      green says nothing about the guard"
+  ok "case 5 goes RED against a mutant with the head-sha exemption removed"
+fi
+
+# --- case 6: before/after verification is a comparison, not a conflict ---------
+# Showing the pre-fix line from the merge base to prove the fix landed is ordinary
+# reviewer behaviour. The first version of this guard refused it (PR #197 round 2,
+# major 1): first-off-head-sha-wins, no status, no comment, PR wedged.
+mkbody "$W/before-after.md" <<'EOF'
+## VERDICT: APPROVE
+
+The fix landed. Before, at the merge base:
+
+```
+git show 4a1b2c3d4e5f6071:fleet-unblock.py | sed -n 138p
+```
+
+After, at the tip under review:
+
+```
+git show @HEAD@:fleet-unblock.py | sed -n 138p
+```
+
+FINDINGS:
+END FINDINGS
+EOF
+run_case before_after "$W/before-after.md" "$HEAD_SHA"
+[ "$RC" -eq 0 ] \
+  || fail "a before/after comparison was refused. Both commands open fleet-unblock.py and one of
+      them opens it at the head, so the review read the tree the status names. stderr:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+status_posted "$CASE_DIR" || fail "no status posted for a before/after review"
+ok "a path opened at the head AND at a base is a comparison, not a conflict"
+
+# --- case 7: the flag window -- `git show --stat <sha>` is still a declaration --
+# The first version anchored on `show[^0-9a-fA-F]{1,6}`. `--stat ` contains a, t
+# and c, so it is not spannable by a non-hex window at any width: the declaration
+# walked past the detector and the review posted success on an unread tree
+# (PR #197 round 2, minor 3).
+mkbody "$W/stat-flag.md" <<'EOF'
+## VERDICT: APPROVE
+
+GitHub was unreachable, so I used the locally available checkout.
+
+```
+git show --stat @WRONG@
+git show --format=%H @WRONG@
+```
+
+FINDINGS:
+END FINDINGS
+EOF
+run_case stat_flag "$W/stat-flag.md" "$HEAD_SHA"
+[ "$RC" -ne 0 ] \
+  || fail "A FLAGGED DECLARATION WALKED PAST THE DETECTOR. \`git show --stat $WRONG_TREE\` is the
+      reviewer saying it opened $WRONG_TREE, and the status would have gone on ${HEAD_SHA:0:8}.
+      That is the ASK-830 symptom verbatim, one flag away from the fixture's shape"
+status_posted "$CASE_DIR" \
+  && fail "a commit status was posted from a review whose only declared tree was $WRONG_TREE:
+$(grep 'statuses/' "$CASE_DIR/gh-calls.log" | sed 's/^/        /')"
+ok "\`git show --stat <sha>\` and \`--format=\` are declarations too"
+
+# --- case 8: `git checkout <sha>` has no colon and no path --------------------
+mkbody "$W/checkout.md" <<'EOF'
+## VERDICT: APPROVE
+
+```
+git checkout @WRONG@
+python3 -m pytest -q
+```
+
+FINDINGS:
+END FINDINGS
+EOF
+run_case checkout "$W/checkout.md" "$HEAD_SHA"
+[ "$RC" -ne 0 ] || fail "\`git checkout $WRONG_TREE\` is a whole-tree declaration and was not caught"
+status_posted "$CASE_DIR" && fail "a status was posted after the review checked out $WRONG_TREE"
+ok "a bare \`git checkout <sha>\` is a whole-tree declaration"
+
+# --- case 9: one right path does not excuse another read off-head -------------
+# THE TRAP. The obvious repair for case 6 is "pass if the head appears in any
+# show position". It is wrong on the measured payload and this case is the pin.
+# Round 2 runs `git show c87245b0:test_fleet_unblock.py` -- it fetched the TEST
+# from the right tree while reading fleet-unblock.py, the file its findings are
+# about, from 0880859e. Under any-match the live defect passes.
+mkbody "$W/mixed.md" <<'EOF'
+## VERDICT: REQUEST CHANGES
+
+```
+git show @WRONG@:fleet-unblock.py > "$tmp/fleet-unblock.py"
+git show @HEAD@:test_fleet_unblock.py > "$tmp/test_fleet_unblock.py"
+```
+
+FINDINGS:
+major|something about fleet-unblock.py|fleet-unblock.py:138
+END FINDINGS
+EOF
+run_case mixed "$W/mixed.md" "$HEAD_SHA"
+[ "$RC" -ne 0 ] \
+  || fail "ANY-MATCH REGRESSION: the review opened test_fleet_unblock.py at the head but read
+      fleet-unblock.py -- the file it reports a finding against -- from $WRONG_TREE, and it was
+      allowed to post. That is PR #165 round 2's exact shape"
+status_posted "$CASE_DIR" && fail "a status was posted from a mixed-tree review"
+grep -q "$WRONG_TREE" "$CASE_DIR/err.txt" || fail "the refusal does not name $WRONG_TREE"
+ok "a head read of one path does not excuse another path read off-head"
 
 echo "PASS ($PASS checks)"

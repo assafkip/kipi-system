@@ -44,6 +44,17 @@ the last 55 KB are absent here:
   declares a DIFFERENT tree", never "requires a review that names the head sha" —
   the latter would pass round 2 anyway (its body also carries `c87245b0`) and
   would fail round 3's tail for a reason that has nothing to do with the defect.
+
+  **The first version of this file drew a second conclusion from that fact, and
+  it was wrong** (PR #197 round 2, major 2). It read the tail's silence as making
+  round 3 a sufficient NEGATIVE SELF-TEST. It is not: a fixture that declares no
+  tree is, to this guard, byte-equivalent to case 3's empty review, so case 2
+  never reaches the head-sha exemption at all. Measured — with that exemption
+  deleted, so the guard refuses every review naming any tree, the suite still
+  reported `PASS (10 checks)`. The negative self-test is now case 5, whose body
+  runs `git show <head>:<path>`, and case 5m mutates the exemption away and
+  requires case 5 to go red. Round 3 stays as the "declares nothing" case it
+  actually is.
 - The round-2 tail still carries every signal the guard keys on: 13 occurrences
   of `0880859e`, its `git show 0880859e:fleet-unblock.py` reproducers, and the
   sentence "GitHub was also unreachable, so the review used the locally available
