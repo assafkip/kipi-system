@@ -99,6 +99,16 @@ REVIEWS_DIR="$STATE_DIR/pr-reviews"
 # THE ONE SLUG DERIVATION (ASK-738). gh binds to cwd and ignores every path
 # variable here, so every gh call below is scoped with -R from this lib.
 . "$SCRIPT_DIR/repo-slug-lib.sh"
+# WHOSE FAILURE IS IT (ASK-873). One detector for "the machine refused", shared
+# with the heartbeat rather than re-typed here -- see env-failure-lib.sh for why
+# a second pattern is the same defect it fixes.
+. "$SCRIPT_DIR/env-failure-lib.sh"
+# The halt is discovered INSIDE the `while read` loop, which is the right-hand
+# side of a pipe and therefore a subshell: nothing it assigns survives `done`.
+# The one alert has to name how many issues went unattempted, and that number is
+# only knowable after the loop, so the halt crosses the subshell boundary as a
+# FILE. Under $STATE_DIR so the suite's KIPI_STATE_DIR seam covers it too.
+ENV_HALT_FILE="${KIPI_STATE_DIR:-$HOME/.config/kipi}/linear-worker-env-halt"
 
 MAX_ATTEMPTS=3
 # Conflict rounds are capped SEPARATELY from failed attempts (ASK-212).
@@ -1173,6 +1183,11 @@ position_tree_on_pr_head() {
 }
 
 DONE=0
+# CLEARED BEFORE THE LOOP, so presence after it means exactly one thing: THIS
+# run halted. A marker left by a previous run would otherwise alert every 15
+# minutes about an outage that ended days ago -- the cry-wolf failure that
+# teaches the reader to mute the channel (founder-notifications.md).
+rm -f "$ENV_HALT_FILE" 2>/dev/null || true
 printf '%s' "$PICKED" | python3 -c 'import json,sys;[print(i["id"]) for i in json.load(sys.stdin)["ready"]]' | \
 while IFS= read -r ISSUE; do
   [ "$DONE" -ge "$LIMIT" ] && break
@@ -1763,12 +1778,39 @@ Anything real you find and are not fixing: capture it, never just mention it:
   # before the Codex dispatch. This is the same move at the Sana dispatch, so
   # both runners establish the freshness their own readers assume.
   rm -f "$TREE/.sana-needs-scope" "$TREE/.sana-blocked-capability"
+  # Byte offset BEFORE the run so the classifier below reads exactly THIS run's
+  # output. Reading a fixed tail of $LOG instead would let a PREVIOUS dispatch's
+  # limit line -- the log persists across runs -- halt a healthy one, which is
+  # this bug pointed the other way.
+  LOG_BEFORE="$(wc -c < "$LOG" 2>/dev/null || echo 0)"
+  ENV_FAIL=""
   if run_bounded "$TIMEOUT_SECONDS" bash -c "cd '$TREE' && KIPI_AGENT='$AGENT' claude -p \"\$1\" </dev/null >>'$LOG' 2>&1" _ "$PROMPT"; then
-    say "ok $ISSUE"
-    python3 "$SYNC" progress "$ISSUE" "Worker run completed. See the branch/PR for the diff." \
-      --agent "$AGENT" >/dev/null 2>&1 || true
+    AGENT_OUT="$(tail -c "+$((LOG_BEFORE + 1))" "$LOG" 2>/dev/null)"
+    # THE OBSERVED SHAPE EXITS 0 (ASK-873). On 2026-08-15 every `claude -p` on
+    # the machine printed the weekly-limit line and exited SUCCESSFULLY, so the
+    # rc!=0 branch below never ran and the run reached the no-PR bump at step 5
+    # as an ordinary silent agent. Classifying only on failure would leave the
+    # exact measured outage unhandled.
+    if is_environmental "$AGENT_OUT"; then
+      ENV_FAIL="$(environmental_reason "$AGENT_OUT")"
+    else
+      say "ok $ISSUE"
+      python3 "$SYNC" progress "$ISSUE" "Worker run completed. See the branch/PR for the diff." \
+        --agent "$AGENT" >/dev/null 2>&1 || true
+    fi
   else
     rc=$?
+    AGENT_OUT="$(tail -c "+$((LOG_BEFORE + 1))" "$LOG" 2>/dev/null)"
+    if is_environmental "$AGENT_OUT"; then
+      # NOT bump_attempt. An exhausted account is a property of the machine,
+      # identical for every issue the loop has not reached yet; charging it to
+      # THIS issue spends a real task's retry budget on an environment problem,
+      # and the attempts ledger makes that permanent. Measured 2026-08-15: 11
+      # healthy issues driven to TERMINAL in six hours, four charges each, no
+      # branch, no commit, no diff -- the agent never spoke because the account
+      # could not answer.
+      ENV_FAIL="$(environmental_reason "$AGENT_OUT")"
+    else
     bump_attempt "$ISSUE" "claude run failed rc=$rc"
     N2="$(attempts_for "$ISSUE")"
     say "fail $ISSUE rc=$rc ($N2/$MAX_ATTEMPTS)"
@@ -1778,6 +1820,32 @@ Anything real you find and are not fixing: capture it, never just mention it:
     if [ "$N2" -ge "$MAX_ATTEMPTS" ]; then
       bash "$NOTIFY" "worker: $ISSUE stuck after $MAX_ATTEMPTS attempts - needs a human" 2>/dev/null || true
     fi
+    fi
+  fi
+
+  # 4a. HALT, DO NOT MARCH ON (ASK-873). Every issue after this one would meet
+  # the identical dead runner, so continuing spends ~31 minutes per issue to
+  # learn a fact already known and charges each of them for it. The loop stops
+  # here; the ONE alert is fired after the loop, where the number of unattempted
+  # issues is finally knowable.
+  if [ -n "$ENV_FAIL" ]; then
+    say "$ISSUE: NOT ATTEMPTED -- the runner itself is unavailable ($ENV_FAIL). No attempt charged; halting the run."
+    # A DURABLE MARKER, read by converge.sh, for the same reason refused_no_pr is
+    # one: converge runs the worker and then charges its OWN attempt at exit-7
+    # when the counter did not move. It cannot tell this halt from an interrupted
+    # worker -- both leave the counter untouched and no PR -- so without the flag
+    # the fix holds inside the worker and leaks straight back in from the driver.
+    python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
+    python3 "$SYNC" progress "$ISSUE" \
+      "**Not attempted.** The runner itself was unavailable ($ENV_FAIL), which is a condition of the machine and not of this issue. No attempt was charged and the dispatcher halted rather than marching the rest of the queue into the same dead environment. It will be picked up normally once the runner is available." \
+      --agent "$AGENT" >/dev/null 2>&1 || true
+    ( cd "$TREE" && python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1 || true
+    # ISSUE|DONE: which issue the halt landed on, and how much budget had been
+    # spent before it. Both are needed to state the unattempted count honestly --
+    # the queue behind it is bounded by --limit, so "every ready issue after this
+    # one" would overstate a number a human then cannot reconcile against the log.
+    printf '%s|%s|%s' "$ISSUE" "$DONE" "$ENV_FAIL" > "$ENV_HALT_FILE" 2>/dev/null || true
+    break
   fi
 
   # 4b. A REFUSAL IS A DECISION, NOT A FAILURE (ASK-275).
@@ -2298,6 +2366,38 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
   # diff.
   [ -n "$REFUSED" ] || DONE=$((DONE+1))
 done
+
+# THE ONE ALERT (ASK-873). Fired here rather than at the point of detection so
+# it can state how many issues went UNATTEMPTED -- that number is only knowable
+# once the loop has stopped. One machine-wide condition, one ticket, naming what
+# a human would otherwise reconstruct from eleven identical TERMINAL lines.
+if [ -f "$ENV_HALT_FILE" ]; then
+  HALT_RAW="$(cat "$ENV_HALT_FILE" 2>/dev/null)"
+  HALT_ISSUE="${HALT_RAW%%|*}"
+  HALT_REASON="${HALT_RAW#*|*|}"
+  HALT_DONE="$(printf '%s' "$HALT_RAW" | cut -d'|' -f2)"
+  # BOUNDED BY --limit, NOT BY THE QUEUE LENGTH. The run would never have
+  # reached more than LIMIT issues, so counting every ready issue behind the
+  # halt reports a number the run-log contradicts -- the ticket arguing with its
+  # own evidence (the same correction PR #198 took on the heartbeat's count).
+  UNATTEMPTED="$(printf '%s' "$PICKED" | python3 -c '
+import json, sys
+halt, done, limit = sys.argv[1], int(sys.argv[2] or 0), int(sys.argv[3] or 0)
+ids = [i["id"] for i in json.load(sys.stdin)["ready"]]
+behind = len(ids) - (ids.index(halt) + 1) if halt in ids else 0
+budget = max(0, limit - done - 1)
+print(max(0, min(behind, budget)))
+' "$HALT_ISSUE" "$HALT_DONE" "$LIMIT" 2>/dev/null || echo 0)"
+  say "worker: HALTED on $HALT_ISSUE -- the runner itself is unavailable ($HALT_REASON). $UNATTEMPTED issue(s) not attempted."
+  bash "$NOTIFY" "kipi worker: dispatch HALTED, the runner itself is unavailable ($HALT_REASON). $HALT_ISSUE was not attempted and neither were $UNATTEMPTED issue(s) behind it -- one machine-wide condition, not one fault per issue. No attempts were charged. Nothing to fix per issue; the loop resumes on its own when the runner is available." 2>/dev/null || true
+  # 9, THE EXISTING INFRA CODE, never 0. ASK-184 pinned that a failed run must
+  # not report success to launchd or fleet-health-daily.py's launchd-failing
+  # detector goes blind to this job, and a halt is a failed run: the dispatcher
+  # stopped early with work still ready. It is not 1 (usage error) for the same
+  # reason the git-fetch guard is not: a caller has to be able to tell a dead
+  # environment from a bad invocation.
+  exit 9
+fi
 
 say "worker: run complete"
 exit 0
