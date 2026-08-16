@@ -78,15 +78,19 @@ check("the rendered fixture carries the cap key that drifted",
       "KIPI_DISPATCH_DAILY_MAX" in BASE["EnvironmentVariables"], True)
 
 
-def _dirs(live_plist_by_label):
-    """(template dir, LaunchAgents dir) holding the real render plus mutations."""
+def _dirs(live_plist_by_label, fmt=plistlib.FMT_XML):
+    """(template dir, LaunchAgents dir) holding the real render plus mutations.
+
+    `fmt` is the format the LIVE copy is written in. Both are legitimate: a job
+    edited with `defaults write` ends up as FMT_BINARY, and launchd loads it.
+    """
     root = Path(tempfile.mkdtemp(prefix="ask860-case-", dir=WORK))
     templates, agents = root / "templates", root / "LaunchAgents"
     templates.mkdir()
     agents.mkdir()
     shutil.copy(RENDERED, templates / "com.kipi.dispatch.plist")
     for label, data in live_plist_by_label.items():
-        (agents / f"{label}.plist").write_bytes(plistlib.dumps(data))
+        (agents / f"{label}.plist").write_bytes(plistlib.dumps(data, fmt=fmt))
     return templates, agents
 
 
@@ -99,11 +103,11 @@ def _mutated(**env):
     return data
 
 
-def _drift(live_by_label):
+def _drift(live_by_label, fmt=plistlib.FMT_XML):
     """Run the detector over a fixture pair. Templates are ALREADY rendered here,
     so the renderer is the identity: the case under test is the COMPARE, not the
     substitution (which the producer above already exercised for real)."""
-    templates, agents = _dirs(live_by_label)
+    templates, agents = _dirs(live_by_label, fmt=fmt)
     return fh.plist_drift_findings(
         template_dir=templates,
         launch_agents=agents,
@@ -170,14 +174,72 @@ def _boom(_path):
     raise RuntimeError("render failed")
 
 
+# ONE fixture root, not two: taking templates from one _dirs() call and agents
+# from a second builds a pair that never existed on any machine.
+_blind_templates, _blind_agents = _dirs({"com.kipi.dispatch": BASE})
 _blind = fh.plist_drift_findings(
-    template_dir=_dirs({"com.kipi.dispatch": BASE})[0],
-    launch_agents=_dirs({"com.kipi.dispatch": BASE})[1],
+    template_dir=_blind_templates,
+    launch_agents=_blind_agents,
     render=_boom,
 )
 check("an unrenderable template yields a finding, not silence", len(_blind), 1)
 check("the cannot-run finding has its own subject, so it cannot collide",
       _blind[0]["subject"] if _blind else None, "com.kipi.dispatch--unrenderable")
+
+# === A BINARY INSTALLED JOB IS A REAL JOB, NOT GARBAGE =====================
+# `defaults write <plist> KEY value` is THE canonical in-place launchd edit --
+# the exact hand-edit this detector exists to catch -- and it rewrites the file
+# as bplist00. Reading that with `read_text(errors="ignore")` drops every
+# non-UTF-8 byte; plistlib then ACCEPTS the shortened binary rather than
+# raising, so the detector both cried wolf on a healthy job and went blind to
+# the drift it was built for. Neither failure announced itself.
+_bin_identical = _drift({"com.kipi.dispatch": BASE}, fmt=plistlib.FMT_BINARY)
+check("a BINARY installed job identical to its template files NOTHING",
+      _bin_identical, [])
+
+_bin_incident = _drift({"com.kipi.dispatch": _mutated(KIPI_DISPATCH_DAILY_MAX="40")},
+                       fmt=plistlib.FMT_BINARY)
+check("the 2026-08-15 drift is still caught when the live job is BINARY",
+      len(_bin_incident), 1)
+_bin_body = body_of(_bin_incident, "com.kipi.dispatch")
+check("the BINARY finding names the key", "KIPI_DISPATCH_DAILY_MAX" in _bin_body, True)
+check("the BINARY finding carries the live value", "`40`" in _bin_body, True)
+check("the BINARY finding carries the committed value", f"`{_live_cap}`" in _bin_body, True)
+
+# A live copy that is neither valid XML nor a real binary plist stays UNKNOWN.
+# Strict decoding is what keeps this from parsing into a confident wrong answer.
+_junk_templates, _junk_agents = _dirs({})
+(_junk_agents / "com.kipi.dispatch.plist").write_bytes(b"\xff\xfe not a plist \x00\x01")
+_junk = fh.plist_drift_findings(
+    template_dir=_junk_templates, launch_agents=_junk_agents,
+    render=lambda path: path.read_text())
+check("an undecodable live job is UNKNOWN, not silently clean",
+      [f["subject"] for f in _junk], ["com.kipi.dispatch--unrenderable"])
+
+# === A DIFFERENCE PAST THE DISPLAY CAP MUST STILL BE VISIBLE ===============
+# Head-truncating both sides renders a late divergence as two identical cells:
+# the issue asserts a difference while showing none. No committed template holds
+# a value this long today, which is exactly why nothing would have caught it.
+_cap = fh._VALUE_CAP
+_long_a, _long_b = "x" * (_cap + 50) + "AAA", "x" * (_cap + 50) + "BBB"
+_long_row = fh._drift_finding("com.kipi.demo", [("Env.LONG", _long_a, _long_b)], [], [])
+check("the two truncated cells are NOT identical",
+      fh._shown(_long_a, _long_b) == fh._shown(_long_b, _long_a), False)
+check("the committed side of the divergence is shown", "AAA" in _long_row["body"], True)
+check("the live side of the divergence is shown", "BBB" in _long_row["body"], True)
+check("a value under the cap is still shown whole", fh._shown("short", "other"), "short")
+
+# === THE TWO INJECTION KNOBS ARE PAIRED, AND SAY SO ========================
+# The default renderer shells install-plist.sh, which resolves templates from
+# ITS OWN directory. Moving template_dir without a matching render would compare
+# one tree's files against another tree's renders and read that as drift.
+_moved, _moved_agents = _dirs({"com.kipi.dispatch": BASE})
+try:
+    fh.plist_drift_findings(template_dir=_moved, launch_agents=_moved_agents)
+    _refused = False
+except ValueError:
+    _refused = True
+check("a moved template_dir with the default renderer is REFUSED", _refused, True)
 
 # === REGISTRY WIRING =======================================================
 # A detector not in DETECTORS is a function nobody calls.

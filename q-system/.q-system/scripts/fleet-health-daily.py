@@ -1271,18 +1271,45 @@ _VALUE_CAP = 200
 # escape the `<` as `&lt;` to be XML at all.
 _XML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
 
+# A binary plist's magic. An installed job is NOT required to be XML: `defaults
+# write <plist> KEY value` -- the canonical in-place launchd edit, and exactly
+# the hand-edit this detector exists to catch -- rewrites the file as bplist00,
+# as does `plutil -convert binary1` and every GUI launchd editor. launchd loads
+# both formats, so both are legitimate live jobs and both must be READ, not
+# decoded at.
+_BINARY_PLIST_MAGIC = b"bplist00"
 
-def plist_pairs(text: str) -> dict:
+
+def plist_pairs(source) -> dict:
     """A plist's leaf values, keyed by dotted path. Raises ValueError if unreadable.
 
-    Flattened rather than compared as nested objects so a finding can NAME THE
-    KEY that moved (`EnvironmentVariables.KIPI_DISPATCH_DAILY_MAX`) instead of
-    saying two dicts differ, which is what the operator needs to act.
+    Takes str (XML) or bytes (either format). Flattened rather than compared as
+    nested objects so a finding can NAME THE KEY that moved
+    (`EnvironmentVariables.KIPI_DISPATCH_DAILY_MAX`) instead of saying two dicts
+    differ, which is what the operator needs to act.
+
+    BYTES ARE NEVER DECODED LENIENTLY, and that is the whole point of this
+    signature. Reading a live job with `read_text(errors="ignore")` silently
+    drops every byte that is not valid UTF-8; re-encoding then yields a SHORTER
+    binary plist whose offset table still parses, so `plistlib` ACCEPTS the
+    corrupted document instead of raising. The result was the worst of both:
+    a byte-identical binary job filed a permanent 13-key "your dispatcher has no
+    ProgramArguments" issue, while the real cap drift it was built for went
+    unnamed, and `_unrenderable` never engaged because nothing ever failed
+    (PR #196 round 1). So a binary plist reaches plistlib untouched, and an XML
+    one is decoded STRICTLY -- a decode failure becomes a finding rather than a
+    confident wrong answer.
     """
     import plistlib
 
     try:
-        data = plistlib.loads(_XML_COMMENT_RE.sub("", text).encode())
+        raw = source.encode() if isinstance(source, str) else bytes(source)
+        if not raw.startswith(_BINARY_PLIST_MAGIC):
+            # Comment stripping is an XML-only leniency (see _XML_COMMENT_RE);
+            # binary plists carry no comments, and a `<!--` byte run inside one
+            # would be payload, not syntax.
+            raw = _XML_COMMENT_RE.sub("", raw.decode("utf-8")).encode()
+        data = plistlib.loads(raw)
     except Exception as exc:  # noqa: BLE001 - any parse failure is "unreadable"
         raise ValueError(f"{type(exc).__name__}: {exc}") from exc
     out: dict = {}
@@ -1323,8 +1350,26 @@ def _render_committed(path: Path) -> str:
         return out.read_text()
 
 
-def _shown(value: str) -> str:
-    return value if len(value) <= _VALUE_CAP else f"{value[:_VALUE_CAP]}... (truncated)"
+def _shown(value: str, other: str = None) -> str:
+    """A value capped for display, WINDOWED ON THE DIVERGENCE when there is one.
+
+    Head-truncating both sides renders two values that first differ past
+    `_VALUE_CAP` as two byte-identical cells, so the finding asserts a
+    difference while displaying none (PR #196 round 1). With a counterpart
+    supplied, the window is centred on the first offset at which they differ,
+    which is the only part of a long value the operator came to read.
+    """
+    if len(value) <= _VALUE_CAP:
+        return value
+    start = 0
+    if other is not None:
+        shared = min(len(value), len(other))
+        first_diff = next((i for i in range(shared) if value[i] != other[i]), shared)
+        if first_diff >= _VALUE_CAP:
+            start = first_diff - _VALUE_CAP // 2
+    head = "" if start == 0 else "(truncated) ..."
+    tail = "" if start + _VALUE_CAP >= len(value) else "... (truncated)"
+    return f"{head}{value[start:start + _VALUE_CAP]}{tail}"
 
 
 def _unrenderable(label: str, reason: str) -> dict:
@@ -1359,7 +1404,7 @@ def _drift_finding(label: str, changed: list, only_committed: list,
         sections.append(
             "## Values that differ\n"
             "| Key | Committed | Live |\n| -- | -- | -- |\n"
-            + "\n".join(f"| `{k}` | `{_shown(c)}` | `{_shown(l)}` |"
+            + "\n".join(f"| `{k}` | `{_shown(c, l)}` | `{_shown(l, c)}` |"
                         for k, c, l in changed))
     if only_committed:
         sections.append(
@@ -1411,7 +1456,18 @@ def plist_drift_findings(template_dir=None, launch_agents=None, render=None) -> 
     """
     templates = Path(template_dir) if template_dir else PLIST_TEMPLATE_DIR
     agents = Path(launch_agents) if launch_agents else LAUNCH_AGENTS
-    render = render or _render_committed
+    if render is None:
+        # THE TWO KNOBS ARE NOT INDEPENDENT. `_render_committed` shells
+        # install-plist.sh, which resolves its templates from ITS OWN directory
+        # and cannot be pointed at another one. So a caller who moves
+        # `template_dir` without supplying a matching `render` would compare
+        # files from one tree against renders from a different tree and read the
+        # difference as drift. Refuse rather than compare (PR #196 round 1).
+        if templates != PLIST_TEMPLATE_DIR:
+            raise ValueError(
+                f"template_dir={templates} needs a matching render=; "
+                "install-plist.sh renders only from its own directory")
+        render = _render_committed
 
     out = []
     for template in sorted(templates.glob("com.kipi.*.plist")):
@@ -1424,7 +1480,10 @@ def plist_drift_findings(template_dir=None, launch_agents=None, render=None) -> 
             continue
         try:
             committed = plist_pairs(render(template))
-            live = plist_pairs(live_path.read_text(errors="ignore"))
+            # BYTES, not text: the installed copy may be binary (`defaults
+            # write` writes bplist00) and a lenient decode mangles it into a
+            # confident wrong answer. See plist_pairs.
+            live = plist_pairs(live_path.read_bytes())
         except (ValueError, RuntimeError, OSError) as exc:
             out.append(_unrenderable(label, str(exc)))
             continue
