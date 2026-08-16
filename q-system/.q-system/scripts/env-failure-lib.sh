@@ -27,23 +27,54 @@
 # per-issue failure into a fleet-wide halt, which is worse than the noise it
 # replaces: the loop would stop on one issue's ordinary bad day.
 #
-# ANCHORED AT THE START OF A LINE, NOT MATCHED ANYWHERE. The runner emits this
-# as a line of its own; an AGENT that merely writes ABOUT limits emits it inside
-# a sentence or a bullet. Matched as a bare substring, an agent working on this
-# very issue and then producing no PR would halt the whole dispatcher and report
-# the runner as dead -- a false halt is worse than the noise, because it stops
-# work that could have run. Same shape as ASK-747, fixed the same way: content
-# that MENTIONS a marker is not the marker being raised. Leading whitespace is
-# tolerated (up to 3) because the CLI pads some of these; an indented quote
-# inside agent prose does not reach that far left.
+# THE MARKER MUST BE THE WHOLE LINE, NOT MERELY ITS START. Start-anchoring alone
+# was the first attempt and it was wrong, because every marker below is also a
+# legal opening for an ordinary English sentence. An agent that FIXES auth
+# handling writes, at the left margin of its summary:
+#   Invalid API key handling is now covered by regression tests.
+# A start-anchored detector reads that success report as the machine being dead.
+# That is the worst failure this file can have: a false halt stops the whole
+# dispatcher on a HEALTHY runner, charges nobody, and -- because no attempt is
+# recorded -- the redrive feeds the same issue back into the same false halt
+# forever. Measured on PR #200's review: three ordinary sentences halted.
+#
+# The discriminator is not WHERE the marker sits but whether the line is the
+# runner's ENTIRE utterance. The machine says its piece and stops; agent prose
+# continues past the marker into more sentence. So the line must END at the
+# marker, allowing only a SEPARATOR-LED tail (`- resets Aug 18 ...`,
+# `· Please run /login`) -- machine formatting, which prose does not use to
+# continue a clause -- plus a bare final period. A tail that resumes with a word
+# is prose and is not a halt. Same shape as ASK-747: content that MENTIONS a
+# marker is not the marker being raised.
+#
+# THIS ERRS TOWARD MISSING AN OUTAGE, DELIBERATELY. If the CLI someday pads a
+# marker with an unseen word-led tail, the run degrades to the OLD behaviour --
+# one issue charged one attempt -- which is recoverable and visible. A false halt
+# is not: it stops work that could have run and it is self-perpetuating. Widen
+# this only from a line an actual log carried, and add that line to the fixture
+# table in test-worker-env-halt.sh.
+#
+# Leading whitespace is tolerated (up to 3) because the CLI pads some of these;
+# an indented quote inside agent prose does not reach that far left.
 ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]+-hour) limit|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login"
 
+# Separator-led remainder of the machine's own line, or nothing. Kept as one
+# string so is_environmental and environmental_reason cannot drift: a reason
+# computed from a looser pattern than the decision would page with an empty
+# "why", and a tighter one would page with none at all.
+# `.*` and not `[^\n]*`: in an ERE bracket `\n` is the two literal characters,
+# so `[^\n]*` excludes every tail containing the LETTER n -- which silently
+# un-matched "- resets Aug 18 ... (America/Los_Angeles)" and "· Please run
+# /login", i.e. both observed machine lines. grep is line-oriented, so `.` is
+# already newline-safe here.
+ENV_LINE_TAIL="([[:space:]]*([-|]|·|–|—).*)?[[:space:]]*[.!]?[[:space:]]*"
+
 is_environmental() {  # is_environmental <runner-output> -> 0 when the MACHINE refused
-  printf '%s' "${1:-}" | grep -qiE "^[[:space:]]{0,3}($ENV_MARKERS)"
+  printf '%s' "${1:-}" | grep -qiE "^[[:space:]]{0,3}($ENV_MARKERS)$ENV_LINE_TAIL\$"
 }
 
 environmental_reason() {  # environmental_reason <runner-output> -> one line, <=120 chars
   printf '%s' "${1:-}" \
-    | grep -iE "^[[:space:]]{0,3}($ENV_MARKERS)" \
+    | grep -iE "^[[:space:]]{0,3}($ENV_MARKERS)$ENV_LINE_TAIL\$" \
     | head -1 | tr -d '\n' | cut -c1-120
 }

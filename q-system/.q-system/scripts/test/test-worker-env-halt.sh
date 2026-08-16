@@ -330,6 +330,48 @@ else
   ok "negative self-test: the detector rejects ordinary output (it can say no)"
 fi
 
+# ----------------------------------------------------------------------------
+# THE SENTENCE-PREFIX FALSE HALT (PR #200 review, major)
+# ----------------------------------------------------------------------------
+# Anchoring at the START of a line is not enough, because every marker is also a
+# legal opening for an ordinary English sentence. An agent that FIXES auth
+# handling writes "Invalid API key handling is now covered." at the left margin
+# of its summary, and a start-anchored detector reads its own success report as
+# the machine being dead: the fleet halts, no attempt is charged, and the redrive
+# re-runs it into the same false halt forever. The runner's utterance is the
+# WHOLE line; agent prose continues past the marker into more sentence. Each case
+# below is a real shape (the middle two were produced by the reviewer against the
+# start-anchored version and all three halted).
+while IFS='|' read -r want text; do
+  [ -n "$want" ] || continue
+  if is_environmental "$text"; then got=halt; else got=continue; fi
+  if [ "$got" = "$want" ]; then
+    ok "detector, whole-line: $want <- $text"
+  else
+    bad "detector, whole-line: expected $want, got $got" "input: $text"
+  fi
+done <<'CASES'
+halt|You've hit your weekly limit - resets Aug 18 at 2pm (America/Los_Angeles)
+halt|Invalid API key · Please run /login
+halt|Invalid API key
+halt|Credit balance is too low.
+halt|usage limit reached
+continue|Invalid API key handling is now covered by regression tests.
+continue|Please run /login only when the session has expired.
+continue|Credit balance is too low in the fixture, so the test asserts a halt.
+continue|Invalid API key, expired token and logged-out CLI are all handled now.
+CASES
+
+# environmental_reason must recognise exactly what is_environmental recognises.
+# Two patterns drifting apart means a real outage halts with an EMPTY reason, so
+# the Linear note and the page say nothing about why the fleet stopped.
+if [ -n "$(environmental_reason "$LIMIT_LINE")" ]; then
+  ok "environmental_reason returns the line the detector matched"
+else
+  bad "environmental_reason returns the line the detector matched" \
+      "is_environmental says yes but environmental_reason returned empty -- the two patterns have drifted"
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
