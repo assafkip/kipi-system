@@ -448,6 +448,36 @@ mkdir -p "$SCRIPTS" "$DROOT/home/.config/kipi" "$DROOT/bin"
 cp "$REDRIVE" "$SCRIPTS/ci-redrive.py"
 cp "$REPO_ROOT/q-system/.q-system/scripts/attempts-ledger.py" "$SCRIPTS/attempts-ledger.py"
 
+# THE PARK READER, BECAUSE THE RED-CI PATH NOW ASKS IT (ASK-872, PR #201 r4).
+# The dispatcher runs ci-redrive FIRST and only reaches the reviewer redrive when
+# it offered nothing, so a parked issue with red CI was dispatched with no park
+# read at all. The gate calls review-redrive.py's reader rather than growing a
+# fourth copy of the label list, so the fake repo needs that whole chain: the
+# reader, the label module it imports, and the Linear client the reader loads.
+cp "$REPO_ROOT/q-system/.q-system/scripts/review-redrive.py" "$SCRIPTS/review-redrive.py"
+cp "$REPO_ROOT/q-system/.q-system/scripts/park_labels.py" "$SCRIPTS/park_labels.py"
+cp "$REPO_ROOT/q-system/.q-system/scripts/linear-sync.py" "$SCRIPTS/linear-sync.py"
+
+# A fixture Linear on loopback, shared with test-review-redrive-park.sh. No case
+# here reaches the real board and none needs a real key. The default answer is
+# "unparked", so every pre-existing case below is unaffected by its presence --
+# and the two new cases at the end are the only ones that change the board.
+D_FIXTURE="$(dirname "${BASH_SOURCE[0]}")/linear-park-fixture.py"
+[ -f "$D_FIXTURE" ] || { echo "FATAL: park fixture not found at $D_FIXTURE" >&2; exit 1; }
+D_LABELS="$DROOT/labels.json"
+d_set_labels() { printf '%s' "$1" > "$D_LABELS"; }
+d_set_labels "{\"$RED_ISS\": [\"owner:sana\"], \"$FRESH_ISS\": [\"owner:sana\"]}"
+LABELS_FILE="$D_LABELS" python3 "$D_FIXTURE" > "$DROOT/port" 2> "$DROOT/srv.err" &
+D_SRV=$!
+for _ in $(seq 1 100); do
+  D_PORT="$(cat "$DROOT/port" 2>/dev/null)"; [ -n "${D_PORT:-}" ] && break; sleep 0.1
+done
+[ -n "${D_PORT:-}" ] || { echo "FATAL: park fixture did not start: $(cat "$DROOT/srv.err")" >&2; exit 1; }
+# BOTH CLAUSES, because an EXIT trap REPLACES the one set at line 64 rather than
+# adding to it -- dropping the rm would leak a temp dir per run.
+trap 'kill "${D_SRV:-}" 2>/dev/null; rm -rf "$TMP"' EXIT
+D_LINEAR_URL="http://127.0.0.1:$D_PORT/graphql"
+
 cp "$TMP/gh" "$DROOT/bin/gh"
 cp "$TMP/ps" "$DROOT/bin/ps-stub"
 printf '#!/usr/bin/env bash\nsleep 30\n' > "$DROOT/converge.sh"; chmod +x "$DROOT/converge.sh"
@@ -471,12 +501,23 @@ D_LEDGER="$DROOT/attempts.json"
 D_PAGES="$DROOT/pages.txt"
 D_PRS="$DROOT/prs.json"
 
+# THE REVIEWER SLOT IS POSTED AND GREEN, DELIBERATELY. This world is now read by
+# TWO selectors: ci-redrive (which excludes reviewer slots from red CI, so the
+# failing `validate` still makes it red) and review-redrive, which the dispatcher
+# reaches whenever ci-redrive offers nothing. With no reviewer slot at all,
+# review-redrive reads the slot as NEVER POSTED and offers a first re-review
+# (sp-d87c5416) -- so case 14g stopped asserting ci-redrive's behaviour and
+# started asserting the reviewer path's. A posted SUCCESS means "a newer review
+# already landed", which takes review-redrive out of every case here and leaves
+# each case measuring the one selector it was written for.
 RED_WORLD="[{\"number\":91,\"headRefName\":\"$RED_BRANCH\",\"isDraft\":false,
   \"headRefOid\":\"9999999999999999999999999999999999999999\",
   \"url\":\"https://x/91\",\"title\":\"t ($RED_ISS)\",
   \"statusCheckRollup\":[{\"__typename\":\"CheckRun\",\"name\":\"validate\",
    \"status\":\"COMPLETED\",\"conclusion\":\"FAILURE\",
-   \"workflowName\":\"Skeleton Validation\"}]}]"
+   \"workflowName\":\"Skeleton Validation\"},
+   {\"__typename\":\"StatusContext\",\"context\":\"kipi/reviewer-approved\",
+    \"state\":\"SUCCESS\"}]}]"
 
 run_dispatch() {  # run_dispatch [GH_RC]
   ( cd "$FAKE_REPO" && HOME="$DROOT/home" PATH="$DROOT/bin:$PATH" \
@@ -485,6 +526,8 @@ run_dispatch() {  # run_dispatch [GH_RC]
       KIPI_ATTEMPTS="$D_LEDGER" KIPI_GH="$DROOT/bin/gh" KIPI_PS="$DROOT/bin/ps-stub" \
       GH_FIXTURE="$D_PRS" GH_RC="${1:-0}" PS_FIXTURE="${PS_FIXTURE:-$TMP/ps-empty}" \
       NOTIFY_LOG="$D_PAGES" \
+      KIPI_LINEAR_API_URL="${D_URL_OVERRIDE:-$D_LINEAR_URL}" \
+      KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
       bash "$DISPATCH" >/dev/null 2>&1 )
 }
 dlog() { cat "$DROOT/home/.config/kipi/dispatch.log" 2>/dev/null; }
@@ -555,6 +598,69 @@ run_dispatch
 check "14i with nothing red the fresh pick is dispatched as before" \
   "$(dispatched)" "$FRESH_ISS"
 lacks "14j and no redrive line is logged" "$(dlog)" "handing"
+pkill -f "$DROOT/converge.sh" 2>/dev/null
+
+# --- 15. the park labels stop the RED-CI redrive too (ASK-872, PR #201 r4) ----
+# THE FINDING: "Park labels do not stop the higher-priority red-CI redrive, so a
+# parked issue with red CI is still dispatched." review-redrive.py reads the park
+# at select AND at its claim, but the dispatcher reaches that block only when
+# ci-redrive offered NOTHING (`[ -z "$REDRIVE_NEXT" ]`). Red CI outranks a
+# reviewer refusal by design, so the higher-priority path was the unguarded one --
+# and `blocked:capability` plus a red build is the case that costs the most, an
+# agent handed work it provably cannot finish, once per heartbeat.
+#
+# ASSERTED THROUGH THE REAL DISPATCHER, off the file the converge stub writes.
+# Nothing here reads a log line to decide whether the gate fired: the question is
+# which issue the dispatcher actually handed to converge.
+echo
+echo "== park labels x the red-CI path =="
+
+# 15a. the parked red issue is not dispatched, AND the fresh pick keeps its slot.
+# Clearing the offer rather than aborting the heartbeat matters: a parked red PR
+# that swallowed NEXT would starve both the reviewer redrive and the fresh pick
+# for as long as the park lasted.
+d_reset
+printf '%s' "$RED_WORLD" > "$D_PRS"
+d_set_labels "{\"$RED_ISS\": [\"owner:sana\", \"owner:assaf\"], \"$FRESH_ISS\": [\"owner:sana\"]}"
+run_dispatch
+check "15a a red PR whose issue is parked is NOT handed back" \
+  "$(dispatched)" "$FRESH_ISS"
+contains "15b the log names the label that stopped it" "$(dlog)" "owner:assaf"
+check "15c a parked red PR claims no attempt" \
+  "$([ -f "$D_LEDGER" ] && grep -c ci_redrive "$D_LEDGER" || echo 0)" "0"
+pkill -f "$DROOT/converge.sh" 2>/dev/null
+
+# 15d. blocked:capability, the sharpest of the three, through the same path.
+d_reset
+printf '%s' "$RED_WORLD" > "$D_PRS"
+d_set_labels "{\"$RED_ISS\": [\"owner:sana\", \"blocked:capability\"], \"$FRESH_ISS\": [\"owner:sana\"]}"
+run_dispatch
+check "15d blocked:capability stops the red-CI redrive as well" \
+  "$(dispatched)" "$FRESH_ISS"
+pkill -f "$DROOT/converge.sh" 2>/dev/null
+
+# 15e. an unreadable park is not an unparked one, at the dispatcher too. Same
+# posture the reader already takes for its own callers: refuse, name Linear, and
+# leave the fresh pick standing.
+d_reset
+printf '%s' "$RED_WORLD" > "$D_PRS"
+d_set_labels "{\"$RED_ISS\": [\"owner:sana\"], \"$FRESH_ISS\": [\"owner:sana\"]}"
+D_URL_OVERRIDE="http://127.0.0.1:1/graphql" run_dispatch
+check "15e an unreadable park does not redrive the red PR" \
+  "$(dispatched)" "$FRESH_ISS"
+contains "15f the log names Linear, not gh" "$(dlog)" "Linear"
+check "15g an unreadable park claims no attempt" \
+  "$([ -f "$D_LEDGER" ] && grep -c ci_redrive "$D_LEDGER" || echo 0)" "0"
+pkill -f "$DROOT/converge.sh" 2>/dev/null
+
+# 15h. THE DISCRIMINATION, and without it "never redrive" passes 15a-15g. The
+# same board, the same red PR, no park label: the hand-back must still happen.
+d_reset
+printf '%s' "$RED_WORLD" > "$D_PRS"
+d_set_labels "{\"$RED_ISS\": [\"owner:sana\"], \"$FRESH_ISS\": [\"owner:sana\"]}"
+run_dispatch
+check "15h an unparked red PR is still handed back after the gate" \
+  "$(dispatched)" "$RED_ISS"
 pkill -f "$DROOT/converge.sh" 2>/dev/null
 
 fi

@@ -440,6 +440,12 @@ import importlib.util, json, os, sys, pathlib
 here = pathlib.Path(os.environ["SCRIPT_DIR"])
 spec = importlib.util.spec_from_file_location("ls", here / "linear-sync.py")
 ls = importlib.util.module_from_spec(spec); spec.loader.exec_module(ls)
+# park_labels.py: the three labels that park an issue, shared with
+# review-redrive.py (ASK-872). Loaded by FILENAME like linear-sync.py above --
+# the capability gate scans wiring surfaces for a script filename, and a module
+# imported without its .py reads as a dead engine there (ASK-230).
+_pspec = importlib.util.spec_from_file_location("park_labels", here / "park_labels.py")
+park = importlib.util.module_from_spec(_pspec); _pspec.loader.exec_module(park)
 only = (sys.argv[1] or "").strip()
 
 Q = """query($t:ID!,$a:String){issues(filter:{team:{id:{eq:$t}}},first:250,after:$a){
@@ -526,23 +532,23 @@ def in_this_repo(i):
 
 def ready(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
-    if "owner:assaf" in labels:      return False   # founder decision, hands off
-    if "owner:sana" not in labels:   return False
-    # A REJECTION BY SANA, MADE MACHINE-READABLE (ASK-275).
+    # THE THREE PARK LABELS COME FROM park_labels.py (ASK-872), not from three
+    # string literals here. owner:assaf is a founder decision, needs-scope is a
+    # rejection by Sana made machine-readable (ASK-275) and blocked:capability is
+    # a runner that lacks something it cannot grant itself -- each routes
+    # somewhere different, all three mean not this one, and the module carries
+    # both the names and the reasons.
+    #
+    # It is a MODULE because this file was one of three consumers and the third,
+    # review-redrive.py, had none of them: a park stopped the fresh pick and not
+    # the redrive. A fourth copy is that defect again.
+    #
     # NOTE: no apostrophes anywhere in this heredoc. It sits inside a $( )
     # command substitution, and bash tracks quote state through a quoted
     # heredoc there -- one apostrophe in a PYTHON COMMENT swallowed the rest of
     # the substitution and the whole script died at "unexpected EOF".
-    # Before this label the only way to get a correctly-refused issue out of the
-    # queue was to relabel it `owner:assaf` -- the FOUNDER queue -- which is how
-    # ASK-149 got there on 2026-07-30. Routing an engineering re-scope to the
-    # founder is the thing this loop exists to avoid, so the refusal needed a
-    # label of its own that means "re-scope this", not "the founder decides".
-    if "needs-scope" in labels:      return False
-    # blocked:capability is the OTHER terminal refusal: the spec is fine, the
-    # runner lacks something it cannot grant itself (a harness permission, a
-    # missing tool). Excluded for the same reason, routed somewhere different.
-    if "blocked:capability" in labels: return False
+    if park.parked_reason(labels):   return False
+    if "owner:sana" not in labels:   return False
     if i["state"]["type"] not in ("backlog", "unstarted"): return False
     if is_fleet_alert(i):            return False   # ASK-839, see ALERT_MARKER
     if not in_this_repo(i):          return False
@@ -555,8 +561,7 @@ def ready(i):
 # this filter could most easily cause.
 def ready_ignoring_project(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
-    return ("owner:assaf" not in labels and "owner:sana" in labels
-            and "needs-scope" not in labels and "blocked:capability" not in labels
+    return (not park.parked_reason(labels) and "owner:sana" in labels
             and not is_fleet_alert(i)
             and i["state"]["type"] in ("backlog", "unstarted")
             and "Definition of Ready" in (i.get("description") or ""))

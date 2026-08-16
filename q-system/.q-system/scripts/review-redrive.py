@@ -142,6 +142,42 @@ def _load_ci_redrive():
 
 CI = _load_ci_redrive()
 
+
+def _load(name, modname):
+    """Load a sibling script by FILENAME, never by import path.
+
+    Two of the three things this file must agree with live next to it and are not
+    importable by name (`review-redrive.py`, `linear-sync.py`, hyphens). Naming
+    the file literally also keeps the capability gate's inert-engine scan able to
+    see the dependency -- a module imported without its `.py` reads as a dead
+    engine to that scan even with live callers (ASK-230).
+    """
+    spec = importlib.util.spec_from_file_location(modname, os.path.join(HERE, name))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# The three park labels, IMPORTED, NOT COPIED -- see park_labels.py. This script
+# was the third consumer of that vocabulary and the only one that never read it
+# (ASK-872).
+PARK = _load("park_labels.py", "park_labels")
+
+
+class ParkUnavailable(Exception):
+    """The park state could not be read. Not the same as nothing being parked."""
+
+
+# THE EXIT CODES THIS SCRIPT HANDS kipi-dispatch.sh, and each unreadable source
+# gets ITS OWN. rc 2 already meant "gh could not read PR state", and the first
+# cut of the park check reused it for "Linear could not answer the labels" --
+# so the dispatcher, whose `say` line is the operator's only surface, reported a
+# Linear outage as a GitHub one and sent the reader to the wrong system
+# (PR #201 review, minor). Two sources, two codes, one message each.
+RC_GH_UNREADABLE = 2
+RC_PARK_UNREADABLE = 3
+RC_PARKED = 4
+
 # Verdicts that mean a human-equivalent reviewer objected and left a spec behind.
 # Kept as a literal set rather than "not an approval": an EMPTY verdict is not an
 # objection, it is an unstated one, and routing empty to rework is precisely the
@@ -450,6 +486,148 @@ def candidates(repo_dir, records_dir):
     return out
 
 
+# One GraphQL call per BATCH, not per PR. Aliasing N `issue(id:)` lookups into a
+# single query is what keeps the cost of this check flat: a redrive run makes ONE
+# call for every candidate it holds, and only when it holds at least one. Chunked
+# so a pathological board cannot post a query of unbounded size.
+PARK_BATCH = 50
+
+
+def _park_query(issues):
+    """One aliased GraphQL document for a batch of issue identifiers.
+
+    Aliased rather than filtered because `issue(id:)` is the only lookup that
+    takes the identifier the PR branch carries. A label-side filter would answer
+    "which issues on the board are parked", which is a different and much larger
+    question than "are THESE four parked".
+    """
+    parts = ['i%d: issue(id: "%s") { identifier labels { nodes { name } } }'
+             % (n, ident) for n, ident in enumerate(issues)]
+    return "query { %s }" % " ".join(parts)
+
+
+def parked(issues, graphql=None):
+    """({issue: (label, why)}, {issue: why-it-could-not-be-read}) for `issues`.
+
+    Raises ParkUnavailable if the labels cannot be read AT ALL. THAT IS NOT THE
+    SAME AS AN EMPTY DICT and the caller must not fold the two together: "the
+    board says nothing is parked" and "I could not ask the board" have opposite
+    consequences, and the second one dispatching is how a `blocked:capability`
+    issue gets handed to an agent that provably cannot finish it, once per
+    heartbeat.
+
+    Same direction main() already takes for GhUnavailable (rc 2, nothing claimed):
+    an unreadable source is never read as permission.
+
+    TWO RETURN VALUES BECAUSE THERE ARE TWO BLAST RADII, and collapsing them into
+    one exception was its own defect (PR #201 review round 4, major: "one invalid
+    title-derived issue ID aborts the entire batched park lookup, suppressing
+    every valid reviewer-redrive candidate").
+
+        a BAD INPUT id   -> that issue's park state is unknown. Nothing else in
+                            the batch is affected, so it is REPORTED, not raised.
+        a BAD RESPONSE   -> the mapping from alias to issue cannot be trusted, so
+                            no answer in the batch may be filed. Raised.
+
+    The identifier is derived from the PR, not chosen: ci-redrive's `attribute()`
+    takes the branch tail when it is an issue id and otherwise the ONE id the
+    title names, and `\\b[A-Za-z]{2,6}-\\d+\\b` matches ordinary English -- a PR
+    titled "convert the log writer to UTF-8" yields `UTF-8`. Round 2 raised for
+    the whole batch on that, so one such title took the reviewer redrive offline
+    for every other PR on the board, every heartbeat, and a title does not heal.
+    """
+    if not issues:
+        return ({}, {})
+    if graphql is None:
+        graphql = _load("linear-sync.py", "linear_sync").graphql
+    out = {}
+    unknown = {}
+    ordered = sorted(set(issues))
+    for start in range(0, len(ordered), PARK_BATCH):
+        batch = ordered[start:start + PARK_BATCH]
+        try:
+            data = graphql(_park_query(batch), {})
+        except Exception as exc:            # transport, auth, GraphQL errors alike
+            raise ParkUnavailable(str(exc)[:200]) from exc
+        data = data or {}
+        # READ BY THE ALIAS THIS RUN ASKED UNDER, never by iterating the values.
+        # `graphql` raises on an `errors` array, so everything arriving here is a
+        # clean 200 -- and a clean 200 can still fail to answer: Linear returns
+        # `null` for an id it does not resolve, and an alias can be missing from
+        # `data` outright. Iterating values() saw neither: a null was skipped and
+        # an omission was never looked for, so both left the issue absent from
+        # `out`, which every caller reads as NOT PARKED (PR #201 review round 2).
+        #
+        # That is this module's own defect one layer down. The docstring above
+        # commits to "an unreadable source is never read as permission", and an
+        # answer that says nothing about the issue is unreadable. It raises.
+        #
+        # THE COST OF FAILING CLOSED HERE IS NAMED, NOT HIDDEN: a PR whose branch
+        # carries an identifier Linear does not know is never redriven, because
+        # its park state cannot be verified. What changed in round 4 is the SCOPE
+        # of that refusal -- it belongs to that candidate, not to the run.
+        for n, ident in enumerate(batch):
+            node = data.get("i%d" % n)
+            if not isinstance(node, dict):
+                # PER-ISSUE, NOT PER-BATCH. `null` (or a dropped alias) is what
+                # Linear answers for an id that resolves to nothing, and the id
+                # came off a PR title -- so this is a statement about ONE bad
+                # input, and the other issues in the same response answered fine.
+                unknown[ident] = (
+                    "Linear answered no issue for %s -- the park state for it is "
+                    "unknown, which is not the same as unparked" % ident)
+                continue
+            got = node.get("identifier")
+            if got and got != ident:
+                # STILL BATCH-WIDE, and the asymmetry with the branch above is the
+                # point. A null is a bad question; an alias answering about a
+                # DIFFERENT issue means the alias-to-issue mapping this whole
+                # response was read through is wrong, so every other answer in it
+                # may be filed under the wrong issue too. Nothing here is
+                # salvageable, so nothing here is used.
+                raise ParkUnavailable(
+                    "Linear answered for %s under the alias asked for %s"
+                    % (got, ident))
+            names = [x.get("name") for x in
+                     ((node.get("labels") or {}).get("nodes") or [])]
+            reason = PARK.parked_reason(names)
+            if reason:
+                out[ident] = reason
+    return (out, unknown)
+
+
+def drop_parked(cands, graphql=None):
+    """The candidates whose issue is not parked, saying which label stopped each.
+
+    OUTSIDE candidates() on purpose. candidates() reads the PR board and nothing
+    else, and test-review-redrive-absent.py calls it in-process precisely because
+    it is that pure; putting a Linear round trip inside it would put a live data
+    path into that suite.
+    """
+    state, unknown = parked([c["issue"] for c in cands], graphql=graphql)
+    keep = []
+    for c in cands:
+        reason = state.get(c["issue"])
+        if reason:
+            sys.stderr.write(
+                "review-redrive: %s PR #%s is parked by %s (%s) -- not "
+                "redriving it.\n" % (c["issue"], c["pr"], reason[0], reason[1]))
+            continue
+        if c["issue"] in unknown:
+            # DROPPED, and the run continues. Same refusal as a park -- an
+            # unverifiable park is never redriven -- scoped to the candidate whose
+            # id could not be resolved. The line names the id because the fix is
+            # on the PR (retitle it, or cut the branch as <agent>/<issue>), and an
+            # operator who cannot see which id failed cannot make it.
+            sys.stderr.write(
+                "review-redrive: %s PR #%s -- %s. Not redriving THIS PR; the rest "
+                "of the batch is unaffected.\n"
+                % (c["issue"], c["pr"], unknown[c["issue"]]))
+            continue
+        keep.append(c)
+    return keep
+
+
 def flag(cand):
     """One attempt per PR per action per head sha. See the module docstring."""
     return "review_%s_pr%s_%s" % (cand["action"].replace("-", ""),
@@ -599,9 +777,130 @@ def cmd_select(cands, show_all):
     return 1
 
 
-def cmd_mark_dispatched(issue, action, pr, head_sha):
+def cmd_mark_dispatched(issue, action, pr, head_sha, graphql=None):
+    """The atomic claim -- and the LAST point where the park can still be read.
+
+    THE PARK IS RE-READ HERE, NOT INHERITED FROM `select`. The two are separate
+    processes with the dispatcher's own guards running between them (the converge
+    liveness check, the ps snapshot), so a label applied inside that window was
+    invisible to the only check that had run and the issue launched anyway. This
+    is the argument kipi-dispatch.sh already makes for the ledger claim itself --
+    "past every guard that can still abort, and immediately before the launch" --
+    applied to the other precondition that can change underneath it. A park check
+    that is not at the point of no return is a check the dispatch can outrun.
+
+    It also closes the non-race half: `mark-dispatched` is a subcommand, and any
+    caller reaching it without going through `select` got no park check at all.
+
+    BEFORE THE CLAIM, NEVER AFTER, and the ordering is load-bearing. The flag is
+    one attempt per PR per action per head sha. Claiming and then refusing on the
+    park would spend that attempt on work that never ran, and lifting the park
+    later would not give it back -- the next redrive would skip the PR for having
+    "already had its one attempt". Refusing first leaves the attempt unspent.
+
+    THE RESIDUAL WINDOW IS REAL AND IS NOT CLOSED BY REORDERING (PR #201 review
+    round 2, major: "a label applied after the Linear response but before the
+    ledger claim is ignored"). True, and it stays true after any reorder, because
+    the exposure is measured from THE LAST READ to the launch, not from the read
+    to the claim. Writing both orderings on one clock, with `r` a Linear round
+    trip and `w` the local ledger write:
+
+        this ordering    read -> [w] claim -> [e] launch   missed: labels in (read, launch]   = w + e
+        claim-then-verify   claim -> [r] read -> [e] launch   missed: labels in (read, launch]   = e
+
+    Each design catches everything up to its own last read and misses everything
+    after it; both place that read as late as they can, so the exposure differs
+    by `w`, one local file write. What the reorder buys is not a smaller window,
+    it is the same window shifted across the claim -- and it is paid for with a
+    release path: a crash between the claim and the release spends the attempt
+    permanently on work that never launched, which is the exact harm the
+    paragraph above exists to prevent. A durability hole traded for a write's
+    worth of race is a worse deal than the race.
+
+    The window is irreducible here because the two facts live in two systems --
+    the park in Linear, the attempt in a local ledger -- with no transaction
+    across them. The last read that could shrink it further is not in this
+    process at all: it is inside the agent this dispatch launches, which does not
+    re-read the park today. That is captured as spillover against this issue
+    rather than smuggled in, because it lands in `pr-review-agent.sh` and
+    `converge`, and the ASK-872 DoR scopes neither.
+    """
+    try:
+        state, unknown = parked([issue], graphql=graphql)
+        if issue in unknown:
+            # A batch of one: "unknown for this issue" and "unreadable for this
+            # run" are the same statement here, and the answer is the same
+            # refusal. The per-issue/per-batch split exists to protect OTHER
+            # candidates, and at the claim there are none.
+            raise ParkUnavailable(unknown[issue])
+    except ParkUnavailable as exc:
+        # Fails CLOSED, like every other unreadable source here: the dispatcher
+        # reads any non-zero as "do not dispatch". Reading "I could not ask" as
+        # "nothing is parked" at the launch point is the whole defect, one step
+        # later than where it was found.
+        sys.stderr.write(
+            "review-redrive: could not read the park labels for %s (%s) -- "
+            "refusing to claim the attempt.\n" % (issue, exc))
+        return RC_PARK_UNREADABLE
+    reason = state.get(issue)
+    if reason:
+        sys.stderr.write(
+            "review-redrive: %s PR #%s is parked by %s (%s) -- it was selected "
+            "before the label landed; not claiming the attempt.\n"
+            % (issue, pr, reason[0], reason[1]))
+        return RC_PARKED
     cand = {"action": action, "pr": pr, "head_sha": head_sha}
     return 0 if CI.ledger_claim(CI.attempts_path(), issue, flag(cand)) else 1
+
+
+def cmd_park_check(issue, graphql=None):
+    """Is THIS issue parked -- the answer the RED-CI path had no way to ask.
+
+    WHY A SUBCOMMAND HERE AND NOT A CHECK IN ci-redrive.py (PR #201 review round
+    4, major: "park labels do not stop the higher-priority red-CI redrive, so a
+    parked issue with red CI is still dispatched").
+
+    kipi-dispatch.sh runs ci-redrive FIRST and reaches the reviewer redrive only
+    when it offered nothing (`[ -z "$REDRIVE_NEXT" ]`). Red CI outranks a reviewer
+    refusal deliberately -- re-reviewing a tree that does not build spends a codex
+    call to be told the build is broken -- so the path with priority was the path
+    with no park read. Everything select and mark-dispatched enforce was bypassed
+    for exactly the PRs that also had red CI, and `blocked:capability` plus a red
+    build is the most expensive case there is.
+
+    IT LIVES HERE BECAUSE THE READER LIVES HERE. The dispatcher asks this file for
+    the answer instead of ci-redrive.py growing its own park read, for the reason
+    park_labels.py exists at all: a fourth consumer with its own copy is this same
+    defect again. This also keeps the ASK-872 DoR's "not doing: ci-redrive.py"
+    intact -- that file is unchanged.
+
+    READ-ONLY, and that is load-bearing. It touches no ledger, so the dispatcher
+    can ask before it has decided anything and an issue that turns out to be
+    parked has spent nothing. The claim for the red-CI path stays where it was, in
+    ci-redrive.py's own mark-dispatched.
+
+    STDOUT CARRIES THE LABEL so the dispatcher's `say` line can name it. That line
+    is the operator's only surface, and "parked" without "by what" sends the
+    reader to the board to work out which of three labels, each routing somewhere
+    different, is the one in play.
+    """
+    try:
+        state, unknown = parked([issue], graphql=graphql)
+        if issue in unknown:
+            raise ParkUnavailable(unknown[issue])
+    except ParkUnavailable as exc:
+        sys.stderr.write(
+            "review-redrive: could not read the park labels for %s (%s) -- "
+            "refusing to call it unparked.\n" % (issue, exc))
+        return RC_PARK_UNREADABLE
+    reason = state.get(issue)
+    if reason:
+        print("%s\t%s" % (reason[0], reason[1]))
+        sys.stderr.write(
+            "review-redrive: %s is parked by %s (%s).\n"
+            % (issue, reason[0], reason[1]))
+        return RC_PARKED
+    return 0
 
 
 def main(argv):
@@ -620,16 +919,38 @@ def main(argv):
     mark.add_argument("--pr", required=True)
     mark.add_argument("--head-sha", default="")
 
+    chk = sub.add_parser("park-check")
+    chk.add_argument("--issue", required=True)
+
     args = ap.parse_args(argv)
     if args.cmd == "mark-dispatched":
         return cmd_mark_dispatched(args.issue, args.action, args.pr, args.head_sha)
+    if args.cmd == "park-check":
+        # BEFORE candidates(), because this command must not read the PR board at
+        # all: its caller is the RED-CI path, which already has its own candidate
+        # and needs one fact about one issue. Running the gh query here would make
+        # a gh outage look like a park answer.
+        return cmd_park_check(args.issue)
     try:
         cands = candidates(args.repo_dir, args.records_dir)
     except CI.GhUnavailable as exc:
         # rc 2 is NOT "nothing to do": the caller must keep its fresh pick rather
         # than read an unreadable board as an empty one.
         sys.stderr.write("review-redrive: %s -- nothing was claimed.\n" % exc)
-        return 2
+        return RC_GH_UNREADABLE
+    try:
+        cands = drop_parked(cands)
+    except ParkUnavailable as exc:
+        # NON-ZERO for the same reason GhUnavailable is non-zero: the run could
+        # not read a source it needs, so it must not report an answer. Reading
+        # "I cannot see the labels" as "nothing is parked" re-dispatches every
+        # parked issue on the board at once, and blocked:capability is
+        # guaranteed to fail. A DISTINCT code, not 2, so the dispatcher names
+        # Linear rather than sending the reader to gh -- see RC_PARK_UNREADABLE.
+        sys.stderr.write(
+            "review-redrive: could not read the park labels (%s) -- refusing to "
+            "treat that as nothing being parked. Nothing was claimed.\n" % exc)
+        return RC_PARK_UNREADABLE
     return cmd_select(cands, args.all)
 
 

@@ -50,6 +50,45 @@ cat "$BOARD"
 EOS
 chmod +x "$BIN/gh"
 
+# --- Linear, stubbed at the API seam (ASK-872) -------------------------------
+# `select` now reads the three park labels off each candidate's issue before it
+# offers anything, so this suite acquired a Linear dependency it did not have.
+# Left alone it would reach the REAL board with the real key -- a live data path
+# in a test, and one whose answers change as issues get labelled, so a case here
+# could start failing because someone parked ASK-317 in the morning.
+#
+# The fixture answers every issue with an EMPTY label set, which is what every
+# case in this file already assumed. No assertion below changes. The park
+# behaviour itself is held by test-review-redrive-park.sh.
+cat > "$WORK/linear-fixture.py" <<'PY'
+import json, re
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers["Content-Length"])).decode()
+        query = (json.loads(body).get("query") or "")
+        data = {alias: {"identifier": ident, "labels": {"nodes": []}}
+                for alias, ident in
+                re.findall(r'(\w+)\s*:\s*issue\(\s*id\s*:\s*"([^"]+)"', query)}
+        out = json.dumps({"data": data}).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out))); self.end_headers()
+        self.wfile.write(out)
+
+srv = HTTPServer(("127.0.0.1", 0), H)
+print(srv.server_port, flush=True)
+srv.serve_forever()
+PY
+python3 "$WORK/linear-fixture.py" > "$WORK/port" 2> "$WORK/linear.err" &
+SRV_PID=$!
+trap 'kill "${SRV_PID:-}" 2>/dev/null; rm -rf "$WORK"' EXIT
+for _ in $(seq 1 100); do PORT="$(cat "$WORK/port" 2>/dev/null)"; [ -n "${PORT:-}" ] && break; sleep 0.1; done
+[ -n "${PORT:-}" ] || { echo "FATAL: linear fixture did not start" >&2; exit 1; }
+LINEAR_ENV=(KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql"
+            KIPI_LINEAR_API_KEY="fixture-key-not-a-secret")
+
 # A PR entry with a failing reviewer slot. Everything except pr/branch/sha is
 # fixed, so a difference in outcome can only come from the verdict record.
 pr_entry() {   # pr_entry <number> <issue-lower> <sha>
@@ -79,6 +118,7 @@ PY
 
 select_all() {
   env PATH="$BIN:$PATH" BOARD="$WORK/board.json" KIPI_NOTIFY="$BIN/notify.sh" \
+      "${LINEAR_ENV[@]}" \
     python3 "$SEL" --repo-dir "$WORK" --records-dir "$RECORDS" select --all 2>/dev/null
 }
 action_for() {   # action_for <pr>
@@ -206,8 +246,39 @@ A42="$(action_for 42)"
 LEDGER="$WORK/attempts.json"; echo '{}' > "$LEDGER"
 select_one() {
   env PATH="$BIN:$PATH" BOARD="$WORK/board.json" KIPI_ATTEMPTS="$LEDGER" \
-      KIPI_NOTIFY="$BIN/notify.sh" \
+      KIPI_NOTIFY="$BIN/notify.sh" "${LINEAR_ENV[@]}" \
     python3 "$SEL" --repo-dir "$WORK" --records-dir "$RECORDS" select 2>/dev/null
+}
+
+# THE CLAIM GOES THROUGH ONE DOOR TOO, for the same reason `select` does.
+#
+# This was two bare `env KIPI_ATTEMPTS=` lines until PR #201 review round 3
+# (major). They were written when `mark-dispatched` did nothing but touch the
+# ledger, so no fixture was needed. Then the claim started re-reading the park
+# labels, and those two lines quietly began asking the REAL Linear board, with
+# the real key, about ASK-298 and ASK-301. Nothing failed: both issues exist and
+# are unparked, so the live answer happened to match the fixture's. On a machine
+# with no key or no network the same lines exit 3, claim nothing, and take five
+# unrelated cases down with them.
+#
+# A helper rather than two more copies of the env: the defect was per-call-site
+# and a third call site would reintroduce it. `test-review-redrive-isolation.sh`
+# is what makes a future omission fail out loud instead of going live.
+mark_dispatched() {   # mark_dispatched <issue> <action> <pr> <sha>
+  env KIPI_ATTEMPTS="$LEDGER" "${LINEAR_ENV[@]}" python3 "$SEL" mark-dispatched \
+    --issue "$1" --action "$2" --pr "$3" --head-sha "$4" >/dev/null 2>&1
+}
+
+# rc IS CHECKED, and that is half the fix. Both call sites discarded it, so a
+# claim that refused was indistinguishable from one that landed -- the assertion
+# that followed just read "the pick is still offered" and blamed the cap. A
+# refused claim now says so where it happened, not three lines later under
+# another name.
+claims() {   # claims <issue> <action> <pr> <sha> <what-it-is-for>
+  mark_dispatched "$1" "$2" "$3" "$4"
+  local rc=$?
+  [ "$rc" = "0" ] && ok "the claim for $1/$2 landed ($5)" \
+    || bad "mark-dispatched exited $rc for $1/$2 -- it claimed nothing, so every assertion after this one is testing the wrong thing"
 }
 printf '[%s]\n' "$(pr_entry 98 ask-298 cccc9999)" > "$WORK/board.json"
 record 98 "REQUEST CHANGES" "REQUEST CHANGES" true cccc9999
@@ -229,8 +300,7 @@ PICK2="$(select_one)"
 
 # And the claim, when it is made deliberately, DOES suppress the next offer.
 # Without this the case above is satisfied by a cap that never fires at all.
-env KIPI_ATTEMPTS="$LEDGER" python3 "$SEL" mark-dispatched \
-  --issue ASK-298 --action rework --pr 98 --head-sha cccc9999 >/dev/null 2>&1
+claims ASK-298 rework 98 cccc9999 "the suppression case below depends on it"
 [ -z "$(select_one)" ] && ok "after mark-dispatched the pick is suppressed -- the cap is real" \
   || bad "the pick survived mark-dispatched -- the cap never fires"
 
@@ -317,7 +387,7 @@ A99="$(action_for 99)"; A100="$(action_for 100)"
 # process is spawned and nothing reads the real one.
 select_ps() {   # select_ps <ps-table-file>
   env PATH="$BIN:$PATH" BOARD="$WORK/board.json" KIPI_ATTEMPTS="$LEDGER" \
-      KIPI_NOTIFY="$BIN/notify.sh" KIPI_PS="cat $1" \
+      KIPI_NOTIFY="$BIN/notify.sh" KIPI_PS="cat $1" "${LINEAR_ENV[@]}" \
     python3 "$SEL" --repo-dir "$WORK" --records-dir "$RECORDS" select 2>/dev/null
 }
 printf '[%s]\n' "$(pr_entry 101 ask-301 ffff9999)" > "$WORK/board.json"
@@ -354,8 +424,7 @@ PICK4="$(select_ps "$WORK/ps-idle.txt")"
 
 # Now the page. The flag is claimed exactly as the dispatcher claims it, one
 # breath before the reviewer starts, which is the state that produced the bug.
-env KIPI_ATTEMPTS="$LEDGER" python3 "$SEL" mark-dispatched \
-  --issue ASK-301 --action re-review --pr 101 --head-sha ffff9999 >/dev/null 2>&1
+claims ASK-301 re-review 101 ffff9999 "the escalation cases below depend on it"
 PAGES_BEFORE="$(pages_count)"
 select_ps "$WORK/ps-live.txt" >/dev/null
 [ "$(pages_count)" = "$PAGES_BEFORE" ] \

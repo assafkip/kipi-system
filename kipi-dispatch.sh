@@ -1130,6 +1130,45 @@ NEXT="$(printf '%s' "$WORK_OUT" | grep -oE '\[dry\] would work ASK-[0-9]+' | gre
 # page is finding 1). Its stderr lands in this log, so the skip is visible here.
 REDRIVE="$REPO/q-system/.q-system/scripts/ci-redrive.py"
 REDRIVE_NEXT=""; REDRIVE_SIG=""; REDRIVE_SHA=""
+
+# --- THE PARK GATE, AND THE RED-CI PATH NEEDS IT MOST (ASK-872, PR #201 r4) ---
+# Three labels mean "a human or a gate decided this must not be worked right now"
+# (park_labels.py). review-redrive.py reads them at its select AND at its claim --
+# but the block below runs FIRST, and the reviewer redrive is reached only when
+# this one offered nothing. So the path WITH priority was the path with no park
+# read: a parked issue whose build was also red got dispatched every heartbeat,
+# and `blocked:capability` there means handing an agent work it provably cannot
+# finish. Red CI outranking a reviewer refusal is correct and stays; being
+# unguarded was not part of that decision.
+#
+# IT ASKS review-redrive.py RATHER THAN ci-redrive.py, on purpose. The reader
+# already exists there, and a fourth consumer with its own copy of the label list
+# is the very defect ASK-872 is about. ci-redrive.py is untouched.
+#
+# READ-ONLY: park-check writes no ledger, so asking costs nothing and a refusal
+# leaves the PR's one machine attempt unspent.
+REVIEW_REDRIVE="$REPO/q-system/.q-system/scripts/review-redrive.py"
+
+park_ok() {   # park_ok <issue> <which-redrive>;  0 = clear to dispatch
+  if [ ! -f "$REVIEW_REDRIVE" ]; then
+    # FAILS CLOSED, and loudly. An instance carrying ci-redrive.py but not the
+    # park reader is a half-installed park, which is the shape of this whole
+    # issue; both files ship in the same rsync, so this is a broken install and
+    # not a supported configuration. Refusing names it in the log; skipping the
+    # check would silently restore the defect on exactly that instance.
+    say "$2 redrive: no park reader at $REVIEW_REDRIVE -- refusing to redrive $1 without checking the park labels"
+    return 1
+  fi
+  local out="" rc=0
+  out="$(python3 "$REVIEW_REDRIVE" park-check --issue "$1" 2>>"$LOG")" || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    4) say "$2 redrive: $1 is parked by $(printf '%s' "$out" | cut -f1) -- not redriving it, nothing claimed" ;;
+    3) say "$2 redrive: Linear could not answer the park labels for $1 -- not redriving it, nothing claimed" ;;
+    *) say "$2 redrive: the park check for $1 exited $rc -- not redriving it, nothing claimed" ;;
+  esac
+  return 1
+}
 if [ -f "$REDRIVE" ]; then
   REDRIVE_LINE="$(KIPI_NOTIFY="$NOTIFY" python3 "$REDRIVE" \
                     --repo-dir "$TARGET_PATH" redrive 2>>"$LOG")"
@@ -1138,8 +1177,17 @@ if [ -f "$REDRIVE" ]; then
     REDRIVE_NEXT="$(printf '%s' "$REDRIVE_LINE" | cut -f1)"
     REDRIVE_SIG="$(printf '%s' "$REDRIVE_LINE" | cut -f2)"
     REDRIVE_SHA="$(printf '%s' "$REDRIVE_LINE" | cut -f3)"
-    say "red-CI redrive: handing $REDRIVE_NEXT back to its agent ahead of the fresh pick${NEXT:+ ($NEXT waits)}"
-    NEXT="$REDRIVE_NEXT"
+    # THE OFFER IS DISCARDED, NOT THE HEARTBEAT. Clearing the three variables
+    # leaves NEXT as whatever the fresh pick found and lets the reviewer redrive
+    # below have its turn -- exiting here instead would let one parked red PR
+    # starve every other path for as long as the park lasted, which is the shape
+    # of the bug ci-redrive's own converge_live() was added to fix (PR #73 r2).
+    if park_ok "$REDRIVE_NEXT" "red-CI"; then
+      say "red-CI redrive: handing $REDRIVE_NEXT back to its agent ahead of the fresh pick${NEXT:+ ($NEXT waits)}"
+      NEXT="$REDRIVE_NEXT"
+    else
+      REDRIVE_NEXT=""; REDRIVE_SIG=""; REDRIVE_SHA=""
+    fi
   elif [ "$REDRIVE_RC" = "2" ]; then
     say "red-CI redrive: gh could not read PR state in $TARGET_NAME -- fresh pick stands, nothing claimed"
   fi
@@ -1166,7 +1214,9 @@ fi
 # pr-review-agent.sh now persists, and answers with the action.
 #
 # rc 2 (gh could not answer) leaves the fresh pick standing, same as above.
-REVIEW_REDRIVE="$REPO/q-system/.q-system/scripts/review-redrive.py"
+# $REVIEW_REDRIVE is assigned once, above the red-CI block, which now asks this
+# same script for the park answer. One assignment and not two: a second copy of
+# the path is how a file gets moved and only one of its callers follows.
 REVIEW_ACTION=""; REVIEW_NEXT=""; REVIEW_PR=""; REVIEW_SHA=""
 if [ -z "$REDRIVE_NEXT" ] && [ -f "$REVIEW_REDRIVE" ]; then
   REVIEW_LINE="$(python3 "$REVIEW_REDRIVE" --repo-dir "$TARGET_PATH" select 2>>"$LOG")"
@@ -1180,6 +1230,13 @@ if [ -z "$REDRIVE_NEXT" ] && [ -f "$REVIEW_REDRIVE" ]; then
     NEXT="$REVIEW_NEXT"
   elif [ "$REVIEW_RC" = "2" ]; then
     say "reviewer redrive: gh could not read PR state in $TARGET_NAME -- fresh pick stands, nothing claimed"
+  elif [ "$REVIEW_RC" = "3" ]; then
+    # A SEPARATE CODE BECAUSE THIS IS A SEPARATE SYSTEM (ASK-872, PR #201 review).
+    # The selector reads two sources: gh for PR state, Linear for the labels that
+    # park an issue. Both being rc 2 made a Linear outage print the gh sentence,
+    # and this line is the operator's only surface -- so the one person who could
+    # fix it was sent to look at the wrong service.
+    say "reviewer redrive: Linear could not answer the park labels in $TARGET_NAME -- fresh pick stands, nothing claimed"
   fi
 fi
 
@@ -1222,6 +1279,12 @@ fi
 # already claimed it (or the ledger could not be written, which is the same
 # answer -- nothing was recorded, so nothing may act as though it was).
 if [ -n "$REDRIVE_SIG" ] && [ "$NEXT" = "$REDRIVE_NEXT" ]; then
+  # RE-READ AT THE POINT OF NO RETURN, for the reason the reviewer path re-reads
+  # it (ASK-872, PR #201 review round 1): the offer above is ~70 lines and several
+  # guards ago, and a label can land in that window. Before the claim, never
+  # after -- refusing after would spend the PR's one attempt on work that never
+  # ran, and lifting the park later would not give it back.
+  park_ok "$NEXT" "red-CI" || exit 0
   if ! python3 "$REDRIVE" mark-dispatched --issue "$NEXT" \
        --signature "$REDRIVE_SIG" --head-sha "$REDRIVE_SHA" 2>>"$LOG"; then
     say "red-CI redrive: the attempt for $NEXT is already claimed -- not dispatching"
@@ -1236,12 +1299,26 @@ fi
 # attempt per PR per action per HEAD SHA, so a PR that pushes a real fix is
 # eligible again while a re-review that keeps coming back phantom at the same sha
 # is not retried.
+#
+# THE CLAIM ALSO RE-READS THE PARK LABELS (ASK-872, PR #201 review). `select`
+# checked them, but that was a separate process and every guard between the two
+# takes time an operator can park an issue in. Non-zero still means "do not
+# dispatch" for all three reasons; they are told apart only so the log names the
+# one that happened, because "already claimed" sent the reader to the ledger for
+# a park and for a Linear outage alike.
 if [ -n "$REVIEW_ACTION" ] && [ "$NEXT" = "$REVIEW_NEXT" ]; then
-  if ! python3 "$REVIEW_REDRIVE" mark-dispatched --issue "$NEXT" \
-       --action "$REVIEW_ACTION" --pr "$REVIEW_PR" --head-sha "$REVIEW_SHA" 2>>"$LOG"; then
-    say "reviewer redrive: the $REVIEW_ACTION attempt for $NEXT PR #$REVIEW_PR is already claimed -- not dispatching"
-    exit 0
-  fi
+  python3 "$REVIEW_REDRIVE" mark-dispatched --issue "$NEXT" \
+    --action "$REVIEW_ACTION" --pr "$REVIEW_PR" --head-sha "$REVIEW_SHA" 2>>"$LOG"
+  MARK_RC=$?
+  case "$MARK_RC" in
+    0) ;;
+    4) say "reviewer redrive: $NEXT was parked by a label after it was selected -- not dispatching, attempt unspent"
+       exit 0 ;;
+    3) say "reviewer redrive: Linear could not answer the park labels for $NEXT -- not dispatching, attempt unspent"
+       exit 0 ;;
+    *) say "reviewer redrive: the $REVIEW_ACTION attempt for $NEXT PR #$REVIEW_PR is already claimed -- not dispatching"
+       exit 0 ;;
+  esac
 fi
 
 # Count BEFORE launching. Counting after would let a crash between the two
