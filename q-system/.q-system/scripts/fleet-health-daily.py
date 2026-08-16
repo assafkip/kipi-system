@@ -1225,7 +1225,255 @@ def detect_stale_runtime_plugins(_ctx) -> list:
     }]
 
 
+# ---------------------------------------------------------------------------
+# The INSTALLED job vs its RENDERED COMMITTED template (ASK-860)
+#
+# THE SCAR. 2026-08-15 the dispatch daily cap read 12 in
+# `q-system/.q-system/scripts/com.kipi.dispatch.plist` and **40** in
+# `~/Library/LaunchAgents/com.kipi.dispatch.plist`. The committed file is the one
+# a reader inspects to answer "what is the cap?"; the installed one is the cap
+# that actually runs. For an unknown period the loop was authorised to start 40
+# issues a day against a stated ceiling of 12 -- roughly 240 agent sessions a day
+# against a stated 72 -- and nothing in the fleet compared the two copies.
+#
+# `install-plist.sh` makes rendering correct when it is USED. It cannot notice a
+# job installed some other way, or edited in place after the fact. This detector
+# is the thing that notices.
+#
+# WHY HERE AND NOT A COMMIT HOOK. The drift lives on the MACHINE, not in the
+# diff: both copies can be individually correct in git and still disagree at
+# rest. CI has no `~/Library/LaunchAgents` to look at, so a CI-only check is
+# structurally blind -- the same reasoning `detect_stale_runtime_plugins`
+# documents for the plugin registry.
+#
+# REPORT, NEVER REPAIR. A live value may have been set deliberately during an
+# incident. Overwriting it silently is how a deliberate change becomes an
+# unexplained regression, so the finding names the divergence and offers the
+# render command; the human chooses.
+# ---------------------------------------------------------------------------
+
+PLIST_TEMPLATE_DIR = HERE
+PLIST_INSTALLER = HERE / "install-plist.sh"
+
+# A published value is capped, not redacted. This bounds a body, it does not
+# pretend to be a secret filter -- that job is done structurally below.
+_VALUE_CAP = 200
+
+# An XML comment, stripped before parsing. NOT a leniency about plist DATA:
+# comments carry none. It exists because the fleet's own committed templates
+# contain `--` inside comments (they are long prose blocks citing PR rounds),
+# which CoreFoundation accepts -- so launchd loads them and the jobs run -- while
+# expat, the parser behind `plistlib`, rejects the document outright. Reading a
+# live job with a stricter parser than the one launchd uses would report every
+# commented template as unreadable, which is a blind spot wearing an error's
+# clothes. Non-greedy: a comment containing `--` but not `-->` is one comment.
+# A literal `<!--` cannot appear inside a plist <string>, which would have to
+# escape the `<` as `&lt;` to be XML at all.
+_XML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+
+
+def plist_pairs(text: str) -> dict:
+    """A plist's leaf values, keyed by dotted path. Raises ValueError if unreadable.
+
+    Flattened rather than compared as nested objects so a finding can NAME THE
+    KEY that moved (`EnvironmentVariables.KIPI_DISPATCH_DAILY_MAX`) instead of
+    saying two dicts differ, which is what the operator needs to act.
+    """
+    import plistlib
+
+    try:
+        data = plistlib.loads(_XML_COMMENT_RE.sub("", text).encode())
+    except Exception as exc:  # noqa: BLE001 - any parse failure is "unreadable"
+        raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+    out: dict = {}
+    _flatten(data, "", out)
+    return out
+
+
+def _flatten(node, prefix: str, out: dict) -> None:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            _flatten(value, f"{prefix}.{key}" if prefix else str(key), out)
+    elif isinstance(node, (list, tuple)):
+        for index, value in enumerate(node):
+            _flatten(value, f"{prefix}[{index}]", out)
+    else:
+        out[prefix] = str(node)
+
+
+def _render_committed(path: Path) -> str:
+    """The committed template AS INSTALL-PLIST.SH WOULD WRITE IT.
+
+    Shelling the installer rather than re-implementing its `sed` is the point:
+    two substituters would be two definitions of "rendered", and the drift
+    between THEM would be invisible in exactly the way this detector exists to
+    end. `--render-only` writes to a path and touches no live job.
+    """
+    import tempfile
+
+    label = path.stem
+    with tempfile.TemporaryDirectory() as work:
+        out = Path(work) / f"{label}.plist"
+        res = subprocess.run(
+            ["bash", str(PLIST_INSTALLER), label, "--render-only", str(out)],
+            capture_output=True, text=True, timeout=60)
+        if res.returncode != 0 or not out.is_file():
+            raise RuntimeError(
+                f"install-plist.sh --render-only exited {res.returncode}")
+        return out.read_text()
+
+
+def _shown(value: str) -> str:
+    return value if len(value) <= _VALUE_CAP else f"{value[:_VALUE_CAP]}... (truncated)"
+
+
+def _unrenderable(label: str, reason: str) -> dict:
+    """A job whose two copies could not be COMPARED. Unknown, never clean.
+
+    The silent-disable shape this file has been corrected for three times over:
+    a `return []` here would make "I could not look" print identically to "I
+    looked and the job matches". Its own subject, so it cannot collide with a
+    real drift finding for the same label.
+    """
+    return {
+        "subject": f"{label}--unrenderable",
+        "title": f"cannot compare {label} against its committed template",
+        "body": (
+            f"`{label}` could not be compared with its committed template: {reason}\n\n"
+            "While this is true, NOTHING checks whether the installed copy of this "
+            "job matches the one in the repo. Absence of a drift finding for "
+            f"`{label}` is not evidence the two copies agree.\n\n"
+            "## Action\n```bash\n"
+            f"bash q-system/.q-system/scripts/install-plist.sh {label} "
+            "--render-only /tmp/render.plist\n"
+            f"diff /tmp/render.plist ~/Library/LaunchAgents/{label}.plist\n```\n"
+            "Fix what that reports, then confirm this issue stops re-filing."
+        ),
+    }
+
+
+def _drift_finding(label: str, changed: list, only_committed: list,
+                   only_live: list) -> dict:
+    sections = []
+    if changed:
+        sections.append(
+            "## Values that differ\n"
+            "| Key | Committed | Live |\n| -- | -- | -- |\n"
+            + "\n".join(f"| `{k}` | `{_shown(c)}` | `{_shown(l)}` |"
+                        for k, c, l in changed))
+    if only_committed:
+        sections.append(
+            "## Declared in the repo, absent from the installed job\n"
+            + "\n".join(f"- `{k}` (committed `{_shown(v)}`)" for k, v in only_committed))
+    if only_live:
+        # KEY NAMES ONLY, and that is structural rather than a filter over the
+        # text (ASK-204). A key the repo DECLARES is the repo's own knob, so its
+        # live value is the answer the operator came for. A key that exists only
+        # on the installed copy is operator-authored -- the one place a
+        # hand-added credential could sit -- and a Linear issue is permanent.
+        # Nine review rounds found nine bypasses of a value-shaped denylist; this
+        # splits on WHO AUTHORED THE KEY, which has no bypass to find.
+        sections.append(
+            "## Present only on the installed job\n"
+            "Key names only: these were not authored in the repo, and a Linear "
+            "issue is permanent (ASK-204). Read the values in the file itself.\n"
+            + "\n".join(f"- `{k}`" for k in only_live))
+    sections.append(
+        "## Action — read it, then decide\n"
+        "This is REPORTED, not repaired. A live value may have been set "
+        "deliberately during an incident, and overwriting it silently is how a "
+        "deliberate change becomes an unexplained regression.\n\n"
+        "```bash\n"
+        f"bash q-system/.q-system/scripts/install-plist.sh {label} "
+        "--render-only /tmp/render.plist\n"
+        f"diff /tmp/render.plist ~/Library/LaunchAgents/{label}.plist\n```\n"
+        "Then EITHER commit the live value into the template, OR re-install from "
+        f"the template (`install-plist.sh {label}`, which also reloads the job). "
+        "Whichever you pick, both copies end up saying the same thing."
+    )
+    return {
+        # The LABEL, so one job is one permanent issue however many keys move.
+        # A key-set subject would fork a new permanent issue every time the set
+        # of divergent keys changed.
+        "subject": label,
+        "title": f"installed job drifted from its committed template: {label} "
+                 f"({len(changed) + len(only_committed) + len(only_live)} key(s))",
+        "body": "\n\n".join(sections),
+    }
+
+
+def plist_drift_findings(template_dir=None, launch_agents=None, render=None) -> list:
+    """Every committed `com.kipi.*` template vs the job installed from it.
+
+    Injectable so the compare is provable against fixtures: a test that pointed
+    at the real `~/Library/LaunchAgents` would pass or fail on the state of
+    whoever's laptop ran it.
+    """
+    templates = Path(template_dir) if template_dir else PLIST_TEMPLATE_DIR
+    agents = Path(launch_agents) if launch_agents else LAUNCH_AGENTS
+    render = render or _render_committed
+
+    out = []
+    for template in sorted(templates.glob("com.kipi.*.plist")):
+        label = template.stem
+        live_path = agents / f"{label}.plist"
+        # NOT INSTALLED IS NOT DRIFT. `detect_dark_jobs` already owns "a job that
+        # should be running is not"; filing it here too would put one condition
+        # on two permanent issues.
+        if not live_path.is_file():
+            continue
+        try:
+            committed = plist_pairs(render(template))
+            live = plist_pairs(live_path.read_text(errors="ignore"))
+        except (ValueError, RuntimeError, OSError) as exc:
+            out.append(_unrenderable(label, str(exc)))
+            continue
+        changed = [(k, committed[k], live[k]) for k in sorted(committed)
+                   if k in live and committed[k] != live[k]]
+        only_committed = [(k, committed[k]) for k in sorted(committed) if k not in live]
+        only_live = [k for k in sorted(live) if k not in committed]
+        if changed or only_committed or only_live:
+            out.append(_drift_finding(label, changed, only_committed, only_live))
+    return out
+
+
+def detect_plist_drift(_ctx) -> list:
+    """`plist_drift_findings`, refused from a worktree.
+
+    `install-plist.sh` resolves `__KIPI_REPO__` from ITS OWN location, so
+    rendering from a git worktree produces `ProgramArguments` pointing at that
+    worktree -- and EVERY installed job would read as drifted on a path nobody
+    changed. A permanent false issue per job is the most expensive outcome
+    available here, so a worktree render is reported as UNKNOWN rather than
+    guessed at. Same discriminator `install-plist.sh --all` already refuses on:
+    a worktree's `.git` is a file, a primary checkout's is a directory.
+    """
+    if not (REPO_ROOT / ".git").is_dir():
+        return [{
+            "subject": "render-root-is-a-worktree",
+            "title": "plist drift cannot be checked from a worktree",
+            "body": (
+                f"`{REPO_ROOT}` is a git worktree, not the primary checkout. "
+                "`install-plist.sh` resolves `__KIPI_REPO__` from its own location, "
+                "so every rendered template would point at this directory and every "
+                "installed job would read as drifted on a path nobody touched.\n\n"
+                "No comparison was made. That is UNKNOWN, not clean.\n\n"
+                "## Action\nRun `kipi health` from the primary checkout. The 08:15 "
+                "LaunchAgent already does; this finding means something ran it from "
+                "somewhere else."
+            ),
+        }]
+    return plist_drift_findings()
+
+
 DETECTORS = [
+    {
+        "id": "plist-drift",
+        "description": "an installed launchd job disagrees with its rendered committed template",
+        "detect": detect_plist_drift,
+        "action": "file_issue",
+        "lesson": "the-running-code-may-not-be-the-code-you-read",
+    },
     {
         "id": "runtime-plugin-stale",
         "description": "the RUNNING plugin copy is older than the merged one, or hand-edited",
