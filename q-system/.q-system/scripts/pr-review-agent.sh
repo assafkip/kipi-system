@@ -804,6 +804,76 @@ else
 fi
 echo "  verdict: ${VERDICT:-unstated}$DRY_NOTE"
 
+# --- the analysed tree must be the tree the status names (ASK-830) ------------
+# THIS IS NOT THE HEAD-MOVED RACE. That one (the HEAD_SHA_CONFIRM refusal ~500
+# lines up, ASK-221) compares two READS of the PR head and fires when something
+# pushes mid-review. It is a good guard and it stays. It structurally cannot see
+# this defect: here NOTHING moves. The wrapper checks out the correct tree, hands
+# it to the model, and the model reads a DIFFERENT one anyway. Two reads of the
+# head agree perfectly while the review is of another commit.
+#
+# MEASURED, PR #165 round 2, 2026-08-14 PT. The wrapper detached a review tree at
+# c87245b0 and logged `commit status posted: kipi/reviewer-approved=failure on
+# c87245b0`. The review body says in its own words "GitHub was also unreachable,
+# so the review used the locally available PR tip `0880859e`", and every one of
+# its reproducers runs `git show 0880859e:fleet-unblock.py`. 0880859e is the
+# merge-base from BEFORE the fixes under review. It re-emitted round 1's two
+# findings verbatim, at round 1's pre-fix line numbers (138, 287), against code
+# where both were already fixed. Attempt 2 of the same command, same head, read
+# the right tree and returned two entirely different findings.
+#
+# WHY THE REVIEW'S OWN COMMANDS AND NOT ITS PROSE. "the body mentions the head
+# sha" would have PASSED round 2 -- its body carries c87245b0 as well. The
+# discriminator has to be a statement about what was READ, so this reads the
+# reviewer's own `git show <sha>:<path>` invocations and its tip declaration.
+# Those are the reviewer telling you which tree it opened.
+#
+# WHAT THIS DOES AND DOES NOT PROVE, stated plainly because a REQUIRED check with
+# enforce_admins on main earns the honesty: it detects a CONTRADICTION, not a
+# match. A review that declares no tree at all is not refused -- there is nothing
+# to contradict, and refusing silence would wedge every review that does not
+# happen to print a git command. Under-refusal here costs a wrong review; a
+# false refusal costs every correct PR in the fleet at once, escapable only via
+# break-glass-main-protection.sh, which disables protection fleet-wide.
+#
+# analysed_tree_conflict <review-file> <head-sha>
+# Prints the first sha the review declares it READ that is not $head, or nothing.
+# A short sha is matched by PREFIX on purpose: the reviewer writes 8 characters,
+# gh reports 40, and treating that as drift would refuse every review.
+analysed_tree_conflict() {
+  local f="${1:-}" head="${2:-}" tok
+  [ -s "$f" ] || return 0
+  [ -n "$head" ] || return 0
+  head="$(printf '%s' "$head" | tr '[:upper:]' '[:lower:]')"
+  # Two shapes, both taken from the real payload: the shell form
+  # `git show 0880859e:fleet-unblock.py`, the python form
+  # `"git","show","0880859e:fleet-unblock.py"`, and the prose tip declaration
+  # "the review used the locally available PR tip `0880859e`".
+  for tok in $(grep -oiE '(show[^0-9a-fA-F]{1,6}|tip[^0-9a-fA-F]{1,4})[0-9a-fA-F]{7,40}' "$f" 2>/dev/null \
+                 | grep -oiE '[0-9a-fA-F]{7,40}$' \
+                 | tr '[:upper:]' '[:lower:]' \
+                 | sort -u); do
+    case "$head" in
+      "$tok"*) ;;
+      *) printf '%s' "$tok"; return 0 ;;
+    esac
+  done
+}
+
+FOREIGN_TREE="$(analysed_tree_conflict "$REVIEW" "$HEAD_SHA")"
+if [ -n "$FOREIGN_TREE" ]; then
+  # NOTHING IS POSTED -- not the status, not the comment. The findings are of
+  # another commit, so putting them on the PR would spend the author's next round
+  # on line numbers that do not exist in their diff, which is what round 2 did.
+  # The refusal is LOUD and names both shas: the operator has to be able to tell
+  # "not reviewed yet" from "reviewed the wrong thing", and an absent status alone
+  # cannot say which. Non-zero exit, so a caller cannot read this as a pass.
+  echo "REFUSING: the review of PR #$PR read tree ${FOREIGN_TREE} but the status would name ${HEAD_SHA:0:8}." >&2
+  echo "  The reviewer's own commands cite ${FOREIGN_TREE}, so its findings are about a different commit." >&2
+  echo "  No commit status and no PR comment posted. Re-run the review; the output is kept at: $REVIEW" >&2
+  exit 1
+fi
+
 # Single writer for verdict state. The worker's rework gate reads THIS record,
 # never the review prose. Keyed by PR number, latest round wins; history stays
 # in the timestamped .md files.

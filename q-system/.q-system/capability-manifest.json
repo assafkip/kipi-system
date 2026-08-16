@@ -380,6 +380,11 @@
       "timeout_s": 240
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-review-analysed-tree.sh",
+      "runner": "bash",
+      "timeout_s": 120
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-review-plan-echo-gate.sh",
       "runner": "bash"
     },
