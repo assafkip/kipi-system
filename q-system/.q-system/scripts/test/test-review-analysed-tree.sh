@@ -411,4 +411,135 @@ status_posted "$CASE_DIR" && fail "a status was posted from a mixed-tree review"
 grep -q "$WRONG_TREE" "$CASE_DIR/err.txt" || fail "the refusal does not name $WRONG_TREE"
 ok "a head read of one path does not excuse another path read off-head"
 
+# --- case 10: the ASYMMETRIC before/after (PR #197 round 3, major) ------------
+# The reviewer is dispatched inside a detached worktree ALREADY at the head, so
+# the head side of a comparison is the working tree -- read with sed/cat, never
+# with `git show <head>:path`. Case 6 only covered the symmetric form, so this
+# shape (one base show + a plain read) was still refused and wedged the check.
+mkbody "$W/asymmetric.md" <<'EOF'
+## VERDICT: APPROVE WITH NITS
+
+Before, at the merge base:
+
+```
+git show 4a1b2c3d4e5f6071:fleet-unblock.py | sed -n 138p
+```
+
+After, in the checkout under review:
+
+```
+sed -n '138p' fleet-unblock.py
+```
+
+FINDINGS:
+END FINDINGS
+EOF
+run_case asymmetric "$W/asymmetric.md" "$HEAD_SHA"
+[ "$RC" -eq 0 ] \
+  || fail "AN ASYMMETRIC BEFORE/AFTER WAS REFUSED. The reviewer runs in a worktree at the head, so
+      \`sed -n 138p fleet-unblock.py\` IS the head read; only the base side needs a sha. Refusing
+      this wedges every correct comparison behind a required check. stderr:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+status_posted "$CASE_DIR" || fail "no status posted for an asymmetric before/after review"
+ok "a worktree read is a head read: the asymmetric comparison posts"
+
+# --- case 11: the symbolic ref (PR #197 round 3, major) -----------------------
+mkbody "$W/symhead.md" <<'EOF'
+## VERDICT: APPROVE
+
+```
+git show HEAD:fleet-unblock.py | sed -n 138p
+git show 4a1b2c3d4e5f6071:fleet-unblock.py | sed -n 138p
+```
+
+FINDINGS:
+END FINDINGS
+EOF
+run_case symhead "$W/symhead.md" "$HEAD_SHA"
+[ "$RC" -eq 0 ] \
+  || fail "\`git show HEAD:path\` is the same claim as naming the head sha, and the comparison was
+      refused anyway. stderr:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+status_posted "$CASE_DIR" || fail "no status posted for a symbolic-HEAD comparison"
+ok "\`git show HEAD:<path>\` counts as reading the head"
+
+# --- case 12: `git -C <dir> show` (PR #197 round 3, minor 2) ------------------
+# UNDER-refusal, the opposite direction from case 10: this shape was invisible to
+# the detector, so the measured ASK-830 payload rewritten with -C posts a green
+# required check on a tree nobody read. The fleet's own rule prefers `git -C`.
+mkbody "$W/dashc.md" <<'EOF'
+## VERDICT: APPROVE
+
+GitHub was unreachable, so I used a local checkout.
+
+```
+git -C /tmp/wt show @WRONG@:fleet-unblock.py | sed -n 138p
+```
+
+FINDINGS:
+major|something about fleet-unblock.py|fleet-unblock.py:138
+END FINDINGS
+EOF
+run_case dashc "$W/dashc.md" "$HEAD_SHA"
+[ "$RC" -ne 0 ] \
+  || fail "\`git -C <dir> show $WRONG_TREE:<path>\` WALKED PAST THE DETECTOR. It is the ASK-830
+      payload with the fleet's preferred git invocation, and it posted a green required check"
+status_posted "$CASE_DIR" \
+  && fail "a status was posted from a \`git -C\` review of $WRONG_TREE:
+$(grep 'statuses/' "$CASE_DIR/gh-calls.log" | sed 's/^/        /')"
+ok "\`git -C <dir> show <sha>:<path>\` is a declaration too"
+
+# --- case 13: path normalization (PR #197 round 3, minor 3) -------------------
+mkbody "$W/dotslash.md" <<'EOF'
+## VERDICT: APPROVE
+
+```
+git show @HEAD@:./fleet-unblock.py | sed -n 138p
+git show 4a1b2c3d4e5f6071:fleet-unblock.py | sed -n 138p
+```
+
+FINDINGS:
+END FINDINGS
+EOF
+run_case dotslash "$W/dotslash.md" "$HEAD_SHA"
+[ "$RC" -eq 0 ] \
+  || fail "\`./fleet-unblock.py\` and \`fleet-unblock.py\` were bucketed as two paths, so a
+      comparison that opened the head copy was refused. stderr:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+status_posted "$CASE_DIR" || fail "no status posted for a ./-prefixed comparison"
+ok "a leading ./ does not split one path into two buckets"
+
+# --- case 14: THE TRAP for case 10's repair -----------------------------------
+# Case 10 says "a plain read of the path is a head read". The measured defect is
+# written as a python-quoted git show -- `python3 -c '...["git","show",
+# "0880859e:fleet-unblock.py"]...'` -- which a naive read-verb scan sees as a
+# python3 command mentioning the path, i.e. as a head read. That would let PR
+# #165 round 2 through the guard built to catch it. Case 1 cannot pin this: the
+# real fixture ALSO carries a prose tip declaration, so it refuses either way.
+# This body has no tip line, so the python-quoted show is the only signal.
+#
+# THE BODY IS COPIED FROM THE MEASURED PAYLOAD, not paraphrased. Round 2 writes
+# it with `\n` escapes and commas and NO literal `;`. A `;` truncates the read
+# window before the path and defuses this case into passing for the wrong
+# reason: mutating the declaration scrub away left the `;` version still
+# refusing (survived) while this version goes RED (killed).
+mkbody "$W/pyquoted.md" <<'EOF'
+## VERDICT: REQUEST CHANGES
+
+```
+python3 -c 'import subprocess,types,ast\nsrc=subprocess.run(["git","show","@WRONG@:fleet-unblock.py"],capture_output=True).stdout'
+```
+
+FINDINGS:
+major|something about fleet-unblock.py|fleet-unblock.py:138
+END FINDINGS
+EOF
+run_case pyquoted "$W/pyquoted.md" "$HEAD_SHA"
+[ "$RC" -ne 0 ] \
+  || fail "WORKTREE-READ REGRESSION: a python-quoted \`git show $WRONG_TREE:fleet-unblock.py\` was
+      read as a plain python3 read of that path, so the off-head bucket was cleared and the review
+      posted. That is PR #165 round 2's exact shape passing the guard written to refuse it"
+status_posted "$CASE_DIR" && fail "a status was posted from a python-quoted off-head read"
+ok "a python-quoted \`git show\` is a declaration, not a worktree read"
+
 echo "PASS ($PASS checks)"

@@ -892,29 +892,75 @@ except OSError:
 # `git` is required in front of show/checkout so ordinary prose ("the diff shows
 # 1234567 rows") cannot manufacture a declaration and refuse a correct review.
 DECLARATION = re.compile(
-    r"(?:git[^\w]{1,4}(?:show|checkout)|\btip\b)"      # what opened a tree
+    r"(?:git"
+    r"(?:[^\w]{1,4}-C[^\w]{1,4}[^\s\"'`,;)]+)?"        # optional `-C <dir>` (minor 2)
+    r"[^\w]{1,4}(?:show|checkout)|\btip\b)"            # what opened a tree
     r"(?:[^\w]{0,3}--?[A-Za-z][\w-]*(?:=[^\s]*)?)*"    # any run of flags
     r"[^\w]{1,4}"
-    r"([0-9a-fA-F]{7,40})(?![0-9a-fA-F])"              # the sha it names
+    r"(HEAD|[0-9a-fA-F]{7,40})(?![0-9a-fA-F~^])"       # the sha it names
     r"(?::([^\s\"'`,;)]+))?",                          # the path, when it names one
     re.IGNORECASE,
 )
 
 WHOLE_TREE = ""  # the bucket for a declaration that names no path
 
+# THE REVIEWER READS THE HEAD SIDE WITHOUT NAMING IT (PR #197 round 3, major).
+# This script dispatches the model inside a detached worktree ALREADY at the head
+# sha, so head-side files ARE the working tree: the model opens them with
+# sed/cat/rg and has no reason to write `git show <head>:path` at all. One
+# `git show <base>:path` to quote the pre-fix line then made that path
+# off-head-only and the run refused, wedging the required check on a correct
+# before/after review. So a plain read of a path is a head read.
+#
+# WHY THE DECLARATIONS ARE SCRUBBED FIRST, and not a matter of taste: round 2's
+# off-head reads are written `python3 -c '...subprocess.run(["git","show",
+# "0880859e:fleet-unblock.py"...'`. Measured, not reasoned -- that is the only
+# shape in which the DEFECT fixture mentions its finding path near a read verb.
+# A bare "a read command mentions this path" rule therefore reads the live defect
+# as a head read and passes it. Blanking every declaration BEFORE looking for
+# reads removes the sha-qualified occurrences and leaves only genuine worktree
+# reads (round 3 opens `pathlib.Path("fleet-unblock.py")`, which survives).
+READ_CMD = re.compile(
+    r"(?:^|[$>|;`&])\s*"
+    r"(?:sudo\s+)?(?:sed|cat|rg|grep|egrep|awk|head|tail|nl|less|wc|diff|python3?|node|Read)\b"
+    r"([^\n|;`]{0,200})",
+    re.MULTILINE,
+)
+scrubbed = DECLARATION.sub(" ", body)
+
 
 def is_head(sha):
+    # `git show HEAD:path` is the same claim as naming the sha (round 3, major).
+    if sha == "head":
+        return True
     return head.startswith(sha) or sha.startswith(head)
+
+
+def norm(path):
+    # `<head>:./f.py` and `<base>:f.py` are one path, not two (round 3, minor 3).
+    p = path.strip().strip("`\"'")
+    while p.startswith("./"):
+        p = p[2:]
+    return p
+
+
+def read_from_worktree(path):
+    return any(path in m.group(1) for m in READ_CMD.finditer(scrubbed))
 
 
 shas_by_path = {}
 for match in DECLARATION.finditer(body):
     sha = match.group(1).lower()
-    shas_by_path.setdefault(match.group(2) or WHOLE_TREE, []).append(sha)
+    path = norm(match.group(2)) if match.group(2) else WHOLE_TREE
+    shas_by_path.setdefault(path, []).append(sha)
 
 for path, shas in shas_by_path.items():
     if any(is_head(sha) for sha in shas):
         continue  # opened at the head; a second sha alongside it is a comparison
+    # A whole-tree declaration is NOT excused by a worktree read: `git checkout
+    # <sha>` moves the very worktree the read would be trusting.
+    if path != WHOLE_TREE and read_from_worktree(path):
+        continue
     sys.stdout.write(shas[0])
     break
 ANALYSED_TREE_PY
