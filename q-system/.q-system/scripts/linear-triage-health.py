@@ -348,6 +348,24 @@ def flag_dormant(ln, issue: dict, days: float, threshold: int) -> str:
     return "flagged"
 
 
+def select_to_flag(dormant: list, limit: int) -> list:
+    """Which dormant issues this run may WRITE to. Never a display concern.
+
+    Split out of main() so it is testable, because the defect it replaces was
+    invisible exactly where it lived. The write and the print used to share one
+    loop over `dormant[:20]`, so --apply flagged 20 and skipped the rest while
+    printing "... and N more" -- a display sentence that read as a work report.
+    Measured 2026-08-16: 193 dormant at a 7-day threshold, 173 silently skipped.
+
+    limit 0 means no cap: every dormant issue is eligible. A caller that wants a
+    bounded first run passes --limit N explicitly rather than inheriting a
+    number that happened to be a print width.
+    """
+    if limit < 0:
+        raise ValueError("limit must be >= 0")
+    return dormant[:limit] if limit else list(dormant)
+
+
 def breaches(m: dict) -> list:
     """Which thresholds this measurement crosses. Empty means stay quiet."""
     out = []
@@ -394,10 +412,17 @@ def main(argv: list) -> int:
     ap.add_argument("--no-notify", action="store_true",
                     help="never call the alert path")
     ap.add_argument("--json", action="store_true", help="print the measurement as JSON")
+    ap.add_argument("--limit", type=int, default=0, metavar="N",
+                    help="write at most N dormancy comments this run (0 = no cap). "
+                         "Bounds the blast radius of a first live --apply.")
     args = ap.parse_args(argv[1:])
 
     if args.dormant_days < 1:
         print("--dormant-days must be >= 1", file=sys.stderr)
+        return EXIT_USAGE
+
+    if args.limit < 0:
+        print("--limit must be >= 0", file=sys.stderr)
         return EXIT_USAGE
 
     # FIXTURE GUARD, the same chokepoint alert-to-linear.py uses. A suite written
@@ -449,14 +474,44 @@ def main(argv: list) -> int:
         print(f"  dormant (>={args.dormant_days}d)      : {m['dormant']}")
 
     if dormant:
-        print(f"\nDORMANT ({'APPLY' if args.apply else 'report only, writes nothing'}):")
+        # The WRITE loop is separate from the DISPLAY loop on purpose, and this
+        # separation is the fix for a real defect, not a style preference. Both
+        # used to be one loop over `dormant[:20]`, so --apply silently flagged
+        # only the first 20 and skipped the rest while printing "... and N more"
+        # -- a line about DISPLAY that read as a line about work done. Measured
+        # 2026-08-16: 193 dormant at a 7-day threshold, so 173 would have been
+        # silently skipped. A display bound must never decide what gets written.
+        to_flag = select_to_flag(dormant, args.limit)
+        outcomes = {}
+        if args.apply:
+            for issue, days in to_flag:
+                outcomes[issue["identifier"]] = flag_dormant(
+                    ln, issue, days, args.dormant_days)
+
+        if args.apply:
+            capped = f", capped at {args.limit}" if args.limit else ""
+            header = f"APPLY: wrote to {len(to_flag)} of {len(dormant)}{capped}"
+        else:
+            header = "report only, writes nothing"
+        print(f"\nDORMANT ({header}):")
+
         for issue, days in dormant[:20]:
             line = f"  {issue['identifier']:<10} {days:6.0f}d  {issue['title'][:58]}"
+            outcome = outcomes.get(issue["identifier"])
             if args.apply:
-                line += "  [" + flag_dormant(ln, issue, days, args.dormant_days) + "]"
+                # "not-attempted" is said out loud rather than left blank: a blank
+                # next to a listed issue is what made the old cap invisible.
+                line += "  [" + (outcome or "not-attempted (over --limit)") + "]"
             print(line)
         if len(dormant) > 20:
-            print(f"  ... and {len(dormant) - 20} more")
+            print(f"  ... and {len(dormant) - 20} more (display cap, not a write cap)")
+
+        if args.apply:
+            wrote = sum(1 for v in outcomes.values() if v == "flagged")
+            print(f"  flagged={wrote} already-flagged="
+                  f"{sum(1 for v in outcomes.values() if v == 'already-flagged')} "
+                  f"failed={sum(1 for v in outcomes.values() if v.startswith('FAILED'))} "
+                  f"not-attempted={len(dormant) - len(to_flag)}")
 
     hits = breaches(m)
     if hits and not args.no_notify:
