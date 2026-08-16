@@ -159,7 +159,8 @@ def extract_producers(agent_text: str) -> tuple[set[str], set[str]]:
 
 def find_drift(bridge: set[str], mcp: dict, vbus: dict,
                schemas: set[str], produced: set[str],
-               mentioned: set[str] | None = None) -> list[dict]:
+               mentioned: set[str] | None = None,
+               day_rules: dict | None = None) -> list[dict]:
     """`produced` = a WRITE was found. `mentioned` = the name appears at all.
 
     Codex PR #202 (major): keying the producer classes on mere mention treated
@@ -170,6 +171,7 @@ def find_drift(bridge: set[str], mcp: dict, vbus: dict,
     """
     if mentioned is None:
         mentioned = produced
+    day_rules = day_rules or {}
     findings: list[dict] = []
 
     # D1 - a structure check registered for a file the loop never visits.
@@ -216,6 +218,22 @@ def find_drift(bridge: set[str], mcp: dict, vbus: dict,
     # D5 - informational: bus file with no schema.
     for f in sorted((bridge | verifier_all) - schemas):
         findings.append({"class": "no-schema", "detail": f"{f} has no JSON schema"})
+
+    # D3b - a file promoted to REQUIRED only on certain weekdays. Both verifiers
+    # move tl-content.json from optional to required on Tue/Thu at phase 4, at
+    # RUNTIME, so a reader of the static spec never sees it as required (Codex
+    # PR #202 round 3, major). tl-content.json has no producer, so phase 4
+    # cannot pass two days a week and the static read reported nothing. A
+    # conditional requirement is still a requirement.
+    for day, phases in sorted(day_rules.items()):
+        for phase, files in sorted(phases.items()):
+            for f in sorted(set(files) - produced):
+                findings.append({
+                    "class": "required-without-producer",
+                    "detail": f"day-rule {day} phase {phase} promotes {f} to required, "
+                              f"but no agent prompt shows a WRITE of it - "
+                              f"phase cannot pass on {day}s",
+                })
 
     # D6 - a bus artifact the agents reference that neither map knows about.
     # Codex PR #199: the candidate set used to be (bridge | verifier), so this
@@ -275,7 +293,10 @@ def self_test() -> int:
         "required-without-producer-when-only-read": dict(
             clean, produced=set(), mentioned={"a.json"}),
         "schema-only": dict(clean, schemas={"a.json", "y.json"}),
-    }
+        # Day-promoted requirement with no writer. Silent before round 3.
+        "required-without-producer-when-day-promoted": dict(
+            clean, day_rules={"tuesday": {"4": ["d.json"]}}),
+        }
     for name, kwargs in cases.items():
         # The mutant NAME may describe a scenario; the class it must emit is the
         # name up to the first "-when-". Asserting a specific class matters: an
@@ -344,7 +365,13 @@ def main() -> int:
         if AGENT_DIR.is_dir() else ""
     produced, mentioned = extract_producers(agent_text)
 
-    findings = find_drift(bridge, mcp, vbus, schemas, produced, mentioned)
+    cadence = AGENT_DIR / "_cadence-config.json"
+    try:
+        day_rules = json.loads(cadence.read_text()).get("day_rules", {}) if cadence.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        day_rules = {}
+
+    findings = find_drift(bridge, mcp, vbus, schemas, produced, mentioned, day_rules)
 
     if args.json:
         print(json.dumps({"findings": findings, "count": len(findings)}, indent=2))
