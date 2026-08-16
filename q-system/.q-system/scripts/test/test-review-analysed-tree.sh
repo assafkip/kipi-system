@@ -518,11 +518,17 @@ ok "a leading ./ does not split one path into two buckets"
 # real fixture ALSO carries a prose tip declaration, so it refuses either way.
 # This body has no tip line, so the python-quoted show is the only signal.
 #
-# THE BODY IS COPIED FROM THE MEASURED PAYLOAD, not paraphrased. Round 2 writes
-# it with `\n` escapes and commas and NO literal `;`. A `;` truncates the read
-# window before the path and defuses this case into passing for the wrong
-# reason: mutating the declaration scrub away left the `;` version still
-# refusing (survived) while this version goes RED (killed).
+# THE BODY FOLLOWS THE MEASURED PAYLOAD'S PUNCTUATION -- `\n` escapes, commas,
+# and NO literal `;`. A `;` truncates the read window before the path and defuses
+# this case into passing for the wrong reason: mutating the declaration scrub
+# away left the `;` version still refusing (survived) while this version goes RED
+# (killed).
+#
+# IT IS NOT BYTE-COPIED, and the earlier claim here that it was is corrected
+# (PR #197 round 4, major 2). Round 2 writes this construct TWO ways in the same
+# file -- `"git","show"` and the re-escaped `\",\"` -- and this case only ever
+# carried the first. The second is case 16, because a 4-char window could not
+# span it and it was the form covering the fixture's finding-bearing path.
 mkbody "$W/pyquoted.md" <<'EOF'
 ## VERDICT: REQUEST CHANGES
 
@@ -541,5 +547,100 @@ run_case pyquoted "$W/pyquoted.md" "$HEAD_SHA"
       posted. That is PR #165 round 2's exact shape passing the guard written to refuse it"
 status_posted "$CASE_DIR" && fail "a status was posted from a python-quoted off-head read"
 ok "a python-quoted \`git show\` is a declaration, not a worktree read"
+
+# --- case 15: the EXTRACTION trap (PR #197 round 4, major 1) ------------------
+# Case 10's escape ("a plain read of the path is a head read") was a SUBSTRING
+# test, and the canonical off-head idiom defeats it in one line: extract the file
+# from the base tree into $tmp, then read the extraction. `"$tmp/fleet-unblock.py"`
+# contains `fleet-unblock.py`, so the read cleared the bucket the extraction had
+# just created and the review posted kipi/reviewer-approved on a tree it never
+# opened. The redirect half is fixture line 459 verbatim, not invented.
+mkbody "$W/tmpread.md" <<'EOF'
+## VERDICT: APPROVE
+
+```
+review_tmp=$(mktemp -d)
+git show @WRONG@:fleet-unblock.py > "$review_tmp/fleet-unblock.py"
+sed -n '138p' "$review_tmp/fleet-unblock.py"
+```
+
+FINDINGS:
+END FINDINGS
+EOF
+run_case tmpread "$W/tmpread.md" "$HEAD_SHA"
+[ "$RC" -ne 0 ] \
+  || fail "THE EXTRACTION TRAP IS LIVE: the review extracted fleet-unblock.py from $WRONG_TREE into
+      \$tmp and then read the extraction, and that read was accepted as a head read. One \`sed\` line
+      turns a refusal into an approved required check on a tree nobody opened"
+status_posted "$CASE_DIR" && fail "a status was posted from a review that only read an off-head copy"
+ok "reading an extracted \"\$tmp/<path>\" copy does not excuse the off-head read"
+
+# --- case 16: the payload's OTHER quoting (PR #197 round 4, major 2) ----------
+# Round 2 writes its python-quoted show twice over, and the two forms are not the
+# same string: `"git","show"` puts 3 characters between the tokens, `\",\"` puts
+# 5. The window was 1-4, so the second form yielded ZERO declarations -- the real
+# ASK-830 shape, fed to the guard alone, posted. This body carries ONLY that form.
+mkbody "$W/escquoted.md" <<'EOF'
+## VERDICT: REQUEST CHANGES
+
+```
+/bin/zsh -lc 'python3 -c $'"'import subprocess,types\nsrc=subprocess.run([\"git\",\"show\",\"@WRONG@:fleet-unblock.py\"],capture_output=True,text=True,check=True).stdout'
+```
+
+FINDINGS:
+major|something about fleet-unblock.py|fleet-unblock.py:138
+END FINDINGS
+EOF
+run_case escquoted "$W/escquoted.md" "$HEAD_SHA"
+[ "$RC" -ne 0 ] \
+  || fail "THE RE-ESCAPED DECLARATION WALKED PAST THE DETECTOR. \`\\\",\\\"\` is 5 characters between
+      \`git\` and \`show\`; a 1-4 window cannot span it, so the guard saw no declaration at all and
+      approved. This is the measured ASK-830 payload's own second form"
+status_posted "$CASE_DIR" && fail "a status was posted from a re-escaped off-head show"
+ok "the re-escaped \`\\\",\\\"git show\` form is a declaration too"
+
+# --- case 17: a QUOTE is not a RUN (PR #197 round 4, major 3) -----------------
+# THE GUARD ATE THE REVIEW OF ITS OWN PR. The fixture is that review, verbatim:
+# it critiques this change, so it cites the `git show 0880859e:...` lines the
+# change adds, and the guard read the citations as commands it had run. Refused
+# with no status and no comment -- which wedges the required check on every later
+# round of any PR that touches these files.
+#
+# This case is the one that must NOT refuse, so it is the negative self-test for
+# the quote rule the same way case 5 is for the head-sha exemption.
+run_case quotesdiff "$FIX/pr-197-round4-quotes-the-diff.md" "$HEAD_SHA"
+[ "$RC" -eq 0 ] \
+  || fail "A REVIEW WAS REFUSED FOR QUOTING THE CODE UNDER REVIEW. This body is PR #197's own round-4
+      review; every sha in it sits in markdown inline code inside a sentence, not at a command
+      position. Refusing it means the guard wedges the required check on its own PR. stderr:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+status_posted "$CASE_DIR" || fail "no status posted for a review that only QUOTED a sha-qualified show"
+ok "a sha-qualified show cited in prose is a quote, not a run"
+
+# --- case 18: prose about a tip is not a declaration (round 4, minor) ---------
+# `\btip\b` plus a sha within 4 non-word characters turned an ordinary sentence
+# into a whole-tree claim -- and the whole-tree bucket is deliberately unclearable
+# by a worktree read, so nothing rescued it. A review that ran no git command at
+# all was refused, with no escape but break-glass-main-protection.sh.
+mkbody "$W/prosetip.md" <<'EOF'
+## VERDICT: APPROVE
+
+Baseline for the comparison below is main's tip (`85f556dc6e0f2c9e0c4b7a1d3f5e8a2b9c6d4e11`),
+which is where the regression was introduced.
+
+```
+$ sed -n '138p' fleet-unblock.py
+```
+
+FINDINGS:
+END FINDINGS
+EOF
+run_case prosetip "$W/prosetip.md" "$HEAD_SHA"
+[ "$RC" -eq 0 ] \
+  || fail "A REVIEW THAT RAN NO GIT COMMAND WAS REFUSED. Naming a baseline's tip in a sentence is
+      prose, not a declaration that a tree was opened. stderr:
+$(sed 's/^/        /' "$CASE_DIR/err.txt")"
+status_posted "$CASE_DIR" || fail "no status posted for a review whose only sha was prose about a tip"
+ok "prose naming a tip is not a whole-tree declaration"
 
 echo "PASS ($PASS checks)"

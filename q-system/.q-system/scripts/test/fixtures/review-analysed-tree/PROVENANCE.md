@@ -63,3 +63,26 @@ the last 55 KB are absent here:
 `test-review-analysed-tree.sh` asserts both of those properties before it runs a
 single case, so a fixture that silently lost them fails as a broken premise
 instead of passing as a working guard.
+
+## pr-197-round4-quotes-the-diff.md
+
+The round-4 adversarial review OF THIS CHANGE, posted to PR #197 on 2026-08-16,
+copied verbatim from `gh pr view 197 --json comments` (the rendered comment, same
+caveat as the two files above: it is the comment, not the on-disk review).
+
+It is here because the guard REFUSED IT. Measured before the fix:
+
+```
+$ bash .ask830-probe.sh .ask830-round4-review.md
+REFUSE (0880859e)
+```
+
+That is not a hypothetical residual. This review's job was to critique the guard,
+so it cites the `git show 0880859e:...` lines the change adds — and the guard
+read those citations as commands it had run. A required check that eats the
+review of its own PR wedges every later round. Case 17 pins it.
+
+Its value as a fixture is exactly that nobody wrote it to be one: it is a real
+reviewer's real prose, so the quote shapes in it (inline code mid-sentence, a
+double-backtick span, a sha in parentheses) are what reviewers actually emit
+rather than what I would have guessed they emit.
