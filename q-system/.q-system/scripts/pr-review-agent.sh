@@ -877,11 +877,15 @@ echo "  verdict: ${VERDICT:-unstated}$DRY_NOTE"
 # or nothing. A short sha is matched by PREFIX on purpose: the reviewer writes 8
 # characters, gh reports 40, and treating that as drift would refuse every review.
 analysed_tree_conflict() {
-  local f="${1:-}" head="${2:-}"
+  # $3 is a file listing the paths this PR changed, one per line. Optional: an
+  # absent or empty list means the question cannot be answered, and an unanswered
+  # question does NOT become an exemption (see outside_the_diff below).
+  local f="${1:-}" head="${2:-}" changed="${3:-}"
   [ -s "$f" ] || return 0
   [ -n "$head" ] || return 0
-  python3 - "$f" "$head" <<'ANALYSED_TREE_PY'
+  python3 - "$f" "$head" "$changed" <<'ANALYSED_TREE_PY'
 import re
+import subprocess
 import sys
 
 review_path, head = sys.argv[1], sys.argv[2].strip().lower()
@@ -923,7 +927,18 @@ DECLARATION = re.compile(
     r"git"
     r"(?:[^\w]{1,8}-C[^\w]{1,8}[^\s\"'`,;)]+)?"        # optional `-C <dir>` (minor 2)
     r"[^\w]{1,8}(?:show|checkout)"                     # what opened a tree
-    r"(?:[^\w]{0,3}--?[A-Za-z][\w-]*(?:=[^\s]*)?)*"    # any run of flags
+    # ANY RUN OF FLAGS -- WRITTEN UNAMBIGUOUSLY ON PURPOSE (PR #197 round 5,
+    # minor 1). This was `(?:[^\w]{0,3}--?[A-Za-z][\w-]*(?:=[^\s]*)?)*`, where a
+    # `-b` segment could be consumed EITHER by the inner `[\w-]*` or by another
+    # turn of the outer loop through a zero-width separator. That ambiguity
+    # backtracks exponentially: `git show --a=` + `-b`*22 took 1.9s and doubled
+    # per added segment. Two changes remove it, and neither narrows what matches:
+    # the separator is now at least one character and never a `-`, so a flag body
+    # cannot be re-entered as a new flag; and the body splits into alnum runs
+    # joined by single dashes, which is disjoint from the separator on its first
+    # character. `","` still separates (the python-quoted form), ` --stat` and
+    # `--format=%h` still match.
+    r"(?:[^\w\-]{1,3}--?[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*(?:=[^\s]*)?)*"
     r"[^\w]{1,8}"
     r"(HEAD|[0-9a-fA-F]{7,40})(?![0-9a-fA-F~^])"       # the sha it names
     r"(?::([^\s\"'`,;)]+))?",                          # the path, when it names one
@@ -948,10 +963,27 @@ WHOLE_TREE = ""  # the bucket for a declaration that names no path
 # as a head read and passes it. Blanking every declaration BEFORE looking for
 # reads removes the sha-qualified occurrences and leaves only genuine worktree
 # reads (round 3 opens `pathlib.Path("fleet-unblock.py")`, which survives).
+#
+# THE START CLASS AND THE WINDOW BOTH MISSED THE REAL REVIEWER (PR #197 round 5,
+# major 1). Measured on 111 real posted review bodies (PRs 150-197), refusals and
+# not declarations this time: the shipped form refused `pr188-c1` against every
+# candidate head of its own PR. That body reads the head side as
+# `/bin/zsh -lc "sed -n '560,625p' kipi-dispatch.sh"` -- codex wraps EVERY command
+# that way, so the read verb is preceded by `"`, which was not in the start class,
+# and the head-side read was invisible while one `git show <base>:...` made the
+# path off-head-only. A correct before/after review, refused, required check never
+# posted. `"` and `'` are therefore command starts too.
+#
+# The window used to stop at `|`, which truncates `rg -n 'A|B' <path>` before the
+# path. That shape did NOT reproduce as a false refusal on the corpus (`pr191-c0`
+# clears against its own base sha), so it is fixed as a real shape rather than
+# claimed as a measured defect -- an alternation in an rg pattern is ordinary and
+# the truncation is arbitrary. Dropping `|` from the window can only ADD reads,
+# and every read is a head read, so the direction of the change is under-refusal.
 READ_CMD = re.compile(
-    r"(?:^|[$>|;`&])\s*"
+    r"(?:^|[$>|;`&\"'])\s*"
     r"(?:sudo\s+)?(?:sed|cat|rg|grep|egrep|awk|head|tail|nl|less|wc|diff|python3?|node|Read)\b"
-    r"([^\n|;`]{0,200})",
+    r"([^\n;`]{0,200})",
     re.MULTILINE,
 )
 scrubbed = DECLARATION.sub(" ", body)
@@ -1047,6 +1079,56 @@ for match in DECLARATION.finditer(body):
     path = norm(match.group(2)) if match.group(2) else WHOLE_TREE
     shas_by_path.setdefault(path, []).append(sha)
 
+# A PATH THAT IS NOT IN THE TREE UNDER REVIEW CANNOT CARRY A FINDING ABOUT IT
+# (PR #197 round 5, major 2). Round 4 separated a quote from a run by markdown
+# position -- inline code is a citation, a fenced block is a transcript. That
+# held for the round-4 review and broke on the round-5 one, which quotes the
+# same commands inside a fence. Measured, not argued: on the 111-body corpus the
+# shipped guard refuses `pr197-c1` and `pr197-c5` -- its own PR's reviews --
+# against every candidate head, and the wedge gets permanent at merge, because
+# the fixture files this change ships CONTAIN `git show 0880859e:fleet-unblock.py`.
+# Any future review that cats or quotes them refuses.
+#
+# Markdown position was the wrong axis. THE FIRST REPLACEMENT I TRIED WAS ALSO
+# WRONG, and it is recorded here because the measurement that killed it is the
+# reason the real rule is trusted: "is the path in the tree at head" looks right
+# and fails, because `fleet-unblock.py` is a real kipi-system file that exists at
+# BOTH c87245b0 (the defect head) and at this branch's head. Existence cannot
+# separate them.
+#
+#   $ git cat-file -e c87245b0:fleet-unblock.py -> EXISTS
+#   $ git cat-file -e 78d19edc:fleet-unblock.py -> EXISTS
+#
+# What separates them is the PR's own CHANGED-FILE SET. A finding is about code
+# this PR changed; a path outside the diff cannot be the subject of one. PR #165
+# changed fleet-unblock.py -- that review's findings really were about it, so the
+# refusal stands. PR #197 changes the reviewer, the fixtures, the test and the
+# manifest, and merely QUOTES fixture text that names fleet-unblock.py, so the
+# refusal is pure cost. Matching is by BASENAME on purpose: generous matching
+# means fewer exemptions, and every exemption here is a refusal given up.
+#
+# Direction, stated because it gates a required check: UNDER-refusal. A review
+# that genuinely read an off-head copy of a file OUTSIDE the diff is no longer
+# caught -- its findings cannot be actioned against this PR anyway. Unknown is
+# NOT treated as absent: an unreadable or empty list means no exemption and the
+# old behaviour stands, so the guard cannot go inert by losing an argument.
+CHANGED = set()
+if len(sys.argv) > 3 and sys.argv[3]:
+    try:
+        with open(sys.argv[3], encoding="utf-8", errors="replace") as fh:
+            CHANGED = {
+                line.strip().rsplit("/", 1)[-1] for line in fh if line.strip()
+            }
+    except OSError:
+        CHANGED = set()
+
+
+def outside_the_diff(path):
+    if not CHANGED or not path:
+        return False  # unknown -> not an exemption
+    return path.rsplit("/", 1)[-1] not in CHANGED
+
+
 for path, shas in shas_by_path.items():
     if any(is_head(sha) for sha in shas):
         continue  # opened at the head; a second sha alongside it is a comparison
@@ -1054,12 +1136,39 @@ for path, shas in shas_by_path.items():
     # <sha>` moves the very worktree the read would be trusting.
     if path != WHOLE_TREE and read_from_worktree(path):
         continue
+    if path != WHOLE_TREE and outside_the_diff(path):
+        continue  # not a file this PR changed; no finding can be about it
     sys.stdout.write(shas[0])
     break
 ANALYSED_TREE_PY
 }
 
-FOREIGN_TREE="$(analysed_tree_conflict "$REVIEW" "$HEAD_SHA")"
+# The changed-file set the guard uses to tell a finding from a citation. Best
+# effort by design: every failure path leaves the file empty, which the guard
+# reads as "unknown" and therefore as NO exemption -- the pre-round-5 behaviour.
+# An override exists so the test suite can supply a list without a network call.
+CHANGED_FILES="${KIPI_PR_CHANGED_FILES:-}"
+if [ -z "$CHANGED_FILES" ]; then
+  CHANGED_FILES="$(mktemp "${TMPDIR:-/tmp}/kipi-changed.XXXXXX")"
+  RAW_CHANGED="$(mktemp "${TMPDIR:-/tmp}/kipi-changed-raw.XXXXXX")"
+  # THE LIST IS VALIDATED, NOT JUST CAPTURED. Caught by this PR's own case 1: a
+  # `gh` that answers something other than a path list (a stub, an auth prompt, an
+  # error object) yielded a non-empty set that contained none of the review's
+  # paths -- which reads as "every path is outside the diff" and exempts
+  # EVERYTHING, turning the guard off while looking healthy. Silent-off is the one
+  # failure this guard must not have, so a line that is not shaped like a repo
+  # path voids the whole list back to unknown, and unknown means no exemption.
+  if gh pr view "$PR" --repo "$REVIEW_SLUG" --json files \
+       --jq '.files[].path' >"$RAW_CHANGED" 2>/dev/null \
+     && [ -s "$RAW_CHANGED" ] \
+     && ! grep -qE '^\s*$|[[:space:]{}"]|^/' "$RAW_CHANGED"; then
+    cp "$RAW_CHANGED" "$CHANGED_FILES"
+  else
+    : >"$CHANGED_FILES"
+  fi
+  rm -f "$RAW_CHANGED"
+fi
+FOREIGN_TREE="$(analysed_tree_conflict "$REVIEW" "$HEAD_SHA" "$CHANGED_FILES")"
 if [ -n "$FOREIGN_TREE" ]; then
   # NOTHING IS POSTED -- not the status, not the comment. The findings are of
   # another commit, so putting them on the PR would spend the author's next round
