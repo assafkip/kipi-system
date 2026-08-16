@@ -142,7 +142,11 @@ EOF
 cat "$body"
 EOF
   chmod +x "$d/bin/gh" "$d/bin/codex" "$d/bin/claude"
+  # CHANGED_LIST is the PR's changed-file set (round 5, major 2). Set by a case
+  # that needs it; empty means the reviewer resolves it itself, which under this
+  # gh stub yields a malformed answer and therefore no exemption.
   ( PATH="$d/bin:$PATH" HOME="$d/home" KIPI_NOTIFY="$W/notify.sh" \
+      KIPI_PR_CHANGED_FILES="${CHANGED_LIST:-}" \
       bash "$REVIEWER" 901 --post ) >"$d/out.txt" 2>"$d/err.txt"
   RC=$?
   CASE_DIR="$d"
@@ -642,5 +646,118 @@ run_case prosetip "$W/prosetip.md" "$HEAD_SHA"
 $(sed 's/^/        /' "$CASE_DIR/err.txt")"
 status_posted "$CASE_DIR" || fail "no status posted for a review whose only sha was prose about a tip"
 ok "prose naming a tip is not a whole-tree declaration"
+
+
+# --- case 19: a path OUTSIDE the diff is a citation, not a finding ------------
+# PR #197 round 5, major 2. The reviewer quoted `git show 0880859e:fleet-unblock.py`
+# out of the fixtures this PR ships and was refused, with the wedge becoming
+# permanent at merge. fleet-unblock.py is not a file PR #197 changes, so no
+# finding can be about it. Measured on 111 real review bodies: this is what
+# turned pr197-c1 and pr197-c5 from refusals into posts.
+cat > "$W/outside.md" <<EOF
+## Verdict: REQUEST CHANGES
+
+The fixture this PR adds contains the defect's own command:
+
+\`\`\`
+git show ${WRONG_TREE}:fleet-unblock.py
+\`\`\`
+
+FINDINGS:
+major|the guard eats its own PR|q-system/.q-system/scripts/pr-review-agent.sh:1
+END FINDINGS
+EOF
+printf '%s\n' "q-system/.q-system/scripts/pr-review-agent.sh" > "$W/changed-outside.txt"
+CHANGED_LIST="$W/changed-outside.txt" run_case outside "$W/outside.md" "$HEAD_SHA"
+CHANGED_LIST=""
+[ "$RC" -eq 0 ] \
+  || fail "THE GUARD STILL EATS ITS OWN PR: a review quoting a path the PR does not
+      change (fleet-unblock.py) was refused. At merge the fixtures ship that string, so
+      every future review of this guard wedges the required check. rc=$RC"
+ok "a path the PR never changed is a citation, not a finding"
+status_posted "$CASE_DIR" \
+  || fail "case 19 exited 0 but posted no status"
+ok "and its status is posted"
+
+# --- case 20: the negative self-test for case 19 ------------------------------
+# THE SAME BODY, with fleet-unblock.py IN the changed set, must still refuse.
+# Without this, case 19 would pass just as well if the exemption were a blanket
+# "never refuse" -- which is exactly how a guard goes silently off.
+printf '%s\n' "fleet-unblock.py" > "$W/changed-inside.txt"
+CHANGED_LIST="$W/changed-inside.txt" run_case inside "$W/outside.md" "$HEAD_SHA"
+CHANGED_LIST=""
+[ "$RC" -ne 0 ] \
+  || fail "THE EXEMPTION IS A BLANKET PASS: the same body was accepted with
+      fleet-unblock.py IN the PR's changed set, where the off-head read really could
+      carry a finding. Case 19 proves nothing if this posts."
+status_posted "$CASE_DIR" \
+  && fail "case 20 refused but posted a status anyway"
+ok "the same body still refuses when the PR does change that path"
+
+# --- case 21: a malformed changed-file list must not exempt anything ----------
+# Caught by case 1 going red mid-round-5: a `gh` that answers anything other than
+# a path list produced a NON-EMPTY set containing none of the review's paths,
+# which reads as "every path is outside the diff" and exempts everything. The
+# guard looked healthy and was off.
+printf '%s\n' '{"errors":[{"message":"not found"}]}' > "$W/changed-junk.txt"
+CHANGED_LIST="$W/changed-junk.txt" run_case junklist "$WRONG_FIX" "$HEAD_SHA"
+CHANGED_LIST=""
+[ "$RC" -ne 0 ] \
+  || fail "SILENT-OFF: a malformed changed-file list exempted every path and the
+      live defect fixture posted. Unknown must mean no exemption, never a free pass."
+ok "a malformed changed-file list means unknown, not a free pass"
+
+# --- case 22: the head read codex actually writes ------------------------------
+# PR #197 round 5, major 1. Every codex command is `/bin/zsh -lc "<cmd>"`, so the
+# read verb sits after a quote. That was not a command start, so the head-side
+# read was invisible and one `git show <base>:...` refused a correct before/after
+# review. Measured: this is the shape that refused pr188-c1 against every
+# candidate head of its own PR.
+cat > "$W/zshlc.md" <<EOF
+## Verdict: APPROVE
+
+I read the head side:
+
+\`\`\`
+/bin/zsh -lc "sed -n '1,40p' fleet-unblock.py"
+\`\`\`
+
+and the base side to compare:
+
+\`\`\`
+git show ${WRONG_TREE}:fleet-unblock.py
+\`\`\`
+
+FINDINGS:
+END FINDINGS
+EOF
+printf '%s\n' "fleet-unblock.py" > "$W/changed-zshlc.txt"
+CHANGED_LIST="$W/changed-zshlc.txt" run_case zshlc "$W/zshlc.md" "$HEAD_SHA"
+CHANGED_LIST=""
+[ "$RC" -eq 0 ] \
+  || fail "A CORRECT BEFORE/AFTER REVIEW IS REFUSED: the head-side read is written
+      /bin/zsh -lc \"sed ...\", which is how codex writes every command. rc=$RC"
+ok "a read after \`-lc \"\` is a head read (the shape codex actually emits)"
+
+# --- case 23: the declaration regex may not backtrack exponentially -----------
+# PR #197 round 5, minor 1. `git show --a=` + `-b`*n doubled per segment (1.9s at
+# 22) because a `-b` could be eaten by the flag body OR by another turn of the
+# outer loop. There is no portable `timeout` binary on this fleet's runners, so
+# the cure is the regex, and this is its clock.
+DET="$W/detector.py"
+awk "/<<'ANALYSED_TREE_PY'/{f=1;next} /^ANALYSED_TREE_PY/{f=0} f" "$REVIEWER" > "$DET"
+python3 - "$DET" <<'PYEOF' || fail "the DECLARATION regex still backtracks: a 40-segment
+      flag run did not finish in 5s. A review body can hang the unattended job."
+import subprocess, sys, tempfile, time, os
+det = sys.argv[1]
+body = "git show --a=" + "-b" * 40 + "!"
+with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+    fh.write(body); p = fh.name
+start = time.time()
+subprocess.run([sys.executable, det, p, "c87245b0", ""], capture_output=True, timeout=60)
+os.unlink(p)
+sys.exit(0 if time.time() - start < 5 else 1)
+PYEOF
+ok "a 40-segment flag run is linear, not exponential"
 
 echo "PASS ($PASS checks)"

@@ -1112,13 +1112,21 @@ for match in DECLARATION.finditer(body):
 # caught -- its findings cannot be actioned against this PR anyway. Unknown is
 # NOT treated as absent: an unreadable or empty list means no exemption and the
 # old behaviour stands, so the guard cannot go inert by losing an argument.
+# THE LIST IS VALIDATED HERE, WHERE EVERY SOURCE PASSES THROUGH. It was first
+# validated in the shell, around the `gh` call only -- and case 21 immediately
+# caught that the KIPI_PR_CHANGED_FILES override went straight past it. A list
+# that is not a path list is worse than no list: it contains none of the review's
+# paths, so it reads as "every path is outside the diff" and exempts EVERYTHING.
+# One malformed line therefore voids the whole list back to unknown, and unknown
+# means no exemption. The guard may under-refuse; it may never go silently off.
+BAD_LINE = re.compile(r"[\s{}\"']|^/")
 CHANGED = set()
 if len(sys.argv) > 3 and sys.argv[3]:
     try:
         with open(sys.argv[3], encoding="utf-8", errors="replace") as fh:
-            CHANGED = {
-                line.strip().rsplit("/", 1)[-1] for line in fh if line.strip()
-            }
+            lines = [line.strip() for line in fh if line.strip()]
+        if lines and not any(BAD_LINE.search(line) for line in lines):
+            CHANGED = {line.rsplit("/", 1)[-1] for line in lines}
     except OSError:
         CHANGED = set()
 
