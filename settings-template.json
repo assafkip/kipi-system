@@ -250,6 +250,10 @@
           },
           {
             "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/linear-filer-label-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/linear-filer-label-lint.py\""
+          },
+          {
+            "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/headline-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/headline-lint.py\""
           },
           {
