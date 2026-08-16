@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -164,6 +165,23 @@ def find_drift(bridge: set[str], mcp: dict, vbus: dict,
     for f in sorted((bridge | verifier_all) - schemas):
         findings.append({"class": "no-schema", "detail": f"{f} has no JSON schema"})
 
+    # D6 - a file an agent WRITES that neither map knows about.
+    # Codex PR #199: the candidate set used to be (bridge | verifier), so a
+    # producer-only artifact was invisible to every rule above - the scanner
+    # could not report the one direction that has a real writer behind it.
+    for f in sorted(produced - bridge - verifier_all):
+        findings.append({
+            "class": "producer-only",
+            "detail": f"an agent writes {f}, but no verifier and no bridge entry knows it",
+        })
+
+    # D7 - a schema with no consumer on any map. Same blind spot, other end.
+    for f in sorted(schemas - bridge - verifier_all - produced):
+        findings.append({
+            "class": "schema-only",
+            "detail": f"{f} has a schema but no producer, verifier or bridge entry",
+        })
+
     return findings
 
 
@@ -182,6 +200,10 @@ def self_test() -> int:
         print("SELF-TEST FAIL: clean input produced findings:", got)
         return 1
 
+    # One mutant per drift class. Codex PR #199 caught that this set covered only
+    # 4 of the classes, so deleting the no-schema or verifier-only branch left the
+    # self-test green - a detector that never fires reads exactly like one that
+    # works. Every class find_drift can emit MUST have a mutant here.
     cases = {
         "dead-check": dict(clean, mcp={0: {"required": [], "optional": [], "checks": ["a.json"]}},
                            vbus={0: {"required": [], "optional": [], "checks": []}}),
@@ -190,6 +212,13 @@ def self_test() -> int:
                                       bridge={"a.json", "b.json"}),
         "required-without-producer": dict(clean, produced=set()),
         "bridge-only": dict(clean, bridge={"a.json", "z.json"}, schemas={"a.json", "z.json"}),
+        "verifier-only": dict(clean,
+                              mcp={0: {"required": ["a.json", "b.json"], "optional": [], "checks": []}},
+                              vbus={0: {"required": ["a.json", "b.json"], "optional": [], "checks": []}},
+                              schemas={"a.json", "b.json"}, produced={"a.json", "b.json"}),
+        "no-schema": dict(clean, schemas=set()),
+        "producer-only": dict(clean, produced={"a.json", "p.json"}),
+        "schema-only": dict(clean, schemas={"a.json", "y.json"}),
     }
     for want, kwargs in cases.items():
         classes = {f["class"] for f in find_drift(**kwargs)}
@@ -198,7 +227,7 @@ def self_test() -> int:
             return 1
         print(f"  ok  {want}: caught")
 
-    print("SELF-TEST PASS: clean input is silent, all 4 mutants caught.")
+    print(f"SELF-TEST PASS: clean input is silent, all {len(cases)} mutants caught.")
     return 0
 
 
@@ -225,7 +254,24 @@ def main() -> int:
 
     agent_text = "\n".join(p.read_text(errors="ignore") for p in AGENT_DIR.glob("*.md")) \
         if AGENT_DIR.is_dir() else ""
-    produced = {f for f in (bridge | _files(mcp) | _files(vbus)) if f in agent_text}
+    # Match the agents' own convention for a bus artifact: a {{BUS_DIR}}-qualified
+    # path. Two earlier shapes were both wrong. Deriving the candidates from
+    # (bridge | verifier) made producer-only structurally unable to fire, since a
+    # file no map lists could never enter the set - green self-test, dead in
+    # production. Widening to every *.json in the prompts then over-claimed,
+    # reporting settings.json and morning-log.json as bus artifacts an agent
+    # "writes". "An agent writes X" is a strong claim, so it is keyed on the
+    # qualified path and nothing looser.
+    # Two writer conventions, and keying on either one alone is wrong. Most
+    # agents write a {{BUS_DIR}}-qualified path, but some bus files are produced
+    # by a SCRIPT the orchestrator shells out to, described as "writes X.json"
+    # (compliance.json comes from compliance-check.py that way). Keying on the
+    # qualified path alone reported compliance.json as having no producer, which
+    # is simply false - and a checker that states a false thing is worse than no
+    # checker, because someone will act on it.
+    produced = {m.rsplit("/", 1)[-1]
+                for m in re.findall(r"\{\{BUS_DIR\}\}/[A-Za-z0-9._-]+\.json", agent_text)}
+    produced |= set(re.findall(r"writes\s+([A-Za-z0-9._-]+\.json)", agent_text))
 
     findings = find_drift(bridge, mcp, vbus, schemas, produced)
 
