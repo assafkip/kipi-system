@@ -61,12 +61,30 @@ ENV_HALT=""
 # that far left.
 ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]+-hour) limit|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login"
 
+# FENCED CONTENT IS QUOTATION, NOT SPEECH (PR #198 review round 2, minor).
+# The line anchor alone was not enough: an agent pasting the runner's line inside
+# a ``` block puts it at column 0, which anchors just as well as the real thing.
+# Measured against a fenced fixture, the anchor-only pattern matched. Everything
+# between fences is something the agent is SHOWING, never something the runner
+# said, so it is removed before the pattern is applied.
+#
+# Residual, stated rather than papered over: an agent that quotes the line bare at
+# column 0, outside any fence, still reads as the runner. Narrowing further would
+# need to know who wrote each line, which this stream does not carry. The cost is
+# bounded -- a halted sweep resumes next run and files one honest-looking alert --
+# and the guard cases below pin the shapes that actually occur.
+strip_fenced() {  # strip_fenced <text> -> text with ``` blocks removed
+  printf '%s\n' "${1:-}" | awk '
+    /^[[:space:]]*```/ { inblock = !inblock; next }
+    !inblock { print }'
+}
+
 is_environmental() {  # is_environmental <agent-output>
-  printf '%s' "${1:-}" | grep -qiE "^[[:space:]]{0,3}($ENV_MARKERS)"
+  strip_fenced "${1:-}" | grep -qiE "^[[:space:]]{0,3}($ENV_MARKERS)"
 }
 
 environmental_reason() {  # environmental_reason <agent-output> -> one line
-  printf '%s' "${1:-}" \
+  strip_fenced "${1:-}" \
     | grep -iE "^[[:space:]]{0,3}($ENV_MARKERS)" \
     | head -1 | tr -d '\n' | cut -c1-120
 }
@@ -160,7 +178,23 @@ work_instance() {
       # not fail at anything. Recording it as a failure is what put a step-audit
       # ticket on top of the pile.
       log_step "$name" skipped "environmental: $ENV_HALT"
-      SWEEP_FAILURES=$((SWEEP_FAILURES + 1))
+      # DELIBERATELY NOT SWEEP_FAILURES (PR #198 review, major). Incrementing it
+      # exits the job non-zero, which trips the launchd-failing detector under a
+      # DIFFERENT dedupe key -- so the halt filed its own informative alert AND a
+      # generic "job failing" one. Two permanent tickets for the condition this
+      # change exists to reduce to one. Yesterday's pile proves it: the ten
+      # per-instance tickets arrived WITH a `launchd job failing:
+      # com.kipi.openloops-heartbeat (exit 1)` beside them.
+      #
+      # ASK-184's contract is preserved in PURPOSE and narrowed in WORDING. It
+      # exists so a failure cannot be SILENT: a dead agent run reaches nobody
+      # unless the exit code carries it, so fleet-health must see that. An
+      # environmental halt is not silent -- it files a named alert saying exactly
+      # what happened, one line above this. Adding a second, vaguer ticket does
+      # not make the first one louder.
+      #
+      # The per-instance failure path below still increments, so the case ASK-184
+      # was written about is untouched.
       return 0
     fi
     echo "$(TS) heartbeat[$name]: agent run failed/timeout" >> "$LOG"

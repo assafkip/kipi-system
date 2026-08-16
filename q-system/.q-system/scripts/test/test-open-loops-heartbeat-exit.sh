@@ -151,13 +151,24 @@ else
   FAIL=$((FAIL + 1))
 fi
 
-# ASK-184's exit contract is not weakened by the halt: an environmental halt is
-# still a failed sweep, or fleet-health's launchd-failing detector goes blind.
-if [ "$ENV_RC" -ne 0 ]; then
-  echo "PASS  environmental halt still reports failure to launchd (exit $ENV_RC)"
+# THIS ASSERTION WAS INVERTED ON PURPOSE (PR #198 review, major). It previously
+# demanded a non-zero exit here, on the reading that ASK-184 requires any failed
+# sweep to reach launchd. Measured consequence: the non-zero exit trips the
+# launchd-failing detector under a DIFFERENT dedupe key, so the halt filed its
+# own informative alert AND a generic "job failing" one -- two permanent tickets
+# for the condition this whole change exists to reduce to one. Yesterday's pile
+# carried exactly that pair.
+#
+# ASK-184 guards against a SILENT failure: a dead agent run reaches nobody unless
+# the exit code carries it. An environmental halt is not silent; it files a named
+# alert. The contract keeps its purpose, and the per-instance failure case it was
+# written about still exits non-zero -- pinned by the first two cases above, which
+# is what stops this inversion from quietly disarming the whole contract.
+if [ "$ENV_RC" -eq 0 ]; then
+  echo "PASS  environmental halt does not also trip launchd-failing (exit $ENV_RC, one ticket not two)"
   PASS=$((PASS + 1))
 else
-  echo "FAIL  environmental halt reported success to launchd; ASK-184's contract is broken"
+  echo "FAIL  environmental halt exited $ENV_RC, which files a second generic ticket beside its own alert"
   FAIL=$((FAIL + 1))
 fi
 
@@ -231,6 +242,13 @@ cat > "$TMP3/bin/claude" <<EOF
 echo "\$PWD" >> "$TMP3/claude-calls"
 echo "I reviewed ASK-869. The log line was: You've hit your weekly limit - resets Aug 18."
 echo "  quoted indented: You've hit your weekly limit"
+echo "And here it is in a fenced block, at column 0 where the anchor alone matched:"
+# Backticks ESCAPED: this heredoc is unquoted (it interpolates \$TMP3), so a bare
+# backtick opens a command substitution and the fenced lines never reach the
+# fixture -- which made this very case pass vacuously on the first run.
+echo "\`\`\`"
+echo "You've hit your weekly limit - resets Aug 18 at 2pm"
+echo "\`\`\`"
 echo "TypeError: unrelated crash"
 exit 7
 EOF
