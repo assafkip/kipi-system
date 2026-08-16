@@ -706,6 +706,11 @@
       "spillover_id": "sp-cc33bdb0"
     },
     {
+      "path": "q-system/.q-system/scripts/bus-vocabulary-drift.py",
+      "reason": "read-only reporter for bus-filename vocabulary drift across the four copies that hand-maintain it (ASK-874). DELIBERATELY unwired. It lives under q-system/.q-system/scripts/ so it ships to all 23 instances, and it exits 1 today (38 findings, incl. two live verifiers disagreeing on a required filename), so wiring it into kipi check would turn the fleet RED on day one. Arming it is a founder decision and must not arrive as a side effect of landing the reader. Wire it or retire it once ASK-874's fix lands and it can actually exit 0. Its --self-test is the paired check: clean input silent, one mutant per drift class caught",
+      "spillover_id": "sp-1798c784"
+    },
+    {
       "path": "q-system/.q-system/scripts/founder-judge-calibration.py",
       "reason": "manually-invoked benchmark harness (build/blind/verify/score), run when a calibration question is asked rather than on any schedule; declared inert instead of given fake wiring to clear the gate",
       "spillover_id": "sp-5de8ca5b"
