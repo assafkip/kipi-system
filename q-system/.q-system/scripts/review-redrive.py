@@ -167,6 +167,17 @@ PARK = _load("park_labels.py", "park_labels")
 class ParkUnavailable(Exception):
     """The park state could not be read. Not the same as nothing being parked."""
 
+
+# THE EXIT CODES THIS SCRIPT HANDS kipi-dispatch.sh, and each unreadable source
+# gets ITS OWN. rc 2 already meant "gh could not read PR state", and the first
+# cut of the park check reused it for "Linear could not answer the labels" --
+# so the dispatcher, whose `say` line is the operator's only surface, reported a
+# Linear outage as a GitHub one and sent the reader to the wrong system
+# (PR #201 review, minor). Two sources, two codes, one message each.
+RC_GH_UNREADABLE = 2
+RC_PARK_UNREADABLE = 3
+RC_PARKED = 4
+
 # Verdicts that mean a human-equivalent reviewer objected and left a spec behind.
 # Kept as a literal set rather than "not an approval": an EMPTY verdict is not an
 # objection, it is an unstated one, and routing empty to rework is precisely the
@@ -702,7 +713,45 @@ def cmd_select(cands, show_all):
     return 1
 
 
-def cmd_mark_dispatched(issue, action, pr, head_sha):
+def cmd_mark_dispatched(issue, action, pr, head_sha, graphql=None):
+    """The atomic claim -- and the LAST point where the park can still be read.
+
+    THE PARK IS RE-READ HERE, NOT INHERITED FROM `select`. The two are separate
+    processes with the dispatcher's own guards running between them (the converge
+    liveness check, the ps snapshot), so a label applied inside that window was
+    invisible to the only check that had run and the issue launched anyway. This
+    is the argument kipi-dispatch.sh already makes for the ledger claim itself --
+    "past every guard that can still abort, and immediately before the launch" --
+    applied to the other precondition that can change underneath it. A park check
+    that is not at the point of no return is a check the dispatch can outrun.
+
+    It also closes the non-race half: `mark-dispatched` is a subcommand, and any
+    caller reaching it without going through `select` got no park check at all.
+
+    BEFORE THE CLAIM, NEVER AFTER, and the ordering is load-bearing. The flag is
+    one attempt per PR per action per head sha. Claiming and then refusing on the
+    park would spend that attempt on work that never ran, and lifting the park
+    later would not give it back -- the next redrive would skip the PR for having
+    "already had its one attempt". Refusing first leaves the attempt unspent.
+    """
+    try:
+        state = parked([issue], graphql=graphql)
+    except ParkUnavailable as exc:
+        # Fails CLOSED, like every other unreadable source here: the dispatcher
+        # reads any non-zero as "do not dispatch". Reading "I could not ask" as
+        # "nothing is parked" at the launch point is the whole defect, one step
+        # later than where it was found.
+        sys.stderr.write(
+            "review-redrive: could not read the park labels for %s (%s) -- "
+            "refusing to claim the attempt.\n" % (issue, exc))
+        return RC_PARK_UNREADABLE
+    reason = state.get(issue)
+    if reason:
+        sys.stderr.write(
+            "review-redrive: %s PR #%s is parked by %s (%s) -- it was selected "
+            "before the label landed; not claiming the attempt.\n"
+            % (issue, pr, reason[0], reason[1]))
+        return RC_PARKED
     cand = {"action": action, "pr": pr, "head_sha": head_sha}
     return 0 if CI.ledger_claim(CI.attempts_path(), issue, flag(cand)) else 1
 
@@ -732,18 +781,20 @@ def main(argv):
         # rc 2 is NOT "nothing to do": the caller must keep its fresh pick rather
         # than read an unreadable board as an empty one.
         sys.stderr.write("review-redrive: %s -- nothing was claimed.\n" % exc)
-        return 2
+        return RC_GH_UNREADABLE
     try:
         cands = drop_parked(cands)
     except ParkUnavailable as exc:
-        # rc 2 for the same reason GhUnavailable is rc 2: the run could not read
-        # a source it needs, so it must not report an answer. Reading "I cannot
-        # see the labels" as "nothing is parked" re-dispatches every parked issue
-        # on the board at once, and blocked:capability is guaranteed to fail.
+        # NON-ZERO for the same reason GhUnavailable is non-zero: the run could
+        # not read a source it needs, so it must not report an answer. Reading
+        # "I cannot see the labels" as "nothing is parked" re-dispatches every
+        # parked issue on the board at once, and blocked:capability is
+        # guaranteed to fail. A DISTINCT code, not 2, so the dispatcher names
+        # Linear rather than sending the reader to gh -- see RC_PARK_UNREADABLE.
         sys.stderr.write(
             "review-redrive: could not read the park labels (%s) -- refusing to "
             "treat that as nothing being parked. Nothing was claimed.\n" % exc)
-        return 2
+        return RC_PARK_UNREADABLE
     return cmd_select(cands, args.all)
 
 

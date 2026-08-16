@@ -56,19 +56,19 @@ chmod +x "$BIN/gh"
 # The four issues are byte-identical except for `labels`, which is the only
 # field the park check may read.
 cat > "$WORK/fixture-server.py" <<'PY'
-import json
+import json, os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-LABELS = {
-    "ASK-901": ["owner:sana", "owner:assaf"],
-    "ASK-902": ["owner:sana", "needs-scope"],
-    "ASK-903": ["owner:sana", "blocked:capability"],
-    "ASK-904": ["owner:sana"],
-}
+# RE-READ PER REQUEST, from a file the cases rewrite. The board is not a
+# constant in life: the whole point of the mark-dispatched cases below is that a
+# label lands BETWEEN two reads, so a fixture that answers from a dict frozen at
+# import cannot express the state the defect lives in.
+LABELS_FILE = os.environ["LABELS_FILE"]
 
 def issue(ident):
+    labels = json.load(open(LABELS_FILE))
     return {"id": ident, "identifier": ident,
-            "labels": {"nodes": [{"name": n} for n in LABELS.get(ident, [])]}}
+            "labels": {"nodes": [{"name": n} for n in labels.get(ident, [])]}}
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -95,6 +95,14 @@ srv = HTTPServer(("127.0.0.1", 0), H)
 print(srv.server_port, flush=True)
 srv.serve_forever()
 PY
+LABELS_FILE="$WORK/labels.json"
+set_labels() { printf '%s' "$1" > "$LABELS_FILE"; }
+set_labels '{"ASK-901": ["owner:sana", "owner:assaf"],
+             "ASK-902": ["owner:sana", "needs-scope"],
+             "ASK-903": ["owner:sana", "blocked:capability"],
+             "ASK-904": ["owner:sana"],
+             "ASK-905": ["owner:sana"]}'
+export LABELS_FILE
 python3 "$WORK/fixture-server.py" > "$WORK/port" 2> "$WORK/server.err" &
 SRV_PID=$!
 for _ in $(seq 1 100); do PORT="$(cat "$WORK/port" 2>/dev/null)"; [ -n "${PORT:-}" ] && break; sleep 0.1; done
@@ -125,12 +133,29 @@ json.dump({"pr": int(pr), "issue": issue, "verdict": "REQUEST CHANGES",
 PY
 }
 
-run_select() {   # run_select [extra env assignments via RR_URL]
-  env PATH="$BIN:$PATH" BOARD="$WORK/board.json" KIPI_NOTIFY="$BIN/notify.sh" \
+# KIPI_ATTEMPTS IS PINNED AT A TEMP PATH FOR EVERY CASE. Without it the ledger
+# ops below write to the real attempts ledger -- a live data path inside a test
+# suite, and one that would silently spend a real PR's one machine attempt.
+LEDGER="$WORK/attempts.json"
+
+run_select() {   # run_select   (RR_URL / RR_BOARD override the two sources)
+  env PATH="$BIN:$PATH" BOARD="${RR_BOARD:-$WORK/board.json}" KIPI_NOTIFY="$BIN/notify.sh" \
+    KIPI_ATTEMPTS="$LEDGER" \
     KIPI_LINEAR_API_URL="${RR_URL:-http://127.0.0.1:$PORT/graphql}" \
     KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
     python3 "$SEL" --repo-dir "$WORK" --records-dir "$RECORDS" select --all \
     > "$WORK/out.txt" 2> "$WORK/err.txt"
+  echo $?
+}
+
+run_mark() {   # run_mark <issue> <action> <pr> <sha>
+  env PATH="$BIN:$PATH" BOARD="$WORK/board.json" KIPI_NOTIFY="$BIN/notify.sh" \
+    KIPI_ATTEMPTS="$LEDGER" \
+    KIPI_LINEAR_API_URL="${RR_URL:-http://127.0.0.1:$PORT/graphql}" \
+    KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+    python3 "$SEL" --repo-dir "$WORK" --records-dir "$RECORDS" mark-dispatched \
+    --issue "$1" --action "$2" --pr "$3" --head-sha "$4" \
+    > "$WORK/mout.txt" 2> "$WORK/merr.txt"
   echo $?
 }
 
@@ -171,18 +196,81 @@ else
 fi
 
 # --- an unreadable board is not an empty one ---------------------------------
-# Same posture as GhUnavailable (rc 2): if the park state cannot be read, the
-# run must not decide that nothing is parked. It refuses and says so.
+# Same posture as GhUnavailable: if the park state cannot be read, the run must
+# not decide that nothing is parked. It refuses and says so.
 #
 # 127.0.0.1:1 is chosen over an unroutable address on purpose: a closed port on
 # loopback refuses the connection immediately, so this case cannot hang on a
 # 30s socket timeout.
 RC2="$(RR_URL="http://127.0.0.1:1/graphql" run_select)"
 OUT2="$(cat "$WORK/out.txt")"
-[ "$RC2" = "2" ] && ok "an unreadable park state exits 2, not 0" \
+[ "$RC2" = "3" ] && ok "an unreadable park state exits 3, not 0" \
   || bad "an unreadable park state exited '$RC2' -- the caller reads that as a verdict"
 [ -z "$OUT2" ] && ok "an unreadable park state offers nothing" \
   || bad "an unreadable park state still offered: $OUT2"
+
+# THE OTHER HALF OF THAT CODE, and without it "return 3 for everything" passes.
+# The selector reads TWO sources and the dispatcher prints a different sentence
+# per source, so the codes have to discriminate: gh down is still 2, Linear down
+# is 3. Both being 2 is what made a Linear outage read as a GitHub outage on the
+# operator's only surface (PR #201 review, minor).
+RC3="$(RR_BOARD="$WORK/no-such-board.json" run_select)"
+[ "$RC3" = "2" ] && ok "a gh outage still exits 2, distinct from the park code" \
+  || bad "a gh outage exited '$RC3' -- the dispatcher cannot tell the two sources apart"
+
+# --- the claim re-reads the park: a label that lands AFTER select -------------
+# FINDING 1 (PR #201 review, major). `select` and `mark-dispatched` are separate
+# processes with the dispatcher's own guards running between them. The park was
+# read only in the first, so a label applied in that window was invisible at the
+# point the work actually launches.
+#
+# The sequence below IS the window, played out: offer it, park it, then claim.
+echo
+echo "== the park is re-read at the atomic claim =="
+
+printf '[%s]\n' "$(pr_entry 94 ask-905 eeee5555)" > "$WORK/board.json"
+record 94 ASK-905 eeee5555
+
+# 1. unparked, so it is genuinely selectable. Without this the case below could
+#    pass because the PR was never a candidate at all.
+RCS="$(run_select)"
+if printf '%s' "$(cat "$WORK/out.txt")" | awk -F'\t' '$3 == "94" {f=1} END {exit !f}'; then
+  ok "PR #94 is offered while ASK-905 carries no park label"
+else
+  bad "PR #94 was not offered even unparked (rc=$RCS) -- the case below proves nothing"
+fi
+
+# 2. the label lands in the window between the offer and the claim.
+set_labels '{"ASK-905": ["owner:sana", "blocked:capability"]}'
+RCM="$(run_mark ASK-905 rework 94 eeee5555)"
+MERR="$(cat "$WORK/merr.txt")"
+[ "$RCM" = "4" ] && ok "a park that lands after select refuses the claim (rc 4)" \
+  || bad "the claim returned '$RCM' -- the dispatcher launches work on a parked issue"
+case "$MERR" in
+  *blocked:capability*) ok "the refusal names blocked:capability as what stopped it" ;;
+  *) bad "nothing in stderr names the label -- a silent refusal is unreadable in dispatch.log" ;;
+esac
+
+# 3. THE ATTEMPT MUST STILL BE UNSPENT. The flag is one attempt per PR per action
+#    per head sha. Claiming and then refusing would burn it on work that never
+#    ran, and lifting the park would not give it back -- the next redrive would
+#    skip PR #94 for having "already had its one attempt". Lifting the park and
+#    getting rc 0 is the only thing that proves the ordering.
+set_labels '{"ASK-905": ["owner:sana"]}'
+RCM2="$(run_mark ASK-905 rework 94 eeee5555)"
+[ "$RCM2" = "0" ] && ok "the refused claim left the attempt unspent: it claims once the park lifts" \
+  || bad "after the park lifted the claim returned '$RCM2' -- the refusal spent the attempt"
+
+# 4. and the ledger claim itself still works, so the fix did not turn
+#    mark-dispatched into a park check that forgot its original job.
+RCM3="$(run_mark ASK-905 rework 94 eeee5555)"
+[ "$RCM3" = "1" ] && ok "a second claim on the same attempt is still refused as claimed" \
+  || bad "the second claim returned '$RCM3' -- the one-attempt cap is broken"
+
+# 5. an unreadable park state at the claim fails CLOSED, with its own code.
+RCM4="$(RR_URL="http://127.0.0.1:1/graphql" run_mark ASK-905 rereview 94 ffff6666)"
+[ "$RCM4" = "3" ] && ok "an unreadable park state at the claim exits 3, not 0" \
+  || bad "an unreadable park state at the claim exited '$RCM4' -- it would dispatch"
 
 echo
 echo "  $PASS passed, $FAIL failed"

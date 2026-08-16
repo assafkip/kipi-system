@@ -1180,6 +1180,13 @@ if [ -z "$REDRIVE_NEXT" ] && [ -f "$REVIEW_REDRIVE" ]; then
     NEXT="$REVIEW_NEXT"
   elif [ "$REVIEW_RC" = "2" ]; then
     say "reviewer redrive: gh could not read PR state in $TARGET_NAME -- fresh pick stands, nothing claimed"
+  elif [ "$REVIEW_RC" = "3" ]; then
+    # A SEPARATE CODE BECAUSE THIS IS A SEPARATE SYSTEM (ASK-872, PR #201 review).
+    # The selector reads two sources: gh for PR state, Linear for the labels that
+    # park an issue. Both being rc 2 made a Linear outage print the gh sentence,
+    # and this line is the operator's only surface -- so the one person who could
+    # fix it was sent to look at the wrong service.
+    say "reviewer redrive: Linear could not answer the park labels in $TARGET_NAME -- fresh pick stands, nothing claimed"
   fi
 fi
 
@@ -1236,12 +1243,26 @@ fi
 # attempt per PR per action per HEAD SHA, so a PR that pushes a real fix is
 # eligible again while a re-review that keeps coming back phantom at the same sha
 # is not retried.
+#
+# THE CLAIM ALSO RE-READS THE PARK LABELS (ASK-872, PR #201 review). `select`
+# checked them, but that was a separate process and every guard between the two
+# takes time an operator can park an issue in. Non-zero still means "do not
+# dispatch" for all three reasons; they are told apart only so the log names the
+# one that happened, because "already claimed" sent the reader to the ledger for
+# a park and for a Linear outage alike.
 if [ -n "$REVIEW_ACTION" ] && [ "$NEXT" = "$REVIEW_NEXT" ]; then
-  if ! python3 "$REVIEW_REDRIVE" mark-dispatched --issue "$NEXT" \
-       --action "$REVIEW_ACTION" --pr "$REVIEW_PR" --head-sha "$REVIEW_SHA" 2>>"$LOG"; then
-    say "reviewer redrive: the $REVIEW_ACTION attempt for $NEXT PR #$REVIEW_PR is already claimed -- not dispatching"
-    exit 0
-  fi
+  python3 "$REVIEW_REDRIVE" mark-dispatched --issue "$NEXT" \
+    --action "$REVIEW_ACTION" --pr "$REVIEW_PR" --head-sha "$REVIEW_SHA" 2>>"$LOG"
+  MARK_RC=$?
+  case "$MARK_RC" in
+    0) ;;
+    4) say "reviewer redrive: $NEXT was parked by a label after it was selected -- not dispatching, attempt unspent"
+       exit 0 ;;
+    3) say "reviewer redrive: Linear could not answer the park labels for $NEXT -- not dispatching, attempt unspent"
+       exit 0 ;;
+    *) say "reviewer redrive: the $REVIEW_ACTION attempt for $NEXT PR #$REVIEW_PR is already claimed -- not dispatching"
+       exit 0 ;;
+  esac
 fi
 
 # Count BEFORE launching. Counting after would let a crash between the two
