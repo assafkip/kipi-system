@@ -362,6 +362,60 @@ continue|Credit balance is too low in the fixture, so the test asserts a halt.
 continue|Invalid API key, expired token and logged-out CLI are all handled now.
 CASES
 
+# ----------------------------------------------------------------------------
+# THE QUOTED-MARKER FALSE HALT (PR #200 review round 2, major)
+# ----------------------------------------------------------------------------
+# Whole-LINE anchoring is still not enough, because an agent that is WORKING on
+# auth quotes a marker on a line of its own -- in a fenced block, a diff, a test
+# name, a bullet -- inside an otherwise ordinary multi-line report. Matching any
+# ONE line of a long transcript reads that report as the machine being dead.
+#
+# The machine says its piece and stops: on 2026-08-15 `claude -p` printed the
+# limit line and NOTHING else. An agent that produced a transcript is, by the
+# existence of the transcript, a runner that ran. So the discriminator is the
+# whole OUTPUT, not a line inside it: every non-blank line must be the machine's.
+#
+# Each case is a real shape. Case 1 is the reviewer's verbatim reproducer.
+env_case() {  # env_case <halt|continue> <label> <payload>
+  local want="$1" label="$2" text="$3" got
+  if is_environmental "$text"; then got=halt; else got=continue; fi
+  if [ "$got" = "$want" ]; then
+    ok "detector, whole-output: $want <- $label"
+  else
+    bad "detector, whole-output: expected $want, got $got" \
+        "$label -- payload: $(printf '%s' "$text" | tr '\n' '|' | cut -c1-300)"
+  fi
+}
+
+env_case continue "a marker quoted in a fenced block inside an agent report" \
+  "$(printf '%s\n' \
+     'Implemented auth handling and added this regression fixture:' \
+     '```text' \
+     'Invalid API key' \
+     '```' \
+     'All tests pass.')"
+
+env_case continue "a marker on its own line at the END of an agent report" \
+  "$(printf '%s\n' \
+     'Added the negative fixture for the auth path. The string under test is:' \
+     'Invalid API key')"
+
+env_case continue "a marker on its own line at the START of an agent report" \
+  "$(printf '%s\n' \
+     'usage limit reached' \
+     'is the exact string the new fixture asserts on. 24 passed, 0 failed.')"
+
+# ...and the machine's own message still halts when the CLI pads it with blank
+# lines, which is formatting, not a second utterance.
+env_case halt "the observed line surrounded by blank lines" \
+  "$(printf '\n%s\n\n' "$LIMIT_LINE")"
+
+# NEGATIVE SELF-TEST for the totality rule itself: a machine message that really
+# is two marker lines is still a halt. Without this, "every line matches" could
+# be silently narrowed to "exactly one line" and nothing here would notice.
+env_case halt "a two-line machine message where BOTH lines are the machine's" \
+  "$(printf '%s\n%s\n' "Invalid API key" "Please run /login")"
+
 # environmental_reason must recognise exactly what is_environmental recognises.
 # Two patterns drifting apart means a real outage halts with an EMPTY reason, so
 # the Linear note and the page say nothing about why the fleet stopped.

@@ -47,12 +47,34 @@
 # is prose and is not a halt. Same shape as ASK-747: content that MENTIONS a
 # marker is not the marker being raised.
 #
-# THIS ERRS TOWARD MISSING AN OUTAGE, DELIBERATELY. If the CLI someday pads a
-# marker with an unseen word-led tail, the run degrades to the OLD behaviour --
-# one issue charged one attempt -- which is recoverable and visible. A false halt
-# is not: it stops work that could have run and it is self-perpetuating. Widen
-# this only from a line an actual log carried, and add that line to the fixture
-# table in test-worker-env-halt.sh.
+# AND THE MARKER MUST BE THE WHOLE OUTPUT, NOT MERELY A LINE OF IT. Whole-line
+# anchoring was the second attempt and it was still wrong, for the same reason
+# one layer up. An agent WORKING on auth quotes a marker on a line of its own --
+# in a fenced block, a diff, a test name, a bullet -- inside an otherwise
+# ordinary multi-line report:
+#   Implemented auth handling and added this regression fixture:
+#   ```text
+#   Invalid API key
+#   ```
+#   All tests pass.
+# Matching any ONE line of a long transcript reads that report as the machine
+# being dead. Measured on PR #200's review round 2.
+#
+# The runner's whole utterance is the whole OUTPUT. The machine says its piece
+# and stops: on 2026-08-15 `claude -p` printed the limit line and nothing else.
+# An agent that produced a transcript is, by the existence of the transcript, a
+# runner that ran -- whatever it quoted inside it. So EVERY non-blank line must
+# be the machine's, not just one. Blank lines are formatting, not a second
+# utterance, and are not counted on either side.
+#
+# THIS ERRS TOWARD MISSING AN OUTAGE, DELIBERATELY, at both layers. If the CLI
+# someday pads a marker with an unseen word-led tail, or prints one ordinary
+# line alongside it, the run degrades to the OLD behaviour -- one issue charged
+# one attempt -- which is recoverable and visible. A false halt is not: it stops
+# work that could have run, charges nobody, and because no attempt is recorded
+# the redrive feeds the same issue back into the same false halt forever. Widen
+# this only from output an actual log carried, and add that output to the
+# fixture table in test-worker-env-halt.sh.
 #
 # Leading whitespace is tolerated (up to 3) because the CLI pads some of these;
 # an indented quote inside agent prose does not reach that far left.
@@ -69,12 +91,22 @@ ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]+-hour) lim
 # already newline-safe here.
 ENV_LINE_TAIL="([[:space:]]*([-|]|·|–|—).*)?[[:space:]]*[.!]?[[:space:]]*"
 
+# ONE regex, built once, used by the counter and by the reason. Two spellings of
+# "is this the machine's line" is the drift this whole file exists to prevent.
+ENV_LINE_RE="^[[:space:]]{0,3}($ENV_MARKERS)$ENV_LINE_TAIL\$"
+
 is_environmental() {  # is_environmental <runner-output> -> 0 when the MACHINE refused
-  printf '%s' "${1:-}" | grep -qiE "^[[:space:]]{0,3}($ENV_MARKERS)$ENV_LINE_TAIL\$"
+  local payload="${1:-}" spoken machine
+  # Non-blank lines the runner emitted, and how many of them were the machine's.
+  # Equality is the test: one ordinary line among them means an agent ran and
+  # merely QUOTED a marker, which is not an outage.
+  spoken="$(printf '%s' "$payload" | grep -c '[^[:space:]]' 2>/dev/null)" || true
+  machine="$(printf '%s' "$payload" | grep -ciE "$ENV_LINE_RE" 2>/dev/null)" || true
+  [ "${spoken:-0}" -ge 1 ] && [ "${machine:-0}" -eq "${spoken:-0}" ]
 }
 
 environmental_reason() {  # environmental_reason <runner-output> -> one line, <=120 chars
   printf '%s' "${1:-}" \
-    | grep -iE "^[[:space:]]{0,3}($ENV_MARKERS)$ENV_LINE_TAIL\$" \
+    | grep -iE "$ENV_LINE_RE" \
     | head -1 | tr -d '\n' | cut -c1-120
 }
