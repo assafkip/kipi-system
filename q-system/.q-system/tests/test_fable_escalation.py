@@ -1153,6 +1153,120 @@ def test_the_writer_reports_a_triage_it_could_not_land(actor, tmp_path):
 
 
 # --------------------------------------------------------------------------
+# escalate() must CONSUME what write_pending returns (ASK-886, PR #203 round 2)
+# --------------------------------------------------------------------------
+#
+# The case above proved the WRITER reports a triage it could not land. Its
+# caller then ignored that answer. Reproduced against the pre-fix script with
+# every private-directory candidate obstructed: `escalated: true`,
+# `failure: null`, and the triage nowhere on disk. So the defect the writer fix
+# closed simply moved one frame up the stack -- a dead channel that reports
+# success.
+#
+# These cases drive the CLI (`--json`), which is the shape a human and the
+# ledger actually see, and read the ledger row the run wrote. The script under
+# test comes from KIPI_FABLE_ESCALATE_SCRIPT when set, so the same file can be
+# aimed at a pre-fix copy extracted from a git ref and watched to FAIL. A
+# regression case that has never been red is decoration.
+
+
+def _escalate_script():
+    return os.environ.get("KIPI_FABLE_ESCALATE_SCRIPT") or os.path.abspath(
+        ESCALATE)
+
+
+def _run_escalate(tmp_path, pending_file, actor):
+    """Drive fable-escalate.py with a stub model and an isolated ledger.
+
+    Returns (result_json, ledger_rows). Never the live path: the stub is the
+    only thing the child can call, and the ledger goes to tmp_path.
+    """
+    ledger = tmp_path / "ledger"
+    stub = _stub(tmp_path, "fable-handoff-stub", "#!/usr/bin/env python3\n"
+                 "import sys; sys.stdin.read(); print(%r)\n" % TRIAGE_TEXT)
+    proc = subprocess.run(
+        [sys.executable, _escalate_script(), "--json",
+         "--trigger", "edit-spiral", "--reason", "hand-off reproducer",
+         "--count", "0", "--pending-file", pending_file, "--actor", actor],
+        capture_output=True, text=True, timeout=60,
+        env=dict(os.environ, KIPI_FABLE_CLAUDE_CMD=stub,
+                 KIPI_FABLE_LEDGER_DIR=str(ledger)))
+    assert proc.returncode == 0, proc.stderr
+    rows = []
+    if ledger.is_dir():
+        for name in sorted(os.listdir(str(ledger))):
+            for line in (ledger / name).read_text().splitlines():
+                if line.strip():
+                    rows.append(json.loads(line))
+    return json.loads(proc.stdout), rows
+
+
+def test_a_triage_that_could_not_be_handed_off_is_not_reported_as_success(
+        actor, tmp_path):
+    """THE REPRODUCER. A pending directory nothing can be written into is the
+    'every candidate squatted' end state: write_pending returns False, and the
+    run must say so instead of `escalated: true, failure: null`."""
+    blocked = tmp_path / "unwritable"
+    blocked.mkdir(mode=0o700)
+    os.chmod(str(blocked), 0o500)
+    try:
+        result, rows = _run_escalate(tmp_path, str(blocked / "pending.json"),
+                                     actor)
+    finally:
+        os.chmod(str(blocked), 0o700)
+
+    assert not os.path.exists(str(blocked / "pending.json")), (
+        "the triage landed after all, so this case is not testing the defect")
+    # `.get` and the failure assertion FIRST on purpose: against the pre-fix
+    # script a bare result["handed_off"] raises KeyError, and a red that is a
+    # missing key does not prove the reported symptom. The symptom is a null
+    # failure over a lost triage, so that is what has to go red.
+    assert result["failure"], (
+        "escalated with a null failure while the triage was lost -- the exact "
+        "confident-success shape the writer fix was written to close")
+    assert result.get("handed_off") is False, (
+        "the run claims the triage reached the guard while it is not on disk")
+    assert result["escalated"] is True, (
+        "the Fable call happened and was paid for; erasing it to describe a "
+        "delivery failure loses the spend the ledger exists to record")
+
+    assert len(rows) == 1, "one episode must leave exactly one ledger row"
+    assert rows[0]["handoff_attempted"] is True
+    assert rows[0]["handed_off"] is False, (
+        "the ledger row records a hand-off that did not happen")
+    assert rows[0]["failure"], "the row carries no reason for the loss"
+
+
+def test_no_hand_off_path_at_all_is_recorded_as_a_loss(actor, tmp_path):
+    """pending_path() returns "" when every candidate directory is obstructed,
+    and the guard passes that empty string straight through. A missing channel
+    and a failed write are the same fact to the agent waiting for the triage."""
+    result, rows = _run_escalate(tmp_path, "", actor)
+    assert result["handed_off"] is False
+    assert result["failure"], "an empty hand-off path was reported as success"
+    assert rows[0]["handed_off"] is False
+    assert rows[0]["handoff_note"], "the row does not say why nothing landed"
+
+
+def test_a_landed_hand_off_still_reports_clean(actor, tmp_path):
+    """THE CONTROL. Without it the assertions above would pass just as well
+    against a script that reported failure unconditionally, and the real
+    channel would be pinned broken."""
+    good = tmp_path / "writable"
+    good.mkdir(mode=0o700)
+    target = good / "pending.json"
+    result, rows = _run_escalate(tmp_path, str(target), actor)
+
+    assert result["handed_off"] is True, "the writable case did not land"
+    assert result["failure"] is None, (
+        "a clean hand-off invented a failure: %r" % (result["failure"],))
+    assert result["escalated"] is True
+    assert json.loads(target.read_text())["triage"] == TRIAGE_TEXT
+    assert rows[0]["handed_off"] is True
+    assert rows[0]["handoff_note"] is None
+
+
+# --------------------------------------------------------------------------
 # the packet is built from the REQUESTING actor's transcript (sp-39c0d7bd)
 # --------------------------------------------------------------------------
 
