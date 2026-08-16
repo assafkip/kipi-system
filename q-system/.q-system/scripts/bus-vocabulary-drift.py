@@ -61,6 +61,13 @@ VERIFY_BUS_PY = QROOT / ".q-system/verify-bus.py"
 SCHEMA_DIR = QROOT / ".q-system/agent-pipeline/schemas"
 AGENT_DIR = QROOT / ".q-system/agent-pipeline/agents"
 
+# The two live verifiers, named once. These strings are BOTH the display label
+# in a finding and the provenance key in `day_rules_by_verifier`, so a typo that
+# split the two would silently drop a verifier out of the cross-verifier
+# comparison while every existing finding still rendered correctly.
+MCP_LABEL = "mcp:bus_verifier"
+VBUS_LABEL = "verify-bus.py"
+
 
 # ---------------------------------------------------------------- AST readers
 # AST, not import: verify-bus.py runs argument parsing at module scope and the
@@ -232,7 +239,14 @@ def read_hardcoded_day_rules(path: Path) -> dict:
 
 
 def merge_day_rules(*sources: dict) -> dict:
-    """Union day->phase->files across every source that can promote at runtime."""
+    """Union day->phase->files across every source that can promote at runtime.
+
+    Union is the right answer for "is this promoted file produced by anyone"
+    (D3b) and "does any verifier know this name" (D4). It is the WRONG answer
+    for comparing two verifiers, which is why the union is now derived inside
+    find_drift from per-verifier rules instead of being handed in pre-collapsed
+    (ASK-874 PR #202 round 5 -- see _day_rule_disagreements).
+    """
     merged: dict = {}
     for src in sources:
         for day, phases in (src or {}).items():
@@ -240,6 +254,66 @@ def merge_day_rules(*sources: dict) -> dict:
                 bucket = merged.setdefault(str(day).lower(), {}).setdefault(str(phase), [])
                 bucket.extend(f for f in files if f not in bucket)
     return merged
+
+
+def _day_rule_disagreements(mcp: dict, vbus: dict, day_rules_by_verifier: dict) -> list[dict]:
+    """Weekday/phase requirements the two verifiers do NOT agree on.
+
+    WHY THIS SHAPE (scar, ASK-874 PR #202 round 5, major): round 4 read all
+    three day-rule sources and then unioned them into ONE set before comparing.
+    Union erases WHICH verifier said what, so "A requires X, B does not"
+    collapsed into "X is required" and the detector reported nothing. Measured
+    on the live tree: verify-bus.py requires content-intel.json every Monday at
+    phase 3 (via _cadence-config.json, which the MCP verifier never opens), the
+    MCP verifier has no Monday rule at all, and the detector emitted ZERO
+    disagreement findings. A real, current, live split between the two live
+    verifiers was invisible because the comparison ran after the merge.
+
+    So provenance is kept per verifier all the way to the comparison, and the
+    thing compared is the EFFECTIVE requirement for that weekday: the static
+    required list PLUS whatever that verifier promotes that day.
+
+    The static half is subtracted back out on purpose. D2 already reports
+    static required/optional splits once per phase; without the subtraction the
+    phase-1 crm.json/notion.json split would be restated on all 7 weekdays. An
+    alert that is wrong (or redundant) every time trains the reader to skip the
+    whole report -- the same reasoning that excluded schedule-data.json.
+    """
+    specs = {MCP_LABEL: mcp, VBUS_LABEL: vbus}
+    # Day-rule phase keys are strings; static spec phase keys are ints.
+    static_required = {
+        label: {str(phase): set(entry["required"]) for phase, entry in spec.items()}
+        for label, spec in specs.items()
+    }
+
+    findings: list[dict] = []
+    days = {d for rules in day_rules_by_verifier.values() for d in rules}
+    for day in sorted(days):
+        phases = {p for rules in day_rules_by_verifier.values()
+                  for p in rules.get(day, {})}
+        for phase in sorted(phases):
+            # Keyed on the FIXED verifier labels, never on the keys present in
+            # day_rules_by_verifier: a verifier with no rule for this day is
+            # half of the finding, so it must stay in the comparison.
+            effective = {}
+            for label in specs:
+                promoted = set(day_rules_by_verifier.get(label, {})
+                               .get(day, {}).get(phase, []))
+                effective[label] = static_required[label].get(phase, set()) | promoted
+
+            a, b = effective[MCP_LABEL], effective[VBUS_LABEL]
+            static_split = (static_required[MCP_LABEL].get(phase, set())
+                            ^ static_required[VBUS_LABEL].get(phase, set()))
+            delta = (a ^ b) - static_split
+            if not delta:
+                continue
+            findings.append({
+                "class": "verifier-disagreement",
+                "detail": f"day-rule {day} phase {phase} required: "
+                          f"mcp={sorted((a - b) & delta) or '-'} only, "
+                          f"verify-bus={sorted((b - a) & delta) or '-'} only",
+            })
+    return findings
 
 
 # ------------------------------------------------------------- the drift rules
@@ -250,7 +324,7 @@ def merge_day_rules(*sources: dict) -> dict:
 def find_drift(bridge: set[str], mcp: dict, vbus: dict,
                schemas: set[str], produced: set[str],
                mentioned: set[str] | None = None,
-               *, day_rules: dict) -> list[dict]:
+               *, day_rules_by_verifier: dict) -> list[dict]:
     """`produced` = a WRITE was found. `mentioned` = the name appears at all.
 
     Codex PR #202 (major): keying the producer classes on mere mention treated
@@ -261,15 +335,21 @@ def find_drift(bridge: set[str], mcp: dict, vbus: dict,
     """
     if mentioned is None:
         mentioned = produced
-    # day_rules is keyword-ONLY and has no default on purpose (ASK-874 round 4).
-    # It used to default to {}, so a caller that forgot it got a detector that
-    # silently skipped D3b and reported GREEN on a phase that cannot pass. The
-    # reviewer's own reproducer did exactly that. A missing argument is now a
-    # loud TypeError instead of a quiet false negative.
+    # day_rules_by_verifier is keyword-ONLY and has no default on purpose
+    # (ASK-874 round 4). It used to default to {}, so a caller that forgot it
+    # got a detector that silently skipped D3b and reported GREEN on a phase
+    # that cannot pass. The reviewer's own reproducer did exactly that. A
+    # missing argument is now a loud TypeError instead of a quiet false negative.
+    #
+    # The UNION is derived here rather than accepted from the caller (round 5):
+    # when the caller handed in both a merged dict and per-verifier dicts, the
+    # two could disagree and every consumer had to remember which one to use.
+    # One input, one derivation, no way to pass an inconsistent pair.
+    day_rules = merge_day_rules(*day_rules_by_verifier.values())
     findings: list[dict] = []
 
     # D1 - a structure check registered for a file the loop never visits.
-    for label, spec in (("mcp:bus_verifier", mcp), ("verify-bus.py", vbus)):
+    for label, spec in ((MCP_LABEL, mcp), (VBUS_LABEL, vbus)):
         for phase, entry in sorted(spec.items()):
             live = set(entry["required"]) | set(entry["optional"])
             for dead in sorted(set(entry["checks"]) - live):
@@ -291,7 +371,7 @@ def find_drift(bridge: set[str], mcp: dict, vbus: dict,
                 })
 
     # D3 - a file a verifier REQUIRES that no agent produces (unsatisfiable).
-    for label, spec in (("mcp:bus_verifier", mcp), ("verify-bus.py", vbus)):
+    for label, spec in ((MCP_LABEL, mcp), (VBUS_LABEL, vbus)):
         for phase, entry in sorted(spec.items()):
             for f in sorted(set(entry["required"]) - produced):
                 findings.append({
@@ -336,6 +416,11 @@ def find_drift(bridge: set[str], mcp: dict, vbus: dict,
                               f"phase cannot pass on {day}s",
                 })
 
+    # D3c - the two verifiers disagree about what a given WEEKDAY requires.
+    # D2 above compares only the static lists, so a split that exists only on
+    # Mondays was structurally invisible to it (ASK-874 round 5, major).
+    findings.extend(_day_rule_disagreements(mcp, vbus, day_rules_by_verifier))
+
     # D6 - a bus artifact the agents reference that neither map knows about.
     # Codex PR #199: the candidate set used to be (bridge | verifier), so this
     # direction was invisible. Keyed on MENTION, and says so: proving a write
@@ -365,7 +450,7 @@ def self_test() -> int:
         vbus={0: {"required": ["a.json"], "optional": [], "checks": ["a.json"]}},
         schemas={"a.json"},
         produced={"a.json"},
-        day_rules={},
+        day_rules_by_verifier={},
     )
     got = find_drift(**clean)
     if got:
@@ -397,7 +482,21 @@ def self_test() -> int:
         "schema-only": dict(clean, schemas={"a.json", "y.json"}),
         # Day-promoted requirement with no writer. Silent before round 3.
         "required-without-producer-when-day-promoted": dict(
-            clean, day_rules={"tuesday": {"4": ["d.json"]}}),
+            clean, day_rules_by_verifier={VBUS_LABEL: {"tuesday": {"4": ["d.json"]}}}),
+        # ONE verifier promotes on a weekday and the other does not. The static
+        # specs are deliberately IDENTICAL and d.json is produced, bridged and
+        # schema'd, so a day-rule disagreement is the only thing that can emit
+        # a finding here. Silent before round 5: merging the day rules into one
+        # set erased which verifier required what, and the reviewer's live
+        # Monday content-intel.json split reported nothing (ASK-874 round 5).
+        "verifier-disagreement-when-only-one-verifier-promotes": dict(
+            clean,
+            bridge={"a.json", "d.json"},
+            mcp={0: {"required": ["a.json"], "optional": ["d.json"], "checks": []}},
+            vbus={0: {"required": ["a.json"], "optional": ["d.json"], "checks": []}},
+            schemas={"a.json", "d.json"},
+            produced={"a.json", "d.json"},
+            day_rules_by_verifier={VBUS_LABEL: {"tuesday": {"0": ["d.json"]}}}),
         }
     for name, kwargs in cases.items():
         # The mutant NAME may describe a scenario; the class it must emit is the
@@ -469,7 +568,8 @@ def self_test() -> int:
               "tuesday promotion the MCP verifier still performs")
         return 1
     day_promoted_findings = [
-        f for f in find_drift(**dict(clean, day_rules=config_gone))
+        f for f in find_drift(**dict(
+            clean, day_rules_by_verifier={MCP_LABEL: config_gone}))
         if f["class"] == "required-without-producer" and "tl-content.json" in f["detail"]
     ]
     if not day_promoted_findings:
@@ -515,10 +615,14 @@ def main() -> int:
         if AGENT_DIR.is_dir() else ""
     produced, mentioned = extract_producers(agent_text)
 
-    # Three independent sources can promote a file to required at RUNTIME, so
-    # all three are read and unioned. The config is the DECLARED source; it is
-    # not the only one, and it is the only one that can go missing (ASK-874
-    # round 4 -- see read_hardcoded_day_rules for the measurement).
+    # Three independent sources can promote a file to required at RUNTIME, and
+    # they are grouped by WHICH VERIFIER acts on them, never pre-merged
+    # (ASK-874 round 5 -- see _day_rule_disagreements for the measurement).
+    #
+    # _cadence-config.json belongs to verify-bus.py alone: measured 2026-08-16,
+    # verify-bus.py is the only file in the repo that opens it, and the MCP
+    # verifier promotes purely from its own literals. Attributing the config to
+    # both verifiers would manufacture agreement that does not exist at runtime.
     cadence = AGENT_DIR / "_cadence-config.json"
     try:
         config_day_rules = json.loads(cadence.read_text()).get("day_rules", {}) \
@@ -526,16 +630,19 @@ def main() -> int:
     except (OSError, json.JSONDecodeError):
         config_day_rules = {}
 
-    hardcoded_day_rules = {}
-    for src in (MCP_VERIFIER_PY, VERIFY_BUS_PY):
-        if src.is_file():
-            hardcoded_day_rules = merge_day_rules(
-                hardcoded_day_rules, read_hardcoded_day_rules(src))
-
-    day_rules = merge_day_rules(config_day_rules, hardcoded_day_rules)
+    # Within ONE verifier the union is still right: verify-bus.py reads the
+    # config when it parses and falls back to its own literals when it does
+    # not, so either branch is a promotion that verifier can perform.
+    day_rules_by_verifier = {
+        MCP_LABEL: read_hardcoded_day_rules(MCP_VERIFIER_PY)
+        if MCP_VERIFIER_PY.is_file() else {},
+        VBUS_LABEL: merge_day_rules(
+            config_day_rules,
+            read_hardcoded_day_rules(VERIFY_BUS_PY) if VERIFY_BUS_PY.is_file() else {}),
+    }
 
     findings = find_drift(bridge, mcp, vbus, schemas, produced, mentioned,
-                          day_rules=day_rules)
+                          day_rules_by_verifier=day_rules_by_verifier)
 
     if args.json:
         print(json.dumps({"findings": findings, "count": len(findings)}, indent=2))
