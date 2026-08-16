@@ -285,3 +285,38 @@ def test_triage_label_constant_matches_what_health_measures():
     drain that is keeping pace.
     """
     assert alerts.TRIAGE_LABEL == health.TRIAGE_LABEL == "needs-triage"
+
+
+def test_no_limit_makes_every_dormant_issue_writable():
+    """A run with no --limit writes to ALL dormant issues, not the first 20.
+
+    This is the regression pin for a shipped defect, so the fixture is 25 items
+    on purpose: the write and the print used to share one loop over
+    `dormant[:20]`, so --apply flagged 20 and silently skipped the rest while
+    printing "... and N more". Measured on the live board 2026-08-16: 193 dormant
+    at a 7-day threshold, 173 of which would never have been written to. Any
+    reintroduced display bound turns this red.
+    """
+    dormant = [(issue(f"ASK-{n}", project="p"), 30.0) for n in range(25)]
+    assert len(health.select_to_flag(dormant, 0)) == 25
+
+
+def test_limit_caps_the_write_and_keeps_the_oldest_first():
+    """--limit bounds blast radius, and bounds it from the oldest end.
+
+    find_dormant sorts oldest-first, so a capped run must spend its budget on
+    the issues that have been quiet longest rather than an arbitrary slice.
+    """
+    dormant = [(issue(f"ASK-{n}", project="p"), float(50 - n)) for n in range(10)]
+    picked = health.select_to_flag(dormant, 3)
+    assert [i["identifier"] for i, _ in picked] == ["ASK-0", "ASK-1", "ASK-2"]
+
+
+def test_negative_limit_is_refused_rather_than_silently_emptying():
+    """A negative slice would return [] and read as "nothing was dormant".
+
+    Refusing is the point: a silent empty write set is indistinguishable from a
+    clean board, which is the one wrong conclusion this script exists to prevent.
+    """
+    with pytest.raises(ValueError):
+        health.select_to_flag([(issue("ASK-1", project="p"), 30.0)], -1)
