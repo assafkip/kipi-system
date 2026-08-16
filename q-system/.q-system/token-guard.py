@@ -39,6 +39,7 @@ Exit codes:
   2 = block (stderr message goes to Claude as feedback)
 """
 
+import calendar
 import contextlib
 import fcntl
 import hashlib
@@ -46,6 +47,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import sys
 import time
 
@@ -590,6 +592,37 @@ def _int_env(name, default):
 # runs DETACHED. Its answer is picked up by whichever later hook fire finds it.
 FABLE_PENDING_TEMPLATE = "/tmp/claude-fable-pending-%s.json"
 
+# --- What the hand-off file must prove before a word of it is believed --------
+# (sp-3caa724d + sp-39c0d7bd, RCA rca-claude-tampering-investigation-2026-08-16)
+#
+# The triage is printed VERBATIM into an agent's context inside a system-looking
+# banner, so this file is an input channel, not a cache. It lives in /tmp, which
+# is mode 1777 with a name any local process can predict from a session id. The
+# read used to accept anything that was a dict with a truthy `triage` key.
+#
+# What actually went wrong on 2026-08-16 was not an attacker, it was routing: a
+# subagent's PreToolUse payload carries the MAIN session transcript in
+# `transcript_path`, so a triage requested BY a subagent was computed FROM the
+# orchestrator's last 25 records and then addressed to the orchestrator in
+# imperative second person. Three subagents read that as prompt injection and
+# refused, correctly, and the session spent hours on a security scare. Measured:
+# the triage delivered to agent a542ade419af5af6d named ASK-723/737/760, which
+# occur 18/12/9 times in the session transcript and ZERO times in that agent's
+# own. Hence `actor` is stamped by the writer and compared here, and hence
+# actor_transcript_path() below.
+#
+# HONEST BOUNDARY. The owner check stops a DIFFERENT local uid from planting a
+# payload; it does nothing against a process running as this uid, which can also
+# read the actor key straight out of /tmp/claude-guard-*.json. Same-uid is
+# already game over for a hook that shells out. What these checks buy is that a
+# stranger on the box, a stale file from another day, and a triage meant for
+# another actor can no longer speak in the guard's voice.
+FABLE_PENDING_MAX_BYTES = 65536      # real payloads measured at 1.6-2.1 KB
+FABLE_TRIAGE_MAX_CHARS = 20000       # a four-section triage, generously
+FABLE_PENDING_MAX_AGE_SECONDS = 3600
+FABLE_PENDING_MAX_SKEW_SECONDS = 60  # a ts ahead of us by more than this is not ours
+FABLE_PENDING_TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
 FABLE_BANNER = (
     "--- FABLE TRIAGE (fresh session, claude-fable-5) ---\n%s\n"
     "--- end triage. It is a proposal, not a measurement: run its REFUTE "
@@ -601,26 +634,138 @@ def pending_path(actor):
         FABLE_PENDING_TEMPLATE % actor)
 
 
-def take_pending_triage(actor):
-    """The triage from an earlier escalation, consumed exactly once.
-
-    The child writes tmp+rename, so a read here sees either the whole file or no
-    file; there is no partial-JSON window. Removing it on read is what makes it
-    deliver once instead of on every later tool call.
-    """
-    path = pending_path(actor)
-    try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError):
-        return None
+def _unlink_quietly(path):
     try:
         os.remove(path)
     except OSError:
         pass
-    if isinstance(data, dict) and data.get("triage"):
-        return data["triage"]
-    return None
+
+
+def _read_pending_file(path):
+    """The parsed hand-off object, or None. Consumes the file.
+
+    O_NOFOLLOW, then fstat on the FD we actually opened: checking the path with
+    os.stat and then opening it is a swap window, and a symlink at a predictable
+    /tmp name is the cheapest way to aim this read somewhere else.
+
+    A file that is opened is always removed, whether or not it validates.
+    Leaving a rejected payload in place would make every later tool call in the
+    session re-read and re-reject the same bytes, and a poisoned file would sit
+    there until reboot. A foreign-owned file is the one we do NOT remove: /tmp
+    is sticky, so the unlink would fail anyway, and refusing it forever is the
+    safe direction.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        if info.st_uid != os.getuid():
+            return None
+        if info.st_size > FABLE_PENDING_MAX_BYTES:
+            _unlink_quietly(path)
+            return None
+        raw = os.read(fd, FABLE_PENDING_MAX_BYTES)
+    except OSError:
+        return None
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    _unlink_quietly(path)
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
+def _pending_is_fresh(ts, now=None):
+    """True for a timestamp written by a child of THIS run, roughly.
+
+    A pending file outlives the session that made it — /tmp today holds ones
+    from three days ago — and the path is derived from a session id, so a
+    redirected or reused path can hand a new actor a stale answer about work
+    that is long finished.
+    """
+    if not isinstance(ts, str):
+        return False
+    try:
+        written = calendar.timegm(time.strptime(ts, FABLE_PENDING_TS_FORMAT))
+    except (ValueError, TypeError):
+        return False
+    age = (time.time() if now is None else now) - written
+    return -FABLE_PENDING_MAX_SKEW_SECONDS <= age <= FABLE_PENDING_MAX_AGE_SECONDS
+
+
+def pending_payload_is_trustworthy(data, actor):
+    """Whether this object may be printed into `actor`'s context as a triage.
+
+    Fails closed on every question it cannot answer. `actor` is the check that
+    exists because of the 2026-08-16 scare: a triage is scoped to the actor that
+    requested it, and correct advice for a coordinator ("skip what is already
+    done", "the next output is the final report") reads as an instruction to
+    hide work and fabricate results when a worker receives it.
+    """
+    if not isinstance(data, dict):
+        return False
+    triage = data.get("triage")
+    if not isinstance(triage, str) or not triage.strip():
+        return False
+    if len(triage) > FABLE_TRIAGE_MAX_CHARS:
+        return False
+    if not isinstance(data.get("trigger"), str):
+        return False
+    if not isinstance(data.get("actor"), str) or data["actor"] != actor:
+        return False
+    return _pending_is_fresh(data.get("ts"))
+
+
+def take_pending_triage(actor):
+    """The triage from THIS actor's own earlier escalation, consumed once.
+
+    The child writes tmp+rename, so a read here sees either the whole file or no
+    file; there is no partial-JSON window. Removing it on read is what makes it
+    deliver once instead of on every later tool call.
+
+    Every rejection is silent by design: this runs inside a PreToolUse hook that
+    fires on every tool call, so raising here would break the session rather
+    than the injection. Silence costs one undelivered proposal.
+    """
+    if not isinstance(actor, str) or not actor:
+        return None
+    data = _read_pending_file(pending_path(actor))
+    if not pending_payload_is_trustworthy(data, actor):
+        return None
+    return data["triage"]
+
+
+def actor_transcript_path(hook_input):
+    """The transcript of the ACTOR this hook fired for, never the session's.
+
+    A subagent's payload carries the parent's `transcript_path` (the same field
+    the cache key exists to work around) while its own records live beside it in
+    `<session>/subagents/agent-<agent_id>.jsonl`. Feeding the parent's file to
+    the triage model is what produced orchestrator-addressed advice inside three
+    subagents on 2026-08-16 and read, correctly, as prompt injection.
+
+    Returns "" rather than the parent's path when a subagent's own transcript
+    cannot be found: build_packet already degrades to trigger + guard message
+    ("(transcript unavailable)"), which is a thin triage. Another actor's
+    context is a wrong one, and thin beats wrong here.
+    """
+    path = hook_input.get("transcript_path") or ""
+    agent_id = hook_input.get("agent_id")
+    if not agent_id:
+        return path
+    if not path:
+        return ""
+    base, ext = os.path.splitext(path)
+    own = os.path.join(base, "subagents", "agent-%s%s" % (agent_id, ext or ".jsonl"))
+    return own if os.path.exists(own) else ""
 
 
 def request_escalation(cache, hook_input, trigger, reason, actor):
@@ -648,9 +793,13 @@ def request_escalation(cache, hook_input, trigger, reason, actor):
         sys.executable, FABLE_ESCALATE_SCRIPT, "--json",
         "--trigger", trigger,
         "--reason", (reason or "")[:500],
-        "--transcript", hook_input.get("transcript_path", "") or "",
+        "--transcript", actor_transcript_path(hook_input),
         "--count", str(count),
         "--pending-file", pending_path(actor),
+        # Stamped into the payload so the READER can refuse a triage that was
+        # not computed for it. Without it the hand-off carries no addressee at
+        # all and any file at the path speaks with the guard's authority.
+        "--actor", str(actor or ""),
     ]
     if cache.get("fable_capped_notified"):
         args.append("--capped-notified")

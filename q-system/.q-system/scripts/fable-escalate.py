@@ -491,14 +491,25 @@ def notify_cap(trigger, count):
 # entry
 # --------------------------------------------------------------------------
 
-def write_pending(path, trigger, triage):
-    """Hand the triage back to the guard, atomically.
+def write_pending(path, trigger, triage, actor=""):
+    """Hand the triage back to the guard, atomically and addressed.
 
     tmp + rename in the SAME directory, so a hook reading concurrently sees
     either no file or the whole file. A plain open("w") would expose a window
     where the reader gets half a JSON object and silently discards the triage
     (json.load raises, the guard's except returns None) -- a loss that looks
     exactly like "the model had nothing to say".
+
+    `actor` is the addressee. The executable that acts on it is
+    `pending_payload_is_trustworthy()` in token-guard.py, tested by
+    tests/test_fable_escalation.py; nothing here enforces anything. The field is
+    written even when empty so it always exists, since an absent addressee and a
+    wrong one are the same fact to that check (sp-39c0d7bd).
+
+    The file is created 0600. It lands in /tmp (mode 1777) with a name derived
+    from a session id, so the mode is the only thing standing between a triage
+    and any other local account reading a slice of this session's transcript
+    back out of it (sp-3caa724d).
     """
     if not path:
         return
@@ -507,8 +518,10 @@ def write_pending(path, trigger, triage):
         directory = os.path.dirname(path)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"trigger": trigger, "triage": triage, "ts": _now()}, fh)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"trigger": trigger, "triage": triage, "ts": _now(),
+                       "actor": actor or ""}, fh)
         os.replace(tmp, path)
     except OSError:
         try:
@@ -518,7 +531,7 @@ def write_pending(path, trigger, triage):
 
 
 def escalate(trigger, reason, transcript_path, count, capped_notified,
-             pending_file=""):
+             pending_file="", actor=""):
     result = {"triage": None, "escalated": False, "capped": False,
               "notified": False, "delivered": False, "failure": None}
 
@@ -587,7 +600,7 @@ def escalate(trigger, reason, transcript_path, count, capped_notified,
     result["escalated"] = triage is not None
     result["failure"] = failure
     if triage:
-        write_pending(pending_file, trigger, triage)
+        write_pending(pending_file, trigger, triage, actor)
     return result
 
 
@@ -660,6 +673,9 @@ def main():
     parser.add_argument("--capped-notified", action="store_true")
     parser.add_argument("--pending-file", default="",
                         help="where to drop the triage for the guard to collect")
+    parser.add_argument("--actor", default="",
+                        help="the actor this triage is FOR; the guard refuses "
+                             "to deliver it to any other actor")
     parser.add_argument("--json", action="store_true",
                         help="machine output (the token-guard contract)")
     args = parser.parse_args()
@@ -669,7 +685,8 @@ def main():
                "notified": False, "delivered": False, "failure": "disabled"}
     else:
         out = escalate(args.trigger, args.reason, args.transcript,
-                       args.count, args.capped_notified, args.pending_file)
+                       args.count, args.capped_notified, args.pending_file,
+                       args.actor)
 
     if args.json:
         print(json.dumps(out))
