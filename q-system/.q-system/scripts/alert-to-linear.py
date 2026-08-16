@@ -54,6 +54,43 @@ EXIT_REFUSED_FIXTURE = 4
 TEAM_KEY = os.environ.get("KIPI_LINEAR_TEAM", "ASK")
 OWNER_LABEL = "owner:sana"
 
+# THE MARK THAT SAYS "A MACHINE FILED THIS, NOBODY ROUTED IT" (ASK-882).
+#
+# Measured on the live board 2026-08-16: 873 issues, 229 of them carrying no
+# project at all -- created, never routed. Automated inflow outran manual triage,
+# and the reason it could is that an auto-filed ticket lands in Backlog looking
+# exactly like work a human scoped and put there. There is no field to filter on,
+# so "everything a scanner filed today" is not a query anyone can write.
+#
+# WHY A LABEL AND NOT LINEAR'S OWN TRIAGE FEATURE. Team Triage is real and it IS
+# reachable from the API -- `TeamUpdateInput.triageEnabled` exists, and ASK reads
+# `triageEnabled: false` (introspected 2026-08-16, so this is measured, not
+# assumed). It was still the wrong instrument here, for two reasons:
+#
+#   1. A triage-type state is NOT a backlog-type state, and both drains filter on
+#      the type: linear-worker.sh:546 refuses anything whose state type is not in
+#      ("backlog", "unstarted"), and linear-dor-drafter.py:194 draws its
+#      DRAFTABLE_STATE_TYPES from the same pair. Flipping the flag would route
+#      every new automated ticket into a state neither consumer can see, which
+#      stops the flood by stopping the drain. That is not a gate, it is an outage.
+#   2. Linear Triage terminates in a human pressing accept or decline. The board
+#      problem was never that nobody could SEE the inflow; it was that outflow is
+#      manual while inflow is not. A queue whose exit is a person is the same
+#      bottleneck wearing a feature's name.
+#
+# So the mark is additive: the ticket still lands in Backlog where the existing
+# drain already reaches it, and it carries one extra label that makes "unrouted
+# machine output" a filterable set for the first time. Nothing is gated OFF.
+TRIAGE_LABEL = "needs-triage"
+
+TRIAGE_LABEL_DESCRIPTION = (
+    "Filed by an automated producer, not routed by a human or a process. "
+    "The issue is real work until triage says otherwise -- volume from one "
+    "detector is a signal about the detector, not N separate problems. "
+    "Cleared by giving the issue a project (routing it) or closing it. "
+    "Written by any automated filer; measured by linear-triage-health.py."
+)
+
 # A repeat inside this window updates the counter silently. Past it, the ticket
 # gets a comment so a condition that is STILL true a day later is visible as
 # still-true rather than as one stale ticket nobody has touched.
@@ -495,23 +532,53 @@ def _project_id_for(ln, team_id: str, names: list) -> str | None:
     return None
 
 
-def _owner_label_id(ln, team_id: str) -> str | None:
-    """The owner:sana label id, created once if the team lacks it.
+def _label_ids(ln, team_id: str, wanted: list) -> list:
+    """Ids for `wanted` label names, creating any the team lacks.
+
+    ONE ROUND TRIP FOR ALL OF THEM, not one per label. The previous shape took a
+    single name and did its own LABELS_QUERY; adding `needs-triage` beside
+    `owner:sana` by copying it would have doubled the query count on the alert
+    path for no new information, and given two places to fix when Linear changes.
 
     A missing label must never cost the ticket: an alert filed with no label is
     still an alert Sana can find, whereas raising here would drop it entirely.
+    That is also why this returns the ids it DID resolve rather than all-or-
+    nothing -- losing the `needs-triage` mark is a worse board, losing the ticket
+    is a lost alert, and those are not the same size of mistake.
+
+    Names are compared lowercased because that is how the previous single-label
+    version compared, and `owner:sana` on the live board is stored lowercase.
     """
+    found: dict = {}
     try:
         team = (ln.graphql(LABELS_QUERY, {"teamId": team_id}) or {}).get("team") or {}
         for node in ((team.get("labels") or {}).get("nodes") or []):
-            if (node.get("name") or "").lower() == OWNER_LABEL:
-                return node.get("id")
-        made = ln.graphql(LABEL_CREATE,
-                          {"input": {"name": OWNER_LABEL, "teamId": team_id}})
-        return (((made or {}).get("issueLabelCreate") or {})
-                .get("issueLabel") or {}).get("id")
+            name = (node.get("name") or "").lower()
+            if name in wanted and name not in found:
+                found[name] = node.get("id")
     except Exception:
-        return None
+        return []
+
+    for name in wanted:
+        if name in found:
+            continue
+        # Created one at a time and each in its own try: a team that already has
+        # `owner:sana` but not `needs-triage` must still come away with the id it
+        # did have. A single try around the whole loop would throw away a
+        # resolved id because a LATER create failed.
+        try:
+            payload = {"name": name, "teamId": team_id}
+            if name == TRIAGE_LABEL:
+                payload["description"] = TRIAGE_LABEL_DESCRIPTION
+            made = ln.graphql(LABEL_CREATE, {"input": payload})
+            new_id = (((made or {}).get("issueLabelCreate") or {})
+                      .get("issueLabel") or {}).get("id")
+            if new_id:
+                found[name] = new_id
+        except Exception:
+            continue
+
+    return [found[n] for n in wanted if n in found]
 
 
 def file_alert(message: str, now: float | None = None) -> tuple[int, str]:
@@ -578,9 +645,14 @@ def file_alert(message: str, now: float | None = None) -> tuple[int, str]:
                 f"<!-- kipi-alert-fingerprint: {fp} -->"
             ),
         }
-        label_id = _owner_label_id(ln, team_id)
-        if label_id:
-            payload["labelIds"] = [label_id]
+        # BOTH labels, and `needs-triage` only on a ticket being CREATED. A
+        # repeat lands in the branch above and never reaches here, so re-marking
+        # an issue a human already routed is structurally impossible rather than
+        # merely avoided -- if this ran on the repeat path it would undo triage
+        # every time the condition fired again.
+        label_ids = _label_ids(ln, team_id, [OWNER_LABEL, TRIAGE_LABEL])
+        if label_ids:
+            payload["labelIds"] = label_ids
 
         # A PROJECT IS ROUTING, NOT DECORATION (ASK-839). This payload carried
         # teamId + labelIds and nothing else, so every alert landed project-unset.
