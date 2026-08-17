@@ -16,13 +16,33 @@ ENFORCED while naming no executable. What is actually enforced today:
 |---|---|
 | `alert-to-linear.py` writes `needs-triage` on every ticket it creates | CODE, and `test_linear_triage_health.py` pins it |
 | `linear-triage-health.py` measures the resulting queue and alerts on a breach | CODE, wired via `com.kipi.linear-triage-health.plist` |
-| Any OTHER filer doing the same | ADVISORY. No hook inspects a new script for this |
+| Any OTHER filer doing the same | PARTLY CODE. `linear-filer-label-lint.py` demands a DECLARED posture, never the label itself |
 
-There is no gate that catches a future filer which skips the mark. Writing one
-would mean statically deciding "is this call site creating a Linear issue without
-a human", which is a judgment a regex loses. So this is a convention with one
-worked reference implementation, not a checked invariant. If it drifts, nothing
-will say so.
+A gate now exists here, and it is narrower than the row above may suggest. The
+original text said no hook could inspect a new script for this, because deciding
+"is this call site creating a Linear issue without a human" statically is a
+judgment a regex loses. That reasoning was right and the gate does not overturn
+it -- it splits the question along `skill-hook-pairing.md`'s decision rule:
+
+- **Deterministic (the script):** does this file construct an `issueCreate`?
+- **Judgment (the author):** is a human deciding each of those issues?
+
+The second is never inferred, it is declared once in the file. So a compliant
+filer passes one of exactly two ways: it references `needs-triage`, or it carries
+`# linear-filer: human-in-the-loop -- <why a person decides each issue>`.
+Wired PostToolUse on Edit/Write/MultiEdit in BOTH `.claude/settings.json` and
+`settings-template.json`, tested by `test_linear_filer_label_lint.py`.
+
+Measured before it shipped: 8 files in this repo construct `issueCreate`, and one
+referenced `needs-triage`. A gate demanding the label outright would have been red
+on 7 files the day it landed -- unsatisfiable for its own population, which is how
+a gate gets switched off and then protects nothing.
+
+**Do not read its silence as proof.** It matches the string `issueCreate`, so a
+filer reaching Linear through some future helper is invisible to it. It cannot
+tell whether a posture marker is TRUE: `human-in-the-loop` on a nightly sweep
+passes and is a lie the gate cannot see. And it checks the label is REFERENCED,
+never that it is attached to the payload on every branch.
 
 ## The rule
 
