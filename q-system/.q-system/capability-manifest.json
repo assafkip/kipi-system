@@ -101,6 +101,10 @@
       "timeout_s": 120
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-converge-capout.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-converge.sh",
       "runner": "bash"
     },
