@@ -320,6 +320,42 @@ def op_claim(d, issue, flag):
     return True
 
 
+def op_claim_uncapped(d, issue, flag, outcome):
+    """`op_claim`, refusing outright if this issue is parked (codex on PR #210).
+
+    ONE TRANSACTION, and that is the entire reason this op exists rather than a
+    capout read in front of a claim-flag call. The redrives' cap-out gates sat in
+    the read-only OFFER; the atomic claim that actually spends the attempt asked
+    only whether the flag was free. kipi-dispatch.sh runs a ps snapshot, a
+    converge-live probe and a budget read between those two calls, so a cap-out
+    landing in that window authorized the very dispatch it was written to stop.
+
+    A caller-side check would only narrow the window: two subprocesses cannot be
+    atomic against a third writer. The question is answered here, under the same
+    flock that sets the flag, so there is no interval to lose the race in.
+
+    REFUSING WRITES NOTHING, which is load-bearing. Claiming first and reporting
+    the park afterwards would spend the issue's one attempt on a dispatch that
+    never happened, and `clear-capout` would then release an issue no redrive can
+    pick up -- a permanent stall wearing a cleared park's clothes.
+
+    `outcome` carries the verdict out because _mutate answers only bool(changed),
+    and "already claimed" and "refused, parked" are both False with different
+    exit codes owed to the caller.
+    """
+    e = d.setdefault(issue, {})
+    if e.get("capout"):
+        outcome["result"] = "capped"
+        outcome["why"] = e.get("capout_why") or "no reason recorded"
+        return False
+    if e.get(flag):
+        outcome["result"] = "already"
+        return False
+    e[flag] = True
+    outcome["result"] = "claimed"
+    return True
+
+
 def main(argv):
     if len(argv) < 3:
         print("usage: attempts-ledger.py <ledger-path> <op> [args...]", file=sys.stderr)
@@ -466,6 +502,24 @@ def _run(path, op, rest, ts):
         issue, flag = _args(op, rest, 2)
         claimed = _mutate(path, lambda d: op_claim(d, issue, flag))
         return 0 if claimed else 1
+
+    if op == "claim-flag-uncapped":       # -> 0 claimed, 1 already, 4 parked
+        # 4, and it has to be its OWN code. 1 already means "already claimed,
+        # stay quiet" for six call sites, and 2/3 already mean "nothing was
+        # written" -- a park is neither: nothing was written AND the caller must
+        # say so out loud, because a silently skipped dispatch is the 29-hour
+        # outage the redrives exist to end. See op_claim_uncapped for why the
+        # check cannot live in the caller.
+        issue, flag = _args(op, rest, 2)
+        outcome = {}
+        _mutate(path, lambda d: op_claim_uncapped(d, issue, flag, outcome))
+        if outcome.get("result") == "capped":
+            sys.stderr.write(
+                "attempts-ledger: `%s` refused for %s -- converge already gave up "
+                "on this issue (%s). Nothing was claimed.\n"
+                % (op, issue, outcome.get("why", "no reason recorded")))
+            return 4
+        return 0 if outcome.get("result") == "claimed" else 1
 
     print("unknown op: %s" % op, file=sys.stderr)
     return 2

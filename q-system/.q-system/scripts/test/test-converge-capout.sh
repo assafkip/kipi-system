@@ -231,6 +231,94 @@ grep -q "ASK-8712" "$WORK/ci.err" && grep -q "clear-capout" "$WORK/ci.err" \
   && ok "ci-redrive says WHY it skipped and how to un-park it" \
   || bad "ci-redrive skipped silently: $(cat "$WORK/ci.err")"
 
+echo "== the atomic claim refuses a cap-out that landed after the offer =="
+
+# THE WINDOW BETWEEN OFFER AND CLAIM (codex review on PR #210, major). The two
+# gates above sit in the READ-ONLY offer. kipi-dispatch.sh then runs a `ps`
+# snapshot, a converge-live probe and a budget read before it reaches
+# mark-dispatched, which is where the attempt is actually spent -- and THAT call
+# asked only "is this flag unclaimed", never "is this issue parked". So a cap-out
+# recorded inside that window authorized the dispatch it was written to stop:
+# converge exits, `converge_live` goes false, the offer passes the capout check
+# microseconds before op_capout lands, and the claim then says yes.
+#
+# Checking capout in the caller before claiming would only narrow the window, not
+# close it -- two subprocesses cannot be atomic against a third. The question has
+# to be answered INSIDE the transaction that sets the flag, which is the ledger's
+# own flock'd _mutate.
+mark_review() {   # mark_review <issue> <pr> <sha> -> rc, stderr in rr-mark.err
+  env KIPI_ATTEMPTS="$ATTEMPTS" KIPI_NOTIFY="$WORK/bin/notify.sh" \
+    python3 "$REVIEW_REDRIVE" --repo-dir "$WORK" --records-dir "$WORK/records" \
+      mark-dispatched --issue "$1" --action rework --pr "$2" --head-sha "$3" \
+      2>"$WORK/rr-mark.err"
+  echo $?
+}
+mark_ci() {       # mark_ci <issue> <signature> <sha> -> rc, stderr in ci-mark.err
+  env KIPI_ATTEMPTS="$ATTEMPTS" KIPI_NOTIFY="$WORK/bin/notify.sh" \
+    python3 "$CI_REDRIVE" --repo-dir "$WORK" mark-dispatched \
+      --issue "$1" --signature "$2" --head-sha "$3" 2>"$WORK/ci-mark.err"
+  echo $?
+}
+
+python3 "$LEDGER" "$ATTEMPTS" record-capout ASK-8720 \
+  "hit the 3-round cap still at 'REQUEST CHANGES' on PR #330" >/dev/null 2>&1
+
+RC="$(mark_review ASK-8720 330 eeee5555)"
+[ "$RC" != "0" ] \
+  && ok "review-redrive's claim refuses a capped issue (rc=$RC) -- the dispatch is not authorized" \
+  || bad "review-redrive mark-dispatched returned 0 for a parked issue -- it authorizes the dispatch the cap-out exists to stop"
+grep -q "clear-capout" "$WORK/rr-mark.err" \
+  && ok "the refusing claim names the command that clears the park" \
+  || bad "the claim refused without naming clear-capout: $(cat "$WORK/rr-mark.err")"
+
+# THE WALL GUARD, same shape as every pair above: byte-identical call, no cap-out.
+RC="$(mark_review ASK-8721 331 ffff6666)"
+[ "$RC" = "0" ] \
+  && ok "an un-capped issue is still claimed -- the gate is not a wall" \
+  || bad "mark_review refused an UN-capped issue (rc=$RC): $(cat "$WORK/rr-mark.err")"
+
+python3 "$LEDGER" "$ATTEMPTS" record-capout ASK-8722 \
+  "hit the 3-round cap still at 'REQUEST CHANGES' on PR #340" >/dev/null 2>&1
+
+RC="$(mark_ci ASK-8722 sig8722 aaaa7777)"
+[ "$RC" != "0" ] \
+  && ok "ci-redrive's claim refuses a capped issue (rc=$RC) -- this is ASK-830's call site" \
+  || bad "ci-redrive mark-dispatched returned 0 for a parked issue: $(cat "$WORK/ci-mark.err")"
+grep -q "clear-capout" "$WORK/ci-mark.err" \
+  && ok "ci-redrive's refusing claim names the clearing command too" \
+  || bad "ci-redrive claim refused without naming clear-capout: $(cat "$WORK/ci-mark.err")"
+
+RC="$(mark_ci ASK-8723 sig8723 bbbb8888)"
+[ "$RC" = "0" ] \
+  && ok "ci-redrive still claims an un-capped issue -- not a wall" \
+  || bad "mark_ci refused an UN-capped issue (rc=$RC): $(cat "$WORK/ci-mark.err")"
+
+# THE REFUSAL MUST NOT SPEND THE ATTEMPT, and this is the case that separates a
+# real check-and-claim from "claim, then notice". A claim that sets the flag and
+# then reports a park has burned the issue's one attempt on a dispatch that never
+# happened, so clearing the park would release an issue that can no longer be
+# redriven -- a silent permanent stall wearing a cleared park's clothes.
+[ -z "$(capout_of ASK-8720 review_rework_pr330_eeee5555)" ] \
+  && ok "the refused claim left the attempt flag UNSET -- the park is reversible" \
+  || bad "the refusal still claimed review_rework_pr330_eeee5555 -- clearing the park cannot recover it"
+
+python3 "$LEDGER" "$ATTEMPTS" clear-capout ASK-8720 >/dev/null 2>&1
+RC="$(mark_review ASK-8720 330 eeee5555)"
+[ "$RC" = "0" ] \
+  && ok "once the park is cleared the same claim succeeds -- nothing was consumed" \
+  || bad "the attempt was consumed by the refusal (rc=$RC after clear-capout)"
+
+# The ledger op itself, at its own seam: one op, one transaction, a distinct code.
+python3 "$LEDGER" "$ATTEMPTS" record-capout ASK-8724 "capped" >/dev/null 2>&1
+python3 "$LEDGER" "$ATTEMPTS" claim-flag-uncapped ASK-8724 f1 >/dev/null 2>&1
+RC=$?
+[ "$RC" = "4" ] \
+  && ok "claim-flag-uncapped exits 4 on a parked issue -- not 1, which means 'already claimed, stay quiet'" \
+  || bad "claim-flag-uncapped on a capped issue exited $RC, want 4"
+[ -z "$(capout_of ASK-8724 f1)" ] \
+  && ok "and it wrote no flag while refusing" \
+  || bad "claim-flag-uncapped set the flag it refused to claim"
+
 echo "== a human clears the park, and only a human =="
 
 # The park must be exitable, or the fix trades a runaway for a permanent stall.
