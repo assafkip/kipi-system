@@ -668,6 +668,274 @@ def test_already_flagged_raises_rather_than_answering_on_a_broken_read():
         health.already_flagged(BrokenReadLinear(), "uuid-1")
 
 
+# --- ROUND 4 FINDINGS 1+2: the READ is the flag-once guarantee ---------------
+#
+# One cause, two symptoms. The lock was keyed on the installed copy's directory,
+# so two installs never contended; and the idempotency check only read the first
+# 100 comments, so it had a permanent blind spot anyway. These pin the fix at the
+# level it was made: a complete read, not a bigger lock.
+
+
+class PaginatedIssue:
+    """A Linear issue that serves its comments in pages and honours `after`.
+
+    Shaped like the real `comments(first: 100, after: $after)` connection --
+    `nodes` plus a `pageInfo` -- because the defect being pinned is precisely
+    that the old query never asked for the second page. A stub that returns all
+    comments in one bag cannot fail for the reason we care about, and every
+    pre-existing stub in this file is exactly that bag.
+
+    The cursor is a stringified offset. Linear's is opaque, but the only
+    property the code under test may rely on is that it round-trips, and an
+    offset makes an off-by-one visible in the assertion instead of hiding it.
+    """
+
+    PAGE = 100
+
+    def __init__(self, comments=None):
+        self.comments = list(comments or [])
+        self.writes = 0
+        self.pages_served = 0
+
+    def graphql(self, query, variables):
+        if "comments(" in query:
+            start = int(variables.get("after") or 0)
+            chunk = self.comments[start:start + self.PAGE]
+            end = start + len(chunk)
+            self.pages_served += 1
+            return {"issue": {"comments": {
+                "nodes": chunk,
+                "pageInfo": {"hasNextPage": end < len(self.comments),
+                             "endCursor": str(end)},
+            }}}
+        self.writes += 1
+        self.comments.append({"body": variables["input"]["body"]})
+        return {"commentCreate": {"success": True}}
+
+
+def _filler(n):
+    return [{"body": f"unrelated comment {i}"} for i in range(n)]
+
+
+def test_a_marker_past_the_first_page_is_still_found():
+    """The finding-2 reproducer, with a stub that actually paginates.
+
+    Measured on the PR head with this same stub: 1 page fetched, result
+    `flagged`, 1 duplicate mutation. A dormancy comment is permanent and there
+    is no undo, so a second one on an already-flagged issue costs trust in
+    every flag the sweep has ever written.
+    """
+    ln = PaginatedIssue(_filler(100) + [{"body": health.DORMANT_MARKER}])
+    out = health.flag_dormant(ln, {"id": "uuid-1", "identifier": "ASK-1"}, 120.0, 75)
+    assert out == "already-flagged"
+    assert ln.writes == 0
+    # Pins the mechanism, not just the outcome: 2 proves it asked for the page
+    # the old code never asked for. Without this the test would still pass if a
+    # future edit widened `first:` to 200 and re-created the blind spot at 201.
+    assert ln.pages_served == 2
+
+
+def test_two_installs_flag_one_issue_once_without_ever_sharing_a_lock():
+    """Finding 1, at the level the fix was actually made.
+
+    Two installed copies hash to two different lock paths and CANNOT contend --
+    that is asserted here rather than fixed, because a filesystem lock cannot
+    represent a shared Linear team and pretending otherwise is the bug. What
+    stops the duplicate is that the second sweep's read finds the first sweep's
+    marker, wherever it landed. The filler pushes that marker onto page 2, so
+    this fails on the PR head for the pagination reason as well.
+    """
+    original_here = health.HERE
+    try:
+        health.HERE = "/opt/kipi-a/scripts"
+        path_a = health.apply_lock_path()
+        health.HERE = "/opt/kipi-b/scripts"
+        path_b = health.apply_lock_path()
+        assert path_a != path_b, "premise of the finding: two installs, two locks"
+
+        shared = PaginatedIssue(_filler(100))
+        issue_node = {"id": "uuid-1", "identifier": "ASK-1"}
+
+        health.HERE = "/opt/kipi-a/scripts"
+        first = health.flag_dormant(shared, issue_node, 120.0, 75)
+        health.HERE = "/opt/kipi-b/scripts"
+        second = health.flag_dormant(shared, issue_node, 120.0, 75)
+    finally:
+        health.HERE = original_here
+
+    assert first == "flagged"
+    assert second == "already-flagged"
+    assert shared.writes == 1
+
+
+def test_an_unfinishable_comment_walk_is_a_failure_not_a_missing_marker():
+    """A stalled cursor must never be answered as "no marker".
+
+    This is the round-2 lesson (an unknown is not a skip) applied to a SECOND
+    way of not finishing. Returning False here would write a duplicate onto an
+    issue whose marker simply had not been reached yet, which is the original
+    defect wearing a different hat.
+    """
+
+    class StalledCursor:
+        def __init__(self):
+            self.writes = 0
+
+        def graphql(self, query, variables):
+            if "comments(" in query:
+                return {"issue": {"comments": {
+                    "nodes": _filler(100),
+                    "pageInfo": {"hasNextPage": True, "endCursor": None},
+                }}}
+            self.writes += 1
+            return {"commentCreate": {"success": True}}
+
+    ln = StalledCursor()
+    with pytest.raises(health.FlagCheckFailed):
+        health.already_flagged(ln, "uuid-1")
+    # flag_dormant turns that into a reported FAILURE that reaches the exit
+    # code, and writes nothing.
+    out = health.flag_dormant(ln, {"id": "uuid-1", "identifier": "ASK-1"}, 120.0, 75)
+    assert out.startswith("FAILED")
+    assert ln.writes == 0
+
+
+def test_a_never_ending_cursor_hits_the_cap_and_still_refuses_to_write():
+    """The runaway stop is a cap on the LOOP, never a bound on the SEARCH.
+
+    A cap that returned False would be a blind spot at page 51 instead of page
+    2 -- the same defect, moved. So it raises, and the caller reports a failure.
+    """
+
+    class EndlessPages:
+        def __init__(self):
+            self.writes = 0
+            self.pages_served = 0
+
+        def graphql(self, query, variables):
+            if "comments(" in query:
+                self.pages_served += 1
+                cursor = int(variables.get("after") or 0) + 100
+                return {"issue": {"comments": {
+                    "nodes": _filler(100),
+                    "pageInfo": {"hasNextPage": True, "endCursor": str(cursor)},
+                }}}
+            self.writes += 1
+            return {"commentCreate": {"success": True}}
+
+    ln = EndlessPages()
+    with pytest.raises(health.FlagCheckFailed):
+        health.already_flagged(ln, "uuid-1")
+    assert ln.pages_served == health.COMMENT_PAGE_CAP
+    assert ln.writes == 0
+
+
+def test_a_single_page_issue_with_no_marker_is_still_flagged_normally():
+    """The negative control for all of the above.
+
+    Every test in this block asserts something is NOT written. If the paginated
+    walk had a bug that made it raise or return True on ordinary input, they
+    would all still pass while the sweep silently stopped flagging anything.
+    """
+    ln = PaginatedIssue(_filler(3))
+    out = health.flag_dormant(ln, {"id": "uuid-1", "identifier": "ASK-1"}, 120.0, 75)
+    assert out == "flagged"
+    assert ln.writes == 1
+    assert ln.pages_served == 1
+
+
+# --- ROUND 4 FINDING 3: a dropped label must be observable -------------------
+
+
+def _alert_linear(label_create):
+    """A Linear double for the alert filer. `label_create` decides that mutation."""
+
+    class L:
+        def __init__(self):
+            self.created = None
+            self.labels = [{"id": "owner-id", "name": "owner:sana"}]
+
+        def linear_api_key(self):
+            return "k"
+
+        def graphql(self, q, v):
+            if "teams(filter" in q:
+                return {"teams": {"nodes": [{"id": "t"}]}}
+            if "labels(first" in q:
+                return {"team": {"labels": {"nodes": list(self.labels)}}}
+            if "issueLabelCreate" in q:
+                return label_create(self)
+            if "projects(first" in q:
+                return {"team": {"projects": {"nodes": []}}}
+            if "issueCreate" in q:
+                self.created = v["input"]
+                return {"issueCreate": {"issue": {"id": "u9",
+                                                  "identifier": "ASK-9"}}}
+            return {}
+
+    return L()
+
+
+def _file_one_alert(monkeypatch, ln):
+    """Run file_alert against `ln` with state IO stubbed out.
+
+    State is stubbed rather than pointed at a tmp file because this asserts on
+    the returned line and on stderr, not on persistence, and a test that touches
+    the real state path is what the fable-discipline lint exists to stop.
+    """
+    monkeypatch.setattr(alerts, "_load_linear", lambda: ln)
+    monkeypatch.setattr(alerts, "_read_state", lambda fp: {})
+    monkeypatch.setattr(alerts, "_write_state", lambda *a: None)
+    return alerts.file_alert("[kipi-system] detector fired", now=1)
+
+
+def test_a_real_label_failure_is_loud_and_marks_the_file_degraded(monkeypatch, capsys):
+    """A permission error looked exactly like success on the PR head.
+
+    Measured there: `(0, 'filed ASK-9')` with `needs-triage` absent. The alert
+    still has to be filed -- a dropped alert is worse than an unlabelled one,
+    which is this file's standing posture -- but `needs-triage` is the field the
+    whole ASK-882 queue measurement reads, so losing it silently makes the
+    depth quietly wrong instead of loudly broken.
+    """
+
+    def denied(_self):
+        raise RuntimeError("permission denied")
+
+    ln = _alert_linear(denied)
+    code, line = _file_one_alert(monkeypatch, ln)
+
+    assert code == alerts.EXIT_OK, "the alert must still be filed"
+    assert ln.created is not None, "the ticket is created regardless"
+    assert alerts.TRIAGE_LABEL not in ln.created.get("labelIds", [])
+    # The two visibility surfaces, asserted separately. An `or` across them
+    # would pass on whichever half happened to work.
+    assert "DEGRADED" in line and alerts.TRIAGE_LABEL in line
+    assert "permission denied" in capsys.readouterr().err
+
+
+def test_a_lost_create_race_stays_quiet_and_undegraded(monkeypatch, capsys):
+    """The negative control: the loud path must not fire on the benign one.
+
+    Two filers racing means the loser's create fails because the label now
+    EXISTS. That is already handled by the refetch, costs nothing, and must not
+    produce a warning -- a warning on every race would train the operator to
+    ignore the one that matters.
+    """
+
+    def already_exists(self):
+        self.labels.append({"id": "triage-id", "name": alerts.TRIAGE_LABEL})
+        raise RuntimeError("label already exists")
+
+    ln = _alert_linear(already_exists)
+    code, line = _file_one_alert(monkeypatch, ln)
+
+    assert code == alerts.EXIT_OK
+    assert "triage-id" in ln.created.get("labelIds", [])
+    assert "DEGRADED" not in line
+    assert "WARNING" not in capsys.readouterr().err
+
+
 # --- ROUND 2 FINDING 2: a refused write has to reach the exit code ----------
 
 FAKE_SYNC_ROUTED_DORMANT = '''
