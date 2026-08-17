@@ -151,6 +151,14 @@ def _non_pytest_runner(monkeypatch, entrypoint, main_file=None):
     """
     for var in ("PYTEST_CURRENT_TEST", "KIPI_TEST_RUNNER", "KIPI_ALERT_CAPTURE"):
         monkeypatch.delenv(var, raising=False)
+    # The ancestry is part of the process's identity, so standing it up as a
+    # non-test runner has to answer for it too. These cases genuinely run under
+    # `python3 -m pytest test_alert_to_linear.py`, so the REAL parent is a test
+    # runner and signal 3 would (correctly) refuse the two production controls
+    # below for a reason that has nothing to do with what they assert. Signal 3
+    # is pinned instead by the real-process reproducer and by the direct cases on
+    # `_ancestor_entrypoints`, where it can be fed a chain the case chose.
+    monkeypatch.setattr(mod, "_ancestor_entrypoints", lambda: [])
     monkeypatch.setattr(sys, "argv", [entrypoint, AUTOCOMMIT[0]])
     main_mod = sys.modules.get("__main__")
     if main_mod is not None:
@@ -291,6 +299,261 @@ def test_capture_hatch_still_wins_over_the_new_marker(monkeypatch, tmp_path):
     assert rc == mod.EXIT_OK
     assert AUTOCOMMIT[0] in dest.read_text(encoding="utf-8")
     assert touched == []
+
+
+# --- the subprocess boundary, in REAL processes (ASK-879, PR #209 round 1) ---
+#
+# CODEX MAJOR: "the fixture guard inspects the writer subprocess rather than its
+# parent test runner, allowing unmarked bash and plain-Python tests to reach
+# Linear." Correct, and the cases above cannot see it. Every one of them calls
+# `mod.main()` in-process, so `sys.argv` and `__main__` ARE the runner's -- the
+# one arrangement where reading self is indistinguishable from reading the
+# runner. The real chain is `suite -> slack-notify.sh -> alert-to-linear.py as a
+# subprocess`, where the leaf's argv[0] is the writer and nothing about it looks
+# like a test. Signal 2 covers that shape and NO runner exports the marker yet
+# (sp-aecfe5d8), so on the shipped head the hole is open in exactly the shape the
+# scar was measured in.
+#
+# So these two cases fork real processes. A fixture built from monkeypatched
+# module attributes cannot cross a process boundary, and a boundary is the defect.
+#
+# THE CROSS-PROCESS TRIPWIRE. `_tripwire` is a monkeypatch and does not survive
+# `fork`, so "did it reach Linear" is asserted through the EXIT CODE against a
+# HOME with no key file and no `KIPI_LINEAR_API_KEY`: exit 3 means the run got
+# past the guard, loaded the client and asked for auth, which is reaching Linear.
+# Exit 4 means refused. That same missing key is what makes running this safe --
+# the RED state cannot file a real ticket, it can only prove it tried to.
+
+_SHIM = """#!/bin/bash
+# Stands in for slack-notify.sh: a bash link in the chain that runs the writer
+# as a subprocess. Deliberately NOT named like a test -- it is production code.
+set -euo pipefail
+exec python3 "$1" "$2"
+"""
+
+_RUNNER = '''#!/usr/bin/env python3
+"""Stands in for a plain-python3 suite: no pytest, so no PYTEST_CURRENT_TEST."""
+import subprocess, sys
+sys.exit(subprocess.run(["bash", sys.argv[1], sys.argv[2], sys.argv[3]]).returncode)
+'''
+
+# WHY THESE CHAINS ARE PADDED, and it is not ceremony.
+#
+# The control below has to show a production chain is NOT refused. But this suite
+# genuinely runs as `python3 -m pytest test_alert_to_linear.py`, so pytest is a
+# real ancestor of anything it forks, and the walk found it: the control went RED
+# with `REFUSED under a test entry point in a parent process
+# (test_alert_to_linear.py)`. That refusal was CORRECT -- the machine really was
+# running a test -- and it made the control unable to fail for its own reason.
+#
+# So each chain is pushed past `_ANCESTRY_MAX_DEPTH` links away from pytest by
+# production-named bash links, and the walk stops before reaching it. Both chains
+# are padded identically, so the only difference between the reproducer and the
+# control stays the one thing under test: what the runner is named.
+_PAD = """#!/bin/bash
+# A production-named link. Not `exec`: each level must stay a live parent, which
+# is the whole point of the padding.
+set -euo pipefail
+n="$1"; shift
+if [ "$n" -gt 0 ]; then bash "$0" "$((n - 1))" "$@"; else python3 "$@"; fi
+"""
+
+_PAD_LINKS = 8
+
+
+def _chain(tmp_path, runner_name):
+    """Write the padded chain and return the command that runs it."""
+    runner = tmp_path / runner_name
+    runner.write_text(_RUNNER, encoding="utf-8")
+    shim = tmp_path / "notify-shim.sh"
+    shim.write_text(_SHIM, encoding="utf-8")
+    pad = tmp_path / "pipeline-link.sh"
+    pad.write_text(_PAD, encoding="utf-8")
+    writer = os.path.join(SCRIPTS, "alert-to-linear.py")
+    return ["bash", str(pad), str(_PAD_LINKS),
+            str(runner), str(shim), writer, AUTOCOMMIT[0]]
+
+
+def _keyless_env(tmp_path):
+    """No marker, no capture, and no reachable Linear key."""
+    env = dict(os.environ)
+    for var in ("PYTEST_CURRENT_TEST", "KIPI_TEST_RUNNER", "KIPI_ALERT_CAPTURE",
+                "KIPI_LINEAR_API_KEY"):
+        env.pop(var, None)
+    home = tmp_path / "home"
+    home.mkdir()
+    env["HOME"] = str(home)
+    return env
+
+
+def test_a_plain_python3_suite_cannot_file_through_a_bash_subprocess(tmp_path):
+    """THE REPRODUCER for the round-1 finding. Real processes, no marker.
+
+    `test_launchd_health_check.py` is the measured case and this is its shape:
+    plain python3, a bash link, the writer as a grandchild. Seen RED on the
+    shipped head -- exit 3, meaning the run reached Linear's auth -- because the
+    guard was reading the grandchild's own identity, and the grandchild is
+    alert-to-linear.py.
+    """
+    import subprocess
+
+    proc = subprocess.run(
+        _chain(tmp_path, "test_repro_chain.py"),
+        env=_keyless_env(tmp_path), capture_output=True, text=True, timeout=60)
+
+    assert proc.returncode == mod.EXIT_REFUSED_FIXTURE, (
+        f"a test runner filed through a subprocess (rc={proc.returncode})\n"
+        f"{proc.stderr}")
+
+
+def test_a_production_chain_through_the_same_shim_still_reaches_linear(tmp_path):
+    """The control, and the reason the reproducer proves anything.
+
+    Same three links, same bash shim, same keyless env -- only the top process is
+    named like production. A guard that walked the ancestry and refused whatever
+    it found would pass the case above and swallow every alert slack-notify.sh
+    raises, which this file already calls worse than the bug it fixes. Exit 3 is
+    the assertion that the run got all the way to Linear's auth.
+    """
+    import subprocess
+
+    proc = subprocess.run(
+        _chain(tmp_path, "run_health_check.py"),
+        env=_keyless_env(tmp_path), capture_output=True, text=True, timeout=60)
+
+    assert proc.returncode == mod.EXIT_NO_KEY, (
+        f"a production chain was refused (rc={proc.returncode})\n{proc.stderr}")
+
+
+# --- the ancestry walk, fed a chain the case chose ---------------------------
+#
+# The two cases above fork real processes, which proves the signal works end to
+# end and says nothing about WHY it decided. These feed the walk a table
+# directly, so the parser, the depth cap and the entry-point rule each have a
+# case that can fail for that one property. A signal reachable only through a
+# live `ps` is a signal tested against whatever this machine was running.
+
+def _table(*rows):
+    """rows of (pid, ppid, cmdline), nearest ancestor first."""
+    return {pid: (ppid, cmd) for pid, ppid, cmd in rows}
+
+
+def test_the_walk_reads_the_script_an_ancestor_was_handed_not_its_arguments():
+    """THE FALSE POSITIVE THAT WENT RED FIRST.
+
+    slack-notify.sh passes the alert TEXT to its child, and an auto-commit alert
+    routinely names uncommitted test files -- AUTOCOMMIT[0] carries
+    `q-consult/pipeline/tests/test_hiring_harvest.py`. The first version read
+    every token, so that message refused itself and the production control went
+    RED. An alerting path that goes quiet whenever the alert mentions a test file
+    is worse than the bug it fixes.
+    """
+    chain = _table(
+        (10, 20, f"bash /opt/kipi/slack-notify.sh {AUTOCOMMIT[0]}"),
+        (20, 1, "/opt/kipi/run_health_check.py"),
+    )
+    assert mod._ancestor_entrypoints(chain, start=10) == [
+        "slack-notify.sh", "run_health_check.py"]
+
+
+def test_the_walk_finds_a_suite_passed_as_an_interpreter_argument():
+    """`python3 test_launchd_health_check.py` -- the measured shape. The suite is
+    argv[1], so a rule reading argv[0] would answer `python3` and cover nothing.
+    """
+    chain = _table(
+        (10, 20, "bash /opt/kipi/slack-notify.sh alert text"),
+        (20, 1, "python3 -u /opt/kipi/tests/test_launchd_health_check.py"),
+    )
+    assert "test_launchd_health_check.py" in mod._ancestor_entrypoints(chain, start=10)
+
+
+def _ancestry(monkeypatch, names):
+    """Stand the ancestry up as `names` on an otherwise production-looking run."""
+    for var in ("PYTEST_CURRENT_TEST", "KIPI_TEST_RUNNER"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(sys, "argv", [PRODUCTION_ENTRYPOINT])
+    main_mod = sys.modules.get("__main__")
+    if main_mod is not None:
+        monkeypatch.setattr(main_mod, "__file__", PRODUCTION_ENTRYPOINT,
+                            raising=False)
+    monkeypatch.setattr(mod, "_ancestor_entrypoints", lambda: list(names))
+
+
+def test_a_test_named_ancestor_is_what_makes_the_guard_refuse(monkeypatch):
+    """The ancestry branch drives the refusal on its own, self looking clean.
+
+    Paired with the case below: one asserts it fires, one asserts it does not, so
+    neither can be satisfied by a branch that is hardwired either way.
+    """
+    _ancestry(monkeypatch, ["test_launchd_health_check.py"])
+    reason = mod.fixture_context()
+    assert reason and "parent process" in reason, reason
+
+
+def test_a_production_ancestor_named_like_a_test_substring_is_not_a_test(monkeypatch):
+    """`latest-run.py` one layer up. THE ANCHOR, asserted on the branch.
+
+    Measured: swapping the ancestor `.match` for a `.search` SURVIVED the first
+    version of this section, because the only thing pinning the anchor was a case
+    asserting the regex directly -- which the guard's own branch is free to ignore.
+    A production script whose name merely contains `test-run.py` must file, or the
+    walk turns an ordinary alert into silence one process further out.
+    """
+    _ancestry(monkeypatch, ["latest-run.py", "slack-notify.sh"])
+    assert mod.fixture_context() is None
+
+
+def test_the_walk_really_hands_that_production_name_to_the_guard():
+    """Kept separate from the case above, which STUBS the walk out.
+
+    Without this, that case could be passing because the ancestry was empty
+    rather than because the name was allowed -- an assertion satisfied by the
+    stub instead of by the code. Asserted on the real walk, so the pair covers
+    both halves: the walk produces `latest-run.py`, and the guard allows it.
+    """
+    chain = _table((10, 1, "python3 /opt/kipi/latest-run.py"),)
+    assert mod._ancestor_entrypoints(chain, start=10) == ["latest-run.py"]
+
+
+def test_the_walk_stops_at_the_depth_cap():
+    """An unbounded walk on a deep chain is work done on every alert, and the
+    real chain is three links. Cap asserted directly so a case can fail for it.
+    """
+    deep = _table(*[(pid, pid + 1, f"python3 /opt/link_{pid}.py")
+                    for pid in range(10, 40)])
+    got = mod._ancestor_entrypoints(deep, start=10)
+    assert len(got) == mod._ANCESTRY_MAX_DEPTH
+
+
+def test_a_cyclic_table_terminates_instead_of_spinning():
+    """A `ps` table is read, not trusted. This runs inside a Stop hook."""
+    cyclic = _table((10, 20, "python3 /opt/a.py"), (20, 10, "python3 /opt/b.py"))
+    assert mod._ancestor_entrypoints(cyclic, start=10) == ["a.py", "b.py"]
+
+
+def test_an_unreadable_process_table_refuses_nothing():
+    """THE FAIL-OPEN, asserted rather than documented.
+
+    No `ps`, or a table this cannot parse, must yield no ancestors and therefore
+    no refusal. Failing CLOSED here would make every alert on a machine without
+    `ps` disappear silently, which is the failure this whole file exists to
+    prevent -- so the boundary is a property, not a comment.
+    """
+    assert mod._parse_process_table("") == {}
+    assert mod._parse_process_table("PID PPID COMMAND\nnot a row\n") == {}
+    assert mod._ancestor_entrypoints({}, start=10) == []
+
+
+def test_the_table_parser_keeps_the_whole_command_line():
+    """Two integers then the rest, with spaces intact -- splitting on every space
+    would truncate the command at its first argument and lose the script."""
+    parsed = mod._parse_process_table(
+        "  10  20 python3 /opt/test_x.py --flag a b\n"
+        "  20   1 /sbin/launchd\n"
+        "bad row without pids\n")
+    assert parsed[10] == (20, "python3 /opt/test_x.py --flag a b")
+    assert parsed[20] == (1, "/sbin/launchd")
+    assert len(parsed) == 2
 
 
 # --- dedup behaviour against a stubbed Linear --------------------------------
