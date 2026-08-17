@@ -102,6 +102,197 @@ def test_empty_message_is_a_no_op():
     assert mod.main(["alert-to-linear.py"]) == mod.EXIT_OK
 
 
+# --- the guard must not depend on WHICH runner was used (ASK-879) -------------
+#
+# SCAR, measured 2026-08-14 (sp-5a3e3b7b, source ASK-746). The refusal above is
+# keyed on PYTEST_CURRENT_TEST, which pytest sets and nothing else does.
+# test_launchd_health_check.py runs as plain python3 under a `__main__` guard, so
+# it sets no such variable and was never refused: it reached repeat #5 on ASK-736
+# from keyed machines and filed ASK-744 and ASK-745 for real. The 2026-08-10 scar
+# was therefore only half closed -- closed for the runner that happened to be
+# used that day. Bash suites are in the same position.
+#
+# Every case below CLEARS PYTEST_CURRENT_TEST first. Leaving it set would let the
+# OLD signal answer, and the new one would be untested while reading green.
+
+
+class GraphQLTripwire(Exception):
+    """Raised if the writer reaches for Linear at all.
+
+    Asserting exit 4 alone is not enough: a refusal that happens AFTER the client
+    is loaded (or after a query goes out) is not a refusal, and the exit code
+    cannot tell the two apart. `_load_linear` is the single seam every Linear call
+    in this file goes through, so tripping it is what makes "no GraphQL was
+    attempted" an assertion rather than a hope.
+    """
+
+
+def _tripwire(monkeypatch):
+    """Explode on any Linear access. Returns the list that records the attempt."""
+    touched = []
+
+    def boom():
+        touched.append(True)
+        raise GraphQLTripwire("alert-to-linear reached for the Linear client")
+
+    monkeypatch.setattr(mod, "_load_linear", boom)
+    return touched
+
+
+def _non_pytest_runner(monkeypatch, entrypoint, main_file=None):
+    """Stand the process up as `entrypoint` with no pytest marker and no capture.
+
+    `main_file` defaults to `entrypoint` (a plain `python3 test_foo.py`, where both
+    agree) and is passed separately when the two must DISAGREE. They are set
+    independently because a guard reading only one of them still passes every case
+    that moves both -- measured, not assumed: the `read argv[0] only, never
+    __main__` mutant SURVIVED the first version of this suite, which moved both
+    together in every case.
+    """
+    for var in ("PYTEST_CURRENT_TEST", "KIPI_TEST_RUNNER", "KIPI_ALERT_CAPTURE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(sys, "argv", [entrypoint, AUTOCOMMIT[0]])
+    main_mod = sys.modules.get("__main__")
+    if main_mod is not None:
+        monkeypatch.setattr(
+            main_mod, "__file__", main_file or entrypoint, raising=False)
+
+
+PRODUCTION_ENTRYPOINT = "/opt/kipi/q-system/.q-system/scripts/launchd-health-check.py"
+
+
+def test_explicit_marker_refuses_a_non_pytest_runner(monkeypatch):
+    """The signal a bash suite or plain-python3 runner can export for itself."""
+    touched = _tripwire(monkeypatch)
+    _non_pytest_runner(monkeypatch, PRODUCTION_ENTRYPOINT)
+    monkeypatch.setenv("KIPI_TEST_RUNNER", "1")
+
+    rc = mod.main(["alert-to-linear.py", AUTOCOMMIT[0]])
+
+    assert rc == mod.EXIT_REFUSED_FIXTURE
+    assert touched == [], "refused only AFTER reaching Linear"
+
+
+def test_any_non_blank_marker_value_arms_the_refusal(monkeypatch):
+    """Presence, not truthiness. `0` is a value someone exported on purpose."""
+    touched = _tripwire(monkeypatch)
+    _non_pytest_runner(monkeypatch, PRODUCTION_ENTRYPOINT)
+    monkeypatch.setenv("KIPI_TEST_RUNNER", "0")
+
+    assert mod.main(["alert-to-linear.py", AUTOCOMMIT[0]]) == mod.EXIT_REFUSED_FIXTURE
+    assert touched == []
+
+
+def test_a_test_named_entrypoint_refuses_without_any_cooperation(monkeypatch):
+    """The half no runner has to opt into.
+
+    test_launchd_health_check.py is the measured case: plain python3, `__main__`
+    guard, no marker exported. A guard that only honours an env var protects the
+    runners someone remembered to edit, which is the per-suite stubbing this
+    chokepoint exists to replace.
+    """
+    touched = _tripwire(monkeypatch)
+    _non_pytest_runner(
+        monkeypatch,
+        "/opt/kipi/q-system/.q-system/scripts/test_launchd_health_check.py",
+    )
+
+    rc = mod.main(["alert-to-linear.py", AUTOCOMMIT[0]])
+
+    assert rc == mod.EXIT_REFUSED_FIXTURE
+    assert touched == []
+
+
+def test_a_bash_suite_entrypoint_is_refused_too(monkeypatch):
+    """`test-break-glass-audit.sh` and siblings: hyphen, `.sh`, same class."""
+    touched = _tripwire(monkeypatch)
+    _non_pytest_runner(
+        monkeypatch,
+        "/opt/kipi/q-system/.q-system/scripts/test-break-glass-audit.sh",
+    )
+
+    assert mod.main(["alert-to-linear.py", AUTOCOMMIT[0]]) == mod.EXIT_REFUSED_FIXTURE
+    assert touched == []
+
+
+def test_each_entry_point_is_read_on_its_own(monkeypatch):
+    """One test name, one production name, one at a time. Both must refuse.
+
+    Moving argv and `__main__` together in every case made them indistinguishable:
+    a guard reading either one alone passed the whole section. Split so each read
+    is pinned by a case the other cannot answer.
+    """
+    suite = "/opt/kipi/q-system/.q-system/scripts/test_launchd_health_check.py"
+
+    for label, entrypoint, main_file in (
+        ("argv[0] only", suite, PRODUCTION_ENTRYPOINT),
+        ("__main__ only", PRODUCTION_ENTRYPOINT, suite),
+    ):
+        touched = _tripwire(monkeypatch)
+        _non_pytest_runner(monkeypatch, entrypoint, main_file=main_file)
+
+        rc = mod.main(["alert-to-linear.py", AUTOCOMMIT[0]])
+
+        assert rc == mod.EXIT_REFUSED_FIXTURE, f"not refused via {label}"
+        assert touched == [], f"reached Linear via {label}"
+        monkeypatch.undo()
+
+
+def test_a_production_name_that_merely_contains_test_is_allowed(monkeypatch):
+    """`latest-run.py` holds the substring `test-run.py`. It is not a test.
+
+    The refusal matches from the START of the basename for this reason. Measured:
+    swap that `.match` for a `.search` and every other case in this section still
+    passes, so without this one the distinction is an unasserted claim -- and a
+    guard that reads an ordinary production script as a fixture swallows its alerts
+    in silence, which slack-notify.sh calls worse than the bug it fixes.
+    """
+    touched = _tripwire(monkeypatch)
+    _non_pytest_runner(
+        monkeypatch, "/opt/kipi/q-system/.q-system/scripts/latest-run.py")
+
+    rc = mod.main(["alert-to-linear.py", AUTOCOMMIT[0]])
+
+    assert touched == [True], "a production script was read as a fixture"
+    assert rc == mod.EXIT_FAILED
+
+
+def test_a_production_runner_is_still_allowed_to_file(monkeypatch):
+    """The control, and the reason the two cases above prove anything.
+
+    Without it a guard hardwired to refuse everything would pass every assertion
+    in this section and silently swallow every real alert -- the failure slack-
+    notify.sh calls worse than the bug it fixes.
+    """
+    touched = _tripwire(monkeypatch)
+    _non_pytest_runner(monkeypatch, PRODUCTION_ENTRYPOINT)
+
+    rc = mod.main(["alert-to-linear.py", AUTOCOMMIT[0]])
+
+    assert touched == [True], "the guard refused a production run"
+    assert rc == mod.EXIT_FAILED, "the tripwire should surface as a failed send"
+
+
+def test_capture_hatch_still_wins_over_the_new_marker(monkeypatch, tmp_path):
+    """KIPI_ALERT_CAPTURE is the sanctioned redirect and returns before the guard.
+
+    Pinned because the new signal sits next to it: a guard placed one line too
+    early would turn every capturing suite's asserted-on file into exit 4 and an
+    empty file, and those suites read the FILE, so they would go red.
+    """
+    touched = _tripwire(monkeypatch)
+    _non_pytest_runner(monkeypatch, PRODUCTION_ENTRYPOINT)
+    monkeypatch.setenv("KIPI_TEST_RUNNER", "1")
+    dest = tmp_path / "captured.txt"
+    monkeypatch.setenv("KIPI_ALERT_CAPTURE", str(dest))
+
+    rc = mod.main(["alert-to-linear.py", AUTOCOMMIT[0]])
+
+    assert rc == mod.EXIT_OK
+    assert AUTOCOMMIT[0] in dest.read_text(encoding="utf-8")
+    assert touched == []
+
+
 # --- dedup behaviour against a stubbed Linear --------------------------------
 
 class FakeLinear:
