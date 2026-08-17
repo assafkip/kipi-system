@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -504,9 +505,24 @@ def _stage_health_copy(tmp_path, fake_sync=FAKE_LINEAR_SYNC):
     return tmp_path / "linear-triage-health.py"
 
 
+# The suite's --apply lock, pinned OUT of the real one.
+#
+# Until round 5 the lock was keyed on the script's own directory, so a staged
+# copy in a tmpdir could not reach the installed job's lock. That isolation was
+# a side effect of the key, and the key was the round-5 blocker: two checkouts
+# on one machine never contended and both wrote a permanent comment. With the
+# key moved to the Linear team, a staged copy resolves to the SAME path as the
+# real launchd sweep, so a test that forgot to pin it would contend with the
+# real job. Isolation is therefore explicit and defaulted here rather than
+# per-test: forgetting it is not an available mistake.
+_SUITE_LOCK_DIR = tempfile.mkdtemp(prefix="kipi-triage-health-suite-")
+
+
 def _health_env(**extra):
     env = dict(os.environ)
     env.pop("PYTEST_CURRENT_TEST", None)
+    env.setdefault("KIPI_TRIAGE_HEALTH_LOCK",
+                   os.path.join(_SUITE_LOCK_DIR, "apply.lock"))
     env.update({k: str(v) for k, v in extra.items()})
     return env
 
@@ -735,15 +751,16 @@ def test_a_marker_past_the_first_page_is_still_found():
     assert ln.pages_served == 2
 
 
-def test_two_installs_flag_one_issue_once_without_ever_sharing_a_lock():
-    """Finding 1, at the level the fix was actually made.
+def test_two_installs_on_one_machine_share_one_lock():
+    """ROUND 5 BLOCKER. This test used to ASSERT the defect.
 
-    Two installed copies hash to two different lock paths and CANNOT contend --
-    that is asserted here rather than fixed, because a filesystem lock cannot
-    represent a shared Linear team and pretending otherwise is the bug. What
-    stops the duplicate is that the second sweep's read finds the first sweep's
-    marker, wherever it landed. The filler pushes that marker onto page 2, so
-    this fails on the PR head for the pagination reason as well.
+    Its previous line was `assert path_a != path_b, "premise of the finding"`,
+    which pinned two install directories to two lock paths and called that
+    settled because "a filesystem lock cannot represent a shared Linear team".
+    A filesystem lock cannot span HOSTS; it represents one machine perfectly
+    well, and two checkouts on one machine is the realistic collision for this
+    fleet -- a worktree plus the installed copy. Keying on the team instead of
+    on `HERE` closes it, so the assertion inverts.
     """
     original_here = health.HERE
     try:
@@ -751,18 +768,138 @@ def test_two_installs_flag_one_issue_once_without_ever_sharing_a_lock():
         path_a = health.apply_lock_path()
         health.HERE = "/opt/kipi-b/scripts"
         path_b = health.apply_lock_path()
-        assert path_a != path_b, "premise of the finding: two installs, two locks"
-
-        shared = PaginatedIssue(_filler(100))
-        issue_node = {"id": "uuid-1", "identifier": "ASK-1"}
-
-        health.HERE = "/opt/kipi-a/scripts"
-        first = health.flag_dormant(shared, issue_node, 120.0, 75)
-        health.HERE = "/opt/kipi-b/scripts"
-        second = health.flag_dormant(shared, issue_node, 120.0, 75)
     finally:
         health.HERE = original_here
+    assert path_a == path_b, "two installs on one machine must contend"
 
+
+class MarkedIssue:
+    """One issue carrying one dormancy marker posted at `marker_at`."""
+
+    def __init__(self, marker_at):
+        self.marker_at = marker_at
+        self.writes = 0
+
+    def graphql(self, query, variables):
+        if "comments(" in query:
+            node = {"body": health.DORMANT_MARKER}
+            if self.marker_at is not None:
+                node["createdAt"] = self.marker_at
+            return {"issue": {"comments": {
+                "nodes": [node],
+                "pageInfo": {"hasNextPage": False, "endCursor": None}}}}
+        self.writes += 1
+        return {"commentCreate": {"success": True}}
+
+
+def test_a_revived_issue_that_goes_quiet_again_is_flagged_again():
+    """ROUND 5 BLOCKER. The marker was a permanent silencer.
+
+    `dormancy_comment()` prints "still wanted -> comment or update it and this
+    clears". Nothing implemented that: `already_flagged()` found the marker
+    forever, so an issue that was flagged, revived by a human, and then went
+    quiet a SECOND time could never be flagged again. A monitor that goes
+    permanently silent on exactly the issues it once identified is worse than
+    one that never ran.
+
+    Timeline: marker 2026-01-15, human touches it 2026-03-01, now 2026-06-01.
+    """
+    issue = {"id": "u1", "identifier": "ASK-1", "title": "real work",
+             "updatedAt": "2026-03-01T00:00:00.000Z", "state": {"type": "backlog"},
+             "project": {"id": "p1"}, "labels": {"nodes": []}}
+    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    dormant = health.find_dormant([issue], now, 75)
+    assert dormant, "precondition: the revived issue is dormant again"
+
+    ln = MarkedIssue("2026-01-15T00:00:00.000Z")
+    assert health.flag_dormant(ln, *dormant[0], 75) == "flagged"
+    assert ln.writes == 1
+
+
+def test_an_issue_untouched_since_its_marker_is_not_flagged_twice():
+    """The negative control, and without it the fix above is a comment stack.
+
+    Same marker, same sweep, one field different: nothing touched the issue
+    after the flag. It must stay silent. A version of the fix that always
+    re-flags passes the test above and fails here.
+    """
+    issue = {"id": "u1", "identifier": "ASK-1", "title": "real work",
+             "updatedAt": "2026-01-10T00:00:00.000Z", "state": {"type": "backlog"},
+             "project": {"id": "p1"}, "labels": {"nodes": []}}
+    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    dormant = health.find_dormant([issue], now, 75)
+
+    ln = MarkedIssue("2026-01-15T00:00:00.000Z")
+    assert health.flag_dormant(ln, *dormant[0], 75) == "already-flagged"
+    assert ln.writes == 0
+
+
+def test_the_bots_own_comment_does_not_supersede_its_own_marker():
+    """Linear bumps updatedAt on comment creation. Measured, not assumed.
+
+    Sampled 2026-08-17 across 14 ASK issues: in 7 the issue's `updatedAt` equals
+    the newest comment's own `updatedAt` to the exact millisecond, and Linear
+    stamps a comment's `updatedAt` 15-200ms BEFORE its `createdAt`. So the
+    dormancy comment lands with the issue's clock fractionally EARLIER than the
+    marker and cannot invalidate itself on the very next sweep.
+    """
+    marker_at = "2026-01-15T00:00:00.100Z"
+    bumped_to = "2026-01-15T00:00:00.083Z"   # the comment's updatedAt, 17ms earlier
+    assert not health.marker_superseded(marker_at, bumped_to)
+
+
+def test_a_marker_with_no_readable_timestamp_still_silences():
+    """Unknown is not "go ahead and comment again".
+
+    A comment is permanent and has no undo, so an unusable timestamp errs toward
+    silence -- the same posture FlagCheckFailed already takes for a read that
+    did not finish.
+    """
+    for stamp in (None, "", "not-a-date"):
+        ln = MarkedIssue(stamp)
+        assert health.already_flagged(ln, "u1", "2026-06-01T00:00:00.000Z") is True
+
+
+def test_the_newest_marker_decides_not_the_first_one_found():
+    """An issue flagged twice must be judged on its LATEST flag.
+
+    Returning on the first marker found was correct while the only question was
+    "is there a marker". Compared against a clock it inverts: the stale first
+    marker reads as superseded and the sweep re-flags an issue that already
+    holds a current flag.
+    """
+    class TwoMarkers:
+        writes = 0
+
+        def graphql(self, query, variables):
+            if "comments(" in query:
+                return {"issue": {"comments": {"nodes": [
+                    {"body": health.DORMANT_MARKER,
+                     "createdAt": "2026-01-15T00:00:00.000Z"},
+                    {"body": health.DORMANT_MARKER,
+                     "createdAt": "2026-05-01T00:00:00.000Z"}],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None}}}}
+            TwoMarkers.writes += 1
+            return {"commentCreate": {"success": True}}
+
+    # touched between the two markers: stale by the first, current by the second
+    assert health.already_flagged(
+        TwoMarkers(), "u1", "2026-03-01T00:00:00.000Z") is True
+    assert TwoMarkers.writes == 0
+
+
+def test_the_marker_read_still_stops_a_duplicate_without_any_lock():
+    """The lock is an optimisation; the marker read is the guarantee.
+
+    Kept from the round-4 test this replaces, because it covers what a lock
+    never can: two sweeps that do NOT share a filesystem. The filler pushes the
+    marker onto page 2, so this also fails on the round-3 head for the
+    pagination reason.
+    """
+    shared = PaginatedIssue(_filler(100))
+    issue_node = {"id": "uuid-1", "identifier": "ASK-1"}
+    first = health.flag_dormant(shared, issue_node, 120.0, 75)
+    second = health.flag_dormant(shared, issue_node, 120.0, 75)
     assert first == "flagged"
     assert second == "already-flagged"
     assert shared.writes == 1
@@ -1079,6 +1216,69 @@ def test_two_concurrent_apply_runs_comment_once(tmp_path):
     assert codes == [health.EXIT_OK, health.EXIT_LOCKED], codes
 
 
+def test_two_separate_installs_on_one_machine_comment_once(tmp_path):
+    """ROUND 5 BLOCKER, end to end, and the reason the in-process check is thin.
+
+    The reviewer's reproducer varied only `HERE` and then called `flag_dormant`
+    directly. `flag_dormant` sits BELOW the lock -- `main()` takes the lock once
+    per sweep, `_run` refuses without it -- so calling it directly can never
+    observe a lock no matter how it is keyed, and its "2 writes" result was a
+    property of the entry point chosen, not of the lock. This runs the real
+    entry point from two genuinely different install directories, which is the
+    shape the finding describes: a worktree and the installed copy on one
+    machine.
+
+    On the round-4 head the two directories hashed to two lock paths, both runs
+    won, and one issue took two permanent dormancy comments.
+
+    NOT COVERED, and deliberately so: two different HOSTS. No filesystem lock
+    spans machines and `commentCreate` has no idempotency key, so that remains
+    documented rather than fixed. There is no way to write that test here.
+    """
+    install_a = tmp_path / "kipi-a" / "scripts"
+    install_b = tmp_path / "kipi-b" / "scripts"
+    ledger = tmp_path / "writes.log"
+    procs = []
+    for install in (install_a, install_b):
+        install.mkdir(parents=True)
+        script = _stage_health_copy(install, FAKE_SYNC_RACY)
+        env = _health_env(FAKE_WRITE_LEDGER=str(ledger),
+                          KIPI_TRIAGE_HEALTH_LOCK=str(tmp_path / "shared.lock"))
+        procs.append(subprocess.Popen(
+            [sys.executable, str(script), "--apply", "--no-notify",
+             "--dormant-days", "30"],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+    for proc in procs:
+        proc.communicate(timeout=180)
+
+    writes = len([l for l in ledger.read_text().splitlines() if l.strip()]) \
+        if ledger.exists() else 0
+    assert writes == 1, f"two installs left {writes} dormancy comments on one issue"
+    assert sorted(p.returncode for p in procs) == \
+        [health.EXIT_OK, health.EXIT_LOCKED]
+
+
+def test_two_installs_resolve_to_one_lock_without_the_override(tmp_path):
+    """The negative control for the test above, and it is load-bearing.
+
+    That test pins the shared lock path explicitly, so it would still pass if
+    `apply_lock_path()` went back to keying on `HERE` -- the override would be
+    doing all the work and the fix could be reverted invisibly. This asserts the
+    DEFAULT, unpinned path is the same from two install directories, which is
+    the property the override hides.
+    """
+    original_here = health.HERE
+    try:
+        health.HERE = str(tmp_path / "kipi-a" / "scripts")
+        default_a = health.apply_lock_path()
+        health.HERE = str(tmp_path / "kipi-b" / "scripts")
+        default_b = health.apply_lock_path()
+    finally:
+        health.HERE = original_here
+    assert default_a == default_b
+    assert str(tmp_path) not in default_a, "the lock must not live in the install"
+
+
 def test_a_single_apply_run_still_writes(tmp_path):
     """The negative control, and it is load-bearing here.
 
@@ -1109,19 +1309,37 @@ def test_report_only_runs_take_no_lock(tmp_path):
     assert not (tmp_path / "writes.log").exists(), "report-only wrote to Linear"
 
 
-def test_the_apply_lock_is_scoped_to_the_installed_copy(tmp_path):
-    """Two DIFFERENT installations must not block each other.
+def test_the_apply_lock_is_scoped_to_the_team_not_the_install_path(tmp_path):
+    """Every sweep of one team on one machine resolves to ONE path.
 
-    Keyed on the script's own directory, so the suite's tmp copies and the real
-    installation never contend -- while two runs of one installation, the actual
-    collision, resolve to the same path.
+    The inverse of what this file asserted through round 4. The lock key is the
+    Linear team being swept, so where the running copy sits is irrelevant --
+    which is the whole point, because "where the copy sits" was the accident
+    that let two checkouts both comment.
     """
     mine = health.apply_lock_path()
     assert mine.endswith(".lock")
     # not inside the repo: `kipi update` rsyncs this tree and would ship it
     assert not mine.startswith(SCRIPTS)
-    # two runs of ONE installation agree, which is the collision that matters
-    assert health.apply_lock_path() == mine
+    assert health.TEAM_KEY in mine, "the team is the key"
+
+    # moving the install path must NOT move the lock
+    original_here = health.HERE
+    try:
+        health.HERE = "/somewhere/else/entirely"
+        assert health.apply_lock_path() == mine
+    finally:
+        health.HERE = original_here
+
+    # a team key that could climb out of the directory is collapsed to a hash
+    original_team = health.TEAM_KEY
+    try:
+        health.TEAM_KEY = "../../etc"
+        escaped = health.apply_lock_path()
+    finally:
+        health.TEAM_KEY = original_team
+    assert ".." not in escaped
+    assert os.path.dirname(escaped) == os.path.dirname(mine)
 
     # the override wins, so a caller can pin it explicitly
     os.environ["KIPI_TRIAGE_HEALTH_LOCK"] = str(tmp_path / "pinned.lock")

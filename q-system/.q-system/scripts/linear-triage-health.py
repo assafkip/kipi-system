@@ -159,7 +159,7 @@ ISSUE_COMMENTS_QUERY = """
 query($id: String!, $after: String) {
   issue(id: $id) {
     comments(first: 100, after: $after) {
-      nodes { body }
+      nodes { body createdAt }
       pageInfo { hasNextPage endCursor }
     }
   }
@@ -380,8 +380,18 @@ class FlagCheckFailed(Exception):
     """
 
 
-def already_flagged(ln, issue_id: str) -> bool:
-    """True when a dormancy comment is already on the issue.
+def already_flagged(ln, issue_id: str, issue_updated_at: str | None = None) -> bool:
+    """True when a CURRENT dormancy comment is already on the issue.
+
+    CURRENT is the round-5 word. A marker is not a permanent silencer; it stops
+    applying once the issue is touched after it was posted, which is exactly
+    what `dormancy_comment()` promises the operator in writing. See
+    `marker_superseded()` for that comparison and the measurement behind it.
+
+    `issue_updated_at` defaults to None, and None means "no clock available, so
+    the marker stands". That keeps every existing caller and any future one safe
+    by default: forgetting the argument can only cause silence, never a
+    duplicate permanent comment.
 
     Checked per issue rather than trusting the label alone: the label can be
     removed by a human who disagrees, and re-adding a comment they already read
@@ -415,7 +425,29 @@ def already_flagged(ln, issue_id: str) -> bool:
     never be reported as "no marker" -- the same lesson the FlagCheckFailed
     branch above already paid for, applied to a second way of not finishing.
     """
-    after = None
+    latest = latest_marker_at(ln, issue_id)
+    if latest is None:
+        return False
+    return not marker_superseded(latest, issue_updated_at)
+
+
+def latest_marker_at(ln, issue_id: str) -> str | None:
+    """The NEWEST dormancy marker's `createdAt`, or None if there is no marker.
+
+    NEWEST, so every page is walked even after a marker is found. Returning on
+    the first hit was correct while the only question was "is there a marker",
+    and it becomes wrong the moment the answer is compared against a clock: an
+    issue that was flagged, revived, went quiet and was flagged AGAIN carries
+    two markers, and the older one is the one that reads as superseded. Judging
+    by the first marker would re-flag an issue that already holds a current
+    flag, which is the duplicate-comment failure this whole read exists to
+    prevent, rebuilt from the other end.
+
+    Raises `FlagCheckFailed` for every way of not finishing, for the reason
+    already_flagged() documents: a read that did not complete must never be
+    answered as "no marker".
+    """
+    after, newest = None, None
     for _ in range(COMMENT_PAGE_CAP):
         try:
             issue = (ln.graphql(ISSUE_COMMENTS_QUERY,
@@ -425,11 +457,19 @@ def already_flagged(ln, issue_id: str) -> bool:
             raise FlagCheckFailed(str(exc)) from exc
         comments = issue.get("comments") or {}
         for node in (comments.get("nodes") or []):
-            if DORMANT_MARKER in (node.get("body") or ""):
-                return True
+            if DORMANT_MARKER not in (node.get("body") or ""):
+                continue
+            stamp = node.get("createdAt") or ""
+            # A marker with no readable stamp is still a marker. It sorts as
+            # the newest so it can never be judged superseded: silence beats a
+            # duplicate permanent comment when the timestamp is unusable.
+            if not stamp or _parse_iso(stamp) is None:
+                return ""
+            if newest is None or stamp > newest:
+                newest = stamp
         page = comments.get("pageInfo") or {}
         if not page.get("hasNextPage"):
-            return False
+            return newest
         cursor = page.get("endCursor")
         if not cursor or cursor == after:
             raise FlagCheckFailed(
@@ -438,6 +478,48 @@ def already_flagged(ln, issue_id: str) -> bool:
     raise FlagCheckFailed(
         f"more than {COMMENT_PAGE_CAP} comment pages on {issue_id}; "
         f"the already-flagged check did not complete")
+
+
+def marker_superseded(marker_at: str, issue_updated_at: str | None) -> bool:
+    """Did the issue get touched AFTER this marker was posted?
+
+    This is the sentence `dormancy_comment()` prints to the operator -- "still
+    wanted -> comment or update it and this clears" -- expressed as code. It was
+    a promise nothing implemented: `already_flagged()` found the marker forever,
+    so an issue that was flagged, revived by a real human, and then went quiet a
+    SECOND time could never be flagged again. Reproduced on the PR head:
+    second_sweep_outcome=already-flagged, new_comment_writes=0, on an issue
+    whose updatedAt was three months newer than its marker (Codex blocker round
+    5, PR #204). A monitor that goes permanently silent on exactly the issues it
+    already identified once is worse than one that never ran.
+
+    MEASURED, not assumed, because the answer decides whether this is safe:
+    Linear DOES bump an issue's `updatedAt` when a comment is created. Sampled
+    2026-08-17 across 14 ASK issues -- in 7 the issue's `updatedAt` equals the
+    newest comment's own `updatedAt` to the exact millisecond, and Linear stamps
+    a comment's `updatedAt` 15-200ms BEFORE its `createdAt`. So the bot's own
+    dormancy comment lands with `issue.updatedAt` fractionally EARLIER than
+    `marker.createdAt` and does not supersede itself.
+
+    That ordering is a nicety, not the safety argument, and this does not lean
+    on it. Even if a bump did land after the marker, `find_dormant()` still
+    requires a FULL fresh threshold of silence measured from that same
+    `updatedAt` before the issue is eligible again. The worst case is therefore
+    one comment per threshold period of continuous silence -- a bounded drip
+    that keeps saying something true -- never the comment stack the marker was
+    introduced to prevent.
+
+    An unreadable or absent `updatedAt` answers False: the marker stands, and
+    the issue stays quiet. Erring toward silence is the standing posture here,
+    because a comment is permanent and has no undo.
+    """
+    if not marker_at:
+        return False
+    marker = _parse_iso(marker_at)
+    updated = _parse_iso(issue_updated_at or "")
+    if marker is None or updated is None:
+        return False
+    return updated > marker
 
 
 def dormancy_comment(days: float, threshold: int) -> str:
@@ -452,8 +534,9 @@ def dormancy_comment(days: float, threshold: int) -> str:
         f"- superseded or done -> close it with the reason\n"
         f"- real but not now -> say so here, so the next sweep reads an answer "
         f"instead of silence\n\n"
-        f"<sub>`linear-triage-health.py`. Flagged once; a re-run finds this "
-        f"comment and skips.</sub>"
+        f"<sub>`linear-triage-health.py`. A re-run finds this comment and "
+        f"skips, until the issue is updated after it -- then the flag above "
+        f"stops applying and a later silence can be flagged again.</sub>"
     )
 
 
@@ -595,7 +678,7 @@ def flag_dormant(ln, issue: dict, days: float, threshold: int) -> str:
     succeeded and declined.
     """
     try:
-        if already_flagged(ln, issue["id"]):
+        if already_flagged(ln, issue["id"], issue.get("updatedAt")):
             return "already-flagged"
     except FlagCheckFailed as exc:
         # UNKNOWN is not "no", so nothing is written; and it is not
