@@ -495,6 +495,55 @@ def attempts_path():
     return os.environ.get("KIPI_ATTEMPTS", DEFAULT_ATTEMPTS)
 
 
+# --- the cap-out park, read by BOTH redrives ---------------------------------
+# ONE DEFINITION, TWO CALLERS (ASK-871), for the same reason `is_reviewer_slot`
+# lives here: review-redrive.py imports this module rather than keeping its own
+# copy, and two hand-maintained copies of a refusal rule is how a state ends up
+# owned by both consumers or by neither.
+#
+# THE FACT IT READS: converge.sh stopped this ISSUE at its round cap and wrote it
+# to the ledger. Every other bound in this loop keys on a PR and a head sha,
+# which is deliberate -- a PR that pushes a real fix must earn a fresh attempt --
+# and it is exactly why nothing caught ASK-830 on 2026-08-16: each of its six
+# rounds moved the head, so every per-sha cap read as fresh while the ISSUE had
+# already been given up on. This is the missing axis, not a tightening of that one.
+
+CAPOUT_CLEAR = ("python3 q-system/.q-system/scripts/attempts-ledger.py "
+                "%s clear-capout %s")
+
+
+def capout(path, issue):
+    """The recorded reason converge gave up on this issue, or "" if it has not.
+
+    HONEST BOUNDARY: `ledger_get` answers "" both for "no cap-out" and for a
+    ledger it could not read at all, so a ledger that will not parse reads as
+    "not capped" and the redrive proceeds. That is the pre-existing direction of
+    every budget in this file (the `get` op swallows a read failure and returns
+    the default), not something this gate introduces -- but it means the silence
+    of this function is not proof the issue was never capped.
+    """
+    if not ledger_get(path, issue, "capout"):
+        return ""
+    return ledger_get(path, issue, "capout_why") or "no reason recorded"
+
+
+def capout_skip(path, issue, who, pr):
+    """True if this issue is parked; writes the operator line saying so.
+
+    Says how to UN-park it in the same breath. A refusal a human cannot reverse
+    is a permanent park, and the founder reading this line is the only thing
+    standing between a parked issue and the 29-hour outage.
+    """
+    why = capout(path, issue)
+    if not why:
+        return False
+    sys.stderr.write(
+        "%s: %s PR #%s -- converge already gave up on this issue (%s). Not "
+        "re-entering it until a human clears the cap-out: %s\n"
+        % (who, issue, pr, why, CAPOUT_CLEAR % (path, issue)))
+    return True
+
+
 def cmd_redrive(cands):
     """READ-ONLY. Offers one pick; the dispatcher spends it via mark-dispatched."""
     path = attempts_path()
@@ -510,6 +559,13 @@ def cmd_redrive(cands):
                 "ci-redrive: %s PR #%s is red but a converge for it is already "
                 "live -- not offering it and not escalating it this run\n"
                 % (cand["issue"], cand["pr"]))
+            continue
+        # AND BEFORE THE ESCALATION TOO, same reasoning as the gate above. A
+        # capped-out issue has ALREADY paged the founder from converge.sh's
+        # exit-2 path, with the clearing command in the line; escalating here
+        # would be a second alarm about one unchanged fact 15 minutes later,
+        # which is the cry-wolf failure that trains the reader to skim.
+        if capout_skip(path, cand["issue"], "ci-redrive", cand["pr"]):
             continue
         if ledger_get(path, cand["issue"], redrive_flag(cand)):
             escalate(path, cand)           # machine tier already spent on this

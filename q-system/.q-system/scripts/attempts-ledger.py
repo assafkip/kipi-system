@@ -289,6 +289,28 @@ def op_clear(d, issue, keys):
     return True
 
 
+def op_capout(d, issue, why, ts):
+    """Record that converge stopped this issue at its round cap.
+
+    KEYED PER ISSUE, and that is the whole point (ASK-871). Every other bound in
+    this loop keys on a PR and a head sha -- deliberately, so a PR that pushes a
+    real fix earns a fresh attempt. Nothing bounded DISPATCHES PER ISSUE, so on
+    2026-08-16 ASK-830 spent six converge rounds and five Opus reviews in one
+    morning: converge capped out at 15:59, the redrive handed the same issue back
+    at 16:14, and each round moved the head, so every per-sha cap read as fresh.
+
+    ALWAYS A WRITE, never a claim. `op_claim` answers False the second time, and
+    a caller reading that as "nothing to do" would leave a stale `capout_why`
+    from an older cap-out sitting next to a newer one. A cap-out that happens
+    twice is two facts, and the later one is the true one.
+    """
+    e = d.setdefault(issue, {})
+    e["capout"] = True
+    e["capout_at"] = ts
+    e["capout_why"] = why
+    return True
+
+
 def op_claim(d, issue, flag):
     """True the FIRST time this flag is claimed, False every time after."""
     e = d.setdefault(issue, {})
@@ -418,6 +440,26 @@ def _run(path, op, rest, ts):
         # so a caller does not have to know the current state to be correct.
         issue, flag = _args(op, rest, 2)
         _mutate(path, lambda d: op_clear(d, issue, (flag,)))
+        return 0
+
+    if op == "record-capout":             # record-capout <issue> <why>
+        # THE MACHINE-READABLE HALF OF A CAP-OUT (ASK-871). converge.sh's exit-2
+        # path used to `say` a log line and Slack the founder and stop, so the
+        # only two consumers that could re-enter the issue -- ci-redrive.py and
+        # review-redrive.py -- had no way to learn its rounds were spent. This
+        # is deliberately the SAME ledger those two already read rather than a
+        # new state file: a second store for one issue's budget is how the four
+        # budgets above ended up racing in the first place.
+        issue, why = _args(op, rest, 2)
+        _mutate(path, lambda d: op_capout(d, issue, why, ts))
+        return 0
+    if op == "clear-capout":              # clear-capout <issue>
+        # THE HUMAN'S WAY OUT, and it ships in the same change as the park on
+        # purpose. A cap-out nobody can clear is a permanent park, and a park
+        # with no exit is a quieter version of the 29-hour outage the redrives
+        # were built to end. The cap-out page names this command.
+        (issue,) = _args(op, rest, 1)
+        _mutate(path, lambda d: op_clear(d, issue, ("capout", "capout_at", "capout_why")))
         return 0
 
     if op == "claim-flag":                # claim-flag <issue> <flag> -> 0 first time, 1 after
