@@ -532,8 +532,12 @@ def _project_id_for(ln, team_id: str, names: list) -> str | None:
     return None
 
 
-def _label_ids(ln, team_id: str, wanted: list) -> list:
+def _label_ids(ln, team_id: str, wanted: list, missing: list | None = None) -> list:
     """Ids for `wanted` label names, creating any the team lacks.
+
+    `missing` is an optional out-list: names that could not be resolved are
+    appended to it, so a caller can report a degraded file without this
+    function changing its return shape or gaining the power to block.
 
     ONE ROUND TRIP FOR ALL OF THEM, not one per label. The previous shape took a
     single name and did its own LABELS_QUERY; adding `needs-triage` beside
@@ -575,7 +579,7 @@ def _label_ids(ln, team_id: str, wanted: list) -> list:
                       .get("issueLabel") or {}).get("id")
             if new_id:
                 found[name] = new_id
-        except Exception:
+        except Exception as exc:
             # LOSING THE CREATE RACE IS NOT THE SAME AS HAVING NO LABEL. Two
             # filers running at once both read the team before either created
             # `needs-triage`; the loser's create fails because the label now
@@ -591,9 +595,37 @@ def _label_ids(ln, team_id: str, wanted: list) -> list:
             existing = _refetch_label_id(ln, team_id, name)
             if existing:
                 found[name] = existing
+                continue
+            # The refetch answered "still absent", so this was NOT a lost create
+            # race -- it is a real failure (a permission error looks exactly like
+            # this). Still never raises, per the rule above; it gets said out
+            # loud instead.
+            _warn_label_unresolved(name, exc)
             continue
 
+    if missing is not None:
+        missing.extend(n for n in wanted if n not in found)
     return [found[n] for n in wanted if n in found]
+
+
+def _warn_label_unresolved(name: str, exc: Exception) -> None:
+    """Say out loud that a label could not be attached. Never raises.
+
+    THE ALERT STILL GOES OUT. This file's standing posture is that a secondary
+    failure must never cost the primary alert, because a dropped alert is worse
+    than an unlabelled one. But "never blocks" had quietly become "never
+    observable": a create that failed for a REAL reason (a permission error,
+    not a lost create race) refetched nothing, dropped the name, and the run
+    still reported `filed ASK-9` with no hint the mark was missing.
+    `needs-triage` is the field the entire ASK-882 queue measurement reads, so
+    losing it silently makes the queue depth quietly WRONG rather than loudly
+    broken -- a monitor that undercounts is worse than one that errors
+    (Codex major round 4, PR #204).
+    """
+    print(f"alert-to-linear: WARNING could not attach the {name!r} label "
+          f"({exc}). The ticket is still being filed. While {TRIAGE_LABEL!r} "
+          f"is missing, the triage-queue measurement undercounts this ticket "
+          f"and it needs backfilling by hand.", file=sys.stderr)
 
 
 def _refetch_label_id(ln, team_id: str, name: str) -> str | None:
@@ -659,6 +691,12 @@ def file_alert(message: str, now: float | None = None) -> tuple[int, str]:
         # ticket on purpose -- reopening a closed one hides the recurrence,
         # which is the signal worth having.
 
+    # Bound BEFORE the try, never inside it. A name first assigned inside a
+    # try/except is only bound on the paths that got that far, and the read of
+    # it below sits outside the block -- the shape that turns one failure into a
+    # NameError wearing the wrong failure's name.
+    unresolved_labels: list = []
+
     try:
         teams = (ln.graphql(TEAM_QUERY, {"key": TEAM_KEY}) or {}).get("teams") or {}
         nodes = teams.get("nodes") or []
@@ -683,7 +721,8 @@ def file_alert(message: str, now: float | None = None) -> tuple[int, str]:
         # an issue a human already routed is structurally impossible rather than
         # merely avoided -- if this ran on the repeat path it would undo triage
         # every time the condition fired again.
-        label_ids = _label_ids(ln, team_id, [OWNER_LABEL, TRIAGE_LABEL])
+        label_ids = _label_ids(ln, team_id, [OWNER_LABEL, TRIAGE_LABEL],
+                               unresolved_labels)
         if label_ids:
             payload["labelIds"] = label_ids
 
@@ -712,7 +751,13 @@ def file_alert(message: str, now: float | None = None) -> tuple[int, str]:
                       "identifier": issue.get("identifier"),
                       "count": 1, "first_at": now, "last_at": now,
                       "last_comment_at": now})
-    return EXIT_OK, f"filed {issue.get('identifier')} {issue.get('url', '')}".strip()
+    line = f"filed {issue.get('identifier')} {issue.get('url', '')}".strip()
+    if unresolved_labels:
+        # STILL EXIT_OK: the alert landed, which is the job. The suffix is so the
+        # run's own summary line cannot read as an unqualified success while the
+        # label the triage measurement depends on is absent.
+        line += f" [DEGRADED: no {', '.join(unresolved_labels)} label]"
+    return EXIT_OK, line
 
 
 def main(argv: list[str]) -> int:

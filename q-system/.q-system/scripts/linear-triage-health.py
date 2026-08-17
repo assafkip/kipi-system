@@ -157,10 +157,21 @@ mutation($input: CommentCreateInput!) {
 """
 
 ISSUE_COMMENTS_QUERY = """
-query($id: String!) {
-  issue(id: $id) { comments(first: 100) { nodes { body } } }
+query($id: String!, $after: String) {
+  issue(id: $id) {
+    comments(first: 100, after: $after) {
+      nodes { body }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
 }
 """
+
+# Runaway-loop stop for the marker walk, NOT a search bound. Exceeding it raises
+# rather than answering "no marker" -- see already_flagged(). 50 pages is 5000
+# comments on one issue; the board's busiest issue is nowhere near that, so this
+# firing at all means something is wrong with the cursor, not with the issue.
+COMMENT_PAGE_CAP = 50
 
 
 def _load_linear():
@@ -389,15 +400,45 @@ def already_flagged(ln, issue_id: str) -> bool:
     unknown -- but silence has to be reported as a failure rather than as a
     skip. A missed flag costs one issue staying quiet; a missed flag the run
     calls "already handled" costs the operator the ability to notice.
+
+    WALKS EVERY COMMENT PAGE, AND THAT IS THE CORRECTNESS GUARANTEE FOR
+    FLAG-ONCE. This read used to ask for `comments(first: 100)` and stop, so a
+    marker sitting at comment 101 was invisible and the sweep wrote a SECOND
+    permanent dormancy comment on an issue it had already flagged -- on one
+    host, with no concurrency involved at all. Reproduced on the PR head: a
+    marker at index 100 returned `flagged` and landed 1 duplicate mutation
+    (Codex major round 4, PR #204).
+
+    A bound would have rebuilt the same defect one page further out, so there
+    is no bound: `False` is returned ONLY after Linear reports
+    `hasNextPage: false`. `COMMENT_PAGE_CAP` and the stalled-cursor branch both
+    RAISE instead of returning False, because a read that did not finish must
+    never be reported as "no marker" -- the same lesson the FlagCheckFailed
+    branch above already paid for, applied to a second way of not finishing.
     """
-    try:
-        issue = (ln.graphql(ISSUE_COMMENTS_QUERY, {"id": issue_id}) or {}).get("issue") or {}
-    except Exception as exc:
-        raise FlagCheckFailed(str(exc)) from exc
-    for node in ((issue.get("comments") or {}).get("nodes") or []):
-        if DORMANT_MARKER in (node.get("body") or ""):
-            return True
-    return False
+    after = None
+    for _ in range(COMMENT_PAGE_CAP):
+        try:
+            issue = (ln.graphql(ISSUE_COMMENTS_QUERY,
+                                {"id": issue_id, "after": after})
+                     or {}).get("issue") or {}
+        except Exception as exc:
+            raise FlagCheckFailed(str(exc)) from exc
+        comments = issue.get("comments") or {}
+        for node in (comments.get("nodes") or []):
+            if DORMANT_MARKER in (node.get("body") or ""):
+                return True
+        page = comments.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            return False
+        cursor = page.get("endCursor")
+        if not cursor or cursor == after:
+            raise FlagCheckFailed(
+                f"comment paging stalled on {issue_id} at cursor {cursor!r}")
+        after = cursor
+    raise FlagCheckFailed(
+        f"more than {COMMENT_PAGE_CAP} comment pages on {issue_id}; "
+        f"the already-flagged check did not complete")
 
 
 def dormancy_comment(days: float, threshold: int) -> str:
@@ -418,15 +459,23 @@ def dormancy_comment(days: float, threshold: int) -> str:
 
 
 def apply_lock_path() -> str:
-    """One lock per INSTALLED COPY of this script.
+    """One lock per INSTALLED COPY. AN OPTIMIZATION, NOT THE FLAG-ONCE GUARANTEE.
+
+    Read this before reasoning about duplicate dormancy comments. The guarantee
+    that an issue is flagged once lives in `already_flagged()`, which walks
+    every comment page. This lock only spares a same-host loser a whole sweep
+    of wasted API calls.
 
     Keyed on the script's own directory rather than a fixed name so that a copy
     running out of a tmpdir (the suite does exactly this) cannot contend with
     the real installation, while two runs of the SAME installation -- the
-    launchd job and a founder's manual run, which is the actual collision --
-    resolve to the same path. Lives in the system temp dir, not in the repo:
-    `kipi update` rsyncs this tree, and a lock file inside it would be fleet
-    cargo.
+    launchd job and a founder's manual run -- resolve to the same path. That
+    keying is also precisely why it can never be the guarantee: two installs,
+    or two hosts, hash to different paths and never contend. Reproduced on the
+    PR head: two install directories produced distinct lock paths and both
+    wrote (Codex major round 4, PR #204). Lives in the system temp dir, not in
+    the repo: `kipi update` rsyncs this tree, and a lock file inside it would
+    be fleet cargo.
     """
     override = os.environ.get("KIPI_TRIAGE_HEALTH_LOCK")
     if override:
@@ -438,14 +487,20 @@ def apply_lock_path() -> str:
 def acquire_apply_lock():
     """Take the exclusive --apply lock, or return None if another run holds it.
 
-    THE CHECK AND THE WRITE ARE NOT ONE OPERATION, which is the whole reason
-    this exists. `already_flagged()` reads Linear, then `flag_dormant()` writes
-    to Linear, and nothing links them: two concurrent --apply runs both read
-    "no marker", both write, and the issue carries two permanent dormancy
-    comments. Permanent is the operative word -- there is no undo on a comment,
-    and a duplicate flag costs trust in every flag. Reproduced on the PR head:
-    two overlapping --apply processes landed 2 comment mutations on one issue
-    (Codex major round 2, PR #204).
+    BEST-EFFORT, AND DELIBERATELY NOT THE CORRECTNESS STORY. A future reader
+    who finds a duplicate comment must not reach for a bigger lock. A
+    filesystem lock cannot coordinate two installs or two hosts, and this one
+    is keyed on `HERE`, so it does not even try. What makes flag-once hold is
+    `already_flagged()` reading every comment page before the write.
+
+    What this DOES buy: the check and the write are not one operation --
+    `already_flagged()` reads Linear, then `flag_dormant()` writes, and nothing
+    links them -- so two overlapping runs of the SAME installation would both
+    read "no marker" and both leave a permanent dormancy comment. Permanent is
+    the operative word; there is no undo on a comment. Serialising same-host
+    runs removes that window and saves the loser the whole sweep. Reproduced on
+    the PR head: two overlapping --apply processes landed 2 comment mutations
+    on one issue (Codex major round 2, PR #204).
 
     NON-BLOCKING ON PURPOSE. The loser refuses and says so rather than queueing:
     this runs daily against a 75-day threshold, so skipping one sweep costs
@@ -459,10 +514,15 @@ def acquire_apply_lock():
     corpse to break. This lock file is never unlinked, so unlike the ledger's it
     also needs no inode re-check -- nothing can swap the path underneath it.
 
-    HONEST BOUNDARY: this is one machine. Two runs on two hosts against the same
-    Linear workspace would still race, because the only authority that could
-    stop that is Linear, and `commentCreate` has no idempotency key. The named
-    threat (a manual run overlapping the scheduled one) is same-host.
+    HONEST BOUNDARY, AND IT IS NARROW NOW. Two hosts, or two installs on one
+    host, still race inside the window between a completed read and the write,
+    because the only authority that could close that is Linear and
+    `commentCreate` has no idempotency key. What the paginated read removed is
+    the LARGE case: an unbounded, permanent blind spot that fired on any issue
+    past 100 comments, on one host, with nothing concurrent about it. What is
+    left needs two sweeps to overlap on the same issue on the same day. Do not
+    try to close the remainder with a wider filesystem lock; it gets closed at
+    Linear or it stays documented.
     """
     path = apply_lock_path()
     try:
