@@ -560,7 +560,24 @@ def _label_ids(ln, team_id: str, wanted: list, missing: list | None = None) -> l
             name = (node.get("name") or "").lower()
             if name in wanted and name not in found:
                 found[name] = node.get("id")
-    except Exception:
+    except Exception as exc:
+        # THE EARLY RETURN MUST STILL REPORT, and this one did not. The round-4
+        # fix taught the per-label create path to record an unresolved name, so
+        # a lost-then-unrecoverable label reached the caller's `[DEGRADED: ...]`
+        # suffix. This branch -- the LABELS_QUERY itself failing -- kept its
+        # original bare `return []` and skipped both out-lists, so a labels
+        # endpoint timeout filed a ticket with NO labels at all, exit 0, and a
+        # result line reading `filed ASK-9` with nothing to distinguish it from
+        # a fully-labelled file. Reproduced on the PR head: degraded_visible=
+        # False, labelIds absent (Codex major round 5, PR #204).
+        #
+        # Same posture as every other failure here: never block the alert, never
+        # let the failure be silent. Nothing is resolvable when the read failed,
+        # so every wanted name is unresolved.
+        for name in wanted:
+            _warn_label_unresolved(name, exc)
+        if missing is not None:
+            missing.extend(wanted)
         return []
 
     for name in wanted:

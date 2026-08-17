@@ -93,7 +93,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 from datetime import datetime, timezone
 
 EXIT_OK = 0
@@ -459,39 +458,74 @@ def dormancy_comment(days: float, threshold: int) -> str:
 
 
 def apply_lock_path() -> str:
-    """One lock per INSTALLED COPY. AN OPTIMIZATION, NOT THE FLAG-ONCE GUARANTEE.
+    """One lock per MACHINE per Linear team. Still not the flag-once guarantee.
 
     Read this before reasoning about duplicate dormancy comments. The guarantee
     that an issue is flagged once lives in `already_flagged()`, which walks
-    every comment page. This lock only spares a same-host loser a whole sweep
-    of wasted API calls.
+    every comment page. This lock removes the window between that read and the
+    write for every sweep that CAN share a filesystem.
 
-    Keyed on the script's own directory rather than a fixed name so that a copy
-    running out of a tmpdir (the suite does exactly this) cannot contend with
-    the real installation, while two runs of the SAME installation -- the
-    launchd job and a founder's manual run -- resolve to the same path. That
-    keying is also precisely why it can never be the guarantee: two installs,
-    or two hosts, hash to different paths and never contend. Reproduced on the
-    PR head: two install directories produced distinct lock paths and both
-    wrote (Codex major round 4, PR #204). Lives in the system temp dir, not in
-    the repo: `kipi update` rsyncs this tree, and a lock file inside it would
-    be fleet cargo.
+    KEYED ON THE TEAM BEING SWEPT, NOT ON THE INSTALL PATH, and that is the
+    round-5 fix. The old key was `sha256(HERE)`, the directory the running copy
+    lives in, chosen so a tmpdir copy could not contend with the real
+    installation. The cost of that convenience was the thing the lock is for:
+    two checkouts of this repo on ONE machine -- a worktree and the installed
+    copy, or `/opt/kipi-a` and `/opt/kipi-b` -- hashed to two different paths,
+    never contended, and both left a permanent dormancy comment on the same
+    issue. Reproduced on the PR head: outcomes=['flagged','flagged'],
+    permanent_comment_writes=2 (Codex major round 5, PR #204). The install path
+    is an accident of deployment; the Linear team is what two sweeps actually
+    collide over, so that is what the key is made of.
+
+    Lives in `~/.cache/kipi/`, the same place and for the same stated reason as
+    `alert-to-linear.py`'s `_state_dir()`: OUTSIDE any repo checkout. A lock
+    inside this tree would be rsynced as fleet cargo by `kipi update`, and would
+    also be per-checkout again, which is the defect above wearing a new path.
+    The system temp dir would work for the lock alone, but splitting kipi's
+    machine-local state across two roots is how the next reader misses one.
+
+    Isolation for the suite is now EXPLICIT, via `KIPI_TRIAGE_HEALTH_LOCK`,
+    rather than a side effect of where a staged copy happened to sit. A test
+    that forgets to pin it would contend with the real launchd job, so the
+    suite's `_health_env()` sets it by default rather than per test.
     """
     override = os.environ.get("KIPI_TRIAGE_HEALTH_LOCK")
     if override:
         return override
-    key = hashlib.sha256(HERE.encode("utf-8")).hexdigest()[:16]
-    return os.path.join(tempfile.gettempdir(), f"kipi-triage-health-{key}.lock")
+    # The team key reaches a filesystem path, and it comes from an env var, so
+    # it is constrained here rather than trusted. Anything outside the safe set
+    # collapses to a hash of the raw value: still one stable path per team, with
+    # no way to climb out of the directory.
+    safe = "".join(c for c in TEAM_KEY if c.isalnum() or c in "-_")
+    if not safe or safe != TEAM_KEY:
+        safe = "team-" + hashlib.sha256(TEAM_KEY.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(os.path.expanduser("~"), ".cache", "kipi",
+                        "linear-triage-health", f"{safe}.lock")
 
 
 def acquire_apply_lock():
     """Take the exclusive --apply lock, or return None if another run holds it.
 
     BEST-EFFORT, AND DELIBERATELY NOT THE CORRECTNESS STORY. A future reader
-    who finds a duplicate comment must not reach for a bigger lock. A
-    filesystem lock cannot coordinate two installs or two hosts, and this one
-    is keyed on `HERE`, so it does not even try. What makes flag-once hold is
+    who finds a duplicate comment must not reach for a bigger lock. What makes
+    flag-once hold across anything that does NOT share this filesystem is
     `already_flagged()` reading every comment page before the write.
+
+    WHAT THIS LOCK NOW COVERS, AND WHAT IT STILL DOES NOT. Since the key moved
+    from the install path to the team (see `apply_lock_path`), every sweep on
+    ONE machine serialises no matter which checkout, worktree or install
+    directory it runs from. That is the whole realistic population for this
+    fleet: a launchd job plus a founder's manual run plus an agent worktree,
+    all on the same laptop.
+
+    Two different PHYSICAL HOSTS sweeping one Linear team still race, and that
+    is an accepted, documented limitation rather than something this change
+    quietly closed. No filesystem lock can span hosts. Closing it needs
+    idempotency on Linear's side with no read/write gap, and `commentCreate`
+    exposes no idempotency key, so there is nowhere to put the guarantee. If a
+    duplicate ever shows up, check whether two hosts ran before reaching for a
+    wider lock here; a bigger filesystem lock cannot fix a cross-host race and
+    will only make the same window harder to see.
 
     What this DOES buy: the check and the write are not one operation --
     `already_flagged()` reads Linear, then `flag_dormant()` writes, and nothing
@@ -514,18 +548,24 @@ def acquire_apply_lock():
     corpse to break. This lock file is never unlinked, so unlike the ledger's it
     also needs no inode re-check -- nothing can swap the path underneath it.
 
-    HONEST BOUNDARY, AND IT IS NARROW NOW. Two hosts, or two installs on one
-    host, still race inside the window between a completed read and the write,
-    because the only authority that could close that is Linear and
-    `commentCreate` has no idempotency key. What the paginated read removed is
-    the LARGE case: an unbounded, permanent blind spot that fired on any issue
-    past 100 comments, on one host, with nothing concurrent about it. What is
-    left needs two sweeps to overlap on the same issue on the same day. Do not
-    try to close the remainder with a wider filesystem lock; it gets closed at
-    Linear or it stays documented.
+    HONEST BOUNDARY. Two different HOSTS still race inside the window between a
+    completed read and the write, because the only authority that could close
+    that is Linear and `commentCreate` has no idempotency key. Two installs on
+    one host no longer do -- that was the round-5 finding and the team-keyed
+    path above closes it. What the paginated read removed is the LARGE case: an
+    unbounded, permanent blind spot that fired on any issue past 100 comments,
+    on one host, with nothing concurrent about it. What is left needs two
+    sweeps on two machines to overlap on the same issue on the same day. It
+    gets closed at Linear or it stays documented.
     """
     path = apply_lock_path()
     try:
+        # The cache root is created on demand: this is the first run's path on
+        # any new machine, and a missing parent would otherwise surface as
+        # "cannot open the --apply lock" and skip the sweep forever.
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         handle = open(path, "a")
     except OSError as exc:
         print(f"WARN: cannot open the --apply lock at {path} ({exc})",
