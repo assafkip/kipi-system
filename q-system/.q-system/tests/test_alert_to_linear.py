@@ -116,6 +116,7 @@ class FakeLinear:
         # a FIELD OF THE PAYLOAD, so the fixture has to keep the payload; a test
         # that only reads the returned identifier cannot see the field at all.
         self.create_input = None
+        self.labels_created = []
         self.projects = [{"id": "proj-kipi", "name": "kipi-system",
                           "description": ""}]
 
@@ -129,6 +130,16 @@ class FakeLinear:
         if "labels(first" in query:
             return {"team": {"labels": {"nodes": [
                 {"id": "lab-1", "name": "owner:sana"}]}}}
+        if "issueLabelCreate" in query:
+            # The team owns `owner:sana` and NOT `needs-triage`, so the healthy
+            # path creates the second one. This branch was missing: the mutation
+            # fell through to `return {}`, `needs-triage` never resolved, and
+            # every "healthy" file in this suite was quietly DEGRADED with no
+            # test able to see it -- the fixture was modelling a broken Linear
+            # and calling it the happy path (found by the round-5 control).
+            self.labels_created.append(variables["input"]["name"])
+            return {"issueLabelCreate": {"issueLabel": {
+                "id": f"lab-new-{len(self.labels_created)}"}}}
         if "projects(first" in query:
             return {"team": {"projects": {"nodes": self.projects}}}
         if "issueCreate" in query:
@@ -228,8 +239,59 @@ def test_label_failure_still_files_the_ticket(isolated_state, monkeypatch):
             return FakeLinear.graphql(self, query, variables)
 
     monkeypatch.setattr(mod, "_load_linear", lambda: NoLabels())
-    code, _ = mod.file_alert(AUTOCOMMIT[0], now=1000.0)
-    assert code == mod.EXIT_OK and _  # filed anyway
+    code, line = mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    assert code == mod.EXIT_OK and line  # filed anyway
+    # ROUND 5: this test used to stop at "filed anyway", and that weak
+    # assertion is what let the finding through -- it is true of both a
+    # correctly-degraded file and a silently unlabelled one.
+    assert "DEGRADED" in line, line
+
+
+def test_the_label_query_failing_outright_is_reported_degraded(
+        isolated_state, monkeypatch):
+    """ROUND 5 MAJOR. Two failure points, only one of them visible.
+
+    The round-4 fix taught the per-label CREATE path to record an unresolved
+    name, so a create that failed for a real reason reached the caller's
+    `[DEGRADED: ...]` suffix. The earlier point -- the LABELS_QUERY itself
+    raising -- kept a bare `return []` and skipped both out-lists. A labels
+    endpoint timeout therefore filed a ticket with NO labels, exit 0, and a
+    result line indistinguishable from a fully-labelled file, which is the one
+    thing the triage measurement cannot afford to be blind to.
+
+    Reproduced on the PR head: degraded_visible=False, labelIds absent.
+    """
+    class LabelsEndpointDown(FakeLinear):
+        def graphql(self, query, variables):
+            if "labels(first" in query:
+                raise RuntimeError("labels endpoint timeout")
+            return FakeLinear.graphql(self, query, variables)
+
+    fake = LabelsEndpointDown()
+    monkeypatch.setattr(mod, "_load_linear", lambda: fake)
+    code, line = mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+
+    # the alert still lands: a dropped alert is worse than an unlabelled one
+    assert code == mod.EXIT_OK
+    assert fake.created == 1
+    assert "labelIds" not in (fake.create_input or {})
+    # and the run's own summary line says so
+    assert "DEGRADED" in line, line
+    assert mod.TRIAGE_LABEL in line, line
+
+
+def test_a_fully_labelled_file_is_never_marked_degraded(
+        isolated_state, monkeypatch):
+    """The negative control. A suffix that is always present says nothing.
+
+    FakeLinear resolves `owner:sana` from the team and creates `needs-triage`,
+    so this is the healthy path and it must come back clean.
+    """
+    fake = FakeLinear()
+    monkeypatch.setattr(mod, "_load_linear", lambda: fake)
+    code, line = mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    assert code == mod.EXIT_OK
+    assert "DEGRADED" not in line, line
 
 
 def test_title_is_one_bounded_line():

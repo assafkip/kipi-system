@@ -1134,6 +1134,10 @@ def report_failures(ls, failures: list, carried: int = 0) -> str:
         if project:
             payload["projectId"] = project["id"]
         node = (ls.graphql(ls.ISSUE_CREATE, {"input": payload})
+                # linear-filer-lint-skip: AUTOMATED and currently unmarked. The
+                # nightly launchd job files its own run-failure report, machine-
+                # authored and nobody asked for it, so this SHOULD attach
+                # TRIAGE_LABEL. Captured as sp-1306aca4 rather than changed here.
                 .get("issueCreate") or {}).get("issue") or {}
         if not node.get("id"):
             print("  failure report refused by Linear", file=sys.stderr)
