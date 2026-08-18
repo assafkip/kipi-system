@@ -435,6 +435,30 @@ def run_check(script, file_path):
 
 
 def main():
+    # sp-08c34cf1: SURFACE-ONLY MODE, for the two events that are not Stop.
+    #
+    # The drain runs on the NEXT Stop event, and the last post of a session has
+    # no next Stop -- confirmed against the hooks documentation, not assumed:
+    # nothing fires while Claude Code sits idle waiting for input. So the score
+    # for the last post he writes reached him only if he happened to write
+    # another one.
+    #
+    # Two events close it, and BOTH are wired rather than one:
+    #   SessionEnd   fires on clear / logout / prompt_input_exit. The worker
+    #                publishes ~3s after the drafting turn, and he reads a draft
+    #                for longer than that, so this is a SAME-session surface for
+    #                the ordinary wrap-up.
+    #   SessionStart is the backstop for the one shape SessionEnd cannot see: a
+    #                terminal killed outright. A day-late number is worse than a
+    #                same-session one and far better than none, which is why the
+    #                drained line now names its own age when it is not fresh.
+    #
+    # It is a FLAG and not a `hook_event_name` sniff on the payload. The lint
+    # half of this file must never run on those events, and keying that on a
+    # field the payload happens to carry makes the safety depend on a schema
+    # nobody here controls.
+    if "--drain-only" in sys.argv[1:]:
+        finish_ok()
     try:
         payload = json.load(sys.stdin)
     except Exception:
