@@ -344,6 +344,45 @@ def authorship_spool(draft, framing, request):
                 pass
 
 
+def authorship_page():
+    """Send a pending drift page, detached. The INSTANCE side owns this channel.
+
+    The reporter computes the drift but may not send the page: everything in
+    `q-consult/pipeline/` is forbidden by that repo's boundary test from reaching
+    the Slack webhook, which belongs to the other side of the ASK/KTLYST
+    separation. So it writes a request and this script -- which lives on the
+    instance, already knows INSTANCE_ROOT, and is where founder notifications
+    belong -- delivers it.
+
+    `slack-notify.sh` is the only sanctioned channel (founder-notifications.md);
+    osascript is banned because a sandboxed process drops it silently, which is
+    the same silence this whole counter exists to break.
+
+    FULLY DETACHED, and that is not optional. This runs on the Stop path, and a
+    curl to Slack must never sit between him and his text. The page is not urgent
+    by construction -- it reports an ongoing silence, not an incident.
+    """
+    argv = _reporter_argv("--drain-page")
+    if argv is None:
+        return
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+    except Exception:
+        return
+    line = (r.stdout or "").strip()
+    if not line:
+        return
+    script = SCRIPTS_DIR / "slack-notify.sh"
+    if not script.is_file():
+        return
+    try:
+        subprocess.Popen(["bash", str(script), line],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception:
+        return
+
+
 def finish_ok():
     """Exit 0, surfacing any advisory line a previous turn's worker finished.
 
@@ -356,6 +395,8 @@ def finish_ok():
     the path that never reached the drain. The number would have appeared only
     if he asked for two posts back to back.
     """
+    # Before the drain, and detached, so a Slack curl never delays his text.
+    authorship_page()
     line = authorship_drain()
     if line:
         # `systemMessage` on exit 0 is the ONLY hook field that puts text in
