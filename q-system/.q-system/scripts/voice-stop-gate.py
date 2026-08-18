@@ -385,8 +385,8 @@ def authorship_page():
 
     The reporter computes the drift but may not send the page: everything in
     `q-consult/pipeline/` is forbidden by that repo's boundary test from reaching
-    the Slack webhook, which belongs to the other side of the ASK/KTLYST
-    separation. So it writes a request and this script -- which lives on the
+    the Slack webhook, which belongs to the other side of that repo's
+    brand-separation boundary (its test_boundary.py names the two sides). So it writes a request and this script -- which lives on the
     instance, already knows INSTANCE_ROOT, and is where founder notifications
     belong -- delivers it.
 
