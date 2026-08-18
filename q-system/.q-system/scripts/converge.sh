@@ -964,6 +964,26 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   say "round $ROUND -> $VERDICT (head $SHA); reworking"
 done
 
-say "STOP exit-2: hit the $MAX_ROUNDS-round cap still at '$LAST_VERDICT'. A cap-out means the reviewer and Sana disagree persistently; read the last review before raising the cap."
-bash "$NOTIFY" "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT" 2>/dev/null || true
+CAPOUT_WHY="hit the $MAX_ROUNDS-round cap still at '$LAST_VERDICT'${PR:+ on PR #$PR}"
+say "STOP exit-2: $CAPOUT_WHY. A cap-out means the reviewer and Sana disagree persistently; read the last review before raising the cap."
+# THE MACHINE-READABLE HALF, AND IT IS THE POINT OF ASK-871. Until this line the
+# cap-out announced itself to a human twice -- the `say` above and the page below
+# -- and to a machine not at all. So ci-redrive.py and review-redrive.py, whose
+# whole job is to re-enter a PR nobody else will, correctly-by-their-own-rules
+# re-entered this one: 2026-08-16, ASK-830 capped out at 15:59:53Z and was handed
+# back at 16:14:01Z, six rounds and five Opus reviews in one morning. Their caps
+# key per PR per head sha and every round moved the head, so nothing they read
+# was stale. Nothing bounded dispatches PER ISSUE. This record is that bound.
+#
+# WRITTEN BEFORE THE PAGE. The page names the command that clears the park, and a
+# page telling the founder to clear a record that was never written is worse than
+# no page. If the ledger refuses (a lock timeout, a read-only disk) the run says
+# so and still pages, because a cap-out the founder never hears about is the
+# 29-hour park with the alarm removed.
+CAPOUT_NOTE=""
+if ! python3 "$LEDGER" "$ATTEMPTS" record-capout "$ISSUE" "$CAPOUT_WHY" 2>>"$LOG"; then
+  CAPOUT_NOTE=" WARNING: the cap-out could NOT be recorded in $ATTEMPTS, so the redrives may re-enter this issue -- check that file."
+  say "WARNING: record-capout failed for $ISSUE; the redrives cannot see this cap-out."
+fi
+bash "$NOTIFY" "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT. Parked -- no redrive will re-enter it until you clear it: python3 q-system/.q-system/scripts/attempts-ledger.py $ATTEMPTS clear-capout $ISSUE$CAPOUT_NOTE" 2>/dev/null || true
 exit 2

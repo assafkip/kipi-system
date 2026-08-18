@@ -289,12 +289,70 @@ def op_clear(d, issue, keys):
     return True
 
 
+def op_capout(d, issue, why, ts):
+    """Record that converge stopped this issue at its round cap.
+
+    KEYED PER ISSUE, and that is the whole point (ASK-871). Every other bound in
+    this loop keys on a PR and a head sha -- deliberately, so a PR that pushes a
+    real fix earns a fresh attempt. Nothing bounded DISPATCHES PER ISSUE, so on
+    2026-08-16 ASK-830 spent six converge rounds and five Opus reviews in one
+    morning: converge capped out at 15:59, the redrive handed the same issue back
+    at 16:14, and each round moved the head, so every per-sha cap read as fresh.
+
+    ALWAYS A WRITE, never a claim. `op_claim` answers False the second time, and
+    a caller reading that as "nothing to do" would leave a stale `capout_why`
+    from an older cap-out sitting next to a newer one. A cap-out that happens
+    twice is two facts, and the later one is the true one.
+    """
+    e = d.setdefault(issue, {})
+    e["capout"] = True
+    e["capout_at"] = ts
+    e["capout_why"] = why
+    return True
+
+
 def op_claim(d, issue, flag):
     """True the FIRST time this flag is claimed, False every time after."""
     e = d.setdefault(issue, {})
     if e.get(flag):
         return False
     e[flag] = True
+    return True
+
+
+def op_claim_uncapped(d, issue, flag, outcome):
+    """`op_claim`, refusing outright if this issue is parked (codex on PR #210).
+
+    ONE TRANSACTION, and that is the entire reason this op exists rather than a
+    capout read in front of a claim-flag call. The redrives' cap-out gates sat in
+    the read-only OFFER; the atomic claim that actually spends the attempt asked
+    only whether the flag was free. kipi-dispatch.sh runs a ps snapshot, a
+    converge-live probe and a budget read between those two calls, so a cap-out
+    landing in that window authorized the very dispatch it was written to stop.
+
+    A caller-side check would only narrow the window: two subprocesses cannot be
+    atomic against a third writer. The question is answered here, under the same
+    flock that sets the flag, so there is no interval to lose the race in.
+
+    REFUSING WRITES NOTHING, which is load-bearing. Claiming first and reporting
+    the park afterwards would spend the issue's one attempt on a dispatch that
+    never happened, and `clear-capout` would then release an issue no redrive can
+    pick up -- a permanent stall wearing a cleared park's clothes.
+
+    `outcome` carries the verdict out because _mutate answers only bool(changed),
+    and "already claimed" and "refused, parked" are both False with different
+    exit codes owed to the caller.
+    """
+    e = d.setdefault(issue, {})
+    if e.get("capout"):
+        outcome["result"] = "capped"
+        outcome["why"] = e.get("capout_why") or "no reason recorded"
+        return False
+    if e.get(flag):
+        outcome["result"] = "already"
+        return False
+    e[flag] = True
+    outcome["result"] = "claimed"
     return True
 
 
@@ -420,10 +478,48 @@ def _run(path, op, rest, ts):
         _mutate(path, lambda d: op_clear(d, issue, (flag,)))
         return 0
 
+    if op == "record-capout":             # record-capout <issue> <why>
+        # THE MACHINE-READABLE HALF OF A CAP-OUT (ASK-871). converge.sh's exit-2
+        # path used to `say` a log line and Slack the founder and stop, so the
+        # only two consumers that could re-enter the issue -- ci-redrive.py and
+        # review-redrive.py -- had no way to learn its rounds were spent. This
+        # is deliberately the SAME ledger those two already read rather than a
+        # new state file: a second store for one issue's budget is how the four
+        # budgets above ended up racing in the first place.
+        issue, why = _args(op, rest, 2)
+        _mutate(path, lambda d: op_capout(d, issue, why, ts))
+        return 0
+    if op == "clear-capout":              # clear-capout <issue>
+        # THE HUMAN'S WAY OUT, and it ships in the same change as the park on
+        # purpose. A cap-out nobody can clear is a permanent park, and a park
+        # with no exit is a quieter version of the 29-hour outage the redrives
+        # were built to end. The cap-out page names this command.
+        (issue,) = _args(op, rest, 1)
+        _mutate(path, lambda d: op_clear(d, issue, ("capout", "capout_at", "capout_why")))
+        return 0
+
     if op == "claim-flag":                # claim-flag <issue> <flag> -> 0 first time, 1 after
         issue, flag = _args(op, rest, 2)
         claimed = _mutate(path, lambda d: op_claim(d, issue, flag))
         return 0 if claimed else 1
+
+    if op == "claim-flag-uncapped":       # -> 0 claimed, 1 already, 4 parked
+        # 4, and it has to be its OWN code. 1 already means "already claimed,
+        # stay quiet" for six call sites, and 2/3 already mean "nothing was
+        # written" -- a park is neither: nothing was written AND the caller must
+        # say so out loud, because a silently skipped dispatch is the 29-hour
+        # outage the redrives exist to end. See op_claim_uncapped for why the
+        # check cannot live in the caller.
+        issue, flag = _args(op, rest, 2)
+        outcome = {}
+        _mutate(path, lambda d: op_claim_uncapped(d, issue, flag, outcome))
+        if outcome.get("result") == "capped":
+            sys.stderr.write(
+                "attempts-ledger: `%s` refused for %s -- converge already gave up "
+                "on this issue (%s). Nothing was claimed.\n"
+                % (op, issue, outcome.get("why", "no reason recorded")))
+            return 4
+        return 0 if outcome.get("result") == "claimed" else 1
 
     print("unknown op: %s" % op, file=sys.stderr)
     return 2
