@@ -2276,7 +2276,7 @@ PY
         CHANGES=$(git diff --cached --name-only 2>/dev/null | wc -l | tr -d ' ')
         if [ "$CHANGES" != "0" ]; then
           if ! guarded_commit "$path" \
-              "chore: sync q-system from skeleton $(date +%Y-%m-%d)"; then
+              "chore: sync q-system from skeleton $(date +%Y-%m-%d) [no-issue: fleet updater skeleton sync]"; then
             abandon_instance "  ERROR: could not commit q-system sync" && continue
           fi
           say "  OK ($CHANGES files updated)"
@@ -2490,7 +2490,7 @@ print("\n".join(mod.EXTRA_WATCHED))
         # touch the index, so it looked like founder work forever.
         { if ! git diff --cached --quiet 2>/dev/null; then
             guarded_commit "$path" \
-              "chore: sync .claude config + plugins from skeleton $(date +%Y-%m-%d)" ||
+              "chore: sync .claude config + plugins from skeleton $(date +%Y-%m-%d) [no-issue: fleet updater skeleton sync]" ||
               { unstage_scope "$path" .claude/ plugins/; false; }
           fi; }
       ); then
