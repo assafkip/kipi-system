@@ -41,19 +41,27 @@
     {
       "id": "linear-worker",
       "path": "q-system/.q-system/scripts/linear-worker.sh",
-      "shapes": ["issue-loop-continue", "ready-return", "label-apply"],
+      "shapes": [
+        "issue-loop-continue",
+        "ready-return",
+        "label-apply"
+      ],
       "what": "Picks one ready issue and works it. Exits per issue via `continue` in the issue loop, via a ready() exclusion, or by applying a durable refusal label."
     },
     {
       "id": "converge",
       "path": "q-system/.q-system/scripts/converge.sh",
-      "shapes": ["toplevel-exit"],
+      "shapes": [
+        "toplevel-exit"
+      ],
       "what": "Drives ONE issue to a terminal PR state across up to MAX_ROUNDS rework rounds. It is a single-issue process, so every top-level exit ends that issue's run."
     },
     {
       "id": "kipi-dispatch",
       "path": "kipi-dispatch.sh",
-      "shapes": ["toplevel-exit"],
+      "shapes": [
+        "toplevel-exit"
+      ],
       "what": "The launchd-driven selector. Every top-level exit ends a dispatch cycle, and an exit before the launch is a cycle in which no issue moved at all."
     }
   ],
@@ -350,7 +358,6 @@
       "terminal": true,
       "rationale": "Not an issue state at all -- it is the caller's own --apply flag, and a live run never takes this branch. Registered rather than exempted because the enumerator finds every continue in the loop, and an exit that is genuinely not a dead end still has to be examined once and said out loud. Silence here would be indistinguishable from an unregistered exit."
     },
-
     {
       "id": "converge-bad-invocation",
       "source": "converge",
@@ -413,7 +420,7 @@
       "marker": "DONE exit-1: PR #$PR verdict",
       "sites": 1,
       "what": "exit 1. The PR reached a terminal verdict. The receipt is written, auto-merge state is reported, and the run is over.",
-      "consumer": "com.kipi.dispatch -- GitHub lands the PR when auto-merge is armed and every required check is green; if it sits, review-redrive.py and ci-redrive.py re-offer it and the dispatcher re-enters",
+      "consumer": "GitHub -- once auto-merge is armed and every required check is green, GitHub performs the merge. That is the machine that owns this exit, and it is the whole of the claim: the redrives are NOT named here, because neither selects this population.",
       "liveness_check": {
         "kind": "launchd",
         "label": "com.kipi.dispatch",
@@ -421,10 +428,11 @@
         "max_age_s": 3600
       },
       "reentry": {
-        "path": "kipi-dispatch.sh",
-        "marker": "REVIEW_REDRIVE=\"$REPO/q-system/.q-system/scripts/review-redrive.py\"",
-        "why": "The redrive wiring in the dispatcher. This is the success exit, so the honest claim is narrow: it is not parked, and if the merge does not happen a redrive re-offers the PR."
-      }
+        "path": "q-system/.q-system/scripts/converge.sh",
+        "marker": "automerge_from_record",
+        "why": "The code that re-reads THIS state -- the stored auto-merge answer for the PR -- whenever converge next runs against it, and reports an UNARMED PR rather than exiting quiet. It replaces a pointer at the dispatcher's REVIEW_REDRIVE wiring, which proved the redrives are wired and NOT that either selects a green approved PR. A marker can certify wiring and certify nothing about this population, which is the gap `reentry` exists to close, one level up. Narrow on purpose: this does not claim the dispatcher re-launches converge for an already-open green PR. It launches converge per ISSUE and pr-review-agent on a reviewer redrive (kipi-dispatch.sh:321), so that would be a second unchecked claim of the exact kind being removed here."
+      },
+      "uncovered": "A PR that is approved, green and armed and still does not land has NO consumer today. ci-redrive.py selects FAILED conclusions and review-redrive.py selects an absent, drifted or refused verdict; an armed green PR has neither. review-redrive.py's own header routes this case to ASK-310's pr-land-if-green.sh, which does not exist in this tree and is wired into neither driver. Recorded here instead of dressed up as covered; tracked in the spillover ledger against ASK-353."
     },
     {
       "id": "converge-review-no-verdict",
@@ -476,7 +484,6 @@
         "why": "The ledger write whose entire purpose is to stop every automated re-entry into this state."
       }
     },
-
     {
       "id": "dispatch-repo-missing",
       "source": "kipi-dispatch",
