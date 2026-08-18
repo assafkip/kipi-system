@@ -210,4 +210,24 @@ def test_an_all_unverifiable_sweep_exits_nonzero(ledger, monkeypatch, capsys):
     monkeypatch.setattr(prd_runner, "_linear_issue_state", boom)
     rc = prd_runner._spillover_promoted_audit(ledger, Args(dry_run=False))
     assert rc == 1
-    assert "nothing was audited" in capsys.readouterr().err
+    assert "3 of 3 rows unverifiable" in capsys.readouterr().err
+
+
+def test_a_partial_outage_exits_nonzero_and_keeps_the_resolved_work(ledger, monkeypatch, capsys):
+    """One row resolves, one lookup 500s: the work is kept AND the sweep
+    reports its own ill health (Codex PR #213 r5: partial outages returned
+    success, so the daily detector discarded unreachable rows)."""
+    calls = {}
+    def split(identifier):
+        calls[identifier] = True
+        if identifier == "ASK-780":
+            raise prd_runner.LinearUnreachableError("Linear returned HTTP 500")
+        return {"name": "Done", "type": "completed"}
+    monkeypatch.setattr(prd_runner, "_linear_issue_state", split)
+    rc = prd_runner._spillover_promoted_audit(ledger, Args(dry_run=False))
+    assert rc == 1
+    out = capsys.readouterr()
+    assert "transport failure" in out.err
+    statuses = _statuses(ledger)
+    resolved = [k for k, v in statuses.items() if v == "resolved"]
+    assert resolved, "the reachable closed row must still resolve"

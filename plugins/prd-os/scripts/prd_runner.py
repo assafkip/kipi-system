@@ -2160,6 +2160,7 @@ def _spillover_promoted_audit(cfg: Config, args) -> int:
     rows = [r for r in _read_spillover(cfg).values() if r.get("status") == "promoted"]
     dry = getattr(args, "dry_run", False)
     closed, still_open, unreadable = [], [], []
+    transport_failures = 0
     for rec in sorted(rows, key=lambda r: r.get("id", "")):
         ref = rec.get("linear_ref")
         if not ref:
@@ -2173,6 +2174,7 @@ def _spillover_promoted_audit(cfg: Config, args) -> int:
             # under STILL OPEN made a down tracker look like a triaged backlog
             # (Codex review PR #213).
             unreadable.append((rec.get("id"), ref, f"tracker unreachable: {exc}"))
+            transport_failures += 1
             continue
         except LinearRefError as exc:
             # A refusal here is the NORMAL case: the issue is simply still open.
@@ -2191,6 +2193,7 @@ def _spillover_promoted_audit(cfg: Config, args) -> int:
             continue
         except Exception as exc:                              # noqa: BLE001
             unreadable.append((rec.get("id"), ref, f"tracker unreachable: {exc}"))
+            transport_failures += 1
             continue
         closed.append((rec.get("id"), ref))
         if dry:
@@ -2210,14 +2213,17 @@ def _spillover_promoted_audit(cfg: Config, args) -> int:
         for row in items:
             print("  " + "  ".join(str(x) for x in row if x))
     print(f"promoted rows audited: {len(rows)}")
-    if rows and len(unreadable) == len(rows):
-        # Every single lookup failed: the audit RAN but audited nothing. Exit 0
-        # here would let an unattended sweep report success with the tracker
-        # fully down (Codex, PR #213 r3) -- the launchd job's own health signal
-        # is this exit code. Partial reads still exit 0: the sweep did work,
-        # and the UNVERIFIABLE lines carry the remainder.
+    if transport_failures or (rows and len(unreadable) == len(rows)):
+        # ANY transport failure exits nonzero, not only a fully-blind sweep
+        # (Codex, PR #213 r5: partial outages returned success, so the daily
+        # detector discarded unreachable rows). The resolutions already applied
+        # above are kept -- the exit code reports the sweep's own health, it
+        # does not undo work. Rows with no linear_ref are a DATA gap, reported
+        # in UNVERIFIABLE but not a transport failure; they fail the sweep only
+        # when they are all it contains (nothing was auditable at all).
         sys.stderr.write(
-            "promoted-audit: 0 of %d rows verifiable; nothing was audited\n" % len(rows))
+            "promoted-audit: %d transport failure(s), %d of %d rows unverifiable\n"
+            % (transport_failures, len(unreadable), len(rows)))
         return 1
     return 0
 

@@ -994,10 +994,11 @@ def detect_open_spillover(_ctx) -> list:
             "RED while any is open, so these block every closeout in the repo.\n\n"
             + "\n".join(f"- `{i}`" for i in shown)
             + (f"\n- ...and {more} more (`prd_runner.py spillover list --open`)" if more else "")
-            + "\n\n## Action\nEach leaves the ledger exactly two ways: fixed through the "
-              "normal issue flow then `spillover resolve <id> --resolution-ref <closed-issue>`, "
-              "or `spillover resolve <id> --void \"<reason>\"`. There is no third way, and "
-              "hand-clearing the gate is not possible."
+            + "\n\n## Action\nEach leaves the ledger through a recorded resolution: "
+              "`spillover resolve <id>` with `--resolution-ref <closed-issue>`, "
+              "`--resolution-commit <merged-sha>`, `--resolution-proof '<cmd with {tree}>' "
+              "--broken-at <sha>`, or `--void \"<reason>\"`. Hand-clearing the gate "
+              "is not possible."
         ),
     }]
 
@@ -1540,8 +1541,16 @@ def detect_promoted_audit(_ctx) -> list:
     try:
         res = subprocess.run(["python3", str(runner), "spillover", "promoted-audit"],
                              capture_output=True, text=True, timeout=300, cwd=REPO_ROOT)
-    except (OSError, subprocess.TimeoutExpired):
-        return []
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # A timeout IS a blind sweep, not a skip (Codex, PR #213 r5: silently
+        # converting it to zero findings made a hung audit look healthy).
+        return [{
+            "subject": "promoted-audit-blind",
+            "title": "The promoted-rows audit did not run to completion",
+            "body": ("`prd_runner.py spillover promoted-audit` failed to complete: "
+                     f"`{exc.__class__.__name__}`. Promoted rows went unchecked today.\n\n"
+                     "## Action\nRun the audit by hand and check why it hung."),
+        }]
     if res.returncode == 0:
         return []
     return [{
