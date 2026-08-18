@@ -701,7 +701,8 @@
     "q-system/.q-system/scripts/test/test-propagation-leak-sources.py",
     "q-system/.q-system/scripts/test/test-token-guard-template-wiring.sh",
     "q-system/.q-system/scripts/test/test-updater-issue-sequence.py",
-    "q-system/.q-system/scripts/test_autocapture_wiring.py"
+    "q-system/.q-system/scripts/test_autocapture_wiring.py",
+    "test_dispatch_pinned.sh"
   ],
   "declared_inert": [
     {
