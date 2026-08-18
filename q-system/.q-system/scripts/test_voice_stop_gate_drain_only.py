@@ -6,7 +6,8 @@ Stop -- confirmed against the hooks documentation rather than assumed. So the
 score for the last post he wrote reached him only if he happened to write
 another one.
 
-`--drain-only` is the surface-only mode the SessionEnd and SessionStart hooks
+`--drain-only` is the surface-only mode the SessionStart hook (SessionEnd was
+unwired: it cannot deliver a systemMessage, so a drain there discards the score)
 call. What this file holds:
 
   - it surfaces a pending line as `systemMessage`, the one hook field that puts
@@ -139,6 +140,55 @@ def test_a_pending_line_reaches_him_as_a_system_message(event, tmp_path):
     # Drained means consumed. A line surfaced twice reads as two scores.
     again = _run(["--drain-only"], payload="{}", env=env)
     assert again.stdout.strip() == "", again.stdout
+
+
+# ------------------------------------------------- hermetic e2e (no skips) ----
+# Codex minor on PR #217: both end-to-end drain tests SKIP wherever the real
+# reporter does not resolve (kipi-system among them), so the capability gate ran
+# this file and verified nothing about the one path it exists for. This test
+# builds a THROWAWAY instance tree -- gate copy, pointer file, stub reporter --
+# so the drain-only path is exercised on every repo the gate ships to.
+
+def test_drain_only_surfaces_via_stub_reporter(tmp_path):
+    import json as _json
+    import shutil, subprocess, sys as _sys
+    root = tmp_path / "instance"
+    scripts = root / "q-system" / ".q-system" / "scripts"
+    data = root / "q-system" / ".q-system" / "data"
+    scripts.mkdir(parents=True)
+    data.mkdir(parents=True)
+    shutil.copy(STOP_GATE, scripts / "voice-stop-gate.py")
+    stub = tmp_path / "stub_reporter.py"
+    stub.write_text(
+        "import sys\n"
+        "if '--drain' in sys.argv:\n"
+        "    print('corpus similarity 0.5000 -- stub band, 10 words')\n"
+    )
+    (data / "authorship-reporter.path").write_text(str(stub) + "\n")
+    r = subprocess.run([_sys.executable, str(scripts / "voice-stop-gate.py"),
+                        "--drain-only"], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+    payload = _json.loads(r.stdout.strip())
+    assert "corpus similarity 0.5000" in payload["systemMessage"]
+
+
+def test_drain_only_with_no_pending_score_is_silent(tmp_path):
+    """No result waiting -> exit 0 and NO payload: a session must not open with
+    noise about nothing."""
+    import shutil, subprocess, sys as _sys
+    root = tmp_path / "instance"
+    scripts = root / "q-system" / ".q-system" / "scripts"
+    data = root / "q-system" / ".q-system" / "data"
+    scripts.mkdir(parents=True)
+    data.mkdir(parents=True)
+    shutil.copy(STOP_GATE, scripts / "voice-stop-gate.py")
+    stub = tmp_path / "stub_reporter.py"
+    stub.write_text("import sys\n")  # --drain prints nothing
+    (data / "authorship-reporter.path").write_text(str(stub) + "\n")
+    r = subprocess.run([_sys.executable, str(scripts / "voice-stop-gate.py"),
+                        "--drain-only"], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+    assert not r.stdout.strip()
 
 
 if __name__ == "__main__":

@@ -181,14 +181,6 @@ def test_an_unpaired_trailing_rule_opens_no_segment():
     assert _gate()._hr_draft_segments(text) == []
 
 
-if __name__ == "__main__":
-    # The capability gate runs this file as `python3 <file>` (runner=python3).
-    # Without this block that invocation executes ZERO assertions and exits 0 --
-    # a test that cannot fail (Codex major on PR #217). pytest.main returns its
-    # own exit code, so a gutted feature now reds the gate.
-    import pytest as _pytest
-    raise SystemExit(_pytest.main([__file__, "-q"]))
-
 
 def test_a_draft_with_prose_slashes_is_not_refused():
     """sp-a2dbef28: the \\w+/\\w+ furniture alternative refused any draft
@@ -211,3 +203,31 @@ def test_a_real_path_still_reads_as_furniture():
     g = _gate()
     assert g._FURNITURE_RE.search("see q-system/.q-system/scripts/voice-stop-gate.py")
     assert g._FURNITURE_RE.search("run `prd_runner.py gates run` first")
+
+
+def test_a_multi_segment_url_is_not_furniture():
+    """github.com/user/repo is a link he would paste, not a repo path."""
+    g = _gate()
+    assert not g._FURNITURE_RE.search("my project lives at github.com/assafkip/kipi-system now")
+    # and a real multi-segment repo path still is furniture
+    assert g._FURNITURE_RE.search("edit q-consult/pipeline/tests before running")
+
+
+def test_a_bare_rule_never_leaks_into_scored_text():
+    """The inline run must break on a --- line, not carry it as prose."""
+    g = _gate()
+    text = ("Here's the post:\n\n"
+            + "Plain prose that reads like a post and keeps going for a while longer here. " * 4
+            + "\n\n---\n\n"
+            + "More prose after a divider that also keeps going for quite a while longer. " * 4)
+    draft = g.extract_setoff_draft(text)
+    assert "---" not in draft
+
+
+if __name__ == "__main__":
+    # The capability gate runs this file as `python3 <file>` (runner=python3).
+    # Without this block that invocation executes ZERO assertions and exits 0 --
+    # a test that cannot fail (Codex major on PR #217). pytest.main returns its
+    # own exit code, so a gutted feature now reds the gate.
+    import pytest as _pytest
+    raise SystemExit(_pytest.main([__file__, "-q"]))

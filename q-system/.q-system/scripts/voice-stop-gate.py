@@ -126,6 +126,12 @@ def _hr_draft_segments(text):
     fallback's share floor correctly refuses the mixture. Measured on the real
     transcript before this was written.
 
+    NO SHARE FLOOR here, refused on purpose (Codex minor, PR #217): the real
+    missed turn this exists for was framing + draft + what-changed analysis,
+    where the draft held WELL under the inline path's 70% -- a floor here
+    re-opens the exact hole. The fences are the author's own set-off; the word
+    and furniture requirements below are the qualification.
+
     The pairing reads like fences: segment 1 sits between rules 1 and 2, segment
     2 between rules 3 and 4. An odd trailing rule opens no segment. Each segment
     must EARN draft status -- at least INLINE_DRAFT_MIN_WORDS words and no
@@ -163,6 +169,7 @@ _FURNITURE_RE = re.compile(
     r"|^\s*([-*+]|\d+[.)])\s"       # bullet or numbered list
     r"|^\s*>"                       # blockquote line
     r"|^\s*\|"                      # table row
+    r"|^\s*-{3,}\s*$"               # a bare horizontal rule (never draft text)
     r"|`"                           # any code span
     r"|\*\*"                        # any bold run
     r"|\]\("                        # markdown link
@@ -178,7 +185,13 @@ _FURNITURE_RE = re.compile(
     # of his real X posts. A residual known cost, accepted and named: a prose
     # triple like "small/medium/up-and-comer" (2 corpus rows) still reads as a
     # path. Pairs were 14 rows; triples are the smaller wrong side of the line.
-    r"|[^\s/]+(?:/[^\s/]+){2,}"
+    # A domain-shaped first segment (github.com/user/repo, t.co/x/y) is a URL
+    # fragment, not a repo path -- his posts name repos and carry links. Dotted
+    # HIDDEN dirs (.claude/...) are not domain-shaped (\w+\.\w+ requires a
+    # word char before the dot), so real paths keep matching.
+    # Anchored to TOKEN START ((?:^|(?<=\s))): without it the engine restarts
+    # one character into the token and matches ".com/user/repo" past the guard.
+    r"|(?:^|(?<=\s))(?![\w-]+\.[A-Za-z]{2,}/)[^\s/]+(?:/[^\s/]+){2,}"
     r"|\w+\.(py|sh|json|md|jsonl|yml|yaml|txt)\b"   # a filename
     r")", re.MULTILINE)
 
@@ -532,7 +545,14 @@ def run_check(script, file_path):
 
 
 def main():
-    # sp-08c34cf1: SURFACE-ONLY MODE, for the two events that are not Stop.
+    # sp-08c34cf1: SURFACE-ONLY MODE, for SessionStart ONLY.
+    #
+    # SessionEnd was wired here first and REMOVED after a Codex review checked
+    # the premise against the hooks documentation: SessionEnd delivers no
+    # systemMessage to the user (only a stderr error notice), so a drain there
+    # CONSUMED the score and threw it away, and the SessionStart backstop then
+    # found nothing left to surface. A same-session wrap-up surface is not
+    # available from any hook; next-session-start is the honest floor.
     #
     # The drain runs on the NEXT Stop event, and the last post of a session has
     # no next Stop -- confirmed against the hooks documentation, not assumed:
