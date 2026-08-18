@@ -111,6 +111,23 @@ FOUNDER_QUEUE = "owner:assaf"
 
 KNOWN_SHAPES = ("issue-loop-continue", "ready-return", "label-apply", "toplevel-exit")
 
+# The three drivers of the Linear loop, as enumerated for ASK-353. This is the
+# COVERAGE FLOOR: the registry may add sources, never drop one of these. It is a
+# constant in the checker precisely so that narrowing coverage takes an edit to
+# the checker -- visible in a diff and answerable in review -- instead of being a
+# silent side effect of deleting rows from the file being checked.
+#
+# KEYED ON ID, NOT ON PATH, and the difference is load-bearing. The suite's own
+# mutation fixtures repoint a source at a COPY under $FIX (a tenth dead end added
+# to converge.sh, etc.) -- that is the harness verifying against a copy instead of
+# the live driver, which is the rule, not a dodge. A path-literal floor called
+# every one of those a missing driver and took four passing tests red. The id is
+# what survives a legitimate repoint; deleting the entry, which is the bypass
+# codex found, changes the id set. The live registry's PATHS are pinned
+# separately, in the shell, against the unmutated file (see "coverage floor"
+# below).
+REQUIRED_SOURCE_IDS = ("linear-worker", "converge", "kipi-dispatch")
+
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 # `exit` in COMMAND POSITION only. Without the position anchor every `say "STOP
 # exit-7: ..."` line in converge.sh reads as an exit site, and there are nine of
@@ -399,6 +416,25 @@ def main():
         raise SystemExit("REGISTRY FAILED: `sources` must be a non-empty list. A single "
                          "`source` is the v1 shape that walked one of three drivers "
                          "and reported green (ASK-353).")
+
+    # THE FLOOR LIVES IN THE CHECKER, NOT IN THE DATA IT CHECKS (codex PR #215,
+    # major). Making `sources` a list fixed the v1 shape but left the registry
+    # declaring its own coverage: delete the converge and kipi-dispatch entries
+    # AND the rows pointing at them, and every remaining row still validates --
+    # green again, on one driver again, which is the exact defect this issue was
+    # opened for. Enforcement a file can switch off by editing itself is not
+    # enforcement.
+    #
+    declared_ids = {s.get("id") for s in sources if isinstance(s, dict)}
+    for req in REQUIRED_SOURCE_IDS:
+        if req not in declared_ids:
+            raise SystemExit(
+                f"REGISTRY FAILED: source {req!r} is a DRIVER of this loop and no `sources` "
+                "entry declares it. Its exits are then never enumerated, so every dead end "
+                "in it reads as green -- the one-driver blind spot ASK-353 closed. Add the "
+                "source back, or change REQUIRED_SOURCE_IDS in this validator and say in "
+                "the diff why that file stopped being a driver.")
+
     src_lines, src_shapes = {}, {}
     for src in sources:
         sid, path = src.get("id"), src.get("path")
@@ -909,6 +945,63 @@ state("drift-cap")["reentry"] = {"path": "q-system/.q-system/scripts/no-such-con
 '
 expect_red "a reentry pointer at a file that does not exist is refused" \
   "$FIX/missingfile.json" "which does not exist"
+
+# --- 14b. REPRODUCER (codex PR #215, major): coverage may not narrow ---------
+# The registry used to declare its own scope, so the way to make two of the three
+# drivers stop being checked was to delete their `sources` entries and the rows
+# that reference them -- a pure deletion, no marker moved, everything left over
+# still valid. That is green on one driver: the ASK-353 defect, re-achieved by
+# subtraction. This is the case that must be RED.
+mkfixture "$FIX/dropsource.json" '
+d["sources"] = [s for s in d["sources"] if s["id"] not in ("converge", "kipi-dispatch")]
+d["states"] = [r for r in d["states"] if r["source"] not in ("converge", "kipi-dispatch")]
+'
+expect_red "REPRODUCER: dropping the converge + dispatch sources and their rows is REFUSED" \
+  "$FIX/dropsource.json" "is a DRIVER of this loop and no"
+
+# Dropping ONE is refused for the same reason, and the message NAMES the driver
+# that went missing rather than reporting a generic count -- an operator reading
+# this at 3am needs to know which one stopped being walked.
+mkfixture "$FIX/dropone.json" '
+d["sources"] = [s for s in d["sources"] if s["id"] != "kipi-dispatch"]
+d["states"] = [r for r in d["states"] if r["source"] != "kipi-dispatch"]
+'
+expect_red "dropping a single driver is refused and the message names it" \
+  "$FIX/dropone.json" "'kipi-dispatch' is a DRIVER"
+
+# NEGATIVE SELF-TEST for the floor: it must not fire on a source REPOINTED to a
+# copy. That is what every mutation fixture in this suite does, and it is the
+# fable-discipline rule (verify against a copy, never the live driver) -- a floor
+# that called it a missing driver would make the safe form of the test impossible
+# and push the next author onto the live file.
+mkfixture "$FIX/repointed.json" 'source("converge")["path"] = "'"$CVMUT"'"'
+if python3 "$WORK/validate.py" "$FIX/repointed.json" "$ROOT" "$MAN" >/dev/null 2>&1; then
+  bad "repointed-source fixture went green for the WRONG reason -- \$CVMUT carries a planted exit"
+else
+  if python3 "$WORK/validate.py" "$FIX/repointed.json" "$ROOT" "$MAN" 2>&1 | grep -q "is a DRIVER"; then
+    bad "the coverage floor fires on a source repointed to a COPY -- it is path-literal, not identity-keyed"
+  else
+    ok "negative self-test: the floor does not fire on a source repointed to a copy"
+  fi
+fi
+
+# THE PATHS ARE PINNED HERE, against the LIVE registry only. The floor inside the
+# validator keys on ids so fixtures can repoint to copies; that leaves "keep the
+# id, point it at an empty file" as the remaining way to declare a driver and walk
+# nothing. This closes it, and it runs against the unmutated file so no fixture is
+# affected.
+for want in "q-system/.q-system/scripts/linear-worker.sh" \
+            "q-system/.q-system/scripts/converge.sh" \
+            "kipi-dispatch.sh"; do
+  if python3 -c "
+import json,sys
+d=json.load(open('$REG'))
+sys.exit(0 if any(s.get('path')=='$want' for s in d['sources']) else 1)"; then
+    ok "coverage floor: the live registry declares $want as a driver"
+  else
+    bad "coverage floor: the live registry no longer declares $want -- its exits are unwalked"
+  fi
+done
 
 # --- 15. ASK-353: owner:assaf may not be certified as a terminal state -------
 # The founder's reversal, made deterministic. Refused by SHAPE (any row whose
