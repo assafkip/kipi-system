@@ -256,7 +256,7 @@ def in_scan_scope(path):
     return path.startswith(SCAN_ROOTS[1] + "/") and "/" not in path[len(SCAN_ROOTS[1]) + 1:]
 
 
-def diff_declared_vs_actual(root, manifest, errors):
+def diff_declared_vs_actual(root, manifest, errors, mode="skeleton"):
     """The two-direction diff. One direction alone would miss F3 (an artifact
     that appears without a declaration) or mask a vanished test."""
     declared = {e["path"] for e in manifest.get("expected_tests", []) if e.get("path")}
@@ -267,7 +267,15 @@ def diff_declared_vs_actual(root, manifest, errors):
     for extra in sorted(discovered - declared):
         errors.append(f"present-but-undeclared: {extra} — add to expected_tests "
                       "in capability-manifest.json")
+    skeleton_only = set(manifest.get("skeleton_only", []))
     for outside in sorted(declared - in_scope_declared):
+        if mode == "instance" and outside in skeleton_only:
+            # A skeleton-only test is ABSENT from every instance by design;
+            # only run_tests consulted skeleton_only, so this check turned the
+            # whole fleet RED for a file that must not exist there (codex,
+            # PR #216). In skeleton mode the check still bites: the skeleton
+            # is where the file must exist.
+            continue
         if not (root / outside).is_file():
             errors.append(f"declared-but-missing (outside scan root): {outside}")
 
@@ -650,7 +658,7 @@ def main():
             if q:
                 notes.append(f"QUARANTINED (until {q['expires']}, {q['spillover_id']}): "
                              f"{e['path']} — {q['reason']}")
-    diff_declared_vs_actual(root, manifest, errors)
+    diff_declared_vs_actual(root, manifest, errors, mode)
     check_required_data(root, manifest, mode, errors)
     # Inert-engine detection is a SKELETON-mode check. An instance's synced
     # scripts are wired by skeleton-root surfaces (validate.yml,

@@ -521,10 +521,32 @@ def sec_negative_proof():
     check("token-guard observation + stall suite green", r.returncode == 0)
 
 
+def sec_skeleton_only_absent():
+    # A skeleton_only path that is GENUINELY ABSENT (never created) and outside
+    # the scan roots -- the fleet-RED shape codex named on PR #216. The earlier
+    # tests created the file first, so no test could fail when it was missing.
+    rel = "test_root_only_absent.sh"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, skeleton=False)
+        m = base_manifest(expected_tests=[entry(rel, runner="bash")], skeleton_only=[rel])
+        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        rc, out = run_gate(root)
+        check("skeleton-only-absent: instance is GREEN without the file",
+              rc == 0 and "declared-but-missing" not in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)  # skeleton mode: the file MUST exist here
+        m = base_manifest(expected_tests=[entry(rel, runner="bash")], skeleton_only=[rel])
+        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        rc, out = run_gate(root)
+        check("skeleton-only-absent: skeleton is still RED without the file",
+              rc == 1 and "declared-but-missing (outside scan root)" in out)
+
+
 SECTIONS = {
     "schema": sec_schema, "overlay": sec_overlay, "quarantine": sec_quarantine,
     "wiring": sec_wiring, "runner": sec_runner, "mode": sec_mode,
     "negative-proof": sec_negative_proof,
+    "skeleton_only_absent": sec_skeleton_only_absent,
 }
 
 
