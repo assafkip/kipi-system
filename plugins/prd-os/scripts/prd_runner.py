@@ -1663,19 +1663,13 @@ def _verify_resolution_proof(cfg: Config, item_id: str, command: str,
             "tree being graded. Without it both runs inspect the same code and "
             "the command cannot flip, so it proves nothing.")
 
-    def _run(tree):
-        """Always from `root`, so the CHECKER is always HEAD's. Only the SUBJECT
-        moves."""
-        return subprocess.run(command.replace("{tree}", str(tree)), shell=True,
-                              cwd=str(root), capture_output=True, text=True,
-                              timeout=PROOF_TIMEOUT_SECONDS)
-
-    # The AFTER half runs against a clean worktree of HEAD, never the live
-    # working directory. The record stores head_sha as WHERE the fix passed;
-    # grading the working tree lets an UNCOMMITTED fix pass while the record
-    # points at a commit that does not contain it -- a false "shipped"
-    # (Codex, PR #213 r4). Same mechanism as the before half: committed trees
-    # only, on both sides of the flip.
+    # BOTH halves run from a clean worktree of HEAD, never the live working
+    # directory. Two distinct laundering paths die here (Codex, PR #213 r4+r6):
+    # an uncommitted FIX passing while the record points at a commit that does
+    # not contain it, and an uncommitted CHECKER swaying the verdict while the
+    # committed checker at the recorded HEAD is red. cwd is the HEAD worktree,
+    # so the checker resolving relatively is HEAD's COMMITTED copy; {tree}
+    # substitution still moves only the SUBJECT.
     tmp_after = Path(tempfile.mkdtemp(prefix="prd-os-proof-"))
     worktree_after = tmp_after / "after"
     added_after = _git(root, "worktree", "add", "--detach", str(worktree_after), head_sha)
@@ -1684,42 +1678,50 @@ def _verify_resolution_proof(cfg: Config, item_id: str, command: str,
             raise CommitRefError(
                 f"could not create a worktree at HEAD {head_sha[:9]}: "
                 f"{(added_after.stderr or added_after.stdout).strip()[:300]}")
+
+        def _run(tree):
+            """cwd is the clean HEAD worktree: the CHECKER is HEAD's committed
+            copy, never the live checkout's. Only the SUBJECT moves."""
+            return subprocess.run(command.replace("{tree}", str(tree)), shell=True,
+                                  cwd=str(worktree_after), capture_output=True,
+                                  text=True, timeout=PROOF_TIMEOUT_SECONDS)
+
         after = _run(worktree_after)
+        if after.returncode != 0:
+            raise CommitRefError(
+                f"the proof command does not pass at HEAD ({head_sha[:9]}), exit "
+                f"{after.returncode}. An item is not resolved while its own check is "
+                f"red -- and only COMMITTED state counts: an uncommitted fix in the "
+                f"working tree is not shipped.\n{(after.stdout + after.stderr)[-800:]}")
+
+        tmp = Path(tempfile.mkdtemp(prefix="prd-os-proof-"))
+        worktree = tmp / "before"
+        added = _git(root, "worktree", "add", "--detach", str(worktree), before_sha)
+        try:
+            if added.returncode != 0 or not (worktree / ".git").exists():
+                # RAISE, never fall through. A failed worktree add followed by a run
+                # in the main checkout would grade the "before" case against FIXED
+                # code and report a false pass.
+                raise CommitRefError(
+                    f"could not create a worktree at {before_sha[:9]}: "
+                    f"{(added.stderr or added.stdout).strip()[:300]}")
+            seen = _git(worktree, "rev-parse", "HEAD").stdout.strip()
+            if seen != before_sha:
+                raise CommitRefError(
+                    f"the worktree is at {seen[:9]}, not the requested {before_sha[:9]}")
+            before = _run(worktree)
+            if before.returncode == 0:
+                raise CommitRefError(
+                    f"the proof command ALSO passes at {before_sha[:9]}, so it does "
+                    "not demonstrate this item was ever broken. Point --broken-at at "
+                    "a commit where the defect was still present, or pick a check "
+                    "that actually fails there.")
+        finally:
+            _git(root, "worktree", "remove", "--force", str(worktree))
+            shutil.rmtree(tmp, ignore_errors=True)
     finally:
         _git(root, "worktree", "remove", "--force", str(worktree_after))
         shutil.rmtree(tmp_after, ignore_errors=True)
-    if after.returncode != 0:
-        raise CommitRefError(
-            f"the proof command does not pass at HEAD ({head_sha[:9]}), exit "
-            f"{after.returncode}. An item is not resolved while its own check is "
-            f"red -- and only COMMITTED state counts: an uncommitted fix in the "
-            f"working tree is not shipped.\n{(after.stdout + after.stderr)[-800:]}")
-
-    tmp = Path(tempfile.mkdtemp(prefix="prd-os-proof-"))
-    worktree = tmp / "before"
-    added = _git(root, "worktree", "add", "--detach", str(worktree), before_sha)
-    try:
-        if added.returncode != 0 or not (worktree / ".git").exists():
-            # RAISE, never fall through. A failed worktree add followed by a run
-            # in the main checkout would grade the "before" case against FIXED
-            # code and report a false pass.
-            raise CommitRefError(
-                f"could not create a worktree at {before_sha[:9]}: "
-                f"{(added.stderr or added.stdout).strip()[:300]}")
-        seen = _git(worktree, "rev-parse", "HEAD").stdout.strip()
-        if seen != before_sha:
-            raise CommitRefError(
-                f"the worktree is at {seen[:9]}, not the requested {before_sha[:9]}")
-        before = _run(worktree)
-        if before.returncode == 0:
-            raise CommitRefError(
-                f"the proof command ALSO passes at {before_sha[:9]}, so it does "
-                "not demonstrate this item was ever broken. Point --broken-at at "
-                "a commit where the defect was still present, or pick a check "
-                "that actually fails there.")
-    finally:
-        _git(root, "worktree", "remove", "--force", str(worktree))
-        shutil.rmtree(tmp, ignore_errors=True)
 
     return {
         "resolution_tracker": "proof",

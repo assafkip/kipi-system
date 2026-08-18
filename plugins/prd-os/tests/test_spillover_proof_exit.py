@@ -297,3 +297,20 @@ def test_an_uncommitted_fix_cannot_resolve_an_item(repo):
     (root / "subject.txt").write_text("THE DEFECT IS FIXED only here, uncommitted\n")
     with pytest.raises(prd_runner.CommitRefError, match="does not pass at HEAD"):
         prd_runner._verify_resolution_proof(cfg, "sp-stuck", GOOD, before)
+
+
+def test_an_uncommitted_checker_cannot_sway_the_verdict(repo):
+    """The CHECKER is HEAD's committed copy, never the live checkout's.
+
+    A checker script edited in the working tree (committed copy exits 1,
+    working copy exits 0) must not resolve the item (Codex PR #213 r6).
+    """
+    cfg, root, before = repo
+    (root / "checker.sh").write_text("#!/bin/sh\nexit 1\n")
+    (root / "checker.sh").chmod(0o755)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "committed checker: always red")
+    # Sabotage the LIVE copy only: it would pass everything.
+    (root / "checker.sh").write_text("#!/bin/sh\nexit 0\n")
+    with pytest.raises(prd_runner.CommitRefError, match="does not pass at HEAD"):
+        prd_runner._verify_resolution_proof(cfg, "sp-stuck", "sh checker.sh {tree}", before)
