@@ -36,8 +36,8 @@ If these files are empty/template, the voice skill cannot run. Ask the founder t
 - Bad: "Organizations often struggle with cross-team coordination challenges."
 
 ### 5. The Contrast Pattern
-- Sharp contrasts, not gradients:
-- "X isn't Y. It's Z." or "X does A. It doesn't do B."
+- Sharp contrasts, not gradients -- but state the thing directly; do not lead with what it is not.
+- The "X isn't Y. It's Z." reveal scaffold is measured RARE in his writing (1 of 72 posts, once, never stacked) and reads as a machine tell when generated. One use tolerable, stacking never. "X does A. It doesn't do B." same rule.
 
 ### 6. The Question-as-Dagger
 - Questions expose uncomfortable truths, not drive engagement
