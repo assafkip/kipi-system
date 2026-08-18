@@ -418,6 +418,138 @@ LOG="$PR/dispatch.log" bash -c '
   || ok "an uncontended clear removes the marker"
 
 echo
+echo "== 15. ASK-358: a dispatch must not land on a branch no open PR is on =="
+# THE DEFECT, measured on ASK-352. That issue has TWO branches: sana/ask-352
+# backs PR #90 (CLOSED) and is what the live checkout sits on, while
+# sana/ask-352-clean backs PR #91 (OPEN). converge.sh:83 derives the branch it
+# works from the issue id alone -- BRANCH="sana/$(lower ISSUE)" -- so a rework
+# dispatched for ASK-352 commits onto the CLOSED branch, where no PR and no
+# reviewer will ever read it. That is silent-wrong-target, which is worse than a
+# stall: the work looks done and is unreachable.
+#
+# review-redrive.py's candidate dict already carries the selected PR's
+# headRefName and drops it before dispatch, so the one fact that would have
+# caught this was fetched and thrown away.
+#
+# Two halves, both driven here: the RESOLVER (review-redrive.py branch-for,
+# which answers "what branch is this issue's open PR on") and the GUARD
+# (branch_guard in kipi-dispatch.sh, which refuses a mismatch before the attempt
+# is claimed). Neither touches a live data path: gh is stubbed via KIPI_GH.
+REDRIVE="$REPO/q-system/.q-system/scripts/review-redrive.py"
+BG="$WORK/bg"; mkdir -p "$BG"
+
+# A gh stub that answers `pr list` from a fixture file, and can be told to fail.
+cat > "$BG/gh" <<'GH'
+#!/usr/bin/env bash
+if [ "${GH_STUB_FAIL:-0}" = "1" ]; then
+  echo "gh: could not resolve to a Repository" >&2; exit 1
+fi
+for a in "$@"; do [ "$a" = "list" ] && { cat "$GH_STUB_PRS"; exit 0; }; done
+exit 0
+GH
+chmod +x "$BG/gh"
+export KIPI_GH="$BG/gh"
+
+# ASK-352 as it actually is: ONE open PR, on the -clean branch. gh pr list is
+# already --state open, so the closed PR #90 is simply absent from the answer --
+# which is exactly why "the issue's branch" and "the open PR's branch" differ.
+cat > "$BG/prs-clean.json" <<'J'
+[{"number":91,"headRefName":"sana/ask-352-clean","headRefOid":"aaaa111",
+  "url":"u","title":"Rework, clean branch (ASK-352)","statusCheckRollup":[],
+  "isDraft":false}]
+J
+# The ordinary shape: the open PR sits on the branch the naming rule produces.
+cat > "$BG/prs-match.json" <<'J'
+[{"number":92,"headRefName":"sana/ask-352","headRefOid":"bbbb222",
+  "url":"u","title":"Ordinary (ASK-352)","statusCheckRollup":[],"isDraft":false}]
+J
+# Two live branches for one issue. Picking either is a guess, so refuse.
+cat > "$BG/prs-two.json" <<'J'
+[{"number":91,"headRefName":"sana/ask-352-clean","headRefOid":"aaaa111",
+  "url":"u","title":"Clean (ASK-352)","statusCheckRollup":[],"isDraft":false},
+ {"number":92,"headRefName":"sana/ask-352","headRefOid":"bbbb222",
+  "url":"u","title":"Original (ASK-352)","statusCheckRollup":[],"isDraft":false}]
+J
+# A different issue's PR only. ASK-352 has no open PR at all.
+cat > "$BG/prs-none.json" <<'J'
+[{"number":93,"headRefName":"sana/ask-999","headRefOid":"cccc333",
+  "url":"u","title":"Elsewhere (ASK-999)","statusCheckRollup":[],"isDraft":false}]
+J
+
+bf() { GH_STUB_PRS="$1" python3 "$REDRIVE" --repo-dir "$WORK" branch-for --issue ASK-352 2>"$BG/err"; }
+
+OUT="$(bf "$BG/prs-clean.json")"; RC=$?
+[ "$RC" = "0" ] && [ "$OUT" = "sana/ask-352-clean" ] \
+  && ok "branch-for reads the OPEN PR's branch (sana/ask-352-clean), not the issue id" \
+  || bad "THE DEFECT: branch-for gave rc=$RC out='$OUT'; the open PR's branch is unreachable"
+
+OUT="$(bf "$BG/prs-two.json")"; RC=$?
+[ "$RC" = "3" ] \
+  && ok "two live branches for one issue is rc 3 (ambiguous), never a guess" \
+  || bad "THE DEFECT: two live branches answered rc=$RC out='$OUT' instead of refusing"
+
+OUT="$(bf "$BG/prs-none.json")"; RC=$?
+[ "$RC" = "1" ] \
+  && ok "no open PR for the issue is rc 1, distinct from an unreadable board" \
+  || bad "no-open-PR answered rc=$RC out='$OUT', not rc 1"
+
+OUT="$(GH_STUB_FAIL=1 bf "$BG/prs-clean.json")"; RC=$?
+[ "$RC" = "2" ] \
+  && ok "gh failing is rc 2 (cannot answer), never read as 'no branch'" \
+  || bad "an unreadable board answered rc=$RC, which a caller would read as a fact"
+
+# --- the guard itself, extracted from the dispatcher and driven directly ------
+grep -q "^branch_guard() {" "$DISPATCH" || {
+  echo "  FAIL: THE DEFECT: kipi-dispatch.sh has no branch_guard"
+  FAIL=$((FAIL+1)); }
+
+if grep -q "^branch_guard() {" "$DISPATCH"; then
+  guard() {
+    GH_STUB_PRS="$1" GH_STUB_FAIL="${2:-0}" bash -c '
+      set -uo pipefail
+      say() { printf "SAY %s\n" "$*" >&2; }
+      NEXT="ASK-352"; TARGET_PATH="'"$WORK"'"
+      # LOG is where the guard appends the resolver stderr. Production always
+      # sets it; leaving it unset here made `2>>"$LOG"` trip set -u, so the
+      # resolver call died and the guard took its fail-OPEN arm -- a harness gap
+      # that reads exactly like the guard passing a mismatch through.
+      LOG="'"$BG"'/guard.log"
+      REVIEW_REDRIVE="'"$REDRIVE"'"
+      '"$(awk '/^branch_guard\(\) \{/,/^\}/' "$DISPATCH")"'
+      branch_guard && echo "VERDICT=RUN" || echo "VERDICT=REFUSE"' 2>"$BG/gerr"
+  }
+
+  V="$(guard "$BG/prs-clean.json")"
+  [ "$V" = "VERDICT=REFUSE" ] \
+    && ok "THE REPRODUCER: dispatch REFUSES ASK-352 while its open PR is on sana/ask-352-clean" \
+    || bad "THE DEFECT: dispatch said $V -- converge would commit onto the CLOSED sana/ask-352"
+  grep -q 'sana/ask-352-clean' "$BG/gerr" \
+    && ok "the refusal names the branch the open PR is actually on" \
+    || bad "the refusal does not say which branch to work, so nobody can act on it"
+
+  V="$(guard "$BG/prs-match.json")"
+  [ "$V" = "VERDICT=RUN" ] \
+    && ok "the ordinary shape (open PR on sana/ask-352) still dispatches" \
+    || bad "THE DEFECT: the guard refuses a correct dispatch -- a gate this noisy gets switched off"
+
+  V="$(guard "$BG/prs-two.json")"
+  [ "$V" = "VERDICT=REFUSE" ] \
+    && ok "two live branches for one issue refuses rather than picking one" \
+    || bad "THE DEFECT: the guard picked a branch when two were live"
+
+  V="$(guard "$BG/prs-none.json")"
+  [ "$V" = "VERDICT=RUN" ] \
+    && ok "an issue with no open PR still dispatches (round one has no PR yet)" \
+    || bad "THE DEFECT: the guard blocks every first round, which stops the loop entirely"
+
+  V="$(guard "$BG/prs-clean.json" 1)"
+  [ "$V" = "VERDICT=RUN" ] \
+    && ok "gh unable to answer fails OPEN, same posture stale_check takes on a failed fetch" \
+    || bad "an unreadable board refused the dispatch, so one gh outage halts the loop"
+fi
+unset KIPI_GH
+
+echo
 echo "-------- $PASS passed, $FAIL failed --------"
 [ "$FAIL" -eq 0 ] || exit 1
 echo "PASS: stale_check refuses without touching the tree, and pages once per episode"

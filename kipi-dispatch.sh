@@ -1215,6 +1215,53 @@ if [[ "$PS_SNAPSHOT" =~ converge\.sh\ --issue\ ${NEXT}([[:space:]]|$) ]]; then
   exit 0
 fi
 
+# --- BRANCH TARGET GUARD (ASK-358) -------------------------------------------
+# Refuse to dispatch an issue whose work would land on a branch no open PR is on.
+#
+# THE DEFECT, measured on ASK-352. converge.sh:83 derives the branch it commits
+# into from the issue id alone -- BRANCH="sana/$(lower ISSUE)". ASK-352 has TWO
+# branches: sana/ask-352 backs PR #90, which is CLOSED, and sana/ask-352-clean
+# backs PR #91, which is open. So a rework dispatched for ASK-352 commits onto
+# the closed branch, where no PR and no reviewer will ever read it. Silent
+# wrong-target is worse than a stall: the work looks done and is unreachable.
+#
+# ON EVERY DISPATCH, NOT ONLY THE REDRIVE ONES. The reviewer redrive is where the
+# defect was found, but the naming rule is converge's and converge runs for the
+# fresh pick too -- a guard on one path is this repo's recurring class (two
+# paths, one guarded). One chokepoint, above every selector, before the attempt
+# is claimed: refusing after mark-dispatched would burn the PR's one attempt.
+#
+# IT REFUSES RATHER THAN RETARGETS. Retargeting means passing a branch through to
+# converge, and converge.sh is not in this change's scope; more to the point, a
+# dispatcher that silently rewrites where work lands is the same class of surprise
+# as the bug. The refusal names the branch, so the next move is a human's and it
+# is one line long.
+#
+# FAILS OPEN ON NOT KNOWING, closed on knowing -- the posture stale_check already
+# takes on a failed fetch. rc 2 (gh could not answer) and a missing resolver both
+# RUN: one gh outage must not halt the loop. rc 1 (no open PR) also runs, because
+# round one legitimately has no PR yet.
+branch_guard() {
+  local expect actual rc
+  # The producer's rule, mirrored. Drift here is silent, so the anti-drift check
+  # is the test asserting converge.sh still builds the branch this same way.
+  expect="sana/$(printf '%s' "$NEXT" | tr 'A-Z' 'a-z')"
+  [ -f "$REVIEW_REDRIVE" ] || return 0
+  actual="$(python3 "$REVIEW_REDRIVE" --repo-dir "$TARGET_PATH" \
+            branch-for --issue "$NEXT" 2>>"$LOG")"
+  rc=$?
+  case "$rc" in
+    0) ;;
+    3) say "skip $NEXT: it maps to more than one live branch, so which one the work belongs on is a guess (see $LOG). Close the stale PR, or say which branch is current."
+       return 1 ;;
+    *) return 0 ;;
+  esac
+  [ "$actual" = "$expect" ] && return 0
+  say "skip $NEXT: its open PR is on $actual, but converge would commit onto $expect -- work there reaches no PR and no reviewer. Rename the branch to $expect, or reopen the PR on it."
+  return 1
+}
+branch_guard || exit 0
+
 # --- RED-CI REDRIVE: MARK-DISPATCHED (ASK-295) -------------------------------
 # Past every guard that can still abort, and immediately before the launch. This
 # is where the PR's one machine attempt is spent, and the call is the atomic

@@ -450,6 +450,67 @@ def candidates(repo_dir, records_dir):
     return out
 
 
+def branch_for(repo_dir, issue):
+    """The ONE branch this issue's OPEN PRs live on, or a refusal (ASK-358).
+
+    WHY (measured on ASK-352). converge.sh:83 derives the branch it commits into
+    from the issue id alone -- `BRANCH="sana/$(lower ISSUE)"`. ASK-352 has TWO
+    branches: `sana/ask-352` backs PR #90, which is CLOSED, and `sana/ask-352-clean`
+    backs PR #91, which is open. So a rework dispatched for ASK-352 lands on the
+    closed branch, where no PR and no reviewer will ever read it. That is
+    silent-wrong-target, which is worse than a stall: the work looks done and is
+    unreachable.
+
+    `candidates()` above already fetches `headRefName` into every candidate dict
+    and nothing downstream ever reads it. This is the reader.
+
+    ONLY OPEN PRs, because `CI.list_prs` is `--state open` -- and that is the
+    point rather than an accident. The closed branch is invisible here by
+    construction, so "the issue's branch" and "the open PR's branch" differing is
+    the whole signal.
+
+    AMBIGUITY IS REFUSED, NOT RESOLVED, the same rule `title_issue` already
+    applies to two ids in one title: two live branches for one issue means any
+    pick is a guess, and the wrong branch worked is the defect this exists to
+    stop. Returns a LIST so the caller can name them; the caller decides.
+    """
+    branches = []
+    for pr_obj in CI.list_prs(repo_dir):
+        attributed = CI.attribute(pr_obj)
+        if attributed is None:
+            continue
+        if attributed[0].upper() != issue.upper():
+            continue
+        head = pr_obj.get("headRefName")
+        if head and head not in branches:
+            branches.append(head)
+    return sorted(branches)
+
+
+def cmd_branch_for(repo_dir, issue):
+    """rc 0 = the one branch (printed), 1 = no open PR, 3 = ambiguous.
+
+    rc 2 is reserved for `gh could not answer` and is raised by the caller in
+    main(), so a caller can never read an unreadable board as a fact. Three
+    distinct non-zero codes because the caller's move differs for each: proceed
+    (no PR yet, round one), refuse and name the branch (mismatch), refuse and
+    name all of them (ambiguous).
+    """
+    branches = branch_for(repo_dir, issue)
+    if not branches:
+        sys.stderr.write(
+            "review-redrive: %s has no OPEN PR, so no branch to resolve.\n" % issue)
+        return 1
+    if len(branches) > 1:
+        sys.stderr.write(
+            "review-redrive: %s maps to %d live branches (%s) -- refusing to "
+            "guess which one the work belongs on.\n"
+            % (issue, len(branches), ", ".join(branches)))
+        return 3
+    print(branches[0])
+    return 0
+
+
 def flag(cand):
     """One attempt per PR per action per head sha. See the module docstring."""
     return "review_%s_pr%s_%s" % (cand["action"].replace("-", ""),
@@ -638,9 +699,21 @@ def main(argv):
     mark.add_argument("--pr", required=True)
     mark.add_argument("--head-sha", default="")
 
+    bfp = sub.add_parser("branch-for")
+    bfp.add_argument("--issue", required=True)
+
     args = ap.parse_args(argv)
     if args.cmd == "mark-dispatched":
         return cmd_mark_dispatched(args.issue, args.action, args.pr, args.head_sha)
+    if args.cmd == "branch-for":
+        try:
+            return cmd_branch_for(args.repo_dir, args.issue)
+        except CI.GhUnavailable as exc:
+            # Same rc as `select`, and for the same reason: an unreadable board
+            # is not the fact "no branch". The caller must be able to tell them
+            # apart or it will refuse a dispatch over one gh outage.
+            sys.stderr.write("review-redrive: %s -- no branch resolved.\n" % exc)
+            return 2
     try:
         cands = candidates(args.repo_dir, args.records_dir)
     except CI.GhUnavailable as exc:
