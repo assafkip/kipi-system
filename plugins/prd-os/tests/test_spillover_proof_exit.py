@@ -264,3 +264,15 @@ def test_a_missing_api_key_is_unreachable_not_still_open(monkeypatch):
     monkeypatch.setattr(prd_runner.Path, "is_file", lambda self: False)
     with pytest.raises(prd_runner.LinearUnreachableError):
         prd_runner._linear_api_key()
+
+
+def test_an_acked_item_clears_exactly_its_acking_scope():
+    """The ack disposition's one promised effect, now read by the gate
+    (Codex PR #213 r3: acked_by_issue was write-only)."""
+    # A BLOCKER, the severity that wedges every scope -- the strongest case:
+    # the ack clears exactly the acking scope and nothing else.
+    rec = {"id": "sp-x", "status": "open", "severity": "blocker",
+           "source": "ASK-1", "acked_by_issue": "ASK-1"}
+    assert prd_runner._spillover_blocks(rec, "ASK-1") is False   # cleared here
+    assert prd_runner._spillover_blocks(rec, "ASK-2") is True    # not there
+    assert prd_runner._spillover_blocks(rec, None) is True       # nor scopeless

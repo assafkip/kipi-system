@@ -2181,6 +2181,15 @@ def _spillover_promoted_audit(cfg: Config, args) -> int:
         for row in items:
             print("  " + "  ".join(str(x) for x in row if x))
     print(f"promoted rows audited: {len(rows)}")
+    if rows and len(unreadable) == len(rows):
+        # Every single lookup failed: the audit RAN but audited nothing. Exit 0
+        # here would let an unattended sweep report success with the tracker
+        # fully down (Codex, PR #213 r3) -- the launchd job's own health signal
+        # is this exit code. Partial reads still exit 0: the sweep did work,
+        # and the UNVERIFIABLE lines carry the remainder.
+        sys.stderr.write(
+            "promoted-audit: 0 of %d rows verifiable; nothing was audited\n" % len(rows))
+        return 1
     return 0
 
 
@@ -2488,6 +2497,14 @@ def _spillover_blocks(record: dict, scope: str | None) -> bool:
     refuses everywhere else.
     """
     severity = (record.get("severity") or "").strip().lower()
+    # The ack disposition's one effect, wired where the closeout block actually
+    # decides (Codex, PR #213 r3: `ack` wrote acked_by_issue and nothing read
+    # it -- a write-only integration cannot report state). An item THIS scope
+    # acknowledged, with a recorded reason, stops blocking THIS scope's
+    # closeout and nothing else: other scopes, scopeless runs, the census and
+    # the still-open status are all untouched.
+    if scope is not None and record.get("acked_by_issue") == scope:
+        return False
     if scope is None or record.get("source") == scope:
         return _is_blocking_severity(severity)
     return severity == "blocker"

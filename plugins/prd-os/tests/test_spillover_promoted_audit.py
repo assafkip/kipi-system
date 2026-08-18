@@ -200,3 +200,14 @@ def test_the_subcommand_is_reachable_from_the_cli(tmp_path):
         capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stdout + out.stderr
     assert "promoted rows audited: 0" in out.stdout
+
+
+def test_an_all_unverifiable_sweep_exits_nonzero(ledger, monkeypatch, capsys):
+    """The audit RAN but audited nothing; an unattended job must not report
+    success with the tracker fully down (Codex PR #213 r3)."""
+    def boom(identifier):
+        raise prd_runner.LinearUnreachableError("cannot reach Linear: down")
+    monkeypatch.setattr(prd_runner, "_linear_issue_state", boom)
+    rc = prd_runner._spillover_promoted_audit(ledger, Args(dry_run=False))
+    assert rc == 1
+    assert "nothing was audited" in capsys.readouterr().err
