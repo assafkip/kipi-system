@@ -1,6 +1,6 @@
 # Deep Module Lens
 
-Source: John Ousterhout, *A Philosophy of Software Design*. A module is deep
+This lens applies John Ousterhout's *A Philosophy of Software Design*. A module is deep
 when its interface is much simpler than what it hides. A module is shallow
 when the interface is almost as complex as the implementation — the caller
 gets little benefit for the coupling it takes on.

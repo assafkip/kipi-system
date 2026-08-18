@@ -27,14 +27,6 @@
   "classifier_sha256": "cb5c31f32e12669210a36fc4434c0430037db1da8fe8765d856d67251dbfeeb2",
   "entries": [
     {
-      "path": "plugins/kipi-core/skills/architecture-review/references/deep-module-lens.md",
-      "fact_class": "source_identity",
-      "indent": "top",
-      "line_sha256": "e7b6588701f352b6b58a3f3a28b15ec210aa1c22d22fddf256297bc0977b3033",
-      "count": 1,
-      "justification": "Public book citation -- 'Source: John Ousterhout, A Philosophy of Software Design' in the architecture-review skill's reference doc. Classifier matches the Source:<name> shape, but this names a published author of a public book, not a client, contact, or engagement fact. Read and blessed 2026-08-18 during the founder-directed fleet update (fleet-audit session)."
-    },
-    {
       "count": 1,
       "fact_class": "source_identity",
       "indent": "top",
