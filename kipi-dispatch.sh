@@ -1167,7 +1167,7 @@ fi
 #
 # rc 2 (gh could not answer) leaves the fresh pick standing, same as above.
 REVIEW_REDRIVE="$REPO/q-system/.q-system/scripts/review-redrive.py"
-REVIEW_ACTION=""; REVIEW_NEXT=""; REVIEW_PR=""; REVIEW_SHA=""
+REVIEW_ACTION=""; REVIEW_NEXT=""; REVIEW_PR=""; REVIEW_SHA=""; REVIEW_BRANCH=""
 if [ -z "$REDRIVE_NEXT" ] && [ -f "$REVIEW_REDRIVE" ]; then
   REVIEW_LINE="$(python3 "$REVIEW_REDRIVE" --repo-dir "$TARGET_PATH" select 2>>"$LOG")"
   REVIEW_RC=$?
@@ -1176,6 +1176,10 @@ if [ -z "$REDRIVE_NEXT" ] && [ -f "$REVIEW_REDRIVE" ]; then
     REVIEW_NEXT="$(printf '%s' "$REVIEW_LINE" | cut -f2)"
     REVIEW_PR="$(printf '%s' "$REVIEW_LINE" | cut -f3)"
     REVIEW_SHA="$(printf '%s' "$REVIEW_LINE" | cut -f4)"
+    # The branch the selected PR is ACTUALLY on, as the selector read it. Kept so
+    # branch_guard below need not ask gh the same question a second time -- see
+    # its FROM THE SELECTOR note.
+    REVIEW_BRANCH="$(printf '%s' "$REVIEW_LINE" | cut -f5)"
     say "reviewer redrive: $REVIEW_NEXT PR #$REVIEW_PR needs $REVIEW_ACTION${NEXT:+ ($NEXT waits)}"
     NEXT="$REVIEW_NEXT"
   elif [ "$REVIEW_RC" = "2" ]; then
@@ -1241,11 +1245,34 @@ fi
 # takes on a failed fetch. rc 2 (gh could not answer) and a missing resolver both
 # RUN: one gh outage must not halt the loop. rc 1 (no open PR) also runs, because
 # round one legitimately has no PR yet.
+#
+# IT GUARDS COMMITS, SO IT SKIPS THE ONE ACTION THAT MAKES NONE (PR #211 round 1,
+# MAJOR 1). A `re-review` runs pr-review-agent.sh against a PR NUMBER; converge's
+# branch rule never applies to it and it cannot land work anywhere. Refusing one
+# parks a PR overnight over a condition it structurally cannot cause -- and a
+# gate that blocks the harmless case is a gate that gets switched off. `rework`
+# and the fresh pick both become a converge, so both stay guarded.
+#
+# FROM THE SELECTOR, NOT FROM A SECOND QUERY (PR #211 round 1, MAJOR 3). When the
+# reviewer redrive picked this issue it already READ the branch its PR is on, and
+# asking gh again opens a window between the two answers: PR #91 closing in
+# between makes the second answer "no open PR", the fail-open arm fires, and the
+# work lands on precisely the branch this guard exists to reject. The carried
+# value is also the more correct question -- it describes the PR whose one
+# attempt is about to be spent, where a fresh query describes the issue's board
+# now. The fresh pick has no earlier observation, so it still asks.
 branch_guard() {
   local expect actual rc
   # The producer's rule, mirrored. Drift here is silent, so the anti-drift check
   # is the test asserting converge.sh still builds the branch this same way.
   expect="sana/$(printf '%s' "$NEXT" | tr 'A-Z' 'a-z')"
+  if [ -n "$REVIEW_ACTION" ] && [ "$NEXT" = "$REVIEW_NEXT" ]; then
+    [ "$REVIEW_ACTION" = "re-review" ] && return 0
+    [ -z "$REVIEW_BRANCH" ] && return 0
+    [ "$REVIEW_BRANCH" = "$expect" ] && return 0
+    say "skip $NEXT: its open PR #$REVIEW_PR is on $REVIEW_BRANCH, but converge would commit onto $expect -- work there reaches no PR and no reviewer. Rename the branch to $expect, or reopen the PR on it."
+    return 1
+  fi
   [ -f "$REVIEW_REDRIVE" ] || return 0
   actual="$(python3 "$REVIEW_REDRIVE" --repo-dir "$TARGET_PATH" \
             branch-for --issue "$NEXT" 2>>"$LOG")"

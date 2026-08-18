@@ -456,24 +456,56 @@ export KIPI_GH="$BG/gh"
 cat > "$BG/prs-clean.json" <<'J'
 [{"number":91,"headRefName":"sana/ask-352-clean","headRefOid":"aaaa111",
   "url":"u","title":"Rework, clean branch (ASK-352)","statusCheckRollup":[],
-  "isDraft":false}]
+  "isDraft":false,"isCrossRepository":false}]
 J
 # The ordinary shape: the open PR sits on the branch the naming rule produces.
 cat > "$BG/prs-match.json" <<'J'
 [{"number":92,"headRefName":"sana/ask-352","headRefOid":"bbbb222",
-  "url":"u","title":"Ordinary (ASK-352)","statusCheckRollup":[],"isDraft":false}]
+  "url":"u","title":"Ordinary (ASK-352)","statusCheckRollup":[],"isDraft":false,
+  "isCrossRepository":false}]
 J
 # Two live branches for one issue. Picking either is a guess, so refuse.
 cat > "$BG/prs-two.json" <<'J'
 [{"number":91,"headRefName":"sana/ask-352-clean","headRefOid":"aaaa111",
-  "url":"u","title":"Clean (ASK-352)","statusCheckRollup":[],"isDraft":false},
+  "url":"u","title":"Clean (ASK-352)","statusCheckRollup":[],"isDraft":false,
+  "isCrossRepository":false},
  {"number":92,"headRefName":"sana/ask-352","headRefOid":"bbbb222",
-  "url":"u","title":"Original (ASK-352)","statusCheckRollup":[],"isDraft":false}]
+  "url":"u","title":"Original (ASK-352)","statusCheckRollup":[],"isDraft":false,
+  "isCrossRepository":false}]
 J
 # A different issue's PR only. ASK-352 has no open PR at all.
 cat > "$BG/prs-none.json" <<'J'
 [{"number":93,"headRefName":"sana/ask-999","headRefOid":"cccc333",
-  "url":"u","title":"Elsewhere (ASK-999)","statusCheckRollup":[],"isDraft":false}]
+  "url":"u","title":"Elsewhere (ASK-999)","statusCheckRollup":[],"isDraft":false,
+  "isCrossRepository":false}]
+J
+# PR #211 round 1, MAJOR 2. A fork PR is opened by anyone who can read a public
+# repo, and BOTH facts attribute() reads are the forker's to choose: the head
+# branch name and the PR title. So `sana/evil` + "(ASK-352)" from a fork
+# impersonates the agent branch namespace, and the guard downstream then refuses
+# the real ASK-352 every cycle until a human closes the external PR.
+cat > "$BG/prs-fork.json" <<'J'
+[{"number":666,"headRefName":"sana/evil","headRefOid":"dddd444",
+  "url":"u","title":"Attacker-controlled title (ASK-352)","statusCheckRollup":[],
+  "isDraft":false,"isCrossRepository":true},
+ {"number":91,"headRefName":"sana/ask-352-clean","headRefOid":"aaaa111",
+  "url":"u","title":"Rework, clean branch (ASK-352)","statusCheckRollup":[],
+  "isDraft":false,"isCrossRepository":false}]
+J
+# The fork ALONE. Nothing trustworthy answers for ASK-352, which is rc 1 (no open
+# PR I may believe), not rc 0 printing the forker's branch.
+cat > "$BG/prs-fork-only.json" <<'J'
+[{"number":666,"headRefName":"sana/evil","headRefOid":"dddd444",
+  "url":"u","title":"Attacker-controlled title (ASK-352)","statusCheckRollup":[],
+  "isDraft":false,"isCrossRepository":true}]
+J
+# The field absent entirely. NOT the same claim as "same repo": PR_FIELDS asks for
+# it, so a missing value means the board did not tell us where the head lives, and
+# an unconfirmed provenance is not a fact to route work on.
+cat > "$BG/prs-unstated.json" <<'J'
+[{"number":91,"headRefName":"sana/ask-352-clean","headRefOid":"aaaa111",
+  "url":"u","title":"No provenance stated (ASK-352)","statusCheckRollup":[],
+  "isDraft":false}]
 J
 
 bf() { GH_STUB_PRS="$1" python3 "$REDRIVE" --repo-dir "$WORK" branch-for --issue ASK-352 2>"$BG/err"; }
@@ -498,17 +530,42 @@ OUT="$(GH_STUB_FAIL=1 bf "$BG/prs-clean.json")"; RC=$?
   && ok "gh failing is rc 2 (cannot answer), never read as 'no branch'" \
   || bad "an unreadable board answered rc=$RC, which a caller would read as a fact"
 
+OUT="$(bf "$BG/prs-fork.json")"; RC=$?
+[ "$RC" = "0" ] && [ "$OUT" = "sana/ask-352-clean" ] \
+  && ok "a fork PR is not a second live branch -- the real one still resolves" \
+  || bad "THE DEFECT: a fork made ASK-352 answer rc=$RC out='$OUT'; anyone can park the issue"
+
+OUT="$(bf "$BG/prs-fork-only.json")"; RC=$?
+[ "$RC" = "1" ] \
+  && ok "a fork alone is rc 1 (nothing trusted answers), never the forker's branch" \
+  || bad "THE DEFECT: the forker's branch answered rc=$RC out='$OUT' for someone else's issue"
+
+OUT="$(bf "$BG/prs-unstated.json")"; RC=$?
+[ "$RC" = "1" ] \
+  && ok "provenance unstated is rc 1 -- absence is not a claim of same-repo" \
+  || bad "an unconfirmed head answered rc=$RC out='$OUT', which trusts what was never said"
+
 # --- the guard itself, extracted from the dispatcher and driven directly ------
 grep -q "^branch_guard() {" "$DISPATCH" || {
   echo "  FAIL: THE DEFECT: kipi-dispatch.sh has no branch_guard"
   FAIL=$((FAIL+1)); }
 
 if grep -q "^branch_guard() {" "$DISPATCH"; then
+  # What the reviewer selector picked, as the dispatcher would have it at the
+  # moment the guard runs. Empty is the fresh-pick path, which is what every
+  # pre-existing case below drives.
+  G_ACTION=""; G_BRANCH=""
   guard() {
-    GH_STUB_PRS="$1" GH_STUB_FAIL="${2:-0}" bash -c '
+    GH_STUB_PRS="$1" GH_STUB_FAIL="${2:-0}" \
+    G_ACTION="$G_ACTION" G_BRANCH="$G_BRANCH" bash -c '
       set -uo pipefail
       say() { printf "SAY %s\n" "$*" >&2; }
       NEXT="ASK-352"; TARGET_PATH="'"$WORK"'"
+      # The dispatcher initialises all four before any selector runs (:1170) and
+      # the guard reads them, so the harness carries the same shape or `set -u`
+      # kills the guard and the fail-OPEN arm reads exactly like a pass.
+      REVIEW_ACTION="$G_ACTION"; REVIEW_BRANCH="$G_BRANCH"
+      REVIEW_NEXT="${G_ACTION:+ASK-352}"; REVIEW_PR="${G_ACTION:+91}"
       # LOG is where the guard appends the resolver stderr. Production always
       # sets it; leaving it unset here made `2>>"$LOG"` trip set -u, so the
       # resolver call died and the guard took its fail-OPEN arm -- a harness gap
@@ -546,6 +603,43 @@ if grep -q "^branch_guard() {" "$DISPATCH"; then
   [ "$V" = "VERDICT=RUN" ] \
     && ok "gh unable to answer fails OPEN, same posture stale_check takes on a failed fetch" \
     || bad "an unreadable board refused the dispatch, so one gh outage halts the loop"
+
+  # PR #211 round 1, MAJOR 1. A re-review runs pr-review-agent.sh against a PR
+  # NUMBER and commits nothing, so converge's branch rule never applies to it.
+  # Refusing one parks a PR overnight over a condition it cannot cause.
+  G_ACTION="re-review"; G_BRANCH="sana/ask-352-clean"
+  V="$(guard "$BG/prs-clean.json")"
+  [ "$V" = "VERDICT=RUN" ] \
+    && ok "a re-review is not gated on the branch -- it commits nothing" \
+    || bad "THE DEFECT: the guard parked a re-review, which no branch rule applies to"
+
+  # A rework DOES become a converge, so the same mismatch must still refuse.
+  G_ACTION="rework"; G_BRANCH="sana/ask-352-clean"
+  V="$(guard "$BG/prs-clean.json")"
+  [ "$V" = "VERDICT=REFUSE" ] \
+    && ok "a rework on a mismatched branch still refuses -- the exemption is action-scoped" \
+    || bad "THE DEFECT: exempting re-review exempted rework too, which is the whole bug"
+
+  # PR #211 round 1, MAJOR 3. The selector already READ the branch. Asking gh a
+  # second time re-opens the window: PR #91 closing in between makes the board
+  # answer "no open PR", the fail-OPEN arm fires, and converge lands on the very
+  # branch the guard exists to reject. The fix is to stop asking twice.
+  G_ACTION="rework"; G_BRANCH="sana/ask-352-clean"
+  V="$(guard "$BG/prs-none.json")"
+  [ "$V" = "VERDICT=REFUSE" ] \
+    && ok "THE RACE: a PR closing after selection cannot un-refuse the dispatch" \
+    || bad "THE DEFECT: the guard re-queried, saw the PR gone, and ran on sana/ask-352"
+
+  # And in the other direction. The carried branch is the branch of the PR whose
+  # one attempt is about to be spent; a second query answers a DIFFERENT question
+  # ("what branches does this issue have right now"), so the board disagreeing
+  # here must not overrule the observation the dispatch is actually about.
+  G_ACTION="rework"; G_BRANCH="sana/ask-352"
+  V="$(guard "$BG/prs-clean.json")"
+  [ "$V" = "VERDICT=RUN" ] \
+    && ok "a matching carried branch dispatches -- the board is not asked a second time" \
+    || bad "THE DEFECT: the guard re-queried and refused, so the selector's observation is discarded"
+  G_ACTION=""; G_BRANCH=""
 fi
 unset KIPI_GH
 

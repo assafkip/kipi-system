@@ -216,6 +216,15 @@ PICK1="$(select_one)"
 [ "$(printf '%s' "$PICK1" | cut -f1)" = "rework" ] && ok "select (single pick) offers the candidate" \
   || bad "select offered '$PICK1' -- the dispatcher's own path returns nothing"
 
+# FIELD 5 IS THE BRANCH THIS PR IS ON (PR #211 round 1, MAJOR 3). candidates()
+# has always carried headRefName and select dropped it, so kipi-dispatch.sh had
+# to ask gh a SECOND time to learn where the work belonged -- and a PR closing
+# between the two answers made the guard fail open onto the wrong branch. The
+# selector already knows; it says so here, and the dispatcher stops re-asking.
+[ "$(printf '%s' "$PICK1" | cut -f5)" = "sana/ask-298" ] \
+  && ok "select carries the PR's branch, so the dispatcher need not re-query it" \
+  || bad "select emitted no branch ('$PICK1') -- the fact it already holds is dropped again"
+
 LEDGER_AFTER="$(cat "$LEDGER")"
 [ "$LEDGER_AFTER" = '{}' ] && ok "select wrote NOTHING to the ledger -- the offer is not the claim" \
   || bad "select mutated the ledger: $LEDGER_AFTER"

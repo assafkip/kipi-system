@@ -473,9 +473,26 @@ def branch_for(repo_dir, issue):
     applies to two ids in one title: two live branches for one issue means any
     pick is a guess, and the wrong branch worked is the defect this exists to
     stop. Returns a LIST so the caller can name them; the caller decides.
+
+    FORK PRs ARE NOT EVIDENCE (PR #211 round 1, MAJOR 2). `CI.attribute` reads
+    two facts and a fork's author chooses both: the head branch name and the PR
+    title. On a public repo that means anyone can open `sana/evil` titled
+    "... (ASK-352)" and this function would answer `sana/evil` for ASK-352 --
+    which does not merely mislead, it PARKS the issue, because the guard
+    downstream then sees a mismatch every cycle until a human closes the external
+    PR. So the branch namespace is only believed from a head that lives in this
+    repo, which requires push access to create.
+
+    ABSENCE IS NOT CONFIRMATION. `isCrossRepository` is requested in PR_FIELDS,
+    so a PR arriving without it is a board that did not answer the question, not
+    a board answering "same repo". Unconfirmed provenance is skipped: the cost is
+    an unresolved branch, which the caller already treats as "proceed", and that
+    is the fail-open-on-not-knowing posture the whole guard is built on.
     """
     branches = []
     for pr_obj in CI.list_prs(repo_dir):
+        if pr_obj.get("isCrossRepository") is not False:
+            continue
         attributed = CI.attribute(pr_obj)
         if attributed is None:
             continue
@@ -667,7 +684,15 @@ def cmd_select(cands, show_all):
             continue
         sys.stderr.write("review-redrive: %s PR #%s -> %s (%s)\n"
                          % (c["issue"], c["pr"], c["action"], c["reason"]))
-        print("%s\t%s\t%s\t%s" % (c["action"], c["issue"], c["pr"], c["head_sha"]))
+        # FIELD 5 IS THE BRANCH (PR #211 round 1, MAJOR 3). candidates() has
+        # always carried headRefName and this line dropped it, so the dispatcher
+        # had to ask gh a SECOND time to learn where the work belonged. Two reads
+        # of mutable state is a window: PR #91 closing in between makes the second
+        # answer "no open PR", which the guard reads as round one and lets the
+        # work land on exactly the branch it exists to reject. Appended rather
+        # than inserted so every existing `cut -f1..f4` reader is untouched.
+        print("%s\t%s\t%s\t%s\t%s" % (c["action"], c["issue"], c["pr"],
+                                      c["head_sha"], c.get("branch") or ""))
         return 0
     return 1
 
