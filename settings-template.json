@@ -79,10 +79,26 @@
     "defaultMode": "acceptEdits"
   },
   "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\" --drain-only; fi",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "startup",
         "hooks": [
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\" --drain-only; fi",
+            "timeout": 15
+          },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/git-health-check.sh\" 2>/dev/null || true",

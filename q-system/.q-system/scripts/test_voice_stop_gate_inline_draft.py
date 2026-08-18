@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""A draft written with no fence is measured; ordinary chat still is not.
+
+sp-88029341. `extract_setoff_draft` returned '' whenever the assistant wrote the
+post straight into the message, so that draft was never scored and nothing about
+the miss was observable -- the same silence-shaped failure the corpus-similarity
+work keeps hitting.
+
+## Why the fixtures are synthetic
+
+This repo is PUBLIC. The detector was tuned against 14,034 real turns from the
+founder's own session logs, and the numbers from that run are recorded in
+`extract_inline_draft`'s docstring, but the message bodies themselves are private
+chat and are not reproduced here. The fixtures below are written to the SHAPES
+that measurement found, one class each:
+
+    negative  a reply with markdown headings
+    negative  a reply with a bullet list
+    negative  a reply with code spans and file paths
+    negative  a short conversational acknowledgement
+    negative  a MIXTURE: real prose plus an engineering section
+    positive  a post written inline with a lead-in sentence
+    positive  a post written inline with nothing around it
+
+The mixture case is the one that matters most, because it is what the obvious fix
+(reusing `extract_publishable`'s whole-message fallback) gets wrong. Measured on
+the real logs, that fallback fires on 47 engineering messages at 3.66s of torch
+each; this detector fires on 0 of 62.
+"""
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+STOP_GATE = Path(__file__).resolve().parent / "voice-stop-gate.py"
+
+
+def _gate():
+    spec = importlib.util.spec_from_file_location("_vsg_inline", STOP_GATE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+POST = (
+    "I counted rows in an append-only ledger and reported the total as a backlog.\n"
+    "The number was wrong by forty three percent.\n"
+    "An append-only file holds one row per state change, and I never collapsed\n"
+    "them by id. The wrong total also hid the distribution, which was the part\n"
+    "that actually mattered. Recompute any count somebody hands you, including\n"
+    "the one you wrote down yourself."
+)
+
+CHAT_HEADINGS = (
+    "Straight answer, and the second half is the one that matters.\n\n"
+    "## Did the fix address the whole complaint\n\n"
+    "Half of it. The opening was a shape problem and that part is closed.\n"
+    "The other reading is structural and it is still open, which is why the\n"
+    "count keeps moving between runs and nobody can explain the gap yet.\n"
+)
+
+CHAT_BULLETS = (
+    "Both holes are silence-shaped, and that is the structural reason.\n\n"
+    "- The scorer only speaks when a hook fires, so a miss makes no sound.\n"
+    "- Nothing cannot page anyone, and a guard cannot report its own miss.\n"
+    "- So both were found the way silence gets found, by a human noticing.\n"
+)
+
+CHAT_CODE = (
+    "The pointer resolves, and the load path is the part that was wrong.\n"
+    "`resolve_reporter` reads the pointer file and returns the named path even\n"
+    "when it is missing, so a test can say the pointer names something absent\n"
+    "instead of saying there is no pointer at all. That distinction is the fix.\n"
+)
+
+CHAT_SHORT = "Done. The suite is green and the gate holds now."
+
+MIXTURE = POST + "\n\n## What changed\n\n- the extractor\n- the counter\n\n" + POST
+
+INLINE_WITH_LEADIN = "Here's the post for LinkedIn.\n\n" + POST
+INLINE_BARE = POST
+
+
+@pytest.mark.parametrize("text,why", [
+    (CHAT_HEADINGS, "markdown headings"),
+    (CHAT_BULLETS, "a bullet list"),
+    (CHAT_CODE, "code spans"),
+    (CHAT_SHORT, "too short to be a post"),
+    (MIXTURE, "prose glued to an engineering section"),
+])
+def test_ordinary_chat_is_never_taken_as_an_inline_draft(text, why):
+    """THE EXPENSIVE DIRECTION. Each false positive here is a 319MB torch load
+    on a turn that contains no draft, which is the compute the founder refused
+    and the reason ASK-896 left this hole open rather than closing it badly."""
+    assert _gate().extract_inline_draft(text) == "", why
+
+
+@pytest.mark.parametrize("text", [INLINE_WITH_LEADIN, INLINE_BARE])
+def test_a_post_written_inline_is_recovered(text):
+    got = _gate().extract_inline_draft(text)
+    assert got, "the inline draft was dropped; sp-88029341 is not fixed"
+    assert got.startswith("I counted rows"), got
+    assert "Here's the post" not in got, (
+        "the lead-in sentence was swept into the thing being measured")
+
+
+def test_a_set_off_draft_still_wins_over_the_inline_path():
+    """The inline path is a FALLBACK, never a replacement. A fenced draft with
+    chat around it must still yield only the fence body -- the property ASK-896
+    built `extract_setoff_draft` for in the first place."""
+    text = ("Here's the post.\n\n"
+            "## Notes\n\n- one\n- two\n\n"
+            "```\n" + POST + "\n```\n\nWant a shorter opener?")
+    got = _gate().extract_setoff_draft(text)
+    assert got.startswith("I counted rows"), got
+    assert "Notes" not in got and "shorter opener" not in got, got
+
+
+def test_the_share_floor_is_what_refuses_the_mixture():
+    """A negative self-test on the specific guard, not on the whole function.
+
+    Deleting the share floor must make the mixture case pass, or the floor is
+    not the thing doing the work and this suite is asserting a coincidence.
+    """
+    gate = _gate()
+    assert gate.extract_inline_draft(MIXTURE) == ""
+    gate.INLINE_DRAFT_MIN_SHARE = 0.0
+    assert gate.extract_inline_draft(MIXTURE) != "", (
+        "with the share floor removed the mixture is still refused, so some "
+        "other rule is carrying this case and the floor is untested")

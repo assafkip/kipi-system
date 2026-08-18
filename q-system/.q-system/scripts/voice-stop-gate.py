@@ -98,13 +98,121 @@ def extract_setoff_draft(text):
     scorer, because the fallback sweeps the surrounding engineering chat into the
     thing being measured, and the scorer then reports a number about a mixture.
     The lint's false positive costs one stdlib subprocess; this one costs a 319MB
-    torch load, so this path takes the strict reading and accepts missing the
-    inline case.
+    torch load, so this path takes the strict reading.
+
+    THE INLINE CASE, added 2026-08-18 (sp-88029341). It is no longer simply
+    dropped: `extract_inline_draft` recovers a draft written with no fence and no
+    blockquote, and it is tried ONLY when nothing is set off. The whole-message
+    fallback stays refused -- see that function for the measurement that killed
+    it.
     """
     segments = [body for info, body in _FENCE_RE.findall(text)
                 if info.strip().lower() in _PROSE_FENCE_LANGS]
     segments += _QUOTE_RE.findall(text)
-    return "\n\n".join(s.strip() for s in segments if s.strip())
+    setoff = "\n\n".join(s.strip() for s in segments if s.strip())
+    return setoff if setoff else extract_inline_draft(text)
+
+
+# Markdown and engineering furniture. A post he would paste into LinkedIn carries
+# none of it; this fleet's chat is built out of it. Membership is what separates
+# an inline draft from an ordinary reply, so each entry is a measured claim, not a
+# guess -- see extract_inline_draft for the corpus it was tuned against.
+_FURNITURE_RE = re.compile(
+    r"(^\s{0,3}#{1,6}\s"            # markdown heading
+    r"|^\s*([-*+]|\d+[.)])\s"       # bullet or numbered list
+    r"|^\s*>"                       # blockquote line
+    r"|^\s*\|"                      # table row
+    r"|`"                           # any code span
+    r"|\*\*"                        # any bold run
+    r"|\]\("                        # markdown link
+    r"|\w+/\w+"                     # a path, or a flag pair
+    r"|\w+\.(py|sh|json|md|jsonl|yml|yaml|txt)\b"   # a filename
+    r")", re.MULTILINE)
+
+# A draft has to BE the message, not sit inside it. Below this share the message
+# is a mixture -- surrounding chat plus some prose -- and scoring the prose half
+# reports a number about something he never wrote as a post.
+INLINE_DRAFT_MIN_SHARE = 0.70
+INLINE_DRAFT_MIN_WORDS = 25
+
+
+# A one-line "here's the post" lead-in and a one-line "want a shorter opener?"
+# trailer are furniture-free prose, so the run finder keeps them. They are the
+# assistant talking to HIM, not part of the post, and leaving them in makes the
+# score describe a text he never wrote (caught by
+# test_a_post_written_inline_is_recovered before this existed).
+HANDOFF_MAX_WORDS = 15
+
+
+def _trim_handoff_paragraphs(paragraphs):
+    """Drop a leading publish-framing line and a trailing question line."""
+    out = list(paragraphs)
+    while out and len(out[0].split()) <= HANDOFF_MAX_WORDS \
+            and _PUBLISH_MARKER_RE.search(out[0]):
+        out.pop(0)
+    while out and len(out[-1].split()) <= HANDOFF_MAX_WORDS \
+            and out[-1].rstrip().endswith("?"):
+        out.pop()
+    return out
+
+
+def extract_inline_draft(text):
+    """A draft written straight into the message body, or ''.
+
+    THE MEASUREMENT THAT SHAPED THIS (2026-08-18, 14,034 real turns across the
+    social-voice and consulting session logs, sp-88029341's DoR asked for it
+    before any extraction change):
+
+        assistant messages carrying strong publish framing ....... 76
+          with a set-off block (already scored) .................. 29
+          with NO set-off block .................................. 47
+
+    Those 47 are the population this function sees, and reading them is what
+    rejected the obvious fix. `extract_publishable` already has a whole-message
+    fallback and reusing it here would have scored all 47 -- every one of them
+    ordinary engineering prose with headings, bullets and backticks, at 3.66s of
+    torch each. A wrong number is worse than a missing one, which is exactly why
+    ASK-896 left this hole open rather than closing it that way.
+
+    So the discriminator is not "no fence was used". It is "the message is
+    nothing but clean prose": consecutive paragraphs free of markdown furniture,
+    together making up at least INLINE_DRAFT_MIN_SHARE of the message. A lead-in
+    ("Here's the post:") or a trailing question is allowed to sit around it; a
+    heading, a bullet list or a backtick anywhere in the body is not.
+
+    The share floor is the part that does the work. Without it a single clean
+    paragraph inside a long engineering answer reads as a draft, which is the
+    mixture problem one level down.
+    """
+    if not text or not text.strip():
+        return ""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if not paragraphs:
+        return ""
+    total_words = sum(len(p.split()) for p in paragraphs)
+    if not total_words:
+        return ""
+    # The longest run of consecutive furniture-free paragraphs. Runs, not the sum
+    # of all clean paragraphs: a post is contiguous, and stitching clean scraps
+    # from either side of a bullet list rebuilds the mixture this rejects.
+    best, current = [], []
+    for para in paragraphs:
+        if _FURNITURE_RE.search(para):
+            current = []
+            continue
+        current.append(para)
+        if sum(len(p.split()) for p in current) > sum(len(p.split()) for p in best):
+            best = list(current)
+    best = _trim_handoff_paragraphs(best)
+    if not best:
+        return ""
+    draft = "\n\n".join(best)
+    words = len(draft.split())
+    if words < INLINE_DRAFT_MIN_WORDS:
+        return ""
+    if words / total_words < INLINE_DRAFT_MIN_SHARE:
+        return ""
+    return draft
 
 
 # --- the optional authorship reporter ----------------------------------------
@@ -327,6 +435,30 @@ def run_check(script, file_path):
 
 
 def main():
+    # sp-08c34cf1: SURFACE-ONLY MODE, for the two events that are not Stop.
+    #
+    # The drain runs on the NEXT Stop event, and the last post of a session has
+    # no next Stop -- confirmed against the hooks documentation, not assumed:
+    # nothing fires while Claude Code sits idle waiting for input. So the score
+    # for the last post he writes reached him only if he happened to write
+    # another one.
+    #
+    # Two events close it, and BOTH are wired rather than one:
+    #   SessionEnd   fires on clear / logout / prompt_input_exit. The worker
+    #                publishes ~3s after the drafting turn, and he reads a draft
+    #                for longer than that, so this is a SAME-session surface for
+    #                the ordinary wrap-up.
+    #   SessionStart is the backstop for the one shape SessionEnd cannot see: a
+    #                terminal killed outright. A day-late number is worse than a
+    #                same-session one and far better than none, which is why the
+    #                drained line now names its own age when it is not fresh.
+    #
+    # It is a FLAG and not a `hook_event_name` sniff on the payload. The lint
+    # half of this file must never run on those events, and keying that on a
+    # field the payload happens to carry makes the safety depend on a schema
+    # nobody here controls.
+    if "--drain-only" in sys.argv[1:]:
+        finish_ok()
     try:
         payload = json.load(sys.stdin)
     except Exception:
