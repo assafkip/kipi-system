@@ -290,6 +290,36 @@ def test_mentioning_a_platform_is_not_publish_framing():
     assert g._PUBLISH_MARKER_RE.search("Here's the LinkedIn post you asked for:")
 
 
+def test_engineering_status_with_copy_paste_vocab_is_not_a_draft():
+    """Fallback-reviewer major, round 7, their own repro shape: furniture-FREE
+    status prose plus fleet vocabulary ('copy-paste' is in this repo's own
+    CLAUDE.md) must not open extraction. The previous guard test passed only
+    because its fixture was stuffed with furniture."""
+    text = ("The migration finished and every row now carries a stable id, "
+            "so the counter reports eighteen instead of thirty one and the "
+            "copy-paste step is gone from the runbook entirely now.\n\n---\n\n"
+            + "The gap that nobody could explain closed once the ids were stable "
+              "and the recount matched the ledger on every machine we tried. " * 3
+            + "\n\n---\n\nNothing else moved.")
+    assert _gate().extract_setoff_draft(text) == ""
+
+
+def test_heres_the_response_is_not_a_handoff():
+    """'here's the response payload' is engineering prose, not a draft handoff."""
+    assert not _gate()._PUBLISH_MARKER_RE.search(
+        "here's the response payload from the retry, decoded")
+
+
+def test_a_draft_split_by_an_internal_rule_is_scored_whole():
+    """Round-7 minor: comparable-size qualifying segments are ONE post split by
+    an internal divider; joining them beats silently scoring half."""
+    a = "First half of the post that keeps going long enough to clear the floor. " * 3
+    b = "Second half of the same post, comparable in size to the first half here. " * 3
+    text = f"Here's the post:\n\n---\n\n{a}\n\n---\n\n{b}\n\n---\n"
+    draft = _gate().extract_setoff_draft(text)
+    assert "First half" in draft and "Second half" in draft
+
+
 if __name__ == "__main__":
     # The capability gate runs this file as `python3 <file>` (runner=python3).
     # Without this block that invocation executes ZERO assertions and exits 0 --

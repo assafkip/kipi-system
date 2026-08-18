@@ -49,8 +49,12 @@ MIN_TEXT_BYTES = 80
 # Explicit publish-intent framing — the only signal that a final chat message hands the
 # founder content meant for someone ELSE. Engineering/debug chat carries none of these,
 # so it's treated as conversational-to-founder and skipped (voice-enforcement.md).
-_NOUN = (r"(post|reply|comment|dm|email|draft|thread|tweet|caption|message|outreach|"
-         r"response|blurb)")
+# 'response' left the set in round 7: "here's the response payload" is
+# engineering prose, and the marker now GATES extraction, so a generic noun
+# opens the sweep. Same round, same reason, the bare copy-paste alternative
+# below is gone -- 'copy-paste' is this fleet's own CLAUDE.md vocabulary.
+_NOUN = (r"(post|reply|comment|dm|email|draft|thread|tweet|caption|outreach|"
+         r"blurb)")
 _PLAT = r"(linkedin|x|twitter|medium|reddit|instagram|threads)"
 _PUBLISH_MARKER_RE = re.compile(
     r"(?im)("
@@ -64,7 +68,6 @@ _PUBLISH_MARKER_RE = re.compile(
     # unscored it. Line-start + trailing colon keeps prose mentions
     # ("the comment was rewritten") out.
     r"|^\s*(rewritten|revised|redrafted)\b[^\n]{0,60}:\s*$"
-    r"|\bcopy[-\s]?paste\b"
     # The bare (for|on|to)+platform alternative is GONE (round 6): "posts to
     # reddit" in ordinary prose read as a handoff, and now that this marker
     # GATES extraction a false hit opens the sweep. "for LinkedIn:" handoffs
@@ -136,7 +139,14 @@ def extract_setoff_draft(text):
     # their join reports a number about a mixture (Codex round 6).
     hr = _hr_draft_segments(text)
     if hr:
-        return max(hr, key=lambda b: len(b.split()))
+        # One dominant segment is THE post (a qualifying afterthought must not
+        # be concatenated into a mixture -- round 6). Comparable segments are
+        # one post split by an internal divider, and scoring half while max()
+        # hides the drop is worse than joining (round 7). The line is 0.5x.
+        hr.sort(key=lambda b: len(b.split()), reverse=True)
+        top = len(hr[0].split())
+        kept = [b for b in hr if len(b.split()) >= 0.5 * top]
+        return "\n\n".join(kept)
     return extract_inline_draft(text)
 
 
@@ -166,15 +176,17 @@ def _hr_draft_segments(text):
     full of paths and code spans must stay invisible to a 319MB model load.
     """
     parts = _HR_RE.split(text)
+    if len(parts) < 3:
+        # Fewer than two rules encloses nothing: a lone --- is a divider, and
+        # the text after it is chat, not a fenced body (Codex major, round 4).
+        return []
     out = []
-    # parts[0] is before the first rule; fenced bodies are the odd indices of
-    # consecutive rule pairs: parts[1], parts[3], ...
-    for i in range(1, len(parts), 2):
-        if i + 1 >= len(parts):
-            # An odd trailing rule CLOSED nothing: parts[i] is the text after a
-            # lone ---, not a fenced body. Codex major on PR #217 -- the first
-            # cut treated it as fenced, gluing post-divider chat into the draft.
-            break
+    # EVERY middle part sits between two rules -- the odd-index pairing the
+    # first cut used was wrong geometry: in framing/---/a/---/b/---, part b is
+    # enclosed just as much as part a, and odd-indexing silently dropped it
+    # (round 7, caught by the split-draft reproducer). parts[0] is before the
+    # first rule, parts[-1] after the last; both are outside.
+    for i in range(1, len(parts) - 1):
         body = parts[i].strip()
         if not body:
             continue
@@ -445,7 +457,17 @@ def authorship_spool(draft, framing, request):
 
 
 def authorship_page():
-    """Send a pending drift page, detached. The INSTANCE side owns this channel.
+    """File a pending drift ALERT, detached. The INSTANCE side owns this channel.
+
+    WHO RECEIVES IT (round 7, aligned with the founder's standing directive
+    rather than with this docstring's first draft): `slack-notify.sh` is THE
+    FLEET ALERT PATH -- founder-directed 2026-08-10, verbatim in that script's
+    header: "I dont want to see any of these. Any of the ones that need
+    attention should go to Sana - not me." It files a Linear ticket for Sana
+    and pages nobody. A reconciliation drift is exactly such an engineering
+    signal: the founder's ask was that silence never falls on the floor, and a
+    ticket in the engineering queue is the opposite of the floor. The founder
+    sees outcomes, never plumbing alerts.
 
     The reporter computes the drift but may not send the page: everything in
     `q-consult/pipeline/` is forbidden by that repo's boundary test from reaching
@@ -462,6 +484,12 @@ def authorship_page():
     curl to Slack must never sit between him and his text. The page is not urgent
     by construction -- it reports an ongoing silence, not an incident.
     """
+    script = SCRIPTS_DIR / "slack-notify.sh"
+    if not script.is_file():
+        # BEFORE the consuming read, not after: --drain-page deletes what it
+        # returns, and an instance without the alert script was eating the
+        # page permanently (fallback-review sub-finding, round 7).
+        return
     argv = _reporter_argv("--drain-page")
     if argv is None:
         return
@@ -474,9 +502,6 @@ def authorship_page():
         return
     line = (r.stdout or "").strip()
     if not line:
-        return
-    script = SCRIPTS_DIR / "slack-notify.sh"
-    if not script.is_file():
         return
     try:
         subprocess.Popen(["bash", str(script), line],
@@ -616,13 +641,11 @@ def main():
     # Gate only real drafts; a conversational reply to the founder is not voice-checked.
     draft = extract_publishable(text)
     if len(draft.encode("utf-8")) < MIN_TEXT_BYTES:
-        # NOT a bare `finish_ok()`, and the difference is the founder's actual
-        # workflow. He types "write me a post"; the assistant answers with the
-        # post in a fence and no "here's the post" sentence. `_PUBLISH_MARKER_RE`
-        # sees nothing, the lint correctly declines to gate, and the old code
-        # returned here -- so the ONE turn shape he uses most was the one shape
-        # that never reached the scorer. The lint's scope is unchanged; the
-        # measurement no longer rides on it.
+        # NOT a bare `finish_ok()`: the lint declines short/unframed turns, but
+        # the spool still gets its look. Since round 6 the extractor itself
+        # requires the handoff marker, so a fence with NO framing language is
+        # unscorable BY DESIGN now -- that cost is named in
+        # extract_setoff_draft, not hidden here (round-7 comment sync).
         authorship_spool(extract_setoff_draft(text), text, request)
         finish_ok()
     with tempfile.NamedTemporaryFile(
