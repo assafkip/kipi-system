@@ -138,6 +138,11 @@ def _hr_draft_segments(text):
     # parts[0] is before the first rule; fenced bodies are the odd indices of
     # consecutive rule pairs: parts[1], parts[3], ...
     for i in range(1, len(parts), 2):
+        if i + 1 >= len(parts):
+            # An odd trailing rule CLOSED nothing: parts[i] is the text after a
+            # lone ---, not a fenced body. Codex major on PR #217 -- the first
+            # cut treated it as fenced, gluing post-divider chat into the draft.
+            break
         body = parts[i].strip()
         if not body:
             continue

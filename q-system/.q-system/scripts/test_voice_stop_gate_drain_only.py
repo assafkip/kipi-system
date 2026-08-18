@@ -139,3 +139,12 @@ def test_a_pending_line_reaches_him_as_a_system_message(event, tmp_path):
     # Drained means consumed. A line surfaced twice reads as two scores.
     again = _run(["--drain-only"], payload="{}", env=env)
     assert again.stdout.strip() == "", again.stdout
+
+
+if __name__ == "__main__":
+    # The capability gate runs this file as `python3 <file>` (runner=python3).
+    # Without this block that invocation executes ZERO assertions and exits 0 --
+    # a test that cannot fail (Codex major on PR #217). pytest.main returns its
+    # own exit code, so a gutted feature now reds the gate.
+    import pytest as _pytest
+    raise SystemExit(_pytest.main([__file__, "-q"]))

@@ -170,3 +170,21 @@ def test_an_hr_pair_inside_ordinary_prose_is_not_a_draft():
         "Next step is rerunning the suite."
     )
     assert _gate().extract_setoff_draft(text) == ""
+
+
+def test_an_unpaired_trailing_rule_opens_no_segment():
+    """Codex major on PR #217: a lone --- (signature divider, section break at
+    end of message) must not turn everything after it into a "draft". The
+    docstring promised this; the code did not deliver it."""
+    text = ("Framing line here.\n\n---\n\n"
+            + "Real prose words follow the single rule and keep going for a while now. " * 5)
+    assert _gate()._hr_draft_segments(text) == []
+
+
+if __name__ == "__main__":
+    # The capability gate runs this file as `python3 <file>` (runner=python3).
+    # Without this block that invocation executes ZERO assertions and exits 0 --
+    # a test that cannot fail (Codex major on PR #217). pytest.main returns its
+    # own exit code, so a gutted feature now reds the gate.
+    import pytest as _pytest
+    raise SystemExit(_pytest.main([__file__, "-q"]))
