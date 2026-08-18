@@ -101,7 +101,10 @@ def test_the_stop_path_still_reaches_the_lint():
         "above is asserting nothing")
 
 
-@pytest.mark.parametrize("event", ["SessionEnd", "SessionStart"])
+# One payload, not a SessionEnd/SessionStart parametrize: --drain-only is an
+# argv flag and never reads the payload, so two event names exercised
+# identical code (Codex round 5). SessionEnd is unwired anyway.
+@pytest.mark.parametrize("event", ["SessionStart"])
 def test_a_pending_line_reaches_him_as_a_system_message(event, tmp_path):
     """END TO END through the deployed file, both events.
 

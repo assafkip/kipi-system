@@ -224,6 +224,32 @@ def test_a_bare_rule_never_leaks_into_scored_text():
     assert "---" not in draft
 
 
+def test_plain_chat_is_not_swept_even_on_a_post_shaped_turn():
+    """Codex major, round 5, MEASURED before fixing: with a matching founder
+    request, a 47-word conversational reply swept through the inline fallback
+    AND cleared is_post_shaped -- ordinary chat scored as his draft. The
+    measured 0-FP population was publish-FRAMED messages, so the inline
+    fallback now requires the marker that population actually carried."""
+    chat = ("Good question. The scorer only fires when the turn looks post "
+            "shaped, and the counter tracks what got detected against what "
+            "got surfaced. Nothing needs you until the merge ping arrives, "
+            "and the whole chain runs itself once the review lands.")
+    assert _gate().extract_setoff_draft(chat) == ""
+
+
+def test_a_publish_framed_inline_draft_is_still_recovered():
+    """The other direction: the 47-of-14034 real shape (framing, no fence)
+    keeps working."""
+    text = "Here's the post:\n\n" + POST
+    assert "append-only ledger" in _gate().extract_setoff_draft(text)
+
+
+def test_a_slash_date_does_not_disqualify_a_draft():
+    """2026/08/18 is a date, not a path (Codex round 5)."""
+    g = _gate()
+    assert not g._FURNITURE_RE.search("On 2026/08/18 I rebuilt the corpus from scratch")
+
+
 if __name__ == "__main__":
     # The capability gate runs this file as `python3 <file>` (runner=python3).
     # Without this block that invocation executes ZERO assertions and exits 0 --

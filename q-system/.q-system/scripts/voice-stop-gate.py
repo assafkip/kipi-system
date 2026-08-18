@@ -111,7 +111,17 @@ def extract_setoff_draft(text):
     segments += _QUOTE_RE.findall(text)
     segments += _hr_draft_segments(text)
     setoff = "\n\n".join(s.strip() for s in segments if s.strip())
-    return setoff if setoff else extract_inline_draft(text)
+    if setoff:
+        return setoff
+    # The inline fallback ONLY behind the publish marker (Codex major, round 5,
+    # measured before fixing): the 0-false-positive result was taken on
+    # publish-FRAMED messages -- all 47 real no-set-off drafts carried framing.
+    # Without this gate, a matching founder request turned a 47-word plain-chat
+    # reply into "his draft" and scored it. Fenced and hr paths stay ungated:
+    # a fence IS the author's own set-off.
+    if _PUBLISH_MARKER_RE.search(text):
+        return extract_inline_draft(text)
+    return ""
 
 
 _HR_RE = re.compile(r"(?m)^\s*-{3,}\s*$")
@@ -191,7 +201,8 @@ _FURNITURE_RE = re.compile(
     # word char before the dot), so real paths keep matching.
     # Anchored to TOKEN START ((?:^|(?<=\s))): without it the engine restarts
     # one character into the token and matches ".com/user/repo" past the guard.
-    r"|(?:^|(?<=\s))(?![\w-]+\.[A-Za-z]{2,}/)[^\s/]+(?:/[^\s/]+){2,}"
+    # (?!\d+/\d+/\d+(?:$|\s)) -- 2026/08/18 is a date, not a path (round 5).
+    r"|(?:^|(?<=\s))(?![\w-]+\.[A-Za-z]{2,}/)(?!\d+/\d+/\d+(?:$|\s))[^\s/]+(?:/[^\s/]+){2,}"
     r"|\w+\.(py|sh|json|md|jsonl|yml|yaml|txt)\b"   # a filename
     r")", re.MULTILINE)
 
@@ -367,7 +378,11 @@ def authorship_drain():
     if argv is None:
         return ""
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        # 5s ceiling on a state-file read (~0.3s real): drain 5 + page 3 bounds
+        # the Stop path's sync reporter cost to 8s inside the 15s hook budget
+        # (Codex round 5 counted 13 and called the "detached" wording wrong;
+        # the WORKER is detached, these two reads never were).
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=5)
         return (r.stdout or "").strip()
     except Exception:
         return ""
@@ -560,15 +575,11 @@ def main():
     # for the last post he writes reached him only if he happened to write
     # another one.
     #
-    # Two events close it, and BOTH are wired rather than one:
-    #   SessionEnd   fires on clear / logout / prompt_input_exit. The worker
-    #                publishes ~3s after the drafting turn, and he reads a draft
-    #                for longer than that, so this is a SAME-session surface for
-    #                the ordinary wrap-up.
-    #   SessionStart is the backstop for the one shape SessionEnd cannot see: a
-    #                terminal killed outright. A day-late number is worse than a
-    #                same-session one and far better than none, which is why the
-    #                drained line now names its own age when it is not fresh.
+    # SessionStart is the one drain event (see the SessionEnd note above): it
+    # covers every way a session begins -- startup, resume, clear, compact --
+    # so the score survives a killed terminal, a /clear, and a compaction. A
+    # day-late number is worse than a same-session one and far better than
+    # none, which is why the drained line names its own age when it is stale.
     #
     # It is a FLAG and not a `hook_event_name` sniff on the payload. The lint
     # half of this file must never run on those events, and keying that on a
