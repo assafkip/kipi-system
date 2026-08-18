@@ -226,6 +226,38 @@ for pair in "ASK-901:foreign project (accountant)" \
   fi
 done
 
+# --- case 1b: owner:assaf is an ERROR PATH, and the run says so (ASK-353) -----
+# Founder directive 2026-08-03 ("nothing should be on me") reversed the archived
+# PRD, which called owner:assaf the one place routing to a person is by design.
+# Excluding the issue is NOT the whole behaviour any more and asserting only the
+# exclusion above would pass for the old silent filter: that is exactly the
+# failure being closed, because a refilling founder queue looked identical to an
+# empty board. ASK-904 carries the label and sits in this repo, so a run that
+# does not name it as a DEFECT has not implemented the reversal.
+if printf '%s\n' "$OUT" | grep -q "DEFECT: owner:assaf"; then
+  ok "names owner:assaf as a DEFECT, not a silent exclusion"
+else
+  bad "names owner:assaf as a DEFECT" \
+      "no DEFECT line in the run output (the old silent-filter behaviour)"
+fi
+if printf '%s\n' "$OUT" | grep "DEFECT: owner:assaf" | grep -q "ASK-904"; then
+  ok "names the offending issue (ASK-904) on the DEFECT line"
+else
+  bad "names the offending issue on the DEFECT line" \
+      "the count is there but not the id, so nobody can find what routed it"
+fi
+# NEGATIVE SELF-TEST. The two assertions above are greps for a string, and a grep
+# that can never fail is decoration -- the whole point of this issue is refusing
+# checks that cannot go red. ASK-900 is the issue this run PICKED, so it is by
+# construction not founder-routed; if the DEFECT line named it, the count is
+# reporting the wrong population and the two passes above mean nothing.
+if printf '%s\n' "$OUT" | grep "DEFECT: owner:assaf" | grep -q "ASK-900"; then
+  bad "negative self-test: the DEFECT line names ONLY founder-routed issues" \
+      "it named ASK-900, which was picked and worked"
+else
+  ok "negative self-test: the DEFECT line names ONLY founder-routed issues"
+fi
+
 # --- case 2: the filter reports what it dropped, it does not drop silently ---
 # A queue that quietly shrinks from 29 to 11 is indistinguishable from a broken
 # query. The count has to be visible in the run's own output or nobody can tell
