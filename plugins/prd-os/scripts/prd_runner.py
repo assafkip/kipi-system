@@ -41,6 +41,8 @@ import argparse
 import contextlib
 import fcntl
 import json
+import shutil
+import subprocess
 import tempfile
 import os
 import re
@@ -379,9 +381,15 @@ def _archive_spillover_gate(cfg: Config, prd_id: str | None = None) -> tuple[int
     `commands/prd-archive.md` asking the model to check first -- prompt-only
     enforcement, which q-system/CLAUDE.md core rule 3 forbids.
 
-    Deliberately no --force hatch: the two documented exits (resolve against a
-    closed issue, or --void with a recorded reason) already cover every real
-    case, and a third would be the hand-clear the rule refuses.
+    Deliberately no --force hatch. There are three documented exits (resolve
+    against a closed issue, resolve against a MERGED commit that names the item,
+    or --void with a recorded reason) and each is evidence-bound; a --force would
+    be the hand-clear the rule refuses.
+
+    The third arrived with sp-8c0b2d87, which measured what the original claim
+    ("two exits cover every real case") got wrong: an item fixed OUTSIDE a PRD
+    manifest had no closed issue to point at and was not voidable, so archive
+    refused forever on work that was already merged.
     """
     openv = _spillover_open(cfg)
     # SCOPED TO THIS PRD's OWN ITEMS (Codex, PR #110 round 3, with a repro).
@@ -1398,6 +1406,21 @@ def _linear_issue_state(identifier: str) -> dict:
     import urllib.error
     import urllib.request
 
+    # A SUITE MUST NEVER SPEND A REAL LINEAR CALL. This is the only outbound
+    # request in this file, and `spillover promoted-audit` newly routes a whole
+    # sweep through it -- one command, seventeen requests. Adding an outbound
+    # call to shared code retroactively puts every older suite that reaches it on
+    # the live path, and the failure is invisible while the network happens to be
+    # up and the token happens to be valid.
+    #
+    # Tests that need a state monkeypatch THIS function, which replaces the
+    # refusal along with the request, so this never blocks a legitimate test. It
+    # only catches the one that forgot.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        raise LinearRefError(
+            f"refusing to query Linear for {identifier} from inside a test. "
+            "Monkeypatch _linear_issue_state with the state you mean to test.")
+
     body = json.dumps({"query": LINEAR_STATE_QUERY, "variables": {"id": identifier}}).encode("utf-8")
     request = urllib.request.Request(
         LINEAR_API_URL, data=body, method="POST",
@@ -1450,10 +1473,244 @@ def _verify_resolution_ref(cfg: Config, ref: str) -> dict:
         # happened. The honest exit for a non-item is --void, which records why.
         raise LinearRefError(
             f"Linear issue '{ref}' is not completed (state: {state.get('name')}). "
-            "Close it first, or record a non-item with --void <reason>.")
+            "Close it first, point at the merged fix with --resolution-commit "
+            "<sha>, or record a non-item with --void <reason>.")
     return {
         "resolution_tracker": "linear",
         "resolution_verified_state": state.get("name"),
+        "resolution_verified_at": _now_iso(),
+    }
+
+
+class CommitRefError(LinearRefError):
+    """A resolution COMMIT could not be proven to be merged evidence for this item.
+
+    Subclasses LinearRefError so the single `except` on the resolve path catches
+    both trackers. Same contract, different evidence: unverifiable is refused,
+    never downgraded to a warning.
+    """
+
+
+def _git(repo_root, *args):
+    """One git invocation against `repo_root`. Never raises on a git failure --
+    every caller below reads the returncode, because "git said no" and "git is
+    missing" must both become a REFUSAL and not a traceback."""
+    import subprocess
+    try:
+        return subprocess.run(["git", "-C", str(repo_root), *args],
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        # Narrow on purpose: a bare `except Exception` here would swallow a
+        # NameError in this module and report it as "git is missing".
+        raise CommitRefError(f"cannot run git in {repo_root}: {exc}") from exc
+
+
+def _integration_branch(repo_root) -> str:
+    """The branch a commit must be merged into to count as shipped.
+
+    Local `main`, then local `master`, then whatever origin/HEAD points at.
+    NEVER a fallback to HEAD: HEAD is the branch you are standing on, so
+    "ancestor of HEAD" is satisfied by the commit you just made on your own
+    unmerged feature branch -- which is the hand-clear this whole verb exists
+    to refuse. A repo with none of those refuses rather than guessing.
+    """
+    for name in ("main", "master"):
+        probe = _git(repo_root, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}")
+        if probe.returncode == 0 and probe.stdout.strip():
+            return name
+    probe = _git(repo_root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    ref = probe.stdout.strip()
+    if probe.returncode == 0 and ref:
+        return ref
+    raise CommitRefError(
+        "no integration branch to measure against: this repo has no local "
+        "main/master and no origin/HEAD. A commit cannot be shown merged, so "
+        "the commit exit is unavailable here.")
+
+
+PROOF_TIMEOUT_SECONDS = 600
+
+
+def _verify_resolution_proof(cfg: Config, item_id: str, command: str,
+                             broken_at: str) -> dict:
+    """THE FOURTH EXIT (sp-1dfc48a8). Prove the defect is gone by watching a
+    check fail before the fix and pass after it.
+
+    ## The hole this fills, and why the obvious patch is a workaround
+
+    The third exit requires a MERGED commit whose MESSAGE names the item id.
+    That binding is made at fix time, and three items are fixed at main HEAD and
+    cannot leave the ledger because it was never made: sp-9066e068 (a1f33b15),
+    sp-43b11b74 (6ef8278d) and sp-cd9ccc16 (b3d95c66). The commit carrying each
+    fix never named the item, and the commit that named it does not contain the
+    fix -- checked both directions with `merge-base --is-ancestor`.
+
+    The two patches that suggest themselves are both worse than the hole:
+
+    - **An empty commit, or a retroactive commit that names the id.** This
+      fabricates the proxy and adds no evidence. The third exit's real claim is
+      "somebody with the context bound this fix to this item"; a commit written
+      today to satisfy a checker is that claim with the context removed. It
+      would pass, and it would mean nothing, and the next reader would trust it.
+    - **Loosening --resolution-commit to accept any sha whose ANCESTRY contains
+      a named fix.** Every sha's ancestry contains every older commit, so this
+      degrades to `--because-i-said-so` with extra steps.
+
+    ## What this exit requires instead
+
+    Not a name. A DEMONSTRATION, and one that stays re-runnable:
+
+      1. `command` PASSES against the current checkout;
+      2. the same `command` FAILS against `broken_at`, in a throwaway worktree;
+      3. both results, the command, and both shas are recorded.
+
+    `{tree}` in the command is substituted with the tree being graded, and BOTH
+    runs happen from the main checkout. That placement is the load-bearing
+    detail. The naive version runs the command with cwd set to each tree, which
+    breaks on the most common case there is: the check that proves a fix
+    normally SHIPPED WITH the fix, so at `broken_at` the checker does not exist
+    and the command fails because the file is missing rather than because the
+    defect is present. A checker that fails for the wrong reason is a false
+    positive wearing a green suit. Running the HEAD checker against a pre-fix
+    TREE is the reproducer-ref-hatch discipline: one checker, two subjects.
+
+    That is strictly stronger than a string in a commit message. A message can
+    be typed; a check that flips across a specific ref cannot be, and a later
+    reader can re-run it. It is the reproducer-ref-hatch discipline applied to
+    the ledger's own exit: a regression check that has never been watched fail
+    is not evidence, so this exit refuses to accept one that does not.
+
+    ## The failure this guards against by construction
+
+    If the worktree cannot be created, this RAISES. It does not fall back to
+    running the command in the main checkout, which would run the "before" case
+    against fixed code, see it pass, and report a false SURVIVED -- the item
+    would then be refused for the wrong reason, or worse, a nearby variant would
+    pass for the wrong reason. The resolved record carries the worktree's own
+    resolved HEAD so the next reader can see WHERE each half ran.
+    """
+    root = Path(cfg.repo_root).resolve()
+    probe = _git(root, "rev-parse", "--verify", "--quiet", f"{broken_at}^{{commit}}")
+    before_sha = probe.stdout.strip()
+    if probe.returncode != 0 or not before_sha:
+        raise CommitRefError(
+            f"no commit {broken_at!r} in {root}. --broken-at must name a real "
+            "pre-fix commit; the whole exit is that the check flips across it.")
+    head_sha = _git(root, "rev-parse", "HEAD").stdout.strip()
+    if before_sha == head_sha:
+        raise CommitRefError(
+            "--broken-at is HEAD, so there is nothing for the check to flip "
+            "across. Name the commit where the defect was still present.")
+
+    if "{tree}" not in command:
+        raise CommitRefError(
+            "--resolution-proof must contain '{tree}', the placeholder for the "
+            "tree being graded. Without it both runs inspect the same code and "
+            "the command cannot flip, so it proves nothing.")
+
+    def _run(tree):
+        """Always from `root`, so the CHECKER is always HEAD's. Only the SUBJECT
+        moves."""
+        return subprocess.run(command.replace("{tree}", str(tree)), shell=True,
+                              cwd=str(root), capture_output=True, text=True,
+                              timeout=PROOF_TIMEOUT_SECONDS)
+
+    after = _run(root)
+    if after.returncode != 0:
+        raise CommitRefError(
+            f"the proof command does not pass at HEAD ({head_sha[:9]}), exit "
+            f"{after.returncode}. An item is not resolved while its own check is "
+            f"red.\n{(after.stdout + after.stderr)[-800:]}")
+
+    tmp = Path(tempfile.mkdtemp(prefix="prd-os-proof-"))
+    worktree = tmp / "before"
+    added = _git(root, "worktree", "add", "--detach", str(worktree), before_sha)
+    try:
+        if added.returncode != 0 or not (worktree / ".git").exists():
+            # RAISE, never fall through. A failed worktree add followed by a run
+            # in the main checkout would grade the "before" case against FIXED
+            # code and report a false pass.
+            raise CommitRefError(
+                f"could not create a worktree at {before_sha[:9]}: "
+                f"{(added.stderr or added.stdout).strip()[:300]}")
+        seen = _git(worktree, "rev-parse", "HEAD").stdout.strip()
+        if seen != before_sha:
+            raise CommitRefError(
+                f"the worktree is at {seen[:9]}, not the requested {before_sha[:9]}")
+        before = _run(worktree)
+        if before.returncode == 0:
+            raise CommitRefError(
+                f"the proof command ALSO passes at {before_sha[:9]}, so it does "
+                "not demonstrate this item was ever broken. Point --broken-at at "
+                "a commit where the defect was still present, or pick a check "
+                "that actually fails there.")
+    finally:
+        _git(root, "worktree", "remove", "--force", str(worktree))
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    return {
+        "resolution_tracker": "proof",
+        "resolution_proof_command": command,
+        "resolution_proof_head": head_sha,
+        "resolution_proof_broken_at": before_sha,
+        "resolution_proof_before_exit": before.returncode,
+        "resolution_proof_after_exit": 0,
+        "resolution_verified_at": _now_iso(),
+    }
+
+
+def _verify_resolution_commit(cfg: Config, item_id: str, sha: str) -> dict:
+    """Prove `sha` is merged evidence that `item_id` was fixed; return that proof.
+
+    THE THIRD EXIT (sp-8c0b2d87). The first two -- a CLOSED tracked issue, or a
+    recorded void -- cannot cover an item fixed outside a PRD manifest:
+    issue_runner has no `create` verb, prd_split is the only issue minter, and
+    voiding a real defect records a falsehood. Measured live on sp-d912cc82 and
+    sp-3aa375a6, both merged into main and both stuck open.
+
+    Three conditions, ALL required, none assertable by the operator:
+
+      1. the object exists here and is a commit;
+      2. it is an ancestor of the integration branch -- merged, not a dangling
+         local commit on the branch that wants the item cleared;
+      3. its MESSAGE names `item_id`.
+
+    (3) is the whole anti-hand-clear property. Without it any of this repo's
+    thousands of merged shas clears any item, which is `--because-i-said-so`
+    with a sha typed in front of it. With it, clearing an item costs a real
+    commit on the real branch that says which item it fixes -- and the binding
+    is made at fix time, by the person holding the context.
+
+    MESSAGE ONLY, never the diff. `git log -S` / a diff scan reads as the more
+    generous rule and is the more dangerous one: any commit touching a file
+    that merely QUOTES an id (an RCA doc, a plan, a review note, a ledger dump)
+    would resolve that id, and those files exist by the dozen here. One channel,
+    written on purpose, is the point.
+    """
+    root = Path(cfg.repo_root).resolve()
+    probe = _git(root, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}")
+    full = probe.stdout.strip()
+    if probe.returncode != 0 or not full:
+        raise CommitRefError(
+            f"no commit {sha!r} in {root}. A resolution commit must exist in the "
+            "repo that holds the ledger.")
+    branch = _integration_branch(root)
+    if _git(root, "merge-base", "--is-ancestor", full, branch).returncode != 0:
+        raise CommitRefError(
+            f"commit {full[:9]} is not an ancestor of '{branch}': the fix is not "
+            "merged. Merge it first -- an unmerged commit is a promise, not evidence.")
+    message = _git(root, "log", "-1", "--format=%B", full).stdout
+    if item_id not in message:
+        subject = _git(root, "log", "-1", "--format=%s", full).stdout.strip()
+        raise CommitRefError(
+            f"commit {full[:9]} ({subject[:60]}) does not name {item_id} in its "
+            f"message. Bind the fix to the item: put '{item_id}' in the commit "
+            "message of the commit that fixes it, or use --void with a reason.")
+    return {
+        "resolution_tracker": "git",
+        "resolution_commit": full,
+        "resolution_commit_subject": _git(root, "log", "-1", "--format=%s", full).stdout.strip()[:200],
+        "resolution_branch": branch,
         "resolution_verified_at": _now_iso(),
     }
 
@@ -1738,10 +1995,137 @@ def _spillover_autopromote(cfg: Config, sid: str, args, dor: str) -> dict:
             "note": "item IS recorded and the gate is RED; only the Linear issue is missing"}
 
 
+def _spillover_ack(cfg: Config, args) -> int:
+    """Record that an issue NAMED this item and deliberately did not fix it.
+
+    THE THIRD DISPOSITION, and the reason it is not a fourth exit. `ack` does not
+    change `status`: the item stays open, the standing gate stays red, and the
+    backlog cannot be emptied with it. All it clears is the closeout block for
+    ONE issue, so the gate below can demand a decision without making the very
+    common filed-not-fixed case unclosable.
+
+    That case is the majority, measured rather than assumed: of 38 open items
+    named by a merged commit on 2026-08-17, 28 were named by the commit that
+    FILED them. Without `ack`, every issue that captures a spillover item would
+    be blocked from closing by its own capture.
+
+    why an explicit reason is required: the value is the sentence, not the row.
+    A disposition with no reason is a hand-clear with extra steps.
+
+    APPENDS A FULL COPY of the record, never a patch. `_read_spillover` is
+    last-write-wins on the WHOLE record (`items[rec["id"]] = rec`), not a merge,
+    so appending `{"id": ..., "acked_by_issue": ...}` alone would erase the
+    item's description, severity and status and resurrect it as a malformed row.
+    The lock's own docstring names this shape; it applies here identically.
+    """
+    with _spillover_lock(cfg):
+        items = _read_spillover(cfg)
+        rec = items.get(args.id)
+        if rec is None:
+            sys.stderr.write(f"no spillover item {args.id}\n")
+            return 2
+        if rec.get("status") != "open":
+            sys.stderr.write(
+                f"{args.id} is {rec.get('status')}, not open: nothing to acknowledge\n")
+            return 2
+        out = dict(rec)
+        out["acked_by_issue"] = args.issue
+        out["ack_reason"] = args.reason
+        out["acked_at"] = _now_iso()
+        _spillover_append(cfg, out)
+    print(json.dumps({"id": args.id, "acked_by_issue": args.issue,
+                      "status": rec.get("status")}))
+    return 0
+
+
+def _spillover_promoted_audit(cfg: Config, args) -> int:
+    """Re-check every `promoted` row against the tracker. sp-0d76a138.
+
+    ## The defect
+
+    `promoted` is the ONE exit from this ledger that fires automatically, and it
+    was the one exit that proved nothing. `_spillover_open` filters
+    `status == "open"`, so the moment a row is promoted it stops blocking
+    `gates run` AND stops blocking archive. `spillover-promote.py` says so in its
+    own docstring -- "promoting is not fixing, and a status that claimed
+    otherwise would let the pile launder itself clean" -- and then nothing ever
+    re-read the Linear issue. Creating the issue was what cleared the gate.
+
+    ## What this does and does not change
+
+    This closes the half that is unambiguously a defect: nothing re-checks. A
+    promoted row whose Linear issue has since COMPLETED is resolvable with real
+    evidence, and now gets resolved by a command instead of waiting for someone
+    to remember. Rows whose issue is still open are named, with age, so they are
+    visible rather than silently gone.
+
+    It deliberately does NOT flip `promoted` back to blocking, and that is a
+    measurement, not a preference. Measured 2026-08-17 against Linear: of the 17
+    promoted rows, 13 refs were readable in one page and 2 of those 13 were
+    Done. Making `promoted` block today would turn the standing gate red on ~15
+    items at once, for work whose arrival rate exceeds its service rate. A gate
+    that is red for months teaches everyone to step over it, which is strictly
+    worse than no gate -- the same reasoning the severity split in
+    SPILLOVER_BLOCKING_SEVERITIES was built on. The flip is a separate decision
+    that needs the backlog drained first, and it is captured as its own item
+    rather than smuggled in here.
+
+    ## Why it reuses `_verify_resolution_ref`
+
+    Because a second Linear client is a second opinion about what "closed"
+    means. That function already refuses `canceled` (a canceled issue shipped no
+    fix), already prefers a local `.prd-os/issues/` spec, and is already the
+    thing the operator-facing resolve path trusts. One authority.
+
+    Offline is a REPORT, never a resolution: a row whose state could not be read
+    is listed as unverifiable and left promoted.
+    """
+    rows = [r for r in _read_spillover(cfg).values() if r.get("status") == "promoted"]
+    dry = getattr(args, "dry_run", False)
+    closed, still_open, unreadable = [], [], []
+    for rec in sorted(rows, key=lambda r: r.get("id", "")):
+        ref = rec.get("linear_ref")
+        if not ref:
+            unreadable.append((rec.get("id"), None, "no linear_ref recorded"))
+            continue
+        try:
+            evidence = _verify_resolution_ref(cfg, ref)
+        except LinearRefError as exc:
+            # A refusal here is the NORMAL case: the issue is simply still open.
+            # It is reported, not raised, because one open issue must not stop
+            # the sweep from resolving the rows that did close.
+            still_open.append((rec.get("id"), ref, str(exc).split(". ")[0]))
+            continue
+        except Exception as exc:                              # noqa: BLE001
+            unreadable.append((rec.get("id"), ref, f"tracker unreachable: {exc}"))
+            continue
+        closed.append((rec.get("id"), ref))
+        if dry:
+            continue
+        with _spillover_lock(cfg):
+            current = _read_spillover(cfg).get(rec.get("id"))
+            if not current or current.get("status") != "promoted":
+                continue          # someone resolved it between the read and here
+            new = dict(current)
+            new.update(status="resolved", resolution_ref=ref, resolved_at=_now_iso(),
+                       resolution_evidence="promoted-audit: tracker reports completed",
+                       **evidence)
+            _spillover_append(cfg, new)
+    for label, items in (("RESOLVED" if not dry else "WOULD RESOLVE", closed),
+                         ("STILL OPEN", still_open), ("UNVERIFIABLE", unreadable)):
+        print(f"{label}: {len(items)}")
+        for row in items:
+            print("  " + "  ".join(str(x) for x in row if x))
+    print(f"promoted rows audited: {len(rows)}")
+    return 0
+
+
 def cmd_spillover(cfg: Config, args) -> int:
-    """add | list | check | resolve | triage — the out-of-scope finding ledger."""
+    """add | list | check | resolve | ack | triage — the out-of-scope finding ledger."""
     import hashlib as _hashlib
     sub = args.spillover_cmd
+    if sub == "ack":
+        return _spillover_ack(cfg, args)
     if sub == "add":
         sid = args.id or f"sp-{_hashlib.sha256((args.source + args.desc).encode()).hexdigest()[:8]}"
         dor = _spillover_read_dor(args)
@@ -1881,8 +2265,9 @@ def cmd_spillover(cfg: Config, args) -> int:
                 sys.stderr.write(f"SPILLOVER OPEN: {r['id']}: {r.get('description', '')[:100]} (src {r.get('source')})\n")
             sys.stderr.write(
                 f"{len(openv)} open spillover item(s). Resolve each against a CLOSED issue "
-                f"(prd_runner.py spillover resolve <id> --resolution-ref <issue-id>) or void it "
-                f"(--void <reason>). They cannot be silently dropped.\n")
+                f"(prd_runner.py spillover resolve <id> --resolution-ref <issue-id>), "
+                f"against a merged commit that names it (--resolution-commit <sha>), "
+                f"or void it (--void <reason>). They cannot be silently dropped.\n")
             return 1
         print("no open spillover items")
         return 0
@@ -1890,8 +2275,10 @@ def cmd_spillover(cfg: Config, args) -> int:
         # Read-only by construction: no _spillover_append call reachable from
         # here. A ledger this size (350+ open, ~50/day arriving from a handful
         # of producers) is unworkable as a flat list, but the fix is a better
-        # LENS, never a bulk exit. The only two ways out of the ledger stay
-        # `resolve --resolution-ref <closed-issue>` and `resolve --void`.
+        # LENS, never a bulk exit. The only three ways out of the ledger stay
+        # `resolve --resolution-ref <closed-issue>`, `resolve --resolution-commit
+        # <merged-sha-naming-this-id>`, and `resolve --void`. Each is verified;
+        # none is assertable.
         openv = _spillover_open(cfg)
         if not openv:
             print("no open spillover items")
@@ -1901,6 +2288,8 @@ def cmd_spillover(cfg: Config, args) -> int:
         _print_spillover_groups(openv, "source", "source")
         _print_reclassifications(openv)
         return 0
+    if sub == "promoted-audit":
+        return _spillover_promoted_audit(cfg, args)
     if sub == "resolve":
         # Same chokepoint as reclassify. This read-modify-append was
         # ALREADY unlocked before PR #112; reclassify only added a third
@@ -1913,12 +2302,49 @@ def cmd_spillover(cfg: Config, args) -> int:
             if not rec:
                 sys.stderr.write(f"unknown spillover id: {args.id}\n")
                 return 2
-            if not args.resolution_ref and not args.void:
-                sys.stderr.write("resolve requires --resolution-ref <issue-id> or --void <reason>\n")
+            # EXACTLY ONE exit, not "at least one" (sp-8c0b2d87 added the third).
+            # `--resolution-ref X --void "not real"` would otherwise take the ref
+            # branch and silently drop the void reason, recording an item as
+            # fixed-and-tracked when the operator said it was a non-item.
+            chosen = [name for name, value in (
+                ("--resolution-ref", args.resolution_ref),
+                ("--resolution-commit", getattr(args, "resolution_commit", None)),
+                ("--resolution-proof", getattr(args, "resolution_proof", None)),
+                ("--void", args.void),
+            ) if value]
+            if not chosen:
+                sys.stderr.write(
+                    "resolve requires exactly one of --resolution-ref <issue-id>, "
+                    "--resolution-commit <sha> or --void <reason>\n")
+                return 2
+            if len(chosen) > 1:
+                sys.stderr.write(
+                    f"resolve takes exactly one exit, got {', '.join(chosen)}\n")
                 return 2
             new = dict(rec)
-            if args.void:
+            if getattr(args, "resolution_proof", None):
+                if not getattr(args, "broken_at", None):
+                    sys.stderr.write(
+                        "--resolution-proof requires --broken-at <sha>: a check "
+                        "that has never been watched fail is not evidence.\n")
+                    return 2
+                try:
+                    evidence = _verify_resolution_proof(
+                        cfg, args.id, args.resolution_proof, args.broken_at)
+                except LinearRefError as exc:
+                    sys.stderr.write(f"cannot resolve {args.id}: {exc}\n")
+                    return 2
+                new.update(status="resolved", resolved_at=_now_iso(), **evidence)
+            elif args.void:
                 new.update(status="resolved", void_reason=args.void, resolved_at=_now_iso())
+            elif getattr(args, "resolution_commit", None):
+                try:
+                    evidence = _verify_resolution_commit(
+                        cfg, args.id, args.resolution_commit)
+                except LinearRefError as exc:
+                    sys.stderr.write(f"cannot resolve {args.id}: {exc}\n")
+                    return 2
+                new.update(status="resolved", resolved_at=_now_iso(), **evidence)
             else:
                 try:
                     evidence = _verify_resolution_ref(cfg, args.resolution_ref)
@@ -2161,7 +2587,8 @@ def cmd_gates(cfg: Config, args) -> int:
         label = f"spillover[{scope}]" if scope else "spillover"
         print(f"[RED] {label}: {len(blocking)} open item(s) this work must answer for: {names}")
         failures.append((label, f"{len(blocking)} open spillover item(s):\n{detail}\n"
-                                f"Resolve via `prd_runner.py spillover resolve <id> --resolution-ref <closed-issue>`."))
+                                f"Resolve via `prd_runner.py spillover resolve <id> "
+                                f"--resolution-ref <closed-issue>` or `--resolution-commit <merged-sha>`."))
     if reported:
         # Reported, never silent. `--severity` DEFAULTS to minor, so a defaulted
         # item is indistinguishable from one assessed as minor -- the label says
@@ -2263,6 +2690,21 @@ def main(argv: list[str] | None = None) -> int:
         "needs-dor", help="open blocking items with no Linear issue yet (Sana's queue)")
     spill_sub.add_parser("check")
     spill_sub.add_parser("triage", help="read-only: open items grouped by severity and by source")
+    sp_ack = spill_sub.add_parser(
+        "ack", help="record that an issue named this item and did NOT fix it "
+                    "(status unchanged; clears only that issue's closeout block)")
+    sp_ack.add_argument("id")
+    sp_ack.add_argument("--issue", required=True,
+                        help="the issue id whose closeout this acknowledgement clears")
+    sp_ack.add_argument("--reason", required=True,
+                        help="why this issue did not fix it")
+
+    sp_audit = spill_sub.add_parser(
+        "promoted-audit",
+        help="re-check every promoted row against the tracker; resolve the ones "
+             "whose issue actually closed (sp-0d76a138)")
+    sp_audit.add_argument("--dry-run", dest="dry_run", action="store_true",
+                          help="report only; write nothing")
     sp_res = spill_sub.add_parser("resolve")
     sp_res.add_argument("id")
     sp_res.add_argument("--resolution-ref", dest="resolution_ref",
@@ -2271,6 +2713,14 @@ def main(argv: list[str] | None = None) -> int:
     sp_res.add_argument("--evidence",
                         help="auditable note recorded alongside a VERIFIED resolution "
                              "(e.g. 'PR #19 / 990d7c1'); never a substitute for closure")
+    sp_res.add_argument("--resolution-commit", dest="resolution_commit",
+                        help="sha of a MERGED commit whose message names this item id")
+    sp_res.add_argument("--resolution-proof", dest="resolution_proof",
+                        help="a command that PASSES here and FAILS at --broken-at; "
+                             "the exit for an item fixed by a commit that never "
+                             "named it (sp-1dfc48a8)")
+    sp_res.add_argument("--broken-at", dest="broken_at",
+                        help="pre-fix sha the proof command must FAIL at")
     sp_res.add_argument("--void", help="record a non-item (with reason) instead of fixing")
     p_spill.set_defaults(func=cmd_spillover)
 
