@@ -485,6 +485,26 @@
       }
     },
     {
+      "id": "converge-interrupted",
+      "source": "converge",
+      "class": "infra-failure",
+      "marker": "INTERRUPTED by $sig",
+      "sites": 1,
+      "what": "exit 143/130/129. TERM, INT or HUP arrived mid-run. The trap releases the claim this run left on the issue and ends the process, abandoning the round in flight. Registered only after the enumerator learned to walk trap handlers (codex PR #215 round 3): a handler has no top-level call site, so the function-body exclusion hid it and this exit was invisible to every check in the suite.",
+      "consumer": "com.kipi.dispatch -- the trap releases the claim BEFORE exiting, so the issue is left unclaimed, still backlog/unstarted and still ready, and the next dispatch cycle re-selects it and launches converge again",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "DISPATCH_ARGV=(./kipi converge --issue",
+        "why": "The dispatcher's launch line -- the same re-entry converge-no-pr-opened names, and it is reached here for the same reason: a released claim puts the issue back in the ready pool. UNLIKE that row, re-entry here is NOT bounded by the attempts cap. The signal arrives before the ledger bump, so no attempt is recorded and the round is free. That is right for an operator pressing Ctrl-C and wrong if something starts killing converge on a clock: nothing in this tree does today (no timeout wraps the launch in kipi-dispatch.sh), and the residual is captured in the spillover ledger rather than dressed up as bounded here."
+      }
+    },
+    {
       "id": "dispatch-repo-missing",
       "source": "kipi-dispatch",
       "class": "infra-failure",

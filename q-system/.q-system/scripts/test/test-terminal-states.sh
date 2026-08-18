@@ -135,6 +135,13 @@ HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 EXIT_CMD = re.compile(r"""(?:^|[;&|{(]|\b(?:then|else|do)\b)\s*exit\b(?!-)""")
 FUNC_OPEN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\(\)\s*\{\s*$")
 FUNC_CLOSE = re.compile(r"^\}\s*$")
+# `trap '<body>' SIG`. Only the quoted forms: an unquoted `trap - EXIT` clears a
+# trap and names no handler, and a bare `trap foo EXIT` is not a shape either file
+# uses. The body is scanned for identifiers and intersected with the functions the
+# file actually defines, so `trap 'rmdir "$D" || true' EXIT` (kipi-dispatch.sh:539)
+# contributes nothing rather than inventing a handler called `rmdir`.
+TRAP_LINE = re.compile(r"^\s*trap\s+(['\"])(.*?)\1")
+IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def read_lines(path):
@@ -169,6 +176,35 @@ def mask_heredocs(lines):
     return out
 
 
+def trap_handler_names(masked):
+    """Functions a `trap` installs -- their exits have NO top-level call site.
+
+    The exclusion of function bodies below rests on one claim: an exit inside a
+    function is reached through a call site that is itself top-level, so the call
+    site is where the dead end is counted. A signal handler breaks that claim,
+    because its caller is the kernel delivering a signal and there is no line
+    anywhere in the file that reaches it. converge.sh's `on_interrupt` exits
+    143/130/129 and ends the whole run, and every check in this validator was
+    blind to it (codex PR #215 round 3, minor).
+
+    HONEST BOUNDARY: this names the handler ITSELF, not what the handler calls.
+    `on_interrupt` calls `release_stale_claim_for_issue`, and an exit added inside
+    THAT function is still invisible here. Closing it properly needs a call graph,
+    which is a bigger change than this finding; the residual is captured in the
+    spillover ledger rather than left implied by silence.
+    """
+    defined = {ln.split("(", 1)[0] for ln in masked
+               if ln is not None and FUNC_OPEN.match(ln)}
+    names = set()
+    for ln in masked:
+        if ln is None or ln.lstrip().startswith("#"):
+            continue
+        m = TRAP_LINE.match(ln)
+        if m:
+            names |= {t for t in IDENT.findall(m.group(2)) if t in defined}
+    return names
+
+
 def sites_toplevel_exit(lines):
     """Every top-level `exit` in a single-run driver.
 
@@ -186,17 +222,22 @@ def sites_toplevel_exit(lines):
     swallowing every exit after the first ragged definition.
     """
     masked = mask_heredocs(lines)
-    sites, infn, opened_at = [], False, 0
+    traps = trap_handler_names(masked)
+    sites, infn, opened_at, fn = [], False, 0, None
     for i, ln in enumerate(masked):
         if ln is None:
             continue
         if not infn and FUNC_OPEN.match(ln):
-            infn, opened_at = True, i + 1
+            infn, opened_at, fn = True, i + 1, ln.split("(", 1)[0]
             continue
         if infn and FUNC_CLOSE.match(ln):
-            infn = False
+            infn, fn = False, None
             continue
-        if infn or is_comment(ln):
+        if is_comment(ln):
+            continue
+        # A trap handler's body IS top level for this purpose -- nothing calls it,
+        # so there is no other line where its exit could be counted instead.
+        if infn and fn not in traps:
             continue
         if EXIT_CMD.search(ln):
             sites.append((i + 1, "toplevel-exit", ln.strip()))
@@ -447,6 +488,19 @@ def main():
         full = path if os.path.isabs(path) else os.path.join(root, path)
         if not os.path.isfile(full):
             raise SystemExit(f"REGISTRY FAILED: source {sid} path {path} does not exist")
+        # LAST-WINS WAS A BYPASS FOR BOTH FLOORS (codex PR #215 round 3, major).
+        # This map is keyed on the id, so a second entry reusing an id REPLACED the
+        # file walked for it. The id floor above only asks whether the id appears,
+        # and the shell-side path pin only asks whether the path appears -- one
+        # entry can satisfy both while a different entry supplies the lines. That
+        # declares converge.sh and enumerates something else, which is the ASK-353
+        # one-driver blind spot reached by a third route. An id names exactly one
+        # file or the registry does not say which file it names.
+        if sid in src_lines:
+            raise SystemExit(
+                f"REGISTRY FAILED: source id {sid!r} is declared twice. The later entry "
+                "silently replaces the file walked for that id, so a driver can be "
+                "declared and never read. Give each source its own id.")
         src_lines[sid] = read_lines(full)
         src_shapes[sid] = shapes
 
@@ -844,6 +898,61 @@ mkfixture "$FIX/cvmut2.json" 'source("converge")["path"] = "'"$CVMUT2"'"'
 expect_red "REPRODUCER: a converge exit inheriting a marker is caught by the sites count" \
   "$FIX/cvmut2.json" "declares"
 
+# --- 6b-trap. A DEAD END REACHED ONLY BY A SIGNAL (codex PR #215 round 3) -----
+# The enumerator skips function BODIES on the stated ground that an exit there is
+# reached through a call site that is itself top-level, so counting both would
+# double-count one dead end. A TRAP HANDLER has no such call site: the signal is
+# the caller. converge.sh's `on_interrupt` ends the entire run (exit 143/130/129)
+# and was invisible to every check in this file. Two cases, both against copies.
+# A WHOLE NEW HANDLER, inserted high, not an extra line inside on_interrupt.
+# Tucked inside the existing handler the planted exit sits under the dry-run
+# marker 60 lines up and is caught by that row's sites count instead -- a real
+# RED for a neighbouring row's reason, which would assert nothing about trap
+# handling. Above every marker there is nothing to adopt it, so the claim under
+# test is the one being made: a dead end reachable only by a signal is SEEN.
+CVTRAP="$WORK/converge-trap-extra-exit.sh"
+python3 - "$CONVERGE" "$CVTRAP" <<'EOF'
+import sys
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+for i, ln in enumerate(lines):
+    if ln.startswith("set -"):
+        lines[i + 1:i + 1] = ["on_bail_fixture() {",
+                              "  exit 45",
+                              "}",
+                              "trap 'on_bail_fixture' USR1"]
+        break
+else:
+    raise SystemExit("FIXTURE FAILED: converge.sh has no `set -` line to anchor to")
+open(sys.argv[2], "w", encoding="utf-8").write("\n".join(lines) + "\n")
+EOF
+mkfixture "$FIX/cvtrap.json" 'source("converge")["path"] = "'"$CVTRAP"'"'
+expect_red "REPRODUCER: a dead end added to a TRAP handler is CAUGHT as UNREGISTERED" \
+  "$FIX/cvtrap.json" "UNREGISTERED EXIT"
+
+# NEGATIVE SELF-TEST. An ordinary function is still skipped. Without this the
+# cheap fix -- count every exit everywhere -- would pass the case above and quietly
+# double-count each of the nine converge exits that already have a top-level call
+# site, turning every sites count in the registry red for a reason that is not a
+# defect. `receipt_tree` is reached by an ordinary call, not by a trap.
+CVFN="$WORK/converge-plain-fn-exit.sh"
+python3 - "$CONVERGE" "$CVFN" <<'EOF'
+import sys
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+for i, ln in enumerate(lines):
+    if ln.startswith("receipt_tree() {"):
+        lines.insert(i + 1, '  if [ "$A_PLAIN_FN_DEAD_END" = "1" ]; then exit 46; fi')
+        break
+else:
+    raise SystemExit("FIXTURE FAILED: converge.sh no longer defines receipt_tree()")
+open(sys.argv[2], "w", encoding="utf-8").write("\n".join(lines) + "\n")
+EOF
+mkfixture "$FIX/cvfn.json" 'source("converge")["path"] = "'"$CVFN"'"'
+if python3 "$WORK/validate.py" "$FIX/cvfn.json" "$ROOT" "$MAN" >/dev/null 2>&1; then
+  ok "negative self-test: an exit in an ordinary function body is still not a site"
+else
+  bad "an exit inside a NON-trap function is being enumerated -- top-level call sites are now double-counted"
+fi
+
 # --- 6c. the same reproducer for kipi-dispatch.sh ----------------------------
 DPMUT="$WORK/dispatch-extra-exit.sh"
 python3 - "$DISPATCH" "$DPMUT" <<'EOF'
@@ -995,6 +1104,23 @@ else
     ok "negative self-test: the floor does not fire on a source repointed to a copy"
   fi
 fi
+
+# --- 14c. REPRODUCER (codex PR #215 round 3, major): a SHADOWED source -------
+# Both floors above ask "is this driver DECLARED", and neither asks "is it the
+# entry that gets walked". `src_lines[sid] = read_lines(full)` is last-wins, so a
+# second entry carrying an existing id replaces the first one's file. That is a
+# way to declare converge.sh and enumerate something else: the id floor sees the
+# id, the path floor sees the path on the shadowing entry, and the driver whose
+# exits actually run is never read. This fixture puts the PLANTED-EXIT copy in the
+# first entry -- the one whose RED the suite already proves at 6b -- and appends a
+# clean duplicate behind it. Green here means the planted exit went unseen.
+mkfixture "$FIX/dupsource.json" '
+dup = json.loads(json.dumps(source("converge")))
+source("converge")["path"] = "'"$CVMUT"'"
+d["sources"].append(dup)
+'
+expect_red "REPRODUCER: a second entry shadowing an existing source id is REFUSED" \
+  "$FIX/dupsource.json" "declared twice"
 
 # THE PATHS ARE PINNED HERE, against the LIVE registry only. The floor inside the
 # validator keys on ids so fixtures can repoint to copies; that leaves "keep the
