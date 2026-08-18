@@ -188,3 +188,26 @@ if __name__ == "__main__":
     # own exit code, so a gutted feature now reds the gate.
     import pytest as _pytest
     raise SystemExit(_pytest.main([__file__, "-q"]))
+
+
+def test_a_draft_with_prose_slashes_is_not_refused():
+    """sp-a2dbef28: the \\w+/\\w+ furniture alternative refused any draft
+    carrying "serve/harm", "FB/Meta", "24/7", or a t.co link. Measured against
+    the live corpus 2026-08-18: 14 of 72 of the founder's REAL posts hit it --
+    a fifth of his writing silently unscored. Slash-pairs are his prose."""
+    text = ("Here's the post:\n\n---\n\n"
+            "Day one at FB/Meta taught me the serve/harm question never sleeps. "
+            "The cameras run 24/7 and someone still asks who watches them. "
+            + "Real prose continues for long enough to clear the word floor here. " * 3
+            + "Full story: https://t.co/Vte8fVfPfB"
+            "\n\n---\n")
+    draft = _gate().extract_setoff_draft(text)
+    assert draft and "serve/harm" in draft and "24/7" in draft
+
+
+def test_a_real_path_still_reads_as_furniture():
+    """The other direction: multi-segment paths and extension-bearing files
+    stay furniture, so engineering prose keeps failing to qualify."""
+    g = _gate()
+    assert g._FURNITURE_RE.search("see q-system/.q-system/scripts/voice-stop-gate.py")
+    assert g._FURNITURE_RE.search("run `prd_runner.py gates run` first")

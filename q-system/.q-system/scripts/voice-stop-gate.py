@@ -166,7 +166,19 @@ _FURNITURE_RE = re.compile(
     r"|`"                           # any code span
     r"|\*\*"                        # any bold run
     r"|\]\("                        # markdown link
-    r"|\w+/\w+"                     # a path, or a flag pair
+    # Paths: THREE+ segments only (sp-a2dbef28). The first cut used \w+/\w+ and
+    # it refused 14 of the founder's 72 real posts -- "serve/harm", "FB/Meta",
+    # "24/7", t.co links are his PROSE (measured against the live corpus,
+    # 2026-08-18). Two-segment mentions in chat are held out by the other
+    # furniture marks plus the post-shaped gate in the reporter, which is the
+    # layer that bounds a false qualify to one wasted score on a post-shaped
+    # turn, never a habit.
+    # Segments are SLASH-FREE, so a URL cannot match: \S+ swallows slashes and
+    # made https://t.co/x count as three segments -- and t.co links appear in 4
+    # of his real X posts. A residual known cost, accepted and named: a prose
+    # triple like "small/medium/up-and-comer" (2 corpus rows) still reads as a
+    # path. Pairs were 14 rows; triples are the smaller wrong side of the line.
+    r"|[^\s/]+(?:/[^\s/]+){2,}"
     r"|\w+\.(py|sh|json|md|jsonl|yml|yaml|txt)\b"   # a filename
     r")", re.MULTILINE)
 
@@ -407,7 +419,10 @@ def authorship_page():
     if argv is None:
         return
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        # 3s, not 10: --drain-page is a state-file read, and this sync call
+        # shares a 15s Stop budget with the drain and the spool (Codex minor,
+        # PR #217). The Slack send below stays a detached Popen.
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=3)
     except Exception:
         return
     line = (r.stdout or "").strip()
