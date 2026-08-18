@@ -151,6 +151,13 @@ REWORK_VERDICTS = {"REQUEST CHANGES", "BLOCK"}
 REWORK = "rework"
 REREVIEW = "re-review"
 
+# Where a PR's head lives, as the board answered it. Three values because
+# "somebody else's repo" and "the board did not say" are different facts and the
+# two readers below pay different costs for confusing them. See head_provenance.
+SAME_REPO = "same-repo"
+FORK = "fork"
+UNSTATED = "unstated"
+
 
 def record_path(records_dir, pr):
     return os.path.join(records_dir, "pr-%s.verdict.json" % pr)
@@ -331,9 +338,61 @@ def classify(record, head_sha):
     return None, "verdict %s is not a refusal" % verdict
 
 
+def head_provenance(pr_obj):
+    """SAME_REPO / FORK / UNSTATED for one PR's head (PR #211 round 2, MAJOR 1).
+
+    THE ONE PLACE THE QUESTION IS ANSWERED. Round 1 answered it inline in
+    `branch_for` and nowhere else, and the gap became this finding: `candidates()`
+    reads the very same two attacker-chosen facts (`CI.attribute` over the head
+    branch name and the PR title) and had no such test. Two copies of one trust
+    rule is how a surface ends up owned by neither, so there is one copy and both
+    callers name it.
+
+    THREE VALUES, NOT A BOOLEAN, because the callers must be able to tell "this
+    head is somebody else's" from "the board did not say". `isCrossRepository` is
+    requested in PR_FIELDS, so its absence is an unanswered question rather than
+    an answer of same-repo -- and the two callers pay opposite costs for that
+    distinction, which a boolean would force them to share.
+    """
+    flagged = pr_obj.get("isCrossRepository")
+    if flagged is False:
+        return SAME_REPO
+    if flagged is None:
+        return UNSTATED
+    return FORK
+
+
 def candidates(repo_dir, records_dir):
     out = []
     for pr_obj in CI.list_prs(repo_dir):
+        # A FORK IS NEVER A CANDIDATE (PR #211 round 2, MAJOR 1; captured first
+        # as sp-f7e6334d and arriving here as a finding).
+        #
+        # On a public repo anyone can open `sana/evil` titled "(ASK-352)", and
+        # both of those are facts `CI.attribute` believes. That made an external
+        # PR a REWORK candidate for someone else's issue. The second cost is the
+        # expensive one: field 5 then carries `sana/evil` into `branch_guard`,
+        # which compares it against `sana/ask-352`, refuses, and PARKS the real
+        # issue every cycle until a human closes the external PR. The guard built
+        # to stop wrong-target work becomes the thing that stalls the queue.
+        #
+        # THE POSTURE HERE IS THE OPPOSITE OF `branch_for`'s, FROM THE SAME
+        # PREDICATE, and that asymmetry is the point rather than an oversight.
+        # A skip in `branch_for` degrades to "no branch known", whose caller
+        # already treats that as proceed -- fail-open. A skip HERE degrades to
+        # "offer nothing", which silently stalls the whole redrive lane, the
+        # exact defect class of the sibling finding in this same review. So a
+        # CONFIRMED fork is dropped, and an UNSTATED provenance is kept as a
+        # candidate but loses its branch below: an unconfirmed head may not route
+        # work, and it may not switch the lane off either.
+        provenance = head_provenance(pr_obj)
+        if provenance == FORK:
+            continue
+        # An unconfirmed head is still worked, but it never ROUTES the work. The
+        # dispatcher reads an empty field 5 as "no earlier observation" and takes
+        # its fail-open arm, so the branch the naming rule produces is used --
+        # which is the legitimate branch, never a head we could not vouch for.
+        head_branch = pr_obj.get("headRefName") if provenance == SAME_REPO else None
         # A DRAFT IS THE AUTHOR SAYING NOT YET, and re-entering one spends a
         # converge round or a codex call on a tree nobody asked to be judged.
         #
@@ -394,7 +453,7 @@ def candidates(repo_dir, records_dir):
                     "action": action, "reason": reason,
                     "issue": issue, "agent": agent, "issue_source": source,
                     "pr": pr, "url": pr_obj.get("url"),
-                    "branch": pr_obj.get("headRefName"),
+                    "branch": head_branch,
                     "head_sha": head_sha, "slots": [],
                 })
                 continue
@@ -420,7 +479,7 @@ def candidates(repo_dir, records_dir):
                     "reason": "the reviewer has never posted a verdict for this PR",
                     "issue": issue, "agent": agent, "issue_source": source,
                     "pr": pr, "url": pr_obj.get("url"),
-                    "branch": pr_obj.get("headRefName"),
+                    "branch": head_branch,
                     "head_sha": pr_obj.get("headRefOid") or "",
                     "slots": [],
                 })
@@ -444,7 +503,7 @@ def candidates(repo_dir, records_dir):
         out.append({
             "action": action, "reason": reason, "issue": issue, "agent": agent,
             "issue_source": source, "pr": pr, "url": pr_obj.get("url"),
-            "branch": pr_obj.get("headRefName"), "head_sha": head_sha,
+            "branch": head_branch, "head_sha": head_sha,
             "slots": slots,
         })
     return out
@@ -491,7 +550,12 @@ def branch_for(repo_dir, issue):
     """
     branches = []
     for pr_obj in CI.list_prs(repo_dir):
-        if pr_obj.get("isCrossRepository") is not False:
+        # ONE PREDICATE, SHARED WITH `candidates()` (PR #211 round 2, MAJOR 1).
+        # Both readers trust the same two attacker-chosen facts, so both ask the
+        # same question through `head_provenance`. Here BOTH non-same-repo answers
+        # skip, because this caller's skip is fail-OPEN: fewer branches means rc 1,
+        # which the guard already treats as "round one, proceed".
+        if head_provenance(pr_obj) != SAME_REPO:
             continue
         attributed = CI.attribute(pr_obj)
         if attributed is None:
