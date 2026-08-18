@@ -109,8 +109,44 @@ def extract_setoff_draft(text):
     segments = [body for info, body in _FENCE_RE.findall(text)
                 if info.strip().lower() in _PROSE_FENCE_LANGS]
     segments += _QUOTE_RE.findall(text)
+    segments += _hr_draft_segments(text)
     setoff = "\n\n".join(s.strip() for s in segments if s.strip())
     return setoff if setoff else extract_inline_draft(text)
+
+
+_HR_RE = re.compile(r"(?m)^\s*-{3,}\s*$")
+
+
+def _hr_draft_segments(text):
+    """Drafts set off by `---` horizontal rules (sp-3bec4a5e).
+
+    The first live post after ASK-902 shipped was delivered exactly this way --
+    framing line, `---`, the post, `---`, a what-changed analysis -- and it was
+    structurally invisible: the fence list knows ``` only, and the inline
+    fallback's share floor correctly refuses the mixture. Measured on the real
+    transcript before this was written.
+
+    The pairing reads like fences: segment 1 sits between rules 1 and 2, segment
+    2 between rules 3 and 4. An odd trailing rule opens no segment. Each segment
+    must EARN draft status -- at least INLINE_DRAFT_MIN_WORDS words and no
+    furniture line -- because two rules used as section dividers around
+    engineering prose are the ordinary non-draft case, and a divider section
+    full of paths and code spans must stay invisible to a 319MB model load.
+    """
+    parts = _HR_RE.split(text)
+    out = []
+    # parts[0] is before the first rule; fenced bodies are the odd indices of
+    # consecutive rule pairs: parts[1], parts[3], ...
+    for i in range(1, len(parts), 2):
+        body = parts[i].strip()
+        if not body:
+            continue
+        if len(body.split()) < INLINE_DRAFT_MIN_WORDS:
+            continue
+        if _FURNITURE_RE.search(body):
+            continue
+        out.append(body)
+    return out
 
 
 # Markdown and engineering furniture. A post he would paste into LinkedIn carries

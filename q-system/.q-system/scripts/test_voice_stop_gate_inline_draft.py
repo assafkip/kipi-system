@@ -130,3 +130,43 @@ def test_the_share_floor_is_what_refuses_the_mixture():
     assert gate.extract_inline_draft(MIXTURE) != "", (
         "with the share floor removed the mixture is still refused, so some "
         "other rule is carrying this case and the floor is untested")
+
+
+# ---------------------------------------------------------------- hr fences ----
+# sp-3bec4a5e: the FIRST live post after ASK-902 shipped was delivered between
+# `---` horizontal rules with a framing line above and a "what changed" analysis
+# below -- and extract_setoff_draft returned nothing. Measured on the real
+# transcript (2026-08-18): the ``` fence list does not know `---`, and the
+# inline fallback's 70% share floor refuses the mixture. The founder's most
+# common delivery shape was structurally invisible.
+
+HR_REPLY = (
+    "The version carrying both of your corrections - no CTA ending:\n"
+    "\n---\n\n"
+    "A 40 hour week with ADHD is a joke. Or a curse, depending on the day. "
+    + ("His brain gives him hyperfocus hours that outrun whole teams. " * 6)
+    + "\n\nSeat time is what the 40 hour week actually measures. "
+    + ("Force presence and you trade the best hours for the worst ones. " * 4)
+    + "\n\n---\n\n"
+    "What changed:\n\n- the ending is a statement now\n- the scaffold is gone\n"
+)
+
+
+def test_an_hr_fenced_draft_is_extracted():
+    draft = _gate().extract_setoff_draft(HR_REPLY)
+    assert draft, "a --- set-off draft must be extracted, not dropped"
+    assert "40 hour week" in draft
+    assert "What changed" not in draft, "analysis after the fences leaked in"
+    assert "corrections - no CTA" not in draft, "framing above the fences leaked in"
+
+
+def test_an_hr_pair_inside_ordinary_prose_is_not_a_draft():
+    """Negative: two horizontal rules used as section dividers in an engineering
+    reply must not turn the middle section into a "draft"."""
+    text = (
+        "Status update on the pipeline run.\n\n---\n\n"
+        "The `gate_post.py` run failed on q-consult/pipeline/decide.py with a "
+        "Traceback, see plugins/prd-os/scripts/prd_runner.py output.\n\n---\n\n"
+        "Next step is rerunning the suite."
+    )
+    assert _gate().extract_setoff_draft(text) == ""
