@@ -1367,6 +1367,18 @@ class LinearRefError(Exception):
     """
 
 
+class LinearUnreachableError(LinearRefError):
+    """The tracker could not be ASKED — transport failure, not an answer.
+
+    Subclass, not sibling: every existing `except LinearRefError` still refuses,
+    so the collapse-to-refuse property above is intact. What this adds is honest
+    REPORTING for the one caller that buckets its refusals: the promoted audit
+    was filing outages under STILL OPEN, because an HTTP 500 and a Backlog state
+    both arrived as the same class (Codex review PR #213, 2026-08-18). An outage
+    is "could not read", never "read it and it is open".
+    """
+
+
 LINEAR_API_URL = "https://api.linear.app/graphql"
 # Linear identifiers are TEAMKEY-number. Anything else is a local spec id (or a
 # typo), and must never become a live lookup.
@@ -1430,11 +1442,11 @@ def _linear_issue_state(identifier: str) -> dict:
         with urllib.request.urlopen(request, timeout=20) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise LinearRefError(f"Linear returned HTTP {exc.code} for {identifier}") from exc
+        raise LinearUnreachableError(f"Linear returned HTTP {exc.code} for {identifier}") from exc
     except urllib.error.URLError as exc:
-        raise LinearRefError(f"cannot reach Linear to verify {identifier}: {exc.reason}") from exc
+        raise LinearUnreachableError(f"cannot reach Linear to verify {identifier}: {exc.reason}") from exc
     except json.JSONDecodeError as exc:
-        raise LinearRefError(f"Linear sent a non-JSON answer for {identifier}: {exc}") from exc
+        raise LinearUnreachableError(f"Linear sent a non-JSON answer for {identifier}: {exc}") from exc
     # Linear answers HTTP 200 with an `errors` array for application-level
     # failures, so a status-code-only check would read a failed lookup as a
     # verified one -- the exact shape of bug this command exists to prevent.
@@ -1601,6 +1613,16 @@ def _verify_resolution_proof(cfg: Config, item_id: str, command: str,
         raise CommitRefError(
             "--broken-at is HEAD, so there is nothing for the check to flip "
             "across. Name the commit where the defect was still present.")
+    # Same ancestry rule as the commit exit. Without it, any commit that EXISTS
+    # (a dangling branch, a fetched fork) can host the failing half of the flip,
+    # and the demonstration says nothing about this repo's actual history — the
+    # unrelated-commit hand-clear Codex named on PR #213.
+    branch = _integration_branch(root)
+    if _git(root, "merge-base", "--is-ancestor", before_sha, branch).returncode != 0:
+        raise CommitRefError(
+            f"--broken-at {before_sha[:9]} is not an ancestor of '{branch}'. "
+            "The flip must cross this repo's real history; a commit outside it "
+            "demonstrates nothing about when this item was broken.")
 
     if "{tree}" not in command:
         raise CommitRefError(
@@ -1650,6 +1672,10 @@ def _verify_resolution_proof(cfg: Config, item_id: str, command: str,
 
     return {
         "resolution_tracker": "proof",
+        # The binding Codex flagged as missing: the stored record names WHICH
+        # item this proof was executed for, so a proof pasted onto a different
+        # row is detectable by any later reader.
+        "resolution_proof_item": item_id,
         "resolution_proof_command": command,
         "resolution_proof_head": head_sha,
         "resolution_proof_broken_at": before_sha,
@@ -2090,6 +2116,13 @@ def _spillover_promoted_audit(cfg: Config, args) -> int:
             continue
         try:
             evidence = _verify_resolution_ref(cfg, ref)
+        except LinearUnreachableError as exc:
+            # BEFORE the still-open catch, because it is a subclass. An outage
+            # is "could not read", never "read it and it is open" — filing it
+            # under STILL OPEN made a down tracker look like a triaged backlog
+            # (Codex review PR #213).
+            unreadable.append((rec.get("id"), ref, f"tracker unreachable: {exc}"))
+            continue
         except LinearRefError as exc:
             # A refusal here is the NORMAL case: the issue is simply still open.
             # It is reported, not raised, because one open issue must not stop

@@ -213,3 +213,33 @@ def test_proof_cannot_be_combined_with_another_exit(repo):
         capture_output=True, text=True, timeout=120)
     assert out.returncode == 2
     assert "exactly one exit" in out.stderr
+
+
+def test_a_broken_at_outside_the_integration_branch_is_refused(repo):
+    """The flip must cross THIS repo's history (Codex review PR #213).
+
+    A commit that merely EXISTS -- here, a dangling side branch holding the
+    'defective' content -- can host the failing half of any flip. Accepting it
+    made the proof exit a hand-clear: pick any unrelated broken tree, watch the
+    check fail there, and the item resolves. Ancestry of the integration branch
+    is the same rule the commit exit already enforces.
+    """
+    cfg, root, before = repo
+    head = _git(root, "rev-parse", "HEAD").stdout.strip()
+    _git(root, "checkout", "-q", "-b", "unrelated", before)
+    (root / "subject.txt").write_text("THE DEFECT IS PRESENT elsewhere\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "a commit main never merged")
+    stray = _git(root, "rev-parse", "HEAD").stdout.strip()
+    _git(root, "checkout", "-q", "main")
+    assert _git(root, "rev-parse", "HEAD").stdout.strip() == head
+    with pytest.raises(prd_runner.CommitRefError, match="not an ancestor"):
+        prd_runner._verify_resolution_proof(cfg, "sp-stuck", GOOD, stray)
+
+
+def test_the_proof_record_names_the_item_it_was_run_for(repo):
+    """The stored record binds proof to item, so a proof pasted onto a
+    different row is detectable by a later reader (Codex review PR #213)."""
+    cfg, root, before = repo
+    ev = prd_runner._verify_resolution_proof(cfg, "sp-stuck", GOOD, before)
+    assert ev["resolution_proof_item"] == "sp-stuck"

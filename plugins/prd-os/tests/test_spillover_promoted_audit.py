@@ -128,7 +128,13 @@ def test_an_unreachable_tracker_resolves_nothing(ledger, monkeypatch, capsys):
     that simply found nothing to do.
     """
     def boom(identifier):
-        raise RuntimeError("network is down")
+        # The PRODUCTION outage type, not an invented one. The first version
+        # raised RuntimeError, which only the generic except catches — so the
+        # test passed while real outages (LinearUnreachableError from
+        # _linear_issue_state's transport handlers) were being filed under
+        # STILL OPEN (Codex review PR #213; fixtures-from-producers).
+        raise prd_runner.LinearUnreachableError(
+            "cannot reach Linear to verify %s: network is down" % identifier)
     monkeypatch.setattr(prd_runner, "_linear_issue_state", boom)
     prd_runner._spillover_promoted_audit(ledger, Args(dry_run=False))
     assert _statuses(ledger)["sp-closed"] == "promoted"
