@@ -413,8 +413,10 @@ def _archive_spillover_gate(cfg: Config, prd_id: str | None = None) -> tuple[int
     return 2, (
         f"refusing to archive: {len(openv)} open spillover item(s) opened by "
         f"{prd_id or 'this PRD'}\n{detail}\n"
-        "Resolve each via `prd_runner.py spillover resolve <id> "
-        "--resolution-ref <closed-issue>` or `--void \"<reason>\"`.\n"
+        "Resolve each via `prd_runner.py spillover resolve <id>` with one of: "
+        "`--resolution-ref <closed-issue>`, `--resolution-commit <merged-sha>`, "
+        "`--resolution-proof '<cmd with {tree}>' --broken-at <sha>`, or "
+        "`--void \"<reason>\"`.\n"
     )
 
 
@@ -1668,12 +1670,30 @@ def _verify_resolution_proof(cfg: Config, item_id: str, command: str,
                               cwd=str(root), capture_output=True, text=True,
                               timeout=PROOF_TIMEOUT_SECONDS)
 
-    after = _run(root)
+    # The AFTER half runs against a clean worktree of HEAD, never the live
+    # working directory. The record stores head_sha as WHERE the fix passed;
+    # grading the working tree lets an UNCOMMITTED fix pass while the record
+    # points at a commit that does not contain it -- a false "shipped"
+    # (Codex, PR #213 r4). Same mechanism as the before half: committed trees
+    # only, on both sides of the flip.
+    tmp_after = Path(tempfile.mkdtemp(prefix="prd-os-proof-"))
+    worktree_after = tmp_after / "after"
+    added_after = _git(root, "worktree", "add", "--detach", str(worktree_after), head_sha)
+    try:
+        if added_after.returncode != 0 or not (worktree_after / ".git").exists():
+            raise CommitRefError(
+                f"could not create a worktree at HEAD {head_sha[:9]}: "
+                f"{(added_after.stderr or added_after.stdout).strip()[:300]}")
+        after = _run(worktree_after)
+    finally:
+        _git(root, "worktree", "remove", "--force", str(worktree_after))
+        shutil.rmtree(tmp_after, ignore_errors=True)
     if after.returncode != 0:
         raise CommitRefError(
             f"the proof command does not pass at HEAD ({head_sha[:9]}), exit "
             f"{after.returncode}. An item is not resolved while its own check is "
-            f"red.\n{(after.stdout + after.stderr)[-800:]}")
+            f"red -- and only COMMITTED state counts: an uncommitted fix in the "
+            f"working tree is not shipped.\n{(after.stdout + after.stderr)[-800:]}")
 
     tmp = Path(tempfile.mkdtemp(prefix="prd-os-proof-"))
     worktree = tmp / "before"
@@ -2158,7 +2178,16 @@ def _spillover_promoted_audit(cfg: Config, args) -> int:
             # A refusal here is the NORMAL case: the issue is simply still open.
             # It is reported, not raised, because one open issue must not stop
             # the sweep from resolving the rows that did close.
-            still_open.append((rec.get("id"), ref, str(exc).split(". ")[0]))
+            age = ""
+            created = str(rec.get("created_at") or "")[:10]
+            if created:
+                try:
+                    from datetime import date
+                    days = (date.today() - date.fromisoformat(created)).days
+                    age = f"open {days}d"
+                except ValueError:
+                    age = f"created {created}"
+            still_open.append((rec.get("id"), ref, age, str(exc).split(". ")[0]))
             continue
         except Exception as exc:                              # noqa: BLE001
             unreadable.append((rec.get("id"), ref, f"tracker unreachable: {exc}"))

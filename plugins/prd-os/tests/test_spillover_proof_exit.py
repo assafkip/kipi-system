@@ -276,3 +276,24 @@ def test_an_acked_item_clears_exactly_its_acking_scope():
     assert prd_runner._spillover_blocks(rec, "ASK-1") is False   # cleared here
     assert prd_runner._spillover_blocks(rec, "ASK-2") is True    # not there
     assert prd_runner._spillover_blocks(rec, None) is True       # nor scopeless
+
+
+def test_an_uncommitted_fix_cannot_resolve_an_item(repo):
+    """The AFTER half grades committed HEAD, never the live working tree.
+
+    An uncommitted fix passed the old working-directory run while the record
+    pointed at a HEAD that does not contain it (Codex PR #213 r4).
+    """
+    cfg, root, before = repo
+    # Revert HEAD's tree state in the working dir: HEAD says fixed, the
+    # working tree says broken. Committed state must win: proof still passes.
+    (root / "subject.txt").write_text("THE DEFECT IS PRESENT again, uncommitted\n")
+    ev = prd_runner._verify_resolution_proof(cfg, "sp-stuck", GOOD, before)
+    assert ev["resolution_proof_after_exit"] == 0
+    # And the inverse: fix ONLY in the working tree, HEAD still broken.
+    _git(root, "checkout", "--", "subject.txt")
+    _git(root, "reset", "-q", "--hard", before)
+    _git(root, "commit", "-q", "--allow-empty", "-m", "unrelated: HEAD moves past broken_at")
+    (root / "subject.txt").write_text("THE DEFECT IS FIXED only here, uncommitted\n")
+    with pytest.raises(prd_runner.CommitRefError, match="does not pass at HEAD"):
+        prd_runner._verify_resolution_proof(cfg, "sp-stuck", GOOD, before)
