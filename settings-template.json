@@ -134,6 +134,16 @@
             "timeout": 35
           }
         ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\" --drain-only; fi",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [

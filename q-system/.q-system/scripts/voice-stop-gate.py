@@ -49,8 +49,12 @@ MIN_TEXT_BYTES = 80
 # Explicit publish-intent framing — the only signal that a final chat message hands the
 # founder content meant for someone ELSE. Engineering/debug chat carries none of these,
 # so it's treated as conversational-to-founder and skipped (voice-enforcement.md).
-_NOUN = (r"(post|reply|comment|dm|email|draft|thread|tweet|caption|message|outreach|"
-         r"response|blurb)")
+# 'response' left the set in round 7: "here's the response payload" is
+# engineering prose, and the marker now GATES extraction, so a generic noun
+# opens the sweep. Same round, same reason, the bare copy-paste alternative
+# below is gone -- 'copy-paste' is this fleet's own CLAUDE.md vocabulary.
+_NOUN = (r"(post|reply|comment|dm|email|draft|thread|tweet|caption|outreach|"
+         r"blurb)")
 _PLAT = r"(linkedin|x|twitter|medium|reddit|instagram|threads)"
 _PUBLISH_MARKER_RE = re.compile(
     r"(?im)("
@@ -59,8 +63,15 @@ _PUBLISH_MARKER_RE = re.compile(
     r"|\bdraft(ed|ing)?\s+(the|a|your|my|for|below|:)"
     r"|\b" + _NOUN + r"\s+draft\b"
     r"|\bready\s+to\s+(post|send|paste|publish)\b"
-    r"|\bcopy[-\s]?paste\b"
-    r"|\b(for|on|to)\s+" + _PLAT + r"\b"          # "for LinkedIn", "to X"
+    # A rewrite handoff: "Rewritten without the scaffold:" opened the REAL
+    # 2026-08-18 redraft turn, and the settled require-a-marker line silently
+    # unscored it. Line-start + trailing colon keeps prose mentions
+    # ("the comment was rewritten") out.
+    r"|^\s*(rewritten|revised|redrafted)\b[^\n]{0,60}:\s*$"
+    # The bare (for|on|to)+platform alternative is GONE (round 6): "posts to
+    # reddit" in ordinary prose read as a handoff, and now that this marker
+    # GATES extraction a false hit opens the sweep. "for LinkedIn:" handoffs
+    # still land via the noun alternatives around it.
     r"|\b" + _PLAT + r"\s+" + _NOUN + r"\b"       # "LinkedIn post", "X reply"
     r")"
 )
@@ -98,13 +109,218 @@ def extract_setoff_draft(text):
     scorer, because the fallback sweeps the surrounding engineering chat into the
     thing being measured, and the scorer then reports a number about a mixture.
     The lint's false positive costs one stdlib subprocess; this one costs a 319MB
-    torch load, so this path takes the strict reading and accepts missing the
-    inline case.
+    torch load, so this path takes the strict reading.
+
+    THE INLINE CASE, added 2026-08-18 (sp-88029341). It is no longer simply
+    dropped: `extract_inline_draft` recovers a draft written with no fence and no
+    blockquote, and it is tried ONLY when nothing is set off. The whole-message
+    fallback stays refused -- see that function for the measurement that killed
+    it.
     """
+    # THE LINE, settled in round 6 after four majors circled one question:
+    # nothing is a draft without the assistant's explicit handoff marker.
+    # Round 5 gated only the inline fallback and called fences "the author's
+    # own set-off"; the reviewer showed the neighbouring hole (unframed
+    # ---divided chat) within one round. The marker is the population every
+    # 0-FP measurement was taken on, so it fronts EVERY path now. What this
+    # deliberately gives up: a draft handed over with zero framing language.
+    # The reporter's request-side check cannot make up for it -- that check
+    # admits the turn, and the turn is exactly where unframed chat lives.
+    if not _PUBLISH_MARKER_RE.search(text):
+        return ""
     segments = [body for info, body in _FENCE_RE.findall(text)
                 if info.strip().lower() in _PROSE_FENCE_LANGS]
     segments += _QUOTE_RE.findall(text)
-    return "\n\n".join(s.strip() for s in segments if s.strip())
+    setoff = "\n\n".join(s.strip() for s in segments if s.strip())
+    if setoff:
+        return setoff
+    # hr fences: the LONGEST qualifying segment, never a concatenation -- a
+    # post plus its qualifying what-changed note is two texts, and scoring
+    # their join reports a number about a mixture (Codex round 6).
+    hr = _hr_draft_segments(text)
+    if hr:
+        # One dominant segment is THE post (a qualifying afterthought must not
+        # be concatenated into a mixture -- round 6). Comparable segments are
+        # one post split by an internal divider, and scoring half while max()
+        # hides the drop is worse than joining (round 7). The line is 0.5x.
+        hr.sort(key=lambda b: len(b.split()), reverse=True)
+        top = len(hr[0].split())
+        kept = [b for b in hr if len(b.split()) >= 0.5 * top]
+        return "\n\n".join(kept)
+    return extract_inline_draft(text)
+
+
+_HR_RE = re.compile(r"(?m)^\s*-{3,}\s*$")
+
+
+def _hr_draft_segments(text):
+    """Drafts set off by `---` horizontal rules (sp-3bec4a5e).
+
+    The first live post after ASK-902 shipped was delivered exactly this way --
+    framing line, `---`, the post, `---`, a what-changed analysis -- and it was
+    structurally invisible: the fence list knows ``` only, and the inline
+    fallback's share floor correctly refuses the mixture. Measured on the real
+    transcript before this was written.
+
+    NO SHARE FLOOR here, refused on purpose (Codex minor, PR #217): the real
+    missed turn this exists for was framing + draft + what-changed analysis,
+    where the draft held WELL under the inline path's 70% -- a floor here
+    re-opens the exact hole. The fences are the author's own set-off; the word
+    and furniture requirements below are the qualification.
+
+    The pairing reads like fences: segment 1 sits between rules 1 and 2, segment
+    2 between rules 3 and 4. An odd trailing rule opens no segment. Each segment
+    must EARN draft status -- at least INLINE_DRAFT_MIN_WORDS words and no
+    furniture line -- because two rules used as section dividers around
+    engineering prose are the ordinary non-draft case, and a divider section
+    full of paths and code spans must stay invisible to a 319MB model load.
+    """
+    parts = _HR_RE.split(text)
+    if len(parts) < 3:
+        # Fewer than two rules encloses nothing: a lone --- is a divider, and
+        # the text after it is chat, not a fenced body (Codex major, round 4).
+        return []
+    out = []
+    # EVERY middle part sits between two rules -- the odd-index pairing the
+    # first cut used was wrong geometry: in framing/---/a/---/b/---, part b is
+    # enclosed just as much as part a, and odd-indexing silently dropped it
+    # (round 7, caught by the split-draft reproducer). parts[0] is before the
+    # first rule, parts[-1] after the last; both are outside.
+    for i in range(1, len(parts) - 1):
+        body = parts[i].strip()
+        if not body:
+            continue
+        if len(body.split()) < INLINE_DRAFT_MIN_WORDS:
+            continue
+        if _FURNITURE_RE.search(body):
+            continue
+        out.append(body)
+    return out
+
+
+# Markdown and engineering furniture. A post he would paste into LinkedIn carries
+# none of it; this fleet's chat is built out of it. Membership is what separates
+# an inline draft from an ordinary reply, so each entry is a measured claim, not a
+# guess -- see extract_inline_draft for the corpus it was tuned against.
+_FURNITURE_RE = re.compile(
+    r"(^\s{0,3}#{1,6}\s"            # markdown heading
+    r"|^\s*([-*+]|\d+[.)])\s"       # bullet or numbered list
+    r"|^\s*>"                       # blockquote line
+    r"|^\s*\|"                      # table row
+    r"|^\s*-{3,}\s*$"               # a bare horizontal rule (never draft text)
+    r"|`"                           # any code span
+    r"|\*\*"                        # any bold run
+    r"|\]\("                        # markdown link
+    # Paths: THREE+ segments only (sp-a2dbef28). The first cut used \w+/\w+ and
+    # it refused 14 of the founder's 72 real posts -- "serve/harm", "FB/Meta",
+    # "24/7", t.co links are his PROSE (measured against the live corpus,
+    # 2026-08-18). Two-segment mentions in chat are held out by the other
+    # furniture marks plus the post-shaped gate in the reporter, which is the
+    # layer that bounds a false qualify to one wasted score on a post-shaped
+    # turn, never a habit.
+    # Segments are SLASH-FREE, so a URL cannot match: \S+ swallows slashes and
+    # made https://t.co/x count as three segments -- and t.co links appear in 4
+    # of his real X posts. A residual known cost, accepted and named: a prose
+    # triple like "small/medium/up-and-comer" (2 corpus rows) still reads as a
+    # path. Pairs were 14 rows; triples are the smaller wrong side of the line.
+    # A domain-shaped first segment (github.com/user/repo, t.co/x/y) is a URL
+    # fragment, not a repo path -- his posts name repos and carry links. Dotted
+    # HIDDEN dirs (.claude/...) are not domain-shaped (\w+\.\w+ requires a
+    # word char before the dot), so real paths keep matching.
+    # Anchored to TOKEN START ((?:^|(?<=\s))): without it the engine restarts
+    # one character into the token and matches ".com/user/repo" past the guard.
+    # (?!\d+/\d+/\d+(?:$|\s)) -- 2026/08/18 is a date, not a path (round 5).
+    # (?:\.[\w-]+)+ -- ANY dotted first segment is domain-shaped, including
+    # multi-label hosts (www.github.com, docs.python.org). A dot-FIRST segment
+    # (.claude/) is not: the lookahead needs a word char before the first dot.
+    r"|(?:^|(?<=\s))(?![\w-]+(?:\.[\w-]+)+/)(?!\d+/\d+/\d+(?:$|\s))[^\s/]+(?:/[^\s/]+){2,}"
+    r"|\w+\.(py|sh|json|md|jsonl|yml|yaml|txt)\b"   # a filename
+    r")", re.MULTILINE)
+
+# A draft has to BE the message, not sit inside it. Below this share the message
+# is a mixture -- surrounding chat plus some prose -- and scoring the prose half
+# reports a number about something he never wrote as a post.
+INLINE_DRAFT_MIN_SHARE = 0.70
+INLINE_DRAFT_MIN_WORDS = 25
+
+
+# A one-line "here's the post" lead-in and a one-line "want a shorter opener?"
+# trailer are furniture-free prose, so the run finder keeps them. They are the
+# assistant talking to HIM, not part of the post, and leaving them in makes the
+# score describe a text he never wrote (caught by
+# test_a_post_written_inline_is_recovered before this existed).
+HANDOFF_MAX_WORDS = 15
+
+
+def _trim_handoff_paragraphs(paragraphs):
+    """Drop a leading publish-framing line and a trailing question line."""
+    out = list(paragraphs)
+    while out and len(out[0].split()) <= HANDOFF_MAX_WORDS \
+            and _PUBLISH_MARKER_RE.search(out[0]):
+        out.pop(0)
+    while out and len(out[-1].split()) <= HANDOFF_MAX_WORDS \
+            and out[-1].rstrip().endswith("?"):
+        out.pop()
+    return out
+
+
+def extract_inline_draft(text):
+    """A draft written straight into the message body, or ''.
+
+    THE MEASUREMENT THAT SHAPED THIS (2026-08-18, 14,034 real turns across the
+    social-voice and consulting session logs, sp-88029341's DoR asked for it
+    before any extraction change):
+
+        assistant messages carrying strong publish framing ....... 76
+          with a set-off block (already scored) .................. 29
+          with NO set-off block .................................. 47
+
+    Those 47 are the population this function sees, and reading them is what
+    rejected the obvious fix. `extract_publishable` already has a whole-message
+    fallback and reusing it here would have scored all 47 -- every one of them
+    ordinary engineering prose with headings, bullets and backticks, at 3.66s of
+    torch each. A wrong number is worse than a missing one, which is exactly why
+    ASK-896 left this hole open rather than closing it that way.
+
+    So the discriminator is not "no fence was used". It is "the message is
+    nothing but clean prose": consecutive paragraphs free of markdown furniture,
+    together making up at least INLINE_DRAFT_MIN_SHARE of the message. A lead-in
+    ("Here's the post:") or a trailing question is allowed to sit around it; a
+    heading, a bullet list or a backtick anywhere in the body is not.
+
+    The share floor is the part that does the work. Without it a single clean
+    paragraph inside a long engineering answer reads as a draft, which is the
+    mixture problem one level down.
+    """
+    if not text or not text.strip():
+        return ""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if not paragraphs:
+        return ""
+    total_words = sum(len(p.split()) for p in paragraphs)
+    if not total_words:
+        return ""
+    # The longest run of consecutive furniture-free paragraphs. Runs, not the sum
+    # of all clean paragraphs: a post is contiguous, and stitching clean scraps
+    # from either side of a bullet list rebuilds the mixture this rejects.
+    best, current = [], []
+    for para in paragraphs:
+        if _FURNITURE_RE.search(para):
+            current = []
+            continue
+        current.append(para)
+        if sum(len(p.split()) for p in current) > sum(len(p.split()) for p in best):
+            best = list(current)
+    best = _trim_handoff_paragraphs(best)
+    if not best:
+        return ""
+    draft = "\n\n".join(best)
+    words = len(draft.split())
+    if words < INLINE_DRAFT_MIN_WORDS:
+        return ""
+    if words / total_words < INLINE_DRAFT_MIN_SHARE:
+        return ""
+    return draft
 
 
 # --- the optional authorship reporter ----------------------------------------
@@ -193,7 +409,11 @@ def authorship_drain():
     if argv is None:
         return ""
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        # 5s ceiling on a state-file read (~0.3s real): drain 5 + page 3 bounds
+        # the Stop path's sync reporter cost to 8s inside the 15s hook budget
+        # (Codex round 5 counted 13 and called the "detached" wording wrong;
+        # the WORKER is detached, these two reads never were).
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=5)
         return (r.stdout or "").strip()
     except Exception:
         return ""
@@ -236,6 +456,61 @@ def authorship_spool(draft, framing, request):
                 pass
 
 
+def authorship_page():
+    """File a pending drift ALERT, detached. The INSTANCE side owns this channel.
+
+    WHO RECEIVES IT (round 7, aligned with the founder's standing directive
+    rather than with this docstring's first draft): `slack-notify.sh` is THE
+    FLEET ALERT PATH -- founder-directed 2026-08-10, verbatim in that script's
+    header: "I dont want to see any of these. Any of the ones that need
+    attention should go to Sana - not me." It files a Linear ticket for Sana
+    and pages nobody. A reconciliation drift is exactly such an engineering
+    signal: the founder's ask was that silence never falls on the floor, and a
+    ticket in the engineering queue is the opposite of the floor. The founder
+    sees outcomes, never plumbing alerts.
+
+    The reporter computes the drift but may not send the page: everything in
+    `q-consult/pipeline/` is forbidden by that repo's boundary test from reaching
+    the Slack webhook, which belongs to the other side of that repo's
+    brand-separation boundary (its test_boundary.py names the two sides). So it writes a request and this script -- which lives on the
+    instance, already knows INSTANCE_ROOT, and is where founder notifications
+    belong -- delivers it.
+
+    `slack-notify.sh` is the only sanctioned channel (founder-notifications.md);
+    osascript is banned because a sandboxed process drops it silently, which is
+    the same silence this whole counter exists to break.
+
+    FULLY DETACHED, and that is not optional. This runs on the Stop path, and a
+    curl to Slack must never sit between him and his text. The page is not urgent
+    by construction -- it reports an ongoing silence, not an incident.
+    """
+    script = SCRIPTS_DIR / "slack-notify.sh"
+    if not script.is_file():
+        # BEFORE the consuming read, not after: --drain-page deletes what it
+        # returns, and an instance without the alert script was eating the
+        # page permanently (fallback-review sub-finding, round 7).
+        return
+    argv = _reporter_argv("--drain-page")
+    if argv is None:
+        return
+    try:
+        # 3s, not 10: --drain-page is a state-file read, and this sync call
+        # shares a 15s Stop budget with the drain and the spool (Codex minor,
+        # PR #217). The Slack send below stays a detached Popen.
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=3)
+    except Exception:
+        return
+    line = (r.stdout or "").strip()
+    if not line:
+        return
+    try:
+        subprocess.Popen(["bash", str(script), line],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception:
+        return
+
+
 def finish_ok():
     """Exit 0, surfacing any advisory line a previous turn's worker finished.
 
@@ -248,6 +523,8 @@ def finish_ok():
     the path that never reached the drain. The number would have appeared only
     if he asked for two posts back to back.
     """
+    # Before the drain, and detached, so a Slack curl never delays his text.
+    authorship_page()
     line = authorship_drain()
     if line:
         # `systemMessage` on exit 0 is the ONLY hook field that puts text in
@@ -327,6 +604,33 @@ def run_check(script, file_path):
 
 
 def main():
+    # sp-08c34cf1: SURFACE-ONLY MODE, for SessionStart ONLY.
+    #
+    # SessionEnd was wired here first and REMOVED after a Codex review checked
+    # the premise against the hooks documentation: SessionEnd delivers no
+    # systemMessage to the user (only a stderr error notice), so a drain there
+    # CONSUMED the score and threw it away, and the SessionStart backstop then
+    # found nothing left to surface. A same-session wrap-up surface is not
+    # available from any hook; next-session-start is the honest floor.
+    #
+    # The drain runs on the NEXT Stop event, and the last post of a session has
+    # no next Stop -- confirmed against the hooks documentation, not assumed:
+    # nothing fires while Claude Code sits idle waiting for input. So the score
+    # for the last post he writes reached him only if he happened to write
+    # another one.
+    #
+    # SessionStart is the one drain event (see the SessionEnd note above): it
+    # covers every way a session begins -- startup, resume, clear, compact --
+    # so the score survives a killed terminal, a /clear, and a compaction. A
+    # day-late number is worse than a same-session one and far better than
+    # none, which is why the drained line names its own age when it is stale.
+    #
+    # It is a FLAG and not a `hook_event_name` sniff on the payload. The lint
+    # half of this file must never run on those events, and keying that on a
+    # field the payload happens to carry makes the safety depend on a schema
+    # nobody here controls.
+    if "--drain-only" in sys.argv[1:]:
+        finish_ok()
     try:
         payload = json.load(sys.stdin)
     except Exception:
@@ -337,13 +641,11 @@ def main():
     # Gate only real drafts; a conversational reply to the founder is not voice-checked.
     draft = extract_publishable(text)
     if len(draft.encode("utf-8")) < MIN_TEXT_BYTES:
-        # NOT a bare `finish_ok()`, and the difference is the founder's actual
-        # workflow. He types "write me a post"; the assistant answers with the
-        # post in a fence and no "here's the post" sentence. `_PUBLISH_MARKER_RE`
-        # sees nothing, the lint correctly declines to gate, and the old code
-        # returned here -- so the ONE turn shape he uses most was the one shape
-        # that never reached the scorer. The lint's scope is unchanged; the
-        # measurement no longer rides on it.
+        # NOT a bare `finish_ok()`: the lint declines short/unframed turns, but
+        # the spool still gets its look. Since round 6 the extractor itself
+        # requires the handoff marker, so a fence with NO framing language is
+        # unscorable BY DESIGN now -- that cost is named in
+        # extract_setoff_draft, not hidden here (round-7 comment sync).
         authorship_spool(extract_setoff_draft(text), text, request)
         finish_ok()
     with tempfile.NamedTemporaryFile(
