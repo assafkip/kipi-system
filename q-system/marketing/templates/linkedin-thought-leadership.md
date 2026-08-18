@@ -22,7 +22,7 @@
 
 **Body (3-5 short paragraphs):**
 - Develop the point with specifics
-- Sharp contrast where the material earns it -- stated directly, not the "X isn't Y. It's Z." reveal scaffold (measured rare in his writing: 1/72 single-use, never stacked; stacking reads as AI)
+- Sharp contrast where the material earns it -- stated directly, not the "X isn't Y. It's Z." reveal scaffold (measured occasional in his writing: 5/72, almost always once; stacking reads as AI -- max one per draft)
 - Include at least one real example or named experience
 - Short paragraphs (1-3 sentences each)
 

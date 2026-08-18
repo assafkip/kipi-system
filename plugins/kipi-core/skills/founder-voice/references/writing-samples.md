@@ -199,7 +199,7 @@ These are the earliest and most authentic samples. The voice here is: investigat
 ## Signature Patterns (Collected Across All Eras)
 
 ### "X isn't Y. It's Z."
-> REAL BUT RARE -- do not use as a generator pattern. Measured 2026-08-18 against the 72-row written corpus: one post uses this once; zero stack it. A draft that stacks it reads as AI. These excerpts show the ceiling, not a target.
+> REAL BUT RARE -- do not use as a generator pattern. Measured 2026-08-18 against the 72-row written corpus: 5 posts use it (four once, one twice); none at the density AI drafts produce. A draft that stacks it reads as AI. These excerpts show the ceiling, not a target.
 - "That's not documentation. It's graffiti."
 - "AI isn't a feature. It's a system."
 - "The missing layer isn't another tool. It's the nervous system."
