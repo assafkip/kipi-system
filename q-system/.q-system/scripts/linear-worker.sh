@@ -871,8 +871,41 @@ if [ "${FOUNDER_ROUTED:-0}" != "0" ]; then
       *) say "WARN: the attempts ledger did not record the founder-routed flag for $fid (exit $rc) -- not paging, to avoid an undeduplicated repeat. Check $ATTEMPTS is writable." ;;
     esac
   done
+  # THE CLAIM IS PROVISIONAL UNTIL THE ALERT IS FILED (codex PR #215 round 3,
+  # major). The flag was claimed above and the send's status was thrown away by
+  # `|| true`, so ONE failed send -- a 20s timeout, a Linear 500, an unset API key
+  # on a fresh machine -- marked the issue announced forever. The next tick read
+  # the flag, stayed quiet, and the founder queue refilled in silence: the exact
+  # failure this whole block exists to end, now reached through the fix for it.
+  #
+  # CLAIM-THEN-CLEAR, not send-then-claim. The invariant that ordering protects is
+  # the one the dedup was built for: a page must never go out without its dedup
+  # already recorded, because a page whose flag did not land repeats every 15
+  # minutes forever. Sending first inverts that. So the claim stays first and a
+  # send that did not file gives it back.
+  #
+  # slack-notify.sh's exit contract (its own header) is what makes this decidable
+  # rather than a guess: 0 filed, 1 attempted and failed, 3 no Linear API key
+  # configured, 4 refused as a fixture run. Only 0 means a ticket exists, so only
+  # 0 keeps the claim. 3 and 4 are not errors and still filed nothing -- holding a
+  # claim for them would mean the first page after the key is configured never
+  # goes out.
   if [ -n "$FOUNDER_NEW" ]; then
-    bash "$NOTIFY" "kipi worker: $FOUNDER_ROUTED issue(s) are labelled owner:assaf, which is an error path now, not a queue (${FOUNDER_IDS:-unknown}). New since the last page:${FOUNDER_NEW}. Do: find what routed them there and re-label to owner:sana or needs-scope." 2>/dev/null || true
+    NRC=0
+    bash "$NOTIFY" "kipi worker: $FOUNDER_ROUTED issue(s) are labelled owner:assaf, which is an error path now, not a queue (${FOUNDER_IDS:-unknown}). New since the last page:${FOUNDER_NEW}. Do: find what routed them there and re-label to owner:sana or needs-scope." 2>/dev/null || NRC=$?
+    if [ "$NRC" != "0" ]; then
+      say "WARN: the owner:assaf alert did NOT file (notifier exit $NRC). Releasing the announce flag for${FOUNDER_NEW} so the next run tries again."
+      for fid in $FOUNDER_NEW; do
+        crc=0
+        python3 "$LEDGER" "$ATTEMPTS" clear-flag "$fid" founder-routed >/dev/null 2>&1 || crc=$?
+        # THE ONE CASE THAT STAYS BROKEN, SAID OUT LOUD. If the release also fails
+        # the flag is set with nothing filed behind it, which is the bug above. It
+        # cannot be fixed from here -- the ledger is the single writer and going
+        # around it is how two runs corrupt it -- so it is named, with the command
+        # that clears it by hand, instead of leaving one id silently muted.
+        [ "$crc" = "0" ] || say "WARN: could not release the founder-routed flag for $fid (exit $crc) -- that issue will NOT page again until: python3 $LEDGER $ATTEMPTS clear-flag $fid founder-routed"
+      done
+    fi
   fi
 fi
 

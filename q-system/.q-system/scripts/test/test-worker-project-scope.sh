@@ -479,6 +479,69 @@ else
   ok "negative self-test: the widened scope takes unset, not another repo's projects"
 fi
 
+# --- 6f. A FAILED SEND MUST NOT CONSUME THE ANNOUNCEMENT (codex round 3) -----
+# The dedup flag was claimed BEFORE the send and the send's status was discarded
+# by `|| true`. One failed file -- a 20s timeout, a Linear 500, no API key on a
+# fresh machine -- marked the issue announced forever, so the next tick read the
+# flag and stayed quiet. That is the silent founder queue this whole block exists
+# to end, arrived at through the fix for it.
+#
+# Asserted on the page TEXT, not on a line count: other once-only pages may fire
+# in the same run and a count cannot say which alert came back.
+FAILPAGER="$WORK/failing-notify.sh"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\nexit 1\n' "$PAGES" > "$FAILPAGER"
+chmod +x "$FAILPAGER"
+
+F_STATE="$WORK/state-pager-fail"; mkdir -p "$F_STATE"
+f_run() {  # f_run <notifier>
+  env KIPI_SKEL="$SKEL_KIPI" \
+      KIPI_STATE_DIR="$F_STATE" \
+      KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+      KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+      KIPI_NOTIFY="$1" \
+      bash "$WORKER" --limit 99 2>&1
+}
+
+: > "$PAGES"
+F_OUT1="$(f_run "$FAILPAGER")"
+if grep -q "owner:assaf" "$PAGES"; then
+  ok "a failing notifier is still ATTEMPTED for the founder DEFECT"
+else
+  bad "a failing notifier is still ATTEMPTED for the founder DEFECT" \
+      "nothing reached the notifier at all, so 6f below would pass on a dead detector"
+fi
+
+if printf '%s\n' "$F_OUT1" | grep -q "did NOT file"; then
+  ok "the run says out loud that the owner:assaf alert did not file"
+else
+  bad "the run says out loud that the owner:assaf alert did not file" \
+      "the notifier exited 1 and the log is silent about it"
+fi
+
+# THE REPRODUCER. Same state dir, working notifier. Before the fix the flag was
+# already spent and this run said nothing.
+: > "$PAGES"
+f_run "$PAGER" >/dev/null 2>&1
+if grep -q "owner:assaf" "$PAGES"; then
+  ok "REPRODUCER: a founder page whose send FAILED is retried on the next run"
+else
+  bad "REPRODUCER: a founder page whose send FAILED is retried on the next run" \
+      "the first run's failed send consumed the dedup flag, so this issue is muted forever"
+fi
+
+# NEGATIVE SELF-TEST for the reproducer. The retry above must come from the
+# FAILURE, not from a release that fires on every run -- that would be the
+# ~96-pages-a-day repeat 6b closed. Third run, notifier now working and the
+# second run's send succeeded, so this one is silent.
+: > "$PAGES"
+f_run "$PAGER" >/dev/null 2>&1
+if grep -q "owner:assaf" "$PAGES"; then
+  bad "negative self-test: a SUCCESSFUL send still consumes the announcement" \
+      "run 3 paged again, so the flag is being released unconditionally -- back to paging every tick"
+else
+  ok "negative self-test: after a successful send the founder page stays deduplicated"
+fi
+
 # --- case 5: NEGATIVE SELF-TEST ---------------------------------------------
 # Proves this suite can go red. Without it, every assertion above is compatible
 # with a picker that emits nothing at all, or a grep that never matches.
