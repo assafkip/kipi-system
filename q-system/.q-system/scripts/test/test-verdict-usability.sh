@@ -154,14 +154,39 @@ minor|the docstring still names the old flag|walker.py:12
 END FINDINGS
 EOS
 
-run_agent() {   # run_agent <fixture> <pr-number>
+# CLAUDE PHANTOM: the same class on the OTHER engine (ASK-357). `claude -p` does
+# not echo the prompt, so a claude phantom does not look like the codex one -- it
+# is the model's own plan, closed with the template block it was asked to end on
+# and a request for permission to begin. Kept as its own fixture rather than
+# reusing phantom.md: that payload is stamped `OpenAI Codex v0.146.0`, and a
+# claude-engine case driven by a codex-stamped stream is a fixture that tests a
+# shape its producer cannot emit.
+#
+# The EMPTY block is the load-bearing part. An unclosed block would be caught by
+# has_complete_findings_block; this one is complete and empty, which derives
+# APPROVE -- so only the decline-to-start half of review_is_usable can refuse it.
+cat > "$WORK/phantom-claude.md" <<'EOS'
+I'll review PR #4803. Here is my plan:
+
+1. Read the diff and the two scripts it touches.
+2. Reproduce each suspected defect in $TMPDIR.
+3. Report findings with severities and paste the real output.
+
+FINDINGS:
+END FINDINGS
+
+Reply `OK` and I'll execute exactly that plan.
+EOS
+
+run_agent() {   # run_agent <fixture> <pr-number> [extra agent args...]
   local fixture="$1" pr="$2" home="$WORK/home-$2"
+  shift 2
   mkdir -p "$home"
   env HOME="$home" \
       PATH="$BIN:$PATH" \
       REVIEW_FIXTURE="$fixture" \
       KIPI_NOTIFY="/usr/bin/true" \
-      bash "$AGENT" "$pr" --issue "ASK-TEST" >"$WORK/out-$pr.log" 2>&1
+      bash "$AGENT" "$pr" --issue "ASK-TEST" "$@" >"$WORK/out-$pr.log" 2>&1
   echo "$home/.config/kipi/pr-reviews/pr-$pr.verdict.json"
 }
 
@@ -228,6 +253,35 @@ approving "$V2" \
 [ "$U1" != "$U2" ] \
   && ok "the two are separated ONLY by usable ($U1 vs $U2), never by the verdict" \
   || bad "usable1=$U1 usable2=$U2 -- the key does not discriminate, so nothing does"
+
+# --- case 4: the claude-PRIMARY path gates on usability too (ASK-357) --------
+# THE RECORD WAS ALREADY HONEST; THE GATE WAS NOT. `usable` is asked once, on the
+# review file, for all three dispatch paths, so cases 1-3 above pass on the
+# pre-fix agent too. What the pre-fix agent skipped is the CONSUMER of that
+# answer: `REVIEW_UNUSABLE` was only ever set on the codex path and the Opus
+# fallback, so on `--engine claude` a phantom fell through to the derivation, an
+# empty FINDINGS block derived APPROVE, and the run posted state=success.
+#
+# PRIMARY, not advisory. With KIPI_REVIEW_PRIMARY_ENGINE=claude the run owns
+# `kipi/reviewer-approved` -- the REQUIRED context -- which is what makes this a
+# gate defect rather than a cosmetic one. Under the default (codex primary) the
+# same phantom only fills the advisory `kipi/claude-approved` slot.
+#
+# Asserted as two facts, not one: `usable=false` pins that the record still tells
+# the truth, and the non-approving verdict pins that the gate now listens to it.
+# Only the second goes RED on the pre-fix agent, and collapsing them into one
+# assertion would hide which half regressed.
+REC4="$(export KIPI_REVIEW_PRIMARY_ENGINE=claude; run_agent "$WORK/phantom-claude.md" 4803 --engine claude)"
+U4="$(field "$REC4" usable)"
+V4="$(field "$REC4" verdict)"
+if [ "$U4" = "false" ]; then
+  ok "claude-primary: a phantom review records usable=false"
+else
+  bad "claude-primary: a phantom recorded usable=$U4 (want false)"
+fi
+approving "$V4" \
+  && bad "claude-primary: the phantom recorded an APPROVING verdict $V4 -- a review that never ran would set the REQUIRED kipi/reviewer-approved context to success" \
+  || ok "claude-primary: the phantom's verdict ($V4) does not release the PR"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
