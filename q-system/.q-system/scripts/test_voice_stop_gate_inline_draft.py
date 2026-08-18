@@ -149,6 +149,8 @@ HR_REPLY = (
     + ("Force presence and you trade the best hours for the worst ones. " * 4)
     + "\n\n---\n\n"
     "What changed:\n\n- the ending is a statement now\n- the scaffold is gone\n"
+    "\nReady to paste."  # the marker: the REAL missed turn carried this trailer,
+                          # and since round 6 no extraction path runs without one
 )
 
 
@@ -248,6 +250,44 @@ def test_a_slash_date_does_not_disqualify_a_draft():
     """2026/08/18 is a date, not a path (Codex round 5)."""
     g = _gate()
     assert not g._FURNITURE_RE.search("On 2026/08/18 I rebuilt the corpus from scratch")
+
+
+def test_unframed_hr_chat_is_not_a_draft():
+    """Round 6, the design question settled on the reviewer's line: NO
+    extraction path runs without the assistant's explicit handoff marker.
+    An unframed ---divided status message is chat, whatever its shape."""
+    text = ("Status recap after the merge went through fine today.\n\n---\n\n"
+            + "Plain prose about the day that keeps going for long enough to qualify. " * 5
+            + "\n\n---\n\nNext step lands tomorrow.")
+    assert _gate().extract_setoff_draft(text) == ""
+
+
+def test_a_framed_hr_draft_still_extracts_the_longest_segment_only():
+    """The marker admits extraction; multiple qualifying bodies are not
+    concatenated into a mixture -- the longest qualifying segment IS the post
+    (Codex round 6: post + what-changed note scored as one text)."""
+    post = "A real post paragraph that keeps going long enough to clear every floor here. " * 4
+    note = "A shorter qualifying afterthought that is prose too and slips past furniture. " * 2
+    text = f"Here's the post:\n\n---\n\n{post}\n\n---\n\nand also\n\n---\n\n{note}\n\n---\n"
+    draft = _gate().extract_setoff_draft(text)
+    assert "real post paragraph" in draft
+    assert "afterthought" not in draft
+
+
+def test_a_multi_label_domain_is_not_a_path():
+    """www.github.com/user/repo and docs.python.org/3/library are links."""
+    g = _gate()
+    assert not g._FURNITURE_RE.search("see www.github.com/assafkip/kipi-system for the code")
+    assert not g._FURNITURE_RE.search("read docs.python.org/3/library first")
+    assert g._FURNITURE_RE.search("edit q-consult/pipeline/tests before running")
+
+
+def test_mentioning_a_platform_is_not_publish_framing():
+    """'posts to reddit' in ordinary prose must not read as a handoff."""
+    g = _gate()
+    assert not g._PUBLISH_MARKER_RE.search(
+        "the pipeline posts to reddit twice a week from the queue")
+    assert g._PUBLISH_MARKER_RE.search("Here's the LinkedIn post you asked for:")
 
 
 if __name__ == "__main__":

@@ -59,8 +59,16 @@ _PUBLISH_MARKER_RE = re.compile(
     r"|\bdraft(ed|ing)?\s+(the|a|your|my|for|below|:)"
     r"|\b" + _NOUN + r"\s+draft\b"
     r"|\bready\s+to\s+(post|send|paste|publish)\b"
+    # A rewrite handoff: "Rewritten without the scaffold:" opened the REAL
+    # 2026-08-18 redraft turn, and the settled require-a-marker line silently
+    # unscored it. Line-start + trailing colon keeps prose mentions
+    # ("the comment was rewritten") out.
+    r"|^\s*(rewritten|revised|redrafted)\b[^\n]{0,60}:\s*$"
     r"|\bcopy[-\s]?paste\b"
-    r"|\b(for|on|to)\s+" + _PLAT + r"\b"          # "for LinkedIn", "to X"
+    # The bare (for|on|to)+platform alternative is GONE (round 6): "posts to
+    # reddit" in ordinary prose read as a handoff, and now that this marker
+    # GATES extraction a false hit opens the sweep. "for LinkedIn:" handoffs
+    # still land via the noun alternatives around it.
     r"|\b" + _PLAT + r"\s+" + _NOUN + r"\b"       # "LinkedIn post", "X reply"
     r")"
 )
@@ -106,22 +114,30 @@ def extract_setoff_draft(text):
     fallback stays refused -- see that function for the measurement that killed
     it.
     """
+    # THE LINE, settled in round 6 after four majors circled one question:
+    # nothing is a draft without the assistant's explicit handoff marker.
+    # Round 5 gated only the inline fallback and called fences "the author's
+    # own set-off"; the reviewer showed the neighbouring hole (unframed
+    # ---divided chat) within one round. The marker is the population every
+    # 0-FP measurement was taken on, so it fronts EVERY path now. What this
+    # deliberately gives up: a draft handed over with zero framing language.
+    # The reporter's request-side check cannot make up for it -- that check
+    # admits the turn, and the turn is exactly where unframed chat lives.
+    if not _PUBLISH_MARKER_RE.search(text):
+        return ""
     segments = [body for info, body in _FENCE_RE.findall(text)
                 if info.strip().lower() in _PROSE_FENCE_LANGS]
     segments += _QUOTE_RE.findall(text)
-    segments += _hr_draft_segments(text)
     setoff = "\n\n".join(s.strip() for s in segments if s.strip())
     if setoff:
         return setoff
-    # The inline fallback ONLY behind the publish marker (Codex major, round 5,
-    # measured before fixing): the 0-false-positive result was taken on
-    # publish-FRAMED messages -- all 47 real no-set-off drafts carried framing.
-    # Without this gate, a matching founder request turned a 47-word plain-chat
-    # reply into "his draft" and scored it. Fenced and hr paths stay ungated:
-    # a fence IS the author's own set-off.
-    if _PUBLISH_MARKER_RE.search(text):
-        return extract_inline_draft(text)
-    return ""
+    # hr fences: the LONGEST qualifying segment, never a concatenation -- a
+    # post plus its qualifying what-changed note is two texts, and scoring
+    # their join reports a number about a mixture (Codex round 6).
+    hr = _hr_draft_segments(text)
+    if hr:
+        return max(hr, key=lambda b: len(b.split()))
+    return extract_inline_draft(text)
 
 
 _HR_RE = re.compile(r"(?m)^\s*-{3,}\s*$")
@@ -202,7 +218,10 @@ _FURNITURE_RE = re.compile(
     # Anchored to TOKEN START ((?:^|(?<=\s))): without it the engine restarts
     # one character into the token and matches ".com/user/repo" past the guard.
     # (?!\d+/\d+/\d+(?:$|\s)) -- 2026/08/18 is a date, not a path (round 5).
-    r"|(?:^|(?<=\s))(?![\w-]+\.[A-Za-z]{2,}/)(?!\d+/\d+/\d+(?:$|\s))[^\s/]+(?:/[^\s/]+){2,}"
+    # (?:\.[\w-]+)+ -- ANY dotted first segment is domain-shaped, including
+    # multi-label hosts (www.github.com, docs.python.org). A dot-FIRST segment
+    # (.claude/) is not: the lookahead needs a word char before the first dot.
+    r"|(?:^|(?<=\s))(?![\w-]+(?:\.[\w-]+)+/)(?!\d+/\d+/\d+(?:$|\s))[^\s/]+(?:/[^\s/]+){2,}"
     r"|\w+\.(py|sh|json|md|jsonl|yml|yaml|txt)\b"   # a filename
     r")", re.MULTILINE)
 

@@ -81,13 +81,8 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup|resume|clear|compact",
+        "matcher": "startup",
         "hooks": [
-          {
-            "type": "command",
-            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\" --drain-only; fi",
-            "timeout": 15
-          },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/git-health-check.sh\" 2>/dev/null || true",
@@ -137,6 +132,16 @@
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/sycophancy-monthly-check.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/sycophancy-monthly-check.py\" 2>/dev/null || true",
             "timeout": 35
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\" --drain-only; fi",
+            "timeout": 15
           }
         ]
       }
