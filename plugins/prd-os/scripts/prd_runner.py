@@ -1398,14 +1398,16 @@ def _linear_api_key() -> str:
         return env
     path = Path(os.path.expanduser("~/.config/kipi/linear-api-key"))
     if not path.is_file():
-        raise LinearRefError(
+        # Unreachable, not still-open: with no key the tracker was never ASKED,
+        # so the promoted audit must file this UNVERIFIABLE (Codex, PR #213 r2).
+        raise LinearUnreachableError(
             "closure cannot be verified: no Linear API key. Create one at "
             "https://linear.app/settings/api then:\n"
             f"  umask 077 && printf '%s' '<key>' > {path}\n"
             "or export KIPI_LINEAR_API_KEY. An unverified reference is never recorded")
     key = path.read_text().strip()
     if not key:
-        raise LinearRefError(f"closure cannot be verified: {path} is empty")
+        raise LinearUnreachableError(f"closure cannot be verified: {path} is empty")
     return key
 
 
@@ -1451,7 +1453,9 @@ def _linear_issue_state(identifier: str) -> dict:
     # failures, so a status-code-only check would read a failed lookup as a
     # verified one -- the exact shape of bug this command exists to prevent.
     if payload.get("errors"):
-        raise LinearRefError(
+        # An application-level rejection (bad auth scope, malformed query) is a
+        # failed READ, not an answer about the issue's state (Codex, PR #213 r2).
+        raise LinearUnreachableError(
             f"Linear rejected the lookup for {identifier}: {json.dumps(payload['errors'])[:200]}")
     issue = (payload.get("data") or {}).get("issue")
     if not isinstance(issue, dict) or not isinstance(issue.get("state"), dict):
@@ -1520,20 +1524,28 @@ def _git(repo_root, *args):
 def _integration_branch(repo_root) -> str:
     """The branch a commit must be merged into to count as shipped.
 
-    Local `main`, then local `master`, then whatever origin/HEAD points at.
+    Origin's view first, the local branch only when no origin exists. Local
+    `main` can hold commits origin has never seen, so "ancestor of local main"
+    certifies work as shipped from an unpushed checkout -- the exact laundering
+    Codex named on PR #213 round 2. The remote-tracking ref is what this
+    machine last SAW of the shared branch; it can be stale, never fabricated.
     NEVER a fallback to HEAD: HEAD is the branch you are standing on, so
     "ancestor of HEAD" is satisfied by the commit you just made on your own
     unmerged feature branch -- which is the hand-clear this whole verb exists
-    to refuse. A repo with none of those refuses rather than guessing.
+    to refuse. A repo with none of these refuses rather than guessing.
     """
+    probe = _git(repo_root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    ref = probe.stdout.strip()
+    if probe.returncode == 0 and ref:
+        return ref.removeprefix("refs/remotes/")
+    for name in ("origin/main", "origin/master"):
+        probe = _git(repo_root, "rev-parse", "--verify", "--quiet", f"refs/remotes/{name}")
+        if probe.returncode == 0 and probe.stdout.strip():
+            return name
     for name in ("main", "master"):
         probe = _git(repo_root, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}")
         if probe.returncode == 0 and probe.stdout.strip():
             return name
-    probe = _git(repo_root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
-    ref = probe.stdout.strip()
-    if probe.returncode == 0 and ref:
-        return ref
     raise CommitRefError(
         "no integration branch to measure against: this repo has no local "
         "main/master and no origin/HEAD. A commit cannot be shown merged, so "
@@ -1600,6 +1612,19 @@ def _verify_resolution_proof(cfg: Config, item_id: str, command: str,
     would then be refused for the wrong reason, or worse, a nearby variant would
     pass for the wrong reason. The resolved record carries the worktree's own
     resolved HEAD so the next reader can see WHERE each half ran.
+
+    ## Honest boundary (what this exit does NOT catch)
+
+    The COMMAND is chosen by the operator, and no code can verify it is
+    semantically ABOUT the item: `grep -q 'IS FIXED' {tree}/README` flips
+    across any commit that edited that file, item or no item. What the exit
+    guarantees is narrower and stated exactly: the flip crosses this repo's
+    MERGED history (both shas ancestry-checked against the integration
+    branch), and the record binds command + both shas + the item id, so a
+    later reader can re-run it and judge the relevance themselves. Closing
+    the semantic half would need a machine-readable link from a free-text
+    ledger item to code, which does not exist; captured as an open spillover
+    item rather than papered over (Codex, PR #213 rounds 1-2).
     """
     root = Path(cfg.repo_root).resolve()
     probe = _git(root, "rev-parse", "--verify", "--quiet", f"{broken_at}^{{commit}}")
@@ -1623,6 +1648,12 @@ def _verify_resolution_proof(cfg: Config, item_id: str, command: str,
             f"--broken-at {before_sha[:9]} is not an ancestor of '{branch}'. "
             "The flip must cross this repo's real history; a commit outside it "
             "demonstrates nothing about when this item was broken.")
+    if _git(root, "merge-base", "--is-ancestor", head_sha, branch).returncode != 0:
+        raise CommitRefError(
+            f"HEAD {head_sha[:9]} is not an ancestor of '{branch}': the fix "
+            "being demonstrated has not merged. A proof run from an unpushed "
+            "checkout would record local work as shipped (Codex, PR #213 r2). "
+            "Merge first, then resolve.")
 
     if "{tree}" not in command:
         raise CommitRefError(

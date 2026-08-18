@@ -243,3 +243,24 @@ def test_the_proof_record_names_the_item_it_was_run_for(repo):
     cfg, root, before = repo
     ev = prd_runner._verify_resolution_proof(cfg, "sp-stuck", GOOD, before)
     assert ev["resolution_proof_item"] == "sp-stuck"
+
+
+def test_an_unpushed_local_fix_cannot_be_recorded_as_shipped(repo):
+    """When an origin exists, the proof measures against ORIGIN's view.
+
+    Local main here is one commit ahead of the simulated origin/main (which
+    sits at the pre-fix commit). Certifying that unpushed HEAD as shipped is
+    the laundering Codex named on PR #213 round 2.
+    """
+    cfg, root, before = repo
+    _git(root, "update-ref", "refs/remotes/origin/main", before)
+    with pytest.raises(prd_runner.CommitRefError, match="has not merged"):
+        prd_runner._verify_resolution_proof(cfg, "sp-stuck", GOOD, before)
+
+
+def test_a_missing_api_key_is_unreachable_not_still_open(monkeypatch):
+    """Auth absence means the tracker was never ASKED (Codex PR #213 r2)."""
+    monkeypatch.delenv("KIPI_LINEAR_API_KEY", raising=False)
+    monkeypatch.setattr(prd_runner.Path, "is_file", lambda self: False)
+    with pytest.raises(prd_runner.LinearUnreachableError):
+        prd_runner._linear_api_key()
