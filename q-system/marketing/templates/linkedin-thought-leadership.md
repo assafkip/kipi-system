@@ -22,7 +22,7 @@
 
 **Body (3-5 short paragraphs):**
 - Develop the point with specifics
-- Use contrast patterns ("X isn't Y. It's Z.")
+- Sharp contrast where the material earns it -- stated directly, not the "X isn't Y. It's Z." reveal scaffold (measured rare in his writing: 1/72 single-use, never stacked; stacking reads as AI)
 - Include at least one real example or named experience
 - Short paragraphs (1-3 sentences each)
 
