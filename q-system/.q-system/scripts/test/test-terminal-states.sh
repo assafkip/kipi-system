@@ -863,13 +863,24 @@ mkfixture "$FIX/dpmut.json" 'source("kipi-dispatch")["path"] = "'"$DPMUT"'"'
 expect_red "REPRODUCER: a dead end added to kipi-dispatch.sh is CAUGHT as UNREGISTERED" \
   "$FIX/dpmut.json" "UNREGISTERED EXIT"
 
-# --- 6d. dropping a whole source must not read as clean ----------------------
-# The v1 hole itself: walk one driver, report green. Deleting a source now
-# orphans its rows loudly instead of quietly shrinking what is checked.
+# --- 6d. a row pointing at a source nothing declares -------------------------
+# The ROW-level half of the coverage question. This used to be exercised by
+# deleting converge + kipi-dispatch and leaving their rows behind, but the
+# coverage floor (14b) now refuses that input earlier and for a stronger reason,
+# so the old fixture could no longer reach this check -- it went red on the
+# floor's message and asserted nothing of its own. A test that passes for another
+# check's reason is not a test.
+#
+# Rebuilt on a source id the floor does not pin, so the two stay independent: the
+# floor owns "a required driver went missing", this owns "a row belongs to no
+# declared driver at all".
 mkfixture "$FIX/onesource.json" '
-d["sources"] = [s for s in d["sources"] if s["id"] == "linear-worker"]
+row = dict(state("owner-assaf"))
+row["id"] = "orphan-row-fixture"
+row["source"] = "no-such-driver"
+d["states"].append(row)
 '
-expect_red "dropping converge/dispatch from the sources list is refused, not silently narrower" \
+expect_red "a row naming a source nothing declares is refused, not silently unwalked" \
   "$FIX/onesource.json" "is not a declared source id"
 
 # --- 7. a line number is refused as identity (finding-15) --------------------

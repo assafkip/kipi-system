@@ -81,6 +81,13 @@ BOARD = [
     issue("ASK-903", "kipi-system", ["owner:sana", "needs-scope"]),
     # pre-existing rules, kept as regression guards
     issue("ASK-904", "kipi-system", ["owner:assaf", "owner:sana"]),
+    # codex PR #215, minor: founder-routed with NO project set. `in_this_repo`
+    # calls unset "not this repo", which is correct for deciding what to WORK and
+    # wrong for deciding what to REPORT -- no repo's worker claims it, so under
+    # the narrow scope every worker in the fleet stays silent and the issue is
+    # invisible everywhere. That is the refilling-queue-looks-like-an-empty-board
+    # failure the reversal exists to close, so it must appear on the DEFECT line.
+    issue("ASK-912", None, ["owner:assaf"]),
     issue("ASK-905", "kipi-system", ["owner:sana"], dor=False),
     # ASK-841: the HELD counts. held_with() selected on label + project and never
     # looked at state, so a finished issue that still carries its refusal label was
@@ -387,6 +394,90 @@ case "${UNREACH_N:-none}" in
             "no UNREACHABLE line at all: $(printf '%s' "$OUT_ALERT" | tr '\n' '|' | cut -c1-300)" ;;
   *)    bad "alert tickets leave the UNREACHABLE bucket" "count reads '$UNREACH_N', expected 2" ;;
 esac
+
+# --- case 6: the founder DEFECT page (codex PR #215, major + minor) ---------
+# Everything above reads the worker's STDOUT. The page is a different channel and
+# has its own failure mode, so it needs its own stub: /usr/bin/true swallows the
+# call and proves only that it did not crash. This records every page to a file,
+# one line per invocation, so "how many times" becomes an assertion instead of an
+# assumption.
+PAGES="$WORK/pages.log"
+PAGER="$WORK/recording-notify.sh"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$PAGES" > "$PAGER"
+chmod +x "$PAGER"
+
+# A state dir of its OWN. The dedup lives in the attempts ledger under
+# KIPI_STATE_DIR, and every run above shares one -- reusing it would mean run 1
+# here is not actually the first claim, and the test would pass on leftovers.
+: > "$PAGES"
+P_STATE="$WORK/state-pager"; mkdir -p "$P_STATE"
+p_run() {
+  env KIPI_SKEL="$SKEL_KIPI" \
+      KIPI_STATE_DIR="$P_STATE" \
+      KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+      KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+      KIPI_NOTIFY="$PAGER" \
+      bash "$WORKER" --limit 99 2>&1
+}
+
+P_OUT1="$(p_run)"; P1="$(wc -l < "$PAGES" | tr -d ' ')"
+P_OUT2="$(p_run)"; P2="$(wc -l < "$PAGES" | tr -d ' ')"
+
+# 6a. It must page AT ALL on the first run. Asserted before the dedup, because a
+# worker that never pages satisfies "does not repeat" perfectly.
+if [ "$P1" -ge 1 ]; then
+  ok "the founder DEFECT pages on the first run ($P1 page(s))"
+else
+  bad "the founder DEFECT pages on the first run" "no page recorded at $PAGES"
+fi
+
+# 6b. THE REPRODUCER. The worker ticks every 15 minutes and this alert asks for a
+# human relabel, so an unguarded page repeats ~96x/day until he acts -- cry-wolf
+# by construction, and a muted channel is the silent board this reversal exists
+# to kill, wearing a different coat.
+if [ "$P2" = "$P1" ]; then
+  ok "REPRODUCER: a second run with the SAME founder queue pages 0 more times (still $P2)"
+else
+  bad "REPRODUCER: the founder DEFECT page is deduplicated across runs" \
+      "run 1 left $P1 page(s), run 2 left $P2 -- it repeats every tick"
+fi
+
+# 6c. NEGATIVE SELF-TEST for 6b. A dedup keyed on a state dir is indistinguishable
+# from a worker that stopped paging entirely, or from a fixture board that lost
+# its owner:assaf issues. A FRESH state dir must page again -- that is the same
+# input with only the memory removed, so it isolates the dedup from the detector.
+: > "$PAGES"
+env KIPI_SKEL="$SKEL_KIPI" KIPI_STATE_DIR="$WORK/state-pager-fresh" \
+    KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+    KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+    KIPI_NOTIFY="$PAGER" bash "$WORKER" --limit 99 >/dev/null 2>&1
+if [ "$(wc -l < "$PAGES" | tr -d ' ')" -ge 1 ]; then
+  ok "negative self-test: a fresh state dir pages again -- 6b is the dedup, not a dead detector"
+else
+  bad "negative self-test: a fresh state dir pages again" \
+      "still silent with no ledger, so the 'no repeat' in 6b proves nothing"
+fi
+
+# 6d. THE UNSET-PROJECT POPULATION (codex minor). ASK-912 carries owner:assaf with
+# no project. Under `in_this_repo` it is neither this repo nor anyone else's, so
+# every worker in the fleet stayed silent about it.
+if printf '%s\n' "$P_OUT1" | grep "DEFECT: owner:assaf" | grep -q "ASK-912"; then
+  ok "the DEFECT line names the unset-project founder issue (ASK-912)"
+else
+  bad "the DEFECT line names the unset-project founder issue (ASK-912)" \
+      "$(printf '%s\n' "$P_OUT1" | grep 'DEFECT: owner:assaf' | head -1)"
+fi
+
+# 6e. NEGATIVE SELF-TEST for 6d: widening the scope must not swallow ANOTHER
+# repo's issues. ASK-901 sits in the `accountant` project; if the widened scope
+# reported it, every worker in the fleet would page about every other repo's
+# founder queue, which is the same cry-wolf failure 6b just fixed.
+if printf '%s\n' "$P_OUT1" | grep "DEFECT: owner:assaf" | grep -q "ASK-901"; then
+  bad "negative self-test: the widened scope excludes OTHER repos' projects" \
+      "the DEFECT line names ASK-901 (project=accountant) -- unset was widened to everything"
+else
+  ok "negative self-test: the widened scope takes unset, not another repo's projects"
+fi
 
 # --- case 5: NEGATIVE SELF-TEST ---------------------------------------------
 # Proves this suite can go red. Without it, every assertion above is compatible
