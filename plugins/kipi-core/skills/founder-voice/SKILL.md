@@ -37,7 +37,7 @@ If these files are empty/template, the voice skill cannot run. Ask the founder t
 
 ### 5. The Contrast Pattern
 - Sharp contrasts, not gradients -- but state the thing directly; do not lead with what it is not.
-- The "X isn't Y. It's Z." reveal scaffold is OCCASIONAL in his writing (measured: 5 of 72 posts -- four once, one twice) but an AI tell at density. At most one per draft, never stacked. "X does A. It doesn't do B." same rule.
+- The "X isn't Y. It's Z." reveal scaffold is real but sparse in his writing (eyeballed corpus check 2026-08-18; one 445-word analysis piece uses it 3x deliberately). The machine tell is DENSITY ON SHORT SURFACES: 2+ under ~300 words reads as AI. Sparing long-form use is his voice. "X does A. It doesn't do B." same rule.
 
 ### 6. The Question-as-Dagger
 - Questions expose uncomfortable truths, not drive engagement

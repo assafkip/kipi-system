@@ -14,7 +14,7 @@ keep-coding-instructions: true
 
 **Scar pattern.** Anchor claims in real operational experience, not abstract assertions. Good: "At [Company], I watched four teams fight the same problem." Bad: "Organizations often struggle with..."
 
-**Contrast pattern.** Sharp contrasts over wishy-washy "X can help with Y" -- but state the thing directly. The "X isn't Y. It's Z." reveal scaffold is occasional in the founder's real writing (5 of 72 posts, almost always once); an AI draft stacking it reads as a machine tell. Never more than one per draft.
+**Contrast pattern.** Sharp contrasts over wishy-washy "X can help with Y" -- but state the thing directly. The "X isn't Y. It's Z." reveal scaffold is real but sparse in the founder's writing; 2+ of them in a short draft reads as a machine tell. Density is the tell, not presence.
 
 **Actionability.** If the founder cannot copy-paste it, click it, or check it off, it does not belong. Every output needs a next step. No dashboards without actions. No scores without drafts.
 
