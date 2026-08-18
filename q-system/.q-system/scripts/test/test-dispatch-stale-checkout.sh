@@ -556,10 +556,16 @@ if grep -q "^branch_guard() {" "$DISPATCH"; then
   # pre-existing case below drives.
   G_ACTION=""; G_BRANCH=""
   guard() {
+    : > "$BG/pages"
     GH_STUB_PRS="$1" GH_STUB_FAIL="${2:-0}" \
     G_ACTION="$G_ACTION" G_BRANCH="$G_BRANCH" bash -c '
       set -uo pipefail
       say() { printf "SAY %s\n" "$*" >&2; }
+      # The real pair is section 14 above (dedupe, re-ping window, lock reaping).
+      # Here they only RECORD, because what is under test is whether the guard
+      # reaches for them at all -- the defect was that it reached for neither.
+      page_once() { printf "PAGE %s | %s\n" "$1" "$2" >> "'"$BG"'/pages"; }
+      page_clear() { printf "CLEAR %s\n" "$1" >> "'"$BG"'/pages"; }
       NEXT="ASK-352"; TARGET_PATH="'"$WORK"'"
       # The dispatcher initialises all four before any selector runs (:1170) and
       # the guard reads them, so the harness carries the same shape or `set -u`
@@ -639,6 +645,62 @@ if grep -q "^branch_guard() {" "$DISPATCH"; then
   [ "$V" = "VERDICT=RUN" ] \
     && ok "a matching carried branch dispatches -- the board is not asked a second time" \
     || bad "THE DEFECT: the guard re-queried and refused, so the selector's observation is discarded"
+  G_ACTION=""; G_BRANCH=""
+
+  # --- PR #211 round 2, MAJOR 2: a refusal nobody is told about --------------
+  # Every arm above ends in `say`, which appends to dispatch.log and nothing
+  # else. So the guard doing its job looked identical, from outside, to the loop
+  # having nothing to do: the same candidate is refused every 15 minutes, the
+  # issue never moves, and the queue starves behind it with no operator ever
+  # learning why. A branch mismatch needs a HUMAN (rename the branch, or reopen
+  # the PR) -- it is the one refusal here that cannot self-heal, which makes a
+  # log-only refusal an indefinite silent park.
+  #
+  # page_once, not page: this fires on every beat while the condition holds, and
+  # `founder-notifications.md` is explicit that a "still waiting" ping each cycle
+  # is noise rather than a page. The dedupe already exists in this file (section
+  # 14) and is what makes it safe to page from a per-beat code path at all.
+  V="$(guard "$BG/prs-clean.json")"
+  [ "$V" = "VERDICT=REFUSE" ] && grep -q '^PAGE ' "$BG/pages" \
+    && ok "THE REPRODUCER: a branch-mismatch park reaches the operator, not just the log" \
+    || bad "THE DEFECT: the guard refused and paged nobody -- the queue starves in silence"
+  grep -q 'ASK-352' "$BG/pages" && grep -q 'sana/ask-352-clean' "$BG/pages" \
+    && ok "the page names the issue and the branch, so the fix is one line long" \
+    || bad "the page says too little to act on: $(cat "$BG/pages")"
+  [ "$(grep -c '^PAGE ' "$BG/pages")" = "1" ] \
+    && ok "exactly one page per refusal -- the beat does not multiply it" \
+    || bad "one refusal produced $(grep -c '^PAGE ' "$BG/pages") pages"
+
+  # Ambiguity is the other refusal that needs a human, and it was equally silent.
+  V="$(guard "$BG/prs-two.json")"
+  [ "$V" = "VERDICT=REFUSE" ] && grep -q '^PAGE ' "$BG/pages" \
+    && ok "the two-live-branches refusal pages too -- it also cannot self-heal" \
+    || bad "THE DEFECT: an ambiguous park is refused silently forever"
+
+  # THE OTHER HALF, or the dedupe becomes a mute. A key that is paged and never
+  # cleared suppresses the NEXT episode for the whole re-ping window, which is
+  # the guard-that-can-never-fire shape section 14 exists because of.
+  V="$(guard "$BG/prs-match.json")"
+  [ "$V" = "VERDICT=RUN" ] && grep -q '^CLEAR ' "$BG/pages" \
+    && ok "a healthy dispatch CLEARS the key, so a recurrence pages immediately" \
+    || bad "THE DEFECT: recovery left the marker set -- the next park is swallowed"
+  grep -q '^PAGE ' "$BG/pages" \
+    && bad "THE DEFECT: a dispatch that RAN paged the founder anyway" \
+    || ok "a healthy dispatch pages nobody"
+
+  # Fail-open arms are not parks. gh being unable to answer runs the dispatch, so
+  # there is no stall to report and a page there is pure noise on an outage.
+  V="$(guard "$BG/prs-clean.json" 1)"
+  grep -q '^PAGE ' "$BG/pages" \
+    && bad "THE DEFECT: a gh outage paged the founder about a park that did not happen" \
+    || ok "the fail-open arm pages nobody -- an outage is not a mismatch"
+
+  # And the re-review exemption, which returns 0 without ever being a refusal.
+  G_ACTION="re-review"; G_BRANCH="sana/ask-352-clean"
+  V="$(guard "$BG/prs-clean.json")"
+  grep -q '^PAGE ' "$BG/pages" \
+    && bad "THE DEFECT: an exempted re-review paged as though it were parked" \
+    || ok "an exempted re-review pages nobody"
   G_ACTION=""; G_BRANCH=""
 fi
 unset KIPI_GH
