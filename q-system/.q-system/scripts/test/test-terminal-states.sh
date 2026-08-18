@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # NEVER LET THIS TEST REACH THE FOUNDER PHONE (ASK-729).
 #
-# This file passes $SRC (linear-worker.sh) to validate.py and to python mutation
-# helpers as a FILE ARGUMENT; it never executes the worker, so today nothing here
-# can page. That is a property of the current code, not a guarantee about the next
-# edit: the worker is pager-capable, and the moment any assertion here decides to
-# RUN it, an unstubbed run rings the founder actual phone at whatever hour the
-# suite happens to fire.
+# This file passes driver scripts to validate.py and to python mutation helpers
+# as FILE ARGUMENTS; it never executes them, so today nothing here can page. That
+# is a property of the current code, not a guarantee about the next edit: the
+# worker and the dispatcher are both pager-capable, and the moment any assertion
+# here decides to RUN one, an unstubbed run rings the founder actual phone at
+# whatever hour the suite happens to fire.
 #
 # So the seam is stubbed once, up front, for the whole file rather than argued
-# about per call site. The fable-discipline lint also reads $SRC being handed to
-# python3 as "this test drives the runner" and blocks on it; this export answers
-# that honestly instead of bypassing the gate with a skip marker, which would
-# switch the check off for every future edit to this file too.
+# about per call site. The fable-discipline lint also reads a driver path being
+# handed to python3 as "this test drives the runner" and blocks on it; this export
+# answers that honestly instead of bypassing the gate with a skip marker, which
+# would switch the check off for every future edit to this file too.
 export KIPI_NOTIFY=/usr/bin/true
 
 # test-terminal-states.sh -- the gate that stops a tenth dead end shipping.
@@ -20,15 +20,20 @@ export KIPI_NOTIFY=/usr/bin/true
 # Pairs with q-system/.q-system/terminal-states.json (Piece B,
 # prd-terminal-state-redrive-2026-08-01, issue terminal-states-validator).
 #
-# WHY THIS EXISTS. The Linear loop has ~9 abnormal exits. As of 2026-08-01
-# exactly one has a working machine consumer. Every other exit either pages the
-# founder or routes to nobody, and the founder does not read or work on code --
-# so those are permanent parking lots. A hand-maintained registry was the v1
-# design and was rejected (finding-4): it cannot detect an exit someone adds
+# WHY THIS EXISTS. The Linear loop has abnormal exits in THREE drivers. As of
+# 2026-08-01 exactly one had a working machine consumer. Every other exit either
+# pages the founder or routes to nobody, and the founder does not read or work on
+# code -- so those are permanent parking lots. A hand-maintained registry was the
+# v1 design and was rejected (finding-4): it cannot detect an exit someone adds
 # later. So the exits are enumerated FROM SOURCE at runtime and the registry is
 # only allowed to explain them.
 #
-# THREE THINGS IT REFUSES TO CERTIFY:
+# THREE DRIVERS, NOT ONE (ASK-353). v1 declared a single `source`,
+# linear-worker.sh, and reported green while converge.sh and kipi-dispatch.sh
+# dead-ended freely. `sources` is now a list, each entry declaring which
+# enumerator SHAPES apply to it, and every row names the source it belongs to.
+#
+# FOUR THINGS IT REFUSES TO CERTIFY:
 #   1. An exit with no registry row (finding-4). Including one added directly
 #      beneath an existing marker -- see the `sites` count below.
 #   2. A consumer proven only by a file on disk (finding-14). A plist can exist
@@ -37,6 +42,13 @@ export KIPI_NOTIFY=/usr/bin/true
 #      inside the interval.
 #   3. A row whose only actor is the founder. He is not an available actor;
 #      naming him is how a dead end gets dressed as a consumer.
+#   4. A consumer whose named job contains no selector for this state (ASK-353).
+#      A liveness_check proves a job RAN, never that it re-enters HERE. That gap
+#      is the validator-satisfying fiction the archived PRD named: ci-redrive.py
+#      excluded the reviewer slots on the strength of a comment claiming
+#      "it is also already handled", and nothing handled it, for 29 hours
+#      (ASK-352). So `reentry` names a file and a literal marker, and this
+#      script opens the file and looks for it.
 #
 # ROWS KEY ON STABLE MARKERS, NEVER LINE NUMBERS (finding-15). The evidence is
 # this PRD's own v1: it cited :1297 (which resets variables) and :1295 (a
@@ -68,9 +80,13 @@ bad()  { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
 # in that file twice.
 cat > "$WORK/validate.py" <<'PYEOF'
 #!/usr/bin/env python3
-"""Validate terminal-states.json against linear-worker.sh, enumerating from source.
+"""Validate terminal-states.json against every declared driver, from source.
 
-argv: <registry.json> <linear-worker.sh> <capability-manifest.json>
+argv: <registry.json> <repo-root> <capability-manifest.json>
+
+Each registry source declares a repo-relative `path` (an ABSOLUTE path is honored
+as-is, which is how the fixtures below point a source at a mutated copy) and the
+enumerator `shapes` that apply to it.
 
 Env seams (fixtures only; unset in real runs so the live system is what is read):
   TERMINAL_STATES_LAUNCHCTL    launchd control binary (default: launchctl)  # portability-lint-skip
@@ -87,6 +103,22 @@ HUMAN_ACTOR = re.compile(
 # finding-15: identity is a stable marker. These shapes are line numbers.
 LINE_NUMBERISH = re.compile(r"^\s*:?\d+\s*$|\.sh:\d+")
 
+# REVERSED 2026-08-03 BY FOUNDER DIRECTIVE ("nothing should be on me"), ASK-353.
+# owner:assaf was a DESIGNED founder queue in the archived PRD and is now an
+# error path. A registry that still calls it terminal would keep certifying the
+# routing as intended, so the shape is refused here rather than left to review.
+FOUNDER_QUEUE = "owner:assaf"
+
+KNOWN_SHAPES = ("issue-loop-continue", "ready-return", "label-apply", "toplevel-exit")
+
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+# `exit` in COMMAND POSITION only. Without the position anchor every `say "STOP
+# exit-7: ..."` line in converge.sh reads as an exit site, and there are nine of
+# those; the negative lookahead drops `exit-7` itself.
+EXIT_CMD = re.compile(r"""(?:^|[;&|{(]|\b(?:then|else|do)\b)\s*exit\b(?!-)""")
+FUNC_OPEN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\(\)\s*\{\s*$")
+FUNC_CLOSE = re.compile(r"^\}\s*$")
+
 
 def read_lines(path):
     with open(path, encoding="utf-8") as fh:
@@ -98,18 +130,69 @@ def is_comment(line):
     return s.startswith("#") or not s
 
 
-def enumerate_sites(lines):
-    """Every source site that removes an issue from the run, found at runtime.
+def mask_heredocs(lines):
+    """Heredoc BODIES replaced by None so their contents are never parsed.
 
-    Three kinds, exactly as the issue spec names them:
-      continue      each `continue` inside the issue loop
-      ready-return  each `return` inside the ready() exclusion predicate
-      label-apply   each REFUSE_LABEL assignment (the durable-queue labels)
-    Returns [(1-based line, kind, text)].
+    kipi-dispatch.sh embeds python that contains `sys.exit(0)`, and converge.sh
+    embeds python too. Reading a heredoc body as shell is how a parser invents an
+    exit that no shell branch can reach.
     """
-    sites = []
+    out, delim = [], None
+    for ln in lines:
+        if delim is not None:
+            out.append(None)
+            if ln.strip() == delim:
+                delim = None
+            continue
+        out.append(ln)
+        if not ln.lstrip().startswith("#"):
+            m = HEREDOC.search(ln)
+            if m:
+                delim = m.group(2)
+    return out
 
-    # -- the issue loop ------------------------------------------------------
+
+def sites_toplevel_exit(lines):
+    """Every top-level `exit` in a single-run driver.
+
+    converge.sh drives ONE issue and kipi-dispatch.sh drives ONE cycle, so an
+    exit outside a function body ends that run -- the same meaning `continue` has
+    inside the worker's issue loop. Function bodies are excluded because an exit
+    there is reached through a call site that is itself top-level, and counting
+    both would double-count one dead end.
+
+    The function test is deliberately shape-based (`name() {` at column 0, closed
+    by `}` at column 0) rather than brace-counting: brace counting in bash is
+    wrong the moment a string or a case arm contains one, and both files hold to
+    the column-0 convention. The parser asserts that it ends OUTSIDE a function,
+    so a file that breaks the convention fails loudly instead of silently
+    swallowing every exit after the first ragged definition.
+    """
+    masked = mask_heredocs(lines)
+    sites, infn, opened_at = [], False, 0
+    for i, ln in enumerate(masked):
+        if ln is None:
+            continue
+        if not infn and FUNC_OPEN.match(ln):
+            infn, opened_at = True, i + 1
+            continue
+        if infn and FUNC_CLOSE.match(ln):
+            infn = False
+            continue
+        if infn or is_comment(ln):
+            continue
+        if EXIT_CMD.search(ln):
+            sites.append((i + 1, "toplevel-exit", ln.strip()))
+    if infn:
+        raise SystemExit(
+            "ENUMERATION FAILED: reached end of file still inside the function "
+            "opened at line %d. The column-0 `name() {` / `}` convention this "
+            "parser depends on is broken, so every exit below that point would "
+            "be invisible." % opened_at)
+    return sites
+
+
+def sites_issue_loop_continue(lines):
     start = end = None
     for i, ln in enumerate(lines):
         if start is None and re.search(r"while\s+IFS=\s*read\s+-r\s+ISSUE\s*;\s*do", ln):
@@ -122,13 +205,16 @@ def enumerate_sites(lines):
                          "loop in the source. The parser is looking at the wrong shape.")
     if end is None:
         end = len(lines)
+    out = []
     for i in range(start + 1, end):
         if is_comment(lines[i]):
             continue
         if re.search(r"\bcontinue\b", lines[i]):
-            sites.append((i + 1, "continue", lines[i].strip()))
+            out.append((i + 1, "continue", lines[i].strip()))
+    return out
 
-    # -- ready() exclusion predicates ----------------------------------------
+
+def sites_ready_return(lines):
     rstart = None
     for i, ln in enumerate(lines):
         if re.match(r"^def ready\(i\):", ln):
@@ -136,6 +222,7 @@ def enumerate_sites(lines):
             break
     if rstart is None:
         raise SystemExit("ENUMERATION FAILED: no `def ready(i):` predicate in the source.")
+    out = []
     for i in range(rstart + 1, len(lines)):
         ln = lines[i]
         if ln.strip() and not ln.startswith((" ", "\t")):
@@ -143,9 +230,12 @@ def enumerate_sites(lines):
         if is_comment(ln):
             continue
         if re.search(r"\breturn\b", ln):
-            sites.append((i + 1, "ready-return", ln.strip()))
+            out.append((i + 1, "ready-return", ln.strip()))
+    return out
 
-    # -- label applies -------------------------------------------------------
+
+def sites_label_apply(lines):
+    out = []
     for i, ln in enumerate(lines):
         if is_comment(ln):
             continue
@@ -155,8 +245,22 @@ def enumerate_sites(lines):
         # variables", finding-15). This validator reported it as an unregistered
         # exit on its first run, which is the same mistake from the other side.
         if re.search(r'REFUSE_LABEL="[^"]+"', ln):
-            sites.append((i + 1, "label-apply", ln.strip()))
+            out.append((i + 1, "label-apply", ln.strip()))
+    return out
 
+
+SHAPE_FN = {
+    "issue-loop-continue": sites_issue_loop_continue,
+    "ready-return": sites_ready_return,
+    "label-apply": sites_label_apply,
+    "toplevel-exit": sites_toplevel_exit,
+}
+
+
+def enumerate_sites(lines, shapes):
+    sites = []
+    for shape in shapes:
+        sites.extend(SHAPE_FN[shape](lines))
     return sorted(sites)
 
 
@@ -171,7 +275,7 @@ def match_site(site_line, lines, rows):
     best, best_at, tie = None, -1, False
     seen = 0
     for idx in range(site_line - 1, -1, -1):
-        if is_comment(lines[idx]):
+        if lines[idx] is None or is_comment(lines[idx]):
             continue
         seen += 1
         if seen > BLOCK_LOOKBACK:
@@ -246,11 +350,41 @@ def check_liveness(lc, errors, row_id):
                       "that stopped running is a dead consumer")
 
 
+def check_pointer(row_id, field, ptr, root, errors):
+    """A {path, marker} pointer must resolve to a file that CONTAINS the marker.
+
+    This is the anti-fiction check (ASK-353). `consumer` is prose and prose is
+    what lied for 29 hours; this makes the claim executable. Absence of the
+    marker means either the selector was never written or it moved, and both
+    answers are "you cannot certify this row today".
+    """
+    if not isinstance(ptr, dict):
+        errors.append(f"{row_id}: {field} must be an object with `path` and `marker`")
+        return
+    path, marker = ptr.get("path"), ptr.get("marker")
+    if not isinstance(path, str) or not path or not isinstance(marker, str) or not marker:
+        errors.append(f"{row_id}: {field} needs a non-empty `path` and `marker`")
+        return
+    if LINE_NUMBERISH.search(marker):
+        errors.append(f"{row_id}: {field} marker {marker!r} is a LINE NUMBER (finding-15)")
+        return
+    full = path if os.path.isabs(path) else os.path.join(root, path)
+    if not os.path.isfile(full):
+        errors.append(f"{row_id}: {field} names {path}, which does not exist. A pointer "
+                      "at a missing file proves nothing.")
+        return
+    with open(full, encoding="utf-8", errors="replace") as fh:
+        if marker not in fh.read():
+            errors.append(
+                f"{row_id}: {field} claims {path} contains {marker[:60]!r} and it does "
+                "NOT. That is a claim with no code behind it -- the exact shape of "
+                "ci-redrive.py's false 'it is also already handled' comment (ASK-352).")
+
+
 def main():
-    reg_path, src_path, man_path = sys.argv[1], sys.argv[2], sys.argv[3]
+    reg_path, root, man_path = sys.argv[1], sys.argv[2], sys.argv[3]
     with open(reg_path, encoding="utf-8") as fh:
         registry = json.load(fh)
-    lines = read_lines(src_path)
     rows = registry.get("states", [])
     errors = []
 
@@ -259,13 +393,41 @@ def main():
         with open(man_path, encoding="utf-8") as fh:
             declared_tests = {e.get("path") for e in json.load(fh).get("expected_tests", [])}
 
+    # -- sources --------------------------------------------------------------
+    sources = registry.get("sources")
+    if not isinstance(sources, list) or not sources:
+        raise SystemExit("REGISTRY FAILED: `sources` must be a non-empty list. A single "
+                         "`source` is the v1 shape that walked one of three drivers "
+                         "and reported green (ASK-353).")
+    src_lines, src_shapes = {}, {}
+    for src in sources:
+        sid, path = src.get("id"), src.get("path")
+        shapes = src.get("shapes")
+        if not sid or not path or not isinstance(shapes, list) or not shapes:
+            raise SystemExit(f"REGISTRY FAILED: source {src!r} needs id, path and shapes")
+        for sh in shapes:
+            if sh not in KNOWN_SHAPES:
+                raise SystemExit(f"REGISTRY FAILED: source {sid}: unknown shape {sh!r}")
+        full = path if os.path.isabs(path) else os.path.join(root, path)
+        if not os.path.isfile(full):
+            raise SystemExit(f"REGISTRY FAILED: source {sid} path {path} does not exist")
+        src_lines[sid] = read_lines(full)
+        src_shapes[sid] = shapes
+
     # -- schema ---------------------------------------------------------------
-    seen_ids, seen_markers = set(), {}
+    seen_ids = set()
+    seen_markers = {}          # (source, marker) -> row id; markers are per-source
     for row in rows:
         rid = row.get("id", "<no id>")
         if rid in seen_ids:
             errors.append(f"duplicate row id: {rid}")
         seen_ids.add(rid)
+
+        sid = row.get("source")
+        if sid not in src_lines:
+            errors.append(f"{rid}: `source` {sid!r} is not a declared source id. Every "
+                          "row belongs to exactly one driver.")
+            continue
 
         # `marker` is a string OR a list. A list is not a convenience: one state
         # can reach the source in two SHAPES (a label tested in a predicate, the
@@ -286,9 +448,10 @@ def main():
                               "a stable token (label name, sentinel filename, function "
                               "name) -- line numbers drift on the first nearby edit "
                               "(finding-15)")
-            if m in seen_markers:
-                errors.append(f"{rid}: marker {m!r} is already used by {seen_markers[m]}")
-            seen_markers[m] = rid
+            if (sid, m) in seen_markers:
+                errors.append(f"{rid}: marker {m!r} is already used by "
+                              f"{seen_markers[(sid, m)]} in source {sid}")
+            seen_markers[(sid, m)] = rid
 
         if not isinstance(row.get("sites"), int) or row["sites"] < 1:
             errors.append(f"{rid}: `sites` must be a positive int (it is what makes an "
@@ -296,9 +459,31 @@ def main():
 
         has_consumer = bool(row.get("consumer"))
         is_terminal = row.get("terminal") is True
-        if has_consumer == is_terminal:
-            errors.append(f"{rid}: declare EITHER a consumer + liveness_check OR "
-                          "terminal:true with a rationale, not both and not neither")
+        is_error = row.get("error_path") is True
+        if sum((has_consumer, is_terminal, is_error)) != 1:
+            errors.append(f"{rid}: declare EXACTLY ONE of consumer+liveness_check+reentry, "
+                          "terminal:true+rationale, or error_path:true+error_evidence")
+
+        # THE FOUNDER QUEUE IS AN ERROR PATH NOW (ASK-353, founder directive
+        # 2026-08-03). Refused as a SHAPE rather than by row id, so re-adding the
+        # queue under a new row name does not slip through.
+        if any(FOUNDER_QUEUE in m for m in markers) and not is_error:
+            errors.append(
+                f"{rid}: marker names {FOUNDER_QUEUE} but the row is not error_path:true. "
+                "The founder queue was closed by directive 2026-08-03 (`nothing should be "
+                "on me`); a code path routing work there is a DEFECT that must fail "
+                "loudly, not a terminal state the registry certifies as designed.")
+
+        if is_error:
+            if not row.get("error_evidence"):
+                errors.append(f"{rid}: error_path:true needs error_evidence naming the "
+                              "file and marker where the code says so out loud. Without "
+                              "it this is a label, not an error path.")
+            else:
+                check_pointer(rid, "error_evidence", row["error_evidence"], root, errors)
+            if len((row.get("rationale") or "").strip()) < 40:
+                errors.append(f"{rid}: error_path:true needs a written rationale")
+
         if has_consumer:
             # Type-guard BEFORE the regex. HUMAN_ACTOR.search on a non-string
             # raises an uncaught TypeError that kills the run before a single
@@ -319,55 +504,87 @@ def main():
                               "nothing ran (finding-14)")
             else:
                 check_liveness(row["liveness_check"], errors, rid)
+            # ASK-353: liveness proves the job RAN, never that it re-enters HERE.
+            if not row.get("reentry"):
+                errors.append(f"{rid}: a liveness_check without a `reentry` pointer is "
+                              "not accepted -- it proves the job ran, not that the job "
+                              "ever selects THIS state. Name the consumer file and the "
+                              "literal selector marker inside it.")
+            else:
+                check_pointer(rid, "reentry", row["reentry"], root, errors)
             ct = row.get("consumer_test")
             if ct and ct not in declared_tests:
                 errors.append(f"{rid}: consumer_test {ct} is not in "
                               "capability-manifest.json expected_tests, so nothing "
                               "runs it -- the consumer is never proven to read this state")
-        if is_terminal and len((row.get("rationale") or "").strip()) < 40:
-            errors.append(f"{rid}: terminal:true needs a written rationale. An honest "
-                          "dead end passes; an unexamined one does not")
+        if is_terminal:
+            if len((row.get("rationale") or "").strip()) < 40:
+                errors.append(f"{rid}: terminal:true needs a written rationale. An honest "
+                              "dead end passes; an unexamined one does not")
+            # Optional, but verified when present: a refusal ON EVIDENCE is what
+            # this issue asked each remaining state for, and unverified evidence
+            # is just a longer rationale.
+            if row.get("evidence"):
+                check_pointer(rid, "evidence", row["evidence"], root, errors)
 
-    # -- enumeration ----------------------------------------------------------
-    good_rows = [r for r in rows if r.get("_markers")]
-    sites = enumerate_sites(lines)
+    # -- the founder queue must be registered at all ---------------------------
+    if not any(any(FOUNDER_QUEUE in m for m in r.get("_markers", [])) for r in rows):
+        errors.append(
+            f"no row covers {FOUNDER_QUEUE}. It is an error path, and an error path "
+            "nobody registered is indistinguishable from one nobody has.")
+
+    # -- enumeration, per source ----------------------------------------------
+    good_rows = [r for r in rows if r.get("_markers") and r.get("source") in src_lines]
     observed = {r["id"]: 0 for r in good_rows}
     debug = os.environ.get("TERMINAL_STATES_DEBUG") == "1"
-    for line_no, kind, text in sites:
-        row, tie = match_site(line_no, lines, good_rows)
-        if debug:
-            # The site table. A RED here is usually a marker claiming a site it
-            # does not own, and reading that off the source by hand is the slow
-            # way to find it.
-            print(f"    site {line_no:>5} {kind:<13} -> "
-                  f"{(row or {}).get('id', 'UNMATCHED')}   | {text[:70]}")
-        if row is None:
-            errors.append(
-                f"UNREGISTERED EXIT at {os.path.basename(src_path)}:{line_no} ({kind})\n"
-                f"      {text}\n"
-                "      No registry row's marker appears above it. Add a row to "
-                "terminal-states.json naming a consumer + liveness_check, or "
-                "terminal:true with a rationale.")
-            continue
-        if tie:
-            errors.append(f"AMBIGUOUS EXIT at {os.path.basename(src_path)}:{line_no}: "
-                          "two markers tie for nearest. Make one more specific.")
-            continue
-        observed[row["id"]] += 1
+    total_sites = 0
+    for sid, lines in src_lines.items():
+        rows_here = [r for r in good_rows if r["source"] == sid]
+        if not rows_here:
+            errors.append(f"source {sid} has NO registry rows. A declared driver nobody "
+                          "explained is the v1 hole, not a clean source.")
+        sites = enumerate_sites(lines, src_shapes[sid])
+        total_sites += len(sites)
+        # heredoc bodies are masked for matching too, for the same reason they are
+        # masked for enumeration: a marker found inside embedded python is not the
+        # shell branch that runs.
+        mlines = mask_heredocs(lines) if "toplevel-exit" in src_shapes[sid] else lines
+        for line_no, kind, text in sites:
+            row, tie = match_site(line_no, mlines, rows_here)
+            if debug:
+                # The site table. A RED here is usually a marker claiming a site
+                # it does not own, and reading that off the source by hand is the
+                # slow way to find it.
+                print(f"    [{sid}] site {line_no:>5} {kind:<18} -> "
+                      f"{(row or {}).get('id', 'UNMATCHED')}   | {text[:60]}")
+            if row is None:
+                errors.append(
+                    f"UNREGISTERED EXIT in source {sid} at line {line_no} ({kind})\n"
+                    f"      {text}\n"
+                    "      No registry row's marker appears above it. Add a row to "
+                    "terminal-states.json naming a consumer + liveness_check + reentry, "
+                    "or terminal:true with a rationale.")
+                continue
+            if tie:
+                errors.append(f"AMBIGUOUS EXIT in source {sid} at line {line_no}: "
+                              "two markers tie for nearest. Make one more specific.")
+                continue
+            observed[row["id"]] += 1
 
     for row in good_rows:
         got, want = observed[row["id"]], row.get("sites")
         if isinstance(want, int) and got != want:
             if got == 0:
                 errors.append(f"{row['id']}: marker(s) {row['_markers']!r} match NO "
-                              "exit in the source. Stale row, or the marker moved.")
+                              f"exit in source {row['source']}. Stale row, or the "
+                              "marker moved.")
             else:
                 errors.append(f"{row['id']}: covers {got} exit site(s), registry "
                               f"declares {want}. An exit was added or removed next to "
                               f"marker(s) {row['_markers']!r} -- reconcile the row.")
 
-    print(f"    enumerated {len(sites)} exit site(s) from "
-          f"{os.path.basename(src_path)}; {len(rows)} registry row(s)")
+    print(f"    enumerated {total_sites} exit site(s) across {len(src_lines)} driver(s); "
+          f"{len(rows)} registry row(s)")
     if errors:
         for e in errors:
             print(f"    RED: {e}")
@@ -381,24 +598,26 @@ PYEOF
 
 REG="$ROOT/q-system/.q-system/terminal-states.json"
 SRC="$ROOT/q-system/.q-system/scripts/linear-worker.sh"
+CONVERGE="$ROOT/q-system/.q-system/scripts/converge.sh"
+DISPATCH="$ROOT/kipi-dispatch.sh"
 MAN="$ROOT/q-system/.q-system/capability-manifest.json"
 
-for f in "$REG" "$SRC" "$MAN"; do
+for f in "$REG" "$SRC" "$CONVERGE" "$DISPATCH" "$MAN"; do
   if [ ! -f "$f" ]; then echo "RED: missing $f"; exit 1; fi
 done
 
 echo "== terminal-states validator =="
 
 # --- 1. the real thing must be green ----------------------------------------
-if python3 "$WORK/validate.py" "$REG" "$SRC" "$MAN"; then
-  ok "live registry covers every enumerated exit in linear-worker.sh"
+if python3 "$WORK/validate.py" "$REG" "$ROOT" "$MAN"; then
+  ok "live registry covers every enumerated exit in all three drivers"
 else
-  bad "live registry does NOT validate against linear-worker.sh"
+  bad "live registry does NOT validate against its declared drivers"
 fi
 
 # --- fixture plumbing --------------------------------------------------------
 # Every negative test runs against COPIES. Nothing below reads or writes the
-# live registry, the live source, or ~/.config/kipi -- the fable-discipline rule
+# live registry, the live sources, or ~/.config/kipi -- the fable-discipline rule
 # that a test never touches a live data path.
 FIX="$WORK/fix"; mkdir -p "$FIX"
 mkdir -p "$FIX/agents"
@@ -420,6 +639,10 @@ mkfixture() {  # mkfixture <out> <python-mutation-on-`d`>
   python3 - "$REG" "$out" "$mut" <<'EOF'
 import json, sys
 d = json.load(open(sys.argv[1]))
+def source(sid):
+    return [s for s in d["sources"] if s["id"] == sid][0]
+def state(rid):
+    return [r for r in d["states"] if r["id"] == rid][0]
 exec(sys.argv[3])
 json.dump(d, open(sys.argv[2], "w"), indent=2)
 EOF
@@ -428,7 +651,7 @@ EOF
 expect_red() {  # expect_red <name> <registry> <grep-pattern> [env...]
   local name="$1" reg="$2" pat="$3"; shift 3
   local out rc
-  out="$(env "$@" python3 "$WORK/validate.py" "$reg" "$SRC" "$MAN" 2>&1)"; rc=$?
+  out="$(env "$@" python3 "$WORK/validate.py" "$reg" "$ROOT" "$MAN" 2>&1)"; rc=$?
   if [ "$rc" -eq 0 ]; then
     bad "$name -- validator returned GREEN on a case it must refuse"
     return
@@ -445,11 +668,13 @@ expect_red() {  # expect_red <name> <registry> <grep-pattern> [env...]
 # The bypass_check's first half. This is the shape every parked state in this
 # loop already has, so a validator that accepts it certifies the bug.
 mkfixture "$FIX/founder.json" '
-row = [r for r in d["states"] if r["id"] == "attempts-cap-stuck"][0]
-row.pop("terminal", None); row.pop("rationale", None)
+row = state("attempts-cap-stuck")
+row.pop("terminal", None); row.pop("rationale", None); row.pop("evidence", None)
 row["consumer"] = "the founder reviews the issue and decides what to do next"
 row["liveness_check"] = {"kind": "launchd", "label": "com.kipi.fixture-job",
                          "run_evidence": "'"$FIX"'/ran", "max_age_s": 86400}
+row["reentry"] = {"path": "q-system/.q-system/scripts/linear-worker.sh",
+                  "marker": "stuck_paged"}
 '
 touch "$FIX/ran"
 expect_red "negative (a): a row whose only actor is the founder" \
@@ -461,8 +686,8 @@ expect_red "negative (a): a row whose only actor is the founder" \
 # The bypass_check's second half, and finding-14 exactly: the plist is present
 # AND the job is loaded. Only the absence of a RUN makes this red.
 mkfixture "$FIX/stale.json" '
-row = [r for r in d["states"] if r["id"] == "needs-scope"][0]
-row["consumer_test"] = None; row.pop("consumer_test")
+row = state("needs-scope")
+row.pop("consumer_test")
 row["liveness_check"] = {"kind": "launchd", "label": "com.kipi.fixture-job",
                          "run_evidence": "'"$FIX"'/stale-ran", "max_age_s": 60}
 '
@@ -474,7 +699,7 @@ expect_red "negative (b): consumer is loaded but has not run inside its interval
 
 # --- 4. a plist on disk while the job is unloaded (finding-14, literally) ----
 mkfixture "$FIX/unloaded.json" '
-row = [r for r in d["states"] if r["id"] == "needs-scope"][0]
+row = state("needs-scope")
 row.pop("consumer_test")
 row["liveness_check"] = {"kind": "launchd", "label": "com.kipi.fixture-job",
                          "run_evidence": "'"$FIX"'/ran", "max_age_s": 86400}
@@ -506,7 +731,7 @@ d["states"] = [r for r in d["states"] if r["id"] != "claim-contended"]
 expect_red "mutation: deleting a row whose site is adopted by a neighbour -> count mismatch" \
   "$FIX/dropped2.json" "covers 2 exit site"
 
-# --- 6. MUTATION: a tenth dead end added to the source -----------------------
+# --- 6. MUTATION: a tenth dead end added to the WORKER -----------------------
 # Two variants, because they fail for different reasons and only the second one
 # is hard. (a) a continue with no marker near it -> unregistered. (b) a continue
 # inserted directly BENEATH an existing marker, which inherits that marker --
@@ -521,13 +746,9 @@ for i, ln in enumerate(lines):
         break
 open(sys.argv[2], "w", encoding="utf-8").write("\n".join(lines) + "\n")
 EOF
-out="$(python3 "$WORK/validate.py" "$REG" "$SRCMUT" "$MAN" 2>&1)"; rc=$?
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "UNREGISTERED EXIT"; then
-  ok "mutation: a tenth dead end added to the source is named as UNREGISTERED"
-else
-  bad "mutation: an added exit did NOT make the check red"
-  printf '%s\n' "$out" | sed 's/^/        /'
-fi
+mkfixture "$FIX/srcmut.json" 'source("linear-worker")["path"] = "'"$SRCMUT"'"'
+expect_red "mutation: a tenth dead end added to the worker is named as UNREGISTERED" \
+  "$FIX/srcmut.json" "UNREGISTERED EXIT"
 
 SRCMUT2="$WORK/worker-inherited-exit.sh"
 python3 - "$SRC" "$SRCMUT2" <<'EOF'
@@ -539,42 +760,104 @@ for i, ln in enumerate(lines):
         break
 open(sys.argv[2], "w", encoding="utf-8").write("\n".join(lines) + "\n")
 EOF
-out="$(python3 "$WORK/validate.py" "$REG" "$SRCMUT2" "$MAN" 2>&1)"; rc=$?
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "declares"; then
-  ok "mutation: an exit INHERITING a nearby marker is caught by the sites count"
-else
-  bad "mutation: an exit added beneath an existing marker slipped through"
-  printf '%s\n' "$out" | sed 's/^/        /'
-fi
+mkfixture "$FIX/srcmut2.json" 'source("linear-worker")["path"] = "'"$SRCMUT2"'"'
+expect_red "mutation: an exit INHERITING a nearby marker is caught by the sites count" \
+  "$FIX/srcmut2.json" "declares"
+
+# --- 6b. THE ASK-353 REPRODUCER: a dead end added to converge.sh -------------
+# THE ACCEPTANCE CRITERION THIS ISSUE WAS FILED FOR. Before this change the
+# registry declared one `source` and converge.sh was never read, so this exact
+# mutation returned exit 0 -- a new dead end in the driver that owns every
+# rework round shipped silently. Two variants for the same reason the worker has
+# two: a standalone exit is UNREGISTERED, and one tucked under an existing marker
+# is caught only by the sites count.
+CVMUT="$WORK/converge-extra-exit.sh"
+python3 - "$CONVERGE" "$CVMUT" <<'EOF'
+import sys
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+# INSERTED HIGH, not appended. Appending put it inside BLOCK_LOOKBACK of the
+# cap-out marker at the foot of the file, so the row adopted it and the count
+# check fired instead -- a real RED, for the wrong reason, and the fixture would
+# have passed while asserting nothing about unregistered detection. Above every
+# marker there is nothing to adopt it.
+for i, ln in enumerate(lines):
+    if ln.startswith("set -"):
+        lines.insert(i + 1, 'if [ "$A_BRAND_NEW_DEAD_END" = "1" ]; then exit 42; fi')
+        break
+else:
+    raise SystemExit("FIXTURE FAILED: converge.sh has no `set -` line to anchor to")
+open(sys.argv[2], "w", encoding="utf-8").write("\n".join(lines) + "\n")
+EOF
+mkfixture "$FIX/cvmut.json" 'source("converge")["path"] = "'"$CVMUT"'"'
+expect_red "REPRODUCER: a dead end added to converge.sh is CAUGHT as UNREGISTERED" \
+  "$FIX/cvmut.json" "UNREGISTERED EXIT"
+
+CVMUT2="$WORK/converge-inherited-exit.sh"
+python3 - "$CONVERGE" "$CVMUT2" <<'EOF'
+import sys
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+for i, ln in enumerate(lines):
+    if "review produced no verdict on round" in ln and not ln.lstrip().startswith("#"):
+        lines.insert(i + 1, '    if [ "$YET_ANOTHER_GATE" = "1" ]; then exit 43; fi')
+        break
+else:
+    raise SystemExit("FIXTURE FAILED: converge.sh no longer carries the anchor line")
+open(sys.argv[2], "w", encoding="utf-8").write("\n".join(lines) + "\n")
+EOF
+mkfixture "$FIX/cvmut2.json" 'source("converge")["path"] = "'"$CVMUT2"'"'
+expect_red "REPRODUCER: a converge exit inheriting a marker is caught by the sites count" \
+  "$FIX/cvmut2.json" "declares"
+
+# --- 6c. the same reproducer for kipi-dispatch.sh ----------------------------
+DPMUT="$WORK/dispatch-extra-exit.sh"
+python3 - "$DISPATCH" "$DPMUT" <<'EOF'
+import sys
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+# Inserted high, for the same reason the converge fixture is: appended, it sat
+# under the DISPATCH DIED marker and tripped that row's count instead.
+for i, ln in enumerate(lines):
+    if ln.startswith("set -"):
+        lines.insert(i + 1, 'if [ "$A_BRAND_NEW_DEAD_END" = "1" ]; then exit 44; fi')
+        break
+else:
+    raise SystemExit("FIXTURE FAILED: kipi-dispatch.sh has no `set -` line to anchor to")
+open(sys.argv[2], "w", encoding="utf-8").write("\n".join(lines) + "\n")
+EOF
+mkfixture "$FIX/dpmut.json" 'source("kipi-dispatch")["path"] = "'"$DPMUT"'"'
+expect_red "REPRODUCER: a dead end added to kipi-dispatch.sh is CAUGHT as UNREGISTERED" \
+  "$FIX/dpmut.json" "UNREGISTERED EXIT"
+
+# --- 6d. dropping a whole source must not read as clean ----------------------
+# The v1 hole itself: walk one driver, report green. Deleting a source now
+# orphans its rows loudly instead of quietly shrinking what is checked.
+mkfixture "$FIX/onesource.json" '
+d["sources"] = [s for s in d["sources"] if s["id"] == "linear-worker"]
+'
+expect_red "dropping converge/dispatch from the sources list is refused, not silently narrower" \
+  "$FIX/onesource.json" "is not a declared source id"
 
 # --- 7. a line number is refused as identity (finding-15) --------------------
-mkfixture "$FIX/lineno.json" '
-[r for r in d["states"] if r["id"] == "attempts-cap-stuck"][0]["marker"] = "linear-worker.sh:680"
-'
+mkfixture "$FIX/lineno.json" 'state("attempts-cap-stuck")["marker"] = "linear-worker.sh:680"'
 expect_red "a line-number marker is refused as row identity" \
   "$FIX/lineno.json" "is a LINE NUMBER"
 
 # --- 8. terminal:true without a rationale is unexamined, not honest ----------
-mkfixture "$FIX/norationale.json" '
-[r for r in d["states"] if r["id"] == "out-of-repo"][0]["rationale"] = "n/a"
-'
+mkfixture "$FIX/norationale.json" 'state("out-of-repo")["rationale"] = "n/a"'
 expect_red "terminal:true with no written rationale is refused" \
   "$FIX/norationale.json" "needs a written rationale"
 
 # --- 9. a consumer with no liveness_check ------------------------------------
-mkfixture "$FIX/noliveness.json" '
-[r for r in d["states"] if r["id"] == "needs-scope"][0].pop("liveness_check")
-'
+mkfixture "$FIX/noliveness.json" 'state("needs-scope").pop("liveness_check")'
 expect_red "a consumer declared without a liveness_check is refused" \
-  "$FIX/noliveness.json" "proves\s*$\|proves nothing ran"
+  "$FIX/noliveness.json" "proves nothing ran"
 
 # --- 10. a consumer_test nothing runs ----------------------------------------
 mkfixture "$FIX/unregtest.json" '
-[r for r in d["states"] if r["id"] == "needs-scope"][0]["consumer_test"] = \
+state("needs-scope")["consumer_test"] = \
     "q-system/.q-system/scripts/test/test-does-not-exist.sh"
 '
 expect_red "a consumer_test absent from capability-manifest.json is refused" \
-  "$FIX/unregtest.json" "not in\s*$\|expected_tests"
+  "$FIX/unregtest.json" "expected_tests"
 
 # --- 11. plist present but launchctl unreadable (codex-adversarial finding-4) -
 # The second fail-open, and the one the code's own comment already argued
@@ -582,7 +865,7 @@ expect_red "a consumer_test absent from capability-manifest.json is refused" \
 # job; only the reader is missing. Before the fix this fixture returned exit 0
 # and the suite printed 12 passed while asserting nothing about any consumer.
 mkfixture "$FIX/nolaunchctl.json" '
-row = [r for r in d["states"] if r["id"] == "needs-scope"][0]
+row = state("needs-scope")
 row.pop("consumer_test", None)
 row["liveness_check"] = {"kind": "launchd", "label": "com.kipi.fixture-job",
                          "run_evidence": "'"$FIX"'/ran", "max_age_s": 86400}
@@ -595,14 +878,70 @@ expect_red "a plist present with an unreadable launchd control binary fails clos
 # --- 12. a non-string consumer must be named, not crash (finding-5) ----------
 # Guards the REPORTING path, not just this row: the uncaught TypeError aborted
 # before any RED: line, so this fixture must go red AND still name the row.
-mkfixture "$FIX/badconsumer.json" '
-row = [r for r in d["states"] if r["id"] == "needs-scope"][0]
-row["consumer"] = {"not": "a string"}
-'
+mkfixture "$FIX/badconsumer.json" 'state("needs-scope")["consumer"] = {"not": "a string"}'
 expect_red "a non-string consumer is named, not an uncaught TypeError" \
   "$FIX/badconsumer.json" "consumer must be a string" \
   "TERMINAL_STATES_LAUNCHD_DIR=$FIX/agents" \
   "TERMINAL_STATES_LAUNCHCTL=$FIX/launchctl-loaded"
+
+# --- 13. ASK-353: a consumer with no reentry pointer -------------------------
+# A liveness_check proves the job RAN. This is the assertion that it re-enters
+# THIS state, and it is the one the archived PRD's Reversal-2 tension turns on.
+mkfixture "$FIX/noreentry.json" 'state("drift-cap").pop("reentry")'
+expect_red "a consumer without a reentry pointer is refused" \
+  "$FIX/noreentry.json" "not that the job"
+
+# --- 14. ASK-353: a reentry pointer whose marker is NOT in the named file ----
+# THE FICTION TEST. This is ci-redrive.py's false "it is also already handled"
+# comment, reduced to a fixture: a named consumer that contains no selector for
+# the state it claims to consume. It cost 29 hours and it must never be green.
+mkfixture "$FIX/fakereentry.json" '
+state("drift-cap")["reentry"] = {
+    "path": "q-system/.q-system/scripts/review-redrive.py",
+    "marker": "a selector that does not exist anywhere in this file"}
+'
+expect_red "a reentry marker absent from the named consumer is refused as fiction" \
+  "$FIX/fakereentry.json" "claim with no code behind it"
+
+mkfixture "$FIX/missingfile.json" '
+state("drift-cap")["reentry"] = {"path": "q-system/.q-system/scripts/no-such-consumer.py",
+                                 "marker": "anything"}
+'
+expect_red "a reentry pointer at a file that does not exist is refused" \
+  "$FIX/missingfile.json" "which does not exist"
+
+# --- 15. ASK-353: owner:assaf may not be certified as a terminal state -------
+# The founder's reversal, made deterministic. Refused by SHAPE (any row whose
+# marker names the label) so re-adding the queue under a new row id is caught.
+mkfixture "$FIX/founderqueue.json" '
+row = state("owner-assaf")
+row.pop("error_path"); row.pop("error_evidence")
+row["terminal"] = True
+'
+expect_red "owner:assaf declared terminal is refused -- it is an error path now" \
+  "$FIX/founderqueue.json" "not error_path:true"
+
+mkfixture "$FIX/noerrorevidence.json" 'state("owner-assaf").pop("error_evidence")'
+expect_red "error_path:true with no error_evidence is a label, not an error path" \
+  "$FIX/noerrorevidence.json" "needs error_evidence"
+
+# --- 16. ASK-353: the loud refusal must exist in the worker ------------------
+# A copy of linear-worker.sh with the DEFECT line removed. If the code stops
+# saying it out loud, the registry's error_path claim is fiction and this goes
+# red -- the pointer is only worth something if its absence is caught.
+WKMUT="$WORK/worker-no-defect-line.sh"
+python3 - "$SRC" "$WKMUT" <<'EOF'
+import sys
+text = open(sys.argv[1], encoding="utf-8").read()
+if "DEFECT: owner:assaf" not in text:
+    raise SystemExit("FIXTURE FAILED: the worker no longer carries the DEFECT line")
+open(sys.argv[2], "w", encoding="utf-8").write(text.replace("DEFECT: owner:assaf", "note"))
+EOF
+mkfixture "$FIX/nodefectline.json" '
+state("owner-assaf")["error_evidence"]["path"] = "'"$WKMUT"'"
+'
+expect_red "removing the loud owner:assaf refusal from the worker is caught" \
+  "$FIX/nodefectline.json" "claim with no code behind it"
 
 echo
 echo "== $PASS passed, $FAIL failed =="

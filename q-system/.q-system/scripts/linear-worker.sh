@@ -647,6 +647,15 @@ def held_with(label):
             if label in {l["name"] for l in i["labels"]["nodes"]} and in_this_repo(i)
             and i["state"]["type"] not in TERMINAL_STATES]
 deferred = held_with("needs-scope")
+# owner:assaf IS AN ERROR PATH NOW, NOT A QUEUE (ASK-353, founder directive
+# 2026-08-03: nothing should be on me). The archived PRD
+# prd-terminal-state-redrive-2026-08-01 called this label the one place routing
+# to a person is by design. The founder closed that queue and emptied it (85
+# issues), so a non-empty count is a DEFECT and the run has to say so out loud
+# rather than filter it in silence. ready() still excludes these -- working an
+# issue the founder marked hands-off would be worse than reporting it -- but the
+# population is now counted and reported, so a refilling queue is loud.
+founder_routed = held_with("owner:assaf")
 # Counted SEPARATELY from needs-scope. A rising blocked:capability count is a
 # claim about the ENVIRONMENT, and averaging it into "held" would hide the one
 # number that says the loop is starving for a capability nobody has granted.
@@ -678,6 +687,9 @@ print(json.dumps({
     "unreachable_ids": [i["identifier"] for i in unreachable],
     "registry_ok": registry_ok,
     "deferred_needs_scope": len(deferred),
+    # ASK-353. Reported as a DEFECT count, not a queue depth.
+    "founder_routed": len(founder_routed),
+    "founder_routed_ids": [i["identifier"] for i in founder_routed],
     "blocked_capability": len(blocked_cap),
     "blocked_capability_ids": [i["identifier"] for i in blocked_cap],
     # Does the derived repo identity name a project that EXISTS on the board?
@@ -786,6 +798,25 @@ say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf
 # Fail loud rather than classify on a guess (see registry_ok in the picker).
 [ "$REG_OK" = "False" ] && say "worker: WARNING instance-registry.json could not be read, so reachability is UNKNOWN this run and every out-of-repo issue is reported as a routine skip"
 [ "${DEFERRED:-0}" != "0" ] && say "worker: $DEFERRED issue(s) held at needs-scope (refused as unexecutable; the DoR drafter re-scopes them)"
+
+# THE FOUNDER QUEUE IS AN ERROR PATH (ASK-353). Directive 2026-08-03: "nothing
+# should be on me". The archived PRD called owner:assaf the designed destination
+# for founder-routed work; that decision is reversed, the queue was emptied (85
+# issues) and it must never refill. So a non-zero count is stated as a DEFECT on
+# its own line, and paged -- because the failure mode being closed here is
+# exactly the silent one: ready() filtered these out without a word, so a
+# refilling founder queue looked identical to an empty board.
+#
+# NOT a hard exit. Refusing to run would let one mislabelled issue stop the whole
+# loop, which routes MORE work to the founder, not less. Loud and still working
+# is the behaviour the directive asks for.
+FOUNDER_ROUTED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("founder_routed",0))' 2>/dev/null)"
+if [ "${FOUNDER_ROUTED:-0}" != "0" ]; then
+  FOUNDER_IDS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin).get("founder_routed_ids",[])))' 2>/dev/null)"
+  say "worker: DEFECT: owner:assaf is an ERROR PATH, not a queue (founder directive 2026-08-03), and $FOUNDER_ROUTED open issue(s) carry it: ${FOUNDER_IDS:-unknown}"
+  say "worker: DEFECT: whatever routed those to the founder is the bug. Re-label them owner:sana with a DoR, or needs-scope if the spec is not executable."
+  bash "$NOTIFY" "kipi worker: $FOUNDER_ROUTED issue(s) are labelled owner:assaf, which is an error path now, not a queue (${FOUNDER_IDS:-unknown}). Do: find what routed them there and re-label to owner:sana or needs-scope." 2>/dev/null || true
+fi
 
 BLOCKED_CAP="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("blocked_capability",0))' 2>/dev/null)"
 BLOCKED_IDS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin).get("blocked_capability_ids",[])))' 2>/dev/null)"
