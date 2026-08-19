@@ -424,6 +424,11 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-script-stable-under-self-edit.sh",
+      "runner": "bash",
+      "timeout_s": 120
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-styles-csv-width.sh",
       "runner": "bash"
     },
