@@ -28,7 +28,6 @@ Exit codes:
     2 = violation (turn blocked, Claude must re-draft)
 """
 
-import hashlib
 import json
 import os
 import re
