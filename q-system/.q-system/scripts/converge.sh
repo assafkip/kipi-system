@@ -1014,8 +1014,10 @@ if ! python3 "$LEDGER" "$ATTEMPTS" record-capout "$ISSUE" "$CAPOUT_WHY" 2>>"$LOG
   say "WARNING: record-capout failed for $ISSUE; the redrives cannot see this cap-out."
 fi
 bash "$NOTIFY" "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT. Parked -- no redrive will re-enter it until you clear it: python3 q-system/.q-system/scripts/attempts-ledger.py $ATTEMPTS clear-capout $ISSUE$CAPOUT_NOTE" 2>/dev/null || true
-# The `exit 2` above is the last statement INSIDE the ASK-351 brace, and it has to
-# stay last and stay unconditional: it is what stops bash from ever reading this
-# file again. See the header. Nothing may be added below the closing brace.
+# The `exit 2` on the line BELOW this comment -- not the `bash "$NOTIFY"` above it --
+# is the last statement INSIDE the ASK-351 brace, and it has to stay last and stay
+# unconditional: it is what stops bash from ever reading this file again. See the
+# header. Nothing may be added between it and the closing brace, and nothing may be
+# added below the closing brace.
 exit 2
 }

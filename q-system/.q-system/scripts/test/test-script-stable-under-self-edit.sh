@@ -36,17 +36,67 @@
 # synthetic is the BODY; the mechanism (in-place edit that shifts offsets under a
 # running bash) is the real one. Case 0 is the negative self-test -- the same
 # unwrapped script with NO edit must come out clean, or a harness that always
-# reports red would look like a passing reproducer. Case 4 then holds the two real
-# scripts to the shape, and case 5 mutates that structural check against an
-# unwrapped copy so it is a check that can actually go red.
+# reports red would look like a passing reproducer. Case 4 then holds the real
+# drivers to the shape, cases 5 and 6 mutate the two checks case 4 is built from so
+# each is one that can actually go red, and case 7 pins the exception ledger.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
-CONVERGE="$ROOT/q-system/.q-system/scripts/converge.sh"
-WORKER="$ROOT/q-system/.q-system/scripts/linear-worker.sh"
+SCRIPTS_DIR="$ROOT/q-system/.q-system/scripts"
+CONVERGE="$SCRIPTS_DIR/converge.sh"
+WORKER="$SCRIPTS_DIR/linear-worker.sh"
 for f in "$CONVERGE" "$WORKER"; do
   [ -f "$f" ] || { echo "FATAL: missing $f" >&2; exit 1; }
 done
+
+# --- who is at risk, DISCOVERED rather than listed ------------------------------
+# The first version of this file looped over exactly $CONVERGE and $WORKER. That
+# list can only ever see the drivers somebody remembered, which is how
+# pr-review-agent.sh sat unwrapped at a 2400s timeout -- launched by this very
+# pipeline at linear-worker.sh:93 -- while a case named "the real drivers" reported
+# green (PR #223 review, codex major). The issue calls this defect "a class across
+# both drivers"; a hardcoded pair cannot hold a class.
+#
+# A driver is at risk when a commit can land inside its run. Two objective markers,
+# unioned, so no judgement call sits between a new driver and this check:
+#   1. it invokes `claude -p`  -- one model call is minutes, a loop of them is hours
+#   2. it declares a *TIMEOUT*= of >= 600 seconds
+# Running it found open-loops-heartbeat.sh too (headless `claude -p` per instance,
+# open-loops-heartbeat.sh:92), which the review did not name. That is the argument
+# for discovery in one line.
+DISCOVERY_MIN_SECONDS=600
+discover_drivers() {
+  local dir="$1" f secs
+  for f in "$dir"/*.sh; do
+    [ -f "$f" ] || continue
+    secs="$(sed -n 's/^[A-Z_]*TIMEOUT[A-Z_]*=\([0-9][0-9]*\).*/\1/p' "$f" | sort -rn | head -1)"
+    if grep -q 'claude -p' "$f" || { [ -n "$secs" ] && [ "$secs" -ge "$DISCOVERY_MIN_SECONDS" ]; }; then
+      echo "$f"
+    fi
+  done
+}
+
+# converge.sh matches NEITHER marker and is the original scar: it spends its hours
+# inside linear-worker.sh, which it launches at converge.sh:94, so the model call is
+# never in its own text. Seeded explicitly rather than by loosening the predicate,
+# because a marker broad enough to catch it catches every wrapper script here.
+DRIVER_SEED="$CONVERGE"
+
+# --- the exception ledger -------------------------------------------------------
+# `basename|spillover-id|why`. An entry here is a gap that is TRACKED, not one that
+# is forgiven: case 4 still reports it, case 7 refuses to let it rot, and each id is
+# an open item in .prd-os/spillover.jsonl that holds `prd_runner.py gates run` red
+# until a real issue closes it (no-orphan-findings.md).
+#
+# Both are unwrapped for the same reason and it is not that they are safe: ASK-351's
+# DoR ends "not auditing or wrapping the other long-running bash drivers", and
+# neither file is in its allowed_files. Wrapping them here would be the scope
+# expansion the DoR forbids; leaving them undeclared would be the silent drop the
+# review correctly caught. Declaring them is the third option.
+KNOWN_UNWRAPPED='pr-review-agent.sh|sp-3bcc9e16|2400s reviewer, launched by linear-worker.sh:93
+open-loops-heartbeat.sh|sp-c2dcebad|headless claude -p per instance, open-loops-heartbeat.sh:92'
+
+declared_gap() { printf '%s\n' "$KNOWN_UNWRAPPED" | grep "^$1|" || true; }
 
 WORK="$(mktemp -d)"
 cleanup() { [ -n "${WORK:-}" ] && [ -d "$WORK" ] && find "$WORK" -mindepth 1 -delete && rmdir "$WORK"; }
@@ -184,20 +234,36 @@ assert_wrapped() {
   return 0
 }
 
-# --- case 4: the real drivers --------------------------------------------------
-echo "case 4: the two real drivers carry the shape and still parse"
-for f in "$CONVERGE" "$WORKER"; do
+# --- case 4: every discovered driver is wrapped, or is a DECLARED gap -----------
+# The pass condition is "wrapped OR declared", never "wrapped OR unlisted". A
+# long-running driver that nobody wrapped and nobody captured is the failure this
+# case exists for, so it is the one combination that goes red.
+echo "case 4: every long-running driver is brace-wrapped, or is a declared+captured gap"
+DRIVERS="$(printf '%s\n%s\n' "$DRIVER_SEED" "$(discover_drivers "$SCRIPTS_DIR")" | awk 'NF && !seen[$0]++')"
+echo "       population (discovered + seed): $(printf '%s\n' "$DRIVERS" | xargs -n1 basename | tr '\n' ' ')"
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  base="$(basename "$f")"
+  gap="$(declared_gap "$base")"
   if why="$(assert_wrapped "$f")"; then
-    ok "$(basename "$f") is brace-wrapped, exits unconditionally inside the brace, and passes bash -n"
+    if [ -n "$gap" ]; then
+      bad "$base IS wrapped but is still listed KNOWN_UNWRAPPED -- delete its line and resolve ${gap%|*} so the ledger stops describing a gap that closed"
+    else
+      ok "$base is brace-wrapped, exits unconditionally inside the brace, and passes bash -n"
+    fi
+  elif [ -n "$gap" ]; then
+    ok "$base is unwrapped and DECLARED (${gap#*|}) -- a tracked gap, not a silent one"
   else
-    bad "$(basename "$f"): $why"
+    bad "$base: $why -- an undeclared long-running driver. Wrap it, or capture it (prd_runner.py spillover add) and add its line to KNOWN_UNWRAPPED"
   fi
-done
+done <<EOF
+$DRIVERS
+EOF
 
 # --- case 5: mutate the structural check ---------------------------------------
 # A check nobody has watched fail is decoration. Strip the wrapper off a COPY of
 # the real converge.sh and the same predicate must reject it.
-echo "case 5: the case-4 predicate goes red on an unwrapped copy (mutation)"
+echo "case 5: the shape predicate goes red on an unwrapped copy (mutation)"
 MUT="$WORK/converge-unwrapped.sh"
 awk 'NF && $0=="{" && !seen {seen=1; next} {print}' "$CONVERGE" | awk 'NF && $0=="}" {last=NR} {a[NR]=$0} END {for(i=1;i<=NR;i++) if (i!=last) print a[i]}' > "$MUT"
 if why="$(assert_wrapped "$MUT")"; then
@@ -205,6 +271,48 @@ if why="$(assert_wrapped "$MUT")"; then
 else
   ok "predicate rejects the unwrapped copy ($why)"
 fi
+
+# --- case 6: mutate the DISCOVERY ----------------------------------------------
+# Case 5 proves the shape check can go red. It says nothing about whether the
+# population reaches the file at all -- and an empty population passes case 4
+# vacuously, which is exactly the hole the hardcoded pair had. So: plant a driver
+# in a synthetic scripts dir and require discovery to reach it by each marker on
+# its own, and require an ordinary short script NOT to be swept in.
+echo "case 6: discovery finds a planted driver by each marker, and skips a non-driver (mutation)"
+SYN="$WORK/syn-scripts"; mkdir -p "$SYN"
+printf '#!/usr/bin/env bash\nset -uo pipefail\nclaude -p "review this" </dev/null\n' > "$SYN/planted-model-caller.sh"
+printf '#!/usr/bin/env bash\nset -uo pipefail\nTIMEOUT_SECONDS=%s\nsleep 1\n' "$DISCOVERY_MIN_SECONDS" > "$SYN/planted-long-timeout.sh"
+printf '#!/usr/bin/env bash\nset -uo pipefail\nTIMEOUT_SECONDS=5\necho hi\n' > "$SYN/planted-quick-helper.sh"
+FOUND="$(discover_drivers "$SYN" | xargs -n1 basename | sort | tr '\n' ' ')"
+if [ "$FOUND" = "planted-long-timeout.sh planted-model-caller.sh " ]; then
+  ok "discovery caught both planted drivers and left the quick helper alone (found: $FOUND)"
+else
+  bad "discovery is wrong; expected the two planted drivers only, got: ${FOUND:-<nothing>}"
+fi
+# ...and the planted driver, being undeclared and unwrapped, must be the red case.
+if why="$(assert_wrapped "$SYN/planted-model-caller.sh")" || [ -n "$(declared_gap planted-model-caller.sh)" ]; then
+  bad "a freshly planted unwrapped driver would pass case 4 -- the population reaches it but the verdict does not"
+else
+  ok "a discovered, unwrapped, undeclared driver lands on case 4's red branch ($why)"
+fi
+
+# --- case 7: the exception ledger cannot rot ------------------------------------
+# A ledger naming a file that no longer exists is worse than no ledger: it reads as
+# coverage. Every KNOWN_UNWRAPPED line must point at a real file that discovery
+# actually reaches, or the entry is stale and case 4's green for it is a lie.
+echo "case 7: every KNOWN_UNWRAPPED entry names a real, still-discovered driver"
+while IFS='|' read -r base sp _why; do
+  [ -n "$base" ] || continue
+  if [ ! -f "$SCRIPTS_DIR/$base" ]; then
+    bad "KNOWN_UNWRAPPED names $base ($sp) but that file does not exist -- stale entry granting silent coverage"
+  elif ! printf '%s\n' "$DRIVERS" | grep -q "/$base\$"; then
+    bad "KNOWN_UNWRAPPED names $base ($sp) but discovery no longer reaches it -- either it stopped being long-running (drop the line) or the predicate regressed"
+  else
+    ok "$base ($sp) is a real file discovery still reaches"
+  fi
+done <<EOF
+$KNOWN_UNWRAPPED
+EOF
 
 echo
 echo "passed: $PASS  failed: $FAIL"
