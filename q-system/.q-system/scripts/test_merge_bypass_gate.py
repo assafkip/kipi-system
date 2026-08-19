@@ -84,6 +84,15 @@ def main() -> int:
         gh_other = _make_repo(root, "gh_other", GH_OTHER, "main")
         # A GitHub URL the owner/name parser cannot read: stays protected.
         gh_weird = _make_repo(root, "gh_weird", GH_WEIRD, "main")
+        # A FLEET INSTANCE: unlisted remote, but q-system/ in the tree. The
+        # hook ships to every instance, so the marker must deny on its own
+        # (PR #226 review, major).
+        gh_fleet = _make_repo(root, "gh_fleet", GH_OTHER, "main")
+        (gh_fleet / "q-system").mkdir()
+        # Same protected repo under different URL casing and a .git suffix:
+        # GitHub treats these as one repo, so must the set.
+        gh_cased = _make_repo(root, "gh_cased",
+                              "https://github.com/EXAMPLE/REPO.git", "main")
 
         # --- the bypass forms: must DENY ---
         check("admin flag last", "gh pr merge 999 --squash --admin", gh_feature, "deny")
@@ -139,6 +148,18 @@ def main() -> int:
         # GitHub URL the parser cannot read: fail closed, still denied.
         check("push main to an unparseable github url",
               "git push origin main", gh_weird, "deny")
+        # Fleet marker alone denies, remote set not consulted.
+        check("push main in a fleet-marker tree with an unlisted remote",
+              "git push origin main", gh_fleet, "deny")
+        # Case-folded, .git-tolerant set matching.
+        check("push main under different URL casing of a protected repo",
+              "git push origin main", gh_cased, "deny")
+        # An explicit override that parses to zero valid entries fails CLOSED,
+        # same direction as the URL parser (PR #226 review, minor).
+        os.environ["MERGE_GATE_PROTECTED_REPOS"] = "  ,garbage,no-slash-here/"
+        check("malformed explicit override fails closed",
+              "git push origin main", gh_other, "deny")
+        os.environ["MERGE_GATE_PROTECTED_REPOS"] = "example/repo"
         check("push main to a local origin via -C",
               f"git -C {local_origin} push origin main", root, "allow")
         # A script-local variable this process never had: unresolvable, so allow
