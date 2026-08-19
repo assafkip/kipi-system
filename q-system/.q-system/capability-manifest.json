@@ -96,13 +96,13 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-converge-capout.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-converge-crossrepo-receipt.sh",
       "runner": "bash",
       "timeout_s": 120
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-converge-capout.sh",
-      "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-converge.sh",
@@ -145,10 +145,6 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-gate-13b-scope.py",
-      "runner": "python3"
-    },
-    {
-      "path": "q-system/.q-system/scripts/test/test-plist-drift.py",
       "runner": "python3"
     },
     {
@@ -319,6 +315,10 @@
     {
       "path": "q-system/.q-system/scripts/test/test-open-loops.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-plist-drift.py",
+      "runner": "python3"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-plugin-hook-ownership.sh",
@@ -638,6 +638,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_voice_lint_caps.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_voice_stop_gate_drain_only.py",
       "runner": "python3"
     },
     {
