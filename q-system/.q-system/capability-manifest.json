@@ -67,6 +67,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-capability-gate-inert-spillover.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-capability-map-wiring.py",
       "runner": "python3"
     },
@@ -762,12 +766,12 @@
     {
       "path": "q-system/.q-system/scripts/memory_outcomes.py",
       "reason": "auto-capture referee merged (PR #7) but gated OFF fleet-wide; activates with the held kipi update",
-      "spillover_id": "sp-cac8540c"
+      "spillover_id": "sp-b8eb2928"
     },
     {
       "path": "q-system/.q-system/scripts/memory_reflect.py",
       "reason": "auto-capture referee merged but gated OFF fleet-wide",
-      "spillover_id": "sp-cac8540c"
+      "spillover_id": "sp-b8eb2928"
     },
     {
       "path": "q-system/.q-system/scripts/pdf-extract.py",
@@ -782,7 +786,7 @@
     {
       "path": "q-system/.q-system/scripts/session_recall.py",
       "reason": "auto-capture referee merged but gated OFF fleet-wide",
-      "spillover_id": "sp-cac8540c"
+      "spillover_id": "sp-b8eb2928"
     },
     {
       "path": "q-system/.q-system/scripts/stat-registry-extract.py",
