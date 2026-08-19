@@ -181,6 +181,129 @@ def validate_manifest(data, errors):
             errors.append(f"unsafe or non-relative path in declared_inert: {entry['path']!r}")
 
 
+def spillover_ledger_path(root):
+    """The ONE spillover ledger for this checkout and all of its worktrees.
+
+    Mirrors prd_runner._ledger_root deliberately rather than importing it: this
+    gate is synced to every instance by `kipi update` and must run where
+    plugins/prd-os is absent. The rule it copies is load-bearing — `*.jsonl` is
+    gitignored, so resolving the ledger from a per-worktree root gives every
+    worktree a private copy, and a gate reading the wrong copy reports a safety
+    it cannot provide (sp-bc42f1d3, 26 private ledgers / 71 invisible findings).
+    `--git-common-dir` is shared across the worktree set, so its parent is the
+    main checkout no matter which worktree calls us.
+
+    Falls back to `root` when git cannot answer. Degraded, never fatal: the
+    caller treats a missing ledger as "not mine to judge".
+    """
+    ledger_root = Path(root)
+    try:
+        out = subprocess.run(["git", "rev-parse", "--git-common-dir"],
+                             cwd=str(root), capture_output=True, text=True, timeout=10)
+        if out.returncode == 0 and out.stdout.strip():
+            common = Path(out.stdout.strip())
+            if not common.is_absolute():
+                common = Path(root) / common
+            parent = common.resolve().parent
+            # Only trust it if it really looks like a checkout root; a bare
+            # repo's parent is an arbitrary directory.
+            if (parent / ".git").exists():
+                ledger_root = parent
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return ledger_root / ".prd-os" / "spillover.jsonl"
+
+
+# A row present with status None is not the same as an id with no row at all;
+# `status.get(sid)` collapses both to None and would make a real row look absent.
+_ABSENT = object()
+
+
+def check_inert_spillover_live(root, manifest, errors, notes=None, mode="instance"):
+    """A declared_inert entry must cite a spillover id that is still a LIVE
+    decision (ASK-345).
+
+    `validate_manifest` only checked that `spillover_id` is a non-empty string.
+    So the pointer that makes "parked as inert" a tracked wire-or-retire
+    decision could aim at a `resolved` ledger row, and the gate stayed GREEN
+    about a silencer that now silences nothing but itself. Measured on main
+    2026-08-19: memory_outcomes.py, memory_reflect.py and session_recall.py all
+    cited sp-cac8540c, status `resolved`. That is the gate's own silent-absence
+    class turned inward.
+
+    `resolved` is the ONLY terminal status prd_runner writes (both the fixed and
+    the voided paths land there), so it is the only one judged dead. `promoted`
+    stays live on purpose: promotion creates a Linear issue that
+    `spillover promoted-audit` re-reads, so the decision is still open.
+
+    TWO SKIPS, both fleet-safety and not lenience — `kipi update` runs this gate
+    in all 20+ instances:
+      * no ledger file -> skip, and SAY SO in notes (see the blindness note).
+      * id not in THIS ledger -> skip IN INSTANCE MODE ONLY. An instance WITH
+        prd-os has its own ids, so "unknown" means "another ledger's row", not
+        "dead pointer"; judging it would turn every declared_inert entry RED
+        fleet-wide. In SKELETON mode the ledger is this manifest's own ledger,
+        so an unknown id is a typo'd or fabricated pointer and goes RED. All 19
+        real ids resolve in the skeleton ledger today (measured 2026-08-19), so
+        the strict half reds nothing that exists (PR #224 review, minor).
+
+    WHERE THIS IS BLIND, AND WHY THE SKIP IS LOUD (PR #224 review, major):
+    `.gitignore:43` excludes `*.jsonl` and un-ignores only `receipts.jsonl`, so
+    `.prd-os/spillover.jsonl` is never committed. Every `actions/checkout` in
+    `.github/workflows/validate.yml` therefore takes the no-ledger branch, and CI
+    CANNOT catch a dead pointer — do not count that step as coverage. Liveness is
+    enforced wherever a ledger is readable: the founder's skeleton checkout via
+    `kipi check`, any worktree of it (git-common-dir), and any instance carrying
+    prd-os. The skip appends a note rather than returning quietly, because a
+    silent GREEN reads as "checked, clean" when it means "not checked" — the same
+    silent-absence class this whole gate exists to make loud.
+    """
+    path = spillover_ledger_path(root)
+    if not path.is_file():
+        if notes is not None:
+            notes.append(
+                f"inert-spillover-liveness: SKIPPED, no ledger at {path}. "
+                f"{len(manifest.get('declared_inert', []))} declared_inert pointer(s) "
+                "were NOT checked for a closed decision. Expected in CI (*.jsonl is "
+                "gitignored) and in instances without prd-os; this run proves nothing "
+                "about pointer liveness.")
+        return
+    status = {}
+    try:
+        text = path.read_text(errors="ignore")
+    except OSError as exc:
+        errors.append(f"spillover ledger unreadable at {path}: {exc}")
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # append-only log; one corrupt line must not blind the rest
+        if isinstance(rec, dict) and rec.get("id"):
+            status[rec["id"]] = rec.get("status")  # last row wins
+    for entry in manifest.get("declared_inert", []):
+        sid = entry.get("spillover_id")
+        if not sid:
+            continue  # validate_manifest already owns the empty-string error
+        st = status.get(sid, _ABSENT)
+        if st == "resolved":
+            errors.append(
+                f"declared_inert {entry.get('path')} cites {sid}, which is RESOLVED "
+                "in the spillover ledger: the wire-or-retire decision it points at "
+                "is closed, so nothing tracks this script any more. Repoint it at an "
+                "open item or decide the script.")
+        elif st is _ABSENT and mode == "skeleton":
+            errors.append(
+                f"declared_inert {entry.get('path')} cites {sid}, which matches NO "
+                f"row in {path}. In the skeleton that ledger IS this manifest's "
+                "ledger, so an id it has never heard of is a typo or a fabricated "
+                "pointer, and a pointer nothing can resolve tracks nothing. (An "
+                "INSTANCE skips this: its ledger legitimately holds other ids.)")
+
+
 def validate_quarantine(entry, errors):
     q = entry.get("quarantine")
     if q is None:
@@ -640,6 +763,11 @@ def main():
         report(mode, errors, notes)
         sys.exit(1)
     load_overlay(root, manifest, errors)
+    # Needs the filesystem (the ledger), so it cannot live inside
+    # validate_manifest, which is handed data only. Placed before the
+    # fail-closed exit below: a declared_inert entry pointing at a closed
+    # decision is a structural manifest problem, not a finding about the repo.
+    check_inert_spillover_live(root, manifest, errors, notes, mode)
     # counts note BEFORE the structural early-exit: an expired quarantine is a
     # structural error, and exiting first meant exactly those runs lost the
     # quarantine count the contract promises in EVERY summary (codex,
