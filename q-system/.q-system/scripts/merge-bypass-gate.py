@@ -104,6 +104,31 @@ from pathlib import Path
 # These are the two names the fleet actually protects.
 PROTECTED_BRANCHES = {"main", "master"}
 
+# The PUSH deny is scoped to the remotes that actually carry the PR machinery
+# (required checks 'validate' + 'kipi/reviewer-approved'). Measured 2026-08-19
+# (sp-9154c64d): the unscoped form blocked creating `main` on a brand-new
+# personal repo (assafkip/adhd-output-style) that has no checks at all -- a
+# refusal whose remedy ("let the machinery merge it") cannot exist there. A
+# gate that fires where its own remedy is impossible teaches routing around
+# gates. The MERGE side stays global on purpose: `--admin` is never the safe
+# shape anywhere, and --auto costs nothing to type.
+# A GitHub URL whose owner/name cannot be parsed stays protected (fail closed
+# on the weird form). Read per call so the test suites can pin their own set
+# via MERGE_GATE_PROTECTED_REPOS (comma-separated owner/name).
+_DEFAULT_PROTECTED_REPOS = "assafkip/kipi-system"
+_GH_URL_RE = re.compile(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
+
+
+def _protected_repo(url: str) -> bool:
+    m = _GH_URL_RE.search(url or "")
+    if not m:
+        return True  # a github URL this cannot parse stays protected
+    repos = frozenset(
+        r.strip() for r in os.environ.get(
+            "MERGE_GATE_PROTECTED_REPOS", _DEFAULT_PROTECTED_REPOS).split(",")
+        if r.strip())
+    return f"{m.group(1)}/{m.group(2)}" in repos
+
 # Shell separators that start a new command. `|` is included so `foo | git push ...`
 # is examined rather than swallowed as an argument of foo.
 _SEPARATORS = {";", ";;", "&&", "||", "|", "|&", "&", "\n"}
@@ -486,6 +511,11 @@ def _push_verdict(seg: list[str], cwd: str) -> str | None:
     # A URL typed straight on the command line never reaches `remote get-url`.
     url = remote if re.match(r"^(https?://|git@|ssh://)", remote) else _remote_url(repo_dir, remote)
     if not _is_github(url):
+        return None
+    if not _protected_repo(url):
+        # A GitHub repo outside the protected set has no 'validate' /
+        # 'kipi/reviewer-approved' checks to skip; the deny's remedy does not
+        # exist there (sp-9154c64d).
         return None
 
     if refspecs:
