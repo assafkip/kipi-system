@@ -481,13 +481,20 @@ def test_the_registry_alias_decides_the_project_not_the_directory_name(
     assert fake.create_input.get("projectId") == "proj-cons"
 
 
-def test_an_unresolvable_repo_still_gets_a_project_and_still_files(
+def test_an_unresolvable_repo_costs_the_project_and_never_the_alert(
         isolated_state, monkeypatch, tmp_path):
-    """22 of the 81 were raised from a cwd of `/` with no repo at all.
+    """When EVERY rung misses, the ticket still lands -- unset, but landed.
 
-    They must not go back to being unset, and they must never be dropped: losing
-    an alert is the failure this whole path exists to prevent. The fallback is
-    the checkout this script itself runs from, which is a derivation, not a guess.
+    Losing an alert is the failure this whole path exists to prevent, so the
+    degrade has to be the project field and never the create.
+
+    This case used to set `KIPI_ALERT_FALLBACK_PROJECT` and assert `proj-kipi`,
+    which made it a test of an env var nothing in production writes (ASK-880).
+    The `[/]` shape it meant to cover is now held by
+    `test_the_last_resort_rung_works_without_an_env_production_never_sets`
+    through rung 5; what is left here is the distinct property that rung had no
+    claim on -- an empty registry resolves nothing at all, and the alert files
+    anyway.
     """
     fake = FakeLinear()
     monkeypatch.setattr(mod, "_load_linear", lambda: fake)
@@ -495,11 +502,11 @@ def test_an_unresolvable_repo_still_gets_a_project_and_still_files(
     reg.write_text(json.dumps([]))
     monkeypatch.setenv("KIPI_INSTANCE_REGISTRY", str(reg))
     monkeypatch.delenv("KIPI_ALERT_REPO_PATH", raising=False)
-    monkeypatch.setenv("KIPI_ALERT_FALLBACK_PROJECT", "kipi-system")
 
     code, _ = mod.file_alert("[/] Meeting loop could not run: token missing", now=1000.0)
     assert code == mod.EXIT_OK
-    assert fake.create_input.get("projectId") == "proj-kipi"
+    assert fake.created == 1
+    assert fake.create_input.get("projectId") is None
 
 
 def test_a_broken_project_lookup_never_costs_the_alert(isolated_state, monkeypatch):
@@ -580,7 +587,6 @@ def test_an_alert_raised_from_the_skeleton_carries_the_skeleton_project(
     monkeypatch.setenv("KIPI_INSTANCE_REGISTRY",
                        str(_registry_with_skeleton(tmp_path, skel)))
     monkeypatch.setenv("KIPI_ALERT_REPO_PATH", str(skel))
-    monkeypatch.delenv("KIPI_ALERT_FALLBACK_PROJECT", raising=False)
 
     code, _ = mod.file_alert(
         "[.wt-ask791] auto-commit left 3 file(s) uncommitted", now=1000.0)
@@ -592,10 +598,11 @@ def test_the_last_resort_rung_works_without_an_env_production_never_sets(
         isolated_state, monkeypatch, tmp_path):
     """Rung 5, for the 22 `[/]` tickets.
 
-    The existing `[/]` case sets KIPI_ALERT_FALLBACK_PROJECT by hand, and NOTHING
-    in this repo sets it -- grep finds one reader and no writer. So that case was
-    passing on an invented fixture while the rung it claims to cover returned "".
-    This one removes the env and leaves rung 5 to do the work it documents."""
+    The `[/]` case used to set `KIPI_ALERT_FALLBACK_PROJECT` by hand while
+    NOTHING in the repo wrote it -- one reader, no writer. So it passed on an
+    invented fixture while the rung it claims to cover returned "". This case
+    leaves rung 5 to do the work it documents; ASK-880 then deleted the env rung
+    outright, so there is no longer an env to remove here."""
     fake = FakeLinear()
     monkeypatch.setattr(mod, "_load_linear", lambda: fake)
     # Through _common_repo_root, so this case reads the same root the rung does
@@ -605,12 +612,35 @@ def test_the_last_resort_rung_works_without_an_env_production_never_sets(
     monkeypatch.setenv("KIPI_INSTANCE_REGISTRY",
                        str(_registry_with_skeleton(tmp_path, own_root)))
     monkeypatch.delenv("KIPI_ALERT_REPO_PATH", raising=False)
-    monkeypatch.delenv("KIPI_ALERT_FALLBACK_PROJECT", raising=False)
 
     code, _ = mod.file_alert("[/] Meeting loop could not run: token missing",
                              now=1000.0)
     assert code == mod.EXIT_OK
     assert fake.create_input.get("projectId") == "proj-kipi"
+
+
+def test_no_env_nothing_writes_can_steer_the_ladder(monkeypatch, tmp_path):
+    """The reproducer for ASK-880, and the guard against the rung coming back.
+
+    `KIPI_ALERT_FALLBACK_PROJECT` was read at one site with no writer anywhere in
+    the repo, so the only thing that could ever set it was a test -- and one did,
+    which is how the `[/]` case passed while the rung it claimed to cover
+    returned "". An env var production cannot set must not be able to decide
+    where an alert lands, because then the suite is measuring its own fixture.
+
+    Named for the PROPERTY, not the variable, so re-adding a differently-spelled
+    dead rung is caught too: the assertion is that a value only this test knows
+    about cannot appear in the candidate list.
+    """
+    reg = tmp_path / "instance-registry.json"
+    reg.write_text(json.dumps([]))
+    monkeypatch.setenv("KIPI_INSTANCE_REGISTRY", str(reg))
+    monkeypatch.delenv("KIPI_ALERT_PROJECT", raising=False)
+    monkeypatch.delenv("KIPI_ALERT_REPO_PATH", raising=False)
+    monkeypatch.setenv("KIPI_ALERT_FALLBACK_PROJECT", "invented-by-a-test-only")
+
+    assert "invented-by-a-test-only" not in mod.project_candidates(
+        "[/] Meeting loop could not run: token missing")
 
 
 def test_a_skeleton_row_with_no_alias_offers_nothing_rather_than_a_guess(
@@ -626,7 +656,6 @@ def test_a_skeleton_row_with_no_alias_offers_nothing_rather_than_a_guess(
     monkeypatch.setenv("KIPI_INSTANCE_REGISTRY", str(reg))
     monkeypatch.setenv("KIPI_ALERT_REPO_PATH", str(tmp_path / "kipi-system"))
     monkeypatch.delenv("KIPI_ALERT_PROJECT", raising=False)
-    monkeypatch.delenv("KIPI_ALERT_FALLBACK_PROJECT", raising=False)
 
     assert "kipi-system" not in mod.project_candidates("[x] something broke")
 
@@ -651,7 +680,6 @@ def test_rung_five_survives_running_out_of_a_worktree(
                        str(_registry_with_skeleton(tmp_path, skel)))
     monkeypatch.setattr(mod, "_own_checkout_root", lambda: str(wt))
     monkeypatch.delenv("KIPI_ALERT_REPO_PATH", raising=False)
-    monkeypatch.delenv("KIPI_ALERT_FALLBACK_PROJECT", raising=False)
 
     code, _ = mod.file_alert("[/] Meeting loop could not run: token missing",
                              now=1000.0)
@@ -738,7 +766,7 @@ def _kipi_on_path(tmp_path, skeleton, monkeypatch):
 def no_registry_env(monkeypatch, tmp_path):
     """Nothing about the real machine may decide these cases."""
     for var in ("KIPI_INSTANCE_REGISTRY", "KIPI_ALERT_PROJECT",
-                "KIPI_ALERT_REPO_PATH", "KIPI_ALERT_FALLBACK_PROJECT"):
+                "KIPI_ALERT_REPO_PATH"):
         monkeypatch.delenv(var, raising=False)
     empty_home = tmp_path / "home"
     empty_home.mkdir()
