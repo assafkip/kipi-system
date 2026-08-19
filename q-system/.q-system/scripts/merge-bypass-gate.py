@@ -151,8 +151,22 @@ def _protected_set() -> frozenset[str] | None:
     return frozenset(valid)
 
 
+def _repo_root(repo_dir: str) -> str:
+    """The worktree root, so the fleet marker is checked where it lives.
+    Checking the push CWD missed `cd <subdir> && git push` on every instance
+    (PR #226 review round 2, major). Unresolvable -> the dir itself, and the
+    remote-set check still applies behind it."""
+    try:
+        r = subprocess.run(["git", "-C", repo_dir, "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=3)
+    except Exception:
+        return repo_dir
+    top = r.stdout.strip()
+    return top if r.returncode == 0 and top else repo_dir
+
+
 def _protected_repo(url: str, repo_dir: str) -> bool:
-    if (Path(repo_dir) / "q-system").is_dir():
+    if (Path(_repo_root(repo_dir)) / "q-system").is_dir():
         return True  # fleet instance: the machinery is right there in the tree
     m = _GH_URL_RE.search((url or "").lower())
     if not m:

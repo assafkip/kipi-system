@@ -151,6 +151,19 @@ def main() -> int:
         # Fleet marker alone denies, remote set not consulted.
         check("push main in a fleet-marker tree with an unlisted remote",
               "git push origin main", gh_fleet, "deny")
+        # The marker lives at the WORKTREE ROOT: a push from a subdirectory
+        # must still see it (PR #226 review round 2, major).
+        (gh_fleet / "sub").mkdir()
+        check("push main from a subdirectory of a fleet-marker tree",
+              "git push origin main", gh_fleet / "sub", "deny")
+        # The shipped default set is load-bearing when no override is set and
+        # no marker is in the tree: mutating it to garbage must kill this.
+        gh_kipi = _make_repo(root, "gh_kipi",
+                             "https://github.com/assafkip/kipi-system.git", "main")
+        saved_env = os.environ.pop("MERGE_GATE_PROTECTED_REPOS")
+        check("default set protects kipi-system with no env override",
+              "git push origin main", gh_kipi, "deny")
+        os.environ["MERGE_GATE_PROTECTED_REPOS"] = saved_env
         # Case-folded, .git-tolerant set matching.
         check("push main under different URL casing of a protected repo",
               "git push origin main", gh_cased, "deny")
