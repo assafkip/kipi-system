@@ -10,7 +10,7 @@
   "enabledPlugins": {
     "kipi-core@kipi": true
   },
-  "outputStyle": "Entrepreneur OS",
+  "outputStyle": "AUDHD",
   "effortLevel": "thorough",
   "autoMemoryEnabled": true,
   "cleanupPeriodDays": 30,
