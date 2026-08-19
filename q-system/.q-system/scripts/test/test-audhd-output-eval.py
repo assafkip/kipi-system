@@ -141,6 +141,45 @@ class TestRunEvalStubbed(unittest.TestCase):
                          respond=lambda p, c: "x",
                          judge=lambda jp: "no json here")
 
+    def test_sink_keeps_paid_rows_before_a_later_failure(self):
+        # Case 2's judge reply is garbage; case 1's row must already be in the
+        # sink so the paid calls are not discarded (PR #225 review, minor).
+        cases = [dict(CASE, id="c1"), dict(CASE, id="c2")]
+        ok = json.dumps({"A": scores(), "B": scores(c=5, a=5, act=5, s=5, con=5)})
+        replies = iter([ok, "garbage"])
+        kept = []
+        with self.assertRaises(ValueError):
+            mod.run_eval(cases, "style", respond=lambda p, c: "x",
+                         judge=lambda jp: next(replies), sink=kept.append)
+        self.assertEqual([r["case_id"] for r in kept], ["c1"])
+
+
+class TestClaudeCallFailsLoudly(unittest.TestCase):
+    # A dead CLI must raise, never return a scoreable "" (PR #225 review,
+    # major: an empty response was silently judged and could print gate PASS).
+    def _call(self, cmd):
+        old = os.environ.get("AUDHD_EVAL_CLAUDE_CMD")
+        os.environ["AUDHD_EVAL_CLAUDE_CMD"] = cmd
+        try:
+            spec2 = importlib.util.spec_from_file_location("aoe_reload", MODULE_PATH)
+            mod2 = importlib.util.module_from_spec(spec2)
+            spec2.loader.exec_module(mod2)
+            with tempfile.TemporaryDirectory() as td:
+                return mod2._claude("prompt", [], td)
+        finally:
+            if old is None:
+                os.environ.pop("AUDHD_EVAL_CLAUDE_CMD", None)
+            else:
+                os.environ["AUDHD_EVAL_CLAUDE_CMD"] = old
+
+    def test_nonzero_exit_raises(self):
+        with self.assertRaises(RuntimeError):
+            self._call("/usr/bin/false")
+
+    def test_empty_output_raises(self):
+        with self.assertRaises(RuntimeError):
+            self._call("/usr/bin/true")
+
 
 class TestParseJudge(unittest.TestCase):
     def test_out_of_range_score_rejected(self):

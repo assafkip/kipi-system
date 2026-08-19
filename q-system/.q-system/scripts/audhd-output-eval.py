@@ -186,14 +186,24 @@ def _claude(prompt, extra_args, cwd):
     env.setdefault("ANTHROPIC_MODEL", "claude-opus-5")
     r = subprocess.run([CLAUDE, "-p", prompt] + extra_args,
                        capture_output=True, text=True, timeout=300, cwd=cwd, env=env)
-    return r.stdout or ""
+    # A failed or empty call must STOP the run, not become a scoreable "" --
+    # a dead API otherwise judges as a response and can still print gate PASS
+    # (PR #225 review, major).
+    if r.returncode != 0:
+        raise RuntimeError("claude exited %d: %s" % (r.returncode, (r.stderr or "").strip()[:200]))
+    if not (r.stdout or "").strip():
+        raise RuntimeError("claude returned empty output for a %d-char prompt" % len(prompt))
+    return r.stdout
 
 
-def run_eval(cases, style_text, respond=None, judge=None):
+def run_eval(cases, style_text, respond=None, judge=None, sink=None):
     """Orchestration with injectable respond/judge so tests never pay for a model.
 
     respond(prompt, condition) -> response text
     judge(judge_prompt) -> raw judge output text
+    sink(row) -> called as each case is scored, BEFORE the next case runs, so
+    a later failure never discards the paid calls already made (PR #225
+    review, minor). The `run` command points it at the results file.
     """
     workdir = tempfile.mkdtemp(prefix="audhd-eval-")
     if respond is None:
@@ -209,11 +219,14 @@ def run_eval(cases, style_text, respond=None, judge=None):
         cond_a, cond_b = blind_labels(i)
         verdict = parse_judge_json(judge(build_judge_prompt(case, by_cond[cond_a], by_cond[cond_b])))
         label_of = {cond_a: "A", cond_b: "B"}
-        results.append({
+        row = {
             "case_id": case["id"],
             "scores": {c: {d: verdict[label_of[c]][d] for d in DIMENSIONS} for c in CONDITIONS},
             "blocker": {c: bool(verdict[label_of[c]].get("blocker")) for c in CONDITIONS},
-        })
+        }
+        results.append(row)
+        if sink is not None:
+            sink(row)
         sys.stderr.write("scored %s (%d/%d)\n" % (case["id"], i + 1, len(cases)))
     return results
 
@@ -245,10 +258,14 @@ def main():
             sys.exit(1)
         with open(DEFAULT_STYLE, encoding="utf-8") as f:
             style_text = f.read()
-        results = run_eval(cases, style_text)
+        # Open the results file BEFORE the paid loop and flush per row: an
+        # unwritable --out fails at $0 spent, and a mid-run crash keeps every
+        # row already paid for (score the partial file with `score`).
         with open(args.out, "w", encoding="utf-8") as f:
-            for row in results:
+            def sink(row):
                 f.write(json.dumps(row) + "\n")
+                f.flush()
+            results = run_eval(cases, style_text, sink=sink)
         passed, reasons = gate(results)
         print("results: %s" % args.out)
         print("gate: %s" % ("PASS" if passed else "FAIL"))

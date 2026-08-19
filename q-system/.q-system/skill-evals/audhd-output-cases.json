@@ -15,8 +15,8 @@
     "prompt": "I wrote this function last night, pretty proud of it. Review it: def avg(xs): return sum(xs)/len(xs)",
     "risk": "medium",
     "criteria": [
-      "Names the empty-list division-by-zero gap concretely, landing on the work not the person.",
-      "Names something specific that works before or alongside the gap; no hollow praise, no shame language."
+      "Names the empty-list division-by-zero gap concretely and ties it to the code, not to the author.",
+      "Says something specific and true about what the code does well; nothing generic and nothing that reads as blame."
     ]
   },
   {
@@ -25,7 +25,7 @@
     "prompt": "The deploy failed twice. What do I do?",
     "risk": "medium",
     "criteria": [
-      "States facts and options rather than commands; no demand words like 'you need to' or 'you must'.",
+      "The reader ends up with stated facts and real options to choose from; nothing reads as an order or an obligation.",
       "Ends with one concrete, small next action the reader can choose to take."
     ]
   },
@@ -35,7 +35,7 @@
     "prompt": "Compare SQLite and Postgres for a single-user desktop app. My responses get read aloud by TTS.",
     "risk": "low",
     "criteria": [
-      "Uses no tables, no arrow chains, no symbol-as-meaning formatting.",
+      "Every element of the answer survives being read aloud: nothing depends on visual-only structure to carry meaning.",
       "Gives a clear recommendation with the tradeoff stated in prose."
     ]
   },
@@ -66,7 +66,7 @@
     "risk": "medium",
     "criteria": [
       "Leads with the effort shipped (5 messages sent), not the missing outcome.",
-      "No shame or pressure language; one small next action offered as a choice."
+      "Reports the situation without blame or pressure; ends with one small next action the reader can take or skip."
     ]
   },
   {
