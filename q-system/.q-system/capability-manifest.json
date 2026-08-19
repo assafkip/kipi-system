@@ -59,6 +59,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-audhd-output-eval.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-auto-update-nudge.sh",
       "runner": "bash"
     },
