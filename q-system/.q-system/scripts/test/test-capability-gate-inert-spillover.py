@@ -21,12 +21,25 @@ away from its caller.
 TWO SKIPS ARE LOAD-BEARING, NOT LENIENCE (fleet blast radius):
  - no `.prd-os/spillover.jsonl` at all -> skip. `kipi update` runs this gate in
    every instance; an instance without a ledger cannot resolve skeleton ids.
- - an id that is not IN this ledger -> skip. An instance that HAS a prd-os
-   ledger has its OWN ids, so "unknown id" means "not my ledger to judge", not
-   "dead pointer". Judging it would turn all 19 entries RED fleet-wide.
+ - an id that is not IN this ledger -> skip IN INSTANCE MODE ONLY. An instance
+   that HAS a prd-os ledger has its OWN ids, so "unknown id" means "not my
+   ledger to judge". In SKELETON mode the ledger is authoritative for the
+   skeleton's own manifest, so an unknown id is a fabricated or typo'd pointer
+   and goes RED (PR #224 review, minor).
+
+WHERE THIS CHECK IS BLIND, STATED SO NOBODY COUNTS IT AS COVERAGE (PR #224
+review, major): `.gitignore:43` excludes `*.jsonl` and un-ignores only
+`receipts.jsonl`, so `.prd-os/spillover.jsonl` is NEVER in a fresh checkout.
+`actions/checkout` in `.github/workflows/validate.yml` therefore takes the
+no-ledger skip every run. CI cannot see a dead pointer. Liveness is enforced
+where a ledger is readable -- the founder's skeleton checkout via `kipi check`,
+and any worktree of it. Cases 8 and 10 pin that the skip is REPORTED rather than
+silent, because a silent skip is the same silent-absence class this gate exists
+to make loud.
 """
 
 import importlib.util
+import inspect
 import json
 import os
 import subprocess
@@ -65,11 +78,14 @@ if not hasattr(capgate, "check_inert_spillover_live"):
 MANIFEST_REL = "q-system/.q-system/capability-manifest.json"
 
 
-def build_repo(tmp, spillover_rows, inert_id="sp-fixture01"):
+def build_repo(tmp, spillover_rows, inert_id="sp-fixture01", skeleton=False):
     """A minimal repo root: manifest + optional ledger. Deliberately NOT a git
-    repo and with no instance-registry.json, so the gate runs in instance mode
-    and the ledger lookup falls back to this root."""
+    repo, so the ledger lookup falls back to this root. `skeleton=True` writes
+    an instance-registry.json, which is the ONLY thing detect_mode() reads to
+    call a checkout the skeleton."""
     root = Path(tmp)
+    if skeleton:
+        (root / "instance-registry.json").write_text(json.dumps({"instances": []}))
     manifest = {
         "schema_version": 1,
         "expected_tests": [],
@@ -90,17 +106,32 @@ def build_repo(tmp, spillover_rows, inert_id="sp-fixture01"):
     return root, manifest
 
 
-def errors_for(spillover_rows, inert_id="sp-fixture01"):
-    with tempfile.TemporaryDirectory() as tmp:
-        root, manifest = build_repo(tmp, spillover_rows, inert_id)
-        errs = []
-        capgate.check_inert_spillover_live(root, manifest, errs)
-        return errs
+_SIG = inspect.signature(capgate.check_inert_spillover_live).parameters
+for _p in ("notes", "mode"):
+    if _p not in _SIG:
+        fail(f"check_inert_spillover_live() takes no {_p!r} argument. Without it the "
+             "check cannot report its own no-ledger skip (silent GREEN in CI, where "
+             "*.jsonl is gitignored) and cannot treat an unknown id as RED in "
+             "skeleton mode, where the ledger IS authoritative. PR #224 review.")
 
 
-def gate_rc(spillover_rows, inert_id="sp-fixture01"):
+def run_check(spillover_rows, inert_id="sp-fixture01", skeleton=False):
+    """Returns (errors, notes) from one direct call against a fixture repo."""
     with tempfile.TemporaryDirectory() as tmp:
-        root, _ = build_repo(tmp, spillover_rows, inert_id)
+        root, manifest = build_repo(tmp, spillover_rows, inert_id, skeleton=skeleton)
+        errs, notes = [], []
+        capgate.check_inert_spillover_live(
+            root, manifest, errs, notes, "skeleton" if skeleton else "instance")
+        return errs, notes
+
+
+def errors_for(spillover_rows, inert_id="sp-fixture01", skeleton=False):
+    return run_check(spillover_rows, inert_id, skeleton)[0]
+
+
+def gate_rc(spillover_rows, inert_id="sp-fixture01", skeleton=False):
+    with tempfile.TemporaryDirectory() as tmp:
+        root, _ = build_repo(tmp, spillover_rows, inert_id, skeleton=skeleton)
         env = dict(os.environ)
         env.pop("PYTHONPATH", None)
         proc = subprocess.run(
@@ -156,12 +187,13 @@ if errors_for([ROW_PROMOTED]):
          "(prd_runner spillover promoted-audit); only `resolved` is terminal")
 ok("declared_inert citing a PROMOTED spillover id stays GREEN (promoted is not terminal)")
 
-# --- case 5: an id absent from THIS ledger is not this ledger's to judge
+# --- case 5: in INSTANCE mode an id absent from THIS ledger is not ours to judge
 if errors_for([ROW_OTHER]):
-    fail(f"an id absent from the ledger was judged: {errors_for([ROW_OTHER])}. "
-         "an instance with its own prd-os ledger holds different ids; judging "
-         "unknown ids turns every declared_inert entry RED fleet-wide")
-ok("a spillover id absent from this ledger is skipped, not judged")
+    fail(f"an id absent from the ledger was judged in instance mode: "
+         f"{errors_for([ROW_OTHER])}. an instance with its own prd-os ledger holds "
+         "different ids; judging unknown ids turns every declared_inert entry RED "
+         "fleet-wide, in 20+ instances at once")
+ok("instance mode: a spillover id absent from this ledger is skipped, not judged")
 
 # --- case 6: last row wins, matching the ledger's own append-only read --------
 if errors_for([ROW_OPEN, ROW_RESOLVED]) == []:
@@ -185,19 +217,71 @@ ok("a malformed ledger line is skipped and the readable rows are still judged")
 
 # --- wiring: main() actually calls this, and the real manifest is clean -------
 src = GATE.read_text()
-if "check_inert_spillover_live(root, manifest, errors)" not in src:
+if "check_inert_spillover_live(root, manifest, errors, notes, mode)" not in src:
     fail("main() no longer calls check_inert_spillover_live; this suite would "
          "be testing dead code")
 subprocess.run([sys.executable, "-c", "import ast,sys; ast.parse(open(sys.argv[1]).read())",
                 str(GATE)], check=True)
 ok("wiring: main() calls check_inert_spillover_live and the gate parses")
 
+# --- case 8: the no-ledger skip must be REPORTED, never silent -----------------
+# This is the CI condition. `.gitignore:43` excludes `*.jsonl`, so a fresh
+# actions/checkout has no spillover ledger and this check cannot fire there. A
+# silent GREEN reads as "checked, clean"; it means "not checked". The gate has to
+# say which.
+errs, notes = run_check(None, skeleton=True)
+if errs:
+    fail(f"a repo with no ledger was judged: {errs}")
+if not any("SKIPPED" in n and "spillover" in n.lower() for n in notes):
+    fail(f"the no-ledger skip emitted no note: {notes}. CI takes this branch on "
+         "EVERY run (*.jsonl is gitignored), so a silent skip lets the gate report "
+         "GREEN on the exact dead-pointer manifest it was written to catch")
+ok("the no-ledger skip is reported as SKIPPED in the gate's notes, not silent")
+
+rc, out = gate_rc(None, skeleton=True)
+if rc != 0:
+    fail(f"gate went RED with no ledger, rc={rc}:\n{out}")
+if "SKIPPED" not in out:
+    fail(f"capability-gate.py --check-only printed no skip line with no ledger:\n{out}")
+ok(f"capability-gate.py --check-only prints the skip and still exits {rc}")
+
+# --- case 9: SKELETON mode, unknown id -> RED (the ledger is authoritative here)
+errs, _ = run_check([ROW_OTHER], skeleton=True)
+if not errs:
+    fail("skeleton mode accepted a spillover_id that is in NO ledger row. In the "
+         "skeleton the ledger IS this manifest's ledger, so an unknown id is a "
+         "typo'd or fabricated pointer, not another ledger's business. All 19 real "
+         "ids resolve today, so this reds zero real entries")
+if "sp-fixture01" not in " ".join(errs):
+    fail(f"the skeleton unknown-id error must name the id: {errs}")
+ok("skeleton mode: a spillover id in NO ledger row is RED and names the id")
+
+# --- case 10: mode is the ONLY difference between cases 5 and 9 ----------------
+# Same fixture ledger, same manifest, different mode. If this pair ever agrees,
+# either the fleet skip is gone (20+ instances RED) or the skeleton hole is back.
+inst_errs, _ = run_check([ROW_OTHER], skeleton=False)
+skel_errs, _ = run_check([ROW_OTHER], skeleton=True)
+if bool(inst_errs) == bool(skel_errs):
+    fail(f"instance and skeleton agree on an unknown id (instance={inst_errs}, "
+         f"skeleton={skel_errs}); one of the two behaviours has been lost")
+ok("unknown-id verdict differs by mode only: instance skips, skeleton reds")
+
+# --- wiring: main() actually calls this, and the real manifest is clean -------
 real_manifest = json.loads((ROOT / MANIFEST_REL).read_text())
-real_errs = []
-capgate.check_inert_spillover_live(ROOT, real_manifest, real_errs)
+real_errs, real_notes = [], []
+capgate.check_inert_spillover_live(ROOT, real_manifest, real_errs, real_notes,
+                                   capgate.detect_mode(ROOT, []))
 if real_errs:
     fail("this repo's own capability-manifest.json has dead inert pointers: "
          + " | ".join(real_errs))
-ok("this repo's capability-manifest.json cites only live spillover ids")
+if any("SKIPPED" in n for n in real_notes):
+    # Do NOT claim the manifest is clean when the ledger was never read. This is
+    # what the assertion did in CI before PR #224 review: it printed "cites only
+    # live spillover ids" while sitting on the three dead pointers.
+    ok("this checkout has no spillover ledger, so manifest liveness was NOT "
+       "checked here (expected in CI; run it where the ledger lives)")
+else:
+    ok("this repo's capability-manifest.json cites only live spillover ids "
+       f"({len(real_manifest.get('declared_inert', []))} entries, ledger read)")
 
 print(f"PASS: {PASS}/{PASS} declared_inert spillover-liveness checks")

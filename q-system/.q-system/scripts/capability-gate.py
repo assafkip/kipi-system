@@ -214,7 +214,12 @@ def spillover_ledger_path(root):
     return ledger_root / ".prd-os" / "spillover.jsonl"
 
 
-def check_inert_spillover_live(root, manifest, errors):
+# A row present with status None is not the same as an id with no row at all;
+# `status.get(sid)` collapses both to None and would make a real row look absent.
+_ABSENT = object()
+
+
+def check_inert_spillover_live(root, manifest, errors, notes=None, mode="instance"):
     """A declared_inert entry must cite a spillover id that is still a LIVE
     decision (ASK-345).
 
@@ -233,13 +238,35 @@ def check_inert_spillover_live(root, manifest, errors):
 
     TWO SKIPS, both fleet-safety and not lenience — `kipi update` runs this gate
     in all 20+ instances:
-      * no ledger file -> skip. An instance without prd-os cannot resolve any id.
-      * id not in THIS ledger -> skip. An instance WITH prd-os has its own ids,
-        so "unknown" means "another ledger's row", not "dead pointer". Judging
-        unknown ids would turn every declared_inert entry RED fleet-wide.
+      * no ledger file -> skip, and SAY SO in notes (see the blindness note).
+      * id not in THIS ledger -> skip IN INSTANCE MODE ONLY. An instance WITH
+        prd-os has its own ids, so "unknown" means "another ledger's row", not
+        "dead pointer"; judging it would turn every declared_inert entry RED
+        fleet-wide. In SKELETON mode the ledger is this manifest's own ledger,
+        so an unknown id is a typo'd or fabricated pointer and goes RED. All 19
+        real ids resolve in the skeleton ledger today (measured 2026-08-19), so
+        the strict half reds nothing that exists (PR #224 review, minor).
+
+    WHERE THIS IS BLIND, AND WHY THE SKIP IS LOUD (PR #224 review, major):
+    `.gitignore:43` excludes `*.jsonl` and un-ignores only `receipts.jsonl`, so
+    `.prd-os/spillover.jsonl` is never committed. Every `actions/checkout` in
+    `.github/workflows/validate.yml` therefore takes the no-ledger branch, and CI
+    CANNOT catch a dead pointer — do not count that step as coverage. Liveness is
+    enforced wherever a ledger is readable: the founder's skeleton checkout via
+    `kipi check`, any worktree of it (git-common-dir), and any instance carrying
+    prd-os. The skip appends a note rather than returning quietly, because a
+    silent GREEN reads as "checked, clean" when it means "not checked" — the same
+    silent-absence class this whole gate exists to make loud.
     """
     path = spillover_ledger_path(root)
     if not path.is_file():
+        if notes is not None:
+            notes.append(
+                f"inert-spillover-liveness: SKIPPED, no ledger at {path}. "
+                f"{len(manifest.get('declared_inert', []))} declared_inert pointer(s) "
+                "were NOT checked for a closed decision. Expected in CI (*.jsonl is "
+                "gitignored) and in instances without prd-os; this run proves nothing "
+                "about pointer liveness.")
         return
     status = {}
     try:
@@ -259,13 +286,22 @@ def check_inert_spillover_live(root, manifest, errors):
             status[rec["id"]] = rec.get("status")  # last row wins
     for entry in manifest.get("declared_inert", []):
         sid = entry.get("spillover_id")
-        if status.get(sid) != "resolved":
-            continue
-        errors.append(
-            f"declared_inert {entry.get('path')} cites {sid}, which is RESOLVED "
-            "in the spillover ledger: the wire-or-retire decision it points at "
-            "is closed, so nothing tracks this script any more. Repoint it at an "
-            "open item or decide the script.")
+        if not sid:
+            continue  # validate_manifest already owns the empty-string error
+        st = status.get(sid, _ABSENT)
+        if st == "resolved":
+            errors.append(
+                f"declared_inert {entry.get('path')} cites {sid}, which is RESOLVED "
+                "in the spillover ledger: the wire-or-retire decision it points at "
+                "is closed, so nothing tracks this script any more. Repoint it at an "
+                "open item or decide the script.")
+        elif st is _ABSENT and mode == "skeleton":
+            errors.append(
+                f"declared_inert {entry.get('path')} cites {sid}, which matches NO "
+                f"row in {path}. In the skeleton that ledger IS this manifest's "
+                "ledger, so an id it has never heard of is a typo or a fabricated "
+                "pointer, and a pointer nothing can resolve tracks nothing. (An "
+                "INSTANCE skips this: its ledger legitimately holds other ids.)")
 
 
 def validate_quarantine(entry, errors):
@@ -731,7 +767,7 @@ def main():
     # validate_manifest, which is handed data only. Placed before the
     # fail-closed exit below: a declared_inert entry pointing at a closed
     # decision is a structural manifest problem, not a finding about the repo.
-    check_inert_spillover_live(root, manifest, errors)
+    check_inert_spillover_live(root, manifest, errors, notes, mode)
     # counts note BEFORE the structural early-exit: an expired quarantine is a
     # structural error, and exiting first meant exactly those runs lost the
     # quarantine count the contract promises in EVERY summary (codex,
