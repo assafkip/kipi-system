@@ -49,6 +49,10 @@ MIN_TEXT_BYTES = 80
 # Explicit publish-intent framing — the only signal that a final chat message hands the
 # founder content meant for someone ELSE. Engineering/debug chat carries none of these,
 # so it's treated as conversational-to-founder and skipped (voice-enforcement.md).
+# 'response' left the set in round 7: "here's the response payload" is
+# engineering prose, and the marker now GATES extraction, so a generic noun
+# opens the sweep. Same round, same reason, the bare copy-paste alternative
+# below is gone -- 'copy-paste' is this fleet's own CLAUDE.md vocabulary.
 _NOUN = (r"(post|reply|comment|dm|email|draft|thread|tweet|caption|message|outreach|"
          r"response|blurb)")
 _PLAT = r"(linkedin|x|twitter|medium|reddit|instagram|threads)"
@@ -193,7 +197,11 @@ def authorship_drain():
     if argv is None:
         return ""
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        # 5s ceiling on a state-file read (~0.3s real): drain 5 + page 3 bounds
+        # the Stop path's sync reporter cost to 8s inside the 15s hook budget
+        # (Codex round 5 counted 13 and called the "detached" wording wrong;
+        # the WORKER is detached, these two reads never were).
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=5)
         return (r.stdout or "").strip()
     except Exception:
         return ""
@@ -236,6 +244,61 @@ def authorship_spool(draft, framing, request):
                 pass
 
 
+def authorship_page():
+    """File a pending drift ALERT, detached. The INSTANCE side owns this channel.
+
+    WHO RECEIVES IT (round 7, aligned with the founder's standing directive
+    rather than with this docstring's first draft): `slack-notify.sh` is THE
+    FLEET ALERT PATH -- founder-directed 2026-08-10, verbatim in that script's
+    header: "I dont want to see any of these. Any of the ones that need
+    attention should go to Sana - not me." It files a Linear ticket for Sana
+    and pages nobody. A reconciliation drift is exactly such an engineering
+    signal: the founder's ask was that silence never falls on the floor, and a
+    ticket in the engineering queue is the opposite of the floor. The founder
+    sees outcomes, never plumbing alerts.
+
+    The reporter computes the drift but may not send the page: everything in
+    `q-consult/pipeline/` is forbidden by that repo's boundary test from reaching
+    the Slack webhook, which belongs to the other side of that repo's
+    brand-separation boundary (its test_boundary.py names the two sides). So it writes a request and this script -- which lives on the
+    instance, already knows INSTANCE_ROOT, and is where founder notifications
+    belong -- delivers it.
+
+    `slack-notify.sh` is the only sanctioned channel (founder-notifications.md);
+    osascript is banned because a sandboxed process drops it silently, which is
+    the same silence this whole counter exists to break.
+
+    FULLY DETACHED, and that is not optional. This runs on the Stop path, and a
+    curl to Slack must never sit between him and his text. The page is not urgent
+    by construction -- it reports an ongoing silence, not an incident.
+    """
+    script = SCRIPTS_DIR / "slack-notify.sh"
+    if not script.is_file():
+        # BEFORE the consuming read, not after: --drain-page deletes what it
+        # returns, and an instance without the alert script was eating the
+        # page permanently (fallback-review sub-finding, round 7).
+        return
+    argv = _reporter_argv("--drain-page")
+    if argv is None:
+        return
+    try:
+        # 3s, not 10: --drain-page is a state-file read, and this sync call
+        # shares a 15s Stop budget with the drain and the spool (Codex minor,
+        # PR #217). The Slack send below stays a detached Popen.
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=3)
+    except Exception:
+        return
+    line = (r.stdout or "").strip()
+    if not line:
+        return
+    try:
+        subprocess.Popen(["bash", str(script), line],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception:
+        return
+
+
 def finish_ok():
     """Exit 0, surfacing any advisory line a previous turn's worker finished.
 
@@ -248,6 +311,8 @@ def finish_ok():
     the path that never reached the drain. The number would have appeared only
     if he asked for two posts back to back.
     """
+    # Before the drain, and detached, so a Slack curl never delays his text.
+    authorship_page()
     line = authorship_drain()
     if line:
         # `systemMessage` on exit 0 is the ONLY hook field that puts text in
@@ -327,6 +392,33 @@ def run_check(script, file_path):
 
 
 def main():
+    # sp-08c34cf1: SURFACE-ONLY MODE, for SessionStart ONLY.
+    #
+    # SessionEnd was wired here first and REMOVED after a Codex review checked
+    # the premise against the hooks documentation: SessionEnd delivers no
+    # systemMessage to the user (only a stderr error notice), so a drain there
+    # CONSUMED the score and threw it away, and the SessionStart backstop then
+    # found nothing left to surface. A same-session wrap-up surface is not
+    # available from any hook; next-session-start is the honest floor.
+    #
+    # The drain runs on the NEXT Stop event, and the last post of a session has
+    # no next Stop -- confirmed against the hooks documentation, not assumed:
+    # nothing fires while Claude Code sits idle waiting for input. So the score
+    # for the last post he writes reached him only if he happened to write
+    # another one.
+    #
+    # SessionStart is the one drain event (see the SessionEnd note above): it
+    # covers every way a session begins -- startup, resume, clear, compact --
+    # so the score survives a killed terminal, a /clear, and a compaction. A
+    # day-late number is worse than a same-session one and far better than
+    # none, which is why the drained line names its own age when it is stale.
+    #
+    # It is a FLAG and not a `hook_event_name` sniff on the payload. The lint
+    # half of this file must never run on those events, and keying that on a
+    # field the payload happens to carry makes the safety depend on a schema
+    # nobody here controls.
+    if "--drain-only" in sys.argv[1:]:
+        finish_ok()
     try:
         payload = json.load(sys.stdin)
     except Exception:
