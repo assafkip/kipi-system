@@ -63,11 +63,62 @@ quiet_for() {
 echo "test-silent-success-lint"
 
 # --- case 0: provenance -- every vendored fixture IS its producing commit -----
+#
+# TWO checks, and only one of them can depend on the clone.
+#
+# Three of the four producing commits (5600ebab, fa74b1d2, 5495a9b) are NOT
+# ancestors of origin/main -- they live only on the unmerged branches sana/ask-208
+# and sana/ask-312. `git cat-file -e` against them therefore succeeds today and
+# stops succeeding the moment those branches are deleted on merge, which is the
+# normal end of a branch's life. The first version of this case called bad() on
+# an absent object, so a routine branch cleanup would have turned this required
+# test permanently red with nothing actually wrong (PR #230 review, major).
+#
+# So the ANTI-DRIFT gate -- the thing this case exists for, "a fixture cannot be
+# quietly edited until it agrees with the lint" -- is the sha256 pin below. It
+# needs no git history at all, so it runs identically in a shallow clone, a fork
+# or a tarball, and it can never be unavailable. Case 4b mutates a fixture and
+# requires it to go red, so this is a check that can fail.
+#
+# Re-deriving from the commit is a STRICTLY ADDITIONAL confirmation (it also
+# catches a fixture edited together with its pin). It runs when the object is
+# present and is REPORTED, never silently dropped, when it is not: an absent
+# object leaves the anti-drift gate fully intact, so it is not "a gate that could
+# not run passing" -- it is one confirmation of two being unavailable, said out
+# loud and counted in the summary.
 echo "[0] fixture provenance"
+NOTE=0
+note() { NOTE=$((NOTE+1)); printf '  note %s\n' "$1"; }
+
+# sha256 of the vendored bytes, pinned at authoring time against the commits below.
+pin_RED_fetch_guard=4f52ae07b069ce340de3be8e423fbfe0599674810d7f8f4752a29d2675daa141
+pin_RED_reset_rounds=4506697d832b4eaa57a0b7d65c363e30926b07c8a1ddc12281c83720e70d0136
+pin_RED_empty_approve=886952b2207cd5088e14df1074a96f69c4fa1f81f940ddc7f637923721c5e046
+pin_GREEN_declared_approve=4cd387412f183775f133de06ec76cb881f22cfe2c14f8b86754ae0f88b008cd0
+pin_GREEN_checked_swallow=81a1efe4c6530aff1f7d8656ce53cb05b86757d35d45133d635386b60d229b62
+
+sha256_of() { python3 -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$1"; }
+
+# check_pin <fixture> <expected-sha256>  -- always runs, no git required
+check_pin() {
+  local fixture="$1" want="$2" got
+  if [ ! -f "$FIX/$fixture" ]; then
+    bad "pin $fixture" "vendored fixture is missing"
+    return
+  fi
+  got="$(sha256_of "$FIX/$fixture")"
+  if [ "$got" = "$want" ]; then
+    ok "pin $fixture sha256 matches"
+  else
+    bad "pin $fixture" "content drifted: want $want got $got"
+  fi
+}
+
+# check_provenance <sha> <path-at-that-sha> <fixture> -- extra, when available
 check_provenance() {
   local sha="$1" path="$2" fixture="$3"
   if ! git -C "$ROOT" cat-file -e "$sha" 2>/dev/null; then
-    bad "provenance $fixture" "commit $sha not in this clone -- fixture unverifiable"
+    note "provenance $fixture: $sha not in this clone (branch merged/pruned); sha256 pin carried it"
     return
   fi
   if git -C "$ROOT" show "$sha:$path" 2>/dev/null | diff -q - "$FIX/$fixture" >/dev/null; then
@@ -76,6 +127,13 @@ check_provenance() {
     bad "provenance $fixture" "drifted from $sha:$path"
   fi
 }
+
+check_pin RED-fetch-guard.linear-worker.sh        "$pin_RED_fetch_guard"
+check_pin RED-reset-rounds.linear-worker.sh       "$pin_RED_reset_rounds"
+check_pin RED-empty-approve.pr-verdict-lib.sh     "$pin_RED_empty_approve"
+check_pin GREEN-declared-approve.pr-verdict-lib.sh "$pin_GREEN_declared_approve"
+check_pin GREEN-checked-swallow.converge.sh       "$pin_GREEN_checked_swallow"
+
 check_provenance '5600ebab^' q-system/.q-system/scripts/linear-worker.sh   RED-fetch-guard.linear-worker.sh
 check_provenance 'fa74b1d2^' q-system/.q-system/scripts/linear-worker.sh   RED-reset-rounds.linear-worker.sh
 check_provenance '4b4dd3e'   q-system/.q-system/scripts/pr-verdict-lib.sh  RED-empty-approve.pr-verdict-lib.sh
@@ -128,6 +186,41 @@ del lines[147:152]
 open(dst, "w", encoding="utf-8").writelines(lines)
 PY
 flags "$TMP/mutant.sh" SS003 148 "un-commented, the same else is flagged again"
+
+# --- case 7b: the sha256 pin is itself a check that can fail ------------------
+# Without this, "pin matches" proves only that two strings were compared. Edit a
+# fixture's bytes and check_pin MUST call bad(). Run against a copy so the real
+# fixture is never touched.
+echo "[4b] mutation: the sha256 pin catches an edited fixture"
+FIX_REAL="$FIX"
+mkdir -p "$TMP/fixdrift"
+cp "$FIX/RED-fetch-guard.linear-worker.sh" "$TMP/fixdrift/"
+printf '\n# a quiet edit to make the lint agree\n' >> "$TMP/fixdrift/RED-fetch-guard.linear-worker.sh"
+PIN_PASS_BEFORE=$PASS PIN_FAIL_BEFORE=$FAIL
+# Redirected, not sub-shelled: the deliberate bad() must not print as a real
+# failure, but its PASS/FAIL side effect has to survive for the delta below.
+FIX="$TMP/fixdrift"
+check_pin RED-fetch-guard.linear-worker.sh "$pin_RED_fetch_guard" > "$TMP/mut-pin.log" 2>&1
+FIX="$FIX_REAL"
+if [ "$FAIL" -gt "$PIN_FAIL_BEFORE" ]; then
+  FAIL=$PIN_FAIL_BEFORE; ok "an edited fixture fails the sha256 pin"
+else
+  PASS=$PIN_PASS_BEFORE; bad "an edited fixture fails the sha256 pin" "pin stayed green on drifted bytes"
+fi
+
+# --- case 7c: an absent producing commit is a note, never a failure ----------
+# Simulates the branch-deletion case directly: a well-formed sha that is not in
+# this clone must NOT turn the suite red, because the sha256 pin above already
+# holds the anti-drift line. This is the finding from PR #230 review (major).
+echo "[4c] a pruned producing commit does not break the suite"
+NOTE_BEFORE=$NOTE FAIL_BEFORE=$FAIL
+check_provenance '0000000000000000000000000000000000000000' some/path RED-fetch-guard.linear-worker.sh
+if [ "$FAIL" -eq "$FAIL_BEFORE" ] && [ "$NOTE" -gt "$NOTE_BEFORE" ]; then
+  ok "an unavailable commit reports a note and keeps the suite green"
+else
+  bad "an unavailable commit reports a note and keeps the suite green" \
+      "fail delta=$((FAIL-FAIL_BEFORE)) note delta=$((NOTE-NOTE_BEFORE))"
+fi
 
 # --- case 8: the suppression marker ------------------------------------------
 echo "[5] suppression"
@@ -215,6 +308,31 @@ else
   ok "repo-wide scan skips fixtures"
 fi
 
-printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+# --- case 12: the lint does not commit its own defect on a named path --------
+# A path the caller NAMED that could not be opened used to return [] -- printed
+# "0 finding(s)", rc=0, a clean bill of health for a file nothing ever read. That
+# is SS002 in the scanner itself (PR #230 review, minor). rc=2, not 1, so a
+# broken invocation is distinguishable from a real result.
+echo "[9] an unreadable requested path is not a clean scan"
+# `&& RC=0 || RC=$?` throughout: these calls exit non-zero by contract and a bare
+# `; RC=$?` would let `set -e` abort the suite before the assertion runs.
+python3 "$LINT" --root "$ROOT" "$TMP/definitely-not-here.sh" >/dev/null 2>"$TMP/unread.err" \
+  && RC=0 || RC=$?
+if [ "$RC" -eq 2 ] && grep -q 'NOT a clean scan' "$TMP/unread.err"; then
+  ok "a missing named path exits 2 and says so"
+else
+  bad "a missing named path exits 2 and says so" "rc=$RC err=$(tr '\n' ' ' < "$TMP/unread.err")"
+fi
+# A directory is unreadable in the same way and must not read as clean either.
+mkdir -p "$TMP/adir.sh"
+python3 "$LINT" --root "$ROOT" "$TMP/adir.sh" >/dev/null 2>&1 && RC=0 || RC=$?
+[ "$RC" -eq 2 ] && ok "a directory argument exits 2" || bad "a directory argument exits 2" "rc=$RC"
+# And the sweep still tolerates what it legitimately cannot open.
+python3 "$LINT" --root "$ROOT" --report >/dev/null 2>&1 && RC=0 || RC=$?
+[ "$RC" -eq 0 ] && ok "the repo-wide sweep is unaffected" || bad "the repo-wide sweep is unaffected" "rc=$RC"
+
+printf '\n%d passed, %d failed' "$PASS" "$FAIL"
+[ "$NOTE" -eq 0 ] || printf ', %d note(s) (provenance unavailable, pin held)' "$NOTE"
+printf '\n'
 [ "$FAIL" -eq 0 ] || exit 1
 echo "PASS test-silent-success-lint"

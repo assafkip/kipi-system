@@ -501,13 +501,26 @@ def included(rel):
     return rel.endswith(".sh") or rel.endswith(".py")
 
 
+# A file this scanner could not read yielded [] -- indistinguishable from "read
+# it, found nothing". On the repo-wide sweep that is fine and deliberate (a
+# tracked-but-deleted path, a symlink, a submodule dir), but on a path the caller
+# NAMED it is this lint committing SS002 against itself: a typo'd argument came
+# back "0 finding(s)" with rc=0, which reads as a clean bill of health for a file
+# nothing ever opened (PR #230 review, minor). Unreadable is now a distinct
+# outcome, and the caller decides what it means.
+class Unreadable:
+    def __init__(self, rel, why):
+        self.rel = rel
+        self.why = why
+
+
 def scan_path(root, rel):
     full = os.path.join(root, rel)
     try:
         with open(full, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
-    except (OSError, IsADirectoryError):
-        return []
+    except (OSError, IsADirectoryError) as exc:
+        return Unreadable(rel, exc.strerror or exc.__class__.__name__)
     if SKIP_RE.search(text.split("\n", 1)[0]):
         return []
     if rel.endswith(".py"):
@@ -541,14 +554,37 @@ def main(argv=None):
         for p in args.paths:
             ap_ = os.path.abspath(p)
             rels.append(os.path.relpath(ap_, root) if ap_.startswith(root) else p)
-        findings = [f for rel in rels for f in scan_path(root, rel)]
+        findings, unreadable = [], []
+        for rel in rels:
+            got = scan_path(root, rel)
+            (unreadable if isinstance(got, Unreadable) else findings).extend(
+                [got] if isinstance(got, Unreadable) else got
+            )
+        # A named path that could not be opened is an error, never a clean scan.
+        # rc=2 (not 1) keeps it distinct from "scanned it, found findings" so a
+        # caller can tell a broken invocation from a real result.
+        if unreadable:
+            for u in unreadable:
+                sys.stderr.write(
+                    "silent-success-lint: cannot read %s: %s\n" % (u.rel, u.why)
+                )
+            sys.stderr.write(
+                "silent-success-lint: %d requested path(s) unread -- NOT a clean "
+                "scan. Fix the path, or drop it from the argument list.\n"
+                % len(unreadable)
+            )
+            return 2
     else:
-        findings = [
-            f
-            for rel in tracked_files(root)
-            if included(rel)
-            for f in scan_path(root, rel)
-        ]
+        # The sweep is the opposite case: `git ls-files` lists tracked paths that
+        # may legitimately not be openable right now, and skipping those is the
+        # intended behaviour rather than an error.
+        findings = []
+        for rel in tracked_files(root):
+            if not included(rel):
+                continue
+            got = scan_path(root, rel)
+            if not isinstance(got, Unreadable):
+                findings.extend(got)
 
     # Two swallow lines can point at ONE report line (break-glass-main-protection
     # .sh:179 did), and reporting the same anchor twice inflates the count a
