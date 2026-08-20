@@ -422,6 +422,28 @@ def _is_loud_name(part):
     return False
 
 
+def _is_indistinguishable_empty(node):
+    """The RETURN half of SS102, and deliberately narrower than the ASSIGN half.
+
+    The defect is that a caller cannot tell a failed read from a real empty
+    result, so the test is not "is this falsy" but "does this collide with a
+    legitimate value". `return {}` / `[]` / `""` / `0` / `False` collide and
+    are the data-loss shape. `return None` does NOT: it is a sentinel the
+    caller has to unwrap, which is the ordinary optional-lookup idiom.
+
+    Measured before narrowing, not guessed: flagging every falsy return took
+    the repo sweep from 173 findings to 351 (SS102 31 -> 209). At that rate the
+    check is bypassed within a day and protects nothing, which the issue's
+    blast-radius line names as worse than no check. Excluding the None sentinel
+    lands it at a reviewable number while keeping every collision case.
+    """
+    if node is None:
+        return False
+    if isinstance(node, ast.Constant) and node.value is None:
+        return False
+    return _is_empty_default(node)
+
+
 def _handler_is_loud(handler):
     """Does this handler tell anyone? raise / log / warn / notify / write."""
     for n in ast.walk(handler):
@@ -497,8 +519,16 @@ def scan_python(path, text):
         rebinds = [
             s
             for s in body
-            if isinstance(s, (ast.Assign, ast.Return)) and _is_empty_default(s.value)
+            if (isinstance(s, ast.Assign) and _is_empty_default(s.value))
+            or (isinstance(s, ast.Return) and _is_indistinguishable_empty(s.value))
         ]
+        # The hatch has to be reachable where the defect is WRITTEN. skipped()
+        # is keyed on the `except` line, which works for a marker above the
+        # handler and misses one sitting on the offending statement inside it --
+        # the natural place to put it, and where the py_green fixture already
+        # had one. Check both.
+        if rebinds and any(skipped(s.lineno) for s in rebinds):
+            continue
         if rebinds and len(rebinds) == len(body) and not _handler_is_loud(node):
             first = rebinds[0]
             tgt = first.targets[0] if isinstance(first, ast.Assign) else None

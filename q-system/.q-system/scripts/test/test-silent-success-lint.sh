@@ -289,6 +289,68 @@ quiet_for "$TMP/py_green.py" SS101 "a loud handler is not SS101"
 quiet_for "$TMP/py_green.py" SS102 "a declared empty default is not SS102"
 quiet_for "$TMP/py_green.py" SS103 "an error branch exiting non-zero is not SS103"
 
+# --- case 6b: the three round-4 review findings, each observed RED first ------
+#
+# Constructed, and labelled as such: these are shapes the detectors MISSED, so
+# no producing commit in this repo carries them as a live defect to extract.
+# Each was run against the pre-fix lint and came back unflagged before the fix
+# landed, and the two negatives below are what keep the fix from over-firing.
+echo "[6b] round-4 findings"
+
+cat > "$TMP/r4_empty_return.py" <<'EOF'
+def load(path):
+    try:
+        return json.load(open(path))
+    except Exception:
+        return {}
+EOF
+# anchored on the `except` line, same as the empty-assign form: SS102 is a
+# statement about the handler, not about the one line inside it.
+flags "$TMP/r4_empty_return.py" SS102 4 \
+  "an empty RETURN out of a handler is SS102, not only an empty assign"
+
+cat > "$TMP/r4_none_return.py" <<'EOF'
+def find(path):
+    try:
+        return index[path]
+    except KeyError:
+        return None
+EOF
+quiet_for "$TMP/r4_none_return.py" SS102 \
+  "a None sentinel is distinguishable, so it is not SS102"
+
+cat > "$TMP/r4_comment_notify.sh" <<'EOF'
+if ! git fetch origin; then
+    # nothing here will notify anyone, which is the bug
+    echo "no upstream"
+    exit 0
+fi
+EOF
+flags "$TMP/r4_comment_notify.sh" SS001 4 \
+  "a comment saying notify does not vouch for the branch"
+
+cat > "$TMP/r4_catalog_exit.py" <<'EOF'
+def run():
+    try:
+        work()
+    except Exception:
+        catalog()
+        sys.exit(0)
+EOF
+flags "$TMP/r4_catalog_exit.py" SS103 6 \
+  "catalog() does not certify a handler as loud"
+
+cat > "$TMP/r4_logger_exit.py" <<'EOF'
+def run():
+    try:
+        work()
+    except Exception:
+        logger.warning("failed")
+        sys.exit(0)
+EOF
+quiet_for "$TMP/r4_logger_exit.py" SS103 \
+  "logger.warning still certifies a handler as loud"
+
 # --- case 10: exit-code contract ---------------------------------------------
 echo "[7] exit codes"
 run "$FIX/RED-fetch-guard.linear-worker.sh"
