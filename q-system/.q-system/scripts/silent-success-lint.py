@@ -197,6 +197,16 @@ def _has(text, tokens):
     return any(t in text for t in tokens)
 
 
+# A `#` that opens a comment is at line start or follows whitespace. `${#arr}`
+# and `$#` follow `{`/`$`, so they survive; a `#` inside a quoted string does
+# not, which costs a false NEGATIVE at worst and never a false positive.
+SHELL_COMMENT_RE = re.compile(r"(?m)(^|\s)#.*$")
+
+
+def _strip_shell_comments(text):
+    return SHELL_COMMENT_RE.sub(r"\1", text)
+
+
 def scan_shell(path, text):
     findings = []
     lines = text.splitlines()
@@ -216,7 +226,10 @@ def scan_shell(path, text):
             ]
             if not exits:
                 continue
-            if _has(body_text, NOTIFY_TOKENS):
+            # Notification has to be CODE. Scanning the raw body let a comment
+            # carry the proof, so `# nothing here will notify anyone` cleared
+            # the branch it was documenting as broken (codex minor, PR #230 r4).
+            if _has(_strip_shell_comments(body_text), NOTIFY_TOKENS):
                 continue
             # A branch that ALSO leaves non-zero somewhere is not silent.
             if re.search(r"^\s*(exit|return)\s+[1-9]", body_text, re.M):
@@ -370,28 +383,52 @@ def _is_empty_default(node):
     return False
 
 
+LOUD_STEMS = (
+    "log",
+    "warn",
+    "error",
+    "critical",
+    "exception",
+    "print",
+    "notify",
+    "alert",
+    "write",
+    "append",
+)
+
+
+def _call_name_parts(func):
+    """The dotted callee spelled out: logging.error -> ('logging', 'error')."""
+    parts = []
+    while isinstance(func, ast.Attribute):
+        parts.append(func.attr)
+        func = func.value
+    name = getattr(func, "id", None) or getattr(func, "attr", None)
+    if name:
+        parts.append(name)
+    return tuple(reversed(parts))
+
+
+def _is_loud_name(part):
+    """A name token that STARTS with a loud stem, never one that merely contains
+    it. The old test matched the substring over ast.dump(func), so `catalog()`
+    ('...Name(id=\'catalog\'...' contains "log") certified a silent handler as
+    loud and suppressed the SS103 finding under it (codex minor, PR #230 r3).
+    Word-start matching keeps logger/logging/warning/writelines loud while
+    catalog/backlog/dialog/analog stay silent."""
+    for token in re.split(r"[^a-z0-9]+", part.lower()):
+        if any(token.startswith(stem) for stem in LOUD_STEMS):
+            return True
+    return False
+
+
 def _handler_is_loud(handler):
     """Does this handler tell anyone? raise / log / warn / notify / write."""
     for n in ast.walk(handler):
         if isinstance(n, ast.Raise):
             return True
         if isinstance(n, ast.Call):
-            src = ast.dump(n.func)
-            if any(
-                k in src
-                for k in (
-                    "log",
-                    "warn",
-                    "error",
-                    "critical",
-                    "exception",
-                    "print",
-                    "notify",
-                    "alert",
-                    "write",
-                    "append",
-                )
-            ):
+            if any(_is_loud_name(p) for p in _call_name_parts(n.func)):
                 return True
     return False
 
@@ -452,25 +489,32 @@ def scan_python(path, text):
             continue
 
         # --- SS102: handler rebuilds state from a default and continues ------
+        # A RETURN of the empty default is the same defect as an ASSIGN of it,
+        # and is the commoner spelling: `except OSError: return {}` hands the
+        # caller an empty result that is indistinguishable from a real empty
+        # one. Matching only ast.Assign missed every function-shaped instance
+        # of the class this code exists to catch (codex major, PR #230 r4).
         rebinds = [
             s
             for s in body
-            if isinstance(s, ast.Assign) and _is_empty_default(s.value)
+            if isinstance(s, (ast.Assign, ast.Return)) and _is_empty_default(s.value)
         ]
         if rebinds and len(rebinds) == len(body) and not _handler_is_loud(node):
-            tgt = rebinds[0].targets[0]
+            first = rebinds[0]
+            tgt = first.targets[0] if isinstance(first, ast.Assign) else None
             findings.append(
                 Finding(
                     path,
                     node.lineno,
                     "SS102",
                     "handler rebuilds state from an empty default and continues",
-                    "`%s` is reset to an empty value on failure and execution "
+                    "`%s` is set to an empty value on failure and execution "
                     "continues, so a corrupt or unreadable input becomes an "
                     "empty one -- the --reset-rounds shape, which is silent "
                     "DATA LOSS. Refuse to write what you could not read, or "
                     "declare it with `# silent-success-ok: <why>`."
-                    % (getattr(tgt, "id", ast.dump(tgt)[:40])),
+                    % ("the return value" if tgt is None
+                       else getattr(tgt, "id", ast.dump(tgt)[:40])),
                 )
             )
             continue
