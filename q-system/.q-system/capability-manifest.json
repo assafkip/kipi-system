@@ -479,6 +479,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-voice-stop-gate-bypass.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-voice-lint-topups.sh",
       "runner": "bash"
     },
