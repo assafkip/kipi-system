@@ -117,6 +117,11 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-capability-drift.sh",
+      "runner": "bash",
+      "timeout_s": 180
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-dispatch-client-refusal-after-hold.sh",
       "runner": "bash"
     },
