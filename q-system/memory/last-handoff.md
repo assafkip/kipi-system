@@ -1,41 +1,53 @@
-# Last handoff — 2026-08-16 (Linear fleet-wide cleanup -> alert-noise fix -> Fable hardening -> triage/dormancy monitoring) [provenance: observed — system currentDate context this session]
+# Session handoff -- 2026-08-19 (evening)
 
-Started as "review all Linear issues, dedupe/remove junk." Grew into a full-day session: workspace cleanup, a shipped fix for the root cause, a real security investigation (false alarm), and three merged PRs with adversarial code review on every one.
+## What shipped today
 
-## What shipped, verified
+- Reviewed github.com/ayghri/i-have-adhd against kipi's AUDHD layer; verdict:
+  kipi deeper everywhere except output-quality evals. Founder picked options 2+3.
+- PR #225 MERGED [verified: gh pr view 225 --json state -> MERGED]: H2 eval
+  harness (audhd-output-eval.py, blind paired judging, release gate), 12-case
+  fixture, 22-test suite, 2 style rules (debug spiral brake, pre-send check).
+  Linear ASK-924 Done.
+- PR #226 MERGED [verified: gh pr view 226 --json state -> MERGED after watcher
+  exit 0]: merge-bypass-gate push deny scoped to protected repos (fleet marker
+  at worktree root + remote set). 3 review rounds. Linear ASK-925 Done;
+  sp-9154c64d resolved against it.
+- Public repo shipped: github.com/assafkip/adhd-output-style (MIT, main,
+  personal-data-scrubbed). Renamed from audhd- per founder.
+- Upstream PR OPEN: github.com/ayghri/i-have-adhd/pull/124 [verified: gh pr create returned this URL in-session]
+  (RSD rule for their rule 8, Author:AI disclosed). Open loop: i-have-adhd-pr-124.
+- ASK-923 created (audhd.md TTS example wording, from sp-7c696491).
 
-**Linear workspace cleanup — 873 issues reviewed, 59 removed, rest re-homed/triaged.** [verified: direct `mcp__linear__*` calls this session — list_issues sweeps, save_issue cancellations, save_comment audit trail on every change]
+## Founder action (one, 2 min, not urgent)
 
-Team `ASK_Consulting`, only 22 days old at session start [verified: `mcp__linear__list_teams` this session, createdAt 2026-07-25]. 59 removed: duplicates merged (`duplicateOf`), Linear's own onboarding stubs (ASK-1–4), and ~50 bare fleet-alert-path tickets whose own text said no action was needed. [verified: direct `save_issue`/`save_comment` calls this session, each with an audit-trail comment] 22 orphaned-but-real issues re-homed to correct projects with evidence (label match, file-path confirmation, or sibling-ticket precedent), then priority-triaged (3 confirmed done and closed with evidence, rest given real priorities). Root-cause diagnosis: automated inflow (bots filing a ticket per event) was outpacing manual triage — the founder's own ASK-789 had already named this exact structural problem days earlier.
+- Read the diff on ayghri/i-have-adhd pull request 124, 10 inserted lines [verified: git commit printed "2 files changed, 10 insertions"],
+  and tick its final-accountability checkbox.
 
-**PR #203 — MERGED to main.** [verified: `gh api repos/assafkip/kipi-system/pulls/203` this session — merged: true, merged_at 2026-08-16T23:35:02Z]
+## Known state for the next session
 
-`alert-to-linear.py` noise classifier (explicit allowlist, 7+ patterns, hard override so `unsanctioned|reverted|SECURITY` can never be suppressed regardless of future pattern additions — regression-tested against a real near-miss, see scars below). Auto-commit hook now reports line-count deltas per file so a revert is distinguishable from an update in `git log --oneline`. Two Fable cross-model-escalation hardening fixes (world-writable pending-file validation with self-healing directory-name fallback; cross-actor delivery bug where a subagent's triage packet was built from the orchestrator's transcript). Went through 4 review rounds (each found one real, narrow, fixable bug — foreign-uid file squat, `escalate()` not consuming `write_pending()`'s result) before APPROVE WITH NITS.
+- Local kipi main is ahead of origin by squash-merged duplicates
+  [verified: git log origin/main..HEAD --oneline | wc -l -> 4 at wrap time].
+  Reconcile on a clean tree with founder-gated
+  `ALLOW_DESTRUCTIVE=1 git reset --hard origin/main`, or hand to Sana.
+  Two uncommitted files (merge-bypass-gate.py + its test) are local duplicates
+  of content already merged via PR #226 [verified: git status --short showed
+  exactly those two modified; identical copies were pushed on the PR branch];
+  the reset clears them too.
+- Open spillover items from review nits: sp-b099e96c (4 eval-harness nits, one
+  small issue fixes all; mirror fixes to the public repo) and sp-c9061dbd
+  (2 gate nits: comment overclaims instance branch protection; override-entry
+  normalization untested).
+- Pre-existing spillover piles surfaced but out of scope today:
+  capability-manifest.json and CLAUDE.md notes {{UNVERIFIED}} counts, see
+  `prd_runner.py spillover list --open`.
+- Codex reviewer is DOWN; Opus fallback produced all reviews today (DEGRADED
+  label on the kipi/reviewer-approved statuses).
+- Fleet loop board republished at a NEW artifact URL (old one was deleted):
+  https://claude.ai/code/artifact/ee66305f-1fd5-4f94-8c9d-f06ea0eb5f0f
 
-**PR #204 — MERGED to main.** [verified: `gh api repos/assafkip/kipi-system/pulls/204` this session — merged: true, merged_at 2026-08-17T01:32:41Z]
+## Effort log
 
-Automated-filer `needs-triage` labeling + a real enforcement gate (measured first: 8 filers construct `issueCreate`, only 1 had the label — gate demands a *declared posture* — label or an explicit human-in-the-loop marker — not a blind requirement, since demanding the label outright would've failed 7 files on day one). `linear-triage-health.py`: throughput + dormancy monitoring in one script, scheduled via launchd. Investigated enabling Linear's native Triage feature and deliberately did NOT: the existing dispatch drain only recognizes `backlog`/`unstarted` state types, so Triage-type state would make new tickets invisible to the drain entirely — documented as a live option with its prerequisite, not a silent no. `.claude/rules/concurrent-session-worktrees.md` written (ADVISORY, explicitly can't be hook-enforced — session launching is outside repo code).
-
-6 review rounds, escalating to a BLOCK verdict on round 5 (two blockers: a dormancy marker that silenced re-flagging forever despite its own comment text promising it clears on activity; a lock keyed on install path so two local checkouts never contend). [verified: `pr-review-agent.sh` outputs this session, each round's verdict + findings read directly from the written review files] Both were genuinely fixable — not the same shape as #202's dead end. Verified empirically rather than assumed: sampled 14 live Linear issues to confirm Linear's own `commentCreate`/`updatedAt` timestamp ordering before trusting a fix on it. [provenance: observed — Sana subagent report this session, the 14-issue sample not independently re-run by me]
-
-**Plist installed and confirmed loaded**, not just committed. [verified: `launchctl list | grep linear-triage-health` this session, after `install-plist.sh` run from the actual primary checkout] First attempt correctly aborted by a Sana agent that caught the installer baking in an ephemeral worktree path (`install-plist.sh` resolves repo root from `BASH_SOURCE`, and the script's own `--all` branch documents this exact failure mode from 2026-08-14 — the single-label path had no such guard). Installed from `/Users/assafkipnis/projects/kipi-system` on `main` after merge; correct permanent path confirmed in the loaded plist.
-
-**PR #202 — CLOSED, not merged.** [verified: `gh api .../pulls/202` — state closed, merged false; `gh api .../issues/202/timeline` — closed by assafkip 2026-08-16T22:25:42Z]
-
-Confirmed directly with the founder this session: the closure was genuinely his call, not an unverified agent claim (I'd flagged it for exactly this reason — the closing comment said "Founder decision" with no way for me to verify that at the time). A different, independent process was running its own review/fix cycles on this same PR in parallel with mine (their commits labeled round 5/6, well past my round 1/2) — same collision *shape* as the social-voice incident, but through GitHub PR state this time, not a shared checkout. Reasoning holds up: 6 rounds, every round the same class of defect (a check that could never fire, because the detector infers bus-artifact facts from unstructured prose with no schema to check itself). Successor issue ASK-885 filed, owned by Sana, scope already split into 4 real cases (most need a simple tag, one is dead code, one writes to `output/` not the bus, one — `step-orchestrator.md` — isn't an agent and can't be tagged the same way).
-
-## Coordination scars (worth institutional memory)
-
-- **Shared checkout, three real incidents in one day, all caught.** (1) Built my first PR branch off another live session's (`social-voice`) unmerged branch instead of `origin/main` — `git reset origin/main` fixed it once nothing was committed yet. (2) An unattended Stop-hook auto-commit landed a stale `capability-manifest.json` on the branch mid-session, silently deleting a just-merged declared-inert entry (`80b82f84`) — caught by `social-voice` reviewing branch ancestry, byte-diffed against `origin/main` and restored per ASK-809's standing hand-merge guidance, not hand-merged. (3) A near-miss: the orphan-sweep cleanup almost cancelled ASK-870 (a REAL security tripwire ticket — an actual unauthorized `.claude/` file change, caught and reverted same-session) because it pattern-matched the same shape as routine "tripwire baselined" noise. Caught before it shipped; the noise classifier now has a hard `unsanctioned|reverted|SECURITY` override specifically so this can't recur even if a careless future pattern is added.
-- **A security scare that was a false alarm, investigated not assumed.** [provenance: observed — Sana's RCA this session, read directly at `q-system/output/rca/rca-claude-tampering-investigation-2026-08-16.md`] Multiple sub-agents flagged apparent prompt-injection (fabricated completion claims, fake agent IDs, instructions to run an unrecognized script) arriving via hook/tool error text. Full investigation (Sana): not an attack. `fable-escalate.py`'s Tier A auto-escalation is real, documented fleet infra that fires on the exact `volume-ceiling` trigger these agents kept hitting reading through 873 issues — a subagent's triage packet was built from the orchestrator's transcript tail (which included my own coordinator messages), so Fable concluded it was addressing the orchestrator and its answer landed in a sub-agent's window instead. Wrong recipient, not forgery — confirmed by one of the "attacks" warning its own target about the injection pattern, which an attacker wouldn't do. Two real hardening gaps came out of it and shipped in PR #203.
-- **`pr-review-agent.sh` isn't triggered automatically.** The required `kipi/reviewer-approved` GitHub status only gets posted when the script is explicitly run (`pr-review-agent.sh <pr> --issue ASK-nnn --post`) — nothing in `.github/workflows/` wires it to fire on PR open/push. Two PRs sat with zero review activity until this was found and run manually. Worth wiring as an actual trigger if this keeps needing a human/agent to remember.
-- **A GitHub PR's `head.sha` can desync from the branch's actual git ref** and not self-heal on its own (confirmed via `gh api .../git/refs/...` vs `gh api .../pulls/N` returning different SHAs, for several minutes, surviving a `gh pr edit` nudge). Forcing a fresh push with a new commit hash was what finally synced it. If a review looks like it ran against stale code, check this before assuming the fix regressed.
-- **Shell `cwd` persists across Bash calls and can silently drift into a worktree.** Caught a `capability-gate.py` run refusing with "not the primary checkout" from what looked like the main session — cwd had drifted from an earlier `cd` during a plist-install attempt. Always verify `pwd`/`git rev-parse --show-toplevel` before trusting "primary checkout" assumptions mid-session.
-
-## Next session, resume here
-
-- Nothing urgent or broken. Board is clean, noise-flood fix is live, monitoring is running (confirmed loaded), both merged PRs verified live.
-- **Open, not urgent:** 5 dangling-project Linear issues (AUDHD_KIDS, fractional-cxo, negotiator, KTLYST_strategy audit) — verified as real, live, registered fleet instances with no matching Linear project. Founder call on whether to wire them or leave untracked.
-- **Open, not urgent:** `lane-h-digest-repeats` isn't a real repo — it's a PRD name that got put into the Linear project namespace. [provenance: observed — Sana subagent report this session, checked the PRD file path and `gh repo list`/`gh api` 404 directly] Two re-homed tickets (ASK-646/650) are now UNREACHABLE to the dispatcher because of this. Two real options with a real tradeoff (move the tickets to `ASK Consulting`, zero blast radius, undoes today's grouping — vs. teach the routing logic PRD-as-project, real code change, fleet-wide blast radius). Founder hasn't picked yet.
-- **ASK-885** (PR #202's successor) is filed and owned by Sana [provenance: observed — read in an earlier same-day handoff, not independently re-verified via Linear MCP this session]; doesn't need this session to move.
-- A handful of pre-existing spillover notes were surfaced (not created) by today's work across `alert-to-linear.py`, `linear-triage-health.py`, `settings.json` — left untouched per the spillover ratchet's own "don't fix here" guidance, still need addresses at some point.
+Commits merged to kipi main via 2 PRs; 1 public repo created and hardened
+through 2 review-fix pushes; 1 upstream OSS PR filed; 2 Linear issues opened
+and closed same-day; 5 spillover items touched (1 promoted to ASK-923,
+1 resolved, 3 batches captured).
