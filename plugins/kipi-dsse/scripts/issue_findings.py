@@ -55,9 +55,9 @@ DEFAULT_FINDINGS_SUBDIR = "findings"
 
 SEVERITIES = ("blocker", "major", "minor", "nit")
 # The issue-level twin of prd-os's REVIEWER_SOURCES. Widened 2026-07-26 for the
-# same reason: Codex is out of credits until 2026-08-24 and the reviewer is a
-# Claude senior-staff-engineer subagent, so accepting only codex-* forced that
-# reviewer to either stamp a false provenance record or record nothing. Fixing
+# same reason: whichever vendor is unavailable on a given day, the reviewer that
+# steps in must be able to stamp itself honestly. Accepting only codex-* forced a
+# non-Codex reviewer to either stamp a false provenance record or record nothing. Fixing
 # this only at the PRD level left the issue path still lying.
 SOURCES = (
     "codex-review",

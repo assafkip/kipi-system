@@ -223,6 +223,104 @@ def sec_wiring():
         (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
         rc, out = run_gate(root, "--check-only")
         check("wiring: declared_inert passes with note", rc == 0 and "DECLARED-INERT" in out)
+    # ASK-746 neighbour: the candidate filter said `"__main__" in text`, a bare
+    # substring over the whole file. conftest.py has no exec bit and no guard --
+    # its only `__main__` is one line of PROSE in its docstring telling future
+    # authors to guard their exits. That sentence promoted it to a candidate, and
+    # since pytest loads conftest BY NAME it could never prove itself wired, so
+    # main's Skeleton Validation carried `inert-engine: conftest.py` from
+    # 2026-08-10 to 2026-08-14. The tempting "fix" is a fake reference on a
+    # wiring surface; the real one is that this was never an engine.
+    #
+    # The control for these lives above: "wiring: unwired engine RED". If a
+    # loosened filter ever stops seeing real dead engines, that case goes green
+    # and these three cannot tell you, so they are read together.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        c = root / "q-system/.q-system/scripts/conftest.py"
+        c.parent.mkdir(parents=True, exist_ok=True)
+        c.write_text('"""Prose only: guard exits under '
+                     '`if __name__ == "__main__":` so it stays importable."""\n')
+        rc, out = run_gate(root, "--check-only")
+        check("ASK-746: conftest.py mentioning __main__ in PROSE is not inert",
+              rc == 0 and "conftest.py" not in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        c = root / "q-system/.q-system/scripts/conftest.py"
+        c.parent.mkdir(parents=True, exist_ok=True)
+        c.write_text('if __name__ == "__main__":\n    print("hi")\n')
+        c.chmod(0o755)
+        rc, out = run_gate(root, "--check-only")
+        check("ASK-746: conftest.py is runner-loaded, inert even with a real guard"
+              " + exec bit", rc == 0 and "conftest.py" not in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        p = root / "q-system/.q-system/scripts/talks_about_main.py"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('"""A library. See `if __name__ == "__main__":` elsewhere."""\n'
+                     "def helper():\n    return 1\n")
+        rc, out = run_gate(root, "--check-only")
+        check("ASK-746: a library that only TALKS about __main__ is not an engine",
+              rc == 0 and "talks_about_main" not in out)
+
+    # ASK-517: an engine wired by a PYTHON IMPORT must not read as inert.
+    # The matcher was `p.name in surface`, i.e. "loops_path.py" WITH the
+    # extension, while an import names the module by its stem -- so
+    # q-system/.q-system/scripts/loops_path.py, imported by the wired hook
+    # q-system/hooks/session-start.py, reddened origin/main and blocked every
+    # merge in the repo. Three cases, because the dangerous fix is one that
+    # loosens the matcher until nothing is ever inert again.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        engine(root, "q-system/.q-system/scripts/imported_engine.py")
+        hook = root / "q-system/hooks/session-start.py"
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text("import imported_engine\nimported_engine.go()\n")
+        rc, out = run_gate(root, "--check-only")
+        check("ASK-517: engine wired by `import <stem>` is NOT inert",
+              rc == 0 and "imported_engine" not in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        engine(root, "q-system/.q-system/scripts/from_imported.py")
+        hook = root / "q-system/hooks/session-start.py"
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text("from from_imported import thing\n")
+        rc, out = run_gate(root, "--check-only")
+        check("ASK-517: `from <stem> import ...` also counts",
+              rc == 0 and "from_imported" not in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        # PRECISION half: a bare mention of the stem in prose is NOT wiring.
+        # Matching a bare stem would make any script called utils.py read as
+        # wired anywhere the word "utils" appears, which turns the check off
+        # without anyone noticing.
+        root = make_repo(tmp)
+        engine(root, "q-system/.q-system/scripts/only_mentioned.py")
+        hook = root / "q-system/hooks/session-start.py"
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text("# only_mentioned is a nice idea, nobody calls it\n")
+        rc, out = run_gate(root, "--check-only")
+        check("ASK-517: a prose mention is NOT wiring, still RED",
+              rc == 1 and "only_mentioned.py" in out)
+
+    # plugins/ is scanned but REPORT-ONLY: it must surface as a note and must
+    # NOT fail the gate, because the widening could not be validated from a
+    # worktree (sp-1cb1a348). Both halves are asserted -- a note-only check
+    # that silently became blocking would red 27 scripts across 22 instances.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        engine(root, "plugins/prd-os/scripts/dead-plugin-engine.py")
+        rc, out = run_gate(root, "--check-only")
+        check("wiring: unwired plugin engine is REPORTED",
+              "dead-plugin-engine.py" in out and "report-only" in out)
+        check("wiring: unwired plugin engine does NOT fail the gate", rc == 0)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        engine(root, "plugins/prd-os/scripts/wired-plugin-engine.py")
+        hooks = root / "plugins/prd-os/hooks"; hooks.mkdir(parents=True, exist_ok=True)
+        (hooks / "hooks.json").write_text('{"c": "wired-plugin-engine.py"}')
+        rc, out = run_gate(root, "--check-only")
+        check("wiring: wired plugin engine is not reported",
+              rc == 0 and "wired-plugin-engine.py" not in out)
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         engine(root, "q-system/.q-system/scripts/hooked-engine.py")
@@ -396,6 +494,8 @@ def sec_negative_proof():
         rc, out = run_gate(root, "--check-only")
         check("vanished: declared-but-missing RED", rc == 1 and "declared-but-missing" in out)
     # Required data: in-scope missing file MUST fail; out-of-scope must not.
+    # spillover-skip: "out-of-scope" here is a required_data `scope` field that
+    # does not name this instance, not deferred work. Nothing to capture.
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         m = base_manifest(required_data=[{"path": "q-system/canonical/x.json", "scope": "all"}])
@@ -413,7 +513,7 @@ def sec_negative_proof():
         m["required_data"][0]["scope"] = ["some-other-instance"]
         (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
         rc, out = run_gate(root, "--check-only")
-        check("required_data: out-of-scope not demanded", rc == 0)
+        check("required_data: out-of-scope not demanded", rc == 0)  # spillover-skip
     # Token-guard fixes are part of the pre-propagation matrix (finding-7):
     # the paired suite must be green, executed here, not assumed.
     tg_test = pathlib.Path(__file__).resolve().parent / "test_token_guard_observation.py"
@@ -421,10 +521,32 @@ def sec_negative_proof():
     check("token-guard observation + stall suite green", r.returncode == 0)
 
 
+def sec_skeleton_only_absent():
+    # A skeleton_only path that is GENUINELY ABSENT (never created) and outside
+    # the scan roots -- the fleet-RED shape codex named on PR #216. The earlier
+    # tests created the file first, so no test could fail when it was missing.
+    rel = "test_root_only_absent.sh"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, skeleton=False)
+        m = base_manifest(expected_tests=[entry(rel, runner="bash")], skeleton_only=[rel])
+        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        rc, out = run_gate(root)
+        check("skeleton-only-absent: instance is GREEN without the file",
+              rc == 0 and "declared-but-missing" not in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)  # skeleton mode: the file MUST exist here
+        m = base_manifest(expected_tests=[entry(rel, runner="bash")], skeleton_only=[rel])
+        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        rc, out = run_gate(root)
+        check("skeleton-only-absent: skeleton is still RED without the file",
+              rc == 1 and "declared-but-missing (outside scan root)" in out)
+
+
 SECTIONS = {
     "schema": sec_schema, "overlay": sec_overlay, "quarantine": sec_quarantine,
     "wiring": sec_wiring, "runner": sec_runner, "mode": sec_mode,
     "negative-proof": sec_negative_proof,
+    "skeleton_only_absent": sec_skeleton_only_absent,
 }
 
 

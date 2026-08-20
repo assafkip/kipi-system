@@ -39,7 +39,15 @@ BEFORE=$(grep -c '.' "$CLAUDE_MD" || true)
 
 # Fix broken import path
 if grep -q '@q-system/q-system/CLAUDE.md' "$CLAUDE_MD"; then
-  sed -i '' 's|@q-system/q-system/CLAUDE.md|@q-system/CLAUDE.md|g' "$CLAUDE_MD"
+  # PORTABLE IN-PLACE EDIT (sp-e1e00a21). `sed -i ''` is BSD-only: GNU sed reads
+  # the next argument as the SCRIPT, so on Linux this ran an empty script and then
+  # tried to open the substitution text as a filename. This script edits instance
+  # CLAUDE.md files and instances run on both kernels, so it was a fleet-touching
+  # path that only worked on the founder's Mac. Temp-then-mv needs no -i at all
+  # and behaves identically everywhere.
+  _tmp="$(mktemp "${TMPDIR:-/tmp}/diet-fix.XXXXXX")"
+  sed 's|@q-system/q-system/CLAUDE.md|@q-system/CLAUDE.md|g' "$CLAUDE_MD" > "$_tmp" \
+    && mv "$_tmp" "$CLAUDE_MD"
   echo "Fixed: broken import @q-system/q-system/CLAUDE.md -> @q-system/CLAUDE.md"
 fi
 

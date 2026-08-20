@@ -1,0 +1,46 @@
+diff --git a/q-system/.q-system/scripts/linear-worker.sh b/q-system/.q-system/scripts/linear-worker.sh
+index deb556c8..b734214c 100755
+--- a/q-system/.q-system/scripts/linear-worker.sh
++++ b/q-system/.q-system/scripts/linear-worker.sh
+@@ -225,9 +225,9 @@ fi
+ # basename is the LAST resort, not the first. instance-registry.json maps every
+ # instance path to its name, and that name IS the Linear project name -- while the
+ # directory very often is not:
+-#   INSTANCE_ALPHA    -> .../cole-gtm/projects/strategy   (basename: strategy)
+-#   instance-beta             -> .../instance-beta-saas/projects/product (basename: product)
+-#   INSTANCE_GAMMA  -> .../consulting                   (basename: consulting)
++#   <Persona>_strategy   -> .../<persona>/projects/strategy (basename: strategy)
++#   <Persona>_product    -> .../<persona>/projects/product  (basename: product)
++#   <Persona>_consultant -> .../consulting                  (basename: consulting)
+ # Three of the first three checked. Shipping basename alone would have made this
+ # filter reject every issue on those instances -- caught loud by the MISCONFIG
+ # guard below rather than as a silently empty queue, but still wrong.
+diff --git a/q-system/.q-system/scripts/pr-review-agent.sh b/q-system/.q-system/scripts/pr-review-agent.sh
+index 175134b5..f5674948 100755
+--- a/q-system/.q-system/scripts/pr-review-agent.sh
++++ b/q-system/.q-system/scripts/pr-review-agent.sh
+@@ -271,7 +271,7 @@ REVIEW_ROOT="$SKEL"
+ # (sp-8f95bba0). The search below correctly finds A tree holding the PR head --
+ # but when the live checkout happens to sit at that sha, "a tree that holds it"
+ # IS the founder's working directory, and that is where the review ran. Both
+-# PR #47 rounds recorded `workdir: /Users/<founder>/projects/kipi-system` with
++# PR #47 rounds recorded `workdir: <the founder's live checkout>` with
+ # `sandbox: workspace-write`.
+ #
+ # Two failures at once, and the second is the worse one:
+diff --git a/q-system/.q-system/scripts/test/test-worker-project-scope.sh b/q-system/.q-system/scripts/test/test-worker-project-scope.sh
+index bc74a1db..0bccb4f5 100644
+--- a/q-system/.q-system/scripts/test/test-worker-project-scope.sh
++++ b/q-system/.q-system/scripts/test/test-worker-project-scope.sh
+@@ -225,8 +225,9 @@ esac
+ 
+ # --- case 4b: the registry BEATS basename -----------------------------------
+ # instance-registry.json maps instance path -> name, and that name is the Linear
+-# project name while the directory usually is NOT: INSTANCE_ALPHA lives at
+-# .../projects/strategy, instance-beta at .../projects/product, INSTANCE_GAMMA at
++# project, while the directory usually is NOT: a registered instance named
++# <Persona>_strategy lives at .../projects/strategy, one named for its product
++# lives at .../projects/product, one named <Persona>_consultant lives at
+ # .../consulting. Shipping basename alone would reject every issue on those
+ # instances. The directory here is deliberately named something that is NOT a
+ # project, so a pass can only come from the registry being read.

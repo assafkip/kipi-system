@@ -11,7 +11,9 @@ Run: python3 plugins/kipi-design/hooks/test_dogfood_gate.py
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dogfood_gate import scan_html, load_fingerprint, EMBEDDED_FALLBACK  # noqa: E402
+from dogfood_gate import (  # noqa: E402
+    scan_html, load_fingerprint, EMBEDDED_FALLBACK, is_public_facing_page,
+)
 
 # the RCA case: tasteful slop. No Inter, no gradient text, no emoji, no "Powered by AI".
 WARM_CREAM = """<!doctype html><html><head><style>
@@ -109,9 +111,115 @@ for label, page in (("rgb", OVERFLOW_RGB), ("hsl", OVERFLOW_HSL)):
     except Exception:
         ok("[guard] overflowing %s color does not crash scan_html (no fail-open)" % label, False)
 
+# ── ASK-134: the public-vs-internal path classifier is the DETERMINISTIC half of
+# .claude/rules/design-auto-invoke.md ("will someone other than the founder see this?").
+# It used to live inline in main() where nothing could test it, so the rule claimed
+# ENFORCED while naming no executable. These cases are that rule's reproducer: an
+# internal path must be SKIPPED (no design skill, no scan) and a public one SCANNED.
+INTERNAL_PATHS = [
+    "/repo/q-system/output/daily-schedule-2026-07-31.html",
+    "/repo/q-system/marketing/templates/post.html",
+    "/repo/sites/eyeball/tests/fixture-page.html",
+    "/repo/node_modules/pkg/demo.html",
+    "/repo/sites/_harvest/sample.html",
+    "/repo/build/index.html",
+    "/repo/dist/index.html",
+    "/repo/sites/eyeball/debug.html",
+    "/repo/q-system/output/morning-log-view.html",
+]
+PUBLIC_PATHS = [
+    "/repo/sites/eyeball/index.html",
+    "/repo/sites/index.html",
+    "/repo/sites/prd-os/landing.html",
+]
+NON_HTML = [
+    "/repo/sites/eyeball/style.css",
+    "/repo/sites/eyeball/app.tsx",
+    "/repo/README.md",
+    "",
+]
+
+for p in INTERNAL_PATHS:
+    ok("[scope] internal path is NOT public-facing: %s" % p, is_public_facing_page(p) is False)
+for p in PUBLIC_PATHS:
+    ok("[scope] public page IS public-facing: %s" % p, is_public_facing_page(p) is True)
+for p in NON_HTML:
+    ok("[scope] non-.html is out of this gate's scope: %r" % p, is_public_facing_page(p) is False)
+# case-insensitive, same as the original main() which lowercased before matching
+ok("[scope] uppercase internal path still skipped",
+   is_public_facing_page("/repo/Q-System/Output/Schedule.HTML") is False)
+ok("[scope] uppercase public page still scanned",
+   is_public_facing_page("/repo/sites/eyeball/INDEX.HTML") is True)
+
+# ── ASK-134 regression, Codex major on PR #49: the classifier called the founder-only
+# GTM cockpit PUBLIC, so every unattended edit by the com.cole.cockpit job fired a
+# blocking false positive. A gate whose first act is refusing legitimate work gets
+# switched off, which is the worst direction for this one to fail in.
+#
+# These are the REAL registered paths, read off disk from the cockpit that
+# instance-registry.json points at -- NOT a path shaped to match the fix. A fixture I
+# invent tests my assumption; the producer's own path tests the system. The cockpit is
+# founder-only by its own bypass check (gtm/cockpit/checks/verify_auth_required.py
+# FAILS on an unauthenticated 200), so "internal" here is the cockpit's claim, not mine.
+COCKPIT_REAL_PATHS = [
+    "/Users/assafkipnis/projects/cole-gtm/gtm/cockpit/index.html",
+    "/Users/assafkipnis/projects/cole-gtm/gtm/cockpit/content.html",
+]
+for p in COCKPIT_REAL_PATHS:
+    ok("[scope] registered founder-only GTM cockpit is NOT public-facing: %s" % p,
+       is_public_facing_page(p) is False)
+
+# Negative self-test for the fixture above. Without it the two cases could pass because
+# some UNRELATED marker happens to match the path, and the assertion would survive the
+# "/cockpit/" marker being deleted -- a test that cannot fail. Drop that one marker and
+# the real paths must flip back to PUBLIC, which is the exact defect Codex reported.
+import dogfood_gate as _dg  # noqa: E402
+_saved_markers = _dg.INTERNAL_PATH_MARKERS
+try:
+    _dg.INTERNAL_PATH_MARKERS = tuple(m for m in _saved_markers if m != "/cockpit/")
+    ok("[scope][mutation] removing the /cockpit/ marker makes the real cockpit paths "
+       "PUBLIC again, so the cases above are driven by that marker and can fail",
+       all(_dg.is_public_facing_page(p) is True for p in COCKPIT_REAL_PATHS))
+finally:
+    _dg.INTERNAL_PATH_MARKERS = _saved_markers
+ok("[scope][mutation] marker tuple restored after the mutation",
+   _dg.INTERNAL_PATH_MARKERS is _saved_markers and "/cockpit/" in _dg.INTERNAL_PATH_MARKERS)
+
 if failures:
     print("test_dogfood_gate FAILED:")
     for f in failures:
         print("  - " + f)
     sys.exit(1)
+# ── ASK-511: two false positives that blocked five legitimate site edits ──
+#
+# The gate exit-2'd every edit to askconsulting.io on 2026-08-08. A gate that
+# refuses correct work is a gate that gets switched off, so these are its own
+# regression tests. Both pages below are DELIBERATELY good.
+
+ANCHOR_CTA = """<!doctype html><html><head><style>
+  body { font-family:'Newsreader', Georgia, serif; background:#0b0f14; color:#e8e6e1; }
+  .btn { background:#d4a017; color:#0b0f14; }
+</style></head><body>
+  <h1>The parts of your business that still run on somebody remembering.</h1>
+  <p>12 years at LinkedIn, Meta, Google and ElevenLabs.</p>
+  <a class="btn" href="/start">Book the assessment</a>
+</body></html>"""
+
+for _fp, _tag in ((load_fingerprint(), "live"), (EMBEDDED_FALLBACK, "fallback")):
+    _f = labels(scan_html(ANCHOR_CTA, _fp))
+    ok("anchor-styled CTA counts as a primary action (%s)" % _tag,
+       "No form/input/button" not in _f)
+    # The page's only warm near-white is its TEXT colour on a near-black ground.
+    # A cream BACKGROUND is the tell; cream text on black is the opposite of one.
+    ok("warm text on a dark ground is not a cream background (%s)" % _tag,
+       "cream" not in _f.lower())
+
+print("test_dogfood_gate: ASK-511 regressions checked")
+
+if failures:
+    print("test_dogfood_gate: %d of %d checks FAILED" % (len(failures), checks))
+    for f in failures:
+        print("  FAIL  %s" % f)
+    raise SystemExit(1)
+
 print("test_dogfood_gate: %d checks passed (live + fallback)" % checks)

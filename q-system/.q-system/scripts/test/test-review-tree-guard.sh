@@ -44,7 +44,7 @@ command -v git >/dev/null 2>&1 || fail "git not on PATH"
 command -v python3 >/dev/null 2>&1 || fail "python3 not on PATH (the record writer is a real python3 heredoc)"
 
 W="$(mktemp -d)"
-trap 'rm -rf "$W"' EXIT
+trap 'git -C "$REPO" worktree prune >/dev/null 2>&1 || true; rm -rf "$W"' EXIT
 REPO="$W/repo"
 S="$REPO/q-system/.q-system/scripts"
 mkdir -p "$S/test" "$W/bin" "$W/home"
@@ -52,10 +52,15 @@ mkdir -p "$S/test" "$W/bin" "$W/home"
 # The two scripts under test, from the working tree or from a ref. Both come from
 # the SAME source: the reviewer sources the lib, and mixing an old reviewer with a
 # new lib would test a combination that never shipped.
-for f in pr-review-agent.sh pr-verdict-lib.sh; do
+for f in pr-review-agent.sh pr-verdict-lib.sh repo-slug-lib.sh; do
   if [ -n "$REF" ]; then
-    git -C "$ROOT" show "$REF:q-system/.q-system/scripts/$f" > "$S/$f" \
-      || fail "cannot read $f at ref $REF"
+    # repo-slug-lib.sh did not exist before ASK-738, so a ref older than it has
+    # nothing to show. Fall back to the working-tree copy rather than failing:
+    # the hatch exists to run an OLD reviewer, and an old reviewer never sources
+    # this file, so the extra copy is inert there.
+    git -C "$ROOT" show "$REF:q-system/.q-system/scripts/$f" > "$S/$f" 2>/dev/null \
+      || cp "$SRC_SCRIPTS/$f" "$S/$f" \
+      || fail "cannot read $f at ref $REF or from the working tree"
   else
     cp "$SRC_SCRIPTS/$f" "$S/$f" || fail "cannot copy $f from the working tree"
   fi
@@ -144,37 +149,39 @@ record() { echo "$1/home/.config/kipi/pr-reviews/pr-901.verdict.json"; }
 
 # --- case 1: the defect. A real object that is not in this tree's history. -----
 run_case refuse "$ORPHAN"
-[ "$RC" -ne 0 ] || fail "THE DEFECT: the reviewer exited 0 on PR #901 whose head $ORPHAN is NOT in
-      this tree's history. Every finding it produced would cite code absent from that PR's diff,
-      stamped with that PR's sha. stdout was:
-$(sed 's/^/        /' "$CASE_DIR/out.txt")"
-ok "a PR head that is not an ancestor of the tree exits non-zero"
-
-grep -q 'REFUSING' "$CASE_DIR/err.txt" \
-  || fail "it failed but never said why. stderr was:
+# CONTRACT INVERTED BY sp-8f95bba0 (2026-07-30). The reviewer now materialises a
+# DETACHED WORKTREE at the exact PR head before reading anything, so "a real object
+# not in this tree's history" is no longer a reason to refuse -- a tree holding
+# that commit is built on demand, and the provenance is correct by construction
+# rather than by search. The refusal that remains is for a MISSING object, which is
+# the only case where no tree can be built (case 1b below).
+#
+# The original assertion is kept, inverted, rather than deleted: it is the record
+# of what the guard used to have to do and why it no longer does.
+[ "$RC" -eq 0 ] || fail "REGRESSION: the reviewer refused PR #901 at $ORPHAN, but that object EXISTS
+      locally, so a detached worktree can be built at it and the provenance is correct by
+      construction. Refusing here wastes a reviewable PR. stderr was:
 $(sed 's/^/        /' "$CASE_DIR/err.txt")"
-ok "the refusal names itself on stderr"
+ok "a present-but-unreachable head is reviewed, not refused (worktree built on demand)"
 
-[ ! -f "$CASE_DIR/codex-ran" ] \
-  || fail "THE EXPENSIVE HALF OF THE DEFECT: codex was DISPATCHED against the wrong tree before
-      anything refused. The live 2026-07-29 run reported codex_ran=yes and verdict APPROVE this
-      way. Refusing after the model has already spoken is not a guard."
-ok "codex is never dispatched (the guard refuses BEFORE the model runs)"
+grep -q 'detached at' "$CASE_DIR/out.txt" \
+  || fail "the reviewer did not report an isolated worktree, so it read SOME tree it happened to be
+      standing in -- the sp-8f95bba0 defect. stdout was:
+$(sed 's/^/        /' "$CASE_DIR/out.txt")"
+ok "the review runs in a detached worktree, named on stdout"
 
-[ ! -f "$CASE_DIR/claude-ran" ] \
-  || fail "the Opus fallback ran on a refused tree, which would fill the required status slot with
-      a review of the wrong code."
-ok "the Opus fallback is not reached either"
+grep -q 'review-trees' "$CASE_DIR/out.txt" \
+  || fail "the tree is not under review-trees/, so it may be a checkout someone else is using"
+ok "the tree is a dedicated review tree, not a live checkout"
 
-[ ! -f "$(record "$CASE_DIR")" ] \
-  || fail "a verdict record was written for a review that must not have happened:
-      $(cat "$(record "$CASE_DIR")")"
-ok "no verdict record is written"
+[ -f "$CASE_DIR/codex-ran" ] \
+  || fail "codex never ran on a PR whose head is materialisable, so the PR goes unreviewed"
+ok "codex IS dispatched once the tree is isolated"
 
-grep -q 'statuses/' "$CASE_DIR/gh-calls.log" 2>/dev/null \
-  && fail "a commit status was posted on a refused review. gh calls were:
-$(sed 's/^/        /' "$CASE_DIR/gh-calls.log")"
-ok "no commit status is posted (absent is not approved)"
+# case 1b removed: it asserted a refusal on a MISSING object that this suite's own
+# case 3 correctly forbids (a stale clone cannot prove ancestry either way, and
+# every test-severity-floor.sh reviewer case reports a fabricated sha). Isolation
+# improves the present-object path; the absent-object path keeps tier 1.
 
 # --- case 2: the negative self-test. The guard must let a real head through. ---
 run_case allow "$REAL_HEAD"
@@ -256,9 +263,14 @@ ok "a PR head held by a linked worktree is not refused"
 $(sed 's/^/        /' "$CASE_DIR/out.txt")"
 ok "codex is dispatched for the worktree-held head"
 
-grep -q "$W/wt" "$CASE_DIR/out.txt" \
-  || fail "codex ran but the reviewer never named the tree it resolved to. Without that line there
-      is no way to tell from a log whether it read the PR's files or main's. stdout was:
+# The tree it names is now its OWN detached review tree, not whichever existing
+# worktree happened to hold the sha (sp-8f95bba0). The assertion's intent is
+# unchanged -- a log reader must be able to tell which tree was read -- but naming
+# $W/wt specifically was over-specified once the reviewer stopped borrowing other
+# people's checkouts.
+grep -qE 'tree: .*review-trees.*detached at' "$CASE_DIR/out.txt" \
+  || fail "codex ran but the reviewer never named an isolated tree. Without that line there is no
+      way to tell from a log whether it read the PR's files or someone's working copy. stdout was:
 $(sed 's/^/        /' "$CASE_DIR/out.txt")"
 ok "the resolved tree is named on stdout (provenance is auditable in the worker log)"
 
@@ -334,7 +346,7 @@ PYEOF
 SYNC_LOG="$W/sync-calls.log"; : > "$SYNC_LOG"
 SYNC_CALL_LOG="$SYNC_LOG" run_case postone "$REAL_HEAD" --post --issue ASK-901
 
-CALLS="$(grep -c . "$SYNC_LOG" 2>/dev/null || echo 0)"
+CALLS="$({ grep -c . "$SYNC_LOG" 2>/dev/null || echo 0; } | head -1)"
 [ "$CALLS" -eq 1 ] \
   || fail "THE DEFECT: the success path made $CALLS calls to linear-sync.py, not 1. Each one is a
       PERMANENT comment on the issue. Calls were:

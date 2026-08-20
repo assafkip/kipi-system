@@ -90,6 +90,15 @@ GOT="$(verdict_from_findings "$W/multi.md")"
       approved PR then wedges forever on a finding that does not exist."
 ok "a quoted, refuted prior-round block does not set the verdict"
 
+# AND IT STILL LANDS AFTER ASK-312. resolve_verdict now takes the harsher of the
+# stated and derived verdicts, so this case is worth re-pinning at that layer: a
+# clean round 2 agrees with itself (APPROVE/APPROVE) and must survive the new
+# fail-closed rule. Without this, hardening the gate could silently wedge exactly
+# the review shape sp-c0a9dac3 exists to let through.
+[ "$(resolve_verdict "$(extract_verdict "$W/multi.md")" "$GOT")" = "APPROVE" ] \
+  || fail "the fail-closed rule must not wedge a refuting round 2 that agrees with itself"
+ok "a refuting round 2 still resolves to APPROVE under the fail-closed rule"
+
 # --- 3. the minors captured must be the minors the verdict came from ----------
 # extract_minor_findings feeds `spillover add`, which writes PERMANENT ledger
 # items. Reading a different block than the verdict came from files follow-ups

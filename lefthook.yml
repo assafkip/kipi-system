@@ -94,6 +94,26 @@ commit-msg:
       run: python3 q-system/.q-system/scripts/linear-issue-ref-check.py {1}
       fail_text: "Commit names no Linear issue. Add the id (ASK-nn) or [no-issue: reason]."
 
+    # Both client names that reached this public repo did so in commit SUBJECTS,
+    # which no content gate reads. The staged-content half lives in pre-commit.
+    # Client names are not secrets in the credential sense, so gitleaks passes
+    # them and nothing else looked. This repo is PUBLIC (102 stars, 23 forks) and
+    # a name that reaches it cannot be recalled: rewriting history leaves the
+    # objects in every fork and reachable by SHA. Measured 2026-08-13, the list
+    # carries 0 false positives across 59 real posts and 133 lessons. The token
+    # list is LOCAL (~/.config/kipi/client-tokens), never ships, and an absent
+    # list warns and passes so a fresh clone is never blocked.
+    #
+    # THE ONE client-name scan (ASK-747). It lives here, not at pre-commit,
+    # because this is the only stage that sees the real message for THIS commit
+    # AND can still read `git diff --cached` (the commit object does not exist
+    # yet). It scans BOTH. The pre-commit `--staged` stage was removed: it could
+    # not see the message, so it could not honour a legitimate bypass, and it
+    # tested the skip token against its own staged diff -- any commit touching a
+    # file containing the token went unscanned.
+    client-names-msg:
+      run: python3 q-system/.q-system/scripts/client-name-guard.py --message {1}
+
 post-commit:
   commands:
     # CheapCheck consumes the ui-ux-pro-max design CSVs (cheapcheck/q-design/data).

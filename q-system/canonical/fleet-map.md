@@ -35,6 +35,24 @@ moves. Only rewrite: 3 tokentrim `_setup_*.py` self-refs (absolute build paths i
 `kipi-system` stays TOP-LEVEL/meta on purpose (it's the factory every persona depends on — plan
 open-decision #3). Section 6 reflects the new paths.
 
+**Git coverage (2026-07-29) — DONE.** First fleet-wide audit of which projects exist anywhere
+but this laptop. 61 repos swept: 16 had no remote, 12 of them real work, oldest 219 commits,
+several client engagements. Nine more directories were not repos at all, including
+`intel/projects/deliverables` (475 files, client run outputs, a live Vercel deploy, zero
+version control). Root cause: `kipi new` did `git init` and never created a remote, so inflow
+was automated and outflow was manual. 13 repos are now private on GitHub; `deliverables` became
+`gh:assafkip/ktlyst-deliverables`. `remote-coverage-check.py` at kipi-system root is the standing
+gate (currently 58 covered, 0 undeclared, 0 not-a-repo) and `kipi new` is private-by-default with
+a reasoned opt-out. Local-only is now a written declaration in `remote-coverage-allow.json`, not
+a silence. `AUDHD_KIDS` and `travel-agent` stay local-only (family-medical). See RULE-004..009 in
+`decisions.md`.
+
+**Deployed-but-sourceless surfaces (2026-07-29).** The same audit surfaced a class the gate
+structurally cannot see: Vercel sites with no source anywhere on disk. Two prospect-facing demos
+(`ktlyst-demo-crinetics`, `sjifire-demo-v2`) were live, fully indexable, and named real
+organizations. Both now carry robots.txt + `X-Robots-Tag: noindex`; content byte-identical.
+Access gating is still open, pending a founder-minted capability token. Tracked as `sp-784e3594`.
+
 ---
 
 ## 1. KTLYST Core Product (the company product)

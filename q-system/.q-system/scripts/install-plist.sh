@@ -1,4 +1,5 @@
 #!/bin/bash
+# portability-lint-skip-file: this script is macOS-only BY DESIGN (launchd/plutil).
 # Materialize a committed plist TEMPLATE and load it into launchd.
 #
 # Why this exists (ASK-191): three committed plists in this directory used two
@@ -33,6 +34,35 @@ usage() {
 if [ $# -lt 1 ]; then
   usage
   exit 2
+fi
+
+# --all: install EVERY committed template. Added 2026-08-14 (ASK-729, Codex review
+# of #147/#143 major). Six templates were committed and NOTHING called the
+# installer, so a merge taught no machine to run any of them -- every job ran only
+# where somebody had typed the command by hand. A scheduled job that exists on one
+# laptop is not a mechanism. This is the caller, so a fresh checkout can arm the
+# fleet's jobs in one step, and each install still reports its own result rather
+# than the loop reporting a single aggregate success.
+if [ "$1" = "--all" ]; then
+  # REFUSE FROM A WORKTREE. Measured the hard way 2026-08-14: running --all from a
+  # git worktree rewrote every live job to point at that worktree, including the
+  # dispatcher, seconds before the directory was to be deleted. One label is a
+  # deliberate act on one job; --all is a fleet-wide rewrite, and aiming that at a
+  # temporary checkout silently disarms every scheduled job on the machine.
+  if [ -f "$KIPI_REPO/.git" ] || [ ! -d "$KIPI_REPO/.git" ]; then
+    echo "REFUSED: --all only runs from the primary checkout, not a worktree." >&2
+    echo "  resolved KIPI_REPO=$KIPI_REPO" >&2
+    echo "  every installed job would point here and break when it is removed." >&2
+    echo "  install a single label instead: install-plist.sh <label>" >&2
+    exit 2
+  fi
+  rc=0
+  for _p in "$SCRIPT_DIR"/com.kipi.*.plist; do
+    [ -e "$_p" ] || continue
+    _label="$(basename "$_p" .plist)"
+    if bash "$0" "$_label"; then :; else rc=1; echo "  FAILED: $_label" >&2; fi
+  done
+  exit "$rc"
 fi
 
 LABEL="$1"

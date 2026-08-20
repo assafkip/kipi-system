@@ -326,48 +326,332 @@ def _docstring_line(text: str) -> str:
     return lines[0][:180] if lines else ""
 
 
+# Files whose CONTENT can wire an engine. A mention anywhere in one of these is a
+# reference; markdown is handled separately below because prose is not wiring.
+SURFACE_CODE_EXT = {
+    ".py", ".sh", ".bash", ".zsh", ".yml", ".yaml", ".toml", ".json",
+    ".cfg", ".ini", ".mk",
+}
+# .txt IS PROSE, NOT CODE (codex round 5, major). It sat in SURFACE_CODE_EXT,
+# where every mention counts with no invocation filter at all, so any note,
+# report or log ANYWHERE outside q-system/output/ silently marked a named engine
+# LIVE. Excluding the generated tree fixed one instance of this and left the
+# class open: the same defect shape as the B1 prose leak, on a different
+# extension. A .txt is a runbook far less often than it is somebody's notes, so
+# it belongs with .md where a line must actually invoke something.
+SURFACE_DOC_EXT = {".md", ".txt"}
+# Extensionless wiring surfaces (the kipi CLI, Makefiles, lefthook's shell blocks).
+SURFACE_NAMES = {"Makefile", "makefile", "kipi", "Dockerfile", "Justfile", "justfile"}
+
+# GENERATED ARTIFACTS ARE NOT WIRING SURFACES (ASK-122, caught pre-merge).
+#
+# Widening the scan repo-wide swept in q-system/output/, which holds codex
+# transcripts, run logs, plans and RCAs. Those name scripts constantly and run
+# nothing. Measured on kipi-investigations: the `_sync_all` design-system script
+# flipped to LIVE on the
+# strength of `q-system/output/codex-sfactivity-prd-out.txt` line 738, a bare
+# `find`-style listing of that script's path.
+#
+# NOTE the extension is omitted deliberately everywhere in these comments. A
+# bare module name only counts inside import/loader syntax (MODULE_REF_RE), but
+# the FILENAME regex matches anywhere in any code file, comments included. The
+# first draft of this scar named the file outright and thereby marked it LIVE --
+# a comment explaining that a script is dead resurrected it, which is the very
+# shape documented just below. Do not add the suffix back.
+#
+# The invocation filter cannot save this: that line starts with "./" and so
+# matches MD_INVOCATION_RE. A log of a command that ENUMERATED files is
+# indistinguishable, line by line, from a runbook that INVOKES one. The only
+# durable separator is provenance -- who wrote the file -- so the fix is to drop
+# generated trees from the surface rather than to write a cleverer regex.
+#
+# q-system/output/ is the OS's generated-artifacts directory by convention; it is
+# also in kipi-update.sh's INSTANCE_OWNED_SUBTREES, i.e. already understood
+# fleet-wide as an instance's own output rather than source.
+GENERATED_SURFACE_PREFIXES = ("q-system/output/",)
+
+# Review scratch: a detached copy of the repo, or a dump ABOUT the repo. Neither
+# is wiring. `.pr36rev/all-dors.json` is a Linear DoR dump whose own text says
+# `_sync_all` has "no test, no wiring reference" -- a document asserting a
+# script is DEAD was the thing marking it alive (Fable B2). Matched on the path
+# component so a nested `.pr42rev-r2/tree/...` counts too.
+#
+# NOT a bare leading-dot rule. `.claude/` and `.q-system/` are this fleet's
+# PRIMARY wiring locations; treating every dotted component as scratch is what
+# made _witness_rank cite the wrong file (Fable A1).
+# `.review-scratch/` AND `.review-tmp-*` ARE COMMITTED, AND WERE NOT MATCHED.
+# Measured 2026-08-14: `git ls-files` returns 20 tracked files under those two
+# prefixes, including full copies of linear-worker.sh, linear-claim.py and
+# pr-review-agent.sh. Because the pattern only knew `.prNNrev`, every one of
+# those copies was walked as a live surface -- emitted as a capability and
+# eligible to sync into a duplicate permanent Linear issue for a script that
+# already has one. Being COMMITTED is what made them invisible to this rule and
+# to a `git status` check alike.
+#
+# `.wt-`, `.fable-wt` and `.sana-tmp` are here for the same reason, not as
+# scope creep: repo-preflight.sh's `_shipping()` already excludes exactly that
+# set, and two scratch definitions that disagree is the defect this file keeps
+# rediscovering (sp-505140ae was the same shape in test-repo-preflight.sh).
+# Keep the two lists in step.
+#
+# STILL NOT a bare leading-dot rule. `.claude/` and `.q-system/` are this
+# fleet's PRIMARY wiring locations; treating every dotted component as scratch
+# is what made _witness_rank cite the wrong file (Fable A1). Each prefix here is
+# named on purpose.
+SCRATCH_DIR_RE = re.compile(
+    r"^\.pr\d+rev|^\.prd-os$|^worktrees$|^review-trees$"
+    r"|^\.review-|^\.wt-|^\.fable-wt|^\.sana-tmp"
+)
+
+
+def _is_excluded_part(part: str) -> bool:
+    return bool(SCRATCH_DIR_RE.match(part))
+
+
+def is_excluded_tree(p: Path, root: Path) -> bool:
+    """Generated artifact or review scratch: not an engine, not a wiring surface,
+    not a witness.
+
+    ONE predicate for all three consumers ON PURPOSE. Excluding a tree from only
+    some of them is the defect shape that has now recurred three times in this
+    file: engines excluded but still voting as surfaces (Fable B3), trees off the
+    surface but still collected as engines (review round 1 major), snapshots
+    skipped one way only. If a tree is not real, it is not real for any of the
+    three questions.
+    """
+    try:
+        rel = p.relative_to(root)
+    except ValueError:
+        return False
+    if rel.as_posix().startswith(GENERATED_SURFACE_PREFIXES):
+        return True
+    return any(_is_excluded_part(part) for part in rel.parts)
+
+
+def _witness_rank(p: Path):
+    """Sort key preferring a REAL caller over a scratch copy of one.
+
+    Ranks on KNOWN scratch markers, not on a leading dot. The dot rule demoted
+    `.claude/` and `.q-system/` -- where most of this fleet's wiring actually
+    lives -- so any non-hidden file out-cited the true caller (Fable A1).
+    """
+    scratch = any(_is_excluded_part(part) for part in p.parts)
+    return (scratch, len(p.parts), str(p))
+
+# A markdown line only counts as wiring if it INVOKES something. A findings doc
+# saying "engine_x.py left the template unfilled" names a script without keeping it
+# alive; a runbook line `python3 engine_x.py` does. Without this split, widening the
+# scan repo-wide just trades false-dead for false-alive (ASK-122).
+# ANCHORED TO INVOCATION POSITION (Fable B1). The unanchored version matched
+# ordinary English, and this filter is the SOLE evidence for 9.2% of fleet LIVE
+# verdicts:
+#   "The source of the bug is engine_x.py"          -> hit on `source `
+#   "run-sweep.sh used to call engine_x.py"         -> hit on `sh `
+#   "this old python script engine_x.py is dead"    -> hit on `python `
+#   "see ../notes for why engine_x.py was dropped"  -> hit on `./`
+# All four assert the script is DEAD and all four marked it LIVE. The suite's
+# prose-negative fixture passed only because its wording happened to dodge those
+# tokens: green for a reason unrelated to correctness.
+# A command starts a line or follows a pipe / && / ; / backtick / $( -- never
+# mid-sentence. `-m` is dropped as a standalone arm: it cannot start a command,
+# and `python -m x` is already covered by the python arm.
+# The interpreter arms need trailing whitespace (`python3 x.py`); `./` does not,
+# because the path follows it directly (`./x.py`). Requiring a separator for both
+# silently dropped every `./script` caller -- caught by the kill-test, not by eye.
+MD_INVOCATION_RE = re.compile(
+    r"(?:^|[|&;(`]|\$\()\s*(?:(?:python3?|bash|sh|source)\s|\./)"
+)
+
+# Module tokens an engine can be reached by WITHOUT its .py suffix. `import x`,
+# `from x import y`, `python -m x`, and importlib's spec_from_file_location("x", ...)
+# are all real callers that a filename-only scan reads as silence. Scar: ASK-230,
+# where provenance_vocabulary.py had two live importers and was reported inert
+# because both wrote `import provenance_vocabulary` with no extension.
+MODULE_REF_RE = re.compile(
+    r"^\s*from\s+([\w.]+)\s+import\b"
+    r"|^\s*import\s+([\w.]+)"
+    r"|spec_from_file_location\(\s*[\"']([\w.\-]+)[\"']"
+    r"|-m\s+([\w.]+)\b",
+    re.M,
+)
+
+
+# `fill_sheet.2026-07-28.py` beside `fill_sheet.py` is a dated SNAPSHOT of an
+# engine, not a second engine. Alice's run-sweep.sh writes one before every sweep
+# (`cp "$GEN/fill_sheet.py" "$DIR/backups/fill_sheet.$TODAY.py"`) and copies it back
+# on failure, so it is live DATA on a rollback path. No static scan can ever match
+# it -- the caller interpolates $TODAY -- so it would report UNWIRED forever and
+# the only way to "fix" it is to delete a rollback artifact (ASK-122).
+DATED_SNAPSHOT_RE = re.compile(r"\.\d{4}-\d{2}-\d{2}$")
+
+
+def _is_test_file(p: Path) -> bool:
+    return p.name.startswith(("test_", "test-")) or "test" in p.parts or "tests" in p.parts
+
+
+def _iter_surface_files(root: Path):
+    """Every file in the repo whose content can constitute wiring.
+
+    WHY REPO-WIDE (ASK-122): the previous list walked only .claude/, plugins/ and
+    q-system/, so an instance whose code lives anywhere else reported its own
+    runners as absent. Alice flagged 22 engines UNWIRED while `regenerate.sh` ran
+    four of them by path and `pipeline.py` imported two more. The scan has to
+    follow the repo, not a layout the skeleton happens to use.
+    """
+    for p in root.rglob("*"):
+        if not p.is_file() or is_vendored(p):
+            continue
+        if is_excluded_tree(p, root):
+            continue
+        # A dated snapshot is DATA, and this file already says so by refusing to
+        # collect it as an engine. It must not VOTE either: a rollback copy's
+        # `import geo_clues` kept geo_clues.py LIVE after every real caller was
+        # gone, and Alice writes one snapshot per sweep so the phantom votes
+        # accumulate forever (Fable B3). Excluding it on one side only was the
+        # same half-exclusion this file keeps repeating.
+        if DATED_SNAPSHOT_RE.search(p.stem):
+            continue
+        if p.suffix.lower() in SURFACE_CODE_EXT or p.suffix.lower() in SURFACE_DOC_EXT:
+            yield p
+        elif p.name in SURFACE_NAMES:
+            yield p
+
+
+def _build_reference_index(root: Path, engines: list) -> dict:
+    """Map each engine path -> the set of OTHER files that reference it.
+
+    Two ways to match: the file name (`foo.py`, seen in shell/CLI invocations and
+    config) and the bare module name, but the bare name ONLY inside an import or
+    loader construct. A generic stem like `pipeline` appears in ordinary prose all
+    over this fleet; counting bare-word hits would mark half the repo live.
+    """
+    by_filename = {}
+    by_module = {}
+    for p in engines:
+        by_filename.setdefault(p.name, []).append(p)
+        by_module.setdefault(p.stem, []).append(p)
+    if not by_filename:
+        return {}
+
+    # One alternation, one pass per file: a per-engine regex would be
+    # len(engines) x len(files) scans, which is minutes on a large instance.
+    # The lookbehind must NOT exclude "/": the common form is path-qualified
+    # (`python3 "$G/fill_sheet.py"`), and blocking it hid every shell caller.
+    filename_re = re.compile(
+        r"(?<![\w.\-])(" + "|".join(re.escape(n) for n in sorted(by_filename)) + r")(?![\w\-])"
+    )
+
+    refs: dict = {}
+    for src in _iter_surface_files(root):
+        text = read_text(src)
+        if not text:
+            continue
+        if src.suffix.lower() in SURFACE_DOC_EXT:
+            text = "\n".join(ln for ln in text.splitlines() if MD_INVOCATION_RE.search(ln))
+            if not text:
+                continue
+        for match in filename_re.finditer(text):
+            for engine in by_filename[match.group(1)]:
+                if engine != src:
+                    refs.setdefault(engine, set()).add(src)
+        for match in MODULE_REF_RE.finditer(text):
+            token = next((g for g in match.groups() if g), None)
+            if not token:
+                continue
+            for part in (token, token.rsplit(".", 1)[-1]):
+                for engine in by_module.get(part, ()):
+                    if engine != src:
+                        refs.setdefault(engine, set()).add(src)
+    return refs
+
+
 def collect_engines(root: Path) -> list:
     """Scripts that have a paired test, or that are referenced from a wiring
     surface. An engine with neither is reported UNWIRED rather than assumed fine."""
     caps = []
-    tests = {p.name for p in root.rglob("test*") if p.is_file() and not is_vendored(p)}
+    # FOURTH consumer of the exclusion predicate, and the one I missed when
+    # claiming "one predicate for all three" in the commit that introduced it
+    # (codex round 3, major). Without this, a test filename inside a review tree
+    # or a generated dir still grants has_test, so the same one-sided-exclusion
+    # shape survived inside the very change written to eliminate it. The count
+    # of consumers is not fixed at three; grep is_excluded_tree before adding a
+    # new walk over the repo.
+    # A DOCUMENT IS NOT A TEST, AND A MENTION IS NOT A PAIRING.
+    #
+    # This used to collect every file whose NAME starts with "test", regardless
+    # of extension, and `has_test` then asked whether the engine's stem appeared
+    # ANYWHERE inside one of those names as a substring. Two ways that goes wrong,
+    # and both were live:
+    #
+    #   1. A Markdown fixture (`test-something.md`, a DoR dump, a review note)
+    #      counted as a test. That is the Fable B2 shape one layer down -- a
+    #      document that merely NAMES a script was the thing certifying it tested.
+    #   2. The substring made `_sync_all` match `test_sync_all_helpers.md`, so
+    #      unwired copies of _sync_all.py reported LIVE.
+    #
+    # So only EXECUTABLE test files count. The substring match itself is kept
+    # deliberately -- see the scar below.
+    #
+    # TIGHTENING THE MATCH TO EXACT WAS TRIED AND REVERTED (codex, PR #164 r2).
+    # Requiring the test filename to equal the engine stem looks obviously right
+    # and is wrong: plugins/kipi-core/voicekit/echo.py is genuinely tested by
+    # voicekit/tests/test_voicekit.py, which imports echo and exercises
+    # echo.prompt_echo and echo.opener_echo across ~20 lines. Its stem is
+    # "voicekit", not "echo", so exact matching flipped a real, covered engine to
+    # UNWIRED -- a false alarm eligible for a permanent Linear issue, which is
+    # worse than the false LIVE it was meant to fix. One test file legitimately
+    # covers several engines, so filename equality cannot be the rule. The real
+    # signal is the CONTENT reference (test_sources); making that reliable is
+    # ASK-810, not a filename heuristic.
+    TEST_SUFFIXES = {".py", ".sh"}
+    tests = {p.name for p in root.rglob("test*")
+             if p.is_file() and p.suffix in TEST_SUFFIXES
+             and not is_vendored(p) and not is_excluded_tree(p, root)}
 
-    # Wiring surfaces mirror capability-gate.py's WIRING_SURFACE_GLOBS. A narrower
-    # list reports UNWIRED for engines that are in fact called by another engine or
-    # by the kipi CLI: the first run of this generator flagged 60 UNWIRED in
-    # 4_points_consulting purely because python-calls-python was never read.
-    surfaces = ""
-    for pat in (".claude/settings.json", "settings-template.json", "lefthook.yml",
-                "Makefile", "*.sh", "kipi*", "validate-separation.py",
-                ".github/workflows/*.yml", "*/hooks/hooks.json", "*/*/hooks.json"):
-        for p in root.glob(pat):
-            if p.is_file() and not is_vendored(p):
-                surfaces += read_text(p)
-    for sub in (root / ".claude", root / "plugins", root / "q-system"):
-        if not sub.is_dir():
-            continue
-        for pattern in ("*.md", "*.py", "*.sh", "*.json"):
-            for p in sub.rglob(pattern):
-                if is_vendored(p) or p.name.startswith(("test_", "test-")):
-                    continue
-                surfaces += read_text(p)
-
+    engines = []
     for p in root.rglob("*.py"):
         if is_vendored(p):
             continue
         if p.name.startswith(("test_", "test-")) or "test" in p.parts:
             continue
-        text = read_text(p)
-        if len(text.splitlines()) < 40:
+        # A generated tree is not a wiring surface (see is_excluded_tree), so
+        # it must not be an ENGINE source either. Excluding it from only one of
+        # the two makes its contents permanently dark: still collected, but with
+        # every file that could reference them now off-surface, so they report
+        # UNWIRED with no way to ever clear it (review finding, PR #74 major;
+        # would have compounded sp-3761d2d9). An artifact is not an engine, so
+        # the coherent move is to stop reporting it at all rather than to report
+        # it as dead. Measured: drops 12 phantom engines in kipi-investigations.
+        if is_excluded_tree(p, root):
             continue
-        has_test = any(p.stem in t for t in tests)
-        referenced = p.name in surfaces
+        if DATED_SNAPSHOT_RE.search(p.stem):
+            continue
+        if len(read_text(p).splitlines()) < 40:
+            continue
+        engines.append(p)
+
+    refs = _build_reference_index(root, engines)
+
+    for p in engines:
+        text = read_text(p)
+        sources = refs.get(p, set())
+        # WITNESS ORDER IS NOT ALPHABETICAL (review finding, PR #74 minor).
+        # Plain sorted()[0] puts dot-prefixed paths first, so the evidence named
+        # a review scratch tree (.pr42rev/, .claude/worktrees/) instead of the
+        # real caller in 163 of 785 witnesses measured across five repos. The
+        # verdict was right and the citation was useless, which is worse than it
+        # sounds: the citation is the only part a human re-checks.
+        test_sources = sorted((s for s in sources if _is_test_file(s)), key=_witness_rank)
+        wiring_sources = sorted((s for s in sources if not _is_test_file(s)), key=_witness_rank)
+        has_test = any(p.stem in t for t in tests) or bool(test_sources)
+        referenced = bool(wiring_sources)
         status = "LIVE" if (has_test or referenced) else "UNWIRED"
         bits = []
         if has_test:
-            bits.append("has a paired test")
+            witness = rel(root, test_sources[0]) if test_sources else "name-matched test file"
+            bits.append(f"has a paired test ({witness})")
         if referenced:
-            bits.append("referenced on a wiring surface")
+            bits.append(f"referenced on a wiring surface ({rel(root, wiring_sources[0])})")
         if not bits:
             bits.append("NO test and NO wiring reference found")
         caps.append({

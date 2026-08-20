@@ -2,11 +2,64 @@
   "schema_version": 1,
   "expected_tests": [
     {
+      "path": "plugins/kipi-design/hooks/test_dogfood_gate.py",
+      "runner": "python3"
+    },
+    {
+      "path": "plugins/kipi-dsse/scripts/test_computed_receipts.py",
+      "runner": "python3",
+      "timeout_s": 180
+    },
+    {
+      "path": "plugins/kipi-dsse/scripts/test_scope_hook_fails_closed.py",
+      "runner": "python3",
+      "timeout_s": 120
+    },
+    {
+      "path": "plugins/prd-os/scripts/test/test_spillover_ledger_root.py",
+      "runner": "python3"
+    },
+    {
+      "path": "plugins/prd-os/skills/fable-discipline/scripts/test_fable_discipline_lint.py",
+      "runner": "python3",
+      "timeout_s": 120
+    },
+    {
+      "path": "plugins/prd-os/tests/test_judgment_compiler.py",
+      "runner": "python3",
+      "timeout_s": 240
+    },
+    {
       "path": "plugins/prd-os/tests/test_prd_split_from_linear.py",
       "runner": "python3"
     },
     {
+      "path": "plugins/prd-os/tests/test_virgin_repo_lifecycle.py",
+      "runner": "python3",
+      "timeout_s": 120
+    },
+    {
+      "path": "q-system/.q-system/scripts/test-break-glass-audit.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test-ripple.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-apply-claude-changes.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-ask842-dispatch-decision.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-attempts-ledger.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-audhd-output-eval.py",
       "runner": "python3"
     },
     {
@@ -18,16 +71,73 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-capability-gate-inert-spillover.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-capability-map-wiring.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-ci-redrive.sh",
+      "runner": "bash",
+      "timeout_s": 240
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-claim-page-once-routing.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-claude-write-path.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-client-name-guard.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-containment-gitlink.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-control-file-propagate.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-converge-capout.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-converge-crossrepo-receipt.sh",
+      "runner": "bash",
+      "timeout_s": 120
     },
     {
       "path": "q-system/.q-system/scripts/test/test-converge.sh",
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-dispatch-liveness.sh",
+      "path": "q-system/.q-system/scripts/test/test-dispatch-client-refusal-after-hold.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-liveness.sh",
+      "runner": "bash",
+      "timeout_s": 120
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-per-repo-concurrency.sh",
+      "runner": "bash",
+      "timeout_s": 180
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-dispatch-stale-checkout.sh",
+      "runner": "bash",
+      "timeout_s": 120
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-dor-refuses-unroutable.py",
+      "runner": "python3"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-findings-block-reader.sh",
@@ -44,6 +154,18 @@
     {
       "path": "q-system/.q-system/scripts/test/test-gate-13b-scope.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-gh-repo-scope-converge.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-gh-repo-scope-reviewer.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-gh-repo-scope-worker.sh",
+      "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-install-plist.sh",
@@ -82,11 +204,28 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-kipi-update-owned-deletion-guard.sh",
+      "runner": "bash",
+      "timeout_s": 300
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-kipi-update-plugin-excludes.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-kipi-update-preservation-failure.sh",
       "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-kipi-update-safety.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-kipi-update-source-provenance.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-kipi-update-system-state-commit.sh",
       "runner": "bash"
     },
     {
@@ -130,6 +269,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-linear-dor-drafter-redrive.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-linear-dor-failure-reporting.py",
       "runner": "python3"
     },
@@ -162,6 +305,18 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-notify-exit-contract.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-notify-fixture-guard.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-notify-supplies-repo-path.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-open-loops-heartbeat-exit.sh",
       "runner": "bash"
     },
@@ -170,8 +325,17 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-plist-drift.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-plugin-hook-ownership.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-pr-review-root-guard.sh",
+      "runner": "bash",
+      "timeout_s": 120
     },
     {
       "path": "q-system/.q-system/scripts/test/test-prompt-only-enforcement-guard-stderr.sh",
@@ -198,8 +362,61 @@
       "runner": "bash"
     },
     {
-      "path": "q-system/.q-system/scripts/test/test-review-tree-guard.sh",
+      "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
+      "runner": "bash",
+      "timeout_s": 600
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-artifact-repo-keyed.sh",
       "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-comment-body.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-degraded-provenance.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-dry-run-labelled.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-invoker-provenance.sh",
+      "runner": "bash",
+      "timeout_s": 240
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-plan-echo-gate.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-redrive-absent.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-redrive.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-review-tree-guard.sh",
+      "runner": "bash",
+      "timeout_s": 120
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-runtime-plugin-freshness-wired.sh",
+      "runner": "bash",
+      "timeout_s": 120
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-runtime-plugin-freshness.sh",
+      "runner": "bash",
+      "timeout_s": 120
     },
     {
       "path": "q-system/.q-system/scripts/test/test-settings-merge.sh",
@@ -208,14 +425,23 @@
     {
       "path": "q-system/.q-system/scripts/test/test-severity-floor.sh",
       "runner": "bash",
-      "timeout_s": 420
+      "timeout_s": 600
     },
     {
       "path": "q-system/.q-system/scripts/test/test-skill-trigger-eval.sh",
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-script-stable-under-self-edit.sh",
+      "runner": "bash",
+      "timeout_s": 120
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-styles-csv-width.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-terminal-states.sh",
       "runner": "bash"
     },
     {
@@ -228,15 +454,25 @@
     },
     {
       "path": "q-system/.q-system/scripts/test/test-update-preservation-manifest.py",
-      "runner": "python3"
+      "runner": "python3",
+      "timeout_s": 120
     },
     {
       "path": "q-system/.q-system/scripts/test/test-updater-issue-sequence.py",
-      "runner": "python3"
+      "runner": "python3",
+      "timeout_s": 240
     },
     {
       "path": "q-system/.q-system/scripts/test/test-updater-receipt-contract.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-verdict-statement-shape.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-verdict-usability.sh",
+      "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-voice-enforcement-rule-wired.sh",
@@ -251,11 +487,28 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-worker-project-scope.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
+      "runner": "bash"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-zero-safe-count-idiom.sh",
+      "runner": "bash",
+      "timeout_s": 60
+    },
+    {
       "path": "q-system/.q-system/scripts/test_autocapture_e2e.py",
       "runner": "python3"
     },
     {
       "path": "q-system/.q-system/scripts/test_autocapture_wiring.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py",
       "runner": "python3"
     },
     {
@@ -272,6 +525,15 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_dispatch_alias_reachability.py",
+      "runner": "python3",
+      "timeout_s": 180
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_dispatch_reachability.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_evidence_ledger.py",
       "runner": "python3"
     },
@@ -281,6 +543,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_launchd_health_check.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_launchd_intent_verify.py",
       "runner": "python3"
     },
     {
@@ -304,6 +570,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_memory_lint.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_memory_outcomes.py",
       "runner": "python3"
     },
@@ -313,6 +583,26 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_memory_scores_surface.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_merge_bypass_gate.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_merge_bypass_gate_admin_forms.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_merge_bypass_gate_global_flags.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_merge_bypass_gate_hidden_tool.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_merge_bypass_gate_wrappers.py",
       "runner": "python3"
     },
     {
@@ -332,6 +622,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_review_tier.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_session_recall.py",
       "runner": "python3"
     },
@@ -340,7 +634,19 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_spillover_promote_selection.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_spillover_ratchet.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test_system_manifest.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_token_guard_commit_forms.py",
       "runner": "python3"
     },
     {
@@ -352,12 +658,47 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test_voice_stop_gate_drain_only.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_wiring_check.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/tests/test-stat-verify.py",
       "runner": "python3"
     },
     {
       "path": "q-system/.q-system/test_token_guard_runtime.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/tests/test_capmap_scratch_and_mention.py",
+      "runner": "python3",
+      "timeout_s": 60
+    },
+    {
+      "path": "q-system/.q-system/tests/test_fable_cap_page_deleted.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/tests/test_fable_escalation.py",
+      "runner": "python3",
+      "timeout_s": 180
+    },
+    {
+      "path": "q-system/.q-system/tests/test_grounding_manifest_health.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/tests/test_token_guard_cache_race.py",
+      "runner": "python3",
+      "timeout_s": 120
+    },
+    {
+      "path": "test_dispatch_pinned.sh",
+      "runner": "bash"
     }
   ],
   "required_data": [],
@@ -370,21 +711,35 @@
     "q-system/.q-system/scripts/test/test-kipi-update-dry-final-state.sh",
     "q-system/.q-system/scripts/test/test-kipi-update-hook-contract.sh",
     "q-system/.q-system/scripts/test/test-kipi-update-leak-preflight.sh",
+    "q-system/.q-system/scripts/test/test-kipi-update-plugin-excludes.sh",
     "q-system/.q-system/scripts/test/test-kipi-update-preservation-failure.sh",
     "q-system/.q-system/scripts/test/test-kipi-update-safety.sh",
+    "q-system/.q-system/scripts/test/test-kipi-update-source-provenance.sh",
+    "q-system/.q-system/scripts/test/test-kipi-update-system-state-commit.sh",
     "q-system/.q-system/scripts/test/test-lessons-push-guard.sh",
     "q-system/.q-system/scripts/test/test-propagation-entrypoints.py",
     "q-system/.q-system/scripts/test/test-propagation-leak-baseline.py",
     "q-system/.q-system/scripts/test/test-propagation-leak-sources.py",
     "q-system/.q-system/scripts/test/test-token-guard-template-wiring.sh",
     "q-system/.q-system/scripts/test/test-updater-issue-sequence.py",
-    "q-system/.q-system/scripts/test_autocapture_wiring.py"
+    "q-system/.q-system/scripts/test_autocapture_wiring.py",
+    "test_dispatch_pinned.sh"
   ],
   "declared_inert": [
     {
       "path": "q-system/.q-system/scripts/accept-rate.py",
       "reason": "sycophancy pi metric script with no caller on any wiring surface",
       "spillover_id": "sp-cc33bdb0"
+    },
+    {
+      "path": "q-system/.q-system/scripts/bus-vocabulary-drift.py",
+      "reason": "read-only reporter for bus-filename vocabulary drift across the four copies that hand-maintain it (ASK-874). DELIBERATELY unwired. It lives under q-system/.q-system/scripts/ so it ships to all 23 instances, and it exits 1 today (38 findings, incl. two live verifiers disagreeing on a required filename), so wiring it into kipi check would turn the fleet RED on day one. Arming it is a founder decision and must not arrive as a side effect of landing the reader. Wire it or retire it once ASK-874's fix lands and it can actually exit 0. Its --self-test is the paired check: clean input silent, one mutant per drift class caught",
+      "spillover_id": "sp-1798c784"
+    },
+    {
+      "path": "q-system/.q-system/scripts/founder-judge-calibration.py",
+      "reason": "manually-invoked benchmark harness (build/blind/verify/score), run when a calibration question is asked rather than on any schedule; declared inert instead of given fake wiring to clear the gate",
+      "spillover_id": "sp-5de8ca5b"
     },
     {
       "path": "q-system/.q-system/scripts/granola-voice-synthesize.py",
@@ -402,6 +757,11 @@
       "spillover_id": "sp-0f773063"
     },
     {
+      "path": "q-system/.q-system/scripts/lessons_recall.py",
+      "reason": "retrieval + de-duplication over the lessons corpus: exec bit, real __main__, four subcommands, and ZERO references anywhere in the repo outside its own usage docstring. A genuine true positive, not a gate defect. Built to fix a measured decay in q-system/hooks/lessons-index.py (122 lessons, only the 20 most recent ever surfaced, title-only, evicting), which is also the obvious wiring destination -- but arming a retrieval engine at SessionStart changes behaviour on every governed instance, so it is a deliberate decision and not a side effect of a CI-green fix. Declared inert rather than given fake wiring. Wire it or retire it.",
+      "spillover_id": "sp-067205d3"
+    },
+    {
       "path": "q-system/.q-system/scripts/linear-collapse-jobmigration.py",
       "reason": "one-shot family collapse: it absorbed the 32-member job-migration family into ASK-151 on 2026-07-28 and has no second family to run on. ASK-226 generalises it; retire this one when that lands",
       "spillover_id": "sp-fb332466"
@@ -414,12 +774,12 @@
     {
       "path": "q-system/.q-system/scripts/memory_outcomes.py",
       "reason": "auto-capture referee merged (PR #7) but gated OFF fleet-wide; activates with the held kipi update",
-      "spillover_id": "sp-cac8540c"
+      "spillover_id": "sp-b8eb2928"
     },
     {
       "path": "q-system/.q-system/scripts/memory_reflect.py",
       "reason": "auto-capture referee merged but gated OFF fleet-wide",
-      "spillover_id": "sp-cac8540c"
+      "spillover_id": "sp-b8eb2928"
     },
     {
       "path": "q-system/.q-system/scripts/pdf-extract.py",
@@ -427,9 +787,14 @@
       "spillover_id": "sp-cc33bdb0"
     },
     {
+      "path": "q-system/.q-system/scripts/review-tier.py",
+      "reason": "deterministic review-tier classifier: built, tested (55 checks incl. a mutation layer), and DELIBERATELY unwired. Not a hook, so .claude/settings.json is the wrong surface -- its contract is `review-tier.py ... || run_independent_review`, making the call site pr-review-agent.sh or linear-worker.sh. Picking between them changes behaviour (one saves a Codex call, the other a whole worker run) and is its own design decision. Held back on purpose: this classifier decides WHO GETS REVIEWED, so it must not arm itself in the same PR that has not yet been reviewed",
+      "spillover_id": "sp-f0f0fc7e"
+    },
+    {
       "path": "q-system/.q-system/scripts/session_recall.py",
       "reason": "auto-capture referee merged but gated OFF fleet-wide",
-      "spillover_id": "sp-cac8540c"
+      "spillover_id": "sp-b8eb2928"
     },
     {
       "path": "q-system/.q-system/scripts/stat-registry-extract.py",

@@ -13,7 +13,10 @@ The About section is what ChatGPT, Claude, Gemini, and Perplexity pull when some
 - First word is "I."
 - Keyword-rich but natural. LLMs pull phrases, not just keywords.
 - Zero em-dashes. Zero rule-of-three lists. Zero AI filler.
-- One clear CTA at the end. Not three.
+- NO CTA at the end. Founder-directed 2026-08-06: "most critically - I dont want to
+  end with a CTA." Per the operator-vs-marketer rule the `ending_gate` enforces, an
+  operator ends "in nothing, or ONE SPECIFIC THING". A marketer "ends in a CTA to a
+  course/call". One specific thing is allowed. An ask is not.
 - Scar-anchored. Lead with a real moment, not a title.
 - Anti-misclassification line near the end (tells LLMs what you're NOT).
 
@@ -37,8 +40,9 @@ Concrete, not "disrupting" or "reinventing."
 [ANTI-MISCLASSIFICATION — 1 line]
 What you are NOT. Stops LLMs from slotting you into the wrong category.
 
-[CTA — 1 line]
-One specific ask. DM about X, book a call if Y, subscribe for Z.
+[CLOSE — 1 line]
+End on nothing, or on ONE SPECIFIC THING. Never an ask. No "DM me", no "book a
+call", no "subscribe".
 ```
 
 ## Framework 2: Passion / Execution
@@ -59,7 +63,7 @@ Who this brand is for. Helps humans and AI classify you correctly.
 
 [ANTI-MISCLASSIFICATION — 1 line]
 
-[CTA — 1 line]
+[CLOSE — 1 line]  (one specific thing, or nothing. Never an ask.)
 ```
 
 ## Framework 3: One-line hammer (for X/Twitter bio + GitHub)
@@ -103,7 +107,7 @@ Sub-patterns that work:
 3. At least one specific scar with company + what broke?
 4. Zero em-dashes, zero rule-of-three lists?
 5. Zero AI filler phrases?
-6. One CTA, not three?
+6. Zero CTAs? (ends on nothing, or one specific thing, never an ask)
 7. Anti-misclassification line present?
 8. 3+ keyword targets worked in naturally?
 9. Readable aloud without sounding like a press release?

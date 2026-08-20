@@ -122,6 +122,15 @@
             "timeout": 35
           }
         ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\" --drain-only; fi"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -160,6 +169,21 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-path-write-guard.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-path-write-guard.py\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/merge-bypass-gate.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/merge-bypass-gate.py\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -170,11 +194,21 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "for R in q-system/.q-system/scripts/claude-path-write-guard.py q-system/.q-system/scripts/claude-integrity-tripwire.py; do [ -f \"$CLAUDE_PROJECT_DIR/$R\" ] && continue; git -C \"$CLAUDE_PROJECT_DIR\" checkout -- \"$R\" >/dev/null 2>&1; N=\"${KIPI_NOTIFY:-$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/slack-notify.sh}\"; if [ -f \"$CLAUDE_PROJECT_DIR/$R\" ]; then \"$N\" \"SECURITY: $R was deleted; restored from git\" >/dev/null 2>&1; else \"$N\" \"SECURITY: $R was deleted and git could not restore it -- that layer is DOWN\" >/dev/null 2>&1; echo \"SECURITY: $R is missing and could not be restored\" >&2; exit 2; fi; done",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-integrity-tripwire.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-integrity-tripwire.py\" --enforce --quiet",
+            "timeout": 20
           }
         ]
       },
       {
-        "matcher": "Edit|Write",
+        "matcher": "Edit|Write|MultiEdit",
         "hooks": [
           {
             "type": "command",
@@ -213,6 +247,11 @@
           },
           {
             "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/linear-filer-label-lint.py\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/audhd-lint.py\"",
             "timeout": 5
           },
@@ -238,6 +277,10 @@
           },
           {
             "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/spillover-ratchet.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/spillover-ratchet.py\""
+          },
+          {
+            "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/settings-template-sync-check.py\"",
             "timeout": 5
           }
@@ -255,6 +298,15 @@
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/handoff-provenance-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/handoff-provenance-lint.py\"",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/portability-lint-hook.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/portability-lint-hook.py\""
           }
         ]
       }
@@ -276,6 +328,11 @@
           {
             "type": "command",
             "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/code_claim_grounding_guard.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/code_claim_grounding_guard.py\"; fi",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/blocked-claim-evidence-lint.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/blocked-claim-evidence-lint.py\"; fi",
             "timeout": 15
           },
           {

@@ -1,0 +1,230 @@
+{
+  "schema_version": 1,
+  "_doc": [
+    "One row per exit that removes an issue from a linear-worker.sh run.",
+    "",
+    "IDENTITY IS A STABLE MARKER, NEVER A LINE NUMBER (finding-15). The PRD's own",
+    "v1 cited linear-worker.sh:1297 (which resets variables), :1295 (a comment),",
+    "and missed that the real persistent stuck gate is :680. Line numbers drift on",
+    "the first nearby edit; a label name, a sentinel filename, a claim_page_once",
+    "flag or a shell function name does not. `marker` is a literal string the",
+    "validator locates in the source at runtime.",
+    "",
+    "`sites` is the number of source sites this row is expected to cover, and it",
+    "is the load-bearing field. Without it a tenth dead end added directly beneath",
+    "an existing marker would INHERIT that marker and pass silently. With it, any",
+    "added or removed exit changes an observed count and the check goes RED.",
+    "",
+    "Each row declares EITHER a consumer + liveness_check, OR terminal:true with a",
+    "written rationale. An honest dead end passes; an unexamined one does not.",
+    "A human is never a valid consumer -- the founder does not read or work on",
+    "code, so a state whose only actor is the founder does not continue. Name it",
+    "terminal:true and say so."
+  ],
+  "source": "q-system/.q-system/scripts/linear-worker.sh",
+  "states": [
+    {
+      "id": "needs-scope",
+      "class": "durable-queue",
+      "marker": [
+        "\"needs-scope\" in labels",
+        "REFUSE_LABEL=\"needs-scope\""
+      ],
+      "sites": 2,
+      "what": "Sana refused the spec as unexecutable. The worker writes .sana-needs-scope, labels the issue needs-scope, and the picker stops offering it.",
+      "consumer": "linear-dor-drafter.py -- selects on the needs-scope label, rewrites the DoR, drops the label so the picker offers it again",
+      "consumer_test": "q-system/.q-system/scripts/test/test-linear-dor-drafter-redrive.sh",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.linear-dor",
+        "run_evidence": "~/.config/kipi/linear-dor.out",
+        "max_age_s": 172800
+      }
+    },
+    {
+      "id": "no-dor",
+      "class": "selection-filter",
+      "marker": "## Definition of Ready",
+      "sites": 1,
+      "what": "ready() excludes an issue with no Definition of Ready. It never entered a state; it was never picked.",
+      "consumer": "linear-dor-drafter.py -- drafting a DoR for issues that lack one is the job this script exists for",
+      "consumer_test": "q-system/.q-system/scripts/test/test-linear-dor-drafter-redrive.sh",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.linear-dor",
+        "run_evidence": "~/.config/kipi/linear-dor.out",
+        "max_age_s": 172800
+      }
+    },
+    {
+      "id": "automerge-unarmed",
+      "class": "transient",
+      "marker": "arm_automerge",
+      "sites": 1,
+      "what": "rework_gate returned 10: approved, clean, pinned to its own head. Nothing to rework. The branch arms auto-merge and skips.",
+      "consumer": "com.kipi.dispatch -- the next worker run re-evaluates this PR and re-arms; GitHub merges once required checks are green",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      }
+    },
+    {
+      "id": "no-review-verdict",
+      "class": "transient",
+      "marker": "\"$GATE\" = \"20\"",
+      "sites": 1,
+      "what": "rework_gate returned 20: the PR has no recorded review verdict, so there is no spec to rework against.",
+      "consumer": "com.kipi.dispatch -- converge.sh runs the reviewer, which writes the verdict record this gate reads",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      }
+    },
+    {
+      "id": "worktree-create-failed",
+      "class": "infra-retry",
+      "marker": "could not create worktree",
+      "sites": 1,
+      "what": "git worktree add failed and the tree still does not exist. Explicitly not counted against the issue.",
+      "consumer": "com.kipi.dispatch -- the next run retries from scratch; nothing about the issue changed",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      }
+    },
+    {
+      "id": "claim-contended",
+      "class": "infra-retry",
+      "marker": "claimed by another session",
+      "sites": 1,
+      "what": "linear-claim.py exited 3: another session holds this worktree. A skip, not an error.",
+      "consumer": "com.kipi.dispatch -- the holding session finishes and releases; the next run claims it. A claim left by a killed run is reclaimable on read via --holder-pid.",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      }
+    },
+    {
+      "id": "claim-infra-failure",
+      "class": "infra-retry",
+      "marker": "claim failed rc=",
+      "sites": 1,
+      "what": "The claim failed for a reason that is not contention. Explicitly not counted against the issue.",
+      "consumer": "com.kipi.dispatch -- retried next run; a persistent failure surfaces through launchd-health-check.py, which pages on a job whose last run exited non-zero",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      }
+    },
+    {
+      "id": "blocked-capability",
+      "class": "durable-queue",
+      "marker": [
+        "\"blocked:capability\" in labels",
+        "REFUSE_LABEL=\"blocked:capability\""
+      ],
+      "sites": 2,
+      "terminal": true,
+      "rationale": "NO CONSUMER TODAY, and that is the honest reading rather than a fake tier. The spec is sound; the runner lacks something it cannot grant itself -- a harness permission is an authorization decision and an agent must never grant itself one (2026-05-17 scar). 10 issues are held here as of 2026-08-01. ASK-281 is in flight adding a Codex tier, and sp-52390281 is live evidence that tier may not work either: the sensitive-path guard blocks any path containing .claude/. This row is revised to a consumer + liveness_check when ASK-281 lands and is proven, not when it merges."
+    },
+    {
+      "id": "owner-assaf",
+      "class": "durable-queue",
+      "marker": "\"owner:assaf\" in labels",
+      "sites": 1,
+      "terminal": true,
+      "rationale": "The founder queue, and the one place that routing is by design. This label exists to mark an issue the loop must NOT touch, so the absence of a machine consumer is the feature. Every other founder-routed state in this file is a defect; this one is the intended destination, which is exactly why the rest must not quietly imitate it."
+    },
+    {
+      "id": "not-owner-sana",
+      "class": "selection-filter",
+      "marker": "\"owner:sana\" not in labels",
+      "sites": 1,
+      "what": "The issue is not addressed to this worker.",
+      "terminal": true,
+      "rationale": "Not an exit and not a refusal -- the issue was never routed here. A machine consumer would mean this worker picking up work nobody assigned to it, which is the opposite of what the ownership label is for. Board triage decides who owns an issue."
+    },
+    {
+      "id": "state-not-open",
+      "class": "selection-filter",
+      "marker": "i[\"state\"][\"type\"] not in",
+      "sites": 1,
+      "what": "The issue is not in backlog or unstarted -- it is already started, done, or cancelled.",
+      "terminal": true,
+      "rationale": "A correct exclusion, not a dead end. An issue in any other state either has an owner working it or is finished. Consuming this would mean re-opening closed work."
+    },
+    {
+      "id": "fleet-alert-not-a-spec",
+      "class": "selection-filter",
+      "marker": "is_fleet_alert(i):",
+      "sites": 1,
+      "what": "The issue is a ticket alert-to-linear.py filed, identified by the <!-- kipi-alert-fingerprint: ... --> marker the writer itself stamps.",
+      "terminal": true,
+      "rationale": "A notification is not work, so refusing it here is the correct end and not a dead end. The body is a raw alert line, not a spec anyone scoped; drafting a DoR onto one would only make it READY-SHAPED and admit it to this queue. Measured on the live board 2026-08-15: 81 open alert tickets, and all 19 already drafted onto sat in the permanently-UNREACHABLE bucket. The consumer of an alert is the operator who reads it; the paired refusal in linear-dor-drafter.py stops the conversion at source. Registered with its own marker rather than left under state-not-open, whose row it would otherwise silently inflate to two sites -- which is exactly how this was caught."
+    },
+    {
+      "id": "out-of-repo",
+      "class": "selection-filter",
+      "marker": "not in_this_repo(i)",
+      "sites": 1,
+      "what": "The issue is ready-shaped and owned by Sana, but its Linear project is not this repo. 18 such issues across 14 projects as of 2026-08-01; one dispatch job exists fleet-wide.",
+      "terminal": true,
+      "rationale": "NO CONSUMER TODAY. This is the largest parked population and it is deliberately left terminal rather than given a fake tier. Piece C (fleet-dispatch-preflight) is the named plan and it does not start until a per-repo preflight exists: a dispatcher that runs a client repo's local ./kipi, pushes branches and arms auto-merge is a real hazard to Alice and Prodigy_Gold, and opt-in plus a project filter is not protection (finding-8). Revised to a consumer when that preflight ships."
+    },
+    {
+      "id": "attempts-cap-stuck",
+      "class": "exhausted-counter",
+      "marker": "stuck_paged",
+      "sites": 1,
+      "what": "MAX_ATTEMPTS spent. Paged once (not per heartbeat), with a Linear comment naming the three options and the last recorded reason.",
+      "terminal": true,
+      "rationale": "The budget ran out and the loop cannot name a machine actor. What ends it is a judgment call -- fix the blocker and clear the count, rewrite the DoR, or close the issue -- and inventing a tier here would manufacture a consumer that only re-runs the thing that already failed MAX_ATTEMPTS times. The honest degraded case is explicit in source: when no reason was recorded, the cap itself is the finding, because the loop burned its whole budget without diagnosing. Note the residual this row does NOT resolve: the named human is the founder, who does not work on code. That makes this a real dead end, which is what terminal:true says."
+    },
+    {
+      "id": "drift-cap",
+      "class": "exhausted-counter",
+      "marker": "drift_paged",
+      "sites": 1,
+      "what": "MAX_DRIFT_ROUNDS spent: the PR is approved at one sha but its head is still unreviewed. Paged once.",
+      "terminal": true,
+      "rationale": "Finding-5, accepted by the PRD: a drift round ALREADY ends in a Codex review with an Opus fallback, so adding a review tier here is a validator-satisfying fiction. When the reviewer is the thing that is down, another review round cannot clear it -- that is precisely why the budget exists. Unreviewed code sitting at the head is a state a human must resolve."
+    },
+    {
+      "id": "conflict-cap",
+      "class": "exhausted-counter",
+      "marker": "conflict_paged",
+      "sites": 1,
+      "what": "MAX_CONFLICT_ROUNDS spent: the PR is approved but still does not merge. Paged once.",
+      "terminal": true,
+      "rationale": "Same shape as drift-cap. The rebase rounds already ran and the conflict survived them; a further automated tier would rework forever and write a permanent Linear comment on every round. An unresolvable conflict is a human judgment about which side wins."
+    },
+    {
+      "id": "tree-position-refused",
+      "class": "exhausted-counter",
+      "marker": "tree_paged",
+      "sites": 1,
+      "what": "The worktree is missing the PR's commits and cannot be moved onto them because it holds local work. The round is refused rather than force-pushing over the approved diff. Paged once, and the claim is released so the issue is not wedged.",
+      "terminal": true,
+      "rationale": "The PRD's own named example of an honest terminal. A tree holding local work has no plausible machine actor: the two candidate moves are discarding that work or force-pushing over a reviewed diff, and both are destructive by construction (destructive-op carve-out). A human decides what the local work was for."
+    },
+    {
+      "id": "dry-run",
+      "class": "transient",
+      "marker": "[dry] would work",
+      "sites": 1,
+      "what": "APPLY=0. The run reports what it would have done and counts the issue against LIMIT without touching it.",
+      "terminal": true,
+      "rationale": "Not an issue state at all -- it is the caller's own --apply flag, and a live run never takes this branch. Registered rather than exempted because the enumerator finds every continue in the loop, and an exit that is genuinely not a dead end still has to be examined once and said out loud. Silence here would be indistinguishable from an unregistered exit."
+    }
+  ]
+}

@@ -40,6 +40,11 @@ DEFAULTS = {
     "state_dir": ".claude/state",
     "receipts_path": ".prd-os/receipts.jsonl",
     "codebase_map_path": ".prd-os/codebase-map.json",
+    # Was hardcoded to q-system/output/skeptic-proposals in
+    # propose_skeptic_antipatterns.py, so archiving a PRD grew a q-system/
+    # tree in ANY repo -- measured in one holding a single README
+    # (2026-08-05). The "portable core" must stay inside its own split.
+    "skeptic_proposals_dir": ".prd-os/skeptic-proposals",
     "codex": {
         "base_ref": "origin/main",
         "review_mode": "background",
@@ -72,6 +77,7 @@ class Config:
     findings_dir: Path
     state_dir: Path
     receipts_path: Path
+    skeptic_proposals_dir: Path
     codebase_map_path: Path
     codex_base_ref: str
     codex_review_mode: str
@@ -161,6 +167,11 @@ def load(repo_root: Optional[Path] = None, *, strict: bool = True) -> Config:
         findings_dir=_resolve(root, _require_str(data, "findings_dir", DEFAULTS["findings_dir"])),
         state_dir=_resolve(root, _require_str(data, "state_dir", DEFAULTS["state_dir"])),
         receipts_path=_resolve(root, _require_str(data, "receipts_path", DEFAULTS["receipts_path"])),
+        skeptic_proposals_dir=_resolve(
+            root,
+            _require_str(data, "skeptic_proposals_dir",
+                         DEFAULTS["skeptic_proposals_dir"]),
+        ),
         codebase_map_path=_resolve(
             root,
             _require_str(data, "codebase_map_path", DEFAULTS["codebase_map_path"]),
@@ -207,6 +218,7 @@ def default_config_payload() -> dict:
         "findings_dir": DEFAULTS["findings_dir"],
         "state_dir": DEFAULTS["state_dir"],
         "receipts_path": DEFAULTS["receipts_path"],
+        "skeptic_proposals_dir": DEFAULTS["skeptic_proposals_dir"],
         "codebase_map_path": DEFAULTS["codebase_map_path"],
         "codex": dict(DEFAULTS["codex"]),
         "control_plane_files": list(DEFAULTS["control_plane_files"]),

@@ -24,6 +24,23 @@ The issue description is the founder's own words. This adds a `## Definition of
 Ready` section beneath it and touches nothing else. An LLM rewriting a human's
 issue text is not a trade worth making, and Linear issues cannot be deleted here.
 
+THE ONE EXCEPTION: REDRAFT (needs-scope-redrive, 2026-08-01)
+
+There is a second selection mode. `linear-worker.sh` refuses an issue whose DoR
+is unexecutable, labels it `needs-scope`, and tells the operator in writing that
+"linear-dor-drafter.py re-scopes this ... no action is needed from the founder."
+That was FALSE for as long as it had been printed: needs_dor() returned False on
+any description containing "Definition of Ready", and a needs-scope issue HAS a
+DoR -- having a bad one is exactly why it was refused. So every refusal was
+parked permanently behind a message promising the opposite (ASK-148).
+
+A redraft therefore DOES overwrite, but only the `## Definition of Ready` section
+and never a byte above it: that section is this job's own prior output, not the
+founder's words, so the append-only rule is not in tension with rewriting it.
+The bounded-loop rules apply (REDRAFT_CAP, TERMINAL_NOTE) because a redraft loop
+that keeps producing unexecutable specs would cycle an issue between the worker
+and this job forever.
+
 AUDHD: every drafted DoR carries an Energy mode and a Time Est, per
 `.claude/rules/audhd-interaction.md` — an issue the founder cannot pick up by
 energy level is not actually ready for a human either.
@@ -43,6 +60,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 HERE = Path(__file__).resolve().parent
 QROOT = HERE.parent.parent
@@ -67,6 +85,31 @@ FAILURE_TITLE = "linear-dor: nightly DoR drafter reported failures"
 # marker: other machine-filed issues (fleet-health-daily's findings) are real work
 # items and a DoR helps them. (PR #12 round-2 review, nit.)
 FAILURE_MARKER = f"<!-- kipi-key: {FAILURE_KEY} -->"
+
+# The marker alert-to-linear.py stamps into every ticket it files. Matched on the
+# marker rather than the title prefix or the owner label: the prefix is prose a
+# human can edit and the label is shared with every other Sana issue, while this
+# is the writer's own machine-readable claim about what the ticket IS.
+#
+# MATCHED IN THE WRITER'S STRUCTURAL FORM, NOT AS A BARE NAME (ASK-839, PR #191
+# review round 4). alert-to-linear.py:515 emits
+# `<!-- kipi-alert-fingerprint: <fp> -->`; testing for the bare name matched any
+# issue whose body merely DISCUSSES the alert mechanism, and dropped it from
+# drafting forever with no counter and no line of output. ASK-839 itself is that
+# issue -- its own description says the tickets "carry `kipi-alert-fingerprint`",
+# so the issue that built this exclusion was excluded by it. Same class as the
+# bare "Definition of Ready" substring that removed a founder's issue from this
+# drafter (sp-b784a19a): a comment marker is structure, a sentence naming it is
+# not.
+ALERT_FINGERPRINT_MARKER = "kipi-alert-fingerprint"
+ALERT_FINGERPRINT_RE = re.compile(r"<!--\s*" + re.escape(ALERT_FINGERPRINT_MARKER)
+                                  + r"\s*:")
+
+
+def is_alert_ticket(description: str) -> bool:
+    """ONE definition of "alert-to-linear.py filed this", used by the selector and
+    by the reporting count. Two substring tests in two places is how they drift."""
+    return bool(ALERT_FINGERPRINT_RE.search(description or ""))
 
 # The single founder-ping channel (.claude/rules/founder-notifications.md).
 # Used ONLY when the report itself could not reach the board -- an open Linear
@@ -150,6 +193,46 @@ CLAUDE_FALLBACKS = (
 # onto one would be pure noise on a permanent object.
 DRAFTABLE_STATE_TYPES = ("backlog", "unstarted")
 
+# The worker's refusal label. This is the redrive input: the issue is selected
+# BECAUSE it carries this, not excluded because it already has a DoR.
+NEEDS_SCOPE_LABEL = "needs-scope"
+
+# How many times this job may rewrite one issue's DoR before it stops.
+# Three, matching self-healing-retry.md's attempt cap: the same reasoning applies
+# (a fourth identical-quality attempt is not new information, it is a slot spent).
+REDRAFT_CAP = 3
+
+# The redraft counter lives in the ISSUE DESCRIPTION, not in the state file and
+# not in attempts-ledger.py.
+#   - not the ledger: out of scope by founder deferral (sp-626e9452), and a  # spillover-skip
+#     read-then-write from a second process is the race that file exists to stop.
+#   - not ~/.config/kipi/linear-dor-state.json: that is one machine's scratch. A
+#     cap whose count evaporates on a new laptop is not a cap, and the terminal
+#     rationale has to be READABLE on the issue by whoever opens it anyway. If
+#     the rationale must live on the issue, so must the number behind it.
+# Single writer: this job is the only thing that writes this marker, and it
+# writes it only inside apply_write(), which is the one path to a description write.
+REDRAFT_MARKER_RE = re.compile(r"<!--\s*kipi-dor:\s*redrafts=(\d+)(\s+terminal)?\s*-->")
+
+# What goes on the issue when the cap is spent. Deliberately NOT a new escalation
+# tier -- the PRD rejects manufactured tiers (codex finding 5). It is an honest
+# terminal: a written statement that the machine is out of moves, kept reversible
+# by naming the one edit that puts the issue back in the loop.
+TERMINAL_NOTE = f"""> **Redraft cap reached ({REDRAFT_CAP} of {REDRAFT_CAP}). This is an honest terminal, not a queue.**
+>
+> `linear-dor-drafter.py` rewrote this Definition of Ready {REDRAFT_CAP} times and the
+> autonomous worker refused it as unexecutable each time. There is no further machine
+> move here: a {REDRAFT_CAP + 1}th rewrite would produce a spec of the same quality and
+> spend another night's slot. The `needs-scope` label stays ON deliberately, so the
+> picker keeps this out of the loop instead of cycling it.
+>
+> What is missing is a scope decision: what bounded outcome this issue is actually
+> asking for. That is a real dead end for this job, recorded here rather than left
+> looking like pending work.
+>
+> To put it back in the loop: delete the `<!-- kipi-dor: ... -->` line above. The
+> counter resets and the next nightly run redrafts it again."""
+
 PROMPT = """You are writing a Definition of Ready for one Linear issue in a software fleet.
 
 Repo/project: {project}
@@ -180,6 +263,47 @@ what is missing instead of guessing. Never invent a file path or a command that 
 cannot see evidence for."""
 
 
+REDRAFT_PROMPT = """You are REWRITING a Definition of Ready that an autonomous coding agent
+already refused as unexecutable. Attempt {attempt} of {cap}.
+
+Repo/project: {project}
+Title: {title}
+
+The Definition of Ready it refused:
+---
+{old_dor}
+---
+
+Why it refused it:
+---
+{reason}
+---
+
+Rewrite the DoR so THAT refusal no longer applies. The usual cause is scope: the
+spec asked for an unbounded amount of work, or asked for a judgment call the agent
+cannot make from a non-interactive session. Cut it down to ONE bounded change that
+a single agent session can finish and prove. Narrowing the outcome is correct and
+expected; do not preserve ambition you cannot bound.
+
+Write ONLY the body of the section. No preamble, no heading, no code fences. Use
+exactly these five bullets, in this order:
+
+- **Outcome:** one sentence, what is true when this is done, in plain terms.
+- **Files:** the explicit paths you'd expect to touch. If genuinely unknown, say
+  "unknown - needs a recon pass" rather than inventing paths.
+- **Check:** the command that proves it works, or that currently fails. Runnable.
+  If none exists, say what would have to be written.
+- **Blast radius:** does this propagate to other repos via `kipi update`? Is it
+  skeleton-only or fleet-wide? Does it touch always-on rules or settings?
+- **Not doing:** the adjacent thing this issue explicitly does not cover. Name here
+  whatever you cut out of the old scope.
+
+Then one final line exactly like:
+**Energy:** <Quick Win|Deep Focus|People|Admin> · **Time Est:** <e.g. 30 min, 2 h, half day>
+
+Be concrete and short. Never invent a file path or a command you cannot see evidence for."""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -191,14 +315,37 @@ def _linear():
     return mod
 
 
+# `labels` is new (needs-scope-redrive). Before it this query selected no labels
+# at all, so a label-driven selection was not merely unimplemented, it had no data
+# to run on. The IDs come with the names because the write needs the id of the one
+# label it drops.
+#
+# These are SELECTION-time labels. The write re-reads them (ISSUE_WRITE_Q) rather
+# than reusing what it found here -- see reread_before_write(). An earlier comment
+# in this slot claimed Linear has no remove-one mutation and that the full labelIds
+# set therefore had to be replaced. That was false; removedLabelIds exists and is
+# what this script sends. See needs_scope_label_ids().
 ISSUES_Q = """query($t:ID!,$a:String){issues(filter:{team:{id:{eq:$t}}},first:250,after:$a){
-  nodes{id identifier title description project{name} state{name type}}
+  nodes{id identifier title description project{name} state{name type}
+        labels{nodes{id name}}}
   pageInfo{hasNextPage endCursor}}}"""
+
+# The worker writes WHY it refused as a comment, not into the description. A
+# redraft that cannot see that reason is a coin flip that spends one of three
+# capped attempts, so it is fetched per candidate rather than skipped. Bounded by
+# --limit (8 a night), which is why this is a per-issue query and not another
+# field on the 250-issue page.
+ISSUE_COMMENTS_Q = """query($id:String!){issue(id:$id){comments(last:15){nodes{body}}}}"""
 
 UPDATE_M = """mutation($id:String!,$input:IssueUpdateInput!){
   issueUpdate(id:$id,input:$input){success issue{identifier}}}"""
 
 ISSUE_STATE_Q = """query($id:String!){issue(id:$id){id identifier state{name type}}}"""
+
+# Re-read one issue immediately before writing it. Same fields the redraft write
+# depends on, and nothing else. See reread_before_write().
+ISSUE_WRITE_Q = """query($id:String!){issue(id:$id){
+  id identifier description state{name type} labels{nodes{id name}}}}"""
 
 TEAM_STATES_Q = """query($t:String!){team(id:$t){
   states(first:50){nodes{id name type position}}}}"""
@@ -207,20 +354,252 @@ REOPEN_M = """mutation($id:String!,$s:String!){
   issueUpdate(id:$id,input:{stateId:$s}){success}}"""
 
 
-def needs_dor(issue: dict) -> bool:
+def issue_labels(issue: dict) -> list:
+    """[{id, name}] for one issue. [] when the caller's fixture omits labels."""
+    return ((issue.get("labels") or {}).get("nodes")) or []
+
+
+def label_names(issue: dict) -> set:
+    return {(lab.get("name") or "") for lab in issue_labels(issue)}
+
+
+# Any markdown ATX heading, captured so its LEVEL can be compared.
+HEADING_RE = re.compile(r"(?m)^[ \t]{0,3}(?P<hashes>#{1,6})[ \t]+(?P<text>.*?)[ \t]*$")
+# The DoR heading, as a STRUCTURE: a heading line whose text begins with the
+# phrase. Trailing words are allowed so the generated capability issues, which
+# title their section in their own wording, are still recognised.
+DOR_HEADING_RE = re.compile(
+    r"(?mi)^[ \t]{0,3}(?P<hashes>#{1,6})[ \t]+definition of ready\b.*$")
+
+
+# An opening or closing code fence: up to 3 spaces, then 3+ backticks or tildes.
+FENCE_RE = re.compile(r"(?m)^[ \t]{0,3}(?P<fence>`{3,}|~{3,})(?P<info>[^\n]*)$")
+
+
+def fenced_spans(text: str) -> list:
+    """Character spans of CLOSED fenced code blocks, so headings inside them can
+    be ignored.
+
+    An UNCLOSED fence is deliberately NOT a span, and that is the load-bearing
+    choice here. Treating a stray ``` as opening a region that runs to the end of
+    the description would hide every real heading below it: the refused DoR would
+    never be located, so it would never be replaced, and a second section would be
+    appended beneath it. Of the two ways to be wrong, ignoring a real-but-unclosed
+    fence costs at most a mis-scoped section, while swallowing the remainder loses
+    the section boundary entirely on a permanent object.
+
+    Fence rules follow CommonMark closely enough for issue descriptions: a closing
+    fence matches the opening CHARACTER, is at least as long, and carries no info
+    string; a backtick opener may not have backticks in its info string.
+    """
+    spans, open_at, open_char, open_len = [], None, "", 0
+    for m in FENCE_RE.finditer(text):
+        marker = m.group("fence")
+        char, length, info = marker[0], len(marker), m.group("info").strip()
+        if open_at is None:
+            if char == "`" and "`" in info:
+                continue      # not a valid backtick opener
+            open_at, open_char, open_len = m.start(), char, length
+        elif char == open_char and length >= open_len and not info:
+            spans.append((open_at, m.end()))
+            open_at = None
+    return spans
+
+
+def _outside_fences(pattern, text: str, spans: list):
+    """Matches of `pattern` in `text` that do not start inside a fenced block."""
+    return (m for m in pattern.finditer(text)
+            if not any(s <= m.start() < e for s, e in spans))
+
+
+def find_dor_heading(desc: str, spans: list | None = None):
+    """The ONE place this file decides where a Definition of Ready section is.
+
+    STRUCTURE, not phrase -- and that distinction is the whole reason this
+    function exists rather than three `in desc` tests. Matching the words
+    "Definition of Ready" wherever they appear went wrong three separate times
+    in this one file:
+
+      1. needs_dor() excluded any description CONTAINING the phrase, so a
+         needs-scope issue (which HAS a bad DoR) was never redrafted. That is
+         the defect this whole branch exists to fix.
+      2. selection_mode() excluded on the same phrase in ordinary prose, so a
+         founder writing "this needs a Definition of Ready" hid their own issue
+         from the drafter permanently (sp-b784a19a).
+      3. split_dor_section() located the owned span with `desc.find()`, so an
+         inline MENTION became the section start and everything from that
+         sentence to the next heading was replaced on redraft (codex round 2).
+
+      4. A heading line INSIDE A FENCED CODE BLOCK counted, so a founder quoting
+         this repo's own DoR template -- which is routinely pasted into a fenced
+         block -- had the QUOTE treated as the section start: their prose was
+         deleted from the quote onward while the actually-refused DoR below it
+         was left untouched (codex round 3).
+
+    Same mistake four times, so the fix is one resolver every site calls, not a
+    fifth correct comparison. A heading is a line that starts with #s, outside a
+    fence. A sentence that happens to contain the words is not a section.
+
+    `spans` is an optimisation only: split_dor_section already computes the fence
+    spans for its end-boundary search and passes them back in. It must NOT resolve
+    the heading itself -- when it did, this function covered only the selection
+    path while the write path kept its own copy, and a mutation that broke fence
+    skipping here left every write-side test green. Found by mutation, not review.
+
+    Known limit, chosen deliberately: a DoR titled with bold text
+    (`**Definition of Ready**`) rather than a heading reads as absent, so such an
+    issue gets a second section appended. That is the tradeoff rebuild_description
+    already makes explicit -- a duplicate section is recoverable, silently
+    deleting or permanently hiding a human's text is not.
+    """
+    desc = desc or ""
+    spans = fenced_spans(desc) if spans is None else spans
+    return next(_outside_fences(DOR_HEADING_RE, desc, spans), None)
+
+
+def has_dor_section(desc: str) -> bool:
+    """Whether the issue already carries a DoR section. See find_dor_heading."""
+    return find_dor_heading(desc) is not None
+
+
+def split_dor_section(desc: str) -> tuple:
+    """(before, heading, section, after) around the DoR section this job owns.
+
+    The owned span runs from the DoR heading LINE to the next heading of the same
+    or a higher level, or to the end when there is none. `after` is somebody
+    else's text -- a `## Notes`, an operator record, a later human edit -- and the
+    first cut of this function took everything from the heading onward as
+    replaceable, which silently deleted all of it on every redraft (codex round 1,
+    finding 1). Nothing outside `section` is ever rewritten.
+
+    The heading LINE comes back as its own element so a redraft can put the
+    founder's exact wording back rather than normalising it to DOR_HEADING.
+    """
+    desc = desc or ""
+    spans = fenced_spans(desc)
+    match = find_dor_heading(desc, spans)
+    if not match:
+        return desc, "", "", ""
+    level = len(match.group("hashes"))
+    heading = match.group(0).strip()
+    # Searched over `desc`, not over a slice, so the fence spans stay in one
+    # coordinate system. Same-or-higher level ends the section; a deeper `###`
+    # inside it does not, and neither does a heading inside a fenced block --
+    # a fenced `## Notes` would otherwise cut the section short and shunt the
+    # rest of the DoR into `after`, where it is never rewritten again.
+    nxt = next((m for m in _outside_fences(HEADING_RE, desc, spans)
+                if m.start() >= match.end() and len(m.group("hashes")) <= level), None)
+    if not nxt:
+        return desc[:match.start()], heading, desc[match.end():], ""
+    return (desc[:match.start()], heading,
+            desc[match.end():nxt.start()], desc[nxt.start():])
+
+
+def redraft_state(desc: str) -> tuple:
+    """(redrafts_done, already_terminal) off the marker. (0, False) if absent.
+
+    Read ONLY from the line directly above the DoR heading, which is the slot
+    this job writes and owns. Scanning the whole description let founder text
+    forge the counter: a pasted `<!-- kipi-dor: redrafts=3 -->` example made the
+    first real redraft terminal, and a pasted `terminal` removed the issue from
+    selection permanently (codex-adversarial finding-4).
+
+    HONEST BOUNDARY: text a human puts in that exact slot is still indistinguishable
+    from this job's own. The slot is narrow and machine-shaped, not immune.
+    """
+    before = split_dor_section(desc)[0]
+    lines = before.rstrip().splitlines()
+    match = REDRAFT_MARKER_RE.search(lines[-1]) if lines else None
+    if not match:
+        return 0, False
+    return int(match.group(1)), bool(match.group(2))
+
+
+def strip_owned_marker(before: str) -> str:
+    """`before` with this job's counter marker removed from the ONE slot it owns.
+
+    The slot is the last line above the DoR heading, and this is deliberately the
+    same slot, same regex and same `search` semantics that redraft_state() reads.
+    They have to agree: the previous cut read narrow (one line) but deleted wide
+    (`REDRAFT_MARKER_RE.sub("", before)` over the whole prefix), so a marker a
+    founder had written into their own prose -- documenting the mechanism, quoting
+    a terminal note from another issue -- was silently deleted on every redraft
+    while being ignored for counting (codex round 1, finding 1). Deleting a human's
+    words off a permanent Linear object is the worst failure this script has, and
+    an asymmetry between the read slot and the write slot is how it got there.
+
+    Only the marker leaves; any other text sharing that last line is kept.
+    """
+    body = (before or "").rstrip()
+    lines = body.splitlines()
+    if not lines or not REDRAFT_MARKER_RE.search(lines[-1]):
+        return body
+    last = REDRAFT_MARKER_RE.sub("", lines[-1]).rstrip()
+    return "\n".join(lines[:-1] + ([last] if last.strip() else [])).rstrip()
+
+
+def selection_mode(issue: dict) -> str | None:
+    """"redraft" | "terminal" | "draft" | None -- THE selection predicate.
+
+    ORDER IS THE WHOLE FIX. The needs-scope branch sits ABOVE the has-a-DoR
+    exclusions, because a refused issue always has a DoR and the old code read
+    that as "nothing to do here". Moving the label check below them would restore
+    the exact bug while looking like it had been fixed, which is why the paired
+    test asserts on an issue carrying BOTH the heading and the label.
+    """
     if (issue.get("state") or {}).get("type") not in DRAFTABLE_STATE_TYPES:
-        return False
+        return None
     desc = issue.get("description") or ""
     # This job's own failure record. Drafting onto it burns a bounded nightly
     # slot to write prose onto a machine-written log. See FAILURE_MARKER.
     if FAILURE_MARKER in desc:
-        return False
-    if DOR_HEADING in desc:
-        return False
-    # The generated capability issues already carry a DoR under their own wording.
-    if "Definition of Ready" in desc:
-        return False
-    return True
+        return None
+
+    # A FLEET ALERT IS A NOTIFICATION, NOT A SPEC (ASK-839).
+    #
+    # alert-to-linear.py files these; their body is a raw alert line ("auto-commit
+    # left 3 file(s) uncommitted"), not work anyone scoped. Writing a Definition
+    # of Ready onto one does not make it executable -- it makes it READY-SHAPED,
+    # which is what admits it to linear-worker.sh's queue. Measured on the live
+    # board 2026-08-15: 81 open alert tickets, 19 already drafted onto, and all 19
+    # sat in the permanently-UNREACHABLE bucket. This drip is what converted them,
+    # at the rate of one batch a night, out of the remaining 62.
+    if is_alert_ticket(desc):
+        return None
+
+    # AN UNROUTABLE ISSUE MUST NOT BE PROMOTED (ASK-839, the second question the
+    # issue asked in so many words). A project is how the worker decides which
+    # checkout can serve an issue; with none set, in_this_repo() is false in every
+    # repo at once, so drafting a DoR moves the issue from "not ready" to "ready
+    # and reachable by nobody". The first state is honest and the second is not.
+    # Refused rather than drafted, and counted at the call site so a legitimately
+    # unrouted issue is visible instead of silently skipped forever.
+    if not ((issue.get("project") or {}).get("name") or "").strip():
+        return None
+
+    if NEEDS_SCOPE_LABEL in label_names(issue):
+        done, terminal = redraft_state(desc)
+        if terminal:
+            return None       # already declared a dead end; costs nothing further
+        if done >= REDRAFT_CAP:
+            return "terminal"  # exhausted -- record the rationale, once
+        return "redraft"
+
+    # One resolver, so "already has a DoR" cannot drift from "where is the DoR".
+    # This replaces two separate phrase tests: an exact-DOR_HEADING substring and
+    # a bare "Definition of Ready" substring. The second matched ordinary prose,
+    # so a founder writing "this needs a Definition of Ready" removed their own
+    # issue from the drafter forever (sp-b784a19a). A heading is structure; a
+    # sentence mentioning the words is not. See find_dor_heading.
+    if has_dor_section(desc):
+        return None
+    return "draft"
+
+
+def needs_dor(issue: dict) -> bool:
+    """Kept as the boolean face of selection_mode: this job's other test file
+    (test-linear-dor-failure-reporting.py) asserts on it directly."""
+    return selection_mode(issue) is not None
 
 
 def notify(message: str) -> bool:
@@ -287,8 +666,12 @@ def claude_binary() -> str | None:
     return None
 
 
-def draft_one(issue: dict, timeout: int) -> tuple:
+def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
     """One `claude -p` call. Returns (dor_body, "") or (None, reason).
+
+    `prompt` overrides the first-draft prompt (the redraft path passes
+    REDRAFT_PROMPT). Optional rather than positional so the existing callers and
+    the failure-reporting test keep working unchanged.
 
     The reason travels with the failure: it is the line report_failures puts on
     the Linear issue. Collapsing every cause into one string told the operator a
@@ -302,11 +685,12 @@ def draft_one(issue: dict, timeout: int) -> tuple:
                   f"not in {len(CLAUDE_FALLBACKS)} known install locations)")
         print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
         return None, reason
-    prompt = PROMPT.format(
-        project=(issue.get("project") or {}).get("name") or "unassigned",
-        title=issue.get("title") or "",
-        description=(issue.get("description") or "(empty)")[:4000],
-    )
+    if prompt is None:
+        prompt = PROMPT.format(
+            project=(issue.get("project") or {}).get("name") or "unassigned",
+            title=issue.get("title") or "",
+            description=(issue.get("description") or "(empty)")[:4000],
+        )
     try:
         res = subprocess.run(
             [binary, "-p", prompt, "--permission-mode", "acceptEdits"],
@@ -339,7 +723,7 @@ def draft_one(issue: dict, timeout: int) -> tuple:
 
 
 def fetch_draftable(ls, team_id: str) -> list:
-    """Every issue on the team that still lacks a Definition of Ready."""
+    """Every issue on the team this job has something to do to."""
     issues, after = [], None
     while True:
         page = ls.graphql(ISSUES_Q, {"t": team_id, "a": after})["issues"]
@@ -347,7 +731,305 @@ def fetch_draftable(ls, team_id: str) -> list:
         if not page["pageInfo"]["hasNextPage"]:
             break
         after = page["pageInfo"]["endCursor"]
+
+    # REFUSALS ARE REPORTED, NOT SILENT (ASK-839). Two shapes now leave this
+    # selection: fleet alert tickets and project-unset issues. An alert ticket
+    # never coming back is the intended end state, but a REAL issue that nobody
+    # gave a project to would otherwise sit unqueued and unmentioned forever --
+    # the drip would look healthy while that issue was invisible to every run.
+    # So the second class is counted and named on stdout, which is where this
+    # job's nightly digest reads from. Bounded to the first few ids: this line
+    # is read in a digest, and a list that can reach 60 buries it.
+    unrouted = [i for i in issues
+                if not ((i.get("project") or {}).get("name") or "").strip()
+                and not is_alert_ticket(i.get("description") or "")
+                and (i.get("state") or {}).get("type") in DRAFTABLE_STATE_TYPES
+                and not has_dor_section(i.get("description") or "")]
+    if unrouted:
+        shown = " ".join(i["identifier"] for i in unrouted[:8])
+        more = f" (+{len(unrouted) - 8} more)" if len(unrouted) > 8 else ""
+        print(f"dor-drafter: {len(unrouted)} issue(s) NOT drafted -- no project, "
+              f"so no checkout could ever be routed one: {shown}{more}")
+
     return [i for i in issues if needs_dor(i)]
+
+
+# Redrafts and terminals sort ahead of first drafts. NOT cosmetic ordering: the
+# batch is todo[:limit] with no cursor and no rotation, and on 2026-08-01 the live
+# board held 93 issues lacking a DoR against a --limit of 8. A redraft appended to
+# the tail of that list would be selected in name and never reached in practice,
+# so the redrive would be as dead as the promise it replaces. Terminals go first
+# of all because they cost no `claude` call at all -- they must not be crowded out
+# by work that does.
+MODE_RANK = {"terminal": 0, "redraft": 1, "draft": 2}
+VERBS = {"terminal": "mark terminal", "redraft": "redraft", "draft": "draft"}
+
+
+def prioritise(issues: list) -> list:
+    """[(mode, issue)] with the redrive ahead of the backlog. Stable within a
+    mode, so the API's own order still decides among equals.
+
+    Classifies but does NOT re-filter: fetch_draftable already holds the
+    selection authority, and a second filter here would silently drop issues
+    handed in by a caller that replaced it (the failure-reporting test does
+    exactly that). Anything unclassifiable is a first draft, the behaviour every
+    issue in the batch had before modes existed.
+    """
+    paired = [(selection_mode(i) or "draft", i) for i in issues]
+    return sorted(paired, key=lambda pair: MODE_RANK.get(pair[0], 9))
+
+
+def refusal_reason(ls, issue: dict) -> str:
+    """The worker's most recent written refusal, or a stated absence.
+
+    Never raises: a redraft without the reason is worse than one with it, but far
+    better than a night that dies reading a comment thread.
+    """
+    try:
+        nodes = ((((ls.graphql(ISSUE_COMMENTS_Q, {"id": issue["identifier"]}) or {})
+                   .get("issue") or {}).get("comments") or {}).get("nodes")) or []
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        print(f"  {issue['identifier']}: could not read comments: {str(exc)[:100]}",
+              file=sys.stderr)
+        return "(the refusal comment could not be read)"
+    for node in reversed(nodes):
+        body = node.get("body") or ""
+        if "Refused as unexecutable" in body:
+            return body[:2000]
+    return "(no refusal comment found on the issue)"
+
+
+# The redraft prompt's budget for quoting the old DoR. A PROMPT cap, never a
+# storage cap -- see dor_section() for why the two may not share one function.
+PROMPT_DOR_CHARS = 3000
+NO_SECTION_NOTE = "(the section could not be located by its heading)"
+
+
+def dor_section(desc: str) -> str:
+    """The DoR section exactly as it stands, in full. NEVER truncated.
+
+    This is what the terminal path writes BACK to the issue, so any cap here is a
+    silent partial write to a permanent object: terminalising an issue whose DoR
+    ran past 3000 characters deleted everything after it, with no error and no
+    record (codex round 4). Measured as introduced by this branch -- main has no
+    terminal path at all and its only description write is a pure append, which
+    cannot truncate.
+
+    The producer/consumer mismatch had two honest resolutions: cap the producer so
+    the trim can never happen, or stop the consumer trimming. Capping the producer
+    is wrong here -- the "producer" is a previous redraft's body and whatever a
+    human wrote, and refusing to store a long DoR is worse than storing it. So the
+    write path takes the section whole, and the prompt keeps its own budget below.
+    """
+    return split_dor_section(desc)[2].strip()
+
+
+def existing_dor(desc: str) -> str:
+    """The DoR section trimmed to the redraft PROMPT's budget. Model input ONLY.
+
+    Safe to truncate because nothing here is written back: it is context for the
+    model to argue with. Never call this on a write path -- that is exactly the
+    confusion that cost the tail of a long DoR. Write paths call dor_section().
+    """
+    return dor_section(desc)[:PROMPT_DOR_CHARS] or NO_SECTION_NOTE
+
+
+def rebuild_description(desc: str, body: str, count: int,
+                        terminal: bool = False) -> str:
+    """Founder text + counter marker + a fresh DoR section + whatever followed it.
+
+    Only the DoR section itself is replaced. Text above it AND text below it are
+    carried through byte for byte, which is what keeps the append-only promise
+    true for the words a human wrote.
+
+    When the heading is absent (a differently-worded DoR on a generated capability
+    issue), the whole description is treated as prefix and the section is APPENDED.
+    Guessing at the boundary of a section we did not write would risk deleting a
+    human's text, and a duplicate section is a recoverable mistake where that is not.
+    """
+    before, heading, _old, after = split_dor_section(desc)
+    prefix = strip_owned_marker(before)
+    marker = f"<!-- kipi-dor: redrafts={count}{' terminal' if terminal else ''} -->"
+    # The founder's own heading wording is theirs, not this job's. Reuse it when
+    # there is one; DOR_HEADING is only the fallback for an appended section.
+    out = f"{prefix}\n\n{marker}\n{heading or DOR_HEADING}\n\n{body.strip()}\n"
+    if terminal:
+        out += f"\n{TERMINAL_NOTE}\n"
+    if after.strip():
+        out += f"\n{after.lstrip()}"
+    return out
+
+
+def needs_scope_label_ids(issue: dict) -> list:
+    """The needs-scope label id(s) to remove.
+
+    Sent as `removedLabelIds`, NOT as a full `labelIds` replacement. The first cut
+    replaced the whole set from labels read before the `claude` call, which can be
+    300s earlier, so any label added in that window was deleted (codex-review
+    finding-2). The claim in that version -- that Linear can only express removal
+    as a full replacement -- was false: IssueUpdateInput carries addedLabelIds and
+    removedLabelIds, confirmed by schema introspection against the live API on
+    2026-08-01. removedLabelIds touches one label and cannot clobber a concurrent one.
+    """
+    return [lab["id"] for lab in issue_labels(issue)
+            if lab.get("name") == NEEDS_SCOPE_LABEL and lab.get("id")]
+
+
+def reread_before_write(ls, issue: dict) -> dict | None:
+    """The issue as Linear holds it NOW. None when it could not be read.
+
+    A redraft's description is read during selection and written up to --timeout
+    (default 300s) later, with a `claude` call in between. Everything the write
+    depends on can move inside that window, and the write was built entirely from
+    the pre-call copy (codex round 1, finding 2).
+
+    None is a refusal to write, not an empty issue: writing the stale copy because
+    the freshness check itself failed is the exact overwrite the check exists to
+    stop, and a skipped redraft costs one slot while a clobbered description is
+    gone from a permanent object.
+    """
+    try:
+        return (ls.graphql(ISSUE_WRITE_Q, {"id": issue["identifier"]}) or {}).get("issue")
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        print(f"  {issue['identifier']}: could not re-read before write: {str(exc)[:100]}",
+              file=sys.stderr)
+        return None
+
+
+def moved_since_selection(selected_desc: str, fresh: dict) -> bool:
+    """True when anything this write depends on changed since selection.
+
+    Named for what it checks, not for one cause of it: it began as a
+    rival-drafter test and a human editing the DoR by hand trips it too.
+
+    The counter marker is this job's own single-writer token, so it doubles as a
+    compare-and-swap version: this job is the only thing that writes it, therefore
+    a changed count means a second drafter finished first. A missing needs-scope
+    label says the same thing from the other side.
+
+    Deliberately NOT a lock, and deliberately not a counter kept in a shared file.
+    Nothing is claimed before the work; the write is simply abandoned if the state
+    it was computed against is gone. That is why this does not recreate the
+    read-then-write race attempts-ledger.py exists to prevent (sp-626e9452, out of
+    scope): a lost update here loses one night's redraft of one issue, which the
+    next run redoes, rather than losing an increment nothing will ever redo.
+
+    A HUMAN edit is not a rival writer. It leaves the counter alone, so the redraft
+    proceeds and rebuild_description carries the human's new text through -- which
+    is the point of rebuilding from the fresh description rather than skipping on
+    any change at all.
+
+    HONEST BOUNDARY: this narrows the window from the whole `claude` call to the
+    gap between this read and the mutation. It does not close it. Linear's
+    issueUpdate takes no expected-version argument, so a true CAS is not available
+    to ask for; two drafters colliding inside that gap still resolve last-write-wins.
+    """
+    fresh_desc = fresh.get("description") or ""
+    if NEEDS_SCOPE_LABEL not in label_names(fresh):
+        return True
+    if redraft_state(fresh_desc) != redraft_state(selected_desc):
+        return True
+    # THIRD signal, and the one a person actually trips: the DoR section itself
+    # changed. The counter and the label are both machine-written, so a human who
+    # rewrote the scope by hand during the model call left both untouched and the
+    # redraft wrote straight over their words (codex round 4). A hand edit is the
+    # most likely edit there is -- someone reading the refusal and fixing it -- so
+    # the section body is part of what "unchanged since selection" has to mean.
+    return dor_section(fresh_desc) != dor_section(selected_desc)
+
+
+def update_issue(ls, issue: dict, payload: dict) -> None:
+    """The single write chokepoint. Raises when Linear reports success=false.
+
+    Both write paths ignored the response before this (codex-review finding-3): a
+    `{"success": false}` was counted as drafted and printed as "redrafted,
+    needs-scope dropped" while neither the label removal nor the cap marker had
+    landed -- a silent divergence between what the run reported and what the board
+    holds. One chokepoint, so the check cannot exist on one path and not the other.
+    """
+    res = ls.graphql(UPDATE_M, {"id": issue["identifier"], "input": payload})
+    if not (((res or {}).get("issueUpdate") or {}).get("success")):
+        raise RuntimeError("Linear returned issueUpdate.success=false "
+                           "(nothing was written)")
+
+
+class Skipped(NamedTuple):
+    """Why a write was not made, and whether the issue is still queued.
+
+    `still_queued` is the part callers got wrong: a skip was read as "somebody
+    else finished it", but a rival redraft the WORKER REFUSED AGAIN still carries
+    needs-scope and is back in the queue, not done. Reporting it as completed
+    deletes real remaining work from the count (codex round 4).
+    """
+    reason: str
+    still_queued: bool
+
+
+def apply_write(ls, issue: dict, mode: str, body: str,
+                attempt: int = 0) -> Skipped | None:
+    """THE path from a drafted body to a description write. Every mode goes here.
+
+    Returns None when the write landed, or a short reason when it was deliberately
+    skipped. Raises only on a real transport/refusal failure.
+
+    One function rather than one per mode, because the freshness guard was written
+    for the redraft path and the other two paths silently did not have it (codex
+    round 2): `terminal` and first-`draft` both built their payload from the
+    description read at SELECTION, so an edit made after selection was overwritten
+    by text that predated it -- the exact defect just fixed one branch over. Three
+    call sites cannot drift apart if there is only one.
+
+    Every mode re-reads first and builds from the CURRENT description. What differs
+    per mode is only the applicability check and the payload shape, so those sit
+    here side by side where a missing one is visible.
+    """
+    selected = issue.get("description") or ""
+    fresh = reread_before_write(ls, issue)
+    if fresh is None:
+        raise RuntimeError("could not re-read the issue before writing")
+    fresh_desc = fresh.get("description") or ""
+
+    if mode == "redraft":
+        if moved_since_selection(selected, fresh):
+            return Skipped(
+                "it changed while this attempt was drafting "
+                "(rival redraft, label change, or a hand edit)",
+                selection_mode(fresh) is not None)
+        # Description and label drop go in ONE mutation on purpose. As two calls,
+        # a failure between them leaves a rewritten DoR still wearing needs-scope:
+        # the picker keeps ignoring it and the next night spends another capped
+        # attempt rewriting work already done.
+        #
+        # removedLabelIds, not a full labelIds replacement: Linear applies it as a
+        # delta against the label set as it stands at write time, so a label added
+        # while this redraft was drafting survives. That is the label half of
+        # round 1 finding 2, and it needs no version check because the server-side
+        # semantics already give the atomicity.
+        payload = {"description": rebuild_description(fresh_desc, body, attempt),
+                   "removedLabelIds": needs_scope_label_ids(fresh)}
+    elif mode == "terminal":
+        # The needs-scope label is deliberately NOT removed: the issue really is
+        # unscoped, and dropping it would feed the issue back to a picker that has
+        # already refused it REDRAFT_CAP times.
+        if moved_since_selection(selected, fresh):
+            return Skipped("it changed while this run was working",
+                           selection_mode(fresh) is not None)
+        # dor_section, NOT existing_dor: this value is WRITTEN BACK, so the
+        # prompt's character budget must not touch it.
+        payload = {"description": rebuild_description(
+            fresh_desc, dor_section(fresh_desc) or NO_SECTION_NOTE,
+            REDRAFT_CAP, terminal=True)}
+    else:
+        # A first draft appends. If the issue gained a DoR since selection then
+        # somebody else drafted it, and appending now would give it two.
+        if has_dor_section(fresh_desc):
+            return Skipped("it gained a Definition of Ready while this "
+                           "attempt was drafting",
+                           selection_mode(fresh) is not None)
+        payload = {"description": fresh_desc.rstrip() + f"\n\n{DOR_HEADING}\n\n{body}\n"}
+
+    update_issue(ls, issue, payload)
+    return None
 
 
 def _is_missing_issue(exc: Exception) -> bool:
@@ -452,6 +1134,10 @@ def report_failures(ls, failures: list, carried: int = 0) -> str:
         if project:
             payload["projectId"] = project["id"]
         node = (ls.graphql(ls.ISSUE_CREATE, {"input": payload})
+                # linear-filer-lint-skip: AUTOMATED and currently unmarked. The
+                # nightly launchd job files its own run-failure report, machine-
+                # authored and nobody asked for it, so this SHOULD attach
+                # TRIAGE_LABEL. Captured as sp-1306aca4 rather than changed here.
                 .get("issueCreate") or {}).get("issue") or {}
         if not node.get("id"):
             print("  failure report refused by Linear", file=sys.stderr)
@@ -470,6 +1156,21 @@ def report_failures(ls, failures: list, carried: int = 0) -> str:
         notify(f"linear-dor: Linear unreachable, {len(failures)} failure(s) could not "
                f"be filed ({str(exc)[:80]}). Held for the next run.")
         return "unreachable"
+
+
+def queue_breakdown(total: int, redrives: int) -> str:
+    """The ONE phrasing of the lacks-a-DoR / has-a-bad-one split.
+
+    Both status lines call this. They used to phrase the same split themselves,
+    and the opening line was corrected while the closing line kept saying the
+    remainder "still lack a DoR" (codex round 2, twin of round 1 finding 3).
+    Every redrive candidate HAS a Definition of Ready -- having one the worker
+    refused is the entire reason it is queued -- so counting it as lacking one
+    reports the opposite of the state the run is acting on. A shared formatter
+    is what stops one caller from being fixed and the other from drifting.
+    """
+    return (f"{total - redrives} lacking a Definition of Ready, "
+            f"{redrives} {NEEDS_SCOPE_LABEL} redrive (DoR present, being rewritten)")
 
 
 def main() -> int:
@@ -510,32 +1211,96 @@ def main() -> int:
         todo = [i for i in todo
                 if ((i.get("project") or {}).get("name") or "") == args.project]
 
-    print(f"dor-drafter {_now()}: {len(todo)} issue(s) lack a Definition of Ready")
-    batch = todo[: args.limit]
+    plan = prioritise(todo)
+    redrives = sum(1 for mode, _ in plan if mode in ("redraft", "terminal"))
+    print(f"dor-drafter {_now()}: {len(todo)} issue(s) queued: "
+          f"{queue_breakdown(len(todo), redrives)}")
+    batch = plan[: args.limit]
     if not args.apply:
-        for i in batch:
-            print(f"  would draft {i['identifier']}  {i['title'][:66]}")
+        for mode, i in batch:
+            print(f"  would {VERBS[mode]} {i['identifier']}  {i['title'][:66]}")
         print(f"dry run. {len(todo)} remaining; --apply to write {len(batch)}.")
         return 0
 
     # Collected, not just printed, and each one carries its own cause. draft_one()
     # still writes the reason to stderr; this list is what leaves the machine.
-    drafted, failed = 0, []
-    for issue in batch:
-        body, reason = draft_one(issue, args.timeout)
+    # done_redrives feeds the CLOSING status line: without it the closing count
+    # cannot tell a redrive apart from a first draft and reports the same wrong
+    # thing the opening line used to (codex round 2, twin of round 1 finding 3).
+    # `elsewhere` is issues a concurrent writer finished first. They are neither
+    # drafted by this run nor still queued, and counting them as remaining
+    # reported work that no longer exists (codex round 3).
+    drafted, failed, done_redrives = 0, [], 0
+    elsewhere, elsewhere_redrives = 0, 0
+    for mode, issue in batch:
+        desc = issue.get("description") or ""
+        attempt = 0  # bound for every mode; only a redraft carries a real number
+
+        # The cap is spent. One write, no model call, and the label stays on.
+        if mode == "terminal":
+            try:
+                skipped = apply_write(ls, issue, "terminal", "")
+            except Exception as exc:  # noqa: BLE001
+                failed.append(f"{issue['identifier']}: terminal write failed: {str(exc)[:120]}")
+                continue
+            if skipped:
+                if not skipped.still_queued:
+                    elsewhere += 1
+                    elsewhere_redrives += 1
+                print(f"  skipped {issue['identifier']}: {skipped.reason}")
+                continue
+            drafted += 1
+            done_redrives += 1
+            print(f"  marked terminal {issue['identifier']}  redraft cap "
+                  f"{REDRAFT_CAP}/{REDRAFT_CAP} spent")
+            continue
+
+        # Two call shapes, not one with a None default. draft_one is a monkeypatch
+        # seam for test-linear-dor-failure-reporting.py, which replaces it with a
+        # TWO-argument lambda; passing a third positional on the first-draft path
+        # breaks that suite with a TypeError. The first-draft call stays exactly
+        # the arity it has always been.
+        if mode == "redraft":
+            attempt = redraft_state(desc)[0] + 1
+            body, reason = draft_one(issue, args.timeout, REDRAFT_PROMPT.format(
+                attempt=attempt, cap=REDRAFT_CAP,
+                project=(issue.get("project") or {}).get("name") or "unassigned",
+                title=issue.get("title") or "",
+                old_dor=existing_dor(desc),
+                reason=refusal_reason(ls, issue),
+            ))
+        else:
+            body, reason = draft_one(issue, args.timeout)
         if not body:
             failed.append(f"{issue['identifier']}: {reason}")
             continue
-        new_desc = (issue.get("description") or "").rstrip() + f"\n\n{DOR_HEADING}\n\n{body}\n"
+
         try:
-            ls.graphql(UPDATE_M, {"id": issue["identifier"],
-                                  "input": {"description": new_desc}})
+            skipped = apply_write(ls, issue, mode, body, attempt)
         except Exception as exc:  # noqa: BLE001
             print(f"  {issue['identifier']}: update failed: {str(exc)[:120]}", file=sys.stderr)
             failed.append(f"{issue['identifier']}: Linear update failed: {str(exc)[:120]}")
             continue
+        if skipped:
+            # Not a failure: the issue got what it needed, or somebody is working
+            # on it. Counting it as drafted would overstate the run, and reporting
+            # it as failed would file a noise issue about work that got done.
+            # It only leaves the queue if it is actually FINISHED -- a rival
+            # redraft the worker refused again still wears needs-scope and is
+            # still real remaining work.
+            if not skipped.still_queued:
+                elsewhere += 1
+                if mode == "redraft":
+                    elsewhere_redrives += 1
+            print(f"  skipped {issue['identifier']}: {skipped.reason}")
+            continue
         drafted += 1
-        print(f"  drafted {issue['identifier']}  {issue['title'][:60]}")
+        if mode == "redraft":
+            done_redrives += 1
+            print(f"  redrafted {issue['identifier']} (attempt {attempt}/{REDRAFT_CAP}, "
+                  f"{NEEDS_SCOPE_LABEL} dropped)  {issue['title'][:44]}")
+        else:
+            print(f"  drafted {issue['identifier']}  {issue['title'][:60]}")
 
     # Anything an earlier night could not file rides along with tonight's, so a
     # clean night still flushes the backlog. `held` was read at the top of the
@@ -545,14 +1310,21 @@ def main() -> int:
     reported = report_failures(ls, to_report, carried=len(pending))
     unfiled = to_report if reported == "unreachable" else []
 
+    # One arithmetic for the queue, used by the state file and the status line, so
+    # the two cannot disagree about what is left.
+    remaining = len(todo) - drafted - elsewhere
+    remaining_redrives = redrives - done_redrives - elsewhere_redrives
     write_state(ran_at=_now(), drafted=drafted, failed=len(failed),
                 carried_in=len(pending), failures_reported=reported,
                 pending_failures=unfiled[-PENDING_CAP:],
-                remaining=len(todo) - drafted)
+                remaining=remaining)
     carried_note = f", {len(pending)} carried in" if pending else ""
     held_note = f", {len(unfiled)} STILL UNFILED" if unfiled else ""
+    elsewhere_note = (f", {elsewhere} completed by another writer"
+                      if elsewhere else "")
     print(f"dor-drafter: drafted {drafted}, {len(failed)} failed ({reported})"
-          f"{carried_note}{held_note}, {len(todo) - drafted} still lack a DoR")
+          f"{carried_note}{held_note}{elsewhere_note}, {remaining} still queued: "
+          f"{queue_breakdown(remaining, remaining_redrives)}")
     return 0
 
 
