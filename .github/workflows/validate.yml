@@ -53,6 +53,28 @@ jobs:
         env:
           CI: true
 
+      # ASK-213 scoped this line "only if the baseline is clean", against an
+      # Outcome line that requires the check to be "wired as a required check".
+      # The baseline is NOT clean (286 findings), so those two pull against each
+      # other and the collision is named here rather than resolved quietly.
+      #
+      # Wired, because the RATCHET is what the clean-baseline precondition was
+      # standing in for. That precondition serves the issue's blast-radius
+      # paragraph -- a check red on day one gets bypassed within a day and then
+      # protects nothing. Keyed per (code, path) against a committed baseline,
+      # this step is GREEN at the current 286 and goes red only when a file
+      # GAINS a finding, which is the day-one-green property the precondition
+      # was asking for. Declaring the engine inert instead would have been the
+      # false statement: its repo-wide result is already enforced, and the only
+      # reason the capability gate could not see it is that the sole call site
+      # was a test case, which is exactly the F2 trap that gate exists to refuse.
+      - name: Silent-success ratchet (no NEW failure path that exits 0 silently)
+        run: |
+          python3 q-system/.q-system/scripts/silent-success-lint.py \
+            --baseline q-system/.q-system/scripts/silent-success-baseline.json
+        env:
+          CI: true
+
       # CAPABILITY_GATE_SKIP: the gate just ran as its own step above; running
       # it again inside validate-separation would execute the suite twice per
       # CI run (finding-15). The skip is honored only with caller proof
