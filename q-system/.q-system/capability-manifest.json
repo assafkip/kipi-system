@@ -595,7 +595,7 @@
     },
     {
       "path": "q-system/.q-system/scripts/spillover-validate.py",
-      "reason": "hand-run ledger-triage tool for ASK-337: read-only by default and --apply voids only confirmed-gone rows. Its one-shot sweep already ran (2026-08-03T14:45Z). Auto-wiring a bulk void is the exact hazard its own docstring names, so the call site is a founder decision, not a hook",
+      "reason": "hand-run ledger-triage tool for ASK-337: read-only by default and --apply voids only confirmed-gone rows. Its one-shot sweep already ran (2026-08-03T14:45Z). DECIDED ASK-344, 2026-08-20: hand-run only, permanently. No call site, no hook, no scheduled job, and --apply is never auto-wired into a bulk void. The hazard its own docstring names is measured, not hypothetical: a single-root os.path.exists() check once classified 209 findings as gone when most were alive under another fleet root, so an automated void would destroy the signal the ledger exists to keep. Zero wiring is the intended end state for this script, not a deferral awaiting a decision",
       "spillover_id": "sp-8a89b0e0"
     },
     {
