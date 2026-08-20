@@ -331,6 +331,88 @@ python3 "$LINT" --root "$ROOT" "$TMP/adir.sh" >/dev/null 2>&1 && RC=0 || RC=$?
 python3 "$LINT" --root "$ROOT" --report >/dev/null 2>&1 && RC=0 || RC=$?
 [ "$RC" -eq 0 ] && ok "the repo-wide sweep is unaffected" || bad "the repo-wide sweep is unaffected" "rc=$RC"
 
+# --- case 13: the ratchet -- this is what makes the repo-wide result ENFORCED -
+#
+# Everything above this line tests the DETECTOR against fixtures. None of it can
+# fail because of the repository. Measured, not assumed: a brand-new SS001 added
+# to a tracked file moved the sweep 173 -> 174 and this suite still reported
+# "33 passed, 0 failed", exit 0 -- 173 findings that nothing could fail on
+# (PR #230 review round 3, major).
+#
+# Demanding zero is not on the table (the DoR arms CI "only if the baseline is
+# clean", and it is 173). So the enforcement is directional: BASELINE pins what
+# each file already carries, and the check goes red when a file GAINS a finding.
+# Because this test is a required capability, a new silent-success defect now
+# fails a required check.
+echo "[10] ratchet: a NEW finding fails the required check"
+BASE="$ROOT/q-system/.q-system/scripts/silent-success-baseline.json"
+
+# (a) the live repository against its committed baseline. THIS is the enforcing
+# assertion; every other case in this block exists to prove it can fail.
+python3 "$LINT" --root "$ROOT" --baseline "$BASE" >"$TMP/rat.out" 2>"$TMP/rat.err" \
+  && RC=0 || RC=$?
+if [ "$RC" -eq 0 ]; then
+  ok "the repo holds its baseline"
+else
+  bad "the repo holds its baseline" "rc=$RC $(grep GAINED "$TMP/rat.out" | head -3 | tr '\n' ' ')"
+fi
+
+# (b) MUTATION. A throwaway git repo, because the ratchet reads `git ls-files`
+# and the assertion has to be that a genuinely new defect turns it red -- not
+# that a hand-edited JSON does. Pin, then add the real 2026-07-27 fetch-guard
+# shape, and require rc=2.
+REPO="$TMP/ratchet-repo"
+mkdir -p "$REPO"
+git -C "$REPO" init -q
+git -C "$REPO" config user.email t@t; git -C "$REPO" config user.name t
+printf '#!/usr/bin/env bash\necho hello\n' > "$REPO/ok.sh"
+git -C "$REPO" add -A; git -C "$REPO" commit -qm base
+python3 "$LINT" --root "$REPO" --baseline-write "$REPO/base.json" >/dev/null
+python3 "$LINT" --root "$REPO" --baseline "$REPO/base.json" >/dev/null 2>&1 \
+  && RC=0 || RC=$?
+[ "$RC" -eq 0 ] && ok "a clean pinned repo holds" || bad "a clean pinned repo holds" "rc=$RC"
+
+printf '#!/usr/bin/env bash\nif ! git fetch origin; then\n  exit 0\nfi\n' > "$REPO/new.sh"
+git -C "$REPO" add -A
+python3 "$LINT" --root "$REPO" --baseline "$REPO/base.json" >"$TMP/mut.out" 2>&1 \
+  && RC=0 || RC=$?
+if [ "$RC" -eq 2 ] && grep -q 'GAINED new.sh: SS001' "$TMP/mut.out"; then
+  ok "a new SS001 in a tracked file exits 2 and names the file"
+else
+  bad "a new SS001 in a tracked file exits 2 and names the file" \
+      "rc=$RC out=$(tr '\n' ' ' < "$TMP/mut.out" | head -c 200)"
+fi
+
+# (c) the declared escape hatch clears the ratchet in place, so the gate is
+# satisfiable without editing the baseline. Otherwise every legitimate
+# best-effort path forces a re-pin, and re-pinning becomes the reflex that
+# turns the baseline back into decoration.
+# The marker goes ON the guard or INSIDE its block, which is where SS001 reads
+# it -- a line above the guard is outside the block and does not suppress.
+printf '#!/usr/bin/env bash\nif ! git fetch origin; then\n  # silent-success-ok: probe only, the caller retries and reports\n  exit 0\nfi\n' > "$REPO/new.sh"
+python3 "$LINT" --root "$REPO" --baseline "$REPO/base.json" >/dev/null 2>&1 \
+  && RC=0 || RC=$?
+[ "$RC" -eq 0 ] && ok "a declared finding clears the ratchet" \
+                || bad "a declared finding clears the ratchet" "rc=$RC"
+
+# (d) an unreadable baseline must be an error, never "nothing regressed" -- that
+# would be this script committing SS002 against itself, the same defect the
+# named-path fix already closed once.
+python3 "$LINT" --root "$REPO" --baseline "$REPO/no-such-baseline.json" \
+  >/dev/null 2>"$TMP/nb.err" && RC=0 || RC=$?
+if [ "$RC" -eq 2 ] && grep -q 'cannot read baseline' "$TMP/nb.err"; then
+  ok "an absent baseline exits 2, not 'held'"
+else
+  bad "an absent baseline exits 2, not 'held'" "rc=$RC"
+fi
+
+# (e) a path-scoped ratchet would read every unscanned file as fixed -- a
+# releasing outcome from an absent input. Refused rather than narrowed.
+python3 "$LINT" --root "$REPO" --baseline "$REPO/base.json" "$REPO/ok.sh" \
+  >/dev/null 2>&1 && RC=0 || RC=$?
+[ "$RC" -eq 2 ] && ok "--baseline refuses path arguments" \
+                || bad "--baseline refuses path arguments" "rc=$RC"
+
 printf '\n%d passed, %d failed' "$PASS" "$FAIL"
 [ "$NOTE" -eq 0 ] || printf ', %d note(s) (provenance unavailable, pin held)' "$NOTE"
 printf '\n'

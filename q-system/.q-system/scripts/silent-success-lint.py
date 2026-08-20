@@ -38,10 +38,31 @@ as proof (evidence-ledger.md):
   * a failure path that is loud but wrong. Notification is checked by token, so
     `>&2 echo "all good"` clears SS001.
 
+THE RATCHET (--baseline) is how the repo-wide result is actually ENFORCED. The
+detector on its own measures 173 findings and nothing can fail on that number:
+a brand-new SS001 committed today moved the sweep 173 -> 174 and left the
+required suite fully green (PR #230 review round 3, major). Demanding zero is
+not available -- 173 is the real floor and a gate that is red on every PR the
+day it lands gets bypassed within a day, which is why the DoR scopes CI arming
+to "only if the baseline is clean". So the gate is per-file and directional:
+the committed baseline pins how many findings of each code each file is allowed
+to carry, and the check fails when any file GAINS one. Pre-existing debt stays
+green; a new defect goes red. Cleanup and a zero-tolerance CI line remain
+sp-b1be7b6d.
+
+  python3 silent-success-lint.py --baseline <file>        # check, exit 2 on a gain
+  python3 silent-success-lint.py --baseline-write <file>  # re-pin after a real fix
+
+HONEST BOUNDARY ON THE RATCHET, specifically: it compares COUNTS per (code,
+path). Deleting one SS101 from a file and adding a different SS101 to that same
+file nets zero and passes. It is a floor against growth, not a fingerprint of
+which findings are which, and a per-finding fingerprint would key on line
+numbers that churn on every unrelated edit.
+
 EXIT CODES
-  0  no findings (or --report / --json, which always exit 0)
+  0  no findings (or --report / --json / a held-or-improved ratchet, all exit 0)
   1  findings present
-  2  usage / scan error
+  2  usage / scan error, or a ratchet regression
 """
 
 from __future__ import annotations
@@ -528,6 +549,32 @@ def scan_path(root, rel):
     return scan_shell(rel, text)
 
 
+# --- the ratchet -------------------------------------------------------------
+# Keyed on (code, path) and NOT on line number: a finding's line moves on every
+# unrelated edit above it, so a line-keyed baseline would be red constantly and
+# would teach people to re-pin reflexively, which is the same as no baseline.
+def tally(findings):
+    out = {}
+    for f in findings:
+        out.setdefault(f.code, {})
+        out[f.code][f.path] = out[f.code].get(f.path, 0) + 1
+    return out
+
+
+def ratchet_diff(current, baseline):
+    """-> (regressions, improvements), each [(code, path, was, now), ...]."""
+    regressions, improvements = [], []
+    for code in sorted(set(current) | set(baseline)):
+        cur, base = current.get(code, {}), baseline.get(code, {})
+        for path in sorted(set(cur) | set(base)):
+            now, was = cur.get(path, 0), base.get(path, 0)
+            if now > was:
+                regressions.append((code, path, was, now))
+            elif now < was:
+                improvements.append((code, path, was, now))
+    return regressions, improvements
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("paths", nargs="*", help="files to scan (default: repo-wide)")
@@ -538,7 +585,29 @@ def main(argv=None):
         action="store_true",
         help="print findings and the count, exit 0 (baseline measurement)",
     )
+    ap.add_argument(
+        "--baseline",
+        metavar="FILE",
+        help="ratchet the repo-wide sweep against a committed per-file baseline; "
+        "exit 2 if any file gained a finding",
+    )
+    ap.add_argument(
+        "--baseline-write",
+        metavar="FILE",
+        help="write the current repo-wide sweep as a new baseline",
+    )
     args = ap.parse_args(argv)
+
+    # The ratchet is a statement about the whole repo. Handed a path list it
+    # would compare a two-file sweep against a 173-finding baseline and read
+    # every unscanned file as fixed -- a releasing outcome derived from an
+    # absent input, which is the exact class this script exists to catch.
+    if (args.baseline or args.baseline_write) and args.paths:
+        sys.stderr.write(
+            "silent-success-lint: --baseline/--baseline-write is repo-wide; "
+            "drop the path arguments\n"
+        )
+        return 2
 
     root = args.root or subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
@@ -598,6 +667,65 @@ def main(argv=None):
         deduped.append(f)
     findings = deduped
     findings.sort(key=lambda f: (f.code, f.path, f.line))
+
+    if args.baseline_write:
+        with open(args.baseline_write, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "_comment": "silent-success-lint ratchet. Per (code, path) "
+                    "counts of pre-existing findings. The check fails when a "
+                    "file GAINS one; it does not demand zero. Re-pin with "
+                    "--baseline-write only after actually removing findings.",
+                    "total": len(findings),
+                    "counts": tally(findings),
+                },
+                fh,
+                indent=2,
+                sort_keys=True,
+            )
+            fh.write("\n")
+        print(
+            "silent-success-lint: wrote baseline %s (%d finding(s))"
+            % (args.baseline_write, len(findings))
+        )
+        return 0
+
+    if args.baseline:
+        try:
+            with open(args.baseline, encoding="utf-8") as fh:
+                base = json.load(fh).get("counts", {})
+        except (OSError, ValueError) as exc:
+            # An unreadable baseline must never read as "nothing regressed".
+            sys.stderr.write(
+                "silent-success-lint: cannot read baseline %s: %s\n"
+                % (args.baseline, exc)
+            )
+            return 2
+        regressions, improvements = ratchet_diff(tally(findings), base)
+        for code, path, was, now in improvements:
+            print("  fixed  %s: %s %d -> %d" % (path, code, was, now))
+        for code, path, was, now in regressions:
+            print("  GAINED %s: %s %d -> %d" % (path, code, was, now))
+        if regressions:
+            sys.stderr.write(
+                "\nsilent-success-lint: %d file/code pair(s) gained a finding "
+                "against %s.\nThis is a NEW failure path that succeeds quietly. "
+                "Fix it, or declare it in place with "
+                "`# silent-success-ok: <why>`.\nRe-pinning the baseline is only "
+                "correct after the finding is genuinely gone.\n"
+                % (len(regressions), args.baseline)
+            )
+            return 2
+        print(
+            "\nsilent-success-lint: ratchet held (%d finding(s), %d fixed since "
+            "the baseline)" % (len(findings), len(improvements))
+        )
+        if improvements:
+            print(
+                "  re-pin with: python3 %s --baseline-write %s"
+                % (os.path.basename(__file__), args.baseline)
+            )
+        return 0
 
     if args.json:
         print(json.dumps({"count": len(findings),
