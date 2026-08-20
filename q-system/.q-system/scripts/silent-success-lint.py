@@ -52,6 +52,13 @@ sp-b1be7b6d.
 
   python3 silent-success-lint.py --baseline <file>        # check, exit 2 on a gain
   python3 silent-success-lint.py --baseline-write <file>  # re-pin after a real fix
+  python3 silent-success-lint.py --baseline <file> --baseline-ref <sha>   # on a PR
+
+--baseline-ref is what stops the ratchet certifying itself. Read from the working
+tree, the allowance and the code it constrains travel in the SAME commit, so a
+branch that adds a defect and re-pins in one push clears the required check
+(codex major, PR #230 r4). Pointed at the PR's base sha, the allowance comes from
+a commit the PR cannot edit, so the re-pin buys nothing.
 
 HONEST BOUNDARY ON THE RATCHET, specifically: it compares COUNTS per (code,
 path). Deleting one SS101 from a file and adding a different SS101 to that same
@@ -649,6 +656,65 @@ def ratchet_diff(current, baseline):
     return regressions, improvements
 
 
+class BaselineError(Exception):
+    """A baseline that could not be established. Never degrades to 'held'."""
+
+
+def load_baseline(path, root, ref=None):
+    """The pinned allowance, from the working tree or from a git ref.
+
+    -> (counts, note). `note` is a line to PRINT when the source is not the one
+    the caller asked for; None when it is. Silence about a substituted source is
+    exactly SS002, so the substitution is always spoken.
+    """
+    if ref is None:
+        return _read_baseline_file(path), None
+
+    rel = os.path.relpath(os.path.abspath(path), root)
+    if subprocess.run(
+        ["git", "-C", root, "rev-parse", "--verify", "--quiet", ref + "^{commit}"],
+        capture_output=True,
+    ).returncode:
+        raise BaselineError("cannot resolve --baseline-ref %s" % ref)
+
+    # Absent-at-ref and broken-ref are SEPARATE outcomes on purpose. The commit
+    # resolving is what makes "the file is not in it" a fact rather than a
+    # failure to look -- so the PR that INTRODUCES a baseline is not permanently
+    # red, while a typo'd ref still cannot read as clean.
+    if subprocess.run(
+        ["git", "-C", root, "cat-file", "-e", "%s:%s" % (ref, rel)],
+        capture_output=True,
+    ).returncode:
+        return (
+            _read_baseline_file(path),
+            "silent-success-lint: baseline absent at %s -- this commit introduces "
+            "it, so the ratchet is checked against the working-tree copy for this "
+            "run only." % ref[:12],
+        )
+
+    shown = subprocess.run(
+        ["git", "-C", root, "show", "%s:%s" % (ref, rel)],
+        capture_output=True,
+        text=True,
+    )
+    if shown.returncode:
+        raise BaselineError(
+            "cannot read baseline %s at %s: %s" % (rel, ref, shown.stderr.strip())
+        )
+    try:
+        return json.loads(shown.stdout).get("counts", {}), None
+    except ValueError as exc:
+        raise BaselineError("baseline at %s is not valid JSON: %s" % (ref, exc))
+
+
+def _read_baseline_file(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh).get("counts", {})
+    except (OSError, ValueError) as exc:
+        raise BaselineError("cannot read baseline %s: %s" % (path, exc))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("paths", nargs="*", help="files to scan (default: repo-wide)")
@@ -666,6 +732,12 @@ def main(argv=None):
         "exit 2 if any file gained a finding",
     )
     ap.add_argument(
+        "--baseline-ref",
+        metavar="REF",
+        help="read the baseline from this git ref instead of the working tree "
+        "(pass the PR's base sha, so the branch cannot raise its own allowance)",
+    )
+    ap.add_argument(
         "--baseline-write",
         metavar="FILE",
         help="write the current repo-wide sweep as a new baseline",
@@ -676,6 +748,13 @@ def main(argv=None):
     # would compare a two-file sweep against a 173-finding baseline and read
     # every unscanned file as fixed -- a releasing outcome derived from an
     # absent input, which is the exact class this script exists to catch.
+    if args.baseline_ref and not args.baseline:
+        sys.stderr.write(
+            "silent-success-lint: --baseline-ref selects the SOURCE of --baseline; "
+            "it does nothing on its own\n"
+        )
+        return 2
+
     if (args.baseline or args.baseline_write) and args.paths:
         sys.stderr.write(
             "silent-success-lint: --baseline/--baseline-write is repo-wide; "
@@ -766,15 +845,13 @@ def main(argv=None):
 
     if args.baseline:
         try:
-            with open(args.baseline, encoding="utf-8") as fh:
-                base = json.load(fh).get("counts", {})
-        except (OSError, ValueError) as exc:
+            base, note = load_baseline(args.baseline, root, args.baseline_ref)
+        except BaselineError as exc:
             # An unreadable baseline must never read as "nothing regressed".
-            sys.stderr.write(
-                "silent-success-lint: cannot read baseline %s: %s\n"
-                % (args.baseline, exc)
-            )
+            sys.stderr.write("silent-success-lint: %s\n" % exc)
             return 2
+        if note:
+            print(note)
         regressions, improvements = ratchet_diff(tally(findings), base)
         for code, path, was, now in improvements:
             print("  fixed  %s: %s %d -> %d" % (path, code, was, now))

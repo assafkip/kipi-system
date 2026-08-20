@@ -475,6 +475,70 @@ python3 "$LINT" --root "$REPO" --baseline "$REPO/base.json" "$REPO/ok.sh" \
 [ "$RC" -eq 2 ] && ok "--baseline refuses path arguments" \
                 || bad "--baseline refuses path arguments" "rc=$RC"
 
+# (f) THE MUTABLE-BASELINE HOLE. The ratchet reads the baseline from the working
+# tree, which on a PR is the PR's OWN copy -- so a branch that adds a defect and
+# raises its own allowance in the same commit clears the required check. The
+# allowance and the thing it constrains travel together, which means the gate
+# certifies itself (codex major, PR #230 r4, .github/workflows/validate.yml:74).
+#
+# --baseline-ref pins the allowance to the BASE commit, which the PR cannot edit.
+REPO2="$TMP/selfcert-repo"
+mkdir -p "$REPO2"
+git -C "$REPO2" init -q -b main
+git -C "$REPO2" config user.email t@t; git -C "$REPO2" config user.name t
+printf '#!/usr/bin/env bash\necho hello\n' > "$REPO2/ok.sh"
+git -C "$REPO2" add -A; git -C "$REPO2" commit -qm base
+python3 "$LINT" --root "$REPO2" --baseline-write "$REPO2/base.json" >/dev/null
+git -C "$REPO2" add -A; git -C "$REPO2" commit -qm pin
+BASE_SHA="$(git -C "$REPO2" rev-parse HEAD)"
+
+# the attacking branch: one new defect, plus a re-pin that allows it.
+git -C "$REPO2" checkout -q -b pr
+printf '#!/usr/bin/env bash\nif ! git fetch origin; then\n  exit 0\nfi\n' > "$REPO2/new.sh"
+git -C "$REPO2" add -A
+python3 "$LINT" --root "$REPO2" --baseline-write "$REPO2/base.json" >/dev/null
+git -C "$REPO2" add -A; git -C "$REPO2" commit -qm "defect + raised allowance"
+
+python3 "$LINT" --root "$REPO2" --baseline "$REPO2/base.json" >/dev/null 2>&1 \
+  && RC=0 || RC=$?
+[ "$RC" -eq 0 ] && ok "the working-tree baseline is self-certifying (the hole)" \
+                || bad "the working-tree baseline is self-certifying (the hole)" "rc=$RC"
+
+python3 "$LINT" --root "$REPO2" --baseline "$REPO2/base.json" \
+  --baseline-ref "$BASE_SHA" >"$TMP/self.out" 2>&1 && RC=0 || RC=$?
+if [ "$RC" -eq 2 ] && grep -q 'GAINED new.sh: SS001' "$TMP/self.out"; then
+  ok "--baseline-ref reads the BASE allowance and refuses the same commit"
+else
+  bad "--baseline-ref reads the BASE allowance and refuses the same commit" \
+      "rc=$RC out=$(tr '\n' ' ' < "$TMP/self.out" | head -c 200)"
+fi
+
+# A ref that does not resolve is a broken invocation, never "nothing regressed".
+python3 "$LINT" --root "$REPO2" --baseline "$REPO2/base.json" \
+  --baseline-ref "no-such-ref-abcdef" >/dev/null 2>"$TMP/badref.err" && RC=0 || RC=$?
+if [ "$RC" -eq 2 ] && grep -q 'cannot resolve' "$TMP/badref.err"; then
+  ok "an unresolvable --baseline-ref exits 2"
+else
+  bad "an unresolvable --baseline-ref exits 2" "rc=$RC"
+fi
+
+# The one case that must NOT be an error: the PR that INTRODUCES the baseline.
+# The file is genuinely absent at base, which is distinguishable from a broken
+# ref, so it degrades to the working-tree copy and SAYS SO on stdout rather than
+# passing quietly -- the same declared-not-silent posture this linter enforces.
+git -C "$REPO2" checkout -q -b intro main
+git -C "$REPO2" rm -q base.json; git -C "$REPO2" commit -qm "unpin"
+INTRO_SHA="$(git -C "$REPO2" rev-parse HEAD)"
+git -C "$REPO2" checkout -q pr
+python3 "$LINT" --root "$REPO2" --baseline "$REPO2/base.json" \
+  --baseline-ref "$INTRO_SHA" >"$TMP/intro.out" 2>&1 && RC=0 || RC=$?
+if [ "$RC" -eq 0 ] && grep -q 'absent at' "$TMP/intro.out"; then
+  ok "a baseline absent at base degrades to the working tree and declares it"
+else
+  bad "a baseline absent at base degrades to the working tree and declares it" \
+      "rc=$RC out=$(tr '\n' ' ' < "$TMP/intro.out" | head -c 200)"
+fi
+
 printf '\n%d passed, %d failed' "$PASS" "$FAIL"
 [ "$NOTE" -eq 0 ] || printf ', %d note(s) (provenance unavailable, pin held)' "$NOTE"
 printf '\n'
