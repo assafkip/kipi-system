@@ -48,6 +48,23 @@ try:
 except Exception:
     PROVENANCE = _FALLBACK_PROVENANCE
 
+# Supersession fields (status / as_of / superseded_by / supersedes) share this
+# same one-table-two-readers shape: memory_conventions.py is imported here and by
+# memory-lint.py, so the enum cannot drift between the write side and the sweep.
+# The literal below is the same mid-`kipi update` fallback the provenance enum
+# gets; the paired test asserts it matches the module.
+_FALLBACK_STATUS = ("current", "superseded")
+try:
+    from memory_conventions import STATUS_VALUES, as_of_errors
+except Exception:  # module not shipped yet -> fall back to the local literal
+    STATUS_VALUES = _FALLBACK_STATUS
+
+    def as_of_errors(fm):
+        raw = fm.get("status", "").strip()
+        if raw and raw not in STATUS_VALUES:
+            return ["status %r not in %s" % (raw, list(STATUS_VALUES))]
+        return []
+
 
 def block(msg):
     sys.stderr.write("memory-confidence-validator: " + msg + "\n")
@@ -123,6 +140,15 @@ def main():
                 f"provenance {prov!r} not in enum "
                 + str(sorted(PROVENANCE))
             )
+
+    # Supersession shape. Absent fields pass: the pre-existing corpus carries
+    # none of them and a gate red on its whole population gets switched off.
+    # Cross-FILE checks (does superseded_by resolve to a real memory) are NOT
+    # here on purpose -- at write time the successor may not exist yet, and a
+    # hook that enforced write ordering would refuse a correct pair of edits.
+    # memory-lint.py owns the graph; this owns the shape.
+    for err in as_of_errors(fm):
+        block(err)
 
     sys.exit(0)
 
