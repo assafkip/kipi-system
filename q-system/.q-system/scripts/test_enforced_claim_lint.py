@@ -41,6 +41,10 @@ def _rule(heading="Cleanup Rule (ENFORCED)", block=None, body="Some directive te
     return out
 
 
+DETECTOR_SRC = "#!/usr/bin/env python3\nimport sys\nprint('finding')\nsys.exit(0)\n"
+BLOCKER_SRC = "#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n"
+
+
 def _codes(violations):
     return sorted(v.condition for v in violations)
 
@@ -330,7 +334,7 @@ def _tree(tmp_path, block, heading="Cleanup Rule (ENFORCED)",
     rules.mkdir(parents=True)
     script = tmp_path / script_rel
     script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n")
+    script.write_text(DETECTOR_SRC)
     cfg = tmp_path / config_rel
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cmd = ("python3 \"$CLAUDE_PROJECT_DIR/%s\"" % script_rel) if wire else "python3 other.py"
@@ -445,7 +449,7 @@ def _tree_with_command(tmp_path, command, exec_rel="q-system/scripts/real-lint.p
     rules.mkdir(parents=True)
     script = tmp_path / exec_rel
     script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n")
+    script.write_text(DETECTOR_SRC)
     cfg = tmp_path / ".claude" / "settings.json"
     cfg.write_text(json.dumps({"hooks": {"PostToolUse": [
         {"matcher": "Edit", "hooks": [{"type": "command", "command": command}]}]}}))
@@ -488,7 +492,7 @@ def test_exec_path_mention_outside_hooks_is_not_wiring(tmp_path):
     rules.mkdir(parents=True)
     exec_rel = "q-system/scripts/real-lint.py"
     (tmp_path / exec_rel).parent.mkdir(parents=True, exist_ok=True)
-    (tmp_path / exec_rel).write_text("import sys\nsys.exit(2)\n")
+    (tmp_path / exec_rel).write_text(DETECTOR_SRC)
     (tmp_path / ".claude" / "settings.json").write_text(json.dumps({
         "_note": "we should wire q-system/scripts/real-lint.py one day",
         "hooks": {}}))
@@ -655,6 +659,119 @@ def test_named_config_against_this_repos_real_wiring():
         for cmd in L.wired_commands(plug):
             ptargets |= L.command_targets(cmd, "plugins/kipi-design")
         assert any(t.startswith("plugins/kipi-design/") for t in ptargets), ptargets
+
+
+# --- posture: does the claimed label match what the wiring can do? ---------------
+
+def _posture_tree(tmp_path, entry, src=BLOCKER_SRC, neutered=False, with_test=True):
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    exec_rel = "q-system/scripts/real-lint.py"
+    (tmp_path / exec_rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / exec_rel).write_text(src)
+    if with_test:
+        t = tmp_path / "q-system/scripts/test_real_lint.py"
+        t.write_text("def test_x():\n    assert True\n")
+    cmd = 'python3 "$CLAUDE_PROJECT_DIR/%s"' % exec_rel
+    if neutered:
+        cmd += " 2>/dev/null || true"
+    (tmp_path / ".claude" / "settings.json").write_text(json.dumps({"hooks": {"PostToolUse": [
+        {"matcher": "Edit", "hooks": [{"type": "command", "command": cmd}]}]}}))
+    rule = rules / "fixture.md"
+    rule.write_text(_rule(block=json.dumps([entry])))
+    return rule
+
+
+_ENFORCED = {"clause": "Cleanup Rule", "status": "ENFORCED",
+             "exec": "q-system/scripts/real-lint.py",
+             "config": ".claude/settings.json",
+             "test": "q-system/scripts/test_real_lint.py"}
+
+
+def test_posture_control_honest_enforced_passes(tmp_path):
+    """CONTROL. A blocking script, wired unneutered, with a real test file, is a
+    legitimate ENFORCED claim and must pass."""
+    assert _lint_in(tmp_path, _posture_tree(tmp_path, dict(_ENFORCED))) == []
+
+
+def test_posture_enforced_needs_a_named_test(tmp_path):
+    """C9. THE LOAD-BEARING ONE. finding-5 was right that 'the source contains a
+    non-zero exit' does not prove that path is reachable. The decidable proxy is
+    the receipt: the only two rules in this repo that were already honest each
+    name a test pinning the claim."""
+    entry = dict(_ENFORCED)
+    entry.pop("test")
+    v = _lint_in(tmp_path, _posture_tree(tmp_path, entry))
+    assert 9 in _codes(v)
+    assert "names no `test`" in " ".join(str(x) for x in v)
+
+
+def test_posture_enforced_test_must_exist(tmp_path):
+    """C9. Naming a test that is not there is the same class of claim as naming a
+    script that is not there."""
+    entry = dict(_ENFORCED, test="q-system/scripts/test_ghost.py")
+    v = _lint_in(tmp_path, _posture_tree(tmp_path, entry))
+    assert 9 in _codes(v)
+
+
+def test_posture_enforced_but_neutered_is_refused(tmp_path):
+    """C7. `|| true` swallows the failure, so the hook can never block. 9 of this
+    fleet's 46 hook commands are written this way; a rule calling one of them
+    ENFORCED is simply wrong."""
+    v = _lint_in(tmp_path, _posture_tree(tmp_path, dict(_ENFORCED), neutered=True))
+    assert 7 in _codes(v)
+    assert "honest label is DETECTED" in " ".join(str(x) for x in v)
+
+
+def test_posture_enforced_without_a_nonzero_exit_is_refused(tmp_path):
+    """C8. A script that exits 0 on every path cannot block, whatever the rule
+    says. wiring-check.py is the real example: it documents exit 0 everywhere."""
+    v = _lint_in(tmp_path, _posture_tree(tmp_path, dict(_ENFORCED), src=DETECTOR_SRC))
+    assert 8 in _codes(v)
+
+
+def test_posture_detected_that_actually_blocks_is_reported(tmp_path):
+    """C10. Understating is the safer direction but it is still a false label: a
+    reader trusting DETECTED would not expect their write refused."""
+    entry = {"clause": "Cleanup Rule", "status": "DETECTED",
+             "exec": "q-system/scripts/real-lint.py", "config": ".claude/settings.json"}
+    v = _lint_in(tmp_path, _posture_tree(tmp_path, entry))
+    assert 10 in _codes(v)
+    assert "it can BLOCK" in " ".join(str(x) for x in v)
+
+
+def test_posture_control_honest_detected_passes(tmp_path):
+    """CONTROL for C10. A real detector, wired, is a legitimate DETECTED claim."""
+    entry = {"clause": "Cleanup Rule", "status": "DETECTED",
+             "exec": "q-system/scripts/real-lint.py", "config": ".claude/settings.json"}
+    assert _lint_in(tmp_path, _posture_tree(tmp_path, entry, src=DETECTOR_SRC)) == []
+
+
+def test_posture_unprovable_exit_counts_as_possible():
+    """The deliberate asymmetry. `sys.exit(main())` is how this lint and most
+    non-trivial hooks here exit; a literal-only regex would call them advisory and
+    push authors to label real gates DETECTED."""
+    assert L.can_exit_nonzero("import sys\nsys.exit(main())\n", ".py")
+    assert L.can_exit_nonzero("import sys\nsys.exit(2)\n", ".py")
+    assert not L.can_exit_nonzero("import sys\nsys.exit(0)\n", ".py")
+    assert not L.can_exit_nonzero("print('hi')\n", ".py")
+    assert L.can_exit_nonzero("exit 1\n", ".sh")
+    assert not L.can_exit_nonzero("exit 0\n", ".sh")
+
+
+def test_posture_classifies_this_repos_real_scripts():
+    """GROUNDING, not a fixture. The producer's own files decide whether the
+    classifier is right: wiring-check.py documents exit 0 on every path,
+    token-guard.py blocks, and this lint exits via sys.exit(main())."""
+    root = Path(__file__).resolve().parents[3]
+    cases = {"q-system/.q-system/scripts/wiring-check.py": False,
+             "q-system/.q-system/token-guard.py": True,
+             "q-system/hooks/lessons-index.py": False,
+             "q-system/.q-system/scripts/enforced-claim-lint.py": True}
+    for rel, expected in cases.items():
+        p = root / rel
+        if p.is_file():
+            assert L.can_exit_nonzero(p.read_text(), p.suffix) is expected, rel
 
 
 # --- self-scoping ---------------------------------------------------------------

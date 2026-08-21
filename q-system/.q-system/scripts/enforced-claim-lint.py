@@ -682,6 +682,136 @@ def check_exec(entries, path):
     return violations
 
 
+# A command whose failure is swallowed. `|| true` and `|| exit 0` are the two
+# forms this fleet uses to make a hook advisory (9 of 46 hook commands, measured).
+_NEUTERED = re.compile(r"\|\|\s*(true|exit\s+0)\b")
+# Every way a script hands back a status. The EXPRESSION is captured, not assumed
+# to be a literal -- see can_exit_nonzero.
+_PY_EXIT = re.compile(r"(?:sys\.exit|SystemExit)\s*\(\s*([^)]*)\)")
+_SH_EXIT = re.compile(r"\bexit\s+(\d+)")
+
+
+def can_exit_nonzero(source, suffix):
+    """Could this script hand back a non-zero status?
+
+    UNPROVABLE MEANS YES, and that asymmetry is deliberate. A literal-only regex
+    would say "no" for `sys.exit(main())` -- which is how this very lint exits,
+    and how most non-trivial hooks in this repo exit -- and a check that
+    misclassifies the common case as advisory would push authors to label real
+    gates DETECTED. So: a non-zero literal is yes; a non-literal expression is
+    yes; only a script whose every exit is a literal 0 (or which never exits
+    explicitly) is no.
+
+    That direction is also the safe one for a fleet gate. Saying "yes" wrongly
+    lets a claim through to a human reader; saying "no" wrongly blocks an honest
+    rule and gets the gate switched off.
+    """
+    if suffix == ".sh":
+        return any(int(code) != 0 for code in _SH_EXIT.findall(source))
+    saw_exit = False
+    for expr in _PY_EXIT.findall(source):
+        expr = expr.strip()
+        saw_exit = True
+        if not expr:
+            continue  # sys.exit() == 0
+        try:
+            if int(expr) != 0:
+                return True
+        except ValueError:
+            return True  # not a literal: unprovable, so treated as possible
+    return False if saw_exit else False
+
+
+def check_posture(entries, path):
+    """C7, C8, C9, C10: does the claimed posture match what the wiring can do?
+
+    finding-5 said the exit posture was "not implementably specified", and it was
+    right that source containing a non-zero exit does not PROVE that path is
+    reachable for the wired invocation. So this checks the parts that ARE
+    decidable and stops there, and the docstring says which is which:
+
+      C7 the wired command is not neutered with `|| true` / `|| exit 0`. Decidable
+         and exact: the fleet has 9 such commands out of 46, and a rule calling one
+         of them ENFORCED is simply wrong.
+      C8 the script has some non-zero exit path at all. Necessary, not sufficient.
+      C9 ENFORCED names a `test` file THAT EXISTS. This is the load-bearing one and
+         it is modelled on the only two rules in this repo that were already
+         honest: voice-enforcement.md and token-discipline.md each name a test that
+         pins the claim. It does NOT prove the test goes red; it proves someone
+         wrote the receipt down and it is still there.
+      C10 a DETECTED entry whose exec can exit non-zero AND is wired unneutered is
+         understating a real gate. Understating is the safe direction, so this
+         reports rather than being silently tolerated -- a reader trusting
+         DETECTED would not expect their write to be blocked.
+    """
+    root = resolve_root(path)
+    if root is None:
+        return []
+    violations = []
+    for idx, entry in enumerate(entries):
+        status = entry["status"]
+        if status == "ADVISORY":
+            continue
+        exec_rel, config_rel = entry.get("exec"), entry.get("config")
+        if not exec_rel or not config_rel or not is_wiring_config(config_rel):
+            continue  # already reported by check_exec; do not pile on
+        exec_path = contained(root, exec_rel)
+        config_path = contained(root, config_rel)
+        if exec_path is None or config_path is None or not exec_path.is_file():
+            continue
+        if status == "ENFORCED":
+            test_rel = entry.get("test")
+            if not test_rel:
+                violations.append(Violation(
+                    9, path,
+                    "entry %d claims ENFORCED but names no `test`. The two rules in "
+                    "this repo that were already honest each name a test pinning "
+                    "the claim; that receipt is what ENFORCED means here."
+                    % idx))
+            else:
+                test_path = contained(root, test_rel)
+                if test_path is None or not test_path.is_file():
+                    violations.append(Violation(
+                        9, path,
+                        "entry %d names test %r, which does not exist at that path"
+                        % (idx, test_rel)))
+        if not config_path.is_file():
+            continue
+        plugin_root = plugin_root_for(config_rel)
+        matched = [cmd for cmd in wired_commands(config_path)
+                   if exec_rel in command_targets(cmd, plugin_root)]
+        if not matched:
+            continue  # orphan, already reported by check_exec
+        neutered = all(_NEUTERED.search(cmd) for cmd in matched)
+        try:
+            source = exec_path.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        nonzero = can_exit_nonzero(source, exec_path.suffix)
+        if status == "ENFORCED":
+            if neutered:
+                violations.append(Violation(
+                    7, path,
+                    "entry %d claims ENFORCED but every wired command for %r "
+                    "swallows its failure (`|| true` / `|| exit 0`), so it can "
+                    "never block. The honest label is DETECTED."
+                    % (idx, exec_rel)))
+            elif not nonzero:
+                violations.append(Violation(
+                    8, path,
+                    "entry %d claims ENFORCED but %r has no non-zero exit path, "
+                    "so it cannot block. The honest label is DETECTED."
+                    % (idx, exec_rel)))
+        elif status == "DETECTED" and nonzero and not neutered:
+            violations.append(Violation(
+                10, path,
+                "entry %d says DETECTED, but %r can exit non-zero and its wired "
+                "command does not swallow failure -- it can BLOCK. A reader "
+                "trusting DETECTED would not expect their write refused."
+                % (idx, exec_rel)))
+    return violations
+
+
 def check_coverage(entries, text, path):
     """C1: a marker-carrying heading with no entry covering it is a bare claim."""
     covered = {clause_key(e["clause"]) for e in entries}
@@ -708,6 +838,7 @@ def lint_text(text, path):
     violations = list(violations)
     violations += check_clause_keys(entries, text, path)
     violations += check_exec(entries, path)
+    violations += check_posture(entries, path)
     violations += check_coverage(entries, text, path)
     return violations
 
