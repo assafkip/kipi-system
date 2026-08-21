@@ -15,7 +15,28 @@ import os
 import sys
 from pathlib import Path
 
-CAP = 20
+# CAP IS GONE. It was 20, and the corpus is 146, so 126 lessons (86%) were
+# invisible in every session. Worse than the cap was HOW it chose: the sort key is
+# date only, so at the cutoff date a group of same-day lessons competes for the
+# remaining slots and Python's stable sort breaks the tie by ALPHABETICAL FILENAME.
+# Measured 2026-08-21 in the consulting instance (153 lessons): the four lessons
+# that exactly describe that week's failures ranked 93, 27, 57 and 24 against a
+# cutoff of 20. All four had aged out. Write rate is 2.61/day, giving any lesson a
+# 7.7-day shelf life.
+#
+# No relevance ranking replaced it, deliberately: a wrong rank looks identical to a
+# right one and fails silently, which is the same class of failure as the
+# alphabetical tiebreak it would replace.
+#
+# MEASURED COST, not estimated: 146 titles is 9,933 chars, about 2,483 tokens
+# (chars/4). The old cap cost 379. So full injection costs roughly +2,100 tokens
+# per session, once, at SessionStart.
+#
+# The ceiling below replaces the cap and does the opposite job. A cap silently
+# drops content; the ceiling never drops anything, it FAILS A TEST so the growth
+# becomes a decision someone makes on purpose. Unbounded growth and a silent cap
+# are the same defect pointed in opposite directions.
+PAYLOAD_CEILING_CHARS = 20000
 
 
 def get_qroot(project_dir):
@@ -45,6 +66,31 @@ def frontmatter(path):
     return fm
 
 
+def build_body(titles):
+    """The SessionStart payload. One place, so the test measures what ships."""
+    return ("# Cross-instance lessons (titles only; read q-system/lessons/<file> "
+            "for detail)\n" + "\n".join("- " + t for t in titles))
+
+
+def collect_titles(lessons_dir):
+    """Every lesson title, newest first, ties broken by title.
+
+    Split out from main so the ceiling test can measure the REAL corpus rather
+    than a fixture. A fixture I invent would test my assumption about how big the
+    payload is; the corpus is the thing that actually grows.
+    """
+    items = []
+    for f in sorted(Path(lessons_dir).glob("*.md")):
+        if f.name == "README.md":
+            continue
+        fm = frontmatter(f)
+        title = fm.get("title")
+        if title:
+            items.append((fm.get("date", ""), title))
+    items.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return [t for _, t in items]
+
+
 def main():
     try:
         project_dir = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
@@ -61,10 +107,14 @@ def main():
                 items.append((fm.get("date", ""), title))
         if not items:
             sys.exit(0)
-        items.sort(key=lambda x: x[0], reverse=True)  # most recent date first
-        titles = [t for _, t in items[:CAP]]
-        body = "# Cross-instance lessons (titles only; read q-system/lessons/<file> for detail)\n" + \
-            "\n".join("- " + t for t in titles)
+        # Sort by (date, title) so the order is TOTAL and stable. The old key was
+        # date alone, which left same-day lessons ordered by filename -- harmless
+        # while everything is injected, and the silent eviction rule while a cap
+        # existed. A total key means the output cannot change for reasons nobody
+        # can see.
+        items.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        titles = [t for _, t in items]
+        body = build_body(titles)
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": body}}))
         sys.exit(0)
     except Exception:
