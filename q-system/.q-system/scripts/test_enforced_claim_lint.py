@@ -108,12 +108,18 @@ def test_grammar_missing_required_key_is_refused():
 
 
 def test_grammar_two_blocks_are_refused():
-    """C4. Two blocks means two sources of truth and a reader that has to guess."""
+    """C4. Two blocks means two sources of truth and a reader that has to guess.
+
+    Asserts the condition code plus 'exactly one', not the full sentence: the
+    wording moved once already (blocks -> markers, when marker counting replaced
+    fence counting) and a test that fails on a reworded message while the
+    behaviour is correct is noise, not coverage.
+    """
     text = _rule(block='[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n"}]')
     text += '\n<!-- enforcement -->\n```json\n[]\n```\n'
     v = L.lint_text(text, "fixture.md")
     assert 4 in _codes(v)
-    assert "enforcement blocks in one file" in str(v[0])
+    assert "exactly one is" in str(v[0])
 
 
 def test_grammar_plain_json_fence_is_not_a_block():
@@ -160,6 +166,71 @@ def test_marker_in_prose_does_not_demand_coverage():
     assert L.lint_text(text, "fixture.md") == []
 
 
+# --- grammar: the four holes codex found in 461bd3ac ---------------------------
+
+def test_grammar_indented_heading_still_needs_coverage():
+    """C1 via the producer's regex. Markdown allows up to 3 leading spaces, and
+    apply_claude_changes._HEADING (line 182) accepts them. An earlier version
+    anchored at column 0, so `   # Foo (ENFORCED)` was a heading to the census and
+    invisible to coverage -- a silent, exploitable evasion."""
+    text = "---\nd: f\n---\n\n   # Sneaky Rule (ENFORCED)\n\nText.\n"
+    v = L.lint_text(text, "fixture.md")
+    assert _codes(v) == [1]
+
+
+def test_heading_matches_producer_regex():
+    """The anti-drift pin. Two readers of 'is this a heading' must stay one rule.
+
+    Asserts on BEHAVIOUR against the producer's accepted forms rather than on the
+    pattern string, so a cosmetic rewrite of either regex does not fail while a
+    real divergence does.
+    """
+    for raw in ("# A (ENFORCED)", " # A (ENFORCED)", "   # A (ENFORCED)",
+                "###### A (ENFORCED)", "#\tA (ENFORCED)"):
+        assert L.marked_headings(raw), "producer accepts %r as a heading" % raw
+    for raw in ("    # A (ENFORCED)", "#A (ENFORCED)", "####### A (ENFORCED)"):
+        assert not L.marked_headings(raw), "producer rejects %r as a heading" % raw
+
+
+def test_grammar_second_malformed_block_is_not_ignored():
+    """C4. A valid covering block plus a MALFORMED second one used to pass on the
+    valid half, defeating the malformed-block refusal and the one-block invariant
+    at the same time. Markers are counted, not well-formed fences."""
+    text = _rule(block='[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n"}]')
+    text += "\n<!-- enforcement -->\nnot a fence at all\n"
+    v = L.lint_text(text, "fixture.md")
+    assert 4 in _codes(v)
+    assert "enforcement markers in one file" in str(v[0])
+
+
+def test_grammar_marker_without_a_fence_is_refused():
+    """C4. A marker whose fence is missing or malformed must be a violation, not a
+    silence. Silence here reads identically to 'this file makes no claim'."""
+    text = "---\nd: f\n---\n\n# Cleanup Rule (ENFORCED)\n\n<!-- enforcement -->\n\nnope\n"
+    v = L.lint_text(text, "fixture.md")
+    assert 4 in _codes(v)
+    assert "no parseable" in str(v[0])
+
+
+def test_grammar_duplicate_keys_are_refused():
+    """C4. json.loads keeps the LAST duplicate silently, so an entry could present
+    one disposition to the machine and another to a human reading the file."""
+    block = ('[{"clause": "Cleanup Rule", "status": "ADVISORY", '
+             '"status": "ENFORCED", "note": "n"}]')
+    v = L.lint_text(_rule(block=block), "fixture.md")
+    assert 4 in _codes(v)
+    assert "duplicate key" in str(v[0])
+
+
+def test_all_mode_treats_an_unreadable_file_as_a_violation(tmp_path):
+    """C0. --all runs in lefthook and CI, where skipping a file it could not read
+    and printing PASS is a green meaning 'inspected nothing'."""
+    bad = tmp_path / "broken.md"
+    bad.write_bytes(b"\xff\xfe\x00 not valid utf-8 \xff")
+    assert L.lint_file(bad, strict=True), "strict mode must report the unreadable file"
+    assert L.lint_file(bad, strict=False) == [], "hook mode must stay silent"
+
+
 # --- self-scoping ---------------------------------------------------------------
 
 def test_scope_only_rule_markdown():
@@ -168,3 +239,53 @@ def test_scope_only_rule_markdown():
     assert not L.is_rule_file("/repo/.claude/settings.json")
     assert not L.is_rule_file("/repo/q-system/scripts/foo.py")
     assert not L.is_rule_file("/repo/docs/rules/foo.md")
+
+
+def test_scope_accepts_relative_paths():
+    """THE BYPASS. Requiring a leading slash made coverage depend on whether the
+    editing tool emitted an absolute path, so a legal relative spelling of the
+    same file skipped the gate entirely."""
+    assert L.is_rule_file(".claude/rules/foo.md")
+    assert L.is_rule_file("./.claude/rules/foo.md")
+    assert L.is_rule_file(".claude/rules/nested/foo.md")
+    # Still not ours: a same-named directory that is not the rules tree.
+    assert not L.is_rule_file("myclaude/rules/foo.md")
+
+
+def test_marker_inside_a_larger_example_fence_is_not_a_disposition():
+    """THE QUOTED-EXAMPLE BYPASS. A rule may DOCUMENT the convention by showing a
+    marker and a ```json block inside a ````-fenced example. That inert example
+    must not satisfy a live ENFORCED heading outside the fence."""
+    text = (
+        "---\nd: f\n---\n\n# Real Rule (ENFORCED)\n\n"
+        "Here is what a disposition looks like:\n\n"
+        "````markdown\n"
+        "<!-- enforcement -->\n"
+        "```json\n"
+        '[{"clause": "Real Rule", "status": "ADVISORY", "note": "n"}]\n'
+        "```\n"
+        "````\n")
+    v = L.lint_text(text, "fixture.md")
+    assert _codes(v) == [1], "the quoted example must not cover the live heading"
+
+
+def test_real_block_after_an_example_fence_still_counts():
+    """CONTROL for the test above. Fence tracking must not swallow the real block
+    that follows the example -- a scanner that loses the genuine disposition is
+    as broken as one that accepts a quoted one."""
+    text = (
+        "---\nd: f\n---\n\n# Real Rule (ENFORCED)\n\n"
+        "````markdown\n<!-- enforcement -->\n```json\n[]\n```\n````\n\n"
+        "<!-- enforcement -->\n```json\n"
+        '[{"clause": "Real Rule", "status": "ADVISORY", "note": "n"}]\n'
+        "```\n")
+    assert L.lint_text(text, "fixture.md") == []
+
+
+def test_unterminated_fence_is_refused():
+    """C4. A marker whose fence never closes yields no parseable block, which must
+    be a violation rather than a silence."""
+    text = ("---\nd: f\n---\n\n# Real Rule (ENFORCED)\n\n"
+            "<!-- enforcement -->\n```json\n[]\n")
+    v = L.lint_text(text, "fixture.md")
+    assert 4 in _codes(v)

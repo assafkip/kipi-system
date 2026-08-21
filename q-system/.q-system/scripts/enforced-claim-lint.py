@@ -82,11 +82,22 @@ REQUIRED_KEYS = {"clause", "status"}
 # ```json -- markdown renderers, and the rules' own readers, treat it as a normal
 # code block rather than a custom dialect nothing else can parse.
 BLOCK_MARKER = "<!-- enforcement -->"
-_BLOCK_RE = re.compile(
-    re.escape(BLOCK_MARKER) + r"\s*\n```json\s*\n(.*?)\n```",
-    re.DOTALL)
+# A fence opener: 3+ backticks or 3+ tildes, optionally indented up to 3, with an
+# optional info string. Tracked with its own character and length because a fence
+# is closed only by the SAME character at the SAME length or longer -- which is
+# exactly how a ````-fenced markdown example can contain ```json without ending.
+_FENCE_RE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})[ \t]*([^`~\s]*)")
 
-_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+# DELIBERATELY IDENTICAL to `_HEADING` in apply_claude_changes.py line 182
+# (`[ ]{0,3}#{1,6}[ \t]`). That script's census decides which markers sit on
+# headings; this lint decides which headings need a disposition. Two readers of
+# the same thing are two readers free to drift -- the defect class that script
+# hit in rounds 2 and 3 -- and the drift here is silent and exploitable: an
+# earlier version anchored at column 0, so `   # Foo (ENFORCED)` (legal markdown,
+# and a heading to the census) was invisible to coverage and kept a bare claim.
+# Found by codex standard review of 461bd3ac. If that regex changes, change this
+# one in the same commit; test_heading_matches_producer_regex fails otherwise.
+_HEADING_RE = re.compile(r"^[ ]{0,3}(#{1,6})[ \t]+(.*)$")
 MARKER = "(ENFORCED"
 
 
@@ -101,6 +112,89 @@ class Violation:
 
     def __str__(self):
         return "[C%d] %s: %s" % (self.condition, self.path, self.detail)
+
+
+def scan_blocks(text):
+    """Return (marker_count, [block_body, ...]), counting only REAL markers.
+
+    A line scanner rather than a regex, because a regex is not markdown-aware and
+    that gap was exploitable (codex-adversarial review of 461bd3ac, major): a rule
+    can wrap a marker plus a ```json block inside a LARGER ````-fenced example --
+    documentation showing what a disposition looks like -- and the inert example
+    would satisfy a live ENFORCED heading sitting outside the fence. A fence is
+    closed only by the same character at the same length or longer, so tracking
+    the open fence is what tells a real block from a quoted one.
+
+    Markers found at fence depth > 0 are IGNORED entirely rather than counted as
+    malformed: text inside an example fence is prose about the convention, not a
+    claim under it. Only markers at depth 0 are the file's own disposition.
+    """
+    lines = text.splitlines()
+    markers = 0
+    blocks = []
+    open_fence = None  # (char, length)
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = _FENCE_RE.match(line)
+        if m:
+            char, length = m.group(1)[0], len(m.group(1))
+            if open_fence is None:
+                open_fence = (char, length)
+            elif char == open_fence[0] and length >= open_fence[1]:
+                open_fence = None
+            i += 1
+            continue
+        if open_fence is None and line.strip() == BLOCK_MARKER:
+            markers += 1
+            body, i = _read_fenced_json(lines, i + 1)
+            if body is not None:
+                blocks.append(body)
+            continue
+        i += 1
+    return markers, blocks
+
+
+def _read_fenced_json(lines, i):
+    """Read a ```json fence starting at or after `i`. Returns (body|None, next_i).
+
+    Only a bare `json` info string on a 3-backtick fence counts, and only after
+    blank lines. Anything else means the marker has no parseable fence, which
+    parse_block reports rather than passing over in silence.
+    """
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i >= len(lines):
+        return None, i
+    m = _FENCE_RE.match(lines[i])
+    if not m or m.group(1) != "```" or m.group(2) != "json":
+        return None, i
+    i += 1
+    body = []
+    while i < len(lines):
+        closer = _FENCE_RE.match(lines[i])
+        if closer and closer.group(1)[0] == "`" and len(closer.group(1)) >= 3:
+            return "\n".join(body), i + 1
+        body.append(lines[i])
+        i += 1
+    return None, i  # unterminated fence: no parseable block
+
+
+def _no_duplicate_keys(pairs):
+    """json.loads hook: a repeated key inside one entry is a refusal, not a merge.
+
+    Python's default keeps the LAST value silently, so
+    `{"status": "ADVISORY", "status": "ENFORCED"}` parses clean and presents one
+    disposition to the machine and a different one to anyone reading the file.
+    A disposition whose meaning depends on which reader you are is exactly the
+    ambiguity this lint exists to remove (codex standard review of 461bd3ac).
+    """
+    seen = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError("duplicate key %r in enforcement entry" % key)
+        seen[key] = value
+    return seen
 
 
 def clause_key(text):
@@ -128,15 +222,25 @@ def parse_block(text, path):
     This is THE single parser. One reader, so a second one cannot drift from it
     (the defect class apply_claude_changes hit twice, rounds 2 and 3).
     """
-    matches = _BLOCK_RE.findall(text)
-    if not matches:
+    markers, matches = scan_blocks(text)
+    # Count MARKERS, not well-formed blocks. Matching only well-formed fences let
+    # a file carry one valid covering block plus a second MALFORMED one and pass
+    # on the valid half, defeating both the malformed-block refusal and the
+    # one-block invariant at once (codex standard review of 461bd3ac, major).
+    if markers == 0:
         return [], []
-    if len(matches) > 1:
+    if markers > 1:
         return [], [Violation(4, path,
-                              "%d enforcement blocks in one file; exactly one is "
-                              "allowed so there is one source of truth" % len(matches))]
+                              "%d enforcement markers in one file; exactly one is "
+                              "allowed so there is one source of truth" % markers)]
+    if not matches:
+        return [], [Violation(
+            4, path,
+            "an enforcement marker is present but no parseable json fence "
+            "follows it. The marker must be followed immediately by a fenced "
+            "json block containing a JSON array.")]
     try:
-        data = json.loads(matches[0])
+        data = json.loads(matches[0], object_pairs_hook=_no_duplicate_keys)
     except ValueError as exc:
         return [], [Violation(4, path, "enforcement block is not valid JSON: %s" % exc)]
     if not isinstance(data, list):
@@ -219,10 +323,28 @@ def lint_text(text, path):
     return violations
 
 
-def lint_file(path):
+def lint_file(path, strict=False):
+    """Lint one rule file.
+
+    `strict` decides what an UNREADABLE file means, and the two answers are
+    different on purpose (codex standard review of 461bd3ac, major):
+
+      hook mode (strict=False): a read error is a silence. The hook fires on
+        every rule-file write fleet-wide and must never wedge a write because of
+        a transient read problem in the hook itself.
+
+      --all (strict=True): a read error is a VIOLATION. This mode runs in
+        lefthook and CI, where the whole point is a verdict over the whole tree.
+        Skipping a file it could not read and then printing PASS is a green that
+        means "inspected nothing", which is worse than a failure.
+    """
     try:
         text = Path(path).read_text()
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError) as exc:
+        if strict:
+            return [Violation(0, str(path),
+                              "unreadable, so its enforcement claims could not be "
+                              "checked: %s" % exc)]
         return []
     return lint_text(text, str(path))
 
@@ -235,7 +357,16 @@ def is_rule_file(path):
     every Edit.
     """
     p = str(path).replace(os.sep, "/")
-    return "/.claude/rules/" in p and p.endswith(".md")
+    if not p.endswith(".md"):
+        return False
+    # A RELATIVE path is a real input shape, and requiring the leading slash made
+    # the gate's coverage depend on whether the editing tool happened to emit an
+    # absolute path -- `.claude/rules/foo.md` bypassed the lint entirely
+    # (codex-adversarial review of 461bd3ac, major). A gate whose scope check can
+    # be missed by a legal spelling of the same file is not a gate.
+    if p.startswith(".claude/rules/") or p.startswith("./.claude/rules/"):
+        return True
+    return "/.claude/rules/" in p
 
 
 def main():
@@ -244,7 +375,7 @@ def main():
         rules = root / ".claude" / "rules"
         violations = []
         for f in sorted(rules.rglob("*.md")):
-            violations += lint_file(f)
+            violations += lint_file(f, strict=True)
         if violations:
             sys.stderr.write("[enforced-claim-lint] %d violation(s):\n" % len(violations))
             for v in violations:
