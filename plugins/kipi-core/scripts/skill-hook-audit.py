@@ -50,15 +50,25 @@ def skills_on_disk(root: Path) -> set:
 
 
 def wired_config_files(root: Path) -> list:
-    """Configs that PROVE a hook ships wired. Tracked files only.
+    """Configs consulted as proof that a hook is wired.
 
     settings.local.json is deliberately absent (ASK-965, finding-13). It used to
     be read here, and that made one developer's untracked machine-local override
     able to report a skeleton hook as wired -- the exact orphan bug this audit
     exists to catch, walking past it. apply_claude_changes.py lines 512-532
     REFUSES that same file rather than merely skipping it, because "a change here
-    leaves no reviewable trace"; an audit answering a question about the SHIPPED
-    tree may only read configs that ship. Pinned by test_skill_hook_audit_local.py.
+    leaves no reviewable trace". Pinned by test_skill_hook_audit_local.py.
+
+    READ THE EXCLUSION NARROWLY -- it is one filename, not a tracked-tree
+    property (codex review of a6504c49, major). This function does NOT consult
+    git. An untracked `plugins/*/hooks/hooks.json`, or an untracked hook script
+    that `script_exists` finds, still counts as wiring here, so the same
+    local-only false green survives by a different door. settings.local.json is
+    excluded because it is the one config the sanctioned write path names and
+    refuses -- a known, enumerated case -- not because anything here verifies
+    that a file ships. Making the general claim true means a git-tracking check
+    with a defined answer for non-git trees, which is a wider change than the
+    finding that motivated this one; captured rather than half-built.
     """
     files = [root / ".claude" / "settings.json"]
     files += [p for p in root.glob("plugins/*/hooks/hooks.json") if "/dist/" not in str(p)]
