@@ -47,10 +47,6 @@
       "runner": "python3"
     },
     {
-      "path": "q-system/.q-system/scripts/test/enforced-claim-mutation-matrix.sh",
-      "runner": "bash"
-    },
-    {
       "path": "q-system/.q-system/scripts/test/test-apply-claude-changes.sh",
       "runner": "bash"
     },
@@ -142,6 +138,10 @@
     {
       "path": "q-system/.q-system/scripts/test/test-dor-refuses-unroutable.py",
       "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test/test-enforced-claim-mutation-matrix.sh",
+      "runner": "bash"
     },
     {
       "path": "q-system/.q-system/scripts/test/test-findings-block-reader.sh",
