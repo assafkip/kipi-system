@@ -1,7 +1,7 @@
 ---
 id: skill-hook-audit-drop-local-settings
 title: Skeleton skill-hook-manifest.json, and stop treating settings.local.json as authoritative wiring
-status: open
+status: closed
 priority: p0
 parent_prd: prd-enforced-claim-verification-2026-08-21
 allowed_files:
@@ -32,4 +32,4 @@ Parent PRD: `.prd-os/prds/prd-enforced-claim-verification-2026-08-21.md`
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Skeleton skill-hook-manifest.json, and stop treating settings.local.json as authoritative wiring
+- [x] Skeleton skill-hook-manifest.json, and stop treating settings.local.json as authoritative wiring
