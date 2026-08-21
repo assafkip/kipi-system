@@ -1,7 +1,13 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "_doc": [
-    "One row per exit that removes an issue from a linear-worker.sh run.",
+    "One row per exit that removes an issue from a RUN OF A REGISTERED DRIVER.",
+    "",
+    "THREE DRIVERS, ONE REGISTRY (ASK-353). v1 declared a single `source`,",
+    "linear-worker.sh, and reported green while converge.sh and kipi-dispatch.sh",
+    "dead-ended freely -- two of the three code paths that can strand an issue were",
+    "never walked. Per-driver registries drift, so `sources` is a list and every row",
+    "names the source it belongs to. A marker is matched only inside its own source.",
     "",
     "IDENTITY IS A STABLE MARKER, NEVER A LINE NUMBER (finding-15). The PRD's own",
     "v1 cited linear-worker.sh:1297 (which resets variables), :1295 (a comment),",
@@ -15,16 +21,54 @@
     "an existing marker would INHERIT that marker and pass silently. With it, any",
     "added or removed exit changes an observed count and the check goes RED.",
     "",
-    "Each row declares EITHER a consumer + liveness_check, OR terminal:true with a",
-    "written rationale. An honest dead end passes; an unexamined one does not.",
+    "Each row declares EXACTLY ONE of three dispositions:",
+    "  consumer + liveness_check + reentry  -- a machine continues from here",
+    "  terminal:true + rationale            -- an honest dead end, said out loud",
+    "  error_path:true + error_evidence     -- reaching this state is a DEFECT and",
+    "                                          the code says so loudly",
     "A human is never a valid consumer -- the founder does not read or work on",
-    "code, so a state whose only actor is the founder does not continue. Name it",
-    "terminal:true and say so."
+    "code, so a state whose only actor is the founder does not continue.",
+    "",
+    "`reentry` IS THE ANTI-FICTION FIELD (ASK-353). A liveness_check proves the",
+    "named job RAN. It cannot prove the job re-enters THIS state, and a job that",
+    "runs forever without ever selecting this state is a validator-satisfying",
+    "fiction -- the same shape as ci-redrive.py's false `it is also already",
+    "handled` comment, which cost 29 hours (ASK-352). So each consumer row names a",
+    "file and a literal marker inside that file, and the validator reads it: the",
+    "selector for this state must EXIST in the consumer's own source."
   ],
-  "source": "q-system/.q-system/scripts/linear-worker.sh",
+  "sources": [
+    {
+      "id": "linear-worker",
+      "path": "q-system/.q-system/scripts/linear-worker.sh",
+      "shapes": [
+        "issue-loop-continue",
+        "ready-return",
+        "label-apply"
+      ],
+      "what": "Picks one ready issue and works it. Exits per issue via `continue` in the issue loop, via a ready() exclusion, or by applying a durable refusal label."
+    },
+    {
+      "id": "converge",
+      "path": "q-system/.q-system/scripts/converge.sh",
+      "shapes": [
+        "toplevel-exit"
+      ],
+      "what": "Drives ONE issue to a terminal PR state across up to MAX_ROUNDS rework rounds. It is a single-issue process, so every top-level exit ends that issue's run."
+    },
+    {
+      "id": "kipi-dispatch",
+      "path": "kipi-dispatch.sh",
+      "shapes": [
+        "toplevel-exit"
+      ],
+      "what": "The launchd-driven selector. Every top-level exit ends a dispatch cycle, and an exit before the launch is a cycle in which no issue moved at all."
+    }
+  ],
   "states": [
     {
       "id": "needs-scope",
+      "source": "linear-worker",
       "class": "durable-queue",
       "marker": [
         "\"needs-scope\" in labels",
@@ -39,10 +83,16 @@
         "label": "com.kipi.linear-dor",
         "run_evidence": "~/.config/kipi/linear-dor.out",
         "max_age_s": 172800
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/linear-dor-drafter.py",
+        "marker": "needs-scope",
+        "why": "The drafter selects on the very label this state applies, so the selector for this state exists in the consumer's own source."
       }
     },
     {
       "id": "no-dor",
+      "source": "linear-worker",
       "class": "selection-filter",
       "marker": "## Definition of Ready",
       "sites": 1,
@@ -54,10 +104,16 @@
         "label": "com.kipi.linear-dor",
         "run_evidence": "~/.config/kipi/linear-dor.out",
         "max_age_s": 172800
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/linear-dor-drafter.py",
+        "marker": "Definition of Ready",
+        "why": "The drafter writes the section whose absence is this state, so it demonstrably reads and resolves the condition."
       }
     },
     {
       "id": "automerge-unarmed",
+      "source": "linear-worker",
       "class": "transient",
       "marker": "arm_automerge",
       "sites": 1,
@@ -68,24 +124,36 @@
         "label": "com.kipi.dispatch",
         "run_evidence": "~/.config/kipi/dispatch.log",
         "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "DISPATCH_ARGV=(./kipi converge --issue",
+        "why": "The dispatcher's launch line re-runs converge on the issue, which re-runs the worker and re-evaluates this PR."
       }
     },
     {
       "id": "no-review-verdict",
+      "source": "linear-worker",
       "class": "transient",
       "marker": "\"$GATE\" = \"20\"",
       "sites": 1,
       "what": "rework_gate returned 20: the PR has no recorded review verdict, so there is no spec to rework against.",
-      "consumer": "com.kipi.dispatch -- converge.sh runs the reviewer, which writes the verdict record this gate reads",
+      "consumer": "com.kipi.dispatch -- review-redrive.py offers the PR as a re-review pick and the dispatcher runs pr-review-agent.sh, which writes the verdict record this gate reads",
       "liveness_check": {
         "kind": "launchd",
         "label": "com.kipi.dispatch",
         "run_evidence": "~/.config/kipi/dispatch.log",
         "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/review-redrive.py",
+        "marker": "the reviewer has never posted a verdict for this PR",
+        "why": "review-redrive.py's own selector for a PR with no verdict. Wired into the dispatcher at the REVIEW_REDRIVE call."
       }
     },
     {
       "id": "worktree-create-failed",
+      "source": "linear-worker",
       "class": "infra-retry",
       "marker": "could not create worktree",
       "sites": 1,
@@ -96,10 +164,16 @@
         "label": "com.kipi.dispatch",
         "run_evidence": "~/.config/kipi/dispatch.log",
         "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "DISPATCH_ARGV=(./kipi converge --issue",
+        "why": "The issue stays backlog/unstarted and ready, so the next dispatch launch re-selects it."
       }
     },
     {
       "id": "claim-contended",
+      "source": "linear-worker",
       "class": "infra-retry",
       "marker": "claimed by another session",
       "sites": 1,
@@ -110,10 +184,16 @@
         "label": "com.kipi.dispatch",
         "run_evidence": "~/.config/kipi/dispatch.log",
         "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "DISPATCH_ARGV=(./kipi converge --issue",
+        "why": "The issue is untouched and still ready, so the next dispatch launch re-selects it once the claim clears."
       }
     },
     {
       "id": "claim-infra-failure",
+      "source": "linear-worker",
       "class": "infra-retry",
       "marker": "claim failed rc=",
       "sites": 1,
@@ -124,10 +204,16 @@
         "label": "com.kipi.dispatch",
         "run_evidence": "~/.config/kipi/dispatch.log",
         "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "DISPATCH_ARGV=(./kipi converge --issue",
+        "why": "Nothing about the issue changed, so the next dispatch launch re-selects it."
       }
     },
     {
       "id": "blocked-capability",
+      "source": "linear-worker",
       "class": "durable-queue",
       "marker": [
         "\"blocked:capability\" in labels",
@@ -135,18 +221,31 @@
       ],
       "sites": 2,
       "terminal": true,
-      "rationale": "NO CONSUMER TODAY, and that is the honest reading rather than a fake tier. The spec is sound; the runner lacks something it cannot grant itself -- a harness permission is an authorization decision and an agent must never grant itself one (2026-05-17 scar). 10 issues are held here as of 2026-08-01. ASK-281 is in flight adding a Codex tier, and sp-52390281 is live evidence that tier may not work either: the sensitive-path guard blocks any path containing .claude/. This row is revised to a consumer + liveness_check when ASK-281 lands and is proven, not when it merges."
+      "rationale": "REFUSAL ON EVIDENCE, re-checked 2026-08-18 against the founder's reversal directive. The method this issue demands is: look for a successor that became real AFTER 2026-08-01, do not reason from the state name. Nothing did. Grepped the whole scripts tree for a reader of the blocked:capability label: linear-worker.sh applies it and counts it (held_with(\"blocked:capability\")), and no other file selects on it. ASK-288 (`a blocked:capability label never expires, nothing re-tests the block`) is still open and is the named owner of the re-test, and this issue's Not-doing line excludes building it. The underlying reason is unchanged and is not a naming problem: the runner lacks something it cannot grant itself, and an agent must never grant itself an authorization (2026-05-17 scar). Revised to a consumer when ASK-288's re-test ships and is proven, not when it merges.",
+      "evidence": {
+        "path": "q-system/.q-system/scripts/linear-worker.sh",
+        "marker": "blocked_cap = held_with(\"blocked:capability\")",
+        "why": "The only other reader of this label in the fleet is a COUNT in the same file that applies it. No selector re-enters the state."
+      }
     },
     {
       "id": "owner-assaf",
-      "class": "durable-queue",
+      "source": "linear-worker",
+      "class": "error-path",
       "marker": "\"owner:assaf\" in labels",
       "sites": 1,
-      "terminal": true,
-      "rationale": "The founder queue, and the one place that routing is by design. This label exists to mark an issue the loop must NOT touch, so the absence of a machine consumer is the feature. Every other founder-routed state in this file is a defect; this one is the intended destination, which is exactly why the rest must not quietly imitate it."
+      "error_path": true,
+      "what": "An issue carrying owner:assaf. REVERSED 2026-08-03 by founder directive (`nothing should be on me`): this was a designed founder queue in the archived PRD prd-terminal-state-redrive-2026-08-01 and it is now a DEFECT. The queue was emptied this session (85 issues cleared) and by directive must never refill.",
+      "rationale": "The v1 row read `this one is the intended destination, which is exactly why the rest must not quietly imitate it`. That reasoning was correct on 2026-08-01 and the founder has since closed the queue. A terminal:true row would keep certifying the routing as designed; an error_path row asserts the opposite -- that any issue reaching it is a bug the run has to say out loud. ready() still excludes the issue (the loop must not work something the founder marked hands-off, and silently working it would be worse), but the run now COUNTS and REPORTS the population and pages when it is non-zero, so a refilling queue is loud instead of invisible.",
+      "error_evidence": {
+        "path": "q-system/.q-system/scripts/linear-worker.sh",
+        "marker": "DEFECT: owner:assaf",
+        "why": "The loud refusal line the worker prints per run when the founder queue is non-empty. Absent from the source, this row is a claim with no code behind it."
+      }
     },
     {
       "id": "not-owner-sana",
+      "source": "linear-worker",
       "class": "selection-filter",
       "marker": "\"owner:sana\" not in labels",
       "sites": 1,
@@ -156,6 +255,7 @@
     },
     {
       "id": "state-not-open",
+      "source": "linear-worker",
       "class": "selection-filter",
       "marker": "i[\"state\"][\"type\"] not in",
       "sites": 1,
@@ -165,6 +265,7 @@
     },
     {
       "id": "fleet-alert-not-a-spec",
+      "source": "linear-worker",
       "class": "selection-filter",
       "marker": "is_fleet_alert(i):",
       "sites": 1,
@@ -174,6 +275,7 @@
     },
     {
       "id": "out-of-repo",
+      "source": "linear-worker",
       "class": "selection-filter",
       "marker": "not in_this_repo(i)",
       "sites": 1,
@@ -183,48 +285,504 @@
     },
     {
       "id": "attempts-cap-stuck",
+      "source": "linear-worker",
       "class": "exhausted-counter",
       "marker": "stuck_paged",
       "sites": 1,
       "what": "MAX_ATTEMPTS spent. Paged once (not per heartbeat), with a Linear comment naming the three options and the last recorded reason.",
       "terminal": true,
-      "rationale": "The budget ran out and the loop cannot name a machine actor. What ends it is a judgment call -- fix the blocker and clear the count, rewrite the DoR, or close the issue -- and inventing a tier here would manufacture a consumer that only re-runs the thing that already failed MAX_ATTEMPTS times. The honest degraded case is explicit in source: when no reason was recorded, the cap itself is the finding, because the loop burned its whole budget without diagnosing. Note the residual this row does NOT resolve: the named human is the founder, who does not work on code. That makes this a real dead end, which is what terminal:true says."
+      "rationale": "STILL TERMINAL, and this is the row that shows what the method is for. A successor DID become real after the PRD archived: fable-escalate.py (ASK-311, 715895e, 2026-08-03) -- when Opus is stuck, Fable triages in a fresh session. It exists in code. It is not wired to this state: its only non-test callers are token-guard.py (a PreToolUse hook inside a live session) and launchd-health-check.py (which imports two helper functions and never escalates). Neither is a re-entrant driver that reads persisted stuck state, and the constraint filed on this issue is explicit that a liveness_check may never name a process the finishing agent spawned. So the honest answer is: the successor is real and UNWIRED, wiring it is ASK-311 and is excluded by this issue's Not-doing line, and until it is wired this state does not continue. The residual is unchanged: the named human is the founder, who does not work on code.",
+      "evidence": {
+        "path": "q-system/.q-system/token-guard.py",
+        "marker": "\"scripts\", \"fable-escalate.py\")",
+        "why": "The only non-test caller of the would-be successor. It is a per-session hook, not a driver that re-enters a persisted stuck state."
+      }
     },
     {
       "id": "drift-cap",
+      "source": "linear-worker",
       "class": "exhausted-counter",
       "marker": "drift_paged",
       "sites": 1,
       "what": "MAX_DRIFT_ROUNDS spent: the PR is approved at one sha but its head is still unreviewed. Paged once.",
-      "terminal": true,
-      "rationale": "Finding-5, accepted by the PRD: a drift round ALREADY ends in a Codex review with an Opus fallback, so adding a review tier here is a validator-satisfying fiction. When the reviewer is the thing that is down, another review round cannot clear it -- that is precisely why the budget exists. Unreviewed code sitting at the head is a state a human must resolve."
+      "consumer": "review-redrive.py -- classify() reads the verdict record's head_sha against the PR's live head and returns a re-review when they differ; kipi-dispatch.sh offers that pick ahead of a fresh issue and runs pr-review-agent.sh --post against the current head",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/review-redrive.py",
+        "marker": "reviewed %s but head is now %s",
+        "why": "The literal drift selector. THIS IS THE FOUNDER'S REVERSAL LANDING ON EVIDENCE, not a manufactured tier: the v1 row refused a review tier because a drift round already ends in a Codex review, which was true of a drift round INSIDE converge and said nothing about who re-enters the PR after the round budget is spent. review-redrive.py (ASK-352) landed 2026-08-03, after the PRD archived, and is exactly that missing re-entrant driver. Its cap is one attempt per PR per action per head sha, so it re-reviews the unreviewed head once rather than looping."
+      }
     },
     {
       "id": "conflict-cap",
+      "source": "linear-worker",
       "class": "exhausted-counter",
       "marker": "conflict_paged",
       "sites": 1,
       "what": "MAX_CONFLICT_ROUNDS spent: the PR is approved but still does not merge. Paged once.",
       "terminal": true,
-      "rationale": "Same shape as drift-cap. The rebase rounds already ran and the conflict survived them; a further automated tier would rework forever and write a permanent Linear comment on every round. An unresolvable conflict is a human judgment about which side wins."
+      "rationale": "REFUSAL ON EVIDENCE, re-checked 2026-08-18 by the same method that moved drift-cap. Two redrives landed after the PRD archived and NEITHER can see this state: ci-redrive.py selects on failing CI checks, review-redrive.py selects on the reviewer's verdict slot, and a PR that is approved-and-green but conflicting has neither. Grepped the whole scripts tree for a reader of merge state: the only hits are a comment in linear-worker.sh and an advice string in blocked-claim-evidence-lint.py. Nothing selects on mergeable/mergeStateStatus, so there is no successor to wire, real or otherwise. The rebase rounds already ran and the conflict survived them; the remaining moves are which side of the conflict wins, which is a judgment, and force-pushing over a reviewed diff, which is destructive by construction.",
+      "evidence": {
+        "path": "q-system/.q-system/scripts/blocked-claim-evidence-lint.py",
+        "marker": "--json mergeStateStatus,mergeable,statusCheckRollup",
+        "why": "The only place merge state is named anywhere in the scripts tree, and it is advice text printed to an operator -- not a selector. That absence is the evidence."
+      }
     },
     {
       "id": "tree-position-refused",
+      "source": "linear-worker",
       "class": "exhausted-counter",
       "marker": "tree_paged",
       "sites": 1,
       "what": "The worktree is missing the PR's commits and cannot be moved onto them because it holds local work. The round is refused rather than force-pushing over the approved diff. Paged once, and the claim is released so the issue is not wedged.",
       "terminal": true,
-      "rationale": "The PRD's own named example of an honest terminal. A tree holding local work has no plausible machine actor: the two candidate moves are discarding that work or force-pushing over a reviewed diff, and both are destructive by construction (destructive-op carve-out). A human decides what the local work was for."
+      "rationale": "REFUSAL ON EVIDENCE, and the one state where a successor cannot become real by anyone shipping code. The PRD's own named example of an honest terminal. A tree holding local work has exactly two candidate machine moves -- discard the work, or force-push over a reviewed diff -- and both are on the destructive-op carve-out, which is hook-enforced and which an agent may not grant itself. A successor here would have to be a machine that decides what the founder's uncommitted work was for. The claim is already released so the issue is not wedged; a human decides.",
+      "evidence": {
+        "path": "q-system/.q-system/scripts/linear-worker.sh",
+        "marker": "tree_paged",
+        "why": "The refusal itself. It releases the claim rather than resolving the tree, because both resolutions are destructive."
+      }
     },
     {
       "id": "dry-run",
+      "source": "linear-worker",
       "class": "transient",
       "marker": "[dry] would work",
       "sites": 1,
       "what": "APPLY=0. The run reports what it would have done and counts the issue against LIMIT without touching it.",
       "terminal": true,
       "rationale": "Not an issue state at all -- it is the caller's own --apply flag, and a live run never takes this branch. Registered rather than exempted because the enumerator finds every continue in the loop, and an exit that is genuinely not a dead end still has to be examined once and said out loud. Silence here would be indistinguishable from an unregistered exit."
+    },
+    {
+      "id": "converge-bad-invocation",
+      "source": "converge",
+      "class": "caller-error",
+      "marker": "unknown arg: $1",
+      "sites": 2,
+      "what": "An unrecognised flag, or no --issue at all. The run refuses before touching any issue.",
+      "terminal": true,
+      "rationale": "No issue entered a state, so nothing is parked. The caller is a script or an operator typing the command, and the fix is the command line -- there is nothing persisted for a machine to re-enter. Registered rather than exempted for the same reason dry-run is: an exit that is genuinely not a dead end still has to be said out loud, because silence here is indistinguishable from an unregistered exit."
+    },
+    {
+      "id": "converge-dry-run",
+      "source": "converge",
+      "class": "transient",
+      "marker": "[dry] branch=$BRANCH",
+      "sites": 1,
+      "what": "--dry. Reports the branch, PR and verdict it would work with, then stops.",
+      "terminal": true,
+      "rationale": "The caller's own flag, exactly like the worker's dry-run row. A live dispatch never takes this branch, nothing is claimed and no state is written, so there is nothing for a consumer to continue from."
+    },
+    {
+      "id": "converge-attempts-ledger-unwritable",
+      "source": "converge",
+      "class": "infra-failure",
+      "marker": "attempts ledger unwritable",
+      "sites": 1,
+      "what": "exit 8. The worker opened no PR AND the attempt could not be recorded, so the 3-attempt cap cannot trip and the issue would retry forever.",
+      "terminal": true,
+      "rationale": "environmental-trigger, not latent-defect (self-healing-retry rule 5): the ledger file is unwritable -- a full disk, a permission change, a lock that never clears. Retrying cannot fix an environment, and a machine consumer here would be a loop re-entering the exact write that just failed while the cap it depends on is provably not enforceable. It pages once and stops, which is the correct behaviour for this class. There is deliberately no consumer.",
+      "evidence": {
+        "path": "q-system/.q-system/scripts/converge.sh",
+        "marker": "The 3-attempt cap keys on that file, so it cannot trip while the write fails",
+        "why": "The exit exists precisely because the mechanism a retry would rely on is the thing that is broken."
+      }
+    },
+    {
+      "id": "converge-no-pr-opened",
+      "source": "converge",
+      "class": "counted-retry",
+      "marker": "stopped, no PR after round",
+      "sites": 1,
+      "what": "exit 7. Sana ran and opened no PR on the branch. The attempt IS recorded, so this round is counted against the 3-attempt cap.",
+      "consumer": "com.kipi.dispatch -- the issue is still backlog/unstarted and still ready, so the next dispatch cycle re-selects it and launches converge again, bounded by the attempts cap that the bump above just wrote",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "DISPATCH_ARGV=(./kipi converge --issue",
+        "why": "The dispatcher's launch line. Re-entry is bounded, not endless: the attempt was persisted before this exit, so the cap can trip, and when it does the issue lands in attempts-cap-stuck, which is registered terminal."
+      }
+    },
+    {
+      "id": "converge-verdict-terminal",
+      "source": "converge",
+      "class": "done",
+      "marker": "DONE exit-1: PR #$PR verdict",
+      "sites": 1,
+      "what": "exit 1. The PR reached a terminal verdict. The receipt is written, auto-merge state is reported, and the run is over.",
+      "consumer": "GitHub -- once auto-merge is armed and every required check is green, GitHub performs the merge. That is the machine that owns this exit, and it is the whole of the claim: the redrives are NOT named here, because neither selects this population.",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/converge.sh",
+        "marker": "automerge_from_record",
+        "why": "The code that re-reads THIS state -- the stored auto-merge answer for the PR -- whenever converge next runs against it, and reports an UNARMED PR rather than exiting quiet. It replaces a pointer at the dispatcher's REVIEW_REDRIVE wiring, which proved the redrives are wired and NOT that either selects a green approved PR. A marker can certify wiring and certify nothing about this population, which is the gap `reentry` exists to close, one level up. Narrow on purpose: this does not claim the dispatcher re-launches converge for an already-open green PR. It launches converge per ISSUE and pr-review-agent on a reviewer redrive (kipi-dispatch.sh:321), so that would be a second unchecked claim of the exact kind being removed here."
+      },
+      "uncovered": "A PR that is approved, green and armed and still does not land has NO consumer today. ci-redrive.py selects FAILED conclusions and review-redrive.py selects an absent, drifted or refused verdict; an armed green PR has neither. review-redrive.py's own header routes this case to ASK-310's pr-land-if-green.sh, which does not exist in this tree and is wired into neither driver. Recorded here instead of dressed up as covered; tracked in the spillover ledger against ASK-353."
+    },
+    {
+      "id": "converge-review-no-verdict",
+      "source": "converge",
+      "class": "transient",
+      "marker": "review produced no verdict on round",
+      "sites": 1,
+      "what": "exit 7 at gate 20. The review died or timed out, so there is no verdict record to rework against.",
+      "consumer": "review-redrive.py -- a PR whose reviewer slot was never posted is its explicit first-re-review case; the dispatcher runs pr-review-agent.sh --post against it ahead of a fresh pick",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/review-redrive.py",
+        "marker": "the reviewer has never posted a verdict for this PR",
+        "why": "The literal selector for a PR with no verdict, in the consumer's own source. Same code path the worker-side no-review-verdict row names, reached from the other driver."
+      }
+    },
+    {
+      "id": "converge-no-progress-stall",
+      "source": "converge",
+      "class": "exhausted-counter",
+      "marker": "STALL_LOG=\"STOP exit-5:",
+      "sites": 1,
+      "what": "exit 5. The round changed no code AND drew the same verdict, so another round would re-read the same review and produce the same nothing.",
+      "terminal": true,
+      "rationale": "REFUSAL ON EVIDENCE. The two ways out are both already spent by construction: re-reviewing is what review-redrive.py does and its cap is one attempt per PR per action per head sha -- and this exit fires only when the head did NOT move, so that cap is either spent or about to be, and re-offering cannot produce a different answer. Reworking is what just ran and changed nothing. A consumer here is the manufactured tier the archived PRD named and dropped: it would re-enter the identical inputs forever and write a Linear comment on every round. The gate-40 variant of the page states the specific unreviewed-head case so the operator is not told a benign stall.",
+      "evidence": {
+        "path": "q-system/.q-system/scripts/converge.sh",
+        "marker": "Requiring BOTH avoids a false stop",
+        "why": "The exit already requires same-verdict AND same-sha, which is exactly the input a redrive would re-enter with."
+      }
+    },
+    {
+      "id": "converge-round-cap-out",
+      "source": "converge",
+      "class": "exhausted-counter",
+      "marker": "record-capout",
+      "sites": 1,
+      "what": "exit 2. MAX_ROUNDS spent without a terminal verdict. The cap-out is written to the attempts ledger so the redrives can read it.",
+      "terminal": true,
+      "rationale": "TERMINAL BY DESIGN AND BY THE MOST RECENT DECISION IN THIS AREA (ASK-871, cfa58133, 2026-08-16). This exit used to be invisible to machines, so ci-redrive.py and review-redrive.py correctly-by-their-own-rules re-entered a capped-out issue: ASK-830 capped out at 15:59:53Z and was handed back at 16:14:01Z, six rounds and five Opus reviews in one morning. The fix was to make the cap-out machine-readable so the redrives STOP. Giving this row a consumer would undo that fix two days after it landed. The founder clears it deliberately, and the page carries the exact command.",
+      "evidence": {
+        "path": "q-system/.q-system/scripts/converge.sh",
+        "marker": "record-capout",
+        "why": "The ledger write whose entire purpose is to stop every automated re-entry into this state."
+      }
+    },
+    {
+      "id": "converge-interrupted",
+      "source": "converge",
+      "class": "infra-failure",
+      "marker": "INTERRUPTED by $sig",
+      "sites": 1,
+      "what": "exit 143/130/129. TERM, INT or HUP arrived mid-run. The trap releases the claim this run left on the issue and ends the process, abandoning the round in flight. Registered only after the enumerator learned to walk trap handlers (codex PR #215 round 3): a handler has no top-level call site, so the function-body exclusion hid it and this exit was invisible to every check in the suite.",
+      "consumer": "com.kipi.dispatch -- the trap releases the claim BEFORE exiting, so the issue is left unclaimed, still backlog/unstarted and still ready, and the next dispatch cycle re-selects it and launches converge again",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "DISPATCH_ARGV=(./kipi converge --issue",
+        "why": "The dispatcher's launch line -- the same re-entry converge-no-pr-opened names, and it is reached here for the same reason: a released claim puts the issue back in the ready pool. UNLIKE that row, re-entry here is NOT bounded by the attempts cap. The signal arrives before the ledger bump, so no attempt is recorded and the round is free. That is right for an operator pressing Ctrl-C and wrong if something starts killing converge on a clock: nothing in this tree does today (no timeout wraps the launch in kipi-dispatch.sh), and the residual is captured in the spillover ledger rather than dressed up as bounded here."
+      }
+    },
+    {
+      "id": "dispatch-repo-missing",
+      "source": "kipi-dispatch",
+      "class": "infra-failure",
+      "marker": "FATAL: repo not found at",
+      "sites": 1,
+      "what": "The dispatcher cannot cd into $REPO. The whole Linear loop is dead, not slow.",
+      "terminal": true,
+      "rationale": "environmental-trigger. The path in com.kipi.dispatch.plist is wrong or the checkout is gone; no amount of re-running reaches a repo that is not there, and the only actor who can restore it is outside this machine's control loop. It pages once via page_once, which is the correct behaviour for this class."
+    },
+    {
+      "id": "dispatch-stale-checkout",
+      "source": "kipi-dispatch",
+      "class": "transient",
+      "marker": "page_once stale-checkout",
+      "sites": 1,
+      "what": "This checkout is behind origin/main, so dispatching would run superseded control code. The cycle stops.",
+      "consumer": "com.kipi.dispatch -- the next tick re-runs stale_check, and the moment the checkout is fast-forwarded the same guard passes and page_clear turns the recovery into silence",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "stale_check || exit 0",
+        "why": "The guard is re-evaluated on every tick of the same job, so the state is re-entered by construction rather than by a separate selector."
+      }
+    },
+    {
+      "id": "dispatch-concurrency-cap",
+      "source": "kipi-dispatch",
+      "class": "transient",
+      "marker": "converge run(s) live, cap",
+      "sites": 1,
+      "what": "MAX_CONCURRENT converge runs are already live. The cycle yields rather than adding another.",
+      "consumer": "com.kipi.dispatch -- the next tick re-counts live converges and dispatches as soon as one finishes",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "LIVE=\"$(live_converges)\"",
+        "why": "The count is recomputed every tick, so the condition clears on its own as the live runs end."
+      }
+    },
+    {
+      "id": "dispatch-budget-day-unknown",
+      "source": "kipi-dispatch",
+      "class": "infra-failure",
+      "marker": "page_once budget-day",
+      "sites": 1,
+      "what": "Neither BSD nor GNU date could compute the budget window, so the dispatcher refuses to run uncapped.",
+      "terminal": true,
+      "rationale": "environmental-trigger, and the refusal is the point. The spend cap is derived from this value; without it the loop would dispatch with no daily bound, which is the one failure mode that costs real money unattended. A consumer would be a retry of the same date call in the same environment. It pages once and stops."
+    },
+    {
+      "id": "dispatch-unknown-lane",
+      "source": "kipi-dispatch",
+      "class": "caller-error",
+      "marker": "DISPATCH_LANE=\"${KIPI_DISPATCH_LANE:-production}\"",
+      "sites": 1,
+      "what": "KIPI_DISPATCH_LANE is set to something other than production or test, so the spend counter and lane cap cannot be resolved.",
+      "terminal": true,
+      "rationale": "A misconfigured environment variable in the caller, not an issue state. No issue was selected and nothing is parked. Refusing loudly is correct: guessing a lane would pick a budget counter at random, and the production one is the unattended self-merging path."
+    },
+    {
+      "id": "dispatch-daily-cap",
+      "source": "kipi-dispatch",
+      "class": "exhausted-counter",
+      "marker": "DAILY CAP:",
+      "sites": 1,
+      "what": "DAILY_MAX issues already dispatched for this budget day. The loop rests until the reset hour.",
+      "consumer": "com.kipi.dispatch -- the budget day rolls at RESET_HOUR and the next tick after that computes a new BUDGET_DAY, a fresh counter file, and dispatches again",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "BUDGET_DAY=\"$(date -v-\"${RESET_HOUR}\"H +%Y-%m-%d 2>/dev/null",
+        "why": "The counter is keyed on a day that advances on its own, so the cap clears without anyone acting. The paged sentinel exists only to page once, not per tick."
+      }
+    },
+    {
+      "id": "dispatch-gh-missing",
+      "source": "kipi-dispatch",
+      "class": "infra-failure",
+      "marker": "page_once gh-missing",
+      "sites": 1,
+      "what": "The gh CLI is not on PATH and was not found in the usual install dirs, so no PR can be opened.",
+      "terminal": true,
+      "rationale": "environmental-trigger: a missing binary. The loop cannot install its own tooling, and retrying a PATH lookup that just failed is the definition of a fake tier. It pages once; the healthy path calls page_clear so a recovery is silent and the next episode pages immediately."
+    },
+    {
+      "id": "dispatch-turn-lock-held",
+      "source": "kipi-dispatch",
+      "class": "transient",
+      "marker": "another dispatcher holds the selection turn",
+      "sites": 1,
+      "what": "Another dispatcher is mid read-select-advance. This one yields rather than racing the cursor.",
+      "consumer": "com.kipi.dispatch -- the holder finishes and advances the cursor, and the next tick takes the lock",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "if ! turn_lock; then",
+        "why": "The lock is re-attempted every tick of the same job. Explicitly not an error: the other dispatcher is doing the work this one skipped."
+      }
+    },
+    {
+      "id": "dispatch-pick-dry-run",
+      "source": "kipi-dispatch",
+      "class": "transient",
+      "marker": "KIPI_DISPATCH_PICK_DRY",
+      "sites": 1,
+      "what": "KIPI_DISPATCH_PICK_DRY=1. Prints the picks the real path would take and exits before anything is claimed.",
+      "terminal": true,
+      "rationale": "The caller's own flag, like the two other dry-run rows in this registry. A live launchd run never sets it, nothing is claimed and no agent starts, so there is no state for a consumer to continue from. It runs after the preflight filter on purpose so the report does not lie in the safe-looking direction."
+    },
+    {
+      "id": "dispatch-no-repo-this-cycle",
+      "source": "kipi-dispatch",
+      "class": "transient",
+      "marker": "no dispatchable repo this cycle",
+      "sites": 1,
+      "what": "The rotation produced no repo the preflight will accept this turn.",
+      "consumer": "com.kipi.dispatch -- the rotation cursor advances, so the next tick starts from a different position and reaches a different repo",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "if [ -z \"$TARGET_NAME\" ]; then",
+        "why": "The selection re-runs from an advanced cursor every tick. A repo the preflight permanently refuses is reported by the worker's own REFUSED bucket, not silently parked here."
+      }
+    },
+    {
+      "id": "dispatch-unsafe-registry-path",
+      "source": "kipi-dispatch",
+      "class": "caller-error",
+      "marker": "its registry path contains whitespace or a glob character",
+      "sites": 1,
+      "what": "The chosen repo's instance-registry path holds whitespace or a glob character, which cannot be passed safely as an unquoted word.",
+      "terminal": true,
+      "rationale": "A loud refusal beating a silent wrong target: this decides which repository an unattended self-merging loop enters, and a mis-expanded path could enter the wrong one. The fix is the registry row, which a machine must not rewrite on its own -- editing the path a dispatcher will `cd` into is exactly the class of change that needs a human. Caught on PR #146 (sp-b2f0627e); the glob half was missed on the first cut."
+    },
+    {
+      "id": "dispatch-linear-down",
+      "source": "kipi-dispatch",
+      "class": "infra-failure",
+      "marker": "page_once linear-down",
+      "sites": 1,
+      "what": "kipi work reported Linear unreachable or auth expired, so NO issue can be picked. The loop is stopped, not slow.",
+      "terminal": true,
+      "rationale": "environmental-trigger (self-healing-retry rule 5): an unreachable service or an expired credential. Retrying logic cannot fix an environment, and an expired token is an authorization an agent must never renew for itself. page_once means one page per episode, and the healthy path clears it so a recovery is silent."
+    },
+    {
+      "id": "dispatch-worker-infra-stop",
+      "source": "kipi-dispatch",
+      "class": "infra-failure",
+      "marker": "leaving linear-down state untouched",
+      "sites": 1,
+      "what": "The worker stopped on a git fetch failure BEFORE reaching Linear. The dispatcher exits without paging and without clearing the linear-down state.",
+      "terminal": true,
+      "rationale": "environmental-trigger, and deliberately silent HERE because the worker already pages this one itself -- double-paging one failure is how an operator learns to skim. The rule it enforces is that a run which never reached Linear is not evidence Linear recovered. The consumer of the page is the worker's own emitter, not this exit."
+    },
+    {
+      "id": "dispatch-nothing-ready",
+      "source": "kipi-dispatch",
+      "class": "transient",
+      "marker": "nothing ready (",
+      "sites": 1,
+      "what": "No fresh pick and no redrive candidate. There is simply nothing to dispatch.",
+      "consumer": "com.kipi.dispatch -- the next tick re-queries the board, and any issue that becomes ready (a DoR drafted, a label dropped, a new issue filed) is picked then",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "if [ -z \"$NEXT\" ]; then",
+        "why": "An empty queue re-fills from outside; the selection re-runs every tick. This is the honest empty-board case, not a park."
+      }
+    },
+    {
+      "id": "dispatch-converge-already-live",
+      "source": "kipi-dispatch",
+      "class": "transient",
+      "marker": "a converge run for it is already live",
+      "sites": 1,
+      "what": "A converge process for the chosen issue is already in the process table. The cycle skips rather than starting a second one.",
+      "consumer": "com.kipi.dispatch -- the live run is the consumer; when it ends, its own exit is a registered converge state and the next tick re-selects if the issue is still ready",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "PS_SNAPSHOT=\"$(ps -Ao args= 2>/dev/null || true)\"",
+        "why": "The snapshot is retaken every tick, so the skip lasts exactly as long as the live run. The work is not parked; it is already happening."
+      }
+    },
+    {
+      "id": "dispatch-ci-redrive-claimed",
+      "source": "kipi-dispatch",
+      "class": "transient",
+      "marker": "red-CI redrive: the attempt for",
+      "sites": 1,
+      "what": "The red-CI redrive attempt for this issue was already claimed (or the ledger could not be written, which is the same answer -- nothing was recorded, so nothing may act as though it was).",
+      "consumer": "com.kipi.dispatch -- whoever holds the claim is dispatching it; ci-redrive.py re-offers the PR on a new failure signature, and the next tick picks it up",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "REDRIVE=\"$REPO/q-system/.q-system/scripts/ci-redrive.py\"",
+        "why": "The redrive is re-consulted every tick and its cap is per PR per failure signature, so a genuinely new red re-offers the same PR."
+      }
+    },
+    {
+      "id": "dispatch-review-redrive-claimed",
+      "source": "kipi-dispatch",
+      "class": "transient",
+      "marker": "reviewer redrive: the $REVIEW_ACTION attempt for",
+      "sites": 1,
+      "what": "The reviewer-redrive attempt for this issue and PR was already claimed at this head sha.",
+      "consumer": "com.kipi.dispatch -- the claim holder is dispatching it; review-redrive.py re-offers the PR when the head moves, and the next tick picks it up",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "REVIEW_REDRIVE=\"$REPO/q-system/.q-system/scripts/review-redrive.py\"",
+        "why": "The redrive is re-consulted every tick and its cap keys on the head sha, so a moved head re-offers the same PR."
+      }
+    },
+    {
+      "id": "dispatch-launch-failed",
+      "source": "kipi-dispatch",
+      "class": "infra-failure",
+      "marker": "FAILED to launch converge for",
+      "sites": 1,
+      "what": "The converge launch returned non-zero. The budget slot is already spent and no work is happening even though the loop looks alive.",
+      "terminal": true,
+      "rationale": "environmental-trigger: the process could not be started at all (a missing interpreter, an exhausted fork/file limit, a broken ./kipi). The budget slot is spent, so a silent retry would burn the day's cap on a launch that keeps failing for a reason outside the loop. It pages with the reproduce command rather than looping. The issue itself is not parked: it stays ready and a later tick re-selects it once the machine is healthy."
+    },
+    {
+      "id": "dispatch-launch-died",
+      "source": "kipi-dispatch",
+      "class": "infra-failure",
+      "marker": "DISPATCH DIED:",
+      "sites": 2,
+      "what": "The tail of the dispatch confirmation block, both arms: exit 1 when the launched converge is gone after 10s, and the final exit 0 when it is confirmed running. Registered as one row because the two arms sit inside one if/else with nothing between them a marker could anchor to -- claiming otherwise would be a marker inventing a boundary the source does not have.",
+      "terminal": true,
+      "rationale": "The failing arm is environmental-trigger: the process launched and died immediately, which is a broken interpreter or a crashing ./kipi, and the budget slot is already spent -- so a retry tier would burn the daily cap on a process that cannot stay up. It pages with the log path. The succeeding arm is not a dead end at all: the converge run IS the consumer and its own exits are registered under the converge source above. Both are honest ends of this driver's cycle, which is why one rationale covers the pair."
     }
   ]
 }
