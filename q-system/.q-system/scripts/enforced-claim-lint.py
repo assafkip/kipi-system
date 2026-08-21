@@ -387,6 +387,90 @@ def marked_headings(text):
     return out
 
 
+def resolve_root(path):
+    """Find the repo root that `exec` and `config` values are relative to.
+
+    CLAUDE_PROJECT_DIR when set (the hook environment), else walk up from the rule
+    file until a directory containing `.claude/rules` appears. Walking up rather
+    than assuming a fixed depth, because rules may sit at any depth under rules/
+    (rule_text_only permits it, and apply_claude_changes' census had to be widened
+    for exactly that reason).
+    """
+    env = os.environ.get("CLAUDE_PROJECT_DIR", "").strip()
+    if env:
+        return Path(env).resolve()
+    here = Path(path).resolve()
+    for parent in here.parents:
+        if (parent / ".claude" / "rules").is_dir():
+            return parent
+    return here.parent
+
+
+def check_exec(entries, path):
+    """C5 and C6: the named executable exists, and is wired in the config named.
+
+    C5 exec is a PATH, not a basename. `skill-hook-audit.py` matches hook scripts
+       by basename (its lines 58-75) and that can pair one wired command with a
+       different same-named file elsewhere in the tree. This schema does not
+       inherit that: a repo-relative path has exactly one referent or it does not
+       exist, and a bare basename is REFUSED rather than resolved by search --
+       resolving it would reintroduce the ambiguity by the back door (finding-9).
+
+    C6 the exec must appear in the config THIS ENTRY NAMES. Asking only whether it
+       appears in ANY wired config let a false `config` value pass as long as some
+       other config referenced the script (finding-8). The entry names one file;
+       that file is what gets read.
+
+    ADVISORY entries name no executable by definition, so they are not checked
+    here -- what makes an ADVISORY entry legal is handled separately.
+    """
+    root = resolve_root(path)
+    violations = []
+    for idx, entry in enumerate(entries):
+        if entry["status"] == "ADVISORY":
+            continue
+        exec_rel = entry.get("exec")
+        config_rel = entry.get("config")
+        if not exec_rel or not config_rel:
+            violations.append(Violation(
+                5, path,
+                "entry %d has status %s, which requires both `exec` (a "
+                "repo-relative path) and `config` (the hook config wiring it)"
+                % (idx, entry["status"])))
+            continue
+        if "/" not in exec_rel:
+            violations.append(Violation(
+                5, path,
+                "entry %d exec %r is a bare basename. Give the repo-relative "
+                "PATH: a basename can name two different files and silently pair "
+                "the wrong one with the wired command." % (idx, exec_rel)))
+            continue
+        if not (root / exec_rel).is_file():
+            violations.append(Violation(
+                5, path,
+                "entry %d exec %r does not exist at that path" % (idx, exec_rel)))
+            continue
+        config_path = root / config_rel
+        if not config_path.is_file():
+            violations.append(Violation(
+                6, path,
+                "entry %d config %r does not exist" % (idx, config_rel)))
+            continue
+        try:
+            config_text = config_path.read_text()
+        except (OSError, UnicodeDecodeError) as exc:
+            violations.append(Violation(
+                6, path, "entry %d config %r is unreadable: %s" % (idx, config_rel, exc)))
+            continue
+        if exec_rel not in config_text:
+            violations.append(Violation(
+                6, path,
+                "entry %d claims %s but %r is referenced NOWHERE in %s -- it is an "
+                "ORPHAN, it never fires. Wire it there, or change the status."
+                % (idx, entry["status"], exec_rel, config_rel)))
+    return violations
+
+
 def check_coverage(entries, text, path):
     """C1: a marker-carrying heading with no entry covering it is a bare claim."""
     covered = {clause_key(e["clause"]) for e in entries}
@@ -412,6 +496,7 @@ def lint_text(text, path):
     entries, violations = parse_block(text, path)
     violations = list(violations)
     violations += check_clause_keys(entries, text, path)
+    violations += check_exec(entries, path)
     violations += check_coverage(entries, text, path)
     return violations
 

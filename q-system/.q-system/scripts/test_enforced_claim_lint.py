@@ -14,6 +14,8 @@ censuses), not invented, because an invented fixture tests my assumption rather
 than the system.
 """
 import importlib.util
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -314,6 +316,125 @@ def test_clause_key_control_distinct_keys_pass():
     text = _rule(heading="First Rule (ENFORCED)", block=block)
     text += "\n## Second Rule (ENFORCED)\n\nMore text.\n"
     assert L.lint_text(text, "fixture.md") == []
+
+
+# --- exec_path and named_config: the executable exists and is wired THERE --------
+
+def _tree(tmp_path, block, heading="Cleanup Rule (ENFORCED)",
+          script_rel="q-system/scripts/real-lint.py", config_rel=".claude/settings.json",
+          wire=True):
+    """A repo-shaped fixture: a rules tree, a real script, and a config that may
+    or may not reference it. Derived from what the lint actually resolves against
+    (CLAUDE_PROJECT_DIR + repo-relative paths), not invented."""
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    script = tmp_path / script_rel
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n")
+    cfg = tmp_path / config_rel
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cmd = ("python3 \"$CLAUDE_PROJECT_DIR/%s\"" % script_rel) if wire else "python3 other.py"
+    cfg.write_text(json.dumps({"hooks": {"PostToolUse": [
+        {"matcher": "Edit", "hooks": [{"type": "command", "command": cmd}]}]}}))
+    rule = rules / "fixture.md"
+    rule.write_text(_rule(heading=heading, block=block))
+    return rule
+
+
+def _lint_in(tmp_path, rule):
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = str(tmp_path)
+    try:
+        return L.lint_file(rule)
+    finally:
+        if old is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = old
+
+
+def test_exec_path_control_real_wired_script_passes(tmp_path):
+    """CONTROL. A real script at a real path, referenced in the config named, is
+    clean. Without this every assertion below could be met by refusing everything."""
+    block = json.dumps([{"clause": "Cleanup Rule", "status": "DETECTED",
+                         "exec": "q-system/scripts/real-lint.py",
+                         "config": ".claude/settings.json"}])
+    assert _lint_in(tmp_path, _tree(tmp_path, block)) == []
+
+
+def test_exec_path_fictional_executable_is_refused(tmp_path):
+    """THE MUTATION THE BRIEF NAMES. A rule claiming ENFORCED with a fictional
+    executable must go red. The existing prompt-only-enforcement-guard is the
+    cautionary case: it passes a fictional hook name at exit 0 because it matches
+    vocabulary, not existence."""
+    block = json.dumps([{"clause": "Cleanup Rule", "status": "ENFORCED",
+                         "exec": "q-system/scripts/totally-imaginary-lint.py",
+                         "config": ".claude/settings.json"}])
+    v = _lint_in(tmp_path, _tree(tmp_path, block))
+    assert 5 in _codes(v)
+    assert "does not exist at that path" in " ".join(str(x) for x in v)
+
+
+def test_exec_path_bare_basename_is_refused(tmp_path):
+    """C5. A basename can name two different files and silently pair the wrong one
+    with the wired command -- the residue skill-hook-audit.py still carries. This
+    schema refuses it rather than resolving it by search."""
+    block = json.dumps([{"clause": "Cleanup Rule", "status": "DETECTED",
+                         "exec": "real-lint.py", "config": ".claude/settings.json"}])
+    v = _lint_in(tmp_path, _tree(tmp_path, block))
+    assert 5 in _codes(v)
+    assert "bare basename" in " ".join(str(x) for x in v)
+
+
+def test_exec_path_missing_fields_are_refused(tmp_path):
+    """C5. ENFORCED and DETECTED both assert a wired executable, so an entry with
+    neither exec nor config is asserting something it has not named."""
+    block = json.dumps([{"clause": "Cleanup Rule", "status": "ENFORCED", "note": "n"}])
+    v = _lint_in(tmp_path, _tree(tmp_path, block))
+    assert 5 in _codes(v)
+
+
+def test_named_config_orphan_script_is_refused(tmp_path):
+    """C6. The script exists but the named config does not reference it: wired
+    nowhere, so it never fires. This is the 8-of-30 population the forensics
+    found."""
+    block = json.dumps([{"clause": "Cleanup Rule", "status": "ENFORCED",
+                         "exec": "q-system/scripts/real-lint.py",
+                         "config": ".claude/settings.json"}])
+    v = _lint_in(tmp_path, _tree(tmp_path, block, wire=False))
+    assert 6 in _codes(v)
+    assert "ORPHAN" in " ".join(str(x) for x in v)
+
+
+def test_named_config_must_be_the_one_that_wires_it(tmp_path):
+    """C6, THE finding-8 CASE. Asking only whether the exec appears in ANY config
+    let a false `config` value pass whenever some OTHER config referenced it. The
+    entry names one file, and that file is what gets read."""
+    rule = _tree(tmp_path, json.dumps([{"clause": "Cleanup Rule", "status": "DETECTED",
+                                        "exec": "q-system/scripts/real-lint.py",
+                                        "config": "settings-template.json"}]))
+    # settings.json (not named by the entry) DOES wire it; the named template does not.
+    (tmp_path / "settings-template.json").write_text(json.dumps({"hooks": {}}))
+    v = _lint_in(tmp_path, rule)
+    assert 6 in _codes(v)
+    assert "settings-template.json" in " ".join(str(x) for x in v)
+
+
+def test_named_config_missing_file_is_refused(tmp_path):
+    """C6. A config that does not exist cannot be wiring anything."""
+    block = json.dumps([{"clause": "Cleanup Rule", "status": "DETECTED",
+                         "exec": "q-system/scripts/real-lint.py",
+                         "config": ".claude/nope.json"}])
+    v = _lint_in(tmp_path, _tree(tmp_path, block))
+    assert 6 in _codes(v)
+
+
+def test_exec_path_advisory_needs_no_executable(tmp_path):
+    """CONTROL. ADVISORY names no executable by definition, so exec checks must
+    not fire on it -- otherwise the honest label would be the hardest to use."""
+    block = json.dumps([{"clause": "Cleanup Rule", "status": "ADVISORY",
+                         "note": "no executable exists for this"}])
+    assert _lint_in(tmp_path, _tree(tmp_path, block)) == []
 
 
 # --- self-scoping ---------------------------------------------------------------
