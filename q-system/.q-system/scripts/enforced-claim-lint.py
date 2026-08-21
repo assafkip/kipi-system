@@ -64,6 +64,7 @@ code (that is the whole point of it):
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -367,6 +368,27 @@ def parse_block(text, path):
             violations.append(Violation(
                 4, path, "entry %d clause must be a non-empty string" % idx))
             continue
+        # Type-check the OPTIONAL fields here too. Downstream checks do path
+        # arithmetic on `exec` and `config`; an int or a list reached `"/" not in
+        # exec_rel` and raised TypeError, turning a schema violation into a
+        # traceback that could break both hook and --all mode (codex standard
+        # review of 9ea17813). A validator that crashes on bad input is not a
+        # validator.
+        bad_type = False
+        for key in ("exec", "config", "test", "note", "marker_removal_ref",
+                    "superseded_by"):
+            if key in entry and not isinstance(entry[key], str):
+                violations.append(Violation(
+                    4, path, "entry %d %s must be a string, got %s"
+                    % (idx, key, type(entry[key]).__name__)))
+                bad_type = True
+        if "directives" in entry and not isinstance(entry["directives"], int):
+            violations.append(Violation(
+                4, path, "entry %d directives must be an integer, got %s"
+                % (idx, type(entry["directives"]).__name__)))
+            bad_type = True
+        if bad_type:
+            continue
         entries.append(entry)
     return entries, violations
 
@@ -388,22 +410,99 @@ def marked_headings(text):
 
 
 def resolve_root(path):
-    """Find the repo root that `exec` and `config` values are relative to.
+    """Repo root that this RULE's exec/config values are relative to, or None.
 
-    CLAUDE_PROJECT_DIR when set (the hook environment), else walk up from the rule
-    file until a directory containing `.claude/rules` appears. Walking up rather
-    than assuming a fixed depth, because rules may sit at any depth under rules/
-    (rule_text_only permits it, and apply_claude_changes' census had to be widened
-    for exactly that reason).
+    Derived from the RULE PATH, not from the environment. CLAUDE_PROJECT_DIR was
+    preferred blindly before, so editing `/other-project/.claude/rules/foo.md`
+    from this project validated that rule's claims against THIS project's scripts
+    and configs and returned clean (codex-adversarial review of 9ea17813). A claim
+    has to be substantiated inside the tree that makes it.
+
+    Returns None when no rules tree can be found above the file, and callers turn
+    that into a violation. The old `here.parent` fallback invented a root and then
+    reported whatever that arbitrary directory happened to contain.
     """
-    env = os.environ.get("CLAUDE_PROJECT_DIR", "").strip()
-    if env:
-        return Path(env).resolve()
     here = Path(path).resolve()
     for parent in here.parents:
         if (parent / ".claude" / "rules").is_dir():
             return parent
-    return here.parent
+    return None
+
+
+def contained(root, rel):
+    """Resolve `rel` under `root` and return it only if it stays inside.
+
+    Absolute values, `..` components and symlinks out of the tree are all
+    rejected: without this an entry could substantiate an ENFORCED claim with
+    files outside the repository entirely (both reviews of 9ea17813). pathlib
+    silently DISCARDS root when the right-hand side is absolute, which is what
+    makes the naive join dangerous rather than merely wrong.
+    """
+    if os.path.isabs(rel):
+        return None
+    try:
+        target = (root / rel).resolve()
+        target.relative_to(root.resolve())
+    except (ValueError, OSError):
+        return None
+    return target
+
+
+_VAR_PREFIX = re.compile(r"^\$\{?CLAUDE_PROJECT_DIR\}?/")
+
+
+def command_targets(command):
+    """Repo-relative script paths a hook command actually INVOKES.
+
+    Tokenized, then each token normalized by stripping a `$CLAUDE_PROJECT_DIR/`
+    (or `${...}/`) prefix and a leading `./`. Comparison downstream is EQUALITY on
+    the normalized token.
+
+    This replaces `exec_rel in config_text`, which both reviews called a blocker
+    and which was one: a bare substring test passes when the path appears in an
+    unrelated JSON value, in prose, or inside a LONGER path -- `real-lint.py.bak`,
+    `real-lint.py.disabled`, `archive/q-system/scripts/real-lint.py` all contain
+    the claimed path and none of them is the claimed file running.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    out = set()
+    for token in tokens:
+        token = _VAR_PREFIX.sub("", token)
+        if token.startswith("./"):
+            token = token[2:]
+        out.add(token)
+    return out
+
+
+def wired_commands(config_path):
+    """Every hook COMMAND string in a config, read structurally rather than as text.
+
+    Only `hooks.<Event>[].hooks[].command` counts. Reading the file as text let a
+    path in a description, a note, or any unrelated JSON value read as wiring.
+    A malformed config yields no commands, so a claim resting on it fails rather
+    than passing on a parse error.
+    """
+    try:
+        data = json.loads(config_path.read_text())
+    except (OSError, ValueError, UnicodeDecodeError):
+        return []
+    out = []
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        return out
+    for matchers in hooks.values():
+        if not isinstance(matchers, list):
+            continue
+        for matcher in matchers:
+            if not isinstance(matcher, dict):
+                continue
+            for hook in matcher.get("hooks") or []:
+                if isinstance(hook, dict) and isinstance(hook.get("command"), str):
+                    out.append(hook["command"])
+    return out
 
 
 def check_exec(entries, path):
@@ -428,6 +527,24 @@ def check_exec(entries, path):
     violations = []
     for idx, entry in enumerate(entries):
         if entry["status"] == "ADVISORY":
+            # ADVISORY means "no executable", so NAMING one contradicts the label.
+            # Skipping the entry entirely let an ADVISORY entry carry exec/config
+            # silently, against the one-meaning-per-status contract (codex
+            # standard review of 9ea17813).
+            named = sorted(k for k in ("exec", "config", "test") if k in entry)
+            if named:
+                violations.append(Violation(
+                    5, path,
+                    "entry %d is ADVISORY, which means no executable, but it names "
+                    "%s. Use DETECTED (wired, surfaces only) or ENFORCED if there "
+                    "really is one." % (idx, ", ".join(named))))
+            continue
+        if root is None:
+            violations.append(Violation(
+                5, path,
+                "entry %d claims %s but no .claude/rules tree was found above this "
+                "file, so its exec and config cannot be resolved"
+                % (idx, entry["status"])))
             continue
         exec_rel = entry.get("exec")
         config_rel = entry.get("config")
@@ -445,29 +562,38 @@ def check_exec(entries, path):
                 "PATH: a basename can name two different files and silently pair "
                 "the wrong one with the wired command." % (idx, exec_rel)))
             continue
-        if not (root / exec_rel).is_file():
+        exec_path = contained(root, exec_rel)
+        if exec_path is None:
+            violations.append(Violation(
+                5, path,
+                "entry %d exec %r is absolute or escapes the repo. exec must be a "
+                "repo-relative path INSIDE the tree that makes the claim."
+                % (idx, exec_rel)))
+            continue
+        if not exec_path.is_file():
             violations.append(Violation(
                 5, path,
                 "entry %d exec %r does not exist at that path" % (idx, exec_rel)))
             continue
-        config_path = root / config_rel
+        config_path = contained(root, config_rel)
+        if config_path is None:
+            violations.append(Violation(
+                6, path,
+                "entry %d config %r is absolute or escapes the repo" % (idx, config_rel)))
+            continue
         if not config_path.is_file():
             violations.append(Violation(
                 6, path,
                 "entry %d config %r does not exist" % (idx, config_rel)))
             continue
-        try:
-            config_text = config_path.read_text()
-        except (OSError, UnicodeDecodeError) as exc:
-            violations.append(Violation(
-                6, path, "entry %d config %r is unreadable: %s" % (idx, config_rel, exc)))
-            continue
-        if exec_rel not in config_text:
+        commands = wired_commands(config_path)
+        if not any(exec_rel in command_targets(cmd) for cmd in commands):
             violations.append(Violation(
                 6, path,
-                "entry %d claims %s but %r is referenced NOWHERE in %s -- it is an "
-                "ORPHAN, it never fires. Wire it there, or change the status."
-                % (idx, entry["status"], exec_rel, config_rel)))
+                "entry %d claims %s but no hook command in %s INVOKES %r -- it is "
+                "an ORPHAN, it never fires. (A path appearing in the file's text "
+                "is not wiring: it must be the target of a hook command.)"
+                % (idx, entry["status"], config_rel, exec_rel)))
     return violations
 
 

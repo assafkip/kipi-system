@@ -437,6 +437,128 @@ def test_exec_path_advisory_needs_no_executable(tmp_path):
     assert _lint_in(tmp_path, _tree(tmp_path, block)) == []
 
 
+# --- exec_path: a textual occurrence is NOT wiring (the blocker) -----------------
+
+def _tree_with_command(tmp_path, command, exec_rel="q-system/scripts/real-lint.py"):
+    """Same fixture, but the config's hook command is supplied verbatim."""
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    script = tmp_path / exec_rel
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n")
+    cfg = tmp_path / ".claude" / "settings.json"
+    cfg.write_text(json.dumps({"hooks": {"PostToolUse": [
+        {"matcher": "Edit", "hooks": [{"type": "command", "command": command}]}]}}))
+    block = json.dumps([{"clause": "Cleanup Rule", "status": "DETECTED",
+                         "exec": exec_rel, "config": ".claude/settings.json"}])
+    rule = rules / "fixture.md"
+    rule.write_text(_rule(block=block))
+    return rule
+
+
+def test_exec_path_control_real_invocation_passes(tmp_path):
+    """CONTROL for the four false-referent cases below."""
+    rule = _tree_with_command(
+        tmp_path, 'python3 "$CLAUDE_PROJECT_DIR/q-system/scripts/real-lint.py"')
+    assert _lint_in(tmp_path, rule) == []
+
+
+def test_exec_path_backup_suffix_is_not_wiring(tmp_path):
+    """THE BLOCKER, case 1. `real-lint.py.bak` CONTAINS the claimed path but is a
+    different file, and the claimed one never runs."""
+    rule = _tree_with_command(
+        tmp_path, 'python3 "$CLAUDE_PROJECT_DIR/q-system/scripts/real-lint.py.bak"')
+    v = _lint_in(tmp_path, rule)
+    assert 6 in _codes(v)
+
+
+def test_exec_path_longer_path_is_not_wiring(tmp_path):
+    """THE BLOCKER, case 2. `archive/q-system/scripts/real-lint.py` contains the
+    claimed path as a suffix and is a different file."""
+    rule = _tree_with_command(
+        tmp_path, 'python3 "$CLAUDE_PROJECT_DIR/archive/q-system/scripts/real-lint.py"')
+    v = _lint_in(tmp_path, rule)
+    assert 6 in _codes(v)
+
+
+def test_exec_path_mention_outside_hooks_is_not_wiring(tmp_path):
+    """THE BLOCKER, case 3. A path in an unrelated JSON value is prose, not wiring.
+    The config is read STRUCTURALLY, so only hook commands count."""
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    exec_rel = "q-system/scripts/real-lint.py"
+    (tmp_path / exec_rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / exec_rel).write_text("import sys\nsys.exit(2)\n")
+    (tmp_path / ".claude" / "settings.json").write_text(json.dumps({
+        "_note": "we should wire q-system/scripts/real-lint.py one day",
+        "hooks": {}}))
+    block = json.dumps([{"clause": "Cleanup Rule", "status": "ENFORCED",
+                         "exec": exec_rel, "config": ".claude/settings.json"}])
+    rule = rules / "fixture.md"
+    rule.write_text(_rule(block=block))
+    v = _lint_in(tmp_path, rule)
+    assert 6 in _codes(v)
+    assert "is not wiring" in " ".join(str(x) for x in v)
+
+
+def test_exec_path_escaping_the_repo_is_refused(tmp_path):
+    """Containment. `../` and absolute values let an entry substantiate a claim
+    with files OUTSIDE the repository. pathlib silently discards root on an
+    absolute right-hand side, which is what makes the naive join dangerous."""
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    (tmp_path / ".claude" / "settings.json").write_text(json.dumps({"hooks": {}}))
+    for bad in ("../outside/real-lint.py", "/etc/passwd"):
+        block = json.dumps([{"clause": "Cleanup Rule", "status": "DETECTED",
+                             "exec": bad, "config": ".claude/settings.json"}])
+        rule = rules / "fixture.md"
+        rule.write_text(_rule(block=block))
+        v = _lint_in(tmp_path, rule)
+        assert 5 in _codes(v), bad
+        assert "escapes the repo" in " ".join(str(x) for x in v), bad
+
+
+def test_root_comes_from_the_rule_not_the_environment(tmp_path):
+    """Cross-project validation. Preferring CLAUDE_PROJECT_DIR blindly meant a rule
+    in ANOTHER project validated against THIS project's scripts and returned clean.
+    A claim must be substantiated inside the tree that makes it."""
+    other = tmp_path / "other"
+    (other / ".claude" / "rules").mkdir(parents=True)
+    (other / ".claude" / "settings.json").write_text(json.dumps({"hooks": {}}))
+    rule = other / ".claude" / "rules" / "foo.md"
+    rule.write_text(_rule(block=json.dumps(
+        [{"clause": "Cleanup Rule", "status": "DETECTED",
+          "exec": "q-system/scripts/real-lint.py", "config": ".claude/settings.json"}])))
+    # THIS project has the script and would satisfy the claim if root came from env.
+    here = tmp_path / "here"
+    (here / "q-system" / "scripts").mkdir(parents=True)
+    (here / "q-system" / "scripts" / "real-lint.py").write_text("x")
+    assert L.resolve_root(rule) == other.resolve()
+    v = _lint_in(here, rule)
+    assert 5 in _codes(v), "the other project's missing script must not be excused"
+
+
+def test_advisory_naming_an_executable_is_refused(tmp_path):
+    """One meaning per status. ADVISORY means no executable, so naming one
+    contradicts the label. Skipping ADVISORY entries entirely let that pass."""
+    block = json.dumps([{"clause": "Cleanup Rule", "status": "ADVISORY",
+                         "note": "n", "exec": "q-system/scripts/real-lint.py"}])
+    v = _lint_in(tmp_path, _tree(tmp_path, block))
+    assert 5 in _codes(v)
+    assert "ADVISORY" in " ".join(str(x) for x in v)
+
+
+def test_non_string_fields_are_a_violation_not_a_traceback():
+    """A validator that crashes on bad input is not a validator. An int in `exec`
+    reached path arithmetic and raised TypeError, which would break both hook and
+    --all mode."""
+    for bad in ('{"clause": "Cleanup Rule", "status": "DETECTED", "exec": 7, "config": "c"}',
+                '{"clause": "Cleanup Rule", "status": "DETECTED", "exec": ["a"], "config": "c"}',
+                '{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n", "directives": "four"}'):
+        v = L.lint_text(_rule(block="[%s]" % bad), "fixture.md")
+        assert 4 in _codes(v), bad
+
+
 # --- self-scoping ---------------------------------------------------------------
 
 def test_scope_only_rule_markdown():
