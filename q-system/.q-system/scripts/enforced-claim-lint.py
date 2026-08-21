@@ -57,15 +57,20 @@ code (that is the whole point of it):
   - `exec` VALUES CANNOT BE SWAPPED through the sanctioned path once written, and
     this is the residue most likely to bite whoever maintains a disposition next.
 
-    `_rule_marks` in apply_claude_changes.py ratchets EVERY `.py`/`.sh` reference
-    a rule contains, as a set member that may only grow, and `ratchet_check`
-    refuses any mark that disappears. So editing an entry from
-    `exec: old-lint.py` to `exec: new-lint.py` is REFUSED: the old basename
-    vanishes from the file, and the ratchet cannot tell a legitimate replacement
-    from someone quietly cutting a reader's route to the enforcer. The same
-    applies to `test`, and to the full PATH as well as the bare name -- those are
-    two different marks, so `scripts/test/x.sh` disappearing is a refusal even
-    when `x.sh` still appears in the prose.
+    `_rule_marks` in apply_claude_changes.py ratchets each DISTINCT `.py`/`.sh`
+    token a rule contains, once per exact spelling and file-wide -- not per field
+    and not per occurrence -- and `ratchet_check` refuses any mark that
+    disappears. So editing an entry from `exec: old-lint.py` to
+    `exec: new-lint.py` is REFUSED WHEN that was the file's only occurrence of the
+    old spelling: the mark vanishes, and the ratchet cannot tell a legitimate
+    replacement from someone quietly cutting a reader's route to the enforcer.
+
+    Read that as narrowly as it is written (codex review of 279f7f5f). If the old
+    token still appears ANYWHERE else in the rule -- prose, a table, another entry
+    -- the swap is fine, because the mark survives. And a full path yields only a
+    full-path mark; the bare basename is a separate mark ONLY if it independently
+    appears somewhere too. That asymmetry is why the token-discipline correction
+    below had to name the full test PATH and not just the filename.
 
     THE WORKING FORM, used in this repo on 2026-08-21 when token-discipline.md's
     two false ENFORCED entries had to become honest ADVISORY ones: keep every
@@ -74,11 +79,19 @@ code (that is the whole point of it):
         "superseded_by": "was ENFORCED naming q-system/.q-system/token-guard.py,
                           which does not implement this clause"
 
-    That satisfies the ratchet AND is better documentation than a silent swap
-    would have been -- it records what was claimed and why it stopped being true.
-    Landing that correction took three refusals (dropped rule lines, then a
-    dropped exec mark, then a dropped test-path mark) and each refusal was the
-    tool working: a path that made this edit easy would make gutting a rule easy.
+    Preserve every EXACT SPELLING that would otherwise disappear -- the full path
+    if that is what the entry carried, the bare name if that is -- and it is
+    better documentation than a silent swap, because it records what was claimed
+    and why it stopped being true.
+
+    `superseded_by` alone does NOT satisfy the whole ratchet, only its exec-mark
+    half. Marker counts and substantive-LINE counts are separate members, so a
+    replacement that is shorter than the text it replaces is still refused however
+    carefully its references are preserved. Landing the token-discipline
+    correction took three refusals for three different reasons -- dropped rule
+    lines, then a dropped exec mark, then a dropped test-PATH mark -- and each was
+    the tool working: a path that made this edit easy would make gutting a rule
+    easy.
 
     An earlier draft of the PRD promised entries could be "reworded freely". That
     was false, it was corrected in the PRD's Risks section, and this comment is
