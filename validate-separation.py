@@ -1034,8 +1034,14 @@ def phase_1():
     #                skeleton, which neither of the other two ever mediates.
     claim_lint = os.path.join(SCRIPT_DIR, "q-system", ".q-system", "scripts",
                               "enforced-claim-lint.py")
+    # A MISSING GATE IS A FAILURE, NOT A WARNING (codex-adversarial review of
+    # 536ab18f, major). This integration exists to catch rule files delivered
+    # through paths no hook mediates; warning when the gate itself is absent lets
+    # `kipi check` exit 0 in exactly the situation it was added for.
     if not file_exists(claim_lint):
-        warn("Enforced-claim audit: q-system/.q-system/scripts/enforced-claim-lint.py missing")
+        check("Enforced-claim audit: enforced-claim-lint.py present", False)
+        errors.append("q-system/.q-system/scripts/enforced-claim-lint.py is missing, "
+                      "so no ENFORCED claim in .claude/rules was checked at all.")
     else:
         env = dict(os.environ, CLAUDE_PROJECT_DIR=SCRIPT_DIR)
         result = subprocess.run([sys.executable, claim_lint, "--all"],

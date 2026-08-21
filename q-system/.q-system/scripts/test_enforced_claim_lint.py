@@ -1063,6 +1063,72 @@ def test_whole_tree_real_tree_is_green_and_reports_its_debt():
     assert "owe a disposition" in r.stdout, r.stdout
 
 
+def test_whole_tree_baseline_may_only_shrink(tmp_path):
+    """BLOCKER. The docstring said "may only shrink" and NOTHING checked it:
+    initial_count was written into the file and never read, so a commit could add
+    a new undispositioned marker AND its baseline key and still pass. Claiming a
+    property while allowing its violation is the defect this lint exists to stop,
+    committed by the lint."""
+    import subprocess
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    (rules / "a.md").write_text(_rule(heading="Rule A (ENFORCED)", block=None))
+    (rules / "b.md").write_text(_rule(heading="Rule B (ENFORCED)", block=None))
+    qs = tmp_path / "q-system" / ".q-system"
+    qs.mkdir(parents=True)
+    keys = [".claude/rules/a.md::" + L.clause_key("Rule A (ENFORCED)"),
+            ".claude/rules/b.md::" + L.clause_key("Rule B (ENFORCED)")]
+    root = Path(__file__).resolve().parents[3]
+    lint = root / "q-system" / ".q-system" / "scripts" / "enforced-claim-lint.py"
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(tmp_path))
+
+    # Two markers, two entries, but the file still declares initial_count 1.
+    (qs / "enforced-claim-baseline.json").write_text(
+        json.dumps({"initial_count": 1, "uncovered_markers": keys}))
+    r = subprocess.run([sys.executable, str(lint), "--all"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "may only SHRINK" in r.stderr
+
+    # CONTROL: an honest declaration of the same two entries passes.
+    (qs / "enforced-claim-baseline.json").write_text(
+        json.dumps({"initial_count": 2, "uncovered_markers": keys}))
+    r = subprocess.run([sys.executable, str(lint), "--all"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_whole_tree_lefthook_post_commit_is_not_blocking_wiring():
+    """BLOCKER. A `run:` under post-commit cannot prevent the commit that already
+    happened, yet every `run:` line counted regardless of its stage -- so a rule
+    could substantiate ENFORCED with an invocation that structurally cannot block.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "lefthook.yml"
+        p.write_text(
+            "post-commit:\n  commands:\n    late:\n      run: python3 q-system/after.py\n"
+            "pre-commit:\n  commands:\n    early:\n      run: python3 q-system/before.py\n")
+        targets = set()
+        for cmd in L.wired_commands(p):
+            targets |= L.command_targets(cmd, None)
+        assert "q-system/before.py" in targets, targets
+        assert "q-system/after.py" not in targets, targets
+
+
+def test_whole_tree_lefthook_quoted_inline_run_is_read():
+    """MAJOR. `run: "python3 path.py"` is legal YAML this repo could adopt at any
+    time; missing it would be a false REJECTION of real wiring."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "lefthook.yml"
+        p.write_text('pre-commit:\n  commands:\n    q:\n      run: "python3 q-system/q.py"\n')
+        targets = set()
+        for cmd in L.wired_commands(p):
+            targets |= L.command_targets(cmd, None)
+        assert "q-system/q.py" in targets, targets
+
+
 def test_whole_tree_a_fabricated_claim_makes_it_red(tmp_path):
     """THE MUTATION, at whole-tree level. A rule claiming ENFORCED with a fictional
     executable must make --all exit non-zero even though the tree is otherwise

@@ -495,6 +495,13 @@ _SETTINGS_CONFIGS = (".claude/settings.json", "settings-template.json")
 # failure automated-filer-marking.md warns about -- it gets switched off, and a
 # switched-off gate protects nothing.
 _LEFTHOOK_CONFIGS = ("lefthook.yml", "lefthook.yaml", ".lefthook.yml")
+# Git stages whose non-zero exit actually STOPS the operation. post-commit,
+# post-merge and friends run after the fact and cannot refuse anything, so an
+# invocation there substantiates nothing.
+LEFTHOOK_BLOCKING_STAGES = frozenset({
+    "pre-commit", "commit-msg", "prepare-commit-msg", "pre-push",
+    "pre-rebase", "pre-merge-commit", "pre-applypatch",
+})
 
 
 def is_wiring_config(config_rel):
@@ -521,11 +528,25 @@ def is_wiring_config(config_rel):
 def _lefthook_commands(config_path):
     """Every `run:` command in a lefthook config, including block scalars.
 
-    A deliberately small YAML reader rather than a dependency: this needs one key,
+    ONLY BLOCKING STAGES COUNT. A `run:` under `post-commit` cannot prevent the
+    commit that already happened, and an earlier version counted every `run:` line
+    in the file regardless of which top-level stage owned it (codex-adversarial
+    review of 536ab18f, blocker). A rule could then substantiate ENFORCED with an
+    invocation that structurally cannot block.
+
+    A deliberately small YAML reader rather than a dependency: this needs two keys,
     and adding a package to a hook that runs on every rule-file write fleet-wide
     would be a much larger change than the question deserves. Both the inline form
-    (`run: cmd`) and the block form (`run: |`) are read; a block ends at the first
-    line indented no further than the `run:` key itself.
+    (`run: cmd`, quoted or bare) and the block form (`run: |`) are read; a block
+    ends at the first line indented no further than the `run:` key itself.
+
+    KNOWN GAPS, named rather than implied away: YAML flow mappings, aliases and
+    anchors, lefthook's `scripts:`/`runner:` form, and true folded-scalar (`>`)
+    joining are not handled. A folded block is read line-per-command, which can
+    turn an argument into an apparent target. Each of those can produce a false
+    REJECTION of real wiring (visible, someone complains) rather than a silent
+    false pass, except the folded case, which is why `>` blocks are refused
+    outright below instead of guessed at.
     """
     try:
         text = config_path.read_text()
@@ -534,15 +555,28 @@ def _lefthook_commands(config_path):
     out = []
     lines = text.splitlines()
     i = 0
+    stage = None
+    for_blocking_stage = False
     while i < len(lines):
         line = lines[i]
+        top = re.match(r"^([A-Za-z][A-Za-z0-9_-]*):\s*$", line)
+        if top:
+            stage = top.group(1)
+            for_blocking_stage = stage in LEFTHOOK_BLOCKING_STAGES
+            i += 1
+            continue
         m = re.match(r"^(\s*)run:\s*(\S.*)?$", line)
-        if not m:
+        if not m or not for_blocking_stage:
             i += 1
             continue
         indent, inline = len(m.group(1)), m.group(2)
-        if inline and inline not in ("|", ">", "|-", ">-"):
-            out.append(inline)
+        if inline in (">", ">-"):
+            # Folded scalars join lines; reading them line-per-command could turn
+            # an argument into an apparent invocation. Skipped rather than guessed.
+            i += 1
+            continue
+        if inline and inline not in ("|", "|-"):
+            out.append(inline.strip().strip('"').strip("'"))
             i += 1
             continue
         i += 1
@@ -1204,14 +1238,21 @@ def load_baseline(root):
     (sp-fea73326) -- so a baseline under `.claude/` could never shrink, which is
     the one thing it has to be able to do.
     """
+    return _read_baseline(root)[0]
+
+
+def _read_baseline(root):
+    """(entries, initial_count). Split out so --all can enforce the shrink rule."""
     path = os.path.join(str(root), BASELINE_REL)
     try:
         with open(path) as fh:
             data = json.load(fh)
     except (OSError, ValueError):
-        return set()
+        return set(), 0
     entries = data.get("uncovered_markers")
-    return set(entries) if isinstance(entries, list) else set()
+    entries = set(entries) if isinstance(entries, list) else set()
+    initial = data.get("initial_count")
+    return entries, initial if isinstance(initial, int) else len(entries)
 
 
 def baseline_key(root, file_path, clause_key_value):
@@ -1272,8 +1313,21 @@ def main():
     if "--all" in sys.argv:
         root = Path(os.environ.get("CLAUDE_PROJECT_DIR", ".")).resolve()
         rules = root / ".claude" / "rules"
-        baseline = load_baseline(root)
+        baseline, initial_count = _read_baseline(root)
         violations = []
+        # THE SHRINK RULE, ENFORCED rather than asserted (codex-adversarial review
+        # of 536ab18f, blocker). The docstring said "may only shrink" and nothing
+        # checked it: `initial_count` was written into the file and never read, so
+        # a commit could add a new undispositioned marker AND its baseline key and
+        # still pass. Saying shrink-only while allowing growth is the exact defect
+        # class this lint exists to stop, committed by the lint.
+        if len(baseline) > initial_count:
+            violations.append(Violation(
+                0, BASELINE_REL,
+                "baseline holds %d entries but declares initial_count %d. It may "
+                "only SHRINK. Raising initial_count is a deliberate act that has "
+                "to be justified in review, never a side effect of adding a marker."
+                % (len(baseline), initial_count)))
         excused = set()
         for f in sorted(rules.rglob("*.md")):
             for v in lint_file(f, strict=True):
