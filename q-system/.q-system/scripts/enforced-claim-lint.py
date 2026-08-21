@@ -54,12 +54,35 @@ code (that is the whole point of it):
     that script enforces THIS clause, nor that the named test actually goes red.
     A rule can name a real, wired, blocking, tested script that gates something
     else entirely and pass here.
-  - `exec` values CANNOT BE SWAPPED through the sanctioned path once written:
-    `_rule_marks` ratchets every referenced `.py`/`.sh` basename and refuses any
-    mark disappearing (lines 748-749, 809-815). Replacing an obsolete enforcer
-    with a differently-named one requires keeping the retired name in the file
-    (a superseded-by line). An earlier draft of the PRD promised free rewording;
-    that was false and this comment is the correction.
+  - `exec` VALUES CANNOT BE SWAPPED through the sanctioned path once written, and
+    this is the residue most likely to bite whoever maintains a disposition next.
+
+    `_rule_marks` in apply_claude_changes.py ratchets EVERY `.py`/`.sh` reference
+    a rule contains, as a set member that may only grow, and `ratchet_check`
+    refuses any mark that disappears. So editing an entry from
+    `exec: old-lint.py` to `exec: new-lint.py` is REFUSED: the old basename
+    vanishes from the file, and the ratchet cannot tell a legitimate replacement
+    from someone quietly cutting a reader's route to the enforcer. The same
+    applies to `test`, and to the full PATH as well as the bare name -- those are
+    two different marks, so `scripts/test/x.sh` disappearing is a refusal even
+    when `x.sh` still appears in the prose.
+
+    THE WORKING FORM, used in this repo on 2026-08-21 when token-discipline.md's
+    two false ENFORCED entries had to become honest ADVISORY ones: keep every
+    retired reference NAMED in the entry, in `superseded_by`.
+
+        "superseded_by": "was ENFORCED naming q-system/.q-system/token-guard.py,
+                          which does not implement this clause"
+
+    That satisfies the ratchet AND is better documentation than a silent swap
+    would have been -- it records what was claimed and why it stopped being true.
+    Landing that correction took three refusals (dropped rule lines, then a
+    dropped exec mark, then a dropped test-path mark) and each refusal was the
+    tool working: a path that made this edit easy would make gutting a rule easy.
+
+    An earlier draft of the PRD promised entries could be "reworded freely". That
+    was false, it was corrected in the PRD's Risks section, and this comment is
+    where a maintainer will actually find it.
 
 prompt-only-enforcement-skip: THIS FILE IS THE DETERMINISTIC BLOCKER, so the
 guard that looks for one is reading its own reflection. It fired here (2026-08-21)

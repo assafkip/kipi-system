@@ -1,7 +1,7 @@
 ---
 id: enforcement-lint-mutation-matrix
 title: One enumerated mutation per blocking condition, each shown red before the tree is shown green
-status: open
+status: closed
 priority: p0
 parent_prd: prd-enforced-claim-verification-2026-08-21
 allowed_files:
