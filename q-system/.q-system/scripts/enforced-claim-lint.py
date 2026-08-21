@@ -61,6 +61,7 @@ code (that is the whole point of it):
     (a superseded-by line). An earlier draft of the PRD promised free rewording;
     that was false and this comment is the correction.
 """
+import ast
 import json
 import os
 import re
@@ -682,44 +683,102 @@ def check_exec(entries, path):
     return violations
 
 
-# A command whose failure is swallowed. `|| true` and `|| exit 0` are the two
-# forms this fleet uses to make a hook advisory (9 of 46 hook commands, measured).
-_NEUTERED = re.compile(r"\|\|\s*(true|exit\s+0)\b")
-# Every way a script hands back a status. The EXPRESSION is captured, not assumed
-# to be a literal -- see can_exit_nonzero.
-_PY_EXIT = re.compile(r"(?:sys\.exit|SystemExit)\s*\(\s*([^)]*)\)")
+# A command whose failure is swallowed, so the hook cannot block.
+#
+# READ THIS LIST AS A FLOOR, NOT A PROOF (codex-adversarial review of eafadb8f,
+# blocker). An earlier version matched only `|| true` and `|| exit 0` and called
+# itself exact; it was not. `script.py; true`, `script.py || :`,
+# `script.py || /bin/true` and `script.py || echo ignored` all return success and
+# all passed as unneutered. Those are covered now. What is STILL not covered, and
+# is named here rather than implied away: a wrapper script that runs the enforcer
+# and swallows its child's status is invisible to any inspection of this command
+# string. C7 catches the inline forms; it does not prove blocking.
+#
+# `2>/dev/null` is deliberately NOT neutering: redirecting stderr preserves the
+# exit status. An earlier comment implied otherwise.
+_NEUTERED = re.compile(
+    r"(?:\|\||;)\s*(?:true\b|:\s*(?:$|;|\|)|/bin/true\b|/usr/bin/true\b"
+    r"|exit\s+0\b|echo\b)")
 _SH_EXIT = re.compile(r"\bexit\s+(\d+)")
+
+
+def _strip_sh_comments(source):
+    """Drop `#` comments from shell source, keeping `#` inside quotes.
+
+    Crude but sufficient for the one question asked of it: does a real `exit N`
+    appear. A commented-out `# exit 2` used to make a never-blocking script read
+    as blocking.
+    """
+    out = []
+    for line in source.splitlines():
+        quote = None
+        cut = len(line)
+        for i, ch in enumerate(line):
+            if quote:
+                if ch == quote:
+                    quote = None
+            elif ch in "'\"":
+                quote = ch
+            elif ch == "#" and (i == 0 or line[i - 1].isspace()):
+                cut = i
+                break
+        out.append(line[:cut])
+    return "\n".join(out)
 
 
 def can_exit_nonzero(source, suffix):
     """Could this script hand back a non-zero status?
 
-    UNPROVABLE MEANS YES, and that asymmetry is deliberate. A literal-only regex
-    would say "no" for `sys.exit(main())` -- which is how this very lint exits,
-    and how most non-trivial hooks in this repo exit -- and a check that
-    misclassifies the common case as advisory would push authors to label real
-    gates DETECTED. So: a non-zero literal is yes; a non-literal expression is
-    yes; only a script whose every exit is a literal 0 (or which never exits
-    explicitly) is no.
+    UNPROVABLE MEANS YES, and that asymmetry is deliberate. A literal-only check
+    says "no" for `sys.exit(main())` -- which is how this very lint exits, and how
+    most non-trivial hooks in this repo exit -- and misclassifying the common case
+    as advisory would push authors to label real gates DETECTED. For a fleet gate
+    the direction matters: wrongly saying "yes" lets a claim reach a human reader,
+    wrongly saying "no" blocks an honest rule and gets the gate switched off.
 
-    That direction is also the safe one for a fleet gate. Saying "yes" wrongly
-    lets a claim through to a human reader; saying "no" wrongly blocks an honest
-    rule and gets the gate switched off.
+    PARSED, NOT PATTERN-MATCHED (codex-adversarial review of eafadb8f, blocker).
+    Scanning raw text meant a script containing only `print("sys.exit(2)")` or
+    `# sys.exit(2)` was classified as blocking while it always exits zero -- a
+    false ENFORCED claim handed out by the checker meant to prevent them. Python
+    goes through `ast`, so comments and string literals cannot contribute; shell
+    has its comments stripped first.
+
+    An unparseable Python file returns True, consistent with unprovable-means-yes.
     """
     if suffix == ".sh":
-        return any(int(code) != 0 for code in _SH_EXIT.findall(source))
-    saw_exit = False
-    for expr in _PY_EXIT.findall(source):
-        expr = expr.strip()
-        saw_exit = True
-        if not expr:
+        return any(int(code) != 0
+                   for code in _SH_EXIT.findall(_strip_sh_comments(source)))
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return True  # unparseable: unprovable, so treated as possible
+    for node in ast.walk(tree):
+        call = None
+        if isinstance(node, ast.Call):
+            call = node
+        elif isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
+            call = node.exc
+        if call is None or not _is_exit_call(call.func):
+            continue
+        if not call.args:
             continue  # sys.exit() == 0
-        try:
-            if int(expr) != 0:
+        arg = call.args[0]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, int):
+            if arg.value != 0:
                 return True
-        except ValueError:
-            return True  # not a literal: unprovable, so treated as possible
-    return False if saw_exit else False
+        elif isinstance(arg, ast.Constant) and arg.value is None:
+            continue  # sys.exit(None) == 0
+        else:
+            return True  # computed: unprovable, so treated as possible
+    return False
+
+
+def _is_exit_call(func):
+    if isinstance(func, ast.Name):
+        return func.id in ("exit", "SystemExit")
+    if isinstance(func, ast.Attribute):
+        return func.attr in ("exit", "_exit")
+    return False
 
 
 def check_posture(entries, path):
@@ -775,6 +834,32 @@ def check_posture(entries, path):
                         9, path,
                         "entry %d names test %r, which does not exist at that path"
                         % (idx, test_rel)))
+                else:
+                    # is_file() alone was trivially satisfiable: an empty file, an
+                    # unrelated file, or the enforcer itself passed (codex-
+                    # adversarial review of eafadb8f, major). Requiring the test to
+                    # MENTION the executable is a weak but real tie between the two,
+                    # and it is the strongest link available without running
+                    # anything -- which this lint deliberately never does, since
+                    # executing hook scripts from inside a lint is the live-data
+                    # path fable-discipline exists to stop.
+                    #
+                    # STILL NOT PROOF, and the docstring says so: a test that
+                    # imports the enforcer and asserts nothing about blocking will
+                    # pass this. C9 evidences that a receipt was written and is
+                    # still there, not that it goes red.
+                    try:
+                        test_src = test_path.read_text()
+                    except (OSError, UnicodeDecodeError):
+                        test_src = ""
+                    exec_base = os.path.basename(exec_rel)
+                    stem = os.path.splitext(exec_base)[0].replace("-", "_")
+                    if exec_base not in test_src and stem not in test_src:
+                        violations.append(Violation(
+                            9, path,
+                            "entry %d names test %r, but that file never mentions "
+                            "%r, so nothing ties the receipt to the enforcer it "
+                            "claims to pin." % (idx, test_rel, exec_base)))
         if not config_path.is_file():
             continue
         plugin_root = plugin_root_for(config_rel)
@@ -782,7 +867,14 @@ def check_posture(entries, path):
                    if exec_rel in command_targets(cmd, plugin_root)]
         if not matched:
             continue  # orphan, already reported by check_exec
-        neutered = all(_NEUTERED.search(cmd) for cmd in matched)
+        # ANY, not ALL (codex-adversarial review of eafadb8f, major). `all` meant
+        # one unneutered invocation LAUNDERED every neutered one: a script wired
+        # twice, blocking on a rare event and swallowed on the common one, read as
+        # a clean ENFORCED claim. The entry does not say WHICH event enforces the
+        # clause, so the only claim its wiring can support is that every
+        # invocation blocks. If that is too strict for a real case, the fix is a
+        # schema that names the event, not a weaker quantifier.
+        neutered = any(_NEUTERED.search(cmd) for cmd in matched)
         try:
             source = exec_path.read_text()
         except (OSError, UnicodeDecodeError):

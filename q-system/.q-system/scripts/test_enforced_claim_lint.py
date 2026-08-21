@@ -671,7 +671,11 @@ def _posture_tree(tmp_path, entry, src=BLOCKER_SRC, neutered=False, with_test=Tr
     (tmp_path / exec_rel).write_text(src)
     if with_test:
         t = tmp_path / "q-system/scripts/test_real_lint.py"
-        t.write_text("def test_x():\n    assert True\n")
+        # Mentions the enforcer by name. The previous fixture was `assert True`,
+        # which is exactly the weakness the review called out: is_file() alone made
+        # any empty or unrelated file a valid "receipt".
+        t.write_text("import real_lint  # real-lint.py\n\n"
+                     "def test_blocks():\n    assert real_lint.main() == 2\n")
     cmd = 'python3 "$CLAUDE_PROJECT_DIR/%s"' % exec_rel
     if neutered:
         cmd += " 2>/dev/null || true"
@@ -745,6 +749,81 @@ def test_posture_control_honest_detected_passes(tmp_path):
     entry = {"clause": "Cleanup Rule", "status": "DETECTED",
              "exec": "q-system/scripts/real-lint.py", "config": ".claude/settings.json"}
     assert _lint_in(tmp_path, _posture_tree(tmp_path, entry, src=DETECTOR_SRC)) == []
+
+
+def test_posture_neutering_forms_beyond_double_pipe_true(tmp_path):
+    """BLOCKER. `|| true` and `|| exit 0` were the only forms recognized, so four
+    other always-succeed shapes passed as unneutered and let an ENFORCED claim
+    stand for a hook that cannot block."""
+    for tail in ("; true", " || :", " || /bin/true", " || echo ignored"):
+        d = tmp_path / tail.replace(" ", "_").replace("/", "_").replace(":", "c")
+        d.mkdir()
+        rules = d / ".claude" / "rules"
+        rules.mkdir(parents=True)
+        exec_rel = "q-system/scripts/real-lint.py"
+        (d / exec_rel).parent.mkdir(parents=True, exist_ok=True)
+        (d / exec_rel).write_text(BLOCKER_SRC)
+        (d / "q-system/scripts/test_real_lint.py").write_text("# real-lint.py\n")
+        (d / ".claude" / "settings.json").write_text(json.dumps({"hooks": {"PostToolUse": [
+            {"matcher": "Edit", "hooks": [{"type": "command",
+             "command": 'python3 "$CLAUDE_PROJECT_DIR/%s"%s' % (exec_rel, tail)}]}]}}))
+        rule = rules / "fixture.md"
+        rule.write_text(_rule(block=json.dumps([dict(_ENFORCED)])))
+        v = _lint_in(d, rule)
+        assert 7 in _codes(v), tail
+
+
+def test_posture_stderr_redirect_alone_is_not_neutering():
+    """CONTROL for the list above. `2>/dev/null` preserves the exit status, so it
+    must NOT count as neutering -- an earlier comment implied it did."""
+    assert not L._NEUTERED.search('python3 "$CLAUDE_PROJECT_DIR/x.py" 2>/dev/null')
+    assert L._NEUTERED.search('python3 "$CLAUDE_PROJECT_DIR/x.py" 2>/dev/null || true')
+
+
+def test_posture_exit_in_a_comment_or_string_does_not_count():
+    """BLOCKER. Scanning raw text meant a script containing only `# sys.exit(2)`
+    or `print("sys.exit(2)")` was classified as blocking while it always exits
+    zero -- a false ENFORCED claim handed out by the checker meant to stop them."""
+    assert not L.can_exit_nonzero("# sys.exit(2)\nprint('hi')\n", ".py")
+    assert not L.can_exit_nonzero('print("sys.exit(2)")\n', ".py")
+    assert not L.can_exit_nonzero("# exit 2\necho hi\n", ".sh")
+    # And the real forms still count.
+    assert L.can_exit_nonzero("import sys\nsys.exit(2)\n", ".py")
+    assert L.can_exit_nonzero("raise SystemExit(2)\n", ".py")
+    assert L.can_exit_nonzero("echo hi\nexit 2\n", ".sh")
+
+
+def test_posture_one_unneutered_wiring_cannot_launder_a_neutered_one(tmp_path):
+    """MAJOR. `all()` meant a script wired twice - blocking on a rare event and
+    swallowed on the common one - read as a clean ENFORCED claim."""
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    exec_rel = "q-system/scripts/real-lint.py"
+    (tmp_path / exec_rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / exec_rel).write_text(BLOCKER_SRC)
+    (tmp_path / "q-system/scripts/test_real_lint.py").write_text("# real-lint.py\n")
+    base = 'python3 "$CLAUDE_PROJECT_DIR/%s"' % exec_rel
+    (tmp_path / ".claude" / "settings.json").write_text(json.dumps({"hooks": {
+        "PreToolUse": [{"matcher": "Bash", "hooks": [
+            {"type": "command", "command": base + " || true"}]}],
+        "PostToolUse": [{"matcher": "Edit", "hooks": [
+            {"type": "command", "command": base}]}]}}))
+    rule = rules / "fixture.md"
+    rule.write_text(_rule(block=json.dumps([dict(_ENFORCED)])))
+    v = _lint_in(tmp_path, rule)
+    assert 7 in _codes(v), "a neutered wiring must not be laundered by an unneutered one"
+
+
+def test_posture_test_receipt_must_mention_the_enforcer(tmp_path):
+    """MAJOR. is_file() alone was trivially satisfiable by an empty or unrelated
+    file. Mentioning the executable is a weak but real tie, and it is the
+    strongest link available without running anything."""
+    entry = dict(_ENFORCED, test="q-system/scripts/unrelated_test.py")
+    rule = _posture_tree(tmp_path, entry)
+    (tmp_path / "q-system/scripts/unrelated_test.py").write_text("def test_x():\n    pass\n")
+    v = _lint_in(tmp_path, rule)
+    assert 9 in _codes(v)
+    assert "never mentions" in " ".join(str(x) for x in v)
 
 
 def test_posture_unprovable_exit_counts_as_possible():
