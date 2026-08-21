@@ -60,6 +60,17 @@ code (that is the whole point of it):
     with a differently-named one requires keeping the retired name in the file
     (a superseded-by line). An earlier draft of the PRD promised free rewording;
     that was false and this comment is the correction.
+
+prompt-only-enforcement-skip: THIS FILE IS THE DETERMINISTIC BLOCKER, so the
+guard that looks for one is reading its own reflection. It fired here (2026-08-21)
+on the operator-facing violation messages -- strings like "nothing ties the
+receipt to the enforcer it claims to pin" -- which are enforcement vocabulary
+sitting next to no nearby executable NOUN, because the executable is the file
+they live in. That is the same VOCABULARY-vs-EXISTENCE gap this lint exists to
+close and which the module docstring above documents: the guard matched words,
+not the thing. Marker used rather than reworded, because contorting a gate's own
+error text to satisfy a string search would make the messages worse for the human
+who has to act on them.
 """
 import ast
 import json
@@ -383,7 +394,13 @@ def parse_block(text, path):
                     4, path, "entry %d %s must be a string, got %s"
                     % (idx, key, type(entry[key]).__name__)))
                 bad_type = True
-        if "directives" in entry and not isinstance(entry["directives"], int):
+        # `not isinstance(x, bool)` first: in Python a bool IS an int, so
+        # `"directives": true` passed the type check and then compared equal to an
+        # actual count of 1 (codex-adversarial review of 08f8aab0, minor). A
+        # declaration that is accidentally correct for one value is a worse failure
+        # than a rejected one.
+        if "directives" in entry and (isinstance(entry["directives"], bool)
+                                      or not isinstance(entry["directives"], int)):
             violations.append(Violation(
                 4, path, "entry %d directives must be an integer, got %s"
                 % (idx, type(entry["directives"]).__name__)))
@@ -922,14 +939,26 @@ _DIRECTIVE_RE = re.compile(r"\b(?:must|never|always|required|do not|shall)\b", r
 
 
 def count_directives(section_lines):
-    """How many normative directive lines this section carries.
+    """How many normative directives this section carries.
 
-    ONE PER LINE, not per occurrence: a line saying "MUST ... and MUST NOT ..." is
-    one instruction to a reader, and counting occurrences would make the number
-    move on rewording rather than on meaning.
+    PER OCCURRENCE, not per line -- and the per-line version was a real bypass I
+    wrote a test to codify (codex-adversarial review of 08f8aab0, blocker).
+    Counting lines meant `You MUST do X.` could become
+    `You MUST do X and MUST do Y.` with the count unchanged, so a directive could
+    be added under a dispositioned heading without the ratchet noticing. That
+    directly contradicts the guarantee the ratchet exists to make, and a test
+    asserting the bypass is worse than no test.
 
-    Blank lines, fenced code and the enforcement block itself are excluded -- a
-    directive quoted inside an example is not an instruction the rule is issuing.
+    The original rationale was that rewording should not move the number. That
+    trade was wrong: forcing a re-read when a directive is REWORDED is a cost
+    worth paying, while letting one be ADDED silently defeats the mechanism.
+    Measured on the real tree, the population barely moves either way (88 lines
+    vs 95 occurrences), so the bypass bought nothing.
+
+    Fenced code is excluded -- a directive quoted inside an example is not an
+    instruction the rule is issuing -- and that also excludes the enforcement
+    block's own JSON, which is pinned by
+    test_directive_count_excludes_the_enforcement_block_itself.
     """
     count = 0
     open_fence = None
@@ -944,8 +973,7 @@ def count_directives(section_lines):
             continue
         if open_fence is not None:
             continue
-        if _DIRECTIVE_RE.search(line):
-            count += 1
+        count += len(_DIRECTIVE_RE.findall(line))
     return count
 
 
@@ -965,7 +993,35 @@ def sections(text):
     """
     lines = text.splitlines()
     heads = []
+    open_fence = None
+    in_frontmatter = False
     for i, line in enumerate(lines):
+        # Frontmatter first. `# comment` inside a YAML block is not a heading, and
+        # treating it as one invented fake sections and could invent a fake marked
+        # clause (codex-adversarial review of 08f8aab0, major).
+        if i == 0 and line.strip() == "---":
+            in_frontmatter = True
+            continue
+        if in_frontmatter:
+            if line.strip() == "---":
+                in_frontmatter = False
+            continue
+        # A heading inside a fenced example is an example, not a boundary. Without
+        # this, a same-or-higher-level heading inside a fence TRUNCATED the
+        # dispositioned section, so directives after that example were omitted and
+        # a stale count stayed valid (same review, blocker). scan_blocks already
+        # tracked fences; this reader did not, and count_directives receives an
+        # already-sliced body so its own tracking cannot recover the loss.
+        m = _FENCE_RE.match(line)
+        if m:
+            char, length = m.group(1)[0], len(m.group(1))
+            if open_fence is None:
+                open_fence = (char, length)
+            elif char == open_fence[0] and length >= open_fence[1]:
+                open_fence = None
+            continue
+        if open_fence is not None:
+            continue
         m = _HEADING_RE.match(line)
         if m:
             heads.append((i, len(m.group(1)), line))

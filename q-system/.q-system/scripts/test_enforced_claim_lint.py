@@ -864,7 +864,9 @@ def _directive_rule(count_decl, body):
 def test_directive_count_control_matching_count_passes():
     """CONTROL. A declaration matching the section is clean. Without this the
     ratchet could be satisfied by a check that always disagrees."""
-    body = "You MUST do the thing.\nYou must never skip it.\n"
+    # One directive word per line, so the arithmetic is legible: "must never"
+    # would be TWO occurrences, which is correct but makes a fixture hard to read.
+    body = "You MUST do the thing.\nYou ALWAYS log it.\n"
     assert L.lint_text(_directive_rule(2, body), "fixture.md") == []
 
 
@@ -872,7 +874,7 @@ def test_directive_count_added_directive_trips_the_ratchet():
     """C12, THE POINT (finding-3). Coverage keyed to a heading is heading-level
     wearing a clause-level label: one disposition greens every directive beneath a
     broad heading. Adding a MUST must force a re-read rather than inherit."""
-    body = "You MUST do the thing.\nYou must never skip it.\nAnd you MUST also log it.\n"
+    body = "You MUST do the thing.\nYou ALWAYS log it.\nAnd you MUST also flush it.\n"
     v = L.lint_text(_directive_rule(2, body), "fixture.md")
     assert 12 in _codes(v)
     assert "carries 3" in " ".join(str(x) for x in v)
@@ -900,11 +902,64 @@ def test_directive_count_ignores_fenced_examples():
     assert L.lint_text(_directive_rule(1, body), "fixture.md") == []
 
 
-def test_directive_count_one_per_line_not_per_occurrence():
-    """A line saying MUST twice is one instruction to a reader. Counting
-    occurrences would move the number on rewording rather than on meaning."""
-    body = "You MUST do X and you MUST do Y.\n"
-    assert L.lint_text(_directive_rule(1, body), "fixture.md") == []
+def test_directive_added_to_an_existing_line_still_trips():
+    """THE BYPASS I CODIFIED. This test previously asserted the OPPOSITE - that a
+    line saying MUST twice counts once - which meant `You MUST do X.` could become
+    `You MUST do X and MUST do Y.` with the count unchanged. A directive could be
+    added under a dispositioned heading and the ratchet would not notice, which
+    contradicts the only guarantee it makes. A test asserting a bypass is worse
+    than no test."""
+    assert L.lint_text(_directive_rule(1, "You MUST do X.\n"), "fixture.md") == []
+    v = L.lint_text(_directive_rule(1, "You MUST do X and MUST do Y.\n"), "fixture.md")
+    assert 12 in _codes(v)
+
+
+def test_sections_ignores_headings_inside_fences():
+    """BLOCKER. A same-or-higher-level heading inside a fenced example TRUNCATED
+    the dispositioned section, so directives after the example were omitted and a
+    stale count stayed valid. count_directives receives an already-sliced body, so
+    its own fence tracking could not recover the loss."""
+    text = ("# Top (ENFORCED)\n\nYou MUST do A.\n\n"
+            "```markdown\n# Not A Real Heading\n```\n\n"
+            "You MUST do B.\n")
+    got = {L._HEADING_RE.match(h).group(2): L.count_directives(b)
+           for h, b in L.sections(text)}
+    assert list(got) == ["Top (ENFORCED)"], got
+    assert got["Top (ENFORCED)"] == 2, "directives after the example must still count"
+
+
+def test_sections_ignores_frontmatter_comments():
+    """MAJOR. A `#` line inside YAML frontmatter is not a heading; treating it as
+    one invented fake sections and could invent a fake marked clause."""
+    text = ("---\ndescription: d\n# a yaml comment (ENFORCED)\npaths:\n  - x\n---\n\n"
+            "# Real Rule (ENFORCED)\n\nYou MUST do A.\n")
+    heads = [L._HEADING_RE.match(h).group(2) for h, _ in L.sections(text)]
+    assert heads == ["Real Rule (ENFORCED)"], heads
+
+
+def test_directives_true_is_not_a_count():
+    """MINOR. bool is an int in Python, so `"directives": true` passed the type
+    check and then compared equal to an actual count of 1. A declaration that is
+    accidentally correct for one value is worse than a rejected one."""
+    block = ('[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n", '
+             '"directives": true}]')
+    v = L.lint_text(_rule(block=block, body="You MUST do X.\n"), "fixture.md")
+    assert 4 in _codes(v)
+
+
+def test_directive_count_excludes_the_enforcement_block_itself():
+    """The docstring claims the block is excluded; this is the check rather than
+    the claim. A `note` reading "you must never rely on this" sits inside the
+    ```json fence, so fence tracking already excludes it -- but a future change to
+    the block's fencing would silently start counting a rule's own disposition as
+    a directive it issues, and the count would move for no reason a reader can see.
+    """
+    text = ('# Cleanup Rule (ENFORCED)\n\nYou MUST do the thing.\n\n'
+            '<!-- enforcement -->\n```json\n'
+            '[{"clause": "Cleanup Rule", "status": "ADVISORY", '
+            '"note": "you must never rely on this"}]\n```\n')
+    heading, body = L.sections(text)[0]
+    assert L.count_directives(body) == 1
 
 
 def test_sections_are_level_aware():
