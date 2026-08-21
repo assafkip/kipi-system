@@ -164,3 +164,12 @@ def test_local_settings_is_not_in_the_reader(tmp_path):
     names = {p.name for p in audit.wired_config_files(tmp_path)}
     assert "settings.local.json" not in names
     assert "settings.json" in names
+
+
+if __name__ == "__main__":
+    # The capability gate runs declared tests as `python3 <path>`, so the file has
+    # to be executable on its own terms. Without this it was declared, discovered,
+    # and never actually run -- present-but-ungated, which is the same shape as a
+    # rule claiming ENFORCED with nothing behind it.
+    import pytest
+    raise SystemExit(pytest.main([__file__, "-q"]))

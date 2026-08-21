@@ -7,6 +7,8 @@ parent_prd: prd-enforced-claim-verification-2026-08-21
 allowed_files:
   - q-system/hooks/lessons-index.py
   - q-system/.q-system/scripts/test_lessons_index.py
+  - q-system/hooks/test/test-lessons-index.sh
+  - q-system/.q-system/capability-manifest.json
 disallowed_files: []
 required_checks:
   - python3 -m pytest q-system/.q-system/scripts/test_lessons_index.py -q

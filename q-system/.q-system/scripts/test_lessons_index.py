@@ -80,16 +80,76 @@ def test_payload_stays_under_the_measured_ceiling():
         % (len(body), len(body) // 4, L.PAYLOAD_CEILING_CHARS))
 
 
-def test_ordering_is_total_and_stable():
-    """The old key was date alone, so same-day lessons were ordered by filename.
-    Harmless now that everything is injected, and it WAS the silent eviction rule
-    while the cap existed. A total key means the output cannot change for reasons
-    nobody can see."""
-    titles = L.collect_titles(_LESSONS)
-    assert titles == L.collect_titles(_LESSONS)
+def test_ordering_is_total_and_breaks_ties_by_title(tmp_path):
+    """The old key was date alone, so SAME-DAY lessons were ordered by whatever
+    order the filenames happened to arrive in -- and while the cap existed, that
+    was the silent eviction rule.
+
+    This asserted `collect_titles() == collect_titles()` until 2026-08-21, which
+    is tautological: comparing a function to itself on an unchanged corpus passes
+    under the old date-only key too, so it proved nothing (codex review of
+    b5d96697, minor). It now builds same-day lessons whose FILENAME order is the
+    REVERSE of their title order, which is the only shape that can tell the two
+    keys apart.
+    """
+    lessons = tmp_path / "lessons"
+    lessons.mkdir()
+    # THE FIXTURE HAS TO DISCRIMINATE, and the first version did not: it used
+    # filenames a,b,c with titles Zebra,Yak,Xray, so filename order and
+    # title-descending order were IDENTICAL and both keys produced the same
+    # answer. Mutating the key back to date-only left the test green -- a test
+    # that cannot fail for the reason it claims, which is the thing this whole
+    # session keeps finding.
+    #
+    # Ascending filenames with ASCENDING titles is the discriminating shape.
+    # `sorted(reverse=True)` is stable and does NOT reverse ties, so a date-only
+    # key returns filename order (Xray, Yak, Zebra) while (date, title) descending
+    # returns Zebra, Yak, Xray. The two answers differ, so the assert can fail.
+    for name, title in (("a.md", "Xray"), ("b.md", "Yak"), ("c.md", "Zebra")):
+        (lessons / name).write_text(
+            "---\ntitle: %s\ndate: 2026-06-01\n---\n\nbody\n" % title)
+    got = L.collect_titles(lessons)
+    assert got == ["Zebra", "Yak", "Xray"], got
+
+
+def test_the_hook_and_the_test_read_the_same_collector():
+    """ANTI-DRIFT. main() used to carry its own copy of the collection loop, so
+    this test could have measured collect_titles while the hook shipped main's
+    version -- and the ceiling number would stop describing the real payload
+    without anything going red. Pins that main has exactly one caller for it and
+    no inline duplicate."""
+    src = _HOOK.read_text()
+    body = src[src.index("def main("):]
+    assert "collect_titles(" in body, "main must use the shared collector"
+    assert 'fm.get("date"' not in body, "main must not re-implement collection"
+
+
+def test_payload_matches_what_the_hook_emits():
+    """END TO END. Runs the hook as a subprocess and asserts the emitted payload
+    is byte-identical to what the ceiling test measures. A ceiling on a body the
+    hook does not actually send would be measuring the wrong thing."""
+    import json
+    import os
+    import subprocess
+    root = Path(__file__).resolve().parents[3]
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root))
+    r = subprocess.run([sys.executable, str(_HOOK)], capture_output=True,
+                       text=True, env=env)
+    assert r.returncode == 0
+    emitted = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert emitted == L.build_body(L.collect_titles(_LESSONS))
 
 
 def test_missing_lessons_dir_is_silent(tmp_path):
     """The fail-closed contract survives. This runs at SessionStart, so it must
     never block a session starting, whatever it finds."""
     assert L.collect_titles(tmp_path) == []
+
+
+if __name__ == "__main__":
+    # The capability gate runs declared tests as `python3 <path>`, so the file has
+    # to be executable on its own terms. Without this it was declared, discovered,
+    # and never actually run -- present-but-ungated, which is the same shape as a
+    # rule claiming ENFORCED with nothing behind it.
+    import pytest
+    raise SystemExit(pytest.main([__file__, "-q"]))

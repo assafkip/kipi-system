@@ -97,23 +97,15 @@ def main():
         lessons = get_qroot(project_dir) / "lessons"
         if not lessons.is_dir():
             sys.exit(0)
-        items = []
-        for f in sorted(lessons.glob("*.md")):
-            if f.name == "README.md":
-                continue
-            fm = frontmatter(f)
-            title = fm.get("title")
-            if title:
-                items.append((fm.get("date", ""), title))
-        if not items:
+        # ONE reader, called by both the hook and its test. main() used to carry
+        # its own copy of this loop, which is two readers free to drift: the
+        # ceiling test would have measured collect_titles while the hook shipped
+        # main's version, and the number in the test would stop describing the
+        # payload without anything going red. Same defect class the rest of this
+        # PRD kept finding (two heading regexes, two marker predicates).
+        titles = collect_titles(lessons)
+        if not titles:
             sys.exit(0)
-        # Sort by (date, title) so the order is TOTAL and stable. The old key was
-        # date alone, which left same-day lessons ordered by filename -- harmless
-        # while everything is injected, and the silent eviction rule while a cap
-        # existed. A total key means the output cannot change for reasons nobody
-        # can see.
-        items.sort(key=lambda x: (x[0], x[1]), reverse=True)
-        titles = [t for _, t in items]
         body = build_body(titles)
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": body}}))
         sys.exit(0)

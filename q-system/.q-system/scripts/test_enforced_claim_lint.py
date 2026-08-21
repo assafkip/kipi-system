@@ -1210,3 +1210,12 @@ def test_unterminated_fence_is_refused():
             "<!-- enforcement -->\n```json\n[]\n")
     v = L.lint_text(text, "fixture.md")
     assert 4 in _codes(v)
+
+
+if __name__ == "__main__":
+    # The capability gate runs declared tests as `python3 <path>`, so the file has
+    # to be executable on its own terms. Without this it was declared, discovered,
+    # and never actually run -- present-but-ungated, which is the same shape as a
+    # rule claiming ENFORCED with nothing behind it.
+    import pytest
+    raise SystemExit(pytest.main([__file__, "-q"]))
