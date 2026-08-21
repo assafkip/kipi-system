@@ -448,42 +448,110 @@ def contained(root, rel):
     return target
 
 
-_VAR_PREFIX = re.compile(r"^\$\{?CLAUDE_PROJECT_DIR\}?/")
+_PROJECT_VAR = re.compile(r"^\$\{?CLAUDE_PROJECT_DIR\}?/")
+_PLUGIN_VAR = re.compile(r"^\$\{?CLAUDE_PLUGIN_ROOT\}?/")
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Splitting on shell operators so each segment has ONE program in position 0.
+_SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n")
+# A program that RUNS its script argument. Anything else (test, echo, cat, [)
+# merely mentions the path, and mentioning is what this whole check refuses.
+INTERPRETERS = frozenset({"python", "python2", "python3", "bash", "sh", "zsh",
+                          "node", "ruby", "perl", "uv", "uvx"})
+
+# The only files whose `hooks` object actually wires anything in this fleet.
+# Without this allowlist ANY in-repo JSON carrying a hooks-shaped object -- a
+# fabricated docs/fake-hooks.json, a copied template -- satisfied the check while
+# never running (codex review of 386bfedd, blocker).
+_PLUGIN_HOOKS_RE = re.compile(r"^plugins/[^/]+/hooks/hooks\.json$")
+_SETTINGS_CONFIGS = (".claude/settings.json", "settings-template.json")
 
 
-def command_targets(command):
+def is_wiring_config(config_rel):
+    """Is this path a file that actually wires hooks?
+
+    `.claude/settings.json` is what Claude Code loads. `settings-template.json` is
+    the fleet ship path -- `kipi update` rebuilds every instance's settings.json
+    from it, and `skill-hook-pairing.md` requires a hook in BOTH, so a rule may
+    honestly name either. Plugin `hooks/hooks.json` files are loaded per plugin.
+    Nothing else wires anything, whatever its shape.
+    """
+    return config_rel in _SETTINGS_CONFIGS or bool(_PLUGIN_HOOKS_RE.match(config_rel))
+
+
+def plugin_root_for(config_rel):
+    """Repo-relative dir that ${CLAUDE_PLUGIN_ROOT} means inside this config."""
+    if _PLUGIN_HOOKS_RE.match(config_rel):
+        return config_rel[:-len("/hooks/hooks.json")]
+    return None
+
+
+def command_targets(command, plugin_root=None):
     """Repo-relative script paths a hook command actually INVOKES.
 
-    Tokenized, then each token normalized by stripping a `$CLAUDE_PROJECT_DIR/`
-    (or `${...}/`) prefix and a leading `./`. Comparison downstream is EQUALITY on
-    the normalized token.
+    Two rounds of review pushed this from "any substring of the file" to "any
+    token of a command" to what it is now: the token in COMMAND POSITION.
 
-    This replaces `exec_rel in config_text`, which both reviews called a blocker
-    and which was one: a bare substring test passes when the path appears in an
-    unrelated JSON value, in prose, or inside a LONGER path -- `real-lint.py.bak`,
-    `real-lint.py.disabled`, `archive/q-system/scripts/real-lint.py` all contain
-    the claimed path and none of them is the claimed file running.
+    Treating every token as a target was still wrong (codex review of 386bfedd,
+    blocker), because all three of these mention the script and none of them runs
+    it:
+        test -f "$CLAUDE_PROJECT_DIR/.../lint.py" && python3 other.py
+        echo "$CLAUDE_PROJECT_DIR/.../lint.py"
+        cat < "$CLAUDE_PROJECT_DIR/.../lint.py"
+    So the command is split on shell operators, each segment's program is read
+    from position 0, and a path counts only if that program is an INTERPRETER
+    running it, or if the path IS the program. `test -f X && python3 X` -- the
+    real shape in this repo -- still matches, via its second segment.
+
+    Both documented placeholders are resolved: ${CLAUDE_PROJECT_DIR} against the
+    repo root, and ${CLAUDE_PLUGIN_ROOT} against the plugin that owns the config.
+    Without the second, no plugin-wired script could ever be substantiated, and
+    every plugin hook in this repo uses it (verified by reading them).
     """
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        tokens = command.split()
     out = set()
-    for token in tokens:
-        token = _VAR_PREFIX.sub("", token)
-        if token.startswith("./"):
-            token = token[2:]
-        out.add(token)
+    for segment in _SEGMENT_SPLIT.split(command):
+        try:
+            tokens = shlex.split(segment)
+        except ValueError:
+            tokens = segment.split()
+        # Drop leading `VAR=value` env assignments; the program follows them.
+        while tokens and _ASSIGNMENT.match(tokens[0]):
+            tokens = tokens[1:]
+        if not tokens:
+            continue
+        program = _normalize_token(tokens[0], plugin_root)
+        if os.path.basename(program) in INTERPRETERS:
+            for token in tokens[1:]:
+                if token.startswith("-"):
+                    continue
+                out.add(_normalize_token(token, plugin_root))
+                break
+        else:
+            out.add(program)
     return out
 
 
-def wired_commands(config_path):
-    """Every hook COMMAND string in a config, read structurally rather than as text.
+def _normalize_token(token, plugin_root):
+    token = _PROJECT_VAR.sub("", token)
+    if plugin_root:
+        token = _PLUGIN_VAR.sub(plugin_root + "/", token)
+    if token.startswith("./"):
+        token = token[2:]
+    return token
 
-    Only `hooks.<Event>[].hooks[].command` counts. Reading the file as text let a
-    path in a description, a note, or any unrelated JSON value read as wiring.
-    A malformed config yields no commands, so a claim resting on it fails rather
-    than passing on a parse error.
+
+def wired_commands(config_path):
+    """Every hook invocation in a config, as argv-ish strings, read structurally.
+
+    Only `hooks.<Event>[].hooks[]` entries with `type == "command"` count, and the
+    exec form (`command` plus an `args` list) is joined so a legitimate handler
+    written that way is not rejected (codex review of 386bfedd, major). Requiring
+    the type means a non-command handler carrying a stray `command` field does not
+    read as wiring.
+
+    Reading the file as TEXT is what this replaced: a path in a description, a
+    note, or any unrelated JSON value counted as wiring. A malformed config yields
+    no commands, so a claim resting on one fails rather than passing on a parse
+    error.
     """
     try:
         data = json.loads(config_path.read_text())
@@ -500,8 +568,15 @@ def wired_commands(config_path):
             if not isinstance(matcher, dict):
                 continue
             for hook in matcher.get("hooks") or []:
-                if isinstance(hook, dict) and isinstance(hook.get("command"), str):
-                    out.append(hook["command"])
+                if not isinstance(hook, dict) or hook.get("type") != "command":
+                    continue
+                command = hook.get("command")
+                if not isinstance(command, str):
+                    continue
+                args = hook.get("args")
+                if isinstance(args, list) and all(isinstance(a, str) for a in args):
+                    command = " ".join([command] + [shlex.quote(a) for a in args])
+                out.append(command)
     return out
 
 
@@ -575,6 +650,15 @@ def check_exec(entries, path):
                 5, path,
                 "entry %d exec %r does not exist at that path" % (idx, exec_rel)))
             continue
+        if not is_wiring_config(config_rel):
+            violations.append(Violation(
+                6, path,
+                "entry %d config %r is not a file that wires hooks. Naming any "
+                "JSON with a hooks-shaped object let a fabricated or copied file "
+                "substantiate a claim it never runs. Use .claude/settings.json, "
+                "settings-template.json, or plugins/<name>/hooks/hooks.json."
+                % (idx, config_rel)))
+            continue
         config_path = contained(root, config_rel)
         if config_path is None:
             violations.append(Violation(
@@ -587,7 +671,8 @@ def check_exec(entries, path):
                 "entry %d config %r does not exist" % (idx, config_rel)))
             continue
         commands = wired_commands(config_path)
-        if not any(exec_rel in command_targets(cmd) for cmd in commands):
+        plugin_root = plugin_root_for(config_rel)
+        if not any(exec_rel in command_targets(cmd, plugin_root) for cmd in commands):
             violations.append(Violation(
                 6, path,
                 "entry %d claims %s but no hook command in %s INVOKES %r -- it is "

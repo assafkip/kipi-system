@@ -559,6 +559,104 @@ def test_non_string_fields_are_a_violation_not_a_traceback():
         assert 4 in _codes(v), bad
 
 
+# --- named_config: command POSITION, real placeholders, real config files --------
+
+def test_named_config_mention_is_not_invocation():
+    """BLOCKER. Every token was treated as an invoked target, so all three of these
+    passed while the named script never ran."""
+    E = "q-system/scripts/lint.py"
+    for cmd in ('test -f "$CLAUDE_PROJECT_DIR/q-system/scripts/lint.py" && python3 other.py',
+                'echo "$CLAUDE_PROJECT_DIR/q-system/scripts/lint.py"',
+                'cat < "$CLAUDE_PROJECT_DIR/q-system/scripts/lint.py"'):
+        assert E not in L.command_targets(cmd), cmd
+
+
+def test_named_config_real_invocation_shapes_match():
+    """CONTROL, from the shapes actually present in this repo's configs, not
+    invented ones. If these stopped matching, every honest claim would break."""
+    E = "q-system/scripts/lint.py"
+    for cmd in ('python3 "$CLAUDE_PROJECT_DIR/q-system/scripts/lint.py"',
+                'python3 "${CLAUDE_PROJECT_DIR}/q-system/scripts/lint.py"',
+                'test -f "$CLAUDE_PROJECT_DIR/q-system/scripts/lint.py" && '
+                'python3 "$CLAUDE_PROJECT_DIR/q-system/scripts/lint.py"',
+                'python3 "$CLAUDE_PROJECT_DIR/q-system/scripts/lint.py" 2>/dev/null || true',
+                'KIPI_X=1 python3 "$CLAUDE_PROJECT_DIR/q-system/scripts/lint.py"'):
+        assert E in L.command_targets(cmd), cmd
+
+
+def test_named_config_plugin_root_is_resolved():
+    """MAJOR. Every plugin hook in this repo invokes through ${CLAUDE_PLUGIN_ROOT}
+    (verified by reading them), so without this substitution no plugin-wired
+    script could ever be substantiated."""
+    cmd = 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/dogfood_gate.py"'
+    targets = L.command_targets(cmd, plugin_root="plugins/kipi-design")
+    assert "plugins/kipi-design/hooks/dogfood_gate.py" in targets
+    assert L.plugin_root_for("plugins/kipi-design/hooks/hooks.json") == "plugins/kipi-design"
+    assert L.plugin_root_for(".claude/settings.json") is None
+
+
+def test_named_config_only_real_wiring_files_count(tmp_path):
+    """BLOCKER. Any in-repo JSON with a hooks-shaped object satisfied the check.
+    A fabricated docs/fake-hooks.json never runs."""
+    assert L.is_wiring_config(".claude/settings.json")
+    assert L.is_wiring_config("settings-template.json")
+    assert L.is_wiring_config("plugins/kipi-core/hooks/hooks.json")
+    assert not L.is_wiring_config("docs/fake-hooks.json")
+    assert not L.is_wiring_config("plugins/kipi-core/hooks/other.json")
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    (tmp_path / "q-system").mkdir()
+    (tmp_path / "q-system" / "lint.py").write_text("x")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "fake-hooks.json").write_text(json.dumps({"hooks": {"PostToolUse": [
+        {"matcher": "Edit", "hooks": [{"type": "command",
+                                       "command": 'python3 "$CLAUDE_PROJECT_DIR/q-system/lint.py"'}]}]}}))
+    rule = rules / "fixture.md"
+    rule.write_text(_rule(block=json.dumps([{"clause": "Cleanup Rule", "status": "ENFORCED",
+                                             "exec": "q-system/lint.py",
+                                             "config": "docs/fake-hooks.json"}])))
+    v = _lint_in(tmp_path, rule)
+    assert 6 in _codes(v)
+    assert "not a file that wires hooks" in " ".join(str(x) for x in v)
+
+
+def test_named_config_exec_form_args_are_read():
+    """MAJOR. A legitimate handler using command + args was rejected because only
+    `command` was read; and a non-command handler carrying a stray `command` field
+    was accepted. Both are wrong in opposite directions."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "settings.json"
+        p.write_text(json.dumps({"hooks": {"PostToolUse": [{"matcher": "Edit", "hooks": [
+            {"type": "command", "command": "python3",
+             "args": ["${CLAUDE_PROJECT_DIR}/q-system/scripts/lint.py"]},
+            {"type": "notyet", "command": 'python3 "$CLAUDE_PROJECT_DIR/ghost.py"'},
+        ]}]}}))
+        cmds = L.wired_commands(p)
+        joined = " ".join(cmds)
+        assert "lint.py" in joined, "exec-form args must be read"
+        assert "ghost.py" not in joined, "a non-command handler is not wiring"
+
+
+def test_named_config_against_this_repos_real_wiring():
+    """GROUNDING. Run the matcher over this repo's ACTUAL configs and assert it
+    recognizes real, currently-wired scripts. A fixture I invent tests my
+    assumption; the producer's own files test the system."""
+    root = Path(__file__).resolve().parents[3]
+    cfg = root / ".claude" / "settings.json"
+    targets = set()
+    for cmd in L.wired_commands(cfg):
+        targets |= L.command_targets(cmd, None)
+    assert "q-system/hooks/lessons-index.py" in targets
+    assert "q-system/.q-system/token-guard.py" in targets
+    plug = root / "plugins" / "kipi-design" / "hooks" / "hooks.json"
+    if plug.is_file():
+        ptargets = set()
+        for cmd in L.wired_commands(plug):
+            ptargets |= L.command_targets(cmd, "plugins/kipi-design")
+        assert any(t.startswith("plugins/kipi-design/") for t in ptargets), ptargets
+
+
 # --- self-scoping ---------------------------------------------------------------
 
 def test_scope_only_rule_markdown():
