@@ -1,7 +1,7 @@
 ---
 id: enforcement-exec-swap-residue-documented
 title: Document that the basename ratchet refuses enforcer swaps, in the lint docstring and the rule text
-status: open
+status: closed
 priority: p1
 parent_prd: prd-enforced-claim-verification-2026-08-21
 allowed_files:
@@ -29,4 +29,19 @@ Parent PRD: `.prd-os/prds/prd-enforced-claim-verification-2026-08-21.md`
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Document that the basename ratchet refuses enforcer swaps, in the lint docstring and the rule text
+- [x] Document that the basename ratchet refuses enforcer swaps, in the lint docstring and the rule text
+
+## Amendments
+
+### 2026-08-21T19:19:49Z
+Reason: Make the bypass_check case-insensitive (grep -q -> grep -qi). The docstring writes the phrase in caps for emphasis and the check was case-sensitive, so it failed on prose that satisfies its intent exactly. Rewording the docstring to match a grep is the antipattern the PRD template names outright: 'A check that shapes the code to fit the check is worse than no check.' Fixing the check is the correct direction.
+
+Before:
+- allowed_files: ['q-system/.q-system/scripts/enforced-claim-lint.py']
+- required_checks: ["grep -q 'ratchet' q-system/.q-system/scripts/enforced-claim-lint.py"]
+- disallowed_files: []
+
+After:
+- allowed_files: ['q-system/.q-system/scripts/enforced-claim-lint.py']
+- required_checks: ["grep -q 'ratchet' q-system/.q-system/scripts/enforced-claim-lint.py"]
+- disallowed_files: []

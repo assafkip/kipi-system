@@ -1,9 +1,9 @@
 ---
 id: prd-enforced-claim-verification-2026-08-21
 title: Enforced Claim Verification
-status: approved
+status: archived
 created_at: 2026-08-21T17:13:00Z
-updated_at: 2026-08-21T17:22:54Z
+updated_at: 2026-08-21T19:23:14Z
 owner: sana
 reviewers: []
 findings_path: .prd-os/findings/prd-enforced-claim-verification-2026-08-21-findings.jsonl
