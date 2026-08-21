@@ -38,8 +38,19 @@ from pathlib import Path
 ROOT, LINT = sys.argv[1], sys.argv[2]
 SRC = Path(LINT).read_text()
 
-# DERIVED, not typed: every condition the lint can actually emit.
-DERIVED = sorted({int(m.group(1)) for m in re.finditer(r"Violation\(\s*(\d+)\s*,", SRC)})
+# DERIVED FROM THE LINT'S OWN REGISTRY, by importing it -- not by scraping the
+# source with a regex. A regex is not a derivation (codex-adversarial review of
+# 1bbfe1c2, blocker): a condition passed as a variable, by keyword, through a
+# helper or via an alias is invisible to it, so a new refusal could ship with no
+# fixture and this matrix would stay green; and a comment or dead code containing
+# the same text would invent a condition that does not exist. The registry is the
+# authority, and Violation() validates against it at construction.
+import importlib.util
+sys.dont_write_bytecode = True
+_spec = importlib.util.spec_from_file_location("_lint", LINT)
+_lint = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_lint)
+DERIVED = sorted(_lint.CONDITIONS)
 
 DETECTOR = "#!/usr/bin/env python3\nimport sys\nprint('x')\nsys.exit(0)\n"
 BLOCKER = "#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n"
@@ -91,7 +102,8 @@ CASES = {
     0: dict(block=json.dumps([entry()]),
             baseline={"initial_count": 0, "uncovered_markers": ["ghost.md::gone"]},
             why="baseline entry that is no longer an undispositioned marker"),
-    1: dict(block=None, why="a marker with no disposition at all"),
+    1: dict(block=None, repair=dict(block=json.dumps([entry(directives=1)])),
+            why="a marker with no disposition at all"),
     2: dict(block=json.dumps([entry(clause="Cleanup Rule"),
                               entry(clause="cleanup   rule")]),
             why="two entries colliding onto one clause key"),
@@ -104,17 +116,37 @@ CASES = {
     # so C1 is expected alongside them.
     3: dict(block=json.dumps([entry(clause="A Heading That Is Not There")]),
             also=[1], why="a disposition matching no marked heading"),
-    4: dict(block='[{"clause": "Cleanup Rule",}]', also=[1], why="malformed JSON"),
+    # C4 is one NUMBER covering many independent checks, and one fixture for it
+    # proved only one of them (codex-adversarial review of 1bbfe1c2, major).
+    # Several fixtures per condition is the honest partial answer: it does not
+    # prove per-emission-site coverage, and the limit is stated at the end.
+    4: [dict(block='[{"clause": "Cleanup Rule",}]', also=[1], why="malformed JSON"),
+        dict(block='{"clause": "Cleanup Rule", "status": "ADVISORY"}', also=[1],
+             why="a bare object, not an array"),
+        dict(block=json.dumps([entry(skip=True)]), also=[1],
+             why="an unknown key, where a future skip:true would arrive"),
+        dict(block=json.dumps([{"clause": "Cleanup Rule", "status": "NOPE"}]), also=[1],
+             why="a status outside the vocabulary"),
+        dict(block=json.dumps([{"clause": "Cleanup Rule"}]), also=[1],
+             why="a missing required key"),
+        dict(block=json.dumps([entry(directives="four")]), also=[1],
+             why="a field of the wrong type"),
+        dict(block=json.dumps([entry()]), extra="\n<!-- enforcement -->\nnot a fence\n",
+             also=[1], why="a second marker with no parseable fence")],
     5: dict(block=json.dumps([entry(exec="q-system/scripts/totally-imaginary-lint.py")]),
+            repair=dict(block=json.dumps([entry(directives=1)])),
             why="THE BRIEF'S CASE: ENFORCED naming a fictional executable"),
     6: dict(block=json.dumps([entry()]), cmd="python3 other.py",
+            repair=dict(cmd=None, block=json.dumps([entry(directives=1)])),
             why="the named config invokes something else, so the claim is an orphan"),
     7: dict(block=json.dumps([entry()]),
             cmd='python3 "$CLAUDE_PROJECT_DIR/%s" || true' % EXEC_REL,
+            repair=dict(cmd=None, block=json.dumps([entry(directives=1)])),
             why="wired but neutered, so it can never block"),
     8: dict(block=json.dumps([entry()]), src=DETECTOR,
             why="ENFORCED naming a script that exits 0 on every path"),
     9: dict(block=json.dumps([entry(test="q-system/scripts/test_ghost.py")]),
+            repair=dict(block=json.dumps([entry(directives=1)])),
             why="ENFORCED whose named test receipt does not exist"),
     10: dict(block=json.dumps([{"clause": "Cleanup Rule", "status": "DETECTED",
                                 "exec": EXEC_REL, "config": ".claude/settings.json"}]),
@@ -145,26 +177,53 @@ if stale:
     sys.exit(1)
 
 failures = []
+checked = 0
 for cond in DERIVED:
-    spec = dict(CASES[cond])
-    why = spec.pop("why")
-    expected = {cond} | set(spec.pop("also", []))
-    with tempfile.TemporaryDirectory() as d:
-        tree(d, **spec)
-        env = dict(os.environ, CLAUDE_PROJECT_DIR=d)
-        r = subprocess.run([sys.executable, LINT, "--all"],
-                           capture_output=True, text=True, env=env)
-        tag = "[C%d]" % cond
-        seen = {int(x) for x in re.findall(r"\[C(\d+)\]", r.stderr)}
-        if r.returncode == 0:
-            failures.append("C%d (%s): expected a violation, got exit 0" % (cond, why))
-        elif seen != expected:
-            failures.append("C%d (%s): expected exactly %s, got %s. A case that "
-                            "fires for a different reason is a case passing for "
-                            "the wrong reason."
-                            % (cond, why, sorted(expected), sorted(seen)))
-        else:
-            print("  RED as required  %-4s %s" % (tag, why))
+    variants = CASES[cond]
+    if isinstance(variants, dict):
+        variants = [variants]
+    for spec in variants:
+        spec = dict(spec)
+        why = spec.pop("why")
+        expected = {cond} | set(spec.pop("also", []))
+        repair = spec.pop("repair", None)
+        with tempfile.TemporaryDirectory() as d:
+            tree(d, **spec)
+            env = dict(os.environ, CLAUDE_PROJECT_DIR=d)
+            r = subprocess.run([sys.executable, LINT, "--all"],
+                               capture_output=True, text=True, env=env)
+            seen = {int(x) for x in re.findall(r"\[C(\d+)\]", r.stderr)}
+            if r.returncode == 0:
+                failures.append("C%d (%s): expected a violation, got exit 0" % (cond, why))
+                continue
+            if seen != expected:
+                failures.append("C%d (%s): expected exactly %s, got %s. A case that "
+                                "fires for a different reason is a case passing for "
+                                "the wrong reason."
+                                % (cond, why, sorted(expected), sorted(seen)))
+                continue
+
+        # THE REPAIRED TWIN. Proves CAUSALITY: the fixture is red because of the
+        # one thing it changed, not because the fixture is malformed in some other
+        # way. Without it a case can be red for a reason nobody checked -- the
+        # same "passing for the wrong reason" failure, inverted (codex-adversarial
+        # review of 1bbfe1c2, major).
+        if repair is not None:
+            with tempfile.TemporaryDirectory() as d2:
+                fixed = dict(spec)
+                fixed.update(repair)
+                tree(d2, **fixed)
+                env = dict(os.environ, CLAUDE_PROJECT_DIR=d2)
+                r2 = subprocess.run([sys.executable, LINT, "--all"],
+                                    capture_output=True, text=True, env=env)
+                if r2.returncode != 0:
+                    failures.append("C%d (%s): the REPAIRED twin still fails, so the "
+                                    "fixture is red for some other reason too: %s"
+                                    % (cond, why, r2.stderr.strip()[:200]))
+                    continue
+        checked += 1
+        print("  RED as required  %-5s %s%s"
+              % ("[C%d]" % cond, why, "  (+repaired twin passes)" if repair else ""))
 
 # THE CONTROL. Without it every line above could be satisfied by a lint that
 # refuses all input, which is a matrix that cannot tell a gate from a wall.
@@ -185,6 +244,9 @@ if failures:
         print("  - %s" % f)
     sys.exit(1)
 
-print("\nPASS: %d derived condition(s), each with a fixture that fires, plus the "
-      "honest-rule control." % len(DERIVED))
+print("\nPASS: %d registered condition(s), %d fixture(s), each firing for exactly "
+      "its declared reason, plus the honest-rule control." % (len(DERIVED), checked))
+print("LIMIT, stated: coverage is per CONDITION NUMBER, not per emission site. A "
+      "number like C4 fronts several independent checks; several fixtures raise "
+      "confidence but do not prove every branch is reached.")
 PYEOF

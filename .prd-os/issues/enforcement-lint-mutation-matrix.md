@@ -30,4 +30,4 @@ Parent PRD: `.prd-os/prds/prd-enforced-claim-verification-2026-08-21.md`
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] One enumerated mutation per blocking condition, each shown red before the tree is shown green
+- [x] One enumerated mutation per blocking condition, each shown red before the tree is shown green

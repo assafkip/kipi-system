@@ -114,11 +114,45 @@ _HEADING_RE = re.compile(r"^[ ]{0,3}(#{1,6})[ \t]+(.*)$")
 MARKER = "(ENFORCED"
 
 
+
+# THE CONDITION REGISTRY: the single machine-readable list of what this lint can
+# refuse, and the authority the mutation matrix derives its cases from.
+#
+# It exists because scraping `Violation(N, ...)` out of the source with a regex is
+# NOT a derivation (codex-adversarial review of 1bbfe1c2, blocker): a condition
+# passed as a variable, by keyword, through a helper, or via an alias is invisible
+# to the scrape, so a new refusal could ship with no fixture and the matrix would
+# stay green. Comments and dead code containing the same text invent conditions
+# that do not exist. Both directions are wrong.
+#
+# Violation() VALIDATES against this table, so an unregistered code raises where it
+# is constructed rather than sliding into stderr.
+CONDITIONS = {
+    0: "structural: the baseline or the file itself could not be trusted",
+    1: "an ENFORCED-marked heading has no disposition entry",
+    2: "clause keys collide, or normalize to empty",
+    3: "a disposition entry matches no marked heading",
+    4: "the enforcement block violates the schema",
+    5: "the named executable is missing, not a path, or wrongly named",
+    6: "the executable is not invoked by the config the entry names",
+    7: "ENFORCED, but the wired command swallows the failure",
+    8: "ENFORCED, but the executable has no non-zero exit path",
+    9: "ENFORCED, but the named test receipt is missing or unrelated",
+    10: "DETECTED, but the executable can actually block",
+    11: "ADVISORY under a live marker without an open removal ticket",
+    12: "the declared directive count does not match the section",
+}
+
 class Violation:
     """One blocking finding. Carries the condition number so the mutation matrix
     can assert on a stable id rather than on message wording, which drifts."""
 
     def __init__(self, condition, path, detail, clause=None):
+        if condition not in CONDITIONS:
+            raise ValueError(
+                "condition %r is not in CONDITIONS. Register it: the mutation "
+                "matrix derives its cases from that table, so an unregistered "
+                "refusal would ship with no fixture." % (condition,))
         self.condition = condition
         self.path = path
         self.detail = detail
