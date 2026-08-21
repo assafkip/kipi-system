@@ -1330,3 +1330,105 @@ if __name__ == "__main__":
     # rule claiming ENFORCED with nothing behind it.
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# --- C11 in a CLEAN CHECKOUT (ASK-965, 2026-08-21) ------------------------------
+#
+# The fail-closed branch above was right in polarity and wrong in blast radius.
+# `.prd-os/spillover.jsonl` is gitignored, so "no ledger readable" is not a corner
+# case -- it is every fresh clone, every CI run and every new instance. With the
+# ledger as the only input, `--all` exited 1 there, which took out BOTH the
+# lefthook pre-commit gate and `kipi check`: a fresh clone of this public repo
+# could not commit at all. Measured by cloning to a scratch dir: rc=1 without the
+# ledger, rc=0 with it, nothing else changed.
+#
+# So a small TRACKED projection carries ids and statuses (no descriptions -- this
+# repo is public) for the refs rules actually name. These tests pin both
+# directions: the clean checkout passes, and every way of lying to it still fails.
+
+def _run_all(tmp_path):
+    import subprocess
+    root = Path(__file__).resolve().parents[3]
+    lint = root / "q-system" / ".q-system" / "scripts" / "enforced-claim-lint.py"
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(tmp_path))
+    return subprocess.run([sys.executable, str(lint), "--all"],
+                          capture_output=True, text=True, env=env)
+
+
+def _advisory_tree(tmp_path, ref="sp-abc123"):
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    (rules / "fixture.md").write_text(_rule(block=json.dumps([{
+        "clause": "Cleanup Rule", "status": "ADVISORY", "note": "n",
+        "marker_removal_ref": ref}])))
+    (tmp_path / ".prd-os").mkdir(exist_ok=True)
+    return tmp_path / ".prd-os"
+
+
+def _projection(prd_dir, refs):
+    (prd_dir / "marker-removal-refs.json").write_text(
+        json.dumps({"_comment": "test fixture", "refs": refs}) + "\n")
+
+
+def test_clean_checkout_with_tracked_projection_passes(tmp_path):
+    """THE REGRESSION. No ledger (a fresh clone) + a projection recording the ref
+    OPEN must pass. Paired with the three refusals below, so it cannot pass by the
+    lint simply accepting everything once a projection exists."""
+    prd = _advisory_tree(tmp_path)
+    _projection(prd, {"sp-abc123": "open"})
+    r = _run_all(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_clean_checkout_projection_recording_closed_is_refused(tmp_path):
+    prd = _advisory_tree(tmp_path)
+    _projection(prd, {"sp-abc123": "closed"})
+    r = _run_all(tmp_path)
+    assert r.returncode == 1
+    assert "does not record as an OPEN" in r.stderr
+
+
+def test_clean_checkout_projection_omitting_the_ref_is_refused(tmp_path):
+    """An invented sp-deadbeef must not become verifiable just because SOME
+    projection exists. This is the branch that keeps fail-closed honest."""
+    prd = _advisory_tree(tmp_path, ref="sp-deadbeef")
+    _projection(prd, {"sp-abc123": "open"})
+    r = _run_all(tmp_path)
+    assert r.returncode == 1
+    assert "does not record as an OPEN" in r.stderr
+
+
+def test_stale_projection_is_caught_where_the_ledger_exists(tmp_path):
+    """DRIFT. The projection is a reading of the ledger, not a claim about it, so
+    where both exist they must agree. This is what stops someone hand-editing the
+    tracked file into agreement and committing it: the authoring machine has the
+    ledger, and lefthook runs --all there."""
+    prd = _advisory_tree(tmp_path)
+    (prd / "spillover.jsonl").write_text(
+        json.dumps({"id": "sp-abc123", "status": "open"}) + "\n")
+    _projection(prd, {"sp-abc123": "closed"})
+    r = _run_all(tmp_path)
+    assert r.returncode == 1
+    assert "stale" in r.stderr
+
+
+def test_sync_marker_refs_generates_from_the_ledger_and_refuses_without_it(tmp_path):
+    """The producer. Refusing without a ledger matters: writing a projection from
+    no source would manufacture the very fact it is supposed to carry."""
+    import subprocess
+    prd = _advisory_tree(tmp_path)
+    root = Path(__file__).resolve().parents[3]
+    lint = root / "q-system" / ".q-system" / "scripts" / "enforced-claim-lint.py"
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(tmp_path))
+    cmd = [sys.executable, str(lint), "--sync-marker-refs"]
+
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    assert r.returncode == 1, "no ledger must refuse, not write an empty projection"
+    assert not (prd / "marker-removal-refs.json").exists()
+
+    (prd / "spillover.jsonl").write_text(
+        json.dumps({"id": "sp-abc123", "status": "open"}) + "\n")
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    written = json.loads((prd / "marker-removal-refs.json").read_text())
+    assert written["refs"] == {"sp-abc123": "open"}

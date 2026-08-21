@@ -768,6 +768,62 @@ def wired_commands(config_path):
 SPILLOVER_REL = os.path.join(".prd-os", "spillover.jsonl")
 _SPILLOVER_ID_RE = re.compile(r"^sp-[0-9a-f]{6,}$")
 
+# The TRACKED half of the ticket check. `.gitignore` carries `*.jsonl`, so
+# spillover.jsonl exists only in a working copy that has run prd-os -- never in a
+# fresh clone, never in CI, never on a new instance.
+#
+# That mattered because the openness check fails CLOSED (deliberately: review of
+# 53a10d54 measured that failing open meant it never fired anywhere, since the
+# ledger is absent from HEAD). Fail-closed plus an always-absent input made the
+# whole-tree pass exit 1 in EVERY clean checkout: `kipi check` red, and the
+# lefthook pre-commit gate red, so a fresh clone of this public repo could not
+# commit at all. Measured 2026-08-21 by cloning to a scratch dir and running
+# `--all` -- rc=1 without the ledger, rc=0 with it, nothing else changed.
+#
+# So the ref resolves against a SMALL TRACKED PROJECTION when the ledger is
+# absent: ids and statuses only, no descriptions, because this repo is public and
+# spillover rows carry free-text `description`. Same reasoning that made
+# `.prd-os/receipts.jsonl` a tracked by-path exception in lefthook.yml.
+#
+# Scoped to refs a rule actually names (currently one), NOT all ~936 open items:
+# a projection that churned on every spillover add would go stale constantly, and
+# a drift gate that is always red is a gate someone switches off.
+MARKER_REFS_REL = os.path.join(".prd-os", "marker-removal-refs.json")
+
+
+def _tracked_marker_refs(root):
+    """The committed ref -> status projection, or None when unreadable.
+
+    None and {} are different answers and the caller depends on the difference:
+    None means "no projection to check against" (refuse), {} means "a projection
+    exists and does not list this ref" (also refuse, but for a nameable reason).
+    """
+    if root is None:
+        return None
+    try:
+        with open(os.path.join(str(root), MARKER_REFS_REL)) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    refs = data.get("refs")
+    if not isinstance(refs, dict):
+        return None
+    return {k: v for k, v in refs.items() if isinstance(v, str)}
+
+
+def spillover_ledger_present(root):
+    """Whether the live ledger is readable at all.
+
+    Separate from open_spillover_ids() on purpose: that function returns an empty
+    set both for "no ledger" and for "a ledger with nothing open", and the ticket
+    check has to tell those apart.
+    """
+    if root is None:
+        return False
+    return os.path.isfile(os.path.join(str(root), SPILLOVER_REL))
+
 
 def _all_mode():
     """True when running the whole-tree pass. Kept as a function so the split
@@ -849,8 +905,34 @@ def _advisory_under_marker(entry, idx, path, root):
     # that gates the commit anyway.
     if root is None or not _all_mode():
         return []
-    open_ids = open_spillover_ids(root)
-    if not open_ids:
+    tracked = _tracked_marker_refs(root)
+    if spillover_ledger_present(root):
+        open_ids = open_spillover_ids(root)
+        # DRIFT, checked only where the live ledger exists -- which is the machine
+        # that authors commits, so the projection cannot be hand-edited into
+        # agreement and then committed. A fresh clone has no ledger and therefore
+        # cannot make this comparison; that is the honest boundary of the
+        # projection, stated rather than papered over.
+        if tracked is not None and ref in tracked:
+            live_status = "open" if ref in open_ids else "closed"
+            if tracked[ref] != live_status:
+                return [Violation(
+                    11, path,
+                    "entry %d names marker_removal_ref %r, which the ledger reports "
+                    "as %s while %s records %r. The tracked projection is stale; "
+                    "re-sync it (--sync-marker-refs) so a fresh clone checks the "
+                    "same fact this one does."
+                    % (idx, ref, live_status, MARKER_REFS_REL, tracked[ref]))]
+        if ref not in open_ids:
+            return [Violation(
+                11, path,
+                "entry %d names marker_removal_ref %r, which is not an OPEN spillover "
+                "item. A closed or invented reference records nothing." % (idx, ref))]
+        return []
+    # No live ledger: this is a clean checkout / CI / a fresh instance. Fall back
+    # to the tracked projection rather than refusing outright -- refusing here is
+    # what made every clean checkout red.
+    if tracked is None:
         # FAIL CLOSED. This branch used to ACCEPT, on the reasoning that refusing
         # would be unsatisfiable in a repo that never ran prd-os init. Measured
         # after the fact (codex-adversarial review of 53a10d54, blocker): the
@@ -859,19 +941,23 @@ def _advisory_under_marker(entry, idx, path, root):
         # escape hatch was not a corner case, it was the only case, and the check
         # never fired anywhere.
         #
-        # An unverifiable ticket is not a ticket. Where the ledger is unreadable
-        # the claim cannot be substantiated, so it is refused rather than waved
-        # through -- the same polarity as every other condition here.
+        # An unverifiable ticket is not a ticket. With NEITHER the ledger nor the
+        # tracked projection readable there is nothing to substantiate the claim
+        # against, so it is refused -- the same polarity as every other condition
+        # here. What changed is only that a fresh clone now has a second place to
+        # look, so this branch means "both inputs missing" instead of "always".
         return [Violation(
             11, path,
-            "entry %d names marker_removal_ref %r but no spillover ledger is "
-            "readable at %s, so the ticket cannot be verified. An unverifiable "
-            "reference records nothing." % (idx, ref, SPILLOVER_REL))]
-    if ref not in open_ids:
+            "entry %d names marker_removal_ref %r but neither the spillover ledger "
+            "(%s) nor the tracked projection (%s) is readable, so the ticket cannot "
+            "be verified. An unverifiable reference records nothing."
+            % (idx, ref, SPILLOVER_REL, MARKER_REFS_REL))]
+    if tracked.get(ref) != "open":
         return [Violation(
             11, path,
-            "entry %d names marker_removal_ref %r, which is not an OPEN spillover "
-            "item. A closed or invented reference records nothing." % (idx, ref))]
+            "entry %d names marker_removal_ref %r, which %s does not record as an "
+            "OPEN spillover item (it records %r). A closed or invented reference "
+            "records nothing." % (idx, ref, MARKER_REFS_REL, tracked.get(ref)))]
     return []
 
 
@@ -1512,7 +1598,61 @@ def is_rule_file(path):
     return "/.claude/rules/" in p
 
 
+def sync_marker_refs(root):
+    """Regenerate MARKER_REFS_REL from the live ledger. Requires the ledger.
+
+    A GENERATOR, not a hand-edited file, because the drift check compares the two
+    and a projection someone types by hand is a claim about the ledger rather
+    than a reading of it. Refuses without the ledger: writing a projection from
+    no source would manufacture exactly the fact it is supposed to carry.
+    """
+    if not spillover_ledger_present(root):
+        sys.stderr.write(
+            "[enforced-claim-lint] --sync-marker-refs needs %s, which is not "
+            "readable here. Run it in a working copy that has the ledger.\n"
+            % SPILLOVER_REL)
+        return 1
+    open_ids = open_spillover_ids(root)
+    refs = {}
+    rules = Path(root) / ".claude" / "rules"
+    for f in sorted(rules.rglob("*.md")):
+        try:
+            text = f.read_text()
+        except OSError:
+            continue
+        for block in scan_blocks(text)[1]:
+            try:
+                entries = json.loads(block, object_pairs_hook=_no_duplicate_keys)
+            except ValueError:
+                continue
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                ref = entry.get("marker_removal_ref")
+                if isinstance(ref, str) and _SPILLOVER_ID_RE.match(ref):
+                    refs[ref] = "open" if ref in open_ids else "closed"
+    out = {
+        "_comment": (
+            "GENERATED by enforced-claim-lint.py --sync-marker-refs. Ids and "
+            "statuses only -- no descriptions, because this repo is public. "
+            "Tracked so the ticket check can run in a fresh clone, where "
+            ".prd-os/spillover.jsonl is gitignored and absent."),
+        "refs": dict(sorted(refs.items())),
+    }
+    dest = os.path.join(str(root), MARKER_REFS_REL)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w") as fh:
+        fh.write(json.dumps(out, indent=2) + "\n")
+    print("[enforced-claim-lint] wrote %s (%d ref(s))" % (MARKER_REFS_REL, len(refs)))
+    return 0
+
+
 def main():
+    if "--sync-marker-refs" in sys.argv:
+        return sync_marker_refs(
+            Path(os.environ.get("CLAUDE_PROJECT_DIR", ".")).resolve())
     if "--all" in sys.argv:
         root = Path(os.environ.get("CLAUDE_PROJECT_DIR", ".")).resolve()
         rules = root / ".claude" / "rules"
