@@ -695,6 +695,104 @@ def wired_commands(config_path):
     return out
 
 
+SPILLOVER_REL = os.path.join(".prd-os", "spillover.jsonl")
+_SPILLOVER_ID_RE = re.compile(r"^sp-[0-9a-f]{6,}$")
+
+
+def _all_mode():
+    """True when running the whole-tree pass. Kept as a function so the split
+    between per-file and whole-tree checks is testable rather than implicit."""
+    return "--all" in sys.argv
+
+
+def open_spillover_ids(root):
+    """Ids of spillover items that are still OPEN, read locally.
+
+    Local by construction: no network call from a hook that fires on every
+    rule-file write. The ledger is a JSONL file in the repo, which is also what
+    makes the reference checkable at all.
+    """
+    out = set()
+    path = os.path.join(str(root), SPILLOVER_REL)
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and row.get("id"):
+                    if row.get("status") == "open":
+                        out.add(row["id"])
+                    else:
+                        out.discard(row["id"])
+    except OSError:
+        return set()
+    return out
+
+
+def _advisory_under_marker(entry, idx, path, root):
+    """C11: ADVISORY under a heading that still carries the marker must be TICKETED.
+
+    finding-4 was the sharpest of the PRD review, and it was right: the first
+    design let an author satisfy a missing disposition by declaring ADVISORY while
+    the heading kept its ENFORCED marker. The false claim stayed visible to every
+    reader and was now mechanically blessed, which is worse than the bare claim it
+    replaced.
+
+    But a hard block here would be UNSATISFIABLE, and that is not a guess: the
+    sanctioned write path REFUSES to remove the marker (`_rule_marks` censuses
+    marker occurrences and marker-carrying headings as ratchet members that may
+    only grow), so an author told "remove the marker or else" has no way to comply.
+    A gate red on files nobody can fix is the failure `automated-filer-marking.md`
+    measured before shipping and refused.
+
+    So the honest label is allowed, and the DISCREPANCY IS RECORDED: the entry must
+    carry `marker_removal_ref` naming an OPEN spillover item. The rule reads
+    honestly today, the gap is countable, and `gates run` stays red until a
+    founder-authorised marker removal closes it. Nothing is silently absorbed and
+    nothing is unfixably red.
+    """
+    ref = entry.get("marker_removal_ref")
+    if not ref:
+        return [Violation(
+            11, path,
+            "entry %d is ADVISORY but its heading still carries the ENFORCED "
+            "marker, so the file goes on claiming enforcement it does not have. "
+            "Add `marker_removal_ref` naming an OPEN spillover item, so the "
+            "discrepancy is counted until a founder removes the marker (the "
+            "sanctioned write path cannot remove it, which is why this is "
+            "ticketed rather than blocked)." % idx)]
+    if not _SPILLOVER_ID_RE.match(ref):
+        return [Violation(
+            11, path,
+            "entry %d marker_removal_ref %r is not a spillover id (expected "
+            "sp-<hex>). The reference has to point at the ledger, or it records "
+            "nothing." % (idx, ref))]
+    # WELL-FORMEDNESS here, OPENNESS in --all. Split deliberately: this runs
+    # PostToolUse on every rule-file write, and making a single-file lint depend
+    # on live ledger state couples every write to another file's contents. The
+    # whole-tree pass is where cross-file consistency belongs, and it is the mode
+    # that gates the commit anyway.
+    if root is None or not _all_mode():
+        return []
+    open_ids = open_spillover_ids(root)
+    if not open_ids:
+        # No ledger, or an empty one. Refusing here would make the gate
+        # unsatisfiable in a repo that has never run prd-os init, so the reference
+        # is accepted and the limit is stated rather than pretended away.
+        return []
+    if ref not in open_ids:
+        return [Violation(
+            11, path,
+            "entry %d names marker_removal_ref %r, which is not an OPEN spillover "
+            "item. A closed or invented reference records nothing." % (idx, ref))]
+    return []
+
+
 def check_exec(entries, path):
     """C5 and C6: the named executable exists, and is wired in the config named.
 
@@ -728,6 +826,7 @@ def check_exec(entries, path):
                     "entry %d is ADVISORY, which means no executable, but it names "
                     "%s. Use DETECTED (wired, surfaces only) or ENFORCED if there "
                     "really is one." % (idx, ", ".join(named))))
+            violations += _advisory_under_marker(entry, idx, path, root)
             continue
         if root is None:
             violations.append(Violation(

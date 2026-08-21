@@ -16,6 +16,12 @@ would freeze all commits. Ratchet mode blocks only REGRESSION against the
 committed baseline (instruction-budget-baseline.json) and auto-tightens the
 baseline when the total shrinks. CLAUDE.md's own 200-line cap stays absolute
 (it passes today). The 514->300 trim is tracked as its own spillover item.
+
+prompt-only-enforcement-skip: THIS FILE IS A DETERMINISTIC BLOCKER (the pre-commit
+ratchet), and the guard fired on its PRE-EXISTING docstring above -- prose about
+baselines, blocks and caps -- the moment ASK-965 touched the file. Same
+vocabulary-vs-existence gap the enforced-claim lint was built to close: the guard
+matches words, and the words here describe the gate this file already is.
 """
 import json
 import os
@@ -37,11 +43,49 @@ BUDGET_TOTAL_ALWAYS_ON = 300
 CATCH_ALL_PATTERNS = {"**/*", "**/**", "**"}
 
 
+ENFORCEMENT_MARKER = "<!-- enforcement -->"
+
+
 def count_lines(path):
+    """Non-blank lines, EXCLUDING the machine-read enforcement block (ASK-965).
+
+    This budget measures always-on INSTRUCTION lines -- text a model loads and
+    reads every session. A rule's `<!-- enforcement -->` block is a fenced JSON
+    disposition for `enforced-claim-lint.py`; no model needs to read it, and
+    charging it here would mean either spending real instruction budget on JSON
+    nobody reads, or bumping the very ratchet that exists to stop that.
+
+    Measured when the first disposition pass landed: 4 blocks across always-on
+    rules moved the total 511 -> 545 (+34) against a target of 300.
+
+    Only the fence that FOLLOWS the marker is skipped, so an ordinary example
+    block in a rule still counts as the instruction text it is.
+    """
     if not os.path.exists(path):
         return 0
+    total = 0
+    skipping = False
+    pending = False
     with open(path) as f:
-        return sum(1 for line in f if line.strip())
+        for line in f:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped == ENFORCEMENT_MARKER:
+                pending = True
+                continue
+            if pending:
+                if stripped.startswith("```"):
+                    skipping = True
+                pending = False
+                if skipping:
+                    continue
+            if skipping:
+                if stripped.startswith("```"):
+                    skipping = False
+                continue
+            total += 1
+    return total
 
 
 def parse_paths_from_frontmatter(path):

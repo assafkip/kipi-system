@@ -30,7 +30,18 @@ _HOOK = Path(__file__).resolve().parents[2] / "hooks" / "lessons-index.py"
 _LESSONS = Path(__file__).resolve().parents[2] / "lessons"
 
 
+# Bytecode caching OFF for these loaders (ASK-965, 2026-08-21). Loading a module
+# by path writes a .pyc keyed on that path, and a mutate-then-restore cycle can
+# produce a file whose size and mtime the cache validator accepts -- so the module
+# under test keeps running the OLD bytecode. That made a mutation test report
+# GREEN after a restore while the source on disk was correct, i.e. a test result
+# that described a file nobody was executing. Exactly the load-path class this PRD
+# is about, arriving in the test harness.
+sys.dont_write_bytecode = True
+
+
 def _load():
+    importlib.invalidate_caches()
     spec = importlib.util.spec_from_file_location("lessons_index", _HOOK)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["lessons_index"] = mod

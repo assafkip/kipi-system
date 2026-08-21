@@ -22,7 +22,18 @@ from pathlib import Path
 _LINT = Path(__file__).resolve().parent / "enforced-claim-lint.py"
 
 
+# Bytecode caching OFF for these loaders (ASK-965, 2026-08-21). Loading a module
+# by path writes a .pyc keyed on that path, and a mutate-then-restore cycle can
+# produce a file whose size and mtime the cache validator accepts -- so the module
+# under test keeps running the OLD bytecode. That made a mutation test report
+# GREEN after a restore while the source on disk was correct, i.e. a test result
+# that described a file nobody was executing. Exactly the load-path class this PRD
+# is about, arriving in the test harness.
+sys.dont_write_bytecode = True
+
+
 def _load():
+    importlib.invalidate_caches()
     spec = importlib.util.spec_from_file_location("enforced_claim_lint", _LINT)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["enforced_claim_lint"] = mod
@@ -57,7 +68,7 @@ def test_grammar_valid_block_parses_clean():
     Without this, every grammar assertion below could be satisfied by a lint that
     rejects all input.
     """
-    block = '[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "no executable"}]'
+    block = '[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "no executable", "marker_removal_ref": "sp-abc123"}]'
     assert L.lint_text(_rule(block=block), "fixture.md") == []
 
 
@@ -80,8 +91,8 @@ def test_grammar_two_entries_both_parse():
     """THE finding-2 CASE. A flat key:value mapping had no record delimiter, so
     two entries repeated keys with undefined behaviour. Two JSON objects are
     unambiguous, and both must be read."""
-    block = ('[{"clause": "First Rule", "status": "ADVISORY", "note": "n"},'
-             ' {"clause": "Second Rule", "status": "ADVISORY", "note": "n"}]')
+    block = ('[{"clause": "First Rule", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123"},'
+             ' {"clause": "Second Rule", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123"}]')
     text = _rule(heading="First Rule (ENFORCED)", block=block)
     text += "\n## Second Rule (ENFORCED)\n\nMore text.\n"
     entries, violations = L.parse_block(text, "fixture.md")
@@ -92,7 +103,7 @@ def test_grammar_two_entries_both_parse():
 def test_grammar_unknown_key_is_refused():
     """C4. A tolerated unknown key is where a future `skip: true` arrives wearing
     a permitted name. Same reasoning as ALLOWED_PROPOSAL_KEYS."""
-    block = '[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n", "skip": true}]'
+    block = '[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123", "skip": true}]'
     v = L.lint_text(_rule(block=block), "fixture.md")
     assert 4 in _codes(v)
     assert "unknown key" in str(v[0])
@@ -121,7 +132,7 @@ def test_grammar_two_blocks_are_refused():
     fence counting) and a test that fails on a reworded message while the
     behaviour is correct is noise, not coverage.
     """
-    text = _rule(block='[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n"}]')
+    text = _rule(block='[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123"}]')
     text += '\n<!-- enforcement -->\n```json\n[]\n```\n'
     v = L.lint_text(text, "fixture.md")
     assert 4 in _codes(v)
@@ -148,7 +159,7 @@ def test_marker_without_any_block_is_a_violation():
 def test_marker_with_uncovered_heading_is_a_violation():
     """C1. A block that disposes SOME markers does not green the others. This is
     the file-level-coverage hole, closed at marker granularity."""
-    block = '[{"clause": "First Rule", "status": "ADVISORY", "note": "n"}]'
+    block = '[{"clause": "First Rule", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123"}]'
     text = _rule(heading="First Rule (ENFORCED)", block=block)
     text += "\n## Second Rule (ENFORCED)\n\nMore text.\n"
     v = L.lint_text(text, "fixture.md")
@@ -202,7 +213,7 @@ def test_grammar_second_malformed_block_is_not_ignored():
     """C4. A valid covering block plus a MALFORMED second one used to pass on the
     valid half, defeating the malformed-block refusal and the one-block invariant
     at the same time. Markers are counted, not well-formed fences."""
-    text = _rule(block='[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n"}]')
+    text = _rule(block='[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123"}]')
     text += "\n<!-- enforcement -->\nnot a fence at all\n"
     v = L.lint_text(text, "fixture.md")
     assert 4 in _codes(v)
@@ -259,7 +270,7 @@ def test_clause_key_normalization_is_stable():
 def test_clause_key_duplicate_entries_are_refused():
     """C2. Two entries normalizing to one key means the second silently shadows
     the first and one heading's disposition becomes unreadable."""
-    block = ('[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n"},'
+    block = ('[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123"},'
              ' {"clause": "cleanup   rule", "status": "ENFORCED", "note": "n"}]')
     v = L.lint_text(_rule(block=block), "fixture.md")
     assert 2 in _codes(v)
@@ -269,7 +280,7 @@ def test_clause_key_duplicate_entries_are_refused():
 def test_clause_key_empty_key_is_refused():
     """C2. A clause of '...' normalizes to '' and would match any heading that
     also normalizes to '' -- coverage by accident, worse than no coverage."""
-    block = '[{"clause": "...", "status": "ADVISORY", "note": "n"}]'
+    block = '[{"clause": "...", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123"}]'
     v = L.lint_text(_rule(block=block), "fixture.md")
     assert 2 in _codes(v)
     assert "empty key" in " ".join(str(x) for x in v)
@@ -278,7 +289,7 @@ def test_clause_key_empty_key_is_refused():
 def test_clause_key_orphan_entry_is_refused():
     """C3. A disposition matching no heading reads as coverage to an auditor and
     is the residue left behind when a heading is reworded."""
-    block = '[{"clause": "A Heading That Does Not Exist", "status": "ADVISORY", "note": "n"}]'
+    block = '[{"clause": "A Heading That Does Not Exist", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123"}]'
     v = L.lint_text(_rule(block=block), "fixture.md")
     assert 3 in _codes(v)
     assert "matches no ENFORCED-marked heading" in " ".join(str(x) for x in v)
@@ -288,7 +299,7 @@ def test_clause_key_colliding_headings_are_refused():
     """C2, mirror image. Two distinct MARKED HEADINGS normalizing to one key mean
     one entry covers both, and coverage returns clean. Deduplicating headings into
     a set hid exactly the accidental coverage this check exists to prevent."""
-    block = '[{"clause": "Delete local", "status": "ADVISORY", "note": "n"}]'
+    block = '[{"clause": "Delete local", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123"}]'
     text = _rule(heading="Delete-local (ENFORCED)", block=block)
     text += "\n## Delete local (ENFORCED)\n\nMore text.\n"
     v = L.lint_text(text, "fixture.md")
@@ -315,8 +326,8 @@ def test_clause_key_control_distinct_keys_pass():
     Without this, C2 could be satisfied by a lint that rejects every multi-entry
     block, which would make the whole two-entry design unusable.
     """
-    block = ('[{"clause": "First Rule", "status": "ADVISORY", "note": "n"},'
-             ' {"clause": "Second Rule", "status": "ADVISORY", "note": "n"}]')
+    block = ('[{"clause": "First Rule", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123"},'
+             ' {"clause": "Second Rule", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123"}]')
     text = _rule(heading="First Rule (ENFORCED)", block=block)
     text += "\n## Second Rule (ENFORCED)\n\nMore text.\n"
     assert L.lint_text(text, "fixture.md") == []
@@ -437,7 +448,8 @@ def test_exec_path_advisory_needs_no_executable(tmp_path):
     """CONTROL. ADVISORY names no executable by definition, so exec checks must
     not fire on it -- otherwise the honest label would be the hardest to use."""
     block = json.dumps([{"clause": "Cleanup Rule", "status": "ADVISORY",
-                         "note": "no executable exists for this"}])
+                         "note": "no executable exists for this",
+                         "marker_removal_ref": "sp-abc123"}])
     assert _lint_in(tmp_path, _tree(tmp_path, block)) == []
 
 
@@ -558,7 +570,7 @@ def test_non_string_fields_are_a_violation_not_a_traceback():
     --all mode."""
     for bad in ('{"clause": "Cleanup Rule", "status": "DETECTED", "exec": 7, "config": "c"}',
                 '{"clause": "Cleanup Rule", "status": "DETECTED", "exec": ["a"], "config": "c"}',
-                '{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n", "directives": "four"}'):
+                '{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123", "directives": "four"}'):
         v = L.lint_text(_rule(block="[%s]" % bad), "fixture.md")
         assert 4 in _codes(v), bad
 
@@ -857,7 +869,8 @@ def test_posture_classifies_this_repos_real_scripts():
 
 def _directive_rule(count_decl, body):
     block = json.dumps([{"clause": "Cleanup Rule", "status": "ADVISORY",
-                         "note": "n", "directives": count_decl}])
+                         "note": "n", "marker_removal_ref": "sp-abc123",
+                         "directives": count_decl}])
     return _rule(block=block, body=body)
 
 
@@ -890,7 +903,7 @@ def test_directive_count_removed_directive_also_trips():
 def test_directive_count_is_optional():
     """Omission is the honest form of 'not ratcheted', and it is VISIBLE in the
     block -- unlike a default, which would look like a count."""
-    block = json.dumps([{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n"}])
+    block = json.dumps([{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123"}])
     body = "You MUST do the thing.\nAnd you MUST do another.\n"
     assert L.lint_text(_rule(block=block, body=body), "fixture.md") == []
 
@@ -941,7 +954,7 @@ def test_directives_true_is_not_a_count():
     """MINOR. bool is an int in Python, so `"directives": true` passed the type
     check and then compared equal to an actual count of 1. A declaration that is
     accidentally correct for one value is worse than a rejected one."""
-    block = ('[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n", '
+    block = ('[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123", '
              '"directives": true}]')
     v = L.lint_text(_rule(block=block, body="You MUST do X.\n"), "fixture.md")
     assert 4 in _codes(v)
@@ -1152,6 +1165,62 @@ def test_whole_tree_a_fabricated_claim_makes_it_red(tmp_path):
     assert "totally-imaginary-lint.py" in r.stderr
 
 
+# --- advisory: an honest label under a live marker is TICKETED, not free ---------
+
+def test_advisory_under_a_live_marker_needs_a_ref():
+    """C11, and finding-4 was the sharpest of the PRD review. The first design let
+    an author satisfy a missing disposition by declaring ADVISORY while the heading
+    kept its ENFORCED marker: the false claim stayed visible to every reader and
+    was now mechanically blessed, which is worse than the bare claim it replaced."""
+    block = '[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "no executable"}]'
+    v = L.lint_text(_rule(block=block), "fixture.md")
+    assert 11 in _codes(v)
+    assert "marker_removal_ref" in " ".join(str(x) for x in v)
+
+
+def test_advisory_control_with_a_ref_passes():
+    """CONTROL. A hard block here would be UNSATISFIABLE: the sanctioned write path
+    REFUSES to remove the marker, so an author told "remove it or else" cannot
+    comply, and a gate red on files nobody can fix gets switched off. The honest
+    label is allowed; the discrepancy is recorded."""
+    block = ('[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "none", '
+             '"marker_removal_ref": "sp-abc123"}]')
+    assert L.lint_text(_rule(block=block), "fixture.md") == []
+
+
+def test_advisory_ref_must_look_like_a_spillover_id():
+    """A reference that cannot point at the ledger records nothing."""
+    for bad in ("later", "TODO", "sp-", "ASK-965"):
+        block = ('[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n", '
+                 '"marker_removal_ref": "%s"}]' % bad)
+        v = L.lint_text(_rule(block=block), "fixture.md")
+        assert 11 in _codes(v), bad
+
+
+def test_advisory_openness_is_checked_only_in_whole_tree_mode(tmp_path):
+    """The deliberate split. Openness needs the ledger; making a SINGLE-FILE lint
+    depend on another file's contents couples every rule write to ledger state, and
+    this hook fires on every rule-file write fleet-wide. Cross-file consistency
+    belongs to the pass that gates the commit."""
+    ledger = tmp_path / ".prd-os"
+    ledger.mkdir()
+    (ledger / "spillover.jsonl").write_text(
+        json.dumps({"id": "sp-open01", "status": "open"}) + "\n" +
+        json.dumps({"id": "sp-shut01", "status": "resolved"}) + "\n")
+    assert L.open_spillover_ids(tmp_path) == {"sp-open01"}
+
+
+def test_advisory_resolved_ref_is_not_an_open_item(tmp_path):
+    """A closed reference records nothing: the discrepancy would stop being
+    counted while the marker is still there."""
+    ledger = tmp_path / ".prd-os"
+    ledger.mkdir()
+    (ledger / "spillover.jsonl").write_text(
+        json.dumps({"id": "sp-abc123", "status": "open"}) + "\n" +
+        json.dumps({"id": "sp-abc123", "status": "resolved"}) + "\n")
+    assert L.open_spillover_ids(tmp_path) == set(), "a later resolved row wins"
+
+
 # --- self-scoping ---------------------------------------------------------------
 
 def test_scope_only_rule_markdown():
@@ -1183,7 +1252,7 @@ def test_marker_inside_a_larger_example_fence_is_not_a_disposition():
         "````markdown\n"
         "<!-- enforcement -->\n"
         "```json\n"
-        '[{"clause": "Real Rule", "status": "ADVISORY", "note": "n"}]\n'
+        '[{"clause": "Real Rule", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123"}]\n'
         "```\n"
         "````\n")
     v = L.lint_text(text, "fixture.md")
@@ -1198,7 +1267,7 @@ def test_real_block_after_an_example_fence_still_counts():
         "---\nd: f\n---\n\n# Real Rule (ENFORCED)\n\n"
         "````markdown\n<!-- enforcement -->\n```json\n[]\n```\n````\n\n"
         "<!-- enforcement -->\n```json\n"
-        '[{"clause": "Real Rule", "status": "ADVISORY", "note": "n"}]\n'
+        '[{"clause": "Real Rule", "status": "ADVISORY", "note": "n", "marker_removal_ref": "sp-abc123"}]\n'
         "```\n")
     assert L.lint_text(text, "fixture.md") == []
 

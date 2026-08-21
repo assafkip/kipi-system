@@ -8,6 +8,10 @@ allowed_files:
   - q-system/.q-system/scripts/enforced-claim-lint.py
   - q-system/.q-system/scripts/test_enforced_claim_lint.py
   - q-system/.q-system/proposals/*.json
+  - q-system/.q-system/enforced-claim-baseline.json
+  - q-system/.q-system/scripts/instruction-budget-audit.py
+  - q-system/.q-system/scripts/test_instruction_budget_audit.py
+  - q-system/.q-system/capability-manifest.json
 disallowed_files: []
 required_checks:
   - python3 -m pytest q-system/.q-system/scripts/test_enforced_claim_lint.py -q -k advisory
