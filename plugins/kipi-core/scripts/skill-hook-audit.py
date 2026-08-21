@@ -20,8 +20,47 @@ Run: python3 plugins/kipi-core/scripts/skill-hook-audit.py [root]
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
+
+# Cache: root -> frozenset of tracked repo-relative paths, or None when unknowable.
+_TRACKED_CACHE = {}
+
+
+def tracked_paths(root: Path):
+    """Repo-relative paths git reports as TRACKED, or None when that is unknowable.
+
+    None is a real third answer, not a failure dressed as one, and every caller
+    has to branch on it: a non-git tree (a tarball, a vendored copy, an instance
+    that was rsynced rather than cloned) genuinely cannot answer "does this ship",
+    and pretending otherwise would either fail every claim or pass every claim.
+    Callers accept everything present when this returns None and the docstrings
+    say so, rather than implying a guarantee that is not there.
+
+    Why this exists (ASK-965, codex standard review of 276e3708): the manifest
+    this audit reads calls its evidence "a tracked wired config", and dropping
+    settings.local.json by NAME did not make that true. An untracked
+    plugins/*/hooks/hooks.json, or an untracked hook script, still counted as
+    shipped wiring -- the same local-only false green through a different door.
+    A claim stronger than the code behind it is worse than no claim, and this
+    audit exists to catch exactly that shape, so it does not get to make one.
+    """
+    key = str(root)
+    if key in _TRACKED_CACHE:
+        return _TRACKED_CACHE[key]
+    result = None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            capture_output=True, timeout=30, check=False)
+        if proc.returncode == 0:
+            result = frozenset(
+                p for p in proc.stdout.decode("utf-8", "replace").split("\0") if p)
+    except (OSError, subprocess.SubprocessError):
+        result = None
+    _TRACKED_CACHE[key] = result
+    return result
 
 _SCRIPT_RE = re.compile(r"[A-Za-z0-9_-]+\.(?:py|sh)")
 # Where skill SKILL.md files live across kipi instance shapes.
@@ -59,20 +98,26 @@ def wired_config_files(root: Path) -> list:
     REFUSES that same file rather than merely skipping it, because "a change here
     leaves no reviewable trace". Pinned by test_skill_hook_audit_local.py.
 
-    READ THE EXCLUSION NARROWLY -- it is one filename, not a tracked-tree
-    property (codex review of a6504c49, major). This function does NOT consult
-    git. An untracked `plugins/*/hooks/hooks.json`, or an untracked hook script
-    that `script_exists` finds, still counts as wiring here, so the same
-    local-only false green survives by a different door. settings.local.json is
-    excluded because it is the one config the sanctioned write path names and
-    refuses -- a known, enumerated case -- not because anything here verifies
-    that a file ships. Making the general claim true means a git-tracking check
-    with a defined answer for non-git trees, which is a wider change than the
-    finding that motivated this one; captured rather than half-built.
+    The exclusion by NAME was not enough on its own (codex standard review of
+    276e3708, major). An untracked `plugins/*/hooks/hooks.json` still counted as
+    wiring, so the same false green survived by a different door, while the
+    manifest called its evidence "a tracked wired config" -- a claim nothing
+    checked. So the general property is now verified rather than asserted: in a
+    git tree, only TRACKED configs count.
+
+    In a non-git tree `tracked_paths` returns None and every present config is
+    accepted. That is a stated limit, not a silent fallback: such a tree cannot
+    answer "does this ship" at all, and failing every wired claim there would
+    make the audit useless exactly where instances are rsynced rather than cloned.
+    Pinned by test_skill_hook_audit_local.py.
     """
     files = [root / ".claude" / "settings.json"]
     files += [p for p in root.glob("plugins/*/hooks/hooks.json") if "/dist/" not in str(p)]
-    return [f for f in files if f.exists()]
+    present = [f for f in files if f.exists()]
+    tracked = tracked_paths(root)
+    if tracked is None:
+        return present
+    return [f for f in present if str(f.relative_to(root)) in tracked]
 
 
 def wired_script_basenames(root: Path) -> set:
@@ -83,6 +128,20 @@ def wired_script_basenames(root: Path) -> set:
 
 
 def script_exists(root: Path, name: str) -> bool:
+    """Does a hook script by this name SHIP in the tree?
+
+    Tracked-only in a git tree, for the same reason as `wired_config_files`: an
+    untracked script on one machine is not evidence that the fleet has it, and a
+    'wired' claim resting on it is the orphan bug this audit exists to catch.
+    None from `tracked_paths` (non-git tree) means every present file counts --
+    a stated limit, not a silent fallback.
+
+    Basename matching, not path matching, is a KNOWN residue kept on purpose:
+    the manifest speaks in basenames because hook configs do, and two files
+    sharing a basename would pair the wrong one here. Named rather than fixed,
+    because narrowing it means changing the manifest schema for every instance.
+    """
+    tracked = tracked_paths(root)
     for sub in _SEARCH_ROOTS:
         base = root / sub
         if not base.exists():
@@ -90,6 +149,8 @@ def script_exists(root: Path, name: str) -> bool:
         for p in base.rglob(name):
             s = str(p)
             if "/.venv/" in s or "/dist/" in s or "__pycache__" in s:
+                continue
+            if tracked is not None and str(p.relative_to(root)) not in tracked:
                 continue
             return True
     return False

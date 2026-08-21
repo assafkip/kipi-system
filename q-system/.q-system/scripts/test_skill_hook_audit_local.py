@@ -92,6 +92,66 @@ def test_local_only_is_an_orphan(tmp_path):
     assert _load_audit().run_audit(tmp_path) == 1
 
 
+def _git_init(root: Path) -> None:
+    """Make `root` a real git repo with an empty index. tmp only, never a live path."""
+    import subprocess
+    for cmd in (["git", "init", "-q"],
+                ["git", "config", "user.email", "t@example.invalid"],
+                ["git", "config", "user.name", "t"]):
+        subprocess.run(cmd, cwd=root, check=True, capture_output=True)
+
+
+def test_untracked_plugin_config_is_not_wiring(tmp_path):
+    """THE SECOND DOOR. An UNTRACKED plugin hooks.json must not count as wiring.
+
+    Dropping settings.local.json by name left this open: any hooks.json present
+    on disk counted, so a hook wired only in an uncommitted plugin config passed
+    the audit. The manifest calls its evidence 'a tracked wired config', and this
+    is the test that makes that phrase mean something.
+    """
+    _git_init(tmp_path)
+    _fixture_tree(tmp_path, config_name="settings.json")
+    plugin_hooks = tmp_path / "plugins" / "demo-plugin" / "hooks"
+    plugin_hooks.mkdir(parents=True)
+    (plugin_hooks / "hooks.json").write_text(json.dumps({"hooks": {}}))
+    # settings.json exists but is UNTRACKED (nothing was ever git-added), so in a
+    # git tree no config is admissible and the wired claim has no support.
+    audit = _load_audit()
+    audit._TRACKED_CACHE.clear()
+    assert audit.wired_config_files(tmp_path) == []
+
+
+def test_tracked_config_counts_in_a_git_tree(tmp_path):
+    """Control for the test above: once ADDED to the index, the config counts.
+
+    Without this, the git filter could pass by rejecting everything, which is a
+    check that cannot tell a real config from a missing one.
+    """
+    import subprocess
+    _git_init(tmp_path)
+    _fixture_tree(tmp_path, config_name="settings.json")
+    subprocess.run(["git", "add", ".claude/settings.json"], cwd=tmp_path,
+                   check=True, capture_output=True)
+    audit = _load_audit()
+    audit._TRACKED_CACHE.clear()
+    names = {p.name for p in audit.wired_config_files(tmp_path)}
+    assert names == {"settings.json"}
+
+
+def test_non_git_tree_accepts_present_configs(tmp_path):
+    """The stated limit, pinned so it stays a decision instead of drifting.
+
+    A tree git cannot answer for accepts every present config. If someone later
+    makes tracked_paths return an empty set instead of None on failure, every
+    wired claim in every non-git instance silently goes red; this test says so.
+    """
+    _fixture_tree(tmp_path, config_name="settings.json")
+    audit = _load_audit()
+    audit._TRACKED_CACHE.clear()
+    assert audit.tracked_paths(tmp_path) is None
+    assert {p.name for p in audit.wired_config_files(tmp_path)} == {"settings.json"}
+
+
 def test_local_settings_is_not_in_the_reader(tmp_path):
     """Structural twin of the behavioural test above.
 
