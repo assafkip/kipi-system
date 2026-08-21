@@ -201,15 +201,80 @@ def clause_key(text):
     """Normalize a heading or a `clause` value to a comparable key.
 
     Defined exactly, because "normalising case and punctuation" was not
-    implementable as written (codex-adversarial finding-7): lowercase, drop any
-    parenthetical (which is where the marker lives), keep only [a-z0-9 ], collapse
-    whitespace, strip. Two distinct headings that collapse to one key are a
-    reported collision, never a silent merge -- see check_duplicate_clause_keys.
+    implementable as written (codex-adversarial finding-7).
+
+      1. Drop a trailing parenthetical ONLY IF IT CONTAINS THE MARKER. Two
+         narrower rules were tried and both alias distinct claims:
+           - dropping EVERY parenthetical made `# Delete (local)` and
+             `# Delete (prod)` both "delete", so one entry covered both headings
+             (codex-adversarial review of 461bd3ac);
+           - dropping any TRAILING parenthetical has the same effect on those two
+             headings, because there the trailing parenthetical IS the claim.
+         A trailing parenthetical is ambiguous on its own; carrying the marker is
+         what identifies it as the marker. Everything else is claim identity and
+         is kept.
+      2. lowercase.
+      3. Keep only [a-z0-9 ]; everything else becomes a space. Non-ASCII headings
+         therefore collapse toward the empty string, which is why the empty key is
+         a REFUSAL rather than a value (see check_clause_keys) -- otherwise a
+         punctuation-only clause would cover every non-ASCII heading in the file.
+      4. Collapse whitespace, strip.
+
+    Collisions are reported, never silently merged. This function only computes;
+    check_clause_keys is the one place that judges.
     """
-    text = re.sub(r"\([^)]*\)", " ", text or "")
+    text = (text or "").strip()
+    tail = re.search(r"\s*\(([^)]*)\)\s*$", text)
+    if tail and "ENFORCED" in tail.group(1):
+        text = text[:tail.start()]
     text = text.lower()
     text = re.sub(r"[^a-z0-9 ]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def check_clause_keys(entries, text, path):
+    """C2 and C3: keys must be unique, non-empty, and must land on a real heading.
+
+    Three distinct failures, all of which used to pass silently:
+
+      C2 duplicate keys  two entries normalizing to one key means the second
+                         silently shadows the first and one heading's disposition
+                         is unreadable.
+      C2 empty key       a clause of "..." normalizes to "" and would match every
+                         heading that also normalizes to "" -- coverage by
+                         accident, which is worse than no coverage.
+      C3 orphan entry    a clause matching NO heading in the file is a disposition
+                         for something that no longer exists. It is not harmless:
+                         it reads as coverage to anyone auditing the file, and it
+                         is the residue left behind when a heading is reworded.
+    """
+    violations = []
+    heading_keys = {key for _, key in marked_headings(text)}
+    seen = {}
+    for idx, entry in enumerate(entries):
+        key = clause_key(entry["clause"])
+        if not key:
+            violations.append(Violation(
+                2, path,
+                "entry %d clause %r normalizes to an empty key; it would match "
+                "any heading that also normalizes to empty, which is coverage by "
+                "accident" % (idx, entry["clause"])))
+            continue
+        if key in seen:
+            violations.append(Violation(
+                2, path,
+                "entries %d and %d both normalize to clause key %r (%r vs %r); "
+                "one silently shadows the other"
+                % (seen[key], idx, key, entries[seen[key]]["clause"], entry["clause"])))
+            continue
+        seen[key] = idx
+        if key not in heading_keys:
+            violations.append(Violation(
+                3, path,
+                "entry %d clause %r matches no ENFORCED-marked heading in this "
+                "file. Either the heading was reworded and this disposition is "
+                "stale, or the clause is misspelled." % (idx, entry["clause"])))
+    return violations
 
 
 def parse_block(text, path):
@@ -319,6 +384,7 @@ def lint_text(text, path):
     """
     entries, violations = parse_block(text, path)
     violations = list(violations)
+    violations += check_clause_keys(entries, text, path)
     violations += check_coverage(entries, text, path)
     return violations
 

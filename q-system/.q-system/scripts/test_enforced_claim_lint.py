@@ -231,6 +231,66 @@ def test_all_mode_treats_an_unreadable_file_as_a_violation(tmp_path):
     assert L.lint_file(bad, strict=False) == [], "hook mode must stay silent"
 
 
+# --- clause_key: unique, non-empty, anchored on a real heading -------------------
+
+def test_clause_key_strips_only_a_trailing_parenthetical():
+    """THE ALIASING BUG. A global parenthetical strip made '# Delete (local)' and
+    '# Delete (prod)' both normalize to 'delete', so one entry covered both."""
+    assert L.clause_key("Cleanup Rule (ENFORCED)") == "cleanup rule"
+    assert L.clause_key("Delete (local) (ENFORCED)") == "delete local"
+    assert L.clause_key("Delete (prod) (ENFORCED)") == "delete prod"
+    assert L.clause_key("Delete (local)") != L.clause_key("Delete (prod)")
+
+
+def test_clause_key_normalization_is_stable():
+    """The exact rules, pinned. 'Normalising case and punctuation' was not
+    implementable as written; these are the four steps."""
+    assert L.clause_key("  Cleanup / Migration Rule (ENFORCED)  ") == "cleanup migration rule"
+    assert L.clause_key("Pre-Action Echo (ENFORCED)") == "pre action echo"
+    assert L.clause_key("A: B; C!") == "a b c"
+
+
+def test_clause_key_duplicate_entries_are_refused():
+    """C2. Two entries normalizing to one key means the second silently shadows
+    the first and one heading's disposition becomes unreadable."""
+    block = ('[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n"},'
+             ' {"clause": "cleanup   rule", "status": "ENFORCED", "note": "n"}]')
+    v = L.lint_text(_rule(block=block), "fixture.md")
+    assert 2 in _codes(v)
+    assert "silently shadows" in " ".join(str(x) for x in v)
+
+
+def test_clause_key_empty_key_is_refused():
+    """C2. A clause of '...' normalizes to '' and would match any heading that
+    also normalizes to '' -- coverage by accident, worse than no coverage."""
+    block = '[{"clause": "...", "status": "ADVISORY", "note": "n"}]'
+    v = L.lint_text(_rule(block=block), "fixture.md")
+    assert 2 in _codes(v)
+    assert "empty key" in " ".join(str(x) for x in v)
+
+
+def test_clause_key_orphan_entry_is_refused():
+    """C3. A disposition matching no heading reads as coverage to an auditor and
+    is the residue left behind when a heading is reworded."""
+    block = '[{"clause": "A Heading That Does Not Exist", "status": "ADVISORY", "note": "n"}]'
+    v = L.lint_text(_rule(block=block), "fixture.md")
+    assert 3 in _codes(v)
+    assert "matches no ENFORCED-marked heading" in " ".join(str(x) for x in v)
+
+
+def test_clause_key_control_distinct_keys_pass():
+    """CONTROL. Two genuinely distinct clauses on two real headings are clean.
+
+    Without this, C2 could be satisfied by a lint that rejects every multi-entry
+    block, which would make the whole two-entry design unusable.
+    """
+    block = ('[{"clause": "First Rule", "status": "ADVISORY", "note": "n"},'
+             ' {"clause": "Second Rule", "status": "ADVISORY", "note": "n"}]')
+    text = _rule(heading="First Rule (ENFORCED)", block=block)
+    text += "\n## Second Rule (ENFORCED)\n\nMore text.\n"
+    assert L.lint_text(text, "fixture.md") == []
+
+
 # --- self-scoping ---------------------------------------------------------------
 
 def test_scope_only_rule_markdown():
