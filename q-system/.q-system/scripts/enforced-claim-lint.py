@@ -904,6 +904,131 @@ def check_posture(entries, path):
     return violations
 
 
+# A normative directive line. CASE-INSENSITIVE, and that was a measurement, not a
+# preference (2026-08-21).
+#
+# The first version matched only the shouty forms (MUST/NEVER/ALWAYS uppercase) on
+# the theory that lowercase "must" is usually explanatory prose. Counting the real
+# tree settled it: uppercase-only found 15 directives across all 32 marked
+# sections, case-insensitive found 88. The forecast for this repo was 118 across
+# whole files, so 88-under-markers is the right order and 15 is not.
+#
+# A ratchet whose population is near zero cannot detect growth in anything. It
+# would ship looking like a gate and protect nothing, which is the exact failure
+# this whole PRD is about. Over-counting is the acceptable error here: the number
+# only has to be DETERMINISTIC and to MOVE when a directive is added. It is not a
+# semantic measure of how many rules a section contains, and the rule text says so.
+_DIRECTIVE_RE = re.compile(r"\b(?:must|never|always|required|do not|shall)\b", re.I)
+
+
+def count_directives(section_lines):
+    """How many normative directive lines this section carries.
+
+    ONE PER LINE, not per occurrence: a line saying "MUST ... and MUST NOT ..." is
+    one instruction to a reader, and counting occurrences would make the number
+    move on rewording rather than on meaning.
+
+    Blank lines, fenced code and the enforcement block itself are excluded -- a
+    directive quoted inside an example is not an instruction the rule is issuing.
+    """
+    count = 0
+    open_fence = None
+    for line in section_lines:
+        m = _FENCE_RE.match(line)
+        if m:
+            char, length = m.group(1)[0], len(m.group(1))
+            if open_fence is None:
+                open_fence = (char, length)
+            elif char == open_fence[0] and length >= open_fence[1]:
+                open_fence = None
+            continue
+        if open_fence is not None:
+            continue
+        if _DIRECTIVE_RE.search(line):
+            count += 1
+    return count
+
+
+def sections(text):
+    """Split a rule into (heading_line, [body lines]) with LEVEL-AWARE nesting.
+
+    A section runs until the next heading of the SAME OR HIGHER level, so an H1
+    owns its subsections and an H2 owns its H3s. That is how a reader understands
+    "this rule (ENFORCED)" -- the marker on the H1 governs the document, not the
+    two lines before the first H2.
+
+    MEASURED, because the first version got this wrong and the number said so
+    (2026-08-21). Splitting at EVERY heading gave 3 directives across all 32
+    marked sections, against a forecast of 118 across the tree. A ratchet whose
+    population is near zero cannot detect growth in anything, so it would have
+    shipped looking like a gate and protecting nothing.
+    """
+    lines = text.splitlines()
+    heads = []
+    for i, line in enumerate(lines):
+        m = _HEADING_RE.match(line)
+        if m:
+            heads.append((i, len(m.group(1)), line))
+    out = []
+    for n, (start, level, line) in enumerate(heads):
+        end = len(lines)
+        for later_start, later_level, _ in heads[n + 1:]:
+            if later_level <= level:
+                end = later_start
+                break
+        out.append((line, lines[start + 1:end]))
+    return out
+
+
+def check_directive_counts(entries, text, path):
+    """C12: the declared directive count must match the section as it stands.
+
+    THE POINT (finding-3, blocker): coverage keyed to a heading is heading-level
+    wearing a clause-level label. One disposition greens every directive beneath a
+    broad heading -- which is the file-level hole this lint replaced, one notch
+    narrower. Keying entries to individual directives was rejected instead: the key
+    would be directive line TEXT, which changes on every editorial pass, so
+    dispositions would orphan constantly and the gate would become noise.
+
+    So the population is ratcheted rather than enumerated. Adding a MUST under a
+    dispositioned heading changes the count, the recount disagrees with the
+    declaration, and the author has to re-examine the disposition instead of
+    inheriting it silently.
+
+    THIS IS A GROWTH DETECTOR, NOT A PER-DIRECTIVE PROOF, and the rule text says
+    so. A disposition still covers a whole section. What it can no longer do is
+    absorb a NEW directive without anyone looking.
+
+    `directives` is optional: a rule may omit it, and then no ratchet applies to
+    that clause. Omission is visible in the block, which is the honest form of
+    "not ratcheted" -- unlike a default that would look like a count.
+    """
+    by_key = {}
+    for heading_line, body in sections(text):
+        m = _HEADING_RE.match(heading_line)
+        if m and MARKER in heading_line:
+            by_key[clause_key(m.group(2))] = (m.group(2).strip(), body)
+    violations = []
+    for idx, entry in enumerate(entries):
+        if "directives" not in entry:
+            continue
+        found = by_key.get(clause_key(entry["clause"]))
+        if found is None:
+            continue  # orphan clause, already reported by check_clause_keys
+        raw, body = found
+        actual = count_directives(body)
+        declared = entry["directives"]
+        if actual != declared:
+            violations.append(Violation(
+                12, path,
+                "entry %d declares directives: %d for %r, but the section now "
+                "carries %d. Re-read the disposition against what the section "
+                "actually says, then update the count -- a new directive must not "
+                "inherit an old disposition."
+                % (idx, declared, raw, actual)))
+    return violations
+
+
 def check_coverage(entries, text, path):
     """C1: a marker-carrying heading with no entry covering it is a bare claim."""
     covered = {clause_key(e["clause"]) for e in entries}
@@ -931,6 +1056,7 @@ def lint_text(text, path):
     violations += check_clause_keys(entries, text, path)
     violations += check_exec(entries, path)
     violations += check_posture(entries, path)
+    violations += check_directive_counts(entries, text, path)
     violations += check_coverage(entries, text, path)
     return violations
 

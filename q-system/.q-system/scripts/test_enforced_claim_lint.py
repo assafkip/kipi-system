@@ -853,6 +853,92 @@ def test_posture_classifies_this_repos_real_scripts():
             assert L.can_exit_nonzero(p.read_text(), p.suffix) is expected, rel
 
 
+# --- directive count: a new directive cannot inherit an old disposition ----------
+
+def _directive_rule(count_decl, body):
+    block = json.dumps([{"clause": "Cleanup Rule", "status": "ADVISORY",
+                         "note": "n", "directives": count_decl}])
+    return _rule(block=block, body=body)
+
+
+def test_directive_count_control_matching_count_passes():
+    """CONTROL. A declaration matching the section is clean. Without this the
+    ratchet could be satisfied by a check that always disagrees."""
+    body = "You MUST do the thing.\nYou must never skip it.\n"
+    assert L.lint_text(_directive_rule(2, body), "fixture.md") == []
+
+
+def test_directive_count_added_directive_trips_the_ratchet():
+    """C12, THE POINT (finding-3). Coverage keyed to a heading is heading-level
+    wearing a clause-level label: one disposition greens every directive beneath a
+    broad heading. Adding a MUST must force a re-read rather than inherit."""
+    body = "You MUST do the thing.\nYou must never skip it.\nAnd you MUST also log it.\n"
+    v = L.lint_text(_directive_rule(2, body), "fixture.md")
+    assert 12 in _codes(v)
+    assert "carries 3" in " ".join(str(x) for x in v)
+
+
+def test_directive_count_removed_directive_also_trips():
+    """The ratchet is two-way. Deleting a directive silently would leave a
+    disposition claiming to cover more than the section says."""
+    v = L.lint_text(_directive_rule(2, "You MUST do the thing.\n"), "fixture.md")
+    assert 12 in _codes(v)
+
+
+def test_directive_count_is_optional():
+    """Omission is the honest form of 'not ratcheted', and it is VISIBLE in the
+    block -- unlike a default, which would look like a count."""
+    block = json.dumps([{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n"}])
+    body = "You MUST do the thing.\nAnd you MUST do another.\n"
+    assert L.lint_text(_rule(block=block, body=body), "fixture.md") == []
+
+
+def test_directive_count_ignores_fenced_examples():
+    """A directive quoted inside a code fence is not an instruction the rule is
+    issuing, so it must not move the count."""
+    body = "You MUST do the thing.\n\n```\nthe docs say you MUST NOT do this\n```\n"
+    assert L.lint_text(_directive_rule(1, body), "fixture.md") == []
+
+
+def test_directive_count_one_per_line_not_per_occurrence():
+    """A line saying MUST twice is one instruction to a reader. Counting
+    occurrences would move the number on rewording rather than on meaning."""
+    body = "You MUST do X and you MUST do Y.\n"
+    assert L.lint_text(_directive_rule(1, body), "fixture.md") == []
+
+
+def test_sections_are_level_aware():
+    """MEASURED, not assumed. Splitting at EVERY heading gave 3 directives across
+    all 32 marked sections in the real tree, against a forecast of 118. A ratchet
+    with a near-zero population cannot detect growth in anything."""
+    text = ("# Top (ENFORCED)\n\nYou MUST do A.\n\n"
+            "## Sub\n\nYou MUST do B.\n\n"
+            "# Other\n\nYou MUST do C.\n")
+    got = {L._HEADING_RE.match(h).group(2): L.count_directives(b)
+           for h, b in L.sections(text)}
+    assert got["Top (ENFORCED)"] == 2, "an H1 owns its subsections"
+    assert got["Sub"] == 1
+    assert got["Other"] == 1, "and stops at the next same-level heading"
+
+
+def test_directive_regex_population_is_not_near_zero():
+    """GROUNDING. Pins the decision that case-insensitive matching was required:
+    on this repo's real marked sections the population must stay substantial, or
+    the ratchet is decoration."""
+    root = Path(__file__).resolve().parents[3]
+    total = 0
+    markers = 0
+    for f in sorted((root / ".claude" / "rules").rglob("*.md")):
+        for heading, body in L.sections(f.read_text()):
+            if L.MARKER in heading:
+                markers += 1
+                total += L.count_directives(body)
+    assert markers >= 25, markers
+    assert total >= 50, ("directive population collapsed to %d across %d markers; "
+                         "uppercase-only matching gave 15 and was rejected for this"
+                         % (total, markers))
+
+
 # --- self-scoping ---------------------------------------------------------------
 
 def test_scope_only_rule_markdown():
