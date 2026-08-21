@@ -95,9 +95,16 @@ CASES = {
     2: dict(block=json.dumps([entry(clause="Cleanup Rule"),
                               entry(clause="cleanup   rule")]),
             why="two entries colliding onto one clause key"),
+    # `also` DECLARES the other conditions a fixture legitimately triggers, and
+    # the assertion below compares the EXACT set. Asserting only "the tag is
+    # present" would let a fixture start firing for a NEW reason without anyone
+    # noticing -- a case passing for the wrong reason is the failure mode this
+    # whole matrix exists to prevent. C3 and C4 both leave the heading uncovered
+    # (an orphan disposition covers nothing; unparseable JSON yields no entries),
+    # so C1 is expected alongside them.
     3: dict(block=json.dumps([entry(clause="A Heading That Is Not There")]),
-            why="a disposition matching no marked heading"),
-    4: dict(block='[{"clause": "Cleanup Rule",}]', why="malformed JSON"),
+            also=[1], why="a disposition matching no marked heading"),
+    4: dict(block='[{"clause": "Cleanup Rule",}]', also=[1], why="malformed JSON"),
     5: dict(block=json.dumps([entry(exec="q-system/scripts/totally-imaginary-lint.py")]),
             why="THE BRIEF'S CASE: ENFORCED naming a fictional executable"),
     6: dict(block=json.dumps([entry()]), cmd="python3 other.py",
@@ -141,17 +148,21 @@ failures = []
 for cond in DERIVED:
     spec = dict(CASES[cond])
     why = spec.pop("why")
+    expected = {cond} | set(spec.pop("also", []))
     with tempfile.TemporaryDirectory() as d:
         tree(d, **spec)
         env = dict(os.environ, CLAUDE_PROJECT_DIR=d)
         r = subprocess.run([sys.executable, LINT, "--all"],
                            capture_output=True, text=True, env=env)
         tag = "[C%d]" % cond
+        seen = {int(x) for x in re.findall(r"\[C(\d+)\]", r.stderr)}
         if r.returncode == 0:
             failures.append("C%d (%s): expected a violation, got exit 0" % (cond, why))
-        elif tag not in r.stderr:
-            failures.append("C%d (%s): blocked, but %s never appeared. stderr: %s"
-                            % (cond, why, tag, r.stderr.strip()[:200]))
+        elif seen != expected:
+            failures.append("C%d (%s): expected exactly %s, got %s. A case that "
+                            "fires for a different reason is a case passing for "
+                            "the wrong reason."
+                            % (cond, why, sorted(expected), sorted(seen)))
         else:
             print("  RED as required  %-4s %s" % (tag, why))
 
