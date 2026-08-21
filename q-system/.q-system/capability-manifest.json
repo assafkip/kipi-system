@@ -437,6 +437,10 @@
       "timeout_s": 120
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-quick-plan-rule-wired.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-social-reaction-gate-rule-wired.sh",
       "runner": "bash"
     },
