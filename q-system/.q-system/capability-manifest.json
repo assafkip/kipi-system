@@ -441,6 +441,10 @@
       "runner": "bash"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-social-reaction-gate-rule-wired.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-styles-csv-width.sh",
       "runner": "bash"
     },
