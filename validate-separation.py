@@ -1021,6 +1021,35 @@ def phase_1():
             if result.returncode != 0 and audit_out:
                 errors.append(audit_out)
 
+    # ENFORCED-claim audit (ASK-965). The sibling question to the one above: that
+    # audit asks whether a SKILL's hook is wired, this asks whether a RULE's
+    # (ENFORCED marker names an executable that exists, is wired in the config it
+    # names, is not neutered there, and has a test pinning the claim.
+    #
+    # Wired in three places on purpose, and they catch different things:
+    #   PostToolUse  feedback on the write that just landed
+    #   lefthook     the commit, which is what makes the invariant persistent
+    #   here         the whole tree, which is what a fleet-wide `check` is for --
+    #                it also sees rule files that arrived by rsync from the
+    #                skeleton, which neither of the other two ever mediates.
+    claim_lint = os.path.join(SCRIPT_DIR, "q-system", ".q-system", "scripts",
+                              "enforced-claim-lint.py")
+    if not file_exists(claim_lint):
+        warn("Enforced-claim audit: q-system/.q-system/scripts/enforced-claim-lint.py missing")
+    else:
+        env = dict(os.environ, CLAUDE_PROJECT_DIR=SCRIPT_DIR)
+        result = subprocess.run([sys.executable, claim_lint, "--all"],
+                                capture_output=True, text=True, env=env)
+        claim_out = (result.stdout + result.stderr).strip()
+        check("Enforced-claim audit: every (ENFORCED marker is substantiated or baselined",
+              result.returncode == 0)
+        if result.returncode != 0 and claim_out:
+            errors.append(claim_out)
+        elif claim_out:
+            # The remaining baselined debt, surfaced on green runs too. Debt that
+            # stops being mentioned stops being debt and becomes furniture.
+            print(f"  {claim_out.splitlines()[-1]}")
+
 
 def phase_2():
     phase_header(2, "KTLYST_strategy subtree")

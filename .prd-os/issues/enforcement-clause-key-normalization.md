@@ -1,7 +1,7 @@
 ---
 id: enforcement-clause-key-normalization
 title: Exact clause-key normalization, duplicate keys rejected, orphan dispositions rejected
-status: open
+status: closed
 priority: p0
 parent_prd: prd-enforced-claim-verification-2026-08-21
 allowed_files:
@@ -30,4 +30,4 @@ Parent PRD: `.prd-os/prds/prd-enforced-claim-verification-2026-08-21.md`
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Exact clause-key normalization, duplicate keys rejected, orphan dispositions rejected
+- [x] Exact clause-key normalization, duplicate keys rejected, orphan dispositions rejected

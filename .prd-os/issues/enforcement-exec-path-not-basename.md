@@ -1,7 +1,7 @@
 ---
 id: enforcement-exec-path-not-basename
 title: exec is a repo-relative path with one referent, never a basename
-status: open
+status: closed
 priority: p0
 parent_prd: prd-enforced-claim-verification-2026-08-21
 allowed_files:
@@ -30,4 +30,4 @@ Parent PRD: `.prd-os/prds/prd-enforced-claim-verification-2026-08-21.md`
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] exec is a repo-relative path with one referent, never a basename
+- [x] exec is a repo-relative path with one referent, never a basename

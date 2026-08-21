@@ -9,7 +9,8 @@ allowed_files:
   - q-system/.q-system/scripts/test_enforced_claim_lint.py
   - lefthook.yml
   - q-system/.q-system/proposals/*.json
-  - plugins/kipi-core/scripts/validate-separation.py
+  - validate-separation.py
+  - q-system/.q-system/enforced-claim-baseline.json
 disallowed_files: []
 required_checks:
   - python3 q-system/.q-system/scripts/enforced-claim-lint.py --all

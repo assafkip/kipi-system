@@ -994,6 +994,98 @@ def test_directive_regex_population_is_not_near_zero():
                          % (total, markers))
 
 
+# --- whole_tree: the gate outside PostToolUse ------------------------------------
+
+def test_whole_tree_lefthook_is_recognized_as_wiring():
+    """sp-3dc0b094. This repo enforces through THREE mechanisms and the allowlist
+    knew one. linear-first.md blocks commits via lefthook's commit-msg stage and is
+    genuinely ENFORCED; without lefthook here it would have been forced to declare
+    ADVISORY -- a gate red on an honestly-enforced rule, which is how a gate gets
+    switched off."""
+    assert L.is_wiring_config("lefthook.yml")
+    root = Path(__file__).resolve().parents[3]
+    lh = root / "lefthook.yml"
+    if not lh.is_file():
+        return
+    targets = set()
+    for cmd in L.wired_commands(lh):
+        targets |= L.command_targets(cmd, None)
+    assert "q-system/.q-system/scripts/linear-issue-ref-check.py" in targets, sorted(targets)
+
+
+def test_whole_tree_lefthook_reads_block_and_inline_run():
+    """Both YAML forms, because this repo uses both. A reader that saw only one
+    would silently report half the commit-time gates as unwired."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "lefthook.yml"
+        p.write_text(
+            "pre-commit:\n  commands:\n"
+            "    inline:\n      run: python3 q-system/a.py\n"
+            "    block:\n      run: |\n"
+            "        echo start\n        python3 q-system/b.py\n"
+            "    after:\n      run: python3 q-system/c.py\n")
+        targets = set()
+        for cmd in L.wired_commands(p):
+            targets |= L.command_targets(cmd, None)
+        assert {"q-system/a.py", "q-system/b.py", "q-system/c.py"} <= targets, targets
+
+
+def test_whole_tree_baseline_excuses_only_undispositioned_markers(tmp_path):
+    """A baseline entry excuses C1 and nothing else. Every other condition means a
+    disposition EXISTS and is wrong, which is new work by definition and never
+    pre-existing debt."""
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    (rules / "bare.md").write_text(_rule(block=None))
+    baseline = tmp_path / "q-system" / ".q-system"
+    baseline.mkdir(parents=True)
+    key = ".claude/rules/bare.md::" + L.clause_key("Cleanup Rule (ENFORCED)")
+    (baseline / "enforced-claim-baseline.json").write_text(
+        json.dumps({"uncovered_markers": [key]}))
+    assert L.load_baseline(tmp_path) == {key}
+    assert L.baseline_key(tmp_path, rules / "bare.md",
+                          L.clause_key("Cleanup Rule (ENFORCED)")) == key
+
+
+def test_whole_tree_real_tree_is_green_and_reports_its_debt():
+    """GROUNDING. --all over the real tree must exit 0 (the baseline covers the
+    pre-existing markers) while still REPORTING how many owe a disposition. A gate
+    that goes red on its own population on day one is unsatisfiable and gets
+    switched off; one that goes quiet about the debt lets it become furniture."""
+    import subprocess
+    root = Path(__file__).resolve().parents[3]
+    lint = root / "q-system" / ".q-system" / "scripts" / "enforced-claim-lint.py"
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root))
+    r = subprocess.run([sys.executable, str(lint), "--all"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "owe a disposition" in r.stdout, r.stdout
+
+
+def test_whole_tree_a_fabricated_claim_makes_it_red(tmp_path):
+    """THE MUTATION, at whole-tree level. A rule claiming ENFORCED with a fictional
+    executable must make --all exit non-zero even though the tree is otherwise
+    clean, and a baseline must NOT excuse it (the disposition exists and is wrong).
+    """
+    import subprocess
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    (rules / "fabricated.md").write_text(_rule(block=json.dumps([{
+        "clause": "Cleanup Rule", "status": "ENFORCED",
+        "exec": "q-system/scripts/totally-imaginary-lint.py",
+        "config": ".claude/settings.json",
+        "test": "q-system/scripts/test_ghost.py"}])))
+    (tmp_path / ".claude" / "settings.json").write_text(json.dumps({"hooks": {}}))
+    root = Path(__file__).resolve().parents[3]
+    lint = root / "q-system" / ".q-system" / "scripts" / "enforced-claim-lint.py"
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(tmp_path))
+    r = subprocess.run([sys.executable, str(lint), "--all"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "totally-imaginary-lint.py" in r.stderr
+
+
 # --- self-scoping ---------------------------------------------------------------
 
 def test_scope_only_rule_markdown():

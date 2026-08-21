@@ -118,10 +118,14 @@ class Violation:
     """One blocking finding. Carries the condition number so the mutation matrix
     can assert on a stable id rather than on message wording, which drifts."""
 
-    def __init__(self, condition, path, detail):
+    def __init__(self, condition, path, detail, clause=None):
         self.condition = condition
         self.path = path
         self.detail = detail
+        # The heading text this violation is about, when there is one. --all uses
+        # it to build a stable baseline key; without it the baseline would have to
+        # key on the message string, which drifts on every reword.
+        self.clause = clause
 
     def __str__(self):
         return "[C%d] %s: %s" % (self.condition, self.path, self.detail)
@@ -482,18 +486,75 @@ INTERPRETERS = frozenset({"python", "python2", "python3", "bash", "sh", "zsh",
 # never running (codex review of 386bfedd, blocker).
 _PLUGIN_HOOKS_RE = re.compile(r"^plugins/[^/]+/hooks/hooks\.json$")
 _SETTINGS_CONFIGS = (".claude/settings.json", "settings-template.json")
+# Git hooks. THIS REPO ENFORCES THROUGH THREE MECHANISMS, NOT ONE, and an earlier
+# version of this allowlist knew only the first (sp-3dc0b094, measured on the real
+# tree): hook configs, lefthook git hooks, and validators invoked by `kipi check`.
+# linear-first.md blocks commits via lefthook's commit-msg stage and is genuinely
+# ENFORCED; without lefthook here it would have been forced to declare ADVISORY.
+# A gate red on rules that are honestly enforced is the unsatisfiable-population
+# failure automated-filer-marking.md warns about -- it gets switched off, and a
+# switched-off gate protects nothing.
+_LEFTHOOK_CONFIGS = ("lefthook.yml", "lefthook.yaml", ".lefthook.yml")
 
 
 def is_wiring_config(config_rel):
-    """Is this path a file that actually wires hooks?
+    """Is this path a file that actually wires an enforcement point?
 
     `.claude/settings.json` is what Claude Code loads. `settings-template.json` is
-    the fleet ship path -- `kipi update` rebuilds every instance's settings.json
-    from it, and `skill-hook-pairing.md` requires a hook in BOTH, so a rule may
-    honestly name either. Plugin `hooks/hooks.json` files are loaded per plugin.
-    Nothing else wires anything, whatever its shape.
+    the fleet ship path -- the skeleton updater rebuilds every instance's
+    settings.json from it, and `skill-hook-pairing.md` requires a hook in BOTH, so
+    a rule may honestly name either. Plugin `hooks/hooks.json` files are loaded per
+    plugin. `lefthook.yml` wires git hooks, which is how the commit-time gates in
+    this repo actually block.
+
+    STILL NOT COMPLETE, and saying so is the point of this file: a validator
+    invoked by `kipi check` (validate-separation.py, and the model-allocation rule
+    that depends on it) is a real enforcement path with no config to name here. A
+    rule enforced that way cannot yet declare ENFORCED honestly and must use
+    DETECTED with a note. That is a known gap, not a claim of coverage.
     """
-    return config_rel in _SETTINGS_CONFIGS or bool(_PLUGIN_HOOKS_RE.match(config_rel))
+    return (config_rel in _SETTINGS_CONFIGS
+            or config_rel in _LEFTHOOK_CONFIGS
+            or bool(_PLUGIN_HOOKS_RE.match(config_rel)))
+
+
+def _lefthook_commands(config_path):
+    """Every `run:` command in a lefthook config, including block scalars.
+
+    A deliberately small YAML reader rather than a dependency: this needs one key,
+    and adding a package to a hook that runs on every rule-file write fleet-wide
+    would be a much larger change than the question deserves. Both the inline form
+    (`run: cmd`) and the block form (`run: |`) are read; a block ends at the first
+    line indented no further than the `run:` key itself.
+    """
+    try:
+        text = config_path.read_text()
+    except (OSError, UnicodeDecodeError):
+        return []
+    out = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = re.match(r"^(\s*)run:\s*(\S.*)?$", line)
+        if not m:
+            i += 1
+            continue
+        indent, inline = len(m.group(1)), m.group(2)
+        if inline and inline not in ("|", ">", "|-", ">-"):
+            out.append(inline)
+            i += 1
+            continue
+        i += 1
+        body = []
+        while i < len(lines):
+            nxt = lines[i]
+            if nxt.strip() and (len(nxt) - len(nxt.lstrip())) <= indent:
+                break
+            body.append(nxt)
+            i += 1
+        out.append("\n".join(body))
+    return out
 
 
 def plugin_root_for(config_rel):
@@ -571,6 +632,8 @@ def wired_commands(config_path):
     no commands, so a claim resting on one fails rather than passing on a parse
     error.
     """
+    if config_path.name in _LEFTHOOK_CONFIGS:
+        return _lefthook_commands(config_path)
     try:
         data = json.loads(config_path.read_text())
     except (OSError, ValueError, UnicodeDecodeError):
@@ -1092,7 +1155,7 @@ def check_coverage(entries, text, path):
     for raw, key in marked_headings(text):
         if key not in covered:
             violations.append(Violation(
-                1, path,
+                1, path, clause=raw, detail=
                 "heading %r carries the ENFORCED marker but no enforcement entry "
                 "covers it. Declare one: status ENFORCED (names a wired, blocking, "
                 "tested executable), DETECTED (wired, surfaces only), or ADVISORY "
@@ -1115,6 +1178,48 @@ def lint_text(text, path):
     violations += check_directive_counts(entries, text, path)
     violations += check_coverage(entries, text, path)
     return violations
+
+
+BASELINE_REL = os.path.join("q-system", ".q-system", "enforced-claim-baseline.json")
+
+
+def load_baseline(root):
+    """Markers that predate this gate, as `<rule path>::<clause key>` strings.
+
+    WHY A BASELINE AT ALL. Measured 2026-08-21, before any of this shipped: 29
+    rule files carry 35 markers across 32 headings, and NONE had a disposition.
+    A gate that goes red on 32 markers the day it lands is unsatisfiable for its
+    own population -- the exact shape `automated-filer-marking.md` measured before
+    shipping (8 files constructed the Linear create-issue mutation, 1 carried the
+    label) and refused to ship. An unsatisfiable gate gets switched off, and a
+    switched-off gate protects nothing at all.
+
+    So the debt is RATCHETED rather than forgiven. Every entry is a marker someone
+    still has to disposition; the file may only shrink; and `--all` prints the
+    remaining count on every run so it stays visible instead of becoming furniture.
+
+    It lives OUTSIDE `.claude/` deliberately. A JSON config the sanctioned write
+    path creates is create-once, correct-never -- `create_file` refuses a target
+    that exists with different content and `replace` is pinned to rule text
+    (sp-fea73326) -- so a baseline under `.claude/` could never shrink, which is
+    the one thing it has to be able to do.
+    """
+    path = os.path.join(str(root), BASELINE_REL)
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return set()
+    entries = data.get("uncovered_markers")
+    return set(entries) if isinstance(entries, list) else set()
+
+
+def baseline_key(root, file_path, clause_key_value):
+    try:
+        rel = os.path.relpath(str(file_path), str(root))
+    except ValueError:
+        rel = str(file_path)
+    return "%s::%s" % (rel.replace(os.sep, "/"), clause_key_value)
 
 
 def lint_file(path, strict=False):
@@ -1167,15 +1272,36 @@ def main():
     if "--all" in sys.argv:
         root = Path(os.environ.get("CLAUDE_PROJECT_DIR", ".")).resolve()
         rules = root / ".claude" / "rules"
+        baseline = load_baseline(root)
         violations = []
+        excused = set()
         for f in sorted(rules.rglob("*.md")):
-            violations += lint_file(f, strict=True)
+            for v in lint_file(f, strict=True):
+                key = baseline_key(root, v.path, clause_key(v.clause or ""))
+                # ONLY C1 (an undispositioned marker) is baselineable. Every other
+                # condition means a disposition EXISTS and is wrong, which is new
+                # work by definition and never pre-existing debt.
+                if v.condition == 1 and key in baseline:
+                    excused.add(key)
+                    continue
+                violations.append(v)
+        stale = sorted(baseline - excused)
+        for key in stale:
+            violations.append(Violation(
+                0, BASELINE_REL,
+                "baseline lists %r, which is no longer an undispositioned marker. "
+                "Remove it: the baseline may only shrink, and a stale entry would "
+                "silently re-excuse the marker if it ever came back." % key))
         if violations:
             sys.stderr.write("[enforced-claim-lint] %d violation(s):\n" % len(violations))
             for v in violations:
                 sys.stderr.write("  - %s\n" % v)
             return 1
-        print("[enforced-claim-lint] PASS -- every ENFORCED marker is dispositioned.")
+        # Printed on EVERY run, including green ones. Debt that stops being
+        # mentioned stops being debt and becomes furniture.
+        print("[enforced-claim-lint] PASS -- every ENFORCED marker is dispositioned "
+              "or baselined. %d marker(s) still owe a disposition (baseline may only "
+              "shrink)." % len(excused))
         return 0
 
     # Hook mode. A crash here must never wedge rule-file writes fleet-wide.

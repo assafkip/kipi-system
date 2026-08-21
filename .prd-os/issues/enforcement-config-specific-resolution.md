@@ -1,7 +1,7 @@
 ---
 id: enforcement-config-specific-resolution
 title: Resolve the exec against the NAMED config, not any config
-status: open
+status: closed
 priority: p0
 parent_prd: prd-enforced-claim-verification-2026-08-21
 allowed_files:
@@ -30,4 +30,4 @@ Parent PRD: `.prd-os/prds/prd-enforced-claim-verification-2026-08-21.md`
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Resolve the exec against the NAMED config, not any config
+- [x] Resolve the exec against the NAMED config, not any config
