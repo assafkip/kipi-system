@@ -225,7 +225,14 @@ def clause_key(text):
     """
     text = (text or "").strip()
     tail = re.search(r"\s*\(([^)]*)\)\s*$", text)
-    if tail and "ENFORCED" in tail.group(1):
+    # MARKER, not the bare word. Testing for the substring "ENFORCED" stripped
+    # the parenthetical off "Cleanup Rule (UNENFORCED)" too, so it collided with
+    # "Cleanup Rule (ENFORCED)" -- while marked_headings, which tests `MARKER in
+    # line`, correctly does NOT treat "(UNENFORCED)" as a marker. Two functions in
+    # one file disagreeing about what the marker is, is the same drift class as
+    # two files disagreeing about what a heading is (codex standard review of
+    # 6fdca4bf). One definition, used by both.
+    if tail and ("(" + tail.group(1)).startswith(MARKER):
         text = text[:tail.start()]
     text = text.lower()
     text = re.sub(r"[^a-z0-9 ]+", " ", text)
@@ -249,7 +256,27 @@ def check_clause_keys(entries, text, path):
                          is the residue left behind when a heading is reworded.
     """
     violations = []
-    heading_keys = {key for _, key in marked_headings(text)}
+    headings = marked_headings(text)
+
+    # HEADING collisions, not just entry collisions. Deduplicating headings into a
+    # set hid the mirror-image of the bug this function exists to catch: two
+    # distinct marked headings normalizing to one key (`Delete-local` and
+    # `Delete local`) meant ONE entry covered BOTH, and coverage returned clean --
+    # the same accidental coverage, arriving from the heading side (codex standard
+    # review of 6fdca4bf). Checked before entries, because while two headings share
+    # a key no entry can unambiguously cover either.
+    heading_seen = {}
+    for raw, key in headings:
+        if key in heading_seen:
+            violations.append(Violation(
+                2, path,
+                "headings %r and %r both normalize to clause key %r, so one "
+                "disposition would cover both. Reword one heading."
+                % (heading_seen[key], raw, key)))
+        else:
+            heading_seen[key] = raw
+
+    heading_keys = set(heading_seen)
     seen = {}
     for idx, entry in enumerate(entries):
         key = clause_key(entry["clause"])

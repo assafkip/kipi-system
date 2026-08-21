@@ -278,6 +278,31 @@ def test_clause_key_orphan_entry_is_refused():
     assert "matches no ENFORCED-marked heading" in " ".join(str(x) for x in v)
 
 
+def test_clause_key_colliding_headings_are_refused():
+    """C2, mirror image. Two distinct MARKED HEADINGS normalizing to one key mean
+    one entry covers both, and coverage returns clean. Deduplicating headings into
+    a set hid exactly the accidental coverage this check exists to prevent."""
+    block = '[{"clause": "Delete local", "status": "ADVISORY", "note": "n"}]'
+    text = _rule(heading="Delete-local (ENFORCED)", block=block)
+    text += "\n## Delete local (ENFORCED)\n\nMore text.\n"
+    v = L.lint_text(text, "fixture.md")
+    assert 2 in _codes(v)
+    assert "both normalize to clause key" in " ".join(str(x) for x in v)
+
+
+def test_clause_key_near_marker_is_not_the_marker():
+    """The marker is the token, not the word. Testing for the substring
+    'ENFORCED' stripped the parenthetical off '(UNENFORCED)' too, so it collided
+    with '(ENFORCED)' -- while marked_headings, testing `MARKER in line`,
+    correctly does not treat '(UNENFORCED)' as a marker at all. One definition."""
+    assert L.clause_key("Cleanup Rule (UNENFORCED)") == "cleanup rule unenforced"
+    assert L.clause_key("Cleanup Rule (ENFORCED)") == "cleanup rule"
+    assert L.clause_key("Cleanup Rule (UNENFORCED)") != L.clause_key("Cleanup Rule (ENFORCED)")
+    # And the heading reader agrees: (UNENFORCED) is not a claim.
+    assert not L.marked_headings("# Cleanup Rule (UNENFORCED)")
+    assert L.marked_headings("# Cleanup Rule (ENFORCED)")
+
+
 def test_clause_key_control_distinct_keys_pass():
     """CONTROL. Two genuinely distinct clauses on two real headings are clean.
 
