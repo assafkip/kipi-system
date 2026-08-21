@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "slug": "token-discipline-honest-advisory-v2",
+  "reason": "ASK-965: correct a FALSE ENFORCED claim I introduced. token-discipline.md's two markers sit on clauses its own body says are NOT gated. token-guard.py is real, wired and blocking, so the entries satisfied the lint's mechanical definition - which is exactly the residue the lint documents: it proves a wired blocking executable exists, never that it implements THIS clause. Where a rule's own text contradicts the status, the status is wrong. superseded_by keeps the token-guard.py basename in the file, which the exec-ref ratchet requires and which also records WHAT was wrongly claimed.",
+  "requires": {
+    "files_present": [
+      "q-system/.q-system/scripts/enforced-claim-lint.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/rules/token-discipline.md",
+      "op": "replace",
+      "anchor": "[\n  {\n    \"clause\": \"Cleanup / Migration Rule\",\n    \"status\": \"ENFORCED\",\n    \"exec\": \"q-system/.q-system/token-guard.py\",\n    \"config\": \".claude/settings.json\",\n    \"test\": \"q-system/.q-system/scripts/test/test-token-discipline-rule-wired.sh\",\n    \"directives\": 0\n  },\n  {\n    \"clause\": \"Pre-Action Echo\",\n    \"status\": \"ENFORCED\",\n    \"exec\": \"q-system/.q-system/token-guard.py\",\n    \"config\": \".claude/settings.json\",\n    \"test\": \"q-system/.q-system/scripts/test/test-token-discipline-rule-wired.sh\",\n    \"directives\": 1\n  }\n]",
+      "reason": "Two false ENFORCED entries become honest ADVISORY ones with a marker-removal ticket.",
+      "insert": "[\n  {\n    \"clause\": \"Cleanup / Migration Rule\",\n    \"status\": \"ADVISORY\",\n    \"note\": \"token-guard.py is wired and blocking, but implements neither grep pass; the rule's own text says the passes are not gated\",\n    \"superseded_by\": \"q-system/.q-system/token-guard.py was claimed as this clause's enforcer and is not\",\n    \"marker_removal_ref\": \"sp-45473673\",\n    \"directives\": 0\n  },\n  {\n    \"clause\": \"Pre-Action Echo\",\n    \"status\": \"ADVISORY\",\n    \"note\": \"structurally unhookable: a PreToolUse hook sees tool_input, never prose, and 'wait for OK' needs a user turn no unattended run has\",\n    \"superseded_by\": \"q-system/.q-system/token-guard.py was claimed as this clause's enforcer and is not\",\n    \"marker_removal_ref\": \"sp-45473673\",\n    \"directives\": 1\n  }\n]"
+    }
+  ]
+}

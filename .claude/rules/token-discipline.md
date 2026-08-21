@@ -50,18 +50,18 @@ Before the first Edit, Write, or destructive Bash call: if the task touches more
 [
   {
     "clause": "Cleanup / Migration Rule",
-    "status": "ENFORCED",
-    "exec": "q-system/.q-system/token-guard.py",
-    "config": ".claude/settings.json",
-    "test": "q-system/.q-system/scripts/test/test-token-discipline-rule-wired.sh",
+    "status": "ADVISORY",
+    "note": "token-guard.py is wired and blocking but implements neither grep pass; the rule's own text says the passes are not gated",
+    "superseded_by": "was ENFORCED naming q-system/.q-system/token-guard.py, which does not implement this clause",
+    "marker_removal_ref": "sp-45473673",
     "directives": 0
   },
   {
     "clause": "Pre-Action Echo",
-    "status": "ENFORCED",
-    "exec": "q-system/.q-system/token-guard.py",
-    "config": ".claude/settings.json",
-    "test": "q-system/.q-system/scripts/test/test-token-discipline-rule-wired.sh",
+    "status": "ADVISORY",
+    "note": "structurally unhookable: a PreToolUse hook sees tool_input, never prose, and waiting for OK needs a user turn",
+    "superseded_by": "was ENFORCED naming q-system/.q-system/scripts/test/test-token-discipline-rule-wired.sh as its receipt; that test pins the LABELLING, not this behaviour",
+    "marker_removal_ref": "sp-45473673",
     "directives": 1
   }
 ]

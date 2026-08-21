@@ -781,10 +781,22 @@ def _advisory_under_marker(entry, idx, path, root):
         return []
     open_ids = open_spillover_ids(root)
     if not open_ids:
-        # No ledger, or an empty one. Refusing here would make the gate
-        # unsatisfiable in a repo that has never run prd-os init, so the reference
-        # is accepted and the limit is stated rather than pretended away.
-        return []
+        # FAIL CLOSED. This branch used to ACCEPT, on the reasoning that refusing
+        # would be unsatisfiable in a repo that never ran prd-os init. Measured
+        # after the fact (codex-adversarial review of 53a10d54, blocker): the
+        # ledger is GITIGNORED (`*.jsonl`) and absent from HEAD, so EVERY clean
+        # checkout hits this branch and accepts any fabricated `sp-deadbeef`. The
+        # escape hatch was not a corner case, it was the only case, and the check
+        # never fired anywhere.
+        #
+        # An unverifiable ticket is not a ticket. Where the ledger is unreadable
+        # the claim cannot be substantiated, so it is refused rather than waved
+        # through -- the same polarity as every other condition here.
+        return [Violation(
+            11, path,
+            "entry %d names marker_removal_ref %r but no spillover ledger is "
+            "readable at %s, so the ticket cannot be verified. An unverifiable "
+            "reference records nothing." % (idx, ref, SPILLOVER_REL))]
     if ref not in open_ids:
         return [Violation(
             11, path,
@@ -1354,6 +1366,28 @@ def _read_baseline(root):
     return entries, initial if isinstance(initial, int) else len(entries)
 
 
+def _baseline_at_head(root):
+    """The committed baseline's entry set, or None when it cannot be read.
+
+    None (no git, no such file yet, a first commit) means "no predecessor to
+    compare against" and the caller falls back to the in-file count. That is a
+    stated limit, not a silent pass: the in-file check still runs, and the only
+    situation with neither is a repo where the baseline has never been committed.
+    """
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "show", "HEAD:" + BASELINE_REL.replace(os.sep, "/")],
+            capture_output=True, timeout=30, check=False)
+        if proc.returncode != 0:
+            return None
+        data = json.loads(proc.stdout.decode("utf-8", "replace"))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    entries = data.get("uncovered_markers")
+    return set(entries) if isinstance(entries, list) else None
+
+
 def baseline_key(root, file_path, clause_key_value):
     try:
         rel = os.path.relpath(str(file_path), str(root))
@@ -1427,6 +1461,21 @@ def main():
                 "only SHRINK. Raising initial_count is a deliberate act that has "
                 "to be justified in review, never a side effect of adding a marker."
                 % (len(baseline), initial_count)))
+        # AGAINST HEAD, not against a number in the same mutable file
+        # (codex-adversarial review of 53a10d54, major). Comparing len(baseline)
+        # to an initial_count that lives BESIDE it means one commit can add keys
+        # and raise the number together, and the file certifies itself. HEAD is
+        # the immutable predecessor: whatever was committed last cannot be edited
+        # by the commit under test.
+        previous = _baseline_at_head(root)
+        if previous is not None:
+            grew = baseline - previous
+            if grew:
+                violations.append(Violation(
+                    0, BASELINE_REL,
+                    "baseline gained %d entry(ies) since HEAD: %s. It may only "
+                    "shrink. A marker that needs excusing is new work, not "
+                    "pre-existing debt." % (len(grew), ", ".join(sorted(grew)[:3]))))
         excused = set()
         for f in sorted(rules.rglob("*.md")):
             for v in lint_file(f, strict=True):

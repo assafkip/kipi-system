@@ -1210,6 +1210,48 @@ def test_advisory_openness_is_checked_only_in_whole_tree_mode(tmp_path):
     assert L.open_spillover_ids(tmp_path) == {"sp-open01"}
 
 
+def test_advisory_unverifiable_ledger_fails_closed(tmp_path):
+    """BLOCKER. This branch used to ACCEPT when no ledger was readable, on the
+    reasoning that refusing would be unsatisfiable in a fresh repo. Measured after
+    the fact: .prd-os/spillover.jsonl is GITIGNORED (*.jsonl) and absent from HEAD,
+    so EVERY clean checkout hit that branch and accepted any fabricated reference.
+    The escape hatch was not a corner case, it was the only case."""
+    import subprocess
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    rule = rules / "fixture.md"
+    rule.write_text(_rule(block=json.dumps([{
+        "clause": "Cleanup Rule", "status": "ADVISORY", "note": "n",
+        "marker_removal_ref": "sp-deadbeef"}])))
+    root = Path(__file__).resolve().parents[3]
+    lint = root / "q-system" / ".q-system" / "scripts" / "enforced-claim-lint.py"
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(tmp_path))
+    r = subprocess.run([sys.executable, str(lint), "--all"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "cannot be verified" in r.stderr
+
+
+def test_advisory_control_open_ref_passes_whole_tree(tmp_path):
+    """CONTROL for the fail-closed branch: with a ledger that HAS the item open,
+    the same rule passes. Without this the fix could pass by refusing everything."""
+    import subprocess
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    (rules / "fixture.md").write_text(_rule(block=json.dumps([{
+        "clause": "Cleanup Rule", "status": "ADVISORY", "note": "n",
+        "marker_removal_ref": "sp-abc123"}])))
+    (tmp_path / ".prd-os").mkdir()
+    (tmp_path / ".prd-os" / "spillover.jsonl").write_text(
+        json.dumps({"id": "sp-abc123", "status": "open"}) + "\n")
+    root = Path(__file__).resolve().parents[3]
+    lint = root / "q-system" / ".q-system" / "scripts" / "enforced-claim-lint.py"
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(tmp_path))
+    r = subprocess.run([sys.executable, str(lint), "--all"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
 def test_advisory_resolved_ref_is_not_an_open_item(tmp_path):
     """A closed reference records nothing: the discrepancy would stop being
     counted while the marker is still there."""

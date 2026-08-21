@@ -44,6 +44,10 @@ CATCH_ALL_PATTERNS = {"**/*", "**/**", "**"}
 
 
 ENFORCEMENT_MARKER = "<!-- enforcement -->"
+# Same fence grammar the enforced-claim lint uses: a fence closes only on the
+# same character at the same length or longer, which is what makes a ````-fenced
+# example able to contain ```json without ending.
+_FENCE_RE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})[ \t]*([^`~\s]*)")
 
 
 def count_lines(path):
@@ -64,26 +68,50 @@ def count_lines(path):
     if not os.path.exists(path):
         return 0
     total = 0
-    skipping = False
+    outer_fence = None      # (char, length) of an enclosing example fence
+    block_fence = None      # length of the disposition fence being skipped
     pending = False
     with open(path) as f:
         for line in f:
             stripped = line.strip()
             if not stripped:
                 continue
-            if stripped == ENFORCEMENT_MARKER:
+            fence = _FENCE_RE.match(stripped)
+
+            if block_fence is not None:
+                # Inside the disposition block. Closed by a fence of the same
+                # character at the same length or longer.
+                if fence and fence.group(1)[0] == "`" and len(fence.group(1)) >= block_fence:
+                    block_fence = None
+                continue
+
+            if fence:
+                char, length = fence.group(1)[0], len(fence.group(1))
+                if pending and char == "`" and fence.group(2) == "json" and outer_fence is None:
+                    # The disposition fence: skip its contents, count neither end.
+                    block_fence = length
+                    pending = False
+                    continue
+                pending = False
+                if outer_fence is None:
+                    outer_fence = (char, length)
+                elif char == outer_fence[0] and length >= outer_fence[1]:
+                    outer_fence = None
+                total += 1      # an ordinary fence line IS instruction text
+                continue
+
+            # MARKER ONLY AT TOP LEVEL. Reacting to it at any fence depth let a
+            # rule nest the marker plus an inner ```json inside a FOUR-backtick
+            # example: enforced-claim-lint ignores that marker (it is inside the
+            # outer fence) while this counter skipped the inner contents, so
+            # arbitrary instruction lines could be hidden from the budget
+            # (codex-adversarial review of 53a10d54, major). Two readers of one
+            # marker disagreeing about depth is the same drift class this PRD
+            # keeps finding; both now require depth 0.
+            if outer_fence is None and stripped == ENFORCEMENT_MARKER:
                 pending = True
                 continue
-            if pending:
-                if stripped.startswith("```"):
-                    skipping = True
-                pending = False
-                if skipping:
-                    continue
-            if skipping:
-                if stripped.startswith("```"):
-                    skipping = False
-                continue
+            pending = False
             total += 1
     return total
 

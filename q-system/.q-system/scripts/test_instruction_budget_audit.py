@@ -116,6 +116,29 @@ def test_marker_without_a_fence_is_not_a_block(tmp_path):
     assert A.count_lines(f) == 2  # heading + the instruction line
 
 
+def test_marker_inside_an_example_fence_hides_nothing(tmp_path):
+    """MAJOR. Reacting to the marker at ANY fence depth let a rule nest the marker
+    plus an inner ```json inside a FOUR-backtick example: enforced-claim-lint
+    ignores that marker (it sits inside the outer fence) while this counter
+    skipped the inner contents -- so arbitrary instruction lines vanished from the
+    budget. Two readers of one marker disagreeing about depth, which is the drift
+    class this PRD keeps finding."""
+    f = tmp_path / "rule.md"
+    f.write_text(
+        "# A Rule (ENFORCED)\n\n"
+        "````markdown\n"
+        "<!-- enforcement -->\n"
+        "```json\n"
+        "hidden instruction one\n"
+        "hidden instruction two\n"
+        "```\n"
+        "````\n")
+    # Nothing may be excluded: the marker is not at top level, so all 8 lines of
+    # the example count as the instruction text they are (heading, ````markdown,
+    # marker, ```json, two hidden lines, ```, ````).
+    assert A.count_lines(f) == 8
+
+
 if __name__ == "__main__":
     # The capability gate runs declared tests as `python3 <path>`.
     import pytest

@@ -36,4 +36,4 @@ Parent PRD: `.prd-os/prds/prd-enforced-claim-verification-2026-08-21.md`
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] ADVISORY under a live ENFORCED marker requires an open spillover ref; disposition pass over the 14 files
+- [x] ADVISORY under a live ENFORCED marker requires an open spillover ref; disposition pass over the 14 files
