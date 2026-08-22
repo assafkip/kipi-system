@@ -92,13 +92,19 @@ def tmp_registry(tmp_path):
 @pytest.fixture
 def tmp_registry_with_instances(tmp_path):
     """Create a registry with sample instances."""
+    # Each instance gets a REAL canonical tree. A registry row is not proof the
+    # tree exists, and the resolver now refuses a root with no canonical/ (4 live
+    # instances were resolving to directories that do not exist). A fixture that
+    # describes an instance without one is describing something that cannot happen.
     inst_path = tmp_path / "test-instance"
     inst_path.mkdir()
-    (inst_path / "q-system").mkdir()
+    (inst_path / "q-system" / "canonical").mkdir(parents=True)
+    (inst_path / "q-system" / "my-project").mkdir(parents=True)
 
     clone_path = tmp_path / "test-clone"
     clone_path.mkdir()
-    (clone_path / "q-system").mkdir()
+    (clone_path / "q-system" / "canonical").mkdir(parents=True)
+    (clone_path / "q-system" / "my-project").mkdir(parents=True)
 
     registry = {
         "skeleton": {

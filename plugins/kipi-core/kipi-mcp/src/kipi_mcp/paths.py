@@ -107,20 +107,38 @@ class KipiPaths:
             or os.environ.get("KIPI_PLUGIN_ROOT")
             or Path(__file__).resolve().parents[3]
         )
-        self.instance = instance or _detect_instance(self._base)
-        # NOTHING tells the deployed server which instance it serves: KIPI_INSTANCE
-        # is unset and {base}/active-instance does not exist, so _detect_instance
-        # returns the "default" sentinel and the registry has no such row. The live
-        # MCP tool therefore fail-closed even once registry_path was fixed.
-        # CLAUDE_PROJECT_DIR is exactly the missing fact -- Claude Code sets it to
-        # the project in use -- and the registry already maps path -> name. Same
-        # match evidence_ledger._registry_q_dir makes. Only consulted when the
-        # caller passed no instance AND nothing was configured, so an explicit
-        # instance and a real active-instance file both still win.
-        if instance is None and self.instance == "default":
-            resolved = self._instance_from_project_dir()
-            if resolved:
-                self.instance = resolved
+        self.instance = instance or self._resolve_instance()
+
+    def _resolve_instance(self) -> str:
+        """Which instance this process serves. ORDER IS THE SECURITY PROPERTY.
+
+        SCAR (Codex review of PR #240, major -- a leak introduced by the fix that
+        exists to prevent leaks). The first version consulted CLAUDE_PROJECT_DIR
+        only when the answer was already the "default" sentinel, so the
+        `{base}/active-instance` marker outranked it. That marker lives in PLUGIN
+        DATA, which is SHARED BY EVERY PROJECT on the machine. Measured:
+
+            CLAUDE_PROJECT_DIR : ~/projects/consulting
+            shared marker says : KTLYST_strategy
+            canonical_dir      : ~/projects/cole-gtm/projects/strategy/q-ktlyst/canonical
+
+        A session in one project read another project's canonical tree. Ordering:
+
+          1. explicit `instance=` argument -- the caller states it outright.
+          2. KIPI_INSTANCE -- per-PROCESS env, deliberate and not shared.
+          3. CLAUDE_PROJECT_DIR matched against the registry -- per-PROJECT and
+             authoritative for "which project is this process actually in".
+          4. the shared active-instance marker -- legacy, and last precisely
+             because one stale write to it would otherwise redirect every project.
+          5. "default".
+        """
+        env = os.environ.get("KIPI_INSTANCE")
+        if env:
+            return env
+        from_project = self._instance_from_project_dir()
+        if from_project:
+            return from_project
+        return _detect_instance(self._base)
 
     def _instance_from_project_dir(self) -> str | None:
         """Registry row whose path IS the current project dir, or None."""
@@ -223,7 +241,21 @@ class KipiPaths:
             sub = (entry.get("instance_q_dir")
                    or entry.get("subtree_prefix")
                    or "q-system")
-            return Path(entry.get("path", "")) / sub
+            root = Path(entry.get("path", "")) / sub
+            # A REGISTERED row is not proof the tree is there. Measured across the
+            # live registry: 4 of 25 instances (registry rows whose q-system/ holds
+            # no canonical/) resolved to a directory that does not exist and were
+            # handed back as authoritative. Returning a path to nothing is the exact
+            # failure this contract exists to remove -- downstream it reads as "no
+            # data" when the truth is "wrong path". Same rule evidence_ledger's
+            # instance_root already applies.
+            if not (root / "canonical").is_dir():
+                raise PathContractError(
+                    f"{self.instance!r} resolves to {root}, which has no canonical/ "
+                    f"subdirectory. There is no canonical tree here; refusing to "
+                    f"return a path to nothing. Fix the registry row or create the "
+                    f"tree.")
+            return root
 
         skel = data.get("skeleton") or {}
         if isinstance(skel, dict) and skel.get("path"):

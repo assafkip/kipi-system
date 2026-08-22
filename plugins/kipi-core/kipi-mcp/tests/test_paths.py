@@ -234,7 +234,9 @@ def test_ensure_dirs_never_creates_repo_owned_dirs(registry_with_domain_dir, mon
 
     # The fixture pre-creates both, so remove them: the only thing that can bring
     # them back inside this test is ensure_dirs itself.
-    for d in (repo / "q-domain" / "canonical", repo / "q-domain" / "my-project"):
+    expected_canon = repo / "q-domain" / "canonical"
+    expected_proj = repo / "q-domain" / "my-project"
+    for d in (expected_canon, expected_proj):
         if d.is_dir():
             d.rmdir()
 
@@ -245,6 +247,8 @@ def test_ensure_dirs_never_creates_repo_owned_dirs(registry_with_domain_dir, mon
     # name, so it held identically against fixed and unfixed code. Measured
     # 2026-08-22: it was the one new case that PASSED on the reproducer run, which
     # is how a vacuous test hides. A test that cannot fail is not a test.
-    assert not paths.canonical_dir.exists(), f"ensure_dirs created {paths.canonical_dir}"
-    assert not paths.my_project_dir.exists(), f"ensure_dirs created {paths.my_project_dir}"
+    # LITERAL paths, not the properties: with the tree deleted the property now
+    # refuses (correctly), and a refusal is not what this case is testing.
+    assert not expected_canon.exists(), f"ensure_dirs created {expected_canon}"
+    assert not expected_proj.exists(), f"ensure_dirs created {expected_proj}"
     assert paths.bus_dir.is_dir(), "ensure_dirs must still create tool-owned state"
