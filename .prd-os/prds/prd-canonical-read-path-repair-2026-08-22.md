@@ -140,6 +140,43 @@ values.** `q-consult/canonical/decisions.md:219` carries the real heading
 `RULE-2026-08-18-A`, which exists in no template and in no fossil file. That string is
 the assertion.
 
+### The live tree does NOT yield `valid: true` (measured 2026-08-22, corrects this PRD)
+
+Running `canonical_digest` directly against the live tree
+(`q-consult/canonical/` + `q-consult/my-project/`) returns **`valid: False`**, with all
+five files found and `warnings: []`. Only 3 of the 7 `_validate_digest` checks pass:
+
+| check | live result | why |
+|---|---|---|
+| `talk_tracks.metaphor` | FAIL | talk-tracks.md was retired to a pointer doc; no `metaphor` heading |
+| `talk_tracks.definition` | FAIL | same |
+| `objections` non-empty | pass | 5 headings, all from the retirement note |
+| `current_state.works_today` | FAIL | heading is `What is true now`, not `works today` |
+| `discovery.questions` | FAIL | items sit under `###` children; `## Unanswered Questions` has an empty body |
+| `decisions` non-empty | pass | 10, incl. `RULE-2026-08-18-A` |
+| `warnings < 3` | pass | 0 |
+
+**This corrects the PRD's own premise.** The read-path fix alone cannot make the headline
+signal green, because the parsers were written against the 2026-07-01 template shape and
+the live files no longer have that shape. Three consequences, all load-bearing:
+
+1. **`valid` is unusable as an acceptance signal in either direction.** It was already
+   wrong to assert `valid: true` (finding-14). It is now also wrong to treat `valid:
+   false` as proof the path is broken. Every acceptance criterion asserts named strings.
+2. **Loosening a parser to make `valid` go green is forbidden.** That is precisely the
+   false-green this PRD exists to eliminate, and it would be the easiest way to fake a
+   pass on any criterion below.
+3. **The parser/live-shape mismatch is a real defect and is NOT in this PRD.** Read-path
+   only. Captured as its own spillover item rather than absorbed here.
+
+The discriminator that survives all of this is a **dated** rule id. Measured across both
+trees: the live `decisions.md` has exactly 1 heading matching
+`RULE-\d{4}-\d{2}-\d{2}`; the fossil `q-system/canonical/decisions.md` has **0** (it
+carries `RULE-XXX`, `RULE-001`, `RULE-002`, `RULE-003` -- template scaffolding only).
+The fossil is therefore a genuine negative control: a checker asserting a dated rule id
+passes against the live tree and fails against the fossil, which is the exact distinction
+this PRD is about.
+
 ### Deletions, in order
 
 Unchanged from the first draft and still load-bearing: unhook consumers, then delete
