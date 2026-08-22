@@ -328,9 +328,9 @@ not held by anything.
       ".prd-os/**"
     ],
     "required_checks": [
-      "python3 -m pytest -q plugins/kipi-core/kipi-mcp/tests/test_bus_verifier.py"
+      "bash -c 'cd plugins/kipi-core/kipi-mcp && PYTHONPATH=src python3 -m pytest -q tests/test_bus_verifier.py'"
     ],
-    "bypass_check": "python3 -m pytest -q plugins/kipi-core/kipi-mcp/tests/test_bus_verifier.py -k 'reachable or substantive or error_key'",
+    "bypass_check": "bash -c 'cd plugins/kipi-core/kipi-mcp && PYTHONPATH=src python3 -m pytest -q tests/test_bus_verifier.py -k \"reachable or substantive or error_key or sequencing\"'",
     "required_reviews": [
       "runtime-owner"
     ],
