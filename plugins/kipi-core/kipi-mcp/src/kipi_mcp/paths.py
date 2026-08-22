@@ -8,17 +8,25 @@ APP_NAME = "kipi-system"
 
 
 class PathContractError(RuntimeError):
-    """An instance state root could not be resolved from the registry.
+    """Carries a `kind` so callers can tell a MISCONFIGURATION from a normal state.
 
-    Raised, never defaulted. The whole defect class this replaces is a resolver
-    that GUESSES on an unmapped repo and hands back an empty directory, which
-    reads downstream as "no data" instead of "wrong path" -- that is how
-    kipi_canonical_digest returned valid:false fleet-wide while looking healthy.
+    Not decoration. bus_verifier has to distinguish "this repo simply is not an
+    instance" (the skeleton, a fresh clone -- there is no canonical tree and that
+    is fine) from "the registry is missing or the registered tree is absent"
+    (someone must fix something). Message-matching for that would be fragile, so
+    the kind is set at each raise site:
 
-    Defined ahead of the resolver on purpose: test_paths.py imports it at module
-    level, so while it was missing pytest raised ImportError at COLLECTION and
-    zero tests ran. A red that never executed the case is not a reproducer.
+        no-registry       the registry file does not exist        -> misconfig
+        unreadable        the registry exists but will not parse  -> misconfig
+        duplicate-name    two rows claim one instance name        -> misconfig
+        no-canonical      registered, but the tree is not there   -> misconfig
+        unregistered      this repo is not a registered instance  -> NORMAL
     """
+
+    def __init__(self, message: str, kind: str = "unknown"):
+        super().__init__(message)
+        self.kind = kind
+
 
 _SUFFIX_WORDS = [
     "arrow", "blaze", "comet", "delta", "ember", "frost", "ghost", "haven",
@@ -224,18 +232,18 @@ class KipiPaths:
         if not reg.is_file():
             raise PathContractError(
                 f"no instance registry at {reg}; cannot resolve a state root for "
-                f"{self.instance!r} without guessing")
+                f"{self.instance!r} without guessing", kind="no-registry")
         try:
             data = _json.loads(reg.read_text(encoding="utf-8"))
         except Exception as exc:
-            raise PathContractError(f"registry {reg} is unreadable: {exc}")
+            raise PathContractError(f"registry {reg} is unreadable: {exc}", kind="unreadable")
 
         matches = [e for e in data.get("instances", [])
                    if e.get("name") == self.instance]
         if len(matches) > 1:
             raise PathContractError(
                 f"{self.instance!r} appears {len(matches)} times in {reg}. Refusing "
-                f"to let the first row silently win.")
+                f"to let the first row silently win.", kind="duplicate-name")
         if matches:
             entry = matches[0]
             sub = (entry.get("instance_q_dir")
@@ -254,7 +262,7 @@ class KipiPaths:
                     f"{self.instance!r} resolves to {root}, which has no canonical/ "
                     f"subdirectory. There is no canonical tree here; refusing to "
                     f"return a path to nothing. Fix the registry row or create the "
-                    f"tree.")
+                    f"tree.", kind="no-canonical")
             return root
 
         skel = data.get("skeleton") or {}
@@ -267,7 +275,7 @@ class KipiPaths:
 
         raise PathContractError(
             f"{self.instance!r} is not a registered instance in {reg}. Refusing to "
-            f"resolve canonical/ or my-project/ by guessing.")
+            f"resolve canonical/ or my-project/ by guessing.", kind="unregistered")
 
     @property
     def canonical_dir(self) -> Path:

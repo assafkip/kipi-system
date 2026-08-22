@@ -188,7 +188,7 @@ def _phase1_baseline(bus_dir, date):
 
 def test_canonical_digest_check_is_reachable(verifier, tmp_path, monkeypatch):
     """DEFECT 1: the file was in no list, so the lambda never ran."""
-    monkeypatch.setattr(BV, "canonical_digest_is_required", lambda: True)
+    monkeypatch.setattr(BV, "canonical_digest_requirement", lambda: (True, None))
     date = "2026-03-27"
     _phase1_baseline(tmp_path, date)
     _write(tmp_path, date, "canonical-digest.json", EMPTY_DIGEST)
@@ -200,7 +200,7 @@ def test_canonical_digest_check_is_reachable(verifier, tmp_path, monkeypatch):
 
 def test_canonical_digest_rejects_empty_and_placeholder(verifier, tmp_path, monkeypatch):
     """DEFECT 2: key-presence passed both of these."""
-    monkeypatch.setattr(BV, "canonical_digest_is_required", lambda: True)
+    monkeypatch.setattr(BV, "canonical_digest_requirement", lambda: (True, None))
     for i, digest in enumerate((EMPTY_DIGEST, PLACEHOLDER_DIGEST)):
         date = f"2026-04-0{i + 1}"
         _phase1_baseline(tmp_path, date)
@@ -216,7 +216,7 @@ def test_canonical_digest_rejects_empty_and_placeholder(verifier, tmp_path, monk
 def test_canonical_digest_error_key_is_a_hard_fail(verifier, tmp_path, monkeypatch):
     """DEFECT 3: the error branch warned and left all_pass untouched, so this
     passed even after defects 1 and 2 were fixed. Assert on pass, never on warn."""
-    monkeypatch.setattr(BV, "canonical_digest_is_required", lambda: True)
+    monkeypatch.setattr(BV, "canonical_digest_requirement", lambda: (True, None))
     date = "2026-03-28"
     _phase1_baseline(tmp_path, date)
     _write(tmp_path, date, "canonical-digest.json", {"error": "canonical digest unavailable"})
@@ -231,13 +231,13 @@ def test_sequencing_both_branches_of_the_promotion_predicate(verifier, tmp_path,
     date = "2026-03-29"
     _phase1_baseline(tmp_path, date)  # digest deliberately absent
 
-    monkeypatch.setattr(BV, "canonical_digest_is_required", lambda: False)
+    monkeypatch.setattr(BV, "canonical_digest_requirement", lambda: (False, None))
     res = verifier.verify(date, 1)
     assert res["pass"] is True, "optional branch must not red a run with no digest"
     assert any(r["file"] == "canonical-digest.json" and r["status"] == "skip"
                for r in res["results"]), "optional branch must still reach the file"
 
-    monkeypatch.setattr(BV, "canonical_digest_is_required", lambda: True)
+    monkeypatch.setattr(BV, "canonical_digest_requirement", lambda: (True, None))
     assert verifier.verify(date, 1)["pass"] is False, "required branch must red a missing digest"
 
 
@@ -266,6 +266,35 @@ def _real_paths_env(monkeypatch, tmp_path, instance="promo-inst"):
         "excluded": [], "eliminated": [],
     }), encoding="utf-8")
     return canonical
+
+
+def test_resolution_failure_is_an_observable_verification_failure(monkeypatch, tmp_path):
+    """Codex PR #240 round 2, major. A path-resolution CRASH used to be swallowed by
+    a bare `except Exception: return False`, so phase 1 passed with the canonical
+    detector silently demoted to optional -- indistinguishable from "the canonical
+    tree is intentionally empty".
+
+    Drives the real verifier, not the predicate: the point is that the FAILURE is
+    recorded and the phase does not pass.
+    """
+    monkeypatch.setenv("KIPI_REGISTRY", "/definitely/missing/instance-registry.json")
+    monkeypatch.setenv("KIPI_INSTANCE", "prod")
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+
+    date = "2026-03-27"
+    # The bus day dir must exist or verify() returns before the wiring runs -- the
+    # first draft of this case asserted against that early return, which proved
+    # nothing about resolution failures.
+    (tmp_path / date).mkdir(parents=True, exist_ok=True)
+    verifier = BusVerifier(tmp_path)
+    result = verifier.verify(date, 1)
+
+    assert result["pass"] is False, "a resolution crash must not pass phase 1"
+    rows = [r for r in result["results"]
+            if r.get("file") == "canonical-digest.json"
+            and "PATH RESOLUTION FAILED" in str(r.get("detail", ""))]
+    assert rows, f"resolution failure was not reported: {result['results']}"
+    assert rows[0]["status"] == "fail"
 
 
 def test_promotion_predicate_true_branch_is_reachable(monkeypatch, tmp_path):

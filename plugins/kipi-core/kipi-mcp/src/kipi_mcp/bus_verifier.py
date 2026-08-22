@@ -48,10 +48,47 @@ def canonical_digest_is_required() -> bool:
     Fails toward NOT-required. A crash here must not be able to cause the outage
     the sequencing guard exists to prevent.
     """
+    return canonical_digest_requirement()[0]
+
+
+def canonical_digest_requirement() -> tuple[bool, str | None]:
+    """(is_required, resolution_error). THREE states, not two.
+
+    SCAR (Codex review of PR #240, major). This used to be a bare
+    `except Exception: return False`, which cannot tell these apart:
+
+      "the canonical tree is intentionally empty"  -> not required, correct
+      "path resolution CRASHED"                    -> we know nothing
+
+    Both silently selected the optional branch, so phase-1 verification passed
+    with the detector disabled. Measured against the repro the reviewer gave:
+
+      KIPI_REGISTRY=/definitely/missing KIPI_INSTANCE=prod
+      resolver: RAISED PathContractError
+      required: False        <- crash became "optional", quietly
+
+    That is the broad-except-hides-your-own-bug shape, and it got worse the moment
+    the resolver started raising by design. A resolution failure is now RETURNED so
+    the caller can make it an observable verification failure. Still no exception
+    escapes: an unattended verifier must not wedge, it must report.
+    """
+    from kipi_mcp.paths import PathContractError
+
     try:
-        return _canonical_content_present()
-    except Exception:
-        return False  # cannot tell -> stay optional -> no outage
+        return _canonical_content_present(), None
+    except PathContractError as exc:
+        # kind SEPARATES a normal state from a misconfiguration, which is the whole
+        # point of the finding. "unregistered" is what the SKELETON and any fresh
+        # clone look like: there is no instance canonical tree and there is not
+        # supposed to be one, so the detector is legitimately optional and reding a
+        # run over it would wedge every non-instance checkout. Every other kind --
+        # a registry that is missing or unparseable, a duplicate row, a registered
+        # instance whose tree is absent -- means somebody has to fix something.
+        if getattr(exc, "kind", "unknown") == "unregistered":
+            return False, None
+        return False, str(exc)
+    except Exception as exc:  # unknown failure is still reportable, not silent
+        return False, f"{type(exc).__name__}: {exc}"
 
 
 def _canonical_digest_substantive(d: dict) -> bool:
@@ -106,9 +143,6 @@ class BusVerifier:
         # dict but in neither `required` nor `optional`, so its lambda was never once
         # invoked -- dead code that read as protection. Wire it into a list, promoting
         # to required only when the path contract makes that survivable.
-        if phase == 1 and CANONICAL_DIGEST not in required and CANONICAL_DIGEST not in optional:
-            (required if canonical_digest_is_required() else optional).append(CANONICAL_DIGEST)
-
         day_name = datetime.strptime(date, "%Y-%m-%d").strftime("%A").lower()
         if phase == 4 and day_name in ("tuesday", "thursday"):
             if "tl-content.json" in optional:
@@ -118,6 +152,23 @@ class BusVerifier:
 
         results: list[dict] = []
         all_pass = True
+
+        # REACHABILITY (PRD defect 1). canonical-digest.json sat in phase 1's `checks`
+        # dict but in neither `required` nor `optional`, so its lambda was never once
+        # invoked -- dead code that read as protection. Wire it into a list, promoting
+        # to required only when the path contract makes that survivable.
+        # Sits AFTER results/all_pass on purpose: a path-resolution failure has to be
+        # recordable, and before this it could only silently pick `optional`.
+        if phase == 1 and CANONICAL_DIGEST not in required and CANONICAL_DIGEST not in optional:
+            is_required, resolve_error = canonical_digest_requirement()
+            if resolve_error:
+                results.append({
+                    "status": "fail", "type": "required", "file": CANONICAL_DIGEST,
+                    "detail": f"PATH RESOLUTION FAILED: {resolve_error}",
+                })
+                all_pass = False
+            else:
+                (required if is_required else optional).append(CANONICAL_DIGEST)
 
         for f in required:
             path = bus_day / f
