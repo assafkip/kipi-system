@@ -1,23 +1,24 @@
 ---
 id: srsa-authoritative-path-contract
 title: Implement the authoritative instance and fleet path contract
-status: open
+status: in-progress
 priority: p0
 parent_prd: prd-single-runtime-state-authority-2026-07-24
 allowed_files:
   - plugins/kipi-core/kipi-mcp/src/kipi_mcp/paths.py
   - plugins/kipi-core/kipi-mcp/tests/test_paths.py
   - plugins/kipi-core/kipi-mcp/tests/conftest.py
+  - plugins/kipi-core/.claude-plugin/plugin.json
 disallowed_files:
   - q-system/canonical/**
   - q-system/my-project/**
   - instance-registry.json
   - .prd-os/**
 required_checks:
-  - python3 -m pytest -q plugins/kipi-core/kipi-mcp/tests/test_paths.py
+  - PYTHONPATH=plugins/kipi-core/kipi-mcp/src python3 -m pytest -q plugins/kipi-core/kipi-mcp/tests/test_paths.py
 required_reviews:
   - runtime-owner
-bypass_check: "python3 -m pytest -q plugins/kipi-core/kipi-mcp/tests/test_paths.py -k 'ambiguous or plugin_cache_write'"
+bypass_check: "PYTHONPATH=plugins/kipi-core/kipi-mcp/src python3 -m pytest -q plugins/kipi-core/kipi-mcp/tests/test_paths.py -k 'ambiguous or plugin_cache_write'"
 deliverables_count: 1
 ---
 <!-- generated-by: prd_split.py prd=prd-single-runtime-state-authority-2026-07-24 finding=finding-1 at=2026-07-24T20:54:11Z -->
