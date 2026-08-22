@@ -362,6 +362,10 @@
       "runner": "python3"
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-quick-plan-rule-wired.sh",
+      "runner": "bash"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-receipts-ledger-check.sh",
       "runner": "bash"
     },
@@ -627,6 +631,10 @@
     },
     {
       "path": "q-system/.q-system/scripts/test_merge_bypass_gate_wrappers.py",
+      "runner": "python3"
+    },
+    {
+      "path": "q-system/.q-system/scripts/test_plan_lint.py",
       "runner": "python3"
     },
     {
