@@ -6,6 +6,20 @@ from pathlib import Path
 
 APP_NAME = "kipi-system"
 
+
+class PathContractError(RuntimeError):
+    """An instance state root could not be resolved from the registry.
+
+    Raised, never defaulted. The whole defect class this replaces is a resolver
+    that GUESSES on an unmapped repo and hands back an empty directory, which
+    reads downstream as "no data" instead of "wrong path" -- that is how
+    kipi_canonical_digest returned valid:false fleet-wide while looking healthy.
+
+    Defined ahead of the resolver on purpose: test_paths.py imports it at module
+    level, so while it was missing pytest raised ImportError at COLLECTION and
+    zero tests ran. A red that never executed the case is not a reproducer.
+    """
+
 _SUFFIX_WORDS = [
     "arrow", "blaze", "comet", "delta", "ember", "frost", "ghost", "haven",
     "ion", "jade", "kite", "lunar", "maple", "noble", "orbit", "prism",

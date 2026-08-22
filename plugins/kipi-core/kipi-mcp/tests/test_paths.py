@@ -188,7 +188,7 @@ def test_my_project_dir_resolves_instance_domain_dir(registry_with_domain_dir, m
     assert paths.my_project_dir == repo / "q-domain" / "my-project"
 
 
-def test_null_domain_dir_falls_back_to_subtree_prefix(registry_fixture, tmp_path, monkeypatch):
+def test_null_domain_dir_falls_back_to_subtree_prefix(tmp_registry_with_instances, tmp_path, monkeypatch):
     """instance_q_dir null means the state root IS <path>/<subtree_prefix>.
 
     NOT <path>/<subtree_prefix>/q-system. A literal reading of the contract sentence
@@ -197,11 +197,11 @@ def test_null_domain_dir_falls_back_to_subtree_prefix(registry_fixture, tmp_path
     """
     repo = tmp_path / "test-instance"
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo))
-    paths = KipiPaths(base_dir=registry_fixture.parent, instance="test-instance")
+    paths = KipiPaths(base_dir=tmp_registry_with_instances.parent, instance="test-instance")
     assert paths.canonical_dir == repo / "q-system" / "canonical"
 
 
-def test_unregistered_repo_fails_closed(tmp_path, registry_fixture, monkeypatch):
+def test_unregistered_repo_fails_closed(tmp_path, tmp_registry_with_instances, monkeypatch):
     """An unmapped repo must RAISE, never silently pick a default.
 
     The whole defect class is a resolver that guesses and returns an empty directory that
@@ -210,7 +210,7 @@ def test_unregistered_repo_fails_closed(tmp_path, registry_fixture, monkeypatch)
     stranger = tmp_path / "not-in-registry"
     stranger.mkdir()
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(stranger))
-    paths = KipiPaths(base_dir=registry_fixture.parent, instance="nope")
+    paths = KipiPaths(base_dir=tmp_registry_with_instances.parent, instance="nope")
     with pytest.raises(PathContractError):
         _ = paths.canonical_dir
 
@@ -224,7 +224,20 @@ def test_ensure_dirs_never_creates_repo_owned_dirs(registry_with_domain_dir, mon
     registry_path, repo = registry_with_domain_dir
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo))
     paths = KipiPaths(base_dir=registry_path.parent, instance="domain-instance")
-    stray = repo / "q-domain" / "should-not-appear"
+
+    # The fixture pre-creates both, so remove them: the only thing that can bring
+    # them back inside this test is ensure_dirs itself.
+    for d in (repo / "q-domain" / "canonical", repo / "q-domain" / "my-project"):
+        if d.is_dir():
+            d.rmdir()
+
     paths.ensure_dirs()
-    assert not stray.exists()
-    assert paths.bus_dir.is_dir()
+
+    # Assert the RESOLVED properties. The first draft asserted that
+    # `repo/q-domain/should-not-appear` was absent -- nothing anywhere creates that
+    # name, so it held identically against fixed and unfixed code. Measured
+    # 2026-08-22: it was the one new case that PASSED on the reproducer run, which
+    # is how a vacuous test hides. A test that cannot fail is not a test.
+    assert not paths.canonical_dir.exists(), f"ensure_dirs created {paths.canonical_dir}"
+    assert not paths.my_project_dir.exists(), f"ensure_dirs created {paths.my_project_dir}"
+    assert paths.bus_dir.is_dir(), "ensure_dirs must still create tool-owned state"
