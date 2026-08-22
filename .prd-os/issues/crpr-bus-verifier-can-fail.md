@@ -12,10 +12,10 @@ disallowed_files:
   - .claude/**
   - .prd-os/**
 required_checks:
-  - python3 -m pytest -q plugins/kipi-core/kipi-mcp/tests/test_bus_verifier.py
+  - bash -c 'cd plugins/kipi-core/kipi-mcp && PYTHONPATH=src python3 -m pytest -q tests/test_bus_verifier.py'
 required_reviews:
   - runtime-owner
-bypass_check: "python3 -m pytest -q plugins/kipi-core/kipi-mcp/tests/test_bus_verifier.py -k 'reachable or substantive or error_key'"
+bypass_check: "bash -c 'cd plugins/kipi-core/kipi-mcp && PYTHONPATH=src python3 -m pytest -q tests/test_bus_verifier.py -k \"reachable or substantive or error_key or sequencing\"'"
 gate_lifecycle: historical-receipt
 deliverables_count: 1
 ---
@@ -34,4 +34,27 @@ THREE independent defects, THREE independent tests, each shown RED first and eac
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Make the canonical-digest check reachable, substantive, and error-proof
+- [x] Make the canonical-digest check reachable, substantive, and error-proof
+
+## Evidence
+
+The required_check as originally written COULD NOT RUN. From repo root the bare
+pytest invocation exits 4 on a conftest ImportError (`No module named 'kipi_mcp'`).
+Same defect class as finding-2 / finding-24. Corrected above and re-measured:
+
+    bare   invocation -> rc=4 (conftest ImportError, zero tests collected)
+    scoped invocation -> rc=0, 17 passed
+
+Three defects, three tests, all green; plus the sequencing predicate with BOTH
+branches asserted.
+
+THE SUITE PINNED DEFECT 3. `test_phase1_calendar_with_error_key` was GREEN while
+asserting the buggy behaviour (`warn` on a required file carrying an error key).
+That green test is why the defect survived. It is inverted to assert the verdict
+(`pass is False`), which is part of the fix, not collateral damage.
+
+SUBSTANCE CHECK CALIBRATED AGAINST REAL DATA, not intuition: the live tree yields
+decisions=10, objections=5, warnings=0 and all-empty talk_tracks, so requiring
+talk_tracks would have redded every run against real data. The predicate passes the
+live shape and rejects both the captured all-empty digest and Codex finding-14's
+nonempty placeholder.
