@@ -134,6 +134,32 @@ def main() -> int:
         rc, out = run(orphan, home=fake_home)
         check("skill with only a dangling link exits 2", rc == 2, f"rc={rc}\n{out}")
 
+        # 7. THE second reproducer (Codex PR #238, major): a pipe row that is not
+        #    part of the trigger table must not be able to satisfy the gate. Gut
+        #    the table's rows, leave one stray row in a later section, and the
+        #    gate has to still say the table is empty -- otherwise deleting the
+        #    table is a silent pass and the "no rows" guard only ever fires on a
+        #    file with no pipes at all.
+        gutted = write(tmp, "gutted.md",
+                       rule_with_rows("") + "\n## Examples\n\n"
+                       "| note | `skill-creator` | a leftover row |\n")
+        rc, out = run(gutted)
+        check("gutted table is not rescued by a stray row elsewhere",
+              rc == 2, f"rc={rc}\n{out}")
+
+        # 8. The negative self-test for #7: rows of an UNRELATED table must not
+        #    be validated as trigger rows either. A fix that just rejects
+        #    everything with a pipe in it would pass #7 and break every rule doc
+        #    that carries a second table (most of them do).
+        sibling = write(tmp, "sibling-table.md", rule_with_rows(
+            "| Editing a skill | `skill-creator` | structure |\n")
+            + "\n## Enforcement pairing\n\n"
+            "| Piece | Status |\n|---|---|\n"
+            "| the detector | wired PostToolUse |\n")
+        rc, out = run(sibling)
+        check("an unrelated table below the trigger table is ignored",
+              rc == 0, f"rc={rc}\n{out}")
+
     print()
     if FAILURES:
         print(f"FAILED ({len(FAILURES)}): " + ", ".join(FAILURES))

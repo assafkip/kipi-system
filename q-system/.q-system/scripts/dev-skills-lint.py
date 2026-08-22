@@ -61,7 +61,7 @@ REPO_ROOT = SCRIPTS.parents[2]
 DEFAULT_RULE = REPO_ROOT / ".claude" / "rules" / "dev-skills-auto-invoke.md"
 
 # A trigger row is `| trigger | `skill` | what it does |`. The header and the
-# `|---|---|---|` separator are skipped by shape, not by line number.
+# `|---|---|---|` separator are found by shape, not by line number.
 ROW_RE = re.compile(r"^\|(?P<cells>.+)\|\s*$")
 SEPARATOR_RE = re.compile(r"^\|[\s:|-]+\|\s*$")
 BACKTICKED_RE = re.compile(r"`([A-Za-z0-9][A-Za-z0-9._:-]*)`")
@@ -69,25 +69,52 @@ BACKTICKED_RE = re.compile(r"`([A-Za-z0-9][A-Za-z0-9._:-]*)`")
 HEADER_FIRST_CELL = "trigger"
 
 
-def table_rows(body: str) -> list[tuple[int, list[str]]]:
-    """Every pipe-table row that is not a header or a separator.
+def _cells(line: str) -> list[str] | None:
+    """Cells of a pipe-table row, or None if this line is not one."""
+    stripped = line.strip()
+    if not stripped.startswith("|"):
+        return None
+    m = ROW_RE.match(stripped)
+    if not m:
+        return None
+    return [c.strip() for c in m.group("cells").split("|")]
 
-    Returns (1-indexed line number, cells). Rows outside a table are impossible
-    to hit because a line has to start and end with `|` to match at all.
+
+def table_rows(body: str) -> list[tuple[int, list[str]]] | None:
+    """Rows of the trigger table ONLY, or None when that table is absent.
+
+    Returns (1-indexed line number, cells).
+
+    WHY the block is bounded rather than "every pipe row in the file"
+    (ASK-135, Codex PR #238, major): the earlier version scanned the whole
+    document, which broke both ways and both were reproduced. Gut the table and
+    leave one stray `| ... |` row further down and the gate read that row and
+    reported "1 trigger row(s), all skills resolve" -- deleting the table was a
+    silent pass, because the no-rows guard only fired on a file with no pipes
+    anywhere. And most rule docs in this repo carry a second table (`| Piece |
+    Status |`); its rows were validated as trigger rows and failed for carrying
+    no backticked skill name. So: find the header, take the contiguous run of
+    rows under its separator, stop at the first line that is not a row.
     """
-    out: list[tuple[int, list[str]]] = []
-    for lineno, line in enumerate(body.splitlines(), start=1):
-        stripped = line.strip()
-        if not stripped.startswith("|") or SEPARATOR_RE.match(stripped):
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        cells = _cells(line)
+        if not cells or cells[0].lower() != HEADER_FIRST_CELL:
             continue
-        m = ROW_RE.match(stripped)
-        if not m:
+        if SEPARATOR_RE.match(line.strip()):
             continue
-        cells = [c.strip() for c in m.group("cells").split("|")]
-        if cells and cells[0].lower() == HEADER_FIRST_CELL:
+        # Header found. A real table separates header from body; without the
+        # separator this is prose that happens to start with the word.
+        if i + 1 >= len(lines) or not SEPARATOR_RE.match(lines[i + 1].strip()):
             continue
-        out.append((lineno, cells))
-    return out
+        out: list[tuple[int, list[str]]] = []
+        for j in range(i + 2, len(lines)):
+            row = _cells(lines[j])
+            if row is None or SEPARATOR_RE.match(lines[j].strip()):
+                break
+            out.append((j + 1, row))
+        return out
+    return None
 
 
 def search_roots(home: Path) -> list[Path]:
