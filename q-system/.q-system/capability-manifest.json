@@ -737,7 +737,7 @@
       "runner": "bash"
     },
     {
-      "path": "test_dispatch_pinned.sh",
+      "path": "q-system/.q-system/scripts/test/test-dispatch-pinned.sh",
       "runner": "bash"
     }
   ],
@@ -763,7 +763,7 @@
     "q-system/.q-system/scripts/test/test-token-guard-template-wiring.sh",
     "q-system/.q-system/scripts/test/test-updater-issue-sequence.py",
     "q-system/.q-system/scripts/test_autocapture_wiring.py",
-    "test_dispatch_pinned.sh"
+    "q-system/.q-system/scripts/test/test-dispatch-pinned.sh"
   ],
   "declared_inert": [
     {
@@ -866,5 +866,19 @@
     "plugins/*/tests \u2014 prd-os plugin suite, run by the plugin's own harness; outside v1 scan roots (finding-9 deferred)",
     "repo-root *.sh utilities are wiring surfaces, not test artifacts",
     "stat-registry.json: NOT expressible as required_data in v1 \u2014 the one instance holding it keeps canonical under its own instance_q_dir (not q-system/) and its registry name differs from its dir basename, so a scoped entry could never fire (grounded 2026-07-23). Declared gap; owning decision + instance detail in spillover sp-72b60bff"
+  ],
+  "scope_exempt": [
+    {
+      "prefix": "plugins/",
+      "reason": "plugin trees carry their own harness (see uncovered_known: plugins/*/tests are run by the plugin's own harness). The declared entries here are the subset the gate also runs. Discovery is NOT widened: 83 tracked test-pattern files live under plugins/, and declaring all of them is a fleet-wide design call captured as sp-c3d0f4d3."
+    },
+    {
+      "prefix": "q-system/.q-system/tests/",
+      "reason": "pytest suite tree, collected via pytest.ini rather than by the gate's TEST_PATTERNS discovery. The declared entries are the ones the gate also runs directly; the other 25 are sp-c3d0f4d3."
+    },
+    {
+      "prefix": "q-system/hooks/test/",
+      "reason": "hook-local test dir outside the scripts scan root; one declared entry, kept beside the hook it exercises (sp-c3d0f4d3)."
+    }
   ]
 }

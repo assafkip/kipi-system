@@ -30,7 +30,7 @@ from pathlib import Path
 SCHEMA_VERSION = 1
 ALLOWED_TOP_KEYS = {
     "schema_version", "expected_tests", "required_data",
-    "skeleton_only", "declared_inert", "uncovered_known",
+    "skeleton_only", "declared_inert", "uncovered_known", "scope_exempt",
 }
 OVERLAY_ALLOWED_KEYS = {"expected_tests", "required_data"}
 TEST_PATTERNS = ("test_*.py", "test-*.py", "test-*.sh")
@@ -117,13 +117,69 @@ def unsafe_path(p):
     return ".." in p.split("/")
 
 
-def validate_test_entry(entry, seen, errors):
+def validate_scope_exempt(data, errors):
+    """Read `scope_exempt` and return the path prefixes it declares.
+
+    This is the ONLY way a declaration may sit outside SCAN_ROOTS, and it exists
+    because the alternative shapes both fail (ASK-972, measured 2026-08-22 on
+    this repo): refusing every unscanned path outright is RED on 15 entries the
+    day it ships, and widening discovery to the repo root surfaces 123
+    undeclared test-pattern files. A gate red on its own population gets
+    switched off, and a gate that is off protects nothing.
+
+    So the boundary is not removed, it is made LEGIBLE: every escape is named
+    with a reason in one reviewable place, counted in the summary of every run,
+    and still subject to the existence check. What it buys is that a NEW escape
+    can no longer happen in silence, which is the whole defect.
+
+    What this deliberately does NOT do is close the undeclared-artifact
+    direction inside an exempt tree; that population and its design call are
+    captured as sp-c3d0f4d3 rather than left as a comment. # spillover-skip
+    """
+    prefixes = []
+    for item in data.get("scope_exempt", []):
+        if not isinstance(item, dict) or not item.get("prefix") or not item.get("reason"):
+            errors.append(f"scope_exempt entry needs prefix+reason: {item!r}")
+            continue
+        if unsafe_path(item["prefix"]):
+            errors.append(f"unsafe or non-relative prefix in scope_exempt: {item['prefix']!r}")
+            continue
+        prefixes.append(item["prefix"])
+    return prefixes
+
+
+def declaration_scope_error(path, exempt_prefixes):
+    """The message for a declaration that neither scan root covers.
+
+    Named separately so the refusal text is written once and both the canonical
+    manifest and the instance overlay refuse with the identical wording.
+    """
+    if any(path.startswith(pref) for pref in exempt_prefixes):
+        return None
+    return (f"declared outside the scan roots and not exempt: {path} — "
+            f"expected_tests paths live under {SCAN_ROOTS[0]}/ or directly in "
+            f"{SCAN_ROOTS[1]}/, because the undeclared-artifact direction of the "
+            "diff can only see what those roots discover. Move it, or add a "
+            "scope_exempt {prefix, reason} entry saying why this tree is not "
+            "scanned.")
+
+
+def validate_test_entry(entry, seen, errors, exempt_prefixes=()):
     """One validator for canonical AND overlay entries (finding: overlay
     entries were appended after validation and never validated themselves)."""
     p = entry.get("path", "")
     if unsafe_path(p):
         errors.append(f"unsafe or non-relative path in expected_tests: {p!r}")
         return
+    if not in_scan_scope(p):
+        # ASK-972: this was the silent escape. `in_scan_scope` was consulted only
+        # by the diff, which then had nothing to compare an unscanned path
+        # against, so such a path skipped the undeclared-artifact direction
+        # entirely and nothing said so. Refusing at DECLARATION time is the
+        # earliest point the two scopes can be held equal.
+        msg = declaration_scope_error(p, exempt_prefixes)
+        if msg:
+            errors.append(msg)
     if entry.get("runner") not in ("python3", "bash"):
         errors.append(f"expected_tests entry needs runner python3|bash: {p}")
     if p in seen:
@@ -161,9 +217,10 @@ def validate_manifest(data, errors):
     unknown = set(data) - ALLOWED_TOP_KEYS
     if unknown:
         errors.append(f"manifest unknown top-level keys: {sorted(unknown)}")
+    exempt = validate_scope_exempt(data, errors)
     seen = set()
     for entry in data.get("expected_tests", []):
-        validate_test_entry(entry, seen, errors)
+        validate_test_entry(entry, seen, errors, exempt)
     for set_name in ("required_data", "skeleton_only", "declared_inert"):
         items = data.get(set_name, [])
         paths = [i if isinstance(i, str) else (i or {}).get("path", "") for i in items]
@@ -338,6 +395,12 @@ def load_overlay(root, manifest, errors):
     if unknown:
         errors.append(f"overlay may only ADD {sorted(OVERLAY_ALLOWED_KEYS)}; found: {sorted(unknown)}")
     canonical = {e.get("path") for e in manifest.get("expected_tests", [])}
+    # The overlay reads the CANONICAL exemptions and cannot declare its own:
+    # `scope_exempt` is absent from OVERLAY_ALLOWED_KEYS on purpose. An overlay
+    # that could mint its own exemption would be a per-instance hatch out of the
+    # scan roots, which is the bypass surface load_overlay exists to refuse.
+    exempt = [i["prefix"] for i in manifest.get("scope_exempt", [])
+              if isinstance(i, dict) and i.get("prefix")]
     seen = set(canonical)
     for entry in data.get("expected_tests", []):
         if entry.get("path") in canonical:
@@ -345,7 +408,7 @@ def load_overlay(root, manifest, errors):
         elif entry.get("quarantine"):
             errors.append(f"overlay may not quarantine: {entry.get('path')}")
         else:
-            validate_test_entry(entry, seen, errors)
+            validate_test_entry(entry, seen, errors, exempt)
             manifest.setdefault("expected_tests", []).append(entry)
     canonical_data = {e.get("path") for e in manifest.get("required_data", [])}
     for entry in data.get("required_data", []):
@@ -777,6 +840,16 @@ def main():
     notes.append(f"declared: {len(expected)} tests ({q_count} quarantined), "
                  f"{len(manifest.get('skeleton_only', []))} skeleton-only, "
                  f"{len(manifest.get('declared_inert', []))} declared-inert")
+    # ASK-972: say the coverage boundary out loud on EVERY run. The escape used
+    # to be a property of the source you had to go read; a GREEN that silently
+    # meant "some of these were only half-checked" is the same silent-absence
+    # class the whole gate exists to make loud.
+    n_exempt = sum(1 for e in expected
+                   if isinstance(e, dict) and e.get("path")
+                   and not in_scan_scope(e["path"]))
+    notes.append(f"scan scope: {len(expected) - n_exempt} declared entries inside "
+                 f"the scan roots (checked BOTH directions), {n_exempt} exempt "
+                 "from undeclared-artifact detection (existence-checked only)")
     if errors:  # fail closed on structural problems before trusting the sets
         report(mode, errors, notes)
         sys.exit(1)
