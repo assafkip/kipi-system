@@ -212,7 +212,15 @@ FAILED_CONCLUSIONS = {"FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE",
 # The legacy commit-status half of the same rollup speaks a different vocabulary.
 FAILED_STATES = {"FAILURE", "ERROR"}
 
-PR_FIELDS = "number,headRefName,headRefOid,url,title,statusCheckRollup,isDraft"
+# isCrossRepository says whether the head branch lives in THIS repo or in a fork.
+# Every other field here is chosen by whoever opened the PR, including the two
+# `attribute()` reads (branch name and title), so on a public repo they are all
+# attacker-supplied. This one is GitHub's answer, not the author's, and it is the
+# only field that separates "an agent pushed this branch" from "a stranger named
+# their fork branch that". Requested for every consumer; read today by
+# review-redrive.branch_for (PR #211 round 1, MAJOR 2).
+PR_FIELDS = ("number,headRefName,headRefOid,url,title,statusCheckRollup,"
+             "isDraft,isCrossRepository")
 
 
 class GhUnavailable(Exception):
