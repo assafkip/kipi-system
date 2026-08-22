@@ -93,6 +93,10 @@ class KipiPaths:
         repo_dir: Path | None = None,
         instance: str | None = None,
     ):
+        # Whether base_dir was HANDED to us decides how registry_path resolves.
+        # A test that passes base_dir must stay hermetic; the deployed server, which
+        # passes nothing, must be allowed to go find a registry that exists.
+        self._base_explicit = base_dir is not None
         self._base = Path(
             base_dir
             or os.environ.get("KIPI_PLUGIN_DATA")
@@ -104,6 +108,41 @@ class KipiPaths:
             or Path(__file__).resolve().parents[3]
         )
         self.instance = instance or _detect_instance(self._base)
+        # NOTHING tells the deployed server which instance it serves: KIPI_INSTANCE
+        # is unset and {base}/active-instance does not exist, so _detect_instance
+        # returns the "default" sentinel and the registry has no such row. The live
+        # MCP tool therefore fail-closed even once registry_path was fixed.
+        # CLAUDE_PROJECT_DIR is exactly the missing fact -- Claude Code sets it to
+        # the project in use -- and the registry already maps path -> name. Same
+        # match evidence_ledger._registry_q_dir makes. Only consulted when the
+        # caller passed no instance AND nothing was configured, so an explicit
+        # instance and a real active-instance file both still win.
+        if instance is None and self.instance == "default":
+            resolved = self._instance_from_project_dir()
+            if resolved:
+                self.instance = resolved
+
+    def _instance_from_project_dir(self) -> str | None:
+        """Registry row whose path IS the current project dir, or None."""
+        import json as _json
+        project = os.environ.get("CLAUDE_PROJECT_DIR")
+        if not project:
+            return None
+        reg = self.registry_path
+        if not reg.is_file():
+            return None
+        try:
+            data = _json.loads(reg.read_text(encoding="utf-8"))
+            target = Path(project).resolve()
+        except (OSError, ValueError):
+            return None
+        for entry in data.get("instances", []):
+            try:
+                if Path(entry.get("path", "")).resolve() == target:
+                    return entry.get("name")
+            except (OSError, ValueError):
+                continue
+        return None
 
     # --- Base directories ---
 
@@ -258,7 +297,59 @@ class KipiPaths:
 
     @property
     def registry_path(self) -> Path:
-        return self._base / "instance-registry.json"
+        """Where the fleet registry actually is.
+
+        SCAR (2026-08-22): this returned `{base}/instance-registry.json`
+        unconditionally, and in the DEPLOYED server `{base}` is KIPI_PLUGIN_DATA
+        (see plugins/kipi-core/.mcp.json) -- i.e. ~/.kipi-system, which holds no
+        registry and never has. Once canonical_dir became registry-derived, the
+        resolver therefore fail-closed on every live MCP call:
+
+            PathContractError: no instance registry at
+            ~/.kipi-system/instance-registry.json
+
+        Failing closed on an input that can never exist is still a dead tool. The
+        repoint was proved by hand-feeding base_dir, which is a sound UNIT proof of
+        the resolver and says nothing about the configuration the server runs under.
+
+        Resolution order, first hit wins:
+          0. base_dir was passed explicitly -> use it, no search. Keeps every test
+             hermetic and stops a fixture from reaching the real fleet registry.
+          1. $KIPI_REGISTRY -- explicit operator override.
+          2. {base}/instance-registry.json when it really exists.
+          3. walk UP from repo_dir. The plugin runs from the marketplace clone
+             (CLAUDE_PLUGIN_ROOT -> .../marketplaces/kipi/plugins/kipi-core) and that
+             clone is a checkout of this repo, which TRACKS instance-registry.json at
+             its root. Verified present. This is also the dev-checkout answer, so one
+             rule covers both without hardcoding a path.
+          4. $KIPI_FLEET_ROOT (default ~/projects), the convention
+             verify-alert-wiring.sh:16 already uses.
+        """
+        if self._base_explicit:
+            return self._base / "instance-registry.json"
+
+        override = os.environ.get("KIPI_REGISTRY")
+        if override:
+            return Path(override)
+
+        default = self._base / "instance-registry.json"
+        if default.is_file():
+            return default
+
+        repo = Path(self.repo_dir)
+        for d in (repo, *repo.parents):
+            cand = d / "instance-registry.json"
+            if cand.is_file():
+                return cand
+
+        fleet = Path(os.environ.get("KIPI_FLEET_ROOT") or Path.home() / "projects")
+        cand = fleet / APP_NAME / "instance-registry.json"
+        if cand.is_file():
+            return cand
+
+        # Nothing found: return the documented default so the refusal names a
+        # stable path rather than whichever candidate was checked last.
+        return default
 
     @property
     def sources_dir(self) -> Path:
