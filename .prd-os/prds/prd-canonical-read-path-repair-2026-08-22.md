@@ -291,6 +291,7 @@ prose here is not held by anything, so it does not belong in this list.
     "title": "Make the canonical-digest check reachable and able to fail",
     "finding_id": "finding-1",
     "priority": "p0",
+    "bypass_check": "python3 -m pytest -q plugins/kipi-core/kipi-mcp/tests/test_bus_verifier.py -k 'empty_digest'",
     "allowed_files": [
       "plugins/kipi-core/kipi-mcp/src/kipi_mcp/bus_verifier.py",
       "plugins/kipi-core/kipi-mcp/tests/test_bus_verifier.py"
@@ -303,7 +304,9 @@ prose here is not held by anything, so it does not belong in this list.
     "required_checks": [
       "python3 -m pytest -q plugins/kipi-core/kipi-mcp/tests/test_bus_verifier.py"
     ],
-    "required_reviews": ["runtime-owner"],
+    "required_reviews": [
+      "runtime-owner"
+    ],
     "acceptance": "Write the failing test FIRST, using the exact empty digest captured 2026-08-22: {\"talk_tracks\":{},\"objections\":[],\"current_state\":{},\"discovery\":{},\"decisions\":[],\"warnings\":[5 not-found messages],\"valid\":false}. Show it RED before any fix. Then (1) add canonical-digest.json to phase 1 `required` so the check is reached at all, and (2) replace the key-presence lambda at bus_verifier.py:102 with an assertion on CONTENT. Prove reachability separately from the assertion: a mutation that reverts only step (1) must turn a test red, and a mutation that reverts only step (2) must turn a different test red. A required-file False is a hard fail per bus_verifier.py:42-81; assert `pass` is False, not merely that a warn was emitted."
   },
   {
@@ -311,6 +314,7 @@ prose here is not held by anything, so it does not belong in this list.
     "title": "Skeleton-shipped references resolve the instance's live canonical tree",
     "finding_id": "finding-2",
     "priority": "p1",
+    "bypass_check": "bash -c '! grep -rn \"q-system/canonical/\" plugins/kipi-ops/skills/council/ plugins/kipi-core/commands/wiring-check.md'",
     "allowed_files": [
       "plugins/kipi-ops/skills/council/SKILL.md",
       "plugins/kipi-ops/skills/council/workflows/quick.md",
@@ -327,7 +331,9 @@ prose here is not held by anything, so it does not belong in this list.
       "python3 -m pytest -q q-system/.q-system/scripts/test_evidence_ledger.py",
       "bash -c '! grep -rn \"q-system/canonical/\" plugins/kipi-ops/skills/council/ plugins/kipi-core/commands/wiring-check.md'"
     ],
-    "required_reviews": ["runtime-owner"],
+    "required_reviews": [
+      "runtime-owner"
+    ],
     "acceptance": "All nine hardcoded q-system/canonical/ references (council SKILL.md:37,38,39,53; quick.md:15,16,17,77; debate.md:15,17,18,201; wiring-check.md:90) resolve through instance_root() from evidence_ledger.py:81-93. NEVER a hardcoded q-consult/ - 8 registered instances have instance_q_dir null and that path is meaningless there. Add a test case to test_evidence_ledger.py proving instance_root() resolves a non-q-system domain dir, since that is the case the skeleton's own fixtures never exercise. The grep check is a negative control: it must FAIL on the current tree before the edit."
   },
   {
@@ -335,6 +341,7 @@ prose here is not held by anything, so it does not belong in this list.
     "title": "Stop requiring the dead tree, then delete the skeleton's plugin copy",
     "finding_id": "finding-3",
     "priority": "p0",
+    "bypass_check": "bash -c '! grep -n \"q-system/canonical/discovery.md\\|q-system/canonical/pricing-framework.md\" q-system/.q-system/scripts/verify-containment-export.py'",
     "allowed_files": [
       "q-system/.q-system/scripts/verify-containment-export.py",
       "q-system/.q-system/scripts/test/test-verify-containment-export.sh",
@@ -348,7 +355,9 @@ prose here is not held by anything, so it does not belong in this list.
     "required_checks": [
       "python3 q-system/.q-system/scripts/verify-containment-export.py"
     ],
-    "required_reviews": ["runtime-owner"],
+    "required_reviews": [
+      "runtime-owner"
+    ],
     "acceptance": "STEP ORDER IS LOAD-BEARING. First: verify-containment-export.py:24-28 stops hard-coding q-system/canonical/discovery.md and pricing-framework.md as REQUIRED export paths and resolves them through instance_root() instead; prove it by running the script from consulting (where q-system/canonical/ is the fossil) and getting exit 0 against q-consult/canonical/. Only then: git rm the skeleton's plugins/kipi-core/kipi-mcp/canonical/ tree - the skeleton copy, because plugins/ is mirrored with rsync -a --delete --delete-excluded (kipi-update.sh:2460) with no canonical exclude, so deleting it anywhere else regenerates it. Enumerate and report the ~20 agent-pipeline prompts under q-system/.q-system/agent-pipeline/agents/ that reference the path; if any are left pointing at a tree that still exists in the skeleton, say so explicitly rather than implying coverage."
   },
   {
@@ -356,6 +365,7 @@ prose here is not held by anything, so it does not belong in this list.
     "title": "Delete consulting's frozen canonical tree and its two council fossils",
     "finding_id": "finding-4",
     "priority": "p1",
+    "bypass_check": "bash q-system/.q-system/scripts/test/test-canonical-fossil-absent.sh",
     "allowed_files": [
       "q-system/.q-system/scripts/test/test-canonical-fossil-absent.sh"
     ],
@@ -367,7 +377,9 @@ prose here is not held by anything, so it does not belong in this list.
     "required_checks": [
       "bash q-system/.q-system/scripts/test/test-canonical-fossil-absent.sh"
     ],
-    "required_reviews": ["runtime-owner"],
+    "required_reviews": [
+      "runtime-owner"
+    ],
     "acceptance": "Runs LAST, after crpr-unhook-dead-canonical-consumers has shipped. In /Users/assafkipnis/projects/consulting: git rm the 10 tracked files under q-system/canonical/ (frozen 2026-07-01; safe because `canonical` is in INSTANCE_OWNED_SUBTREES at kipi-update.sh:64, so the updater neither restores nor --deletes it), and repoint the TWO instance-owned council fossils under .claude/skills/ - .claude/skills/council/ (SKILL.md:32-34,48; workflows/quick.md:11-13,73; workflows/debate.md:11,13,14,197) and the orphaned .claude/skills/workflows/ pair. .claude/skills/ is NOT covered by config_source_manages (kipi-update.sh:1279-1296), so these persist untouched and fixing only the plugin copy leaves two live wrong copies. The check in this repo is a fossil-absence assertion that must be shown RED against consulting before the deletion. Then re-run the fleet updater in DRY mode against consulting and confirm no restore of the deleted trees and no reversion of the skeleton edits."
   }
 ]
