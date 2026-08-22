@@ -160,6 +160,36 @@ SHIPPED as of commit 63248474. `srsa-registry-state-root-fixtures` must not re-a
 them; its remaining scope is whatever it needs beyond `registry_with_domain_dir`, and if
 that is nothing it should be closed as delivered-by this issue rather than worked.
 
+## SIZING, measured 2026-08-22 by building it and throwing it away
+
+A throwaway resolver was implemented against this spec and MEASURED, then reverted,
+so the cost below is observed rather than estimated. Registry-as-authority keyed on
+instance name, `instance_q_dir or subtree_prefix`, raising PathContractError on an
+unmapped instance:
+
+  the 4 resolution cases          -> PASS
+  test_paths.py overall           -> 3 failed / 17 passed (was 5 / 15)
+  the 5 in-scope test files       -> 8 failed + 50 ERRORS / 38 passed
+                                     (baseline: 5 failed / 91 passed)
+
+So the resolver itself is small; the work is the **53 collateral tests** it breaks.
+Most are collection ERRORS in test_validator.py and test_morning_init.py, because
+`tmp_kipi_paths` builds KipiPaths with an instance name that no registry lists, and
+a fail-closed resolver raises where those fixtures expect a path. That is the real
+deliverable: every fixture that wants canonical/my-project must register its temp
+repo, exactly as the evidence_ledger fixtures had to (commit e469bddc).
+
+Two conflicts to settle while doing it, both already visible in the numbers:
+- `test_ensure_dirs` (test_paths.py:136) asserts canonical_dir IS created. The new
+  `test_ensure_dirs_never_creates_repo_owned_dirs` asserts it is NOT. They cannot
+  both hold; ensure_dirs must stop mkdir-ing the two repo-owned properties and
+  test_ensure_dirs must drop them from its expected list.
+- `test_instance_subdirectories` asserts the plugin-data shape for both properties.
+
+NOT bundled into PR #240 for a measured reason, not a preference: that PR is
+CI-green, and adding 53 collateral failures to a 20-file PR mid-review makes the
+review surface unreadable. This issue has its own parent PRD.
+
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
