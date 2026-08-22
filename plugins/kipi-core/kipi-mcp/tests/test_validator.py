@@ -23,6 +23,8 @@ def _build_skeleton(tmp_path: Path) -> tuple[KipiPaths, Path]:
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
 
+    from conftest import write_registry
+    write_registry(tmp_path / "base", repo_dir, instance="test")
     paths = KipiPaths(
         base_dir=tmp_path / "base",
         repo_dir=repo_dir,

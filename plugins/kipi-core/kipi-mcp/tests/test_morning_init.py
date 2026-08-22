@@ -22,6 +22,8 @@ from kipi_mcp.morning_init import (
 @pytest.fixture
 def paths(tmp_path):
     from kipi_mcp.paths import KipiPaths
+    from conftest import write_registry
+    write_registry(tmp_path / "base", tmp_path / "repo", instance="test")
     p = KipiPaths(base_dir=tmp_path / "base", repo_dir=tmp_path / "repo", instance="test")
     p.ensure_dirs()
     return p

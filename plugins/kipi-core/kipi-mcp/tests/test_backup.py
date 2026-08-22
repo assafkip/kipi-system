@@ -66,6 +66,8 @@ def test_backup_skips_other_backups(backup_mgr, tmp_kipi_paths):
 def test_restore_dry_run(backup_mgr, tmp_path):
     result = backup_mgr.backup()
     from kipi_mcp.paths import KipiPaths
+    from conftest import write_registry
+    write_registry(tmp_path / "new_base", tmp_path / "repo", instance="restored")
     new_paths = KipiPaths(
         base_dir=tmp_path / "new_base",
         repo_dir=tmp_path / "repo",
@@ -83,6 +85,8 @@ def test_restore_dry_run(backup_mgr, tmp_path):
 def test_restore_writes_files(backup_mgr, tmp_path):
     result = backup_mgr.backup()
     from kipi_mcp.paths import KipiPaths
+    from conftest import write_registry
+    write_registry(tmp_path / "restored_base", tmp_path / "repo", instance="restored")
     new_paths = KipiPaths(
         base_dir=tmp_path / "restored_base",
         repo_dir=tmp_path / "repo",

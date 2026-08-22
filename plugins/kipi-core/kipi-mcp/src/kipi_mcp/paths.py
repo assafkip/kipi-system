@@ -141,8 +141,66 @@ class KipiPaths:
     # --- Per-instance subdirectories ---
 
     @property
+    def _state_root(self) -> Path:
+        """The instance's OWN tree that owns canonical/ and my-project/.
+
+        THE DEFECT THIS FIXES. These two properties used to return
+        `{base}/instances/{name}/...` -- plugin DATA, which holds no repo content.
+        So kipi_canonical_digest read an empty directory and returned
+        all-files-not-found on every instance, and agents fell back to reading raw
+        canonical (40-60K tokens), where one instance has three diverged copies.
+
+        Registry is the authority, keyed by instance name. Formula per
+        prd-single-runtime-state-authority: `instance_q_dir` when set, else
+        `subtree_prefix`, else q-system.
+
+        FAILS CLOSED. An unmapped instance RAISES rather than returning a path to
+        nothing: an empty directory reads downstream as "no data" when the truth is
+        "wrong path", and that misreading is the whole reason this contract exists.
+
+        NOT `<path>/<subtree_prefix>/q-system`. A literal reading of the contract
+        sentence produces q-system/q-system, and those nested shadow trees were
+        deleted fleet-wide on 2026-07-01.
+        """
+        import json as _json
+        reg = self.registry_path
+        if not reg.is_file():
+            raise PathContractError(
+                f"no instance registry at {reg}; cannot resolve a state root for "
+                f"{self.instance!r} without guessing")
+        try:
+            data = _json.loads(reg.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise PathContractError(f"registry {reg} is unreadable: {exc}")
+
+        matches = [e for e in data.get("instances", [])
+                   if e.get("name") == self.instance]
+        if len(matches) > 1:
+            raise PathContractError(
+                f"{self.instance!r} appears {len(matches)} times in {reg}. Refusing "
+                f"to let the first row silently win.")
+        if matches:
+            entry = matches[0]
+            sub = (entry.get("instance_q_dir")
+                   or entry.get("subtree_prefix")
+                   or "q-system")
+            return Path(entry.get("path", "")) / sub
+
+        skel = data.get("skeleton") or {}
+        if isinstance(skel, dict) and skel.get("path"):
+            try:
+                if Path(skel["path"]).resolve() == Path(self.repo_dir).resolve():
+                    return Path(skel["path"]) / "q-system"
+            except OSError:
+                pass
+
+        raise PathContractError(
+            f"{self.instance!r} is not a registered instance in {reg}. Refusing to "
+            f"resolve canonical/ or my-project/ by guessing.")
+
+    @property
     def canonical_dir(self) -> Path:
-        return self._instance_dir / "canonical"
+        return self._state_root / "canonical"
 
     @property
     def marketing_config_dir(self) -> Path:
@@ -150,7 +208,7 @@ class KipiPaths:
 
     @property
     def my_project_dir(self) -> Path:
-        return self._instance_dir / "my-project"
+        return self._state_root / "my-project"
 
     @property
     def memory_dir(self) -> Path:
@@ -229,10 +287,8 @@ class KipiPaths:
             self.voice_dir,
             self.audhd_dir,
             self._instance_dir,
-            self.canonical_dir,
             self.marketing_config_dir,
             self.marketing_config_dir / "assets",
-            self.my_project_dir,
             self.memory_dir,
             self.memory_dir / "working",
             self.memory_dir / "weekly",

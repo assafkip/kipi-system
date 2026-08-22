@@ -108,9 +108,11 @@ def test_global_dir(tmp_path):
 def test_instance_subdirectories(tmp_path):
     paths = KipiPaths(base_dir=tmp_path, instance="proj")
     inst = tmp_path / "instances" / "proj"
-    assert paths.canonical_dir == inst / "canonical"
+    # canonical_dir and my_project_dir are DELIBERATELY absent from this list now.
+    # They are repo-derived (see _state_root) because plugin-data held no content,
+    # which is what made kipi_canonical_digest return all-files-not-found. The rest
+    # of the table is genuinely tool-owned state and still lives under plugin data.
     assert paths.marketing_config_dir == inst / "marketing"
-    assert paths.my_project_dir == inst / "my-project"
     assert paths.memory_dir == inst / "memory"
     assert paths.output_dir == inst / "output"
     assert paths.bus_dir == inst / "bus"
@@ -142,10 +144,8 @@ def test_ensure_dirs(tmp_path):
         paths.voice_dir,
         paths.audhd_dir,
         paths.config_dir,
-        paths.canonical_dir,
         paths.marketing_config_dir,
         paths.marketing_config_dir / "assets",
-        paths.my_project_dir,
         paths.memory_dir,
         paths.memory_dir / "working",
         paths.memory_dir / "weekly",
@@ -156,6 +156,13 @@ def test_ensure_dirs(tmp_path):
     ]
     for d in expected:
         assert d.is_dir(), f"{d} was not created"
+
+    # And the two repo-owned dirs must NOT be conjured. They are tracked git
+    # content; ensure_dirs() with an unset repo_dir used to create them inside the
+    # real plugin directory. `instance="test"` is unregistered, so asking for the
+    # path at all is the fail-closed refusal -- which is itself the assertion.
+    with pytest.raises(PathContractError):
+        _ = paths.canonical_dir
 
 
 # --------------------------------------------------------------- path contract (srsa)
