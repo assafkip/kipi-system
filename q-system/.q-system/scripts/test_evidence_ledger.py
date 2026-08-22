@@ -21,9 +21,16 @@ import evidence_ledger as EL  # noqa: E402
 
 
 def _root() -> Path:
-    """A temp instance root shaped like a real one: <root>/q-thing/canonical/."""
+    """A temp instance root shaped like a real one: <root>/q-thing/canonical/.
+
+    It is REGISTERED. Before the fail-closed resolver these cases used a bare temp
+    dir and passed only because instance_root() guessed for unregistered repos --
+    the exact hole Codex flagged on PR #240. Registering here makes the fixture
+    match a real instance instead of relying on the guess that was removed.
+    """
     tmp = Path(tempfile.mkdtemp())
     (tmp / "q-thing" / "canonical").mkdir(parents=True)
+    _reg(tmp, [{"name": "tmp-instance", "path": str(tmp), "instance_q_dir": "q-thing"}])
     return tmp
 
 
@@ -117,14 +124,19 @@ def case_ledger_path_prefers_instance_over_skeleton() -> bool:
     """An instance has both q-system/ and q-<name>/. Content lives in q-<name>/."""
     tmp = Path(tempfile.mkdtemp())
     (tmp / "q-system" / "canonical").mkdir(parents=True)
-    (tmp / "q-prodigy" / "canonical").mkdir(parents=True)
-    return EL.ledger_path(tmp).parent.parent.name == "q-prodigy"
+    (tmp / "q-example" / "canonical").mkdir(parents=True)
+    _reg(tmp, [{"name": "example-instance", "path": str(tmp), "instance_q_dir": "q-example"}])
+    return EL.ledger_path(tmp).parent.parent.name == "q-example"
 
 
 def case_ledger_path_falls_back_to_skeleton() -> bool:
     """The skeleton itself has only q-system/. Resolve there, do not crash."""
     tmp = Path(tempfile.mkdtemp())
     (tmp / "q-system" / "canonical").mkdir(parents=True)
+    # Registered AS THE SKELETON, which is what this case is about. _registry_q_dir
+    # maps the skeleton row to "q-system", so this asserts the real skeleton path
+    # rather than the unregistered-repo guess that no longer exists.
+    _reg(tmp, [], skeleton=tmp)
     return EL.ledger_path(tmp).parent.parent.name == "q-system"
 
 
@@ -137,10 +149,13 @@ def case_ledger_path_falls_back_to_skeleton() -> bool:
 # Every case pins KIPI_EVIDENCE_REGISTRY at its own temp registry. Without that the
 # resolver falls back to the REAL fleet registry and the case stops being hermetic.
 
-def _reg(tmp: Path, entries: list[dict]) -> Path:
+def _reg(tmp: Path, entries: list[dict], skeleton: Path | None = None) -> Path:
     import json
     p = tmp / "registry.json"
-    p.write_text(json.dumps({"instances": entries}), encoding="utf-8")
+    doc: dict = {"instances": entries}
+    if skeleton is not None:
+        doc["skeleton"] = {"path": str(skeleton)}
+    p.write_text(json.dumps(doc), encoding="utf-8")
     os.environ["KIPI_EVIDENCE_REGISTRY"] = str(p)
     return p
 
@@ -185,6 +200,23 @@ def case_resolver_refuses_registered_null_against_real_dir() -> bool:
     tmp = Path(tempfile.mkdtemp())
     (tmp / "q-real" / "canonical").mkdir(parents=True)
     _reg(tmp, [{"name": "x", "path": str(tmp), "instance_q_dir": None}])
+    return _raises(lambda: EL.instance_root(tmp))
+
+
+def case_resolver_refuses_unregistered_repo() -> bool:
+    """Codex review of PR #240, major. An UNREGISTERED checkout whose q-system/
+    happens to hold canonical/ fell straight through to `root = repo / "q-system"`
+    and was returned as authoritative.
+
+    Why it survived the existing suite: case_resolver_refuses_root_with_no_canonical
+    is also unregistered, but it raises on the LATER "no canonical/ subdirectory"
+    check, so the fall-through arm was never once exercised with the dir PRESENT.
+    Measured from the reviewer's isolated tree: registered=False,
+    resolved=<tree>/q-system. An unattended run from a stray clone would append
+    evidence against the wrong canonical tree."""
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-system" / "canonical").mkdir(parents=True)
+    _reg(tmp, [])  # a real registry that simply does not list this repo
     return _raises(lambda: EL.instance_root(tmp))
 
 
@@ -249,6 +281,7 @@ CASES = [
     ("resolver refuses a root with no canonical/", case_resolver_refuses_root_with_no_canonical),
     ("resolver refuses registry/filesystem mismatch", case_resolver_refuses_registry_filesystem_mismatch),
     ("resolver refuses registered-null against a real dir", case_resolver_refuses_registered_null_against_real_dir),
+    ("resolver refuses an unregistered repo", case_resolver_refuses_unregistered_repo),
     ("resolver uses the registry as authority", case_resolver_uses_registry_as_authority),
     ("resolver strict=False restores the legacy guess", case_resolver_nonstrict_restores_legacy_guess),
     ("refuses a claim with no command", case_refuses_missing_command),

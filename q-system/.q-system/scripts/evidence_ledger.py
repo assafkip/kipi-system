@@ -176,6 +176,23 @@ def instance_root(repo=None, strict: bool = True) -> Path:
     q_dir, registered = _registry_q_dir(repo)
     fs_pick = named[0].name if named else None
 
+    # An UNREGISTERED repo has no mapping, and strict mode must not invent one.
+    # SCAR (Codex review of PR #240, major): the `else` arm below fell through to
+    # repo/"q-system" for ANY unregistered checkout whose q-system/ happened to hold
+    # canonical/, and returned it as authoritative -- measured from an isolated review
+    # tree as registered=False, resolved=<tree>/q-system. That is the exact defect
+    # class this resolver exists to remove: guess quietly rather than refuse out loud.
+    # Refused here, at the one place that knows, so both downstream arms are covered
+    # rather than patching the q-system arm alone.
+    # _registry_q_dir already resolves the SKELETON row (returns "q-system", True), so
+    # kipi-system itself stays registered and this does not refuse the skeleton.
+    if not registered:
+        raise ResolutionError(
+            f"{repo}: not a registered instance and not the skeleton. Refusing to "
+            f"resolve a canonical root by guessing. Add it to the registry, or pass "
+            f"strict=False to accept the legacy guess deliberately."
+        )
+
     if registered and q_dir:
         if fs_pick and fs_pick != q_dir:
             raise ResolutionError(
