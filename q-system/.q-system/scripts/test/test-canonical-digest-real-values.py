@@ -212,64 +212,125 @@ def synthetic_fossil() -> Path:
 
 # ------------------------------------------------------------------------- self-test
 
-def self_test() -> int:
+def synthetic_live(rule_id: str = "RULE-2026-01-02-Z") -> Path:
+    """Hermetic POSITIVE control: a tree a correct checker MUST pass.
+
+    WHY THIS EXISTS (scar, measured 2026-08-22): the first version of this file
+    made only the NEGATIVE control runnable off-fleet, so on a machine with no
+    kipi instances -- every CI runner -- the single assertion was "the fossil
+    fails". A checker hardcoded to `return False` passes that. A one-directional
+    control is the false green this PRD exists to remove, so the hermetic pair
+    runs everywhere: fossil must FAIL and live must PASS in the same run.
+
+    The heading is `### RULE-YYYY-MM-DD...`, which is what _parse_decisions keys
+    on ("rule" in heading.lower()), so both readers can see the same id.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="canon-live-control-"))
+    canon = tmp / "canonical"
+    canon.mkdir()
+    (canon / "decisions.md").write_text(
+        "# Decision Log\n\n"
+        f"### {rule_id}: Hermetic positive control\n\n"
+        "Body text so the section carries a summary.\n",
+        encoding="utf-8",
+    )
+    (tmp / "my-project").mkdir()
+    return tmp
+
+
+def run_checks(require_fleet: bool) -> int:
+    """The whole check. `require_fleet` changes REPORTING, never an assertion.
+
+    bare run -- `python3 <this file>`, which is exactly what capability-gate.py
+        builds at line 617 and it can pass NO arguments at all. require_fleet is
+        False: the hermetic pair still both run and both assert; an unreachable
+        fleet prints what it could not reach and claims nothing about it.
+    --self-test -- operator, on a machine with the fleet checked out.
+        require_fleet is True: an unreachable fleet is a REFUSAL, not a skip.
+
+    Scar: this file originally printed argparse help and returned 2 on a bare
+    invocation. That made it undeclarable in expected_tests (the gate's only
+    bucket that clears present-but-undeclared), so it sat undeclared and turned
+    the capability gate red instead.
+    """
     _, module_file = _load_digest_fn()
     print(f"[load-path] canonical_digest imported from {module_file}")
 
     failures = []
 
-    # --- hermetic negative control: MUST FAIL -------------------------------
+    # --- hermetic pair: ALWAYS runs, on every machine, both directions -------
     tmp = synthetic_fossil()
     syn_canon, syn_proj = tmp / "canonical", tmp / "my-project"
     # Validate the control is really what we think before trusting its verdict.
     raw = (syn_canon / "decisions.md").read_text(encoding="utf-8")
-    assert "RULE-001" in raw and not DATED_RULE_RE.search(raw), "synthetic control malformed"
+    assert "RULE-001" in raw and not DATED_RULE_RE.search(raw), "synthetic fossil control malformed"
     ok, why = check_tree(syn_canon, syn_proj)
     print(f"[control:synthetic-fossil] {syn_canon}\n    -> {'PASS' if ok else 'FAIL'}: {why}")
     if ok:
         failures.append("synthetic fossil PASSED; the checker cannot distinguish a template tree")
 
-    # --- real trees --------------------------------------------------------
-    name, live_canon, live_proj, fossil_canon = find_live_and_fossil()
-    print(f"[instance] {name}")
-
-    ok, why = check_tree(fossil_canon, fossil_canon.parent / "my-project")
-    print(f"[control:real-fossil] {fossil_canon}\n    -> {'PASS' if ok else 'FAIL'}: {why}")
-    if ok:
-        failures.append(f"real fossil {fossil_canon} PASSED; checker does not separate fossil from live")
-
-    ok, why = check_tree(live_canon, live_proj)
-    print(f"[subject:live] {live_canon}\n    -> {'PASS' if ok else 'FAIL'}: {why}")
+    live_tmp = synthetic_live()
+    lv_canon, lv_proj = live_tmp / "canonical", live_tmp / "my-project"
+    raw_live = (lv_canon / "decisions.md").read_text(encoding="utf-8")
+    assert DATED_RULE_RE.search(raw_live), "synthetic live control malformed"
+    ok, why = check_tree(lv_canon, lv_proj)
+    print(f"[control:synthetic-live] {lv_canon}\n    -> {'PASS' if ok else 'FAIL'}: {why}")
     if not ok:
-        failures.append(f"live tree {live_canon} FAILED: {why}")
+        failures.append(f"synthetic LIVE tree FAILED; checker cannot recognise a live tree: {why}")
+
+    # --- real fleet: the only half that can prove a SHIPPED tree is read -----
+    fleet_ran = False
+    try:
+        name, live_canon, live_proj, fossil_canon = find_live_and_fossil()
+    except Refusal as exc:
+        if require_fleet:
+            raise
+        print(f"[fleet] SKIPPED: {exc}")
+        print("[fleet] this run proves NOTHING about any real instance tree; the "
+              "hermetic pair above is everything it checked.")
+    else:
+        fleet_ran = True
+        print(f"[instance] {name}")
+        ok, why = check_tree(fossil_canon, fossil_canon.parent / "my-project")
+        print(f"[control:real-fossil] {fossil_canon}\n    -> {'PASS' if ok else 'FAIL'}: {why}")
+        if ok:
+            failures.append(f"real fossil {fossil_canon} PASSED; checker does not separate fossil from live")
+        ok, why = check_tree(live_canon, live_proj)
+        print(f"[subject:live] {live_canon}\n    -> {'PASS' if ok else 'FAIL'}: {why}")
+        if not ok:
+            failures.append(f"live tree {live_canon} FAILED: {why}")
 
     print()
     if failures:
         for f in failures:
             print(f"FAIL: {f}", file=sys.stderr)
         return 1
-    print("PASS: live tree proved read by name; both fossil controls correctly failed.")
+    tail = "; real instance tree proved read by name." if fleet_ran else " (fleet half not reached)."
+    print(f"PASS: hermetic pair separated fossil from live{tail}")
     return 0
+
+
+def self_test() -> int:
+    """Back-compat alias. The fleet is REQUIRED here."""
+    return run_checks(require_fleet=True)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--self-test", action="store_true",
-                    help="run the live subject AND both fossil negative controls")
+                    help="require the real fleet: an unreachable instance refuses, never skips")
     ap.add_argument("--canonical-dir", type=Path, help="check one tree directly")
     ap.add_argument("--my-project-dir", type=Path)
     args = ap.parse_args()
 
     try:
-        if args.self_test:
-            return self_test()
         if args.canonical_dir:
             proj = args.my_project_dir or args.canonical_dir.parent / "my-project"
             ok, why = check_tree(args.canonical_dir, proj)
             print(f"{'PASS' if ok else 'FAIL'} {args.canonical_dir}: {why}")
             return 0 if ok else 1
-        ap.print_help()
-        return 2
+        # No flag is the RUNNER's invocation and it must be the real check, not help.
+        return run_checks(require_fleet=args.self_test)
     except Refusal as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 3
