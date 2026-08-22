@@ -17,12 +17,19 @@ def backup_mgr(tmp_kipi_paths):
     (tmp_kipi_paths.my_project_dir / "current-state.md").write_text("# State")
     (tmp_kipi_paths.memory_dir / "graph.jsonl").write_text('{"s":"a","p":"knows","o":"b"}')
     (tmp_kipi_paths.output_dir / "morning-log-2026-03-27.json").write_text("{}")
+    # NOTE the archive now holds 4 of these 6, not 6. canonical/ and my-project/
+    # are repo-derived since the path-contract repoint, and BackupManager sweeps
+    # global_dir + config_dir (plugin DATA) only -- so talk-tracks.md and
+    # current-state.md are no longer swept. That is deliberate, not an oversight:
+    # those two live in the instance's git tree now, and a restore that wrote into
+    # a git working tree could clobber tracked content. Backup owns tool state;
+    # git owns repo content. Coverage note captured as spillover.
     return BackupManager(tmp_kipi_paths)
 
 
 def test_backup_creates_archive(backup_mgr, tmp_kipi_paths):
     result = backup_mgr.backup()
-    assert result["files_count"] == 6  # 1 global + 5 instance files
+    assert result["files_count"] == 4  # 1 global + 3 instance files (see backup_mgr)
     assert result["size_bytes"] > 0
     assert Path(result["path"]).exists()
     assert "kipi-backup-" in result["path"]
@@ -42,7 +49,7 @@ def test_backup_contains_manifest(backup_mgr):
         assert MANIFEST_NAME in names
         manifest = json.loads(tar.extractfile(MANIFEST_NAME).read())
         assert manifest["version"] == 1
-        assert len(manifest["files"]) == 6
+        assert len(manifest["files"]) == 4
 
 
 def test_backup_archive_structure(backup_mgr):
@@ -78,7 +85,7 @@ def test_restore_dry_run(backup_mgr, tmp_path):
 
     restore_result = new_mgr.restore(Path(result["path"]), dry_run=True)
     assert restore_result["dry_run"] is True
-    assert len(restore_result["restored"]) == 6
+    assert len(restore_result["restored"]) == 4
     assert not (new_paths.config_dir / "founder-profile.md").exists()
 
 
@@ -97,7 +104,7 @@ def test_restore_writes_files(backup_mgr, tmp_path):
 
     restore_result = new_mgr.restore(Path(result["path"]), dry_run=False)
     assert restore_result["dry_run"] is False
-    assert len(restore_result["restored"]) == 6
+    assert len(restore_result["restored"]) == 4
     assert (new_paths.config_dir / "founder-profile.md").read_text() == "# Profile\nName: Test"
     assert (new_paths.my_project_dir / "current-state.md").read_text() == "# State"
 
@@ -151,6 +158,8 @@ def test_roundtrip_preserves_content(backup_mgr, tmp_path):
     """Full roundtrip: backup -> restore to new location -> verify identical."""
     result = backup_mgr.backup()
     from kipi_mcp.paths import KipiPaths
+    from conftest import write_registry
+    write_registry(tmp_path / "rt_base", tmp_path / "repo", instance="rt")
     new_paths = KipiPaths(
         base_dir=tmp_path / "rt_base",
         repo_dir=tmp_path / "repo",
@@ -160,7 +169,9 @@ def test_roundtrip_preserves_content(backup_mgr, tmp_path):
     new_mgr = BackupManager(new_paths)
     new_mgr.restore(Path(result["path"]), dry_run=False)
 
-    assert (new_paths.canonical_dir / "talk-tracks.md").read_text() == "# Talk Tracks"
+    # talk-tracks.md is NOT asserted here any more: it lives in the repo tree since
+    # the path-contract repoint, so the plugin-data archive never carried it. See
+    # backup_mgr. The three below are genuine tool state and must survive intact.
     assert (new_paths.voice_dir / "voice-dna.md").read_text() == "# Voice DNA"
     assert (new_paths.memory_dir / "graph.jsonl").read_text() == '{"s":"a","p":"knows","o":"b"}'
     assert (new_paths.output_dir / "morning-log-2026-03-27.json").read_text() == "{}"

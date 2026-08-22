@@ -248,10 +248,23 @@ def _real_paths_env(monkeypatch, tmp_path, instance="promo-inst"):
     whole point of these two cases is to drive the production code path.
     """
     base = tmp_path / "plugin-data"
+    repo = tmp_path / "repo"
     monkeypatch.setenv("KIPI_PLUGIN_DATA", str(base))
     monkeypatch.setenv("KIPI_INSTANCE", instance)
-    canonical = base / "instances" / instance / "canonical"
+    # canonical_dir is REGISTRY-derived now, not {base}/instances/<name>/canonical.
+    # That change is exactly what this pair of cases was written to anticipate:
+    # "when the path contract repoints canonical_dir at a live tree, the promotion
+    # happens on its own with no edit here" (bus_verifier docstring). The predicate
+    # is untouched; only where the tree lives moved.
+    canonical = repo / "q-system" / "canonical"
     canonical.mkdir(parents=True, exist_ok=True)
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "instance-registry.json").write_text(json.dumps({
+        "skeleton": {"path": str(repo)},
+        "instances": [{"name": instance, "path": str(repo),
+                       "subtree_prefix": "q-system", "instance_q_dir": None}],
+        "excluded": [], "eliminated": [],
+    }), encoding="utf-8")
     return canonical
 
 

@@ -34,7 +34,7 @@ def _build_skeleton(tmp_path: Path) -> tuple[KipiPaths, Path]:
 
     # q-system core (repo code)
     q = repo_dir / "q-system"
-    q.mkdir()
+    q.mkdir(exist_ok=True)  # write_registry already made it
     qsys = q / ".q-system"
     qsys.mkdir()
     agents_dir = qsys / "agent-pipeline" / "agents"
@@ -175,7 +175,7 @@ class TestPhase0:
     def test_phase_0_missing_registry(self, tmp_path):
         repo_dir = tmp_path / "empty"
         repo_dir.mkdir()
-        (repo_dir / "q-system").mkdir()
+        (repo_dir / "q-system").mkdir(exist_ok=True)
         paths = KipiPaths(
             base_dir=tmp_path / "base2",
             repo_dir=repo_dir,
