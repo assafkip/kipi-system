@@ -751,6 +751,30 @@ def phase_1():
         warn(v)
     check(f"Agent model IDs match the allocation policy ({len(ma_violations)} violations)", not ma_violations)
 
+    # --- Gate 1.1c: dev-skills-auto-invoke trigger table resolves (ASK-135) ---
+    # The deterministic half of `.claude/rules/dev-skills-auto-invoke.md`: every
+    # skill that rule tells you to invoke must resolve to a readable SKILL.md.
+    # A `kipi check` gate rather than a PostToolUse hook on purpose — it
+    # validates one always-loaded rule file, not the file being edited, so a
+    # per-Edit hook fleet-wide would buy nothing (token-discipline scope-match).
+    # The script exits 2 only on an unresolvable/malformed row; a dangling
+    # ~/.claude/skills symlink is a WARN it prints and passes, because no
+    # instance can repair the founder's machine and a gate red on its own
+    # population gets switched off.
+    print()
+    print("  --- Gate 1.1c: dev-skills trigger table (.claude/rules) ---")
+    dev_skills_lint = os.path.join(scripts_dir, "scripts", "dev-skills-lint.py")
+    if not file_exists(dev_skills_lint):
+        check("Gate 1.1c: dev-skills-lint.py exists", False)
+    else:
+        ds_run = subprocess.run([sys.executable, dev_skills_lint],
+                                capture_output=True, text=True)
+        for line in (ds_run.stdout + ds_run.stderr).splitlines():
+            if line.strip():
+                print("  " + line.rstrip())
+        check("dev-skills-auto-invoke: every skill in the trigger table resolves",
+              ds_run.returncode == 0)
+
     # --- GATE 1.2: Scripts ---
     print()
     print("  --- Gate 1.2: Scripts ---")
