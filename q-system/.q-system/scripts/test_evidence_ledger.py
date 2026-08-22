@@ -220,6 +220,46 @@ def case_resolver_refuses_unregistered_repo() -> bool:
     return _raises(lambda: EL.instance_root(tmp))
 
 
+def case_allow_unregistered_still_refuses_ambiguity() -> bool:
+    """allow_unregistered is NOT strict=False. It must keep refusing the guess
+    between two candidate domain dirs -- that is the sorted()[0] hazard this PRD
+    exists to kill, and a READ-ONLY caller has no better claim to it than a writer."""
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-alpha" / "canonical").mkdir(parents=True)
+    (tmp / "q-beta" / "canonical").mkdir(parents=True)
+    _reg(tmp, [])
+    return _raises(lambda: EL.instance_root(tmp, allow_unregistered=True))
+
+
+def case_allow_unregistered_resolves_a_single_tree() -> bool:
+    """The one thing it DOES permit: an unregistered repo with exactly one possible
+    answer. system_manifest.health() depends on this -- a hard refusal here made the
+    grounding Stop hook report a HEALTHY manifest as unreadable on every turn."""
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-system" / "canonical").mkdir(parents=True)
+    _reg(tmp, [])
+    return EL.instance_root(tmp, allow_unregistered=True) == tmp / "q-system"
+
+
+def case_write_refuses_unregistered_but_read_degrades() -> bool:
+    """THE asymmetry, pinned. Codex's hazard is an unattended run APPENDING evidence
+    to the wrong tree -- a property of the OPERATION. Guarding the REPOSITORY instead
+    took out the grounding Stop hook and the client-output evidence gate, because
+    read/check/has_ledger all share ledger_path(). Two rounds of per-caller opt-ins
+    later, the fix was to move the refusal onto append_row, the single write path.
+    If someone widens ledger_path back to strict, this case goes red."""
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-system" / "canonical").mkdir(parents=True)
+    _reg(tmp, [])  # a real registry that does not list this repo
+    wrote = _raises(lambda: EL.add(tmp, claim="c", source="s",
+                                   command="true", result="ok"))
+    try:
+        read_ok = EL.read(tmp) == []
+    except Exception:
+        read_ok = False
+    return wrote and read_ok
+
+
 def case_resolver_uses_registry_as_authority() -> bool:
     tmp = Path(tempfile.mkdtemp())
     (tmp / "q-real" / "canonical").mkdir(parents=True)
@@ -282,6 +322,9 @@ CASES = [
     ("resolver refuses registry/filesystem mismatch", case_resolver_refuses_registry_filesystem_mismatch),
     ("resolver refuses registered-null against a real dir", case_resolver_refuses_registered_null_against_real_dir),
     ("resolver refuses an unregistered repo", case_resolver_refuses_unregistered_repo),
+    ("allow_unregistered still refuses ambiguity", case_allow_unregistered_still_refuses_ambiguity),
+    ("allow_unregistered resolves a single tree", case_allow_unregistered_resolves_a_single_tree),
+    ("write refuses unregistered, read degrades", case_write_refuses_unregistered_but_read_degrades),
     ("resolver uses the registry as authority", case_resolver_uses_registry_as_authority),
     ("resolver strict=False restores the legacy guess", case_resolver_nonstrict_restores_legacy_guess),
     ("refuses a claim with no command", case_refuses_missing_command),

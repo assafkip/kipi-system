@@ -136,7 +136,8 @@ def _named_canonical_dirs(repo: Path) -> list[Path]:
             if p.is_dir() and p.name != "q-system" and (p / "canonical").is_dir()]
 
 
-def instance_root(repo=None, strict: bool = True) -> Path:
+def instance_root(repo=None, strict: bool = True,
+                  allow_unregistered: bool = False) -> Path:
     """The dir holding this instance's canonical/ content. FAILS CLOSED.
 
     WHY (scar, measured 2026-08-22 across all 25 registered instances):
@@ -159,6 +160,28 @@ def instance_root(repo=None, strict: bool = True) -> Path:
       mismatch. strict=False restores the old guessing behaviour and exists only
       for callers that must degrade rather than refuse; it is not the default
       because a silently wrong canonical path is the whole reason this PRD exists.
+
+    `allow_unregistered` is the NARROW middle ground, and the distinction is the
+    hazard, not the caller's convenience:
+
+      WRITE callers (ledger_path -> add/append) keep the default and REFUSE. Codex
+      flagged the real danger as an unattended run from a stray clone APPENDING
+      evidence against the wrong tree; that stays refused.
+
+      READ-ONLY callers that must keep running (system_manifest.health, whose own
+      docstring promises it never raises because a Stop hook depends on it) pass
+      allow_unregistered=True. They still get the AMBIGUITY and no-canonical
+      refusals, so this never restores the sorted()[0] guess between two candidate
+      domain dirs -- it only permits the single-tree repo that has exactly one
+      possible answer.
+
+    SCAR 2026-08-22: the first version of this guard refused on `not registered`
+    unconditionally. That is a coarser rule than the hazard, and it broke 11 tests
+    in test_grounding_manifest_health.py plus, worse, made the grounding Stop hook
+    emit "the manifest is unreadable" on a HEALTHY manifest -- a live false alarm
+    on every turn, which is exactly the fleet-wide wedge health() was written to
+    avoid. Blast radius was measured for the paths.py resolver and not for this
+    one; that asymmetry is the actual defect.
     """
     repo = Path(repo or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
     named = _named_canonical_dirs(repo)
@@ -186,11 +209,12 @@ def instance_root(repo=None, strict: bool = True) -> Path:
     # rather than patching the q-system arm alone.
     # _registry_q_dir already resolves the SKELETON row (returns "q-system", True), so
     # kipi-system itself stays registered and this does not refuse the skeleton.
-    if not registered:
+    if not registered and not allow_unregistered:
         raise ResolutionError(
             f"{repo}: not a registered instance and not the skeleton. Refusing to "
-            f"resolve a canonical root by guessing. Add it to the registry, or pass "
-            f"strict=False to accept the legacy guess deliberately."
+            f"resolve a canonical root by guessing. Add it to the registry, pass "
+            f"allow_unregistered=True if you are a READ-ONLY caller that must "
+            f"degrade, or strict=False for the full legacy guess."
         )
 
     if registered and q_dir:
@@ -242,8 +266,17 @@ def audit_instance_roots(registry=None) -> list[dict]:
     return rows
 
 
-def ledger_path(repo=None) -> Path:
-    return instance_root(repo) / "canonical" / "evidence.jsonl"
+def ledger_path(repo=None, allow_unregistered: bool = True) -> Path:
+    """Where the evidence ledger lives.
+
+    Permissive BY DEFAULT, and that is deliberate. `read`, `check` and
+    `has_ledger` all come through here, so a refusal on this accessor refuses
+    every READER -- which is how one guard took out the grounding Stop hook and
+    the client-output evidence gate in a single change (2026-08-22).
+
+    The write path opts INTO the refusal explicitly; see append_row.
+    """
+    return instance_root(repo, allow_unregistered=allow_unregistered) / "canonical" / "evidence.jsonl"
 
 
 # ---------------------------------------------------------------------- read/write
@@ -282,6 +315,13 @@ def _validate(row: dict) -> list[str]:
 
 def append_row(repo, row: dict) -> dict:
     """The single write path. Every field required; claim_id unique; append only."""
+    # THE REFUSAL LIVES HERE, at the single write path, not on the shared resolver.
+    # Codex's hazard was an unattended run APPENDING evidence against the wrong
+    # canonical tree -- a property of the OPERATION, not of the repository. Guarding
+    # the repository instead swept in every read-only caller; two rounds of
+    # per-caller opt-ins later, the surface was the problem, not the callers.
+    path = ledger_path(repo, allow_unregistered=False)
+
     errs = _validate(row)
     if errs:
         raise LedgerError(
@@ -296,7 +336,6 @@ def append_row(repo, row: dict) -> dict:
             "append-only and single-writer; re-verifying a claim means adding a row "
             "with a new command, not rewriting the old one."
         )
-    path = ledger_path(repo)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
