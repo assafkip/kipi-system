@@ -229,6 +229,11 @@
           },
           {
             "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/enforced-claim-lint.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/enforced-claim-lint.py\"; fi",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "if [ -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-lint.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-lint.py\"; fi",
             "timeout": 5
           },

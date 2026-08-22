@@ -79,6 +79,15 @@ pre-commit:
     # Ratchet, not absolute: the 300-line target was 214 under water when revived,
     # so this gates REGRESSION of the always-on total (baseline auto-tightens).
     # The 514->300 trim is its own spillover item.
+    # ASK-965. PostToolUse is FEEDBACK AFTER THE WRITE LANDS, so an interrupted
+    # session, a shell heredoc, a merge, or the skeleton updater can all leave a
+    # false ENFORCED claim in the tree that no PostToolUse hook ever saw. This is
+    # the persistence half. --all exits 1 on any unsubstantiated claim, and prints
+    # the remaining baselined debt on every green run so it stays visible.
+    enforced-claim:
+      run: CLAUDE_PROJECT_DIR="$(git rev-parse --show-toplevel)" python3 q-system/.q-system/scripts/enforced-claim-lint.py --all
+      fail_text: "A rule claims (ENFORCED) that nothing substantiates. Declare ENFORCED / DETECTED / ADVISORY in its enforcement block, or fix the wiring."
+
     instruction-budget:
       run: python3 q-system/.q-system/scripts/instruction-budget-audit.py --ratchet
       fail_text: "Always-on instruction lines grew past the ratchet baseline. Trim what you added or scope a rule with paths: frontmatter."

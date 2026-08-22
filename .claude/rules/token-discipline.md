@@ -44,3 +44,25 @@ When doing cleanup, migration, or rename tasks: run TWO grep passes.
 Before the first Edit, Write, or destructive Bash call: if the task touches more than one file OR more than one tool category (Read, Bash, Edit, Web, Agent), echo the plan in 2-3 bullets and wait for OK. No exceptions for "small" tasks. If you find yourself thinking "this is small, I'll just do it," that is the trigger to echo.
 
 **Scope of (ENFORCED) above: the labelling only, pinned by `test-token-discipline-rule-wired.sh`. The echo itself is structurally unhookable and that is not a TODO.** A PreToolUse hook receives `tool_name` and `tool_input`, never your prose, so "echoed the plan" is invisible to it; and "wait for OK" needs a user turn, which no unattended `claude -p` run has. A blocking branch would deadlock the first Edit of every autonomous run fleet-wide -- the `/q-morning` carve-out was the first sign of that, and the fleet has many more unattended runners now. Still does not apply to `/q-morning` pipeline sub-agents.
+
+<!-- enforcement -->
+```json
+[
+  {
+    "clause": "Cleanup / Migration Rule",
+    "status": "ADVISORY",
+    "note": "token-guard.py is wired and blocking but implements neither grep pass; the rule's own text says the passes are not gated",
+    "superseded_by": "was ENFORCED naming q-system/.q-system/token-guard.py, which does not implement this clause",
+    "marker_removal_ref": "sp-45473673",
+    "directives": 0
+  },
+  {
+    "clause": "Pre-Action Echo",
+    "status": "ADVISORY",
+    "note": "structurally unhookable: a PreToolUse hook sees tool_input, never prose, and waiting for OK needs a user turn",
+    "superseded_by": "was ENFORCED naming q-system/.q-system/scripts/test/test-token-discipline-rule-wired.sh as its receipt; that test pins the LABELLING, not this behaviour",
+    "marker_removal_ref": "sp-45473673",
+    "directives": 1
+  }
+]
+```
