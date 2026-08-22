@@ -334,7 +334,29 @@ not held by anything.
     "required_reviews": [
       "runtime-owner"
     ],
-    "acceptance": "THREE independent defects, THREE independent tests, each shown RED first and each killed by its own mutation. (1) REACHABLE: canonical-digest.json is in phase 1 required; reverting only this must turn a test red. (2) SUBSTANTIVE: the exact empty digest captured 2026-08-22 must be rejected - talk_tracks {}, objections [], current_state {}, discovery {}, decisions [], warnings 5 not-found messages, valid false; reverting only the lambda must turn a DIFFERENT test red. (3) ERROR SHORT-CIRCUIT (finding-13): bus_verifier.py:46-52 tests 'error' in data BEFORE the structure check and emits warn WITHOUT setting all_pass=False, so a required canonical-digest.json of exactly {\"error\":\"canonical digest unavailable\"} yields pass:true even after (1) and (2). Assert verify() returns pass False for that input. A required-file failure is a hard fail per bus_verifier.py:42-81, so assert on pass, never on the presence of a warn. SEQUENCING (finding-27): making this file required while canonical_dir still resolves to ~/.kipi-system/instances/<name>/canonical turns every phase-1 run red on 23 instances. Add a precondition test asserting canonical_dir does NOT resolve under the plugin-data base; it fails until srsa lands, which is the intended block."
+    "acceptance": "THREE independent defects, THREE independent tests, each shown RED first and each killed by its own mutation. (1) REACHABLE: canonical-digest.json is in phase 1 required; reverting only this must turn a test red. (2) SUBSTANTIVE: the exact empty digest captured 2026-08-22 must be rejected - talk_tracks {}, objections [], current_state {}, discovery {}, decisions [], warnings 5 not-found messages, valid false; reverting only the lambda must turn a DIFFERENT test red. (3) ERROR SHORT-CIRCUIT (finding-13): bus_verifier.py:46-52 tests 'error' in data BEFORE the structure check and emits warn WITHOUT setting all_pass=False, so a required canonical-digest.json of exactly {\"error\":\"canonical digest unavailable\"} yields pass:true even after (1) and (2). Assert verify() returns pass False for that input. A required-file failure is a hard fail per bus_verifier.py:42-81, so assert on pass, never on the presence of a warn. SEQUENCING (finding-27): making this file required while canonical_dir still resolves to ~/.kipi-system/instances/<name>/canonical turns every phase-1 run red on 23 instances. Add a precondition test asserting canonical_dir does NOT resolve under the plugin-data base; it fails until srsa lands, which is the intended block. (4) NON-EMPTINESS IS NOT SUBSTANCE (finding-14, finding-9): a fixture-level test CANNOT prove the live tree was read, so this entry must not claim it does. The structure check must reject Codex's exact nonempty placeholder {\"talk_tracks\":{\"metaphor\":\"placeholder\"},\"objections\":[],\"current_state\":{},\"discovery\":{},\"decisions\":[],\"warnings\":[],\"valid\":false} -- assert on that literal, not on 'some field is nonempty'. NEVER assert valid alone in either direction: measured 2026-08-22, the LIVE tree also returns valid:false (3 of 7 checks), so valid:true is not the success signal and valid:false is not the failure signal. Proving a real tree was read belongs to crpr-digest-asserts-real-canonical, which owns that assertion end to end. Do NOT loosen any parser in morning_init.py to move valid; that file is not in allowed_files precisely so this cannot happen."
+  },
+  {
+    "id": "crpr-digest-asserts-real-canonical",
+    "title": "Prove the digest read the live canonical tree, by named value",
+    "finding_id": "finding-14",
+    "priority": "p0",
+    "allowed_files": [
+      "q-system/.q-system/scripts/test/test-canonical-digest-real-values.py"
+    ],
+    "disallowed_files": [
+      "plugins/kipi-core/kipi-mcp/src/kipi_mcp/morning_init.py",
+      ".claude/**",
+      ".prd-os/**"
+    ],
+    "required_checks": [
+      "python3 q-system/.q-system/scripts/test/test-canonical-digest-real-values.py --self-test"
+    ],
+    "bypass_check": "python3 q-system/.q-system/scripts/test/test-canonical-digest-real-values.py --self-test",
+    "required_reviews": [
+      "runtime-owner"
+    ],
+    "acceptance": "Closes finding-14 and finding-9, which no other entry can: every other entry is fixture-level and structurally cannot prove a live tree was read. This checker calls canonical_digest against a REAL instance tree and asserts NAMED values. Rules: (a) NEVER assert valid -- measured 2026-08-22 the live tree returns valid:false (3 of 7), so valid is not a signal in either direction; (b) NEVER assert mere non-emptiness -- that is the exact false green finding-14 names. (c) DERIVE the expected value, do not hardcode it: this repo is PUBLIC, so grep the instance's own decisions.md for a dated rule id matching RULE-[0-9]{4}-[0-9]{2}-[0-9]{2} with an INDEPENDENT reader (regex over the raw file), then assert canonical_digest's parsed decisions[] contains that same id. Two independent readers agreeing on a value present in that one tree is what proves the tree was read; it also keeps the checker instance-agnostic and leaks no client content into a public repo. (d) NEGATIVE SELF-TEST, non-optional and wired as --self-test so the required_check exercises it: the FOSSIL tree is the control. Measured: live decisions.md has exactly 1 dated rule id, fossil q-system/canonical/decisions.md has 0 (it carries only RULE-XXX / RULE-001 / RULE-002 / RULE-003 template scaffolding). The checker MUST pass against the live tree and MUST fail against the fossil; --self-test asserts BOTH and exits nonzero if the fossil case passes. A checker that cannot fail against the fossil is the defect this PRD exists to remove. (e) Show it RED first: run it before the resolver work lands and record the failure reason. (f) If the named instance is absent, REFUSE (exit nonzero) rather than skip -- a skip is a false green."
   },
   {
     "id": "crpr-skeleton-resolves-live-canonical",
