@@ -1,9 +1,9 @@
 ---
 id: prd-canonical-read-path-repair-2026-08-22
 title: Canonical Read Path Repair
-status: in-review
+status: approved
 created_at: 2026-08-22T19:37:28Z
-updated_at: 2026-08-22T19:59:11Z
+updated_at: 2026-08-22T20:07:33Z
 owner: sana
 reviewers: []
 findings_path: .prd-os/findings/prd-canonical-read-path-repair-2026-08-22-findings.jsonl
