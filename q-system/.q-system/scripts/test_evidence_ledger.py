@@ -10,6 +10,7 @@ Run: python3 test_evidence_ledger.py
 """
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -127,7 +128,89 @@ def case_ledger_path_falls_back_to_skeleton() -> bool:
     return EL.ledger_path(tmp).parent.parent.name == "q-system"
 
 
+# --------------------------------------------------------- fail-closed resolver
+# Pairs with prd-canonical-read-path-repair-2026-08-22 / crpr-one-canonical-resolver.
+# The old instance_root() was `named[0] if named else repo/"q-system"` -- a glob with
+# no registry and no cross-check, structurally unable to be wrong out loud. Each case
+# below is one measured way it answered confidently and wrongly.
+#
+# Every case pins KIPI_EVIDENCE_REGISTRY at its own temp registry. Without that the
+# resolver falls back to the REAL fleet registry and the case stops being hermetic.
+
+def _reg(tmp: Path, entries: list[dict]) -> Path:
+    import json
+    p = tmp / "registry.json"
+    p.write_text(json.dumps({"instances": entries}), encoding="utf-8")
+    os.environ["KIPI_EVIDENCE_REGISTRY"] = str(p)
+    return p
+
+
+def _raises(fn) -> bool:
+    try:
+        fn()
+    except EL.ResolutionError:
+        return True
+    except Exception:
+        return False
+    return False
+
+
+def case_resolver_refuses_two_named_canonical_dirs() -> bool:
+    """sorted()[0] silently won. ZERO fleet instances hit this, so it must be
+    synthetic -- a hazard with no current victim is still a hazard."""
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-alpha" / "canonical").mkdir(parents=True)
+    (tmp / "q-beta" / "canonical").mkdir(parents=True)
+    _reg(tmp, [])
+    return _raises(lambda: EL.instance_root(tmp))
+
+
+def case_resolver_refuses_root_with_no_canonical() -> bool:
+    """Measured on 3 of 25 instances: resolves to a dir holding no canonical/."""
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-system").mkdir(parents=True)
+    _reg(tmp, [])
+    return _raises(lambda: EL.instance_root(tmp))
+
+
+def case_resolver_refuses_registry_filesystem_mismatch() -> bool:
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-real" / "canonical").mkdir(parents=True)
+    _reg(tmp, [{"name": "x", "path": str(tmp), "instance_q_dir": "q-other"}])
+    return _raises(lambda: EL.instance_root(tmp))
+
+
+def case_resolver_refuses_registered_null_against_real_dir() -> bool:
+    """The 6-of-25 case: registry says null, a real domain dir holds canonical/."""
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-real" / "canonical").mkdir(parents=True)
+    _reg(tmp, [{"name": "x", "path": str(tmp), "instance_q_dir": None}])
+    return _raises(lambda: EL.instance_root(tmp))
+
+
+def case_resolver_uses_registry_as_authority() -> bool:
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-real" / "canonical").mkdir(parents=True)
+    _reg(tmp, [{"name": "x", "path": str(tmp), "instance_q_dir": "q-real"}])
+    return EL.instance_root(tmp) == tmp / "q-real"
+
+
+def case_resolver_nonstrict_restores_legacy_guess() -> bool:
+    """The escape hatch must still guess, or callers cannot degrade deliberately."""
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-alpha" / "canonical").mkdir(parents=True)
+    (tmp / "q-beta" / "canonical").mkdir(parents=True)
+    _reg(tmp, [])
+    return EL.instance_root(tmp, strict=False) == tmp / "q-alpha"
+
+
 CASES = [
+    ("resolver refuses two named canonical dirs", case_resolver_refuses_two_named_canonical_dirs),
+    ("resolver refuses a root with no canonical/", case_resolver_refuses_root_with_no_canonical),
+    ("resolver refuses registry/filesystem mismatch", case_resolver_refuses_registry_filesystem_mismatch),
+    ("resolver refuses registered-null against a real dir", case_resolver_refuses_registered_null_against_real_dir),
+    ("resolver uses the registry as authority", case_resolver_uses_registry_as_authority),
+    ("resolver strict=False restores the legacy guess", case_resolver_nonstrict_restores_legacy_guess),
     ("refuses a claim with no command", case_refuses_missing_command),
     ("refuses a claim with no result", case_refuses_missing_result),
     ("refuses a duplicate claim_id", case_refuses_duplicate_claim_id),
