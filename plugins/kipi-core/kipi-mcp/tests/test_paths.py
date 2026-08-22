@@ -1,6 +1,15 @@
 from pathlib import Path
 
-from kipi_mcp.paths import APP_NAME, KipiPaths, _detect_instance, _slugify, generate_instance_name
+import pytest
+
+from kipi_mcp.paths import (
+    APP_NAME,
+    KipiPaths,
+    PathContractError,
+    _detect_instance,
+    _slugify,
+    generate_instance_name,
+)
 
 
 def test_default_resolution():
@@ -147,3 +156,75 @@ def test_ensure_dirs(tmp_path):
     ]
     for d in expected:
         assert d.is_dir(), f"{d} was not created"
+
+
+# --------------------------------------------------------------- path contract (srsa)
+# These pin the defect that made kipi_canonical_digest return valid:false in every
+# instance: canonical_dir and my_project_dir resolved to plugin-data
+# (~/.kipi-system/instances/<name>/), which holds zero files, instead of to the
+# instance's own tree. The digest exists to save 40-60K tokens against reading full
+# canonical; returning nothing sent agents back to raw files, where consulting has THREE
+# diverged copies. Written to fail first -- see the issue's reproducer-first acceptance.
+
+
+def test_canonical_dir_resolves_instance_domain_dir(registry_with_domain_dir, monkeypatch):
+    registry_path, repo = registry_with_domain_dir
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo))
+    paths = KipiPaths(base_dir=registry_path.parent, instance="domain-instance")
+    assert paths.canonical_dir == repo / "q-domain" / "canonical"
+
+
+def test_my_project_dir_resolves_instance_domain_dir(registry_with_domain_dir, monkeypatch):
+    """Part 5. Same defect, same file, different property.
+
+    morning_init.py:192 reads current-state.md from my_project_dir, so fixing only
+    canonical leaves current_state empty. Asserted directly and NOT via digest["valid"]:
+    _validate_digest needs 5 of 7 checks and 6 stay reachable without works_today, so
+    valid can go true with this half still broken.
+    """
+    registry_path, repo = registry_with_domain_dir
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo))
+    paths = KipiPaths(base_dir=registry_path.parent, instance="domain-instance")
+    assert paths.my_project_dir == repo / "q-domain" / "my-project"
+
+
+def test_null_domain_dir_falls_back_to_subtree_prefix(registry_fixture, tmp_path, monkeypatch):
+    """instance_q_dir null means the state root IS <path>/<subtree_prefix>.
+
+    NOT <path>/<subtree_prefix>/q-system. A literal reading of the contract sentence
+    produces q-system/q-system, and those nested shadow trees were removed fleet-wide on
+    2026-07-01; re-deriving one here would resurrect the thing that flattening deleted.
+    """
+    repo = tmp_path / "test-instance"
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo))
+    paths = KipiPaths(base_dir=registry_fixture.parent, instance="test-instance")
+    assert paths.canonical_dir == repo / "q-system" / "canonical"
+
+
+def test_unregistered_repo_fails_closed(tmp_path, registry_fixture, monkeypatch):
+    """An unmapped repo must RAISE, never silently pick a default.
+
+    The whole defect class is a resolver that guesses and returns an empty directory that
+    reads as 'no data' rather than 'wrong path'.
+    """
+    stranger = tmp_path / "not-in-registry"
+    stranger.mkdir()
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(stranger))
+    paths = KipiPaths(base_dir=registry_fixture.parent, instance="nope")
+    with pytest.raises(PathContractError):
+        _ = paths.canonical_dir
+
+
+def test_ensure_dirs_never_creates_repo_owned_dirs(registry_with_domain_dir, monkeypatch):
+    """ensure_dirs() must not mkdir canonical/ or my-project/ once they are repo-derived.
+
+    They are tracked git content, not tool-created state. Before this, ensure_dirs() with
+    an unset repo_dir would happily create them inside the real plugin directory.
+    """
+    registry_path, repo = registry_with_domain_dir
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo))
+    paths = KipiPaths(base_dir=registry_path.parent, instance="domain-instance")
+    stray = repo / "q-domain" / "should-not-appear"
+    paths.ensure_dirs()
+    assert not stray.exists()
+    assert paths.bus_dir.is_dir()

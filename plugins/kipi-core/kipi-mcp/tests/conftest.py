@@ -108,3 +108,37 @@ def tmp_sources_dir(tmp_path):
     sources.mkdir()
     (sources / "chrome").mkdir()
     return sources
+
+
+@pytest.fixture
+def registry_with_domain_dir(tmp_path):
+    """A registry whose instance names a domain dir that is NOT q-system.
+
+    Every pre-existing fixture set `instance_q_dir: None`, so the registry branch of the
+    path contract had no test at all and would have shipped unexercised. Mirrors the real
+    shape: a repo holding both `q-system/` (skeleton-synced code) and a named domain dir
+    that actually owns `canonical/`.
+    """
+    repo = tmp_path / "domain-instance"
+    (repo / "q-system").mkdir(parents=True)
+    (repo / "q-domain" / "canonical").mkdir(parents=True)
+    (repo / "q-domain" / "my-project").mkdir(parents=True)
+
+    registry = {
+        "skeleton": {"path": str(tmp_path / "skeleton"), "remote": "https://example.invalid/x.git"},
+        "instances": [
+            {
+                "name": "domain-instance",
+                "path": str(repo),
+                "subtree_prefix": "q-system",
+                "instance_q_dir": "q-domain",
+                "type": "subtree",
+                "has_git": True,
+            }
+        ],
+        "excluded": [],
+        "eliminated": [],
+    }
+    registry_path = tmp_path / "instance-registry.json"
+    registry_path.write_text(json.dumps(registry, indent=2))
+    return registry_path, repo
