@@ -407,8 +407,30 @@ def _run_audit(argv) -> int:
         for r in rows:
             print(f"{r['status']:<8} {r['name']:<22} registry={str(r['registry_q_dir']):<14} "
                   f"fs={str(r.get('filesystem_q_dir')):<14} {r['detail']}")
-        bad = [r for r in rows if r["status"] == "REFUSED"]
+    bad = [r for r in rows if r["status"] == "REFUSED"]
+    if "--json" not in argv:
         print(f"\n{len(rows)} registered, {len(bad)} REFUSED by the fail-closed resolver")
+
+    # SCAR (Codex review of PR #240, major). This returned a hardcoded 0 on every
+    # path, so the one command that enumerates unresolvable instances could not
+    # fail for the reason it exists -- a caller wiring it as a check would get a
+    # green on a fleet where the resolver refuses. Exit 1 when any instance is
+    # REFUSED; exit 2 reserved for the command itself breaking.
+    #
+    # This is non-zero on the live fleet TODAY and that is the correct report, not
+    # a regression: the registry fill that would clear those rows is deliberately
+    # out of this PR (the client-name guard refuses client-derived names in this
+    # PUBLIC repo, sp-71c71288). `--allow-refused` exists for the enumerating
+    # callers that want the rows without the verdict, and it is opt-in per call so
+    # it cannot silently become the default posture.
+    if bad and "--allow-refused" not in argv:
+        sys.stderr.write(
+            f"evidence_ledger: {len(bad)} of {len(rows)} registered instances are "
+            f"REFUSED by the fail-closed resolver. Fill instance_q_dir in the "
+            f"registry so it agrees with the filesystem, or pass --allow-refused "
+            f"to enumerate without failing.\n"
+        )
+        return 1
     return 0
 
 

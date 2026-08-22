@@ -241,11 +241,52 @@ def test_sequencing_both_branches_of_the_promotion_predicate(verifier, tmp_path,
     assert verifier.verify(date, 1)["pass"] is False, "required branch must red a missing digest"
 
 
-def test_promotion_predicate_reads_the_real_path_contract(monkeypatch):
-    """PRECONDITION (finding-27). While canonical_dir resolves under the plugin-data
-    base this is False, and that is the intended block: it flips to True only once
-    srsa-authoritative-path-contract lands. Fails toward NOT-required so a crash
-    here cannot cause the outage the predicate exists to prevent."""
-    monkeypatch.setenv("KIPI_PLUGIN_DATA", "/tmp/some-plugin-data")
-    monkeypatch.setattr(BV, "KipiPaths", None, raising=False)
-    assert BV._canonical_dir_is_plugin_data() is True
+def _real_paths_env(monkeypatch, tmp_path, instance="promo-inst"):
+    """Point the REAL KipiPaths at a tmp base and return its canonical dir.
+
+    Deliberately uses no monkeypatch of the predicate and no stub of KipiPaths: the
+    whole point of these two cases is to drive the production code path.
+    """
+    base = tmp_path / "plugin-data"
+    monkeypatch.setenv("KIPI_PLUGIN_DATA", str(base))
+    monkeypatch.setenv("KIPI_INSTANCE", instance)
+    canonical = base / "instances" / instance / "canonical"
+    canonical.mkdir(parents=True, exist_ok=True)
+    return canonical
+
+
+def test_promotion_predicate_true_branch_is_reachable(monkeypatch, tmp_path):
+    """REPRODUCER (Codex PR #240 blocker). The promotion predicate used to ask
+    "is canonical_dir under the plugin-data base?" -- and `KipiPaths.canonical_dir`
+    is DEFINED as `{base}/instances/<name>/canonical` where `{base}` is exactly
+    KIPI_PLUGIN_DATA or ~/.kipi-system. So the answer was yes for every reachable
+    configuration: a tautology, not a sequencing guard. Its true branch could only
+    ever be entered by monkeypatching the predicate itself, which is how three
+    tests above reached the required branch and why the check stayed permanently
+    optional in production.
+
+    This case drives the real code path with a canonical tree that HAS content.
+    """
+    canonical = _real_paths_env(monkeypatch, tmp_path)
+    (canonical / "decisions.md").write_text("### RULE-2026-08-18-A: real content\n")
+    assert BV.canonical_digest_is_required() is True
+
+
+def test_promotion_predicate_false_while_the_canonical_tree_is_empty(monkeypatch, tmp_path):
+    """The other half, same real code path. SEQUENCING (finding-27): the resolved
+    canonical dir holds ZERO files today (measured 2026-08-22, and re-measured on
+    this machine: 1 instance dir, canonical/ present, 0 .md files), so the digest
+    stays OPTIONAL and no phase-1 run reds. It promotes itself the moment the path
+    contract points canonical_dir at a tree that actually holds content."""
+    _real_paths_env(monkeypatch, tmp_path, instance="empty-inst")
+    assert BV.canonical_digest_is_required() is False
+
+
+def test_promotion_predicate_fails_toward_optional_when_it_cannot_tell(monkeypatch):
+    """A crash in the predicate must not be able to cause the outage it exists to
+    prevent, so an unresolvable path contract means NOT required."""
+    def _boom():
+        raise RuntimeError("path contract unresolvable")
+
+    monkeypatch.setattr(BV, "_canonical_content_present", _boom)
+    assert BV.canonical_digest_is_required() is False

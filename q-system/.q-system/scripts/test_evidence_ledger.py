@@ -204,7 +204,47 @@ def case_resolver_nonstrict_restores_legacy_guess() -> bool:
     return EL.instance_root(tmp, strict=False) == tmp / "q-alpha"
 
 
+# ------------------------------------------------ the audit's exit code can fail
+# SCAR (Codex review of PR #240, major). `_run_audit` ended in a hardcoded
+# `return 0`, so the one command that enumerates unresolvable instances could not
+# fail for the reason it exists. Both branches are asserted here; an exit code
+# that is only ever observed as 0 is a constant, not a verdict.
+
+def _audit_rc(tmp: Path, entries: list[dict], extra: list[str] | None = None) -> int:
+    reg = _reg(tmp, entries)
+    return EL.main(["--audit-instance-roots", "--registry", str(reg)] + (extra or []))
+
+
+def case_audit_exits_nonzero_when_an_instance_is_refused() -> bool:
+    """A registered instance whose registry says null while a real domain dir holds
+    canonical/ -- the 6-of-25 shape. The resolver REFUSES it, so the audit must too."""
+    tmp = Path(tempfile.mkdtemp())
+    inst = tmp / "inst"
+    (inst / "q-real" / "canonical").mkdir(parents=True)
+    return _audit_rc(tmp, [{"name": "x", "path": str(inst), "instance_q_dir": None}]) == 1
+
+
+def case_audit_exits_zero_when_every_instance_resolves() -> bool:
+    """The green branch, or the case above proves only that the command is broken."""
+    tmp = Path(tempfile.mkdtemp())
+    inst = tmp / "inst"
+    (inst / "q-real" / "canonical").mkdir(parents=True)
+    return _audit_rc(tmp, [{"name": "x", "path": str(inst), "instance_q_dir": "q-real"}]) == 0
+
+
+def case_audit_allow_refused_enumerates_without_failing() -> bool:
+    """The opt-in hatch for callers that want the rows, not the verdict."""
+    tmp = Path(tempfile.mkdtemp())
+    inst = tmp / "inst"
+    (inst / "q-real" / "canonical").mkdir(parents=True)
+    entries = [{"name": "x", "path": str(inst), "instance_q_dir": None}]
+    return _audit_rc(tmp, entries, ["--allow-refused"]) == 0
+
+
 CASES = [
+    ("audit exits non-zero on a REFUSED instance", case_audit_exits_nonzero_when_an_instance_is_refused),
+    ("audit exits zero when every instance resolves", case_audit_exits_zero_when_every_instance_resolves),
+    ("audit --allow-refused enumerates without failing", case_audit_allow_refused_enumerates_without_failing),
     ("resolver refuses two named canonical dirs", case_resolver_refuses_two_named_canonical_dirs),
     ("resolver refuses a root with no canonical/", case_resolver_refuses_root_with_no_canonical),
     ("resolver refuses registry/filesystem mismatch", case_resolver_refuses_registry_filesystem_mismatch),

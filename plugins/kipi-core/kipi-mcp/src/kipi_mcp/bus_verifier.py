@@ -8,8 +8,8 @@ from pathlib import Path
 CANONICAL_DIGEST = "canonical-digest.json"
 
 
-def _canonical_dir_is_plugin_data() -> bool:
-    """True while canonical_dir still resolves under the plugin-data base.
+def _canonical_content_present() -> bool:
+    """True when the resolved canonical dir actually holds canonical content.
 
     SEQUENCING GUARD (PRD finding-27). canonical-digest.json must become a REQUIRED
     phase-1 file, but promoting it while paths.py still resolves canonical_dir to
@@ -18,32 +18,40 @@ def _canonical_dir_is_plugin_data() -> bool:
     promotion is computed, not typed: optional until the path contract lands
     (srsa-authoritative-path-contract), required automatically afterwards.
 
-    Fails toward NOT-required. A crash here must not be able to cause the outage
-    this function exists to prevent.
+    SCAR (Codex review of PR #240, blocker). The first version of this guard asked
+    "does canonical_dir resolve under the plugin-data base?" -- and
+    `KipiPaths.canonical_dir` is DEFINED as `{base}/instances/<name>/canonical`
+    where `{base}` is exactly `KIPI_PLUGIN_DATA` or `~/.kipi-system`. The answer
+    was therefore yes for every reachable configuration. It was a tautology
+    wearing a predicate's clothes: the required branch could only be entered by
+    monkeypatching this function, so the digest check shipped permanently optional
+    and the "make it able to fail" fix was inert in production.
+
+    Emptiness is the condition the docstring above actually names, and unlike a
+    path prefix it can be observed BOTH ways through the real code path: an empty
+    tree yields False (no outage today), a populated one yields True. When the
+    path contract repoints canonical_dir at a live tree, the promotion happens on
+    its own with no edit here.
     """
-    try:
-        from kipi_mcp.paths import KipiPaths
+    from kipi_mcp.paths import KipiPaths
 
-        canonical = KipiPaths().canonical_dir.resolve()
-    except Exception:
-        return True  # cannot tell -> stay optional -> no outage
-
-    base = os.environ.get("KIPI_PLUGIN_DATA")
-    bases = [Path(base)] if base else []
-    bases.append(Path.home() / ".kipi-system")
-    for b in bases:
-        try:
-            canonical.relative_to(b.resolve())
-            return True
-        except (ValueError, OSError):
-            continue
-    return False
+    canonical = KipiPaths().canonical_dir
+    if not canonical.is_dir():
+        return False
+    return any(p.is_file() for p in canonical.iterdir())
 
 
 def canonical_digest_is_required() -> bool:
     """The promotion predicate. Public so its BOTH branches can be tested; a
-    predicate whose false branch is never exercised reports success by default."""
-    return not _canonical_dir_is_plugin_data()
+    predicate whose false branch is never exercised reports success by default.
+
+    Fails toward NOT-required. A crash here must not be able to cause the outage
+    the sequencing guard exists to prevent.
+    """
+    try:
+        return _canonical_content_present()
+    except Exception:
+        return False  # cannot tell -> stay optional -> no outage
 
 
 def _canonical_digest_substantive(d: dict) -> bool:
