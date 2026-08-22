@@ -1432,3 +1432,68 @@ def test_sync_marker_refs_generates_from_the_ledger_and_refuses_without_it(tmp_p
     assert r.returncode == 0, r.stdout + r.stderr
     written = json.loads((prd / "marker-removal-refs.json").read_text())
     assert written["refs"] == {"sp-abc123": "open"}
+
+
+# --- the ratchet's comparison point (ASK-965, 2026-08-22) ------------------------
+#
+# The shrink check read the baseline "at HEAD". That is a predecessor only at
+# PRE-COMMIT time. Once the commit exists -- in CI, or any post-commit run -- HEAD
+# IS the candidate, so `baseline - previous` is empty by construction and the check
+# never fires. Proven end-to-end before fixing: commit A shrinks 27->26, commit B
+# re-adds the removed exception, and the identical tree PASSES with HEAD=B while
+# REFUSING with HEAD=A. A guard that reads as enforcing and does not fire where it
+# runs is this lint's own defect class, arriving inside the lint.
+
+def _git_repo(tmp_path):
+    import subprocess
+    run = lambda *a: subprocess.run(["git", "-C", str(tmp_path)] + list(a),
+                                    capture_output=True, check=True)
+    run("init", "-q")
+    run("config", "user.email", "t@t.local")
+    run("config", "user.name", "t")
+    return run
+
+
+def _write_baseline(tmp_path, keys, initial):
+    d = tmp_path / "q-system" / ".q-system"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "enforced-claim-baseline.json").write_text(
+        json.dumps({"uncovered_markers": sorted(keys), "initial_count": initial}) + "\n")
+
+
+def test_ratchet_refuses_a_reintroduced_exception_after_commit(tmp_path):
+    """THE REGRESSION. Post-commit (CI), a commit that re-adds a previously removed
+    baseline entry must still be refused. Before the fix this passed, because the
+    'previous' baseline was read from the very commit under test."""
+    run = _git_repo(tmp_path)
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    (rules / "fixture.md").write_text(_rule(block=None))  # marker, no disposition
+    key = ".claude/rules/fixture.md::cleanup rule"
+
+    _write_baseline(tmp_path, [], 1)                       # commit A: excuse removed
+    run("add", "-A"); run("commit", "-qm", "A: no excuse")
+    _write_baseline(tmp_path, [key], 1)                    # commit B: excuse re-added
+    run("add", "-A"); run("commit", "-qm", "B: excuse re-added")
+
+    r = _run_all(tmp_path)
+    assert r.returncode == 1, "a re-added exception must not pass post-commit"
+    assert "may only shrink" in r.stderr, r.stderr
+
+
+def test_ratchet_control_unchanged_baseline_passes_after_commit(tmp_path):
+    """CONTROL. Without this the fix could 'work' by refusing every post-commit
+    run. Same two commits, but B does not re-add anything."""
+    run = _git_repo(tmp_path)
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    (rules / "fixture.md").write_text(_rule(block=None))
+    key = ".claude/rules/fixture.md::cleanup rule"
+
+    _write_baseline(tmp_path, [key], 1)
+    run("add", "-A"); run("commit", "-qm", "A: excused")
+    (rules / "other.md").write_text("# Plain Rule\n\nno marker.\n")
+    run("add", "-A"); run("commit", "-qm", "B: unrelated change")
+
+    r = _run_all(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr

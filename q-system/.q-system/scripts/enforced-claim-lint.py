@@ -1523,26 +1523,83 @@ def _read_baseline(root):
 
 
 def _baseline_at_head(root):
-    """The committed baseline's entry set, or None when it cannot be read.
+    """The PREDECESSOR baseline's entry set, or None when there is none to read.
 
-    None (no git, no such file yet, a first commit) means "no predecessor to
-    compare against" and the caller falls back to the in-file count. That is a
-    stated limit, not a silent pass: the in-file check still runs, and the only
-    situation with neither is a repo where the baseline has never been committed.
+    Named for HEAD historically; the comparison point is whatever commit actually
+    precedes the candidate. Comparing to HEAD is only correct at PRE-COMMIT time.
+    Once the commit exists -- in CI, or any post-commit run -- HEAD IS the
+    candidate, so `baseline - previous` is empty by construction and the shrink
+    check silently never fires (codex-adversarial review of eb923991, major).
+
+    Proven end-to-end 2026-08-22, not reasoned: commit A shrinks the baseline
+    27->26, commit B re-adds the removed exception. The identical tree with the
+    identical code PASSES when HEAD is B and REFUSES with C0 naming the re-added
+    key when HEAD is A. A guard that reads as enforcing and does not fire where it
+    runs is this lint's own defect class, arriving inside the lint.
+
+    None still means "no predecessor to compare against" and the caller falls back
+    to the in-file count. That is a stated limit, not a silent pass.
     """
     import subprocess
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(root), "show", "HEAD:" + BASELINE_REL.replace(os.sep, "/")],
-            capture_output=True, timeout=30, check=False)
+
+    def _git(*args):
+        try:
+            proc = subprocess.run(["git", "-C", str(root)] + list(args),
+                                  capture_output=True, timeout=30, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return None
         if proc.returncode != 0:
             return None
-        data = json.loads(proc.stdout.decode("utf-8", "replace"))
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
-    entries = data.get("uncovered_markers")
-    return set(entries) if isinstance(entries, list) else None
+        return proc.stdout.decode("utf-8", "replace").strip()
 
+    def _baseline_at(rev):
+        blob = _git("show", rev + ":" + BASELINE_REL.replace(os.sep, "/"))
+        if blob is None:
+            return None
+        try:
+            data = json.loads(blob)
+        except ValueError:
+            return None
+        entries = data.get("uncovered_markers")
+        return set(entries) if isinstance(entries, list) else None
+
+    # IS HEAD THE CANDIDATE? Decided by CONTENT, never by guessing the context.
+    # If the committed baseline already equals the one on disk, this run is
+    # validating HEAD itself, and HEAD cannot be its own predecessor.
+    head_set = _baseline_at("HEAD")
+    if head_set is None:
+        return None
+    try:
+        with open(os.path.join(str(root), BASELINE_REL)) as fh:
+            disk_set = set(json.load(fh).get("uncovered_markers") or [])
+    except (OSError, ValueError):
+        return head_set
+    if disk_set != head_set:
+        return head_set  # pre-commit: HEAD really is the predecessor
+
+    # Post-commit / CI: walk to the nearest ancestor that HAS a baseline. The
+    # merge base with the base branch is preferred -- it forbids growth across the
+    # WHOLE branch rather than just since the last commit. But the branch that
+    # INTRODUCES this file has no baseline at its merge base: the first attempt at
+    # this fix used merge-base alone, got None, and the caller skipped the check,
+    # so the exploit still passed. Measured, not assumed. Hence HEAD~1 in the chain.
+    cands = []
+    for b in ("origin/main", "origin/master"):
+        if _git("rev-parse", "--verify", "--quiet", b):
+            mb = _git("merge-base", "HEAD", b)
+            if mb:
+                cands.append(mb)
+            break
+    cands.append("HEAD~1")
+    head_sha = _git("rev-parse", "HEAD")
+    for rev in cands:
+        sha = _git("rev-parse", "--verify", "--quiet", rev)
+        if not sha or sha == head_sha:
+            continue
+        prev = _baseline_at(rev)
+        if prev is not None:
+            return prev
+    return None
 
 def baseline_key(root, file_path, clause_key_value):
     try:
