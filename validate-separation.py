@@ -758,9 +758,12 @@ def phase_1():
     # validates one always-loaded rule file, not the file being edited, so a
     # per-Edit hook fleet-wide would buy nothing (token-discipline scope-match).
     # The script exits 2 only on an unresolvable/malformed row; a dangling
-    # ~/.claude/skills symlink is a WARN it prints and passes, because no
-    # instance can repair the founder's machine and a gate red on its own
-    # population gets switched off.
+    # ~/.claude/skills symlink passes, because no instance can repair the
+    # founder's machine and a gate red on its own population gets switched off.
+    # A passing run costs ONE line here on purpose: it used to forward one WARN
+    # per stale link on every `kipi check` fleet-wide, which trains an operator
+    # to skim the gate (ASK-135, Codex PR #238 round 3). The count is folded
+    # into the pass line; `--verbose` still lists each one on demand.
     print()
     print("  --- Gate 1.1c: dev-skills trigger table (.claude/rules) ---")
     dev_skills_lint = os.path.join(scripts_dir, "scripts", "dev-skills-lint.py")

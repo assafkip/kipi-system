@@ -19,22 +19,30 @@ This is NOT a PostToolUse hook: the thing it validates is one always-loaded rule
 file, not the file you happen to be editing, so paying a hook on every Edit
 fleet-wide would buy nothing (`token-discipline.md`, scope-match).
 
-  python3 q-system/.q-system/scripts/dev-skills-lint.py [--rule PATH] [--quiet]
+  python3 q-system/.q-system/scripts/dev-skills-lint.py [--rule PATH] [--quiet] [--verbose]
 
-Contract: exit 0 = pass (warnings may still print), exit 2 = fail. stdlib only.
+Contract: exit 0 = pass, exit 2 = fail. stdlib only.
 Reproducer: `python3 q-system/.q-system/scripts/test/test-dev-skills-lint.py`.
 
 TWO SEVERITIES, on purpose:
 
   ERROR (exit 2) -- a named skill resolves NOWHERE, or the table is missing or
     malformed. This is a defect in a file this repo owns and can fix.
-  WARN (exit 0)  -- the skill resolves through some provider, but its
-    `~/.claude/skills/<name>` entry is a DANGLING SYMLINK. Real breakage, and
-    outside this repo: nothing in `kipi update` can repair a link into a
-    directory that no longer exists on the founder's machine. Blocking on it
-    would make `kipi check` red on every instance for a cause no instance owns,
-    and a gate that is red on its own population gets switched off
-    (`automated-filer-marking.md`, `plan-lint.py` made the same call).
+  NOTE (exit 0)  -- the skill resolves through some provider, but its
+    `~/.claude/skills/<name>` entry is a DANGLING SYMLINK. Outside this repo:
+    nothing in `kipi update` can repair a link into a directory that no longer
+    exists on the founder's machine. Blocking on it would make `kipi check` red
+    on every instance for a cause no instance owns, and a gate that is red on
+    its own population gets switched off (`automated-filer-marking.md`,
+    `plan-lint.py` made the same call).
+
+A PASSING RUN COSTS ONE LINE (ASK-135, Codex PR #238 round 3, major). The notes
+above used to print one WARN per stale link: six identical lines on every `kipi
+check`, fleet-wide, for skills that resolve fine and a cause no run of this gate
+can fix. That is how an operator is trained to skim past the real warning. So
+the count is folded into the single pass line and the per-skill list moved
+behind `--verbose`. Summarised, not deleted -- `--verbose` still names each one,
+and the resolution failure it would mask is a different branch (exit 2).
 
 HONEST BOUNDARY, three of them:
   1. A readable SKILL.md on disk is NOT proof the running session offers that
@@ -226,13 +234,17 @@ def main(argv: list[str] | None = None) -> int:
                     help="rule file to audit (default: dev-skills-auto-invoke.md)")
     ap.add_argument("--quiet", action="store_true",
                     help="print nothing on a clean pass")
+    ap.add_argument("--verbose", action="store_true",
+                    help="list every stale ~/.claude/skills link (default: "
+                         "one summary clause on the pass line)")
     args = ap.parse_args(argv)
 
     rule_path = Path(args.rule)
     errors, warnings = audit(rule_path, Path.home())
 
-    for w in warnings:
-        print(f"  WARN  {w}")
+    if args.verbose and not args.quiet:
+        for w in warnings:
+            print(f"  note  {w}")
 
     if errors:
         sys.stderr.write(
@@ -251,8 +263,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.quiet:
         rows = len(table_rows(rule_path.read_text(encoding="utf-8")))
-        print(f"  dev-skills-lint: {rows} trigger row(s), all skills resolve"
-              + (f", {len(warnings)} warning(s)" if warnings else ""))
+        stale = (f"; {len(warnings)} also carry a dangling ~/.claude/skills link "
+                 "that resolution does not depend on (--verbose lists them)"
+                 if warnings else "")
+        print(f"  dev-skills-lint: {rows} trigger row(s), all skills resolve{stale}")
     return 0
 
 

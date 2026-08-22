@@ -26,14 +26,14 @@ REAL_RULE = REPO / ".claude" / "rules" / "dev-skills-auto-invoke.md"
 FAILURES: list[str] = []
 
 
-def run(rule: Path, home: Path | None = None) -> tuple[int, str]:
+def run(rule: Path, home: Path | None = None, verbose: bool = False) -> tuple[int, str]:
     env = dict(os.environ)
     if home is not None:
         env["HOME"] = str(home)
-    proc = subprocess.run(
-        [sys.executable, str(LINT), "--rule", str(rule)],
-        capture_output=True, text=True, env=env,
-    )
+    argv = [sys.executable, str(LINT), "--rule", str(rule)]
+    if verbose:
+        argv.append("--verbose")
+    proc = subprocess.run(argv, capture_output=True, text=True, env=env)
     return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -159,6 +159,27 @@ def main() -> int:
         rc, out = run(sibling)
         check("an unrelated table below the trigger table is ignored",
               rc == 0, f"rc={rc}\n{out}")
+
+        # 9. THE third reproducer (Codex PR #238 round 3, major): a PASSING run
+        #    must not spend more than one line on a condition it cannot fix.
+        #    The live gate printed one WARN per stale link -- six identical
+        #    lines on every `kipi check`, fleet-wide, for skills that resolve
+        #    fine. Repeat non-actionable warnings are how an operator learns to
+        #    skim past the real one. The fact is still stated, once, in the
+        #    pass line; the per-skill list moves behind --verbose.
+        rc, out = run(ghost, home=fake_home)
+        printed = [ln for ln in out.splitlines() if ln.strip()]
+        check("a passing run prints exactly one line",
+              rc == 0 and len(printed) == 1, f"rc={rc}\n{out}")
+        check("that one line still names the dangling link",
+              "dangling" in out.lower(), out)
+
+        # 10. Negative self-test for #9: collapsing the output must not DELETE
+        #     the evidence. --verbose still names the affected skill, so the
+        #     quiet default is a summary and not a silent swallow.
+        rc, out = run(ghost, home=fake_home, verbose=True)
+        check("--verbose exits 0 and names the affected skill",
+              rc == 0 and "ghost-skill" in out, f"rc={rc}\n{out}")
 
     print()
     if FAILURES:

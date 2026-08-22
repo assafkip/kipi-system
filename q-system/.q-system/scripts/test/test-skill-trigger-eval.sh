@@ -85,4 +85,25 @@ SKILL_EVAL_DIR="$FX" SKILL_EVAL_CLAUDE_CMD="$MULTI" python3 "$H" e >/dev/null 2>
 printf '{"skill":"t","fired_marker":"FIRED","cases":[{"prompt":"yes","should_trigger":true}]}\n' > "$FX/t.json"
 SKILL_EVAL_DIR="$FX" SKILL_EVAL_CLAUDE_CMD="/nonexistent/claude-xyz" python3 "$H" t >/dev/null 2>&1 && fail "broken claude binary did not error" || true
 
-echo "PASS: trigger_rate computed, false-positive penalized, malformed rejected, all 5 real fixtures parse; any-of marker list + per-case narrowing work; pipe-separated and empty markers refused; broken-claude errors clearly (offline)"
+# 10. A claude that EXISTS and is executable but fails every call is the same
+#     class as case 5, and case 5 could not see it: claude_runnable() passes on
+#     /usr/bin/false, then every invocation exits nonzero with no output and the
+#     old run_case returned "" for each. Three negative cases scored as correct
+#     and the harness published trigger_rate=0.38 -- total infrastructure
+#     failure wearing the shape of a model measurement (Codex PR #238 round 3).
+BROKEN="$(mktemp -d)/broken"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "auth error" >&2' 'exit 1' > "$BROKEN"
+chmod +x "$BROKEN"
+OUT10="$(SKILL_EVAL_DIR="$FX" SKILL_EVAL_CLAUDE_CMD="$BROKEN" python3 "$H" t 2>&1 || true)"
+echo "$OUT10" | grep -q "trigger_rate=" && fail "a failing claude still published a trigger_rate: $OUT10"
+SKILL_EVAL_DIR="$FX" SKILL_EVAL_CLAUDE_CMD="$BROKEN" python3 "$H" t >/dev/null 2>&1 && fail "a claude that fails every call did not error" || true
+
+# 11. Negative self-test for 10: a claude that exits 0 with EMPTY output is a
+#     real measurement ("the skill did not fire"), not an infrastructure error.
+#     A fix that treated silence as failure would refuse every honest negative
+#     case and the eval could never score a should_trigger=false case again.
+printf '{"skill":"n","fired_marker":"FIRED","cases":[{"prompt":"no","should_trigger":false}]}\n' > "$FX/n.json"
+OUT11="$(SKILL_EVAL_DIR="$FX" SKILL_EVAL_CLAUDE_CMD="$NOOP" python3 "$H" n 2>&1)" || fail "empty-but-successful claude errored: $OUT11"
+echo "$OUT11" | grep -q "trigger_rate=1.00" || fail "expected 1.00 (silence is a valid non-trigger), got: $OUT11"
+
+echo "PASS: trigger_rate computed, false-positive penalized, malformed rejected, all 5 real fixtures parse; any-of marker list + per-case narrowing work; pipe-separated and empty markers refused; broken-claude and failing-claude error clearly, empty-but-successful still measures (offline)"
