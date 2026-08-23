@@ -162,13 +162,27 @@ class KipiPaths:
             target = Path(project).resolve()
         except (OSError, ValueError):
             return None
+        # Collect ALL matches, never `return` on the first. Duplicate registry
+        # PATHS are the sibling of the duplicate-NAME hazard guarded in
+        # _state_root, and this site had only the name half. Measured with two
+        # rows sharing one path: resolved_instance=alpha, ambiguity_reported=no --
+        # an unattended server binds to whichever row is listed first and reads
+        # that project's canonical data. Refusing is the only safe answer; picking
+        # is what this whole contract exists to stop.
+        matches = []
         for entry in data.get("instances", []):
             try:
                 if Path(entry.get("path", "")).resolve() == target:
-                    return entry.get("name")
+                    matches.append(entry.get("name"))
             except (OSError, ValueError):
                 continue
-        return None
+        if len(matches) > 1:
+            raise PathContractError(
+                f"{project} is claimed by {len(matches)} registry rows "
+                f"({', '.join(sorted(str(m) for m in matches))}). Refusing to let "
+                f"the first row win. Remove the duplicate path from the registry.",
+                kind="duplicate-path")
+        return matches[0] if matches else None
 
     # --- Base directories ---
 

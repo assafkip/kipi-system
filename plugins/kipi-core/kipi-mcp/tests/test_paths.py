@@ -208,6 +208,38 @@ def test_null_domain_dir_falls_back_to_subtree_prefix(tmp_registry_with_instance
     assert paths.canonical_dir == repo / "q-system" / "canonical"
 
 
+def test_duplicate_registry_paths_fail_closed(tmp_path, monkeypatch):
+    """Codex PR #240 round 3, major. The NAME axis was guarded in _state_root and
+    the PATH axis was not, so two rows sharing one path let the first silently win:
+
+        resolved_instance=alpha, ambiguity_reported=no
+
+    An unattended server then binds to whichever row is listed first and reads that
+    project's canonical data. Both axes now refuse.
+    """
+    import json
+    repo = tmp_path / "repo"
+    (repo / "q-system" / "canonical").mkdir(parents=True)
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "instance-registry.json").write_text(json.dumps({
+        "skeleton": {"path": str(tmp_path / "nope")},
+        "instances": [
+            {"name": "alpha", "path": str(repo), "subtree_prefix": "q-system",
+             "instance_q_dir": None},
+            {"name": "beta", "path": str(repo), "subtree_prefix": "q-system",
+             "instance_q_dir": None},
+        ],
+    }), encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo))
+    monkeypatch.setenv("KIPI_PLUGIN_DATA", str(base))
+    monkeypatch.delenv("KIPI_INSTANCE", raising=False)
+
+    with pytest.raises(PathContractError) as exc:
+        KipiPaths()
+    assert exc.value.kind == "duplicate-path"
+
+
 def test_unregistered_repo_fails_closed(tmp_path, tmp_registry_with_instances, monkeypatch):
     """An unmapped repo must RAISE, never silently pick a default.
 
