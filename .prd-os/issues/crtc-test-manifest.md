@@ -14,10 +14,15 @@ disallowed_files:
   - q-system/canonical/**
   - .prd-os/**
 required_checks:
-  - python3 -m pytest -q q-system/.q-system/scripts/test_capability_gate.py
+  - python3 q-system/.q-system/scripts/test_capability_gate.py
 required_reviews:
   - test-owner
-bypass_check: "python3 -m pytest -q q-system/.q-system/scripts/test_capability_gate.py -k undeclared"
+# sp-4c5a00f3: test_capability_gate.py is a main()-based harness with sec_*
+# sections; pytest collects ZERO tests from it, so the pytest form returned
+# rc=5 forever and could never fail. Same trap crtc-one-canonical-resolver's
+# spec documents (finding-3, finding-29). The direct invocation exits 1 on a
+# broken manifest and 0 on a healthy one.
+bypass_check: "python3 q-system/.q-system/scripts/test_capability_gate.py"
 deliverables_count: 1
 ---
 <!-- generated-by: prd_split.py prd=prd-complete-repo-test-contract-2026-07-24 finding=finding-1 at=2026-07-24T21:01:37Z -->
