@@ -132,7 +132,11 @@ def load_receipts(prd_os_dir: str) -> set[tuple[str, str]]:
                 # safe side, same as a malformed row.
                 continue
             prev = latest.get(pair)
-            if prev is None or prev[0] is None or event[0] > prev[0]:
+            # Round 6 (codex): identical timestamps must not fall back to
+            # physical order. Tie goes to REOPEN: reporting finished work as
+            # open is recoverable, reporting unfinished work as closed is not.
+            if (prev is None or prev[0] is None or event[0] > prev[0]
+                    or (event[0] == prev[0] and event[1] is False)):
                 latest[pair] = event
     return closed_pairs(latest)
 

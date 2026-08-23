@@ -86,6 +86,17 @@ LATER_REOPEN = {"prd_id": "P", "finding_id": "f3", "issue_id": "i2",
 check("offset-bearing timestamps compare as instants, not text",
       ar.load_receipts(ledger([OFFSET_CLOSE, LATER_REOPEN])), set())
 
+# 5c. SAME-SECOND TIE (codex round 6): equal timestamps must not fall back to
+# physical ledger order; the reopen wins from either listing position.
+SAME = "2026-05-01T00:00:00Z"
+TIE_CLOSE = {"prd_id": "P", "finding_id": "f4", "closed_at": SAME}
+TIE_REOPEN = {"prd_id": "P", "finding_id": "f4", "issue_id": "i3",
+              "reopened_at": SAME}
+check("same-second tie: reopen wins when listed second",
+      ar.load_receipts(ledger([TIE_CLOSE, TIE_REOPEN])), set())
+check("same-second tie: reopen wins when listed first",
+      ar.load_receipts(ledger([TIE_REOPEN, TIE_CLOSE])), set())
+
 # 6. MUTATION GUARD: an always-empty loader must fail these checks. Proves the
 #    suite can go red for the reason this file exists (codex round 4).
 stub = tempfile.mkdtemp()  # directory with NO receipts.jsonl at all

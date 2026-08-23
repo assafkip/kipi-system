@@ -859,7 +859,10 @@ def _load_receipts_for_prd(path: Path, prd_id: str) -> set[str]:
             if ts is None:
                 continue  # an unparseable timestamp proves nothing either way
             prev = latest.get(fid)
-            if prev is None or ts > prev[0]:
+            # ASK-988 round 6: identical timestamps tie-break to REOPEN, never
+            # to physical ledger order (see accept-rate.py for the reasoning).
+            if (prev is None or ts > prev[0]
+                    or (ts == prev[0] and not is_close)):
                 latest[fid] = (ts, is_close)
     return {fid for fid, (_ts, is_close) in latest.items() if is_close}
 
