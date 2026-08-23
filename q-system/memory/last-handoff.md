@@ -1,112 +1,73 @@
-# Session handoff, night of Aug 22 [verified: date -u]. READ THIS FIRST.
+# Session handoff, Aug 23 evening [verified: date]. READ THIS FIRST.
 
-## THE ONE THING TO DO IN THIS SESSION
+## State
 
-The founder just restarted Claude Code specifically so the kipi MCP server would
-reload. Before anything else, run the MCP tool `kipi_canonical_digest` and show
-him the raw output.
+Two Sana sessions have run on the spillover queue. Blocking items: 43 -> 36
+(35 original + sp-a7846d3d filed this session). Census 963 open.
 
-**If it returns real data** (a populated `decisions` list, empty `warnings`, and
-no "not found" messages) it worked. Then run:
+Landed on origin/main (all merged, CI green):
+- PR #246: ASK-975/976/977/984/985 stack (bypass_check runs at close, digest
+  parser, guard reader stages, uv-collectible suite). Resolved sp-50db1764,
+  sp-0cf100b3, sp-b82fda60, sp-8804dee7, sp-7e42845e, sp-dcd84af1; voided
+  sp-eea17567, sp-d120853a, sp-ca9351e4, sp-4c0b19ba.
+- PR #247: ASK-988 / sp-4c5a00f3 (crtc-test-manifest check commands point at
+  the harness entrypoint). Also shipped: receipts.jsonl gained `reopened_at`
+  (allowlist + ISO contract), accept-rate.load_receipts and prd_runner's
+  archive coverage now resolve state by parsed event timestamp with
+  same-second ties going to REOPEN. Pinned in
+  q-system/.q-system/scripts/test/test-accept-rate-receipts.py (manifest-declared).
+- crtc-test-manifest itself is REOPENED (status: open in its spec): the
+  enumeration deliverable is NOT done. Do not re-close it for check-command
+  work.
 
-```bash
-cd ~/projects/kipi-system
-R=plugins/prd-os/scripts/prd_runner.py
-python3 $R spillover resolve sp-64c9fdfb --resolution-commit de2e4624
-python3 $R spillover resolve sp-b2c21bdc --resolution-commit de2e4624
-python3 $R spillover resolve sp-88c00ce2 --resolution-commit de2e4624
-```
+## Next pick (Sana's call, but the recon is done)
 
-Tell the founder it worked, in one line. He has been at this since morning.
+sp-a7846d3d is the natural next item: capability-manifest.json does not
+enumerate plugin tests (65+ files under plugins/*/tests; manifest references
+plugins/ only 12 times) and gate scan scope excludes plugin test discovery.
+This is the defect class that makes other verdicts untrustworthy.
 
-**If it STILL returns** `"talk-tracks.md not found"` with an empty decisions
-list, the server is still on the old plugin version. Diagnose in this order:
+Recon notes for sp-32b3438d (audit --dry-run), measured this session:
+- The flag already exists: prd_runner.py spillover promoted-audit --dry-run
+  ("report only; write nothing", parser line ~2824).
+- Under --dry-run it still queries Linear read-only, prints WOULD RESOLVE,
+  and keeps the SAME exit-code contract (1 on transport failure or fully-blind
+  sweep). See _spillover_promoted_audit, lines ~2160-2243.
+- The fix is one argv element in fleet-health-daily.py detect_promoted_audit
+  (~line 1542): append "--dry-run" to the subprocess.run list.
+- RED first via a source-inspection check appended to
+  q-system/.q-system/scripts/test/test-fleet-health-daily.py (house style:
+  main()-based check() helpers, inspect.getsource assertion like line ~141).
 
-```bash
-ps aux | grep "[k]ipi-mcp" | grep -o "kipi-core/[0-9.]*"
-ls ~/.claude/plugins/cache/kipi/kipi-core/
-```
+## Mechanics that burned time this session (do not rediscover)
 
-- Fixed plugin version, the one to look for: `1.7.19` [provenance: imported]
-- Stale version the session was pinned to: `1.5.15` [provenance: imported]
-- Everything already tried is in spillover `sp-d120853a`. Read it before
-  repeating any of it.
+- Landing: main is protected. Branch off fresh origin/main, PR, then BOTH
+  required checks: `validate` (CI, ~12 min) and `kipi/reviewer-approved`
+  (posted by q-system/.q-system/scripts/pr-review-agent.sh <pr> --engine
+  codex --post). Reviewer takes ~9 min; timeout of YOUR shell does not mean
+  it failed - check the commit status before assuming anything.
+- Codex review rounds are real: r1-r6 on PR #247 each found a legitimate
+  defect. Fix, do not argue. Expect findings about: parent PRDs retaining
+  what generated specs fixed, receipts/metrics consistency when reopening,
+  union-merge row ordering, UTC-offset timestamps, same-second ties.
+- Every commit touching plugins/** needs a version bump IN THAT COMMIT
+  (plugin-version-bump gate compares per-commit vs HEAD).
+- Commit messages need an ASK-nn reference or [no-issue: reason]
+  (linear-issue-ref hook blocks otherwise).
+- receipts.jsonl has a CLOSED key allowlist (receipts-ledger-check.py,
+  ALLOWED_KEYS); reopen rows use reopened_at + issue_id + prd_id +
+  finding_id + commit_sha. No free text; it ships to a PUBLIC repo.
+- New test files must be declared in q-system/.q-system/capability-manifest.json
+  ({path, runner}) or the capability gate goes undeclared-artifact RED.
+- kipi-mcp tests run under `uv run pytest tests/` from plugins/kipi-core/kipi-mcp.
+- Subagent dispatch was broken all session at the provider level
+  (network_error / instant cancel) while four other opencode sessions ran.
+  If dispatch dies instantly again, execute inline rather than retrying.
 
-## WHY (context you do not have)
+## Standing rules that decided everything today
 
-Founder asked whether Obsidian plus the Obsidian Copilot plugin would fix "Claude
-losing context" in his projects. It would not. The real defect:
-`kipi_canonical_digest` resolved `canonical_dir` to an EMPTY plugin-data
-directory, so it returned all-files-not-found on every instance, and agents fell
-back to reading raw canonical files instead.
-
-Measured across founder-typed messages only (`promptSource` in typed or queued,
-excluding headless prompts, hook injections and subagents), by mining
-`~/.claude/projects/*/*.jsonl` with a python classifier whose hits were then
-hand-read to check the regex was not lying:
-
-- consulting: `1,345` msgs, `14` "read the canonical files", `7` "it's in the file" [verified: python classifier over the jsonl transcripts]
-- kipi-system: `770` msgs, `0` of either pattern [verified: same classifier, same run]
-
-Consulting has three diverged canonical trees with identical filenames
-[verified: `git log -1 --format=%ad -- <path>` on each]:
-
-- `q-consult/canonical` is live, last commit `2026-08-20` [verified: git log]
-- `q-system/canonical` is frozen template stubs, last commit `2026-07-01` [verified: git log]
-- `plugins/kipi-core/kipi-mcp/canonical` frozen, last commit `2026-06-10` [verified: git log]
-
-## SHIPPED AND MERGED
-
-Merge commit `de2e4624` on `origin/main`, from PR #240, squashed [verified: gh pr view 240 --json state,mergeCommit].
-
-`_state_root` occurrences in main's `paths.py`, was zero this morning: `4` [verified: git show origin/main:plugins/kipi-core/kipi-mcp/src/kipi_mcp/paths.py | grep -c _state_root].
-
-Four Codex review rounds, every finding in Sana's own diff, each reproduced red
-before being touched [provenance: observed, read each verdict on PR #240]:
-
-1. cross-instance leak: a shared `active-instance` marker outranked
-   `CLAUDE_PROJECT_DIR`, so a restarted session could read another project's
-   canonical. Plus a fail-closed resolver silently returning nonexistent
-   directories for four real registered instances.
-2. a swallowed resolution error that let phase-1 verification pass with the
-   detector disabled
-3. duplicate registry PATHS unguarded, though names already were
-4. APPROVE WITH NITS
-
-Proven under the deployed configuration with nothing hand-fed: instance
-`ASK_AI_consultant` resolves to `~/projects/consulting/q-consult/canonical`,
-naming `RULE-2026-08-18-A` [verified: PYTHONPATH=... python3 -c over KipiPaths + canonical_digest].
-
-Registry-wide resolver audit: `21` resolve, `4` raise PathContractError all with kind `no-canonical`, `0` silently wrong [verified: python3 loop over instance-registry.json].
-
-## STILL OPEN
-
-Local `main` is `1` ahead and `2` behind origin [verified: git rev-list --count]. Sana owns this, NOT the founder. It carries a stale `status: idea` PRD draft; a pull or rebase, never a reset.
-
-Captured and deliberately untouched:
-
-- `sp-d120853a` session-pinned plugin cache
-- `sp-ee4d6ece` duplicate paths not rejected at registry WRITE time
-- `sp-eea17567` a branch fix is invisible to the live MCP tool, because the
-  server loads a clone that tracks main
-- `sp-f7476ec8` `com.kipi.dispatch` is loaded but not running on this box [verified: launchctl print gui/501/com.kipi.dispatch]
-- `sp-50db1764` bypass_check registered at close WITHOUT being run [provenance: imported, Sana's finding]
-- `sp-e500bf34`, `sp-4c5a00f3`, `sp-1d4ca360`
-
-Always-on instruction budget is `511` lines against a `300` target [verified: python3 q-system/.q-system/scripts/instruction-budget-audit.py]. The founder explicitly chose to keep this SEPARATE from the canonical work. Do not bundle it.
-
-## HOW TO WORK WITH HIM RIGHT NOW
-
-Sana is the human decision maker, informed by data. Route engineering calls to her
-with the measurement attached, never to him [provenance: explicit_statement,
-"sana has approval to be the human decision maker as long as its informed with
-data"]. He corrected me for punting decisions upward, and for assuming he was done
-for the day when it was not yet 5pm. Answer his questions; do not convert them
-into permission asks.
-
-The recurring defect this whole session, in the tooling AND in my reporting: **a
-state claimed one step ahead of its evidence** [provenance: observed]. A green on
-one commit reported as green on the next. A "red reproducer" that was actually a
-collection error. A fix proven by hand-feeding `base_dir` rather than in the
-config the server actually starts under. Quote the tool line and the sha next to
-any verdict.
+Reproducer first, RED before GREEN. Never trust a green you have not seen go
+red. Verify against the installed clone the server actually starts. Quote the
+tool line and sha next to any verdict. Anything real found and not fixed goes
+to spillover add. Engineering calls belong to Sana; publish/spend/delete stay
+with the founder. Pull or rebase, never reset.
