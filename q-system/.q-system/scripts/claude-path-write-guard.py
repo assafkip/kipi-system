@@ -91,6 +91,26 @@ READ_ONLY = {
 # names no path at all. See _stage(), the only reader.
 SCRIPT_ARG_INTERPRETERS = {"awk", "gawk", "mawk", "nawk", "sed", "ed"}
 
+# A `.claude` mention anchored to a PATH COMPONENT, for the raw-text rules that
+# scan program text a parser refuses to read. Substring matching over-matched:
+# `sed -i s/a/b/ plugins/x/.claude-plugin/plugin.json` was refused because
+# ".claude" is a substring of ".claude-plugin" (sp-1d4ca360, 2026-08-22), and
+# the plugin-version-bump gate REQUIRES editing .claude-plugin/plugin.json -- two
+# gates contradicting each other. The lookahead keeps every real shape blocked:
+# `.claude/x` (slash), `'w .claude'` (quote), `touch .claude` (end) -- and only
+# un-blocks names where `.claude` is merely a PREFIX of a longer component
+# (.claude-plugin, .claude.json), which are different files outside the tree.
+_CLAUDE_PATH_TEXT = re.compile(r"\.claude(?![\w.-])")
+
+# find's primaries that write (POSIX + GNU + BSD; stable for decades). A find
+# whose argv uses NONE of these is an enumeration and cannot mutate anything,
+# so it reads like a member of READ_ONLY -- see _find_is_reader(). Enumerating
+# the WRITE subset (not the safe subset round 10 deleted) keeps the fail-closed
+# direction: an unknown future write primary is simply not in this set, so the
+# stage keeps its writer verdict and Layer 2 stays the backstop.
+FIND_WRITE_PRIMARIES = {"-delete", "-exec", "-execdir", "-ok", "-okdir",
+                        "-fls", "-fprint", "-fprint0", "-fprintf"}
+
 # git subcommands that only read. Any other git subcommand touching .claude/ is
 # treated as write-capable (checkout, restore, apply, clean, mv, rm...).
 # `config` and `worktree` were here in rounds 1-2 and both WRITE:
@@ -472,6 +492,24 @@ def hits_claude(path, session_cwd=None):
     if session_cwd is None:
         return True
     return any(_under(path, root) for root in guarded_roots(session_cwd))
+
+
+def _find_is_reader(args):
+    """True when this find argv uses none of find's write primaries, so the
+    stage enumerates and cannot mutate (sp-54b02aa0: `find .claude/skills
+    -name x` is a read; blocking it hit three real sessions in one day)."""
+    return not any(a in FIND_WRITE_PRIMARIES for a in args)
+
+
+def _stage_is_reader(prog, args):
+    """True when this program+argv cannot mutate ANY file, so rules whose cost
+    is only justified for writers do not fire. find-without-write-primaries
+    reads like a reader here AND in _voids_layer2, so both layers answer the
+    same question about the same argv -- two layers disagreeing about whether
+    a stage can write is how case 3 of sp-54b02aa0 slipped through both."""
+    if prog == "find":
+        return _find_is_reader(args)
+    return prog in READ_ONLY
 
 
 def literal_claude_tail(token, assigns):
@@ -860,7 +898,7 @@ def _analyse_statements(command, cwd, layer2_blind=False):
         # a .claude/ path anywhere in the statement into a write.
         # Same program-position rule as _is_sanctioned: a mention of a
         # sanctioned script must never disarm a pipeline (review finding, r2).
-        if ".claude" in stmt and not any(_is_sanctioned(s.split()) for s in stages):
+        if _CLAUDE_PATH_TEXT.search(stmt) and not any(_is_sanctioned(s.split()) for s in stages):
             for idx, stage in enumerate(stages):
                 head = stage.split()
                 if not head or os.path.basename(head[0]) not in SHELL_SINKS:
@@ -1322,7 +1360,22 @@ def _voids_layer2(command, cwd=None):
                 if _stage_names(stage, REBASELINERS, tokens, assigns,
                                 slots_only=not piped_into_sink):
                     return True
-                if any(_could_name_baseline(t, cwd, assigns) for t in tokens):
+                # A stage that cannot write cannot REACH the baseline either:
+                # containment (`q-system` naming the baseline's ancestor) only
+                # matters for programs able to delete or rewrite what they
+                # name. Every round-11 pinned shape is a writer (rm, mv, `: >`,
+                # echo >, python -c os.remove), so exempting reader stages
+                # keeps them blocked while `find q-system -name x` stops
+                # flipping layer2_blind on for the whole command
+                # (sp-54b02aa0 case 3). Unknown programs stay writers.
+                stripped = _exec_position(list(tokens))
+                if stripped:
+                    stage_reader = _stage_is_reader(
+                        os.path.basename(stripped[0]), stripped[1:])
+                else:
+                    stage_reader = False
+                if not stage_reader and any(
+                        _could_name_baseline(t, cwd, assigns) for t in tokens):
                     return True
     return False
 
@@ -1492,7 +1545,8 @@ def _stage(seg, assigns, cwd_box, session_cwd=None, layer2_blind=False):
     # entrypoints are exempt, and flag tokens and text payloads carrying a
     # newline are skipped exactly as they are in _unanchored_unwatched(). The
     # escape hatch is unchanged: run the two halves as SEPARATE Bash calls.
-    if layer2_blind and prog not in READ_ONLY and not _is_sanctioned(tokens):
+    if layer2_blind and not _stage_is_reader(prog, args) \
+            and not _is_sanctioned(tokens):
         unreadable = next((a for a in args
                            if not a.startswith("-") and "\n" not in a
                            and NOT_A_LITERAL.search(_subst(a, assigns))), None)
@@ -1524,7 +1578,7 @@ def _stage(seg, assigns, cwd_box, session_cwd=None, layer2_blind=False):
     #     cat .claude/settings.json | awk '{print $1}'
     # stage 2 mentions no .claude, so it passes; the path is stage 1's, where
     # `cat` is a genuine reader.
-    if prog in SCRIPT_ARG_INTERPRETERS and ".claude" in seg:
+    if prog in SCRIPT_ARG_INTERPRETERS and _CLAUDE_PATH_TEXT.search(seg):
         return ("%r runs a program text this parser cannot read, and that text "
                 "mentions .claude/" % prog)
 
@@ -1567,7 +1621,7 @@ def _stage(seg, assigns, cwd_box, session_cwd=None, layer2_blind=False):
     # SCRIPT FILE passes its remaining args to that script; those args are
     # already resolved component-wise above, and this rule is only needed for the
     # inline-code shape the comment names, where no path token exists to resolve.
-    if prog in SHELL_SINKS and ".claude" in seg and \
+    if prog in SHELL_SINKS and _CLAUDE_PATH_TEXT.search(seg) and \
             any(t in INLINE_CODE_FLAGS for t in args):
         return "%r carries a .claude/ path inside its code/argument string" % prog
 
@@ -1593,6 +1647,13 @@ def _stage(seg, assigns, cwd_box, session_cwd=None, layer2_blind=False):
     # READ_ONLY has no file-writing channel in any form, so there is nothing left
     # to match against. A program that grew one leaves the set instead.
     if prog in READ_ONLY:
+        return ok
+
+    # An enumeration cannot write, whatever its search roots are. Judged AFTER
+    # the touches above so a find whose argv DOES carry a write primary still
+    # falls through to the writer verdict below with its target named
+    # (sp-54b02aa0 case 1: `find .claude/skills -name x` is a read).
+    if prog == "find" and _find_is_reader(args):
         return ok
 
     return "%r would write inside .claude/: %s" % (prog, touches[0])
