@@ -109,8 +109,16 @@ def load_receipts(prd_os_dir: str) -> set[tuple[str, str]]:
                 continue
             prd_id = obj.get("prd_id")
             finding_id = obj.get("finding_id")
-            if prd_id and finding_id:
-                closed.add((prd_id, finding_id))
+            if not (prd_id and finding_id):
+                continue
+            pair = (prd_id, finding_id)
+            if obj.get("reopened_at"):
+                # ASK-988 round 3 (codex): a reopen row is the ledger saying the
+                # earlier close no longer holds. Last event wins, so the pair
+                # leaves the closed set until a fresh close row re-earns it.
+                closed.discard(pair)
+            else:
+                closed.add(pair)
     return closed
 
 
