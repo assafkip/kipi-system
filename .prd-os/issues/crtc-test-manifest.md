@@ -1,7 +1,7 @@
 ---
 id: crtc-test-manifest
 title: Enumerate every shipped test and enforcement path
-status: closed
+status: open
 priority: p1
 parent_prd: prd-complete-repo-test-contract-2026-07-24
 allowed_files:
@@ -40,4 +40,11 @@ Write a failing undeclared-artifact fixture first. Enumerate shipped plugin suit
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [x] Enumerate every shipped test and enforcement path
+- [ ] Enumerate every shipped test and enforcement path
+
+<!-- REOPENED 2026-08-23 (codex-review on PR #247): closed prematurely. The
+check-command repair (this PR) is real, but the deliverable itself is NOT
+done: 65+ tracked test files under plugins/*/tests are absent from
+capability-manifest.json (12 plugins/ references total) and plugin discovery
+is excluded from the gate's scan scope. Enumeration gap filed as spillover;
+it blocks re-closing this issue. -->
