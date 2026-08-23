@@ -1,7 +1,7 @@
 ---
 id: ask-985-kipi-mcp-collectible
 title: kipi-mcp suite collects and runs green under its own runtime (sp-dcd84af1)
-status: open
+status: closed
 priority: p1
 allowed_files:
   - plugins/kipi-core/kipi-mcp/src/kipi_mcp/registry.py
