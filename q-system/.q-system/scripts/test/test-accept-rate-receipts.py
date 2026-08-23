@@ -75,6 +75,17 @@ OTHER = {"prd_id": "P", "finding_id": "f2", "closed_at": "2026-01-02T00:00:00Z"}
 check("malformed row skipped, other finding unaffected",
       ar.load_receipts(ledger(["{not json", OTHER])), {("P", "f2")})
 
+# 5b. OFFSET TRAP (codex round 5): "+02:00" text sorts AFTER the Z-row but is
+# EARLIER in absolute time. The close at 2026-03-01T00:00+02:00 is
+# 2026-02-28T22:00Z, so the Feb 28 23:00Z reopen is LATER and must win even
+# though the close's string is lexicographically bigger.
+OFFSET_CLOSE = {"prd_id": "P", "finding_id": "f3",
+                "closed_at": "2026-03-01T00:00:00+02:00"}
+LATER_REOPEN = {"prd_id": "P", "finding_id": "f3", "issue_id": "i2",
+                "reopened_at": "2026-02-28T23:00:00Z"}
+check("offset-bearing timestamps compare as instants, not text",
+      ar.load_receipts(ledger([OFFSET_CLOSE, LATER_REOPEN])), set())
+
 # 6. MUTATION GUARD: an always-empty loader must fail these checks. Proves the
 #    suite can go red for the reason this file exists (codex round 4).
 stub = tempfile.mkdtemp()  # directory with NO receipts.jsonl at all
