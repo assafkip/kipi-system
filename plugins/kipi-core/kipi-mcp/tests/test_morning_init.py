@@ -278,7 +278,7 @@ class TestCanonicalDigest:
         _create_file(paths.canonical_dir / "decisions.md", "# [RULE] R\nD.\n")
         result = canonical_digest(paths)
         assert result["valid"] is False
-        assert "discovery.questions" in result["validation_failed"]
+        assert "discovery: no questions parsed" in result["validation_failed"]
 
     def test_retired_sources_drop_out_of_validity(self, paths):
         """The schema decision: metaphor/definition/wedge/works_today belong to
@@ -297,6 +297,166 @@ class TestCanonicalDigest:
         assert set(result["retired_sources"]) == {
             "talk_tracks", "objections", "current_state"}
         assert result["valid"] is True, result["validation_failed"]
+
+
+# ── Canonical Digest: wrong content (ASK-977) ──
+
+
+# Shapes taken from the live consulting tree as MEASURED and recorded in ASK-977
+# on 2026-08-23 (H2 sections with H3 children; '## Validation Gaps' immediately
+# followed by '## Website Positioning Gap'), not from an author's imagination.
+# This worktree cannot read that tree, so the provenance is the issue's
+# measurement, and these fixtures reproduce its SHAPE, never its content.
+
+DISCOVERY_H3_CHILDREN = """\
+# Discovery
+
+## Unanswered Questions
+
+### Pricing
+- What does a pilot actually cost?
+- Who signs the PO?
+
+### Scope
+- Which data sources are in scope?
+
+## Validation Gaps
+
+### Never tested
+- Nobody has paid for the weekly report yet
+
+## Website Positioning Gap
+
+- askconsulting.io reads as fraud investigation
+"""
+
+
+class TestDigestReturnsRightContent:
+    """ASK-977: canonical_digest returned WRONG content, not merely empty."""
+
+    def test_h3_children_stay_in_their_h2_parent(self, paths):
+        """Mechanism 1: H3 was a peer of H2, so the parent parsed to 0 items."""
+        _create_file(paths.canonical_dir / "discovery.md", DISCOVERY_H3_CHILDREN)
+        questions = canonical_digest(paths)["discovery"]["questions"]
+        assert "What does a pilot actually cost?" in questions
+        assert "Which data sources are in scope?" in questions
+
+    def test_matching_sections_accumulate_instead_of_overwriting(self, paths):
+        """Mechanism 2: last-match-wins shipped website notes AS validation gaps."""
+        _create_file(paths.canonical_dir / "discovery.md", DISCOVERY_H3_CHILDREN)
+        gaps = canonical_digest(paths)["discovery"]["gaps"]
+        assert "Nobody has paid for the weekly report yet" in gaps
+        assert "askconsulting.io reads as fraud investigation" in gaps
+
+    def test_accumulated_items_keep_the_cap_and_dedupe(self, paths):
+        """The cap survives accumulation, and a parent+child pair is not doubled."""
+        gap_sections = "\n\n".join(
+            f"## Gap {n}\n\n### detail\n- gap item {n}" for n in range(14)
+        )
+        _create_file(paths.canonical_dir / "discovery.md", gap_sections)
+        gaps = canonical_digest(paths)["discovery"]["gaps"]
+        assert len(gaps) == 10
+        assert len(set(gaps)) == 10
+
+    def test_flat_h1_documents_still_split_per_heading(self, paths):
+        """Nesting must not merge a document whose headings are all one depth."""
+        _create_file(
+            paths.canonical_dir / "objections.md",
+            "# Too expensive\nWe save time.\n\n# Already have a tool\nDoes it remember?\n",
+        )
+        objections = canonical_digest(paths)["objections"]
+        names = [o["name"] for o in objections]
+        assert names == ["Too expensive", "Already have a tool"]
+        assert objections[0]["response"] == "We save time."
+
+
+SUPERSEDED_TALK_TRACKS = """\
+---
+status: superseded
+superseded_by: ASK-510
+---
+
+# Primary Metaphor
+Your brain externalized.
+"""
+
+SUPERSEDED_CURRENT_STATE = """\
+> **SUPERSEDED** by ASK-510. Kept for history only.
+
+# What Works Today
+- Something that has not been true since March
+"""
+
+
+def _seed_live_sources(paths):
+    _create_file(paths.canonical_dir / "objections.md", "# Obj1\nResponse here.\n")
+    _create_file(paths.canonical_dir / "discovery.md", "# Top Questions\n- Q1\n")
+    _create_file(paths.canonical_dir / "decisions.md", "# [RULE] Test\nDo this.\n")
+
+
+class TestRetiredSources:
+    """A retired source must be distinguishable from an absent one."""
+
+    def test_superseded_frontmatter_is_recorded_not_parsed(self, paths):
+        _create_file(paths.canonical_dir / "talk-tracks.md", SUPERSEDED_TALK_TRACKS)
+        result = canonical_digest(paths)
+        assert result["retired_sources"]["talk_tracks"] == {"decision": "ASK-510"}
+        assert result["talk_tracks"].get("metaphor", "") == ""
+
+    def test_superseded_banner_is_recorded_not_parsed(self, paths):
+        _create_file(paths.my_project_dir / "current-state.md", SUPERSEDED_CURRENT_STATE)
+        result = canonical_digest(paths)
+        assert result["retired_sources"]["current_state"] == {"decision": "ASK-510"}
+        assert result["current_state"].get("works_today", []) == []
+
+    def test_retirement_adds_no_warning(self, paths):
+        """warnings stay a missing-file signal; retirement is not a missing file."""
+        _create_file(paths.canonical_dir / "talk-tracks.md", SUPERSEDED_TALK_TRACKS)
+        _create_file(paths.my_project_dir / "current-state.md", SUPERSEDED_CURRENT_STATE)
+        _seed_live_sources(paths)
+        assert canonical_digest(paths)["warnings"] == []
+
+    def test_a_live_source_is_not_marked_retired(self, paths):
+        """Negative self-test: without a banner the same file parses as before."""
+        _create_file(
+            paths.canonical_dir / "talk-tracks.md",
+            "# Primary Metaphor\nYour brain externalized.\n",
+        )
+        result = canonical_digest(paths)
+        assert result["retired_sources"] == {}
+        assert "externalized" in result["talk_tracks"]["metaphor"]
+
+
+class TestValidityAccounting:
+    def test_retired_source_checks_drop_out_and_valid_is_reachable(self, paths):
+        """ASK-510 retired talk-tracks + current-state; 3 of 7 checks were then
+        structurally unreachable, so valid could never go true honestly."""
+        _create_file(paths.canonical_dir / "talk-tracks.md", SUPERSEDED_TALK_TRACKS)
+        _create_file(paths.my_project_dir / "current-state.md", SUPERSEDED_CURRENT_STATE)
+        _seed_live_sources(paths)
+        result = canonical_digest(paths)
+        assert result["validation_failed"] == []
+        assert result["valid"] is True
+
+    def test_invalid_digest_names_every_reason(self, paths):
+        _create_file(paths.canonical_dir / "talk-tracks.md", "# Primary Metaphor\nX.\n")
+        result = canonical_digest(paths)
+        assert result["valid"] is False
+        assert result["validation_failed"], "valid=False named no reason"
+        joined = " ".join(result["validation_failed"])
+        assert "objections" in joined
+        assert "definition" in joined
+
+    def test_a_failing_check_on_a_live_source_still_invalidates(self, paths):
+        """Negative self-test: retirement drops checks, it does not pass them."""
+        _create_file(paths.canonical_dir / "talk-tracks.md", SUPERSEDED_TALK_TRACKS)
+        _create_file(paths.my_project_dir / "current-state.md", SUPERSEDED_CURRENT_STATE)
+        _create_file(paths.canonical_dir / "discovery.md", "# Top Questions\n- Q1\n")
+        _create_file(paths.canonical_dir / "decisions.md", "# [RULE] Test\nDo this.\n")
+        # objections.md absent -> a LIVE check fails and one warning is raised
+        result = canonical_digest(paths)
+        assert result["valid"] is False
+        assert any("objections" in r for r in result["validation_failed"])
 
 
 # ── Morning Init ──

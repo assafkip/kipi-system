@@ -175,58 +175,28 @@ def canonical_digest(paths) -> dict:
         "decisions": [],
         "warnings": [],
         "retired_sources": {},
-        "validation_failed": [],
         "valid": False,
+        "validation_failed": [],
     }
 
-    tt_path = paths.canonical_dir / "talk-tracks.md"
-    if not tt_path.exists():
-        digest["warnings"].append("talk-tracks.md not found")
-    else:
-        text = tt_path.read_text()
-        decision = _superseded_decision(text)
-        if decision:
-            digest["retired_sources"]["talk_tracks"] = {"decision": decision}
-        else:
-            digest["talk_tracks"] = _parse_talk_tracks(text)
+    for key, dir_attr, filename, parse in _DIGEST_SOURCES:
+        path = getattr(paths, dir_attr) / filename
+        if not path.exists():
+            digest["warnings"].append(f"{filename} not found")
+            continue
+        content = path.read_text()
+        retirement = _retirement(content)
+        if retirement is not None:
+            # A retired source is NOT parsed into structured fields: its content
+            # is history, and shipping it as current is the ASK-977 defect one
+            # layer up. It is recorded instead, so a consumer can tell
+            # empty-because-retired from empty-because-none. No warning --
+            # warnings stay a missing-file signal.
+            digest["retired_sources"][key] = retirement
+            continue
+        digest[key] = parse(content)
 
-    obj_path = paths.canonical_dir / "objections.md"
-    if not obj_path.exists():
-        digest["warnings"].append("objections.md not found")
-    else:
-        text = obj_path.read_text()
-        decision = _superseded_decision(text)
-        if decision:
-            digest["retired_sources"]["objections"] = {"decision": decision}
-        else:
-            digest["objections"] = _parse_objections(text)
-
-    cs_path = paths.my_project_dir / "current-state.md"
-    if not cs_path.exists():
-        digest["warnings"].append("current-state.md not found")
-    else:
-        text = cs_path.read_text()
-        decision = _superseded_decision(text)
-        if decision:
-            digest["retired_sources"]["current_state"] = {"decision": decision}
-        else:
-            digest["current_state"] = _parse_current_state(text)
-
-    disc_path = paths.canonical_dir / "discovery.md"
-    if disc_path.exists():
-        digest["discovery"] = _parse_discovery(disc_path.read_text())
-    else:
-        digest["warnings"].append("discovery.md not found")
-
-    dec_path = paths.canonical_dir / "decisions.md"
-    if dec_path.exists():
-        digest["decisions"] = _parse_decisions(dec_path.read_text())
-    else:
-        digest["warnings"].append("decisions.md not found")
-
-    valid, failed = _validate_digest(digest)
-    digest["valid"] = valid
-    digest["validation_failed"] = failed
+    digest["valid"], digest["validation_failed"] = _validate_digest(digest)
     return digest
 
 
@@ -462,53 +432,85 @@ def _clean_old_bus(bus_dir: Path, days: int = 3):
                 pass
 
 
-def _split_sections(content: str) -> list[tuple[str, str]]:
-    """Split at the document's OWN section level, not at every heading.
+_HEADING_RE = re.compile(r"^(#+)[ \t]*(.*)$")
 
-    sp-8804dee7 / sp-7e42845e: the live canonical files section with ## and
-    nest their real list items under ### children ('## Unanswered Questions'
-    held 28 questions across five ### verticals). Splitting on ANY heading
-    made each child its own section and the parent shipped empty. The boundary
-    is now the shallowest heading depth present, so H3+ content stays inside
-    its parent body; a document sectioning with # alone behaves exactly as
-    before.
+# Only the leading block of a file can retire it. Scanning the whole body would
+# let a canonical file that DISCUSSES a retirement retire itself.
+_RETIREMENT_HEADER_LINES = 15
+_STATUS_SUPERSEDED_RE = re.compile(r"^\s*status\s*:\s*superseded\b", re.IGNORECASE | re.MULTILINE)
+_SUPERSEDED_BANNER_RE = re.compile(r"\bSUPERSEDED\b")  # uppercase: a banner, not prose
+_DECISION_REF_RE = re.compile(r"\bASK-\d+\b")
+
+_ITEM_CAP = 10
+
+
+def _heading_depth(line: str) -> int | None:
+    """Depth of a markdown heading line, or None when the line is not one."""
+    match = _HEADING_RE.match(line)
+    return len(match.group(1)) if match else None
+
+
+def _subtree_end(heads: list[tuple[int, int, str]], index: int) -> int | None:
+    """Line index of the next heading at the same or shallower depth."""
+    depth = heads[index][1]
+    for start, later_depth, _ in heads[index + 1:]:
+        if later_depth <= depth:
+            return start
+    return None
+
+
+def _split_sections(content: str) -> list[tuple[str, str]]:
+    """Split markdown into (heading, body) with child sections NESTED in the parent.
+
+    Scar ASK-977: the old split treated every heading line as a peer, so the
+    live '## Unanswered Questions' -- whose 28 questions all sit under five ###
+    children -- parsed to an empty body and the digest shipped questions=[]. A
+    section's body now runs to the next heading of the SAME OR SHALLOWER depth,
+    which is the ordinary document model. Child heading LINES are dropped from
+    the parent body so list-item and [RULE] extraction see content only. A
+    document whose headings are all one depth splits exactly as it did before.
     """
-    levels = [
-        len(line) - len(line.lstrip("#"))
-        for line in content.splitlines()
-        if line.startswith("#")
+    lines = content.splitlines()
+    heads = [
+        (i, _heading_depth(line), _HEADING_RE.match(line).group(2).strip())
+        for i, line in enumerate(lines)
+        if _heading_depth(line) is not None
     ]
-    counts: dict[int, int] = {}
-    for depth in levels:
-        counts[depth] = counts.get(depth, 0) + 1
-    distinct = sorted(counts)
-    if not distinct:
-        return []
-    repeated = [depth for depth in distinct if counts[depth] >= 2]
-    # No level repeats: a title plus one deeper section. The SECTION is the
-    # deeper line ('# Decision Log' + '### RULE-...' must parse as a rule),
-    # so the boundary drops to the deepest heading present.
-    base = repeated[0] if repeated else distinct[-1]
+
     sections: list[tuple[str, str]] = []
-    heading = ""
-    body: list[str] = []
-    for line in content.splitlines():
-        depth = len(line) - len(line.lstrip("#")) if line.startswith("#") else 0
-        is_boundary = (
-            bool(depth)
-            and depth == base
-            and (len(line) == depth or line[depth] == " ")
-        )
-        if is_boundary:
-            if heading or body:
-                sections.append((heading, "\n".join(body)))
-            heading = line.lstrip("#").strip()
-            body = []
-        else:
-            body.append(line)
-    if heading or body:
-        sections.append((heading, "\n".join(body)))
+    preamble = lines[: heads[0][0]] if heads else lines
+    if any(line.strip() for line in preamble):
+        sections.append(("", "\n".join(preamble)))
+
+    for index, (start, _depth, title) in enumerate(heads):
+        end = _subtree_end(heads, index)
+        span = lines[start + 1: len(lines) if end is None else end]
+        sections.append((title, "\n".join(l for l in span if _heading_depth(l) is None)))
     return sections
+
+
+def _retirement(content: str) -> dict | None:
+    """{'decision': 'ASK-nnn'} when the source's header retires it, else None."""
+    header = "\n".join(content.splitlines()[:_RETIREMENT_HEADER_LINES])
+    if not (_STATUS_SUPERSEDED_RE.search(header) or _SUPERSEDED_BANNER_RE.search(header)):
+        return None
+    ref = _DECISION_REF_RE.search(header)
+    return {"decision": ref.group(0) if ref else None}
+
+
+def _accumulate(existing: list[str], items: list[str], cap: int | None = _ITEM_CAP) -> list[str]:
+    """Add items to a field instead of REPLACING it, deduped, capped.
+
+    Scar ASK-977: assignment was last-match-wins, so '## Validation Gaps' (0
+    items) was overwritten by '## Website Positioning Gap' (8 items) and the
+    digest shipped March website notes labelled as validation gaps. Dedup also
+    collapses the parent/child pair that nesting now produces.
+    """
+    merged = list(existing)
+    for item in items:
+        if item not in merged:
+            merged.append(item)
+    return merged if cap is None else merged[:cap]
 
 
 def _extract_list_items(text: str) -> list[str]:
@@ -530,7 +532,9 @@ def _parse_talk_tracks(content: str) -> dict:
         elif "wedge" in hl:
             result["wedge"] = body.strip()[:500]
         elif "banned" in hl:
-            result["banned_phrases"] = _extract_list_items(body)
+            result["banned_phrases"] = _accumulate(
+                result["banned_phrases"], _extract_list_items(body), cap=None
+            )
         elif "detection" in hl or "framing" in hl:
             result["detection_rule"] = body.strip()[:500]
     return result
@@ -552,11 +556,11 @@ def _parse_current_state(content: str) -> dict:
         hl = heading.lower()
         items = _extract_list_items(body)
         if "works" in hl and "today" in hl:
-            result["works_today"] = items
+            result["works_today"] = _accumulate(result["works_today"], items)
         elif "unvalidated" in hl or "not yet" in hl:
-            result["unvalidated"] = items
+            result["unvalidated"] = _accumulate(result["unvalidated"], items)
         elif "validated" in hl:
-            result["validated"] = items
+            result["validated"] = _accumulate(result["validated"], items)
     return result
 
 
@@ -565,67 +569,71 @@ def _parse_discovery(content: str) -> dict:
     for heading, body in _split_sections(content):
         hl = heading.lower()
         items = _extract_list_items(body)
-        # ACCUMULATE, never last-match-wins (sp-7e42845e): '## Validation Gaps'
-        # with 0 direct items was overwritten by '## Website Positioning Gap',
-        # shipping March website notes labelled as validation gaps.
         if "gap" in hl:
-            result["gaps"] = (result["gaps"] + items)[:10]
+            result["gaps"] = _accumulate(result["gaps"], items)
         elif any(k in hl for k in ("question", "q&a", "top")):
-            result["questions"] = (result["questions"] + items)[:10]
+            result["questions"] = _accumulate(result["questions"], items)
     return result
 
 
 def _parse_decisions(content: str) -> list[dict]:
-    decisions = []
+    decisions: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(rule: str, summary: str):
+        # Nesting means a parent section can now restate a child's rule; dedup
+        # by rule text so one rule never lands twice (ASK-977).
+        if rule and rule not in seen:
+            seen.add(rule)
+            decisions.append({"rule": rule, "summary": summary})
+
     for heading, body in _split_sections(content):
         if "rule" in heading.lower():
-            decisions.append({"rule": heading.strip(), "summary": body.strip()[:300]})
+            _add(heading.strip(), body.strip()[:300])
         for match in re.finditer(r"\[RULE\]\s*(.+?)(?:\n|$)", body):
-            decisions.append({"rule": match.group(1).strip(), "summary": ""})
+            _add(match.group(1).strip(), "")
     return decisions
 
 
-def _superseded_decision(text: str) -> str | None:
-    """The ASK id a SUPERSEDED source was retired under, or None.
+# (source key, KipiPaths attribute, filename, parser)
+_DIGEST_SOURCES = (
+    ("talk_tracks", "canonical_dir", "talk-tracks.md", _parse_talk_tracks),
+    ("objections", "canonical_dir", "objections.md", _parse_objections),
+    ("current_state", "my_project_dir", "current-state.md", _parse_current_state),
+    ("discovery", "canonical_dir", "discovery.md", _parse_discovery),
+    ("decisions", "canonical_dir", "decisions.md", _parse_decisions),
+)
 
-    ASK-510 retired talk-tracks.md / objections.md / current-state.md to pointer
-    docs: their bodies describe the retirement, not the practice. Parsing them
-    into structured fields shipped retired content as live content
-    (sp-7e42845e). The digest records the retirement instead of parsing it.
-    """
-    head = "\n".join(text.splitlines()[:30])
-    m = re.search(r"SUPERSEDED[^\n]*?\((ASK-\d+)", head)
-    if m:
-        return m.group(1)
-    if re.search(r"(?m)^status:\s*superseded\s*$", head):
-        by = re.search(r"(?m)^superseded_by:\s*(\S+)", head)
-        return by.group(1) if by else "unknown"
-    return None
+
+def _validity_checks(digest: dict) -> list[tuple[str | None, str, bool]]:
+    """(source key this check depends on, reason if it fails, did it pass)."""
+    return [
+        ("talk_tracks", "talk_tracks: no metaphor", bool(digest["talk_tracks"].get("metaphor"))),
+        ("talk_tracks", "talk_tracks: no definition", bool(digest["talk_tracks"].get("definition"))),
+        ("objections", "objections: none parsed", len(digest["objections"]) > 0),
+        ("current_state", "current_state: no works_today items",
+         len(digest["current_state"].get("works_today", [])) > 0),
+        ("discovery", "discovery: no questions parsed",
+         len(digest["discovery"].get("questions", [])) > 0),
+        ("decisions", "decisions: none parsed", len(digest["decisions"]) > 0),
+        (None, "3 or more canonical files not found", len(digest["warnings"]) < 3),
+    ]
 
 
 def _validate_digest(digest: dict) -> tuple[bool, list[str]]:
-    """(valid, failed-check names). valid=False always names its reasons.
+    """(valid, reasons). Every failure names itself.
 
-    Checks tied to a retired source drop out of the accounting while retired:
-    metaphor/definition/wedge/works_today live in files deliberately retired
-    under ASK-510, so their absence is structural and labelled in
-    digest['retired_sources'], not a freshness failure. A zero-selection gate
-    would be decoration; this keeps only checks that can actually fail.
+    Scar ASK-977: this returned a bare bool from `sum(checks) >= 5`, so a
+    caller saw valid=False with nothing to act on. Worse, three of the seven
+    checks read sources retired under ASK-510 (talk-tracks, current-state):
+    they could never pass, which put the 5-of-7 bar out of reach and made
+    valid=False permanent and meaningless. Checks whose source is retired drop
+    out of the accounting entirely; every check that still APPLIES must pass.
     """
     retired = digest.get("retired_sources", {})
-    checks = [
-        ("talk_tracks.metaphor", "talk_tracks",
-         bool(digest["talk_tracks"].get("metaphor"))),
-        ("talk_tracks.definition", "talk_tracks",
-         bool(digest["talk_tracks"].get("definition"))),
-        ("objections", "objections", len(digest["objections"]) > 0),
-        ("current_state.works_today", "current_state",
-         len(digest["current_state"].get("works_today", [])) > 0),
-        ("discovery.questions", "discovery",
-         len(digest["discovery"].get("questions", [])) > 0),
-        ("decisions", "decisions", len(digest["decisions"]) > 0),
-        ("warnings<3", None, len(digest["warnings"]) < 3),
+    failed = [
+        reason
+        for source, reason, passed in _validity_checks(digest)
+        if source not in retired and not passed
     ]
-    failed = [name for name, source, ok in checks
-              if source not in retired and not ok]
-    return (not failed, failed)
+    return not failed, failed
