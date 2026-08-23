@@ -1,7 +1,7 @@
 ---
 id: crtc-test-manifest
 title: Enumerate every shipped test and enforcement path
-status: open
+status: closed
 priority: p1
 parent_prd: prd-complete-repo-test-contract-2026-07-24
 allowed_files:
@@ -40,4 +40,4 @@ Write a failing undeclared-artifact fixture first. Enumerate shipped plugin suit
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Enumerate every shipped test and enforcement path
+- [x] Enumerate every shipped test and enforcement path
