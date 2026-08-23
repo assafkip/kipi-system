@@ -217,6 +217,87 @@ class TestCanonicalDigest:
         result = canonical_digest(paths)
         assert result["valid"] is True
 
+    def test_h3_children_parse_into_their_h2_section(self, paths):
+        """sp-8804dee7. The live discovery.md sections with ## and nests its
+        28 real questions under ### vertical children; splitting at ANY heading
+        shipped the parent empty and lost every child to unmatched headings."""
+        content = (
+            "# Discovery Log\n\n"
+            "## Unanswered Questions\n\n"
+            "### ESG Vertical\n"
+            "- What ESG platforms do firms use?\n"
+            "- What is the buying decision-maker?\n\n"
+            "### IP Law Vertical\n"
+            "- Which patent platforms do boutiques use?\n\n"
+            "## Validation Gaps\n"
+            "- ESG ROI numbers unvalidated\n"
+        )
+        _create_file(paths.canonical_dir / "discovery.md", content)
+        result = canonical_digest(paths)
+        assert len(result["discovery"]["questions"]) == 3
+
+    def test_gap_sections_accumulate_never_overwrite(self, paths):
+        """sp-7e42845e mechanism 2. '## Validation Gaps' was overwritten by
+        '## Website Positioning Gap', shipping March website notes labelled as
+        validation gaps."""
+        content = (
+            "# Discovery Log\n\n"
+            "## Validation Gaps\n"
+            "- ESG ROI numbers unvalidated\n\n"
+            "## Website Positioning Gap\n"
+            "- askconsulting.io positioned as fraud investigation\n"
+        )
+        _create_file(paths.canonical_dir / "discovery.md", content)
+        result = canonical_digest(paths)
+        gaps = result["discovery"]["gaps"]
+        assert any("ESG ROI" in g for g in gaps), gaps
+        assert any("askconsulting.io" in g for g in gaps), gaps
+
+    def test_superseded_source_is_recorded_not_parsed(self, paths):
+        """ASK-510 retired three sources to pointer docs. Their bodies describe
+        the retirement; parsing them shipped retired content as live content."""
+        content = (
+            "---\nstatus: superseded\nsuperseded_by: ASK-510 2026-08-08\n---\n\n"
+            "# Talk Tracks\n\n> **SUPERSEDED 2026-08-08 (ASK-510).**\n\n"
+            "## Why this was retired rather than rewritten\n"
+            "- It sold the retired beachhead.\n"
+        )
+        _create_file(paths.canonical_dir / "talk-tracks.md", content)
+        _create_file(paths.canonical_dir / "objections.md",
+                     "# Obj\nResp.\n")   # not retired, must still parse
+        result = canonical_digest(paths)
+        assert result["retired_sources"]["talk_tracks"] == {"decision": "ASK-510"}
+        assert result["talk_tracks"] == {}
+        assert len(result["objections"]) == 1
+        assert not any("retired" in w or "talk-tracks" in w
+                       for w in result["warnings"]), result["warnings"]
+
+    def test_valid_false_names_its_failed_checks(self, paths):
+        """sp-7e42845e mechanism 3: valid=False arrived with warnings=[] and no
+        reason attached anywhere."""
+        _create_file(paths.canonical_dir / "decisions.md", "# [RULE] R\nD.\n")
+        result = canonical_digest(paths)
+        assert result["valid"] is False
+        assert "discovery.questions" in result["validation_failed"]
+
+    def test_retired_sources_drop_out_of_validity(self, paths):
+        """The schema decision: metaphor/definition/wedge/works_today belong to
+        sources deliberately retired under ASK-510. With those sources retired,
+        valid=True is reachable honestly from what still lives."""
+        for name in ("talk-tracks.md", "objections.md"):
+            _create_file(paths.canonical_dir / name,
+                         f"# {name}\n> SUPERSEDED 2026-08-08 (ASK-510).\n")
+        _create_file(paths.my_project_dir / "current-state.md",
+                     "---\nstatus: superseded\nsuperseded_by: ASK-510\n---\n")
+        _create_file(
+            paths.canonical_dir / "discovery.md",
+            "## Unanswered Questions\n### V\n- Q1\n")
+        _create_file(paths.canonical_dir / "decisions.md", "# [RULE] R\nD.\n")
+        result = canonical_digest(paths)
+        assert set(result["retired_sources"]) == {
+            "talk_tracks", "objections", "current_state"}
+        assert result["valid"] is True, result["validation_failed"]
+
 
 # ── Morning Init ──
 
