@@ -1,7 +1,7 @@
 ---
 id: ask-984-guard-reader-stages
 title: path-write-guard stops blocking read-only commands and .claude-plugin paths (sp-54b02aa0, sp-1d4ca360)
-status: open
+status: closed
 priority: p1
 allowed_files:
   - q-system/.q-system/scripts/claude-path-write-guard.py
