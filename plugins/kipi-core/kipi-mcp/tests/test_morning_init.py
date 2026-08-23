@@ -22,6 +22,8 @@ from kipi_mcp.morning_init import (
 @pytest.fixture
 def paths(tmp_path):
     from kipi_mcp.paths import KipiPaths
+    from conftest import write_registry
+    write_registry(tmp_path / "base", tmp_path / "repo", instance="test")
     p = KipiPaths(base_dir=tmp_path / "base", repo_dir=tmp_path / "repo", instance="test")
     p.ensure_dirs()
     return p
@@ -438,7 +440,11 @@ class TestAutoBackup:
     @pytest.fixture
     def backup_mgr(self, paths):
         from kipi_mcp.backup import BackupManager
-        _create_file(paths.canonical_dir / "talk-tracks.md", "# TT")
+        # Seed PLUGIN-DATA, not canonical/. canonical_dir is repo-derived since the
+        # path-contract repoint and BackupManager sweeps global_dir + config_dir
+        # only, so a file seeded there produced an archive of 0 files and this
+        # case asserted >= 1 against an empty backup.
+        _create_file(paths.config_dir / "founder-profile.md", "# Profile")
         return BackupManager(paths)
 
     def test_auto_backup_creates_archive(self, backup_mgr):
