@@ -174,26 +174,43 @@ def canonical_digest(paths) -> dict:
         "discovery": {},
         "decisions": [],
         "warnings": [],
+        "retired_sources": {},
+        "validation_failed": [],
         "valid": False,
     }
 
     tt_path = paths.canonical_dir / "talk-tracks.md"
-    if tt_path.exists():
-        digest["talk_tracks"] = _parse_talk_tracks(tt_path.read_text())
-    else:
+    if not tt_path.exists():
         digest["warnings"].append("talk-tracks.md not found")
+    else:
+        text = tt_path.read_text()
+        decision = _superseded_decision(text)
+        if decision:
+            digest["retired_sources"]["talk_tracks"] = {"decision": decision}
+        else:
+            digest["talk_tracks"] = _parse_talk_tracks(text)
 
     obj_path = paths.canonical_dir / "objections.md"
-    if obj_path.exists():
-        digest["objections"] = _parse_objections(obj_path.read_text())
-    else:
+    if not obj_path.exists():
         digest["warnings"].append("objections.md not found")
+    else:
+        text = obj_path.read_text()
+        decision = _superseded_decision(text)
+        if decision:
+            digest["retired_sources"]["objections"] = {"decision": decision}
+        else:
+            digest["objections"] = _parse_objections(text)
 
     cs_path = paths.my_project_dir / "current-state.md"
-    if cs_path.exists():
-        digest["current_state"] = _parse_current_state(cs_path.read_text())
-    else:
+    if not cs_path.exists():
         digest["warnings"].append("current-state.md not found")
+    else:
+        text = cs_path.read_text()
+        decision = _superseded_decision(text)
+        if decision:
+            digest["retired_sources"]["current_state"] = {"decision": decision}
+        else:
+            digest["current_state"] = _parse_current_state(text)
 
     disc_path = paths.canonical_dir / "discovery.md"
     if disc_path.exists():
@@ -207,7 +224,9 @@ def canonical_digest(paths) -> dict:
     else:
         digest["warnings"].append("decisions.md not found")
 
-    digest["valid"] = _validate_digest(digest)
+    valid, failed = _validate_digest(digest)
+    digest["valid"] = valid
+    digest["validation_failed"] = failed
     return digest
 
 
@@ -444,11 +463,40 @@ def _clean_old_bus(bus_dir: Path, days: int = 3):
 
 
 def _split_sections(content: str) -> list[tuple[str, str]]:
+    """Split at the document's OWN section level, not at every heading.
+
+    sp-8804dee7 / sp-7e42845e: the live canonical files section with ## and
+    nest their real list items under ### children ('## Unanswered Questions'
+    held 28 questions across five ### verticals). Splitting on ANY heading
+    made each child its own section and the parent shipped empty. The boundary
+    is now the shallowest heading depth present, so H3+ content stays inside
+    its parent body; a document sectioning with # alone behaves exactly as
+    before.
+    """
+    levels = [
+        len(line) - len(line.lstrip("#"))
+        for line in content.splitlines()
+        if line.startswith("#")
+    ]
+    counts: dict[int, int] = {}
+    for depth in levels:
+        counts[depth] = counts.get(depth, 0) + 1
+    distinct = sorted(counts)
+    if not distinct:
+        return []
+    repeated = [depth for depth in distinct if counts[depth] >= 2]
+    base = repeated[0] if repeated else distinct[0]
     sections: list[tuple[str, str]] = []
     heading = ""
     body: list[str] = []
     for line in content.splitlines():
-        if line.startswith("#"):
+        depth = len(line) - len(line.lstrip("#")) if line.startswith("#") else 0
+        is_boundary = (
+            bool(depth)
+            and depth == base
+            and (len(line) == depth or line[depth] == " ")
+        )
+        if is_boundary:
             if heading or body:
                 sections.append((heading, "\n".join(body)))
             heading = line.lstrip("#").strip()
@@ -514,10 +562,13 @@ def _parse_discovery(content: str) -> dict:
     for heading, body in _split_sections(content):
         hl = heading.lower()
         items = _extract_list_items(body)
+        # ACCUMULATE, never last-match-wins (sp-7e42845e): '## Validation Gaps'
+        # with 0 direct items was overwritten by '## Website Positioning Gap',
+        # shipping March website notes labelled as validation gaps.
         if "gap" in hl:
-            result["gaps"] = items[:10]
+            result["gaps"] = (result["gaps"] + items)[:10]
         elif any(k in hl for k in ("question", "q&a", "top")):
-            result["questions"] = items[:10]
+            result["questions"] = (result["questions"] + items)[:10]
     return result
 
 
@@ -531,14 +582,47 @@ def _parse_decisions(content: str) -> list[dict]:
     return decisions
 
 
-def _validate_digest(digest: dict) -> bool:
+def _superseded_decision(text: str) -> str | None:
+    """The ASK id a SUPERSEDED source was retired under, or None.
+
+    ASK-510 retired talk-tracks.md / objections.md / current-state.md to pointer
+    docs: their bodies describe the retirement, not the practice. Parsing them
+    into structured fields shipped retired content as live content
+    (sp-7e42845e). The digest records the retirement instead of parsing it.
+    """
+    head = "\n".join(text.splitlines()[:30])
+    m = re.search(r"SUPERSEDED[^\n]*?\((ASK-\d+)", head)
+    if m:
+        return m.group(1)
+    if re.search(r"(?m)^status:\s*superseded\s*$", head):
+        by = re.search(r"(?m)^superseded_by:\s*(\S+)", head)
+        return by.group(1) if by else "unknown"
+    return None
+
+
+def _validate_digest(digest: dict) -> tuple[bool, list[str]]:
+    """(valid, failed-check names). valid=False always names its reasons.
+
+    Checks tied to a retired source drop out of the accounting while retired:
+    metaphor/definition/wedge/works_today live in files deliberately retired
+    under ASK-510, so their absence is structural and labelled in
+    digest['retired_sources'], not a freshness failure. A zero-selection gate
+    would be decoration; this keeps only checks that can actually fail.
+    """
+    retired = digest.get("retired_sources", {})
     checks = [
-        bool(digest["talk_tracks"].get("metaphor")),
-        bool(digest["talk_tracks"].get("definition")),
-        len(digest["objections"]) > 0,
-        len(digest["current_state"].get("works_today", [])) > 0,
-        len(digest["discovery"].get("questions", [])) > 0,
-        len(digest["decisions"]) > 0,
-        len(digest["warnings"]) < 3,
+        ("talk_tracks.metaphor", "talk_tracks",
+         bool(digest["talk_tracks"].get("metaphor"))),
+        ("talk_tracks.definition", "talk_tracks",
+         bool(digest["talk_tracks"].get("definition"))),
+        ("objections", "objections", len(digest["objections"]) > 0),
+        ("current_state.works_today", "current_state",
+         len(digest["current_state"].get("works_today", [])) > 0),
+        ("discovery.questions", "discovery",
+         len(digest["discovery"].get("questions", [])) > 0),
+        ("decisions", "decisions", len(digest["decisions"]) > 0),
+        ("warnings<3", None, len(digest["warnings"]) < 3),
     ]
-    return sum(checks) >= 5
+    failed = [name for name, source, ok in checks
+              if source not in retired and not ok]
+    return (not failed, failed)

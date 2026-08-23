@@ -150,3 +150,4 @@
 {"commit_sha": "dd8a8d32d8e05cf838e98eb1d7d62666946572aa", "issue_id": "ASK-137", "receipts": {"reviewed": "2026-08-21T17:49:06Z"}, "reviewed_at": "2026-08-21T17:49:06Z"}
 {"commit_sha": "ff85eec58630ec72f0816dd585e8e92dbeaa2ab4", "issue_id": "ASK-136", "receipts": {"reviewed": "2026-08-21T20:30:36Z"}, "reviewed_at": "2026-08-21T20:30:36Z"}
 {"commit_sha": "0adb37645d20787c79b781f1734233c5647455ac", "issue_id": "ASK-972", "receipts": {"reviewed": "2026-08-22T20:10:30Z"}, "reviewed_at": "2026-08-22T20:10:30Z"}
+{"closed_at": "2026-08-23T01:25:47Z", "commit_sha": "7e1a05ead8d45a584cabc5769195d4dad288eb65", "finding_id": "finding-manual", "findings_triaged_at": "2026-08-23T01:25:39Z", "issue_id": "srsa-check-repairs-survived-merge", "prd_id": "prd-manual", "reviewed_at": "2026-08-23T01:25:46Z", "verified_at": "2026-08-23T01:25:32Z"}
