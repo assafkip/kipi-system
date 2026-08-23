@@ -825,9 +825,15 @@ def _load_receipt_issue_ids(path: Path) -> set[str]:
 
 
 def _load_receipts_for_prd(path: Path, prd_id: str) -> set[str]:
-    covered: set[str] = set()
+    """finding_ids whose LATEST receipt event is a close (reopen-aware, ASK-988).
+
+    State resolves by event timestamp via _parse_iso_z, never by physical line
+    order: a union merge can interleave appended rows, and a reopened finding
+    must not satisfy coverage because its old close row still exists.
+    """
+    latest: dict[str, tuple[datetime, bool]] = {}
     if not path.is_file():
-        return covered
+        return set()
     with path.open() as fh:
         for raw in fh:
             line = raw.strip()
@@ -842,9 +848,23 @@ def _load_receipts_for_prd(path: Path, prd_id: str) -> set[str]:
             if rec.get("prd_id") != prd_id:
                 continue
             fid = rec.get("finding_id")
-            if isinstance(fid, str) and fid:
-                covered.add(fid)
-    return covered
+            if not (isinstance(fid, str) and fid):
+                continue
+            if rec.get("reopened_at"):
+                ts, is_close = _parse_iso_z(rec["reopened_at"]), False
+            elif rec.get("closed_at"):
+                ts, is_close = _parse_iso_z(rec["closed_at"]), True
+            else:
+                continue
+            if ts is None:
+                continue  # an unparseable timestamp proves nothing either way
+            prev = latest.get(fid)
+            # ASK-988 round 6: identical timestamps tie-break to REOPEN, never
+            # to physical ledger order (see accept-rate.py for the reasoning).
+            if (prev is None or ts > prev[0]
+                    or (ts == prev[0] and not is_close)):
+                latest[fid] = (ts, is_close)
+    return {fid for fid, (_ts, is_close) in latest.items() if is_close}
 
 
 def _parse_iso_z(value: str) -> datetime | None:
