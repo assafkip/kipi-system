@@ -291,7 +291,7 @@ class TestCanonicalDigest:
                      "---\nstatus: superseded\nsuperseded_by: ASK-510\n---\n")
         _create_file(
             paths.canonical_dir / "discovery.md",
-            "## Unanswered Questions\n### V\n- Q1\n")
+            "## Unanswered Questions\n### V\n- Q1\n\n## Validation Gaps\n- G1\n")
         _create_file(paths.canonical_dir / "decisions.md", "# [RULE] R\nD.\n")
         result = canonical_digest(paths)
         assert set(result["retired_sources"]) == {
