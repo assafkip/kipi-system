@@ -485,7 +485,10 @@ def _split_sections(content: str) -> list[tuple[str, str]]:
     if not distinct:
         return []
     repeated = [depth for depth in distinct if counts[depth] >= 2]
-    base = repeated[0] if repeated else distinct[0]
+    # No level repeats: a title plus one deeper section. The SECTION is the
+    # deeper line ('# Decision Log' + '### RULE-...' must parse as a rule),
+    # so the boundary drops to the deepest heading present.
+    base = repeated[0] if repeated else distinct[-1]
     sections: list[tuple[str, str]] = []
     heading = ""
     body: list[str] = []
