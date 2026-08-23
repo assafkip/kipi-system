@@ -483,6 +483,10 @@
       "timeout_s": 240
     },
     {
+      "path": "q-system/.q-system/scripts/test/test-accept-rate-receipts.py",
+      "runner": "python3"
+    },
+    {
       "path": "q-system/.q-system/scripts/test/test-updater-receipt-contract.py",
       "runner": "python3"
     },

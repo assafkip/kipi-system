@@ -89,11 +89,19 @@ def load_findings(prd_os_dir: str) -> tuple[dict[str, list[dict]], list[str]]:
 
 
 def load_receipts(prd_os_dir: str) -> set[tuple[str, str]]:
-    """Return {(prd_id, finding_id), ...} for every closed-out finding."""
-    closed: set[tuple[str, str]] = set()
+    """Return {(prd_id, finding_id), ...} for every closed-out finding.
+
+    ASK-988 round 4 (codex): state is resolved by EVENT TIMESTAMP, never by
+    physical line order. A union merge of two branches can interleave appended
+    rows, so "last line wins" could resurrect a closure that a reopen had
+    already undone. Both row shapes carry an ISO-8601 `_at` field, and ISO
+    strings sort correctly as plain strings, so latest-event-wins is
+    deterministic under any merge order.
+    """
+    latest: dict[tuple[str, str], tuple[str, bool]] = {}
     path = os.path.join(prd_os_dir, "receipts.jsonl")
     if not os.path.isfile(path):
-        return closed
+        return closed_pairs(latest)
     with open(path, "r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
@@ -113,13 +121,20 @@ def load_receipts(prd_os_dir: str) -> set[tuple[str, str]]:
                 continue
             pair = (prd_id, finding_id)
             if obj.get("reopened_at"):
-                # ASK-988 round 3 (codex): a reopen row is the ledger saying the
-                # earlier close no longer holds. Last event wins, so the pair
-                # leaves the closed set until a fresh close row re-earns it.
-                closed.discard(pair)
+                event = (obj["reopened_at"], False)
+            elif obj.get("closed_at"):
+                event = (obj["closed_at"], True)
             else:
-                closed.add(pair)
-    return closed
+                continue
+            prev = latest.get(pair)
+            if prev is None or event[0] > prev[0]:
+                latest[pair] = event
+    return closed_pairs(latest)
+
+
+def closed_pairs(latest: dict[tuple[str, str], tuple[str, bool]]) -> set[tuple[str, str]]:
+    """Project the latest-event map down to the still-closed pairs."""
+    return {pair for pair, (_ts, is_closed) in latest.items() if is_closed}
 
 
 def stats_for_prd(prd_id: str, items: list[dict], closed: set[tuple[str, str]]) -> dict:
