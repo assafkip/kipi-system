@@ -62,22 +62,42 @@ def find_kb(root: Path) -> Path | None:
 
 
 def newest_entity_mtime(root: Path) -> float | None:
-    """Scan <root>/investigations AND <root>/q-*/investigations: instances with
-    an instance_q_dir keep cases under the q-dir, plain ones at repo root."""
+    """Watch BOTH instance shapes (fleet is mixed -- RCA 2026-08-24 follow-up):
+
+    - investigation instances: <root>/investigations or q-*/investigations,
+      any investigation/{targets,findings} tree
+    - client/relationship instances: my-project/relationships.md and
+      canonical/*.md, at repo root or under q-*
+
+    Whatever exists is watched; missing shapes contribute nothing.
+    """
+    inv_trees = [p for p in [root / "investigations", *root.glob("q-*/investigations")]
+                 if p.is_dir()]
+    entity_files = []
+    for base in [root, *root.glob("q-*")]:
+        rel = base / "my-project" / "relationships.md"
+        if rel.is_file():
+            entity_files.append(rel)
+        canon = base / "canonical"
+        if canon.is_dir():
+            entity_files.extend(p for p in sorted(canon.glob("*.md")) if p.is_file())
+
     newest = None
-    candidates = [root / "investigations"]
-    candidates += sorted(root.glob("q-*/investigations"))
-    for investigations in candidates:
-        if not investigations.is_dir():
-            continue
+
+    def note(m: float) -> None:
+        nonlocal newest
+        newest = m if newest is None or m > newest else newest
+
+    for tree in inv_trees:
         for sub in WATCH_SUBDIRS:
-            for dirpath in investigations.rglob(f"investigation/{sub}"):
+            for dirpath in tree.rglob(f"investigation/{sub}"):
                 if not dirpath.is_dir():
                     continue
                 for f in dirpath.rglob("*"):
                     if f.is_file() and not f.name.startswith("."):
-                        m = f.stat().st_mtime
-                        newest = m if newest is None or m > newest else newest
+                        note(f.stat().st_mtime)
+    for f in entity_files:
+        note(f.stat().st_mtime)
     return newest
 
 

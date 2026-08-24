@@ -93,6 +93,34 @@ def test_root_layout_instances_are_watched_too() -> None:
         assert run_guard(root).returncode == 2
 
 
+def test_client_relationship_layout_is_watched() -> None:
+    """Non-investigation instance: relationships.md newer than KB -> block.
+    This is the fleet majority (client work), not a corner case."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "repo"
+        kb = root / "memory" / "graph.jsonl"
+        rel = root / "my-project" / "relationships.md"
+        kb.parent.mkdir(parents=True)
+        rel.parent.mkdir(parents=True)
+        kb.write_text("")
+        touch_later(rel)
+        result = run_guard(root)
+        assert result.returncode == 2, f"expected block, got {result.returncode}"
+
+
+def test_canonical_notes_are_watched() -> None:
+    """canonical/*.md (objections, discovery, market intel) count as entities."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "repo"
+        kb = root / "q-ktlyst" / "memory" / "graph.jsonl"
+        canon = root / "q-ktlyst" / "canonical"
+        kb.parent.mkdir(parents=True)
+        canon.mkdir(parents=True)
+        kb.write_text("")
+        touch_later(canon / "objections.md")
+        assert run_guard(root).returncode == 2
+
+
 def test_second_same_day_miss_escalates_once_then_releases(monkeypatch=None) -> None:
     """1st miss: warn (exit 2). 2nd miss same day: queue once, exit 0.
     Third pass stays quiet. Runs in-process so the fake queue applies."""
