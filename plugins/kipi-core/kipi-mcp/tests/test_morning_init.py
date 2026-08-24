@@ -3,10 +3,12 @@ import json
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from kipi_mcp.morning_init import (
+    _split_sections,
     preflight,
     session_bootstrap,
     canonical_digest,
@@ -446,6 +448,60 @@ class TestValidityAccounting:
         joined = " ".join(result["validation_failed"])
         assert "objections" in joined
         assert "definition" in joined
+
+    def test_live_repo_talk_tracks_headings_yield_a_definition(self):
+        """ASK-976: the digest must be valid against THIS repo's real canonical tree.
+
+        Deliberately NOT a fixture. The defect was that every fixture in this
+        file spelled the heading `Definition`, while the file the digest
+        actually reads spells the same content `### One-liner` / `### Category`
+        under `## Core Positioning`. An invented fixture agreed with the parser
+        and could not see the gap; only the producer's own file can.
+
+        RED before the fix (2026-08-24):
+            valid=False, validation_failed=['talk_tracks: no definition']
+        """
+        repo = Path(__file__).resolve().parents[4]
+        canonical, my_project = repo / "q-system" / "canonical", repo / "q-system" / "my-project"
+        if not (canonical / "talk-tracks.md").exists():
+            pytest.skip(f"no live canonical tree at {canonical}")
+
+        live = SimpleNamespace(canonical_dir=canonical, my_project_dir=my_project)
+        result = canonical_digest(live)
+
+        assert result["talk_tracks"]["definition"], (
+            "live talk-tracks.md parsed to an empty definition; its headings are "
+            f"{[h for h, _ in _split_sections((canonical / 'talk-tracks.md').read_text())]}"
+        )
+        assert result["validation_failed"] == []
+        assert result["valid"] is True
+
+    def test_a_definition_heading_is_named_never_positional(self, paths):
+        """Negative self-test: the aliases are heading names, not a fallback.
+
+        Mutation guard for ASK-976 -- if the fix had been "use the first section
+        when no definition heading exists", this file would pass and the check
+        would be decoration.
+        """
+        _create_file(
+            paths.canonical_dir / "talk-tracks.md",
+            "# Primary Metaphor\nX.\n\n# Rollout Notes\nSome prose that defines nothing.\n",
+        )
+        result = canonical_digest(paths)
+        assert result["talk_tracks"]["definition"] == ""
+        assert "talk_tracks: no definition" in result["validation_failed"]
+
+    def test_two_definition_headings_accumulate_never_overwrite(self, paths):
+        """`One-liner` + `Category` both feed `definition`; the later must not erase."""
+        _create_file(
+            paths.canonical_dir / "talk-tracks.md",
+            "# Primary Metaphor\nX.\n\n"
+            "## Core Positioning\n\n### One-liner\nThe one-liner text.\n\n"
+            "### Category\nThe category text.\n",
+        )
+        definition = canonical_digest(paths)["talk_tracks"]["definition"]
+        assert "one-liner text" in definition
+        assert "category text" in definition
 
     def test_a_failing_check_on_a_live_source_still_invalidates(self, paths):
         """Negative self-test: retirement drops checks, it does not pass them."""
