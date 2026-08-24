@@ -540,13 +540,96 @@ def _parse_talk_tracks(content: str) -> dict:
     return result
 
 
+# A fenced block is literal text. A heading inside one is SAMPLE markup, not a
+# section -- the canonical objections.md ships its record shape in a fence, and
+# the old parser recorded that sample as a real objection (ASK-992).
+_FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
+
+# A heading that is only a bracketed slot names no objection. The live template
+# writes it quoted: ### "[Objection as they say it]".
+_PLACEHOLDER_HEADING_RE = re.compile(r"^\[.*\]$")
+
+# Body lines that are document chrome rather than an objection's response.
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+_PARENTHETICAL_ONLY_RE = re.compile(r"^\(.*\)$")
+
+
+def _drop_fenced_blocks(content: str) -> str:
+    """Content with every fenced block, markers included, removed."""
+    kept, inside = [], False
+    for line in content.splitlines():
+        if _FENCE_RE.match(line):
+            inside = not inside
+            continue
+        if not inside:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def _headings_with_children(content: str) -> list[bool]:
+    """Per heading, in document order: is the next heading deeper than it?
+
+    A heading with a deeper heading under it is a CONTAINER. Nesting (ASK-977)
+    means a container also inherits its children's body text, so an empty-body
+    test cannot tell the two apart -- the structure has to be read directly.
+    """
+    depths = [
+        depth
+        for line in content.splitlines()
+        if (depth := _heading_depth(line)) is not None
+    ]
+    return [
+        index + 1 < len(depths) and depths[index + 1] > depths[index]
+        for index in range(len(depths))
+    ]
+
+
+def _objection_response(body: str) -> str:
+    """Body with chrome (blockquotes, comments, parenthetical stubs) removed."""
+    kept = []
+    for line in body.splitlines():
+        text = _HTML_COMMENT_RE.sub("", line).strip()
+        if not text or text.startswith(">") or _PARENTHETICAL_ONLY_RE.match(text):
+            continue
+        kept.append(text)
+    return "\n".join(kept).strip()
+
+
+def _is_placeholder_heading(heading: str) -> bool:
+    text = _HTML_COMMENT_RE.sub("", heading).strip().strip("\"'`").strip()
+    return bool(_PLACEHOLDER_HEADING_RE.match(text))
+
+
 def _parse_objections(content: str) -> list[dict]:
+    """Real objection records only; containers, template slots and chrome are not.
+
+    Scar ASK-992: `if heading and body.strip()` accepted every section, so this
+    repo's own objections.md parsed to four records -- the document title, the
+    `## Format` container, the heading inside the format fence, and
+    `## Active Objections` -- and not one objection. Because the paired validity
+    check is `len(objections) > 0`, a file holding no objections at all reported
+    healthy, which is the reason the check exists and the one case it could not
+    catch. It can now go RED for that reason.
+    """
+    stripped = _drop_fenced_blocks(content)
+    flags = _headings_with_children(stripped)
+    sections = _split_sections(stripped)
+    # _split_sections prepends one ("", preamble) entry when the file opens with
+    # text before its first heading; the rest are one per heading in document
+    # order, which is exactly what flags indexes.
+    heading_sections = sections[len(sections) - len(flags):]
+
     objections = []
-    for heading, body in _split_sections(content):
-        if heading and body.strip():
-            sentences = re.split(r"(?<=[.!?])\s+", body.strip())
-            response = " ".join(sentences[:2])
-            objections.append({"name": heading.strip(), "response": response[:300]})
+    for (heading, body), has_children in zip(heading_sections, flags):
+        if not heading or has_children or _is_placeholder_heading(heading):
+            continue
+        response = _objection_response(body)
+        if not response:
+            continue
+        sentences = re.split(r"(?<=[.!?])\s+", response)
+        objections.append(
+            {"name": heading.strip(), "response": " ".join(sentences[:2])[:300]}
+        )
     return objections
 
 
