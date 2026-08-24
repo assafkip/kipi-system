@@ -132,6 +132,11 @@
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/sycophancy-monthly-check.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/sycophancy-monthly-check.py\" 2>/dev/null || true",
             "timeout": 35
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/miyo-session-pull.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/miyo-session-pull.py\" 2>/dev/null || true",
+            "timeout": 30
           }
         ]
       },
@@ -193,6 +198,16 @@
           {
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/merge-bypass-gate.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/merge-bypass-gate.py\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Grep|Glob|WebSearch|WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/miyo-research-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/miyo-research-gate.py\"; fi",
             "timeout": 5
           }
         ]
