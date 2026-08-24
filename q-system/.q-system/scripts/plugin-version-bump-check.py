@@ -170,6 +170,49 @@ def main():
     if not violations:
         sys.exit(0)
 
+    # --fix: BUMP IT RATHER THAN REFUSE. Scar 2026-08-24 (sp-97303649, ASK-1039),
+    # reproduced live during the ASK-999 port.
+    #
+    # Refusing created a deadlock and then something worse than a deadlock. The
+    # deadlock: the bump needs a file edit, and under the token guard's call
+    # ceiling only `git commit` is exempt, so the one action allowed is the one
+    # action that cannot succeed. The worse part: a refused commit LEAVES ITS
+    # CHANGES STAGED, so the follow-up commit that finally bumps the manifest
+    # silently absorbs the whole original diff. That is what happened to the
+    # ASK-999 port -- it landed under a message describing only a version bump,
+    # and correcting the message needs a force-push, which is hook-blocked. A
+    # refusal that mislabels permanent history is worse than no gate.
+    #
+    # The bump is DERIVABLE, so deriving it is strictly better than demanding it.
+    # PATCH only, never minor or major: those carry intent a script cannot read,
+    # and guessing intent is how a tool starts lying about what changed.
+    if "--fix" in sys.argv:
+        import json as _json
+        for plugin, ver in violations:
+            man = os.path.join("plugins", plugin, ".claude-plugin", "plugin.json")
+            with open(man) as fh:
+                data = _json.load(fh)
+            parts = str(data.get("version", "0.0.0")).split(".")
+            while len(parts) < 3:
+                parts.append("0")
+            try:
+                parts[2] = str(int(parts[2]) + 1)
+            except ValueError:
+                sys.stderr.write(
+                    f"  - {plugin}: version {ver!r} is not numeric; bump it by hand\n")
+                sys.exit(2)
+            data["version"] = ".".join(parts[:3])
+            with open(man, "w") as fh:
+                _json.dump(data, fh, indent=2)
+                fh.write("\n")
+            subprocess.run(["git", "add", man], check=True)
+            # LOUD, never silent. A hook that edits your commit and says nothing
+            # is its own defect; the author must see what shipped.
+            sys.stderr.write(
+                f"plugin-version-bump-check: auto-bumped {plugin} "
+                f"{ver} -> {data['version']} and staged it\n")
+        sys.exit(0)
+
     sys.stderr.write(
         "plugin-version-bump-check: plugin(s) changed without a version bump -> "
         "the version-keyed cache will keep running the STALE copy:\n"
