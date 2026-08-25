@@ -57,11 +57,19 @@ echo "ASK-445 ordering-constraint reproducer (pr-verdict-lib.sh as it stands on 
 
 # --- Case 1: THE CONSTRAINT. A real out-of-credits codex transcript shape.
 # Verbatim error string from the billed 2026-08-06 run recorded on ASK-445.
+#
+# The `workdir:` value is the ONE field neutralised rather than copied. The real
+# transcript carries the absolute checkout path, and this repo is the public
+# skeleton -- validate-separation.py's Full skeleton sweep bans `/Users/assafkip`
+# anywhere under q-system/, and it caught this line on PR #255. Neutralising it
+# is safe precisely because nothing reads it: review_is_usable keys off the
+# usage-limit error string and the FINDINGS block, never the header rows. Every
+# field the parser DOES look at is still verbatim.
 cat > "$TMP/out-of-credits.txt" <<'EOF'
 Reading additional input from stdin...
 OpenAI Codex v0.147.0
 --------
-workdir: /Users/assafkipnis/projects/kipi-system
+workdir: /path/to/checkout
 model: gpt-5.6-sol
 provider: openai
 --------

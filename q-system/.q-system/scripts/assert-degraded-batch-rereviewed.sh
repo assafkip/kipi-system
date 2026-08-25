@@ -101,9 +101,34 @@ skips=$((skips + 1))
 
 echo
 echo "batch: $(printf '%s' "$BATCH_PRS" | wc -w | tr -d ' ') PRs checked, $fails failing, $skips skipped"
-if [ "$fails" -eq 0 ]; then
-  echo "RESULT: every PR in the 2026-08-06 degraded batch has a non-degraded Codex re-review on record."
+
+# A SKIP MUST NOT BE ABLE TO PRODUCE EXIT 0, and this is a fix, not a nicety.
+# The first version returned 0 whenever `fails` was 0, so it exited successfully
+# while announcing that one of its eight scoped items had never been re-reviewed
+# -- a caller reading only the exit code was told the batch was complete when it
+# was not (codex major, PR #255). "Every PR passed" and "the batch is covered"
+# are different claims and this script makes both, so it needs more than two
+# outcomes to say which one holds.
+#
+# THREE STATES, so the exit code carries the same truth as the prose:
+#   0 = every scoped item checked and passing. The batch really is covered.
+#   1 = a scoped PR lacks a non-degraded Codex re-review. Actionable: re-run it.
+#   2 = every PR checked passes, but coverage is INCOMPLETE because an item
+#       could not be addressed at all. Not actionable by re-running anything.
+#
+# 2 rather than 1 on purpose: an item with no PR number cannot be fixed by
+# running the reviewer again, so collapsing it into the failure code would tell
+# an operator to retry something that has no retry. It also keeps this script
+# out of any pass/fail gate by construction, which is the posture the commit
+# that added it already argued for -- it is red on its own population until that
+# branch gets a PR, and a gate red for a reason nobody can clear gets ignored.
+if [ "$fails" -eq 0 ] && [ "$skips" -eq 0 ]; then
+  echo "RESULT: every item in the 2026-08-06 degraded batch has a non-degraded Codex re-review on record."
   exit 0
+fi
+if [ "$fails" -eq 0 ]; then
+  echo "RESULT: all $(printf '%s' "$BATCH_PRS" | wc -w | tr -d ' ') PRs checked have a non-degraded Codex re-review, but batch coverage is INCOMPLETE: $skips item(s) could not be checked at all (see SKIP above). Do not read this run as the batch being done." >&2
+  exit 2
 fi
 echo "RESULT: $fails item(s) still lack a non-degraded Codex re-review." >&2
 exit 1
