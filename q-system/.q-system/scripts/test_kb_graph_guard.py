@@ -112,8 +112,8 @@ def test_canonical_notes_are_watched() -> None:
     """canonical/*.md (objections, discovery, market intel) count as entities."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "repo"
-        kb = root / "q-ktlyst" / "memory" / "graph.jsonl"
-        canon = root / "q-ktlyst" / "canonical"
+        kb = root / "q-clientx" / "memory" / "graph.jsonl"
+        canon = root / "q-clientx" / "canonical"
         kb.parent.mkdir(parents=True)
         canon.mkdir(parents=True)
         kb.write_text("")
