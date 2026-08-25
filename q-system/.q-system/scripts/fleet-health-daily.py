@@ -1538,8 +1538,8 @@ def detect_promoted_audit(_ctx) -> list:
     runner = REPO_ROOT / "plugins/prd-os/scripts/prd_runner.py"
     if not runner.is_file():
         return []
-try:
-            res = subprocess.run(["python3", str(runner), "spillover", "promoted-audit", "--dry-run"],
+    try:
+        res = subprocess.run(["python3", str(runner), "spillover", "promoted-audit"],
                              capture_output=True, text=True, timeout=300, cwd=REPO_ROOT)
     except (OSError, subprocess.TimeoutExpired) as exc:
         # A timeout IS a blind sweep, not a skip (Codex, PR #213 r5: silently
