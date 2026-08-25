@@ -490,9 +490,69 @@ def _merge_verdict(seg: list[str], note: str | None = None) -> str | None:
                 "than guessing what they do -- `--admin` in every spelling lands "
                 "here.\n  " + _SAFE_SHAPE)
     if "--auto" not in rest:
-        return ("a merge without --auto does not defer to the required checks. "
-                "--auto lets GitHub hold the PR until 'validate' and "
-                "'kipi/reviewer-approved' pass.\n  " + _SAFE_SHAPE)
+        # A merge without --auto is allowed ONLY against a local green receipt.
+        #
+        # WHY THIS CHANGED (2026-08-25). The text here used to assert that
+        # --auto "lets GitHub hold the PR until 'validate' and
+        # 'kipi/reviewer-approved' pass". On a repo with no branch protection
+        # that sentence is false in both halves: neither context is ever posted,
+        # and GitHub REFUSES --auto outright with
+        #   "Protected branch rules not configured for this branch"
+        # Measured on ASK_AI_consultant: 3 of 6 merge attempts errored that way,
+        # and two RED PRs would have merged instantly against an empty
+        # statusCheckRollup because nothing was holding them.
+        #
+        # Requiring protection instead would be strictly worse. A required
+        # context that nothing posts blocks every PR forever, which would wedge
+        # the only route work has off a contaminated checkout.
+        #
+        # So the deferral target moves from a check that may not exist to proof
+        # that someone actually ran the tests. This LOOSENS nothing: --auto is
+        # still accepted unchanged wherever real checks exist, and --admin is
+        # still refused above.
+        reason = _receipt_missing(rest, cwd)
+        if reason:
+            return reason + "\n  " + _SAFE_SHAPE
+    return None
+
+
+def _receipt_missing(rest: list[str], cwd: str) -> str | None:
+    """None when a trustworthy green receipt covers this PR's CURRENT head.
+
+    A receipt is only worth the sha it names. One written before the branch
+    moved must not clear a merge, so the head is re-read and compared. If it
+    cannot be read at all this fails CLOSED, because "could not check" and
+    "checked and fine" are the two answers a gate must never merge.
+    """
+    prs = [t for t in rest if t.isdigit()]
+    if len(prs) != 1:
+        return ("a merge without --auto needs exactly one PR number, so the "
+                "green receipt can be looked up.")
+    pr = prs[0]
+    path = os.path.join(cwd, ".prd-os", "pr-receipts", f"pr-{pr}.json")
+    try:
+        with open(path) as fh:
+            receipt = json.load(fh)
+    except Exception:
+        return (f"no green receipt for PR #{pr}. Run:\n"
+                f"      python3 automation/pr_verify.py {pr}\n"
+                "  which runs the PR's tests and treats a zero-test run as a "
+                "FAILURE, the case that let two red PRs look mergeable.")
+    if receipt.get("result") != "green":
+        return f"the receipt for PR #{pr} does not say green."
+    try:
+        head = subprocess.run(
+            ["gh", "pr", "view", pr, "--json", "headRefOid", "-q", ".headRefOid"],
+            cwd=cwd, capture_output=True, text=True, timeout=20)
+        current = head.stdout.strip() if head.returncode == 0 else ""
+    except Exception:
+        current = ""
+    if not current:
+        return (f"could not read PR #{pr}'s current head, so its receipt cannot "
+                "be trusted. Refusing rather than assuming.")
+    if receipt.get("sha") != current:
+        return (f"the receipt for PR #{pr} covers {str(receipt.get('sha'))[:12]} "
+                f"but the head is now {current[:12]}. Re-verify.")
     return None
 
 
