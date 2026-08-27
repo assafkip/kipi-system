@@ -59,8 +59,21 @@ esac
 
 STAGED=""
 if [ "$MODE" = "--staged" ]; then
+  # TWO DIFFERENT QUESTIONS, and conflating them opened a hole.
+  #
+  # STAGED is "which files should I scope checks to", so it excludes deletions:
+  # you cannot syntax-check a file that will not exist. ANY_STAGED is "is this
+  # commit empty", and deletions absolutely count.
+  #
+  # the finding (codex, PR #259 round 4): one variable answered both. A commit
+  # that ONLY deletes files produced an empty ACMR list, hit the early exit, and
+  # sailed through at exit 0 with no checks run at all. Deleting the last caller
+  # of a module, or deleting a test file, is exactly the change a floor should
+  # look at -- the remaining tree still has to parse and its suites still have to
+  # pass without it.
+  ANY_STAGED="$(git -C "$REPO" diff --cached --name-only)"
   STAGED="$(git -C "$REPO" diff --cached --name-only --diff-filter=ACMR)"
-  if [ -z "$STAGED" ]; then
+  if [ -z "$ANY_STAGED" ]; then
     echo "verify.sh --staged: nothing staged, nothing to verify."
     exit 0
   fi
@@ -246,6 +259,30 @@ if [ -f "$REPO/.verify-suites" ]; then
   if command -v pytest >/dev/null 2>&1 || python3 -c "import pytest" 2>/dev/null; then
     while IFS= read -r suite; do
       case "$suite" in ''|'#'*) continue ;; esac
+      # A MANIFEST ENTRY MAY BE A FILE, not only a directory.
+      #
+      # why (codex, PR #259 round 4): 10 tracked test files sit where no
+      # runnable directory contains them -- two at the repo root, one beside a
+      # broken sibling suite, two under scripts/. Running pytest FROM those
+      # locations either collects nothing or drags in the vendored trees that
+      # produce 109 collection errors. Without file support the only options
+      # were to leave them silently ungated, which is the finding, or to declare
+      # them excluded, which pretends a limitation is a decision. 48 tests were
+      # passing and gated by nothing.
+      #
+      # A file entry runs from the REPO ROOT against that path, so pytest
+      # resolves it exactly as a human would typing the path.
+      if [ -f "$TARGET/$suite" ]; then
+        if [ "$MODE" = "--staged" ]; then
+          if ! printf '%s\n' "$STAGED" | grep -q "^$suite$"; then
+            say "pytest:$suite" "skipped (not staged)"
+            continue
+          fi
+        fi
+        run_check "pytest:$suite" bash -c 'cd "$1" && python3 -m pytest "$2" -q --no-header' \
+                  _ "$TARGET" "$suite"
+        continue
+      fi
       if [ ! -d "$TARGET/$suite" ]; then
         # A manifest naming a directory that is gone is a BROKEN FLOOR. Silently
         # skipping it is how a suite stops running and nobody notices.

@@ -104,6 +104,26 @@ printf 'x = 1\n' > "$R/ok.py"; git -C "$R" add ok.py
     bash q-system/.q-system/verify.sh --staged >/dev/null 2>&1 )
 check "--staged works under hook env" 0 $?; rm -rf "$R"
 
+# --- A DELETION-ONLY COMMIT MUST STILL BE CHECKED. The scoping list excludes
+# deletions on purpose (you cannot syntax-check a file that will not exist), and
+# one variable used to answer both "what do I scope to" and "is this commit
+# empty". So a commit that ONLY deletes files produced an empty list, hit the
+# nothing-staged early exit, and passed at exit 0 having run nothing at all.
+# Deleting the last caller of a module, or deleting a test, is exactly the
+# change a floor should look at: the remaining tree still has to parse.
+R=$(newrepo)
+printf 'x = 1\n' > "$R/keep.py"
+printf 'def gone():\n    pass\n' > "$R/doomed.py"
+git -C "$R" add keep.py doomed.py
+git -C "$R" commit -qm "add"
+printf 'this is not python(\n' > "$R/keep.py"
+git -C "$R" add keep.py
+git -C "$R" commit -qm "break it"
+git -C "$R" rm -q doomed.py
+# keep.py is broken in the committed tree, and the staged set is a deletion
+# ONLY. The old code skipped everything here and exited 0.
+run "$R" --staged; check "deletion-only commit is still checked" 1 $?
+
 # --- THE DEEPER HALF of the same leak. Sanitizing only `worktree add` stops the
 # crash and leaves every CHECK running with the hook's git environment, so a
 # test that shells out to git asks the PARENT repo from inside the snapshot.
