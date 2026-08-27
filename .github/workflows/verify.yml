@@ -1,0 +1,22 @@
+# GATE 2 OF 2 in this repo (pre-commit is the other). The same verify.sh, so the
+# commit door and the merge door cannot quietly diverge.
+#
+# Added with the lefthook wiring 2026-08-27, after Codex review of PR #259 filed
+# a major: the script shipped here with no caller in any tracked hook or
+# workflow, so merging it added zero enforcement. The finding was correct.
+name: verify
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest
+      - name: verify.sh --full
+        run: bash q-system/.q-system/verify.sh --full

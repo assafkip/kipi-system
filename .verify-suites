@@ -1,0 +1,24 @@
+# Directories pytest is invoked FROM, one per line. Read by q-system/.q-system/verify.sh.
+#
+# WHY THIS FILE EXISTS HERE. Without it verify.sh falls back to one root-level
+# pytest, and in this repo that is not a red suite, it is NO suite: measured
+# 2026-08-27, root pytest hits "Interrupted: 109 errors during collection" and
+# runs zero tests. The errors come from vendored and rescued trees (.rescue/,
+# rescued/memory-lifecycle/, .wt-parity/, .pr25rev/) and from worktrees under
+# .claude/worktrees/ -- separate checkouts with their own sys.path, collected
+# only because they happen to sit under this root.
+#
+# A collection error is the dangerous shape: pytest exits non-zero, so the gate
+# does go red, but it goes red for a reason that has nothing to do with your
+# change and cannot be fixed by anyone committing. That is how a gate gets
+# switched off in a day.
+#
+# Both suites below were measured green before being named here:
+#   plugins/prd-os             680 passed, 1 skipped
+#   q-system/.q-system/tests   458 passed
+#
+# plugins/kipi-core is deliberately ABSENT: it collects 84 tests and 1 error,
+# and a manifest naming it would make this gate unsatisfiable. See the spillover
+# item filed with this change. Adding it is a fix, not a config edit.
+plugins/prd-os
+q-system/.q-system/tests
