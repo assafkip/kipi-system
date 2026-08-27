@@ -14,6 +14,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # FULL HISTORY, not the default depth-1 shallow clone.
+          #
+          # why (measured 2026-08-27): the first CI run of this workflow failed
+          # 18 tests that are green locally. Seven of them reproduce EXACTLY in a
+          # real shallow clone:
+          #   git clone --depth 1 ... && pytest q-system/.q-system/tests
+          #   -> 7 failed, 446 passed
+          # They are separation tests that run `git show <sha>:<path>` against
+          # commits that a depth-1 checkout does not have, so git exits 128 and
+          # the test reports a defect that is really a missing object.
+          #
+          # This is declaring the environment the suite needs, not loosening the
+          # gate: with full history those tests grade the same thing they grade
+          # on a developer machine.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
