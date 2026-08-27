@@ -30,6 +30,32 @@
 # make this gate unsatisfiable on arrival, which is how a gate gets switched off
 # in a day. Tracked as spillover sp-97ce989b; fixing that collection error and
 # adding the line here is one piece of work, not a config edit.
+#
+# ROUND 3 of the same finding. Codex filed it twice more after the first fix,
+# each time correctly, because I kept fixing the instance instead of the method.
+# The method now: enumerate every tracked test file, group by directory, MEASURE
+# each candidate, name every one that is green. Do not eyeball the tree.
+#   git ls-files '*test_*.py' 'test_*.py' | sed 's|/[^/]*$||' | sort | uniq -c
+#
+# Measured 2026-08-27, all five named suites green:
+#   plugins/prd-os              680 passed, 1 skipped
+#   plugins/kipi-dsse           110 passed
+#   plugins/kipi-core/voicekit   84 passed
+#   automation                   14 passed
+#   q-system/.q-system/tests    458 passed
+#
+# TWO known-excluded, both blockers rather than choices, both ticketed:
+#   q-system/.q-system/scripts  308 passed but 8 ERRORS (317 collected). This is
+#     the largest single body of untested-by-the-floor code in the repo and it
+#     is tracked; naming it today makes this gate unsatisfiable on arrival.
+#   plugins/kipi-core/kipi-mcp  ModuleNotFoundError: No module named 'kipi_mcp'
+#     at collection. Same class, same reason. sp-97ce989b.
+#
+# An exclusion that is WRITTEN DOWN with its measurement is the remedy here. The
+# finding was never "run everything"; it was that a manifest omitting suites in
+# silence is a false claim of coverage.
 plugins/prd-os
 plugins/kipi-dsse
+plugins/kipi-core/voicekit
+automation
 q-system/.q-system/tests
