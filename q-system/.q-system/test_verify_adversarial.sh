@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Adversarial test for verify.sh: does it actually BLOCK, or only pass tests?
+#
+# Every case builds a FRESH throwaway repo, breaks something real, runs the real
+# script, and asserts the EXIT CODE. No mocks, no stubs, no fixtures.
+#
+# The harness lives OUTSIDE the repos it builds. The first version lived inside
+# one and its own `git clean -fd` deleted it mid-run, which produced two
+# phantom failures that had nothing to do with verify.sh. A test harness that
+# perturbs its own subject is measuring itself.
+VERIFY_SRC="${1:?usage: adversarial.sh /path/to/verify.sh}"
+pass=0; fail=0
+
+newrepo() {
+  local d; d="$(mktemp -d)"
+  git -C "$d" init -q .
+  git -C "$d" config user.email t@t; git -C "$d" config user.name t
+  mkdir -p "$d/q-system/.q-system"
+  cp "$VERIFY_SRC" "$d/q-system/.q-system/verify.sh"
+  printf "print('ok')\n" > "$d/good.py"
+  printf '{"a": 1}\n'    > "$d/good.json"
+  printf 'echo hi\n'     > "$d/good.sh"
+  git -C "$d" add -A; git -C "$d" commit -qm init
+  printf '%s' "$d"
+}
+
+check() {
+  if [ "$2" = "$3" ]; then printf '  PASS  %-38s exit=%s\n' "$1" "$3"; pass=$((pass+1))
+  else printf '  FAIL  %-38s exit=%s want=%s\n' "$1" "$3" "$2"; fail=$((fail+1)); fi
+}
+
+run() { ( cd "$1" && bash q-system/.q-system/verify.sh "$2" >/dev/null 2>&1 ); }
+
+# --- baseline: a clean repo must PASS, or every later result is meaningless ---
+R=$(newrepo); run "$R" --full; check "clean repo, --full" 0 $?; rm -rf "$R"
+
+# --- it blocks on real breakage, at the staged gate ---
+for case in "py:def (:bad.py" "json:{bad:bad.json" "sh:if [ 1 ; then:bad.sh"; do
+  kind="${case%%:*}"; rest="${case#*:}"; body="${rest%:*}"; file="${rest##*:}"
+  R=$(newrepo); printf '%s\n' "$body" > "$R/$file"; git -C "$R" add "$file"
+  run "$R" --staged; check "broken $kind, --staged BLOCKS" 1 $?; rm -rf "$R"
+done
+
+# --- THE STAGED SNAPSHOT IS THE SUBJECT, not the working tree ---
+# This is the entire reason --staged materialises the index into a temp dir.
+R=$(newrepo)
+printf 'def (\n' > "$R/good.py"           # TRACKED file, broken, NOT staged
+printf 'x\n' > "$R/ok.txt"; git -C "$R" add ok.txt
+run "$R" --staged; check "unstaged breakage ignored, --staged" 0 $?
+run "$R" --full;   check "same breakage caught by --full" 1 $?
+rm -rf "$R"
+
+# --full deliberately does NOT see an untracked file. It runs at pre-push and in
+# CI, and an untracked file reaches neither. Asserted so that if someone later
+# widens --full to walk the filesystem, this goes red and they have to argue for
+# it rather than drift into it.
+R=$(newrepo)
+printf 'def (\n' > "$R/never-tracked.py"
+run "$R" --full;   check "untracked file NOT checked by --full" 0 $?
+rm -rf "$R"
+
+# --- a commit cannot smuggle breakage past --staged by leaving it unstaged ---
+# The inverse of the case above: the file IS staged broken while the working
+# tree copy is fine. A hook that checked the working tree would pass this.
+R=$(newrepo)
+printf 'def (\n' > "$R/sneak.py"; git -C "$R" add sneak.py
+printf "print('fine')\n" > "$R/sneak.py"   # working tree now clean, index is not
+run "$R" --staged; check "staged-broken/tree-clean BLOCKS" 1 $?
+rm -rf "$R"
+
+# --- THE ONE THAT MATTERS: nothing to check must FAIL, never pass ---
+# A green exit meaning "I found no linter" is indistinguishable from "your code
+# is fine" at any call site that reads only the exit code.
+E="$(mktemp -d)"; git -C "$E" init -q .
+git -C "$E" config user.email t@t; git -C "$E" config user.name t
+mkdir -p "$E/q-system/.q-system"; cp "$VERIFY_SRC" "$E/q-system/.q-system/verify.sh"
+printf 'hello\n' > "$E/readme.txt"; git -C "$E" add -A
+git -C "$E" commit -qm init
+run "$E" --full; check "empty repo FAILS (cannot-run)" 1 $?; rm -rf "$E"
+
+# --- a manifest naming a vanished suite must FAIL, never silently skip ---
+R=$(newrepo)
+printf 'no-such-dir\n' > "$R/.verify-suites"
+printf 'x\n' > "$R/t.txt"; git -C "$R" add .verify-suites t.txt
+run "$R" --staged; check "missing suite dir FAILS" 1 $?; rm -rf "$R"
+
+# --- nothing staged is a no-op. A hook that blocks an empty commit gets removed ---
+R=$(newrepo); run "$R" --staged; check "nothing staged, --staged no-op" 0 $?; rm -rf "$R"
+
+# --- bad argument is refused, not silently treated as --full ---
+R=$(newrepo)
+( cd "$R" && bash q-system/.q-system/verify.sh --oops >/dev/null 2>&1 )
+check "unknown mode refused" 2 $?; rm -rf "$R"
+
+echo
+echo "adversarial: $pass passed, $fail failed"
+[ "$fail" -eq 0 ]
