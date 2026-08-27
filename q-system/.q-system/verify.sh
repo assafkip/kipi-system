@@ -159,6 +159,34 @@ run_check() {
   else
     FAILED+=("$name")
     say "$name" "FAILED"
+    # EVERY failure line, THEN the tail for context.
+    #
+    # the scar (2026-08-27): this was `| tail -30` alone. A run with 50 failures
+    # printed the last 30 lines of pytest output, which held 12 of the 50 FAILED
+    # lines, and the other 38 were invisible EVERYWHERE -- the job log, the raw
+    # API log, `gh run view --log` all only ever contain what this line emitted.
+    # I spent three rounds fixing the instances visible in a 12-of-50 sample,
+    # which is precisely the fix-the-instance-not-the-class failure the reviewer
+    # caught on this same PR three times.
+    #
+    # A gate that hides most of what it found is a gate you cannot act on. The
+    # summary lines are the diagnosis, so they are never truncated silently: if
+    # the cap is hit, the count of what was dropped is PRINTED, so the output can
+    # never imply it was complete when it was not.
+    _sum="$(grep -E '^(FAILED|ERROR) ' /tmp/verify-$$-out || true)"
+    if [ -n "$_sum" ]; then
+      _n=$(printf '%s\n' "$_sum" | wc -l | tr -d ' ')
+      printf '%s\n' "$_sum" | head -200 | sed 's/^/      /'
+      # `if`, NOT `[ ... ] && echo`. Under `set -e` a bare test that evaluates
+      # FALSE returns 1 and kills the script mid-check -- which is exactly what
+      # the first version of this block did, silently, before `say` could even
+      # print the failure. Caught by running it against a repo with 40 failing
+      # tests and watching verify.sh stop after "shell syntax ok".
+      if [ "$_n" -gt 200 ]; then
+        echo "      ... and $((_n - 200)) more failure lines (capped)"
+      fi
+      echo "      ---- tail of the run ----"
+    fi
     sed 's/^/      /' /tmp/verify-$$-out | tail -30
   fi
   rm -f /tmp/verify-$$-out
