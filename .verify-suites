@@ -17,8 +17,19 @@
 #   plugins/prd-os             680 passed, 1 skipped
 #   q-system/.q-system/tests   458 passed
 #
-# plugins/kipi-core is deliberately ABSENT: it collects 84 tests and 1 error,
-# and a manifest naming it would make this gate unsatisfiable. See the spillover
-# item filed with this change. Adding it is a fix, not a config edit.
+# EVERY suite that can be named IS named. Codex review of PR #259 filed a major
+# on the first version of this file: it named two suites and silently left real
+# plugin tests out, so CI would go green having never run them. A manifest is a
+# claim about coverage, and an incomplete one is a false claim.
+#
+# plugins/kipi-dsse was added in response, after measuring it: 110 passed.
+#
+# plugins/kipi-core is the ONE deliberate exclusion and it is not a judgement
+# call, it is a blocker: `cd plugins/kipi-core && python3 -m pytest` reports
+# "Interrupted: 1 error during collection" and runs zero tests. Naming it would
+# make this gate unsatisfiable on arrival, which is how a gate gets switched off
+# in a day. Tracked as spillover sp-97ce989b; fixing that collection error and
+# adding the line here is one piece of work, not a config edit.
 plugins/prd-os
+plugins/kipi-dsse
 q-system/.q-system/tests
