@@ -30,6 +30,7 @@ import fcntl
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -408,6 +409,39 @@ def promote_locked(args, root: Path, ledger: Path, rec: dict) -> int:
     return 0
 
 
+def _main_checkout(root: Path) -> str:
+    """The registered checkout path for `root`, resolving a git WORKTREE to it.
+
+    the finding (codex, PR #260): matching realpath(root) against the registry
+    rejected every real worktree. instance-registry.json records ONE path per
+    instance, the main checkout, and a worktree lives somewhere else entirely,
+    often under /private/tmp. No row matched, the derivation fell through to the
+    worktree's basename, and the promotion refused.
+
+    That is precisely the UNATTENDED path: linear-worker.sh does its work in
+    worktrees. The rung would have worked every time a human ran it by hand in
+    the checkout and failed every time the worker ran it. Same by-hand-versus-
+    real split verify.sh hit with the hook environment, one repo over, which is
+    why it was worth taking the finding seriously rather than arguing scope.
+
+    `--git-common-dir` is the resolution: inside a worktree it points at the MAIN
+    repo's .git, whose parent is the registered path. In an ordinary checkout it
+    is that checkout's own .git, so this is a no-op there. Any failure falls back
+    to realpath(root), the previous behaviour.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "rev-parse",
+             "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True)
+        common = (out.stdout or "").strip()
+        if out.returncode == 0 and common and os.path.basename(common) == ".git":
+            return os.path.realpath(os.path.dirname(common))
+    except Exception:
+        pass
+    return os.path.realpath(str(root))
+
+
 def registry_project(root: Path) -> str:
     """The board project this checkout maps to, per instance-registry.json.
 
@@ -436,7 +470,7 @@ def registry_project(root: Path) -> str:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         rows = mod._registry_rows()
-        target = os.path.realpath(str(root))
+        target = _main_checkout(root)
     except Exception:
         return ""
     for row in rows:

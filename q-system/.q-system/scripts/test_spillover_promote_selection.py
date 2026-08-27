@@ -717,10 +717,6 @@ class ReadOnlyLockTest(unittest.TestCase):
                           "an unlocked promotion has to say so out loud")
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class TestProjectComesFromTheInstanceRegistry(unittest.TestCase):
     """The THIRD RUNG: instance-registry alias, between env and basename.
 
@@ -781,6 +777,45 @@ class TestProjectComesFromTheInstanceRegistry(unittest.TestCase):
             self.assertEqual(rc, 0, "env override did not take precedence")
             self.assertEqual(stub.created["projectId"], PROJECT_IDS["kipi-system"])
 
+    def test_a_git_worktree_resolves_to_its_registered_main_checkout(self):
+        """codex major on PR #260. The registry records ONE path per instance,
+        the main checkout. linear-worker.sh works in WORKTREES, which live
+        somewhere else entirely, so matching realpath(root) rejected every
+        unattended run: no row matched, the derivation fell through to the
+        worktree basename, and the promotion refused.
+
+        The rung would have worked whenever a human ran it by hand in the
+        checkout and failed every time the worker ran it, which is the split
+        that makes a bug survive."""
+        import subprocess as sp
+        with tempfile.TemporaryDirectory() as tmp:
+            main = Path(tmp) / "checkout"
+            main.mkdir()
+            for cmd in (["init", "-q", "."], ["config", "user.email", "t@t"],
+                        ["config", "user.name", "t"]):
+                sp.run(["git", "-C", str(main)] + cmd, check=True,
+                       capture_output=True)
+            (main / "f.txt").write_text("x")
+            sp.run(["git", "-C", str(main), "add", "f.txt"], check=True,
+                   capture_output=True)
+            sp.run(["git", "-C", str(main), "commit", "-qm", "init"], check=True,
+                   capture_output=True)
+            wt = Path(tmp) / "wt"
+            sp.run(["git", "-C", str(main), "worktree", "add", "--detach",
+                    str(wt)], check=True, capture_output=True)
+
+            mod = load_promote()
+            # The worktree is a real repo at a different path than the registry row.
+            self.assertEqual(mod._main_checkout(wt), os.path.realpath(str(main)),
+                             "a worktree did not resolve to its main checkout")
+            # NEGATIVE SELF-TEST: without the resolution this is the worktree
+            # itself, which is what made every unattended promotion refuse.
+            self.assertNotEqual(os.path.realpath(str(wt)),
+                                os.path.realpath(str(main)),
+                                "fixture is wrong: worktree and checkout share a path")
+            # An ordinary checkout must be unchanged by the same call.
+            self.assertEqual(mod._main_checkout(main), os.path.realpath(str(main)))
+
     def test_an_unreadable_registry_falls_through_and_never_invents_a_project(self):
         """A registry that cannot be read must not become a guess. Filing into
         the wrong board is worse than refusing."""
@@ -792,3 +827,7 @@ class TestProjectComesFromTheInstanceRegistry(unittest.TestCase):
                 extra_env={"KIPI_INSTANCE_REGISTRY": str(bad)})
             self.assertEqual(rc, 2)
             self.assertIsNone(stub.created)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
