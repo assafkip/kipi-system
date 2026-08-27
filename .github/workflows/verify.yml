@@ -36,3 +36,12 @@ jobs:
       - run: pip install pytest
       - name: verify.sh --full
         run: bash q-system/.q-system/verify.sh --full
+      # THE HARNESS THAT GUARDS THE GATE NEEDS A CALLER TOO.
+      #
+      # codex, PR #259 round 5, minor: 15 adversarial cases asserting verify.sh's
+      # exit codes existed and NOTHING RAN THEM, so they provided zero regression
+      # protection. That is the same finding as the round-1 major one layer up --
+      # I wired the floor and left its own test suite unwired. A check nobody
+      # invokes is an aspiration, whichever layer it sits on.
+      - name: adversarial suite (the floor's own tests)
+        run: bash q-system/.q-system/test_verify_adversarial.sh q-system/.q-system/verify.sh

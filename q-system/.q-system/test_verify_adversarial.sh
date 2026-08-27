@@ -104,6 +104,24 @@ printf 'x = 1\n' > "$R/ok.py"; git -C "$R" add ok.py
     bash q-system/.q-system/verify.sh --staged >/dev/null 2>&1 )
 check "--staged works under hook env" 0 $?; rm -rf "$R"
 
+# --- THE STAGED MANIFEST DECIDES, NOT THE WORKING TREE'S. Both reads used
+# $REPO, which is identical in --full and wrong in --staged: the snapshot's
+# checks were chosen by whatever .verify-suites happened to be lying in the
+# working tree. Here the STAGED manifest names a directory that does not exist
+# (which verify.sh must refuse) while the WORKING TREE manifest is valid. The
+# old code read the working tree, found a fine manifest, and passed.
+R=$(newrepo)
+mkdir -p "$R/realsuite"
+printf 'def test_ok():\n    assert True\n' > "$R/realsuite/test_ok.py"
+printf 'realsuite\n' > "$R/.verify-suites"
+git -C "$R" add .verify-suites realsuite/test_ok.py
+git -C "$R" commit -qm "good manifest"
+# stage a BAD manifest, then put the good one back in the working tree only
+printf 'no-such-dir\n' > "$R/.verify-suites"
+git -C "$R" add .verify-suites
+printf 'realsuite\n' > "$R/.verify-suites"
+run "$R" --staged; check "staged manifest decides, not the worktree" 1 $?
+
 # --- A DELETION-ONLY COMMIT MUST STILL BE CHECKED. The scoping list excludes
 # deletions on purpose (you cannot syntax-check a file that will not exist), and
 # one variable used to answer both "what do I scope to" and "is this commit

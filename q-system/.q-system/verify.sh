@@ -255,7 +255,17 @@ TESTFILES="$(git -C "$REPO" ls-files 'test_*.py' '*/test_*.py')"
 #
 # A repo with no manifest falls back to one root pytest, which is right for a
 # normal repo and is what every instance without the file gets.
-if [ -f "$REPO/.verify-suites" ]; then
+# THE MANIFEST COMES FROM THE TREE BEING GRADED, not from the working tree.
+#
+# the finding (codex, PR #259 round 5): both reads used $REPO. In --full that is
+# the same path, so it looked right. In --staged it meant the snapshot's checks
+# were chosen by whatever manifest happened to be lying in the working tree.
+# Stage a commit that ADDS a suite and the gate would not run it; stage one that
+# REMOVES a broken suite and the gate would still run it and refuse. The whole
+# premise of --staged is "grade what the commit contains", and the file deciding
+# WHAT GETS GRADED was exempt from it.
+MANIFEST="$TARGET/.verify-suites"
+if [ -f "$MANIFEST" ]; then
   if command -v pytest >/dev/null 2>&1 || python3 -c "import pytest" 2>/dev/null; then
     while IFS= read -r suite; do
       case "$suite" in ''|'#'*) continue ;; esac
@@ -305,7 +315,7 @@ if [ -f "$REPO/.verify-suites" ]; then
       fi
       run_check "pytest:$suite" bash -c 'cd "$1/$2" && python3 -m pytest -q --no-header' \
                 _ "$TARGET" "$suite"
-    done < "$REPO/.verify-suites"
+    done < "$MANIFEST"
   else
     RAN+=("pytest")
     FAILED+=("pytest: .verify-suites present but pytest is not installed")
