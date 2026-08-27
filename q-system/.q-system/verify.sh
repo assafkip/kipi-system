@@ -10,11 +10,11 @@
 #   verify.sh --staged    what a commit would contain, checked against a COPY
 #   verify.sh --full      the working tree, everything
 #
-# --staged never touches your working tree. It writes the git INDEX out to a
-# temporary directory with `git checkout-index` and runs there. The obvious
-# alternative, `git stash --keep-index`, puts uncommitted work inside a stash
-# that a crash mid-hook can strand. Verifying against a copy costs a few hundred
-# milliseconds and cannot eat anybody's work.
+# --staged never touches your working tree. It turns the git INDEX into a real
+# commit object and checks that out as a throwaway worktree, then runs there.
+# The obvious alternative, `git stash --keep-index`, puts uncommitted work
+# inside a stash that a crash mid-hook can strand. Verifying against a copy
+# costs a couple of seconds and cannot eat anybody's work.
 #
 # THE ONE RULE THAT IS NOT NEGOTIABLE: if this script discovers no checks to
 # run, it FAILS. A gate that cannot run must not pass. The alternative is a
@@ -41,6 +41,13 @@ TMP=""
 # repo. No test of the failure cases could have found it: they all expect 1.
 cleanup() {
   if [ -n "$TMP" ] && [ -d "$TMP" ]; then rm -rf "$TMP"; fi
+  # The staged worktree lived under $TMP, so removing $TMP orphans its
+  # registration in .git/worktrees. prune is the sanctioned cleanup, is a no-op
+  # when nothing is stale, and never touches a worktree whose directory still
+  # exists. Without it every --staged run leaks an entry and `git worktree list`
+  # fills with dead paths until an add starts failing.
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+      -u GIT_COMMON_DIR git worktree prune >/dev/null 2>&1 || true
   return 0
 }
 trap cleanup EXIT
@@ -57,12 +64,76 @@ if [ "$MODE" = "--staged" ]; then
     echo "verify.sh --staged: nothing staged, nothing to verify."
     exit 0
   fi
-  # The staged snapshot, materialised. Not the working tree, and not a stash.
+  # The staged snapshot, materialised AS A REAL REPOSITORY. Not the working
+  # tree, and not a stash.
+  #
+  # why a worktree and not `git checkout-index --prefix=` (the first version):
+  # checkout-index writes FILES and nothing else, so the snapshot had no .git.
+  # Every test that asks the repository a question then got a wrong answer
+  # instead of an error. Measured 2026-08-27 on this repo: 25 failed under
+  # --staged against 7 under --full, and the 18-test difference was entirely
+  # this. `provenance.resolve` on HEAD returned "empty commit ref"; the
+  # gitignore checks, the behind-upstream check and the live-tree enumerations
+  # all followed. A pre-commit gate that fails 18 times for a reason unrelated
+  # to your change is a gate that gets deleted in a day, which is the same
+  # protection as no gate at all.
+  #
+  # write-tree + commit-tree turns the INDEX into a real commit object without
+  # touching any ref, any branch, or the working tree. The worktree checked out
+  # at that commit is a genuine git repository holding exactly what the commit
+  # would contain, so a repo-aware test is answered about the STAGED state
+  # rather than about a directory that is not a repo.
   TMP="$(mktemp -d)"
-  git -C "$REPO" checkout-index -a -f --prefix="$TMP/"
-  TARGET="$TMP"
+  TREE="$(git -C "$REPO" write-tree)"
+  # An empty repo has no HEAD to parent from; the adversarial suite covers it.
+  if git -C "$REPO" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    SNAP="$(git -C "$REPO" commit-tree "$TREE" -p HEAD -m 'verify.sh staged snapshot')"
+  else
+    SNAP="$(git -C "$REPO" commit-tree "$TREE" -m 'verify.sh staged snapshot')"
+  fi
+  # FAIL, never fall through. A failed `worktree add` leaves $TMP/wt absent, and
+  # a TARGET that does not exist would send every check at the MAIN CHECKOUT,
+  # reporting green for a tree nobody staged.
+  #
+  # `env -u` is not defensive tidiness, it is the whole reason this works inside
+  # a hook. git EXPORTS GIT_DIR and GIT_INDEX_FILE to its hooks, and a child
+  # `git worktree add` inherits them and tries to use the PARENT's index path
+  # inside the new worktree: "fatal: .git/index: index file open failed: Not a
+  # directory". Measured 2026-08-27 -- verify.sh --staged ran fine by hand and
+  # refused every time lefthook called it, which is the worst possible split
+  # because the by-hand run is the one you use to convince yourself it works.
+  # write-tree above deliberately KEEPS the inherited environment: it has to
+  # read the index the commit is actually being built from.
+  if ! WT_ERR="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+                     -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR \
+                     git -C "$REPO" worktree add --detach "$TMP/wt" "$SNAP" 2>&1)"; then
+    # Print what git said. The first version threw stderr away and the refusal
+    # was untraceable: a gate that cannot say why it refused gets bypassed.
+    echo "verify.sh: could not create the staged worktree. Refusing." >&2
+    echo "$WT_ERR" | sed 's/^/  /' >&2
+    exit 1
+  fi
+  TARGET="$TMP/wt"
+  # AND NOW DROP THEM FOR THE REST OF THE RUN. Sanitizing only the `worktree
+  # add` above fixed the crash and left the deeper half: every check below runs
+  # with the hook's environment too, so a TEST that shells out to git inherits
+  # GIT_DIR=.git and GIT_INDEX_FILE=.git/index and asks the PARENT repo, from
+  # inside the snapshot, using a relative path that means something else there.
+  # Measured 2026-08-27: a bare `verify.sh --staged` printed "verify.sh ok" and
+  # the pre-commit call on byte-identical staged content failed on
+  # test_corpus_is_tracked, test_acquisition_manifest,
+  # test_sp_392043b5_backup_is_ignored and test_provenance_repo_field -- every
+  # one of them a test that asks git what is tracked or ignored.
+  #
+  # This is the script's own thesis applied to itself. verify.sh exists so the
+  # same checks run identically at every door; a run whose answers depend on
+  # which door invoked it is the exact drift it was written to stop.
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
 else
   TARGET="$REPO"
+  # --full has no snapshot to build, so there is nothing to read the index for
+  # and the same leak applies from the first check onward.
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
 fi
 
 say() { printf '  %-28s %s\n' "$1" "$2"; }

@@ -92,6 +92,41 @@ R=$(newrepo)
 ( cd "$R" && bash q-system/.q-system/verify.sh --oops >/dev/null 2>&1 )
 check "unknown mode refused" 2 $?; rm -rf "$R"
 
+# --- THE HOOK ENVIRONMENT. git exports GIT_DIR and GIT_INDEX_FILE to its hooks,
+# and --staged builds a worktree, which inherits them and dies on the parent's
+# relative index path. Measured 2026-08-27: --staged passed by hand and refused
+# on every lefthook pre-commit call, which is the worst split there is, because
+# the by-hand run is the one you use to convince yourself the gate works.
+# Every other case here runs with a clean environment and CANNOT see it.
+R=$(newrepo)
+printf 'x = 1\n' > "$R/ok.py"; git -C "$R" add ok.py
+( cd "$R" && GIT_DIR=.git GIT_INDEX_FILE=.git/index \
+    bash q-system/.q-system/verify.sh --staged >/dev/null 2>&1 )
+check "--staged works under hook env" 0 $?; rm -rf "$R"
+
+# --- THE DEEPER HALF of the same leak. Sanitizing only `worktree add` stops the
+# crash and leaves every CHECK running with the hook's git environment, so a
+# test that shells out to git asks the PARENT repo from inside the snapshot.
+# This case owns a suite whose test does exactly that; case 13 cannot see it,
+# because a repo with no git-aware test passes either way.
+R=$(newrepo)
+mkdir -p "$R/suite"
+printf 'suite\n' > "$R/.verify-suites"
+cat > "$R/suite/test_tracked.py" <<'PYEOF'
+import subprocess
+def test_git_sees_the_tracked_file():
+    # ls-files prints paths relative to CWD, and pytest runs from the suite dir,
+    # so this is "test_tracked.py" and not "suite/test_tracked.py". Under the
+    # env leak GIT_DIR=.git resolves against THIS dir, finds nothing, and git
+    # exits with empty stdout, which is what makes the assertion discriminate.
+    r = subprocess.run(["git", "ls-files"], capture_output=True, text=True)
+    assert "test_tracked.py" in r.stdout, (r.returncode, r.stdout, r.stderr)
+PYEOF
+git -C "$R" add .verify-suites suite/test_tracked.py
+( cd "$R" && GIT_DIR=.git GIT_INDEX_FILE=.git/index \
+    bash q-system/.q-system/verify.sh --staged >/dev/null 2>&1 )
+check "git-aware test correct under hook env" 0 $?; rm -rf "$R"
+
 echo
 echo "adversarial: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
