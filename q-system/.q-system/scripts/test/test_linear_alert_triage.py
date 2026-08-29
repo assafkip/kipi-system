@@ -305,12 +305,69 @@ class TestHoldIsNeverSilentOrStale(unittest.TestCase):
         self.assertTrue(triage.is_held(as_issue(ALERT_DESC, labels=("triage:held",))))
         self.assertFalse(triage.is_held(as_issue(ALERT_DESC, labels=("owner:sana",))))
 
-    def test_missing_hold_label_raises_rather_than_no_ops(self):
-        class NoLabel:
+    def test_a_missing_hold_label_is_created_not_raised(self):
+        """codex round 7, major. The label existed only because I made it by hand
+        on this one workspace. On a fresh deployment the old code raised EVERY
+        night, and because do_hold comments before it labels, the raise landed
+        after the comment posted: one identical rationale comment per night,
+        forever, on the same issue."""
+        calls = []
+        class Fresh:
             def graphql(s, q, v):
-                return {"issueLabels": {"nodes": []}}
+                calls.append(q)
+                if "issueLabels(first" in q:
+                    return {"issueLabels": {"nodes": []}}
+                if "teams(" in q:
+                    return {"teams": {"nodes": [{"id": "team-1"}]}}
+                if "issueLabelCreate" in q:
+                    return {"issueLabelCreate": {"success": True,
+                            "issueLabel": {"id": "made-it", "name": "triage:held"}}}
+                return {}
+        self.assertEqual(triage.held_label_id(Fresh()), "made-it")
+        self.assertTrue(any("issueLabelCreate" in q for q in calls))
+
+    def test_the_label_is_resolved_before_any_write(self):
+        """The half that stops the duplicate comments: a workspace where the label
+        cannot be resolved must fail having written NOTHING."""
+        class Broken:
+            def __init__(s): s.calls = []
+            def graphql(s, q, v):
+                s.calls.append(q)
+                if "issueLabels(first" in q:
+                    return {"issueLabels": {"nodes": []}}
+                if "teams(" in q:
+                    return {"teams": {"nodes": []}}
+                if "issue(" in q:
+                    return {"issue": {"id": "u", "identifier": "ASK-1",
+                                      "description": ALERT_DESC, "labels": {"nodes": []}}}
+                return {}
+        b = Broken()
         with self.assertRaises(RuntimeError):
-            triage.held_label_id(NoLabel())
+            triage.do_hold(b, {"identifier": "ASK-1"}, "why", True)
+        self.assertFalse(any("commentCreate" in q for q in b.calls),
+                         "a rationale comment posted before the label was resolved; "
+                         "every nightly run would add another")
+
+    def test_promotion_clears_a_previous_hold(self):
+        """codex round 7, minor. An issue held earlier and promoted later is
+        executable now; leaving triage:held on it says the opposite."""
+        class L:
+            def __init__(s): s.calls = []
+            def graphql(s, q, v):
+                s.calls.append((q, v))
+                if "issue(" in q:
+                    return {"issue": {"id": "u", "identifier": "ASK-1",
+                            "description": ALERT_DESC,
+                            "labels": {"nodes": [{"id": "h", "name": "triage:held"},
+                                                 {"id": "t", "name": "needs-triage"}]}}}
+                if "issueUpdate" in q:
+                    return {"issueUpdate": {"success": True, "issue": {"identifier": "ASK-1"}}}
+                return {}
+        f = L()
+        triage.do_promote(f, {"identifier": "ASK-1"}, DOR, "why", True)
+        removed = [v["input"]["removedLabelIds"] for q, v in f.calls if "issueUpdate" in q][0]
+        self.assertIn("h", removed, "promotion left the stale triage:held label on")
+        self.assertIn("t", removed, "promotion left needs-triage on")
 
     def test_every_write_path_reads_its_comment_result(self):
         """THE CLASS, not the instances. A new write path that comments and ignores
@@ -326,12 +383,23 @@ class TestHoldIsNeverSilentOrStale(unittest.TestCase):
     def test_only_one_description_writer_remains(self):
         """Fable's refutation condition, kept executable. Two full-replace writers
         is the condition under which patching one relocates the race instead of
-        closing it."""
+        closing it.
+
+        Scoped to the three VERBS, not the whole module. The first version counted
+        every '"description":' in the file and went red when held_label_id gained a
+        label-creation input, whose description field is a label's own text and
+        writes no issue body. A guard that counts the wrong thing gets loosened
+        instead of heeded, so it counts the right thing."""
         import inspect
-        writers = inspect.getsource(triage).count('"description":')
-        self.assertEqual(writers, 1,
-                         f"{writers} description writers; a second one revives the "
-                         "clobber class that hold was just redesigned to escape")
+        src = inspect.getsource(triage)
+        writers = []
+        for fn in ("do_promote", "do_hold", "do_close"):
+            body = src.split(f"def {fn}(")[1].split("\ndef ")[0]
+            if '"description":' in body:
+                writers.append(fn)
+        self.assertEqual(writers, ["do_promote"],
+                         f"issue-description writers are {writers}; a second one "
+                         "revives the clobber class hold was redesigned to escape")
 
 
 class TestUnattendedRunReportsTotalFailure(unittest.TestCase):

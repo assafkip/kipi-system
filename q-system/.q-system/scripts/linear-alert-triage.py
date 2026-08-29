@@ -144,6 +144,11 @@ COMMENT_M = """mutation($input:CommentCreateInput!){
 
 LABELS_Q = """query{issueLabels(first:250){nodes{id name}}}"""
 
+TEAM_ID_Q = """query($k:String!){teams(filter:{key:{eq:$k}}){nodes{id}}}"""
+
+LABEL_CREATE_M = """mutation($i:IssueLabelCreateInput!){
+  issueLabelCreate(input:$i){success issueLabel{id name}}}"""
+
 STATES_Q = """query($k:String!){teams(filter:{key:{eq:$k}}){nodes{
   states{nodes{id name type}}}}}"""
 
@@ -226,7 +231,12 @@ def do_promote(ls, issue: dict, dor: str, why: str, apply: bool) -> str:
     # ONE mutation for description + label drop. As two calls a failure between
     # them leaves a ticket carrying a DoR and still wearing needs-triage, which
     # reads as triaged to a human and as untriaged to every filter.
-    payload = {"description": new, "removedLabelIds": label_ids(fresh, TRIAGE_LABEL)}
+    # Drop the hold too (round 7, minor). An issue held on an earlier night and
+    # promoted later is executable now; leaving triage:held on it says the
+    # opposite, and is the kind of stale flag someone later reads as a decision.
+    payload = {"description": new,
+               "removedLabelIds": (label_ids(fresh, TRIAGE_LABEL)
+                                   + label_ids(fresh, HELD_LABEL))}
     if not apply:
         return Outcome(True, f"{ident}: WOULD PROMOTE (strip marker "
                        f"{fp[:12] or '-'}, drop {TRIAGE_LABEL}, +{len(dor)} chars)")
@@ -343,19 +353,36 @@ def is_held(issue: dict) -> bool:
 
 
 def held_label_id(ls) -> str:
-    """Resolve the hold label. Raises rather than returning None.
+    """Resolve the hold label, CREATING it if this workspace has none.
 
-    A label id that does not resolve makes issueUpdate error, not silently no-op,
-    and an unattended job that cannot record a hold must say so loudly instead of
-    reporting HELD every night while marking nothing.
+    SELF-PROVISIONING, and that is the fix for a real deployment defect (codex
+    round 7, major). The first cut raised when the label was missing. It worked
+    only because I had created triage:held by hand on this one workspace; on a
+    fresh deployment every night would raise. And because do_hold comments BEFORE
+    it labels, the raise landed AFTER the comment had already posted, so each
+    nightly run added another identical rationale comment to the same issue,
+    forever, while reporting a failed pass. A hand-run setup step nobody knows
+    about is the same class as the rest of this issue: a mechanism that needs a
+    human who is not there.
     """
     data = ls.graphql(LABELS_Q, {}) or {}
     for node in ((data.get("issueLabels") or {}).get("nodes") or []):
         if node.get("name") == HELD_LABEL:
             return node["id"]
-    raise RuntimeError(
-        f"no {HELD_LABEL!r} label exists on this workspace; create it once, "
-        "then this job can record holds")
+    teams = (ls.graphql(TEAM_ID_Q, {"k": TEAM_KEY}) or {}).get("teams") or {}
+    nodes = teams.get("nodes") or []
+    if not nodes:
+        raise RuntimeError(f"cannot resolve team {TEAM_KEY!r} to create "
+                           f"the {HELD_LABEL!r} label")
+    res = ls.graphql(LABEL_CREATE_M, {"i": {
+        "name": HELD_LABEL, "teamId": nodes[0]["id"], "color": "#bec2c8",
+        "description": ("linear-alert-triage.py held this alert: a triage decision "
+                        "was made and it is not executable as written. Not a close. "
+                        "Remove to return it to the nightly pool.")}})
+    node = (((res or {}).get("issueLabelCreate") or {}).get("issueLabel") or {})
+    if not node.get("id"):
+        raise RuntimeError(f"could not create the {HELD_LABEL!r} label")
+    return node["id"]
 
 
 def claude_binary() -> str | None:
@@ -443,7 +470,13 @@ def do_hold(ls, issue: dict, reason: str, apply: bool) -> str:
     if not is_alert_ticket(desc):
         return Outcome(False, f"{ident}: SKIPPED (no longer an alert; promoted while this ran)")
 
-    # COMMENT FIRST, AND READ ITS RESULT, THEN THE MARKER (round 2, major 3).
+    # RESOLVE THE LABEL BEFORE ANYTHING IS WRITTEN (round 7, major).
+    # If this cannot be resolved or created, the pass must fail having written
+    # NOTHING. Resolving it after the comment is what turned one broken workspace
+    # into a permanent stream of duplicate rationale comments.
+    label_id = held_label_id(ls)
+
+    # COMMENT FIRST, AND READ ITS RESULT, THEN THE LABEL (round 2, major 3).
     # This is the identical defect just fixed in do_close, in a function written in
     # the same commit -- fixing the instance and not the class. The marker is the
     # irreversible half here: it removes the issue from every future nightly pass,
@@ -461,7 +494,7 @@ def do_hold(ls, issue: dict, reason: str, apply: bool) -> str:
 
     # addedLabelIds, never a description write. See the HELD_LABEL note above.
     upd = ls.graphql(UPDATE_M, {"id": ident,
-                                "input": {"addedLabelIds": [held_label_id(ls)]}})
+                                "input": {"addedLabelIds": [label_id]}})
     if not (((upd or {}).get("issueUpdate") or {}).get("success")):
         raise RuntimeError(f"{ident}: hold label write failed")
     return Outcome(True, f"{ident}: HELD")
