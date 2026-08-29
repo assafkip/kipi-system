@@ -555,9 +555,14 @@ if grep -q "^branch_guard() {" "$DISPATCH"; then
   # moment the guard runs. Empty is the fresh-pick path, which is what every
   # pre-existing case below drives.
   G_ACTION=""; G_BRANCH=""
+  # And what the RED-CI selector picked (ASK-358 round 3, MAJOR 2). Same shape,
+  # earlier lane: ci-redrive runs first and, when it offers, the reviewer lane is
+  # skipped entirely. Empty is the fresh-pick path.
+  G_REDRIVE=""; G_REDRIVE_BRANCH=""
   guard() {
     : > "$BG/pages"
     GH_STUB_PRS="$1" GH_STUB_FAIL="${2:-0}" \
+    G_REDRIVE="$G_REDRIVE" G_REDRIVE_BRANCH="$G_REDRIVE_BRANCH" \
     G_ACTION="$G_ACTION" G_BRANCH="$G_BRANCH" bash -c '
       set -uo pipefail
       say() { printf "SAY %s\n" "$*" >&2; }
@@ -572,6 +577,12 @@ if grep -q "^branch_guard() {" "$DISPATCH"; then
       # kills the guard and the fail-OPEN arm reads exactly like a pass.
       REVIEW_ACTION="$G_ACTION"; REVIEW_BRANCH="$G_BRANCH"
       REVIEW_NEXT="${G_ACTION:+ASK-352}"; REVIEW_PR="${G_ACTION:+91}"
+      # The red-CI lane initialises its three at :1132, ahead of every selector,
+      # for exactly the reason the note above gives: an unset name under `set -u`
+      # kills the guard mid-arm and the caller reads the corpse as a pass. Adding
+      # the arm without adding these here is what turned 15 green cases red.
+      REDRIVE_NEXT="$G_REDRIVE"; REDRIVE_BRANCH="$G_REDRIVE_BRANCH"
+      REDRIVE_PR="${G_REDRIVE:+91}"
       # LOG is where the guard appends the resolver stderr. Production always
       # sets it; leaving it unset here made `2>>"$LOG"` trip set -u, so the
       # resolver call died and the guard took its fail-OPEN arm -- a harness gap
@@ -646,6 +657,83 @@ if grep -q "^branch_guard() {" "$DISPATCH"; then
     && ok "a matching carried branch dispatches -- the board is not asked a second time" \
     || bad "THE DEFECT: the guard re-queried and refused, so the selector's observation is discarded"
   G_ACTION=""; G_BRANCH=""
+
+  # --- PR #211 round 3, MAJOR 2: THE SAME RACE, IN THE OTHER LANE ------------
+  # Round 1 fixed the re-query for the reviewer redrive and left the red-CI
+  # redrive on the old path: ci-redrive.py READ the branch, dropped it, and the
+  # guard fell through to the `elif` and asked gh again. That second answer is
+  # the fail-OPEN one. Note the failure mode: not a crash, not a refusal, but the
+  # dispatch being WAVED THROUGH onto the branch this whole PR exists to reject.
+  # A fail-open hole inside the guard whose thesis is "refuse a dispatch that
+  # would land on a branch no open PR is on" is the PR contradicting itself,
+  # which is why this is not a null check.
+  #
+  # `prs-none.json` IS the race: it is the board a moment after the PR closed.
+  # If the carried branch is not read, the resolver answers rc 1 (no open PR),
+  # the fail-open arm runs, and converge commits onto sana/ask-352.
+  G_REDRIVE="ASK-352"; G_REDRIVE_BRANCH="sana/ask-352-clean"
+  V="$(guard "$BG/prs-none.json")"
+  [ "$V" = "VERDICT=REFUSE" ] \
+    && ok "THE RACE, RED-CI LANE: a PR closing after selection cannot un-refuse it" \
+    || bad "THE DEFECT: the red-CI guard re-queried, saw the PR gone, and ran on sana/ask-352"
+
+  # The refusal has to be actionable, and it has to name the PR whose attempt is
+  # about to be spent -- field 5 of the offer exists for this line.
+  V="$(guard "$BG/prs-none.json")"
+  if grep -q "sana/ask-352-clean" "$BG/gerr" && grep -q "PR #91" "$BG/gerr"; then
+    ok "the red-CI refusal names both the branch to work and the PR it read"
+  else
+    bad "the red-CI refusal names both the branch to work and the PR it read" \
+        "$(cat "$BG/gerr" 2>/dev/null)"
+  fi
+
+  # A refusal that cannot self-heal earns a page in this lane too. Without it the
+  # red-CI queue starves exactly the way the reviewer queue did.
+  if grep -q "^PAGE branch-guard-ASK-352" "$BG/pages"; then
+    ok "a red-CI branch mismatch pages a human, not just dispatch.log"
+  else
+    bad "a red-CI branch mismatch pages a human, not just dispatch.log" \
+        "$(cat "$BG/pages" 2>/dev/null)"
+  fi
+
+  # The other direction: a matching carried branch runs, and the board is never
+  # consulted. `prs-none.json` would say rc 1 here too, so a guard that still
+  # asked would be indistinguishable -- `prs-two.json` is used instead, which
+  # would answer rc 3 (ambiguous) and REFUSE if the second query happened.
+  G_REDRIVE="ASK-352"; G_REDRIVE_BRANCH="sana/ask-352"
+  V="$(guard "$BG/prs-two.json")"
+  [ "$V" = "VERDICT=RUN" ] \
+    && ok "a matching carried branch dispatches without asking the board again" \
+    || bad "THE DEFECT: the red-CI guard re-queried, so the selector's observation is discarded"
+
+  # AN UNCONFIRMED HEAD RUNS, AND IT DOES NOT ASK THE BOARD AGAIN. ci-redrive
+  # leaves field 4 empty when the board did not confirm the head lives in this
+  # repo, and this lane then behaves exactly as the reviewer lane already does
+  # with an empty REVIEW_BRANCH: fail open. Two reasons, and the second is the
+  # one that decides it.
+  #
+  #   - Treating "" as a mismatch would park every unconfirmed head forever, and
+  #     a gate that blocks the harmless case is a gate that gets switched off.
+  #   - Falling through to the resolver buys nothing and costs the fix: branch_for
+  #     itself only believes same-repo heads, so it answers rc 1 for exactly the
+  #     PR we could not vouch for -- fail open by a longer road -- while for any
+  #     OTHER board state it would overrule the dispatch with an answer to a
+  #     different question. That re-query is the defect this case sits under.
+  #
+  # `prs-clean.json` is the discriminating fixture: an open PR on
+  # sana/ask-352-clean, which the resolver WOULD refuse on. RUN here is the proof
+  # that no second query happened.
+  G_REDRIVE="ASK-352"; G_REDRIVE_BRANCH=""
+  V="$(guard "$BG/prs-clean.json")"
+  [ "$V" = "VERDICT=RUN" ] \
+    && ok "an unconfirmed head runs on the naming rule, with no second query" \
+    || bad "THE DEFECT: the empty-branch arm fell through and re-queried the board"
+  if grep -q "PAGE" "$BG/pages" 2>/dev/null; then
+    bad "an unconfirmed head pages nobody" "$(cat "$BG/pages")"
+  else
+    ok "an unconfirmed head pages nobody -- it dispatched, so there is no stall"
+  fi
+  G_REDRIVE=""; G_REDRIVE_BRANCH=""
 
   # --- PR #211 round 2, MAJOR 2: a refusal nobody is told about --------------
   # Every arm above ends in `say`, which appends to dispatch.log and nothing
