@@ -233,5 +233,64 @@ class TestUnattendedLaneExists(unittest.TestCase):
         self.assertFalse(IS_FLEET_ALERT(as_issue(triage.strip_alert_marker(held))))
 
 
+class TestHoldIsNeverSilentOrStale(unittest.TestCase):
+    """codex review of PR #268 round 2, majors 2 and 3. Both are the do_close
+    defects relocated into its sibling: I fixed the instance, not the class."""
+
+    def _fake(self, fresh, comment_ok):
+        class L:
+            def __init__(s):
+                s.calls = []
+            def graphql(s, q, v):
+                s.calls.append((q, v))
+                if "issue(" in q:
+                    return {"issue": {"id": "uuid", "identifier": "ASK-1",
+                                      "description": fresh, "labels": {"nodes": []}}}
+                if "commentCreate" in q:
+                    return {"commentCreate": {"success": comment_ok}}
+                if "issueUpdate" in q:
+                    return {"issueUpdate": {"success": True,
+                                            "issue": {"identifier": "ASK-1"}}}
+                return {}
+            def wrote_description(s):
+                return [v["input"]["description"]
+                        for q, v in s.calls if "issueUpdate" in q]
+        return L()
+
+    def test_hold_refuses_when_the_rationale_comment_fails(self):
+        f = self._fake(ALERT_DESC, comment_ok=False)
+        with self.assertRaises(RuntimeError) as cm:
+            triage.do_hold(f, {"identifier": "ASK-1"}, "model rationale", True)
+        self.assertIn("refusing to hold", str(cm.exception))
+        self.assertEqual(f.wrote_description(), [],
+                         "the hold marker was written despite the comment failing")
+
+    def test_hold_skips_an_issue_promoted_while_the_model_ran(self):
+        promoted = triage.promote_body(ALERT_DESC, DOR, "fp", "")
+        f = self._fake(promoted, comment_ok=True)
+        out = triage.do_hold(f, {"identifier": "ASK-1"}, "stale HOLD", True)
+        self.assertIn("SKIPPED", out)
+        self.assertEqual(f.wrote_description(), [],
+                         "a promoted, worker-ready issue was stamped held")
+
+    def test_hold_still_works_on_a_real_alert(self):
+        """Negative control: neither guard may block the good path."""
+        f = self._fake(ALERT_DESC, comment_ok=True)
+        self.assertIn("HELD", triage.do_hold(f, {"identifier": "ASK-1"}, "why", True))
+        self.assertTrue(triage.is_held(f.wrote_description()[0]))
+
+    def test_every_write_path_reads_its_comment_result(self):
+        """THE CLASS, not the two instances. A third write path that comments and
+        ignores the result would pass both tests above and reintroduce the bug, so
+        this asserts on the source of every function that calls COMMENT_M."""
+        import inspect
+        src = inspect.getsource(triage)
+        for fn in ("do_close", "do_hold"):
+            body = src.split(f"def {fn}(")[1].split("\ndef ")[0]
+            self.assertIn("COMMENT_M", body, f"{fn} no longer comments")
+            self.assertIn("commentCreate", body,
+                          f"{fn} sends a comment and never reads whether it landed")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

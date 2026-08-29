@@ -343,14 +343,37 @@ def do_hold(ls, issue: dict, reason: str, apply: bool) -> str:
     if fresh is None:
         return f"{ident}: SKIPPED (could not re-read)"
     desc = (fresh.get("description") or "").rstrip()
-    body = f"{desc}\n\n<!-- {HELD_MARKER}: {time.strftime('%Y-%m-%d', time.gmtime())} -->\n"
-    res = ls.graphql(UPDATE_M, {"id": ident, "input": {"description": body}})
-    if not (((res or {}).get("issueUpdate") or {}).get("success")):
-        raise RuntimeError(f"{ident}: hold marker write failed")
-    ls.graphql(COMMENT_M, {"input": {"issueId": fresh["id"], "body":
+
+    # STILL AN ALERT? (codex review of PR #268 round 2, major 2.) do_promote has
+    # always re-checked this; do_hold did not, and the omission is the whole bug: a
+    # rival run (or a hand promotion) can promote this issue during the model call,
+    # and holding it afterwards stamps a worker-READY issue as excluded-from-triage.
+    # It then sits eligible for dispatch and invisible to every future pass at once.
+    # The guard belongs on BOTH write paths or it belongs on neither; one function
+    # having it was the reason it looked correct.
+    if not is_alert_ticket(desc):
+        return f"{ident}: SKIPPED (no longer an alert; promoted while this ran)"
+
+    # COMMENT FIRST, AND READ ITS RESULT, THEN THE MARKER (round 2, major 3).
+    # This is the identical defect just fixed in do_close, in a function written in
+    # the same commit -- fixing the instance and not the class. The marker is the
+    # irreversible half here: it removes the issue from every future nightly pass,
+    # so writing it before a rationale that never landed produces a permanent,
+    # unexplained exclusion that reports HELD. Rationale first; no rationale, no
+    # marker, and the issue simply stays in the pool for tomorrow.
+    res = ls.graphql(COMMENT_M, {"input": {"issueId": fresh["id"], "body":
         f"Held by linear-alert-triage.py: not executable as written.\n\n{reason}\n\n"
         "This is NOT a close. Remove the kipi-alert-held marker to put it back in "
         "the nightly triage pool, or promote it by hand with a real DoR."}})
+    if not (((res or {}).get("commentCreate") or {}).get("success")):
+        raise RuntimeError(
+            f"{ident}: refusing to hold -- the rationale comment did not post, and a "
+            "hold marker with no recorded reason is a permanent silent exclusion")
+
+    body = f"{desc}\n\n<!-- {HELD_MARKER}: {time.strftime('%Y-%m-%d', time.gmtime())} -->\n"
+    upd = ls.graphql(UPDATE_M, {"id": ident, "input": {"description": body}})
+    if not (((upd or {}).get("issueUpdate") or {}).get("success")):
+        raise RuntimeError(f"{ident}: hold marker write failed")
     return f"{ident}: HELD"
 
 
