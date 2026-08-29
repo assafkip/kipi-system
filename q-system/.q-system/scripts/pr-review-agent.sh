@@ -418,8 +418,23 @@ review_worktree() {  # review_worktree <sha> -> prints path, or nothing
   # fails: it produces a confident verdict about a file that is not there.
   # Anchored here because this is the single place that pins tree-to-sha, so the
   # ref cannot drift from HEAD without this line drifting too.
-  git -C "$wt" update-ref "refs/remotes/pr/$PR" "$sha" >/dev/null 2>&1 || return 1
-  [ "$(git -C "$wt" rev-parse "refs/remotes/pr/$PR" 2>/dev/null)" = "$sha" ] || return 1
+  #
+  # AND IF IT CANNOT BE MADE CORRECT, DELETE IT (Codex major on PR #265, which is
+  # this change reviewing itself). The first cut just returned 1 here. But the
+  # caller wraps this in `|| true` and degrades to reviewing the live tree, so a
+  # swallowed failure left the tree re-detached, the ref stale, and the review
+  # running anyway -- the exact state this function exists to prevent, reached
+  # through its own error path.
+  #
+  # Deleting fails CLOSED: `git show pr/<N>:<file>` then errors on a missing ref,
+  # which is answerable. Leaving it fails OPEN: the same command silently returns
+  # round-1 content and the reviewer never knows it read the wrong file. No answer
+  # beats a confident wrong one.
+  if ! git -C "$wt" update-ref "refs/remotes/pr/$PR" "$sha" >/dev/null 2>&1 ||
+     [ "$(git -C "$wt" rev-parse "refs/remotes/pr/$PR" 2>/dev/null)" != "$sha" ]; then
+    git -C "$wt" update-ref -d "refs/remotes/pr/$PR" >/dev/null 2>&1 || true
+    return 1
+  fi
   printf '%s' "$wt"
 }
 

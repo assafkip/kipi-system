@@ -68,6 +68,46 @@ SEEN="$(git -C "$WT" show refs/remotes/pr/99:f.txt 2>/dev/null)"
 [ "$SEEN" = "round2" ] && ok "reading the PR through pr/<N> sees round-2 content" \
                        || bad "reading the PR through pr/<N> sees stale content (got '$SEEN')"
 
+# WHEN THE REF CANNOT BE MADE CORRECT, IT MUST NOT SURVIVE STALE.
+# (Codex major on PR #265, which is this change reviewing itself.) The caller
+# wraps review_worktree in `|| true` and degrades to the live tree, so simply
+# returning 1 left the ref stale and the review running anyway -- the exact
+# state this function exists to prevent, reached through its own error path.
+#
+# Failure is injected with a `git` shim rather than by breaking the repo on
+# disk: a read-only refs dir would also break the DELETE, so the test would pass
+# while proving nothing. The shim fails update-ref and leaves `update-ref -d`
+# working, which is precisely the split the fix depends on.
+WT2="$TMP/wt2"
+git -C "$REPO" worktree add --detach "$WT2" "$SHA1" >/dev/null 2>&1
+git -C "$WT2" update-ref refs/remotes/pr/98 "$SHA1"
+
+git() {
+  if [ "${3:-}" = "update-ref" ] && [ "${4:-}" != "-d" ]; then return 1; fi
+  command git "$@"
+}
+PR=98
+review_tree_path() { echo "$WT2"; }
+review_worktree "$SHA2" >/dev/null 2>&1
+RC=$?
+unset -f git
+
+[ "$RC" -ne 0 ] && ok "a failed ref update returns nonzero" \
+                || bad "a failed ref update returns nonzero (got $RC)"
+
+# THE POINT: gone, not stale.
+if command git -C "$WT2" rev-parse refs/remotes/pr/98 >/dev/null 2>&1; then
+  LEFT="$(command git -C "$WT2" rev-parse --short=8 refs/remotes/pr/98)"
+  bad "a ref that could not be updated is deleted, not left stale (still at $LEFT)"
+else
+  ok "a ref that could not be updated is deleted, not left stale"
+fi
+
+# And what a reproducer would get: an error, never round-1 content.
+OUT="$(command git -C "$WT2" show refs/remotes/pr/98:f.txt 2>/dev/null)"
+[ "$OUT" != "round1" ] && ok "a reproducer cannot read stale content through the dead ref" \
+                       || bad "a reproducer still reads stale content (got '$OUT')"
+
 echo
 if [ "$FAIL" -eq 0 ]; then echo "PASS: $PASS checks green"; exit 0; fi
 echo "FAILED: $FAIL"; exit 1
