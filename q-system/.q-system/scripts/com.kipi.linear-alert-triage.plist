@@ -20,6 +20,14 @@
      was about to be deleted. Every other kipi job has this same property, and
      ASK-1130 owns the fix.
 
+     FLEET-WIDE ON PURPOSE (codex round 5, major 2). Pinning this to one project
+     left every other project's alerts outside the only scheduled consumer:
+     measured 2026-08-29, 151 open alert tickets of which just 55 were
+     kipi-system, so a single-project pass covered about a third of the bucket
+     and the rest stayed exactly as inert as before this job existed. The run
+     refuses any issue with no project set, so widening the scope cannot create
+     the reachable-by-nobody bucket ASK-839 measured.
+
      Runs at 02:30, half an hour AHEAD of com.kipi.linear-dor at 03:00, on purpose.
      A promoted ticket carries a real DoR, so the drafter then correctly skips it
      rather than spending one of its 8 nightly slots rewriting one. -->
@@ -29,7 +37,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string><string>-lc</string>
-    <string>cd __KIPI_REPO__ &amp;&amp; ./kipi alert-triage --project kipi-system --limit 5 --apply</string>
+    <string>cd __KIPI_REPO__ &amp;&amp; ./kipi alert-triage --limit 8 --apply</string>
   </array>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>30</integer></dict>
   <key>RunAtLoad</key><false/>

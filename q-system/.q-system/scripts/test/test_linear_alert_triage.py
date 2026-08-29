@@ -179,7 +179,8 @@ class TestCloseIsNeverSilent(unittest.TestCase):
         f = FakeLinear(comment_ok=True)
         out = triage.do_close(f, {"id": "issue-id", "identifier": "ASK-9"},
                               "duplicate noise", True)
-        self.assertIn("CLOSED", out)
+        self.assertIn("CLOSED", out.line)
+        self.assertTrue(out.wrote)
         self.assertTrue(f.sent("issueUpdate"))
 
 
@@ -288,13 +289,17 @@ class TestHoldIsNeverSilentOrStale(unittest.TestCase):
     def test_hold_skips_an_issue_promoted_while_the_model_ran(self):
         promoted = triage.promote_body(ALERT_DESC, DOR, "fp", "")
         f = self._fake(promoted)
-        self.assertIn("SKIPPED", triage.do_hold(f, {"identifier": "ASK-1"}, "x", True))
+        res = triage.do_hold(f, {"identifier": "ASK-1"}, "x", True)
+        self.assertIn("SKIPPED", res.line)
+        self.assertFalse(res.wrote, "a skip was reported as a write")
         self.assertEqual(f.updates(), [])
 
     def test_hold_still_works_on_a_real_alert(self):
         """Negative control: no guard may block the good path."""
         f = self._fake(ALERT_DESC)
-        self.assertIn("HELD", triage.do_hold(f, {"identifier": "ASK-1"}, "why", True))
+        res = triage.do_hold(f, {"identifier": "ASK-1"}, "why", True)
+        self.assertIn("HELD", res.line)
+        self.assertTrue(res.wrote)
 
     def test_held_ness_is_read_from_labels_only(self):
         self.assertTrue(triage.is_held(as_issue(ALERT_DESC, labels=("triage:held",))))
@@ -392,6 +397,70 @@ class TestPromotedIssuesAreActuallySelectable(unittest.TestCase):
         body = triage.promote_body(ALERT_DESC, "### Definition of Ready\n\n- x",
                                    "fp", "")
         self.assertEqual(body.count("Definition of Ready"), 1)
+
+
+class TestNothingWrittenIsNotAQuietNight(unittest.TestCase):
+    """codex round 5. A refuse path counted as a success made a fully-skipped
+    batch exit 0, the same silent-success class as the total-model-failure fix one
+    round earlier. Fixed at the class: the write status is now typed data."""
+
+    def _run(self, desc, n=2, project="kipi-system", fresh=None):
+        """`desc` is what SELECTION sees; `fresh` is what the re-read returns.
+        They differ exactly when a rival promotion lands during the model call,
+        which is the only way every write legitimately refuses."""
+        fresh = desc if fresh is None else fresh
+        issues = [dict(as_issue(desc), identifier=f"ASK-{i}", id=f"u{i}",
+                       createdAt="2026-01-01", title="t",
+                       project={"name": project} if project else None)
+                  for i in range(n)]
+        class L:
+            def graphql(s, q, v):
+                if "issueLabels" in q:
+                    return {"issueLabels": {"nodes": [{"id": "h", "name": "triage:held"}]}}
+                if "issue(" in q:
+                    return {"issue": {"id": "u", "identifier": "ASK-0",
+                                      "description": fresh, "labels": {"nodes": []}}}
+                if "commentCreate" in q:
+                    return {"commentCreate": {"success": True}}
+                if "issueUpdate" in q:
+                    return {"issueUpdate": {"success": True, "issue": {"identifier": "ASK-0"}}}
+                return {}
+        of, od = triage.fetch_open, triage.decide
+        triage.fetch_open = lambda ls, proj: issues
+        triage.decide = lambda i, timeout=300: ("HOLD", "not executable")
+        try:
+            return triage.run_triage(L(), None, 5, True)
+        finally:
+            triage.fetch_open, triage.decide = of, od
+
+    def test_a_batch_that_writes_nothing_exits_nonzero(self):
+        """Every issue is already promoted, so every do_hold refuses. Nothing is
+        written, and the old code called that a successful night."""
+        promoted = triage.promote_body(ALERT_DESC, DOR, "fp", "")
+        self.assertEqual(self._run(ALERT_DESC, fresh=promoted), 1,
+                         "a pass that wrote nothing reported success")
+
+    def test_a_batch_that_writes_exits_zero(self):
+        """Negative control."""
+        self.assertEqual(self._run(ALERT_DESC), 0)
+
+    def test_an_issue_with_no_project_is_never_promoted(self):
+        """ASK-839's measured harm: promoting an unroutable issue moves it from
+        'not ready' to 'ready and reachable by nobody'."""
+        self.assertEqual(self._run(ALERT_DESC, project=None), 0,
+                         "an empty pool is success, not an outage")
+
+
+class TestSchedulerCoversTheWholeFleet(unittest.TestCase):
+    def test_the_nightly_pass_is_not_pinned_to_one_project(self):
+        """codex round 5, major 2. 151 open alert tickets, 55 in kipi-system: a
+        single-project scheduler left two thirds of the bucket as inert as before."""
+        import plistlib
+        d = plistlib.loads((SCRIPTS / "com.kipi.linear-alert-triage.plist").read_bytes())
+        cmd = " ".join(d["ProgramArguments"])
+        self.assertNotIn("--project", cmd,
+                         "the scheduled pass is pinned to one project")
+        self.assertIn("--apply", cmd)
 
 
 if __name__ == "__main__":

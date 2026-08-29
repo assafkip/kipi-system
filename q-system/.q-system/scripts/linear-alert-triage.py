@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+from collections import namedtuple
 import subprocess
 import json
 import os
@@ -71,6 +72,19 @@ HERE = Path(__file__).resolve().parent
 ALERT_MARKER = "kipi-alert-fingerprint"
 PROMOTED_MARKER = "kipi-alert-promoted"
 HELD_LABEL = "triage:held"
+
+# WHETHER A WRITE HAPPENED IS DATA, NOT A SUBSTRING (codex round 5, major 1).
+#
+# do_promote and do_hold each have a legitimate refuse path (the issue is no
+# longer an alert, or it could not be re-read). Both returned a plain string, and
+# run_triage counted "the call did not raise" as success. So a batch that skipped
+# every issue reported "N promoted", exited 0, and told launchd-health-check the
+# night went fine while nothing was written. That is the SAME silent-success
+# defect fixed one round earlier for total model failure: I fixed the symptom
+# (model unreachable) and left the class (a non-write counted as a write).
+#
+# The status now travels WITH the line, so a caller cannot forget to ask.
+Outcome = namedtuple("Outcome", "wrote line")
 TRIAGE_LABEL = "needs-triage"
 OWNER_LABEL = "owner:sana"
 DOR_HEADING = "## Definition of Ready"
@@ -203,10 +217,10 @@ def do_promote(ls, issue: dict, dor: str, why: str, apply: bool) -> str:
     ident = issue["identifier"]
     fresh = reread(ls, ident) if apply else issue
     if fresh is None:
-        return f"{ident}: SKIPPED (could not re-read)"
+        return Outcome(False, f"{ident}: SKIPPED (could not re-read)")
     desc = fresh.get("description") or ""
     if not is_alert_ticket(desc):
-        return f"{ident}: SKIPPED (no alert marker; already promoted or never an alert)"
+        return Outcome(False, f"{ident}: SKIPPED (no alert marker; already promoted or never an alert)")
     fp = alert_fingerprint(desc)
     new = promote_body(desc, dor, fp, why)
     # ONE mutation for description + label drop. As two calls a failure between
@@ -214,18 +228,18 @@ def do_promote(ls, issue: dict, dor: str, why: str, apply: bool) -> str:
     # reads as triaged to a human and as untriaged to every filter.
     payload = {"description": new, "removedLabelIds": label_ids(fresh, TRIAGE_LABEL)}
     if not apply:
-        return (f"{ident}: WOULD PROMOTE (strip marker {fp[:12] or '-'}, "
-                f"drop {TRIAGE_LABEL}, +{len(dor)} chars of DoR)")
+        return Outcome(True, f"{ident}: WOULD PROMOTE (strip marker "
+                       f"{fp[:12] or '-'}, drop {TRIAGE_LABEL}, +{len(dor)} chars)")
     res = ls.graphql(UPDATE_M, {"id": ident, "input": payload})
     if not (((res or {}).get("issueUpdate") or {}).get("success")):
         raise RuntimeError(f"{ident}: issueUpdate.success=false")
-    return f"{ident}: PROMOTED"
+    return Outcome(True, f"{ident}: PROMOTED")
 
 
 def do_close(ls, issue: dict, reason: str, apply: bool) -> str:
     ident = issue["identifier"]
     if not apply:
-        return f"{ident}: WOULD CLOSE ({reason[:70]})"
+        return Outcome(True, f"{ident}: WOULD CLOSE ({reason[:70]})")
     # Comment FIRST, then close, and REFUSE TO CLOSE IF THE COMMENT DID NOT LAND.
     #
     # Ordering alone was not enough and that was a real defect (codex review of
@@ -250,7 +264,7 @@ def do_close(ls, issue: dict, reason: str, apply: bool) -> str:
     res = ls.graphql(UPDATE_M, {"id": ident, "input": {"stateId": done[0]["id"]}})
     if not (((res or {}).get("issueUpdate") or {}).get("success")):
         raise RuntimeError(f"{ident}: close failed")
-    return f"{ident}: CLOSED ({done[0]['name']})"
+    return Outcome(True, f"{ident}: CLOSED ({done[0]['name']})")
 
 
 # THE UNATTENDED LANE (codex review of PR #268, major 1).
@@ -398,10 +412,10 @@ def decide(issue: dict, timeout: int = 300) -> tuple[str, str] | None:
 def do_hold(ls, issue: dict, reason: str, apply: bool) -> str:
     ident = issue["identifier"]
     if not apply:
-        return f"{ident}: WOULD HOLD ({reason[:70]})"
+        return Outcome(True, f"{ident}: WOULD HOLD ({reason[:70]})")
     fresh = reread(ls, ident)
     if fresh is None:
-        return f"{ident}: SKIPPED (could not re-read)"
+        return Outcome(False, f"{ident}: SKIPPED (could not re-read)")
     desc = (fresh.get("description") or "").rstrip()
 
     # STILL AN ALERT? (codex review of PR #268 round 2, major 2.) do_promote has
@@ -412,7 +426,7 @@ def do_hold(ls, issue: dict, reason: str, apply: bool) -> str:
     # The guard belongs on BOTH write paths or it belongs on neither; one function
     # having it was the reason it looked correct.
     if not is_alert_ticket(desc):
-        return f"{ident}: SKIPPED (no longer an alert; promoted while this ran)"
+        return Outcome(False, f"{ident}: SKIPPED (no longer an alert; promoted while this ran)")
 
     # COMMENT FIRST, AND READ ITS RESULT, THEN THE MARKER (round 2, major 3).
     # This is the identical defect just fixed in do_close, in a function written in
@@ -435,16 +449,22 @@ def do_hold(ls, issue: dict, reason: str, apply: bool) -> str:
                                 "input": {"addedLabelIds": [held_label_id(ls)]}})
     if not (((upd or {}).get("issueUpdate") or {}).get("success")):
         raise RuntimeError(f"{ident}: hold label write failed")
-    return f"{ident}: HELD"
+    return Outcome(True, f"{ident}: HELD")
 
 
 def run_triage(ls, project: str | None, limit: int, apply: bool) -> int:
     """One bounded unattended pass. Returns a process exit code."""
+    # AN UNROUTABLE ISSUE IS NEVER PROMOTED. Same rule linear-dor-drafter.py
+    # applies: a project is how linear-worker.sh decides which checkout can serve
+    # an issue, so with none set in_this_repo() is false in every repo at once.
+    # Promoting one moves it from "not ready" to "ready and reachable by nobody",
+    # which is the UNREACHABLE bucket ASK-839 measured. The first state is honest.
     pool = [i for i in fetch_open(ls, project)
-            if is_alert_ticket(i.get("description")) and not is_held(i)]
+            if is_alert_ticket(i.get("description")) and not is_held(i)
+            and ((i.get("project") or {}).get("name") or "").strip()]
     pool.sort(key=lambda i: i.get("createdAt") or "")
     batch = pool[:limit]
-    promoted = held = failed = 0
+    wrote = failed = skipped = 0
     for issue in batch:
         d = decide(issue)
         if d is None:
@@ -455,15 +475,21 @@ def run_triage(ls, project: str | None, limit: int, apply: bool) -> int:
         verdict, body = d
         try:
             if verdict == "PROMOTE" and body:
-                print(do_promote(ls, issue, body, "Triaged unattended.", apply))
-                promoted += 1
+                out = do_promote(ls, issue, body, "Triaged unattended.", apply)
             else:
-                print(do_hold(ls, issue, body or "no reason given", apply))
-                held += 1
+                out = do_hold(ls, issue, body or "no reason given", apply)
+            print(out.line)
+            # .wrote, never "the call returned without raising". A refuse path is
+            # not a success, and counting it as one is what made a fully-skipped
+            # night report exit 0.
+            if out.wrote:
+                wrote += 1
+            else:
+                skipped += 1
         except Exception as exc:  # noqa: BLE001 - one bad issue must not stop the batch
             failed += 1
             print(f"  {issue['identifier']}: FAILED {str(exc)[:160]}", file=sys.stderr)
-    line = (f"triage pass: {promoted} promoted, {held} held, {failed} failed; "
+    line = (f"triage pass: {wrote} written, {skipped} skipped, {failed} failed; "
             f"{len(pool) - len(batch)} still queued"
             + (f" in {project}" if project else " fleet-wide"))
     print(line)
@@ -479,10 +505,10 @@ def run_triage(ls, project: str | None, limit: int, apply: bool) -> int:
     # So: partial failures stay exit 0 (one bad issue is not an outage), an empty
     # batch stays exit 0 (nothing to do is success), and a non-empty batch where
     # NOTHING succeeded exits 1 so the health check sees it.
-    if batch and not promoted and not held:
-        print(f"  every decision failed ({failed}/{len(batch)}); reporting as a "
-              "failed run so launchd-health-check does not read it as a quiet night",
-              file=sys.stderr)
+    if batch and not wrote:
+        print(f"  NOTHING WAS WRITTEN this pass ({failed} failed, {skipped} skipped "
+              f"of {len(batch)}); reporting a failed run so launchd-health-check "
+              "does not read it as a quiet night", file=sys.stderr)
         return 1
     return 0
 
@@ -567,8 +593,8 @@ def main() -> int:
                 out = do_promote(ls, issue, dor, a.why, a.apply)
             else:
                 out = do_close(ls, issue, a.reason, a.apply)
-            print(out)
-            done.append(out)
+            print(out.line)
+            done.append(out.line)
         except Exception as exc:  # noqa: BLE001 - one bad issue must not stop the batch
             print(f"{ident}: FAILED {str(exc)[:160]}", file=sys.stderr)
             rc = 1
