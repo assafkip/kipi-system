@@ -81,6 +81,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import random
 import re
 import shutil
 import subprocess
@@ -727,7 +728,17 @@ def sweep(root, args):
     if args.only:
         pat = re.compile(args.only)
         pop = [e for e in pop if pat.search(e["path"])]
-    if args.limit:
+    if args.sample:
+        # --limit takes the first N, which is alphabetical, so it measures
+        # whatever sorts early (every plugins/kipi-core/... path) and calls it
+        # a repo's number. A seeded sample is reproducible AND unbiased; the
+        # seed is printed so a surprising number can be re-run exactly.
+        rnd = random.Random(args.seed)
+        pop = rnd.sample(pop, min(args.sample, len(pop)))
+        pop.sort(key=lambda e: e["path"])
+        print(f"sampled {len(pop)} of the population (seed={args.seed})",
+              flush=True)
+    elif args.limit:
         pop = pop[:args.limit]
 
     results = []
@@ -1116,8 +1127,15 @@ def self_test():
         {"path": "q-system/.q-system/scripts/test_fixture_unrelated.py", "runner": "python3"},
     ]})
 
-    args = argparse.Namespace(only=None, limit=None,
-                              max_subjects=4, resume=False, verbose=False)
+    # Built from the REAL parser, never hand-listed. The hand-written
+    # Namespace that used to sit here was a second copy of the argument set,
+    # and it drifted the moment the parser gained --sample: the self-test --
+    # the one check that can tell a working harness from one that reports
+    # SURVIVED for everything -- died with AttributeError instead of running.
+    # A check carrying its own copy of the thing it checks cannot see that
+    # thing change. Defaults come from the parser or they are not defaults.
+    args = build_parser().parse_args([])
+    args.max_subjects = 4
     results = sweep(tmp, args)
     got = {r["test"].split("/")[-1]: r["status"] for r in results}
     expect = {
@@ -1165,7 +1183,7 @@ def dirty_tree(root):
     return [l for l in r.stdout.splitlines() if l.strip()]
 
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--subject",
                     help="probe every declared test that names this file, to "
@@ -1177,7 +1195,14 @@ def main():
     ap.add_argument("--self-test", action="store_true",
                     help="run the harness's own negative control and exit")
     ap.add_argument("--only", help="regex; restrict the population")
-    ap.add_argument("--limit", type=int, help="first N tests only")
+    ap.add_argument("--limit", type=int, help="first N tests only (alphabetical; "
+                                              "prefer --sample for a number you will quote)")
+    ap.add_argument("--sample", type=int,
+                    help="measure a seeded random sample of N tests. The mode "
+                         "for fleet sweeps: full x mutants is too slow to run "
+                         "everywhere, and the first-N alternative is biased.")
+    ap.add_argument("--seed", type=int, default=1729,
+                    help="sample seed, printed with the result so it re-runs exactly")
     ap.add_argument("--max-subjects", type=int, default=4)
     ap.add_argument("--resume", action="store_true",
                     help="reuse verdicts already in results.jsonl")
@@ -1195,7 +1220,11 @@ def main():
     ap.add_argument("--outdir",
                     help="where results.jsonl lands. Keeps a fleet sweep from "
                          "writing into the repo it is measuring.")
-    args = ap.parse_args()
+    return ap
+
+
+def main():
+    args = build_parser().parse_args()
 
     _install_restore_handlers()
     if args.self_test:
