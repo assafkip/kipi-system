@@ -102,6 +102,8 @@ HUMAN_ACTOR = re.compile(
     r"\b(founder|assaf|human|humans|a person|by hand|manually|someone)\b", re.I)
 # finding-15: identity is a stable marker. These shapes are line numbers.
 LINE_NUMBERISH = re.compile(r"^\s*:?\d+\s*$|\.sh:\d+")
+# `uncovered` must point at the ledger, not just sound sorry about itself.
+SPILLOVER_REF = re.compile(r"\bsp-[0-9a-f]{8}\b")
 
 # REVERSED 2026-08-03 BY FOUNDER DIRECTIVE ("nothing should be on me"), ASK-353.
 # owner:assaf was a DESIGNED founder queue in the archived PRD and is now an
@@ -594,6 +596,36 @@ def main():
                               "nothing ran (finding-14)")
             else:
                 check_liveness(row["liveness_check"], errors, rid)
+            # THE PROSE AND THE INSTRUMENTS MUST BE ABOUT THE SAME MACHINE
+            # (codex PR #215 round 4, major). converge-verdict-terminal declared
+            # consumer: "GitHub" while its liveness_check probed
+            # com.kipi.dispatch and its reentry pointed inside converge.sh, the
+            # driver that had just exited. Every field validated; not one of them
+            # was about GitHub. The row read as certified and certified nothing.
+            #
+            # MEASURED BEFORE IT WAS WRITTEN, not assumed: run against the live
+            # registry, 20 of the 21 consumer rows already satisfied this and the
+            # single miss was that row. So this codifies the shape the registry
+            # was already keeping, and takes an edit to this file -- visible in a
+            # diff -- to loosen.
+            #
+            # Deliberately a SUBSTRING test on the basename or the label, not a
+            # prose parse: the claim being checked is only that the sentence
+            # names what is being probed. It cannot tell a right name in a wrong
+            # sentence, and does not pretend to.
+            reent = row.get("reentry") or {}
+            live = row.get("liveness_check") or {}
+            base = os.path.basename(reent.get("path") or "")
+            label = live.get("label") or ""
+            ctext = row["consumer"] if isinstance(row.get("consumer"), str) else ""
+            if (base or label) and not ((base and base in ctext)
+                                        or (label and label in ctext)):
+                errors.append(
+                    f"{rid}: consumer names neither the job it probes ({label!r}) nor "
+                    f"the file its reentry marker lives in ({base!r}). A row whose "
+                    "prose is about one machine and whose evidence is about another "
+                    "is certified by instruments that cannot see the thing it claims "
+                    "-- name the actual consumer, or say terminal:true.")
             # ASK-353: liveness proves the job RAN, never that it re-enters HERE.
             if not row.get("reentry"):
                 errors.append(f"{rid}: a liveness_check without a `reentry` pointer is "
@@ -607,6 +639,34 @@ def main():
                 errors.append(f"{rid}: consumer_test {ct} is not in "
                               "capability-manifest.json expected_tests, so nothing "
                               "runs it -- the consumer is never proven to read this state")
+        # `uncovered` IS AN ADMISSION AND IT MUST NOT SIT INSIDE A CERTIFICATION
+        # (codex PR #215 round 4, major). converge-verdict-terminal carried a
+        # consumer, a liveness_check and a reentry pointer -- and an `uncovered`
+        # note saying the stuck-green population has no consumer at all. NOTHING
+        # READ THAT KEY. The row passed as covered while its own text said the
+        # opposite, which is a worse state than an uncovered row: the gate now
+        # reports green ABOUT the gap. A row either certifies that a machine
+        # continues from here, or it does not.
+        #
+        # And an admission with no address is the pile, re-read
+        # (no-orphan-findings.md), so it must carry its spillover id: the ledger
+        # is what keeps `gates run` red until someone builds the consumer.
+        unc = row.get("uncovered")
+        if unc is not None:
+            if not isinstance(unc, str) or len(unc.strip()) < 40:
+                errors.append(f"{rid}: `uncovered` must be a written admission of what "
+                              "this state does not cover, not a flag")
+            elif not SPILLOVER_REF.search(unc):
+                errors.append(f"{rid}: `uncovered` names no spillover id (sp-xxxxxxxx). "
+                              "An admission nothing tracks is prose that decays into "
+                              "the pile; the ledger is what keeps it red.")
+            if has_consumer:
+                errors.append(
+                    f"{rid}: declares a consumer AND an `uncovered` admission. Those "
+                    "contradict: the row certifies that a machine continues from here "
+                    "while saying part of this population has nobody. Split the exit, "
+                    "or drop the consumer and say terminal:true with the admission.")
+
         if is_terminal:
             if len((row.get("rationale") or "").strip()) < 40:
                 errors.append(f"{rid}: terminal:true needs a written rationale. An honest "
@@ -1065,6 +1125,54 @@ state("drift-cap")["reentry"] = {"path": "q-system/.q-system/scripts/no-such-con
 '
 expect_red "a reentry pointer at a file that does not exist is refused" \
   "$FIX/missingfile.json" "which does not exist"
+
+# --- 14c. REPRODUCER (codex PR #215 round 4, major): certified by the wrong ---
+#          instrument.
+# converge-verdict-terminal read consumer: "GitHub", liveness_check on
+# com.kipi.dispatch, reentry inside converge.sh -- the driver that had just
+# exited. Every field resolved and not one was about GitHub, so the row was
+# certified by probing a job it did not name. That is the fiction check reached
+# from the inside: the pointer exists, it is simply pointed somewhere else.
+#
+# `drift-cap` is a REAL consumer row and the mutation touches only the prose, so
+# a green here would mean the prose is never read against the evidence at all.
+mkfixture "$FIX/wrongmachine.json" '
+state("drift-cap")["consumer"] = "GitHub -- it lands the PR once every check is green"
+'
+expect_red "a consumer naming neither the probed job nor the reentry file is refused" \
+  "$FIX/wrongmachine.json" "certified by instruments that cannot see"
+
+# NEGATIVE SELF-TEST for 14c. The rule must fire on the MISMATCH, not on any
+# rewrite of the sentence -- a check that reddens whenever the prose changes is a
+# spell-checker, and it would be switched off the first time someone reworded a
+# consumer. Naming the probed job is enough, even with every other word replaced.
+mkfixture "$FIX/rightmachine.json" '
+state("drift-cap")["consumer"] = "com.kipi.dispatch re-offers it on the next cycle"
+'
+if python3 "$WORK/validate.py" "$FIX/rightmachine.json" "$ROOT" "$MAN" >/dev/null 2>&1; then
+  ok "negative self-test: a reworded consumer that still names its probed job passes"
+else
+  bad "negative self-test: a reworded consumer that still names its probed job passes -- the rule is reddening on prose, not on the mismatch"
+fi
+
+# --- 14d. REPRODUCER (codex PR #215 round 4, major): an admission inside a ----
+#          certification.
+# The row carried `uncovered` -- "the stuck green state has NO consumer today" --
+# next to a consumer, a liveness_check and a reentry pointer. Nothing read that
+# key, so the gate reported green ABOUT the gap. Worse than an uncovered row.
+mkfixture "$FIX/coveredbutnot.json" '
+state("drift-cap")["uncovered"] = "the armed-and-green population has no consumer today; tracked open at sp-9b01682d"
+'
+expect_red "a row that declares a consumer AND an uncovered admission is refused" \
+  "$FIX/coveredbutnot.json" "declares a consumer AND an .uncovered. admission"
+
+# An admission with no address is the pile, re-read (no-orphan-findings.md).
+mkfixture "$FIX/untrackedadmission.json" '
+r = state("converge-verdict-terminal")
+r["uncovered"] = "this population has no consumer today and nobody is tracking that fact anywhere at all"
+'
+expect_red "an uncovered admission naming no spillover id is refused" \
+  "$FIX/untrackedadmission.json" "names no spillover id"
 
 # --- 14b. REPRODUCER (codex PR #215, major): coverage may not narrow ---------
 # The registry used to declare its own scope, so the way to make two of the three

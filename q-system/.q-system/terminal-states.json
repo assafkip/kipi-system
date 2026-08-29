@@ -420,19 +420,14 @@
       "marker": "DONE exit-1: PR #$PR verdict",
       "sites": 1,
       "what": "exit 1. The PR reached a terminal verdict. The receipt is written, auto-merge state is reported, and the run is over.",
-      "consumer": "GitHub -- once auto-merge is armed and every required check is green, GitHub performs the merge. That is the machine that owns this exit, and it is the whole of the claim: the redrives are NOT named here, because neither selects this population.",
-      "liveness_check": {
-        "kind": "launchd",
-        "label": "com.kipi.dispatch",
-        "run_evidence": "~/.config/kipi/dispatch.log",
-        "max_age_s": 3600
-      },
-      "reentry": {
+      "terminal": true,
+      "rationale": "REFUSAL ON EVIDENCE, and the refusal is about the INSTRUMENTS. This row used to read consumer: GitHub, with a launchd liveness_check on com.kipi.dispatch and a reentry marker inside converge.sh -- the driver that just exited. Neither field could be about GitHub: liveness_check has one kind, launchd, which reads a local plist and a local run-log, and reentry must name a file in this repo containing the selector. GitHub's merge daemon has neither, so the row was certified by probing a job it did not name and by pointing at code inside the exit itself. That is the validator-satisfying fiction this registry exists to refuse, reached from the inside (codex PR #215 round 4, major). What the exit actually reports is four sub-states, and three of them -- unarmed, never-recorded, and armed-with-no-receipt -- say Needs a human in their own page text. A human is not an available actor. The fourth hands off to GitHub, which does land it, and which no instrument here can certify; saying so is the honest answer, not naming it a consumer. The issue is DONE either way, which is why the class stays done: no kipi driver has more to do.",
+      "evidence": {
         "path": "q-system/.q-system/scripts/converge.sh",
-        "marker": "automerge_from_record",
-        "why": "The code that re-reads THIS state -- the stored auto-merge answer for the PR -- whenever converge next runs against it, and reports an UNARMED PR rather than exiting quiet. It replaces a pointer at the dispatcher's REVIEW_REDRIVE wiring, which proved the redrives are wired and NOT that either selects a green approved PR. A marker can certify wiring and certify nothing about this population, which is the gap `reentry` exists to close, one level up. Narrow on purpose: this does not claim the dispatcher re-launches converge for an already-open green PR. It launches converge per ISSUE and pr-review-agent on a reviewer redrive (kipi-dispatch.sh:321), so that would be a second unchecked claim of the exact kind being removed here."
+        "marker": "it will sit green. Needs a human",
+        "why": "The exit's own page text for the unarmed sub-state, which is a majority of what this exit reports and asks for a person by name. Code that says out loud it has no machine consumer."
       },
-      "uncovered": "A PR that is approved, green and armed and still does not land has NO consumer today. ci-redrive.py selects FAILED conclusions and review-redrive.py selects an absent, drifted or refused verdict; an armed green PR has neither. review-redrive.py's own header routes this case to ASK-310's pr-land-if-green.sh, which does not exist in this tree and is wired into neither driver. Recorded here instead of dressed up as covered; tracked in the spillover ledger against ASK-353."
+      "uncovered": "A PR that is approved, green and armed and still does not land has NO consumer today, and neither does the unarmed one this exit reports. ci-redrive.py selects FAILED conclusions and review-redrive.py selects an absent, drifted or refused verdict; a green approved PR has neither. review-redrive.py's own header routes this case to ASK-310's pr-land-if-green.sh, which does not exist in this tree and is wired into neither driver. Tracked open at sp-9b01682d."
     },
     {
       "id": "converge-review-no-verdict",
