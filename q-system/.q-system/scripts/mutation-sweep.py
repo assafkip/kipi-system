@@ -8,8 +8,9 @@ reported perfect survival because a module-level ImportError killed every case,
 one because it ran no tests at all. So this harness proves its own work rather
 than asserting it (see SELF-GUARDS below).
 
-The population is q-system/.q-system/capability-manifest.json's expected_tests:
-the fleet's own declaration of which tests are supposed to exist and run.
+The population is the fleet's own declaration of which tests are supposed to
+exist and run: one fragment per declaration under q-system/.q-system/capability/,
+assembled through capability_manifest.load().
 
 ## The two-stage probe
 
@@ -130,11 +131,58 @@ def load_runner(root):
 
 # ------------------------------------------------------------ test population
 
-def load_population(root, manifest_path=None):
-    path = manifest_path or (root / "q-system/.q-system/capability-manifest.json")
-    data = json.loads(Path(path).read_text())
+def load_manifest_module(root):
+    """Import capability_manifest.py from a COPY, same reason as the runner:
+    it is itself a mutable subject, and a sweep must never assemble its
+    population with its own mutant."""
+    src = root / "q-system/.q-system/scripts/capability_manifest.py"
+    if not src.is_file():
+        raise SystemExit(
+            "mutation-sweep: capability_manifest.py not found at %s. The "
+            "declared population moved to a fragment directory (#263); this "
+            "checkout predates it or the loader was removed." % src)
+    tmpdir = tempfile.mkdtemp(prefix="msweep-manifest-")
+    copy = Path(tmpdir) / "capability_manifest_copy.py"
+    shutil.copy2(src, copy)
+    spec = importlib.util.spec_from_file_location("capability_manifest_copy", copy)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def load_population(root):
+    """Assemble the declared population through capability_manifest.load().
+
+    The population is no longer one JSON array: it is one file per declaration
+    under q-system/.q-system/capability/, assembled in memory (#263, which
+    killed the manifest conflict class). Reading the old monolith here would
+    read a DELETED file.
+
+    load() never raises -- it returns None and appends to `errors`, because its
+    other callers treat an unreadable manifest as "no data". That contract is
+    exactly wrong for this tool: a sweep that quietly saw zero declared tests
+    would run nothing, find nothing, and report perfect survival. That is
+    instance 17 of the taxonomy this sweep exists to detect, reproduced inside
+    the detector. So every not-a-population outcome is fatal here, loudly.
+    """
+    cm = load_manifest_module(root)
+    errors = []
+    data = cm.load(root, errors)
+    if data is None:
+        raise SystemExit("mutation-sweep: could not assemble the manifest:\n  "
+                         + "\n  ".join(errors or ["load() returned None"]))
+    if errors:
+        raise SystemExit("mutation-sweep: manifest problems, refusing to "
+                         "measure against a partial population:\n  "
+                         + "\n  ".join(errors))
+    declared = data.get("expected_tests") or []
+    if not declared:
+        raise SystemExit(
+            "mutation-sweep: the declared population is EMPTY. Refusing to "
+            "report survival over zero tests -- a harness that runs nothing "
+            "reports perfect survival and looks identical to a healthy one.")
     out = []
-    for entry in data.get("expected_tests", []):
+    for entry in declared:
         p = entry.get("path", "")
         if entry.get("quarantine"):
             continue
@@ -145,6 +193,11 @@ def load_population(root, manifest_path=None):
             "runner": entry.get("runner", "python3"),
             "timeout_s": entry.get("timeout_s", DEFAULT_TIMEOUT_S),
         })
+    if not out:
+        raise SystemExit(
+            "mutation-sweep: %d test(s) declared but NONE present on disk. "
+            "Refusing to report survival over an empty population."
+            % len(declared))
     return out
 
 
@@ -566,7 +619,7 @@ def probe_pair(sw, entry, subj_rel, baseline, score):
 def sweep(root, args):
     runner = load_runner(root)
     sw = Sweep(root, runner, args.verbose)
-    pop = load_population(root, args.manifest)
+    pop = load_population(root)
     if args.only:
         pat = re.compile(args.only)
         pop = [e for e in pop if pat.search(e["path"])]
@@ -940,20 +993,24 @@ def self_test():
     # is pointed at, so the fixture repo needs the real one.
     here = Path(__file__).resolve().parent
     shutil.copy2(here / "capability-gate.py", scripts / "capability-gate.py")
+    shutil.copy2(here / "capability_manifest.py", scripts / "capability_manifest.py")
     (scripts / "fixture_gate.py").write_text(SELF_SUBJECT)
     (scripts / "test_fixture_gate.py").write_text(SELF_TEST_SIGHTED)
     (scripts / "test_fixture_blind.py").write_text(SELF_TEST_BLIND)
     (scripts / "test_fixture_shallow.py").write_text(SELF_TEST_SHALLOW)
     (scripts / "test_fixture_unrelated.py").write_text(SELF_TEST_UNRELATED)
-    manifest = tmp / "manifest.json"
-    manifest.write_text(json.dumps({"schema_version": 1, "expected_tests": [
+    # Fragments via the real explode(), so the fixture exercises the same
+    # assembly path production uses. A fixture that hand-wrote one JSON file
+    # would have kept passing through #263 while the sweep read a deleted file.
+    cm = load_manifest_module(tmp)
+    cm.explode(tmp, {"schema_version": 1, "expected_tests": [
         {"path": "q-system/.q-system/scripts/test_fixture_gate.py", "runner": "python3"},
         {"path": "q-system/.q-system/scripts/test_fixture_blind.py", "runner": "python3"},
         {"path": "q-system/.q-system/scripts/test_fixture_shallow.py", "runner": "python3"},
         {"path": "q-system/.q-system/scripts/test_fixture_unrelated.py", "runner": "python3"},
-    ]}))
+    ]})
 
-    args = argparse.Namespace(manifest=manifest, only=None, limit=None,
+    args = argparse.Namespace(only=None, limit=None,
                               max_subjects=4, resume=False, verbose=False)
     results = sweep(tmp, args)
     got = {r["test"].split("/")[-1]: r["status"] for r in results}
@@ -1019,7 +1076,6 @@ def main():
     ap.add_argument("--resume", action="store_true",
                     help="reuse verdicts already in results.jsonl")
     ap.add_argument("--force-dirty", action="store_true")
-    ap.add_argument("--manifest")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 

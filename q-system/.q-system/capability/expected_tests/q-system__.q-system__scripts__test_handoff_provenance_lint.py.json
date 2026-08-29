@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test_handoff_provenance_lint.py",
+ "runner": "python3"
+}

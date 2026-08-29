@@ -1,0 +1,4 @@
+{
+ "prefix": "q-system/hooks/test/",
+ "reason": "hook-local test dir outside the scripts scan root; one declared entry, kept beside the hook it exercises (sp-c3d0f4d3)."
+}
