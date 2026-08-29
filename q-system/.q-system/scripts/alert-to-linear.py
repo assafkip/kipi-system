@@ -333,11 +333,33 @@ def _write_state(fp: str, data: dict) -> None:
 
 
 # HOW LONG A SECOND CALLER WAITS FOR THE FIRST ONE'S TICKET.
-# Sized against the work the lock covers: one issueCreate plus the team/label/
-# project lookups around it, each capped by linear-sync.py at 30s HTTP. 25s is
-# under slack-notify.sh's own `timeout 20` for the common path and still leaves
-# room when this file is invoked directly by a job with no outer cap.
-LOCK_WAIT_SECONDS = float(os.environ.get("KIPI_ALERT_LOCK_WAIT_SECONDS", "25"))
+#
+# THIS NUMBER WAS 25 AND THAT WAS THE BUG (PR #198 review round 5, major, and
+# the finding is right). The comment sized it "against the work the lock covers"
+# and then picked a value SHORTER than one HTTP call's own cap. A holder that is
+# slow rather than stuck outlives the wait, the waiter gives up, and the
+# duplicate this whole mechanism removes comes straight back. Codex reproduced
+# it: two threads, wait scaled below the request duration, creates=2.
+#
+# So the wait is now DERIVED, not picked. linear-sync.py:374 caps each HTTP call
+# at 30s, and the locked section makes at most six of them -- issue-state, team,
+# labels, label-create, label-refetch, projects, issueCreate -- so a holder doing
+# genuinely slow work can legitimately take minutes. Anyone adding a query inside
+# _file_alert_serialized should raise the call count here in the same change.
+#
+# Sizing it correctly is only half the fix, and deliberately the weaker half. The
+# structural half is in file_alert: a caller that does NOT hold the lock never
+# creates. That is what makes the duplicate impossible for ANY value of this
+# number, instead of unlikely for a well-chosen one.
+#
+# A long wait cannot hang a Stop hook: slack-notify.sh caps the whole call at
+# `timeout 20` and reports a failed send, which is the honest answer and still
+# not a duplicate. This value governs direct callers with no outer cap.
+_LINEAR_HTTP_TIMEOUT = 30      # linear-sync.py:374, urlopen(..., timeout=30)
+_MAX_HTTP_CALLS_LOCKED = 6     # the queries _file_alert_serialized can make
+LOCK_WAIT_SECONDS = float(os.environ.get(
+    "KIPI_ALERT_LOCK_WAIT_SECONDS",
+    str(_LINEAR_HTTP_TIMEOUT * _MAX_HTTP_CALLS_LOCKED)))
 
 
 @contextlib.contextmanager
@@ -373,11 +395,16 @@ def _fingerprint_lock(fp: str, wait: float | None = None):
     proceed in parallel, so a global lock fails a test rather than shipping
     quietly.
 
-    THE FALLBACK IS DELIBERATE AND STATED. If the lock cannot be taken -- an
-    unwritable cache dir, or a holder that outlives the wait -- this yields False
-    and the caller proceeds anyway. A duplicate ticket is a nuisance; a swallowed
-    alert is the exact failure mode this whole path exists to prevent, and the
-    caller says so in the line it returns.
+    A FAILED ACQUIRE YIELDS False AND THE CALLER MUST NOT CREATE. The first cut
+    of this yielded False and let the caller file anyway, reasoning that a
+    swallowed alert is worse than a duplicate one. The reasoning holds; the
+    conclusion did not. It made "no duplicates" contingent on LOCK_WAIT_SECONDS
+    being longer than the slowest holder, and the value shipped was shorter than
+    a single HTTP timeout (PR #198 review round 5, major, reproduced by the
+    reviewer with creates=2). _file_alert_serialized's may_create gate is what
+    replaced it: unlocked callers may COUNT an existing ticket, never create one,
+    and an unlocked caller with nothing to count returns EXIT_FAILED with the
+    message intact rather than silently dropping it.
 
     The lock file is never unlinked. Unlinking one is its own race: a process can
     hold the lock on an inode another process has already replaced, and then both
@@ -870,21 +897,28 @@ def file_alert(message: str, now: float | None = None) -> tuple[int, str]:
         return EXIT_NO_KEY, f"no Linear key configured ({exc}); NOT filed: {message}"
 
     with _fingerprint_lock(fp) as held:
-        code, line = _file_alert_serialized(message, fp, ln, now)
-    if not held:
-        # Never silent about it. A duplicate ticket nobody can explain is how a
-        # queue stops being trusted, so the reason lands in the job log that
-        # already prints this line.
-        line += " [WITHOUT the dedupe lock -- a concurrent duplicate was possible]"
-    return code, line
+        return _file_alert_serialized(message, fp, ln, now, may_create=held)
 
 
-def _file_alert_serialized(message: str, fp: str, ln, now: float) -> tuple[int, str]:
+def _file_alert_serialized(message: str, fp: str, ln, now: float,
+                           may_create: bool = True) -> tuple[int, str]:
     """Read state -> decide -> create -> write state. Under the fingerprint lock.
 
     Split out rather than indented in place so the lock's extent is the function
     boundary. An `if`-shaped critical section is the kind that grows a new early
     `return` above the write and silently stops being covered.
+
+    may_create IS THE STRUCTURAL HALF OF THE DEDUPE (PR #198 review round 5).
+    The first cut of this fix proceeded normally when the lock could not be
+    taken, on the reasoning that a swallowed alert is worse than a duplicate one.
+    That reasoning is still true and the conclusion was still wrong: it made the
+    duplicate depend on LOCK_WAIT_SECONDS being generous enough, and it was not.
+    Creation is now gated on actually holding the lock, so no value of that
+    number can bring the duplicate back.
+
+    The counting path stays open without the lock, because it creates nothing.
+    Two callers both counting overstates a repeat counter; that is a wrong
+    number, and a wrong number is not a permanent object a human has to close.
     """
     prior = _read_state(fp)
 
@@ -919,6 +953,24 @@ def _file_alert_serialized(message: str, fp: str, ln, now: float) -> tuple[int, 
         # Closed or gone: Sana dealt with it and it came back. That is a NEW
         # ticket on purpose -- reopening a closed one hides the recurrence,
         # which is the signal worth having.
+
+    # THE ONE DOOR TO A PERMANENT LINEAR OBJECT, and it is barred to anyone not
+    # holding this fingerprint's lock. Everything above this line either counts
+    # an existing ticket or returns; everything below creates one. Placed here
+    # rather than at the top of the function on purpose: the counting path is
+    # safe unlocked and refusing it would drop occurrences for no gain.
+    #
+    # NOT SILENT. EXIT_FAILED with the message intact is slack-notify.sh's
+    # documented "attempted and FAILED", which its callers already handle -- the
+    # heartbeat's halt branch turns exactly this into a non-zero exit, so the
+    # condition still reaches Linear through the launchd detector. A repeat that
+    # is reported as unfiled costs one generic ticket that dedupes; a duplicate
+    # create costs a permanent one that does not.
+    if not may_create:
+        return EXIT_FAILED, (
+            f"another writer holds this alert's lock and did not publish a "
+            f"ticket within {LOCK_WAIT_SECONDS:g}s; refusing to create a "
+            f"duplicate. NOT filed: {message}")
 
     # Bound BEFORE the try, never inside it. A name first assigned inside a
     # try/except is only bound on the paths that got that far, and the read of

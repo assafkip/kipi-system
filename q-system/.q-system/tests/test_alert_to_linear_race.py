@@ -189,8 +189,8 @@ def test_concurrent_writers_open_exactly_one_ticket(tmp_path):
     # which is the count that makes a still-firing alert visible as still-firing.
     repeats = [r for r in results if "repeat #" in r["line"]]
     assert len(repeats) == 3, f"expected 3 counted repeats, got {results}"
-    assert not any("WITHOUT the dedupe lock" in r["line"] for r in results), \
-        "a writer fell back to the unlocked path in an uncontended fixture"
+    assert not any("refusing to create a duplicate" in r["line"] for r in results), \
+        "a writer timed out on the lock in an uncontended fixture"
 
 
 def test_two_different_alerts_are_not_serialized_behind_each_other(tmp_path):
@@ -212,24 +212,13 @@ def test_two_different_alerts_are_not_serialized_behind_each_other(tmp_path):
         "they are sharing one lock instead of one per fingerprint")
 
 
-def test_a_lock_that_cannot_be_taken_still_files_and_says_so(tmp_path, monkeypatch):
-    """A swallowed alert is worse than a duplicate one, so the fallback files.
-
-    Pinned because the fallback is the one path where a duplicate is still
-    possible; if it ever became a silent drop instead, this suite would be the
-    only thing that noticed.
-    """
+def _module_with_fake(monkeypatch, state_dir, created, name):
+    """A fresh module copy with Linear stubbed and its state dir pointed at tmp."""
     import importlib.util
-    spec = importlib.util.spec_from_file_location("alert_fallback", ALERT)
+    spec = importlib.util.spec_from_file_location(name, ALERT)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-
-    # An unwritable state dir: makedirs and open both fail, so no lock is held.
-    blocked = tmp_path / "blocked"
-    blocked.write_text("not a directory", encoding="utf-8")
-    monkeypatch.setattr(mod, "_state_dir", lambda: str(blocked / "sub"))
-
-    created = []
+    monkeypatch.setattr(mod, "_state_dir", lambda: str(state_dir))
 
     class Fake:
         def linear_api_key(self):
@@ -246,17 +235,101 @@ def test_a_lock_that_cannot_be_taken_still_files_and_says_so(tmp_path, monkeypat
                 created.append(1)
                 return {"issueCreate": {"success": True, "issue": {
                     "id": "i", "identifier": "ASK-902", "url": "u"}}}
+            if "issue(id" in query:
+                return {"issue": {"id": "i", "identifier": "ASK-902", "url": "u",
+                                  "state": {"type": "unstarted"}}}
+            if "commentCreate" in query:
+                return {"commentCreate": {"success": True}}
             return {}
 
     monkeypatch.setattr(mod, "_load_linear", lambda: Fake())
+    return mod
 
+
+def test_a_caller_without_the_lock_never_creates(tmp_path, monkeypatch):
+    """THE ROUND-5 FINDING, pinned.
+
+    The first cut of this fix let an unlocked caller file anyway, which made
+    "no duplicates" contingent on LOCK_WAIT_SECONDS being longer than the
+    slowest holder -- and the value shipped (25s) was shorter than ONE of the
+    six HTTP calls the section can make, each capped at 30s. The reviewer
+    reproduced creates=2 by scaling the wait below the request duration.
+
+    Creation is now gated on holding the lock, so no value of that number can
+    bring the duplicate back. An unlocked caller with nothing to count reports a
+    failed send, which is slack-notify.sh's documented exit 1 and reaches Linear
+    by the launchd route rather than by a second permanent ticket.
+    """
+    state = tmp_path / "state"
+    state.mkdir()
+    created = []
+    mod = _module_with_fake(monkeypatch, state, created, "alert_nolock")
+
+    # An unwritable state dir: makedirs and open both fail, so no lock is held.
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory", encoding="utf-8")
+    with mod._fingerprint_lock("deadbeef") as held:
+        assert held is True, "control: a writable dir must yield a held lock"
+    monkeypatch.setattr(mod, "_state_dir", lambda: str(blocked / "sub"))
     with mod._fingerprint_lock("deadbeef") as held:
         assert held is False, "the lock reported success on an unwritable dir"
 
     code, line = mod.file_alert(MSG_A, now=1000.0)
-    assert code == mod.EXIT_OK and created == [1], "the alert was dropped"
-    assert "WITHOUT the dedupe lock" in line, \
-        "the run took the unlocked path and did not say so"
+    assert created == [], "an unlocked caller created a permanent Linear ticket"
+    assert code == mod.EXIT_FAILED, f"want a reported failure, got {code}: {line}"
+    assert "refusing to create a duplicate" in line, line
+    assert MSG_A in line, "the undelivered message must stay readable"
+
+
+def test_a_slow_holder_that_outlives_the_wait_costs_no_duplicate(tmp_path):
+    """The reviewer's scenario end to end, with real processes and a real flock.
+
+    LOCK_WAIT_SECONDS is forced BELOW the holder's work so the waiter is
+    guaranteed to time out -- the exact condition that produced creates=2 before
+    this round. One create is the whole assertion.
+    """
+    env_wait = "0.3"          # far below SLOW, so the second child always gives up
+    child_py = tmp_path / "child_slow.py"
+    child_py.write_text(CHILD, encoding="utf-8")
+    state = tmp_path / "state_slow"
+    state.mkdir()
+    creates = tmp_path / "creates_slow"
+    creates.write_text("", encoding="utf-8")
+
+    barrier = time.time() + 2.5
+    procs = []
+    for i in range(2):
+        env = dict(os.environ)
+        env.pop("PYTEST_CURRENT_TEST", None)
+        env.update({
+            "RACE_MODULE": os.path.abspath(ALERT),
+            "RACE_STATE": str(state),
+            "RACE_CREATES": str(creates),
+            "RACE_TAG": str(i),
+            "RACE_SLOW": str(SLOW),
+            "RACE_BARRIER": f"{barrier:.6f}",
+            "RACE_MSG": MSG_A,
+            "RACE_NOLOCK": "0",
+            "KIPI_ALERT_LOCK_WAIT_SECONDS": env_wait,
+        })
+        procs.append(subprocess.Popen(
+            [sys.executable, str(child_py)], env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+
+    results = []
+    for p in procs:
+        out, err = p.communicate(timeout=120)
+        assert p.returncode == 0, f"child crashed: rc={p.returncode} err={err}"
+        results.append(json.loads(out.strip().splitlines()[-1]))
+
+    recorded = [l for l in creates.read_text(encoding="utf-8").splitlines() if l]
+    assert len(recorded) == 1, (
+        f"a {env_wait}s wait against {SLOW}s of held work produced "
+        f"{len(recorded)} tickets: {results}")
+    refused = [r for r in results if "refusing to create a duplicate" in r["line"]]
+    assert len(refused) == 1, (
+        "the loser neither counted nor refused out loud -- if it silently "
+        f"succeeded, the wait did not actually expire: {results}")
 
 
 if __name__ == "__main__":
