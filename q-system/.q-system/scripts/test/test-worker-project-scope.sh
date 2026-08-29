@@ -53,10 +53,16 @@ cat > "$WORK/fixture-server.py" <<'PY'
 import json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-def issue(ident, project, labels, dor=True, state="backlog"):
+def issue(ident, project, labels, dor=True, state="backlog", alert=False):
+    body = "## Definition of Ready\nOutcome: x" if dor else "no readiness heading here"
+    # ASK-839: what alert-to-linear.py stamps into every ticket IT files. The
+    # DoR text is deliberately present too -- the defect is precisely an alert
+    # ticket the drafter had already made ready-shaped.
+    if alert:
+        body += "\n\n<!-- kipi-alert-fingerprint: deadbeefdeadbeef -->"
     return {
         "id": ident, "identifier": ident, "title": "fixture " + ident,
-        "description": "## Definition of Ready\nOutcome: x" if dor else "no readiness heading here",
+        "description": body,
         "state": {"name": state, "type": state},
         "project": ({"name": project} if project else None),
         "labels": {"nodes": [{"name": n} for n in labels]},
@@ -76,6 +82,26 @@ BOARD = [
     # pre-existing rules, kept as regression guards
     issue("ASK-904", "kipi-system", ["owner:assaf", "owner:sana"]),
     issue("ASK-905", "kipi-system", ["owner:sana"], dor=False),
+    # ASK-841: the HELD counts. held_with() selected on label + project and never
+    # looked at state, so a finished issue that still carries its refusal label was
+    # counted as held forever. The live board read "2 issue(s) held at
+    # blocked:capability (ASK-284 ASK-281)" while ASK-281 was Done.
+    # One open + two terminal of each kind, so the expected count (1) cannot be
+    # reached by an off-by-one or by dropping the wrong row.
+    issue("ASK-906", "kipi-system", ["owner:sana", "blocked:capability"]),
+    issue("ASK-907", "kipi-system", ["owner:sana", "blocked:capability"], state="completed"),
+    issue("ASK-908", "kipi-system", ["owner:sana", "blocked:capability"], state="canceled"),
+    issue("ASK-909", "kipi-system", ["owner:sana", "needs-scope"], state="completed"),
+    # ASK-839: a fleet alert ticket the DoR drafter already made ready-shaped,
+    # project-unset because the writer never set one. On the live board
+    # 2026-08-15 there were 19 of exactly this, and they were 100% of the
+    # ready-shaped unset population and 43% of the whole UNREACHABLE bucket.
+    issue("ASK-910", None, ["owner:sana"], alert=True),
+    # An alert ticket that DOES carry a project. It must still be excluded: the
+    # decision is "an alert is not dispatch work", not "an alert is unroutable".
+    # Without this case the exclusion could be implemented as a project test and
+    # nothing here would notice.
+    issue("ASK-911", "kipi-system", ["owner:sana"], alert=True),
 ]
 
 class H(BaseHTTPRequestHandler):
@@ -185,7 +211,13 @@ for pair in "ASK-901:foreign project (accountant)" \
             "ASK-902:unset project" \
             "ASK-903:needs-scope (Sana already rejected it)" \
             "ASK-904:owner:assaf" \
-            "ASK-905:no Definition of Ready"; do
+            "ASK-905:no Definition of Ready" \
+            "ASK-906:blocked:capability" \
+            "ASK-907:blocked:capability and completed" \
+            "ASK-908:blocked:capability and canceled" \
+            "ASK-909:needs-scope and completed" \
+            "ASK-910:fleet alert ticket, project-unset (ASK-839)" \
+            "ASK-911:fleet alert ticket, project set (ASK-839)"; do
   id="${pair%%:*}"; why="${pair#*:}"
   if printf '%s\n' "$PICKED" | grep -q "$id"; then
     bad "excludes $id -- $why" "it was picked"
@@ -203,6 +235,46 @@ if printf '%s\n' "$OUT" | grep -qi "out-of-repo\|other project\|not this repo"; 
 else
   bad "names the out-of-repo issues it dropped" "no line accounting for the drops in: $(printf '%s' "$OUT" | tr '\n' '|' | cut -c1-300)"
 fi
+
+# --- case 2b: the HELD counts describe OPEN work only (ASK-841) --------------
+# held_with() selected on label + project and never read state, so a Done issue
+# still carrying its refusal label was counted as held on every run, forever.
+# Measured on the live board 2026-08-15: "2 issue(s) held at blocked:capability
+# (ASK-284 ASK-281)" while ASK-281 was Done (completed). The real number was 1.
+#
+# Why the number matters and not just the label: this count is the ONLY signal
+# that the loop is starving on a capability nobody granted (linear-worker.sh:596
+# says so at the reporting site). A count that can only rise, because finished
+# work never leaves it, cannot report starvation -- it reports the same alarm
+# whether or not anything is actually blocked. Hand-clearing the label on the
+# closed issue would have made the line read 1 without fixing that.
+#
+# Asserted on the reported LINE, not on a re-derived pool: the line is what an
+# operator reads at 3am, and it is the artifact that was wrong.
+CAP_LINE="$(printf '%s\n' "$OUT" | grep 'held at blocked:capability' | head -1)"
+case "$CAP_LINE" in
+  *"worker: 1 issue(s) held at blocked:capability"*)
+    ok "blocked:capability count excludes closed issues (reports 1, not 3)" ;;
+  "") bad "blocked:capability count excludes closed issues" "no held-at-blocked:capability line at all in the run output" ;;
+  *)  bad "blocked:capability count excludes closed issues" "line reads: $CAP_LINE" ;;
+esac
+
+# The ids on that same line, asserted separately. A count of 1 reached by
+# counting the WRONG one is still broken, and only the id list can tell.
+case "$CAP_LINE" in
+  *"(ASK-906)"*) ok "names the open blocked issue (ASK-906) and no closed one" ;;
+  *)             bad "names the open blocked issue (ASK-906) and no closed one" "line reads: $CAP_LINE" ;;
+esac
+
+# needs-scope goes through the SAME helper, so it carried the same defect. Its
+# line has no id list, so this asserts the count only.
+SCOPE_LINE="$(printf '%s\n' "$OUT" | grep 'held at needs-scope' | head -1)"
+case "$SCOPE_LINE" in
+  *"worker: 1 issue(s) held at needs-scope"*)
+    ok "needs-scope count excludes closed issues (reports 1, not 2)" ;;
+  "") bad "needs-scope count excludes closed issues" "no held-at-needs-scope line at all in the run output" ;;
+  *)  bad "needs-scope count excludes closed issues" "line reads: $SCOPE_LINE" ;;
+esac
 
 # --- case 3: FAIL LOUD on a repo identity that matches no project -----------
 # The dangerous failure mode of this whole change. If the derived name matches
@@ -260,6 +332,28 @@ PICKED_OVR="$(printf '%s\n' "$OUT_OVR" | grep -o 'would work ASK-[0-9]*' | sed '
 case "$PICKED_OVR" in
   "ASK-900 ") ok "KIPI_LINEAR_PROJECT still outranks the registry" ;;
   *)          bad "KIPI_LINEAR_PROJECT still outranks the registry" "picked: [$PICKED_OVR] -- expected [ASK-900 ]" ;;
+esac
+
+# --- case 4c: alert tickets leave the UNREACHABLE bucket too (ASK-839) -------
+# Excluding them from ready() alone would be half a fix: they would stop being
+# WORKED and keep being COUNTED, so the same 19-issue UNREACHABLE line would run
+# every night describing work the loop has already decided it will never take.
+# Run against SKEL_REG because it is the only skel here carrying a registry, and
+# without one reachability is UNKNOWN and the whole classification collapses.
+#
+# The expected number is 2, not 0, and that is deliberate. ASK-902 is a genuine
+# non-alert unset issue and ASK-900 is a foreign project with no checkout -- both
+# are really unreachable and must keep being reported. Only the two alert tickets
+# leave. An assertion of 0 would pass for a worker that stopped reporting at all.
+OUT_ALERT="$(run_worker "$SKEL_REG")"
+UNREACH_N="$(printf '%s\n' "$OUT_ALERT" | sed -n 's/.*worker: \([0-9]*\) ready-shaped issue(s) UNREACHABLE.*/\1/p' | head -1)"
+case "${UNREACH_N:-none}" in
+  2)    ok "alert tickets leave the UNREACHABLE bucket (2 left, not 4)" ;;
+  4)    bad "alert tickets leave the UNREACHABLE bucket" \
+            "still 4 -- ASK-910/ASK-911 are counted as unreachable dispatch work" ;;
+  none) bad "alert tickets leave the UNREACHABLE bucket" \
+            "no UNREACHABLE line at all: $(printf '%s' "$OUT_ALERT" | tr '\n' '|' | cut -c1-300)" ;;
+  *)    bad "alert tickets leave the UNREACHABLE bucket" "count reads '$UNREACH_N', expected 2" ;;
 esac
 
 # --- case 5: NEGATIVE SELF-TEST ---------------------------------------------

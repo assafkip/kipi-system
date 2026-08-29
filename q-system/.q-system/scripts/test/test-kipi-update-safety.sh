@@ -13,6 +13,7 @@ WORK="$(mktemp -d)"; SK="$WORK/skel"; INST="$WORK/inst"
 mkdir -p "$SK/q-system"
 cp "$SCRIPT" "$SK/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" "$SK/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" "$SK/kipi-update-deletion-guard.py"
 # A valid skeleton ships the propagation leak gate: kipi-update.sh is
 # fail-closed on it, so a fixture without it aborts before any sync.
 mkdir -p "$SK/q-system/.q-system/scripts" "$SK/q-system/.q-system/state"
@@ -77,6 +78,7 @@ WORK3="$(mktemp -d)"; SK3="$WORK3/skel"; A3="$WORK3/a"; B3="$WORK3/b"
 mkdir -p "$SK3/q-system" "$A3/q-system" "$B3/q-system"
 cp "$SCRIPT" "$SK3/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" "$SK3/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" "$SK3/kipi-update-deletion-guard.py"
 mkdir -p "$SK3/q-system/.q-system/scripts" "$SK3/q-system/.q-system/state"
 cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
    "$SK3/q-system/.q-system/scripts/propagation-leak-gate.py"
@@ -114,6 +116,7 @@ WORK4="$(mktemp -d)"; SK4="$WORK4/skel"; I4="$WORK4/inst"
 mkdir -p "$SK4/q-system/.q-system/data" "$I4/q-system/.q-system/data"
 cp "$SCRIPT" "$SK4/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" "$SK4/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" "$SK4/kipi-update-deletion-guard.py"
 mkdir -p "$SK4/q-system/.q-system/scripts" "$SK4/q-system/.q-system/state"
 cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
    "$SK4/q-system/.q-system/scripts/propagation-leak-gate.py"
@@ -152,6 +155,7 @@ WORK5="$(mktemp -d)"; SK5="$WORK5/skel"; I5="$WORK5/inst"
 mkdir -p "$SK5/q-system/.q-system/scripts" "$SK5/q-system/.q-system/state" "$I5/q-system"
 cp "$SCRIPT" "$SK5/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" "$SK5/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" "$SK5/kipi-update-deletion-guard.py"
 cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
    "$SK5/q-system/.q-system/scripts/propagation-leak-gate.py"
 cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
@@ -201,6 +205,7 @@ mkdir -p "$SK6/q-system/.q-system/scripts" "$SK6/q-system/.q-system/state" \
          "$I6/q-system" "$I6/plugins/kipi-core/kipi-mcp/.venv/bin" "$OUT6DIR"
 cp "$SCRIPT" "$SK6/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" "$SK6/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" "$SK6/kipi-update-deletion-guard.py"
 cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
    "$SK6/q-system/.q-system/scripts/propagation-leak-gate.py"
 cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
@@ -263,6 +268,7 @@ mkdir -p "$SK7/q-system/.q-system/scripts" "$SK7/q-system/.q-system/state" \
          "$I7/q-system" "$I7/projects/nested/q-system"
 cp "$SCRIPT" "$SK7/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" "$SK7/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" "$SK7/kipi-update-deletion-guard.py"
 cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
    "$SK7/q-system/.q-system/scripts/propagation-leak-gate.py"
 cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
@@ -317,6 +323,7 @@ mkdir -p "$SK8/q-system/.q-system/scripts" "$SK8/q-system/.q-system/state" \
          "$SK8/plugins/realplugin" "$SK8/.claude/rules" "$I8/q-system" "$I8/.claude"
 cp "$SCRIPT" "$SK8/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" "$SK8/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" "$SK8/kipi-update-deletion-guard.py"
 cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
    "$SK8/q-system/.q-system/scripts/propagation-leak-gate.py"
 cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
@@ -372,6 +379,7 @@ mkdir -p "$SK9/q-system/.q-system/scripts" "$SK9/q-system/.q-system/state" \
          "$SK9/plugins/realplugin" "$SK9/.claude/rules" "$I9/q-system" "$I9/.claude"
 cp "$SCRIPT" "$SK9/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" "$SK9/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" "$SK9/kipi-update-deletion-guard.py"
 cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
    "$SK9/q-system/.q-system/scripts/propagation-leak-gate.py"
 cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
@@ -424,6 +432,7 @@ mkdir -p "$SK10/q-system/.q-system/scripts" "$SK10/q-system/.q-system/state" \
          "$I10/q-system" "$I10/tools/submod" "$I10/projects/separate/q-system"
 cp "$SCRIPT" "$SK10/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" "$SK10/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" "$SK10/kipi-update-deletion-guard.py"
 cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
    "$SK10/q-system/.q-system/scripts/propagation-leak-gate.py"
 cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
@@ -471,6 +480,7 @@ mkdir -p "$SK11/q-system/.q-system/scripts" "$SK11/q-system/.q-system/state" \
          "$I11/q-system" "$I11/projects/child/q-system"
 cp "$SCRIPT" "$SK11/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" "$SK11/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" "$SK11/kipi-update-deletion-guard.py"
 cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
    "$SK11/q-system/.q-system/scripts/propagation-leak-gate.py"
 cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
@@ -519,6 +529,7 @@ mkdir -p "$SK12/q-system/.q-system/scripts" "$SK12/q-system/.q-system/state" \
          "$I12/q-system"
 cp "$SCRIPT" "$SK12/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" "$SK12/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" "$SK12/kipi-update-deletion-guard.py"
 cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
    "$SK12/q-system/.q-system/scripts/propagation-leak-gate.py"
 cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
@@ -565,6 +576,7 @@ mkdir -p "$SK13/q-system/.q-system/scripts" "$SK13/q-system/.q-system/state" \
          "$I13/q-system"
 cp "$SCRIPT" "$SK13/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" "$SK13/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" "$SK13/kipi-update-deletion-guard.py"
 cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
    "$SK13/q-system/.q-system/scripts/propagation-leak-gate.py"
 cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
@@ -635,6 +647,7 @@ WORK14="$(mktemp -d)"; SK14="$WORK14/skel"; HOST14="$WORK14/host"; I14="$WORK14/
 mkdir -p "$SK14/q-system/.q-system/scripts" "$SK14/q-system/.q-system/state" "$HOST14"
 cp "$SCRIPT" "$SK14/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" "$SK14/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" "$SK14/kipi-update-deletion-guard.py"
 cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
    "$SK14/q-system/.q-system/scripts/propagation-leak-gate.py"
 cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
@@ -690,6 +703,7 @@ mkdir -p "$SK15/q-system/.q-system/scripts" "$SK15/q-system/.q-system/state" \
          "$SK15/.claude/rules" "$I15/q-system" "$I15/.claude/rules"
 cp "$SCRIPT" "$SK15/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" "$SK15/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" "$SK15/kipi-update-deletion-guard.py"
 cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
    "$SK15/q-system/.q-system/scripts/propagation-leak-gate.py"
 cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \

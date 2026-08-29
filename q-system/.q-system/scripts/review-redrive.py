@@ -24,7 +24,9 @@ other's slot.
 
 THE THREE STATES A REQUIRED CONTEXT CAN BE IN, AND WHO OWNS EACH
 ----------------------------------------------------------------
-    ABSENT  (never posted)            -> ASK-318 producer + ASK-313 detector
+    ABSENT  (never posted)            -> HERE, as a first re-review (sp-d87c5416).
+                                         ASK-318/ASK-313 still own the PRODUCER
+                                         question of why it never posted.
     SUCCESS (but nothing merges)      -> ASK-310, pr-land-if-green.sh
     FAILURE (the reviewer refused)    -> here
 
@@ -72,11 +74,15 @@ the first; nothing bounds the second except the cap it would waste.
 
 WHAT IT REFUSES TO TOUCH
 ------------------------
-- A PR with no verdict record at all. That is ABSENT, and it belongs to
-  ASK-318/ASK-313. Manufacturing a review for a PR whose producer never ran would
-  paper over the missing producer, which is the harder and more important bug.
-- A PR whose reviewer slot is not currently FAILURE. A stale record next to a
-  green slot means a newer review already landed.
+- A PR whose slot is FAILING but has no verdict record. The producer ran, posted
+  a failure, and recorded nothing; re-reviewing that papers over a broken producer,
+  which is the harder and more important bug. Still ASK-318/ASK-313.
+  NOT the same as a slot that was NEVER POSTED -- there is no verdict to be
+  missing there, and since 2026-08-06 that case IS selected (sp-d87c5416). The
+  two were conflated while absence was rare; it is now 18 of 29 open PRs.
+- A PR whose reviewer slot is POSTED and not FAILURE. A stale record next to a
+  green slot means a newer review already landed. Note the word posted: the old
+  wording said "not currently FAILURE", which silently included never-posted.
 - A PR that is a draft, or not attributable to an agent+issue. Same rule as
   ci-redrive: an unrecognised branch owner is a human's branch, left alone.
 
@@ -150,12 +156,29 @@ def record_path(records_dir, pr):
     return os.path.join(records_dir, "pr-%s.verdict.json" % pr)
 
 
+# A THIRD answer, alongside a record and no record. json.JSONDecodeError IS a
+# ValueError, so the original `except (OSError, ValueError): return None`
+# reported a TRUNCATED record and an ABSENT one identically -- and every caller
+# then states, in the operator-facing reason, that no verdict exists. That is
+# the same false statement finding 1 was about, arriving through the other door.
+# Latent rather than live: 0 unparseable across 96 records sampled 2026-08-06.
+# (Independent probe on PR #123, sp-3e57348e.)
+CORRUPT_RECORD = object()
+
+
 def read_record(records_dir, pr):
+    """The verdict record, None if absent, CORRUPT_RECORD if unreadable."""
     try:
         with open(record_path(records_dir, pr)) as fh:
             return json.load(fh)
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return None
+    except OSError:
+        # Unreadable for a reason that is not absence (permissions, a directory
+        # where a file belongs). Refusing beats claiming the review never ran.
+        return CORRUPT_RECORD
+    except ValueError:
+        return CORRUPT_RECORD
 
 
 def usable_from_lib(review_file):
@@ -225,6 +248,59 @@ def reviewer_slot_failing(pr_obj):
     return sorted(names)
 
 
+# NOTE, unresolved on purpose (sp-833a2b76): should this be the GATING context
+# only, or any reviewer slot?
+#
+# pr-review-agent.sh:189 writes `kipi/reviewer-approved` for the PRIMARY engine
+# and an advisory `kipi/<engine>-approved` otherwise, and ci-redrive.py:202 says
+# the split exists so neither engine "can answer for the other".
+# CI.is_reviewer_slot matches `^kipi/[a-z0-9-]+-approved$`, i.e. BOTH, so a green
+# ADVISORY slot currently reports the GATE as spoken (codex review of PR #123,
+# finding 2, reproduced).
+#
+# It is left BROAD here because narrowing it flips an existing deliberate
+# assertion -- test-review-redrive.sh:157 fixtures `kipi/codex-approved` green
+# and requires "the live status must win over the record". Those two cannot both
+# hold, and picking between them is a scope call about which question this
+# predicate answers ("did SOME review land" vs "has the GATE spoken"), not a
+# detail of making absence visible. Unreachable today regardless:
+# KIPI_REVIEW_PRIMARY_ENGINE defaults to codex, so `kipi/codex-approved` needs a
+# hand-run with a non-default primary. Captured rather than decided here.
+GATING_SLOT = "kipi/reviewer-approved"  # named for the pending decision above
+
+
+def reviewer_slot_posted(pr_obj):
+    """True if the GATING reviewer slot appears in the rollup, whatever its state.
+
+    The distinction reviewer_slot_failing() structurally cannot make. That
+    predicate is two-valued -- failing / not-failing -- over a three-valued
+    world: failing, passing, and NEVER POSTED. Callers that branch only on
+    `not failing` read the third state as the second, so silence becomes health.
+
+    Scar (sp-d87c5416, measured 2026-08-06): candidates() did
+    `if not slots: continue`, so a PR the reviewer had never run against was
+    skipped before its verdict record was even read. 18 of 29 open PRs were in
+    that state, which made the MAJORITY of the backlog invisible to the only
+    mechanism that could move it -- while `select` still printed 8 confident
+    rework candidates and read like a full account of the queue.
+
+    Deliberately state-blind: it answers "did the producer ever speak", never
+    "what did it say". Folding the state back in here would recreate the same
+    two-valued collapse one function further down.
+    """
+    for check in pr_obj.get("statusCheckRollup") or []:
+        if not isinstance(check, dict):
+            continue
+        if check.get("__typename") == "StatusContext":
+            name = check.get("context") or ""
+        else:
+            name = check.get("name") or ""
+        # BROAD on purpose, and this is contested -- see GATING_SLOT above.
+        if CI.is_reviewer_slot(name):
+            return True
+    return False
+
+
 def classify(record, head_sha):
     """(action, reason) for a PR whose reviewer slot is failing.
 
@@ -275,11 +351,86 @@ def candidates(repo_dir, records_dir):
             continue
         issue, agent, source = attributed
         slots = reviewer_slot_failing(pr_obj)
-        if not slots:
-            continue
         pr = pr_obj.get("number")
         record = read_record(records_dir, pr)
-        if record is None:
+        if not slots:
+            if reviewer_slot_posted(pr_obj):
+                # A gating verdict exists and is not failing. Nothing to redrive.
+                continue
+            if record is CORRUPT_RECORD:
+                # Say what is true: the record is there and unreadable. Naming it
+                # "never posted" would send the operator after a producer bug.
+                sys.stderr.write(
+                    "review-redrive: PR #%s has a verdict record that will not "
+                    "parse -- refusing to call it absent. Left alone.\n" % pr)
+                continue
+            if record is not None:
+                # NO STATUS, BUT A VERDICT RECORD EXISTS. Not a virgin PR.
+                #
+                # pr-review-agent.sh writes the record unconditionally but posts
+                # the status only inside `if [ "$POST" = "1" ]` (:917, :975). So
+                # `kipi review <PR>` without --post, the ":915 recorded but NO
+                # gate moved" branch, and the missing-head-sha branch all leave
+                # this shape, in the very directory read_record reads (:111).
+                #
+                # classify() answers "is this a refusal", which is the WRONG
+                # question here. It returns (None, ...) for any non-refusal, and
+                # the shared tail below does `if action is None: continue` -- so
+                # a review that PASSED but was never posted fell out silently.
+                # Sampled 2026-08-06 across 96 records: APPROVE WITH NITS 54,
+                # REQUEST CHANGES 23, APPROVE 17, BLOCK 1, empty 1. The dropped
+                # non-refusals are 71 of 96, the MAJORITY, and PR #23 is one --
+                # approved, never posted, auto-merge armed and waiting forever on
+                # a status nobody sends. The cheapest PR in the queue was the one
+                # the selector could not see. (Independent probe on PR #123.)
+                head_sha = pr_obj.get("headRefOid") or ""
+                action, reason = classify(record, head_sha)
+                if action is None:
+                    # A PASSING review with no status. Not a refusal, not virgin.
+                    action = REREVIEW
+                    reason = ("the review passed but its status was never "
+                              "posted (%s)" % (record.get("verdict") or "no verdict"))
+                out.append({
+                    "action": action, "reason": reason,
+                    "issue": issue, "agent": agent, "issue_source": source,
+                    "pr": pr, "url": pr_obj.get("url"),
+                    "branch": pr_obj.get("headRefName"),
+                    "head_sha": head_sha, "slots": [],
+                })
+                continue
+            else:
+                # NEVER POSTED and never recorded -- the reviewer has not run
+                # against this PR at all.
+                #
+                # NOT the ASK-318 case below. There, a FAILING slot with no record
+                # means the producer ran and recorded nothing, so re-reviewing
+                # papers over a broken producer. Here nothing ever claimed a
+                # review happened, so there is no verdict to be missing.
+                #
+                # It emits the EXISTING re-review action on purpose.
+                # kipi-dispatch.sh:1000 matches that exact string to run
+                # pr-review-agent.sh --post; any other value falls through to
+                # `./kipi converge`, so a new vocabulary word would not be inert,
+                # it would silently buy a full rework round against a review that
+                # does not exist. The word already means "nobody read the code,
+                # there is no spec", which is precisely this state. The
+                # distinction rides in the reason, which select prints.
+                out.append({
+                    "action": REREVIEW,
+                    "reason": "the reviewer has never posted a verdict for this PR",
+                    "issue": issue, "agent": agent, "issue_source": source,
+                    "pr": pr, "url": pr_obj.get("url"),
+                    "branch": pr_obj.get("headRefName"),
+                    "head_sha": pr_obj.get("headRefOid") or "",
+                    "slots": [],
+                })
+                continue
+        elif record is CORRUPT_RECORD:
+            sys.stderr.write(
+                "review-redrive: PR #%s has %s failing and an unreadable verdict "
+                "record -- refusing to guess. Left alone.\n" % (pr, ",".join(slots)))
+            continue
+        elif record is None:
             # ABSENT, not FAILURE-with-no-record. Owned by ASK-318/ASK-313.
             sys.stderr.write(
                 "review-redrive: PR #%s has %s failing but NO verdict record -- "
@@ -379,7 +530,7 @@ def escalate(path, cand):
         "review-redrive: %s PR #%s still has %s failing after the machine tier. "
         "What the machine tried: one %s at %s. The reviewer's record now reads "
         "%s. %s"
-        % (cand["issue"], cand["pr"], ", ".join(cand["slots"]), cand["action"],
+        % (cand["issue"], cand["pr"], (", ".join(cand["slots"]) or "(never posted)"), cand["action"],
            (cand["head_sha"] or "an unknown head")[:8], cand["reason"],
            cand["url"]))
     return True
@@ -396,6 +547,18 @@ def cmd_select(cands, show_all):
 
     path = CI.attempts_path()
     for c in cands:
+        # THE CAP-OUT PARK, FIRST (ASK-871). converge.sh stopping this ISSUE at
+        # its round cap is a refusal to touch it at all, so it outranks every
+        # question below -- which action, is anything live, is the attempt spent.
+        #
+        # IMPORTED FROM ci-redrive, NOT REIMPLEMENTED, for the same reason
+        # `is_reviewer_slot` is: both redrives must refuse the same parked issue,
+        # and two copies of one refusal rule is how a state ends up owned by
+        # neither. It reads a fact, writes nothing, and cannot page -- so putting
+        # it ahead of the in-flight gates does not reintroduce the false-page
+        # hazard those gates exist for.
+        if CI.capout_skip(path, c["issue"], "review-redrive", c["pr"]):
+            continue
         # IN-FLIGHT GATES, BOTH ACTIONS, BEFORE THE LEDGER IS READ. Each action
         # launches a different long-running process, so each needs its own
         # liveness question -- but the reason is one reason, and the ledger read
@@ -449,8 +612,14 @@ def cmd_select(cands, show_all):
 
 
 def cmd_mark_dispatched(issue, action, pr, head_sha):
+    # THE SAME SHARED CLAIM ci-redrive uses, not `ledger_claim` (codex on PR #210).
+    # `cmd_select`'s capout gate gates the OFFER; this is where the attempt is
+    # spent, and a cap-out recorded between the two used to sail straight through
+    # it. Imported rather than reimplemented for the reason `capout_skip` is: two
+    # copies of one refusal rule is how a state ends up owned by neither.
     cand = {"action": action, "pr": pr, "head_sha": head_sha}
-    return 0 if CI.ledger_claim(CI.attempts_path(), issue, flag(cand)) else 1
+    return 0 if CI.claim_unless_capped(
+        CI.attempts_path(), issue, flag(cand), "review-redrive", pr) else 1
 
 
 def main(argv):

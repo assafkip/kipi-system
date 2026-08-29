@@ -40,7 +40,7 @@ Run the required reviews for the active DSSE issue. Execute in order:
    | Codex | `codex-review` | `codex-adversarial` |
    | Claude senior-staff-engineer subagent | `claude-review` | `claude-adversarial` |
 
-   Codex is out of credits until 2026-08-24 and Gemini needs auth, so today the reviewer is the Claude subagent and the sources are `claude-*`. Stamping `codex-*` for a pass Codex did not run puts a false provenance record in the findings ledger, which is worse than being blocked in a repo whose thesis is receipts.
+   Pick the row for the reviewer that ACTUALLY ran. Stamping `codex-*` for a pass Codex did not run puts a false provenance record in the findings ledger — worse than being blocked, in a repo whose whole thesis is receipts. If one reviewer is unavailable (no credits, missing auth), use another row and stamp what ran. Do NOT hardcode an outage into this file: a stale availability note outlives the outage and sends every later session to the wrong reviewer. `manual` and `plan` are the author's own words and the writer refuses them here by design.
 
    **Immediately pipe the standard-review findings to disk** (compaction hardening: if the conversation compacts after this point, the findings survive because they are on disk, not in narrative memory). Translate Codex's free-form verdict into `[{severity, body, affected_path}]`. The writer assigns sequential ids, stamps `created_at`, marks `out_of_scope=true` for paths outside `$ALLOWED`, and sets `disposition=pending`:
 
@@ -80,11 +80,37 @@ Run the required reviews for the active DSSE issue. Execute in order:
    If the adversarial review returned approve with no findings, skip the writer call for this source.
 
 7. If both reviews completed (regardless of verdict, even if findings exist):
-   - Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" mark reviewed`.
+   - For EACH review that returned a verdict, SAVE THE REVIEWER'S OWN OUTPUT
+     to a file and record the completion against it:
+
+   ```bash
+   mkdir -p .prd-os/reviews
+   # Write the reviewer's raw output verbatim. Do NOT summarise it, and do not
+   # hand-write it from memory -- the file IS the evidence and it is hashed.
+   # A clean pass still writes a file saying it ran and found nothing; an
+   # ABSENT file and a clean review must not look the same.
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" complete-review standard \
+     --verdict "<verdict>" --evidence-file .prd-os/reviews/$ISSUE_ID-standard.md
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" complete-review adversarial \
+     --verdict "<verdict>" --evidence-file .prd-os/reviews/$ISSUE_ID-adversarial.md
+   ```
+
+   `record-review` in step 3 / step 5 only CLAIMED the slot; it writes no
+   receipt, because at that moment the reviewer had not run. `complete-review`
+   hashes the artifact, seals it to the issue, and writes `reviewed` only once
+   EVERY kind has landed. `close` re-checks that seal.
+
+   The boundary, stated plainly: this does not PROVE a reviewer ran -- this
+   command shares a trust boundary with the agent calling it. It makes the
+   receipt a function of a durable artifact instead of a typed string, so an
+   interrupted review, a partial workflow or a summary-from-memory produce NO
+   receipt instead of a green one (Codex, PR #110 rounds 2, 3 and 6).
    - Report: "reviewed receipt recorded at <timestamp>. Findings now belong to `/issue-closeout` triage."
 
 8. If either review failed to complete (Codex error, timeout, parse error):
-   - Do NOT call `mark reviewed`.
+   - Do NOT call `complete-review` for a review that did not return a verdict.
+     Its slot stays claimed and its receipt stays unwritten, which is the
+     honest record: the round was spent, the review did not finish.
    - Note: the slot was already claimed in step 3 / step 5. Re-running `/issue-review` will hit the cap. Tell the founder to retry with `ISSUE_ALLOW_REVIEW_REPEAT=1` if the failure was transient.
    - Report the failure mode. Stop.
 

@@ -97,13 +97,67 @@ def test_check_red_while_open_green_when_none(repo):
     assert run(repo, "spillover", "check").returncode == 1  # open item = red
 
 
-def test_gates_run_red_while_spillover_open(repo):
-    # No registered gates at all, but an open spillover item must still make the
-    # STANDING re-proof fail. This is the can't-be-forgotten property.
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+def _ledger_lines(repo):
+    """Raw ledger lines, for asserting append-only behaviour.
+
+    A missing file is zero events, not an error: a refused command must leave
+    no ledger at all, and that is a state this helper has to be able to report.
+    """
+    path = repo / ".prd-os" / "spillover.jsonl"
+    if not path.is_file():
+        return []
+    return [l for l in path.read_text().splitlines() if l.strip()]
+
+def test_gates_run_red_while_a_blocking_severity_item_is_open(repo):
+    # No registered gates at all, but an open BLOCKING-severity spillover item
+    # must still make the STANDING re-proof fail. The can't-be-forgotten
+    # property, now scoped to severities that were actually assessed.
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1",
+        "--severity", "major")
     g = run(repo, "gates", "run")
-    assert g.returncode != 0, "gates run stayed green with an open spillover item"
+    assert g.returncode != 0, "gates run stayed green with an open major item"
     assert "sp1" in (g.stdout + g.stderr)
+
+
+def test_gates_run_is_green_but_reports_a_minor_item(repo):
+    """The contract change (approved PRD prd-spillover-current-state-2026-07-24,
+    goal 5: "make gates run identify pre-existing debt separately from new
+    debt").
+
+    Every open item used to turn the gate red as one undifferentiated group. It
+    reached 550 open and stayed red for months, which teaches everyone to step
+    over it -- worse than no gate, because it launders "we have enforcement".
+
+    A minor item is now REPORTED and does not block."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "nit", "--id", "sp-n",
+        "--severity", "minor")
+    g = run(repo, "gates", "run")
+    assert g.returncode == 0, (
+        f"a minor item still blocks the gate: {g.stdout}{g.stderr}")
+    assert "sp-n" in (g.stdout + g.stderr), (
+        "the minor item is not blocking AND not reported -- that is silent, "
+        "which is how 533 of them accumulated unnoticed")
+
+
+def test_the_report_does_not_call_untriaged_items_minor(repo):
+    """`--severity` DEFAULTS to minor, so a defaulted item is indistinguishable
+    from one assessed as minor. 533 of 550 open items sit at that default. The
+    report must not launder "nobody looked at it" as "we judged it small"."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "nit", "--id", "sp-n")
+    out = run(repo, "gates", "run").stdout
+    assert "untriaged" in out.lower(), (
+        f"report presents the default as a real severity judgement: {out}")
+
+
+def test_a_blocking_item_still_blocks_when_minor_items_exist(repo):
+    """Negative-fire: the minor bucket must not swallow the blocking one."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "nit", "--id", "sp-n",
+        "--severity", "minor")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "bad", "--id", "sp-b",
+        "--severity", "blocker")
+    g = run(repo, "gates", "run")
+    assert g.returncode != 0
+    assert "sp-b" in (g.stdout + g.stderr)
 
 
 def test_resolve_refuses_unless_issue_closed(repo):
@@ -194,7 +248,12 @@ def test_resolve_verifies_closed_linear_issue(repo, runner, monkeypatch):
 
 
 def test_resolve_refuses_open_linear_issue(repo, runner, monkeypatch):
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1",
+        # Blocking severity on purpose: this test asserts `gates run` stays
+        # RED after a REFUSED resolve. Since 2026-08-05 the gate only blocks
+        # on blocker/major/high, so a default-severity item would leave it
+        # green and the assertion would pass for the wrong reason.
+        "--severity", "major")
     _stub_linear(monkeypatch, runner, {"ASK-999": {"type": "started", "name": "In Progress"}})
 
     assert _resolve(runner, repo, "sp1", "--resolution-ref", "ASK-999") != 0
@@ -242,7 +301,12 @@ def test_resolve_refuses_when_linear_auth_is_missing(repo, tmp_path):
     and a clean ledger, which is exactly the hand-clear this command exists to
     prevent. Refusing keeps the item visible until someone can actually prove it.
     """
-    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    run(repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1",
+        # Blocking severity on purpose: this test asserts `gates run` stays
+        # RED after a REFUSED resolve. Since 2026-08-05 the gate only blocks
+        # on blocker/major/high, so a default-severity item would leave it
+        # green and the assertion would pass for the wrong reason.
+        "--severity", "major")
     env = dict(os.environ)
     env.pop("KIPI_LINEAR_API_KEY", None)
     env["HOME"] = str(tmp_path / "empty-home")  # no ~/.config/kipi/linear-api-key
@@ -341,3 +405,579 @@ def test_triage_leaves_the_gate_red(repo):
 
     assert run(repo, "spillover", "check").returncode == 1
     assert run(repo, "gates", "run").returncode != 0
+
+
+def test_archive_still_refuses_on_a_minor_item(repo):
+    """The standing gate and the terminal closeout have different bars, and
+    that difference must be pinned or a later reader will "fix" the
+    inconsistency. `gates run` blocks only on blocker/major/high so it can be
+    green day to day. `archive` refuses on ANY open item, because
+    no-orphan-findings.md requires every item the work touched to be reported
+    at closeout."""
+    import json as _json
+    created = run(repo, "new", "arch", "--title", "T")
+    prd_id = _json.loads(created.stdout)["created"]
+    run(repo, "advance", "draft")
+    # Sourced from THIS PRD: archive is scoped to the items the work opened.
+    run(repo, "spillover", "add", "--source", prd_id, "--desc", "nit",
+        "--id", "sp-n", "--severity", "minor")
+    assert run(repo, "gates", "run").returncode == 0, "minor should not block the gate"
+    assert run(repo, "archive").returncode != 0, (
+        "archive let through a minor item THIS PRD opened; closeout must report all"
+    )
+
+
+def test_archive_ignores_a_minor_item_another_prd_opened(repo):
+    """The scope half, added after Codex round 3 produced a repro.
+
+    Refusing on the GLOBAL ledger made archive unreachable: 533 items sit at
+    the default `minor`, so every PRD inherited the fleet's whole backlog as
+    its own exit condition. no-orphan-findings.md says report every item THE
+    WORK TOUCHED, which is what this pins."""
+    import json as _json
+    run(repo, "spillover", "add", "--source", "SOME-OTHER-PRD", "--desc",
+        "unrelated backlog", "--id", "sp-other", "--severity", "minor")
+    created = run(repo, "new", "arch2", "--title", "T")
+    prd_id = _json.loads(created.stdout)["created"]
+    run(repo, "advance", "draft")
+    assert run(repo, "archive").returncode == 0, (
+        "another PRD's open item blocked this archive; the terminal step is "
+        "unreachable whenever the fleet backlog is non-empty"
+    )
+
+
+# ---------------------------------------------------------------------------
+# An unrecognized severity must never read as "minor".
+# Codex, PR #110 round 2, with a reproducer: `--severity critical` was stored
+# verbatim, reported as minor-or-untriaged, and the gate returned green.
+# ---------------------------------------------------------------------------
+
+
+def _load_runner():
+    import importlib.util
+    from pathlib import Path as _P
+    path = _P(__file__).resolve().parents[1] / "scripts/prd_runner.py"
+    spec = importlib.util.spec_from_file_location("prd_runner_sev", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize("severity", ["critical", "urgent", "sev1", "P0", "BLOCKER!"])
+def test_unknown_severity_is_treated_as_blocking(severity):
+    """Fail-closed. The word a human reaches for under pressure is exactly the
+    one the allowlist did not contain, so the louder the label the quieter the
+    gate got."""
+    mod = _load_runner()
+    assert mod._is_blocking_severity(severity), (
+        f"{severity!r} was classified non-blocking; an unknown severity must block"
+    )
+
+
+@pytest.mark.parametrize("severity", ["minor", "low", "medium", "MINOR", " Low "])
+def test_known_nonblocking_severities_still_do_not_block(severity):
+    """The negative half: without this the fix could pass by blocking on
+    everything, which is the permanently-red gate it replaced."""
+    mod = _load_runner()
+    assert not mod._is_blocking_severity(severity)
+
+
+@pytest.mark.parametrize("severity", ["blocker", "major", "high"])
+def test_blocking_severities_still_block(severity):
+    mod = _load_runner()
+    assert mod._is_blocking_severity(severity)
+
+
+def test_cli_refuses_an_unrecognized_severity_at_the_door():
+    """Fail-closed in the gate is the backstop; the CLI should never store it."""
+    import subprocess, sys
+    from pathlib import Path as _P
+    runner = _P(__file__).resolve().parents[1] / "scripts/prd_runner.py"
+    proc = subprocess.run(
+        [sys.executable, str(runner), "spillover", "add", "--source", "t",
+         "--desc", "d", "--severity", "critical"],
+        capture_output=True, text=True)
+    assert proc.returncode != 0, "CLI accepted an unrecognized severity"
+    assert "critical" in (proc.stderr + proc.stdout)
+
+
+# ---------------------------------------------------------------------------
+# reclassify: correct a severity through a NEW event, never a mutation
+# ---------------------------------------------------------------------------
+#
+# 549 of 559 open items sit at the `minor` DEFAULT, i.e. untriaged. `gates run`
+# now blocks only on blocker/major/high, so triaging that backlog is the work
+# that makes the gate mean something -- and there was no verb to do it with.
+# `add`, `list`, `check`, `triage` (read-only), `resolve`. Nothing could raise
+# an item.
+#
+# Shape per the approved PRD prd-spillover-current-state-2026-07-24: "correct
+# severity through new events only", "preserve append-only history", "editing
+# or deleting prior spillover events" is an explicit non-goal.
+
+def test_reclassify_raises_severity_and_blocks_the_gate(repo):
+    run(repo, "spillover", "add", "--source", "s", "--desc", "real bug", "--id", "sp1")
+    assert run(repo, "gates", "run").returncode == 0, "precondition: minor is not blocking"
+    r = run(repo, "spillover", "reclassify", "sp1", "--severity", "major",
+            "--reason", "deletes founder data on an empty-prefix instance")
+    assert r.returncode == 0, r.stderr
+    assert run(repo, "gates", "run").returncode != 0, (
+        "reclassify to major did not make the standing gate block"
+    )
+
+
+def test_reclassify_appends_and_never_rewrites_history(repo):
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    before = _ledger_lines(repo)
+    run(repo, "spillover", "reclassify", "sp1", "--severity", "high", "--reason", "why")
+    after = _ledger_lines(repo)
+    assert after[:len(before)] == before, "reclassify rewrote prior events"
+    assert len(after) == len(before) + 1, "reclassify did not append exactly one event"
+    assert json.loads(after[-1])["severity"] == "high"
+
+
+def test_reclassify_records_the_reason(repo):
+    """A severity change with no stated reason is the hand-clear this ledger
+    refuses everywhere else."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    bad = run(repo, "spillover", "reclassify", "sp1", "--severity", "major")
+    assert bad.returncode != 0, "reclassify accepted a severity change with no reason"
+    ok = run(repo, "spillover", "reclassify", "sp1", "--severity", "major",
+             "--reason", "it can delete data")
+    assert ok.returncode == 0
+    assert "it can delete data" in _ledger_lines(repo)[-1]
+
+
+def test_reclassify_refuses_an_unknown_severity(repo):
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    r = run(repo, "spillover", "reclassify", "sp1", "--severity", "urgent",
+            "--reason", "x")
+    assert r.returncode != 0, "unknown severity accepted; the gate reads this field"
+
+
+def test_reclassify_refuses_an_unknown_id(repo):
+    """Negative-fire: a typo must not silently create a new open item.
+
+    Asserts the MESSAGE, not just a nonzero exit. Mutation showed exit-code-only
+    could not tell a clean refusal from a TypeError crash -- dropping the guard
+    made `dict(None)` raise, which is also nonzero, so the test passed while the
+    behaviour was a stack trace."""
+    r = run(repo, "spillover", "reclassify", "sp-nope", "--severity", "major",
+            "--reason", "x")
+    assert r.returncode != 0, "reclassify invented an item that never existed"
+    assert "unknown spillover id" in r.stderr, (
+        f"refused, but not cleanly -- stderr was: {r.stderr!r}")
+    assert "Traceback" not in r.stderr, "refusal is a crash, not a decision"
+    assert not _ledger_lines(repo), "a refused reclassify still wrote an event"
+
+
+def test_reclassify_refuses_a_whitespace_only_reason(repo):
+    """argparse `required=True` already rejects a MISSING --reason, so the
+    in-code check is only reachable via whitespace. Mutation proved the earlier
+    test never exercised it: deleting the check left the suite green because
+    argparse fired first."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1")
+    r = run(repo, "spillover", "reclassify", "sp1", "--severity", "major",
+            "--reason", "   ")
+    assert r.returncode != 0, "a whitespace-only reason was accepted as a reason"
+    assert "--reason is required" in r.stderr
+
+
+def test_reclassify_preserves_status_and_description(repo):
+    """Only severity moves. A reclassify that drops the description would make
+    the ledger unreadable, and one that flips status would resolve by side
+    effect."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "the original text",
+        "--id", "sp1")
+    run(repo, "spillover", "reclassify", "sp1", "--severity", "major", "--reason", "r")
+    rec = json.loads(_ledger_lines(repo)[-1])
+    assert rec["description"] == "the original text"
+    assert rec["status"] == "open"
+    assert rec["source"] == "s"
+
+
+def test_reclassify_can_lower_severity_too(repo):
+    """Triage runs both ways: an over-flagged item must be demotable, or the
+    only safe move is to leave everything blocking."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1",
+        "--severity", "blocker")
+    assert run(repo, "gates", "run").returncode != 0
+    run(repo, "spillover", "reclassify", "sp1", "--severity", "minor",
+        "--reason", "reread it: cosmetic, no data path")
+    assert run(repo, "gates", "run").returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# Gaps found reviewing PR #112 (ASK-402).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("typed", ["MAJOR", "  Major  ", "MaJoR", "major\t"])
+def test_reclassify_normalizes_case_and_whitespace(repo, typed):
+    """The normalization was UNTESTED: replacing
+    `(args.severity or "").strip().lower()` with the raw value survived
+    mutation, because every existing case passed an already-canonical string.
+
+    It matters in both directions. Un-normalized, a user typing MAJOR is
+    refused with a confusing message; worse, the STORED value is what
+    `_is_blocking_severity` reads, so a variant that ever slipped past the
+    membership check would sit in the ledger looking severe and blocking
+    nothing.
+    """
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-case", "--severity", "minor")
+    r = run(repo, "spillover", "reclassify", "sp-case",
+            "--severity", typed, "--reason", "case probe")
+    assert r.returncode == 0, r.stderr
+    rec = json.loads(_ledger_lines(repo)[-1])
+    assert rec["severity"] == "major", f"{typed!r} stored as {rec['severity']!r}"
+    # ...and the GATE must agree, not just the stored string.
+    assert run(repo, "gates", "run").returncode != 0, (
+        f"{typed!r} normalized in the record but did not block the gate"
+    )
+
+
+def test_reclassify_refuses_an_unknown_severity_cleanly(repo):
+    """The sibling refusals assert their message; this one asserted only a
+    non-zero exit, which is the shape that let two other guards pass while
+    the behaviour was a stack trace."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-u", "--severity", "minor")
+    r = run(repo, "spillover", "reclassify", "sp-u",
+            "--severity", "critical", "--reason", "sounds urgent")
+    assert r.returncode != 0
+    assert "--severity must be one of" in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr, "refusal is a crash, not a decision"
+
+
+def test_triage_surfaces_a_downgrade(repo):
+    """A writer with no reader is not an audited escape hatch.
+
+    `reclassified_from` and `reclassify_reason` were written and read by
+    nothing, so the one action that can stop the standing gate blocking
+    appeared in no report.
+    """
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-down", "--severity", "blocker")
+    assert run(repo, "gates", "run").returncode != 0, "precondition: it blocks"
+    run(repo, "spillover", "reclassify", "sp-down", "--severity", "minor",
+        "--reason", "reviewed, it is cosmetic")
+    assert run(repo, "gates", "run").returncode == 0, "precondition: now green"
+
+    out = run(repo, "spillover", "triage").stdout
+    assert "LOWERED" in out, f"triage hides the downgrade that moved the gate:\n{out}"
+    assert "sp-down" in out
+    assert "blocker -> minor" in out
+    assert "cosmetic" in out, "the stated reason is not surfaced with the change"
+
+
+def test_triage_does_not_cry_downgrade_over_a_raise(repo):
+    """The negative half. Without it, labelling every change LOWERED passes."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-up", "--severity", "minor")
+    run(repo, "spillover", "reclassify", "sp-up", "--severity", "major",
+        "--reason", "it is worse than filed")
+    out = run(repo, "spillover", "triage").stdout
+    assert "severity raised" in out, out
+    assert "LOWERED" not in out, f"a raise was reported as a downgrade:\n{out}"
+
+
+def test_concurrent_resolve_and_reclassify_cannot_resurrect(repo):
+    """Codex, PR #112, with an executed repro.
+
+    `resolve` and `reclassify` both read a record, copy it, and append the
+    copy, and `_read_spillover` is last-write-wins on the WHOLE record. The
+    interleaving is: reclassify reads (status=open), resolve appends
+    (status=resolved), reclassify appends its STALE copy (status=open) -- and
+    a resolved item is back in the standing gate.
+
+    Stress rather than a staged interleave: the race is between two OS
+    processes, so there is no seam to patch. 25 rounds reproduces it reliably
+    without the lock; the loop is the reproducer.
+    """
+    import concurrent.futures as cf
+    resurrected = []
+    for n in range(25):
+        sid = f"sp-race{n}"
+        run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+            "--id", sid, "--severity", "minor")
+        with cf.ThreadPoolExecutor(max_workers=2) as ex:
+            a = ex.submit(run, repo, "spillover", "resolve", sid, "--void", "not real")
+            b = ex.submit(run, repo, "spillover", "reclassify", sid,
+                          "--severity", "blocker", "--reason", "raising it")
+            a.result(); b.result()
+        rec = json.loads([l for l in _ledger_lines(repo)
+                          if json.loads(l).get("id") == sid][-1])
+        if rec.get("status") == "open":
+            resurrected.append((sid, rec.get("severity")))
+    assert not resurrected, (
+        f"{len(resurrected)}/25 resolved items were resurrected into the gate "
+        f"by a concurrent reclassify: {resurrected[:5]}")
+
+
+@pytest.mark.parametrize("before,after,expect", [
+    ("blocker", "high", "LOWERED"),      # blocker is MORE severe than high
+    ("high", "blocker", "severity raised"),
+    ("major", "minor", "LOWERED"),
+    ("minor", "major", "severity raised"),
+])
+def test_triage_labels_the_direction_correctly(repo, before, after, expect):
+    """The first rank was built by concatenating the two MEMBERSHIP tuples,
+    which are not ordered by severity: `blocker` is index 0 of its tuple and
+    `high` index 2, so `blocker -> high` reported as a RAISE (Codex, minor).
+    A membership set is not a scale."""
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-dir", "--severity", before)
+    run(repo, "spillover", "reclassify", "sp-dir", "--severity", after,
+        "--reason", "direction probe")
+    out = run(repo, "spillover", "triage").stdout
+    assert expect in out, f"{before} -> {after} not reported as {expect}:\n{out}"
+    if expect == "severity raised":
+        assert "LOWERED" not in out, f"{before} -> {after} called a downgrade:\n{out}"
+
+
+def test_every_known_severity_has_a_rank(repo):
+    """A severity missing from the order defaults to -1 and silently reads as
+    the least severe thing there is."""
+    import importlib.util
+    from pathlib import Path as _P
+    spec = importlib.util.spec_from_file_location(
+        "pr_rank", _P(__file__).resolve().parents[1] / "scripts/prd_runner.py")
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    missing = [s for s in m.SPILLOVER_KNOWN_SEVERITIES
+               if s not in m.SPILLOVER_SEVERITY_ORDER]
+    assert not missing, f"known severities absent from the rank order: {missing}"
+
+
+def test_ledger_lock_degrades_when_it_cannot_be_taken(repo):
+    """A lock that cannot be TAKEN must not become a new hard failure.
+
+    Taking it CREATES a file, so it needs write permission on the DIRECTORY,
+    while appending to the existing ledger only needs it on the FILE. Adding
+    the lock therefore turned a working `resolve` into a PermissionError
+    traceback under a read-only `.prd-os` -- and read-only sandboxes are real
+    here. The race it protects against costs a false RED gate, which is
+    recoverable; refusing to resolve at all is not.
+    """
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d",
+        "--id", "sp-ro", "--severity", "minor")
+    d = Path(repo) / ".prd-os"
+    mode = d.stat().st_mode
+    d.chmod(0o555)
+    try:
+        r = run(repo, "spillover", "resolve", "sp-ro", "--void", "read-only probe")
+    finally:
+        d.chmod(mode)
+    assert "Traceback" not in r.stderr, f"the lock crashed instead of degrading:\n{r.stderr}"
+    assert r.returncode == 0, f"a read-only ledger dir broke resolve: {r.stderr}"
+    assert "could not lock" in r.stderr, (
+        "it degraded SILENTLY -- an unlocked write with no warning is the "
+        "failure mode nobody notices")
+    assert json.loads(_ledger_lines(repo)[-1])["status"] == "resolved"
+
+
+# --- sp-8c0b2d87: the exit for an item fixed OUTSIDE a PRD manifest ----------
+#
+# THE HOLE. `no-orphan-findings.md` names exactly two exits: resolve against a
+# CLOSED issue, or void with a reason. But issue_runner.py has no `create` verb
+# (load/status/scope/gate/mark/verify/triage/approve/amend/close/clear/
+# allowed-files/complete-review/record-review) and prd_split is the only issue
+# minter, so an item discovered outside a PRD -- or fixed outside its parent
+# PRD's manifest -- can be FIXED and never RESOLVED. It is not voidable (it was
+# real) and there is no closed issue to point at. Measured live on sp-d912cc82
+# and sp-3aa375a6, both fixed and merged into main and both still reading open.
+#
+# THE EXIT: the merged code itself. A commit that (1) exists, (2) is an ancestor
+# of the integration branch, and (3) NAMES this item in its message is evidence
+# no operator can assert into being -- it takes a real commit on the real branch.
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(repo), *args],
+                          capture_output=True, text=True)
+
+
+@pytest.fixture
+def git_repo(repo: Path) -> Path:
+    """The `repo` fixture only MKDIRs `.git`; the commit exit needs a real one.
+
+    Identity is set per-repo rather than inherited: a CI box with no global
+    git identity would otherwise fail every commit here for a reason that has
+    nothing to do with what is under test.
+    """
+    (repo / ".git").rmdir()
+    _git(repo, "init", "--quiet", "--initial-branch", "main")
+    _git(repo, "config", "user.email", "t@example.test")
+    _git(repo, "config", "user.name", "T")
+    return repo
+
+
+def _commit(repo: Path, filename: str, message: str) -> str:
+    """Commit `filename` with unique content and return its full sha.
+
+    Content carries the filename because a fixture that writes the same bytes
+    with the same message inside the same second produces the SAME sha in two
+    "different" repos, and a test asserting on a sha then passes for the wrong
+    reason.
+    """
+    (repo / filename).write_text(f"content of {filename}\n")
+    _git(repo, "add", filename)
+    _git(repo, "commit", "--quiet", "--no-verify", "-m", message)
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_a_merged_fix_commit_resolves_the_item(git_repo):
+    """REPRODUCER for sp-8c0b2d87. Watched failing at 0143ab9 before the fix:
+
+        >       assert ok.returncode == 0, ok.stderr
+        E       AssertionError: usage: prd_runner.py [-h] [--repo-root REPO_ROOT]
+        E                              {new,load,status,advance,archive,clear,gates,spillover} ...
+        E         prd_runner.py: error: unrecognized arguments: --resolution-commit
+        E         c713d41e3202ba287f287e6578335a810d434547
+        E       assert 2 == 0
+
+    The item is fixed. The fix is merged. Neither existing exit can say so:
+    `--resolution-ref` has no issue to point at and `--void` would record that
+    a real defect was not real.
+    """
+    sha = _commit(git_repo, "fix.py", "fix(x): stop the leak\n\nsp1 was real.\n")
+    run(git_repo, "spillover", "add", "--source", "rca-x", "--desc", "leak", "--id", "sp1")
+
+    ok = run(git_repo, "spillover", "resolve", "sp1", "--resolution-commit", sha)
+    assert ok.returncode == 0, ok.stderr
+
+    last = [json.loads(l) for l in _ledger_lines(git_repo) if json.loads(l)["id"] == "sp1"][-1]
+    assert last["status"] == "resolved"
+    assert last["resolution_commit"] == sha
+    assert last["resolution_tracker"] == "git"
+    assert run(git_repo, "spillover", "check").returncode == 0
+
+
+# The negative half. Each of these is a way the commit exit could become the
+# hand-clear no-orphan-findings.md refuses, so each has to be watched refusing.
+
+
+def test_an_unmerged_commit_is_refused(git_repo):
+    """The branch that wants the item cleared cannot vouch for itself.
+
+    This is the failure mode a naive `--is-ancestor <sha> HEAD` ships: you make
+    the fix commit on your feature branch and resolve from that same branch,
+    which is every commit ever written.
+    """
+    _commit(git_repo, "base.py", "chore: base")
+    _git(git_repo, "checkout", "--quiet", "-b", "feature")
+    sha = _commit(git_repo, "fix.py", "fix: sp1 handled\n")
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+
+    bad = run(git_repo, "spillover", "resolve", "sp1", "--resolution-commit", sha)
+    assert bad.returncode == 2
+    assert "not merged" in bad.stderr, bad.stderr
+    assert run(git_repo, "spillover", "check").returncode == 1  # still open
+    assert len(_ledger_lines(git_repo)) == 1  # refusal wrote nothing
+
+
+def test_a_merged_commit_that_does_not_name_the_item_is_refused(git_repo):
+    """Any merged sha would otherwise clear any item. This is THE property."""
+    sha = _commit(git_repo, "other.py", "fix: an unrelated thing\n")
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+
+    bad = run(git_repo, "spillover", "resolve", "sp1", "--resolution-commit", sha)
+    assert bad.returncode == 2
+    assert "does not name sp1" in bad.stderr, bad.stderr
+    assert run(git_repo, "spillover", "check").returncode == 1
+
+
+def test_a_commit_naming_a_different_item_is_refused(git_repo):
+    """Neighbouring ids must not be interchangeable: sp1's fix is not sp2's."""
+    sha = _commit(git_repo, "fix.py", "fix: sp1 handled\n")
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "a", "--id", "sp1")
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "b", "--id", "sp2")
+
+    assert run(git_repo, "spillover", "resolve", "sp1", "--resolution-commit", sha).returncode == 0
+    bad = run(git_repo, "spillover", "resolve", "sp2", "--resolution-commit", sha)
+    assert bad.returncode == 2
+    assert "does not name sp2" in bad.stderr, bad.stderr
+
+
+def test_the_id_is_read_from_the_message_never_the_diff(git_repo):
+    """A file that merely QUOTES an id must not resolve it.
+
+    RCA docs, plans and review notes quote spillover ids by the dozen here, so
+    a diff-based match would let a docs commit clear the very item it describes.
+    """
+    (git_repo / "rca.md").write_text("The finding sp1 is described here.\n")
+    _git(git_repo, "add", "rca.md")
+    _git(git_repo, "commit", "--quiet", "--no-verify", "-m", "docs: write up the rca")
+    sha = _git(git_repo, "rev-parse", "HEAD").stdout.strip()
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+
+    bad = run(git_repo, "spillover", "resolve", "sp1", "--resolution-commit", sha)
+    assert bad.returncode == 2
+    assert "does not name sp1" in bad.stderr, bad.stderr
+
+
+def test_a_nonexistent_sha_is_refused(git_repo):
+    _commit(git_repo, "base.py", "chore: base")
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    bad = run(git_repo, "spillover", "resolve", "sp1",
+              "--resolution-commit", "0" * 40)
+    assert bad.returncode == 2
+    assert "no commit" in bad.stderr, bad.stderr
+
+
+def test_a_tree_sha_is_refused(git_repo):
+    """`^{commit}` peeling, not mere object existence: a tree is not evidence."""
+    _commit(git_repo, "base.py", "chore: base")
+    tree = _git(git_repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    bad = run(git_repo, "spillover", "resolve", "sp1", "--resolution-commit", tree)
+    assert bad.returncode == 2
+    assert "no commit" in bad.stderr, bad.stderr
+
+
+def test_no_integration_branch_refuses_rather_than_falling_back(git_repo):
+    """With no main/master and no origin/HEAD there is nothing to be merged INTO.
+
+    The tempting fallback is HEAD, which would silently make every commit in
+    every repo count as merged. Refuse and say why.
+    """
+    _commit(git_repo, "base.py", "chore: base")
+    sha = _commit(git_repo, "fix.py", "fix: sp1 handled\n")
+    _git(git_repo, "branch", "--quiet", "-m", "main", "trunk")
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+
+    bad = run(git_repo, "spillover", "resolve", "sp1", "--resolution-commit", sha)
+    assert bad.returncode == 2
+    assert "no integration branch" in bad.stderr, bad.stderr
+
+
+def test_resolve_takes_exactly_one_exit(git_repo):
+    sha = _commit(git_repo, "fix.py", "fix: sp1 handled\n")
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    bad = run(git_repo, "spillover", "resolve", "sp1",
+              "--resolution-commit", sha, "--void", "not real")
+    assert bad.returncode == 2
+    assert "exactly one exit" in bad.stderr, bad.stderr
+    assert run(git_repo, "spillover", "check").returncode == 1
+
+
+def test_the_commit_exit_unblocks_archive(git_repo):
+    """The step this hole actually blocked: archive refuses on ANY open item the
+    PRD opened, and an item fixed outside a manifest had no way to stop being
+    open. Asserted end to end rather than on the resolve call alone.
+    """
+    created = run(git_repo, "new", "arch-commit-exit", "--title", "T")
+    assert created.returncode == 0, created.stderr
+    prd_id = json.loads(created.stdout)["created"]
+    run(git_repo, "advance", "draft")
+    sha = _commit(git_repo, "fix.py", "fix: sp1 handled\n")
+    run(git_repo, "spillover", "add", "--source", prd_id, "--desc", "leak", "--id", "sp1")
+
+    blocked = run(git_repo, "archive")
+    assert blocked.returncode != 0
+    assert "refusing to archive" in blocked.stderr, blocked.stderr
+
+    assert run(git_repo, "spillover", "resolve", "sp1",
+               "--resolution-commit", sha).returncode == 0
+    after = run(git_repo, "archive")
+    assert after.returncode == 0, after.stderr + after.stdout

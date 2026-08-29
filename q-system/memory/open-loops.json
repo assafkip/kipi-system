@@ -26,6 +26,16 @@
       "needs_founder": true,
       "status": "closed",
       "added": "2026-06-20"
+    },
+    {
+      "id": "i-have-adhd-pr-124",
+      "title": "i-have-adhd rule-8 RSD PR (upstream)",
+      "next_action": "PR github.com/ayghri/i-have-adhd/pull/124 is OPEN (rule 8 extended to feedback on the reader's own work, Author:AI disclosed). Founder action: review the diff and tick the final-accountability checkbox in the PR body (2 min). Then wait on maintainer review; close this loop when merged or closed.",
+      "needs_founder": true,
+      "status": "open",
+      "added": "2026-08-19",
+      "github_url": "https://github.com/ayghri/i-have-adhd/pull/124",
+      "linear": "ASK-924"
     }
   ]
 }
