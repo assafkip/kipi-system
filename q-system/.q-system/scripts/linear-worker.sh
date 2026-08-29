@@ -916,6 +916,23 @@ if [ "${FOUNDER_ROUTED:-0}" != "0" ]; then
   # defined ~200 lines below this block. This site cannot move down to reach it:
   # the `READY_COUNT = 0` early exit sits between them, and an empty board with a
   # refilling founder queue is exactly the case that must still page.
+  # THE CLAIM IS PROVISIONAL, AND THE RECOVERY IS NOT ON THIS LINE. Read this
+  # before concluding that a kill here mutes the issue forever (codex PR #215
+  # round 7 raised exactly that, having probed only for a `trap` between the
+  # claim and the send; there is none, and none is needed):
+  #
+  #   claim-flag <id> founder-routed         <- here. provisional.
+  #   claim-flag <id> founder-routed-filed   <- only after the notifier exits 0
+  #   the sweep below the FOUNDER_ROUTED block releases any founder-routed flag
+  #   whose -filed marker is absent, on the NEXT tick
+  #
+  # So a SIGKILL, a reboot or launchd stopping the job between these two leaves
+  # a claimed-but-unfiled flag, and the next run releases it and pages. That is
+  # the reclaim-after-the-fact shape; it needs no in-process handler, because a
+  # kill runs no handler. Proven end to end by test-worker-project-scope.sh case
+  # 6h, whose fixture is the exact ledger state a kill leaves, written by the
+  # ledger CLI -- and mutation-killed: treat an unfiled claim as filed and 6h
+  # goes red.
   FOUNDER_NEW=""
   for fid in $FOUNDER_IDS; do
     rc=0
