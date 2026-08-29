@@ -262,9 +262,10 @@ def do_promote(ls, issue: dict, dor: str, why: str, apply: bool) -> str:
     # ONE mutation for description + label drop. As two calls a failure between
     # them leaves a ticket carrying a DoR and still wearing needs-triage, which
     # reads as triaged to a human and as untriaged to every filter.
-    # Drop the hold too (round 7, minor). An issue held on an earlier night and
-    # promoted later is executable now; leaving triage:held on it says the
-    # opposite, and is the kind of stale flag someone later reads as a decision.
+    # Only needs-triage. The hold label went with the unattended lane to
+    # ASK-1133; a comment here promising to clear it would describe a mutation
+    # this payload does not make, which is how a reader learns to distrust the
+    # comments.
     payload = {"description": new, "removedLabelIds": label_ids(fresh, TRIAGE_LABEL)}
     if not apply:
         # wrote=False: nothing reached Linear. A preview that reports a write
@@ -362,8 +363,21 @@ def do_close(ls, issue: dict, reason: str, apply: bool) -> str:
     if not (((res or {}).get("issueUpdate") or {}).get("success")):
         raise RuntimeError(f"{ident}: close failed")
 
+    # A VERIFICATION THAT DID NOT RUN IS NOT A PASS (codex review of PR #275 r3).
+    #
+    # The first cut read `if after is not None and ...`, so a failed re-read fell
+    # straight through to "CLOSED" -- the safety check silently skipped and its
+    # success reported anyway. That is the same shape as every other defect in
+    # this file's history: an UNKNOWN counted as an OK. The close itself did
+    # happen, so wrote stays True and the line says so; what changes is that it
+    # stops claiming a verification it could not perform.
     after = reread(ls, ident)
-    if after is not None and not is_alert_ticket(after.get("description") or ""):
+    if after is None:
+        print(f"  {ident}: closed, but could NOT re-read to verify it did not race "
+              "a promotion; check it by hand", file=sys.stderr)
+        return Outcome(True, f"{ident}: CLOSED ({done[0]['name']}) -- UNVERIFIED, "
+                             "the post-close read failed")
+    if not is_alert_ticket(after.get("description") or ""):
         reopened = _reopen(ls, ident)
         ls.graphql(COMMENT_M, {"input": {"issueId": fresh["id"], "body":
             "This issue was promoted while a close was in flight, so the close "

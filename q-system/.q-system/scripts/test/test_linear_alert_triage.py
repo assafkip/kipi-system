@@ -395,5 +395,60 @@ class TestExplicitVerbsReportSkips(unittest.TestCase):
                       "main has no notion of a skip, so it cannot report one")
 
 
+class TestUnverifiedCloseSaysSo(unittest.TestCase):
+    """codex review of PR #275 round 3. A failed post-close re-read fell through
+    to CLOSED, so the safety check was skipped and its success reported anyway."""
+
+    def _fake(self, reads):
+        seq = list(reads)
+        class L:
+            def __init__(s): s.calls = []
+            def graphql(s, q, v):
+                s.calls.append((q, v))
+                if "comments(first" in q:
+                    return {"issue": {"comments": {"nodes": []}}}
+                if "issue(" in q:
+                    d = seq.pop(0) if seq else ALERT_DESC
+                    if d is None:
+                        raise RuntimeError("transport failure on the verify read")
+                    return {"issue": {"id": "u", "identifier": "ASK-9",
+                                      "description": d, "labels": {"nodes": []}}}
+                if "commentCreate" in q:
+                    return {"commentCreate": {"success": True}}
+                if "teams(" in q:
+                    return {"teams": {"nodes": [{"states": {"nodes": [
+                        {"id": "c", "name": "Canceled", "type": "canceled"},
+                        {"id": "b", "name": "Backlog", "type": "backlog"}]}}]}}
+                if "issueUpdate" in q:
+                    return {"issueUpdate": {"success": True}}
+                return {}
+        return L()
+
+    def test_a_failed_verify_read_is_reported_not_swallowed(self):
+        # gate ok, final check ok, POST-close read fails
+        f = self._fake([ALERT_DESC, ALERT_DESC, None])
+        out = triage.do_close(f, {"id": "u", "identifier": "ASK-9"}, "noise", True)
+        self.assertTrue(out.wrote, "the close did happen, so it must not claim otherwise")
+        self.assertIn("UNVERIFIED", out.line,
+                      "a skipped verification was reported as a verified close")
+
+    def test_a_clean_close_does_not_say_unverified(self):
+        """Negative control."""
+        f = self._fake([ALERT_DESC, ALERT_DESC, ALERT_DESC])
+        out = triage.do_close(f, {"id": "u", "identifier": "ASK-9"}, "noise", True)
+        self.assertTrue(out.wrote)
+        self.assertNotIn("UNVERIFIED", out.line)
+
+    def test_promotion_comment_matches_the_mutation_it_makes(self):
+        """The stale 'drop the hold too' comment survived the split while the
+        payload reverted to needs-triage only. A comment describing a mutation
+        the code does not make teaches a reader to distrust the comments."""
+        import inspect
+        body = inspect.getsource(triage).split("def do_promote(")[1].split("\ndef ")[0]
+        if "HELD_LABEL" not in body:
+            self.assertNotIn("triage:held", body,
+                             "the comment promises to clear a label the payload leaves")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
