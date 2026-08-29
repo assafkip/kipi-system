@@ -138,6 +138,8 @@ ISSUES_Q = """query($f:IssueFilter,$a:String){issues(filter:$f,first:100,after:$
 ISSUE_Q = """query($id:String!){issue(id:$id){id identifier title description url
   state{name type} project{name} labels{nodes{id name}}}}"""
 
+COMMENTS_Q = """query($id:String!){issue(id:$id){comments(first:100){nodes{body}}}}"""
+
 UPDATE_M = """mutation($id:String!,$input:IssueUpdateInput!){
   issueUpdate(id:$id,input:$input){success issue{identifier}}}"""
 
@@ -213,6 +215,22 @@ def promote_body(desc: str, dor: str, fp: str, why: str) -> str:
     return "\n".join(parts).rstrip() + "\n"
 
 
+def _rationale_already_posted(ls, issue_id: str) -> bool:
+    """Whether a previous attempt already left this verb's rationale.
+
+    Keyed on CLOSE_MARKER rather than on the reason text, so a reworded retry
+    still recognises its own earlier note. Failing to read comments returns
+    False: posting a second rationale is untidy, skipping the only one is a
+    silent close, and this file always errs toward the record existing.
+    """
+    try:
+        nodes = ((((ls.graphql(COMMENTS_Q, {"id": issue_id}) or {}).get("issue")
+                   or {}).get("comments") or {}).get("nodes") or [])
+    except Exception:  # noqa: BLE001 - see the docstring
+        return False
+    return any(CLOSE_MARKER in (n.get("body") or "") for n in nodes)
+
+
 def do_promote(ls, issue: dict, dor: str, why: str, apply: bool) -> str:
     ident = issue["identifier"]
     fresh = reread(ls, ident) if apply else issue
@@ -260,10 +278,29 @@ def do_promote(ls, issue: dict, dor: str, why: str, apply: bool) -> str:
     return Outcome(True, f"{ident}: PROMOTED")
 
 
+CLOSE_MARKER = "<!-- kipi-alert-close-rationale -->"
+
+
 def do_close(ls, issue: dict, reason: str, apply: bool) -> str:
     ident = issue["identifier"]
     if not apply:
         return Outcome(False, f"{ident}: WOULD CLOSE ({reason[:70]})")
+
+    # CLOSE ONLY AN ALERT TICKET (codex review of PR #275).
+    #
+    # do_promote has always re-read and checked this; do_close never did. So a
+    # mistyped identifier, or an agent acting on a stale decision, could CANCEL
+    # unrelated founder work, and cancelling is the one direction here nobody
+    # sees afterwards. The asymmetry was invisible because both functions look
+    # equally careful; only one of them was.
+    fresh = reread(ls, ident)
+    if fresh is None:
+        return Outcome(False, f"{ident}: SKIPPED (could not re-read)")
+    if not is_alert_ticket(fresh.get("description") or ""):
+        return Outcome(False, f"{ident}: SKIPPED (not an alert ticket; this verb "
+                              "closes alerts, and closing anything else is not "
+                              "its job)")
+
     # Comment FIRST, then close, and REFUSE TO CLOSE IF THE COMMENT DID NOT LAND.
     #
     # Ordering alone was not enough and that was a real defect (codex review of
@@ -273,12 +310,27 @@ def do_close(ls, issue: dict, reason: str, apply: bool) -> str:
     # Getting the ORDER right and then not reading the first write's result is the
     # whole failure: an unrecorded close is exactly what this script forbids, and
     # a wrong success line is worse than a failure, because nobody goes looking.
-    res = ls.graphql(COMMENT_M, {"input": {"issueId": issue["id"],
-              "body": f"Triaged by linear-alert-triage.py: not worth executing.\n\n{reason}"}})
-    if not (((res or {}).get("commentCreate") or {}).get("success")):
-        raise RuntimeError(
-            f"{ident}: refusing to close -- the rationale comment did not post, "
-            "and a close with no recorded reason is exactly what this script forbids")
+    #
+    # AND IT MUST NOT STRAND OR DUPLICATE (codex review of PR #275). The comment
+    # asserts a close. If the close then fails, that assertion is sitting on an
+    # OPEN issue and is now false, and a retry used to add a second identical
+    # copy. Two changes, because the two halves are different failures:
+    #   - the body carries CLOSE_MARKER, so a retry finds its own earlier
+    #     rationale and does not post another
+    #   - it is worded as a DECISION rather than as an accomplished close, so it
+    #     stays true on an issue that is still open
+    # A stranded rationale is then a visible, correct, single note rather than a
+    # false statement multiplying once per attempt.
+    if not _rationale_already_posted(ls, fresh["id"]):
+        res = ls.graphql(COMMENT_M, {"input": {"issueId": fresh["id"], "body":
+                  f"{CLOSE_MARKER}\nTriage decision by linear-alert-triage.py: not "
+                  f"worth executing.\n\n{reason}\n\nIf this issue is still open, the "
+                  "close did not land and the decision above is the record of why "
+                  "it was attempted."}})
+        if not (((res or {}).get("commentCreate") or {}).get("success")):
+            raise RuntimeError(
+                f"{ident}: refusing to close -- the rationale comment did not post, "
+                "and a close with no recorded reason is exactly what this script forbids")
     teams = (ls.graphql(STATES_Q, {"k": TEAM_KEY}) or {}).get("teams") or {}
     states = (((teams.get("nodes") or [{}])[0]).get("states") or {}).get("nodes") or []
     done = [s for s in states if s.get("type") == "canceled"] or \

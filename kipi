@@ -47,7 +47,7 @@ usage() {
   echo "  kipi work [--apply]  Autonomous worker: take a ready issue, branch, PR (never merges/closes)"
   echo "  kipi converge --issue <ASK-n> [--max-rounds N]  Drive one issue to an APPROVED PR (work+review+rework, capped)"
   echo "  kipi dor [--apply]   Draft a Definition of Ready onto issues that lack one (bounded)"
-  echo "  kipi alert-triage [--apply]  Triage the fleet-alert bucket: promote real work, hold the rest"
+  echo "  kipi alert-triage <list|promote|close> [--apply]  Triage the fleet-alert bucket"
   echo "  kipi health          Fleet health check: dark/failing jobs, double schedules, open spillover"
   echo "  kipi health --apply  ...and file each finding as a deduped Linear issue"
   echo "  kipi lessons-run     Run the daily auto-learn heartbeat once (distill->publish->propagate->slack)"

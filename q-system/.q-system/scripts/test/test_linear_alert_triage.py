@@ -249,5 +249,80 @@ class TestPromotionRequiresASelectableOwner(unittest.TestCase):
         self.assertEqual(len(f.wrote()), 1)
 
 
+class TestCloseOnlyTouchesAlerts(unittest.TestCase):
+    """codex review of PR #275. do_promote always re-read and checked; do_close
+    never did, so a mistyped identifier could CANCEL unrelated founder work. Both
+    functions looked equally careful and only one was."""
+
+    def _fake(self, desc, comments=(), close_ok=True):
+        class L:
+            def __init__(s): s.calls = []
+            def graphql(s, q, v):
+                s.calls.append((q, v))
+                if "comments(first" in q:
+                    return {"issue": {"comments": {"nodes": [{"body": b} for b in comments]}}}
+                if "issue(" in q:
+                    return {"issue": {"id": "u", "identifier": "ASK-9",
+                                      "description": desc, "labels": {"nodes": []}}}
+                if "commentCreate" in q:
+                    return {"commentCreate": {"success": True}}
+                if "teams(" in q:
+                    return {"teams": {"nodes": [{"states": {"nodes": [
+                        {"id": "c", "name": "Canceled", "type": "canceled"}]}}]}}
+                if "issueUpdate" in q:
+                    return {"issueUpdate": {"success": close_ok}}
+                return {}
+            def sent(s, n): return any(n in q for q, _ in s.calls)
+            def comments_posted(s):
+                return [v for q, v in s.calls if "commentCreate" in q]
+        return L()
+
+    def test_close_refuses_anything_that_is_not_an_alert(self):
+        f = self._fake("A real founder issue with no alert marker at all.")
+        out = triage.do_close(f, {"id": "u", "identifier": "ASK-9"}, "typo", True)
+        self.assertFalse(out.wrote)
+        self.assertIn("not an alert", out.line)
+        self.assertFalse(f.sent("issueUpdate"), "unrelated work was cancelled")
+        self.assertFalse(f.sent("commentCreate"), "it commented on unrelated work")
+
+    def test_close_still_works_on_a_real_alert(self):
+        """Negative control: the guard must not block the ordinary path."""
+        f = self._fake(ALERT_DESC)
+        out = triage.do_close(f, {"id": "u", "identifier": "ASK-9"}, "noise", True)
+        self.assertTrue(out.wrote)
+        self.assertIn("CLOSED", out.line)
+
+    def test_a_retry_does_not_post_a_second_rationale(self):
+        """The close can fail after the comment lands, leaving the rationale on an
+        open issue. A retry used to add another identical copy."""
+        prior = triage.CLOSE_MARKER + "\nTriage decision ... earlier attempt"
+        f = self._fake(ALERT_DESC, comments=(prior,))
+        triage.do_close(f, {"id": "u", "identifier": "ASK-9"}, "noise", True)
+        self.assertEqual(f.comments_posted(), [],
+                         "a second identical rationale was posted on retry")
+
+    def test_the_rationale_is_worded_as_a_decision_not_a_finished_close(self):
+        """It may end up sitting on an issue that is still open, so it must not
+        assert a state that did not happen."""
+        f = self._fake(ALERT_DESC)
+        triage.do_close(f, {"id": "u", "identifier": "ASK-9"}, "noise", True)
+        body = f.comments_posted()[0]["input"]["body"]
+        self.assertIn(triage.CLOSE_MARKER, body, "the retry key is missing")
+        self.assertIn("Triage decision", body)
+        self.assertIn("still open", body,
+                      "the note does not tell a reader what an open issue means")
+
+
+class TestCliHelpMatchesReality(unittest.TestCase):
+    def test_the_cli_does_not_advertise_a_verb_it_lacks(self):
+        """codex review of PR #275, minor. The usage line still promised 'hold the
+        rest' after the unattended lane was split out to ASK-1133."""
+        cli = (SCRIPTS.parent.parent.parent / "kipi").read_text(encoding="utf-8")
+        usage = [l for l in cli.split("\n") if "kipi alert-triage" in l and "echo" in l]
+        self.assertTrue(usage, "the verb is no longer documented at all")
+        self.assertNotIn("hold", usage[0].lower(),
+                         "the CLI advertises a hold operation that does not exist")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
