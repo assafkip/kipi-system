@@ -59,8 +59,21 @@ esac
 
 STAGED=""
 if [ "$MODE" = "--staged" ]; then
+  # TWO DIFFERENT QUESTIONS, and conflating them opened a hole.
+  #
+  # STAGED is "which files should I scope checks to", so it excludes deletions:
+  # you cannot syntax-check a file that will not exist. ANY_STAGED is "is this
+  # commit empty", and deletions absolutely count.
+  #
+  # the finding (codex, PR #259 round 4): one variable answered both. A commit
+  # that ONLY deletes files produced an empty ACMR list, hit the early exit, and
+  # sailed through at exit 0 with no checks run at all. Deleting the last caller
+  # of a module, or deleting a test file, is exactly the change a floor should
+  # look at -- the remaining tree still has to parse and its suites still have to
+  # pass without it.
+  ANY_STAGED="$(git -C "$REPO" diff --cached --name-only)"
   STAGED="$(git -C "$REPO" diff --cached --name-only --diff-filter=ACMR)"
-  if [ -z "$STAGED" ]; then
+  if [ -z "$ANY_STAGED" ]; then
     echo "verify.sh --staged: nothing staged, nothing to verify."
     exit 0
   fi
@@ -146,6 +159,34 @@ run_check() {
   else
     FAILED+=("$name")
     say "$name" "FAILED"
+    # EVERY failure line, THEN the tail for context.
+    #
+    # the scar (2026-08-27): this was `| tail -30` alone. A run with 50 failures
+    # printed the last 30 lines of pytest output, which held 12 of the 50 FAILED
+    # lines, and the other 38 were invisible EVERYWHERE -- the job log, the raw
+    # API log, `gh run view --log` all only ever contain what this line emitted.
+    # I spent three rounds fixing the instances visible in a 12-of-50 sample,
+    # which is precisely the fix-the-instance-not-the-class failure the reviewer
+    # caught on this same PR three times.
+    #
+    # A gate that hides most of what it found is a gate you cannot act on. The
+    # summary lines are the diagnosis, so they are never truncated silently: if
+    # the cap is hit, the count of what was dropped is PRINTED, so the output can
+    # never imply it was complete when it was not.
+    _sum="$(grep -E '^(FAILED|ERROR) ' /tmp/verify-$$-out || true)"
+    if [ -n "$_sum" ]; then
+      _n=$(printf '%s\n' "$_sum" | wc -l | tr -d ' ')
+      printf '%s\n' "$_sum" | head -200 | sed 's/^/      /'
+      # `if`, NOT `[ ... ] && echo`. Under `set -e` a bare test that evaluates
+      # FALSE returns 1 and kills the script mid-check -- which is exactly what
+      # the first version of this block did, silently, before `say` could even
+      # print the failure. Caught by running it against a repo with 40 failing
+      # tests and watching verify.sh stop after "shell syntax ok".
+      if [ "$_n" -gt 200 ]; then
+        echo "      ... and $((_n - 200)) more failure lines (capped)"
+      fi
+      echo "      ---- tail of the run ----"
+    fi
     sed 's/^/      /' /tmp/verify-$$-out | tail -30
   fi
   rm -f /tmp/verify-$$-out
@@ -242,10 +283,44 @@ TESTFILES="$(git -C "$REPO" ls-files 'test_*.py' '*/test_*.py')"
 #
 # A repo with no manifest falls back to one root pytest, which is right for a
 # normal repo and is what every instance without the file gets.
-if [ -f "$REPO/.verify-suites" ]; then
+# THE MANIFEST COMES FROM THE TREE BEING GRADED, not from the working tree.
+#
+# the finding (codex, PR #259 round 5): both reads used $REPO. In --full that is
+# the same path, so it looked right. In --staged it meant the snapshot's checks
+# were chosen by whatever manifest happened to be lying in the working tree.
+# Stage a commit that ADDS a suite and the gate would not run it; stage one that
+# REMOVES a broken suite and the gate would still run it and refuse. The whole
+# premise of --staged is "grade what the commit contains", and the file deciding
+# WHAT GETS GRADED was exempt from it.
+MANIFEST="$TARGET/.verify-suites"
+if [ -f "$MANIFEST" ]; then
   if command -v pytest >/dev/null 2>&1 || python3 -c "import pytest" 2>/dev/null; then
     while IFS= read -r suite; do
       case "$suite" in ''|'#'*) continue ;; esac
+      # A MANIFEST ENTRY MAY BE A FILE, not only a directory.
+      #
+      # why (codex, PR #259 round 4): 10 tracked test files sit where no
+      # runnable directory contains them -- two at the repo root, one beside a
+      # broken sibling suite, two under scripts/. Running pytest FROM those
+      # locations either collects nothing or drags in the vendored trees that
+      # produce 109 collection errors. Without file support the only options
+      # were to leave them silently ungated, which is the finding, or to declare
+      # them excluded, which pretends a limitation is a decision. 48 tests were
+      # passing and gated by nothing.
+      #
+      # A file entry runs from the REPO ROOT against that path, so pytest
+      # resolves it exactly as a human would typing the path.
+      if [ -f "$TARGET/$suite" ]; then
+        if [ "$MODE" = "--staged" ]; then
+          if ! printf '%s\n' "$STAGED" | grep -q "^$suite$"; then
+            say "pytest:$suite" "skipped (not staged)"
+            continue
+          fi
+        fi
+        run_check "pytest:$suite" bash -c 'cd "$1" && python3 -m pytest "$2" -q --no-header' \
+                  _ "$TARGET" "$suite"
+        continue
+      fi
       if [ ! -d "$TARGET/$suite" ]; then
         # A manifest naming a directory that is gone is a BROKEN FLOOR. Silently
         # skipping it is how a suite stops running and nobody notices.
@@ -266,9 +341,42 @@ if [ -f "$REPO/.verify-suites" ]; then
           continue
         fi
       fi
-      run_check "pytest:$suite" bash -c 'cd "$1/$2" && python3 -m pytest -q --no-header' \
-                _ "$TARGET" "$suite"
-    done < "$REPO/.verify-suites"
+      # THE RETRY COSTS AS MUCH AS THE FIRST RUN, and that is the whole problem
+      # (2026-08-29). A caller with a shorter timeout than the suite kills the hook
+      # mid-run, nothing is committed, the caller retries, and pays the full run
+      # again to reach the same failure. Measured three times in one session on a
+      # ~160s suite.
+      #
+      # Two changes, neither of which weakens the gate:
+      #
+      #   --ff   run the tests that failed LAST time first. The retry hits its
+      #          failure in seconds instead of after the whole suite.
+      #   -x     stop at the first failure. A commit blocked by one failing test is
+      #          blocked either way; there is nothing gained by spending another two
+      #          minutes proving the rest still pass. A GREEN run is unaffected: it
+      #          has no first failure, so it still runs every test. Measured on a
+      #          real hook: a failing pre-commit went 142s -> 2.84s, and a green
+      #          tree still ran all 5800 tests.
+      #
+      # `-o cache_dir` is what makes --ff work at all here. The --staged snapshot
+      # worktree is thrown away after every run, so pytest's cache died with it and
+      # --ff had nothing to read. The cache lives beside the repo instead, keyed per
+      # suite. It is a CACHE OF ORDERING, never of verdicts: no run is skipped, so a
+      # corrupt or stale cache can only make the run slower, never green-by-cache.
+      #
+      # --full deliberately keeps NEITHER flag. Pre-push and CI want the complete
+      # picture, not the fastest no. The file-entry branch above also keeps neither:
+      # a single test file is already the fast case, so --ff would buy nothing and
+      # -x would hide sibling failures in the same file.
+      if [ "$MODE" = "--staged" ]; then
+        run_check "pytest:$suite" bash -c \
+          'cd "$1/$2" && python3 -m pytest -q --no-header --ff -x -o cache_dir="$3"' \
+          _ "$TARGET" "$suite" "$REPO/.verify-cache/$(printf '%s' "$suite" | tr / _)"
+      else
+        run_check "pytest:$suite" bash -c 'cd "$1/$2" && python3 -m pytest -q --no-header' \
+                  _ "$TARGET" "$suite"
+      fi
+    done < "$MANIFEST"
   else
     RAN+=("pytest")
     FAILED+=("pytest: .verify-suites present but pytest is not installed")
