@@ -244,8 +244,6 @@ def candidate_subjects(root, test_rel, max_subjects):
 # it on the first self-test run; the anchors are narrow now so it cannot recur.
 _EOL = r"([ \t]*\r?\n?)$"
 PY_RULES = [
-    (re.compile(r"(\bsys\.exit\s*\(\s*)(?!0\s*\))[^)]*(\))"), r"\g<1>0\g<2>"),
-    (re.compile(r"(\braise\s+SystemExit\s*\(\s*)(?!0\s*\))[^)]*(\))"), r"\g<1>0\g<2>"),
     (re.compile(r"^([ \t]*)return[ \t]+False" + _EOL), r"\g<1>return True\g<2>"),
     (re.compile(r"^([ \t]*)return[ \t]+[1-9][0-9]*" + _EOL), r"\g<1>return 0\g<2>"),
 ]
@@ -253,6 +251,47 @@ SH_RULES = [
     (re.compile(r"^([ \t]*)exit[ \t]+[1-9][0-9]*" + _EOL), r"\g<1>exit 0\g<2>"),
     (re.compile(r"^([ \t]*)return[ \t]+[1-9][0-9]*" + _EOL), r"\g<1>return 0\g<2>"),
 ]
+
+
+# Call heads whose argument is the process's verdict. Rewritten by balanced
+# paren scan, NOT by regex: `[^)]*(\))` stopped at the FIRST `)`, so the very
+# common `sys.exit(main())` became `sys.exit(0))` -- a syntax error, which any
+# test that imports the module kills for free. The ast guard caught it on a real
+# file; a harness without that guard would have booked it as a kill.
+_EXIT_HEADS = (re.compile(r"\bsys\.exit\s*\("),
+               re.compile(r"\braise\s+SystemExit\s*\("))
+
+
+def _disarm_exit_calls(line):
+    """Replace each `sys.exit(<anything>)` / `raise SystemExit(<anything>)` on
+    this line with a zero-argument form. Returns (line, n_replacements)."""
+    n = 0
+    for head in _EXIT_HEADS:
+        pos = 0
+        while True:
+            m = head.search(line, pos)
+            if not m:
+                break
+            depth, i = 1, m.end()
+            while i < len(line) and depth:
+                if line[i] == "(":
+                    depth += 1
+                elif line[i] == ")":
+                    depth -= 1
+                i += 1
+            if depth:
+                # The call spans more than this physical line. Leave it alone
+                # rather than emit something unbalanced.
+                pos = m.end()
+                continue
+            arg = line[m.end():i - 1].strip()
+            if arg == "0":
+                pos = i
+                continue
+            line = line[:m.end()] + "0" + line[i - 1:]
+            n += 1
+            pos = m.end() + 1
+    return line, n
 
 
 def make_disarm(text, suffix):
@@ -266,6 +305,9 @@ def make_disarm(text, suffix):
             out.append(line)
             continue
         new = line
+        if suffix == ".py":
+            new, k = _disarm_exit_calls(new)
+            n += k
         for pat, repl in rules:
             new2 = pat.sub(repl, new)
             if new2 != new:
@@ -627,6 +669,97 @@ def report(results, outdir):
     print(f"\nledger: {outdir}/results.jsonl")
 
 
+
+# ------------------------------------------------- zero-execution scan (static)
+
+_MAIN_GUARD = re.compile(r"^\s*if\s+__name__\s*==\s*['\"]__main__['\"]\s*:", re.M)
+_TESTDEF = re.compile(r"^\s*(?:def|async def)\s+test_\w+|^\s*class\s+Test\w+", re.M)
+_PYTEST_IMPORT = re.compile(r"^\s*(?:import\s+pytest|from\s+pytest\s+import)", re.M)
+
+
+def ci_pytest_targets(root):
+    """Paths CI hands to pytest, so a declared test can be checked against the
+    population that actually runs it.
+
+    This is the scope-vs-population diff, and it is the half that decides how
+    bad a finding is: of the 10 files this scan flags in kipi-system, one IS
+    collected by `pytest plugins/prd-os/tests/` in CI and nine execute nowhere.
+    Reporting all 10 identically would have overstated it by one and, worse,
+    hidden that the other nine have no runner at all.
+    """
+    targets = []
+    wf = root / ".github/workflows"
+    if not wf.is_dir():
+        return targets
+    for f in sorted(wf.glob("*.yml")) + sorted(wf.glob("*.yaml")):
+        for line in f.read_text(errors="ignore").splitlines():
+            m = re.search(r"\bpytest\s+([^\s|;&]+)", line)
+            if m and not m.group(1).startswith("-"):
+                targets.append(m.group(1).strip())
+    return targets
+
+
+def zero_exec_scan(root):
+    """Declared tests that the gate RUNS and that execute no assertions.
+
+    The gate invokes every python3 entry as `python3 <file>`. A pytest-style
+    module has no entry point, so that command imports it, defines the test
+    functions, and exits 0. The gate books a pass. Nothing ran.
+
+    This is invisible to mutation testing by construction -- a test that
+    executes nothing cannot notice a mutant, so it reads as "no dependency",
+    which is indistinguishable from a bad attribution guess. It needs its own
+    check, and the check is static plus one confirming execution.
+    """
+    pop = load_population(root)
+    ci = ci_pytest_targets(root)
+    findings = []
+    for entry in pop:
+        if entry["runner"] != "python3":
+            continue
+        rel = entry["path"]
+        text = (root / rel).read_text(errors="ignore")
+        n_tests = len(_TESTDEF.findall(text))
+        if not n_tests:
+            continue
+        if _MAIN_GUARD.search(text):
+            continue  # has an entry point; it runs something
+        covered = [c for c in ci if rel == c or rel.startswith(c.rstrip("/") + "/")]
+        findings.append({
+            "path": rel, "test_defs": n_tests,
+            "uses_pytest": bool(_PYTEST_IMPORT.search(text)),
+            "ci_pytest_covered_by": covered,
+            "timeout_s": entry["timeout_s"],
+        })
+    return findings
+
+
+def report_zero_exec(root, findings, sw):
+    print("=== ZERO-EXECUTION SCAN ===")
+    print("declared tests the gate runs as `python3 <file>` that define test "
+          "functions but have no entry point.\n")
+    if not findings:
+        print("none.")
+        return 0
+    orphans = [f for f in findings if not f["ci_pytest_covered_by"]]
+    for f in sorted(findings, key=lambda x: (bool(x["ci_pytest_covered_by"]), x["path"])):
+        # Confirm by EXECUTION, not by reading: run it the way the gate does.
+        r = sw.run_test({"path": f["path"], "runner": "python3",
+                         "timeout_s": f["timeout_s"]})
+        f["direct_rc"] = r["rc"]
+        f["direct_out_bytes"] = r["out_bytes"]
+        cov = (", ".join(f["ci_pytest_covered_by"])
+               if f["ci_pytest_covered_by"] else "NOTHING")
+        print(f"  {f['path']}\n      {f['test_defs']} test def(s); direct run "
+              f"rc={r['rc']} out={r['out_bytes']}B; other runner: {cov}")
+    print(f"\n{len(findings)} declared test file(s) execute nothing under the gate; "
+          f"{len(orphans)} of those run NOWHERE else.")
+    out = root / "q-system/output/mutation-sweep"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "zero-exec.json").write_text(json.dumps(findings, indent=2))
+    return len(orphans)
+
+
 # ------------------------------------------------------------------ self-test
 
 SELF_SUBJECT = '''#!/usr/bin/env python3
@@ -776,6 +909,8 @@ def dirty_tree(root):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--zero-exec-scan", action="store_true",
+                    help="report declared tests that execute no assertions")
     ap.add_argument("--self-test", action="store_true",
                     help="run the harness's own negative control and exit")
     ap.add_argument("--only", help="regex; restrict the population")
@@ -804,6 +939,10 @@ def main():
               f"({len(dirty)} path(s)). Commit, stash, or pass --force-dirty.",
               file=sys.stderr)
         sys.exit(3)
+
+    if args.zero_exec_scan:
+        sw = Sweep(root, load_runner(root))
+        sys.exit(1 if report_zero_exec(root, zero_exec_scan(root), sw) else 0)
 
     results = sweep(root, args)
 
