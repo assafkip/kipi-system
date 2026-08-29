@@ -54,6 +54,43 @@ EXIT_REFUSED_FIXTURE = 4
 TEAM_KEY = os.environ.get("KIPI_LINEAR_TEAM", "ASK")
 OWNER_LABEL = "owner:sana"
 
+# THE MARK THAT SAYS "A MACHINE FILED THIS, NOBODY ROUTED IT" (ASK-882).
+#
+# Measured on the live board 2026-08-16: 873 issues, 229 of them carrying no
+# project at all -- created, never routed. Automated inflow outran manual triage,
+# and the reason it could is that an auto-filed ticket lands in Backlog looking
+# exactly like work a human scoped and put there. There is no field to filter on,
+# so "everything a scanner filed today" is not a query anyone can write.
+#
+# WHY A LABEL AND NOT LINEAR'S OWN TRIAGE FEATURE. Team Triage is real and it IS
+# reachable from the API -- `TeamUpdateInput.triageEnabled` exists, and ASK reads
+# `triageEnabled: false` (introspected 2026-08-16, so this is measured, not
+# assumed). It was still the wrong instrument here, for two reasons:
+#
+#   1. A triage-type state is NOT a backlog-type state, and both drains filter on
+#      the type: linear-worker.sh:546 refuses anything whose state type is not in
+#      ("backlog", "unstarted"), and linear-dor-drafter.py:194 draws its
+#      DRAFTABLE_STATE_TYPES from the same pair. Flipping the flag would route
+#      every new automated ticket into a state neither consumer can see, which
+#      stops the flood by stopping the drain. That is not a gate, it is an outage.
+#   2. Linear Triage terminates in a human pressing accept or decline. The board
+#      problem was never that nobody could SEE the inflow; it was that outflow is
+#      manual while inflow is not. A queue whose exit is a person is the same
+#      bottleneck wearing a feature's name.
+#
+# So the mark is additive: the ticket still lands in Backlog where the existing
+# drain already reaches it, and it carries one extra label that makes "unrouted
+# machine output" a filterable set for the first time. Nothing is gated OFF.
+TRIAGE_LABEL = "needs-triage"
+
+TRIAGE_LABEL_DESCRIPTION = (
+    "Filed by an automated producer, not routed by a human or a process. "
+    "The issue is real work until triage says otherwise -- volume from one "
+    "detector is a signal about the detector, not N separate problems. "
+    "Cleared by giving the issue a project (routing it) or closing it. "
+    "Written by any automated filer; measured by linear-triage-health.py."
+)
+
 # A repeat inside this window updates the counter silently. Past it, the ticket
 # gets a comment so a condition that is STILL true a day later is visible as
 # still-true rather than as one stale ticket nobody has touched.
@@ -122,6 +159,91 @@ def title_for(message: str) -> str:
     """A ticket title a human can scan in a list. One line, bounded."""
     line = " ".join(message.strip().split())
     return line[:110] + ("..." if len(line) > 110 else "")
+
+
+# Alert shapes that are pure all-clear / no-op confirmations: nothing is broken
+# and nothing needs Sana's attention, so filing+closing a ticket for each one is
+# pure overhead. Evidence: the Linear cleanup on 2026-08-16 found 50 open
+# tickets matching these exact shapes, none carrying content beyond the
+# confirmation itself. An EXPLICIT allowlist, not a heuristic -- a message that
+# matches nothing here still files a ticket, so widening this list is a
+# deliberate decision, not drift.
+_NOISE_PATTERNS = [
+    # "kipi heartbeat: RESUMED after 99 min down" (ASK-771/807/813) -- the
+    # outage already ended by the time this fires; nothing is left to fix.
+    re.compile(r"heartbeat:\s*RESUMED after \d+\s*min down", re.IGNORECASE),
+    # "armed .claude/ integrity tripwire: 45 file(s) baselined" (ASK-862/790/
+    # 703/814) -- establishing a baseline, not a detected change. The
+    # unsanctioned/reverted override below is what keeps this from ever
+    # matching a real detection like ASK-870.
+    re.compile(r"armed .*tripwire.*baselined", re.IGNORECASE),
+    # "Reddit paste-list ...: nothing due to paste. Job ran fine" (ASK-720) --
+    # explicit no-op, the job's own text says nothing happened.
+    re.compile(r"nothing due to paste\.?\s*Job ran fine", re.IGNORECASE),
+    # "Daily X tool post scheduled for ... (auto-posted, cancel in Publer if
+    # off)" (ASK-704) -- confirms a routine scheduled action already
+    # completed successfully.
+    re.compile(r"scheduled for .*\(auto-posted", re.IGNORECASE),
+    # "converge ASK-700: APPROVE, PR #141 auto-merge armed" (ASK-706) -- a
+    # SUCCESS confirmation. Contrast with "converge ... stalled at 'BLOCK'",
+    # which must still file (ASK-702).
+    re.compile(r"converge .*:\s*APPROVE.*auto-merge armed", re.IGNORECASE),
+    # "delivery self-heal tier 3 STARTED on ...: dispatching a fix-agent"
+    # (ASK-723) -- the self-heal loop already owns this; a STARTED notice is
+    # not a thing for Sana to act on. A tier that FAILED or gave up still
+    # files, since this pattern only matches STARTED.
+    re.compile(r"delivery self-heal tier \d+ STARTED", re.IGNORECASE),
+    # "probe: local endpoints only, ASK-447" (ASK-737/739) -- a routine probe
+    # result with no failure described.
+    re.compile(r"probe: local endpoints only", re.IGNORECASE),
+    # "kipi dispatch: hit the daily cap of 10 issues (~60 agent sessions). Not
+    # an error -- the loop is resting until 7am..." (ASK-884) -- a rate limit
+    # working as designed. The alert's own text says "Not an error", and the
+    # loop resumes by itself at the reset hour, so there is nothing to act on.
+    # Filed 21:17 on 2026-08-16, AFTER this list shipped earlier the same day:
+    # the shape was simply unseen, not excluded.
+    #
+    # NARROW ON PURPOSE. kipi-dispatch.sh pages about three other things
+    # (:449 could not record a live run, :1335 could not launch, :1379 launched
+    # but died immediately) and every one of those is a real problem from the
+    # SAME emitter. Anchoring on the literal cap phrase plus the digits means a
+    # dispatch FAILURE can never ride in behind the routine cap notice; a
+    # bare "dispatch:" prefix match would have swallowed all three.
+    re.compile(r"dispatch:\s*hit the daily cap of \d+ issues", re.IGNORECASE),
+]
+
+
+def is_noise(message: str) -> bool:
+    """True for a pure all-clear/no-op alert that should never become a ticket.
+
+    THE OVERRIDE COMES FIRST AND WINS. ASK-870 ("SECURITY: unsanctioned
+    .claude/ change -- 1 modified ... reverted 1") was wrongly canceled during
+    the 2026-08-16 cleanup by a reviewer that treated it as the same shape as
+    the routine "armed tripwire: N baselined" tickets. A real detected change
+    always carries "unsanctioned" or "reverted" or "SECURITY" in its text; a
+    routine baseline-arm never does. Checking that first means a future
+    pattern added to _NOISE_PATTERNS can never repeat that mistake by
+    accident -- the override applies to every pattern above, not just the
+    tripwire one.
+    """
+    if re.search(r"unsanctioned|reverted|SECURITY", message, re.IGNORECASE):
+        return False
+    return any(p.search(message) for p in _NOISE_PATTERNS)
+
+
+def _noise_log_path() -> str:
+    return os.path.join(_state_dir(), "noise.log")
+
+
+def _log_noise(message: str, now: float) -> None:
+    """Never drop an alert silently -- log it locally instead of filing a
+    ticket. Never raises, same posture as every other write on this path."""
+    try:
+        os.makedirs(_state_dir(), exist_ok=True)
+        with open(_noise_log_path(), "a", encoding="utf-8") as fh:
+            fh.write(f"{now:.0f} {message}\n")
+    except OSError:
+        pass
 
 
 def _load_linear():
@@ -495,28 +617,143 @@ def _project_id_for(ln, team_id: str, names: list) -> str | None:
     return None
 
 
-def _owner_label_id(ln, team_id: str) -> str | None:
-    """The owner:sana label id, created once if the team lacks it.
+def _label_ids(ln, team_id: str, wanted: list, missing: list | None = None) -> list:
+    """Ids for `wanted` label names, creating any the team lacks.
+
+    `missing` is an optional out-list: names that could not be resolved are
+    appended to it, so a caller can report a degraded file without this
+    function changing its return shape or gaining the power to block.
+
+    ONE ROUND TRIP FOR ALL OF THEM, not one per label. The previous shape took a
+    single name and did its own LABELS_QUERY; adding `needs-triage` beside
+    `owner:sana` by copying it would have doubled the query count on the alert
+    path for no new information, and given two places to fix when Linear changes.
 
     A missing label must never cost the ticket: an alert filed with no label is
     still an alert Sana can find, whereas raising here would drop it entirely.
+    That is also why this returns the ids it DID resolve rather than all-or-
+    nothing -- losing the `needs-triage` mark is a worse board, losing the ticket
+    is a lost alert, and those are not the same size of mistake.
+
+    Names are compared lowercased because that is how the previous single-label
+    version compared, and `owner:sana` on the live board is stored lowercase.
     """
+    found: dict = {}
     try:
         team = (ln.graphql(LABELS_QUERY, {"teamId": team_id}) or {}).get("team") or {}
         for node in ((team.get("labels") or {}).get("nodes") or []):
-            if (node.get("name") or "").lower() == OWNER_LABEL:
-                return node.get("id")
-        made = ln.graphql(LABEL_CREATE,
-                          {"input": {"name": OWNER_LABEL, "teamId": team_id}})
-        return (((made or {}).get("issueLabelCreate") or {})
-                .get("issueLabel") or {}).get("id")
+            name = (node.get("name") or "").lower()
+            if name in wanted and name not in found:
+                found[name] = node.get("id")
+    except Exception as exc:
+        # THE EARLY RETURN MUST STILL REPORT, and this one did not. The round-4
+        # fix taught the per-label create path to record an unresolved name, so
+        # a lost-then-unrecoverable label reached the caller's `[DEGRADED: ...]`
+        # suffix. This branch -- the LABELS_QUERY itself failing -- kept its
+        # original bare `return []` and skipped both out-lists, so a labels
+        # endpoint timeout filed a ticket with NO labels at all, exit 0, and a
+        # result line reading `filed ASK-9` with nothing to distinguish it from
+        # a fully-labelled file. Reproduced on the PR head: degraded_visible=
+        # False, labelIds absent (Codex major round 5, PR #204).
+        #
+        # Same posture as every other failure here: never block the alert, never
+        # let the failure be silent. Nothing is resolvable when the read failed,
+        # so every wanted name is unresolved.
+        for name in wanted:
+            _warn_label_unresolved(name, exc)
+        if missing is not None:
+            missing.extend(wanted)
+        return []
+
+    for name in wanted:
+        if name in found:
+            continue
+        # Created one at a time and each in its own try: a team that already has
+        # `owner:sana` but not `needs-triage` must still come away with the id it
+        # did have. A single try around the whole loop would throw away a
+        # resolved id because a LATER create failed.
+        try:
+            payload = {"name": name, "teamId": team_id}
+            if name == TRIAGE_LABEL:
+                payload["description"] = TRIAGE_LABEL_DESCRIPTION
+            made = ln.graphql(LABEL_CREATE, {"input": payload})
+            new_id = (((made or {}).get("issueLabelCreate") or {})
+                      .get("issueLabel") or {}).get("id")
+            if new_id:
+                found[name] = new_id
+        except Exception as exc:
+            # LOSING THE CREATE RACE IS NOT THE SAME AS HAVING NO LABEL. Two
+            # filers running at once both read the team before either created
+            # `needs-triage`; the loser's create fails because the label now
+            # EXISTS, and dropping the name here filed that ticket unmarked and
+            # invisible to the health script -- the failure mode being silent is
+            # what made it worth a fix (Codex major, PR #204).
+            #
+            # The recheck is a refetch, not a parse of Linear's error prose: the
+            # question "does this label exist now" is answerable directly, and
+            # an answer beats matching a message string this fleet has never
+            # measured. A create that failed for any OTHER reason finds nothing
+            # and falls through to the old behaviour unchanged.
+            existing = _refetch_label_id(ln, team_id, name)
+            if existing:
+                found[name] = existing
+                continue
+            # The refetch answered "still absent", so this was NOT a lost create
+            # race -- it is a real failure (a permission error looks exactly like
+            # this). Still never raises, per the rule above; it gets said out
+            # loud instead.
+            _warn_label_unresolved(name, exc)
+            continue
+
+    if missing is not None:
+        missing.extend(n for n in wanted if n not in found)
+    return [found[n] for n in wanted if n in found]
+
+
+def _warn_label_unresolved(name: str, exc: Exception) -> None:
+    """Say out loud that a label could not be attached. Never raises.
+
+    THE ALERT STILL GOES OUT. This file's standing posture is that a secondary
+    failure must never cost the primary alert, because a dropped alert is worse
+    than an unlabelled one. But "never blocks" had quietly become "never
+    observable": a create that failed for a REAL reason (a permission error,
+    not a lost create race) refetched nothing, dropped the name, and the run
+    still reported `filed ASK-9` with no hint the mark was missing.
+    `needs-triage` is the field the entire ASK-882 queue measurement reads, so
+    losing it silently makes the queue depth quietly WRONG rather than loudly
+    broken -- a monitor that undercounts is worse than one that errors
+    (Codex major round 4, PR #204).
+    """
+    print(f"alert-to-linear: WARNING could not attach the {name!r} label "
+          f"({exc}). The ticket is still being filed. While {TRIAGE_LABEL!r} "
+          f"is missing, the triage-queue measurement undercounts this ticket "
+          f"and it needs backfilling by hand.", file=sys.stderr)
+
+
+def _refetch_label_id(ln, team_id: str, name: str) -> str | None:
+    """The team's id for `name`, read fresh. None when it is still absent.
+
+    Its own function so the create loop keeps one level of nesting, and so the
+    "never let a lookup cost the ticket" rule holds here too: this runs on a
+    path that is ALREADY failing, so it swallows and returns None rather than
+    turning a missing label into a lost alert.
+    """
+    try:
+        team = (ln.graphql(LABELS_QUERY, {"teamId": team_id}) or {}).get("team") or {}
     except Exception:
         return None
+    for node in ((team.get("labels") or {}).get("nodes") or []):
+        if (node.get("name") or "").lower() == name.lower():
+            return node.get("id")
+    return None
 
 
 def file_alert(message: str, now: float | None = None) -> tuple[int, str]:
     """(exit_code, human line). The whole job, in one place."""
     now = time.time() if now is None else now
+    if is_noise(message):
+        _log_noise(message, now)
+        return EXIT_OK, f"suppressed (noise, logged not filed): {title_for(message)}"
     fp = fingerprint(message)
     ln = _load_linear()
 
@@ -559,6 +796,12 @@ def file_alert(message: str, now: float | None = None) -> tuple[int, str]:
         # ticket on purpose -- reopening a closed one hides the recurrence,
         # which is the signal worth having.
 
+    # Bound BEFORE the try, never inside it. A name first assigned inside a
+    # try/except is only bound on the paths that got that far, and the read of
+    # it below sits outside the block -- the shape that turns one failure into a
+    # NameError wearing the wrong failure's name.
+    unresolved_labels: list = []
+
     try:
         teams = (ln.graphql(TEAM_QUERY, {"key": TEAM_KEY}) or {}).get("teams") or {}
         nodes = teams.get("nodes") or []
@@ -578,9 +821,15 @@ def file_alert(message: str, now: float | None = None) -> tuple[int, str]:
                 f"<!-- kipi-alert-fingerprint: {fp} -->"
             ),
         }
-        label_id = _owner_label_id(ln, team_id)
-        if label_id:
-            payload["labelIds"] = [label_id]
+        # BOTH labels, and `needs-triage` only on a ticket being CREATED. A
+        # repeat lands in the branch above and never reaches here, so re-marking
+        # an issue a human already routed is structurally impossible rather than
+        # merely avoided -- if this ran on the repeat path it would undo triage
+        # every time the condition fired again.
+        label_ids = _label_ids(ln, team_id, [OWNER_LABEL, TRIAGE_LABEL],
+                               unresolved_labels)
+        if label_ids:
+            payload["labelIds"] = label_ids
 
         # A PROJECT IS ROUTING, NOT DECORATION (ASK-839). This payload carried
         # teamId + labelIds and nothing else, so every alert landed project-unset.
@@ -607,7 +856,13 @@ def file_alert(message: str, now: float | None = None) -> tuple[int, str]:
                       "identifier": issue.get("identifier"),
                       "count": 1, "first_at": now, "last_at": now,
                       "last_comment_at": now})
-    return EXIT_OK, f"filed {issue.get('identifier')} {issue.get('url', '')}".strip()
+    line = f"filed {issue.get('identifier')} {issue.get('url', '')}".strip()
+    if unresolved_labels:
+        # STILL EXIT_OK: the alert landed, which is the job. The suffix is so the
+        # run's own summary line cannot read as an unqualified success while the
+        # label the triage measurement depends on is absent.
+        line += f" [DEGRADED: no {', '.join(unresolved_labels)} label]"
+    return EXIT_OK, line
 
 
 def main(argv: list[str]) -> int:

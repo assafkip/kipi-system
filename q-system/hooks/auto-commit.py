@@ -281,14 +281,91 @@ def report_skipped(unclassified):
         print(f"  - ... and {len(unclassified) - 20} more")
 
 
+def staged_linecounts(files):
+    """{path: (adds, dels) | None} for the STAGED diff, plus the totals.
+
+    `None` means git reported no line counts for that path (a binary file).
+    A path absent from the mapping means the diff could not be attributed, and
+    the caller degrades to a bare path rather than guessing.
+
+    THE SCAR (2026-08-16, commit 80b82f84). An unattended Stop-hook commit read
+    `chore: update system infrastructure` over the body line
+    `- q-system/.q-system/capability-manifest.json`. That message was not
+    missing the path -- the path was right there. What it could not say is that
+    the change was FIVE DELETED LINES and nothing else, so a silent revert of a
+    real capability-manifest entry looked byte-for-byte like an ordinary
+    update. It cost a second session a manual diff to find. Direction and
+    magnitude are the half a path cannot carry, so they are read from git here
+    rather than described by the hook.
+
+    Read AFTER staging and scoped to the same pathspec the commit uses, so the
+    counts describe exactly what this commit will contain -- not the worktree,
+    which a concurrent session may have moved on.
+    """
+    per_path = {}
+    adds_total = dels_total = 0
+    r = run(["git", "diff", "--cached", "--numstat", "-z", "--"] + files)
+    if r.returncode != 0:
+        return per_path, 0, 0
+    # `-z` and not the plain form: git QUOTES a path containing a space, a
+    # newline or a non-ASCII byte in the default output, which would not match
+    # the pathspec strings the caller holds. Verified against git directly:
+    # a non-rename record is `adds\tdels\tpath\0`.
+    for record in r.stdout.split("\0"):
+        if not record:
+            continue
+        parts = record.split("\t")
+        if len(parts) != 3:
+            # A RENAME emits `adds\tdels\0old\0new\0`, which arrives here as a
+            # short record trailed by bare paths. Annotate nothing rather than
+            # attribute one file's counts to another file's name.
+            continue
+        raw_adds, raw_dels, path = parts
+        if raw_adds == "-" or raw_dels == "-":
+            per_path[path] = None  # binary; git reports no line counts
+            continue
+        try:
+            adds, dels = int(raw_adds), int(raw_dels)
+        except ValueError:
+            continue
+        per_path[path] = (adds, dels)
+        adds_total += adds
+        dels_total += dels
+    return per_path, adds_total, dels_total
+
+
+def describe_change(path, per_path):
+    """One body line for one file: the path, and what happened to it."""
+    if path not in per_path:
+        return f"- {path}"
+    counts = per_path[path]
+    if counts is None:
+        return f"- {path} (binary)"
+    adds, dels = counts
+    line = f"- {path} (+{adds}/-{dels})"
+    if dels and not adds:
+        # The shape that hid commit 80b82f84. A pure deletion is the one change
+        # an unattended commit can make that nobody asked for, so it is called
+        # out in words -- greppable in `git log`, not inferable from a number a
+        # reader has to notice is zero.
+        line += "  <-- DELETIONS ONLY"
+    return line
+
+
 def commit_group(commit_type, message, files):
     """Stage files and create a commit."""
     # Stage
     run(["git", "add", "--"] + files)
 
     # Build commit message
-    header = f"{commit_type}: {message}"
-    body_lines = [f"- {f}" for f in files[:20]]
+    per_path, adds_total, dels_total = staged_linecounts(files)
+    # The stat rides in the SUBJECT, not only the body. The 80b82f84 review
+    # happened in `git log --oneline`, where a body is invisible; a subject that
+    # says "update system infrastructure" for a five-line deletion is not merely
+    # uninformative, it is wrong in the one direction that matters.
+    header = (f"{commit_type}: {message} "
+              f"({len(files)} file(s), +{adds_total}/-{dels_total})")
+    body_lines = [describe_change(f, per_path) for f in files[:20]]
     if len(files) > 20:
         body_lines.append(f"- ... and {len(files) - 20} more files")
 

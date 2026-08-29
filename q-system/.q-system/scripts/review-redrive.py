@@ -547,6 +547,18 @@ def cmd_select(cands, show_all):
 
     path = CI.attempts_path()
     for c in cands:
+        # THE CAP-OUT PARK, FIRST (ASK-871). converge.sh stopping this ISSUE at
+        # its round cap is a refusal to touch it at all, so it outranks every
+        # question below -- which action, is anything live, is the attempt spent.
+        #
+        # IMPORTED FROM ci-redrive, NOT REIMPLEMENTED, for the same reason
+        # `is_reviewer_slot` is: both redrives must refuse the same parked issue,
+        # and two copies of one refusal rule is how a state ends up owned by
+        # neither. It reads a fact, writes nothing, and cannot page -- so putting
+        # it ahead of the in-flight gates does not reintroduce the false-page
+        # hazard those gates exist for.
+        if CI.capout_skip(path, c["issue"], "review-redrive", c["pr"]):
+            continue
         # IN-FLIGHT GATES, BOTH ACTIONS, BEFORE THE LEDGER IS READ. Each action
         # launches a different long-running process, so each needs its own
         # liveness question -- but the reason is one reason, and the ledger read
@@ -600,8 +612,14 @@ def cmd_select(cands, show_all):
 
 
 def cmd_mark_dispatched(issue, action, pr, head_sha):
+    # THE SAME SHARED CLAIM ci-redrive uses, not `ledger_claim` (codex on PR #210).
+    # `cmd_select`'s capout gate gates the OFFER; this is where the attempt is
+    # spent, and a cap-out recorded between the two used to sail straight through
+    # it. Imported rather than reimplemented for the reason `capout_skip` is: two
+    # copies of one refusal rule is how a state ends up owned by neither.
     cand = {"action": action, "pr": pr, "head_sha": head_sha}
-    return 0 if CI.ledger_claim(CI.attempts_path(), issue, flag(cand)) else 1
+    return 0 if CI.claim_unless_capped(
+        CI.attempts_path(), issue, flag(cand), "review-redrive", pr) else 1
 
 
 def main(argv):

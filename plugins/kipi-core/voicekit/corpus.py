@@ -21,7 +21,11 @@ POV = "pov.md"
 LEXICON = "lexicon.json"
 FINGERPRINT = "fingerprint.json"
 
-EXEMPLAR_KINDS = ("post", "article-excerpt", "comment", "dm", "email")
+EXEMPLAR_KINDS = ("post", "article-excerpt", "article", "comment", "dm", "email")
+# "article" (2026-08-18 decontamination): a WHOLE article, added when full articles
+# replaced their excerpts in the corpus. Deliberately absent from
+# selector.ELIGIBLE_KINDS -- a 1,400-word article is reference material for the
+# authorship region, not a slot exemplar a 280-char draft should imitate.
 EXEMPLAR_CHANNELS = ("linkedin", "x", "substack", "medium", "any")
 
 

@@ -14,11 +14,15 @@ doing / next path / the refuting check) and Opus keeps the work.
 
 Contract with token-guard: one JSON object on stdout —
   {"triage": str|null, "escalated": bool, "capped": bool, "notified": bool,
-   "delivered": bool, "failure": str|null}
+   "delivered": bool, "handed_off": bool, "failure": str|null}
 `notified` means a page was ATTEMPTED; `delivered` means it could actually have
 left the machine. They are separate because slack-notify.sh exits 0 having sent
 nothing when no webhook resolves, so one field cannot carry both facts without
 lying about one of them.
+`escalated` means Fable answered; `handed_off` means that answer actually landed
+at the pending file the guard collects from. Same reason they are two fields: a
+triage that was computed and could not be written is a spend with no delivery,
+and when it happens `failure` says so rather than staying null (ASK-886).
 Exit is ALWAYS 0. A non-zero exit from here would turn a triage attempt into a
 guard crash, and the guard's job (blocking a runaway loop) outranks this one.
 
@@ -491,36 +495,60 @@ def notify_cap(trigger, count):
 # entry
 # --------------------------------------------------------------------------
 
-def write_pending(path, trigger, triage):
-    """Hand the triage back to the guard, atomically.
+def write_pending(path, trigger, triage, actor=""):
+    """Hand the triage back to the guard, atomically and addressed.
 
     tmp + rename in the SAME directory, so a hook reading concurrently sees
     either no file or the whole file. A plain open("w") would expose a window
     where the reader gets half a JSON object and silently discards the triage
     (json.load raises, the guard's except returns None) -- a loss that looks
     exactly like "the model had nothing to say".
+
+    `actor` is the addressee. The executable that acts on it is
+    `pending_payload_is_trustworthy()` in token-guard.py, tested by
+    tests/test_fable_escalation.py; nothing here enforces anything. The field is
+    written even when empty so it always exists, since an absent addressee and a
+    wrong one are the same fact to that check (sp-39c0d7bd).
+
+    The file is created 0600 inside a directory created 0700, and the guard
+    picks that directory precisely because only this uid may write into it
+    (ASK-877, `pending_dir()` in token-guard.py). Both layers are kept: the mode
+    is what stops another local account reading a slice of this session's
+    transcript back out of the file (sp-3caa724d), and the private directory is
+    what stops one PARKING a file at this name that can never be displaced.
+
+    Returns whether the triage actually landed at `path`. It used to return
+    nothing and swallow every OSError, which is how the squat above stayed
+    silent: os.replace() onto a foreign-owned file in sticky /tmp raises EACCES,
+    and an unchecked exception made a permanently dead channel look exactly like
+    a model that had nothing to say.
     """
     if not path:
-        return
+        return False
     tmp = "%s.%d.tmp" % (path, os.getpid())
     try:
         directory = os.path.dirname(path)
         if directory:
-            os.makedirs(directory, exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"trigger": trigger, "triage": triage, "ts": _now()}, fh)
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"trigger": trigger, "triage": triage, "ts": _now(),
+                       "actor": actor or ""}, fh)
         os.replace(tmp, path)
+        return True
     except OSError:
         try:
             os.remove(tmp)
         except OSError:
             pass
+        return False
 
 
 def escalate(trigger, reason, transcript_path, count, capped_notified,
-             pending_file=""):
+             pending_file="", actor=""):
     result = {"triage": None, "escalated": False, "capped": False,
-              "notified": False, "delivered": False, "failure": None}
+              "notified": False, "delivered": False, "handed_off": False,
+              "failure": None}
 
     cap = _int_env("KIPI_FABLE_CAP", DEFAULT_CAP)
     if count >= cap:
@@ -568,6 +596,44 @@ def escalate(trigger, reason, transcript_path, count, capped_notified,
                                                   DEFAULT_TIMEOUT))
     duration = round(time.time() - started, 2)
 
+    result["triage"] = triage
+    result["escalated"] = triage is not None
+
+    # THE HAND-OFF RUNS BEFORE THE ROW, AND THE ROW CARRIES ITS OUTCOME
+    # (ASK-886, PR #203 round 2 Codex major).
+    #
+    # cc1cbc06 taught write_pending to RETURN whether the triage landed, and
+    # then this caller threw that answer away. Reproduced on this branch with
+    # every `claude-fable-<uid>` candidate obstructed: pending_path() is "",
+    # write_pending() returns False, and escalate() still reported
+    # `escalated: true` with `failure: null`. The triage vanished and the only
+    # record of the episode said the escalation worked -- the same confident
+    # success over a dead channel that cc1cbc06 closed, one level up the stack.
+    #
+    # `escalated` stays TRUE here on purpose. Fable was called and it answered;
+    # that call cost money and this ledger is the only place the spend is
+    # recorded. Flipping the flag would erase the call to describe a delivery
+    # failure, so delivery gets its own field -- the same split already made
+    # between `notified` (a page was attempted) and `delivered` (it could
+    # actually have left the machine).
+    #
+    # The row is written AFTER the hand-off so it can state the outcome. A row
+    # written first would have to assert a hand-off that had not happened yet,
+    # and a receipt for an action that did not occur is the
+    # rca-specification-reported-as-state class.
+    handoff_note = None
+    if triage:
+        result["handed_off"] = write_pending(pending_file, trigger, triage,
+                                             actor)
+        if not result["handed_off"]:
+            handoff_note = ("write refused at %s" % pending_file
+                            if pending_file else
+                            "no hand-off path: every private directory "
+                            "candidate was obstructed")
+            failure = failure or (
+                "triage computed but not handed off (%s)" % handoff_note)
+    result["failure"] = failure
+
     log_row({
         "ts": _now(),
         "trigger": trigger,
@@ -581,13 +647,11 @@ def escalate(trigger, reason, transcript_path, count, capped_notified,
         # Filled by nothing today. A field with no writer is a lie, so it is
         # recorded as unknown rather than as a claim about what Opus did next.
         "next_path_taken": None,
+        "handoff_attempted": bool(triage),
+        "handed_off": result["handed_off"],
+        "handoff_note": handoff_note,
         "capped": False,
     })
-    result["triage"] = triage
-    result["escalated"] = triage is not None
-    result["failure"] = failure
-    if triage:
-        write_pending(pending_file, trigger, triage)
     return result
 
 
@@ -633,6 +697,14 @@ def report():
             first = (row.get("diagnosis") or "").splitlines()
             if first:
                 print("    %s" % first[0][:110])
+            # A row whose triage never reached the agent reads as an ordinary
+            # success on the status column (`fable_ok` is about the MODEL, not
+            # about delivery), so the hand-off failure gets its own line. A
+            # field written to the ledger that nothing ever prints is a
+            # producer with no consumer (ASK-886).
+            if row.get("handoff_attempted") and not row.get("handed_off"):
+                print("    hand-off: NOT DELIVERED (%s)"
+                      % (row.get("handoff_note") or "reason not recorded"))
             # The cap row is the one a human needs to trust, so it never prints
             # a bare "notified". It prints whether the page could have LEFT the
             # machine, and why not when it could not.
@@ -660,16 +732,21 @@ def main():
     parser.add_argument("--capped-notified", action="store_true")
     parser.add_argument("--pending-file", default="",
                         help="where to drop the triage for the guard to collect")
+    parser.add_argument("--actor", default="",
+                        help="the actor this triage is FOR; the guard refuses "
+                             "to deliver it to any other actor")
     parser.add_argument("--json", action="store_true",
                         help="machine output (the token-guard contract)")
     args = parser.parse_args()
 
     if os.environ.get("KIPI_FABLE_ESCALATION") == "0":
         out = {"triage": None, "escalated": False, "capped": False,
-               "notified": False, "delivered": False, "failure": "disabled"}
+               "notified": False, "delivered": False, "handed_off": False,
+               "failure": "disabled"}
     else:
         out = escalate(args.trigger, args.reason, args.transcript,
-                       args.count, args.capped_notified, args.pending_file)
+                       args.count, args.capped_notified, args.pending_file,
+                       args.actor)
 
     if args.json:
         print(json.dumps(out))
