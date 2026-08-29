@@ -201,6 +201,105 @@ def load_population(root):
     return out
 
 
+# ---------------------------------------------------- discovered population
+
+# The gate's own patterns are ("test_*.py", "test-*.py", "test-*.sh"). They miss
+# test_*.sh and *_test.py, so a repo that names its shell tests test_foo.sh has
+# them invisible to BOTH directions of the declared-vs-actual diff. Discovery
+# uses the wider set on purpose and the scope detector reports the delta.
+DISCOVER_PATTERNS = ("test_*.py", "test-*.py", "test-*.sh", "test_*.sh",
+                     "*_test.py", "*_test.sh")
+
+# Scratch trees are full repo copies. Measured on the fleet: kipi-system's raw
+# test-file count is 8261, of which 4448 live under .claude/worktrees/ alone --
+# a sweep that walked them would spend its whole budget re-measuring copies of
+# itself and report a survival number for a tree nobody ships.
+DISCOVER_EXCLUDE_DIRS = frozenset({
+    ".git", "node_modules", ".venv", "venv", "site-packages", "__pycache__",
+    ".claude", ".fable-wt", "template-repo", ".rescue", ".review-scratch",
+    ".mypy_cache", ".pytest_cache", "vendor", "dist", "build",
+})
+# Prefix form, for scratch dirs whose names vary by run (.pr42rev-*, .wt-*).
+DISCOVER_EXCLUDE_PREFIXES = (".pr", ".wt-", ".review-tmp", "rescued")
+
+
+def _excluded_dir(name):
+    return name in DISCOVER_EXCLUDE_DIRS or name.startswith(DISCOVER_EXCLUDE_PREFIXES)
+
+
+def discover_population(root, timeout_s=DEFAULT_TIMEOUT_S):
+    """Population by walking the tree, for repos with no usable declaration.
+
+    Why this exists at all: the declared population is a SCOPE CLAIM, and a
+    sweep that measures only what a manifest declares inherits that manifest's
+    blind spots. Measured on kipi-system 2026-08-29: 312 tracked files match the
+    gate's own test patterns, 172 are inside its SCAN_ROOTS, so 140 (45%) are
+    structurally undeclarable -- including every test under plugins/, which is
+    the code that ships to all 25 instances. Reporting survival over the
+    declared 186 while 140 were never looked at is this taxonomy's mechanism E
+    committed by the detector built to find it.
+
+    It is also the only way to run at all outside this repo: every fleet
+    instance is still on the legacy monolithic capability-manifest.json, and
+    capability_manifest.load() returns None for that shape (it refuses a
+    legacy file without the fragment dir), so the declared path cannot even
+    assemble a population there.
+    """
+    import fnmatch
+    out = []
+    seen = set()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not _excluded_dir(d)]
+        for fn in filenames:
+            if not any(fnmatch.fnmatch(fn, pat) for pat in DISCOVER_PATTERNS):
+                continue
+            full = Path(dirpath) / fn
+            rel = str(full.relative_to(root))
+            if rel in seen:
+                continue
+            seen.add(rel)
+            out.append({
+                "path": rel,
+                "runner": "bash" if fn.endswith(".sh") else "python3",
+                "timeout_s": timeout_s,
+            })
+    if not out:
+        raise SystemExit(
+            "mutation-sweep: discovery found NO test files under %s. Refusing "
+            "to report survival over an empty population -- a harness that "
+            "runs nothing reports perfect survival and looks identical to a "
+            "healthy one." % root)
+    out.sort(key=lambda e: e["path"])
+    return out
+
+
+def vendor_runner_into(root):
+    """Give a target repo the runner if it lacks one.
+
+    A fleet instance that has no capability-gate.py (reddit-build-radar is
+    skeleton_managed:false) would otherwise be unmeasurable. Copying THIS
+    repo's runner keeps one runner implementation across the fleet rather than
+    growing a second, drifting one -- the extracted-function fidelity gap.
+    Returns a cleanup callable.
+    """
+    dest = root / "q-system/.q-system/scripts/capability-gate.py"
+    if dest.is_file():
+        return lambda: None
+    src = Path(__file__).resolve().parent / "capability-gate.py"
+    if not src.is_file():
+        raise SystemExit("mutation-sweep: no runner to vendor from %s" % src)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+    created = dest
+
+    def cleanup():
+        try:
+            created.unlink()
+        except OSError:
+            pass
+    return cleanup
+
+
 # ------------------------------------------------------- subject attribution
 
 # A test artifact is never a subject: mutating one test to see whether another
@@ -617,9 +716,14 @@ def probe_pair(sw, entry, subj_rel, baseline, score):
 
 
 def sweep(root, args):
-    runner = load_runner(root)
+    cleanup = vendor_runner_into(root) if getattr(args, "discover", False) else (lambda: None)
+    try:
+        runner = load_runner(root)
+    except SystemExit:
+        cleanup()
+        raise
     sw = Sweep(root, runner, args.verbose)
-    pop = load_population(root)
+    pop = discover_population(root) if getattr(args, "discover", False) else load_population(root)
     if args.only:
         pat = re.compile(args.only)
         pop = [e for e in pop if pat.search(e["path"])]
@@ -628,7 +732,8 @@ def sweep(root, args):
 
     results = []
     resume = {}
-    outdir = root / "q-system/output/mutation-sweep"
+    outdir = Path(args.outdir).resolve() if getattr(args, "outdir", None) else (
+        root / "q-system/output/mutation-sweep")
     outdir.mkdir(parents=True, exist_ok=True)
     store = outdir / "results.jsonl"
     if args.resume and store.is_file():
@@ -672,6 +777,7 @@ def sweep(root, args):
     finally:
         fh.close()
 
+    cleanup()
     report(results, outdir)
     return results
 
@@ -1077,15 +1183,34 @@ def main():
                     help="reuse verdicts already in results.jsonl")
     ap.add_argument("--force-dirty", action="store_true")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--root",
+                    help="repo to measure (default: the enclosing git toplevel). "
+                         "Fleet sweeps point this at each instance.")
+    ap.add_argument("--discover", action="store_true",
+                    help="build the population by walking the tree instead of "
+                         "reading the declared manifest. Required outside this "
+                         "repo (instances are still on the legacy manifest), and "
+                         "the honest mode inside it: the declaration covers 172 "
+                         "of 312 test files.")
+    ap.add_argument("--outdir",
+                    help="where results.jsonl lands. Keeps a fleet sweep from "
+                         "writing into the repo it is measuring.")
     args = ap.parse_args()
 
     _install_restore_handlers()
     if args.self_test:
         sys.exit(self_test())
 
-    root = Path(subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                               capture_output=True, text=True, timeout=60
-                               ).stdout.strip() or ".").resolve()
+    if args.root:
+        root = Path(args.root).resolve()
+        if not root.is_dir():
+            print(f"mutation-sweep: --root {root} is not a directory",
+                  file=sys.stderr)
+            sys.exit(3)
+    else:
+        root = Path(subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                                   capture_output=True, text=True, timeout=60
+                                   ).stdout.strip() or ".").resolve()
     # Only the MUTATING path needs this. The refusal exists because a crash
     # between mutate and restore is indistinguishable from the operator's own
     # edits, and the operator's edits are what gets lost -- neither read-only
