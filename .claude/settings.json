@@ -122,6 +122,15 @@
             "timeout": 35
           }
         ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\" --drain-only; fi"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -208,7 +217,17 @@
           },
           {
             "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/enforced-claim-lint.py\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/wiring-check.py\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/plan-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/plan-lint.py\"",
             "timeout": 5
           },
           {
@@ -345,6 +364,11 @@
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory_autocapture.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory_autocapture.py\" 2>/dev/null || true",
             "async": true
+          },
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/kb-graph-guard.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/kb-graph-guard.py\"; fi",
+            "timeout": 15
           }
         ]
       }

@@ -28,6 +28,10 @@ route AROUND machinery that already works without a human:
                                     This is the path linear-worker.sh already uses.
     gh pr merge --admin ...  DENY   The only way to defeat kipi/reviewer-approved.
     git push <protected>     DENY   Skips the PR, so skips both required checks.
+                                    Scoped to protected repos: a fleet-marker
+                                    tree (q-system/) or the protected remote
+                                    set. Elsewhere the checks do not exist, so
+                                    the push is not a bypass (sp-9154c64d).
     everything else          ALLOW  not-applicable
 
 The effect is to make the autonomous path the ONLY path, which is what the founder
@@ -103,6 +107,74 @@ from pathlib import Path
 # in the session wait on GitHub, and would fail open whenever the network is down.
 # These are the two names the fleet actually protects.
 PROTECTED_BRANCHES = {"main", "master"}
+
+# The PUSH deny is scoped to repos that actually carry the PR machinery
+# (required checks 'validate' + 'kipi/reviewer-approved'). Measured 2026-08-19
+# (sp-9154c64d): the unscoped form blocked creating `main` on a brand-new
+# personal repo (assafkip/adhd-output-style) that has no checks at all -- a
+# refusal whose remedy ("let the machinery merge it") cannot exist there. A
+# gate that fires where its own remedy is impossible teaches routing around
+# gates. The MERGE side stays global on purpose: `--admin` is never the safe
+# shape anywhere, and --auto costs nothing to type.
+#
+# TWO protected signals, either one denies (PR #226 review, major):
+#   1. The FLEET MARKER: this hook ships to every kipi instance via
+#      settings-template.json, and every instance carries q-system/ in its
+#      root. A remote allowlist alone turned the deny off on all of them the
+#      day it landed -- including instances with required checks and
+#      enforce_admins:false, the exact scar configuration. The marker is
+#      local, needs no enumeration, and cannot rot as instances are added.
+#   2. The REMOTE SET: owner/name pairs for protected repos with no fleet
+#      marker in the tree. Default assafkip/kipi-system; override via
+#      MERGE_GATE_PROTECTED_REPOS (comma-separated), read per call so the
+#      test suites can pin their own. Matching is case-folded and tolerates
+#      a .git suffix (GitHub treats both as the same repo). An override that
+#      is SET but yields no valid owner/name entry fails CLOSED -- the same
+#      direction as the URL parser beside it.
+# A GitHub URL whose owner/name cannot be parsed stays protected.
+_DEFAULT_PROTECTED_REPOS = "assafkip/kipi-system"
+_GH_URL_RE = re.compile(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
+
+
+def _protected_set() -> frozenset[str] | None:
+    """Normalized owner/name set, or None when an explicit override is all
+    malformed (the fail-closed sentinel)."""
+    raw = os.environ.get("MERGE_GATE_PROTECTED_REPOS")
+    entries = (raw if raw is not None else _DEFAULT_PROTECTED_REPOS).split(",")
+    valid = set()
+    for entry in entries:
+        e = entry.strip().lower().removesuffix(".git").strip("/")
+        if e.count("/") == 1 and all(e.split("/")):
+            valid.add(e)
+    if raw is not None and not valid:
+        return None
+    return frozenset(valid)
+
+
+def _repo_root(repo_dir: str) -> str:
+    """The worktree root, so the fleet marker is checked where it lives.
+    Checking the push CWD missed `cd <subdir> && git push` on every instance
+    (PR #226 review round 2, major). Unresolvable -> the dir itself, and the
+    remote-set check still applies behind it."""
+    try:
+        r = subprocess.run(["git", "-C", repo_dir, "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=3)
+    except Exception:
+        return repo_dir
+    top = r.stdout.strip()
+    return top if r.returncode == 0 and top else repo_dir
+
+
+def _protected_repo(url: str, repo_dir: str) -> bool:
+    if (Path(_repo_root(repo_dir)) / "q-system").is_dir():
+        return True  # fleet instance: the machinery is right there in the tree
+    m = _GH_URL_RE.search((url or "").lower())
+    if not m:
+        return True  # a github URL this cannot parse stays protected
+    repos = _protected_set()
+    if repos is None:
+        return True  # explicit override, zero valid entries: stay closed
+    return f"{m.group(1)}/{m.group(2)}" in repos
 
 # Shell separators that start a new command. `|` is included so `foo | git push ...`
 # is examined rather than swallowed as an argument of foo.
@@ -486,6 +558,11 @@ def _push_verdict(seg: list[str], cwd: str) -> str | None:
     # A URL typed straight on the command line never reaches `remote get-url`.
     url = remote if re.match(r"^(https?://|git@|ssh://)", remote) else _remote_url(repo_dir, remote)
     if not _is_github(url):
+        return None
+    if not _protected_repo(url, repo_dir):
+        # No fleet marker in the tree and not in the protected remote set:
+        # there are no 'validate' / 'kipi/reviewer-approved' checks to skip,
+        # so the deny's remedy does not exist there (sp-9154c64d).
         return None
 
     if refspecs:
