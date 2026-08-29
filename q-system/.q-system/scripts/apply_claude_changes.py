@@ -142,41 +142,6 @@ import sys
 import tempfile
 import time
 
-CAPABILITY_FRAGMENT_DIR = os.path.join("q-system", ".q-system", "capability")
-
-
-def _capability_manifest():
-    """Locate the fragment assembler beside this engine, or return None.
-
-    SOFT on purpose. This file's own suite mutation-tests the engine by copying
-    it to a TEMPDIR and running the copy (`mutate` writes $T/mutant_*.py), so a
-    module-level `import capability_manifest` resolved against __file__'s
-    directory raised ModuleNotFoundError there and killed 13 mutation cases at
-    import time -- every one of them reported as "mutant did not write", which
-    reads as a non-load-bearing test rather than a broken harness.
-
-    Absence degrades to "no declared tests", which is exactly what the file read
-    this replaced did when the manifest was missing. It is not a silent hole:
-    capability-gate.py imports the same module HARD, so a real disappearance is
-    RED on the next gate run, not quietly tolerated here.
-    """
-    for base in (os.path.dirname(os.path.abspath(__file__)),
-                 os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "q-system", ".q-system", "scripts")):
-        mod_path = os.path.join(base, "capability_manifest.py")
-        if not os.path.isfile(mod_path):
-            continue
-        spec = importlib.util.spec_from_file_location("capability_manifest",
-                                                      mod_path)
-        mod = importlib.util.module_from_spec(spec)
-        try:
-            spec.loader.exec_module(mod)
-        except Exception:
-            return None
-        return mod
-    return None
-
-
 SCHEMA_VERSION = 1
 
 # L1: the op vocabulary. Additive ops reach anything under .claude/.
@@ -870,18 +835,17 @@ def census(root):
     c["agents"] = _dir_names(os.path.join(root, ".claude", "agents"))
     c["output_styles"] = _dir_names(os.path.join(root, ".claude", "output-styles"))
 
-    # The manifest is assembled from q-system/.q-system/capability/ -- one JSON
-    # fragment per declaration, so two branches declaring two tests write two
-    # files instead of colliding on one array. `load` records problems into the
-    # list it is handed and never raises: this census is a ratchet input, and a
-    # single malformed fragment must not crash the tool that would let you fix
-    # it (the file read it replaced swallowed ValueError for the same reason).
+    manifest = os.path.join(root, "q-system", ".q-system", "capability-manifest.json")
     tests = set()
-    capmod = _capability_manifest()
-    data = (capmod.load(root, []) if capmod else None) or {}
-    for entry in data.get("expected_tests") or []:
-        if isinstance(entry, dict) and "path" in entry:
-            tests.add(entry["path"])
+    if os.path.isfile(manifest):
+        try:
+            with open(manifest) as fh:
+                data = json.load(fh)
+            for entry in data.get("expected_tests") or []:
+                if isinstance(entry, dict) and "path" in entry:
+                    tests.add(entry["path"])
+        except ValueError:
+            pass
     c["manifest_tests"] = tests
     return c
 
@@ -1171,13 +1135,11 @@ def main(argv):
         copy_root = os.path.join(tmp, "root")
         os.makedirs(copy_root)
         stage_census_copy(root, copy_root)
-        # A DIRECTORY now, not a file (#263). Copying only the file left the
-        # copy tree with an empty manifest census, so every declared test read
-        # as "would disappear" and the ratchet refused every proposal.
-        manifest_rel = CAPABILITY_FRAGMENT_DIR
+        manifest_rel = os.path.join("q-system", ".q-system", "capability-manifest.json")
         src_manifest = os.path.join(root, manifest_rel)
-        if os.path.isdir(src_manifest):
-            shutil.copytree(src_manifest, os.path.join(copy_root, manifest_rel))
+        if os.path.isfile(src_manifest):
+            os.makedirs(os.path.dirname(os.path.join(copy_root, manifest_rel)), exist_ok=True)
+            shutil.copy2(src_manifest, os.path.join(copy_root, manifest_rel))
 
         # The scoped copy is PROVEN census-equal to the live tree, never assumed
         # (ASK-1118). Taken BEFORE the staged content lands, because after that
@@ -1187,10 +1149,6 @@ def main(argv):
         # disagree here, and the run refuses -- instead of the ratchet counting
         # zero for a category and waving a removal through. This is the check
         # that makes an allowlist safe; deleting it re-opens the hole.
-        #
-        # It covers the manifest copy above too, and would have caught the #263
-        # symptom directly rather than through "the ratchet refused every
-        # proposal": an under-copied census input IS a census disagreement.
         before_census = census(root)
         if census(copy_root) != before_census:
             raise Refusal(
@@ -1436,6 +1394,22 @@ def wired_hook_commands(root, staged_settings_text=None):
         return []
 
 
+_PATH_TAIL = re.compile(r"[A-Za-z0-9_.\-/]")
+
+
+def _names_path(command, path):
+    """True when `command` runs exactly `path`, not a longer path starting with it."""
+    start = 0
+    while True:
+        i = command.find(path, start)
+        if i < 0:
+            return False
+        end = i + len(path)
+        if end >= len(command) or not _PATH_TAIL.match(command[end]):
+            return True
+        start = i + 1
+
+
 def _is_wired_hook_script(wired_commands, full):
     """True when `full` is the script a wired hook command actually runs.
 
@@ -1451,8 +1425,15 @@ def _is_wired_hook_script(wired_commands, full):
         if spelling.startswith(home + os.sep):
             spellings.add("~" + spelling[len(home):])
             spellings.add("$HOME" + spelling[len(home):])
-    return any(any(s in command for s in spellings)
-               for command in wired_commands)
+    # Bounded, not a bare `in` (Codex minor, PR #274). A hook wired as
+    # `.../a-gate.sh.disabled` CONTAINS `.../a-gate.sh`, so an unbounded
+    # substring match would call the shorter path wired and grant it +x on the
+    # strength of a command that never runs it. The character after the match
+    # has to end the token: a path continues through [A-Za-z0-9_.-] and through
+    # a separator, so anything else (space, quote, end of string) is the end of
+    # the executed path.
+    return any(_names_path(command, s) for command in wired_commands
+               for s in spellings)
 
 
 def restore_exec_wiring(wired_commands, rel, full, prior_mode, log):

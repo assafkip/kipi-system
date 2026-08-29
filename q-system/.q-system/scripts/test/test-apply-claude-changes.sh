@@ -127,9 +127,13 @@ JSON
   }
 }
 JSON
-  cat > "$r/q-system/.q-system/capability-manifest.json" <<'JSON'
-{ "schema_version": 1, "expected_tests": [ { "path": "a/b.py", "runner": "python3" } ] }
-JSON
+  # One fragment per declaration -- census() reads the assembled view, so the
+  # fixture has to be written in the layout the engine actually walks.
+  mkdir -p "$r/q-system/.q-system/capability/expected_tests"
+  echo '{ "schema_version": 1 }' \
+    > "$r/q-system/.q-system/capability/manifest.json"
+  echo '{ "path": "a/b.py", "runner": "python3" }' \
+    > "$r/q-system/.q-system/capability/expected_tests/a__b.py.json"
 }
 
 run_engine() {  # run_engine <engine> <proposal> <root>  -> sets RC and OUT
@@ -1743,6 +1747,27 @@ if [ -x "$T/.claude/hooks/a-gate.sh" ]; then
   ok "16d a hook wired by the SAME proposal ends the run executable (rc=$RC)"
 else
   bad "16d a newly wired hook shipped disarmed :: $(ls -l "$T/.claude/hooks/a-gate.sh") :: $OUT"
+fi
+rm -r "$T"
+
+# 16e. A LONGER path that merely starts with this one (Codex minor, PR #274).
+# `.../a-gate.sh.disabled` contains `.../a-gate.sh`, so an unbounded substring
+# match calls the shorter path wired and grants +x on the strength of a command
+# that never runs it.
+T=$(mktemp -d); mk_fixture "$T"
+mkdir -p "$T/.claude/hooks"
+printf '#!/bin/bash\n# ANCHOR LINE\nexit 0\n' > "$T/.claude/hooks/a-gate.sh"
+chmod 644 "$T/.claude/hooks/a-gate.sh"
+cat > "$T/.claude/settings.json" <<JSON
+{ "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [
+  { "type": "command", "command": "$T/.claude/hooks/a-gate.sh.disabled" } ] } ] } }
+JSON
+mk_mode_proposal "$T/p.json" ".claude/hooks/a-gate.sh"
+run_engine "$ENGINE" "$T/p.json" "$T"
+if [ -x "$T/.claude/hooks/a-gate.sh" ]; then
+  bad "16e a path that is only a PREFIX of the wired one was made executable"
+else
+  ok "16e a longer wired path does not make its prefix executable (rc=$RC)"
 fi
 rm -r "$T"
 

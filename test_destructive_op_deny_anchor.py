@@ -49,7 +49,25 @@ HOOK = pathlib.Path(os.environ.get("HOME", "")) / ".claude/hooks/destructive-op-
 # machine WITHOUT the live hook skipped the whole module, silently, and a suite
 # that skips reads exactly like a suite that passes.
 _OVERRIDE = os.environ.get("KIPI_DESTRUCTIVE_HOOK")
-_UNDER_TEST = pathlib.Path(_OVERRIDE) if _OVERRIDE else HOOK
+
+# A VENDORED reference copy, so this suite can run somewhere other than one
+# laptop (Codex major, PR #274). The hook is machine-local with no repo copy, so
+# every case here skipped on every runner and verify.sh reported
+# `pytest:test_destructive_op_deny_anchor.py ok` having executed NOTHING: 89
+# assertions about the fleet's most destructive guard, gated by a false green.
+#
+# The live hook is still the one that runs, and it is still what these cases
+# prefer. The vendored copy is the CI fallback, and test_the_vendored_copy_has_
+# not_drifted below pins the two byte-identical whenever both exist, so the copy
+# cannot quietly become a different program that passes its own tests.
+VENDORED = pathlib.Path(__file__).parent / "q-system/.q-system/hooks/destructive-op-deny.sh"
+
+if _OVERRIDE:
+    _UNDER_TEST = pathlib.Path(_OVERRIDE)
+elif HOOK.is_file():
+    _UNDER_TEST = HOOK
+else:
+    _UNDER_TEST = VENDORED
 
 CURRENT = "'kipi[[:space:]]+update'"
 # Command position, allowing an env-var assignment prefix and command
@@ -66,9 +84,14 @@ pytestmark = pytest.mark.skipif(
 
 
 def variants(tmp_path):
-    """(live copy, patched copy). The live hook is READ, never written."""
+    """(live copy, patched copy). The hook is READ, never written.
+
+    Reads _UNDER_TEST, not HOOK: on a machine with no live hook these classes
+    used to fail rather than skip once the module stopped skipping wholesale,
+    which is 23 cases that were green only because one laptop had the file.
+    """
     live = tmp_path / "live.sh"
-    shutil.copy(HOOK, live)
+    shutil.copy(_UNDER_TEST, live)
     text = live.read_text(encoding="utf-8")
     assert CURRENT in text, (
         "the unanchored pattern is gone from the live hook -- either this was "
@@ -357,6 +380,15 @@ FLAG_POSITION = [
     # case above.)
     "echo preparing; rm -v -rf /tmp/ask1131-canary",
     "cd /tmp && git push -q --force origin main",
+    # A transparent prefix that takes its OWN options. Stripping the prefix name
+    # alone leaves the prefix's option sitting where the program should be, so
+    # the scan reads the program as `-u` and finds no rule. These are NOT caught
+    # by the substring list either: the leading -v/-i is hole 3 again, so both
+    # layers miss them together. (Codex major, PR #274.)
+    "sudo -u root rm -v -rf /tmp/ask1131-canary",
+    "env -i rm -v -rf /tmp/ask1131-canary",
+    "nice -n 10 rm -i -r /tmp/ask1131-canary",
+    "sudo -u root git push -q --force origin main",
 ]
 
 # The other half of the fix, and the half a pattern-per-hole approach loses:
@@ -376,6 +408,11 @@ FLAG_POSITION_SAFE = [
     "git clean -n",
     "grep -rf patterns.txt src/",
     "git -C /tmp/repo status",
+    # The same option-bearing prefixes in front of something harmless. Offering
+    # the rules every starting position must not turn a prefix's own option into
+    # a finding.
+    "sudo -u root ls -rf /tmp",
+    "nice -n 10 rm /tmp/one-file.txt",
 ]
 
 
@@ -395,6 +432,17 @@ class TestFlagPositionDoesNotMoveTheTarget:
     @pytest.mark.parametrize("command", REAL)
     def test_the_fleet_shapes_are_unaffected(self, tmp_path, command):
         assert decide(hook_copy(tmp_path), command, tmp_path) == "deny", command
+
+    @pytest.mark.skipif(not HOOK.is_file(),
+                        reason="no live hook on this machine; nothing to drift from")
+    def test_the_vendored_copy_has_not_drifted(self):
+        """The vendored copy is what CI actually executes. If it drifts from the
+        hook that really runs, CI is green about a different program -- which is
+        the same false green vendoring was added to remove, one layer over."""
+        assert VENDORED.is_file(), "the vendored reference copy is missing: %s" % VENDORED
+        assert VENDORED.read_bytes() == HOOK.read_bytes(), (
+            "the vendored copy and the live hook have diverged. Re-vendor with:\n"
+            "  cat %s > %s" % (HOOK, VENDORED))
 
     def test_the_prose_false_positive_is_unchanged(self, tmp_path):
         """The hook deliberately does NOT tell prose from invocation, and argv
