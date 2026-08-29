@@ -70,7 +70,7 @@ HERE = Path(__file__).resolve().parent
 
 ALERT_MARKER = "kipi-alert-fingerprint"
 PROMOTED_MARKER = "kipi-alert-promoted"
-HELD_MARKER = "kipi-alert-held"
+HELD_LABEL = "triage:held"
 TRIAGE_LABEL = "needs-triage"
 OWNER_LABEL = "owner:sana"
 DOR_HEADING = "## Definition of Ready"
@@ -125,6 +125,8 @@ UPDATE_M = """mutation($id:String!,$input:IssueUpdateInput!){
 
 COMMENT_M = """mutation($input:CommentCreateInput!){
   commentCreate(input:$input){success}}"""
+
+LABELS_Q = """query{issueLabels(first:250){nodes{id name}}}"""
 
 STATES_Q = """query($k:String!){teams(filter:{key:{eq:$k}}){nodes{
   states{nodes{id name type}}}}}"""
@@ -255,7 +257,31 @@ def do_close(ls, issue: dict, reason: str, apply: bool) -> str:
 # night forever, so the nightly cost grows with the size of the bucket rather than
 # with its inflow. The marker is a comment key, like the other two, and it does not
 # collide with either refusal predicate.
-HELD_COMMENT_RE = re.compile(r"<!--\s*" + re.escape(HELD_MARKER) + r"\s*:")
+# HOLD IS A LABEL, NOT A BODY EDIT (codex round 3, major 1; confirmed by a Fable
+# escalation and then by measurement).
+#
+# The first cut appended a marker to the description. do_hold re-read the issue,
+# checked it was still an alert, and then wrote description = stale_body + marker.
+# A promotion landing inside that window was CLOBBERED: its Definition of Ready
+# deleted and the issue excluded from triage forever. Adding a fourth point-in-time
+# check would not fix it, and this repo already wrote that lesson down in ASK-1126:
+# a point-in-time check cannot make a shared mutable resource safe, and there is
+# always a next window. I then wrote exactly that bug, twice.
+#
+# A label is applied by Linear as a SERVER-SIDE DELTA at write time
+# (addedLabelIds/removedLabelIds), so it commutes with a concurrent description
+# write and touches no description bytes. The race is removed by construction
+# rather than guarded. Same reasoning linear-dor-drafter.py gives for using
+# removedLabelIds over a full labelIds replacement.
+#
+# MEASURED before choosing: exactly two call sites sent a description
+# (do_promote and do_hold). do_close writes none. So dropping hold's write leaves
+# ONE description writer, which is the condition under which this closes the class
+# rather than relocating it. do_promote keeps its own re-read guard, and its worst
+# case is a DoR overwritten by another DoR, never a DoR deleted.
+#
+# The label is the SOLE source of held-ness. Nothing writes a hold marker into the
+# body any more; two sources of one fact is how they drift.
 
 TRIAGE_PROMPT = """You are triaging ONE fleet alert ticket in a software repo.
 
@@ -280,8 +306,26 @@ Alert body:
 """
 
 
-def is_held(description: str) -> bool:
-    return bool(HELD_COMMENT_RE.search(description or ""))
+def is_held(issue: dict) -> bool:
+    """Held-ness lives in the label set, never in the description."""
+    return HELD_LABEL in {l.get("name") for l in
+                          ((issue.get("labels") or {}).get("nodes") or [])}
+
+
+def held_label_id(ls) -> str:
+    """Resolve the hold label. Raises rather than returning None.
+
+    A label id that does not resolve makes issueUpdate error, not silently no-op,
+    and an unattended job that cannot record a hold must say so loudly instead of
+    reporting HELD every night while marking nothing.
+    """
+    data = ls.graphql(LABELS_Q, {}) or {}
+    for node in ((data.get("issueLabels") or {}).get("nodes") or []):
+        if node.get("name") == HELD_LABEL:
+            return node["id"]
+    raise RuntimeError(
+        f"no {HELD_LABEL!r} label exists on this workspace; create it once, "
+        "then this job can record holds")
 
 
 def claude_binary() -> str | None:
@@ -363,24 +407,25 @@ def do_hold(ls, issue: dict, reason: str, apply: bool) -> str:
     # marker, and the issue simply stays in the pool for tomorrow.
     res = ls.graphql(COMMENT_M, {"input": {"issueId": fresh["id"], "body":
         f"Held by linear-alert-triage.py: not executable as written.\n\n{reason}\n\n"
-        "This is NOT a close. Remove the kipi-alert-held marker to put it back in "
+        f"This is NOT a close. Remove the {HELD_LABEL} label to put it back in "
         "the nightly triage pool, or promote it by hand with a real DoR."}})
     if not (((res or {}).get("commentCreate") or {}).get("success")):
         raise RuntimeError(
             f"{ident}: refusing to hold -- the rationale comment did not post, and a "
             "hold marker with no recorded reason is a permanent silent exclusion")
 
-    body = f"{desc}\n\n<!-- {HELD_MARKER}: {time.strftime('%Y-%m-%d', time.gmtime())} -->\n"
-    upd = ls.graphql(UPDATE_M, {"id": ident, "input": {"description": body}})
+    # addedLabelIds, never a description write. See the HELD_LABEL note above.
+    upd = ls.graphql(UPDATE_M, {"id": ident,
+                                "input": {"addedLabelIds": [held_label_id(ls)]}})
     if not (((upd or {}).get("issueUpdate") or {}).get("success")):
-        raise RuntimeError(f"{ident}: hold marker write failed")
+        raise RuntimeError(f"{ident}: hold label write failed")
     return f"{ident}: HELD"
 
 
 def run_triage(ls, project: str | None, limit: int, apply: bool) -> int:
     """One bounded unattended pass. Returns a process exit code."""
     pool = [i for i in fetch_open(ls, project)
-            if is_alert_ticket(i.get("description")) and not is_held(i.get("description"))]
+            if is_alert_ticket(i.get("description")) and not is_held(i)]
     pool.sort(key=lambda i: i.get("createdAt") or "")
     batch = pool[:limit]
     promoted = held = failed = 0
@@ -407,10 +452,22 @@ def run_triage(ls, project: str | None, limit: int, apply: bool) -> int:
             + (f" in {project}" if project else " fleet-wide"))
     print(line)
     write_run_evidence(line)
-    # Exit 0 even on failures, deliberately: launchd treats non-zero as a crash and
-    # the fleet health check keys on LastExitStatus. The run line above is the
-    # signal, and it is written every pass so a silent night is visible as a
-    # MISSING line rather than as a calm one.
+    # TOTAL failure is not a quiet night (codex round 3, major 2). The first cut
+    # returned 0 unconditionally, with a comment justifying it: launchd treats
+    # non-zero as a crash and launchd-health-check.py keys on LastExitStatus. That
+    # reasoning is right for a PARTIAL failure and wrong for a complete one. With
+    # the model unreachable every night, the job would report success forever while
+    # triaging nothing, which is the same invisible-silence defect this whole issue
+    # is about (ASK-1127) and the same one ASK-1123 found in the watchdog.
+    #
+    # So: partial failures stay exit 0 (one bad issue is not an outage), an empty
+    # batch stays exit 0 (nothing to do is success), and a non-empty batch where
+    # NOTHING succeeded exits 1 so the health check sees it.
+    if batch and not promoted and not held:
+        print(f"  every decision failed ({failed}/{len(batch)}); reporting as a "
+              "failed run so launchd-health-check does not read it as a quiet night",
+              file=sys.stderr)
+        return 1
     return 0
 
 

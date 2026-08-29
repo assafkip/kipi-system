@@ -144,6 +144,8 @@ class FakeLinear:
         if "teams(" in query:
             return {"teams": {"nodes": [{"states": {"nodes": [
                 {"id": "cancel-id", "name": "Canceled", "type": "canceled"}]}}]}}
+        if "issueLabels" in query:
+            return {"issueLabels": {"nodes": [{"id": "held-id", "name": "triage:held"}]}}
         if "issueUpdate" in query:
             return {"issueUpdate": {"success": self.update_ok,
                                     "issue": {"identifier": "ASK-9"}}}
@@ -216,73 +218,98 @@ class TestUnattendedLaneExists(unittest.TestCase):
                 triage.fetch_open, triage.decide = orig_fetch, orig_decide
             self.assertFalse(f.sent("stateId"),
                              "the unattended lane must NEVER close an issue")
-            desc = [v for q, v in f.calls if "issueUpdate" in q][0]["input"].get("description", "")
-            self.assertEqual(not triage.is_alert_ticket(desc), expect_marker_gone,
-                             f"{verdict} wrote the wrong description shape")
+            payload = [v for q, v in f.calls if "issueUpdate" in q][0]["input"]
+            if expect_marker_gone:   # PROMOTE rewrites the body, marker stripped
+                self.assertFalse(triage.is_alert_ticket(payload["description"]))
+            else:                    # HOLD is a label delta and touches no body
+                self.assertNotIn("description", payload)
+                self.assertIn("addedLabelIds", payload)
 
     def test_held_issues_leave_the_nightly_pool(self):
-        held = ALERT_DESC + "\n<!-- kipi-alert-held: 2026-08-29 -->"
-        self.assertTrue(triage.is_held(held))
-        self.assertFalse(triage.is_held(ALERT_DESC),
+        self.assertTrue(triage.is_held(as_issue(ALERT_DESC, labels=("triage:held",))))
+        self.assertFalse(triage.is_held(as_issue(ALERT_DESC, labels=("owner:sana",))),
                          "an unheld alert must stay in the pool")
 
-    def test_hold_marker_does_not_retrip_either_reader(self):
-        held = ALERT_DESC + "\n<!-- kipi-alert-held: 2026-08-29 -->"
-        self.assertTrue(triage.is_alert_ticket(held),
-                        "a held ticket is still an alert; only promotion clears that")
-        self.assertFalse(IS_FLEET_ALERT(as_issue(triage.strip_alert_marker(held))))
+    def test_a_held_ticket_is_still_an_alert(self):
+        """Holding records a triage decision; only PROMOTION clears alert-ness.
+        A held ticket the worker could pick up would be the ASK-839 regression."""
+        held = as_issue(ALERT_DESC, labels=("owner:sana", "triage:held"))
+        self.assertTrue(triage.is_alert_ticket(held["description"]))
+        self.assertTrue(IS_FLEET_ALERT(held),
+                        "a held ticket became worker-eligible")
 
 
 class TestHoldIsNeverSilentOrStale(unittest.TestCase):
-    """codex review of PR #268 round 2, majors 2 and 3. Both are the do_close
-    defects relocated into its sibling: I fixed the instance, not the class."""
+    """codex rounds 2 and 3. Hold accumulated three defects of one class, so it
+    stopped being guarded and became a label delta instead."""
 
-    def _fake(self, fresh, comment_ok):
+    def _fake(self, fresh, comment_ok=True, labels=()):
         class L:
             def __init__(s):
                 s.calls = []
             def graphql(s, q, v):
                 s.calls.append((q, v))
+                if "issueLabels" in q:
+                    return {"issueLabels": {"nodes": [
+                        {"id": "held-id", "name": "triage:held"}]}}
                 if "issue(" in q:
                     return {"issue": {"id": "uuid", "identifier": "ASK-1",
-                                      "description": fresh, "labels": {"nodes": []}}}
+                                      "description": fresh,
+                                      "labels": {"nodes": [{"id": f"i{n}", "name": n}
+                                                           for n in labels]}}}
                 if "commentCreate" in q:
                     return {"commentCreate": {"success": comment_ok}}
                 if "issueUpdate" in q:
                     return {"issueUpdate": {"success": True,
                                             "issue": {"identifier": "ASK-1"}}}
                 return {}
-            def wrote_description(s):
-                return [v["input"]["description"]
-                        for q, v in s.calls if "issueUpdate" in q]
+            def updates(s):
+                return [v["input"] for q, v in s.calls if "issueUpdate" in q]
         return L()
+
+    def test_hold_never_writes_a_description(self):
+        """THE anti-clobber property (round 3, major 1). A hold that rewrites the
+        body from a stale read deletes a DoR written during the model call. A label
+        is a server-side delta, so it cannot."""
+        f = self._fake(ALERT_DESC)
+        triage.do_hold(f, {"identifier": "ASK-1"}, "why", True)
+        for payload in f.updates():
+            self.assertNotIn("description", payload,
+                             "hold wrote a description and can clobber a promotion")
+        self.assertIn("addedLabelIds", f.updates()[0])
 
     def test_hold_refuses_when_the_rationale_comment_fails(self):
         f = self._fake(ALERT_DESC, comment_ok=False)
         with self.assertRaises(RuntimeError) as cm:
             triage.do_hold(f, {"identifier": "ASK-1"}, "model rationale", True)
         self.assertIn("refusing to hold", str(cm.exception))
-        self.assertEqual(f.wrote_description(), [],
-                         "the hold marker was written despite the comment failing")
+        self.assertEqual(f.updates(), [], "the hold landed despite no rationale")
 
     def test_hold_skips_an_issue_promoted_while_the_model_ran(self):
         promoted = triage.promote_body(ALERT_DESC, DOR, "fp", "")
-        f = self._fake(promoted, comment_ok=True)
-        out = triage.do_hold(f, {"identifier": "ASK-1"}, "stale HOLD", True)
-        self.assertIn("SKIPPED", out)
-        self.assertEqual(f.wrote_description(), [],
-                         "a promoted, worker-ready issue was stamped held")
+        f = self._fake(promoted)
+        self.assertIn("SKIPPED", triage.do_hold(f, {"identifier": "ASK-1"}, "x", True))
+        self.assertEqual(f.updates(), [])
 
     def test_hold_still_works_on_a_real_alert(self):
-        """Negative control: neither guard may block the good path."""
-        f = self._fake(ALERT_DESC, comment_ok=True)
+        """Negative control: no guard may block the good path."""
+        f = self._fake(ALERT_DESC)
         self.assertIn("HELD", triage.do_hold(f, {"identifier": "ASK-1"}, "why", True))
-        self.assertTrue(triage.is_held(f.wrote_description()[0]))
+
+    def test_held_ness_is_read_from_labels_only(self):
+        self.assertTrue(triage.is_held(as_issue(ALERT_DESC, labels=("triage:held",))))
+        self.assertFalse(triage.is_held(as_issue(ALERT_DESC, labels=("owner:sana",))))
+
+    def test_missing_hold_label_raises_rather_than_no_ops(self):
+        class NoLabel:
+            def graphql(s, q, v):
+                return {"issueLabels": {"nodes": []}}
+        with self.assertRaises(RuntimeError):
+            triage.held_label_id(NoLabel())
 
     def test_every_write_path_reads_its_comment_result(self):
-        """THE CLASS, not the two instances. A third write path that comments and
-        ignores the result would pass both tests above and reintroduce the bug, so
-        this asserts on the source of every function that calls COMMENT_M."""
+        """THE CLASS, not the instances. A new write path that comments and ignores
+        the result would pass every test above and reintroduce the bug."""
         import inspect
         src = inspect.getsource(triage)
         for fn in ("do_close", "do_hold"):
@@ -290,6 +317,55 @@ class TestHoldIsNeverSilentOrStale(unittest.TestCase):
             self.assertIn("COMMENT_M", body, f"{fn} no longer comments")
             self.assertIn("commentCreate", body,
                           f"{fn} sends a comment and never reads whether it landed")
+
+    def test_only_one_description_writer_remains(self):
+        """Fable's refutation condition, kept executable. Two full-replace writers
+        is the condition under which patching one relocates the race instead of
+        closing it."""
+        import inspect
+        writers = inspect.getsource(triage).count('"description":')
+        self.assertEqual(writers, 1,
+                         f"{writers} description writers; a second one revives the "
+                         "clobber class that hold was just redesigned to escape")
+
+
+class TestUnattendedRunReportsTotalFailure(unittest.TestCase):
+    """codex round 3, major 2: exit 0 on a night where nothing worked."""
+
+    def _run(self, decide_result, n=2):
+        issues = [dict(as_issue(ALERT_DESC), identifier=f"ASK-{i}", id=f"u{i}",
+                       createdAt="2026-01-01", title="t") for i in range(n)]
+        class L:
+            def graphql(s, q, v):
+                if "issueLabels" in q:
+                    return {"issueLabels": {"nodes": [{"id": "h", "name": "triage:held"}]}}
+                if "issue(" in q:
+                    return {"issue": {"id": "u", "identifier": "ASK-0",
+                                      "description": ALERT_DESC, "labels": {"nodes": []}}}
+                if "commentCreate" in q:
+                    return {"commentCreate": {"success": True}}
+                if "issueUpdate" in q:
+                    return {"issueUpdate": {"success": True, "issue": {"identifier": "ASK-0"}}}
+                return {}
+        of, od = triage.fetch_open, triage.decide
+        triage.fetch_open = lambda ls, proj: issues
+        triage.decide = lambda i, timeout=300: decide_result
+        try:
+            return triage.run_triage(L(), "kipi-system", 5, True)
+        finally:
+            triage.fetch_open, triage.decide = of, od
+
+    def test_total_failure_exits_nonzero(self):
+        self.assertEqual(self._run(None), 1,
+                         "a night where every decision failed reported success")
+
+    def test_a_working_night_exits_zero(self):
+        """Negative control: the new exit code must not fire on a good run."""
+        self.assertEqual(self._run(("HOLD", "not executable")), 0)
+
+    def test_an_empty_batch_exits_zero(self):
+        self.assertEqual(self._run(None, n=0), 0,
+                         "nothing to triage is success, not an outage")
 
 
 if __name__ == "__main__":
