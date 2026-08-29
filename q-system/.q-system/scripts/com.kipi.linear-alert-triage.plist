@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Nightly triage pass over the fleet-alert bucket.
+     TEMPLATE, not a loadable plist. __KIPI_REPO__ and __HOME__ are materialized by
+     install-plist.sh, the same convention com.kipi.linear-dor uses. A plist that
+     hardcodes one home directory is unusable on any other machine and fails
+     validate-separation's skeleton sweep (ASK-113 / ASK-191).
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.linear-alert-triage
+
+     WHY THIS EXISTS (codex review of PR #268, major 1). linear-alert-triage.py
+     shipped with promote/close as hand-run verbs and no scheduled caller, which is
+     the same defect the script was written to fix: a consumer nothing invokes.
+
+     Runs at 02:30, half an hour AHEAD of com.kipi.linear-dor at 03:00, on purpose.
+     A promoted ticket carries a real DoR, so the drafter then correctly skips it
+     rather than spending one of its 8 nightly slots rewriting one. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.linear-alert-triage</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>cd __KIPI_REPO__ &amp;&amp; ./kipi alert-triage --project kipi-system --limit 5 --apply</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>30</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/linear-alert-triage.out</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/linear-alert-triage.err</string>
+</dict>
+</plist>

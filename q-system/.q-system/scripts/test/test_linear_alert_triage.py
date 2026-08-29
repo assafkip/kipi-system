@@ -129,5 +129,109 @@ class TestPromotionUnblocksBothReaders(unittest.TestCase):
         self.assertEqual(triage.alert_fingerprint(ALERT_DESC), "6f1a2b3c4d5e")
 
 
+class FakeLinear:
+    """Records every mutation so a test can assert what was NOT sent."""
+
+    def __init__(self, comment_ok=True, update_ok=True):
+        self.calls = []
+        self.comment_ok = comment_ok
+        self.update_ok = update_ok
+
+    def graphql(self, query, variables):
+        self.calls.append((query, variables))
+        if "commentCreate" in query:
+            return {"commentCreate": {"success": self.comment_ok}}
+        if "teams(" in query:
+            return {"teams": {"nodes": [{"states": {"nodes": [
+                {"id": "cancel-id", "name": "Canceled", "type": "canceled"}]}}]}}
+        if "issueUpdate" in query:
+            return {"issueUpdate": {"success": self.update_ok,
+                                    "issue": {"identifier": "ASK-9"}}}
+        if "issue(" in query:
+            return {"issue": {"id": "issue-id", "identifier": "ASK-9",
+                              "description": ALERT_DESC,
+                              "labels": {"nodes": []}}}
+        return {}
+
+    def sent(self, needle):
+        return any(needle in q for q, _ in self.calls)
+
+
+class TestCloseIsNeverSilent(unittest.TestCase):
+    """codex review of PR #268, major 2. do_close sent the rationale comment and
+    discarded the result, so commentCreate.success=false still fell through to the
+    close and printed CLOSED. Getting the ORDER right is not enough; the first
+    write's result has to be read."""
+
+    def test_close_refuses_when_the_rationale_comment_fails(self):
+        f = FakeLinear(comment_ok=False)
+        with self.assertRaises(RuntimeError) as cm:
+            triage.do_close(f, {"id": "issue-id", "identifier": "ASK-9"},
+                            "duplicate noise", True)
+        self.assertIn("refusing to close", str(cm.exception))
+        self.assertFalse(f.sent("issueUpdate"),
+                         "the close mutation was sent despite the comment failing")
+
+    def test_close_still_works_when_the_comment_lands(self):
+        """Negative control: the guard must not block the good path."""
+        f = FakeLinear(comment_ok=True)
+        out = triage.do_close(f, {"id": "issue-id", "identifier": "ASK-9"},
+                              "duplicate noise", True)
+        self.assertIn("CLOSED", out)
+        self.assertTrue(f.sent("issueUpdate"))
+
+
+class TestUnattendedLaneExists(unittest.TestCase):
+    """codex review of PR #268, major 1: nothing invoked this script, so the
+    consumer did not exist operationally."""
+
+    def test_a_scheduled_caller_references_this_script(self):
+        import plistlib
+        plist = SCRIPTS / "com.kipi.linear-alert-triage.plist"
+        self.assertTrue(plist.exists(), "no scheduled caller ships with the script")
+        d = plistlib.loads(plist.read_bytes())
+        cmd = " ".join(d["ProgramArguments"])
+        self.assertIn("alert-triage", cmd, "the scheduled job must run the triage verb")
+        self.assertIn("--apply", cmd, "a scheduled pass that never writes is a no-op")
+        # The FULL chain, because the plist alone is not enough: a .plist is not
+        # one of capability-gate's WIRING_SURFACES, so a script reachable only
+        # from a plist still reports inert-engine. `kipi*` IS a surface, which is
+        # why the dor lane is wired as a CLI verb and scheduled through it.
+        cli = (SCRIPTS.parent.parent.parent / "kipi").read_text(encoding="utf-8")
+        self.assertIn("alert-triage)", cli, "no kipi CLI verb, so the gate sees it inert")
+        self.assertIn("linear-alert-triage.py", cli,
+                      "the kipi verb must reference the script by path")
+
+    def test_triage_promotes_on_promote_and_holds_on_hold(self):
+        issues = [dict(as_issue(ALERT_DESC), identifier="ASK-9", id="issue-id",
+                       createdAt="2026-01-01", title="t")]
+        for verdict, expect_marker_gone in (("PROMOTE", True), ("HOLD", False)):
+            f = FakeLinear()
+            orig_fetch, orig_decide = triage.fetch_open, triage.decide
+            triage.fetch_open = lambda ls, proj: issues
+            triage.decide = lambda i, timeout=300: (verdict, "## Definition of Ready\n\n- x")
+            try:
+                triage.run_triage(f, "kipi-system", 5, True)
+            finally:
+                triage.fetch_open, triage.decide = orig_fetch, orig_decide
+            self.assertFalse(f.sent("stateId"),
+                             "the unattended lane must NEVER close an issue")
+            desc = [v for q, v in f.calls if "issueUpdate" in q][0]["input"].get("description", "")
+            self.assertEqual(not triage.is_alert_ticket(desc), expect_marker_gone,
+                             f"{verdict} wrote the wrong description shape")
+
+    def test_held_issues_leave_the_nightly_pool(self):
+        held = ALERT_DESC + "\n<!-- kipi-alert-held: 2026-08-29 -->"
+        self.assertTrue(triage.is_held(held))
+        self.assertFalse(triage.is_held(ALERT_DESC),
+                         "an unheld alert must stay in the pool")
+
+    def test_hold_marker_does_not_retrip_either_reader(self):
+        held = ALERT_DESC + "\n<!-- kipi-alert-held: 2026-08-29 -->"
+        self.assertTrue(triage.is_alert_ticket(held),
+                        "a held ticket is still an alert; only promotion clears that")
+        self.assertFalse(IS_FLEET_ALERT(as_issue(triage.strip_alert_marker(held))))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

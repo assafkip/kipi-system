@@ -47,6 +47,7 @@ usage() {
   echo "  kipi work [--apply]  Autonomous worker: take a ready issue, branch, PR (never merges/closes)"
   echo "  kipi converge --issue <ASK-n> [--max-rounds N]  Drive one issue to an APPROVED PR (work+review+rework, capped)"
   echo "  kipi dor [--apply]   Draft a Definition of Ready onto issues that lack one (bounded)"
+  echo "  kipi alert-triage [--apply]  Triage the fleet-alert bucket: promote real work, hold the rest"
   echo "  kipi health          Fleet health check: dark/failing jobs, double schedules, open spillover"
   echo "  kipi health --apply  ...and file each finding as a deduped Linear issue"
   echo "  kipi lessons-run     Run the daily auto-learn heartbeat once (distill->publish->propagate->slack)"
@@ -128,6 +129,19 @@ case "${1:-help}" in
     shift || true
     ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-claude-opus-5}" \
       python3 "$KIPI_HOME/q-system/.q-system/scripts/linear-dor-drafter.py" "$@"
+    ;;
+  alert-triage)
+    # Bounded nightly pass over the fleet-alert bucket. alert-to-linear.py files
+    # tickets that BOTH linear-dor-drafter.py and linear-worker.sh refuse by
+    # design (ASK-839); nothing moved them out of that bucket, so 151 sat inert
+    # over a red main and a full disk (ASK-1127). Promote-or-hold only: this lane
+    # never closes an issue, because a close is the direction you cannot see
+    # afterwards. Scheduled by com.kipi.linear-alert-triage.plist at 02:30, ahead
+    # of `kipi dor` at 03:00 so a promoted ticket already carries its DoR.
+    # Model pinned for the same reason the dor verb pins it.
+    shift || true
+    ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-claude-opus-5}" \
+      python3 "$KIPI_HOME/q-system/.q-system/scripts/linear-alert-triage.py" triage "$@"
     ;;
   health)
     # Daily fleet health. Every detector must DETECT, ACT (file a deduped Linear
