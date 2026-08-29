@@ -82,7 +82,7 @@ cat > "$WORK/validate.py" <<'PYEOF'
 #!/usr/bin/env python3
 """Validate terminal-states.json against every declared driver, from source.
 
-argv: <registry.json> <repo-root> <capability-manifest.json>
+argv: <registry.json> <repo-root> <assembled-capability-manifest.json>
 
 Each registry source declares a repo-relative `path` (an ABSOLUTE path is honored
 as-is, which is how the fixtures below point a source at a mutated copy) and the
@@ -659,7 +659,7 @@ def main():
             ct = row.get("consumer_test")
             if ct and ct not in declared_tests:
                 errors.append(f"{rid}: consumer_test {ct} is not in "
-                              "capability-manifest.json expected_tests, so nothing "
+                              "the capability manifest's expected_tests, so nothing "
                               "runs it -- the consumer is never proven to read this state")
         # `uncovered` IS AN ADMISSION AND IT MUST NOT SIT INSIDE A CERTIFICATION
         # (codex PR #215 round 4, major). converge-verdict-terminal carried a
@@ -772,7 +772,13 @@ REG="$ROOT/q-system/.q-system/terminal-states.json"
 SRC="$ROOT/q-system/.q-system/scripts/linear-worker.sh"
 CONVERGE="$ROOT/q-system/.q-system/scripts/converge.sh"
 DISPATCH="$ROOT/kipi-dispatch.sh"
-MAN="$ROOT/q-system/.q-system/capability-manifest.json"
+# validate.py takes the manifest as a FILE argument, and that contract is
+# unchanged. The manifest itself is a per-declaration fragment directory now
+# (the single array it replaced was the merge conflict in 37 of 41 conflicting
+# PRs), so assemble it once here and hand validate.py a plain file.
+MAN="$WORK/capability-manifest.assembled.json"
+python3 "$ROOT/q-system/.q-system/scripts/capability_manifest.py" \
+  --root "$ROOT" --print >"$MAN" || { echo "RED: manifest does not assemble"; exit 1; }
 
 for f in "$REG" "$SRC" "$CONVERGE" "$DISPATCH" "$MAN"; do
   if [ ! -f "$f" ]; then echo "RED: missing $f"; exit 1; fi
@@ -1094,7 +1100,7 @@ mkfixture "$FIX/unregtest.json" '
 state("needs-scope")["consumer_test"] = \
     "q-system/.q-system/scripts/test/test-does-not-exist.sh"
 '
-expect_red "a consumer_test absent from capability-manifest.json is refused" \
+expect_red "a consumer_test absent from the capability manifest is refused" \
   "$FIX/unregtest.json" "expected_tests"
 
 # --- 11. plist present but launchctl unreadable (codex-adversarial finding-4) -
