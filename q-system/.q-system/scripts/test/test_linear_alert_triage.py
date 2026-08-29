@@ -52,23 +52,35 @@ ALERT_DESC = (
 )
 
 
-def as_issue(desc, labels=("owner:sana", "needs-triage"), project="kipi-system"):
-    return {"identifier": "ASK-9999", "description": desc,
-            "state": {"type": "backlog"}, "project": {"name": project},
+def as_issue(desc, labels=("owner:sana", "needs-triage"), project="kipi-system",
+             state="backlog"):
+    return {"identifier": "ASK-9999", "id": "u", "description": desc,
+            "state": {"type": state},
+            "project": {"name": project} if project else None,
             "labels": {"nodes": [{"id": f"id-{n}", "name": n} for n in labels]}}
 
 
-def worker_ready(issue):
-    """ready() from linear-worker.sh, in its decisive part: the alert exclusion
-    sits ABOVE the DoR test, which is why emitting a DoR from the filer is inert."""
-    labels = {l["name"] for l in issue["labels"]["nodes"]}
-    if "owner:assaf" in labels: return False
-    if "owner:sana" not in labels: return False
-    if "needs-scope" in labels: return False
-    if issue["state"]["type"] not in ("backlog", "unstarted"): return False
-    if IS_FLEET_ALERT(issue): return False
-    d = issue.get("description") or ""
-    return "## Definition of Ready" in d or "Definition of Ready" in d
+def _worker_ready(repo_project="kipi-system"):
+    """ready(), lifted VERBATIM out of linear-worker.sh.
+
+    The first version of this helper was hand-written and omitted
+    blocked:capability and the project check, which is the same subset bug codex
+    found in promotion_refusal. A test carrying its own copy of the predicate
+    cannot detect that the real one has a condition the code under test lacks."""
+    src = (SCRIPTS / "linear-worker.sh").read_text(encoding="utf-8")
+    m = re.search(r"^def ready\(i\):.*?^    return \"## Definition of Ready\" in d "
+                  r"or \"Definition of Ready\" in d$", src, re.S | re.M)
+    if not m:
+        raise AssertionError("could not locate ready() in linear-worker.sh")
+    ns = {"is_fleet_alert": IS_FLEET_ALERT, "repo_project": repo_project,
+          "project_of": lambda i: ((i.get("project") or {}).get("name") or "")}
+    exec(compile("def in_this_repo(i):\n    return project_of(i) == repo_project\n",
+                 "worker:in_this_repo", "exec"), ns)
+    exec(compile(m.group(0), "linear-worker.sh:ready", "exec"), ns)
+    return ns["ready"]
+
+
+worker_ready = _worker_ready()
 
 
 DOR = "## Definition of Ready\n\n- Reproducer: `gh pr checks`\n- Done: main is green\n"
@@ -387,13 +399,11 @@ class TestExplicitVerbsReportSkips(unittest.TestCase):
     """codex review of PR #275 round 2. main() is run_triage's sibling and kept the
     identical skip-as-success defect after run_triage was fixed for it."""
 
-    def test_main_source_counts_writes_not_returns(self):
-        import inspect
-        body = inspect.getsource(triage).split("def main(")[1]
-        self.assertIn("if out.wrote:", body,
-                      "main appends to `done` without asking whether a write happened")
-        self.assertIn("skipped", body,
-                      "main has no notion of a skip, so it cannot report one")
+    def test_main_exit_contract_is_covered_behaviourally(self):
+        """Replaced by TestMainExitCodeBehaviour, which drives main() instead of
+        grepping its source (codex r5 minor: the source test stayed green when
+        the contract was deleted)."""
+        self.assertTrue(hasattr(triage, "main"))
 
 
 class TestUnverifiedCloseSaysSo(unittest.TestCase):
@@ -517,6 +527,141 @@ class TestCloseRefusesOnAFailedFreshnessRead(unittest.TestCase):
         self.assertFalse(out.wrote)
         self.assertFalse(any("issueUpdate" in q for q, _ in f.calls),
                          "it closed without confirming the issue was still an alert")
+
+
+class TestRefusalAgreesWithTheRealWorker(unittest.TestCase):
+    """codex review of PR #275 round 5, major. Centralising the preconditions was
+    only half the fix: the list itself was the SUBSET that had come up in review,
+    missing owner:assaf, needs-scope, blocked:capability and the state type. So
+    promote reported PROMOTED, stripped the alert marker, and left an issue the
+    worker still refuses.
+
+    This test does not re-list the conditions. It asserts the PROPERTY: anything
+    promotion_refusal lets through must be accepted by linear-worker.sh's own
+    ready(), extracted from the shipped file. A condition added to the worker, or
+    dropped from here, breaks it."""
+
+    SHAPES = [
+        ("ordinary alert", {}),
+        ("founder-owned", {"labels": ("owner:assaf", "owner:sana")}),
+        ("no owner", {"labels": ("needs-triage",)}),
+        ("needs-scope", {"labels": ("owner:sana", "needs-scope")}),
+        ("blocked:capability", {"labels": ("owner:sana", "blocked:capability")}),
+        ("started state", {"state": "started"}),
+        ("completed state", {"state": "completed"}),
+        ("no project", {"project": None}),
+        ("wrong project", {"project": "some-other-repo"}),
+    ]
+
+    def test_anything_allowed_is_accepted_by_the_worker(self):
+        allowed = 0
+        for name, kw in self.SHAPES:
+            issue = as_issue(ALERT_DESC, **kw)
+            if triage.promotion_refusal(issue) is not None:
+                continue
+            allowed += 1
+            promoted = dict(issue, description=triage.promote_body(
+                issue["description"], DOR, "fp", ""))
+            # ready() against the checkout that OWNS this issue's project.
+            # in_this_repo() is per-checkout, not a global validity condition:
+            # this tool is fleet-wide by design (--project is optional), so an
+            # issue in another repo's project is legitimately promotable and a
+            # dispatcher there picks it up. Pinning every shape to kipi-system
+            # would assert something the system does not claim. What must hold
+            # is that SOME checkout can serve it, which is why a projectless
+            # issue is still refused: no checkout can ever match an empty name.
+            ready = _worker_ready((issue.get("project") or {}).get("name") or "")
+            self.assertTrue(ready(promoted),
+                            f"promotion_refusal allowed {name!r}, but the worker's "
+                            "own ready() still refuses it after promotion")
+        self.assertGreater(allowed, 0,
+                           "no shape was allowed, so this test proved nothing")
+
+    def test_the_refusals_are_not_blanket(self):
+        """Negative control: an ordinary alert must pass, or the check above is
+        satisfied trivially by refusing everything."""
+        self.assertIsNone(triage.promotion_refusal(as_issue(ALERT_DESC)))
+
+
+class TestMainExitCodeBehaviour(unittest.TestCase):
+    """codex r5 minor: the only test for main's exit contract asserted SOURCE
+    substrings and stayed green when the contract was deleted. This drives main()
+    and reads the code it returns."""
+
+    def _main(self, argv, refusal_desc):
+        import io, contextlib
+        class LS:
+            def graphql(s, q, v):
+                if "comments(first" in q:
+                    return {"issue": {"comments": {"nodes": []}}}
+                if "issue(" in q:
+                    return {"issue": {"id": "u", "identifier": "ASK-1",
+                                      "description": refusal_desc,
+                                      "state": {"type": "backlog"},
+                                      "project": {"name": "kipi-system"},
+                                      "labels": {"nodes": [
+                                          {"id": "o", "name": "owner:sana"}]}}}
+                if "issueUpdate" in q:
+                    return {"issueUpdate": {"success": True, "issue": {"identifier": "ASK-1"}}}
+                return {}
+            def linear_api_key(s): return "k"
+        orig_load, orig_ev = triage._load, triage.write_run_evidence
+        triage._load = lambda n, f: LS()
+        triage.write_run_evidence = lambda line: None
+        argv_backup = sys.argv[:]
+        sys.argv = ["linear-alert-triage.py"] + argv
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                return triage.main()
+        finally:
+            triage._load, triage.write_run_evidence = orig_load, orig_ev
+            sys.argv = argv_backup
+
+    def test_an_apply_that_writes_nothing_exits_nonzero(self):
+        promoted = triage.promote_body(ALERT_DESC, DOR, "fp", "")
+        rc = self._main(["promote", "ASK-1", "--dor", DOR, "--apply"], promoted)
+        self.assertEqual(rc, 1, "promote --apply wrote nothing and reported success")
+
+    def test_an_apply_that_writes_exits_zero(self):
+        """Negative control."""
+        rc = self._main(["promote", "ASK-1", "--dor", DOR, "--apply"], ALERT_DESC)
+        self.assertEqual(rc, 0)
+
+
+class TestFencedDorDoesNotCount(unittest.TestCase):
+    """codex r5 minor. DOR_HEADING_RE claimed to mirror the drafter's
+    find_dor_heading, which skips code fences, and did not. A DoR shown as an
+    EXAMPLE inside a fence satisfied the bare regex, so promote_body added no
+    real heading.
+
+    Written because the first mutation run SURVIVED: reverting the fence fix left
+    every test green, which means the fix was decoration until this existed."""
+
+    FENCED = ("Here is the shape we want:\n\n"
+              "```markdown\n## Definition of Ready\n\n- not a real one\n```\n\n"
+              "That is only an example.")
+
+    def test_a_fenced_dor_still_gets_a_real_heading(self):
+        body = triage.promote_body(ALERT_DESC, self.FENCED, "fp", "")
+        outside = triage._outside_fences(body)
+        self.assertTrue(triage.DOR_HEADING_RE.search(outside),
+                        "the only DoR heading is inside a code fence")
+
+    def test_the_promoted_issue_is_still_worker_ready(self):
+        body = triage.promote_body(ALERT_DESC, self.FENCED, "fp", "")
+        self.assertTrue(worker_ready(as_issue(body, labels=("owner:sana",))))
+
+    def test_an_unfenced_heading_is_not_duplicated(self):
+        """Negative control: the fence skip must not make it add a second one."""
+        body = triage.promote_body(ALERT_DESC, DOR, "fp", "")
+        self.assertEqual(body.count("Definition of Ready"), 1)
+
+    def test_outside_fences_blanks_only_the_fenced_span(self):
+        out = triage._outside_fences("keep me\n```\nhide me\n```\nkeep me too")
+        self.assertIn("keep me", out)
+        self.assertIn("keep me too", out)
+        self.assertNotIn("hide me", out)
 
 
 if __name__ == "__main__":

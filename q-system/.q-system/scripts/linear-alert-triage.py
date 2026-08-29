@@ -88,7 +88,9 @@ PROMOTED_MARKER = "kipi-alert-promoted"
 Outcome = namedtuple("Outcome", "wrote line")
 TRIAGE_LABEL = "needs-triage"
 OWNER_LABEL = "owner:sana"
-OWNER_LABEL = "owner:sana"
+FOUNDER_LABEL = "owner:assaf"
+BLOCKING_LABELS = ("needs-scope", "blocked:capability")
+OPEN_STATE_TYPES = ("backlog", "unstarted")
 DOR_HEADING = "## Definition of Ready"
 # Any level of heading whose text is "Definition of Ready". Mirrors the drafter.
 DOR_HEADING_RE = re.compile(r"(?mi)^[ \t]{0,3}#{1,6}[ \t]+definition of ready\b")
@@ -186,6 +188,27 @@ def reread(ls, identifier: str) -> dict | None:
         return None
 
 
+FENCE_RE = re.compile(r"(?m)^[ \t]{0,3}(?:`{3,}|~{3,})[^\n]*$")
+
+
+def _outside_fences(text: str) -> str:
+    """`text` with fenced code blocks blanked out.
+
+    The heading test claimed to mirror linear-dor-drafter.py's find_dor_heading,
+    which skips fences, and did not (codex r5 minor). A DoR shown as an EXAMPLE
+    inside a code fence satisfied the bare regex, so no real heading was added.
+    Blanking rather than deleting keeps offsets stable and keeps this readable.
+    """
+    out, fenced = [], False
+    for line in (text or "").split("\n"):
+        if FENCE_RE.match(line):
+            fenced = not fenced
+            out.append("")
+            continue
+        out.append("" if fenced else line)
+    return "\n".join(out)
+
+
 def promote_body(desc: str, dor: str, fp: str, why: str) -> str:
     body = strip_alert_marker(desc).rstrip()
     dor = dor.strip()
@@ -203,7 +226,7 @@ def promote_body(desc: str, dor: str, fp: str, why: str) -> str:
     # Test for the HEADING, not for "starts with a hash". Same distinction
     # linear-dor-drafter.py's find_dor_heading draws, and for the same reason:
     # structure, not a character.
-    if not DOR_HEADING_RE.search(dor):
+    if not DOR_HEADING_RE.search(_outside_fences(dor)):
         dor = f"{DOR_HEADING}\n\n{dor}"
     parts = [body, "", dor, "",
              f"---", f"Promoted from a fleet alert by linear-alert-triage.py. {why}".rstrip()]
@@ -257,15 +280,28 @@ def promotion_refusal(fresh: dict) -> str | None:
     if not is_alert_ticket(fresh.get("description") or ""):
         return "no alert marker; already promoted or never an alert"
     labels = {l.get("name") for l in ((fresh.get("labels") or {}).get("nodes") or [])}
+    # EVERY condition linear-worker.sh ready() applies, not the three I happened
+    # to be told about (codex review of PR #275 r5). Centralising the checks was
+    # only half the fix; the list itself was still the subset that had come up in
+    # review. These mirror ready() line for line, minus the two that promotion
+    # itself supplies (the alert marker it strips, the DoR it writes).
+    if FOUNDER_LABEL in labels:
+        return f"{FOUNDER_LABEL}; the worker hands those to the founder, not to a runner"
     if OWNER_LABEL not in labels:
         return f"no {OWNER_LABEL}; the worker checks that label before the description"
+    for blocking in BLOCKING_LABELS:
+        if blocking in labels:
+            return f"{blocking}; the worker refuses that label regardless of the DoR"
+    state = ((fresh.get("state") or {}).get("type") or "")
+    if state and state not in OPEN_STATE_TYPES:
+        return f"state type {state!r} is not one of {OPEN_STATE_TYPES}"
     if not ((fresh.get("project") or {}).get("name") or "").strip():
         return ("no project; in_this_repo() is false in every checkout at once, so "
                 "promoting it would make it ready and reachable by nobody")
     return None
 
 
-def do_promote(ls, issue: dict, dor: str, why: str, apply: bool) -> str:
+def do_promote(ls, issue: dict, dor: str, why: str, apply: bool) -> Outcome:
     ident = issue["identifier"]
     fresh = reread(ls, ident) if apply else issue
     if fresh is None:
@@ -299,7 +335,7 @@ def do_promote(ls, issue: dict, dor: str, why: str, apply: bool) -> str:
 CLOSE_MARKER = "<!-- kipi-alert-close-rationale -->"
 
 
-def do_close(ls, issue: dict, reason: str, apply: bool) -> str:
+def do_close(ls, issue: dict, reason: str, apply: bool) -> Outcome:
     ident = issue["identifier"]
     if not apply:
         return Outcome(False, f"{ident}: WOULD CLOSE ({reason[:70]})")
@@ -484,7 +520,11 @@ def main() -> int:
 
     dor = a.dor or ""
     if a.dor_file:
-        dor = Path(a.dor_file).read_text(encoding="utf-8")
+        try:
+            dor = Path(a.dor_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            print(f"cannot read --dor-file {a.dor_file}: {exc.strerror}", file=sys.stderr)
+            return 2
     if a.verb == "promote" and not dor.strip():
         print("promote needs --dor or --dor-file", file=sys.stderr)
         return 2
