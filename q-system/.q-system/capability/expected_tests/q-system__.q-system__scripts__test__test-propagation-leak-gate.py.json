@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-propagation-leak-gate.py",
+ "runner": "python3"
+}

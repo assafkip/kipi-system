@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_fable_escalation.py",
+ "runner": "python3",
+ "timeout_s": 180
+}
