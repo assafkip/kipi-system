@@ -521,10 +521,127 @@ def sec_negative_proof():
     check("token-guard observation + stall suite green", r.returncode == 0)
 
 
+def sec_skeleton_only_absent():
+    # A skeleton_only path that is GENUINELY ABSENT (never created) and outside
+    # the scan roots -- the fleet-RED shape codex named on PR #216. The earlier
+    # tests created the file first, so no test could fail when it was missing.
+    rel = "test_root_only_absent.sh"
+    # ASK-972: a repo-root declaration now needs a scope_exempt prefix, so the
+    # fixture carries one. That is load-bearing rather than boilerplate — it is
+    # what proves the exemption waives only the SCOPE check: the skeleton case
+    # below still goes RED on the file's absence.
+    ex = [{"prefix": "test_", "reason": "fixture: repo-root skeleton-only artifact"}]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, skeleton=False)
+        m = base_manifest(expected_tests=[entry(rel, runner="bash")],
+                          skeleton_only=[rel], scope_exempt=ex)
+        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        rc, out = run_gate(root)
+        check("skeleton-only-absent: instance is GREEN without the file",
+              rc == 0 and "declared-but-missing" not in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)  # skeleton mode: the file MUST exist here
+        m = base_manifest(expected_tests=[entry(rel, runner="bash")],
+                          skeleton_only=[rel], scope_exempt=ex)
+        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        rc, out = run_gate(root)
+        check("skeleton-only-absent: skeleton is still RED without the file",
+              rc == 1 and "declared-but-missing (outside scan root)" in out)
+
+
+def sec_scan_scope():
+    """ASK-972: a declaration outside SCAN_ROOTS escaped BOTH directions silently.
+
+    The F3 direction (an artifact appearing with no declaration) only ever sees
+    what `discover_tests` walks, so anything declared elsewhere sat in a scope
+    nothing measured -- and nothing SAID so. These cases pin the two halves of
+    the fix: an unannounced escape is refused, an announced one is counted out
+    loud and still has to exist.
+    """
+    stray = "test-stray-probe.sh"
+    # 1. THE REPRODUCER. Declaring a repo-root path is out of both scan roots.
+    #    Before the fix this was accepted in silence and the gate went GREEN.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        add_test(root, stray)
+        m = base_manifest(expected_tests=[entry(stray)])
+        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        rc, out = run_gate(root, "--check-only")
+        check("scan-scope: undeclared-exemption escape is RED",
+              rc == 1 and "outside the scan roots" in out)
+        check("scan-scope: the refusal NAMES the scan roots",
+              "q-system/.q-system/scripts" in out)
+
+    # 2. CONTROL. The same artifact inside a scan root is still reported by the
+    #    F3 direction exactly as before -- the fix must not trade one blindness
+    #    for another.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        add_test(root, "q-system/.q-system/scripts/test-stray-probe.sh")
+        rc, out = run_gate(root, "--check-only")
+        check("scan-scope CONTROL: in-scope undeclared still RED",
+              rc == 1 and "present-but-undeclared" in out)
+
+    # 3. An ANNOUNCED escape is accepted -- and the run says how many entries
+    #    are riding it, so the boundary is legible on every run instead of
+    #    being a property you have to go read the source to discover.
+    exempt = [{"prefix": "test-", "reason": "repo-root automation tests"}]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        add_test(root, stray)
+        m = base_manifest(expected_tests=[entry(stray)], scope_exempt=exempt)
+        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        rc, out = run_gate(root, "--check-only")
+        check("scan-scope: declared exemption is accepted", rc == 0)
+        check("scan-scope: the run REPORTS the F3-blind count",
+              "1 exempt from undeclared-artifact detection" in out)
+
+    # 4. An exemption waives the SCOPE check, never the EXISTENCE check. If it
+    #    waived both, `scope_exempt` would be a delete-anything hatch.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        m = base_manifest(expected_tests=[entry(stray)], scope_exempt=exempt)
+        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        rc, out = run_gate(root, "--check-only")
+        check("scan-scope: exempt-but-vanished is still RED",
+              rc == 1 and "declared-but-missing (outside scan root)" in out)
+
+    # 5. The instance-local overlay runs through the same validator, so it
+    #    cannot be used to smuggle in an escape the canonical manifest refuses.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, skeleton=False)
+        add_test(root, stray)
+        (root / "capability-manifest.local.json").write_text(
+            json.dumps({"expected_tests": [entry(stray)]}))
+        rc, out = run_gate(root, "--check-only")
+        check("scan-scope: overlay cannot smuggle an escape",
+              rc == 1 and "outside the scan roots" in out)
+
+    # 6. The exemption list is itself validated: a reasonless or unsafe prefix
+    #    is a silent hole in the one place that is allowed to make holes.
+    #    The expected message is asserted EXACTLY, and the unknown-top-level-key
+    #    error is asserted ABSENT -- before scope_exempt was a known key these
+    #    same cases went red on "unknown top-level keys", which is a pass for
+    #    entirely the wrong reason.
+    for bad, want, why in (
+        (({"prefix": "test-"},), "scope_exempt entry needs prefix+reason", "reasonless"),
+        (({"prefix": "/etc/", "reason": "x"},),
+         "unsafe or non-relative prefix in scope_exempt", "absolute"),
+        (("test-",), "scope_exempt entry needs prefix+reason", "bare string"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_repo(tmp, manifest=base_manifest(scope_exempt=list(bad)))
+            rc, out = run_gate(root, "--check-only")
+            check(f"scan-scope: {why} scope_exempt entry RED",
+                  rc == 1 and want in out and "unknown top-level keys" not in out)
+
+
 SECTIONS = {
     "schema": sec_schema, "overlay": sec_overlay, "quarantine": sec_quarantine,
     "wiring": sec_wiring, "runner": sec_runner, "mode": sec_mode,
     "negative-proof": sec_negative_proof,
+    "skeleton_only_absent": sec_skeleton_only_absent,
+    "scan-scope": sec_scan_scope,
 }
 
 

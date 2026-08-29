@@ -25,6 +25,34 @@
 #                        (1800s work) and the reviewer (2400s review)
 #
 # Usage: converge.sh --issue ASK-150 [--max-rounds 4] [--dry]
+#
+# THE BRACE AROUND EVERYTHING BELOW IS LOAD-BEARING (ASK-351). Do not remove it,
+# and do not "clean up" the bare `}` on the last line.
+#
+# bash does not load a script into memory. It reads a chunk, executes ONE command,
+# then lseeks back to the byte offset just past that command for the next one.
+# This script runs for hours inside a repo that agents edit the whole time, so an
+# edit shifts every later byte offset and bash resumes parsing mid-string. Measured
+# 2026-08-03, ~/.config/kipi/converge-ASK-288.log, four completed review rounds
+# thrown away at the exit:
+#
+#   converge.sh: line 872: of: command not found
+#   converge.sh: line 872: not: command not found
+#   converge.sh: line 876: syntax error near unexpected token `fi'
+#
+# Line 872 on disk is `fi`. `of` and `not` exist only INSIDE the quoted STALL_LOG
+# strings, so no correct read can execute them, and `bash -n` passes on every
+# committed version -- the file was never syntactically wrong. Commit d142466
+# landed seven minutes into that run. That is the edit.
+#
+# bash must parse a compound command to completion before executing any of it, so
+# the brace makes the whole body arrive at startup. The `exit 2` on the last line
+# INSIDE the brace is the other half and is not redundant: measured, a brace wrap
+# alone still dies rc=2, because bash seeks past the closing brace looking for one
+# more command and re-executes leftovers from a file that has grown.
+#
+# Reproducer for both halves: q-system/.q-system/scripts/test/test-script-stable-under-self-edit.sh
+{
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -986,4 +1014,10 @@ if ! python3 "$LEDGER" "$ATTEMPTS" record-capout "$ISSUE" "$CAPOUT_WHY" 2>>"$LOG
   say "WARNING: record-capout failed for $ISSUE; the redrives cannot see this cap-out."
 fi
 bash "$NOTIFY" "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT. Parked -- no redrive will re-enter it until you clear it: python3 q-system/.q-system/scripts/attempts-ledger.py $ATTEMPTS clear-capout $ISSUE$CAPOUT_NOTE" 2>/dev/null || true
+# The `exit 2` on the line BELOW this comment -- not the `bash "$NOTIFY"` above it --
+# is the last statement INSIDE the ASK-351 brace, and it has to stay last and stay
+# unconditional: it is what stops bash from ever reading this file again. See the
+# header. Nothing may be added between it and the closing brace, and nothing may be
+# added below the closing brace.
 exit 2
+}

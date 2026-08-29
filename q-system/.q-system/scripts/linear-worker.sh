@@ -44,6 +44,27 @@
 #
 # Usage:  linear-worker.sh [--apply] [--limit N] [--issue ASK-123]
 # Dry by default: prints what it would pick and stops.
+#
+# THE BRACE AROUND EVERYTHING BELOW IS LOAD-BEARING (ASK-351). Do not remove it,
+# and do not "clean up" the bare `}` on the last line.
+#
+# bash does not load a script into memory. It reads a chunk, executes ONE command,
+# then lseeks back to the byte offset just past that command for the next one. A
+# round here runs up to 1800s inside a repo that agents edit the whole time, so an
+# edit shifts every later byte offset and bash resumes parsing mid-string.
+# ~/.config/kipi/linear-worker.log carries the signature: `ial: command not found`,
+# and `ial` is not a word in this file -- it is the tail of one, read from a
+# slipped offset. converge.sh died the same way on 2026-08-03 and threw away four
+# completed review rounds.
+#
+# bash must parse a compound command to completion before executing any of it, so
+# the brace makes the whole body arrive at startup. The `exit 0` on the last line
+# INSIDE the brace is the other half and is not redundant: measured, a brace wrap
+# alone still dies rc=2, because bash seeks past the closing brace looking for one
+# more command and re-executes leftovers from a file that has grown.
+#
+# Reproducer for both halves: q-system/.q-system/scripts/test/test-script-stable-under-self-edit.sh
+{
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -2422,4 +2443,8 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
 done
 
 say "worker: run complete"
+# The `exit 0` below is the last statement INSIDE the ASK-351 brace, and it has to
+# stay last and stay unconditional: it is what stops bash from ever reading this
+# file again. See the header. Nothing may be added below the closing brace.
 exit 0
+}

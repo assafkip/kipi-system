@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "slug": "ask136-quick-plan-names-and-wires-plan-lint",
+  "reason": "ASK-136. quick-plan.md claims ENFORCED but names no executable, so capability-map-gen.py grades the label prompt-only and the reproducer test-quick-plan-rule-wired.sh is red. Unlike the ASK-140 siblings the enforcing script was NOT already switched on: plan-lint.py shipped as an engine with no wiring (PR #236) and Codex flagged that twice. So this proposal does both halves in one transaction - it wires plan-lint.py PostToolUse in .claude/settings.json AND settings-template.json (both, or settings-template-sync-check goes red in one direction), and adds the rule text naming it plus the honest bound on what it checks. Additive only: three inserts, no hook removed, no marker moved, no line dropped. The hook count grows by one on each settings file.",
+  "requires": {
+    "files_present": [
+      ".claude/rules/quick-plan.md",
+      ".claude/settings.json",
+      "settings-template.json",
+      "q-system/.q-system/scripts/plan-lint.py",
+      "q-system/.q-system/scripts/test_plan_lint.py",
+      "q-system/.q-system/scripts/test/test-quick-plan-rule-wired.sh"
+    ],
+    "template_pairs": [
+      "scripts/plan-lint.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/settings.json",
+      "op": "insert_after",
+      "anchor": "\"command\": \"python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/wiring-check.py\\\"\",\n            \"timeout\": 5\n          },",
+      "insert": "\n          {\n            \"type\": \"command\",\n            \"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/plan-lint.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/plan-lint.py\\\"\",\n            \"timeout\": 5\n          },",
+      "reason": "Switch the plan-lint engine on in the skeleton's own runtime. test -f guard per skill-hook-pairing.md, so a missing script is a deliberate no-op rather than a crash on every Edit."
+    },
+    {
+      "file": "settings-template.json",
+      "op": "insert_after",
+      "anchor": "\"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/wiring-check.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/wiring-check.py\\\"\"\n          },",
+      "insert": "\n          {\n            \"type\": \"command\",\n            \"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/plan-lint.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/plan-lint.py\\\"\"\n          },",
+      "reason": "kipi update rebuilds every instance's settings.json from the template alone, so the switch has to land here in the same transaction or the hook ships dead to the fleet."
+    },
+    {
+      "file": ".claude/rules/quick-plan.md",
+      "op": "insert_after",
+      "anchor": "The plan is the durable checkpoint that survives context loss.\n",
+      "insert": "\n**Scope of (ENFORCED) above: the plan's SHAPE, held by `q-system/.q-system/scripts/plan-lint.py`.** Wired PostToolUse on Edit/Write in BOTH `.claude/settings.json` and `settings-template.json`, so `kipi update` ships the switch and not only the script. It exits 2 on a plan written to `q-system/output/plans/` that lacks the dated `<slug>-<YYYY-MM-DD>.md` filename or any of the five sections named below, and fast-exits on every other path. Read its silence narrowly: it checks that those sections EXIST, never that their content is true, grounded or complete. Plans dated before 2026-08-21 are grandfathered (39 of the 57 plans on disk were short a section, and a gate red on its own population gets switched off), and `plan-lint-skip` is the explicit per-file bypass. Whether this reflex FIRES at all stays a model decision that no hook observes -- a PostToolUse hook can inspect a plan that was written and is structurally blind to one that was skipped. Pinned by `test-quick-plan-rule-wired.sh` (the labelling and the wiring) and `test_plan_lint.py` (the engine).\n",
+      "reason": "Name the enforcing executable inside the (ENFORCED) heading's own section so the claim is checkable, and state the bound so the label is not read wider than the hook actually holds."
+    }
+  ]
+}

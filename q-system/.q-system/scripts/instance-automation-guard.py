@@ -25,6 +25,35 @@ import sys
 SCRIPT_EXTS = (".sh", ".py", ".plist")
 BYPASS_MARKER = "automation-guard-skip"
 
+# sp-c2e12da4. kipi-update.sh excludes these subtrees from the q-system
+# rsync --delete (INSTANCE_OWNED_SUBTREES), so a script written there is
+# NOT clobbered and the block's premise is false. The list must match
+# the bash array; test_instance_automation_guard.py parses both and
+# refuses drift between them.
+INSTANCE_OWNED_SUBTREES = (
+    "my-project",
+    "canonical",
+    "memory",
+    "output",
+    "research",
+    ".q-system/data",
+    ".q-system/agent-pipeline/bus",
+)
+
+
+def _under_owned_subtree(norm):
+    """True when the path sits inside q-system/<owned>/... The slash is
+    explicit: outputx/ is not output/, matching the bash case pattern."""
+    marker = "/q-system/"
+    idx = norm.find(marker)
+    if idx == -1:
+        return False
+    rest = norm[idx + len(marker):]
+    for sub in INSTANCE_OWNED_SUBTREES:
+        if rest == sub or rest.startswith(sub + "/"):
+            return True
+    return False
+
 
 def is_skeleton(project_dir):
     """The skeleton (kipi-system) has instance-registry.json at its root; instances do not."""
@@ -79,6 +108,8 @@ def main():
         sys.exit(0)
     if not norm.endswith(SCRIPT_EXTS):
         sys.exit(0)
+    if _under_owned_subtree(norm):
+        sys.exit(0)  # instance-owned: kipi update never deletes these
 
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     if is_skeleton(owning_repo(fp, project_dir)):
