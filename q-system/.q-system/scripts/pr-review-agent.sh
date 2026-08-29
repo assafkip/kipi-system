@@ -438,8 +438,41 @@ review_worktree() {  # review_worktree <sha> -> prints path, or nothing
   printf '%s' "$wt"
 }
 
+# NO REVIEW MAY START WHILE A STALE pr/<N> REF EXISTS. Checked HERE, at the
+# caller, because nothing review_worktree returns can enforce it: it is invoked
+# inside `$( )`, so it runs in a SUBSHELL -- `return 1` is swallowed by the
+# `|| true` below, and even `exit` would only leave the subshell. A guard whose
+# every failure signal is discarded by its own call site is not a guard.
+#
+# So the invariant is asserted independently of the function's result: after the
+# call, the ref is either absent or equal to the sha under review. Anything else
+# and the reproducers would read another commit's files while reporting this sha
+# (sp-690ba60b / ASK-1120), which is a confident wrong answer rather than a
+# failure, so this refuses instead of degrading.
+#
+# Codex found this twice on PR #265, both times correctly. Round 1: returning 1
+# left the ref stale because the caller degrades. Round 2: the cleanup's own
+# `|| true` meant a failed DELETE was swallowed too. Both are the same shape --
+# an error path that lands in the exact state the guard exists to prevent.
+assert_pr_ref_not_stale() {  # assert_pr_ref_not_stale <dir> <sha>
+  local dir="$1" sha="$2" now
+  # --verify --quiet IS LOAD-BEARING. Bare `rev-parse <missing-ref>` prints the
+  # REF NAME on stdout and exits non-zero, so `now` came back as the literal
+  # string "refs/remotes/pr/<N>" -- non-empty, not equal to the sha, and the
+  # assertion refused every FIRST-round review, where absent is the normal state.
+  # Caught by the absent-ref case below, which is why that case exists.
+  now="$(git -C "$dir" rev-parse --verify --quiet "refs/remotes/pr/$PR" 2>/dev/null || true)"
+  [ -z "$now" ] && return 0          # absent is safe: a reproducer errors loudly
+  [ "$now" = "$sha" ] && return 0
+  echo "FATAL: refs/remotes/pr/$PR is stale (${now:0:8}, reviewing ${sha:0:8}) and could not be corrected or removed." >&2
+  echo "       Refusing to review: the reproducers read the PR through that ref and would report on the wrong commit." >&2
+  echo "       Clear it by hand:  git -C $dir update-ref -d refs/remotes/pr/$PR" >&2
+  exit 1
+}
+
 if [ -n "$HEAD_SHA" ] && git -C "$REVIEW_REPO" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
   ISOLATED="$(review_worktree "$HEAD_SHA" || true)"
+  assert_pr_ref_not_stale "${ISOLATED:-$REVIEW_REPO}" "$HEAD_SHA"
   if [ -n "$ISOLATED" ]; then
     REVIEW_ROOT="$ISOLATED"
     echo "  tree: $REVIEW_ROOT (detached at ${HEAD_SHA:0:8}; isolated from any checkout in use)"

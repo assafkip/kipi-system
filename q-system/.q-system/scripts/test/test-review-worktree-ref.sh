@@ -108,6 +108,48 @@ OUT="$(command git -C "$WT2" show refs/remotes/pr/98:f.txt 2>/dev/null)"
 [ "$OUT" != "round1" ] && ok "a reproducer cannot read stale content through the dead ref" \
                        || bad "a reproducer still reads stale content (got '$OUT')"
 
+# WHEN UPDATE *AND* DELETE BOTH FAIL, NO REVIEW MAY START.
+# (Codex major, PR #265 round 2.) The cleanup carries `|| true`, so a failed
+# DELETE is swallowed too, and the caller's `|| true` discards the return code.
+# Nothing the function returns can stop the run -- it is called inside `$( )`, so
+# it is a SUBSHELL and even `exit` would only leave the subshell. The invariant
+# therefore lives at the CALLER, asserted independently of the result.
+WT3="$TMP/wt3"
+git -C "$REPO" worktree add --detach "$WT3" "$SHA1" >/dev/null 2>&1
+git -C "$WT3" update-ref refs/remotes/pr/97 "$SHA1"
+
+# Both write forms fail; reads still work, which is what makes the stale ref
+# READABLE and therefore dangerous.
+git() {
+  if [ "${3:-}" = "update-ref" ]; then return 1; fi
+  command git "$@"
+}
+PR=97
+eval "$(sed -n '/^assert_pr_ref_not_stale() {/,/^}/p' "$AGENT")"
+review_tree_path() { echo "$WT3"; }
+review_worktree "$SHA2" >/dev/null 2>&1
+unset -f git
+
+# The ref survived, by construction. That is the state under test.
+SURV="$(command git -C "$WT3" rev-parse refs/remotes/pr/97 2>/dev/null)"
+[ "$SURV" = "$SHA1" ] && ok "setup: the stale ref really did survive both writes" \
+                      || bad "setup: stale ref did not survive, test proves nothing (got ${SURV:0:8})"
+
+# The assertion must REFUSE, not warn and continue.
+OUT="$( (assert_pr_ref_not_stale "$WT3" "$SHA2") 2>&1 )"; ARC=$?
+[ "$ARC" -ne 0 ] && ok "a surviving stale ref refuses the review" \
+                 || bad "a surviving stale ref refuses the review (exited $ARC)"
+case "$OUT" in
+  *FATAL*stale*) ok "the refusal names the ref and both shas" ;;
+  *) bad "the refusal names the ref and both shas (got: $OUT)" ;;
+esac
+
+# ABSENT must stay safe, or the assertion would block every first-round review.
+command git -C "$WT3" update-ref -d refs/remotes/pr/97 >/dev/null 2>&1
+(assert_pr_ref_not_stale "$WT3" "$SHA2") >/dev/null 2>&1 \
+  && ok "an absent ref is allowed through" \
+  || bad "an absent ref is allowed through"
+
 echo
 if [ "$FAIL" -eq 0 ]; then echo "PASS: $PASS checks green"; exit 0; fi
 echo "FAILED: $FAIL"; exit 1
