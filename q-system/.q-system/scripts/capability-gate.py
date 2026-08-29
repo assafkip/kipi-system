@@ -10,7 +10,8 @@ crashed in 23. Nothing declared what was supposed to exist, so nothing could
 detect what was missing. Silent absences are invisible to exit codes; this
 gate makes absence loud in both directions.
 
-Manifest: q-system/.q-system/capability-manifest.json (canonical, synced).
+Manifest: q-system/.q-system/capability/ (canonical, synced) -- one JSON
+          fragment per declaration, assembled by capability_manifest.py.
 Overlay:  <repo-root>/capability-manifest.local.json (instance-local, ADD-only).
 
 Exit codes: 0 green, 1 red, 3 refused (worktree copy).
@@ -26,6 +27,12 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+
+# Same directory, and this script is invoked by path from several
+# roots (lefthook, kipi check, CI), so the parent dir is put on the
+# path explicitly rather than relying on the caller's cwd.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import capability_manifest  # noqa: E402
 
 SCHEMA_VERSION = 1
 ALLOWED_TOP_KEYS = {
@@ -93,14 +100,19 @@ def detect_mode(root, errors):
 
 
 def load_manifest(root, errors):
-    path = root / "q-system/.q-system/capability-manifest.json"
-    if not path.is_file():
-        errors.append(f"manifest missing: {path.relative_to(root)}")
-        return None
-    try:
-        data = json.loads(path.read_text())
-    except json.JSONDecodeError as exc:
-        errors.append(f"manifest malformed JSON: {exc}")
+    """Assemble the manifest from its fragment directory, then validate it.
+
+    The manifest used to be one hand-maintained file with one unsorted
+    182-entry `expected_tests` array, so every branch that declared a test
+    appended to the same lines and collided with every other branch: it was the
+    conflict in 37 of 41 conflicting PRs and the ONLY conflict in 16. It is now
+    one file per declaration under q-system/.q-system/capability/; two branches
+    adding two declarations write two different filenames and never collide.
+    Only the ASSEMBLY moved -- every rule below still reads the same dict, so
+    the declared-vs-actual diff is unchanged in both directions.
+    """
+    data = capability_manifest.load(root, errors)
+    if data is None:
         return None
     validate_manifest(data, errors)
     return data
@@ -451,8 +463,16 @@ def diff_declared_vs_actual(root, manifest, errors, mode="skeleton"):
     for missing in sorted(in_scope_declared - discovered):
         errors.append(f"declared-but-missing: {missing}")
     for extra in sorted(discovered - declared):
-        errors.append(f"present-but-undeclared: {extra} — add to expected_tests "
-                      "in capability-manifest.json")
+        # Name the exact file to create. The old message said "add to
+        # expected_tests" and every author then appended to the same array,
+        # which is what made this manifest the conflict in 37 of 41
+        # conflicting PRs. A declaration is one file now, so the refusal hands
+        # over its path rather than a section name.
+        frag = capability_manifest.fragment_name("expected_tests", {"path": extra})
+        errors.append(
+            f"present-but-undeclared: {extra} — declare it by creating "
+            f"{capability_manifest.FRAGMENT_DIR}/expected_tests/{frag} "
+            'containing {"path": "%s", "runner": "python3"|"bash"}' % extra)
     skeleton_only = set(manifest.get("skeleton_only", []))
     for outside in sorted(declared - in_scope_declared):
         if mode == "instance" and outside in skeleton_only:
