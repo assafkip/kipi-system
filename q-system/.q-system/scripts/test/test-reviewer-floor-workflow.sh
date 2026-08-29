@@ -49,7 +49,12 @@ fi
 
 # 3. The head sha is still used, as the ARGUMENT. Without this the fix would
 #    "pass" by posting to the wrong commit, which is a different outage.
-if grep -qE 'reviewer-floor\.sh "\$\{\{[[:space:]]*github\.event\.pull_request\.head\.sha' "$WF"; then
+# Matched on the ARGUMENT, not on one spelling of the call. The first version of
+# this check hard-coded `reviewer-floor.sh "${{ ...` and went red the moment the
+# step became a multi-line block invoking "$FLOOR" -- a true property failing on
+# a cosmetic refactor. Assert that the head sha is passed to the floor, however
+# the floor is named on that line.
+if grep -qE '(reviewer-floor\.sh|"\$FLOOR")[[:space:]]+"\$\{\{[[:space:]]*github\.event\.pull_request\.head\.sha' "$WF"; then
   ok "the head sha is still what gets inspected and posted to"
 else
   bad "the head sha is still what gets inspected and posted to"
@@ -61,6 +66,25 @@ if grep -qE '^[[:space:]]*statuses:[[:space:]]*write' "$WF"; then
   ok "statuses: write is present (so the base-pin above is load-bearing)"
 else
   bad "statuses: write not found -- re-read this test, its premise changed"
+fi
+
+# 5. The bootstrap must post NOTHING, never fall back to the PR's own copy.
+#    On the PR that introduces this workflow the script is not on base yet and
+#    `bash <missing>` exits 127 (measured on PR #96). The tempting fix is to run
+#    the PR's copy when base has none -- that fallback IS the vulnerability.
+#    Absent-and-blocked is the safe direction; a forged success is not.
+if grep -qE 'if \[ ! -f "\$FLOOR" \]; then' "$WF"; then
+  ok "the missing-script case is handled explicitly"
+else
+  bad "the missing-script case is handled explicitly (else the bootstrap commit dies rc=127)"
+fi
+
+# The handler must NOT reach for the PR checkout as a fallback. Any checkout of
+# head.sha, or a git fetch of the PR ref inside the run block, is that hole.
+if grep -qE 'fetch.*(refs/pull|head\.sha)|checkout.*head\.sha' "$WF"; then
+  bad "the bootstrap must not fetch or check out the PR's own copy as a fallback"
+else
+  ok "the bootstrap does not fall back to the PR's own copy"
 fi
 
 echo

@@ -59,7 +59,30 @@ jobs:
       # evaluates. Posting there would leave the real head untouched and the PR
       # still wedged on an absent context.
       - name: Post the floor when no reviewer verdict exists at this head
-        run: bash q-system/.q-system/scripts/reviewer-floor.sh "${{ github.event.pull_request.head.sha }}"
+        run: |
+          set -euo pipefail
+          FLOOR=q-system/.q-system/scripts/reviewer-floor.sh
+          # BOOTSTRAP, and the only safe direction out of it. The step above
+          # checks out the BASE so the code that runs is trusted -- but on the
+          # PR that INTRODUCES this workflow the script is not on base yet, and
+          # `bash <missing>` exits 127 (rc=127 on PR #96, this exact commit).
+          #
+          # Posting nothing is the correct response, not a fallback to the PR's
+          # own copy: that fallback IS the vulnerability. It leaves
+          # kipi/reviewer-approved ABSENT, which branch protection treats as
+          # unsatisfied, so the PR stays blocked. Absent-and-blocked is the safe
+          # direction; a forged success is not.
+          #
+          # Same reasoning covers the script being deleted later: the floor goes
+          # quiet and PRs stop merging, rather than the floor going quiet and
+          # PRs merging unreviewed.
+          if [ ! -f "$FLOOR" ]; then
+            echo "reviewer-floor.sh is not on the base ref yet."
+            echo "No trusted copy to run, so this posts NOTHING and kipi/reviewer-approved stays absent."
+            echo "That leaves this PR blocked, which is the intended direction. Once this lands on main, base carries the script and the floor runs normally."
+            exit 0
+          fi
+          bash "$FLOOR" "${{ github.event.pull_request.head.sha }}"
         env:
           GH_TOKEN: ${{ github.token }}
           # Makes the {owner}/{repo} placeholders resolve from the event rather
