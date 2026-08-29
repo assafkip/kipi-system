@@ -189,7 +189,38 @@ def main():
     if "--fix" in sys.argv:
         import json as _json
         for plugin, ver in violations:
-            man = os.path.join("plugins", plugin, ".claude-plugin", "plugin.json")
+            # USE THE CHECKER'S OWN RESOLVER. This hardcoded
+            # plugins/<p>/.claude-plugin/plugin.json, so --fix crashed on the
+            # root-level plugin.json layout that MANIFESTS explicitly supports:
+            # the fixer could not repair the very layout the check flags
+            # (Codex minor, PR #253).
+            man = manifest_path(plugin)
+            if not man:
+                sys.stderr.write(
+                    f"  - {plugin}: no manifest at any known path; bump it by hand\n")
+                sys.exit(2)
+
+            # NEVER `git add` A MANIFEST CARRYING UNSTAGED WORK. `git add <man>`
+            # stages the WHOLE working-tree file, so an unrelated edit the author
+            # had in flight is silently absorbed into a commit whose message says
+            # only "version bump" (Codex major, PR #253).
+            #
+            # That is the SAME absorption this gate exists to stop -- the header
+            # above records a refused commit eating the entire ASK-999 port -- so
+            # a fixer that did it would reproduce the defect it was written to
+            # end, and under a message that lies about what changed.
+            #
+            # Refusing ONLY here keeps the deadlock fix intact: a clean manifest,
+            # which is the ordinary case, still auto-bumps and never asks.
+            clean, _ = run_ok(["git", "diff", "--quiet", "--", man])
+            if not clean:
+                sys.stderr.write(
+                    f"plugin-version-bump-check: {man} has UNSTAGED changes.\n"
+                    f"  Auto-bumping stages the whole file, so that work would land "
+                    f"under a message describing only a version bump.\n"
+                    f"  Stage it or revert it, then commit again.\n")
+                sys.exit(2)
+
             with open(man) as fh:
                 data = _json.load(fh)
             parts = str(data.get("version", "0.0.0")).split(".")

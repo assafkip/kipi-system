@@ -237,8 +237,60 @@ def main():
         near = code[max(0, idx - 6):idx + 1]
         check("I. CI does not swallow a failure on the line feeding the gate",
               bool(invocations)
-              and not any("|| true" in l and "fetch" in l for l in near))
+              and not any("|| true" in l and "fetch" in l for l in near))    # --- Codex findings on PR #253 ---
 
+    # MAJOR: --fix must never `git add` a manifest carrying unstaged work.
+    # `git add <man>` stages the WHOLE working-tree file, so an unrelated edit
+    # the founder had in flight is absorbed into a commit whose message says
+    # only "version bump". That is the same absorption this gate exists to stop
+    # (the script header records it eating the ASK-999 port), so a fixer that
+    # does it reproduces the defect it was written to end.
+    with tempfile.TemporaryDirectory() as tmp:
+        git(tmp, "init", "-q")
+        git(tmp, "config", "user.email", "t@t")
+        git(tmp, "config", "user.name", "t")
+        man_rel = "plugins/foo/.claude-plugin/plugin.json"
+        write(os.path.join(tmp, man_rel), manifest("1.0.0"))
+        write(os.path.join(tmp, "plugins/foo/cmd.md"), "v1\n")
+        git(tmp, "add", "-A"); git(tmp, "commit", "-qm", "base")
+        # a plugin edit staged for commit (this is what trips the gate) ...
+        write(os.path.join(tmp, "plugins/foo/cmd.md"), "v2\n")
+        git(tmp, "add", "plugins/foo/cmd.md")
+        # ... and UNRELATED founder work sitting unstaged in the manifest.
+        import json as _j
+        d = _j.loads(open(os.path.join(tmp, man_rel)).read())
+        d["description"] = "founder work in flight"
+        open(os.path.join(tmp, man_rel), "w").write(_j.dumps(d))
+
+        rc, err = run_script_full(tmp, "--fix")
+        staged = subprocess.run(["git", "diff", "--cached", "--name-only"],
+                                cwd=tmp, capture_output=True, text=True).stdout
+        absorbed = man_rel in staged
+        check("fix: refuses rather than absorbing unstaged manifest work",
+              rc != 0 and not absorbed)
+        check("fix: says WHY it refused, not just that it did",
+              "unstaged" in err.lower())
+
+    # MINOR: --fix must handle the root-level plugin.json layout that
+    # manifest_path() already supports. The fixer hardcoded the
+    # .claude-plugin/ path, so it crashed on the very layout the checker flags.
+    with tempfile.TemporaryDirectory() as tmp:
+        git(tmp, "init", "-q")
+        git(tmp, "config", "user.email", "t@t")
+        git(tmp, "config", "user.name", "t")
+        write(os.path.join(tmp, "plugins/bar/plugin.json"), manifest("2.0.0"))
+        write(os.path.join(tmp, "plugins/bar/cmd.md"), "v1\n")
+        git(tmp, "add", "-A"); git(tmp, "commit", "-qm", "base")
+        write(os.path.join(tmp, "plugins/bar/cmd.md"), "v2\n")
+        git(tmp, "add", "plugins/bar/cmd.md")
+
+        rc, err = run_script_full(tmp, "--fix")
+        newver = json.loads(open(os.path.join(tmp, "plugins/bar/plugin.json")).read())["version"]
+        check("fix: bumps the root-level plugin.json layout", rc == 0 and newver == "2.0.1")
+        check("fix: does not traceback on the root-level layout",
+              "Traceback" not in err)
+
+    print()
     if failures:
         print(f"\nFAILED: {failures}")
         sys.exit(1)
