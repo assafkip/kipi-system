@@ -89,6 +89,12 @@ from pathlib import Path
 
 SCHEMA_VERSION = 1
 DEFAULT_TIMEOUT_S = 60
+# 97 is not 0, 1, 2, or 127: those are the codes loose assertions already
+# tolerate (`rc in (0,1,2)` is a real shape in this repo, and 127 is
+# command-not-found). A control has to fail in a way nobody accidentally allows.
+TRIPWIRE_RC = 97
+TRIPWIRE_PY = "import sys\nsys.exit(%d)\n" % TRIPWIRE_RC
+TRIPWIRE_SH = "#!/usr/bin/env bash\nexit %d\n" % TRIPWIRE_RC
 # The mutant runs the same test as the baseline. A mutant that pushes it far
 # past its own measured baseline is a hang, not a verdict, so the budget is
 # derived per test rather than fixed.
@@ -335,12 +341,14 @@ class Sweep:
         fd, bpath = tempfile.mkstemp(prefix="msweep-bak-")
         os.close(fd)
         shutil.copy2(target, bpath)
+        _PENDING[target] = bpath
         return bpath
 
     def _restore(self, target: Path, bpath, orig_sha):
         """cp from our own backup. NEVER `git checkout --`: that restore form
         once wiped a whole uncommitted fix out of a working tree."""
         shutil.copy2(bpath, target)
+        _PENDING.pop(target, None)
         os.unlink(bpath)
         if sha(target.read_bytes()) != orig_sha:
             raise SystemExit(f"mutation-sweep: FAILED TO RESTORE {target}. "
@@ -350,6 +358,37 @@ class Sweep:
 
 def sha(b):
     return hashlib.sha256(b).hexdigest()
+
+
+# A mutated file must never outlive this process. `finally` does NOT run on
+# SIGTERM, and the first long run of this sweep was killed mid-flight -- the
+# tree came back clean by luck, between two mutations, not by design.
+_PENDING = {}
+
+
+def _restore_all(*_a):
+    for target, bpath in list(_PENDING.items()):
+        try:
+            shutil.copy2(bpath, target)
+        except OSError:
+            pass
+    _PENDING.clear()
+
+
+def _install_restore_handlers():
+    import atexit
+    import signal as _sig
+    atexit.register(_restore_all)
+    for s in (_sig.SIGTERM, _sig.SIGINT, _sig.SIGHUP):
+        prev = _sig.getsignal(s)
+
+        def handler(signum, frame, _prev=prev):
+            _restore_all()
+            sys.exit(128 + signum)
+        try:
+            _sig.signal(s, handler)
+        except (ValueError, OSError):
+            pass
 
 
 # ------------------------------------------------------------------ the sweep
@@ -379,19 +418,45 @@ def probe_pair(sw, entry, subj_rel, baseline, score):
                  int(baseline["duration_s"] * MUTANT_TIMEOUT_FACTOR) + 1)
     budget = min(budget, entry["timeout_s"] * 2)
 
-    # ---- Stage 1: ABSENT. The positive control -- it MUST turn the test red,
-    # or the test does not depend on this file and stage 2 would be measuring
-    # a file nobody loads.
+    # ---- Stage 1: TRIPWIRE. The dependency control.
+    #
+    # The file STAYS, but its whole body becomes an immediate abort with a
+    # distinctive code. Any test that imports it, runs it, or shells it now
+    # fails loudly. A test that stays green does not exercise this file, so
+    # stage 2 would be measuring code nobody loads.
+    #
+    # This replaced a DELETE-the-file control, which was wrong in a way worth
+    # recording: deleting a subject makes `python3 subject.py` exit 2 and print
+    # to stderr, and a loose test ("rc in (0,1,2)", "some output appeared")
+    # passes on that. Deletion and a bad attribution guess were therefore
+    # indistinguishable -- measured on this repo, a test that merely QUOTED
+    # `converge.sh` inside PRD fixture text was scored a finding. Tripwire
+    # keeps the file present, so only real non-use looks like non-use.
+    tripwire = TRIPWIRE_PY if suffix == ".py" else TRIPWIRE_SH
+    bpath = sw._backup(target)
+    try:
+        target.write_text(tripwire)
+        trip = sw.run_test(entry, budget)
+    finally:
+        sw._restore(target, bpath, orig_sha)
+    if trip["timed_out"]:
+        return {"verdict": "tripwire-timeout", "tripwire": trip, "score": score}
+    if trip["rc"] == 0:
+        # The test is green while the subject cannot run at all: it does not
+        # exercise this file. A guess, not a finding.
+        return {"verdict": "no-dependency", "tripwire": trip, "score": score}
+
+    # ---- Stage 1b: ABSENT. Secondary, and only for CONFIRMED pairs. A test
+    # that also passes with the file GONE is strictly worse than one that only
+    # survives a disarm: no version of the subject could turn it red.
     bpath = sw._backup(target)
     try:
         target.unlink()
         absent = sw.run_test(entry, budget)
     finally:
         sw._restore(target, bpath, orig_sha)
-    if absent["timed_out"]:
-        return {"verdict": "absent-timeout", "absent": absent}
-    if absent["rc"] == 0:
-        if score >= STRONG_ATTRIBUTION:
+    if not absent["timed_out"] and absent["rc"] == 0:
+        if True:
             # The test names this file and still passes with the file DELETED.
             # Strictly worse than surviving a disarm: there is no version of
             # the subject this test could fail on. Found by the harness's own
@@ -399,20 +464,19 @@ def probe_pair(sw, entry, subj_rel, baseline, score):
             # something" stayed green against a gate that was not there --
             # stderr from the missing-file error satisfied it.
             return {"verdict": "SURVIVED-ABSENT", "absent": absent,
-                    "score": score, "orig_sha": orig_sha[:12],
+                    "tripwire_rc": trip["rc"], "score": score,
+                    "orig_sha": orig_sha[:12],
                     "mutant_sha": "n/a-file-removed"}
-        # Below the threshold this is just a wrong guess, not a finding.
-        return {"verdict": "no-dependency", "absent": absent, "score": score}
 
     # ---- Stage 2: DISARM.
     text = orig.decode("utf-8", errors="replace")
     mutated, n_sites = make_disarm(text, suffix)
     if n_sites == 0:
-        return {"verdict": "no-disarm-site", "absent": absent}
+        return {"verdict": "no-disarm-site", "tripwire_rc": trip["rc"]}
     if mutated == text:
-        return {"verdict": "harness-error-mutant-noop", "absent": absent}
+        return {"verdict": "harness-error-mutant-noop"}
     if not syntax_ok(sw.root, target, mutated, suffix):
-        return {"verdict": "harness-error-mutant-invalid", "absent": absent}
+        return {"verdict": "harness-error-mutant-invalid"}
 
     bpath = sw._backup(target)
     try:
@@ -420,7 +484,7 @@ def probe_pair(sw, entry, subj_rel, baseline, score):
         # self-guard 1: re-read from DISK. "we wrote it" is not "it is there".
         after_sha = sha(target.read_bytes())
         if after_sha == orig_sha:
-            return {"verdict": "harness-error-mutant-not-applied", "absent": absent}
+            return {"verdict": "harness-error-mutant-not-applied"}
         mut = sw.run_test(entry, budget)
     finally:
         sw._restore(target, bpath, orig_sha)
@@ -429,15 +493,15 @@ def probe_pair(sw, entry, subj_rel, baseline, score):
     # control means this run's verdict is not trustworthy.
     control = sw.run_test(entry, budget)
     if control["rc"] != 0:
-        return {"verdict": "harness-error-control-red", "absent": absent,
+        return {"verdict": "harness-error-control-red",
                 "mutant": mut, "control": control}
 
     if mut["timed_out"]:
-        return {"verdict": "mutant-timeout", "absent": absent, "mutant": mut}
+        return {"verdict": "mutant-timeout", "mutant": mut}
     res = {
         "verdict": "KILLED" if mut["rc"] != 0 else "SURVIVED",
         "sites": n_sites,
-        "absent_rc": absent["rc"],
+        "tripwire_rc": trip["rc"],
         "mutant_rc": mut["rc"],
         "orig_sha": orig_sha[:12],
         "mutant_sha": after_sha[:12],
@@ -516,7 +580,7 @@ def summarize(rec):
         return "KILLED"
     for v in ("harness-error-control-red", "harness-error-mutant-not-applied",
               "harness-error-mutant-invalid", "harness-error-mutant-noop",
-              "mutant-timeout", "absent-timeout"):
+              "mutant-timeout", "tripwire-timeout"):
         if v in vs:
             return v
     if "no-disarm-site" in vs:
@@ -549,7 +613,7 @@ def report(results, outdir):
         for r in surv:
             p = next(x for x in r["pairs"] if x["verdict"] == "SURVIVED")
             print(f"  {r['test']}\n      subject: {p['subject']}  "
-                  f"(disarmed {p['sites']} site(s); absent-control rc={p['absent_rc']})")
+                  f"(disarmed {p['sites']} site(s); tripwire rc={p['tripwire_rc']})")
     (outdir / "summary.json").write_text(json.dumps(
         {"schema_version": SCHEMA_VERSION, "counts": dict(c),
          "survived": [{"test": r["test"],
@@ -724,6 +788,7 @@ def main():
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
+    _install_restore_handlers()
     if args.self_test:
         sys.exit(self_test())
 
