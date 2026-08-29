@@ -402,6 +402,24 @@ review_worktree() {  # review_worktree <sha> -> prints path, or nothing
   # Prove it landed where we asked. A worktree silently sitting at the wrong sha
   # is the same false-provenance bug in a new costume.
   [ "$(git -C "$wt" rev-parse HEAD 2>/dev/null)" = "$sha" ] || return 1
+
+  # REFRESH refs/remotes/pr/<N> TOO. Re-detaching moved HEAD but left this ref
+  # wherever the FIRST round put it, and the reviewer's reproducers read the PR
+  # through it (`git show pr/<N>:<file>`). So from round 2 onward the tree was
+  # correct and the ref was stale, and the reviewer re-raised findings against
+  # code the author had already fixed.
+  #
+  # Measured 2026-08-29: pr/253 sat at the pre-fix sha while the PR head had
+  # moved, and that round's verdict was issued without the fix in view. On
+  # ASK-353 it cost two whole rounds of re-raised findings before anyone looked
+  # at the ref rather than at the code.
+  #
+  # This is a gate reading the wrong input, which is worse than a gate that
+  # fails: it produces a confident verdict about a file that is not there.
+  # Anchored here because this is the single place that pins tree-to-sha, so the
+  # ref cannot drift from HEAD without this line drifting too.
+  git -C "$wt" update-ref "refs/remotes/pr/$PR" "$sha" >/dev/null 2>&1 || return 1
+  [ "$(git -C "$wt" rev-parse "refs/remotes/pr/$PR" 2>/dev/null)" = "$sha" ] || return 1
   printf '%s' "$wt"
 }
 
