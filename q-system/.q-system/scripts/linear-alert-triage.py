@@ -231,32 +231,49 @@ def _rationale_already_posted(ls, issue_id: str) -> bool:
     return any(CLOSE_MARKER in (n.get("body") or "") for n in nodes)
 
 
+def promotion_refusal(fresh: dict) -> str | None:
+    """Every reason NOT to promote, in ONE place. None means go ahead.
+
+    ONE FUNCTION BECAUSE THE PRECONDITIONS KEEP ARRIVING ONE AT A TIME, and each
+    time I added the new one to whichever function the reviewer named and left
+    its sibling alone. Round 9 added the owner check to do_promote; the project
+    check went into the unattended pool filter and NOT here, so a projectless
+    alert was still promoted out of triage by hand (round 4 of PR #275). A list
+    of preconditions in a shared function is checkable at a glance; the same
+    list open-coded in two places is not.
+
+    PROMOTION MUST YIELD A SELECTABLE ISSUE. linear-worker.sh ready() refuses on
+    the owner label and on the project BEFORE it ever reads the description, so
+    promoting an issue that fails either check strips the alert marker (removing
+    it from this tool's pool) while the worker still refuses it. Promoted and
+    permanently unreachable is a fresh dead end of exactly the kind this file
+    exists to close.
+
+    Refused rather than repaired in every case: a refusal leaves the issue
+    exactly where it was, which is always recoverable, and the alternative
+    (inventing a label or a project) is this tool guessing at routing it has no
+    business deciding.
+    """
+    if not is_alert_ticket(fresh.get("description") or ""):
+        return "no alert marker; already promoted or never an alert"
+    labels = {l.get("name") for l in ((fresh.get("labels") or {}).get("nodes") or [])}
+    if OWNER_LABEL not in labels:
+        return f"no {OWNER_LABEL}; the worker checks that label before the description"
+    if not ((fresh.get("project") or {}).get("name") or "").strip():
+        return ("no project; in_this_repo() is false in every checkout at once, so "
+                "promoting it would make it ready and reachable by nobody")
+    return None
+
+
 def do_promote(ls, issue: dict, dor: str, why: str, apply: bool) -> str:
     ident = issue["identifier"]
     fresh = reread(ls, ident) if apply else issue
     if fresh is None:
         return Outcome(False, f"{ident}: SKIPPED (could not re-read)")
     desc = fresh.get("description") or ""
-    if not is_alert_ticket(desc):
-        return Outcome(False, f"{ident}: SKIPPED (no alert marker; already promoted or never an alert)")
-    # PROMOTION MUST YIELD A SELECTABLE ISSUE (codex round 9).
-    #
-    # linear-worker.sh ready() refuses on `owner:sana not in labels` before it
-    # ever reads the description. alert-to-linear.py normally applies that label
-    # at creation, but it tolerates a failed label resolution, so a
-    # producer-valid alert can exist without it. Promoting one strips the alert
-    # marker, which removes it from THIS tool's pool, while the worker still
-    # refuses it: promoted and permanently unselectable, a fresh dead end of
-    # exactly the kind this file exists to close. Same shape as the missing-DoR
-    # case one round earlier.
-    #
-    # Refused rather than repaired: adding the label would need a workspace-wide
-    # label lookup this file otherwise has no reason to carry, and a refusal
-    # leaves the issue exactly where it was, which is always recoverable.
-    if OWNER_LABEL not in {l.get("name") for l in
-                           ((fresh.get("labels") or {}).get("nodes") or [])}:
-        return Outcome(False, f"{ident}: SKIPPED (no {OWNER_LABEL}; promoting it "
-                              "would leave it unselectable by the worker)")
+    refusal = promotion_refusal(fresh)
+    if refusal:
+        return Outcome(False, f"{ident}: SKIPPED ({refusal})")
     fp = alert_fingerprint(desc)
     new = promote_body(desc, dor, fp, why)
     # ONE mutation for description + label drop. As two calls a failure between
@@ -354,8 +371,16 @@ def do_close(ls, issue: dict, reason: str, apply: bool) -> str:
     # So the window is narrowed AND the act is VERIFIED AFTERWARDS, with a
     # compensating reopen. Cancelling real work silently is the failure that
     # matters; a close that undoes itself and says so is recoverable and visible.
+    # A READ THAT FAILED IS NOT PERMISSION (codex review of PR #275 r4). Round 3
+    # fixed exactly this on the POST-close read and I left the PRE-close read
+    # alone, which is the sibling pattern this work keeps reproducing. Both now
+    # refuse on None; the close is the irreversible act and an unknown state is
+    # never a reason to take it.
     latest = reread(ls, ident)
-    if latest is not None and not is_alert_ticket(latest.get("description") or ""):
+    if latest is None:
+        return Outcome(False, f"{ident}: SKIPPED (could not confirm it is still an "
+                              "alert immediately before closing)")
+    if not is_alert_ticket(latest.get("description") or ""):
         return Outcome(False, f"{ident}: SKIPPED (promoted while this close was "
                               "being prepared)")
 

@@ -225,6 +225,7 @@ class TestPromotionRequiresASelectableOwner(unittest.TestCase):
                 if "issue(" in q:
                     return {"issue": {"id": "u", "identifier": "ASK-1",
                             "description": ALERT_DESC,
+                            "project": {"name": "kipi-system"},
                             "labels": {"nodes": [{"id": f"i{n}", "name": n}
                                                  for n in labels]}}}
                 if "issueUpdate" in q:
@@ -448,6 +449,74 @@ class TestUnverifiedCloseSaysSo(unittest.TestCase):
         if "HELD_LABEL" not in body:
             self.assertNotIn("triage:held", body,
                              "the comment promises to clear a label the payload leaves")
+
+
+class TestPromotionRefusesUnroutableWork(unittest.TestCase):
+    """codex review of PR #275 round 4. The project check lived in the unattended
+    pool filter and never in do_promote, so a hand promotion still stripped the
+    alert marker off an issue no checkout can ever serve."""
+
+    def _issue(self, project, labels=("owner:sana",)):
+        return {"identifier": "ASK-1", "id": "u", "description": ALERT_DESC,
+                "project": {"name": project} if project else None,
+                "labels": {"nodes": [{"id": "x", "name": n} for n in labels]}}
+
+    def test_a_projectless_alert_is_refused(self):
+        r = triage.promotion_refusal(self._issue(None))
+        self.assertIsNotNone(r)
+        self.assertIn("no project", r)
+
+    def test_an_empty_project_name_is_refused(self):
+        self.assertIsNotNone(triage.promotion_refusal(self._issue("   ")))
+
+    def test_a_routable_alert_passes(self):
+        """Negative control: all three preconditions satisfied."""
+        self.assertIsNone(triage.promotion_refusal(self._issue("kipi-system")))
+
+    def test_every_precondition_lives_in_one_function(self):
+        """The reason this class of defect kept recurring: preconditions were
+        open-coded per verb, so each new one landed in whichever function the
+        reviewer named. do_promote must not grow its own."""
+        import inspect
+        body = inspect.getsource(triage).split("def do_promote(")[1].split("\ndef ")[0]
+        self.assertIn("promotion_refusal(", body)
+        for leaked in ("OWNER_LABEL not in", 'get("project")'):
+            self.assertNotIn(leaked, body,
+                             "a precondition is open-coded in do_promote instead of "
+                             "promotion_refusal, where its sibling cannot see it")
+
+
+class TestCloseRefusesOnAFailedFreshnessRead(unittest.TestCase):
+    """codex review of PR #275 round 4. Round 3 fixed this on the POST-close read
+    and I left the PRE-close read alone: the sibling pattern, again."""
+
+    def test_a_failed_pre_close_read_does_not_permit_the_close(self):
+        seq = [ALERT_DESC, None]
+        class L:
+            def __init__(s): s.calls = []
+            def graphql(s, q, v):
+                s.calls.append((q, v))
+                if "comments(first" in q:
+                    return {"issue": {"comments": {"nodes": []}}}
+                if "issue(" in q:
+                    d = seq.pop(0) if seq else ALERT_DESC
+                    if d is None:
+                        raise RuntimeError("transport failure on the freshness read")
+                    return {"issue": {"id": "u", "identifier": "ASK-9",
+                                      "description": d, "labels": {"nodes": []}}}
+                if "commentCreate" in q:
+                    return {"commentCreate": {"success": True}}
+                if "teams(" in q:
+                    return {"teams": {"nodes": [{"states": {"nodes": [
+                        {"id": "c", "name": "Canceled", "type": "canceled"}]}}]}}
+                if "issueUpdate" in q:
+                    return {"issueUpdate": {"success": True}}
+                return {}
+        f = L()
+        out = triage.do_close(f, {"id": "u", "identifier": "ASK-9"}, "noise", True)
+        self.assertFalse(out.wrote)
+        self.assertFalse(any("issueUpdate" in q for q, _ in f.calls),
+                         "it closed without confirming the issue was still an alert")
 
 
 if __name__ == "__main__":
