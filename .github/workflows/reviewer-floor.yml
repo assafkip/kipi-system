@@ -30,10 +30,29 @@ jobs:
   reviewer-floor:
     runs-on: ubuntu-latest
     steps:
+      # CHECK OUT THE BASE, NOT THE PR (Codex major, PR #96).
+      #
+      # This job holds `statuses: write` and then RUNS a script out of the
+      # checkout. Without a ref: that checkout is PR-controlled code, so on a
+      # same-repository PR the author could edit reviewer-floor.sh to post
+      # `success` and mint the very required context this workflow exists to
+      # defend -- the ASK-312 phantom-approval hole (unreviewed PRs merging on a
+      # forged kipi/reviewer-approved, twice on PR #74), re-entered through the
+      # workflow's own permissions rather than through the script's logic.
+      #
+      # Pinning to base.sha means the code that runs is always the version
+      # already on main and reviewed to get there. The PR head is still what
+      # gets INSPECTED and posted to -- that is the sha argument below, which is
+      # data, not code.
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           # Only the floor script is needed; no history is read.
           fetch-depth: 1
+          # The job posts through GH_TOKEN explicitly; it never needs the
+          # checkout's stored credentials, and leaving them out means a script
+          # here cannot push with them.
+          persist-credentials: false
 
       # THE HEAD SHA, NOT github.sha. On a `pull_request` event github.sha is the
       # ephemeral MERGE commit, which is not the commit branch protection
