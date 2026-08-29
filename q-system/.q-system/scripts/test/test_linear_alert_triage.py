@@ -368,5 +368,31 @@ class TestUnattendedRunReportsTotalFailure(unittest.TestCase):
                          "nothing to triage is success, not an outage")
 
 
+class TestPromotedIssuesAreActuallySelectable(unittest.TestCase):
+    """codex round 4, major 1. Promotion strips the alert marker BEFORE the body is
+    validated, so a promotion that omits the DoR heading leaves the issue out of the
+    triage pool and still refused by the worker: promoted and unselectable."""
+
+    def test_a_model_body_opening_with_another_heading_still_gets_a_dor(self):
+        body = triage.promote_body(ALERT_DESC, "## Problem\n\nthe parser stalls",
+                                   "fp", "")
+        self.assertIn("Definition of Ready", body,
+                      "a body starting with '## Problem' shipped no DoR")
+        self.assertTrue(worker_ready(as_issue(body, labels=("owner:sana",))),
+                        "promoted issue is not selectable by the worker")
+
+    def test_a_body_that_already_has_the_heading_is_not_doubled(self):
+        body = triage.promote_body(ALERT_DESC, DOR, "fp", "")
+        self.assertEqual(body.count("Definition of Ready"), 1,
+                         "the DoR heading was duplicated")
+        self.assertTrue(worker_ready(as_issue(body, labels=("owner:sana",))))
+
+    def test_a_lower_level_heading_counts(self):
+        """### Definition of Ready is still a DoR; only structure matters."""
+        body = triage.promote_body(ALERT_DESC, "### Definition of Ready\n\n- x",
+                                   "fp", "")
+        self.assertEqual(body.count("Definition of Ready"), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

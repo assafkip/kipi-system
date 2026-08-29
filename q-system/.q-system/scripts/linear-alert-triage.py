@@ -74,6 +74,8 @@ HELD_LABEL = "triage:held"
 TRIAGE_LABEL = "needs-triage"
 OWNER_LABEL = "owner:sana"
 DOR_HEADING = "## Definition of Ready"
+# Any level of heading whose text is "Definition of Ready". Mirrors the drafter.
+DOR_HEADING_RE = re.compile(r"(?mi)^[ \t]{0,3}#{1,6}[ \t]+definition of ready\b")
 TEAM_KEY = "ASK"
 
 # Same shape both existing readers use. Kept here rather than imported because
@@ -171,7 +173,21 @@ def reread(ls, identifier: str) -> dict | None:
 def promote_body(desc: str, dor: str, fp: str, why: str) -> str:
     body = strip_alert_marker(desc).rstrip()
     dor = dor.strip()
-    if not dor.startswith("#"):
+    # THE HEADING MUST ACTUALLY BE THERE (codex round 4, major 1).
+    #
+    # The first cut tested `dor.startswith("#")`, reasoning that a body already
+    # starting with a heading carried its own. It does not follow: a model that
+    # opens with "## Problem" satisfies that test and ships NO Definition of Ready.
+    # The result is the worst of both states, because promotion has already
+    # stripped the alert marker: the issue is out of the triage pool AND
+    # linear-worker.sh still refuses it, since ready() wants the literal
+    # "Definition of Ready". Promoted and unselectable is a new dead end, which is
+    # the exact failure mode this whole issue exists to remove.
+    #
+    # Test for the HEADING, not for "starts with a hash". Same distinction
+    # linear-dor-drafter.py's find_dor_heading draws, and for the same reason:
+    # structure, not a character.
+    if not DOR_HEADING_RE.search(dor):
         dor = f"{DOR_HEADING}\n\n{dor}"
     parts = [body, "", dor, "",
              f"---", f"Promoted from a fleet alert by linear-alert-triage.py. {why}".rstrip()]

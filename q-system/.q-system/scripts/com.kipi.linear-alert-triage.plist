@@ -11,6 +11,15 @@
      shipped with promote/close as hand-run verbs and no scheduled caller, which is
      the same defect the script was written to fix: a consumer nothing invokes.
 
+     DEPLOYMENT, and it is a real gap, tracked as ASK-1130. Committing this
+     template does not install it. `kipi install-jobs` is the call site and it
+     globs com.kipi.*.plist, so this job needs no registration, but nothing calls
+     install-jobs automatically. After this merges, run `kipi install-jobs` from
+     the PRIMARY checkout, never from a git worktree: the installer refuses there,
+     because running it from one once repointed every live job at a directory that
+     was about to be deleted. Every other kipi job has this same property, and
+     ASK-1130 owns the fix.
+
      Runs at 02:30, half an hour AHEAD of com.kipi.linear-dor at 03:00, on purpose.
      A promoted ticket carries a real DoR, so the drafter then correctly skips it
      rather than spending one of its 8 nightly slots rewriting one. -->
