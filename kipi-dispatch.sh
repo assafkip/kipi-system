@@ -1130,7 +1130,7 @@ NEXT="$(printf '%s' "$WORK_OUT" | grep -oE '\[dry\] would work ASK-[0-9]+' | gre
 # paying for, and only the Python side can also suppress the founder page (that
 # page is finding 1). Its stderr lands in this log, so the skip is visible here.
 REDRIVE="$REPO/q-system/.q-system/scripts/ci-redrive.py"
-REDRIVE_NEXT=""; REDRIVE_SIG=""; REDRIVE_SHA=""
+REDRIVE_NEXT=""; REDRIVE_SIG=""; REDRIVE_SHA=""; REDRIVE_BRANCH=""; REDRIVE_PR=""
 if [ -f "$REDRIVE" ]; then
   REDRIVE_LINE="$(KIPI_NOTIFY="$NOTIFY" python3 "$REDRIVE" \
                     --repo-dir "$TARGET_PATH" redrive 2>>"$LOG")"
@@ -1139,6 +1139,14 @@ if [ -f "$REDRIVE" ]; then
     REDRIVE_NEXT="$(printf '%s' "$REDRIVE_LINE" | cut -f1)"
     REDRIVE_SIG="$(printf '%s' "$REDRIVE_LINE" | cut -f2)"
     REDRIVE_SHA="$(printf '%s' "$REDRIVE_LINE" | cut -f3)"
+    # The branch the selected PR is ACTUALLY on, as the selector read it, and the
+    # PR number so the refusal can name it. Kept for the same reason REVIEW_BRANCH
+    # is kept below: branch_guard must not ask gh a question it has just been
+    # answered -- see its FROM THE SELECTOR note. Empty when ci-redrive could not
+    # confirm the head lives in this repo, which branch_guard reads as "no earlier
+    # observation" and handles on its fail-open arm.
+    REDRIVE_BRANCH="$(printf '%s' "$REDRIVE_LINE" | cut -f4)"
+    REDRIVE_PR="$(printf '%s' "$REDRIVE_LINE" | cut -f5)"
     say "red-CI redrive: handing $REDRIVE_NEXT back to its agent ahead of the fresh pick${NEXT:+ ($NEXT waits)}"
     NEXT="$REDRIVE_NEXT"
   elif [ "$REDRIVE_RC" = "2" ]; then
@@ -1168,7 +1176,7 @@ fi
 #
 # rc 2 (gh could not answer) leaves the fresh pick standing, same as above.
 REVIEW_REDRIVE="$REPO/q-system/.q-system/scripts/review-redrive.py"
-REVIEW_ACTION=""; REVIEW_NEXT=""; REVIEW_PR=""; REVIEW_SHA=""
+REVIEW_ACTION=""; REVIEW_NEXT=""; REVIEW_PR=""; REVIEW_SHA=""; REVIEW_BRANCH=""
 if [ -z "$REDRIVE_NEXT" ] && [ -f "$REVIEW_REDRIVE" ]; then
   REVIEW_LINE="$(python3 "$REVIEW_REDRIVE" --repo-dir "$TARGET_PATH" select 2>>"$LOG")"
   REVIEW_RC=$?
@@ -1177,6 +1185,10 @@ if [ -z "$REDRIVE_NEXT" ] && [ -f "$REVIEW_REDRIVE" ]; then
     REVIEW_NEXT="$(printf '%s' "$REVIEW_LINE" | cut -f2)"
     REVIEW_PR="$(printf '%s' "$REVIEW_LINE" | cut -f3)"
     REVIEW_SHA="$(printf '%s' "$REVIEW_LINE" | cut -f4)"
+    # The branch the selected PR is ACTUALLY on, as the selector read it. Kept so
+    # branch_guard below need not ask gh the same question a second time -- see
+    # its FROM THE SELECTOR note.
+    REVIEW_BRANCH="$(printf '%s' "$REVIEW_LINE" | cut -f5)"
     say "reviewer redrive: $REVIEW_NEXT PR #$REVIEW_PR needs $REVIEW_ACTION${NEXT:+ ($NEXT waits)}"
     NEXT="$REVIEW_NEXT"
   elif [ "$REVIEW_RC" = "2" ]; then
@@ -1215,6 +1227,121 @@ if [[ "$PS_SNAPSHOT" =~ converge\.sh\ --issue\ ${NEXT}([[:space:]]|$) ]]; then
   say "skip $NEXT: a converge run for it is already live"
   exit 0
 fi
+
+# --- BRANCH TARGET GUARD (ASK-358) -------------------------------------------
+# Refuse to dispatch an issue whose work would land on a branch no open PR is on.
+#
+# THE DEFECT, measured on ASK-352. converge.sh:83 derives the branch it commits
+# into from the issue id alone -- BRANCH="sana/$(lower ISSUE)". ASK-352 has TWO
+# branches: sana/ask-352 backs PR #90, which is CLOSED, and sana/ask-352-clean
+# backs PR #91, which is open. So a rework dispatched for ASK-352 commits onto
+# the closed branch, where no PR and no reviewer will ever read it. Silent
+# wrong-target is worse than a stall: the work looks done and is unreachable.
+#
+# ON EVERY DISPATCH, NOT ONLY THE REDRIVE ONES. The reviewer redrive is where the
+# defect was found, but the naming rule is converge's and converge runs for the
+# fresh pick too -- a guard on one path is this repo's recurring class (two
+# paths, one guarded). One chokepoint, above every selector, before the attempt
+# is claimed: refusing after mark-dispatched would burn the PR's one attempt.
+#
+# IT REFUSES RATHER THAN RETARGETS. Retargeting means passing a branch through to
+# converge, and converge.sh is not in this change's scope; more to the point, a
+# dispatcher that silently rewrites where work lands is the same class of surprise
+# as the bug. The refusal names the branch, so the next move is a human's and it
+# is one line long.
+#
+# FAILS OPEN ON NOT KNOWING, closed on knowing -- the posture stale_check already
+# takes on a failed fetch. rc 2 (gh could not answer) and a missing resolver both
+# RUN: one gh outage must not halt the loop. rc 1 (no open PR) also runs, because
+# round one legitimately has no PR yet.
+#
+# IT GUARDS COMMITS, SO IT SKIPS THE ONE ACTION THAT MAKES NONE (PR #211 round 1,
+# MAJOR 1). A `re-review` runs pr-review-agent.sh against a PR NUMBER; converge's
+# branch rule never applies to it and it cannot land work anywhere. Refusing one
+# parks a PR overnight over a condition it structurally cannot cause -- and a
+# gate that blocks the harmless case is a gate that gets switched off. `rework`
+# and the fresh pick both become a converge, so both stay guarded.
+#
+# FROM THE SELECTOR, NOT FROM A SECOND QUERY (PR #211 round 1, MAJOR 3; extended
+# to the red-CI lane in round 3, MAJOR 2). When EITHER redrive picked this issue
+# it already READ the branch its PR is on, and asking gh again opens a window
+# between the two answers: PR #91 closing in between makes the second answer "no
+# open PR", the fail-open arm fires, and the work lands on precisely the branch
+# this guard exists to reject. The carried value is also the more correct
+# question -- it describes the PR whose one attempt is about to be spent, where a
+# fresh query describes the issue's board now. The fresh pick has no earlier
+# observation, so it still asks; so does a redrive whose selector could not
+# confirm the head lives in this repo, which arrives as an empty carried branch.
+# A REFUSAL NOBODY IS TOLD ABOUT IS A SILENT PARK (PR #211 round 2, MAJOR 2).
+# Every arm below used to end in `say`, which appends to dispatch.log and nothing
+# else. From outside, the guard doing its job was indistinguishable from the loop
+# having nothing to do: the same candidate refused every 15 minutes, the issue
+# never moving, and the queue starving behind it with nobody learning why.
+#
+# A branch mismatch and an ambiguous board are the two refusals here that CANNOT
+# SELF-HEAL -- both need a human to rename a branch, reopen a PR, or close a
+# stale one. That is what earns a page. The fail-open arms do not get one: they
+# RUN the dispatch, so there is no stall to report, and paging on a gh outage is
+# noise on top of an outage.
+#
+# page_once rather than page, because this code path fires on every beat while
+# the condition holds, and `founder-notifications.md` is explicit that repeating
+# "still waiting" each cycle is noise rather than a page. The dedupe (and its
+# 24h re-ping) already exists above and is what makes paging from a per-beat path
+# safe at all. Its matching page_clear runs on the healthy exit, or the marker
+# outlives its condition and swallows the NEXT park for the whole window.
+#
+# ONE VERDICT, THEN ONE ACTION. The arms compute a message and fall through to a
+# single exit, rather than each arm remembering to say AND page AND return. Six
+# return sites each owning three obligations is how the log-only refusal survived
+# round 1 in the first place.
+branch_guard() {
+  local expect actual rc key msg
+  # The producer's rule, mirrored. Drift here is silent, so the anti-drift check
+  # is the test asserting converge.sh still builds the branch this same way.
+  expect="sana/$(printf '%s' "$NEXT" | tr 'A-Z' 'a-z')"
+  key="branch-guard-$NEXT"
+  msg=""
+  if [ -n "$REDRIVE_NEXT" ] && [ "$NEXT" = "$REDRIVE_NEXT" ]; then
+    # THE RED-CI LANE READS ITS OWN OBSERVATION TOO (PR #211 round 3, MAJOR 2).
+    # Round 2 carried the branch for the reviewer redrive only. The red-CI
+    # selector read the branch and dropped it, so this lane fell through to the
+    # elif below and asked gh a SECOND time -- and that second answer is the
+    # fail-open one: if the PR closed between the two calls, `branch-for` says
+    # "no open PR", rc 1 runs the dispatch, and the work lands on the branch this
+    # guard exists to reject. Fail-open in the guard whose thesis is "refuse a
+    # dispatch that would land on a branch no open PR is on" is the PR
+    # contradicting itself.
+    #
+    # No `re-review` carve-out here: every red-CI hand-back becomes a converge,
+    # so converge's naming rule always applies to it.
+    if [ -n "$REDRIVE_BRANCH" ] && [ "$REDRIVE_BRANCH" != "$expect" ]; then
+      msg="skip $NEXT: its open PR #$REDRIVE_PR is on $REDRIVE_BRANCH, but converge would commit onto $expect -- work there reaches no PR and no reviewer. Rename the branch to $expect, or reopen the PR on it."
+    fi
+  elif [ -n "$REVIEW_ACTION" ] && [ "$NEXT" = "$REVIEW_NEXT" ]; then
+    if [ "$REVIEW_ACTION" != "re-review" ] && [ -n "$REVIEW_BRANCH" ] \
+       && [ "$REVIEW_BRANCH" != "$expect" ]; then
+      msg="skip $NEXT: its open PR #$REVIEW_PR is on $REVIEW_BRANCH, but converge would commit onto $expect -- work there reaches no PR and no reviewer. Rename the branch to $expect, or reopen the PR on it."
+    fi
+  elif [ -f "$REVIEW_REDRIVE" ]; then
+    actual="$(python3 "$REVIEW_REDRIVE" --repo-dir "$TARGET_PATH" \
+              branch-for --issue "$NEXT" 2>>"$LOG")"
+    rc=$?
+    case "$rc" in
+      0) [ "$actual" = "$expect" ] || msg="skip $NEXT: its open PR is on $actual, but converge would commit onto $expect -- work there reaches no PR and no reviewer. Rename the branch to $expect, or reopen the PR on it." ;;
+      3) msg="skip $NEXT: it maps to more than one live branch, so which one the work belongs on is a guess (see $LOG). Close the stale PR, or say which branch is current." ;;
+      *) ;;
+    esac
+  fi
+  if [ -z "$msg" ]; then
+    page_clear "$key"
+    return 0
+  fi
+  say "$msg"
+  page_once "$key" "kipi dispatch: $msg"
+  return 1
+}
+branch_guard || exit 0
 
 # --- RED-CI REDRIVE: MARK-DISPATCHED (ASK-295) -------------------------------
 # Past every guard that can still abort, and immediately before the launch. This
