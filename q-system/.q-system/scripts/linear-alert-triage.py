@@ -331,16 +331,62 @@ def do_close(ls, issue: dict, reason: str, apply: bool) -> str:
             raise RuntimeError(
                 f"{ident}: refusing to close -- the rationale comment did not post, "
                 "and a close with no recorded reason is exactly what this script forbids")
+    # THE STATE LOOKUP HAPPENS BEFORE THE LAST ALERT CHECK, ON PURPOSE.
+    # Every network round trip between the check and the mutation widens the
+    # window in which a promotion can land. Ordering the lookup first leaves the
+    # final check adjacent to the close.
     teams = (ls.graphql(STATES_Q, {"k": TEAM_KEY}) or {}).get("teams") or {}
     states = (((teams.get("nodes") or [{}])[0]).get("states") or {}).get("nodes") or []
     done = [s for s in states if s.get("type") == "canceled"] or \
            [s for s in states if s.get("type") == "completed"]
     if not done:
         raise RuntimeError("no canceled/completed state on the team")
+
+    # A POINT-IN-TIME CHECK CANNOT MAKE THIS SAFE (codex review of PR #275 r2).
+    #
+    # Linear's issueUpdate takes no expected-version argument, so there is no CAS
+    # and no ordering of checks that closes the window: a promotion landing
+    # between the last check and the close still cancels a newly-executable
+    # issue. This repo already wrote that lesson down in ASK-1126, and narrowing
+    # the window a fourth time would be the same mistake in a new place.
+    #
+    # So the window is narrowed AND the act is VERIFIED AFTERWARDS, with a
+    # compensating reopen. Cancelling real work silently is the failure that
+    # matters; a close that undoes itself and says so is recoverable and visible.
+    latest = reread(ls, ident)
+    if latest is not None and not is_alert_ticket(latest.get("description") or ""):
+        return Outcome(False, f"{ident}: SKIPPED (promoted while this close was "
+                              "being prepared)")
+
     res = ls.graphql(UPDATE_M, {"id": ident, "input": {"stateId": done[0]["id"]}})
     if not (((res or {}).get("issueUpdate") or {}).get("success")):
         raise RuntimeError(f"{ident}: close failed")
+
+    after = reread(ls, ident)
+    if after is not None and not is_alert_ticket(after.get("description") or ""):
+        reopened = _reopen(ls, ident)
+        ls.graphql(COMMENT_M, {"input": {"issueId": fresh["id"], "body":
+            "This issue was promoted while a close was in flight, so the close "
+            "raced a promotion and cancelled executable work. "
+            + ("Reopened automatically." if reopened else
+               "REOPEN FAILED, please reopen it by hand.")}})
+        return Outcome(False, f"{ident}: CLOSE UNDONE (promoted mid-flight; "
+                              f"{'reopened' if reopened else 'REOPEN FAILED'})")
     return Outcome(True, f"{ident}: CLOSED ({done[0]['name']})")
+
+
+def _reopen(ls, ident: str) -> bool:
+    """Put an issue back into an open state. Never raises; the caller reports."""
+    try:
+        teams = (ls.graphql(STATES_Q, {"k": TEAM_KEY}) or {}).get("teams") or {}
+        states = (((teams.get("nodes") or [{}])[0]).get("states") or {}).get("nodes") or []
+        opens = [x for x in states if x.get("type") in ("backlog", "unstarted")]
+        if not opens:
+            return False
+        res = ls.graphql(UPDATE_M, {"id": ident, "input": {"stateId": opens[0]["id"]}})
+        return bool(((res or {}).get("issueUpdate") or {}).get("success"))
+    except Exception:  # noqa: BLE001 - reported by the caller, never masked
+        return False
 
 
 def write_run_evidence(line: str) -> None:
@@ -407,7 +453,7 @@ def main() -> int:
         print("close needs --reason (never a silent close)", file=sys.stderr)
         return 2
 
-    rc, done = 0, []
+    rc, done, skipped = 0, [], 0
     for ident in a.ids:
         issue = reread(ls, ident)
         if issue is None:
@@ -420,12 +466,27 @@ def main() -> int:
             else:
                 out = do_close(ls, issue, a.reason, a.apply)
             print(out.line)
-            done.append(out.line)
+            # .wrote, not "it returned" (codex review of PR #275 r2). main() is
+            # run_triage's SIBLING and carried the identical defect after
+            # run_triage was fixed for it: a SKIPPED promotion was appended to
+            # `done`, written to the run-evidence file as though it happened, and
+            # exited 0. An explicit `promote --apply` that quietly did nothing is
+            # the same lie the whole issue is about, one layer down.
+            if out.wrote:
+                done.append(out.line)
+            else:
+                skipped += 1
         except Exception as exc:  # noqa: BLE001 - one bad issue must not stop the batch
             print(f"{ident}: FAILED {str(exc)[:160]}", file=sys.stderr)
             rc = 1
     if a.apply and done:
         write_run_evidence("; ".join(done))
+    # An explicit verb was asked to act on named issues and none of them were
+    # written. That is a failed command, not a quiet success.
+    if a.apply and skipped and not done:
+        print(f"  nothing was written ({skipped} skipped); reporting failure",
+              file=sys.stderr)
+        rc = 1
     return rc
 
 

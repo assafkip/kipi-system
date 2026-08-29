@@ -324,5 +324,76 @@ class TestCliHelpMatchesReality(unittest.TestCase):
                          "the CLI advertises a hold operation that does not exist")
 
 
+class TestCloseRacingAPromotion(unittest.TestCase):
+    """codex review of PR #275 round 2. Linear has no CAS, so no ordering of
+    checks closes the window between the last alert check and the close. ASK-1126
+    already says a point-in-time check cannot make a shared mutable resource safe.
+    So the act is verified AFTERWARDS and compensated."""
+
+    def _fake(self, descs, reopen_ok=True):
+        """`descs` is consumed one per reread, so the issue can change mid-flight."""
+        seq = list(descs)
+        class L:
+            def __init__(s): s.calls = []; s.state = []
+            def graphql(s, q, v):
+                s.calls.append((q, v))
+                if "comments(first" in q:
+                    return {"issue": {"comments": {"nodes": []}}}
+                if "issue(" in q:
+                    d = seq.pop(0) if seq else ALERT_DESC
+                    return {"issue": {"id": "u", "identifier": "ASK-9",
+                                      "description": d, "labels": {"nodes": []}}}
+                if "commentCreate" in q:
+                    return {"commentCreate": {"success": True}}
+                if "teams(" in q:
+                    return {"teams": {"nodes": [{"states": {"nodes": [
+                        {"id": "c", "name": "Canceled", "type": "canceled"},
+                        {"id": "b", "name": "Backlog", "type": "backlog"}]}}]}}
+                if "issueUpdate" in q:
+                    s.state.append(v["input"].get("stateId"))
+                    return {"issueUpdate": {"success": reopen_ok or
+                                            v["input"].get("stateId") == "c"}}
+                return {}
+        return L()
+
+    def test_a_promotion_landing_before_the_close_stops_it(self):
+        promoted = triage.promote_body(ALERT_DESC, DOR, "fp", "")
+        # reread #1 (alert gate) sees an alert; reread #2 (final check) sees a promotion
+        f = self._fake([ALERT_DESC, promoted])
+        out = triage.do_close(f, {"id": "u", "identifier": "ASK-9"}, "noise", True)
+        self.assertFalse(out.wrote)
+        self.assertIn("promoted", out.line)
+        self.assertEqual(f.state, [], "executable work was cancelled")
+
+    def test_a_promotion_landing_after_the_close_is_undone(self):
+        promoted = triage.promote_body(ALERT_DESC, DOR, "fp", "")
+        # gate ok, final check ok, and only the POST-close read sees the promotion
+        f = self._fake([ALERT_DESC, ALERT_DESC, promoted])
+        out = triage.do_close(f, {"id": "u", "identifier": "ASK-9"}, "noise", True)
+        self.assertFalse(out.wrote)
+        self.assertIn("UNDONE", out.line)
+        self.assertIn("b", f.state, "the close was not compensated with a reopen")
+
+    def test_an_ordinary_close_still_works(self):
+        """Negative control: three clean reads must still close, once."""
+        f = self._fake([ALERT_DESC, ALERT_DESC, ALERT_DESC])
+        out = triage.do_close(f, {"id": "u", "identifier": "ASK-9"}, "noise", True)
+        self.assertTrue(out.wrote)
+        self.assertEqual(f.state, ["c"], "it closed more than once or not at all")
+
+
+class TestExplicitVerbsReportSkips(unittest.TestCase):
+    """codex review of PR #275 round 2. main() is run_triage's sibling and kept the
+    identical skip-as-success defect after run_triage was fixed for it."""
+
+    def test_main_source_counts_writes_not_returns(self):
+        import inspect
+        body = inspect.getsource(triage).split("def main(")[1]
+        self.assertIn("if out.wrote:", body,
+                      "main appends to `done` without asking whether a write happened")
+        self.assertIn("skipped", body,
+                      "main has no notion of a skip, so it cannot report one")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
