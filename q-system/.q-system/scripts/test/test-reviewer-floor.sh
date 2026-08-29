@@ -64,6 +64,23 @@ check_eq "a real APPROVE is never clobbered" \
 check_eq "a real red verdict is never clobbered" \
   "noop failure" "$(floor_decision < "$FX/verdict-failure.json")"
 
+# ---- the clobber check (Codex major on PR #95: read and post are not atomic)
+# These drive the PLURAL statuses list, which is the only payload where a buried
+# verdict is still visible after the floor has posted over it.
+check_eq "floor alone on the list is clean" \
+  "clean" "$(clobber_decision < "$FX/list-floor-only.json")"
+
+check_eq "our floor on top of a real APPROVE is a clobber" \
+  "clobbered success" "$(clobber_decision < "$FX/list-clobbered.json")"
+
+# LOSING the race is not clobbering it. If the reviewer posted AFTER us their
+# verdict is the live one and we harmed nothing -- reporting that as a clobber
+# would make the floor cry wolf on its own correct behaviour.
+check_eq "a verdict posted after ours is clean" \
+  "clean" "$(clobber_decision < "$FX/list-race-lost.json")"
+
+check_eq "an empty list is clean" "clean" "$(printf '[]' | clobber_decision)"
+
 # ASSERT THE LITERAL, not a value read back from the same script. A
 # baseline-relative assertion ("same as FLOOR_STATE") cannot see a mutant that
 # moves both sides.
@@ -94,11 +111,15 @@ fi
 STUB_DIR="$(mktemp -d)"
 trap 'rm -rf "$STUB_DIR"' EXIT
 
+# TWO ENDPOINTS, TWO FIXTURES. main() reads the COMBINED status to decide, then
+# the PLURAL statuses list to check whether it buried a verdict. A stub serving
+# one payload to both would feed an object where an array is expected and the
+# clobber check would pass for the wrong reason.
 make_stub() {
-  local fixture="$1" read_rc="${2:-0}"
+  local fixture="$1" read_rc="${2:-0}" list="${3:-$FX/list-floor-only.json}"
   cat > "$STUB_DIR/gh" <<STUB
 #!/usr/bin/env bash
-# Records argv, serves a fixture for the read, records the POST.
+# Records argv, serves a fixture per endpoint, records the POST.
 for a in "\$@"; do
   if [ "\$a" = "POST" ]; then
     printf '%s\n' "\$*" >> "$STUB_DIR/posted.txt"
@@ -108,7 +129,10 @@ for a in "\$@"; do
 done
 printf '%s\n' "\$*" >> "$STUB_DIR/read.txt"
 [ "$read_rc" -ne 0 ] && exit "$read_rc"
-cat "$fixture"
+case "\$*" in
+  */statuses) cat "$list" ;;
+  *)          cat "$fixture" ;;
+esac
 STUB
   chmod +x "$STUB_DIR/gh"
   : > "$STUB_DIR/posted.txt"
@@ -150,6 +174,26 @@ check_eq "real APPROVE: nothing posted" "0" "$(wc -l < "$STUB_DIR/posted.txt" | 
 make_stub "$FX/verdict-failure.json"
 rc="$(run_main deadbeef)"
 check_eq "real red: nothing posted" "0" "$(wc -l < "$STUB_DIR/posted.txt" | tr -d ' ')"
+
+# THE RACE, END TO END. The floor posts, and the reviewer's real APPROVE landed
+# in the window. It must exit nonzero and say so: a wrongly BLOCKED PR that is
+# loudly reported, never a silently buried approval.
+make_stub "$FX/absent.json" 0 "$FX/list-clobbered.json"
+rc="$(run_main deadbeef)"
+check_eq "buried verdict: exits 3" "3" "$rc"
+check_eq "buried verdict: still posted exactly one status" \
+  "1" "$(wc -l < "$STUB_DIR/posted.txt" | tr -d ' ')"
+# The repair it must NOT attempt. Restoring the approval would make this script
+# capable of posting success -- the ASK-312 phantom-approval hole.
+case "$(cat "$STUB_DIR/posted.txt")" in
+  *"state=success"*) fail "buried verdict: re-posted SUCCESS -- phantom approval" ;;
+  *) pass "buried verdict: never re-posts the approval" ;;
+esac
+
+# Losing the race is a clean outcome, not an error.
+make_stub "$FX/absent.json" 0 "$FX/list-race-lost.json"
+rc="$(run_main deadbeef)"
+check_eq "verdict posted after ours: exit 0" "0" "$rc"
 
 # A FAILED READ MUST NOT LOOK LIKE ABSENCE. If the API read fails and the script
 # fell through, it would post over a verdict it simply could not see.
@@ -200,6 +244,9 @@ run_mutant() {
 }
 
 MUT_FAIL=0
+# The clobber check: let a buried verdict report clean.
+run_mutant "clobber-check-blinded" \
+  's/^    echo "clobbered \$buried"$/    echo "clean"/' || MUT_FAIL=1
 # The no-clobber guard: make every payload look absent.
 run_mutant "no-clobber-removed" \
   's/if \[ "\$existing" = "none" \]; then/if true; then/' || MUT_FAIL=1

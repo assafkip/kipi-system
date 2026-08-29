@@ -73,6 +73,37 @@ floor_decision() {
   fi
 }
 
+# Pure. Reads the PLURAL statuses list (newest first) on stdin, writes
+# `clean` or `clobbered <state>` on stdout. No I/O, so the test feeds fixtures.
+#
+# WHY A SECOND, DIFFERENT ENDPOINT. floor_decision reads the COMBINED endpoint,
+# which collapses to the latest status per context -- that is the right shape for
+# "is there a verdict", and the wrong shape for "did I just bury one", because
+# after post_floor the latest IS ours and the real one is invisible there. The
+# plural list keeps every status, so a buried verdict is still findable.
+#
+# The floor identifies its own writes by FLOOR_DESC. That string is a literal in
+# this file and the only thing that ever posts it is post_floor, so "description
+# is not FLOOR_DESC" is exactly "somebody else wrote this".
+clobber_decision() {
+  local payload buried newest
+  payload="$(cat)"
+  # Entries for our context, newest first, as GitHub returns them.
+  newest="$(printf '%s' "$payload" | jq -r --arg ctx "$REVIEWER_CONTEXT" \
+    '[.[]? | select(.context == $ctx)] | if length == 0 then "none" else .[0].description end')"
+  buried="$(printf '%s' "$payload" | jq -r \
+    --arg ctx "$REVIEWER_CONTEXT" --arg fd "$FLOOR_DESC" \
+    '[.[]? | select(.context == $ctx) | select(.description != $fd)] | if length == 0 then "none" else .[0].state end')"
+
+  # Clobbered only if OUR write is on top AND a real verdict exists underneath.
+  # If someone posted after us their verdict is live and we harmed nothing.
+  if [ "$newest" = "$FLOOR_DESC" ] && [ "$buried" != "none" ]; then
+    echo "clobbered $buried"
+  else
+    echo "clean"
+  fi
+}
+
 post_floor() {
   local sha="$1"
   local gh_cmd
@@ -88,6 +119,13 @@ read_combined_status() {
   local gh_cmd
   read -r -a gh_cmd <<< "$REVIEWER_FLOOR_GH"
   "${gh_cmd[@]}" api "repos/{owner}/{repo}/commits/$sha/status"
+}
+
+read_status_list() {
+  local sha="$1"
+  local gh_cmd
+  read -r -a gh_cmd <<< "$REVIEWER_FLOOR_GH"
+  "${gh_cmd[@]}" api "repos/{owner}/{repo}/commits/$sha/statuses"
 }
 
 main() {
@@ -113,6 +151,32 @@ main() {
       echo "no reviewer verdict at $sha -- posting floor $REVIEWER_CONTEXT=$FLOOR_STATE"
       post_floor "$sha" >/dev/null
       echo "floor posted"
+
+      # THE RACE (Codex major, PR #95). Reading the status and posting the floor
+      # are two API calls, and the real reviewer can land a verdict between them.
+      # GitHub's status API has no compare-and-swap, so the window cannot be
+      # closed -- only OBSERVED.
+      #
+      # It is deliberately not repaired by re-posting the buried verdict. That
+      # would make this script capable of posting `success`, which is the exact
+      # phantom-approval hole ASK-312 burned us with (PR #74, twice). FLOOR_STATE
+      # stays a literal red and this script stays incapable of minting an
+      # approval, even a "restoring" one.
+      #
+      # So the failure is steered rather than eliminated: a buried approval means
+      # a PR is wrongly BLOCKED and loudly reported, never wrongly MERGED. Red is
+      # answerable; a phantom green is not.
+      local list verdict
+      if ! list="$(read_status_list "$sha")"; then
+        echo "WARNING: floor posted but the clobber check could not read $sha" >&2
+        exit 4
+      fi
+      verdict="$(printf '%s' "$list" | clobber_decision)"
+      if [ "$verdict" != "clean" ]; then
+        echo "ERROR: the floor buried a real verdict at $sha (${verdict#clobbered }) -- it landed between the read and the post." >&2
+        echo "ERROR: this PR is now wrongly blocked. Re-run the reviewer on $sha to restore its verdict." >&2
+        exit 3
+      fi
       ;;
     noop*)
       echo "reviewer verdict already present at $sha (${decision#noop }) -- floor stands down"
