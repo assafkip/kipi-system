@@ -13,11 +13,44 @@ vanished-artifact-caught. A gate that cannot be seen to FAIL is a rubber stamp.
 import argparse
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
 
 GATE = pathlib.Path(__file__).resolve().parent / "capability-gate.py"
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import capability_manifest  # noqa: E402
+
+
+def write_manifest(root, m):
+    """Write the sandbox repo's manifest in the layout the gate actually reads.
+
+    The manifest is a fragment DIRECTORY, one JSON per declaration, because the
+    single 182-entry array it replaced was the merge conflict in 37 of 41
+    conflicting PRs. Every fixture below still hands over a whole manifest dict
+    -- the explode is the only thing that moved, so a section that used to
+    assert on a manifest shape still asserts on exactly that shape.
+    """
+    capability_manifest.explode(root, m)
+
+
+def duplicate_fragment(root, section, dest_name="a-copy.json"):
+    """Copy one declaration to a second filename in the same section.
+
+    The array layout let a duplicate be written by appending the same entry
+    twice. A fragment is named after the declaration it carries, so an explode
+    can no longer produce one -- the only way a duplicate reaches the assembled
+    view now is a hand-copied fragment, which is the shape this reproduces. The
+    duplicate rules in validate_manifest have to keep firing on it, and the
+    name/declaration mismatch has to be loud on top, or one entry could silently
+    overwrite another.
+    """
+    sdir = capability_manifest.fragment_dir(root) / section
+    src = sorted(f for f in sdir.iterdir() if f.suffix == ".json")[0]
+    (sdir / dest_name).write_text(src.read_text())
+
+
 failures = []
 
 
@@ -35,7 +68,7 @@ def make_repo(tmp, skeleton=True, manifest=None):
     if skeleton:
         (root / "instance-registry.json").write_text('{"instances": []}')
     m = manifest if manifest is not None else base_manifest()
-    (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+    write_manifest(root, m)
     return root
 
 
@@ -80,35 +113,55 @@ def sec_schema():
             check(f"schema: non-int version {bad!r} RED", rc == 1 and "schema_version" in out)
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp, manifest=base_manifest(
-            skeleton_only=["q-system/a.py", "q-system/a.py"]))
+            skeleton_only=["q-system/a.py"]))
+        duplicate_fragment(root, "skeleton_only")
         rc, out = run_gate(root, "--check-only")
         check("schema: duplicate in skeleton_only RED", rc == 1 and "duplicate path in skeleton_only" in out)
     with tempfile.TemporaryDirectory() as tmp:
-        root = make_repo(tmp, manifest=base_manifest(bogus_key=[]))
+        # An unknown top-level KEY is now an unknown section DIRECTORY: the
+        # assembler builds the dict from the known sections, so that is the only
+        # shape an undeclared bucket can take. The property is unchanged -- a
+        # bucket nothing reads must be RED, never silently ignored.
+        root = make_repo(tmp)
+        (capability_manifest.fragment_dir(root) / "bogus_key").mkdir()
         rc, out = run_gate(root, "--check-only")
-        check("schema: unknown key RED", rc == 1 and "unknown top-level" in out)
+        check("schema: unknown section dir RED",
+              rc == 1 and "unknown fragment section" in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        # and a stray file in the fragment root, which is the other way to write
+        # a declaration nothing will ever assemble
+        root = make_repo(tmp)
+        (capability_manifest.fragment_dir(root) / "loose.json").write_text("{}")
+        rc, out = run_gate(root, "--check-only")
+        check("schema: stray file in fragment root RED",
+              rc == 1 and "stray file in fragment root" in out)
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         rel = add_test(root, "q-system/.q-system/scripts/test_a.py")
-        root_m = base_manifest(expected_tests=[entry(rel), entry(rel)])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(root_m))
+        write_manifest(root, base_manifest(expected_tests=[entry(rel)]))
+        duplicate_fragment(root, "expected_tests")
         rc, out = run_gate(root, "--check-only")
         check("schema: duplicate path RED", rc == 1 and "duplicate" in out)
+        check("schema: fragment name mismatch RED",
+              rc == 1 and "does not match its declaration" in out)
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
-        (root / "q-system/.q-system/capability-manifest.json").write_text("{nope")
+        write_manifest(root, base_manifest())
+        sdir = capability_manifest.fragment_dir(root) / "expected_tests"
+        sdir.mkdir(parents=True, exist_ok=True)
+        (sdir / "broken.json").write_text("{nope")
         rc, out = run_gate(root, "--check-only")
         check("schema: malformed JSON RED", rc == 1 and "malformed" in out)
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         rel = add_test(root, "q-system/.q-system/scripts/test_a.py")
         m = base_manifest(expected_tests=[entry(rel, timeout_s=9999)])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root, "--check-only")
         check("schema: timeout out of bounds RED", rc == 1 and "out of bounds" in out)
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
-        (root / "q-system/.q-system/capability-manifest.json").unlink()
+        shutil.rmtree(capability_manifest.fragment_dir(root))
         rc, out = run_gate(root, "--check-only")
         check("schema: missing manifest RED", rc == 1 and "manifest missing" in out)
     with tempfile.TemporaryDirectory() as tmp:
@@ -140,7 +193,7 @@ def sec_overlay():
         root = make_repo(tmp)
         rel = add_test(root, "q-system/.q-system/scripts/test_a.py")
         m = base_manifest(expected_tests=[entry(rel)])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         (root / "capability-manifest.local.json").write_text(
             json.dumps({"expected_tests": [entry(rel)]}))
         rc, out = run_gate(root, "--check-only")
@@ -181,7 +234,7 @@ def sec_quarantine():
         root = make_repo(tmp)
         rel = add_test(root, "q-system/.q-system/scripts/test_bad.py", "import sys; sys.exit(1)")
         m = base_manifest(expected_tests=[entry(rel, quarantine=q)])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root)
         check("quarantine: valid future expiry skips + notes", rc == 0 and "QUARANTINED" in out)
     with tempfile.TemporaryDirectory() as tmp:
@@ -189,14 +242,14 @@ def sec_quarantine():
         rel = add_test(root, "q-system/.q-system/scripts/test_bad.py", "import sys; sys.exit(1)")
         expired = dict(q, expires="2020-01-01")
         m = base_manifest(expected_tests=[entry(rel, quarantine=expired)])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root, "--check-only")
         check("quarantine: EXPIRED is RED", rc == 1 and "EXPIRED" in out)
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         rel = add_test(root, "q-system/.q-system/scripts/test_bad.py", "import sys; sys.exit(1)")
         m = base_manifest(expected_tests=[entry(rel, quarantine={"reason": "r"})])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root, "--check-only")
         check("quarantine: missing fields RED", rc == 1 and "missing" in out)
 
@@ -220,7 +273,7 @@ def sec_wiring():
         rel = engine(root, "q-system/.q-system/scripts/dead-engine.py")
         m = base_manifest(declared_inert=[{"path": rel, "reason": "parked",
                                            "spillover_id": "sp-x"}])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root, "--check-only")
         check("wiring: declared_inert passes with note", rc == 0 and "DECLARED-INERT" in out)
     # ASK-746 neighbour: the candidate filter said `"__main__" in text`, a bare
@@ -378,7 +431,7 @@ def sec_runner():
         ok_py = add_test(root, "q-system/.q-system/scripts/test_ok.py")
         ok_sh = add_test(root, "q-system/.q-system/scripts/test/test-ok.sh", "exit 0")
         m = base_manifest(expected_tests=[entry(ok_py), entry(ok_sh)])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root)
         check("runner: both runners green, ran=2", rc == 0 and "ran=2" in out)
     with tempfile.TemporaryDirectory() as tmp:
@@ -386,7 +439,7 @@ def sec_runner():
         bad = add_test(root, "q-system/.q-system/scripts/test_bad.py",
                        'print("boom detail")\nimport sys; sys.exit(3)')
         m = base_manifest(expected_tests=[entry(bad)])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root)
         check("runner: failing test RED with tail",
               rc == 1 and "test-failed rc=3" in out and "boom detail" in out)
@@ -395,7 +448,7 @@ def sec_runner():
         slow = add_test(root, "q-system/.q-system/scripts/test_slow.py",
                         'print("hanging-on-xyz", flush=True)\nimport time; time.sleep(30)')
         m = base_manifest(expected_tests=[entry(slow, timeout_s=5)])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root)
         check("runner: timeout RED with partial output tail",
               rc == 1 and "test-timeout" in out and "hanging-on-xyz" in out)
@@ -407,7 +460,7 @@ def sec_runner():
                      'sys.exit(0 if ok else 1)')
         rel = add_test(root, "q-system/.q-system/scripts/test_envprobe.py", env_probe)
         m = base_manifest(expected_tests=[entry(rel)])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root)
         check("runner: cwd=repo root and QROOT set (contract pinned)", rc == 0)
     with tempfile.TemporaryDirectory() as tmp:
@@ -415,7 +468,7 @@ def sec_runner():
         noisy = "\n".join(f'print("line{i}")' for i in range(1, 31)) + "\nimport sys; sys.exit(1)"
         rel = add_test(root, "q-system/.q-system/scripts/test_noisy.py", noisy)
         m = base_manifest(expected_tests=[entry(rel)])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root)
         check("runner: exactly last-20-line tail (line30 in, line5 out)",
               rc == 1 and "line30" in out and "line5\n" not in out and "line10\n" not in out)
@@ -427,7 +480,7 @@ def sec_mode():
         root = make_repo(tmp, skeleton=False)
         rel = add_test(root, "q-system/.q-system/scripts/test_skel.py", crash)
         m = base_manifest(expected_tests=[entry(rel)], skeleton_only=[rel])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root)
         check("mode: instance skips skeleton_only (crashing test passes by skip)",
               rc == 0 and "skipped-skeleton-only=1" in out and "mode=instance" in out)
@@ -467,7 +520,7 @@ def sec_negative_proof():
         root = make_repo(tmp, skeleton=False)
         rel = add_test(root, "q-system/.q-system/scripts/test_skelwire.py", crash)
         m = base_manifest(expected_tests=[entry(rel)], skeleton_only=[rel])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root)
         check("F3a: declared skeleton-only skipped in instance",
               rc == 0 and "mode=instance" in out and "skipped-skeleton-only=1" in out)
@@ -476,7 +529,7 @@ def sec_negative_proof():
         root = make_repo(tmp, skeleton=False)
         rel = add_test(root, "q-system/.q-system/scripts/test_skelwire.py", crash)
         m = base_manifest(expected_tests=[entry(rel)])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root)
         check("F3b: undeclared skeleton-only FAILS in instance", rc == 1 and "test-failed" in out)
     # F2: an unwired engine fails loud (also covered in sec_wiring; kept in the
@@ -490,7 +543,7 @@ def sec_negative_proof():
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         m = base_manifest(expected_tests=[entry("q-system/.q-system/scripts/test_gone.py")])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root, "--check-only")
         check("vanished: declared-but-missing RED", rc == 1 and "declared-but-missing" in out)
     # Required data: in-scope missing file MUST fail; out-of-scope must not.
@@ -499,19 +552,19 @@ def sec_negative_proof():
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         m = base_manifest(required_data=[{"path": "q-system/canonical/x.json", "scope": "all"}])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root, "--check-only")
         check("required_data: in-scope missing RED", rc == 1 and "required-data-missing" in out)
         # scope-LIST positive match: names the sandbox's own basename, so an
         # implementation that ignores list scopes cannot pass (codex,
         # sag-negative-proof-matrix)
         m["required_data"][0]["scope"] = [pathlib.Path(tmp).resolve().name]
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root, "--check-only")
         check("required_data: scope-list match demanded RED",
               rc == 1 and "required-data-missing" in out)
         m["required_data"][0]["scope"] = ["some-other-instance"]
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root, "--check-only")
         check("required_data: out-of-scope not demanded", rc == 0)  # spillover-skip
     # Token-guard fixes are part of the pre-propagation matrix (finding-7):
@@ -535,7 +588,7 @@ def sec_skeleton_only_absent():
         root = make_repo(tmp, skeleton=False)
         m = base_manifest(expected_tests=[entry(rel, runner="bash")],
                           skeleton_only=[rel], scope_exempt=ex)
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root)
         check("skeleton-only-absent: instance is GREEN without the file",
               rc == 0 and "declared-but-missing" not in out)
@@ -543,7 +596,7 @@ def sec_skeleton_only_absent():
         root = make_repo(tmp)  # skeleton mode: the file MUST exist here
         m = base_manifest(expected_tests=[entry(rel, runner="bash")],
                           skeleton_only=[rel], scope_exempt=ex)
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root)
         check("skeleton-only-absent: skeleton is still RED without the file",
               rc == 1 and "declared-but-missing (outside scan root)" in out)
@@ -565,7 +618,7 @@ def sec_scan_scope():
         root = make_repo(tmp)
         add_test(root, stray)
         m = base_manifest(expected_tests=[entry(stray)])
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root, "--check-only")
         check("scan-scope: undeclared-exemption escape is RED",
               rc == 1 and "outside the scan roots" in out)
@@ -590,7 +643,7 @@ def sec_scan_scope():
         root = make_repo(tmp)
         add_test(root, stray)
         m = base_manifest(expected_tests=[entry(stray)], scope_exempt=exempt)
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root, "--check-only")
         check("scan-scope: declared exemption is accepted", rc == 0)
         check("scan-scope: the run REPORTS the F3-blind count",
@@ -601,7 +654,7 @@ def sec_scan_scope():
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         m = base_manifest(expected_tests=[entry(stray)], scope_exempt=exempt)
-        (root / "q-system/.q-system/capability-manifest.json").write_text(json.dumps(m))
+        write_manifest(root, m)
         rc, out = run_gate(root, "--check-only")
         check("scan-scope: exempt-but-vanished is still RED",
               rc == 1 and "declared-but-missing (outside scan root)" in out)

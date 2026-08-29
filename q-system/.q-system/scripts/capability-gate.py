@@ -463,8 +463,16 @@ def diff_declared_vs_actual(root, manifest, errors, mode="skeleton"):
     for missing in sorted(in_scope_declared - discovered):
         errors.append(f"declared-but-missing: {missing}")
     for extra in sorted(discovered - declared):
-        errors.append(f"present-but-undeclared: {extra} — add to expected_tests "
-                      "in capability-manifest.json")
+        # Name the exact file to create. The old message said "add to
+        # expected_tests" and every author then appended to the same array,
+        # which is what made this manifest the conflict in 37 of 41
+        # conflicting PRs. A declaration is one file now, so the refusal hands
+        # over its path rather than a section name.
+        frag = capability_manifest.fragment_name("expected_tests", {"path": extra})
+        errors.append(
+            f"present-but-undeclared: {extra} — declare it by creating "
+            f"{capability_manifest.FRAGMENT_DIR}/expected_tests/{frag} "
+            'containing {"path": "%s", "runner": "python3"|"bash"}' % extra)
     skeleton_only = set(manifest.get("skeleton_only", []))
     for outside in sorted(declared - in_scope_declared):
         if mode == "instance" and outside in skeleton_only:

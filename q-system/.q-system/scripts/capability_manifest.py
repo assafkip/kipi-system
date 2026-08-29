@@ -136,7 +136,10 @@ def load(root, errors=None):
                  "legacy monolithic manifest present but %s is missing; this "
                  "checkout predates the fragment migration" % FRAGMENT_DIR)
         else:
-            _err(errors, "manifest fragment directory missing: %s" % FRAGMENT_DIR)
+            # Wording pinned: "manifest missing:" is the phrase the gate's
+            # own suite and its callers assert on. The layout moved; the
+            # refusal contract did not.
+            _err(errors, "manifest missing: %s (fragment directory)" % FRAGMENT_DIR)
         return None
 
     meta_path = fdir / META_FILE

@@ -387,7 +387,8 @@ live_converges() {
 #
 # This deliberately does NOT unlock same-repo concurrency. File-disjointness is
 # still unbuilt, and sp-f3a2ad81 shows why the obvious version is not enough:
-# capability-manifest.json is a magnet file every test-adding issue appends to,
+# capability-manifest.json WAS a magnet file every test-adding issue appended
+# to (resolved 2026-08-29: it is a per-declaration fragment directory now),
 # so a naive disjointness rule would serialize the whole board on it anyway
 # (sp-4caf5d7b measured 19 of 22 conflicting PRs conflicting on that one file).
 # Cross-repo is the slice that is safe TODAY, on the conflict argument's own terms.

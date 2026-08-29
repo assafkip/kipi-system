@@ -70,7 +70,7 @@ cat > "$WORK/validate.py" <<'PYEOF'
 #!/usr/bin/env python3
 """Validate terminal-states.json against linear-worker.sh, enumerating from source.
 
-argv: <registry.json> <linear-worker.sh> <capability-manifest.json>
+argv: <registry.json> <linear-worker.sh> <assembled-capability-manifest.json>
 
 Env seams (fixtures only; unset in real runs so the live system is what is read):
   TERMINAL_STATES_LAUNCHCTL    launchd control binary (default: launchctl)  # portability-lint-skip
@@ -322,7 +322,7 @@ def main():
             ct = row.get("consumer_test")
             if ct and ct not in declared_tests:
                 errors.append(f"{rid}: consumer_test {ct} is not in "
-                              "capability-manifest.json expected_tests, so nothing "
+                              "the capability manifest's expected_tests, so nothing "
                               "runs it -- the consumer is never proven to read this state")
         if is_terminal and len((row.get("rationale") or "").strip()) < 40:
             errors.append(f"{rid}: terminal:true needs a written rationale. An honest "
@@ -381,7 +381,13 @@ PYEOF
 
 REG="$ROOT/q-system/.q-system/terminal-states.json"
 SRC="$ROOT/q-system/.q-system/scripts/linear-worker.sh"
-MAN="$ROOT/q-system/.q-system/capability-manifest.json"
+# validate.py takes the manifest as a FILE argument. The manifest itself is now
+# a per-declaration fragment directory (the single array it replaced was the
+# merge conflict in 37 of 41 conflicting PRs), so assemble it once here and keep
+# validate.py's argument contract exactly as it was.
+MAN="$WORK/capability-manifest.assembled.json"
+python3 "$ROOT/q-system/.q-system/scripts/capability_manifest.py" \
+  --root "$ROOT" --print >"$MAN" || { echo "RED: manifest does not assemble"; exit 1; }
 
 for f in "$REG" "$SRC" "$MAN"; do
   if [ ! -f "$f" ]; then echo "RED: missing $f"; exit 1; fi
@@ -573,7 +579,7 @@ mkfixture "$FIX/unregtest.json" '
 [r for r in d["states"] if r["id"] == "needs-scope"][0]["consumer_test"] = \
     "q-system/.q-system/scripts/test/test-does-not-exist.sh"
 '
-expect_red "a consumer_test absent from capability-manifest.json is refused" \
+expect_red "a consumer_test absent from the capability manifest is refused" \
   "$FIX/unregtest.json" "not in\s*$\|expected_tests"
 
 # --- 11. plist present but launchctl unreadable (codex-adversarial finding-4) -
