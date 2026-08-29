@@ -439,6 +439,29 @@ esac
 # call and proves only that it did not crash. This records every page to a file,
 # one line per invocation, so "how many times" becomes an assertion instead of an
 # assumption.
+# THE FOUNDER CASES RUN AGAINST A SKELETON, NOT AN INSTANCE (codex PR #215
+# round 6, major). founder_scope only takes the UNSET population when this
+# checkout is the one instance-registry.json declares as `skeleton` -- otherwise
+# all 23 workers page about the same unrouted issue into one Linear queue, each
+# with its own ledger, so nothing can collapse them. SKEL_KIPI carries no
+# registry, which is exactly what an INSTANCE looks like (linear-worker.sh: an
+# instance carries no instance-registry.json), so it is the wrong fixture for a
+# rule about who owns the unset queue.
+#
+# Repo identity comes from the registry here, not the basename, so this can live
+# in a directory named anything. Only the founder cases use it; every case above
+# keeps SKEL_KIPI so their reachability assertions are untouched.
+SKEL_SKELETON="$(setup_skel skeleton-checkout)"
+python3 - "$SKEL_SKELETON" <<'REGPY'
+import json, sys
+root = sys.argv[1]
+json.dump({
+    "skeleton": {"path": root, "linear_project": "kipi-system"},
+    "instances": [{"name": "kipi-system", "linear_project": "kipi-system",
+                   "path": root}],
+}, open(root + "/instance-registry.json", "w"), indent=2)
+REGPY
+
 PAGES="$WORK/pages.log"
 PAGER="$WORK/recording-notify.sh"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$PAGES" > "$PAGER"
@@ -450,7 +473,7 @@ chmod +x "$PAGER"
 : > "$PAGES"
 P_STATE="$WORK/state-pager"; mkdir -p "$P_STATE"
 p_run() {
-  env KIPI_SKEL="$SKEL_KIPI" \
+  env KIPI_SKEL="$SKEL_SKELETON" \
       KIPI_STATE_DIR="$P_STATE" \
       KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
       KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
@@ -485,7 +508,7 @@ fi
 # its owner:assaf issues. A FRESH state dir must page again -- that is the same
 # input with only the memory removed, so it isolates the dedup from the detector.
 : > "$PAGES"
-env KIPI_SKEL="$SKEL_KIPI" KIPI_STATE_DIR="$WORK/state-pager-fresh" \
+env KIPI_SKEL="$SKEL_SKELETON" KIPI_STATE_DIR="$WORK/state-pager-fresh" \
     KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
     KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
     KIPI_NOTIFY="$PAGER" bash "$WORKER" --limit 99 >/dev/null 2>&1
@@ -543,7 +566,7 @@ chmod +x "$FAILPAGER"
 
 F_STATE="$WORK/state-pager-fail"; mkdir -p "$F_STATE"
 f_run() {  # f_run <notifier>
-  env KIPI_SKEL="$SKEL_KIPI" \
+  env KIPI_SKEL="$SKEL_SKELETON" \
       KIPI_STATE_DIR="$F_STATE" \
       KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
       KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
@@ -604,7 +627,7 @@ fi
 # recovery seam in the fixture server is for.
 G_STATE="$WORK/state-recur"; mkdir -p "$G_STATE"
 g_run() {
-  env KIPI_SKEL="$SKEL_KIPI" \
+  env KIPI_SKEL="$SKEL_SKELETON" \
       KIPI_STATE_DIR="$G_STATE" \
       KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
       KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
@@ -693,7 +716,7 @@ fi
 
 : > "$RECOVER_FILE"
 : > "$PAGES"
-H_OUT="$(env KIPI_SKEL="$SKEL_KIPI" KIPI_STATE_DIR="$H_STATE" \
+H_OUT="$(env KIPI_SKEL="$SKEL_SKELETON" KIPI_STATE_DIR="$H_STATE" \
     KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
     KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
     KIPI_NOTIFY="$PAGER" bash "$WORKER" --limit 99 2>&1)"
@@ -707,7 +730,7 @@ fi
 # THE REPRODUCER. Second run, same ledger, ASK-912 still founder-routed. Before
 # the fix the interrupted claim stood and this issue never paged again.
 : > "$PAGES"
-env KIPI_SKEL="$SKEL_KIPI" KIPI_STATE_DIR="$H_STATE" \
+env KIPI_SKEL="$SKEL_SKELETON" KIPI_STATE_DIR="$H_STATE" \
     KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
     KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
     KIPI_NOTIFY="$PAGER" bash "$WORKER" --limit 99 >/dev/null 2>&1
@@ -722,7 +745,7 @@ fi
 # from a release that runs on every tick. The run just above filed one, so this
 # one must be silent -- otherwise the fix is the ~96-pages-a-day repeat again.
 : > "$PAGES"
-env KIPI_SKEL="$SKEL_KIPI" KIPI_STATE_DIR="$H_STATE" \
+env KIPI_SKEL="$SKEL_SKELETON" KIPI_STATE_DIR="$H_STATE" \
     KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
     KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
     KIPI_NOTIFY="$PAGER" bash "$WORKER" --limit 99 >/dev/null 2>&1
@@ -731,6 +754,37 @@ if grep -q "ASK-912" "$PAGES"; then
       "run 3 paged again, so the unfiled check is releasing every claim -- back to paging every tick"
 else
   ok "negative self-test: once the alert has filed, the claim suppresses the next tick"
+fi
+
+# --- 6i. ONLY THE SKELETON OWNS THE UNSET QUEUE (codex PR #215 round 6) ------
+# 6d widened founder_scope to include unset-project issues so an unrouted one is
+# not invisible fleet-wide. Unqualified, that put the SAME issue in all 23
+# instances at once: each keeps its own attempts ledger so the per-id dedup
+# cannot collapse them, and alert-to-linear cannot either -- measured, two
+# workers whose populations differ by one id fingerprint differently (d5547a63
+# vs ff6479df). One mislabelled issue, one Linear ticket per instance, all by
+# hand to close.
+#
+# SKEL_KIPI carries no instance-registry.json, which IS what an instance looks
+# like. So this run must NOT claim ASK-912.
+I_OUT="$(run_worker "$SKEL_KIPI")"
+I_DEFECT="$(printf '%s\n' "$I_OUT" | grep 'DEFECT: owner:assaf' | head -1)"
+if printf '%s' "$I_DEFECT" | grep -q "ASK-912"; then
+  bad "REPRODUCER: an instance does not claim the unset founder queue" \
+      "the instance run names ASK-912 -- every worker in the fleet pages about it: $I_DEFECT"
+else
+  ok "REPRODUCER: an instance (no registry) does not claim the unset founder queue"
+fi
+
+# NEGATIVE SELF-TEST. The narrowing must drop the UNSET issue only, never the
+# instance own project founder issues -- silencing those would be a worse bug
+# than the flood, and an assertion that only checks for absence passes just as
+# well against a worker that stopped reporting the DEFECT line at all.
+if printf '%s' "$I_DEFECT" | grep -q "ASK-904"; then
+  ok "negative self-test: the instance still names its OWN founder-routed issue (ASK-904)"
+else
+  bad "negative self-test: the instance still names its OWN founder-routed issue (ASK-904)" \
+      "the DEFECT line lost ASK-904 too, so 6i passes on a dead detector: $I_DEFECT"
 fi
 
 # --- case 5: NEGATIVE SELF-TEST ---------------------------------------------

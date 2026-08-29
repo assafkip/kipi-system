@@ -410,7 +410,7 @@ def check_liveness(lc, errors, row_id):
                       "that stopped running is a dead consumer")
 
 
-def check_pointer(row_id, field, ptr, root, errors):
+def check_pointer(row_id, field, ptr, root, errors, code_only=False):
     """A {path, marker} pointer must resolve to a file that CONTAINS the marker.
 
     This is the anti-fiction check (ASK-353). `consumer` is prose and prose is
@@ -434,11 +434,32 @@ def check_pointer(row_id, field, ptr, root, errors):
                       "at a missing file proves nothing.")
         return
     with open(full, encoding="utf-8", errors="replace") as fh:
-        if marker not in fh.read():
-            errors.append(
-                f"{row_id}: {field} claims {path} contains {marker[:60]!r} and it does "
-                "NOT. That is a claim with no code behind it -- the exact shape of "
-                "ci-redrive.py's false 'it is also already handled' comment (ASK-352).")
+        body = fh.read()
+    # A COMMENT IS NOT A SELECTOR (codex PR #215 round 6, major). check_pointer
+    # searched the whole file, so a reentry marker found only in PROSE certified
+    # a consumer -- and every one of these markers is also DISCUSSED in comments,
+    # here and in the consumer itself. Delete the line that selects the state,
+    # leave the paragraph explaining it, and the row stayed green: the ASK-352
+    # fiction reproduced inside the check written to refuse it. match_site
+    # already skips comments for exactly this reason, one level up.
+    #
+    # `reentry` ONLY, and the asymmetry is deliberate. `evidence` on a
+    # terminal:true row is a citation of a REFUSAL, and a refusal is argued in
+    # prose by design -- converge-no-progress-stall cites "Requiring BOTH avoids
+    # a false stop", which is a comment and is the honest evidence for that row.
+    # Measured before this was scoped: that is the only comment-only pointer in
+    # the live registry, and it is not a reentry.
+    if code_only:
+        body = "\n".join(l for l in body.splitlines() if not l.lstrip().startswith("#"))
+    if marker not in body:
+        errors.append(
+            f"{row_id}: {field} claims {path} contains {marker[:60]!r} and it does "
+            "NOT"
+            + (" OUTSIDE A COMMENT. A paragraph about a selector is not the "
+               "selector; the line that runs is what certifies the consumer."
+               if code_only else "")
+            + ". That is a claim with no code behind it -- the exact shape of "
+            "ci-redrive.py's false 'it is also already handled' comment (ASK-352).")
 
 
 def main():
@@ -633,7 +654,8 @@ def main():
                               "ever selects THIS state. Name the consumer file and the "
                               "literal selector marker inside it.")
             else:
-                check_pointer(rid, "reentry", row["reentry"], root, errors)
+                check_pointer(rid, "reentry", row["reentry"], root, errors,
+                              code_only=True)
             ct = row.get("consumer_test")
             if ct and ct not in declared_tests:
                 errors.append(f"{rid}: consumer_test {ct} is not in "
@@ -1126,6 +1148,40 @@ state("drift-cap")["reentry"] = {"path": "q-system/.q-system/scripts/no-such-con
 expect_red "a reentry pointer at a file that does not exist is refused" \
   "$FIX/missingfile.json" "which does not exist"
 
+# --- 14b-ii. REPRODUCER (codex PR #215 round 6, major): a comment is not a ---
+#             selector.
+# Every marker in this registry is also DISCUSSED in prose, in the consumer and
+# here. check_pointer read the whole file, so deleting the line that selects the
+# state and leaving the paragraph about it kept the row green -- the ASK-352
+# fiction reproduced inside the check written to refuse it.
+#
+# The fixture points reentry at a string that exists in review-redrive.py ONLY
+# inside a comment, which is what a deleted selector leaves behind.
+mkfixture "$FIX/commentonly.json" '
+import re
+src = open("q-system/.q-system/scripts/review-redrive.py", encoding="utf-8").read()
+cand = [l.strip().lstrip("#").strip() for l in src.splitlines()
+        if l.lstrip().startswith("#") and len(l.strip()) > 45]
+code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+pick = [c for c in cand if c and c not in code][0]
+state("drift-cap")["reentry"] = {
+    "path": "q-system/.q-system/scripts/review-redrive.py", "marker": pick}
+'
+expect_red "a reentry marker that appears ONLY in a comment is refused" \
+  "$FIX/commentonly.json" "OUTSIDE A COMMENT"
+
+# NEGATIVE SELF-TEST. The rule must reject a comment-ONLY marker, not every
+# marker that also happens to be discussed in one -- the live rows are all
+# discussed in comments, and a rule that reddened on that would take the whole
+# registry down and be switched off the same day. The unmutated registry passing
+# above is that proof; this pins the live drift-cap row explicitly.
+if env TERMINAL_STATES_LAUNCHD_DIR="$FIX/agents" TERMINAL_STATES_LAUNCHCTL="$FIX/launchctl-loaded" \
+     python3 "$WORK/validate.py" "$REG" "$ROOT" "$MAN" >/dev/null 2>&1; then
+  ok "negative self-test: live reentry markers that are ALSO discussed in comments still pass"
+else
+  bad "negative self-test: live reentry markers that are ALSO discussed in comments still pass -- the code-only rule is rejecting real selectors"
+fi
+
 # --- 14c. REPRODUCER (codex PR #215 round 4, major): certified by the wrong ---
 #          instrument.
 # converge-verdict-terminal read consumer: "GitHub", liveness_check on
@@ -1149,7 +1205,14 @@ expect_red "a consumer naming neither the probed job nor the reentry file is ref
 mkfixture "$FIX/rightmachine.json" '
 state("drift-cap")["consumer"] = "com.kipi.dispatch re-offers it on the next cycle"
 '
-if python3 "$WORK/validate.py" "$FIX/rightmachine.json" "$ROOT" "$MAN" >/dev/null 2>&1; then
+# THE FIXTURE LAUNCHD ENV IS PART OF THIS CONTROL, not decoration. Without it
+# the probe reads the LIVE com.kipi.dispatch, so this green-expecting control
+# fails whenever that job happens not to have run in the last hour -- measured
+# at 3755s idle, which took this control red for a reason that has nothing to do
+# with what it asserts. A control that can go red for an unrelated reason cannot
+# testify about the rule it guards.
+if env TERMINAL_STATES_LAUNCHD_DIR="$FIX/agents" TERMINAL_STATES_LAUNCHCTL="$FIX/launchctl-loaded" \
+     python3 "$WORK/validate.py" "$FIX/rightmachine.json" "$ROOT" "$MAN" >/dev/null 2>&1; then
   ok "negative self-test: a reworded consumer that still names its probed job passes"
 else
   bad "negative self-test: a reworded consumer that still names its probed job passes -- the rule is reddening on prose, not on the mismatch"

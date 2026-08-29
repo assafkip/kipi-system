@@ -438,7 +438,18 @@ for e in entries if isinstance(entries, list) else []:
         local.append({"project": proj, "path": p,
                       "remote": d.get("expected_remote") or ""})
 local.sort(key=lambda r: r["project"])
-print(json.dumps({"name": name, "local_repos": local, "ok": ok}))
+# WHO OWNS THE UNSET POPULATION (codex PR #215 round 6, major). A founder-routed
+# issue with no project is claimed by no repo, so an earlier round widened
+# founder_scope to include unset -- in EVERY instance at once. All 23 workers
+# then paged about the same issue into one Linear queue, each with its own
+# ledger, so the dedup could not collapse them and the operator got N tickets to
+# close by hand. Exactly one worker has to own it, and the registry already
+# DECLARES which one: `skeleton.linear_project`. Read, not guessed -- the same
+# reason linear_project() exists twelve lines up.
+skel_row = reg.get("skeleton") if isinstance(reg, dict) else None
+skeleton_project = linear_project(skel_row) if isinstance(skel_row, dict) else ""
+print(json.dumps({"name": name, "local_repos": local, "ok": ok,
+                  "skeleton_project": skeleton_project}))
 PY
 )"
 _facts_get() { printf '%s' "$REGISTRY_FACTS" | python3 -c "import json,sys;d=json.load(sys.stdin);v=d.get('$1');print('\n'.join(v) if isinstance(v,list) else v)" 2>/dev/null; }
@@ -453,7 +464,11 @@ export REPO_PROJECT
 
 LOCAL_REPOS="$(_facts_json local_repos)"
 REGISTRY_OK="$(_facts_get ok)"
-export LOCAL_REPOS REGISTRY_OK
+# Empty when the registry is unreadable, or on an instance that carries none.
+# The picker treats empty as "nobody declared an owner", which narrows the scope
+# rather than widening it -- see founder_scope.
+SKELETON_PROJECT="$(_facts_get skeleton_project)"
+export LOCAL_REPOS REGISTRY_OK SKELETON_PROJECT
 
 # --- pick ready issues ------------------------------------------------------
 PICKED="$(python3 - "$ONLY_ISSUE" <<'PY'
@@ -681,8 +696,31 @@ def held_with(label, scope=in_this_repo):
 # Unset is included; ANOTHER repo's project is still excluded. A worker paging
 # about issues routed at a different checkout would put the same line on every
 # run in the fleet, which is the cry-wolf shape founder-notifications.md names.
+#
+# AND THE UNSET HALF IS OWNED BY ONE WORKER, NOT ALL OF THEM (codex PR #215
+# round 6, major). `or project_of(i) is None` alone put the same unset issue in
+# the founder population of every instance. Each one keeps its own attempts
+# ledger, so the per-id dedup cannot collapse pages across them, and the
+# alert-to-linear fingerprint cannot either: measured here, two workers whose
+# founder populations differ by one id hash differently (d5547a63 vs ff6479df),
+# so the fleet opens one Linear ticket per instance for one mislabelled issue.
+# That is the cry-wolf shape again, arrived at through the fix for invisibility.
+#
+# NOTE: no apostrophes anywhere in this heredoc. It sits inside a $( ) command
+# substitution and bash tracks quote state through a quoted heredoc there.
+#
+# The owner is DECLARED, never derived: the skeleton.linear_project field in
+# instance-registry.json. An empty value -- unreadable registry, or an instance
+# that carries none -- means nobody claims the unset population here, so the
+# scope NARROWS to this repo. Failing narrow is right for a widening: a fleet
+# that under-reports one unset issue is recoverable, a fleet where all 23
+# workers page about it is the flood this rule exists to stop.
+unset_owner = os.environ.get("SKELETON_PROJECT", "").strip()
+owns_unset = bool(unset_owner) and unset_owner == repo_project
+
+
 def founder_scope(i):
-    return in_this_repo(i) or project_of(i) is None
+    return in_this_repo(i) or (owns_unset and project_of(i) is None)
 
 deferred = held_with("needs-scope")
 # owner:assaf IS AN ERROR PATH NOW, NOT A QUEUE (ASK-353, founder directive
