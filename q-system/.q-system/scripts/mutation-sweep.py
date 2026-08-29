@@ -79,6 +79,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import pathlib
 import re
 import shutil
 import subprocess
@@ -803,6 +804,57 @@ def report_zero_exec(root, findings, sw):
     return len(orphans)
 
 
+def probe_subject(root, args, subj_rel):
+    """Answer the question the per-test sweep cannot: does ANY declared test
+    guard THIS file's ability to report failure?
+
+    The main sweep settles each test on its first confirmed subject, so its
+    per-subject rollup only covers the pairs it happened to probe. Measured on
+    this repo: eight declared tests reference prd_runner.py and the sweep paired
+    exactly one of them with it, which would have reported a hole that the other
+    seven might well close. A claim about a SUBJECT has to be asked of every
+    test that could answer it.
+
+    Scope: tests that name the file or import its module. A test reaching the
+    subject through a chain it never names is out of scope and stated as such,
+    rather than silently counted as coverage.
+    """
+    runner = load_runner(root)
+    sw = Sweep(root, runner)
+    stem = pathlib.PurePath(subj_rel).name
+    mod = stem[:-3] if stem.endswith(".py") else None
+    candidates = []
+    for entry in load_population(root):
+        text = (root / entry["path"]).read_text(errors="ignore")
+        if stem in text or (mod and re.search(
+                r"\bimport\s+%s\b|\bfrom\s+%s\s+import\b" % (re.escape(mod), re.escape(mod)),
+                text)):
+            candidates.append(entry)
+    print(f"subject: {subj_rel}")
+    print(f"declared tests that name or import it: {len(candidates)}\n")
+    killers, survivors, other = [], [], []
+    for entry in candidates:
+        base = sw.run_test(entry)
+        if base["timed_out"] or base["rc"] != 0:
+            other.append((entry["path"], "baseline-red"))
+            print(f"  baseline-red      {entry['path']}")
+            continue
+        v = probe_pair(sw, entry, subj_rel, base, 100)
+        verdict = v["verdict"]
+        if verdict == "KILLED":
+            killers.append(entry["path"])
+        elif verdict.startswith("SURVIVED"):
+            survivors.append(entry["path"])
+        else:
+            other.append((entry["path"], verdict))
+        print(f"  {verdict:<28} {entry['path']}")
+    print(f"\nGUARDED BY {len(killers)} test(s); {len(survivors)} exercise it "
+          f"but cannot see its verdict.")
+    if not killers:
+        print("NO declared test observes this subject's failure path.")
+    return 1 if not killers else 0
+
+
 # ------------------------------------------------------------------ self-test
 
 SELF_SUBJECT = '''#!/usr/bin/env python3
@@ -952,6 +1004,9 @@ def dirty_tree(root):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--subject",
+                    help="probe every declared test that names this file, to "
+                         "answer whether ANYTHING guards its failure path")
     ap.add_argument("--report-only", action="store_true",
                     help="re-derive the report from results.jsonl, run nothing")
     ap.add_argument("--zero-exec-scan", action="store_true",
@@ -986,6 +1041,9 @@ def main():
               f"({len(dirty)} path(s)). Commit, stash, or pass --force-dirty.",
               file=sys.stderr)
         sys.exit(3)
+
+    if args.subject:
+        sys.exit(probe_subject(root, args, args.subject))
 
     if args.report_only:
         out = root / "q-system/output/mutation-sweep"
