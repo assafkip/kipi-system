@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Pins the ONE property linear-alert-triage.py exists to create: after a
+promotion, BOTH refusing readers accept the issue.
+
+The readers are not reimplemented here. linear-worker.sh's is_fleet_alert lives
+inside a bash heredoc and cannot be imported, so its Python text is EXTRACTED
+FROM THE SHIPPED FILE and exec'd. A hand-written copy of that predicate would
+pass this test forever while the real one drifted -- which is precisely the
+"two substring tests in two places is how they drift" failure the drafter's own
+docstring names.
+"""
+import importlib.util
+import re
+import sys
+import unittest
+from pathlib import Path
+
+SCRIPTS = Path(__file__).resolve().parent.parent
+
+
+def _load(name, filename):
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS / filename)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+triage = _load("triage", "linear-alert-triage.py")
+drafter = _load("drafter", "linear-dor-drafter.py")
+
+
+def worker_is_fleet_alert():
+    """is_fleet_alert, lifted verbatim out of linear-worker.sh."""
+    src = (SCRIPTS / "linear-worker.sh").read_text(encoding="utf-8")
+    m = re.search(r"^ALERT_MARKER = .*?^def is_fleet_alert\(i\):.*?^    return False$",
+                  src, re.S | re.M)
+    if not m:
+        raise AssertionError(
+            "could not locate is_fleet_alert in linear-worker.sh -- the extraction "
+            "anchor moved, so this test is no longer reading the shipped predicate")
+    ns = {}
+    exec(compile(m.group(0), "linear-worker.sh:is_fleet_alert", "exec"), ns)
+    return ns["is_fleet_alert"]
+
+
+IS_FLEET_ALERT = worker_is_fleet_alert()
+
+ALERT_DESC = (
+    "Filed automatically by the fleet alert path.\n\n"
+    "```\nmain is RED and the auto-merge lane is still live\n```\n\n"
+    "<!-- kipi-alert-fingerprint: 6f1a2b3c4d5e -->"
+)
+
+
+def as_issue(desc, labels=("owner:sana", "needs-triage"), project="kipi-system"):
+    return {"identifier": "ASK-9999", "description": desc,
+            "state": {"type": "backlog"}, "project": {"name": project},
+            "labels": {"nodes": [{"id": f"id-{n}", "name": n} for n in labels]}}
+
+
+def worker_ready(issue):
+    """ready() from linear-worker.sh, in its decisive part: the alert exclusion
+    sits ABOVE the DoR test, which is why emitting a DoR from the filer is inert."""
+    labels = {l["name"] for l in issue["labels"]["nodes"]}
+    if "owner:assaf" in labels: return False
+    if "owner:sana" not in labels: return False
+    if "needs-scope" in labels: return False
+    if issue["state"]["type"] not in ("backlog", "unstarted"): return False
+    if IS_FLEET_ALERT(issue): return False
+    d = issue.get("description") or ""
+    return "## Definition of Ready" in d or "Definition of Ready" in d
+
+
+DOR = "## Definition of Ready\n\n- Reproducer: `gh pr checks`\n- Done: main is green\n"
+
+
+class TestPromotionUnblocksBothReaders(unittest.TestCase):
+
+    def test_negative_self_test_alert_is_refused_by_both(self):
+        """The bad case must be RED first, or nothing below proves anything."""
+        self.assertTrue(IS_FLEET_ALERT(as_issue(ALERT_DESC)),
+                        "worker predicate did not see the alert marker")
+        self.assertTrue(drafter.is_alert_ticket(ALERT_DESC),
+                        "drafter predicate did not see the alert marker")
+        self.assertIsNone(drafter.selection_mode(as_issue(ALERT_DESC)),
+                          "drafter would have drafted an alert ticket")
+        self.assertFalse(worker_ready(as_issue(ALERT_DESC)),
+                         "worker would have picked an alert ticket")
+
+    def test_a_dor_alone_does_not_unblock_it(self):
+        """The founder's proposed fix, tested rather than argued: emitting a DoR
+        from alert-to-linear.py changes NOTHING, because is_fleet_alert is
+        evaluated before the DoR is ever looked at."""
+        with_dor = ALERT_DESC + "\n\n" + DOR
+        self.assertIn("Definition of Ready", with_dor)
+        self.assertFalse(worker_ready(as_issue(with_dor)),
+                         "a DoR on a still-marked alert must remain refused")
+        self.assertIsNone(drafter.selection_mode(as_issue(with_dor)))
+
+    def test_promotion_makes_both_readers_accept(self):
+        body = triage.promote_body(ALERT_DESC, DOR, "6f1a2b3c4d5e", "real, scoped.")
+        self.assertFalse(IS_FLEET_ALERT(as_issue(body)),
+                         "worker still refuses a promoted issue")
+        self.assertFalse(drafter.is_alert_ticket(body),
+                         "drafter still refuses a promoted issue")
+        self.assertTrue(worker_ready(as_issue(body, labels=("owner:sana",))),
+                        "promoted issue is not in the worker ready set")
+
+    def test_audit_marker_does_not_retrip_either_reader(self):
+        body = triage.promote_body(ALERT_DESC, DOR, "6f1a2b3c4d5e", "")
+        self.assertIn("kipi-alert-promoted", body,
+                      "provenance was dropped; promotion must stay auditable")
+        self.assertFalse(IS_FLEET_ALERT(as_issue(body)))
+        self.assertFalse(drafter.is_alert_ticket(body))
+
+    def test_strip_removes_every_marker_not_just_the_first(self):
+        two = ALERT_DESC + "\n<!-- kipi-alert-fingerprint: second -->\n"
+        self.assertFalse(triage.is_alert_ticket(triage.strip_alert_marker(two)),
+                         "a second marker survived the strip")
+
+    def test_strip_does_not_eat_text_between_two_comments(self):
+        d = ("<!-- kipi-alert-fingerprint: aa -->\nKEEP THIS LINE\n"
+             "<!-- something-else: bb -->")
+        out = triage.strip_alert_marker(d)
+        self.assertIn("KEEP THIS LINE", out)
+        self.assertIn("something-else", out)
+
+    def test_fingerprint_is_recovered_for_the_audit_line(self):
+        self.assertEqual(triage.alert_fingerprint(ALERT_DESC), "6f1a2b3c4d5e")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
