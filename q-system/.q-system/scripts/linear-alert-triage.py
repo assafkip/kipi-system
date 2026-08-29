@@ -53,6 +53,12 @@ re-trip either filter.
 NEVER DELETE. A ticket that is not worth working is CLOSED with the reason
 written on it as a comment, which is reversible and auditable. There is no verb
 in this script that removes an issue.
+
+SCOPE OF THIS FILE: the TRANSITION mechanism only, driven deliberately by a
+person or an agent. The UNATTENDED nightly lane that decides promote-or-hold on
+its own is deliberately NOT here; it was split out after nine review rounds put
+seven of its eight majors inside that one function. It gets its own issue and
+its own design pass. This half is small enough to be argued about completely.
 """
 from __future__ import annotations
 
@@ -71,21 +77,17 @@ HERE = Path(__file__).resolve().parent
 
 ALERT_MARKER = "kipi-alert-fingerprint"
 PROMOTED_MARKER = "kipi-alert-promoted"
-HELD_LABEL = "triage:held"
 
-# WHETHER A WRITE HAPPENED IS DATA, NOT A SUBSTRING (codex round 5, major 1).
+# WHETHER A WRITE HAPPENED IS DATA, NOT A SUBSTRING.
 #
-# do_promote and do_hold each have a legitimate refuse path (the issue is no
-# longer an alert, or it could not be re-read). Both returned a plain string, and
-# run_triage counted "the call did not raise" as success. So a batch that skipped
-# every issue reported "N promoted", exited 0, and told launchd-health-check the
-# night went fine while nothing was written. That is the SAME silent-success
-# defect fixed one round earlier for total model failure: I fixed the symptom
-# (model unreachable) and left the class (a non-write counted as a write).
-#
-# The status now travels WITH the line, so a caller cannot forget to ask.
+# Every verb here has a legitimate refuse path: the issue is no longer an alert,
+# or it could not be re-read. When the verbs returned a plain string, a caller had
+# to infer success from "the call did not raise", and one did exactly that and
+# counted a refusal as a write. The status now travels WITH the line, so a call
+# site cannot forget to ask.
 Outcome = namedtuple("Outcome", "wrote line")
 TRIAGE_LABEL = "needs-triage"
+OWNER_LABEL = "owner:sana"
 OWNER_LABEL = "owner:sana"
 DOR_HEADING = "## Definition of Ready"
 # Any level of heading whose text is "Definition of Ready". Mirrors the drafter.
@@ -141,13 +143,6 @@ UPDATE_M = """mutation($id:String!,$input:IssueUpdateInput!){
 
 COMMENT_M = """mutation($input:CommentCreateInput!){
   commentCreate(input:$input){success}}"""
-
-LABELS_Q = """query{issueLabels(first:250){nodes{id name}}}"""
-
-TEAM_ID_Q = """query($k:String!){teams(filter:{key:{eq:$k}}){nodes{id}}}"""
-
-LABEL_CREATE_M = """mutation($i:IssueLabelCreateInput!){
-  issueLabelCreate(input:$i){success issueLabel{id name}}}"""
 
 STATES_Q = """query($k:String!){teams(filter:{key:{eq:$k}}){nodes{
   states{nodes{id name type}}}}}"""
@@ -226,6 +221,24 @@ def do_promote(ls, issue: dict, dor: str, why: str, apply: bool) -> str:
     desc = fresh.get("description") or ""
     if not is_alert_ticket(desc):
         return Outcome(False, f"{ident}: SKIPPED (no alert marker; already promoted or never an alert)")
+    # PROMOTION MUST YIELD A SELECTABLE ISSUE (codex round 9).
+    #
+    # linear-worker.sh ready() refuses on `owner:sana not in labels` before it
+    # ever reads the description. alert-to-linear.py normally applies that label
+    # at creation, but it tolerates a failed label resolution, so a
+    # producer-valid alert can exist without it. Promoting one strips the alert
+    # marker, which removes it from THIS tool's pool, while the worker still
+    # refuses it: promoted and permanently unselectable, a fresh dead end of
+    # exactly the kind this file exists to close. Same shape as the missing-DoR
+    # case one round earlier.
+    #
+    # Refused rather than repaired: adding the label would need a workspace-wide
+    # label lookup this file otherwise has no reason to carry, and a refusal
+    # leaves the issue exactly where it was, which is always recoverable.
+    if OWNER_LABEL not in {l.get("name") for l in
+                           ((fresh.get("labels") or {}).get("nodes") or [])}:
+        return Outcome(False, f"{ident}: SKIPPED (no {OWNER_LABEL}; promoting it "
+                              "would leave it unselectable by the worker)")
     fp = alert_fingerprint(desc)
     new = promote_body(desc, dor, fp, why)
     # ONE mutation for description + label drop. As two calls a failure between
@@ -234,9 +247,7 @@ def do_promote(ls, issue: dict, dor: str, why: str, apply: bool) -> str:
     # Drop the hold too (round 7, minor). An issue held on an earlier night and
     # promoted later is executable now; leaving triage:held on it says the
     # opposite, and is the kind of stale flag someone later reads as a decision.
-    payload = {"description": new,
-               "removedLabelIds": (label_ids(fresh, TRIAGE_LABEL)
-                                   + label_ids(fresh, HELD_LABEL))}
+    payload = {"description": new, "removedLabelIds": label_ids(fresh, TRIAGE_LABEL)}
     if not apply:
         # wrote=False: nothing reached Linear. A preview that reports a write
         # makes the run line and the exit code lie in exactly the mode used to
@@ -280,326 +291,6 @@ def do_close(ls, issue: dict, reason: str, apply: bool) -> str:
     return Outcome(True, f"{ident}: CLOSED ({done[0]['name']})")
 
 
-# THE UNATTENDED LANE (codex review of PR #268, major 1).
-#
-# The first cut of this file shipped promote/close as hand-run verbs and nothing
-# else. That is the SAME defect this script was written to fix, one layer over: a
-# consumer that no scheduler invokes does not exist operationally, and the 151
-# tickets stay exactly where they were. The reviewer was right and the finding is
-# recorded here rather than in a commit message, because the shape is easy to
-# re-introduce.
-#
-# WHY PROMOTE-OR-HOLD AND NEVER AUTO-CLOSE. Promotion is reversible: the issue
-# stays open and visible, and a wrong promotion costs one dispatch. A close is the
-# direction you cannot see afterwards, so it stays an explicit verb a person or an
-# agent runs deliberately. An unattended job that closes permanent Linear objects
-# on a model's say-so is precisely the "wrong behavior unattended that a human must
-# clean up" this repo grades as major.
-#
-# WHY HOLD IS MARKED. Without a marker every held ticket is re-evaluated every
-# night forever, so the nightly cost grows with the size of the bucket rather than
-# with its inflow. The marker is a comment key, like the other two, and it does not
-# collide with either refusal predicate.
-# HOLD IS A LABEL, NOT A BODY EDIT (codex round 3, major 1; confirmed by a Fable
-# escalation and then by measurement).
-#
-# The first cut appended a marker to the description. do_hold re-read the issue,
-# checked it was still an alert, and then wrote description = stale_body + marker.
-# A promotion landing inside that window was CLOBBERED: its Definition of Ready
-# deleted and the issue excluded from triage forever. Adding a fourth point-in-time
-# check would not fix it, and this repo already wrote that lesson down in ASK-1126:
-# a point-in-time check cannot make a shared mutable resource safe, and there is
-# always a next window. I then wrote exactly that bug, twice.
-#
-# A label is applied by Linear as a SERVER-SIDE DELTA at write time
-# (addedLabelIds/removedLabelIds), so it commutes with a concurrent description
-# write and touches no description bytes. The race is removed by construction
-# rather than guarded. Same reasoning linear-dor-drafter.py gives for using
-# removedLabelIds over a full labelIds replacement.
-#
-# MEASURED before choosing: exactly two call sites sent a description
-# (do_promote and do_hold). do_close writes none. So dropping hold's write leaves
-# ONE description writer, which is the condition under which this closes the class
-# rather than relocating it. do_promote keeps its own re-read guard, and its worst
-# case is a DoR overwritten by another DoR, never a DoR deleted.
-#
-# The label is the SOLE source of held-ness. Nothing writes a hold marker into the
-# body any more; two sources of one fact is how they drift.
-
-TRIAGE_PROMPT = """You are triaging ONE fleet alert ticket in a software repo.
-
-Decide whether it describes real, scoped engineering work someone should execute.
-
-Reply with EITHER:
-  PROMOTE
-  <a Definition of Ready: Problem, Approach, Reproducer, Acceptance criteria as
-   markdown checkboxes. Ground every claim in the alert text below. Do not invent
-   measurements. Start directly with the body, no preamble.>
-OR:
-  HOLD
-  <one line saying why this is not executable as written>
-
-The first line must be exactly PROMOTE or HOLD and nothing else.
-
-Project: {project}
-Title: {title}
-
-Alert body:
-{description}
-"""
-
-
-def is_held(issue: dict) -> bool:
-    """Held-ness lives in the label set, never in the description."""
-    return HELD_LABEL in {l.get("name") for l in
-                          ((issue.get("labels") or {}).get("nodes") or [])}
-
-
-def held_label_id(ls) -> str:
-    """Resolve the hold label, CREATING it if this workspace has none.
-
-    SELF-PROVISIONING, and that is the fix for a real deployment defect (codex
-    round 7, major). The first cut raised when the label was missing. It worked
-    only because I had created triage:held by hand on this one workspace; on a
-    fresh deployment every night would raise. And because do_hold comments BEFORE
-    it labels, the raise landed AFTER the comment had already posted, so each
-    nightly run added another identical rationale comment to the same issue,
-    forever, while reporting a failed pass. A hand-run setup step nobody knows
-    about is the same class as the rest of this issue: a mechanism that needs a
-    human who is not there.
-    """
-    data = ls.graphql(LABELS_Q, {}) or {}
-    for node in ((data.get("issueLabels") or {}).get("nodes") or []):
-        if node.get("name") == HELD_LABEL:
-            return node["id"]
-    teams = (ls.graphql(TEAM_ID_Q, {"k": TEAM_KEY}) or {}).get("teams") or {}
-    nodes = teams.get("nodes") or []
-    if not nodes:
-        raise RuntimeError(f"cannot resolve team {TEAM_KEY!r} to create "
-                           f"the {HELD_LABEL!r} label")
-    res = ls.graphql(LABEL_CREATE_M, {"i": {
-        "name": HELD_LABEL, "teamId": nodes[0]["id"], "color": "#bec2c8",
-        "description": ("linear-alert-triage.py held this alert: a triage decision "
-                        "was made and it is not executable as written. Not a close. "
-                        "Remove to return it to the nightly pool.")}})
-    node = (((res or {}).get("issueLabelCreate") or {}).get("issueLabel") or {})
-    if not node.get("id"):
-        raise RuntimeError(f"could not create the {HELD_LABEL!r} label")
-    return node["id"]
-
-
-def claude_binary() -> str | None:
-    for cand in (os.environ.get("KIPI_CLAUDE_BIN"), "claude",
-                 os.path.expanduser("~/.claude/local/claude"),
-                 "/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
-        if not cand:
-            continue
-        try:
-            if subprocess.run([cand, "--version"], capture_output=True,
-                              timeout=20, stdin=subprocess.DEVNULL).returncode == 0:
-                return cand
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-    return None
-
-
-def decide(issue: dict, timeout: int = 300) -> tuple[str, str] | None:
-    """(verdict, body) or None when the model could not be reached.
-
-    ANTHROPIC_MODEL is pinned. An unpinned headless `claude -p` job rides whatever
-    the default is; the fleet has already paid for that once (a batch lane burned
-    3% of a weekly budget in an hour on the wrong model). A scheduled job that
-    picks its own model is a cost defect waiting for a quiet night.
-    """
-    binary = claude_binary()
-    if not binary:
-        return None
-    prompt = TRIAGE_PROMPT.format(
-        project=(issue.get("project") or {}).get("name") or "unassigned",
-        title=issue.get("title") or "",
-        description=(issue.get("description") or "(empty)")[:4000])
-    env = {**os.environ, "ANTHROPIC_MODEL": os.environ.get(
-        "KIPI_TRIAGE_MODEL", "claude-opus-5")}
-    # NO TOOLS. THE PROMPT CONTAINS UNTRUSTED TEXT (codex round 6, major).
-    #
-    # The alert body is machine-written from fleet events and is not authored by
-    # anyone we trust to be addressing the model. This job runs unattended, at
-    # 02:30, against the PRIMARY checkout. The first cut passed that text with
-    # --permission-mode acceptEdits, copied from linear-dor-drafter.py without
-    # asking what it was for: a prompt-injected alert could have edited files in
-    # the repo, with nobody watching and the only record a triage line.
-    #
-    # This call is text in, one verdict out. It needs no tools at all, so it gets
-    # none: `--tools ""` disables the entire built-in set. That is a capability
-    # bound, not a filter, so it does not depend on recognising an attack.
-    #
-    # linear-dor-drafter.py has the SAME exposure on the same kind of input and
-    # is already running nightly. Filed separately rather than fixed here.
-    try:
-        res = subprocess.run([binary, "-p", prompt, "--tools", ""],
-                             capture_output=True, text=True, timeout=timeout,
-                             stdin=subprocess.DEVNULL, env=env)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    out = (res.stdout or "").strip()
-    if res.returncode != 0 or not out:
-        return None
-    out = re.sub(r"^```[a-z]*\n|\n```$", "", out).strip()
-    head, _, rest = out.partition("\n")
-    verdict = head.strip().upper()
-    # Parsed strictly. A model that answered in prose has NOT made a decision, and
-    # guessing one from fuzzy text is how an unattended job promotes garbage.
-    if verdict not in ("PROMOTE", "HOLD"):
-        return None
-    return verdict, rest.strip()
-
-
-def do_hold(ls, issue: dict, reason: str, apply: bool) -> str:
-    ident = issue["identifier"]
-    if not apply:
-        return Outcome(False, f"{ident}: WOULD HOLD ({reason[:70]})")
-    fresh = reread(ls, ident)
-    if fresh is None:
-        return Outcome(False, f"{ident}: SKIPPED (could not re-read)")
-    desc = (fresh.get("description") or "").rstrip()
-
-    # STILL AN ALERT? (codex review of PR #268 round 2, major 2.) do_promote has
-    # always re-checked this; do_hold did not, and the omission is the whole bug: a
-    # rival run (or a hand promotion) can promote this issue during the model call,
-    # and holding it afterwards stamps a worker-READY issue as excluded-from-triage.
-    # It then sits eligible for dispatch and invisible to every future pass at once.
-    # The guard belongs on BOTH write paths or it belongs on neither; one function
-    # having it was the reason it looked correct.
-    if not is_alert_ticket(desc):
-        return Outcome(False, f"{ident}: SKIPPED (no longer an alert; promoted while this ran)")
-
-    # RESOLVE THE LABEL BEFORE ANYTHING IS WRITTEN (round 7, major).
-    # If this cannot be resolved or created, the pass must fail having written
-    # NOTHING. Resolving it after the comment is what turned one broken workspace
-    # into a permanent stream of duplicate rationale comments.
-    label_id = held_label_id(ls)
-
-    # COMMENT FIRST, AND READ ITS RESULT, THEN THE LABEL (round 2, major 3).
-    # This is the identical defect just fixed in do_close, in a function written in
-    # the same commit -- fixing the instance and not the class. The marker is the
-    # irreversible half here: it removes the issue from every future nightly pass,
-    # so writing it before a rationale that never landed produces a permanent,
-    # unexplained exclusion that reports HELD. Rationale first; no rationale, no
-    # marker, and the issue simply stays in the pool for tomorrow.
-    res = ls.graphql(COMMENT_M, {"input": {"issueId": fresh["id"], "body":
-        f"Held by linear-alert-triage.py: not executable as written.\n\n{reason}\n\n"
-        f"This is NOT a close. Remove the {HELD_LABEL} label to put it back in "
-        "the nightly triage pool, or promote it by hand with a real DoR."}})
-    if not (((res or {}).get("commentCreate") or {}).get("success")):
-        raise RuntimeError(
-            f"{ident}: refusing to hold -- the rationale comment did not post, and a "
-            "hold marker with no recorded reason is a permanent silent exclusion")
-
-    # addedLabelIds, never a description write. See the HELD_LABEL note above.
-    upd = ls.graphql(UPDATE_M, {"id": ident,
-                                "input": {"addedLabelIds": [label_id]}})
-    if not (((upd or {}).get("issueUpdate") or {}).get("success")):
-        raise RuntimeError(f"{ident}: hold label write failed")
-    return Outcome(True, f"{ident}: HELD")
-
-
-def run_triage(ls, project: str | None, limit: int, apply: bool) -> int:
-    """One bounded unattended pass. Returns a process exit code."""
-    # AN UNROUTABLE ISSUE IS NEVER PROMOTED. Same rule linear-dor-drafter.py
-    # applies: a project is how linear-worker.sh decides which checkout can serve
-    # an issue, so with none set in_this_repo() is false in every repo at once.
-    # Promoting one moves it from "not ready" to "ready and reachable by nobody",
-    # which is the UNREACHABLE bucket ASK-839 measured. The first state is honest.
-    pool = [i for i in fetch_open(ls, project)
-            if is_alert_ticket(i.get("description")) and not is_held(i)
-            and ((i.get("project") or {}).get("name") or "").strip()]
-    pool.sort(key=lambda i: i.get("createdAt") or "")
-    batch = pool[:limit]
-    wrote = failed = skipped = 0
-    for issue in batch:
-        d = decide(issue)
-        if d is None:
-            failed += 1
-            print(f"  {issue['identifier']}: no decision (model unreachable or unparseable)",
-                  file=sys.stderr)
-            continue
-        verdict, body = d
-        # EXPLICIT DISPATCH, NO else-FALLTHROUGH (codex round 8, major).
-        #
-        # The old shape was `if verdict == "PROMOTE" and body: promote else: hold`.
-        # A PROMOTE whose body came back empty therefore fell into the HOLD branch
-        # and was held with the reason "no reason given". That INVERTS the model's
-        # verdict in the one direction that costs something: it says this is real
-        # work, and the job permanently removes it from nightly triage until a
-        # human notices the label. An empty body is a MALFORMED ANSWER, not a
-        # decision to hold, and the two must not share a branch.
-        #
-        # This is the third round to find a defect in these fifteen lines (the
-        # count in round 5, the exit code in round 3, the dispatch here), so the
-        # dispatch is now exhaustive: every verdict has its own arm and anything
-        # unexpected is a FAILURE that leaves the issue in tomorrow's pool. A
-        # refusal to act is always safe here; a wrong write is not.
-        if verdict == "PROMOTE" and not body:
-            failed += 1
-            print(f"  {issue['identifier']}: PROMOTE with an empty body; left in the "
-                  "pool rather than converted to a hold", file=sys.stderr)
-            continue
-        try:
-            if verdict == "PROMOTE":
-                out = do_promote(ls, issue, body, "Triaged unattended.", apply)
-            elif verdict == "HOLD":
-                out = do_hold(ls, issue, body or "no reason given", apply)
-            else:
-                failed += 1
-                print(f"  {issue['identifier']}: unknown verdict {verdict!r}",
-                      file=sys.stderr)
-                continue
-            print(out.line)
-            # .wrote, never "the call returned without raising". A refuse path is
-            # not a success, and counting it as one is what made a fully-skipped
-            # night report exit 0.
-            if out.wrote:
-                wrote += 1
-            else:
-                skipped += 1
-        except Exception as exc:  # noqa: BLE001 - one bad issue must not stop the batch
-            failed += 1
-            print(f"  {issue['identifier']}: FAILED {str(exc)[:160]}", file=sys.stderr)
-    line = (f"triage pass: {wrote} written, {skipped} skipped, {failed} failed; "
-            f"{len(pool) - len(batch)} still queued"
-            + (f" in {project}" if project else " fleet-wide"))
-    print(line)
-    write_run_evidence(line)
-    # TOTAL failure is not a quiet night (codex round 3, major 2). The first cut
-    # returned 0 unconditionally, with a comment justifying it: launchd treats
-    # non-zero as a crash and launchd-health-check.py keys on LastExitStatus. That
-    # reasoning is right for a PARTIAL failure and wrong for a complete one. With
-    # the model unreachable every night, the job would report success forever while
-    # triaging nothing, which is the same invisible-silence defect this whole issue
-    # is about (ASK-1127) and the same one ASK-1123 found in the watchdog.
-    #
-    # So: partial failures stay exit 0 (one bad issue is not an outage), an empty
-    # batch stays exit 0 (nothing to do is success), and a non-empty batch where
-    # NOTHING succeeded exits 1 so the health check sees it.
-    # Only an APPLYING pass can fail to write. A preview writes nothing by
-    # definition, so judging it by write count would make --dry always exit 1.
-    if apply and batch and not wrote:
-        print(f"  NOTHING WAS WRITTEN this pass ({failed} failed, {skipped} skipped "
-              f"of {len(batch)}); reporting a failed run so launchd-health-check "
-              "does not read it as a quiet night", file=sys.stderr)
-        return 1
-    # A MOSTLY-FAILED PASS IS NOT A GOOD NIGHT EITHER (codex round 6, minor).
-    # One write out of eight exited 0, so a job degrading badly looked identical
-    # to a healthy one. A single bad issue still must not page, which is why this
-    # is a majority test and not "any failure".
-    if apply and failed > wrote:
-        print(f"  DEGRADED: {failed} failure(s) against {wrote} write(s); more went "
-              "wrong than right, so this pass is reported as failed",
-              file=sys.stderr)
-        return 1
-    return 0
-
-
 def write_run_evidence(line: str) -> None:
     """The liveness artifact terminal-states.json points at.
 
@@ -620,7 +311,7 @@ def write_run_evidence(line: str) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("verb", choices=["list", "promote", "close", "triage"])
+    ap.add_argument("verb", choices=["list", "promote", "close"])
     ap.add_argument("ids", nargs="*", help="issue identifiers, e.g. ASK-1121")
     ap.add_argument("--project", help="only this project")
     ap.add_argument("--dor", help="Definition of Ready body (promote)")
@@ -628,7 +319,6 @@ def main() -> int:
     ap.add_argument("--why", default="", help="one line of triage rationale")
     ap.add_argument("--reason", help="why this is not worth executing (close)")
     ap.add_argument("--apply", action="store_true", help="write to Linear")
-    ap.add_argument("--limit", type=int, default=5, help="issues per triage pass")
     a = ap.parse_args()
 
     ls = _load("linear_sync", "linear-sync.py")
@@ -637,9 +327,6 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"no Linear key configured ({exc})", file=sys.stderr)
         return 2
-
-    if a.verb == "triage":
-        return run_triage(ls, a.project, a.limit, a.apply)
 
     if a.verb == "list":
         issues = [i for i in fetch_open(ls, a.project)

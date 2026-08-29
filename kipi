@@ -131,17 +131,18 @@ case "${1:-help}" in
       python3 "$KIPI_HOME/q-system/.q-system/scripts/linear-dor-drafter.py" "$@"
     ;;
   alert-triage)
-    # Bounded nightly pass over the fleet-alert bucket. alert-to-linear.py files
+    # Triage the fleet-alert bucket. alert-to-linear.py files
     # tickets that BOTH linear-dor-drafter.py and linear-worker.sh refuse by
     # design (ASK-839); nothing moved them out of that bucket, so 151 sat inert
     # over a red main and a full disk (ASK-1127). Promote-or-hold only: this lane
-    # never closes an issue, because a close is the direction you cannot see
-    # afterwards. Scheduled by com.kipi.linear-alert-triage.plist at 02:30, ahead
-    # of `kipi dor` at 03:00 so a promoted ticket already carries its DoR.
-    # Model pinned for the same reason the dor verb pins it.
+    # never closes an issue silently: a close records its reason first and
+    # refuses if that comment did not land. Verbs: list, promote, close.
+    # The UNATTENDED nightly lane is deliberately not here yet; it is split out
+    # to its own issue after nine review rounds put seven of eight majors inside
+    # it. Model pinned anyway, so a future subcommand cannot inherit the default.
     shift || true
     ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-claude-opus-5}" \
-      python3 "$KIPI_HOME/q-system/.q-system/scripts/linear-alert-triage.py" triage "$@"
+      python3 "$KIPI_HOME/q-system/.q-system/scripts/linear-alert-triage.py" "$@"
     ;;
   health)
     # Daily fleet health. Every detector must DETECT, ACT (file a deduped Linear
