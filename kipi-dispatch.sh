@@ -1129,7 +1129,7 @@ NEXT="$(printf '%s' "$WORK_OUT" | grep -oE '\[dry\] would work ASK-[0-9]+' | gre
 # paying for, and only the Python side can also suppress the founder page (that
 # page is finding 1). Its stderr lands in this log, so the skip is visible here.
 REDRIVE="$REPO/q-system/.q-system/scripts/ci-redrive.py"
-REDRIVE_NEXT=""; REDRIVE_SIG=""; REDRIVE_SHA=""
+REDRIVE_NEXT=""; REDRIVE_SIG=""; REDRIVE_SHA=""; REDRIVE_BRANCH=""; REDRIVE_PR=""
 if [ -f "$REDRIVE" ]; then
   REDRIVE_LINE="$(KIPI_NOTIFY="$NOTIFY" python3 "$REDRIVE" \
                     --repo-dir "$TARGET_PATH" redrive 2>>"$LOG")"
@@ -1138,6 +1138,14 @@ if [ -f "$REDRIVE" ]; then
     REDRIVE_NEXT="$(printf '%s' "$REDRIVE_LINE" | cut -f1)"
     REDRIVE_SIG="$(printf '%s' "$REDRIVE_LINE" | cut -f2)"
     REDRIVE_SHA="$(printf '%s' "$REDRIVE_LINE" | cut -f3)"
+    # The branch the selected PR is ACTUALLY on, as the selector read it, and the
+    # PR number so the refusal can name it. Kept for the same reason REVIEW_BRANCH
+    # is kept below: branch_guard must not ask gh a question it has just been
+    # answered -- see its FROM THE SELECTOR note. Empty when ci-redrive could not
+    # confirm the head lives in this repo, which branch_guard reads as "no earlier
+    # observation" and handles on its fail-open arm.
+    REDRIVE_BRANCH="$(printf '%s' "$REDRIVE_LINE" | cut -f4)"
+    REDRIVE_PR="$(printf '%s' "$REDRIVE_LINE" | cut -f5)"
     say "red-CI redrive: handing $REDRIVE_NEXT back to its agent ahead of the fresh pick${NEXT:+ ($NEXT waits)}"
     NEXT="$REDRIVE_NEXT"
   elif [ "$REDRIVE_RC" = "2" ]; then
@@ -1253,14 +1261,16 @@ fi
 # gate that blocks the harmless case is a gate that gets switched off. `rework`
 # and the fresh pick both become a converge, so both stay guarded.
 #
-# FROM THE SELECTOR, NOT FROM A SECOND QUERY (PR #211 round 1, MAJOR 3). When the
-# reviewer redrive picked this issue it already READ the branch its PR is on, and
-# asking gh again opens a window between the two answers: PR #91 closing in
-# between makes the second answer "no open PR", the fail-open arm fires, and the
-# work lands on precisely the branch this guard exists to reject. The carried
-# value is also the more correct question -- it describes the PR whose one
-# attempt is about to be spent, where a fresh query describes the issue's board
-# now. The fresh pick has no earlier observation, so it still asks.
+# FROM THE SELECTOR, NOT FROM A SECOND QUERY (PR #211 round 1, MAJOR 3; extended
+# to the red-CI lane in round 3, MAJOR 2). When EITHER redrive picked this issue
+# it already READ the branch its PR is on, and asking gh again opens a window
+# between the two answers: PR #91 closing in between makes the second answer "no
+# open PR", the fail-open arm fires, and the work lands on precisely the branch
+# this guard exists to reject. The carried value is also the more correct
+# question -- it describes the PR whose one attempt is about to be spent, where a
+# fresh query describes the issue's board now. The fresh pick has no earlier
+# observation, so it still asks; so does a redrive whose selector could not
+# confirm the head lives in this repo, which arrives as an empty carried branch.
 # A REFUSAL NOBODY IS TOLD ABOUT IS A SILENT PARK (PR #211 round 2, MAJOR 2).
 # Every arm below used to end in `say`, which appends to dispatch.log and nothing
 # else. From outside, the guard doing its job was indistinguishable from the loop
@@ -1291,7 +1301,23 @@ branch_guard() {
   expect="sana/$(printf '%s' "$NEXT" | tr 'A-Z' 'a-z')"
   key="branch-guard-$NEXT"
   msg=""
-  if [ -n "$REVIEW_ACTION" ] && [ "$NEXT" = "$REVIEW_NEXT" ]; then
+  if [ -n "$REDRIVE_NEXT" ] && [ "$NEXT" = "$REDRIVE_NEXT" ]; then
+    # THE RED-CI LANE READS ITS OWN OBSERVATION TOO (PR #211 round 3, MAJOR 2).
+    # Round 2 carried the branch for the reviewer redrive only. The red-CI
+    # selector read the branch and dropped it, so this lane fell through to the
+    # elif below and asked gh a SECOND time -- and that second answer is the
+    # fail-open one: if the PR closed between the two calls, `branch-for` says
+    # "no open PR", rc 1 runs the dispatch, and the work lands on the branch this
+    # guard exists to reject. Fail-open in the guard whose thesis is "refuse a
+    # dispatch that would land on a branch no open PR is on" is the PR
+    # contradicting itself.
+    #
+    # No `re-review` carve-out here: every red-CI hand-back becomes a converge,
+    # so converge's naming rule always applies to it.
+    if [ -n "$REDRIVE_BRANCH" ] && [ "$REDRIVE_BRANCH" != "$expect" ]; then
+      msg="skip $NEXT: its open PR #$REDRIVE_PR is on $REDRIVE_BRANCH, but converge would commit onto $expect -- work there reaches no PR and no reviewer. Rename the branch to $expect, or reopen the PR on it."
+    fi
+  elif [ -n "$REVIEW_ACTION" ] && [ "$NEXT" = "$REVIEW_NEXT" ]; then
     if [ "$REVIEW_ACTION" != "re-review" ] && [ -n "$REVIEW_BRANCH" ] \
        && [ "$REVIEW_BRANCH" != "$expect" ]; then
       msg="skip $NEXT: its open PR #$REVIEW_PR is on $REVIEW_BRANCH, but converge would commit onto $expect -- work there reaches no PR and no reviewer. Rename the branch to $expect, or reopen the PR on it."

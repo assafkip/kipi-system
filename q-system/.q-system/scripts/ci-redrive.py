@@ -158,9 +158,14 @@ its agent right now. The dispatching is the dispatcher's, and stays under the
 dispatcher's caps.
 
     scan            -> JSON of red agent PRs (read-only, no ledger write, no page)
-    redrive         -> read-only. prints `<issue>\t<signature>\t<head_sha>`,
+    redrive         -> read-only. prints
+                       `<issue>\t<signature>\t<head_sha>\t<branch>\t<pr>`,
                        exit 0. Nothing to offer -> exit 1. gh could not answer
                        -> exit 2. Escalates any candidate whose attempt is spent.
+                       <branch> is the head this selector OBSERVED, empty when
+                       the board did not confirm the head lives in this repo;
+                       the dispatcher's branch_guard reads it instead of asking
+                       gh a second time.
     mark-dispatched -> the atomic claim. exit 0 = dispatch it, exit 1 = do not.
 
 THE PROBE'S rc IS PART OF ITS ANSWER. `gh pr list` failing is not "no red PRs":
@@ -221,6 +226,32 @@ FAILED_STATES = {"FAILURE", "ERROR"}
 # review-redrive.branch_for (PR #211 round 1, MAJOR 2).
 PR_FIELDS = ("number,headRefName,headRefOid,url,title,statusCheckRollup,"
              "isDraft,isCrossRepository")
+
+# Where a PR's head lives, as the BOARD answered it. Three values, not a boolean,
+# because "somebody else's repo" and "the board did not say" are different facts
+# and the readers pay opposite costs for confusing them. THIS is the authority --
+# review-redrive.py aliases these names rather than keeping a second copy, because
+# the field is requested here and two hand-maintained copies of one trust rule is
+# how a surface ends up owned by neither (PR #211 round 3, MAJOR 1).
+SAME_REPO = "same-repo"
+FORK = "fork"
+UNSTATED = "unstated"
+
+
+def head_provenance(pr_obj):
+    """SAME_REPO / FORK / UNSTATED for one PR's head.
+
+    ABSENCE IS NOT CONFIRMATION. `isCrossRepository` is requested in PR_FIELDS,
+    so a PR arriving without it is a board that did not answer the question, not
+    a board answering same-repo. A caller that cannot tell those apart has to
+    pick one cost for both, and the two callers here want opposite ones.
+    """
+    flagged = pr_obj.get("isCrossRepository")
+    if flagged is False:
+        return SAME_REPO
+    if flagged is None:
+        return UNSTATED
+    return FORK
 
 
 class GhUnavailable(Exception):
@@ -373,6 +404,38 @@ def signature(names):
 def candidates(repo_dir):
     out = []
     for pr in list_prs(repo_dir):
+        # A FORK IS NEVER A CANDIDATE (PR #211 round 3, MAJOR 1). This repo is
+        # PUBLIC. `attribute` below reads exactly two facts -- the head branch
+        # name and the PR title -- and on a fork the person who opened the PR
+        # chose both. So anyone could open `sana/ask-358` titled "... (ASK-358)"
+        # against this repo, let its CI go red, and have that PR selected as the
+        # machine's work for a real Linear issue: the agent gets handed back an
+        # issue on the strength of a stranger's branch, and the once-per-PR
+        # attempt for the REAL PR is spent on it.
+        #
+        # The field was requested in PR_FIELDS and then never read, which is the
+        # worst of the three states: the query looks defended and answers nothing.
+        # It is not a null check. `isCrossRepository` is the only field in the
+        # rollup that GitHub asserts rather than the author, and it is the whole
+        # boundary between "an agent pushed this branch" (which needs push
+        # access) and "a stranger named their fork branch that" (which needs a
+        # GitHub account).
+        #
+        # UNSTATED IS KEPT, BUT LOSES ITS BRANCH -- the same asymmetry
+        # review-redrive.candidates() takes, from the same predicate. Dropping
+        # every unconfirmed head would let one board that stops returning the
+        # field switch the whole red-CI lane off silently, which is the sibling
+        # defect class. So a CONFIRMED fork is dropped, and an unconfirmed head
+        # is still worked but may not ROUTE the work: field 4 of the offer goes
+        # out empty and branch_guard falls back to the naming rule, which is the
+        # legitimate branch, never a head we could not vouch for.
+        provenance = head_provenance(pr)
+        if provenance == FORK:
+            sys.stderr.write(
+                "ci-redrive: PR #%s head %s lives in a fork -- not a candidate, "
+                "its branch name and title are the author's to choose\n"
+                % (pr.get("number"), pr.get("headRefName")))
+            continue
         attributed = attribute(pr)
         if attributed is None:
             continue                       # not an agent PR, or not attributable
@@ -386,7 +449,7 @@ def candidates(repo_dir):
             "issue_source": source,
             "pr": pr.get("number"),
             "url": pr.get("url"),
-            "branch": pr.get("headRefName"),
+            "branch": pr.get("headRefName") if provenance == SAME_REPO else None,
             "head_sha": pr.get("headRefOid") or "",
             "failing_checks": failing,
             "signature": signature(failing),
@@ -644,8 +707,21 @@ def cmd_redrive(cands):
         "ci-redrive: %s PR #%s red on %s -- offering it back to %s\n"
         % (chosen["issue"], chosen["pr"], ", ".join(chosen["failing_checks"]),
            chosen["agent"]))
-    print("%s\t%s\t%s" % (chosen["issue"], chosen["signature"],
-                          chosen["head_sha"]))
+    # FIELDS 4 AND 5 ARE THE OBSERVATION, NOT A RE-QUERY (PR #211 round 3,
+    # MAJOR 2). The selector has just READ the branch the chosen PR is on; the
+    # dispatcher's branch_guard used to throw that away and ask gh the same
+    # question again, which opens a window between the two answers. If the PR
+    # closes in between, the second answer is "no open PR", the guard takes its
+    # fail-open arm, and the work lands on exactly the branch the guard exists
+    # to reject. A guard whose whole thesis is "refuse a dispatch that would land
+    # on a branch no open PR is on" must not itself fail open on a stale read.
+    #
+    # EMPTY IS A REAL VALUE HERE. `candidates` leaves the branch empty for an
+    # UNSTATED head, and the dispatcher reads an empty field 4 as "no earlier
+    # observation" and takes the fail-open arm on purpose -- see candidates().
+    print("%s\t%s\t%s\t%s\t%s" % (chosen["issue"], chosen["signature"],
+                                    chosen["head_sha"], chosen["branch"] or "",
+                                    chosen["pr"]))
     return 0
 
 

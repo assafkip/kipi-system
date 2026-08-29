@@ -151,12 +151,15 @@ REWORK_VERDICTS = {"REQUEST CHANGES", "BLOCK"}
 REWORK = "rework"
 REREVIEW = "re-review"
 
-# Where a PR's head lives, as the board answered it. Three values because
-# "somebody else's repo" and "the board did not say" are different facts and the
-# two readers below pay different costs for confusing them. See head_provenance.
-SAME_REPO = "same-repo"
-FORK = "fork"
-UNSTATED = "unstated"
+# Where a PR's head lives, as the board answered it. ALIASED, NOT REDEFINED
+# (PR #211 round 3, MAJOR 1). Round 2 put this predicate here, and the finding
+# that followed was ci-redrive.candidates() -- the OTHER reader of the same two
+# attacker-chosen facts -- having no such check at all. The field is requested in
+# ci-redrive's PR_FIELDS, so the answer to "whose head is this" belongs in the
+# module that asks the question, and every reader names that one copy.
+SAME_REPO = CI.SAME_REPO
+FORK = CI.FORK
+UNSTATED = CI.UNSTATED
 
 
 def record_path(records_dir, pr):
@@ -338,28 +341,12 @@ def classify(record, head_sha):
     return None, "verdict %s is not a refusal" % verdict
 
 
-def head_provenance(pr_obj):
-    """SAME_REPO / FORK / UNSTATED for one PR's head (PR #211 round 2, MAJOR 1).
-
-    THE ONE PLACE THE QUESTION IS ANSWERED. Round 1 answered it inline in
-    `branch_for` and nowhere else, and the gap became this finding: `candidates()`
-    reads the very same two attacker-chosen facts (`CI.attribute` over the head
-    branch name and the PR title) and had no such test. Two copies of one trust
-    rule is how a surface ends up owned by neither, so there is one copy and both
-    callers name it.
-
-    THREE VALUES, NOT A BOOLEAN, because the callers must be able to tell "this
-    head is somebody else's" from "the board did not say". `isCrossRepository` is
-    requested in PR_FIELDS, so its absence is an unanswered question rather than
-    an answer of same-repo -- and the two callers pay opposite costs for that
-    distinction, which a boolean would force them to share.
-    """
-    flagged = pr_obj.get("isCrossRepository")
-    if flagged is False:
-        return SAME_REPO
-    if flagged is None:
-        return UNSTATED
-    return FORK
+# THE ONE PLACE THE QUESTION IS ANSWERED, and since round 3 that place is
+# ci-redrive.py. Round 2 answered it here and ci-redrive.candidates() -- reading
+# the very same two attacker-chosen facts -- still had no check, which is exactly
+# the "two copies of one trust rule, owned by neither" shape this name was
+# introduced to end. Bound here so both callers below read as they did.
+head_provenance = CI.head_provenance
 
 
 def candidates(repo_dir, records_dir):
