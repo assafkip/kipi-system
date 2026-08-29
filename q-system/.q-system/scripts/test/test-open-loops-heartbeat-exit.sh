@@ -285,6 +285,98 @@ else
 fi
 rm -rf "$TMP4"
 
+# THE PRIVATE COPY OF AN AGENT RUN DOES NOT OUTLIVE THE RUN (PR #198 review
+# round 4, minor). work_instance captures each agent's output to a temp file so
+# the environmental classifier reads THIS run rather than a shared log. The
+# cleanup lived inside the FAILURE branch only, so every SUCCESSFUL agent run
+# left that file behind -- one per agent-waking instance, twice a day. The file
+# is the agent's verbatim output, so this is disclosure, not untidiness.
+#
+# THE ASSERTION IS ABOUT CONTENT, NOT ABOUT A COUNT. Counting files in the system
+# temp dir is a shared-resource race with every other process on the machine.
+# Instead the shimmed agent emits a marker unique to this run, and the check is:
+# does any file created during the sweep still carry it. That is the disclosure
+# claim itself, and only the file actually being gone satisfies it.
+#
+# Note for anyone porting this: bare `mktemp` IGNORES $TMPDIR on macOS (measured
+# -- it uses the per-user /var/folders dir), so a fixture that sets TMPDIR and
+# counts files there reports a clean run against a leaking script. That was the
+# first cut of this case and it passed against the unfixed code.
+leak_case() {  # leak_case <script-path> <case-name> <expect: clean|leaks>
+  local sut="$1" case_name="$2" expect="$3"
+  local tmp skel inst marker systmp found
+  tmp="$(mktemp -d)"
+  skel="$tmp/skel"; inst="$tmp/inst"
+  mkdir -p "$skel/q-system/output" "$skel/q-system/.q-system/scripts" \
+           "$inst/q-system/.q-system/scripts" "$tmp/bin"
+  cp "$sut"   "$skel/q-system/.q-system/scripts/open-loops-heartbeat.sh"
+  cp "$AUDIT" "$skel/q-system/.q-system/scripts/run-step-audit.py"
+  printf '#!/bin/bash\nexit 0\n' > "$skel/q-system/.q-system/scripts/slack-notify.sh"
+  printf 'print("- [ ] fixture loop [needs you] -> do the thing")\n' \
+    > "$inst/q-system/.q-system/scripts/open-loops.py"
+  printf '{"instances":[{"name":"fake","path":"%s"}]}\n' "$inst" \
+    > "$skel/instance-registry.json"
+
+  # Unique per invocation so two cases in one run cannot read each other's file.
+  marker="HEARTBEAT-PRIVATE-AGENT-OUTPUT-$$-${case_name}-$(date +%s%N 2>/dev/null || date +%s)"
+  # SUCCEEDS (exit 0). The leak was on the success path; a failing agent shim
+  # would take the branch that always cleaned up and this case would pass
+  # against the unfixed script.
+  printf '#!/bin/bash\necho "%s"\nexit 0\n' "$marker" > "$tmp/bin/claude"
+  chmod +x "$tmp/bin/claude"
+
+  systmp="$(dirname "$(mktemp -u)")"
+  ls -A "$systmp" 2>/dev/null | sort > "$tmp/before.txt"
+  PATH="$tmp/bin:$PATH" KIPI_REPO="$skel" \
+    bash "$skel/q-system/.q-system/scripts/open-loops-heartbeat.sh" >/dev/null 2>&1
+  ls -A "$systmp" 2>/dev/null | sort > "$tmp/after.txt"
+
+  found=""
+  while IFS= read -r n; do
+    [ -f "$systmp/$n" ] || continue
+    if grep -q "$marker" "$systmp/$n" 2>/dev/null; then
+      found="$systmp/$n"
+      rm -f "$systmp/$n" 2>/dev/null || true   # the test does not leak either
+    fi
+  done < <(comm -13 "$tmp/before.txt" "$tmp/after.txt")
+
+  if [ "$expect" = "clean" ] && [ -z "$found" ]; then
+    echo "PASS  $case_name"; PASS=$((PASS + 1))
+  elif [ "$expect" = "leaks" ] && [ -n "$found" ]; then
+    echo "PASS  $case_name (detector fired on $found)"; PASS=$((PASS + 1))
+  elif [ "$expect" = "clean" ]; then
+    echo "FAIL  $case_name: a successful sweep left the agent's output at $found"
+    FAIL=$((FAIL + 1))
+  else
+    echo "FAIL  $case_name: the leak detector found nothing against a script with"
+    echo "      the cleanup deleted, so it cannot fail and proves nothing"
+    FAIL=$((FAIL + 1))
+  fi
+  rm -rf "$tmp"
+}
+
+leak_case "$SUT" "a successful agent run leaves no copy of its output behind" clean
+
+# THE CONTROL, BUILT FROM THE REAL SCRIPT. A leak check that has never seen a
+# leak is decoration. This mutates the shipped file -- deleting the one cleanup
+# call and its EXIT-trap backstop -- and requires the detector to FIRE. If a
+# future refactor renames those lines, the substitutions match nothing, and the
+# guard below fails the suite rather than letting the control pass vacuously
+# against an unmutated copy.
+MUT="$(mktemp -d)/open-loops-heartbeat-nocleanup.sh"
+sed -e 's/^  _drop_agent_tmp$/  : # cleanup deleted by the leak-detector control/' \
+    -e 's/^trap _drop_agent_tmp EXIT$/: # trap deleted by the leak-detector control/' \
+    "$SUT" > "$MUT"
+if [ "$(grep -c 'deleted by the leak-detector control' "$MUT")" = "2" ]; then
+  leak_case "$MUT" "the leak detector goes red when the cleanup is removed" leaks
+else
+  echo "FAIL  the leak-detector control did not apply: expected 2 substitutions,"
+  echo "      got $(grep -c 'deleted by the leak-detector control' "$MUT"). The"
+  echo "      cleanup lines were renamed, so the control tested unmutated code."
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$(dirname "$MUT")"
+
 echo "---"
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

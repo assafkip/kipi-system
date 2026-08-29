@@ -96,6 +96,21 @@ print(json.dumps({"id": sys.argv[1], "status": sys.argv[2], "note": sys.argv[3] 
 ' "$1" "$2" "${3:-}" >> "$RUNLOG_TMP"
 }
 
+# --- the private copy of an agent run, and its one deletion point -------------
+# work_instance captures each agent's output to a temp file so the environmental
+# classifier reads THIS run and not a shared log (see the comment at the capture
+# site). The file is that agent's verbatim output, so it must not outlive the
+# decision it exists for. ONE function deletes it, called on the normal path, and
+# an EXIT trap catches the ways a run can leave without reaching that call --
+# `exit 0` from a later guard, or the sweep dying between mktemp and the read.
+AGENT_TMP=""
+_drop_agent_tmp() {
+  [ -n "${AGENT_TMP:-}" ] || return 0
+  rm -f "$AGENT_TMP" 2>/dev/null || true
+  AGENT_TMP=""
+}
+trap _drop_agent_tmp EXIT
+
 command -v claude >/dev/null 2>&1 || { echo "$(TS) heartbeat: no claude CLI -> skip" >> "$LOG"; exit 0; }
 # Founder decision 2026-08-01: pin the per-instance agents' model; unpinned they
 # ride the interactive default (Fable on 2026-08-01) and burn quota unattended.
@@ -164,8 +179,39 @@ work_instance() {
   # halt. `tee` keeps the live streaming the log is there for while giving the
   # classifier a file only this invocation writes. pipefail is already set above,
   # so the `if` still tests claude's status and not tee's.
-  local agent_tmp; agent_tmp="$(mktemp)"
-  if ( cd "$path" && KIPI_INSTANCE_NAME="$name" $TO claude -p "$prompt" </dev/null 2>&1 | tee -a "$LOG" > "$agent_tmp" ); then
+  #
+  # DELETED ON BOTH BRANCHES AND ON THE WAY OUT (PR #198 review round 4, minor).
+  # The cleanup used to live inside the FAILURE branch only, so every successful
+  # agent run left this file behind: one per agent-waking instance, twice a day,
+  # indefinitely. That is a disclosure issue and not untidiness. The file holds a
+  # verbatim copy of that instance's agent output, which is precisely why the
+  # classifier needs it, and it sits in the shared per-user temp dir until the OS
+  # reaps it. Measured against the pre-fix script with a marker string in the
+  # agent's output: a CLEAN sweep left tmp.XXXXXXXX in the system temp dir still
+  # containing the marker.
+  #
+  # AGENT_TMP is a global so the EXIT trap at the bottom of this function's
+  # section can reach it; work_instance runs sequentially, so at most one is ever
+  # live. Residual, stated rather than papered over: SIGKILL runs no trap. The
+  # trap is EXIT only, because trapping INT/TERM would make the sweep RESUME
+  # after a signal instead of dying, which is a behaviour change this finding did
+  # not ask for.
+  AGENT_TMP="$(mktemp)" || {
+    echo "$(TS) heartbeat[$name]: mktemp failed -- cannot classify this run" >> "$LOG"
+    log_step "$name" failed "mktemp failed"
+    SWEEP_FAILURES=$((SWEEP_FAILURES + 1))
+    return 0
+  }
+  local agent_tmp="$AGENT_TMP"
+  local agent_rc=0
+  ( cd "$path" && KIPI_INSTANCE_NAME="$name" $TO claude -p "$prompt" </dev/null 2>&1 | tee -a "$LOG" > "$agent_tmp" ) || agent_rc=$?
+  # Read it out, then delete it, BEFORE either branch decides anything. The
+  # classifier below reads $agent_out and never the file, so there is exactly one
+  # place the file has to go away and no future branch can be added past it --
+  # which is how the original leak happened.
+  local agent_out; agent_out="$(cat "$agent_tmp" 2>/dev/null)"
+  _drop_agent_tmp
+  if [ "$agent_rc" -eq 0 ]; then
     log_step "$name" completed "agent ran ($count loops)"
   else
     # WHOSE FAILURE IS IT (ASK-869). An exhausted account is not a property of
@@ -179,8 +225,6 @@ work_instance() {
     # `.claude/rules/self-healing-retry.md` step 5 already states the rule --
     # environmental failures stop on attempt 1 and surface immediately, because
     # retrying cannot fix an environment. The heartbeat simply never applied it.
-    local agent_out; agent_out="$(cat "$agent_tmp" 2>/dev/null)"
-    rm -f "$agent_tmp" 2>/dev/null || true
     if is_environmental "$agent_out"; then
       ENV_HALT="$(environmental_reason "$agent_out")"
       echo "$(TS) heartbeat[$name]: environmental failure ($ENV_HALT) -- halting the sweep" >> "$LOG"
