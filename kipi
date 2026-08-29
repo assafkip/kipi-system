@@ -19,6 +19,8 @@ usage() {
   echo "  kipi migrate <path> --dry-run  Preview migration without changes"
   echo "  kipi cluster add <path> <name> <role>  Plug an instance into the KTLYST cluster"
   echo "  kipi cluster sync    Re-run all bridge writers (push latest state to all instances)"
+  echo "  kipi install-jobs    Install every committed launchd job on this machine"
+  echo "                       (run once per machine; without it nothing is scheduled)"
   echo "  kipi list            Show all registered projects"
   echo ""
   echo "  kipi linear issue \"<title>\"   Open a Linear issue for work you are ABOUT to start"
@@ -32,6 +34,14 @@ usage() {
   echo "  kipi linear release <ASK-n> --agent <name> --session <id> Drop the claim (when the PR opens)"
   echo "  kipi linear claims            Who holds this working tree"
   echo "  kipi linear progress <ASK-n> \"<note>\" [--evidence \"...\"]  Post progress onto an issue"
+  echo "  kipi judgment assemble --prd <id> --finding <id> [--output <f>]  Freeze decision-time context"
+  echo "  kipi judgment capture ...     Validate + append one triage episode receipt"
+  echo "  kipi judgment judge --prd <id> --finding <id> --output <f>  Run the blind LLM judge (tools OFF)"
+  echo "  kipi judgment verify          Re-walk the receipt chain + cross-check findings (--no-cross-check to skip)"
+  echo "  kipi judgment evaluate        Score prospective judge-vs-founder cases + release gates"
+  echo "  kipi judgment reanchor        Re-cover a legitimate unanchored tail after an interrupted write"
+  echo "  kipi judgment sample-check --basis <sha256>  Reproduce the 5% sampling verdict"
+  echo "  kipi judgment policy-candidates [--min-cases N]  Detect repeated override patterns (proposals only)"
   echo "  kipi review <PR#> [--post]  Adversarial PR review (Netflix staff, fresh eyes, repro-or-drop)"
   echo "  kipi jobs [--apply]  File/refresh one migration issue per scheduled job"
   echo "  kipi work [--apply]  Autonomous worker: take a ready issue, branch, PR (never merges/closes)"
@@ -99,6 +109,17 @@ case "${1:-help}" in
     shift || true
     bash "$KIPI_HOME/q-system/.q-system/scripts/linear-worker.sh" "$@"
     ;;
+  install-jobs)
+    # Install every committed launchd template so this machine actually runs the
+    # scheduled jobs. Added 2026-08-14 (ASK-729): six com.kipi.*.plist templates were
+    # committed and NOTHING invoked the installer, so a fresh checkout ran none of
+    # them and each job existed only where somebody had typed the command by hand.
+    # The first fix wrote `install-plist.sh --all` and stopped there, which moved the
+    # gap up a level rather than closing it -- a caller nobody calls is the same
+    # defect wearing a different name. This is the call site.
+    shift || true
+    bash "$KIPI_HOME/q-system/.q-system/scripts/install-plist.sh" --all "$@"
+    ;;
   dor)
     # Bounded nightly DoR drafter. The autonomous worker only picks up issues that
     # satisfy Definition of Ready, so this is the gate on autonomy, not paperwork.
@@ -114,6 +135,28 @@ case "${1:-help}" in
     # Scheduled by q-system/.q-system/scripts/com.kipi.fleet-health.plist at 08:15.
     shift || true
     python3 "$KIPI_HOME/q-system/.q-system/scripts/fleet-health-daily.py" "$@"
+    ;;
+  judgment)
+    # Judgment Compiler (PRD prd-judgment-compiler-2026-08-04, ASK-363).
+    # Runs against the CALLER's repo: judgment_compiler.py discovers the repo
+    # root by walking up from cwd, so each instance reads its own .prd-os
+    # ledgers, not the skeleton's.
+    shift || true
+    JUDGMENT="$KIPI_HOME/plugins/prd-os/scripts/judgment_compiler.py"
+    sub="${1:-}"
+    shift || true
+    case "$sub" in
+      assemble|capture|judge|verify|evaluate|reanchor|sample-check|policy-candidates)
+        python3 "$JUDGMENT" "$sub" "$@"
+        ;;
+      selftest)
+        python3 "$JUDGMENT" --selftest
+        ;;
+      *)
+        echo "usage: kipi judgment <assemble|capture|judge|verify|evaluate|reanchor|sample-check|policy-candidates|selftest>" >&2
+        exit 1
+        ;;
+    esac
     ;;
   linear)
     # Issue-first fast path. The commit-msg gate (linear-issue-ref-check.py)
@@ -232,6 +275,22 @@ PY
       cd "$KIPI_HOME"
       python3 validate-separation.py "${1:-5}"
     fi
+    # ADVISORY, and deliberately after the gate: a test named for a script it
+    # never runs is usually re-implementing it, which proves the algorithm and
+    # can never see the wiring or the interpreter (ASK-607 shipped green that
+    # way). Invoking the target is necessary but not sufficient -- a test can run
+    # the real script and still assert nothing that could fail -- so this reports
+    # and does not block. `|| true` keeps a finding from failing `kipi check`.
+    python3 "$KIPI_HOME/reimplementing-test-lint.py" || true
+    # ADVISORY, and PINNED at the measured backlog (ASK-627, sp-ebe6a2b5). The
+    # notifier has a real exit contract and 44 call sites still ignore it, so a
+    # caller can record a delivery that never happened. Pinning the count means
+    # the number can only shrink: a new caller that ignores the status moves it
+    # up and this line says so. Lower the pin in the same commit that fixes a
+    # site. `|| true` keeps it from failing `kipi check` while the backlog runs
+    # down.
+    python3 "$KIPI_HOME/q-system/.q-system/scripts/notify-callsite-audit.py" \
+      --expect-findings 44 --quiet || true
     ;;
   migrate)
     shift

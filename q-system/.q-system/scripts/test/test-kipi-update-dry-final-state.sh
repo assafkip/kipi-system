@@ -107,6 +107,10 @@ mkdir -p \
 cp "$ROOT/kipi-update.sh" "$SKELETON/kipi-update.sh"
 cp "$ROOT/kipi-update-preserve-scan.py" \
   "$SKELETON/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" \
+  "$SKELETON/kipi-update-deletion-guard.py"
+cp "$ROOT/kipi-update-deletion-guard.py" \
+  "$SKELETON/kipi-update-deletion-guard.py"
 cp "$ROOT/kipi-settings-merge.py" "$SKELETON/kipi-settings-merge.py"
 # A valid skeleton ships the propagation leak gate: kipi-update.sh is
 # fail-closed on it, so a fixture without it aborts before any sync.
@@ -150,7 +154,12 @@ printf '{"permissions":{"allow":["Read"]},"hooks":{}}\n' \
 (
   cd "$SKELETON"
   git_test init -q
-  git_test add q-system
+  # .claude/ and plugins/ too, not q-system/ alone. The real skeleton tracks
+  # all three, and the source-provenance preflight refuses to rsync a config
+  # scope that is not committed -- correctly, since that scope reaches every
+  # instance straight from the working tree. Committing only q-system/ made
+  # this fixture a repo the updater will not run on. (2026-08-14)
+  git_test add q-system .claude plugins settings-template.json
   git_test commit -qm skeleton
 )
 printf \

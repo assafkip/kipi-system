@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-if [ ! -s "/Users/assafkipnis/projects/kipi-system/.pr25rev/r1-77954/prompt.txt" ]; then printf '%s\n' "$@" > "/Users/assafkipnis/projects/kipi-system/.pr25rev/r1-77954/prompt.txt"; fi
-exit 0

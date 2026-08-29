@@ -25,6 +25,10 @@ make_fixture() {
   cp "$UPDATER" "$skeleton/kipi-update.sh"
   cp "$ROOT/kipi-update-preserve-scan.py" \
     "$skeleton/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" \
+  "$skeleton/kipi-update-deletion-guard.py"
+cp "$ROOT/kipi-update-deletion-guard.py" \
+  "$skeleton/kipi-update-deletion-guard.py"
   cp "$ROOT/kipi-settings-merge.py" "$skeleton/kipi-settings-merge.py"
   cp "$ROOT/settings-template.json" "$skeleton/settings-template.json"
   # A valid skeleton ships the propagation leak gate: kipi-update.sh is
@@ -228,10 +232,31 @@ git -C "$CONFIG_BLOCKED/instance" log -1 --format=%s |
 [ ! -e "$CONFIG_BLOCKED/capability.log" ] ||
   fail "capability phase ran after config hook rejection"
 
+# The dirt below sits on q-system/tracked.md -- a file the sync WRITES -- and not
+# on the instance-root unrelated.md it used to use. That is a fixture fix, not a
+# relaxed assertion: every check in this block is unchanged and now actually
+# exercises the guard instead of an empty set.
+#
+# WHY (ASK-609, 548919d4, 2026-08-10). The dirty-tree guard used to be repo-wide.
+# It was deliberately scoped that day to the paths the sync can reach, after
+# measuring 182 dirty files across four blocked instances with ZERO of them in a
+# path the sync writes -- four instances locked out of every fix, including the
+# one written to unblock them, by a guard protecting nothing. That commit shipped
+# its own two-direction test (test-kipi-update-dirty-guard-scope.sh) and did NOT
+# update this file, so from 2026-08-10 these five assertions asserted the
+# pre-ASK-609 repo-wide contract against post-ASK-609 code. Instrumented at
+# 11f0eb8a: the guard never fired, no refusal was printed, FAIL stayed 0 and the
+# run exited 0 -- so there was never a swallowed exit code here to fix. That is
+# what kept main's Skeleton Validation red for four days.
+#
+# Two tests encoding opposite contracts is a decision, not a bug, and it is made
+# here in favour of ASK-609: root-level dirt genuinely cannot be clobbered
+# (staging is pathspec-scoped throughout), so blocking on it protected an empty
+# set at the cost of stranding real instances.
 DIRTY="$WORK/dirty"
 make_fixture "$DIRTY"
 DIRTY_HEAD="$(git -C "$DIRTY/instance" rev-parse HEAD)"
-printf 'founder work in progress\n' > "$DIRTY/instance/unrelated.md"
+printf 'founder work in progress\n' > "$DIRTY/instance/q-system/tracked.md"
 set +e
 HOOK_LOG="$DIRTY/hook.log" CAPABILITY_LOG="$DIRTY/capability.log" \
   bash "$DIRTY/skeleton/kipi-update.sh" >"$DIRTY/output.log" 2>&1
@@ -240,7 +265,7 @@ set -e
 [ "$DIRTY_RC" -ne 0 ] || fail "dirty instance returned success"
 [ "$(git -C "$DIRTY/instance" rev-parse HEAD)" = "$DIRTY_HEAD" ] ||
   fail "updater committed unrelated work in progress"
-grep -q 'founder work in progress' "$DIRTY/instance/unrelated.md" ||
+grep -q 'founder work in progress' "$DIRTY/instance/q-system/tracked.md" ||
   fail "updater changed unrelated work in progress"
 [ ! -e "$DIRTY/hook.log" ] ||
   fail "updater reached a commit hook after dirty-tree refusal"
@@ -250,8 +275,8 @@ grep -q 'dirty working tree' "$DIRTY/output.log" ||
 STAGED="$WORK/staged"
 make_fixture "$STAGED"
 STAGED_HEAD="$(git -C "$STAGED/instance" rev-parse HEAD)"
-printf 'staged founder work\n' > "$STAGED/instance/unrelated.md"
-git -C "$STAGED/instance" add unrelated.md
+printf 'staged founder work\n' > "$STAGED/instance/q-system/tracked.md"
+git -C "$STAGED/instance" add q-system/tracked.md
 set +e
 HOOK_LOG="$STAGED/hook.log" CAPABILITY_LOG="$STAGED/capability.log" \
   bash "$STAGED/skeleton/kipi-update.sh" >"$STAGED/output.log" 2>&1

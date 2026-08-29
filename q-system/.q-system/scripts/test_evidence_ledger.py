@@ -10,6 +10,7 @@ Run: python3 test_evidence_ledger.py
 """
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -20,9 +21,16 @@ import evidence_ledger as EL  # noqa: E402
 
 
 def _root() -> Path:
-    """A temp instance root shaped like a real one: <root>/q-thing/canonical/."""
+    """A temp instance root shaped like a real one: <root>/q-thing/canonical/.
+
+    It is REGISTERED. Before the fail-closed resolver these cases used a bare temp
+    dir and passed only because instance_root() guessed for unregistered repos --
+    the exact hole Codex flagged on PR #240. Registering here makes the fixture
+    match a real instance instead of relying on the guess that was removed.
+    """
     tmp = Path(tempfile.mkdtemp())
     (tmp / "q-thing" / "canonical").mkdir(parents=True)
+    _reg(tmp, [{"name": "tmp-instance", "path": str(tmp), "instance_q_dir": "q-thing"}])
     return tmp
 
 
@@ -116,18 +124,209 @@ def case_ledger_path_prefers_instance_over_skeleton() -> bool:
     """An instance has both q-system/ and q-<name>/. Content lives in q-<name>/."""
     tmp = Path(tempfile.mkdtemp())
     (tmp / "q-system" / "canonical").mkdir(parents=True)
-    (tmp / "q-prodigy" / "canonical").mkdir(parents=True)
-    return EL.ledger_path(tmp).parent.parent.name == "q-prodigy"
+    (tmp / "q-example" / "canonical").mkdir(parents=True)
+    _reg(tmp, [{"name": "example-instance", "path": str(tmp), "instance_q_dir": "q-example"}])
+    return EL.ledger_path(tmp).parent.parent.name == "q-example"
 
 
 def case_ledger_path_falls_back_to_skeleton() -> bool:
     """The skeleton itself has only q-system/. Resolve there, do not crash."""
     tmp = Path(tempfile.mkdtemp())
     (tmp / "q-system" / "canonical").mkdir(parents=True)
+    # Registered AS THE SKELETON, which is what this case is about. _registry_q_dir
+    # maps the skeleton row to "q-system", so this asserts the real skeleton path
+    # rather than the unregistered-repo guess that no longer exists.
+    _reg(tmp, [], skeleton=tmp)
     return EL.ledger_path(tmp).parent.parent.name == "q-system"
 
 
+# --------------------------------------------------------- fail-closed resolver
+# Pairs with prd-canonical-read-path-repair-2026-08-22 / crpr-one-canonical-resolver.
+# The old instance_root() was `named[0] if named else repo/"q-system"` -- a glob with
+# no registry and no cross-check, structurally unable to be wrong out loud. Each case
+# below is one measured way it answered confidently and wrongly.
+#
+# Every case pins KIPI_EVIDENCE_REGISTRY at its own temp registry. Without that the
+# resolver falls back to the REAL fleet registry and the case stops being hermetic.
+
+def _reg(tmp: Path, entries: list[dict], skeleton: Path | None = None) -> Path:
+    import json
+    p = tmp / "registry.json"
+    doc: dict = {"instances": entries}
+    if skeleton is not None:
+        doc["skeleton"] = {"path": str(skeleton)}
+    p.write_text(json.dumps(doc), encoding="utf-8")
+    os.environ["KIPI_EVIDENCE_REGISTRY"] = str(p)
+    return p
+
+
+def _raises(fn) -> bool:
+    try:
+        fn()
+    except EL.ResolutionError:
+        return True
+    except Exception:
+        return False
+    return False
+
+
+def case_resolver_refuses_two_named_canonical_dirs() -> bool:
+    """sorted()[0] silently won. ZERO fleet instances hit this, so it must be
+    synthetic -- a hazard with no current victim is still a hazard."""
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-alpha" / "canonical").mkdir(parents=True)
+    (tmp / "q-beta" / "canonical").mkdir(parents=True)
+    _reg(tmp, [])
+    return _raises(lambda: EL.instance_root(tmp))
+
+
+def case_resolver_refuses_root_with_no_canonical() -> bool:
+    """Measured on 3 of 25 instances: resolves to a dir holding no canonical/."""
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-system").mkdir(parents=True)
+    _reg(tmp, [])
+    return _raises(lambda: EL.instance_root(tmp))
+
+
+def case_resolver_refuses_registry_filesystem_mismatch() -> bool:
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-real" / "canonical").mkdir(parents=True)
+    _reg(tmp, [{"name": "x", "path": str(tmp), "instance_q_dir": "q-other"}])
+    return _raises(lambda: EL.instance_root(tmp))
+
+
+def case_resolver_refuses_registered_null_against_real_dir() -> bool:
+    """The 6-of-25 case: registry says null, a real domain dir holds canonical/."""
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-real" / "canonical").mkdir(parents=True)
+    _reg(tmp, [{"name": "x", "path": str(tmp), "instance_q_dir": None}])
+    return _raises(lambda: EL.instance_root(tmp))
+
+
+def case_resolver_refuses_unregistered_repo() -> bool:
+    """Codex review of PR #240, major. An UNREGISTERED checkout whose q-system/
+    happens to hold canonical/ fell straight through to `root = repo / "q-system"`
+    and was returned as authoritative.
+
+    Why it survived the existing suite: case_resolver_refuses_root_with_no_canonical
+    is also unregistered, but it raises on the LATER "no canonical/ subdirectory"
+    check, so the fall-through arm was never once exercised with the dir PRESENT.
+    Measured from the reviewer's isolated tree: registered=False,
+    resolved=<tree>/q-system. An unattended run from a stray clone would append
+    evidence against the wrong canonical tree."""
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-system" / "canonical").mkdir(parents=True)
+    _reg(tmp, [])  # a real registry that simply does not list this repo
+    return _raises(lambda: EL.instance_root(tmp))
+
+
+def case_allow_unregistered_still_refuses_ambiguity() -> bool:
+    """allow_unregistered is NOT strict=False. It must keep refusing the guess
+    between two candidate domain dirs -- that is the sorted()[0] hazard this PRD
+    exists to kill, and a READ-ONLY caller has no better claim to it than a writer."""
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-alpha" / "canonical").mkdir(parents=True)
+    (tmp / "q-beta" / "canonical").mkdir(parents=True)
+    _reg(tmp, [])
+    return _raises(lambda: EL.instance_root(tmp, allow_unregistered=True))
+
+
+def case_allow_unregistered_resolves_a_single_tree() -> bool:
+    """The one thing it DOES permit: an unregistered repo with exactly one possible
+    answer. system_manifest.health() depends on this -- a hard refusal here made the
+    grounding Stop hook report a HEALTHY manifest as unreadable on every turn."""
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-system" / "canonical").mkdir(parents=True)
+    _reg(tmp, [])
+    return EL.instance_root(tmp, allow_unregistered=True) == tmp / "q-system"
+
+
+def case_write_refuses_unregistered_but_read_degrades() -> bool:
+    """THE asymmetry, pinned. Codex's hazard is an unattended run APPENDING evidence
+    to the wrong tree -- a property of the OPERATION. Guarding the REPOSITORY instead
+    took out the grounding Stop hook and the client-output evidence gate, because
+    read/check/has_ledger all share ledger_path(). Two rounds of per-caller opt-ins
+    later, the fix was to move the refusal onto append_row, the single write path.
+    If someone widens ledger_path back to strict, this case goes red."""
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-system" / "canonical").mkdir(parents=True)
+    _reg(tmp, [])  # a real registry that does not list this repo
+    wrote = _raises(lambda: EL.add(tmp, claim="c", source="s",
+                                   command="true", result="ok"))
+    try:
+        read_ok = EL.read(tmp) == []
+    except Exception:
+        read_ok = False
+    return wrote and read_ok
+
+
+def case_resolver_uses_registry_as_authority() -> bool:
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-real" / "canonical").mkdir(parents=True)
+    _reg(tmp, [{"name": "x", "path": str(tmp), "instance_q_dir": "q-real"}])
+    return EL.instance_root(tmp) == tmp / "q-real"
+
+
+def case_resolver_nonstrict_restores_legacy_guess() -> bool:
+    """The escape hatch must still guess, or callers cannot degrade deliberately."""
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "q-alpha" / "canonical").mkdir(parents=True)
+    (tmp / "q-beta" / "canonical").mkdir(parents=True)
+    _reg(tmp, [])
+    return EL.instance_root(tmp, strict=False) == tmp / "q-alpha"
+
+
+# ------------------------------------------------ the audit's exit code can fail
+# SCAR (Codex review of PR #240, major). `_run_audit` ended in a hardcoded
+# `return 0`, so the one command that enumerates unresolvable instances could not
+# fail for the reason it exists. Both branches are asserted here; an exit code
+# that is only ever observed as 0 is a constant, not a verdict.
+
+def _audit_rc(tmp: Path, entries: list[dict], extra: list[str] | None = None) -> int:
+    reg = _reg(tmp, entries)
+    return EL.main(["--audit-instance-roots", "--registry", str(reg)] + (extra or []))
+
+
+def case_audit_exits_nonzero_when_an_instance_is_refused() -> bool:
+    """A registered instance whose registry says null while a real domain dir holds
+    canonical/ -- the 6-of-25 shape. The resolver REFUSES it, so the audit must too."""
+    tmp = Path(tempfile.mkdtemp())
+    inst = tmp / "inst"
+    (inst / "q-real" / "canonical").mkdir(parents=True)
+    return _audit_rc(tmp, [{"name": "x", "path": str(inst), "instance_q_dir": None}]) == 1
+
+
+def case_audit_exits_zero_when_every_instance_resolves() -> bool:
+    """The green branch, or the case above proves only that the command is broken."""
+    tmp = Path(tempfile.mkdtemp())
+    inst = tmp / "inst"
+    (inst / "q-real" / "canonical").mkdir(parents=True)
+    return _audit_rc(tmp, [{"name": "x", "path": str(inst), "instance_q_dir": "q-real"}]) == 0
+
+
+def case_audit_allow_refused_enumerates_without_failing() -> bool:
+    """The opt-in hatch for callers that want the rows, not the verdict."""
+    tmp = Path(tempfile.mkdtemp())
+    inst = tmp / "inst"
+    (inst / "q-real" / "canonical").mkdir(parents=True)
+    entries = [{"name": "x", "path": str(inst), "instance_q_dir": None}]
+    return _audit_rc(tmp, entries, ["--allow-refused"]) == 0
+
+
 CASES = [
+    ("audit exits non-zero on a REFUSED instance", case_audit_exits_nonzero_when_an_instance_is_refused),
+    ("audit exits zero when every instance resolves", case_audit_exits_zero_when_every_instance_resolves),
+    ("audit --allow-refused enumerates without failing", case_audit_allow_refused_enumerates_without_failing),
+    ("resolver refuses two named canonical dirs", case_resolver_refuses_two_named_canonical_dirs),
+    ("resolver refuses a root with no canonical/", case_resolver_refuses_root_with_no_canonical),
+    ("resolver refuses registry/filesystem mismatch", case_resolver_refuses_registry_filesystem_mismatch),
+    ("resolver refuses registered-null against a real dir", case_resolver_refuses_registered_null_against_real_dir),
+    ("resolver refuses an unregistered repo", case_resolver_refuses_unregistered_repo),
+    ("allow_unregistered still refuses ambiguity", case_allow_unregistered_still_refuses_ambiguity),
+    ("allow_unregistered resolves a single tree", case_allow_unregistered_resolves_a_single_tree),
+    ("write refuses unregistered, read degrades", case_write_refuses_unregistered_but_read_degrades),
+    ("resolver uses the registry as authority", case_resolver_uses_registry_as_authority),
+    ("resolver strict=False restores the legacy guess", case_resolver_nonstrict_restores_legacy_guess),
     ("refuses a claim with no command", case_refuses_missing_command),
     ("refuses a claim with no result", case_refuses_missing_result),
     ("refuses a duplicate claim_id", case_refuses_duplicate_claim_id),

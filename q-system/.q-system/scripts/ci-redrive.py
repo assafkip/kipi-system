@@ -408,6 +408,23 @@ def _ledger_claim_rc(path, issue, flag):
     return proc.returncode
 
 
+def _ledger_claim_rc_uncapped(path, issue, flag):
+    """Raw rc of `claim-flag-uncapped`: 0 claimed, 1 already, 4 parked, 2/3 unwritten.
+
+    Separate from `_ledger_claim_rc` because the caller must distinguish 4 from
+    the rest; folding it into a bool here would put the park back in the same
+    bucket as "someone else owns it" and lose the operator line that names how to
+    un-park it.
+    """
+    proc = subprocess.run(
+        [sys.executable, LEDGER_SCRIPT, path, "claim-flag-uncapped", issue, flag],
+        capture_output=True, text=True)
+    if proc.returncode not in (0, 1, 4):
+        sys.stderr.write("ci-redrive: ledger refused `%s` for %s: %s\n"
+                         % (flag, issue, (proc.stderr or "").strip()[:200]))
+    return proc.returncode
+
+
 def ledger_claim(path, issue, flag):
     """True the first time this flag is claimed anywhere, False otherwise.
 
@@ -495,6 +512,96 @@ def attempts_path():
     return os.environ.get("KIPI_ATTEMPTS", DEFAULT_ATTEMPTS)
 
 
+# --- the cap-out park, read by BOTH redrives ---------------------------------
+# ONE DEFINITION, TWO CALLERS (ASK-871), for the same reason `is_reviewer_slot`
+# lives here: review-redrive.py imports this module rather than keeping its own
+# copy, and two hand-maintained copies of a refusal rule is how a state ends up
+# owned by both consumers or by neither.
+#
+# THE FACT IT READS: converge.sh stopped this ISSUE at its round cap and wrote it
+# to the ledger. Every other bound in this loop keys on a PR and a head sha,
+# which is deliberate -- a PR that pushes a real fix must earn a fresh attempt --
+# and it is exactly why nothing caught ASK-830 on 2026-08-16: each of its six
+# rounds moved the head, so every per-sha cap read as fresh while the ISSUE had
+# already been given up on. This is the missing axis, not a tightening of that one.
+
+CAPOUT_CLEAR = ("python3 q-system/.q-system/scripts/attempts-ledger.py "
+                "%s clear-capout %s")
+
+
+def capout(path, issue):
+    """The recorded reason converge gave up on this issue, or "" if it has not.
+
+    HONEST BOUNDARY: `ledger_get` answers "" both for "no cap-out" and for a
+    ledger it could not read at all, so a ledger that will not parse reads as
+    "not capped" and the redrive proceeds. That is the pre-existing direction of
+    every budget in this file (the `get` op swallows a read failure and returns
+    the default), not something this gate introduces -- but it means the silence
+    of this function is not proof the issue was never capped.
+    """
+    if not ledger_get(path, issue, "capout"):
+        return ""
+    return ledger_get(path, issue, "capout_why") or "no reason recorded"
+
+
+def capout_skip(path, issue, who, pr):
+    """True if this issue is parked; writes the operator line saying so.
+
+    Says how to UN-park it in the same breath. A refusal a human cannot reverse
+    is a permanent park, and the founder reading this line is the only thing
+    standing between a parked issue and the 29-hour outage.
+    """
+    why = capout(path, issue)
+    if not why:
+        return False
+    sys.stderr.write(
+        "%s: %s PR #%s -- converge already gave up on this issue (%s). Not "
+        "re-entering it until a human clears the cap-out: %s\n"
+        % (who, issue, pr, why, CAPOUT_CLEAR % (path, issue)))
+    return True
+
+
+def claim_unless_capped(path, issue, flag, who, pr=""):
+    """The atomic claim, refusing a parked issue in the SAME transaction.
+
+    True only when this run now owns the attempt. Replaces `ledger_claim` at both
+    mark-dispatched call sites (codex on PR #210, major): `capout_skip` guards the
+    read-only OFFER, and the claim that actually spends the attempt asked only
+    whether the flag was free. kipi-dispatch.sh does real work between the two --
+    a ps snapshot, a converge-live probe, a budget read -- so a cap-out landing in
+    that window authorized the dispatch it was written to stop.
+
+    Reading capout here, before calling claim-flag, would only shrink the window.
+    Two subprocesses cannot be atomic against a third writer, so the refusal is
+    delegated to the ledger's `claim-flag-uncapped`, which answers under the same
+    flock that sets the flag. rc 4 is the park; anything else non-zero is the
+    pre-existing "someone else owns it, or nothing was written" answer.
+
+    ONE DEFINITION, TWO CALLERS, like `capout_skip` and `is_reviewer_slot` above
+    and for the same reason: the two redrives must refuse the same parked issue.
+    """
+    rc = _ledger_claim_rc_uncapped(path, issue, flag)
+    if rc == 0:
+        return True
+    if rc == 4:
+        # LOUD, not quiet. A skipped dispatch nobody can see is the silent-park
+        # failure mode; the founder was already paged once by converge's exit-2,
+        # so this line is for whoever reads the dispatch log -- and it carries the
+        # clearing command because a park with no exit is the worse outage.
+        sys.stderr.write(
+            "%s: %s%s -- converge already gave up on this issue (%s). NOT "
+            "dispatching, and the attempt is NOT spent. Clear it with: %s\n"
+            % (who, issue, (" PR #%s" % pr) if pr else "",
+               capout(path, issue) or "no reason recorded",
+               CAPOUT_CLEAR % (path, issue)))
+        return False
+    sys.stderr.write(
+        "%s: the attempt for %s%s was already claimed (or the ledger could not be "
+        "written) -- not dispatching.\n"
+        % (who, issue, (" PR #%s" % pr) if pr else ""))
+    return False
+
+
 def cmd_redrive(cands):
     """READ-ONLY. Offers one pick; the dispatcher spends it via mark-dispatched."""
     path = attempts_path()
@@ -510,6 +617,13 @@ def cmd_redrive(cands):
                 "ci-redrive: %s PR #%s is red but a converge for it is already "
                 "live -- not offering it and not escalating it this run\n"
                 % (cand["issue"], cand["pr"]))
+            continue
+        # AND BEFORE THE ESCALATION TOO, same reasoning as the gate above. A
+        # capped-out issue has ALREADY paged the founder from converge.sh's
+        # exit-2 path, with the clearing command in the line; escalating here
+        # would be a second alarm about one unchanged fact 15 minutes later,
+        # which is the cry-wolf failure that trains the reader to skim.
+        if capout_skip(path, cand["issue"], "ci-redrive", cand["pr"]):
             continue
         if ledger_get(path, cand["issue"], redrive_flag(cand)):
             escalate(path, cand)           # machine tier already spent on this
@@ -530,10 +644,10 @@ def cmd_redrive(cands):
 def cmd_mark_dispatched(issue, sig, head_sha):
     """The atomic claim. 0 = it is yours to dispatch, 1 = it is not."""
     path = attempts_path()
-    if not ledger_claim(path, issue, "ci_redrive_%s" % sig):
-        sys.stderr.write(
-            "ci-redrive: %s attempt for signature %s was already claimed (or the "
-            "ledger could not be written) -- not dispatching.\n" % (issue, sig))
+    # NOT `ledger_claim`. The park has to be refused inside the claim's own
+    # transaction, not read before it -- see claim_unless_capped.
+    if not claim_unless_capped(path, issue, "ci_redrive_%s" % sig,
+                               "ci-redrive [signature %s]" % sig):
         return 1
     # Order matters: record WHICH head first, then the marker saying a head was
     # recorded at all. The reverse order lets a failure between the two claim

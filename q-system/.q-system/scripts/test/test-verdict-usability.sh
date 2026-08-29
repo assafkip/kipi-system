@@ -53,10 +53,31 @@ fi
 chmod +x "$AGENT"
 # The agent sources the lib from its own directory, so both copies must sit
 # together. Verify-against-a-copy: the live checkout is never the thing driven.
-mkdir -p "$WORK/scripts"
-cp "$AGENT" "$WORK/scripts/pr-review-agent.sh"
-cp "$LIB" "$WORK/scripts/pr-verdict-lib.sh"
-AGENT="$WORK/scripts/pr-review-agent.sh"
+#
+# THE COPY MUST SIT AT THE CALLER'S REAL DEPTH, IN A REAL REPO. This used to be a
+# flat "$WORK/scripts", so the agent's own `SKEL=$SCRIPT_DIR/../../..` resolved to
+# the parent of a bare mktemp dir -- not a repository, and two levels shallower
+# than any real install. That went unnoticed while nothing asserted the depth. The
+# review-root guard added in this same change asserts it, and this fixture was the
+# first thing it caught: three cases went <<NORECORD>> because the agent refused
+# before it could write a verdict, which reads as "the usable key is a constant"
+# rather than "the harness is shaped wrong".
+#
+# Reproducing the caller's shape is the fix, NOT relaxing the guard. A fixture the
+# guard would refuse in production is a fixture testing a layout that cannot ship,
+# and the whole defect class here is a test whose environment does not match the
+# real one.
+REPO_FIXTURE="$WORK/repo"
+mkdir -p "$REPO_FIXTURE/q-system/.q-system/scripts"
+git -C "$REPO_FIXTURE" init -q 2>/dev/null || { echo "FATAL: could not git-init the fixture repo" >&2; exit 1; }
+cp "$AGENT" "$REPO_FIXTURE/q-system/.q-system/scripts/pr-review-agent.sh"
+cp "$LIB" "$REPO_FIXTURE/q-system/.q-system/scripts/pr-verdict-lib.sh"
+# The reviewer sources this too (ASK-738); without it every case refuses before
+# writing a record and the usable key reads as a constant rather than a bug here.
+# From the SCRIPTS DIR, not from $(dirname "$LIB"): $LIB is already a copy in a
+# temp dir, so deriving the sibling from it looks right and resolves to nothing.
+cp "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/repo-slug-lib.sh" "$REPO_FIXTURE/q-system/.q-system/scripts/repo-slug-lib.sh"
+AGENT="$REPO_FIXTURE/q-system/.q-system/scripts/pr-review-agent.sh"
 
 # --- stubs: the engine and gh are the seams, and both are stubbed ------------
 # NOT a sandboxed HOME alone. A quiet run because a dependency silently no-ops

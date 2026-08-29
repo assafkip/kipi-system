@@ -104,10 +104,41 @@ def test_repository_sequence_allows_only_the_next_safe_step():
 
     assert can_start("sdc-owner-export", statuses, receipts)
     assert can_start("sdc-template-restoration", statuses, receipts)
-    assert not can_start(
-        "sdc-update-propagation-proof",
-        statuses,
-        receipts,
+
+    # ASK-608. This used to assert `not can_start("sdc-update-propagation-proof")`.
+    # That encoded a STATUS -- "this work is not finished yet" -- not an
+    # invariant, and it went stale the moment the prerequisites were genuinely
+    # closed with receipts. A step becoming startable because its dependencies
+    # completed is progress; reporting it as a failure trains people to leave
+    # work unfinished to keep a gate green.
+    #
+    # The refusal LOGIC is not what decayed and is not going untested:
+    # test_refuses_out_of_order_execution drives can_start with synthetic
+    # statuses and pins both directions.
+    #
+    # Replaced with the ordering invariant over the repository's own ledger,
+    # which is strictly stronger and cannot go stale: nothing may have been
+    # CLOSED before everything it depends on was closed. The old line checked one
+    # hardcoded step's startability at one moment; this checks every recorded
+    # closure against every dependency, forever.
+    closed = receipt_index(receipts)
+    checked = 0
+    for issue_id, dependencies in DEPENDENCIES.items():
+        if issue_id not in closed:
+            continue                     # not closed yet: nothing to order
+        for dependency in dependencies:
+            assert dependency in closed, (
+                f"{issue_id} was closed while its dependency {dependency} has "
+                f"no closure receipt -- the sequence was not respected"
+            )
+            assert closed[dependency]["closed_at"] <= closed[issue_id]["closed_at"], (
+                f"{issue_id} closed at {closed[issue_id]['closed_at']} before its "
+                f"dependency {dependency} closed at "
+                f"{closed[dependency]['closed_at']}"
+            )
+            checked += 1
+    assert checked, (
+        "no closed issue with dependencies was found, so this asserted nothing"
     )
 
 

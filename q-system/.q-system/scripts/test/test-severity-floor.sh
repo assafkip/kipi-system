@@ -30,6 +30,9 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 LIB="$ROOT/q-system/.q-system/scripts/pr-verdict-lib.sh"
+. "$ROOT/q-system/.q-system/scripts/repo-slug-lib.sh"
+# The basename the reviewer will write for PR 901 in THIS repo.
+REC901="$(artifact_key "$(slug_for_repo "$ROOT")" 901).verdict.json"
 WORKER="$ROOT/q-system/.q-system/scripts/linear-worker.sh"
 REVIEWER="$ROOT/q-system/.q-system/scripts/pr-review-agent.sh"
 
@@ -492,7 +495,7 @@ grep -q "conflict round(s) -- a human resolves this one" "$W2/cap1.out" \
       not at gate 20 (unreviewed). The worker said: $(grep -i skip "$W2/cap1.out" | head -1)"
 ok "it stopped at the conflict cap, not as unreviewed"
 
-PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
+PAGES="$({ grep -c . "$W2/pages.txt" 2>/dev/null || echo 0; } | head -1)"
 [ "$PAGES" = "1" ] \
   || fail "expected EXACTLY 1 page across 2 runs at the cap, got $PAGES: $(cat "$W2/pages.txt")"
 grep -q "needs a human" "$W2/pages.txt" || fail "the page does not say a human is needed"
@@ -862,7 +865,7 @@ EOF
 cat > "$SW/gh" <<EOF
 #!/usr/bin/env bash
 case "\$*" in
-  "pr view 901 --json"*) printf '$SHA_A\tpin the sha the review actually read\n' ;;
+  "pr view 901"*) printf '$SHA_A\tpin the sha the review actually read\n' ;;
   *) exit 1 ;;
 esac
 exit 0
@@ -880,7 +883,7 @@ chmod +x "$SW/python3" "$SW/gh" "$SW/claude"
 # "codex is not producing an independent review (PR #901)" to a capture endpoint.
 ( PATH="$SW:$PATH" HOME="$W2/home-writer" KIPI_NOTIFY="/usr/bin/true" \
   bash "$REVIEWER" 901 ) >"$W2/writer.out" 2>&1
-REC="$W2/home-writer/.config/kipi/pr-reviews/pr-901.verdict.json"
+REC="$W2/home-writer/.config/kipi/pr-reviews/$REC901"
 [ -s "$REC" ] \
   || fail "the reviewer wrote no verdict record at all. It said:
 $(sed 's/^/        /' "$W2/writer.out")"
@@ -1055,7 +1058,7 @@ run_status_reviewer "$N4" --post
 [ "$RC" = "0" ] \
   || fail "a failed status POST took the whole review down (exit $RC). The verdict record is the
       loop's hand-off; losing it to a transient GitHub error costs a full re-review."
-[ -s "$N4/home/.config/kipi/pr-reviews/pr-901.verdict.json" ] \
+[ -s "$N4/home/.config/kipi/pr-reviews/$REC901" ] \
   || fail "a failed status POST cost the verdict record, which converge.sh and linear-worker.sh
       both read"
 grep -q "$SHA_A" "$N4/err.txt" \
@@ -1594,7 +1597,7 @@ grep -q "drift round(s) -- a human resolves this one" "$W2/p3-5.out" \
       gate 10 or gate 20. It said: $(grep -i skip "$W2/p3-5.out" | head -1)"
 ok "it stopped at the drift cap, not as approved or unreviewed"
 
-PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
+PAGES="$({ grep -c . "$W2/pages.txt" 2>/dev/null || echo 0; } | head -1)"
 [ "$PAGES" = "1" ] \
   || fail "expected EXACTLY 1 founder page across 5 runs at the drift cap, got $PAGES. Zero means
       unreviewed code sits at the head of an approved PR with nobody told; more than one is the
@@ -1789,7 +1792,7 @@ ok "an unreadable head does not refill the drift budget"
       the round-2 major this budget was added to fix, wearing a gh hiccup as a coat."
 ok "the drift cap holds across runs whose head could not be read"
 
-P8_PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
+P8_PAGES="$({ grep -c . "$W2/pages.txt" 2>/dev/null || echo 0; } | head -1)"
 [ "$P8_PAGES" = "1" ] \
   || fail "expected EXACTLY 1 founder page across 9 runs, got $P8_PAGES. Zero means the cap was
       never reached, so unreviewed code sits at the head of an approved PR with nobody told. More
@@ -1970,7 +1973,12 @@ run_engine_reviewer() {
   RC=$?
 }
 
-pages_in() { grep -c . "$1/pages.txt" 2>/dev/null || echo 0; }
+# `grep -c` prints 0 AND exits 1 on a zero count, so a bare `|| echo 0`
+# APPENDED a second 0 and the value became "0\n0": that breaks `-eq` with
+# "integer expression expected" and makes a legitimate `= "0"` assertion
+# fail on correct behaviour. `| head -1` keeps whichever 0 arrived first.
+# Missing file: grep prints nothing and the fallback supplies the only 0.
+pages_in() { { grep -c . "$1/pages.txt" 2>/dev/null || echo 0; } | head -1; }
 
 # --- Q1. an approving codex review posts kipi/codex-approved on the read sha ---
 Q1="$W2/eng-approve"
@@ -2103,7 +2111,7 @@ ok "an unusable codex answer is not laundered through the fallback"
 # Q1's fixture is the noisy one on purpose; this reads back what the parser
 # actually extracted from it, because a status assertion alone cannot tell
 # "the noise was ignored" from "the noise happened to be harmless".
-Q1_REVIEW="$(ls -t "$Q1/home/.config/kipi/pr-reviews/codex/pr-901-"*.md 2>/dev/null | head -1)"
+Q1_REVIEW="$(ls -t "$Q1/home/.config/kipi/pr-reviews/codex/${REC901%.verdict.json}-"*.md 2>/dev/null | head -1)"
 [ -n "$Q1_REVIEW" ] \
   || fail "the codex engine wrote no review file under pr-reviews/codex/, so nothing can be
       re-parsed. Tree was: $(find "$Q1/home/.config/kipi/pr-reviews" -type f 2>/dev/null | tr '\n' ' ')"
@@ -2232,10 +2240,10 @@ ok "an unknown PR sha warns and proceeds (a partial clone does not wedge the loo
 # globs pr-<N>-*.md -- count the EXISTING claude rounds as codex's own, arming the
 # anti-re-litigation rule a round early on every PR with review history. So the
 # round counters do not move even though the gate did.
-[ -n "$(ls "$Q7/home/.config/kipi/pr-reviews/pr-901-"*.md 2>/dev/null)" ] \
+[ -n "$(ls "$Q7/home/.config/kipi/pr-reviews/${REC901%.verdict.json}-"*.md 2>/dev/null)" ] \
   || fail "the claude engine stopped writing its review to pr-reviews/ ; the worker's
       \`ls pr-reviews/pr-<N>-*.md\` read would find nothing"
-[ -z "$(ls "$Q1/home/.config/kipi/pr-reviews/pr-901-"*.md 2>/dev/null)" ] \
+[ -z "$(ls "$Q1/home/.config/kipi/pr-reviews/${REC901%.verdict.json}-"*.md 2>/dev/null)" ] \
   || fail "a codex review landed in the CLAUDE review directory. review_round globs
       pr-901-*.md, so every codex run would advance the claude reviewer's round counter."
 ok "the engines keep separate review directories (round counters do not cross-count)"
@@ -2244,15 +2252,15 @@ ok "the engines keep separate review directories (round counters do not cross-co
 # linear-worker.sh:76 both read pr-<N>.verdict.json at the pr-reviews ROOT. Codex
 # is the engine that checks Sana's work, so codex writes THAT file -- and the
 # advisory claude engine must not, or two writers would answer for one gate.
-[ -s "$Q1/home/.config/kipi/pr-reviews/pr-901.verdict.json" ] \
+[ -s "$Q1/home/.config/kipi/pr-reviews/$REC901" ] \
   || fail "THE DEFECT: the codex engine wrote no verdict record at the pr-reviews ROOT, so the
       file converge.sh:36 and linear-worker.sh:76 gate the loop on is never written by the
       engine that actually reviewed. The loop would read a stale or absent verdict."
-[ ! -f "$Q7/home/.config/kipi/pr-reviews/pr-901.verdict.json" ] \
+[ ! -f "$Q7/home/.config/kipi/pr-reviews/$REC901" ] \
   || fail "the ADVISORY claude engine wrote the loop's verdict record (pr-901.verdict.json).
       Two engines answering for one gate is the single-writer defect this repo keeps finding;
       a Claude verdict would drive the loop that exists to be checked by another lab."
-[ -s "$Q7/home/.config/kipi/pr-reviews/claude/pr-901.verdict.json" ] \
+[ -s "$Q7/home/.config/kipi/pr-reviews/claude/$REC901" ] \
   || fail "the claude engine wrote no verdict record of its own, so its advisory opinion is not
       recorded anywhere a later run can read"
 ok "codex writes the loop's verdict record; claude records its advisory one beside its reviews"

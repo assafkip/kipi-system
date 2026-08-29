@@ -73,6 +73,33 @@ CASES = [
     ("deferral_in_markdown.md",
      'We left the CLI digest filter out of scope for now; fix later.\n',
      0),
+    # --- the disposition VOCABULARY is not a deferral (ASK-734) -------------
+    # `out-of-scope` and `scope-removed` are two of prd-os's own finding
+    # disposition values, so its runner, findings writer and their tests carry
+    # the token as DATA. Every case below is copied from a real line that this
+    # lint blocked on: 14 hits across the 47 code files under plugins/prd-os,
+    # every one of them vocabulary or prose, none a deferral. All four FAIL
+    # against the pre-fix lint -- checked by running them against the blob at
+    # origin/main, not assumed.
+    ("disposition_list.py",
+     'DISPOSITIONS = ["scope-removed", "out-of-scope", "defer", "invalid"]\n',
+     0),
+    ("disposition_help_text.py",
+     'USAGE = """workflow_disposition  one of: fix-now, duplicate,\n'
+     '                      scope-removed, out-of-scope, defer, needs-human"""\n',
+     0),
+    ("disposition_prose.py",
+     'def score():\n'
+     '    """Regression: broken `scope-removed` / `out-of-scope` scored nothing."""\n'
+     '    return 1\n',
+     0),
+    # THE TRUE POSITIVE. Named in the DoR and kept green on purpose: a detector
+    # that stops firing is indistinguishable from one that works, so the fix is
+    # only correct if this still blocks. The noun needs a forward-looking cue --
+    # here `later` -- which is exactly what the vocabulary lines above lack.
+    ("deferred_scope_noun_with_cue.py",
+     '# out-of-scope, handle later\nVALUE = 1\n',
+     2),
 ]
 
 
