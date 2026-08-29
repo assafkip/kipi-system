@@ -390,8 +390,23 @@ def decide(issue: dict, timeout: int = 300) -> tuple[str, str] | None:
         description=(issue.get("description") or "(empty)")[:4000])
     env = {**os.environ, "ANTHROPIC_MODEL": os.environ.get(
         "KIPI_TRIAGE_MODEL", "claude-opus-5")}
+    # NO TOOLS. THE PROMPT CONTAINS UNTRUSTED TEXT (codex round 6, major).
+    #
+    # The alert body is machine-written from fleet events and is not authored by
+    # anyone we trust to be addressing the model. This job runs unattended, at
+    # 02:30, against the PRIMARY checkout. The first cut passed that text with
+    # --permission-mode acceptEdits, copied from linear-dor-drafter.py without
+    # asking what it was for: a prompt-injected alert could have edited files in
+    # the repo, with nobody watching and the only record a triage line.
+    #
+    # This call is text in, one verdict out. It needs no tools at all, so it gets
+    # none: `--tools ""` disables the entire built-in set. That is a capability
+    # bound, not a filter, so it does not depend on recognising an attack.
+    #
+    # linear-dor-drafter.py has the SAME exposure on the same kind of input and
+    # is already running nightly. Filed separately rather than fixed here.
     try:
-        res = subprocess.run([binary, "-p", prompt, "--permission-mode", "acceptEdits"],
+        res = subprocess.run([binary, "-p", prompt, "--tools", ""],
                              capture_output=True, text=True, timeout=timeout,
                              stdin=subprocess.DEVNULL, env=env)
     except (OSError, subprocess.TimeoutExpired):
@@ -509,6 +524,15 @@ def run_triage(ls, project: str | None, limit: int, apply: bool) -> int:
         print(f"  NOTHING WAS WRITTEN this pass ({failed} failed, {skipped} skipped "
               f"of {len(batch)}); reporting a failed run so launchd-health-check "
               "does not read it as a quiet night", file=sys.stderr)
+        return 1
+    # A MOSTLY-FAILED PASS IS NOT A GOOD NIGHT EITHER (codex round 6, minor).
+    # One write out of eight exited 0, so a job degrading badly looked identical
+    # to a healthy one. A single bad issue still must not page, which is why this
+    # is a majority test and not "any failure".
+    if failed > wrote:
+        print(f"  DEGRADED: {failed} failure(s) against {wrote} write(s); more went "
+              "wrong than right, so this pass is reported as failed",
+              file=sys.stderr)
         return 1
     return 0
 

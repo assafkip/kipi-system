@@ -463,5 +463,80 @@ class TestSchedulerCoversTheWholeFleet(unittest.TestCase):
         self.assertIn("--apply", cmd)
 
 
+class TestUntrustedTextGetsNoTools(unittest.TestCase):
+    """codex round 6, major. The alert body is machine-written from fleet events
+    and is not trusted input. This job runs unattended against the primary
+    checkout, and the first cut passed that text with --permission-mode
+    acceptEdits, copied from the drafter without asking what it was for.
+
+    Proven live, not just asserted: with acceptEdits a benign 'create this file'
+    prompt WROTE the file; with --tools "" the same prompt did not, and the model
+    answered 'Which one?' because it had no tool to act with. The positive control
+    matters because an earlier attempt used an injection-flavoured prompt and the
+    model refused on judgment, which would have passed without the flag doing
+    anything."""
+
+    def _argv(self):
+        import subprocess as sp
+        seen = {}
+        class R:
+            returncode = 0
+            stdout = "HOLD\nnot executable"
+            stderr = ""
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+            return R()
+        orig_run, orig_bin = triage.subprocess.run, triage.claude_binary
+        triage.subprocess.run = fake_run
+        triage.claude_binary = lambda: "/fake/claude"
+        try:
+            triage.decide(as_issue(ALERT_DESC))
+        finally:
+            triage.subprocess.run, triage.claude_binary = orig_run, orig_bin
+        return seen.get("cmd", [])
+
+    def test_the_model_call_disables_every_tool(self):
+        argv = self._argv()
+        self.assertIn("--tools", argv, "the model call grants tools by default")
+        self.assertEqual(argv[argv.index("--tools") + 1], "",
+                         '--tools must be "" (the whole built-in set disabled)')
+
+    def test_the_model_call_never_grants_edit_permission(self):
+        argv = " ".join(self._argv())
+        self.assertNotIn("acceptEdits", argv,
+                         "untrusted alert text was passed with edit permission")
+        self.assertNotIn("--permission-mode", argv)
+
+    def test_a_degraded_pass_is_reported_as_failed(self):
+        """codex round 6, minor: 1 write against 7 failures exited 0."""
+        calls = {"n": 0}
+        def flaky(issue, timeout=300):
+            calls["n"] += 1
+            return ("HOLD", "nope") if calls["n"] == 1 else None
+        issues = [dict(as_issue(ALERT_DESC), identifier=f"ASK-{i}", id=f"u{i}",
+                       createdAt="2026-01-01", title="t",
+                       project={"name": "kipi-system"}) for i in range(8)]
+        class L:
+            def graphql(s, q, v):
+                if "issueLabels" in q:
+                    return {"issueLabels": {"nodes": [{"id": "h", "name": "triage:held"}]}}
+                if "issue(" in q:
+                    return {"issue": {"id": "u", "identifier": "ASK-0",
+                                      "description": ALERT_DESC, "labels": {"nodes": []}}}
+                if "commentCreate" in q:
+                    return {"commentCreate": {"success": True}}
+                if "issueUpdate" in q:
+                    return {"issueUpdate": {"success": True, "issue": {"identifier": "ASK-0"}}}
+                return {}
+        of, od = triage.fetch_open, triage.decide
+        triage.fetch_open = lambda ls, proj: issues
+        triage.decide = flaky
+        try:
+            rc = triage.run_triage(L(), None, 8, True)
+        finally:
+            triage.fetch_open, triage.decide = of, od
+        self.assertEqual(rc, 1, "7 failures against 1 write reported a healthy night")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
