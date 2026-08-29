@@ -720,6 +720,26 @@
       }
     },
     {
+      "id": "dispatch-branch-target-refused",
+      "source": "kipi-dispatch",
+      "class": "transient",
+      "marker": "branch_guard || exit 0",
+      "sites": 1,
+      "what": "branch_guard (ASK-358) refused this dispatch: the issue's open PR is on a branch converge would not commit into, or the issue maps to more than one live branch. The cycle exits before mark-dispatched, so the PR's one attempt is not spent.",
+      "consumer": "com.kipi.dispatch -- the guard runs on EVERY dispatch above every selector, so the next tick re-evaluates it against the board as it is then; the moment the branch matches (or the stale PR is closed) the guard passes, page_clear fires and the same issue is dispatched normally. Nothing is parked: the issue stays ready and is re-offered every beat.",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch.log",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "branch_guard || exit 0",
+        "why": "The guard is a call site on the main path of the same job, re-evaluated every tick, so the state is re-entered by construction rather than by a separate selector -- the same shape as stale_check above it."
+      }
+    },
+    {
       "id": "dispatch-ci-redrive-claimed",
       "source": "kipi-dispatch",
       "class": "transient",
