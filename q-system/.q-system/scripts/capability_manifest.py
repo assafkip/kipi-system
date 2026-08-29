@@ -235,6 +235,40 @@ def explode(root, manifest, errors=None):
     return written
 
 
+def add_delta(root, base, head, errors=None):
+    """Write a fragment for every declaration `head` has that `base` does not.
+
+    The rebase tool for the 37 open branches that predate the split. Their
+    manifest edit is almost always one appended entry; replaying it by hand
+    means re-reading main's whole manifest per PR, which is what did not scale.
+    Feed it the merge-base manifest and the branch-head manifest and it writes
+    exactly that branch's additions as fragments, touching nothing else.
+
+    Additive ONLY. A branch that REMOVED a declaration is reported, never acted
+    on: deleting someone else's declaration during a rebase is the silent loss
+    this whole change exists to prevent, so it is surfaced for a human.
+    """
+    written, removed = [], []
+    for section in LIST_SECTIONS:
+        seen = {json.dumps(e, sort_keys=True) for e in (base.get(section) or [])}
+        have = {json.dumps(e, sort_keys=True) for e in (head.get(section) or [])}
+        for raw in sorted(have - seen):
+            entry = json.loads(raw)
+            sdir = fragment_dir(root) / section
+            sdir.mkdir(parents=True, exist_ok=True)
+            name = fragment_name(section, entry)
+            (sdir / name).write_text(json.dumps(entry, indent=1,
+                                                sort_keys=True) + "\n")
+            written.append("%s/%s" % (section, name))
+        for raw in sorted(seen - have):
+            removed.append("%s: %s" % (section, raw))
+    if removed:
+        _err(errors, "this branch also REMOVED %d declaration(s); replay those "
+                     "by hand rather than silently: %s"
+                     % (len(removed), " | ".join(removed)))
+    return written
+
+
 def equivalent(a, b):
     """Order-insensitive equality of two assembled manifests.
 
@@ -261,6 +295,9 @@ def main():
                     help="write fragments from a monolithic manifest JSON file")
     ap.add_argument("--check-against", metavar="FILE",
                     help="assemble and prove equivalence with a monolithic file")
+    ap.add_argument("--add-from", nargs=2, metavar=("BASE_JSON", "HEAD_JSON"),
+                    help="replay a pre-split branch: write a fragment for every "
+                         "declaration HEAD_JSON adds over BASE_JSON")
     args = ap.parse_args()
     root = Path(args.root).resolve()
 
@@ -271,6 +308,18 @@ def main():
         for e in errors:
             print("ERROR: " + e, file=sys.stderr)
         print("wrote %d fragment(s) under %s" % (n, FRAGMENT_DIR))
+        return 1 if errors else 0
+
+    if args.add_from:
+        base = json.loads(Path(args.add_from[0]).read_text())
+        head = json.loads(Path(args.add_from[1]).read_text())
+        errors = []
+        written = add_delta(root, base, head, errors)
+        for w in written:
+            print("added fragment: %s/%s" % (FRAGMENT_DIR, w))
+        for e in errors:
+            print("ERROR: " + e, file=sys.stderr)
+        print("%d declaration(s) replayed" % len(written))
         return 1 if errors else 0
 
     errors = []

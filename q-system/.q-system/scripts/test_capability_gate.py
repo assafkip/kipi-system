@@ -165,6 +165,26 @@ def sec_schema():
         rc, out = run_gate(root, "--check-only")
         check("schema: missing manifest RED", rc == 1 and "manifest missing" in out)
     with tempfile.TemporaryDirectory() as tmp:
+        # SINGLE WRITER. A rebase of one of the 37 branches that predate the
+        # split can resurrect the monolith. Picking a winner would silently drop
+        # one source's declarations -- the same loss class the split exists to
+        # end -- so two sources is RED, and it names both.
+        root = make_repo(tmp)
+        (root / capability_manifest.LEGACY_MANIFEST).write_text(
+            json.dumps(base_manifest()))
+        rc, out = run_gate(root, "--check-only")
+        check("schema: legacy monolith beside the fragment dir RED",
+              rc == 1 and "TWO manifest sources" in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        # and the monolith ALONE, which is a checkout that never got the split
+        root = make_repo(tmp)
+        shutil.rmtree(capability_manifest.fragment_dir(root))
+        (root / capability_manifest.LEGACY_MANIFEST).write_text(
+            json.dumps(base_manifest()))
+        rc, out = run_gate(root, "--check-only")
+        check("schema: legacy monolith alone RED (not silently honoured)",
+              rc == 1 and "predates the fragment migration" in out)
+    with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp, manifest=base_manifest(
             required_data=[{"path": "q-system/x.json", "scope": "skeletn"}]))
         rc, out = run_gate(root, "--check-only")
@@ -179,6 +199,47 @@ def sec_schema():
             expected_tests=[{"path": "q-system/../../x/test_a.py", "runner": "python3"}]))
         rc, out = run_gate(root, "--check-only")
         check("schema: dotdot escape RED", rc == 1 and "unsafe" in out)
+
+
+def sec_replay():
+    """--add-from: the rebase tool for the branches that predate the split.
+
+    It is additive by contract, so the negative case matters more than the happy
+    one: a branch that REMOVED a declaration must be reported, not silently
+    replayed as a deletion. Removing someone else's declaration during a rebase
+    is exactly the silent loss the split exists to prevent.
+    """
+    import subprocess as sp
+
+    def add_from(root, base, head):
+        b = root / "base.json"; h = root / "head.json"
+        b.write_text(json.dumps(base)); h.write_text(json.dumps(head))
+        r = sp.run([sys.executable,
+                    str(pathlib.Path(__file__).resolve().parent / "capability_manifest.py"),
+                    "--root", str(root), "--add-from", str(b), str(h)],
+                   capture_output=True, text=True, timeout=60)
+        return r.returncode, r.stdout + r.stderr
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        rel = add_test(root, "q-system/.q-system/scripts/test_new.py")
+        base = base_manifest()
+        head = base_manifest(expected_tests=[entry(rel)])
+        rc, out = add_from(root, base, head)
+        check("replay: an added declaration becomes a fragment",
+              rc == 0 and "added fragment" in out)
+        rc2, out2 = run_gate(root, "--check-only")
+        check("replay: the replayed repo is GREEN (declaration and file agree)",
+              rc2 == 0)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        rel = add_test(root, "q-system/.q-system/scripts/test_new.py")
+        base = base_manifest(expected_tests=[entry(rel)])
+        head = base_manifest()
+        rc, out = add_from(root, base, head)
+        check("replay: a REMOVED declaration is refused, never silently dropped",
+              rc == 1 and "REMOVED" in out)
 
 
 def sec_overlay():
@@ -690,7 +751,7 @@ def sec_scan_scope():
 
 
 SECTIONS = {
-    "schema": sec_schema, "overlay": sec_overlay, "quarantine": sec_quarantine,
+    "schema": sec_schema, "overlay": sec_overlay, "replay": sec_replay, "quarantine": sec_quarantine,
     "wiring": sec_wiring, "runner": sec_runner, "mode": sec_mode,
     "negative-proof": sec_negative_proof,
     "skeleton_only_absent": sec_skeleton_only_absent,
