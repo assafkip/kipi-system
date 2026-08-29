@@ -242,14 +242,24 @@ def candidate_subjects(root, test_rel, max_subjects):
 # -- a mutant that is a syntax error, killed by anything that loads the file,
 # scoring a free kill for every test in the population. The syntax guard caught
 # it on the first self-test run; the anchors are narrow now so it cannot recur.
-_EOL = r"([ \t]*\r?\n?)$"
+# Anchors are line-based but must tolerate the ways these statements really
+# appear, or the sweep UNDER-disarms and every miss biases a verdict toward
+# KILLED -- a detector reporting "fine" for the reason it exists to catch.
+# Measured on repo-preflight.sh: 4 `exit 1` lines, 2 found, because a case arm
+# writes `exit 1 ;;`. Trailing comments and `|| exit 1` were missed the same way.
+#
+# Trailing whitespace is [ \t]*, never \s*: `\s` matches the newline, so a
+# `\s*$` rule silently ATE the line ending and welded two statements into one.
+_LEAD = r"^([ \t]*(?:(?:\|\||&&|then|else|do)[ \t]+)?)"
+_PY_TAIL = r"([ \t]*(?:\#.*)?\r?\n?)$"
+_SH_TAIL = r"([ \t]*;{0,2}[ \t]*(?:\#.*)?\r?\n?)$"
 PY_RULES = [
-    (re.compile(r"^([ \t]*)return[ \t]+False" + _EOL), r"\g<1>return True\g<2>"),
-    (re.compile(r"^([ \t]*)return[ \t]+[1-9][0-9]*" + _EOL), r"\g<1>return 0\g<2>"),
+    (re.compile(r"^([ \t]*)return[ \t]+False" + _PY_TAIL), r"\g<1>return True\g<2>"),
+    (re.compile(r"^([ \t]*)return[ \t]+[1-9][0-9]*" + _PY_TAIL), r"\g<1>return 0\g<2>"),
 ]
 SH_RULES = [
-    (re.compile(r"^([ \t]*)exit[ \t]+[1-9][0-9]*" + _EOL), r"\g<1>exit 0\g<2>"),
-    (re.compile(r"^([ \t]*)return[ \t]+[1-9][0-9]*" + _EOL), r"\g<1>return 0\g<2>"),
+    (re.compile(_LEAD + r"exit[ \t]+[1-9][0-9]*" + _SH_TAIL), r"\g<1>exit 0\g<2>"),
+    (re.compile(_LEAD + r"return[ \t]+[1-9][0-9]*" + _SH_TAIL), r"\g<1>return 0\g<2>"),
 ]
 
 
@@ -257,7 +267,7 @@ SH_RULES = [
 # paren scan, NOT by regex: `[^)]*(\))` stopped at the FIRST `)`, so the very
 # common `sys.exit(main())` became `sys.exit(0))` -- a syntax error, which any
 # test that imports the module kills for free. The ast guard caught it on a real
-# file; a harness without that guard would have booked it as a kill.
+# file; a harness without that guard would have booked 48 sites as a clean kill.
 _EXIT_HEADS = (re.compile(r"\bsys\.exit\s*\("),
                re.compile(r"\braise\s+SystemExit\s*\("))
 
