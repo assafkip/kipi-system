@@ -1,0 +1,5 @@
+{
+ "path": "plugins/kipi-dsse/scripts/test_computed_receipts.py",
+ "runner": "python3",
+ "timeout_s": 180
+}
