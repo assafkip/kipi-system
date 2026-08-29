@@ -722,22 +722,18 @@
     {
       "id": "dispatch-branch-target-refused",
       "source": "kipi-dispatch",
-      "class": "transient",
+      "class": "durable-queue",
       "marker": "branch_guard || exit 0",
       "sites": 1,
-      "what": "branch_guard (ASK-358) refused this dispatch: the issue's open PR is on a branch converge would not commit into, or the issue maps to more than one live branch. The cycle exits before mark-dispatched, so the PR's one attempt is not spent.",
-      "consumer": "com.kipi.dispatch -- the guard runs on EVERY dispatch above every selector, so the next tick re-evaluates it against the board as it is then; the moment the branch matches (or the stale PR is closed) the guard passes, page_clear fires and the same issue is dispatched normally. Nothing is parked: the issue stays ready and is re-offered every beat.",
-      "liveness_check": {
-        "kind": "launchd",
-        "label": "com.kipi.dispatch",
-        "run_evidence": "~/.config/kipi/dispatch.log",
-        "max_age_s": 3600
-      },
-      "reentry": {
+      "what": "branch_guard (ASK-358) refused this dispatch: the issue's open PR is on a branch converge would not commit into, or the issue maps to more than one live branch. The guard runs after every selector has picked and before mark-dispatched, so the PR's one attempt is not spent and the cycle exits 0.",
+      "terminal": true,
+      "rationale": "OPERATOR-BLOCKED, and the first cut of this row got it wrong. It declared com.kipi.dispatch a consumer on the strength of the guard being re-evaluated every tick -- which is true and is not consumption. Re-running a guard whose condition nothing in the loop can change only repeats the refusal, and a registry that calls that recovery is the validator-satisfying fiction this file exists to refuse (codex PR #266 round 1, major -- confirmed with a reproducer: producer_requires_operator_action=True, producer_mutates_branch_or_pr=False). Clearing it takes a branch rename, a reopened PR or a closed stale one, and nothing in the loop performs any of the three. The near neighbour dispatch-stale-checkout IS a consumer row and the difference is load-bearing: `kipi update` fast-forwards a stale checkout on a schedule, so a machine really does clear that one. page_once carries the handoff to Sana's Linear triage via slack-notify.sh (founder-notifications.md), and page_clear turns the recovery back into silence, so this dead end is at least audible. It is still a dead end.",
+      "evidence": {
         "path": "kipi-dispatch.sh",
-        "marker": "branch_guard || exit 0",
-        "why": "The guard is a call site on the main path of the same job, re-evaluated every tick, so the state is re-entered by construction rather than by a separate selector -- the same shape as stale_check above it."
-      }
+        "marker": "Rename the branch to $expect, or reopen the PR on it.",
+        "why": "The refusal message the producer itself computes names the three acts that clear this state, and every one of them is performed outside this loop. The code says out loud that it is waiting on somebody."
+      },
+      "uncovered": "No machine selects this state; the refusal repeats every beat until an operator acts. A consumer is buildable -- review-redrive.py already answers `branch-for --issue` (rc 3 = more than one live branch) -- so the loop could close the superseded PR or apply a durable refusal label ready() excludes. Tracked open at sp-c0c71ad1."
     },
     {
       "id": "dispatch-ci-redrive-claimed",
