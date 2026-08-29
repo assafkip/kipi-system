@@ -642,6 +642,37 @@ def summarize(rec):
     return "UNMEASURED-no-dependency"
 
 
+
+CONFIRMED = ("KILLED", "SURVIVED", "SURVIVED-ABSENT")
+
+
+def subject_rollup(results):
+    """Per-SUBJECT view: does ANY declared test observe this file's ability to
+    report failure?
+
+    The per-test number alone overstates the defect count, and the reason is
+    worth stating. test-capability-gate-reap.sh SURVIVES a disarm of
+    capability-gate.py -- correctly: it imports run_contained and tests process
+    reaping, so the gate's exit codes are outside its remit. That is a narrow
+    unit test doing its job, not a blind gate.
+
+    The question that actually decides whether something is broken is asked of
+    the SUBJECT, not the test: this file can no longer report failure -- did
+    anything notice? A subject whose every confirmed test survived has a
+    failure path no declared test observes. That is the row to fix.
+    """
+    by_subject = {}
+    for r in results:
+        for pair in r.get("pairs", []):
+            if pair["verdict"] not in CONFIRMED:
+                continue
+            s = by_subject.setdefault(pair["subject"], {"killed": [], "survived": []})
+            key = "killed" if pair["verdict"] == "KILLED" else "survived"
+            s[key].append(r["test"])
+    unguarded = {s: v for s, v in by_subject.items() if not v["killed"]}
+    return by_subject, unguarded
+
+
 def report(results, outdir):
     import collections
     c = collections.Counter(r["status"] for r in results)
@@ -666,16 +697,18 @@ def report(results, outdir):
             p = next(x for x in r["pairs"] if x["verdict"] == "SURVIVED")
             print(f"  {r['test']}\n      subject: {p['subject']}  "
                   f"(disarmed {p['sites']} site(s); tripwire rc={p['tripwire_rc']})")
+    by_subject, unguarded = subject_rollup(results)
+    print(f"\n--- per-subject rollup ---")
+    print(f"subjects with at least one confirmed test: {len(by_subject)}")
+    print(f"subjects NO declared test guards the failure path of: {len(unguarded)}")
+    for s, v in sorted(unguarded.items()):
+        print(f"  {s}\n      survived in: {', '.join(v['survived'])}")
     (outdir / "summary.json").write_text(json.dumps(
         {"schema_version": SCHEMA_VERSION, "counts": dict(c),
-         "survived": [{"test": r["test"],
-                       "subject": next(x["subject"] for x in r["pairs"]
-                                       if x["verdict"] == "SURVIVED")}
-                      for r in surv],
-         "survived_absent": [{"test": r["test"],
-                              "subject": next(x["subject"] for x in r["pairs"]
-                                              if x["verdict"] == "SURVIVED-ABSENT")}
-                             for r in gone]}, indent=2))
+         "survived": [r["test"] for r in surv],
+         "survived_absent": [r["test"] for r in gone],
+         "unguarded_subjects": {s: v["survived"] for s, v in unguarded.items()},
+         }, indent=2))
     print(f"\nledger: {outdir}/results.jsonl")
 
 
@@ -919,6 +952,8 @@ def dirty_tree(root):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--report-only", action="store_true",
+                    help="re-derive the report from results.jsonl, run nothing")
     ap.add_argument("--zero-exec-scan", action="store_true",
                     help="report declared tests that execute no assertions")
     ap.add_argument("--self-test", action="store_true",
@@ -940,15 +975,24 @@ def main():
     root = Path(subprocess.run(["git", "rev-parse", "--show-toplevel"],
                                capture_output=True, text=True, timeout=60
                                ).stdout.strip() or ".").resolve()
-    # This harness REWRITES FILES IN THE WORKING TREE. On a dirty tree a crash
+    # Only the MUTATING path needs this. The refusal exists because a crash
     # between mutate and restore is indistinguishable from the operator's own
-    # edits, and the operator's edits are what gets lost.
+    # edits, and the operator's edits are what gets lost -- neither read-only
+    # mode can do that, and refusing them just made the tool unusable mid-work.
+    read_only = args.report_only or args.zero_exec_scan
     dirty = dirty_tree(root)
-    if dirty and not args.force_dirty:
+    if dirty and not read_only and not args.force_dirty:
         print("mutation-sweep: refusing to run on a dirty tree "
               f"({len(dirty)} path(s)). Commit, stash, or pass --force-dirty.",
               file=sys.stderr)
         sys.exit(3)
+
+    if args.report_only:
+        out = root / "q-system/output/mutation-sweep"
+        rows = [json.loads(l) for l in (out / "results.jsonl").read_text().splitlines()
+                if l.strip()]
+        report(rows, out)
+        sys.exit(0)
 
     if args.zero_exec_scan:
         sw = Sweep(root, load_runner(root))
