@@ -35,7 +35,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
-from voicekit import selector  # noqa: E402
+from voiceloop import selector  # noqa: E402
 
 ROTATION = range(30)          # one full lap of the real corpus's 30 rows
 
@@ -116,7 +116,7 @@ def test_a_thin_primary_tier_still_pads_from_fallback():
 def _voice_dir(tmp_path, rows):
     """A minimal on-disk voice dir. Returns the PATH, because `check_all` takes a
     directory while the individual checks take a loaded Voice."""
-    from voicekit import corpus, fingerprint
+    from voiceloop import corpus, fingerprint
 
     d = tmp_path / f"voice-{len(list(tmp_path.iterdir()))}"
     d.mkdir()
@@ -132,7 +132,7 @@ def _voice_dir(tmp_path, rows):
 
 def _loaded(tmp_path, rows):
     """The same corpus, loaded, so validate's per-check functions can run on it."""
-    from voicekit import corpus
+    from voiceloop import corpus
 
     return corpus.load(_voice_dir(tmp_path, rows))
 
@@ -141,7 +141,7 @@ def test_the_validator_reports_a_pinning_anchor_set(tmp_path):
     """The corpus-side half of the pairing: selector rotates what the corpus gives
     it, so the floor has to live in validate. Loud at edit time, never a runtime
     refusal -- corpus.py's degrade posture is unchanged."""
-    from voicekit import validate
+    from voiceloop import validate
 
     pinned = validate.check_anchor_diversity(_loaded(tmp_path, _corpus(
         post_anchors=1)))
@@ -164,7 +164,7 @@ def test_anchors_that_exist_but_no_post_slot_can_reach_are_reported(tmp_path):
     2026-08-09). Keying it on the per-kind count let the worst case through: the
     author marked anchors, and after tier exhaustion not one of them can ride in a
     post prompt."""
-    from voicekit import validate
+    from voiceloop import validate
 
     rows = _corpus(post_anchors=0, article_anchors=2)
     rode = [r for r in _anchors_over_rotation(rows) if r]
@@ -182,7 +182,7 @@ def test_a_pool_the_same_size_as_k_cannot_rotate_and_says_so(tmp_path):
     and the cliff is invisible at k-1 and k+1. `select` stays form-pure rather than
     padding with the wrong kind to fake variety; the shortage surfaces in validate.
     """
-    from voicekit import validate
+    from voiceloop import validate
 
     distinct = {}
     for n_post in (3, 4, 5, 12):
@@ -209,7 +209,7 @@ def test_the_rotation_message_is_true_about_the_corpus_it_describes(tmp_path):
     'every prompt gets the SAME set' at n=1,2,3, where padding makes selection
     vary. A validator that says something false about its own data is worse than
     silence, so the claim and the measurement are asserted TOGETHER."""
-    from voicekit import validate
+    from voiceloop import validate
 
     for n_post in (1, 2, 3, 4, 5, 12):
         rows = _corpus(post_anchors=min(3, n_post), n_post=n_post)
@@ -230,7 +230,7 @@ def test_the_anchor_message_counts_what_the_slot_can_actually_reach(tmp_path):
     pads, so article-kind anchors DO ride in a post slot -- adversarial review
     measured 38 rides from 2 distinct ids while the check said 0 post anchors
     pinned one row, a sentence false in both halves."""
-    from voicekit import validate
+    from voiceloop import validate
 
     for n_post, p_anch, a_anch in ((3, 0, 2), (3, 1, 0), (12, 4, 2), (12, 0, 2)):
         rows = _corpus(post_anchors=p_anch, article_anchors=a_anch, n_post=n_post)
@@ -247,12 +247,12 @@ def test_the_anchor_message_counts_what_the_slot_can_actually_reach(tmp_path):
 
 def test_both_new_checks_are_wired_into_check_all(tmp_path):
     """V4/V5: adversarial review deleted each `check_all` call line and all 60
-    voicekit tests plus all 19 pipeline tests stayed green. Unwiring the two OLD
+    voiceloop tests plus all 19 pipeline tests stayed green. Unwiring the two OLD
     checks was killed, so this was a real hole -- the checks existed and nothing
     proved the entry point ran them."""
-    from voicekit import validate
+    from voiceloop import validate
 
-    from voicekit import corpus
+    from voiceloop import corpus
 
     # Built to trip BOTH: 4 post rows is the rotation cliff, 1 anchor is below the
     # reachable floor.
@@ -302,7 +302,7 @@ def test_selection_does_not_depend_on_the_order_rows_sit_in_the_file(tmp_path):
 
 def test_slot_index_advances_the_rotation():
     """M2: 7 of 8 mutants survived the suite because `slot_index` had no coverage
-    anywhere in voicekit. A multi-slot day must not hand both slots the same set."""
+    anywhere in voiceloop. A multi-slot day must not hand both slots the same set."""
     rows = _corpus()
     for counter in (0, 7, 29):
         first = [r["id"] for r in selector.select(rows, "x", counter, slot_index=0,
