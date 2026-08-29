@@ -914,6 +914,36 @@ if [ "${FOUNDER_ROUTED:-0}" != "0" ]; then
   if [ -n "$FOUNDER_NEW" ]; then
     NRC=0
     bash "$NOTIFY" "kipi worker: $FOUNDER_ROUTED issue(s) are labelled owner:assaf, which is an error path now, not a queue (${FOUNDER_IDS:-unknown}). New since the last page:${FOUNDER_NEW}. Do: find what routed them there and re-label to owner:sana or needs-scope." 2>/dev/null || NRC=$?
+    if [ "$NRC" = "0" ]; then
+      # THE SECOND HALF OF THE CLAIM (codex PR #215 round 5, major). The claim
+      # above is PROVISIONAL: between it and this line the worker can be killed
+      # -- launchd stopping the job, a reboot, an OOM -- and the release below
+      # only runs when the notifier RETURNED non-zero. A kill returns nothing, so
+      # the flag stood with no ticket behind it and that issue was muted forever.
+      # The sweep further down cannot see it either: the issue is still IN the
+      # founder population, so departure never releases it.
+      #
+      # So "claimed" and "filed" are two facts and they are recorded separately.
+      # A flag that is claimed and not filed is an interrupted announcement, and
+      # the sweep releases it on the next tick.
+      #
+      # A kill in the OTHER window -- after the ticket filed, before this line --
+      # costs ONE duplicate page. That direction is chosen deliberately: a
+      # repeated page is visible and self-correcting, a swallowed one is the
+      # silent founder queue this whole block exists to end.
+      for fid in $FOUNDER_NEW; do
+        frc=0
+        python3 "$LEDGER" "$ATTEMPTS" claim-flag "$fid" founder-routed-filed >/dev/null 2>&1 </dev/null || frc=$?
+        # 0 = recorded here, 1 = already recorded (a duplicate page after a kill
+        # in the narrow window above). Anything else means nothing was written,
+        # so the next run reads an unfiled claim and pages again -- the safe
+        # direction, but say it out loud rather than let a duplicate look random.
+        case "$frc" in
+          0|1) : ;;
+          *) say "WARN: filed the owner:assaf alert for $fid but could not record that (exit $frc) -- it will page once more on the next run." ;;
+        esac
+      done
+    fi
     if [ "$NRC" != "0" ]; then
       say "WARN: the owner:assaf alert did NOT file (notifier exit $NRC). Releasing the announce flag for${FOUNDER_NEW} so the next run tries again."
       for fid in $FOUNDER_NEW; do
@@ -971,16 +1001,34 @@ if [ "$(printf '%s\n' "$FOUNDER_POP" | head -1)" = "PARSED" ]; then
   FOUNDER_STILL=" $(printf '%s\n' "$FOUNDER_POP" | sed -n '2p') "
   while IFS= read -r flagged; do
     [ -n "$flagged" ] || continue
-    # Space-delimited containment, so ASK-91 does not match ASK-911.
+    # TWO WAYS A CLAIM STOPS STANDING FOR A SENT PAGE.
+    #
+    # (1) The issue LEFT the population: recovered, so the flag must come off or
+    #     the next recurrence of that id is swallowed.
+    # (2) The claim was never FILED: the worker was killed between claim-flag and
+    #     the notifier returning (codex PR #215 round 5, major). Departure alone
+    #     cannot see this one -- the issue is still founder-routed, so it stays
+    #     in FOUNDER_STILL forever while its flag suppresses every later tick.
+    #     The failed-send release below only runs when the notifier RETURNED.
+    #
+    # Checked in that order because a departed id needs no filed-lookup.
+    WHY_RELEASE="is no longer founder-routed"
     case "$FOUNDER_STILL" in
-      *" $flagged "*) continue ;;
+      *" $flagged "*)
+        FILED="$(python3 "$LEDGER" "$ATTEMPTS" get "$flagged" founder-routed-filed "" 2>/dev/null </dev/null)"
+        # A read that FAILED returns empty too, and empty means "release it" --
+        # so an unreadable ledger costs a duplicate page, never a swallowed one.
+        [ -n "${FILED:-}" ] && continue
+        WHY_RELEASE="was announced but the alert never filed (worker killed mid-announce)"
+        ;;
     esac
     src=0
     # </dev/null: this loop reads the flagged list from a heredoc on stdin, and a
     # child inheriting it would eat the remaining ids.
     python3 "$LEDGER" "$ATTEMPTS" clear-flag "$flagged" founder-routed >/dev/null 2>&1 </dev/null || src=$?
+    python3 "$LEDGER" "$ATTEMPTS" clear-flag "$flagged" founder-routed-filed >/dev/null 2>&1 </dev/null || true
     if [ "$src" = "0" ]; then
-      say "worker: $flagged is no longer founder-routed -- released its announce flag, so a recurrence pages again"
+      say "worker: $flagged $WHY_RELEASE -- released its announce flag, so it can page again"
     else
       # Named, not swallowed. A release that did not land leaves that id muted
       # for its next recurrence, which is the defect this sweep exists to close,

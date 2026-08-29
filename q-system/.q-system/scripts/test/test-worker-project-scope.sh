@@ -665,6 +665,74 @@ else
   ok "negative self-test: with no recovery in between, the founder page stays deduplicated"
 fi
 
+# --- 6h. A KILL BETWEEN THE CLAIM AND THE SEND (codex PR #215 round 5) -------
+# The claim is written first on purpose: a page whose dedup did not land repeats
+# every 15 minutes forever. But that leaves a window. Kill the worker after
+# claim-flag and before the notifier returns -- launchd stopping the job, a
+# reboot, an OOM -- and the release path never runs, because it only runs when
+# the notifier RETURNED non-zero. A kill returns nothing. The flag then stood
+# with no ticket behind it, and the 6g sweep could not see it either: the issue
+# is still founder-routed, so it never leaves the population.
+#
+# THE FIXTURE IS THE LEDGER STATE A KILL LEAVES, not a real kill. Killing the
+# worker mid-run from inside its own notifier is racy and would make the suite
+# flaky for a reason unrelated to the assertion. The post-kill state is exactly
+# one fact -- founder-routed claimed, founder-routed-filed absent -- and the
+# ledger's own CLI is what writes it, so the fixture cannot drift from what the
+# worker would have written.
+H_STATE="$WORK/state-killed"; mkdir -p "$H_STATE"
+H_LEDGER="$H_STATE/linear-worker-attempts.json"
+python3 "$REPO_SCRIPTS/attempts-ledger.py" "$H_LEDGER" claim-flag ASK-912 founder-routed >/dev/null
+
+if python3 "$REPO_SCRIPTS/attempts-ledger.py" "$H_LEDGER" list-flagged founder-routed | grep -q "ASK-912"; then
+  ok "6h setup: the post-kill ledger really holds an unfiled claim for ASK-912"
+else
+  bad "6h setup: the post-kill ledger really holds an unfiled claim for ASK-912" \
+      "nothing claimed, so the reproducer below would pass against unfixed code"
+fi
+
+: > "$RECOVER_FILE"
+: > "$PAGES"
+H_OUT="$(env KIPI_SKEL="$SKEL_KIPI" KIPI_STATE_DIR="$H_STATE" \
+    KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+    KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+    KIPI_NOTIFY="$PAGER" bash "$WORKER" --limit 99 2>&1)"
+if printf '%s\n' "$H_OUT" | grep -q "never filed"; then
+  ok "6h: the run names ASK-912's claim as announced-but-never-filed"
+else
+  bad "6h: the run names ASK-912's claim as announced-but-never-filed" \
+      "no release line -- an unfiled claim is indistinguishable from a filed one"
+fi
+
+# THE REPRODUCER. Second run, same ledger, ASK-912 still founder-routed. Before
+# the fix the interrupted claim stood and this issue never paged again.
+: > "$PAGES"
+env KIPI_SKEL="$SKEL_KIPI" KIPI_STATE_DIR="$H_STATE" \
+    KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+    KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+    KIPI_NOTIFY="$PAGER" bash "$WORKER" --limit 99 >/dev/null 2>&1
+if grep -q "ASK-912" "$PAGES"; then
+  ok "REPRODUCER: a claim interrupted before its send pages on the next run"
+else
+  bad "REPRODUCER: a claim interrupted before its send pages on the next run" \
+      "the interrupted claim stood, so ASK-912 is muted until someone hand-clears the ledger"
+fi
+
+# NEGATIVE SELF-TEST. The page above must come from the claim being UNFILED, not
+# from a release that runs on every tick. The run just above filed one, so this
+# one must be silent -- otherwise the fix is the ~96-pages-a-day repeat again.
+: > "$PAGES"
+env KIPI_SKEL="$SKEL_KIPI" KIPI_STATE_DIR="$H_STATE" \
+    KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+    KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+    KIPI_NOTIFY="$PAGER" bash "$WORKER" --limit 99 >/dev/null 2>&1
+if grep -q "ASK-912" "$PAGES"; then
+  bad "negative self-test: a FILED claim still suppresses the next tick" \
+      "run 3 paged again, so the unfiled check is releasing every claim -- back to paging every tick"
+else
+  ok "negative self-test: once the alert has filed, the claim suppresses the next tick"
+fi
+
 # --- case 5: NEGATIVE SELF-TEST ---------------------------------------------
 # Proves this suite can go red. Without it, every assertion above is compatible
 # with a picker that emits nothing at all, or a grep that never matches.
