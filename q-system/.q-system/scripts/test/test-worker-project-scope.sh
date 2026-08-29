@@ -50,7 +50,7 @@ trap 'kill "${SRV_PID:-}" 2>/dev/null; rm -rf "$WORK"' EXIT
 # unset-project issues, all otherwise identically ready. Every exclusion below
 # is a case the live board actually contains.
 cat > "$WORK/fixture-server.py" <<'PY'
-import json, sys
+import json, os, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 def issue(ident, project, labels, dor=True, state="backlog", alert=False):
@@ -88,6 +88,14 @@ BOARD = [
     # invisible everywhere. That is the refilling-queue-looks-like-an-empty-board
     # failure the reversal exists to close, so it must appear on the DEFECT line.
     issue("ASK-912", None, ["owner:assaf"]),
+    # codex PR #215 round 4, minor: THE ONLY ISSUE THAT CAN FALSIFY 6e.
+    # That case asserted the DEFECT line omits ASK-901 -- which carries
+    # owner:sana, so `held_with("owner:assaf", ...)` never selects it no matter
+    # how wide founder_scope gets. The assertion could not fail for the reason it
+    # was written, which is the whole reason it exists. This one is founder-routed
+    # AND sits in another repo's project, so widening founder_scope to every
+    # project puts it on the DEFECT line and 6e goes red.
+    issue("ASK-913", "accountant", ["owner:assaf"]),
     issue("ASK-905", "kipi-system", ["owner:sana"], dor=False),
     # ASK-841: the HELD counts. held_with() selected on label + project and never
     # looked at state, so a finished issue that still carries its refusal label was
@@ -111,6 +119,31 @@ BOARD = [
     issue("ASK-911", "kipi-system", ["owner:sana"], alert=True),
 ]
 
+# THE RECOVERY SEAM. The board is static, and the defect in codex PR #215 round 4
+# is only visible ACROSS a change to it: an issue that is founder-routed, then
+# recovered, then founder-routed again. A file of ids, re-read on every request,
+# is what lets one long-lived server serve three different boards to three worker
+# runs. Named ids are stripped of owner:assaf -- exactly what a re-label does --
+# so the issue leaves the founder population without leaving the board.
+RECOVERED = os.environ.get("FIXTURE_RECOVERED_FILE", "")
+
+
+def board():
+    if not RECOVERED or not os.path.exists(RECOVERED):
+        return BOARD
+    ids = {ln.strip() for ln in open(RECOVERED) if ln.strip()}
+    if not ids:
+        return BOARD
+    # Deep-copied per request: mutating BOARD in place would make the recovery
+    # permanent and the third run below could never see the recurrence.
+    out = json.loads(json.dumps(BOARD))
+    for i in out:
+        if i["identifier"] in ids:
+            i["labels"]["nodes"] = [n for n in i["labels"]["nodes"]
+                                    if n["name"] != "owner:assaf"]
+    return out
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_POST(self):
@@ -118,7 +151,7 @@ class H(BaseHTTPRequestHandler):
         if "teams(" in body:
             data = {"teams": {"nodes": [{"id": "team-fixture"}]}}
         else:
-            data = {"issues": {"nodes": BOARD,
+            data = {"issues": {"nodes": board(),
                                "pageInfo": {"hasNextPage": False, "endCursor": None}}}
         out = json.dumps({"data": data}).encode()
         self.send_response(200)
@@ -136,7 +169,12 @@ PY
 # holds the suite's stderr open keeps the whole pipeline's write end open, so a
 # caller doing `| tail` hangs forever after the script has already exited -- which
 # looked exactly like the worker hanging, and cost a 120s timeout to tell apart.
-python3 "$WORK/fixture-server.py" > "$WORK/port" 2> "$WORK/server.err" &
+# Starts EMPTY, so every case above sees the unmodified board. Only case 6g
+# writes to it, and it truncates the file again when it is done.
+RECOVER_FILE="$WORK/recovered-ids"
+: > "$RECOVER_FILE"
+FIXTURE_RECOVERED_FILE="$RECOVER_FILE" \
+  python3 "$WORK/fixture-server.py" > "$WORK/port" 2> "$WORK/server.err" &
 SRV_PID=$!
 for _ in $(seq 1 100); do
   PORT="$(cat "$WORK/port" 2>/dev/null)"
@@ -469,12 +507,23 @@ else
 fi
 
 # 6e. NEGATIVE SELF-TEST for 6d: widening the scope must not swallow ANOTHER
-# repo's issues. ASK-901 sits in the `accountant` project; if the widened scope
-# reported it, every worker in the fleet would page about every other repo's
-# founder queue, which is the same cry-wolf failure 6b just fixed.
-if printf '%s\n' "$P_OUT1" | grep "DEFECT: owner:assaf" | grep -q "ASK-901"; then
+# repo's issues. If the widened scope reported them, every worker in the fleet
+# would page about every other repo's founder queue, which is the same cry-wolf
+# failure 6b just fixed.
+#
+# THE FIXTURE IS THE ASSERTION (codex PR #215 round 4, minor). This case used to
+# name ASK-901, which carries owner:sana -- and founder_routed is
+# `held_with("owner:assaf", founder_scope)`, so the LABEL filter drops ASK-901
+# before founder_scope is ever consulted. Set founder_scope to `return True` and
+# the case still passed: it was structurally incapable of observing the widening
+# it exists to catch. ASK-913 is the same foreign project (`accountant`) and IS
+# founder-routed, so it clears the label filter and the only thing left holding
+# it off the DEFECT line is the scope predicate. Verified by mutation before this
+# comment was written: `def founder_scope(i): return True` takes this case red and
+# leaves 6d green.
+if printf '%s\n' "$P_OUT1" | grep "DEFECT: owner:assaf" | grep -q "ASK-913"; then
   bad "negative self-test: the widened scope excludes OTHER repos' projects" \
-      "the DEFECT line names ASK-901 (project=accountant) -- unset was widened to everything"
+      "the DEFECT line names ASK-913 (owner:assaf, project=accountant) -- unset was widened to everything"
 else
   ok "negative self-test: the widened scope takes unset, not another repo's projects"
 fi
@@ -540,6 +589,80 @@ if grep -q "owner:assaf" "$PAGES"; then
       "run 3 paged again, so the flag is being released unconditionally -- back to paging every tick"
 else
   ok "negative self-test: after a successful send the founder page stays deduplicated"
+fi
+
+# --- 6g. A RECURRENCE AFTER RECOVERY MUST PAGE AGAIN (codex PR #215 round 4) -
+# The announce flag was claimed on the first page and released on exactly one
+# event: a send that FAILED (6f). Recovery released nothing. So an issue that was
+# mis-routed, re-labelled, and mis-routed again hit `claim-flag` -> 1 (already
+# announced) and the SECOND occurrence was swallowed, permanently, until someone
+# hand-edited the ledger. A detector that stops detecting.
+#
+# 6b and 6f cannot see this. Both assert about the FIRST episode -- that it pages
+# once, and that a failed send does not consume the claim. Neither ever changes
+# the board, and this defect only exists across a change to it. That is what the
+# recovery seam in the fixture server is for.
+G_STATE="$WORK/state-recur"; mkdir -p "$G_STATE"
+g_run() {
+  env KIPI_SKEL="$SKEL_KIPI" \
+      KIPI_STATE_DIR="$G_STATE" \
+      KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+      KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+      KIPI_NOTIFY="$PAGER" \
+      bash "$WORKER" --limit 99 2>&1
+}
+
+# Occurrence 1: ASK-912 is founder-routed and this is a virgin ledger.
+: > "$RECOVER_FILE"
+: > "$PAGES"
+g_run >/dev/null 2>&1
+if grep -q "ASK-912" "$PAGES"; then
+  ok "6g setup: the first occurrence of ASK-912 pages"
+else
+  bad "6g setup: the first occurrence of ASK-912 pages" \
+      "nothing paged, so everything below would pass on a dead detector"
+fi
+
+# Recovery: the fixture strips owner:assaf, which is what a re-label does.
+printf 'ASK-912\n' > "$RECOVER_FILE"
+: > "$PAGES"
+G_OUT2="$(g_run)"
+if grep -q "ASK-912" "$PAGES"; then
+  bad "6g: recovery itself does not page" \
+      "leaving the population produced a page -- that is the re-page-on-departure shape the block rejects"
+else
+  ok "6g: recovery itself is silent (no page on leaving the population)"
+fi
+if printf '%s\n' "$G_OUT2" | grep -q "ASK-912 is no longer founder-routed"; then
+  ok "6g: the run says out loud that it released ASK-912's announce flag"
+else
+  bad "6g: the run says out loud that it released ASK-912's announce flag" \
+      "no release line -- the sweep did not run, or it did not see the flag"
+fi
+
+# THE REPRODUCER. Same ledger, same id, board back to founder-routed. Before the
+# fix this run was silent: the flag from occurrence 1 was still held.
+: > "$RECOVER_FILE"
+: > "$PAGES"
+g_run >/dev/null 2>&1
+if grep -q "ASK-912" "$PAGES"; then
+  ok "REPRODUCER: a SECOND occurrence after recovery pages again"
+else
+  bad "REPRODUCER: a SECOND occurrence after recovery pages again" \
+      "the flag from occurrence 1 was never released, so every later recurrence of ASK-912 is muted"
+fi
+
+# NEGATIVE SELF-TEST for the reproducer. The page above must come from the
+# RECOVERY, not from a sweep that releases on every tick -- that would be the
+# ~96-pages-a-day repeat 6b closed, reintroduced by its own fix. Fourth run,
+# board unchanged, so ASK-912 is still in the population and must stay quiet.
+: > "$PAGES"
+g_run >/dev/null 2>&1
+if grep -q "ASK-912" "$PAGES"; then
+  bad "negative self-test: the recurrence page comes from recovery, not from an unconditional release" \
+      "run 4 paged with no recovery in between -- the sweep is clearing flags for ids still in the population"
+else
+  ok "negative self-test: with no recovery in between, the founder page stays deduplicated"
 fi
 
 # --- case 5: NEGATIVE SELF-TEST ---------------------------------------------

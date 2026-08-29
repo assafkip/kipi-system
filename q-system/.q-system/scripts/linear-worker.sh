@@ -930,6 +930,68 @@ if [ "${FOUNDER_ROUTED:-0}" != "0" ]; then
   fi
 fi
 
+# --- RECOVERY RE-ARMS THE ANNOUNCEMENT (codex PR #215 round 4, major) --------
+#
+# `claim-flag` was set on the first page and cleared on exactly one event: a send
+# that failed. Nothing cleared it when the issue RECOVERED. So: ASK-x is
+# mislabelled owner:assaf, the page fires, the flag sticks; someone re-labels it
+# owner:sana and the issue leaves this population with its flag still held; the
+# same issue is mis-routed again next week and `claim-flag` answers 1 -- already
+# announced -- and the second occurrence is swallowed. Permanently, until someone
+# hand-clears the ledger, which nobody knows to do because there is no page
+# telling them to. A detector that stops detecting is worse than no detector: the
+# board reads quiet for the same reason it read quiet before this whole block
+# existed. Same defect class as clear-automerge in attempts-ledger.py, where a PR
+# armed, unarmed and armed again went permanently silent.
+#
+# THE FLAG MEANS "announced WHILE routed", so departure from the population is
+# what releases it. Clearing on departure never pages -- it only re-arms that id
+# for a future recurrence -- so it does NOT reintroduce the per-population
+# re-paging the block above rejects (relabel one of four and the other three
+# stay claimed, because they are still in the population).
+#
+# RUNS ON EVERY TICK INCLUDING AN EMPTY QUEUE, which is why it sits outside the
+# `FOUNDER_ROUTED != 0` guard: the case being fixed is precisely the one where
+# the population is now empty and the flags from the last episode are still set.
+# It is above the `READY_COUNT = 0` early exit for the same reason the page site
+# is: a board with nothing ready still has to re-arm.
+#
+# SKIPPED, NOT EMPTIED, WHEN THE PICKER OUTPUT IS UNREADABLE. An unparseable
+# $PICKED would make the current population read as empty and this sweep would
+# release every flag it holds, so the next tick re-pages the entire founder queue
+# -- a page storm caused by a broken picker, announcing nothing new. The sentinel
+# says the JSON parsed; without it the sweep does nothing and the flags stand.
+FOUNDER_POP="$(printf '%s' "$PICKED" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print("PARSED")
+print(" ".join(d.get("founder_routed_ids", [])))
+' 2>/dev/null)"
+if [ "$(printf '%s\n' "$FOUNDER_POP" | head -1)" = "PARSED" ]; then
+  FOUNDER_STILL=" $(printf '%s\n' "$FOUNDER_POP" | sed -n '2p') "
+  while IFS= read -r flagged; do
+    [ -n "$flagged" ] || continue
+    # Space-delimited containment, so ASK-91 does not match ASK-911.
+    case "$FOUNDER_STILL" in
+      *" $flagged "*) continue ;;
+    esac
+    src=0
+    # </dev/null: this loop reads the flagged list from a heredoc on stdin, and a
+    # child inheriting it would eat the remaining ids.
+    python3 "$LEDGER" "$ATTEMPTS" clear-flag "$flagged" founder-routed >/dev/null 2>&1 </dev/null || src=$?
+    if [ "$src" = "0" ]; then
+      say "worker: $flagged is no longer founder-routed -- released its announce flag, so a recurrence pages again"
+    else
+      # Named, not swallowed. A release that did not land leaves that id muted
+      # for its next recurrence, which is the defect this sweep exists to close,
+      # so it gets the hand command exactly like the failed-send release above.
+      say "WARN: could not release the founder-routed flag for $flagged (exit $src) -- that issue will NOT page again if it recurs, until: python3 $LEDGER $ATTEMPTS clear-flag $flagged founder-routed"
+    fi
+  done <<FRECOVEOF
+$(python3 "$LEDGER" "$ATTEMPTS" list-flagged founder-routed 2>/dev/null)
+FRECOVEOF
+fi
+
 BLOCKED_CAP="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("blocked_capability",0))' 2>/dev/null)"
 BLOCKED_IDS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin).get("blocked_capability_ids",[])))' 2>/dev/null)"
 # ONE consolidated line per run, never one per issue. Six issues blocked on the
