@@ -238,7 +238,10 @@ def do_promote(ls, issue: dict, dor: str, why: str, apply: bool) -> str:
                "removedLabelIds": (label_ids(fresh, TRIAGE_LABEL)
                                    + label_ids(fresh, HELD_LABEL))}
     if not apply:
-        return Outcome(True, f"{ident}: WOULD PROMOTE (strip marker "
+        # wrote=False: nothing reached Linear. A preview that reports a write
+        # makes the run line and the exit code lie in exactly the mode used to
+        # check them (round 8, minor).
+        return Outcome(False, f"{ident}: WOULD PROMOTE (strip marker "
                        f"{fp[:12] or '-'}, drop {TRIAGE_LABEL}, +{len(dor)} chars)")
     res = ls.graphql(UPDATE_M, {"id": ident, "input": payload})
     if not (((res or {}).get("issueUpdate") or {}).get("success")):
@@ -249,7 +252,7 @@ def do_promote(ls, issue: dict, dor: str, why: str, apply: bool) -> str:
 def do_close(ls, issue: dict, reason: str, apply: bool) -> str:
     ident = issue["identifier"]
     if not apply:
-        return Outcome(True, f"{ident}: WOULD CLOSE ({reason[:70]})")
+        return Outcome(False, f"{ident}: WOULD CLOSE ({reason[:70]})")
     # Comment FIRST, then close, and REFUSE TO CLOSE IF THE COMMENT DID NOT LAND.
     #
     # Ordering alone was not enough and that was a real defect (codex review of
@@ -454,7 +457,7 @@ def decide(issue: dict, timeout: int = 300) -> tuple[str, str] | None:
 def do_hold(ls, issue: dict, reason: str, apply: bool) -> str:
     ident = issue["identifier"]
     if not apply:
-        return Outcome(True, f"{ident}: WOULD HOLD ({reason[:70]})")
+        return Outcome(False, f"{ident}: WOULD HOLD ({reason[:70]})")
     fresh = reread(ls, ident)
     if fresh is None:
         return Outcome(False, f"{ident}: SKIPPED (could not re-read)")
@@ -521,11 +524,36 @@ def run_triage(ls, project: str | None, limit: int, apply: bool) -> int:
                   file=sys.stderr)
             continue
         verdict, body = d
+        # EXPLICIT DISPATCH, NO else-FALLTHROUGH (codex round 8, major).
+        #
+        # The old shape was `if verdict == "PROMOTE" and body: promote else: hold`.
+        # A PROMOTE whose body came back empty therefore fell into the HOLD branch
+        # and was held with the reason "no reason given". That INVERTS the model's
+        # verdict in the one direction that costs something: it says this is real
+        # work, and the job permanently removes it from nightly triage until a
+        # human notices the label. An empty body is a MALFORMED ANSWER, not a
+        # decision to hold, and the two must not share a branch.
+        #
+        # This is the third round to find a defect in these fifteen lines (the
+        # count in round 5, the exit code in round 3, the dispatch here), so the
+        # dispatch is now exhaustive: every verdict has its own arm and anything
+        # unexpected is a FAILURE that leaves the issue in tomorrow's pool. A
+        # refusal to act is always safe here; a wrong write is not.
+        if verdict == "PROMOTE" and not body:
+            failed += 1
+            print(f"  {issue['identifier']}: PROMOTE with an empty body; left in the "
+                  "pool rather than converted to a hold", file=sys.stderr)
+            continue
         try:
-            if verdict == "PROMOTE" and body:
+            if verdict == "PROMOTE":
                 out = do_promote(ls, issue, body, "Triaged unattended.", apply)
-            else:
+            elif verdict == "HOLD":
                 out = do_hold(ls, issue, body or "no reason given", apply)
+            else:
+                failed += 1
+                print(f"  {issue['identifier']}: unknown verdict {verdict!r}",
+                      file=sys.stderr)
+                continue
             print(out.line)
             # .wrote, never "the call returned without raising". A refuse path is
             # not a success, and counting it as one is what made a fully-skipped
@@ -553,7 +581,9 @@ def run_triage(ls, project: str | None, limit: int, apply: bool) -> int:
     # So: partial failures stay exit 0 (one bad issue is not an outage), an empty
     # batch stays exit 0 (nothing to do is success), and a non-empty batch where
     # NOTHING succeeded exits 1 so the health check sees it.
-    if batch and not wrote:
+    # Only an APPLYING pass can fail to write. A preview writes nothing by
+    # definition, so judging it by write count would make --dry always exit 1.
+    if apply and batch and not wrote:
         print(f"  NOTHING WAS WRITTEN this pass ({failed} failed, {skipped} skipped "
               f"of {len(batch)}); reporting a failed run so launchd-health-check "
               "does not read it as a quiet night", file=sys.stderr)
@@ -562,7 +592,7 @@ def run_triage(ls, project: str | None, limit: int, apply: bool) -> int:
     # One write out of eight exited 0, so a job degrading badly looked identical
     # to a healthy one. A single bad issue still must not page, which is why this
     # is a majority test and not "any failure".
-    if failed > wrote:
+    if apply and failed > wrote:
         print(f"  DEGRADED: {failed} failure(s) against {wrote} write(s); more went "
               "wrong than right, so this pass is reported as failed",
               file=sys.stderr)

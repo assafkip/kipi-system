@@ -606,5 +606,73 @@ class TestUntrustedTextGetsNoTools(unittest.TestCase):
         self.assertEqual(rc, 1, "7 failures against 1 write reported a healthy night")
 
 
+class TestVerdictDispatchIsExhaustive(unittest.TestCase):
+    """codex round 8. Three rounds found defects in the same fifteen lines of
+    run_triage (the count, the exit code, the dispatch), so the dispatch is now
+    exhaustive rather than an if/else."""
+
+    def _run(self, decide_result, apply=True, n=1):
+        issues = [dict(as_issue(ALERT_DESC), identifier=f"ASK-{i}", id=f"u{i}",
+                       createdAt="2026-01-01", title="t",
+                       project={"name": "kipi-system"}) for i in range(n)]
+        seen = []
+        class L:
+            def graphql(s, q, v):
+                seen.append(q)
+                if "issueLabels(first" in q:
+                    return {"issueLabels": {"nodes": [{"id": "h", "name": "triage:held"}]}}
+                if "issue(" in q:
+                    return {"issue": {"id": "u", "identifier": "ASK-0",
+                                      "description": ALERT_DESC, "labels": {"nodes": []}}}
+                if "commentCreate" in q:
+                    return {"commentCreate": {"success": True}}
+                if "issueUpdate" in q:
+                    return {"issueUpdate": {"success": True, "issue": {"identifier": "ASK-0"}}}
+                return {}
+        of, od = triage.fetch_open, triage.decide
+        triage.fetch_open = lambda ls, proj: issues
+        triage.decide = lambda i, timeout=300: decide_result
+        try:
+            rc = triage.run_triage(L(), None, 5, apply)
+        finally:
+            triage.fetch_open, triage.decide = of, od
+        return rc, seen
+
+    def test_a_bodyless_promote_is_never_converted_into_a_hold(self):
+        """The model said this IS real work. Holding it removes real work from
+        triage until a human notices the label."""
+        rc, seen = self._run(("PROMOTE", ""))
+        self.assertFalse(any("issueUpdate" in q for q in seen),
+                         "a bodyless PROMOTE was written as a hold")
+        self.assertEqual(rc, 1, "a malformed answer was reported as a good night")
+
+    def test_an_unknown_verdict_writes_nothing(self):
+        rc, seen = self._run(("SHIP IT", "whatever"))
+        self.assertFalse(any("issueUpdate" in q for q in seen))
+        self.assertEqual(rc, 1)
+
+    def test_a_real_promote_still_writes(self):
+        """Negative control: the new arms must not block the good paths."""
+        rc, seen = self._run(("PROMOTE", DOR))
+        self.assertTrue(any("issueUpdate" in q for q in seen))
+        self.assertEqual(rc, 0)
+
+    def test_a_real_hold_still_writes(self):
+        rc, seen = self._run(("HOLD", "not executable as written"))
+        self.assertTrue(any("issueUpdate" in q for q in seen))
+        self.assertEqual(rc, 0)
+
+    def test_a_dry_run_claims_no_write_and_still_exits_zero(self):
+        """codex round 8, minor. A preview reported writes it had not made, which
+        made the run line and exit code lie in the very mode used to check them."""
+        rc, seen = self._run(("PROMOTE", DOR), apply=False)
+        self.assertFalse(any("issueUpdate" in q for q in seen),
+                         "a dry run reached Linear")
+        self.assertEqual(rc, 0, "a preview was graded as a failed pass")
+        out = triage.do_promote(None, as_issue(ALERT_DESC), DOR, "", False)
+        self.assertFalse(out.wrote, "a preview reported wrote=True")
+        self.assertIn("WOULD", out.line)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
