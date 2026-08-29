@@ -37,6 +37,8 @@ that can crash its caller is worse than the alert being lost.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -310,14 +312,111 @@ def _read_state(fp: str) -> dict:
 
 
 def _write_state(fp: str, data: dict) -> None:
-    """Remember which ticket owns this fingerprint. Never raises."""
+    """Remember which ticket owns this fingerprint. Never raises.
+
+    WRITTEN THEN RENAMED, not written in place. A reader that catches the file
+    mid-truncate gets `{}` back from _read_state, decides no ticket exists, and
+    opens a second permanent one -- the same duplicate this file's lock exists to
+    prevent, arriving by a different door. Inside the lock that cannot happen;
+    the rename is what protects the ONE path that runs without it, the bounded
+    fallback in _fingerprint_lock. os.replace is atomic within a directory.
+    """
     try:
         os.makedirs(_state_dir(), exist_ok=True)
-        with open(os.path.join(_state_dir(), f"{fp}.json"), "w",
-                  encoding="utf-8") as fh:
+        final = os.path.join(_state_dir(), f"{fp}.json")
+        tmp = f"{final}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(data, fh)
+        os.replace(tmp, final)
     except OSError:
         pass
+
+
+# HOW LONG A SECOND CALLER WAITS FOR THE FIRST ONE'S TICKET.
+# Sized against the work the lock covers: one issueCreate plus the team/label/
+# project lookups around it, each capped by linear-sync.py at 30s HTTP. 25s is
+# under slack-notify.sh's own `timeout 20` for the common path and still leaves
+# room when this file is invoked directly by a job with no outer cap.
+LOCK_WAIT_SECONDS = float(os.environ.get("KIPI_ALERT_LOCK_WAIT_SECONDS", "25"))
+
+
+@contextlib.contextmanager
+def _fingerprint_lock(fp: str, wait: float | None = None):
+    """Serialize read-state -> create-issue -> write-state for ONE fingerprint.
+
+    THE DEFECT (PR #198 review round 4, major). file_alert reads the fingerprint
+    state, and only if it finds no open ticket does it create one. Two callers
+    that reach the read before either reaches the write both see "no ticket" and
+    both create. The result is two PERMANENT Linear objects for one condition,
+    which is expensive in a way a duplicate log line is not: nothing collapses
+    them, a human closes each by hand, and a queue that repeats itself is a queue
+    people learn to skim. The heartbeat is one caller that can overlap with
+    itself -- each instance is bounded at 1800s, so a wide sweep can outlive the
+    gap to the next fire -- but it is not the only one: ~30 call sites across six
+    repos reach this writer, and launchd fires several of their jobs on the hour.
+
+    WHY A LOCK, over the two alternatives:
+
+      * An idempotency key on the create would be the strongest answer, and
+        Linear's IssueCreateInput has no such field. There is no server-side
+        dedupe to key on, so this is ruled out by the API, not by taste.
+      * A claim file (O_CREAT|O_EXCL) makes the loser give up. The loser then has
+        no way to learn the winner's issue id, so it either drops its occurrence
+        -- losing the count that makes a repeating alert visible as repeating --
+        or files anyway, which is the bug. A lock makes the loser WAIT and then
+        take the existing repeat path: one ticket, count 2. That is the behaviour
+        the file already documents, restored under concurrency.
+
+    Keyed PER FINGERPRINT, not globally. A global lock would pass the duplicate
+    test above and queue every unrelated alert behind the slowest HTTP call in
+    the fleet; test_alert_to_linear.py measures that two different shapes still
+    proceed in parallel, so a global lock fails a test rather than shipping
+    quietly.
+
+    THE FALLBACK IS DELIBERATE AND STATED. If the lock cannot be taken -- an
+    unwritable cache dir, or a holder that outlives the wait -- this yields False
+    and the caller proceeds anyway. A duplicate ticket is a nuisance; a swallowed
+    alert is the exact failure mode this whole path exists to prevent, and the
+    caller says so in the line it returns.
+
+    The lock file is never unlinked. Unlinking one is its own race: a process can
+    hold the lock on an inode another process has already replaced, and then both
+    are "holding the lock" on different files. They are empty, one per distinct
+    alert shape, and bounded by the number of shapes the fleet can emit.
+    """
+    wait = LOCK_WAIT_SECONDS if wait is None else wait
+    handle = None
+    try:
+        os.makedirs(_state_dir(), exist_ok=True)
+        handle = open(os.path.join(_state_dir(), f"{fp}.lock"), "a+")
+    except OSError:
+        handle = None
+
+    held = False
+    if handle is not None:
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.02)
+    try:
+        yield held
+    finally:
+        if handle is not None:
+            if held:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            try:
+                handle.close()
+            except OSError:
+                pass
 
 
 # The fleet convention for where the skeleton sits when nothing else can say.
@@ -749,7 +848,15 @@ def _refetch_label_id(ln, team_id: str, name: str) -> str | None:
 
 
 def file_alert(message: str, now: float | None = None) -> tuple[int, str]:
-    """(exit_code, human line). The whole job, in one place."""
+    """(exit_code, human line). The whole job, in one place.
+
+    The decide-and-create half runs under this fingerprint's lock -- see
+    _fingerprint_lock for why two concurrent callers otherwise open two
+    permanent tickets for one condition. The noise check and the key lookup stay
+    OUTSIDE it on purpose: neither can create anything, and every caller on the
+    machine queueing behind a lock to be told "no key configured" would be a
+    stall this path invented for itself.
+    """
     now = time.time() if now is None else now
     if is_noise(message):
         _log_noise(message, now)
@@ -762,6 +869,23 @@ def file_alert(message: str, now: float | None = None) -> tuple[int, str]:
     except Exception as exc:
         return EXIT_NO_KEY, f"no Linear key configured ({exc}); NOT filed: {message}"
 
+    with _fingerprint_lock(fp) as held:
+        code, line = _file_alert_serialized(message, fp, ln, now)
+    if not held:
+        # Never silent about it. A duplicate ticket nobody can explain is how a
+        # queue stops being trusted, so the reason lands in the job log that
+        # already prints this line.
+        line += " [WITHOUT the dedupe lock -- a concurrent duplicate was possible]"
+    return code, line
+
+
+def _file_alert_serialized(message: str, fp: str, ln, now: float) -> tuple[int, str]:
+    """Read state -> decide -> create -> write state. Under the fingerprint lock.
+
+    Split out rather than indented in place so the lock's extent is the function
+    boundary. An `if`-shaped critical section is the kind that grows a new early
+    `return` above the write and silently stops being covered.
+    """
     prior = _read_state(fp)
 
     # A ticket already exists for this shape. Is it still open?
