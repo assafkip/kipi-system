@@ -329,6 +329,42 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     done
   done < <(printf '%s\n' "$COMMAND" | tr ';|&' '\n\n\n')
 
+  # ASK-1131 round 3 (Codex major, PR #274). The program token can be QUOTED or
+  # ESCAPED, and then the scan reads a different word:
+  #
+  #   "rm" -rf DIR    tokenises to `"rm"`, basename `"rm"`, no rule, ALLOWED
+  #   'rm' -rf DIR    same
+  #
+  # and the substring list misses `"rm" -rf` too, because it wants whitespace
+  # straight after the name and finds a quote instead. Escaping the name is also
+  # the ordinary way to bypass an alias, so it is a form people type on purpose,
+  # not only one an attacker would reach for.
+  #
+  # The shell strips these before exec, so the scan does too: the SAME rules are
+  # offered once more over a stage with quote and backslash characters removed.
+  # Removing them can only REVEAL a program name, never hide one, so this layer
+  # is deny-only like every layer before it and cannot clear anything.
+  #
+  # It does mean `echo "rm -rf x"` reaches the rm rule. That string is already
+  # denied by the substring list above, deliberately, since 2026-08-07: this hook
+  # does not try to tell prose from invocation, and nothing here changes that.
+  while IFS= read -r _stage; do
+    [ -n "$_stage" ] || continue
+    _norm="${_stage//\"/}"
+    _norm="${_norm//\'/}"
+    _norm="${_norm//\\/}"
+    [ "$_norm" = "$_stage" ] && continue
+    set -f
+    _dw=( "" $_norm )
+    set +f
+    _i=1
+    while [ "$_i" -lt "${#_dw[@]}" ]; do
+      _argv_reason="$(argv_deny_reason "${_dw[*]:$_i}")" && \
+        emit_deny "destructive invocation: $_argv_reason. The program token was quoted or escaped; the shell strips that before exec, so this scan does too (ASK-1131)."
+      _i=$((_i+1))
+    done
+  done < <(printf '%s\n' "$COMMAND" | tr ';|&' '\n\n\n')
+
   # ASK-1118: the fleet exemption is decided per STAGE, not over the whole string.
   #
   # THE SCAR, both directions, each measured before this was written. The block

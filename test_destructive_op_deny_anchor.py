@@ -389,6 +389,14 @@ FLAG_POSITION = [
     "env -i rm -v -rf /tmp/ask1131-canary",
     "nice -n 10 rm -i -r /tmp/ask1131-canary",
     "sudo -u root git push -q --force origin main",
+    # The program token QUOTED or escaped. `"rm" -rf DIR` runs rm, and the
+    # substring list misses it too because there is a quote between the name and
+    # the space it wants. Escaping the name is also how you bypass an alias, so
+    # it is a form people type on purpose. (Codex major, PR #274 round 2.)
+    '"rm" -rf /tmp/ask1131-canary',
+    "'rm' -rf /tmp/ask1131-canary",
+    "\\rm -rf /tmp/ask1131-canary",
+    '"git" push --force origin main',
 ]
 
 # The other half of the fix, and the half a pattern-per-hole approach loses:
@@ -443,6 +451,24 @@ class TestFlagPositionDoesNotMoveTheTarget:
         assert VENDORED.read_bytes() == HOOK.read_bytes(), (
             "the vendored copy and the live hook have diverged. Re-vendor with:\n"
             "  cat %s > %s" % (HOOK, VENDORED))
+
+    def test_git_clean_dry_run_is_a_known_false_positive(self, tmp_path):
+        """`git clean -n -d` is a PREVIEW and is refused anyway.
+
+        This pins what the hook does, not what it should do (Codex minor, PR
+        #274 round 2). The rule lives inside a block that the only write path an
+        agent has cannot modify: apply-claude-changes is additive-only, so a
+        rule can be superseded by an earlier DENY but never loosened, and every
+        earlier loop fires before anything new could clear this. Fixing it needs
+        `replace` to reach hook text, which is sp-ae47f005 and is a deliberate
+        widening with its own blast radius, not a side effect of this change.
+
+        Left standing rather than hidden because the cost sits on the side this
+        file already chose in 2026-08-07: the miss costs a deleted volume, the
+        false positive costs one tool call. `git clean -n` alone still passes.
+        When sp-ae47f005 lands, this test flips and that is the signal.
+        """
+        assert decide(hook_copy(tmp_path), "git clean -n -d", tmp_path) == "deny"
 
     def test_the_prose_false_positive_is_unchanged(self, tmp_path):
         """The hook deliberately does NOT tell prose from invocation, and argv
