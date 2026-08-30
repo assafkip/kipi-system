@@ -82,15 +82,70 @@ MIN_TERM_LEN = 4
 # every firing, and a hook that fires on "what is the weather" is a tax with no
 # signal. A MISSED engineering prompt costs nothing -- the SessionStart titles are
 # still there -- so this errs narrow on purpose.
+# FOUR WORDS REMOVED (Codex minor, PR #277): design, designing, ship, budget.
+# The docstring above promises this does not fire on prompts with no engineering
+# intent, and those four have strong non-engineering senses in this founder's own
+# work -- design is brand and visual design, ship is publishing content, budget is
+# money. They made the docstring false. merge/commit/patch stay: they have no
+# common non-engineering reading here.
+#
+# The COST argument for narrowing is separately handled by the per-session dedupe
+# below, which is the better lever: it makes a second firing on the same lesson
+# free rather than making the first firing rarer.
 TRIGGER_RE = re.compile(
     r"(?i)\b("
-    r"fix|fixing|build|building|implement|design|designing|debug|refactor|harden|"
-    r"wire|wiring|ship|patch|migrate|migration|schema|script|deploy|commit|merge|"
+    r"fix|fixing|build|building|implement|debug|refactor|harden|"
+    r"wire|wiring|patch|migrate|migration|schema|script|deploy|commit|merge|"
     r"gate|gates|hook|hooks|test|tests|guard|lint|linter|validator|detector|"
-    r"selector|allowlist|timeout|budget|bug|defect|broken|failing|fails|regress\w*|"
+    r"selector|allowlist|timeout|bug|defect|broken|failing|fails|regress\w*|"
     r"rca|root cause|postmortem|corpus|reproducer|mutation"
     r")\b"
 )
+
+
+def _seen_path(session_id):
+    """Per-session record of which lessons have already been injected.
+
+    In the system temp dir, never the repo: this is ephemeral per-machine state
+    and writing it under the project would put a file on every prompt into a
+    tree that unattended jobs commit with `git add -A`.
+    """
+    import tempfile
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(session_id))[:120]
+    if not safe:
+        return None
+    return Path(tempfile.gettempdir()) / "kipi-lessons-inject" / (safe + ".json")
+
+
+def load_seen(session_id):
+    # NO SESSION ID, NO DEDUPE. The first version fell back to a single
+    # "nosession" key, which is a GLOBAL record shared by every caller that
+    # omits the field -- so a second run saw the first run's lessons as already
+    # injected and stayed silent. Found by this file's own suite going 7/8 then
+    # 5/8 on identical input: a dedupe scoped wider than a session makes the
+    # thing it dedupes disappear.
+    path = _seen_path(session_id)
+    if path is None:
+        return set()
+    try:
+        return set(json.loads(path.read_text()))
+    except Exception:
+        # No record, unreadable record, corrupt record: all mean "inject". This
+        # fails OPEN on purpose. The failure mode of a broken dedupe must be a
+        # repeated injection, never a silent nothing -- the whole point of this
+        # hook is that the words reach the model.
+        return set()
+
+
+def save_seen(session_id, ids):
+    p = _seen_path(session_id)
+    if p is None:
+        return
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(sorted(ids)))
+    except OSError:
+        pass
 
 STOPWORDS = {
     "that", "this", "with", "from", "have", "will", "would", "should", "could",
@@ -186,6 +241,13 @@ def main():
 
     lessons = []
     for p in sorted(lessons_dir.glob("*.md")):
+        # README.md is the corpus's own authoring instruction, not a lesson.
+        # It out-ranked real lessons on any lessons-related prompt because its
+        # vocabulary IS the corpus vocabulary (Codex minor, PR #277).
+        # lessons-index.py already excludes it by the same name check; this is
+        # the second reader of that directory agreeing with the first.
+        if p.name == "README.md":
+            continue
         parsed = parse_lesson(p)
         if not parsed:
             continue
@@ -196,7 +258,17 @@ def main():
     if not lessons:
         return 0
 
-    picked = rank(lessons, terms(prompt))[:TOP_K]
+    # CROSS-TURN DEDUPE (Codex minor, PR #277). Without it a byte-identical
+    # payload was re-injected every turn: measured at 48KB across six turns of
+    # one session, for zero added information after the first.
+    #
+    # Keyed on the lesson ID, not the payload hash: the point is that the model
+    # has already been shown this lesson's TEXT in this session, and that stays
+    # true even when a later prompt would have ranked it differently.
+    session_id = payload.get("session_id") or ""
+    seen = load_seen(session_id)
+    ranked = rank(lessons, terms(prompt))
+    picked = [r for r in ranked if r[1] not in seen][:TOP_K]
     if not picked:
         return 0
 
@@ -218,6 +290,13 @@ def main():
         used += len(chunk)
     if len(parts) == 1:
         return 0
+
+    # Record only what actually FIT under the ceiling. A lesson trimmed by the
+    # payload cap was never shown, so marking it seen would lose it for the rest
+    # of the session -- the dedupe would have caused the silent miss the header
+    # warns about.
+    emitted = {lid for _, lid, _, _ in picked[:len(parts) - 1]}
+    save_seen(session_id, seen | emitted)
 
     sys.stdout.write(json.dumps(
         {"hookSpecificOutput": {"additionalContext": "".join(parts)}}))

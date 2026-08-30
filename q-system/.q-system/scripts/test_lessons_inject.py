@@ -20,6 +20,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 HOOK = Path(__file__).resolve().parent / "lessons-inject.py"
@@ -151,6 +152,101 @@ def case_non_engineering_prompt_with_shared_vocabulary_is_silent() -> bool:
     rc, out = run(repo, "I want to write a post about voice cadence and draft rhythm")
     return rc == 0 and not out.strip()
 
+
+def case_readme_is_not_a_lesson() -> bool:
+    """README.md is the corpus's authoring instruction, not a lesson.
+
+    Codex minor, PR #277: its vocabulary IS the corpus vocabulary, so it
+    out-ranked real lessons on any lessons-related prompt. lessons-index.py
+    already excludes it by name; this pins the second reader agreeing.
+    """
+    repo = _repo()
+    (repo / "q-system" / "lessons" / "README.md").write_text(
+        "---\nid: readme\nkind: pattern\ntitle: How to write a lesson\n"
+        "date: 2026-08-01\n---\n\n"
+        "A lesson records a gate, a hook, an allowlist, a timeout or a budget "
+        "that failed, and the reproducer that shows it. Keep it HOW-only.\n",
+        encoding="utf-8")
+    _, out = run(repo, "widen the blocking gate allowlist so the hook fires")
+    ctx = _ctx(out)
+    return bool(ctx) and "readme" not in ctx and "How to write a lesson" not in ctx
+
+
+def case_same_session_does_not_re_inject() -> bool:
+    """Codex minor, PR #277: 48KB of byte-identical payload over six turns.
+
+    Second turn, same session, same prompt: the lesson already shown must not
+    be shown again.
+    """
+    repo = _repo()
+    sid = "sess-dedupe-" + uuid.uuid4().hex  # fresh: the record persists on disk
+    prompt = "widen the blocking gate allowlist so the hook fires"
+    _, first = run(repo, prompt, raw=json.dumps(
+        {"prompt": prompt, "session_id": sid}))
+    _, second = run(repo, prompt, raw=json.dumps(
+        {"prompt": prompt, "session_id": sid}))
+    if not first.strip():
+        return False
+    if not second.strip():
+        return True                      # nothing left to say: correct
+    return _ctx(first) != _ctx(second)   # or at minimum, not the same payload
+
+
+def case_a_different_session_still_gets_it() -> bool:
+    """The negative control for the dedupe.
+
+    A dedupe scoped wider than one session makes the thing it dedupes
+    disappear. This suite caught exactly that in the first revision -- it went
+    7/8 then 5/8 on identical input, because a payload with no session_id fell
+    back to one shared global key. A second session must be unaffected.
+    """
+    repo = _repo()
+    prompt = "widen the blocking gate allowlist so the hook fires"
+    _, a = run(repo, prompt, raw=json.dumps(
+        {"prompt": prompt, "session_id": "one-" + uuid.uuid4().hex}))
+    _, b = run(repo, prompt, raw=json.dumps(
+        {"prompt": prompt, "session_id": "two-" + uuid.uuid4().hex}))
+    return bool(a.strip()) and bool(b.strip()) and _ctx(a) == _ctx(b)
+
+
+def case_repeated_runs_without_a_session_id_are_identical() -> bool:
+    """No session id means NO dedupe, not a global one.
+
+    Same call twice, no session_id, must give the same answer both times.
+    """
+    repo = _repo()
+    prompt = "widen the blocking gate allowlist so the hook fires"
+    _, a = run(repo, prompt)
+    _, b = run(repo, prompt)
+    return bool(a.strip()) and _ctx(a) == _ctx(b)
+
+
+def case_ambiguous_words_no_longer_trigger() -> bool:
+    """design / ship / budget have strong non-engineering senses here.
+
+    The docstring promises this does not fire without engineering intent, and
+    those words made it false (Codex minor, PR #277).
+    """
+    repo = _repo()
+    for prompt in ("can you design a logo for the brand",
+                   "when do we ship the newsletter to the list",
+                   "what is our marketing budget for next month"):
+        rc, out = run(repo, prompt)
+        if rc != 0 or out.strip():
+            return False
+    return True
+
+
+def case_engineering_words_still_trigger() -> bool:
+    """The control for the narrowing: it must not have gutted the trigger."""
+    repo = _repo()
+    for prompt in ("merge it once the gate is green",
+                   "commit the hook fix",
+                   "the allowlist timeout is a defect"):
+        rc, out = run(repo, prompt)
+        if rc != 0 or not out.strip():
+            return False
+    return True
 
 CASES = [v for k, v in sorted(globals().items()) if k.startswith("case_")]
 
