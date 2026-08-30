@@ -288,9 +288,18 @@ TEXT_ENVELOPE_RE = re.compile(r'["\']?%s["\']?\s*[:=]' % KEY_ENVELOPE)
 #   emission :  {"additionalContext": "..."}        <- key of an object literal
 #   read     :  out["hookSpecificOutput"]["additionalContext"]
 #   assertion:  assert "additionalContext" not in out
-# So: the key must be FOLLOWED by a colon (it is a key, not an index or an
-# operand) and must NOT be immediately PRECEDED by '[' (that is a subscript).
-EMIT_KEY_RE = re.compile(r'(?<!\[)["\']%s["\']\s*:' % KEY_CONTEXT)
+# So: the key must be FOLLOWED by a colon. That single requirement separates all
+# three -- a subscript closes with ']' and an operand with whitespace.
+#
+# This used to also carry a `(?<!\[)` lookbehind against the subscript case, and
+# the comment claimed both halves were load-bearing. They were not: deleting the
+# lookbehind changed no result anywhere, because the colon had already excluded
+# every subscript. It read as verified because the mutation that checked it
+# removed the lookbehind AND the comment-stripping in one edit and credited the
+# resulting red to both. A mutation that changes two things proves nothing about
+# either (Opus fallback minor, PR #285 round 10). Dead branch removed, and the
+# colon is now pinned on its own below.
+EMIT_KEY_RE = re.compile(r'["\']%s["\']\s*:' % KEY_CONTEXT)
 # `#` for shell and python, `//` for js/ts. A scar comment quoting the broken
 # envelope verbatim -- which is exactly how this repo documents a scar -- was
 # being read as an emission in a .js or .ts hook (round 8 minor).
@@ -400,6 +409,11 @@ SELF_TEST_CASES = [
 ]
 
 SELF_TEST_SHELL = [
+    # The arm that pins the colon requirement ON ITS OWN. Without it, the
+    # subscript/assertion arms below pass for a reason no case names, which is
+    # how a control ends up hollow.
+    ("shell_key_without_colon_is_not_an_emission", None,
+     'if [ "$k" = "additionalContext" ]; then echo hi; fi\n'),
     ("shell_good", OK,
      'echo \'{"hookSpecificOutput": {"hookEventName": "SessionStart", '
      '"additionalContext": "x"}}\'\n'),
