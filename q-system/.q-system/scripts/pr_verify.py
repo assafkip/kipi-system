@@ -77,9 +77,6 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("pr", help="PR number")
     ap.add_argument("--root", default=".")
-    ap.add_argument("--allow-detached", action="store_true",
-                    help="write the receipt when HEAD equals the PR head even "
-                         "on a detached checkout (the review-tree case)")
     args = ap.parse_args()
 
     root = repo_root(args.root)

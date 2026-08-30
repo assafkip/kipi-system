@@ -60,6 +60,27 @@ FAILURES: list[str] = []
 CHECKS = 0
 
 
+
+class unprotected:
+    """Pin `_protection_exists` to False for the receipt cases.
+
+    The receipt deferral is only reachable on a repo with NO branch protection,
+    so a case about receipt LOOKUP has to put itself in that world explicitly.
+    The fixture repos point at a github.com URL that is never contacted, so the
+    real probe answers "unknown", which the gate treats as protected -- correct
+    behaviour, and it would make every receipt case below assert the same
+    refusal and test nothing.
+    """
+
+    def __enter__(self):
+        self.saved = _mod._protection_exists
+        _mod._protection_exists = lambda cwd: False
+
+    def __exit__(self, *a):
+        _mod._protection_exists = self.saved
+        return False
+
+
 def check(name: str, command: str, cwd: Path, want: str,
           contains: str | None = None) -> None:
     """Assert the decision, and optionally a substring of the REASON.
@@ -233,14 +254,39 @@ def main() -> int:
         (gh_feature / ".prd-os" / "pr-receipts").mkdir(parents=True)
         (gh_feature / ".prd-os" / "pr-receipts" / "pr-9.json").write_text(
             '{"result": "green", "sha": "deadbeef"}\n')
-        check("cd to another repo does not borrow this repo's receipt",
-              "cd " + str(gh_other) + " && gh pr merge 9 --squash",
-              gh_feature, "deny", contains="no green receipt")
-        # The control: with no cd, the same command DOES consult this repo, so
-        # the case above cannot be green by way of a gate that ignores receipts.
-        check("without a cd, the receipt in this repo is the one consulted",
-              "gh pr merge 9 --squash", gh_feature, "deny",
-              contains="could not read PR #9's current head")
+        with unprotected():
+            check("cd to another repo does not borrow this repo's receipt",
+                  "cd " + str(gh_other) + " && gh pr merge 9 --squash",
+                  gh_feature, "deny", contains="no green receipt")
+            # The control: with no cd, the same command DOES consult this repo,
+            # so the case above cannot be green by way of a gate that ignores
+            # receipts.
+            check("without a cd, the receipt in this repo is the one consulted",
+                  "gh pr merge 9 --squash", gh_feature, "deny",
+                  contains="could not read PR #9's current head")
+
+        # --- AND THE RECEIPT PATH IS CLOSED WHERE PROTECTION EXISTS ---
+        #
+        # Codex major, PR #269 round 6. The receipt is a local file written by
+        # the same actor this gate constrains, so it cannot be made unforgeable;
+        # it defends against FORGETTING to verify, never against a deliberate
+        # bypass. It is therefore only offered where there is nothing better --
+        # a repo with no protection, where GitHub refuses --auto outright and
+        # posts no contexts.
+        #
+        # Same command, same green receipt on disk, three worlds:
+        _saved = _mod._protection_exists
+        try:
+            _mod._protection_exists = lambda cwd: True
+            check("protected: a local receipt does not outrank a required check",
+                  "gh pr merge 9 --squash", gh_feature, "deny",
+                  contains="GitHub is already holding the required checks")
+            _mod._protection_exists = lambda cwd: None
+            check("unknown protection is treated as protected",
+                  "gh pr merge 9 --squash", gh_feature, "deny",
+                  contains="could not be read")
+        finally:
+            _mod._protection_exists = _saved
 
         # --- THE RECEIPT LIVES AT THE REPO ROOT, THE SHELL DOES NOT ---
         #
@@ -254,15 +300,17 @@ def main() -> int:
         # unpatched gate says "no green receipt"; the patched one finds it and
         # moves on to the head re-read. Same decision, different cause.
         (gh_feature / "sub" / "dir").mkdir(parents=True)
-        check("a receipt at the repo root is found from a subdirectory",
-              "gh pr merge 9 --squash", gh_feature / "sub" / "dir", "deny",
-              contains="could not read PR #9's current head")
-        # Control: a directory that is NOT in any repo has no root to resolve, so
-        # it still reports the receipt missing. Without this, a gate that simply
-        # stopped checking receipts would pass the case above.
-        check("outside any repo there is no root, so the receipt is missing",
-              "gh pr merge 9 --squash", root, "deny",
-              contains="no green receipt")
+        with unprotected():
+            check("a receipt at the repo root is found from a subdirectory",
+                  "gh pr merge 9 --squash", gh_feature / "sub" / "dir", "deny",
+                  contains="could not read PR #9's current head")
+            # Control: a directory that is NOT in any repo has no root to
+            # resolve, so it still reports the receipt missing. Without this, a
+            # gate that simply stopped checking receipts would pass the case
+            # above.
+            check("outside any repo there is no root, so the receipt is missing",
+                  "gh pr merge 9 --squash", root, "deny",
+                  contains="no green receipt")
 
         # --- degenerate input ---
         check("empty command", "", gh_feature, "allow")

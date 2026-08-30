@@ -523,6 +523,39 @@ def _merge_verdict(seg: list[str], cwd: str, note: str | None = None) -> str | N
     return None
 
 
+def _protection_exists(cwd: str) -> bool | None:
+    """True when the repo's default branch has required status checks.
+
+    None means the question could not be answered, and every caller treats that
+    as "assume it does", because the receipt path must never open on a repo whose
+    protection state is unknown.
+    """
+    try:
+        r = subprocess.run(
+            ["gh", "api", "repos/{owner}/{repo}/branches/{branch}/protection"
+             .replace("{branch}", "main"),
+             "-q", ".required_status_checks.contexts | length"],
+            cwd=cwd, capture_output=True, text=True, timeout=20)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        # ONLY GitHub's own sentence counts as "not protected". A BARE 404 is
+        # ambiguous -- it is also what a missing repo, a revoked token and a
+        # typo'd remote return -- and reading it as "unprotected" would open the
+        # local-receipt path on exactly the failures where you least want it
+        # open. Measured against the fixture repos in this suite: their origin
+        # points at a repo that does not exist, and a bare-404 rule classified
+        # them as unprotected, which is the wrong answer arrived at by accident.
+        blob = (r.stderr or "") + (r.stdout or "")
+        if "Branch not protected" in blob:
+            return False
+        return None
+    try:
+        return int(r.stdout.strip()) > 0
+    except ValueError:
+        return None
+
+
 def _receipt_missing(rest: list[str], cwd: str) -> str | None:
     """None when a trustworthy green receipt covers this PR's CURRENT head.
 
@@ -531,6 +564,35 @@ def _receipt_missing(rest: list[str], cwd: str) -> str | None:
     cannot be read at all this fails CLOSED, because "could not check" and
     "checked and fine" are the two answers a gate must never merge.
     """
+    # A LOCAL FILE MAY NOT OUTRANK A REQUIRED CHECK (Codex major, PR #269 r6).
+    #
+    # The receipt is written by pr_verify.py, in this working tree, by the same
+    # actor this gate constrains. Nothing stops that actor writing
+    # {"result": "green", "sha": <the real head>} by hand instead of running the
+    # floor. It cannot be made unforgeable against a local agent, and pretending
+    # otherwise is worse than admitting it: the receipt defends against
+    # FORGETTING to verify, never against a deliberate bypass.
+    #
+    # So it is only ever offered where there is nothing better. The deferral
+    # exists for repos with NO branch protection, where `--auto` is refused by
+    # GitHub outright and the required contexts are never posted -- there, a
+    # receipt beats nothing. Where protection DOES exist, GitHub is holding the
+    # real line and no local file may step in front of it.
+    #
+    # Unknown counts as protected. "Could not check" and "checked and fine" are
+    # the two answers a gate must never merge.
+    protected = _protection_exists(cwd)
+    if protected is not False:
+        why = ("this branch is protected, so GitHub is already holding the "
+               "required checks" if protected
+               else "the protection state could not be read, so this assumes it "
+                    "is protected")
+        return ("a merge without --auto is refused here: %s. A green receipt is "
+                "a LOCAL file written by the same actor this gate constrains, "
+                "so it may not outrank a required check.\n"
+                "  Let the machinery merge it:  gh pr merge --auto --squash <n>"
+                % why)
+
     prs = [t for t in rest if t.isdigit()]
     if len(prs) != 1:
         return ("a merge without --auto needs exactly one PR number, so the "
