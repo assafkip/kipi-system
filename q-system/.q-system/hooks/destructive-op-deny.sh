@@ -281,14 +281,20 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     case "${1##*/}" in
       rm|git)                                  return 0 ;;
       sudo|command|nohup|nice|time|env)        return 0 ;;
-      # An ENV ASSIGNMENT prefix (`FOO=bar cmd`), which cannot begin with `-`.
-      # argv_deny_reason strips any `*=*`, so `--grep=x` is stripped there too --
-      # but a position starting at a FLAG is safe to skip here, because whatever
-      # deny survives that stripping is reachable from the program token itself,
-      # and the program token is always scanned. Without this exclusion the
-      # filter passed every `--opt=value` and bought nothing: measured 19.87s on
-      # 400 tokens with `*=*`, unchanged from before the filter existed.
-      [!-]*=*)                                 return 0 ;;
+      # NO ASSIGNMENT ARM AT ALL, and that is not a narrowing of the guard.
+      #
+      # It used to admit `[!-]*=*` to catch `FOO=bar cmd`. But argv_deny_reason
+      # STRIPS leading assignments and then looks at the program, so a position
+      # starting at an assignment can only deny if a recognised program follows
+      # -- and that program's own position is scanned separately, every time.
+      # The arm bought no coverage and cost the bypass it was meant to close:
+      # 300 `k=v` tokens took 8.28s against a 5s timeout, because every one of
+      # them forked a subshell.
+      #
+      # `FOO=bar rm -rf x` still denies, from the `rm` position. That is pinned
+      # by test_an_env_assignment_prefix_still_denies, which existed before this
+      # change and is why removing the arm is safe to do rather than to argue
+      # about.
       *)                                       return 1 ;;
     esac
   }
@@ -484,8 +490,14 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     set +f
     _i=1
     while [ "$_i" -lt "${#_dw[@]}" ]; do
-      _argv_reason="$(argv_deny_reason "${_dw[*]:$_i}")" && \
-        emit_deny "destructive invocation: $_argv_reason. The program token was quoted or escaped; the shell strips that before exec, so this scan does too (ASK-1131)."
+      # THE SAME PRE-FILTER AS THE OTHER SCAN (PR #279 major). This loop had
+      # none, so a single long QUOTED string reached it unfiltered and forked
+      # per word: 3000 words took 6.99s against a 5s timeout. Fixing one of two
+      # identical loops is how a bypass survives being "fixed".
+      if _argv_could_deny_here "${_dw[$_i]}"; then
+        _argv_reason="$(argv_deny_reason "${_dw[*]:$_i}")" && \
+          emit_deny "destructive invocation: $_argv_reason. The program token was quoted or escaped; the shell strips that before exec, so this scan does too (ASK-1131)."
+      fi
       _i=$((_i+1))
     done
   done < <(printf '%s\n' "$COMMAND" | tr ';|&' '\n\n\n')
@@ -636,6 +648,20 @@ if [ "${TOOL_NAME:0:5}" = "mcp__" ]; then
   # rule below can ever deny the call that makes a server usable.
   case "$MCP_OP_LOWER" in
     *authenticate*|*complete_authentication*) : ;;
+    # A SESSION RESET CLEARS A CONVERSATION, NOT DATA (PR #279 minor).
+    # `..._notebooklm__reset_session` matched the `reset` verb and came back with
+    # a destructive-operation message and an approval-token instruction.
+    # Clearing chat history destroys nothing, and a gate that blocks routine work
+    # with a scary message is a gate someone switches off.
+    #
+    # It sits beside the auth exemption because both are evaluated before the
+    # verb rules; placed after them it never runs. My first attempt did exactly
+    # that. The ordering is held by test_a_session_reset_is_allowed, which drives
+    # the hook and goes red if this stops taking effect.
+    #
+    # `reset_branch` DOES discard a database branch's state and keeps its deny,
+    # which test_supabase_reset_branch_is_denied pins.
+    reset_session|reset_chat|reset_conversation) : ;;
     *)
       # Destructive verbs. Anchored at the start of the operation or after a
       # non-letter, so `untrash` (letter before the verb) does not match and

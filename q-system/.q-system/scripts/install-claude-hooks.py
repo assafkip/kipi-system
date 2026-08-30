@@ -287,11 +287,42 @@ def read(path):
 _ENV_READ = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 
 
+# Names the script ASSIGNS: `NAME=`, `local NAME=`, `declare -a NAME=`,
+# `for NAME in`, `read NAME`. A variable the file defines for itself is not an
+# environment read, whatever its case.
+_ENV_ASSIGNED = re.compile(
+    r"(?:^|;|\||&|\bthen\b|\bdo\b|\belse\b|\{)\s*"
+    r"(?:local\s+|declare\s+(?:-\w+\s+)*|export\s+|readonly\s+)?"
+    r"([A-Za-z_][A-Za-z0-9_]*)=",
+    re.M)
+_ENV_LOOPVAR = re.compile(r"\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b")
+_ENV_READVAR = re.compile(r"\bread\s+(?:-\w+\s+)*([A-Za-z_][A-Za-z0-9_]*)")
+_ENV_LOCALDECL = re.compile(r"\blocal\s+((?:[A-Za-z_][A-Za-z0-9_]*\s*)+)")
+
+
 def _env_vars_read(text):
-    """Uppercase-ish names only: shell locals are lowercase by convention here,
-    and every local in this hook follows it, so this stays about the environment
-    rather than reporting every variable in the file."""
-    return {m for m in _ENV_READ.findall(text) if m.isupper() or "_" in m}
+    """Environment reads only: names the script does NOT define for itself.
+
+    THE BUG THIS FIXES REFUSED MY OWN HOOK (PR #279 major). The first cut kept
+    every `$NAME` that was uppercase or contained an underscore, on the theory
+    that shell locals here are lowercase. They are not: this hook declares
+    MCP_OP, MCP_OP_LOWER, _scope and _tok. So the installer reported four "new
+    environment reads" and REFUSED the very change it exists to deliver -- a
+    guard that blocks its own repair, which is worse than the hole it closes and
+    would have shipped silently because I tested the checker against the OLD
+    hook, not against this PR's.
+
+    Subtracting assigned names is exact rather than heuristic: `HOME` and
+    `ALLOW_DESTRUCTIVE` are read and never assigned, so they stay; a backdoor's
+    `${SOME_NEW_VAR:-}` is read and never assigned, so it is still caught.
+    """
+    assigned = set(_ENV_ASSIGNED.findall(text))
+    assigned |= set(_ENV_LOOPVAR.findall(text))
+    assigned |= set(_ENV_READVAR.findall(text))
+    for group in _ENV_LOCALDECL.findall(text):
+        assigned |= set(group.split())
+    reads = {m for m in _ENV_READ.findall(text) if m.isupper() or "_" in m}
+    return reads - assigned
 
 
 def decision_of(hook_path, tool_name, tool_input, home):

@@ -84,6 +84,32 @@ class ArgvPrefilterCase(unittest.TestCase):
                         "overrunning hook is killed and its deny discarded"
                         % (elapsed, HOOK_TIMEOUT_S))
 
+    def test_assignment_tokens_do_not_blow_the_timeout(self):
+        """PR #279 major, round 2. My first timing case padded with `--grep=x`
+        -- the ONE shape the pre-filter excluded -- so it measured the path I
+        had just fixed and was blind to the two that were still open. 300 `k=v`
+        tokens took 8.28s."""
+        command = "echo " + " ".join("K%d=v%d" % (i, i) for i in range(300))
+        decision, elapsed = decision_for(command)
+        self.assertEqual(decision, "allow")
+        self.assertLess(elapsed, HOOK_TIMEOUT_S,
+                        "%.2fs against a %.0fs timeout" % (elapsed, HOOK_TIMEOUT_S))
+
+    def test_one_long_quoted_string_does_not_blow_the_timeout(self):
+        """The quote-stripped rescan had no pre-filter at all, so a single long
+        QUOTED string forked per word: 3000 words took 6.99s. Fixing one of two
+        identical loops is how a bypass survives being fixed."""
+        command = 'echo "' + " ".join("w%d" % i for i in range(3000)) + '"'
+        decision, elapsed = decision_for(command)
+        self.assertEqual(decision, "allow")
+        self.assertLess(elapsed, HOOK_TIMEOUT_S,
+                        "%.2fs against a %.0fs timeout" % (elapsed, HOOK_TIMEOUT_S))
+
+    def test_a_deny_inside_a_quoted_program_token_still_fires(self):
+        """The rescan exists to catch a quoted program token. Adding a filter to
+        it must not cost that."""
+        self.assertEqual(decision_for('"%s" %s /tmp/x' % (RM, RF))[0], "deny")
+
     def test_transparent_prefixes_still_deny(self):
         """What the pre-filter could plausibly have broken. Each of these has a
         head token that is NOT a recognised program, so each depends on the

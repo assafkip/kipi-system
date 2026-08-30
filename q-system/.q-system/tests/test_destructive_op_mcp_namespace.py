@@ -188,6 +188,26 @@ class MCPNamespaceCase(unittest.TestCase):
         _, decision = drive(self.hook, "Bash", command="rm -rf /tmp/some-dir")
         self.assertEqual(decision, "deny")
 
+    def test_a_session_reset_is_allowed(self):
+        """PR #279 minor. `reset_session` matched the `reset` verb and came back
+        with a destructive-operation message and an approval-token instruction.
+        Clearing chat history destroys nothing, and a gate that blocks routine
+        work with a scary message is a gate someone switches off.
+
+        This also pins the ORDERING: the carve-out is evaluated before the verb
+        rules, and placed after them it never runs. My first attempt did exactly
+        that, so this case is what keeps it reachable."""
+        self.assertEqual(
+            drive(self.hook,
+                  "mcp__plugin_kipi-notebooklm_notebooklm__reset_session")[1],
+            "allow")
+
+    def test_a_branch_reset_is_still_denied(self):
+        """The carve-out is the session word, not the reset verb. reset_branch
+        discards a database branch's state."""
+        self.assertEqual(
+            drive(self.hook, "mcp__supabase__reset_branch")[1], "deny")
+
     # ---- camelCase compounds (PR #279 minor) ----
 
     def test_camelcase_compound_deletions_are_denied(self):
