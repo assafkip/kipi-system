@@ -84,16 +84,25 @@ if [ "${1:-}" = "--render-only" ]; then
   RENDER_ONLY="$2"
 fi
 
+# ASK-1170: __USER__ joined __KIPI_REPO__ and __HOME__ because a launchd job that
+# shells the `claude` CLI needs USER/LOGNAME set. Measured 2026-08-30: with them
+# absent the CLI answers "Not logged in - please run /login" (the keychain lookup
+# needs them); with USER set, the same command returned a real calendar answer.
+# Adding the token WITHOUT adding it to assert_rendered below would have been the
+# worse half of the change: an unsubstituted placeholder that plutil accepts and
+# launchd fails on at fire time, silently, which is the exact class assert_rendered
+# was written for.
 render() {
-  # sed with | as the delimiter: both replacements are absolute paths containing /.
-  sed -e "s|__KIPI_REPO__|$KIPI_REPO|g" -e "s|__HOME__|$HOME|g" "$TEMPLATE"
+  # sed with | as the delimiter: the path replacements contain /.
+  sed -e "s|__KIPI_REPO__|$KIPI_REPO|g" -e "s|__HOME__|$HOME|g" \
+      -e "s|__USER__|$(id -un)|g" "$TEMPLATE"
 }
 
 # A template that still carries a placeholder after substitution is a broken
 # render, and launchd would accept it silently and fail at fire time. Fail loud.
 assert_rendered() {
   local rendered_file="$1"
-  if grep -q "__KIPI_REPO__\|__HOME__" "$rendered_file"; then
+  if grep -q "__KIPI_REPO__\|__HOME__\|__USER__" "$rendered_file"; then
     echo "ERROR: unsubstituted placeholder remains in $rendered_file" >&2
     exit 1
   fi

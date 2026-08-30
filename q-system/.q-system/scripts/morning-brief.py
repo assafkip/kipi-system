@@ -1,0 +1,452 @@
+#!/usr/bin/env python3
+"""One Slack message each morning: what the founder has going on today.
+
+Founder-directed 2026-08-30: fully automated, no HTML, one Slack message telling
+him what he has on. Plan: `q-system/output/plans/morning-brief-overhaul-2026-08-30.md`.
+
+## What this replaces, and why it is not a revival
+
+The 37-agent `/q-morning` pipeline produced its last artifact on 2026-04-04 and
+then produced nothing for 148 days without anyone being told. Two measured
+causes, both in `.q-system/preflight.md`: it probed
+`Google_Calendar__gcal_list_events` and `Gmail__gmail_search_messages`, tool
+names that no longer exist (they are `list_events` and `search_threads`), and the
+fallback for both rows was "None. Halt." The same table listed Chrome MCP as
+CRITICAL with fallback "None. Halt.", which makes a headless run impossible by
+construction: a 7am launchd job has no browser.
+
+It was also never automated. It required the founder to open a session and type
+a command, and it answered with an HTML page. An output nobody opens is the same
+as no output.
+
+Most of what the nine phases did (LinkedIn posts, engagement hitlist, lead
+sourcing, prospect pipeline, content intel) is covered TODAY by live `com.cole.*`
+launchd jobs. Reviving the orchestrator would build a second copy of running
+work. What is actually missing is only the briefing.
+
+## Two rules inherited verbatim from daily-linear-digest.py
+
+**An empty section and a broken section are different facts.** Every collector
+returns `(rows, error)`. A section with an error prints COULD NOT READ. It never
+prints "nothing", because a silent zero reading as a quiet day is the exact
+defect that let this system die in April.
+
+**The send is verified, not assumed.** Delivery goes through `slack_founder.py`,
+which reads Slack's own answer out of the response body. Never `slack-notify.sh`:
+that is the fleet ALERT path, it files a Linear ticket for Sana, it sends nothing
+to Slack, and it exits 0 either way.
+
+## Why two `claude -p` calls and not one
+
+Calendar and Gmail live behind the `claude_ai_*` connectors, which are MCP
+servers attached to the CLI, not an HTTP API a bare Python script can call.
+Measured 2026-08-30 in a stripped environment: a headless `claude -p` DOES reach
+them (`--allowedTools mcp__claude_ai_Google_Calendar__list_events` returned
+`COUNT=0`), provided `USER`/`LOGNAME` are set so the keychain resolves, and
+provided PATH carries `~/.local/bin` (a bare `bash -lc` does not).
+
+One combined call would be cheaper and would collapse two independent failures
+into one: a model that could reach Gmail but not Calendar would blank both
+sections identically. Constraint 3 says each section reports FAILED on its own,
+so each section gets its own call.
+
+    python3 morning-brief.py            # build and send
+    python3 morning-brief.py --dry-run  # build, print, send nothing
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+# scripts/ -> .q-system/ -> q-system/   (the folder-structure QROOT rule)
+QROOT = HERE.parent.parent / "q-system" if (HERE.parent.parent / "q-system").is_dir() \
+    else HERE.parent.parent
+STATE_DIR = Path(os.environ.get("KIPI_STATE_DIR", os.path.expanduser("~/.config/kipi")))
+RECEIPT_PATH = STATE_DIR / "morning-brief-last.json"
+
+# Pinned. Scar: headless `claude -p` jobs without an explicit pin rode the
+# default model and burned 3% of a weekly budget in one hour.
+BRIEF_MODEL = os.environ.get("KIPI_BRIEF_MODEL", "claude-opus-5")
+CLAUDE_TIMEOUT = int(os.environ.get("KIPI_BRIEF_CLAUDE_TIMEOUT", "180"))
+
+CAL_TOOL = "mcp__claude_ai_Google_Calendar__list_events"
+MAIL_TOOL = "mcp__claude_ai_Gmail__search_threads"
+
+MAX_ROWS = 15
+
+
+def _load_sibling(stem: str, filename: str):
+    spec = importlib.util.spec_from_file_location(stem, HERE / filename)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# ---------------------------------------------------------------------------
+# The model seam
+# ---------------------------------------------------------------------------
+
+def run_claude(prompt: str, tools: list, timeout: int = CLAUDE_TIMEOUT):
+    """(stdout, error). One bounded headless call.
+
+    REFUSES UNDER PYTEST. Same chokepoint posture as slack_founder.deliver: the
+    refusal lives at the destination, not in per-test stubs, because per-test
+    stubbing only ever protects the tests somebody remembered to write.
+
+    `</dev/null` equivalent (`stdin=DEVNULL`) is not optional: `claude -p` reads
+    stdin, and a caller that leaves it inherited has its own input drained.
+    See rca-heartbeat-tail-skip-2026-07-05.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return None, "refused: running under pytest, no live model call"
+    env = dict(os.environ)
+    env["ANTHROPIC_MODEL"] = BRIEF_MODEL
+    try:
+        proc = subprocess.run(
+            ["claude", "-p", prompt, "--allowedTools", *tools],
+            capture_output=True, text=True, timeout=timeout,
+            stdin=subprocess.DEVNULL, env=env)
+    except FileNotFoundError:
+        return None, "claude CLI not on PATH (a bare launchd PATH omits ~/.local/bin)"
+    except subprocess.TimeoutExpired:
+        return None, f"claude timed out after {timeout}s"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"{type(exc).__name__}: {str(exc)[:160]}"
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()[:200]
+        return None, f"claude exited {proc.returncode}: {detail}"
+    return proc.stdout, None
+
+
+def _parse_json_block(text: str, key: str):
+    """(list, error). The model is asked for one JSON object; this refuses
+    anything else rather than guessing.
+
+    Deliberately not a regex over prose. A model that answers "I could not reach
+    the calendar" must land in the ERROR branch, not be read as zero events,
+    which is the whole distinction this file exists to preserve.
+    """
+    if text is None:
+        return None, "no output"
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None, f"no JSON object in the answer: {text.strip()[:160]!r}"
+    try:
+        data = json.loads(text[start:end + 1])
+    except ValueError as exc:
+        return None, f"unparseable JSON: {exc}"
+    if not isinstance(data, dict) or key not in data:
+        return None, f"answer has no {key!r} key: {text.strip()[:160]!r}"
+    value = data[key]
+    if not isinstance(value, list):
+        return None, f"{key!r} is not a list"
+    return value, None
+
+
+# ---------------------------------------------------------------------------
+# Section 1: today's calendar
+# ---------------------------------------------------------------------------
+
+CAL_PROMPT = """Call {tool} for calendar "primary" restricted to {day} local time only.
+Reply with ONE JSON object and nothing else, no prose, no code fence:
+{{"events": [{{"start": "HH:MM", "title": "...", "who": ["name", ...]}}]}}
+Use "all-day" as start for all-day events. "who" is the other attendees, may be [].
+If the tool call fails, reply with exactly: {{"error": "<what failed>"}}"""
+
+
+def collect_calendar(now: dt.datetime, runner=None):
+    day = now.strftime("%Y-%m-%d")
+    runner = runner or (lambda p, t: run_claude(p, t))
+    text, error = runner(CAL_PROMPT.format(tool=CAL_TOOL, day=day), [CAL_TOOL])
+    if error:
+        return [], error
+    events, parse_error = _parse_json_block(text, "events")
+    if parse_error:
+        return [], parse_error
+    rows = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        who = ev.get("who") or []
+        who_text = f"  ({', '.join(str(w) for w in who)})" if who else ""
+        rows.append(f"{ev.get('start', '??:??')}  {str(ev.get('title', 'untitled'))[:80]}{who_text}")
+    return rows, None
+
+
+# ---------------------------------------------------------------------------
+# Section 2: mail that needs an answer
+# ---------------------------------------------------------------------------
+
+MAIL_PROMPT = """Call {tool} to find email threads from the last 48 hours where a
+REAL PERSON wrote to the founder and the founder has not replied yet. Exclude
+newsletters, notifications, receipts, calendar invites, automated senders and
+no-reply addresses.
+Reply with ONE JSON object and nothing else, no prose, no code fence:
+{{"threads": [{{"from": "email or name", "subject": "...", "age_hours": <int>}}]}}
+If the tool call fails, reply with exactly: {{"error": "<what failed>"}}"""
+
+
+def collect_mail(now: dt.datetime, runner=None):
+    runner = runner or (lambda p, t: run_claude(p, t))
+    text, error = runner(MAIL_PROMPT.format(tool=MAIL_TOOL), [MAIL_TOOL])
+    if error:
+        return [], error
+    threads, parse_error = _parse_json_block(text, "threads")
+    if parse_error:
+        return [], parse_error
+    rows = []
+    for th in threads:
+        if not isinstance(th, dict):
+            continue
+        age = th.get("age_hours")
+        age_text = f"  [{age}h]" if isinstance(age, int) else ""
+        rows.append(f"{str(th.get('from', 'unknown'))[:40]}  {str(th.get('subject', ''))[:70]}{age_text}")
+    return rows, None
+
+
+# ---------------------------------------------------------------------------
+# Section 3: owed today
+# ---------------------------------------------------------------------------
+
+ASSIGNED_Q = """
+query {
+  viewer {
+    assignedIssues(first: 100, filter: {state: {type: {nin: ["completed", "canceled"]}}}) {
+      nodes { identifier title state { name type } }
+    }
+  }
+}
+"""
+
+
+def collect_owed(now: dt.datetime, qroot=None, graphql=None):
+    """(rows, error). TWO producers, and a failure in one must not erase the other.
+
+    An earlier shape returned `([], error)` the moment Linear failed, which threw
+    away the open loops that had been read successfully. A section that discards
+    the half it HAS because the other half broke is a worse liar than one that
+    just says nothing: it reports a partial truth with no marker.
+    """
+    qroot = Path(qroot) if qroot else QROOT
+    rows, errors = [], []
+
+    if graphql is None:
+        try:
+            graphql = _load_sibling("linear_sync", "linear-sync.py").graphql
+        except Exception as exc:  # noqa: BLE001
+            graphql = None
+            errors.append(f"linear client unavailable: {type(exc).__name__}: {str(exc)[:120]}")
+    if graphql is not None:
+        try:
+            data = graphql(ASSIGNED_Q, {})
+            nodes = ((data or {}).get("viewer") or {}).get("assignedIssues", {}).get("nodes") or []
+            for n in nodes:
+                rows.append(f"{n.get('identifier')}  [{(n.get('state') or {}).get('name')}]  "
+                            f"{str(n.get('title', ''))[:80]}")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"linear: {type(exc).__name__}: {str(exc)[:140]}")
+
+    # ONE resolver for the loop ledger, and MISSING IS NOT EMPTY -- both rules
+    # belong to loops_path.py, which exists because four readers resolved three
+    # different paths and a warm inbound sat unanswered for 46 days while every
+    # one of them rendered "no open loops".
+    try:
+        loops_mod = _load_sibling("loops_path", "loops_path.py")
+        loops, status = loops_mod.load(qroot)
+        if status != loops_mod.FOUND:
+            errors.append(f"open-loops ledger unreadable under {qroot}")
+        else:
+            for loop in loops:
+                if loop.get("status") == "open" and loop.get("needs_founder"):
+                    rows.append(f"loop {loop.get('id')}  {str(loop.get('title', ''))[:80]}")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"loops: {type(exc).__name__}: {str(exc)[:120]}")
+
+    return rows, ("; ".join(errors) if errors else None)
+
+
+# ---------------------------------------------------------------------------
+# Section 4: what ran overnight
+# ---------------------------------------------------------------------------
+
+def _watched_labels():
+    """Every launchd job the fleet watchdog already watches. Reused, not
+    re-derived: a second discovery rule would drift from the first, and the
+    watchdog's prefix set is the one that gets maintained."""
+    health = _load_sibling("launchd_health", "launchd-health-check.py")
+    labels, seen = [], set()
+    for prefix in health.load_watched_prefixes():
+        for plist in sorted(health.LAUNCH_AGENTS.glob(f"{prefix}*.plist")):
+            if plist.stem in seen:
+                continue
+            seen.add(plist.stem)
+            labels.append(plist.stem)
+    return labels, health.job_status, health.load_paused_labels()
+
+
+def collect_overnight(now: dt.datetime, status_fn=None, labels=None, paused=None):
+    """(rows, error). Names the jobs that did NOT do their job.
+
+    Reporting all ~70 healthy labels every morning is noise the founder would
+    learn to skip, and a brief nobody reads is the failure mode one level up. So
+    a clean night renders as one line saying how many jobs were checked, and the
+    named rows are the failures.
+    """
+    if status_fn is None or labels is None:
+        try:
+            discovered, status_fn_disc, paused_disc = _watched_labels()
+        except Exception as exc:  # noqa: BLE001
+            return [], f"cannot read launchd jobs: {type(exc).__name__}: {str(exc)[:140]}"
+        labels = discovered if labels is None else labels
+        status_fn = status_fn_disc if status_fn is None else status_fn
+        paused = paused_disc if paused is None else paused
+    paused = paused or set()
+
+    if not labels:
+        # A discovery that finds nothing is broken discovery. On this machine the
+        # watched prefixes match ~70 plists; zero means the glob, the prefix file
+        # or LaunchAgents itself moved, and rendering that as a quiet night is
+        # the 148-day silence in miniature.
+        return [], "no watched launchd jobs found at all (discovery is broken, not the night quiet)"
+
+    failed, stopped, paused_rows, unknown = [], [], [], 0
+    for label in labels:
+        kind, code = status_fn(label)
+        if kind == "unknown":
+            unknown += 1
+        elif kind == "failing":
+            failed.append(f"FAILED  {label}  (exit {code})")
+        elif kind == "not_loaded":
+            if label in paused:
+                paused_rows.append(label)
+            else:
+                stopped.append(f"NOT RUNNING  {label}  (installed but not loaded)")
+    # ORDER IS THE MESSAGE, and the 15-row cap makes it load-bearing. Measured on
+    # the first live run: 26 jobs are paused on purpose and they sorted ahead of
+    # the two that had actually failed, so the cap ate both real findings and the
+    # section read as a wall of "paused". A brief whose signal is below the fold
+    # is the "output nobody reads" failure wearing a different hat. Paused jobs
+    # are still reported -- as one counted line, because a deliberate pause is a
+    # fact about a decision, not about last night.
+    rows = failed + stopped
+    if paused_rows:
+        rows.append(f"({len(paused_rows)} more paused on purpose)")
+    if unknown:
+        # launchctl unreadable for any job means this section cannot make its
+        # claim. Partial silence here is indistinguishable from health.
+        return rows, f"launchctl unreadable for {unknown} of {len(labels)} jobs"
+    if not rows:
+        return [f"all {len(labels)} scheduled jobs clean"], None
+    return rows, None
+
+
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
+
+def _section(title, rows, error, cap=MAX_ROWS):
+    """Lifted from daily-linear-digest.py deliberately. Same shape, same words,
+    so a reader who knows one message knows the other."""
+    if error:
+        return [f"*{title}*", f"  COULD NOT READ: {error}"]
+    if not rows:
+        return [f"*{title}*", "  nothing"]
+    out = [f"*{title}*"] + [f"  {r}" for r in rows[:cap]]
+    if len(rows) > cap:
+        out.append(f"  ...and {len(rows) - cap} more")
+    return out
+
+
+SECTIONS = (
+    ("calendar", "Today"),
+    ("mail", "Mail needing an answer (48h)"),
+    ("owed", "Owed today"),
+    ("overnight", "Overnight jobs"),
+)
+
+
+def build(now: dt.datetime, sources: dict):
+    """(message, degraded). `sources` maps section key -> (rows, error)."""
+    lines = [f"*Morning brief* {now.strftime('%A %Y-%m-%d')} "
+             f"(built {now.strftime('%H:%M %Z')})", ""]
+    degraded = False
+    for key, title in SECTIONS:
+        rows, error = sources.get(key, ([], f"section {key} was never collected"))
+        if error:
+            degraded = True
+        lines += _section(title, rows, error)
+        lines.append("")
+    return "\n".join(lines).rstrip(), degraded
+
+
+def collect_all(now: dt.datetime) -> dict:
+    return {
+        "calendar": collect_calendar(now),
+        "mail": collect_mail(now),
+        "owed": collect_owed(now),
+        "overnight": collect_overnight(now),
+    }
+
+
+# ---------------------------------------------------------------------------
+# The receipt the deadman reads
+# ---------------------------------------------------------------------------
+
+def write_receipt(result: dict, now: dt.datetime, receipt_path=None) -> Path:
+    """Single writer of the freshness receipt.
+
+    Written LAST and only after the send has answered, so the recorded state is
+    what Slack said rather than what this script intended. `delivered` is copied
+    straight off the send result; there is no separate "I tried" flag that could
+    drift from it.
+    """
+    path = Path(receipt_path) if receipt_path else RECEIPT_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "date": now.strftime("%Y-%m-%d"),
+        "at": now.isoformat(timespec="seconds"),
+        "delivered": bool(result.get("delivered")),
+        "transport": result.get("transport"),
+        "reason": result.get("reason") or result.get("error"),
+        "degraded": result.get("degraded"),
+    }
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(path)  # atomic: the deadman may read while this writes
+    return path
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true",
+                    help="build and print; send nothing, write no receipt")
+    args = ap.parse_args(argv)
+
+    now = dt.datetime.now().astimezone()
+    message, degraded = build(now, collect_all(now))
+    print(message)
+    if args.dry_run:
+        print("\n[dry-run] nothing sent, no receipt written")
+        return 0
+
+    sender = _load_sibling("slack_founder", "slack_founder.py")
+    result = sender.deliver(message)
+    result["degraded"] = degraded
+    print(f"\n[send] {json.dumps(result)}")
+    receipt = write_receipt(result, now)
+    print(f"[receipt] {receipt}")
+    if not result.get("delivered"):
+        return 1
+    return 1 if degraded else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
