@@ -280,7 +280,19 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   _argv_could_deny_here() {  # _argv_could_deny_here <token>
     case "${1##*/}" in
       rm|git)                                  return 0 ;;
-      sudo|command|nohup|nice|time|env)        return 0 ;;
+      # NO TRANSPARENT-PREFIX ARM. Same argument as the flag and assignment arms
+      # before it, and it is the one that finally ends this bypass: a position
+      # starting at `sudo` can only deny if a recognised program FOLLOWS, and
+      # that program's own position is scanned separately. Admitting prefixes
+      # bought no coverage and cost the third measured blowup -- 300 `sudo`
+      # tokens took 5.91s against a 5s timeout, because each forked a subshell.
+      #
+      # `sudo rm -rf x` still denies, from the `rm` position, and that is pinned
+      # by test_transparent_prefixes_still_deny -- a case that predates this
+      # change, which is why removing the arm is verifiable rather than
+      # arguable. The filter now admits only tokens that can themselves deny, so
+      # the fork count is bounded by the number of rm/git tokens rather than by
+      # command length.
       # NO ASSIGNMENT ARM AT ALL, and that is not a narrowing of the guard.
       #
       # It used to admit `[!-]*=*` to catch `FOO=bar cmd`. But argv_deny_reason

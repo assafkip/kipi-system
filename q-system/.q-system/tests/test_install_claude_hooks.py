@@ -253,6 +253,37 @@ class InstallerCase(unittest.TestCase):
         self.assertIsNotNone(refusal, "a shebang-less hook installed on a first run")
         self.assertIn("shebang", refusal)
 
+    def test_a_second_vendored_hook_is_not_refused_forever(self):
+        """PR #279 minor. MUST_DENY encodes destructive-op-deny.sh's semantics,
+        so applied to ANY hook a second one -- a lint, a formatter -- fails every
+        canary and is refused forever, with the fleet updater warning on every
+        run until somebody deletes the file. A gate that no legitimate input can
+        satisfy gets switched off."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("inst", INSTALLER)
+        inst = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inst)
+        other = "#!/bin/bash\nset -uo pipefail\ncat >/dev/null\nexit 0\n"
+        self.assertIsNone(inst.refuse_if_weaker("some-lint.sh", other, None))
+        self.assertIsNone(inst.refuse_if_weaker("some-lint.sh", other, other))
+        # It still has to parse and carry a shebang.
+        broken = "set -uo pipefail\nif [ broken\n"
+        self.assertIsNotNone(inst.refuse_if_weaker("some-lint.sh", broken, other))
+
+    def test_the_destructive_hook_still_gets_the_full_canaries(self):
+        """Scoping must not turn the real gate's canaries off."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("inst", INSTALLER)
+        inst = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inst)
+        real = open(SOURCE).read()
+        gutted = real.replace('permissionDecision: "deny"',
+                              'permissionDecision: "allow"')
+        self.assertNotEqual(gutted, real)
+        self.assertIsNotNone(
+            inst.refuse_if_weaker("destructive-op-deny.sh", gutted, real),
+            "the disarmed destructive hook was accepted")
+
     def test_an_empty_source_dir_is_a_refusal_not_a_pass(self):
         """A run that finds nothing to install must not report success."""
         with tempfile.TemporaryDirectory() as fake_repo:

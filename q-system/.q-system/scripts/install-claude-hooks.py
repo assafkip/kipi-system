@@ -174,24 +174,6 @@ MUST_ALLOW = (
 )
 
 
-def code_only(text):
-    """Drop comment bodies before counting teeth.
-
-    THE HOLE THIS CLOSES (PR #279 round 4, blocker). The ratchet counted these
-    tokens as raw text over the whole file, so a source that deletes every real
-    `emit_deny` call and pads the comments with the word `emit_deny` keeps the
-    count identical and installs a gutted hook with every check green. A guard
-    whose bypass is typing a word in a comment is not a guard.
-
-    Line-oriented and deliberately crude: a `#` inside a shell string is treated
-    as a comment start, so a real call after one on the same line is not
-    counted. That direction is SAFE -- undercounting the source can only make
-    the ratchet refuse an install, never wave one through. The opposite mistake
-    is the one that costs a machine.
-    """
-    return "\n".join(line.split("#", 1)[0] for line in text.splitlines())
-
-
 def parses_as_bash(path):
     """`bash -n`. A hook bash cannot parse does not deny anything.
 
@@ -360,6 +342,45 @@ def decision_of(hook_path, tool_name, tool_input, home):
     return decision if decision in ("deny", "allow") else "error"
 
 
+def parses_as_bash_text(text):
+    """`bash -n` on text rather than a path, for hooks probed without install."""
+    tmp = tempfile.mkdtemp(prefix="parsecheck-")
+    try:
+        path = os.path.join(tmp, "candidate.sh")
+        with open(path, "w") as fh:
+            fh.write(text)
+        return parses_as_bash(path)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _differential_only(name, source_text, installed_text):
+    """The part of the gate that holds for ANY hook: never weaker than what runs."""
+    if installed_text is None:
+        return None
+    probe_home = tempfile.mkdtemp(prefix="hookdiff-")
+    try:
+        os.makedirs(os.path.join(probe_home, ".claude", "audit"), exist_ok=True)
+        candidate = os.path.join(probe_home, name)
+        with open(candidate, "w") as fh:
+            fh.write(source_text)
+        reference = os.path.join(probe_home, "installed-" + name)
+        with open(reference, "w") as fh:
+            fh.write(installed_text)
+        for tool, payload in DIFFERENTIAL_CORPUS:
+            if decision_of(reference, tool, payload, probe_home) != "deny":
+                continue
+            now = decision_of(candidate, tool, payload, probe_home)
+            if now != "deny":
+                detail = payload.get("command", tool)
+                return ("%s: the installed hook DENIES `%s` and the source does "
+                        "not (%s). A hook may be repaired, never disarmed."
+                        % (name, detail, now))
+    finally:
+        shutil.rmtree(probe_home, ignore_errors=True)
+    return None
+
+
 def refuse_if_weaker(name, source_text, installed_text):
     """Behavioural gate: does the CANDIDATE still deny what it must?
 
@@ -398,6 +419,23 @@ def refuse_if_weaker(name, source_text, installed_text):
                     "hook does not (%s). A probe cannot open a door whose key it "
                     "does not hold, so a new env read is refused rather than "
                     "tested." % (name, ", ".join(sorted(new_vars))))
+
+    # THE CANARIES DESCRIBE ONE HOOK, SO THEY ARE SCOPED TO IT (PR #279 minor).
+    #
+    # MUST_DENY encodes destructive-op-deny.sh's semantics. Applied to ANY
+    # vendored hook, a second one -- a lint, a formatter, anything that is not a
+    # destructive-op gate -- would fail every canary and be refused forever,
+    # and kipi update would warn on every run until someone deleted the file.
+    # A gate that cannot be satisfied by a legitimate input gets switched off.
+    #
+    # The DIFFERENTIAL below is the part that generalises: "you cannot be weaker
+    # than what is already running" is true of every hook, needs no knowledge of
+    # what the hook does, and still runs for all of them.
+    if name != "destructive-op-deny.sh":
+        ok, why = parses_as_bash_text(source_text)
+        if not ok:
+            return "%s: the source does not parse (`bash -n`): %s" % (name, why)
+        return _differential_only(name, source_text, installed_text)
 
     probe_home = tempfile.mkdtemp(prefix="hookprobe-")
     try:

@@ -110,6 +110,30 @@ class ArgvPrefilterCase(unittest.TestCase):
         it must not cost that."""
         self.assertEqual(decision_for('"%s" %s /tmp/x' % (RM, RF))[0], "deny")
 
+    def test_prefix_padding_does_not_blow_the_timeout(self):
+        """Round three of this bypass, and the reason it kept surviving.
+
+        Each round I removed one admitted shape, then padded the timing test
+        with a shape the filter DROPS -- so the suite went green while another
+        class stayed open at 5-13s. This pads with the shape the filter admitted
+        LONGEST: 300 `sudo` tokens took 5.91s."""
+        command = "echo " + " ".join(["sudo"] * 300)
+        decision, elapsed = decision_for(command)
+        self.assertEqual(decision, "allow")
+        self.assertLess(elapsed, HOOK_TIMEOUT_S,
+                        "%.2fs against a %.0fs timeout" % (elapsed, HOOK_TIMEOUT_S))
+
+    def test_the_admitted_token_shape_is_bounded(self):
+        """The filter now admits ONLY tokens that can themselves deny, so the
+        fork count follows the number of rm/git tokens rather than command
+        length. Padding with the admitted shape is therefore the worst case."""
+        command = "echo " + " ".join(["git"] * 300)
+        decision, elapsed = decision_for(command)
+        self.assertEqual(decision, "allow")
+        self.assertLess(elapsed, HOOK_TIMEOUT_S,
+                        "even the admitted shape must stay under the timeout: "
+                        "%.2fs" % elapsed)
+
     def test_transparent_prefixes_still_deny(self):
         """What the pre-filter could plausibly have broken. Each of these has a
         head token that is NOT a recognised program, so each depends on the
