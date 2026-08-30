@@ -345,3 +345,98 @@ def test_reading_that_same_subscript_is_still_not_an_emission():
            'ctx = payload["hookSpecificOutput"]["additionalContext"]\n'
            'print(ctx)\n')
     assert audit.audit_python("<read>", source=src) == []
+
+
+# --------------------------------------------------------------------------
+# Codex round 5. The gate was wired on Edit|Write|MultiEdit only, and a Bash
+# write carries no file_path -- so it would never have fired on the very edits
+# it was built for. This session wrote every one of its own hook fixes through
+# Bash heredocs and python drivers.
+# --------------------------------------------------------------------------
+def _init_repo(path):
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    return path
+
+
+def _run_bash_gate(root):
+    payload = json.dumps({"tool_name": "Bash",
+                          "tool_input": {"command": "python3 - <<EOF ... EOF"}})
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root))
+    return subprocess.run([sys.executable, AUDIT, "--hook"], input=payload,
+                          env=env, capture_output=True, text=True, timeout=60)
+
+
+def test_bash_leg_blocks_a_hook_written_without_a_file_path(tmp_path):
+    """Judge the EFFECT, not the command text.
+
+    Parsing the command for a path is the wrong layer, and this repo already
+    carries the lesson: a guard that reads command text cannot see a computed
+    path, and the careless wide rewrite is the one that computes its targets.
+    """
+    root = _init_repo(tmp_path / "repo")
+    (root / "sneaky_hook.py").write_text(
+        'import json, sys\n'
+        'payload = json.load(sys.stdin)\n'
+        'print(json.dumps({"additionalContext": "discarded"}))\n')
+    proc = _run_bash_gate(root)
+    assert proc.returncode == 2, proc.stdout
+    assert "DISCARDS" in proc.stderr
+
+
+def test_bash_leg_passes_when_nothing_hook_shaped_was_written(tmp_path):
+    """The control. Blocking unrelated Bash work gets the gate switched off."""
+    root = _init_repo(tmp_path / "repo")
+    (root / "notes.md").write_text("# nothing to do with hooks\n")
+    (root / "helper.py").write_text("def add(a, b):\n    return a + b\n")
+    assert _run_bash_gate(root).returncode == 0
+
+
+def test_bash_leg_ignores_a_file_written_long_ago(tmp_path):
+    """A file broken last week must not wedge every Bash call in the session."""
+    import time
+    root = _init_repo(tmp_path / "repo")
+    stale = root / "old_hook.py"
+    stale.write_text('import json, sys\n'
+                     'payload = json.load(sys.stdin)\n'
+                     'print(json.dumps({"additionalContext": "discarded"}))\n')
+    old = time.time() - (audit.RECENT_WRITE_SECONDS + 600)
+    os.utime(stale, (old, old))
+    assert _run_bash_gate(root).returncode == 0
+
+
+def test_the_bash_leg_is_actually_wired(tmp_path):
+    """A capability nobody wired is a capability nobody has."""
+    for rel in (os.path.join("." + "claude", "settings.json"),
+                "settings-template.json"):
+        cfg = json.load(open(os.path.join(REPO, rel)))
+        matchers = [g.get("matcher") for g in cfg["hooks"]["PostToolUse"]
+                    for h in g["hooks"]
+                    if "hook_envelope_audit" in h.get("command", "")]
+        assert "Bash" in matchers, "%s wires the gate on %r only" % (rel, matchers)
+
+
+def test_dict_construction_is_not_silently_approved():
+    """dict(additionalContext=...) is invisible to a walk over dict literals.
+
+    dict(**d) reports TOP_LEVEL rather than UNKNOWN because the aliased literal
+    is itself un-nested; both are non-OK, which is what the gate acts on, and
+    neither is the silent absence that started all of this.
+    """
+    kwargs_src = ('import json, sys\n'
+                  'payload = json.load(sys.stdin)\n'
+                  'print(json.dumps({"hookSpecificOutput": dict('
+                  'hookEventName="UserPromptSubmit", additionalContext="x")}))\n')
+    assert [s.verdict for s in audit.audit_python("<kw>", source=kwargs_src)] == [audit.UNKNOWN]
+
+    star_src = ('import json, sys\n'
+                'payload = json.load(sys.stdin)\n'
+                'd = {"additionalContext": "x"}\n'
+                'print(json.dumps({"hookSpecificOutput": dict(**d)}))\n')
+    verdicts = [s.verdict for s in audit.audit_python("<star>", source=star_src)]
+    assert verdicts and all(v != audit.OK for v in verdicts), verdicts
+
+
+def test_an_ordinary_dict_call_is_not_an_emission():
+    """The control for the dict() rule."""
+    src = 'rows = dict(name="a", value="b")\nprint(rows)\n'
+    assert audit.audit_python("<ordinary>", source=src) == []

@@ -183,6 +183,21 @@ def audit_python(path, source=None):
                         and id(_resolve(node.value)) in envelopes):
                     nested.add(id(_resolve(node.value)))
 
+    # dict(additionalContext=...) and dict(**{...}) are two more ways to build
+    # the payload that a walk over Dict LITERALS never sees (Codex minor, PR #285
+    # round 5). Same rule as everywhere else here: a shape this cannot read is
+    # UNKNOWN, never absent.
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "dict"):
+            continue
+        named = any(kw.arg == KEY_CONTEXT for kw in node.keywords)
+        starred = any(kw.arg is None for kw in node.keywords)
+        if named or (starred and KEY_CONTEXT in ast.dump(node)):
+            sites.append(Site(path, node.lineno, UNKNOWN,
+                              detail="envelope built with dict(), which this "
+                                     "cannot read as a literal"))
+
     # `out["hookSpecificOutput"]["additionalContext"] = x` builds the payload by
     # ASSIGNMENT, so a walk over dict literals sees nothing at all and the gate
     # passed the file at exit 0 (Codex minor, PR #285 round 4). Absent read as
@@ -471,6 +486,74 @@ def looks_like_a_hook(source):
     return any(marker in source for marker in HOOK_MARKERS)
 
 
+# How recently a file must have been written for a Bash PostToolUse to own it.
+# Wide enough to cover a slow command, narrow enough that a file broken last week
+# does not wedge every Bash call in the session -- a gate that blocks unrelated
+# work is a gate that gets switched off.
+RECENT_WRITE_SECONDS = 120
+# Cost ceiling for the Bash path: this runs after EVERY Bash call, so it reads a
+# bounded number of recently-written files and no more (token discipline).
+MAX_RECENT_FILES = 40
+
+
+def _recently_written(root, now=None):
+    """Hook-shaped files in `root`'s working tree written in the last window."""
+    import subprocess
+    import time
+    now = time.time() if now is None else now
+    try:
+        r = subprocess.run(["git", "-C", root, "status", "--porcelain",
+                            "--untracked-files=all"],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if r.returncode != 0:
+        return []
+    out = []
+    for line in r.stdout.splitlines():
+        rel = line[3:].strip()
+        if " -> " in rel:                       # a rename: take the destination
+            rel = rel.split(" -> ", 1)[1]
+        rel = rel.strip('"')
+        if not rel.endswith((".py", ".sh", ".js", ".ts")):
+            continue
+        full = os.path.join(root, rel)
+        try:
+            if now - os.path.getmtime(full) > RECENT_WRITE_SECONDS:
+                continue
+        except OSError:
+            continue
+        out.append(full)
+        if len(out) >= MAX_RECENT_FILES:
+            break
+    return out
+
+
+def _audit_recent_writes(payload):
+    """The Bash leg: judge what was written, not what the command said."""
+    root = (os.environ.get("CLAUDE_PROJECT_DIR")
+            or (payload.get("cwd") if isinstance(payload.get("cwd"), str) else None)
+            or os.getcwd())
+    if self_test(verbose=False):
+        return 0                      # a broken audit blocks nothing
+    bad = []
+    for full in _recently_written(root):
+        try:
+            with open(full, "r", encoding="utf-8", errors="replace") as fh:
+                source = fh.read()
+        except OSError:
+            continue
+        if KEY_CONTEXT not in source or not looks_like_a_hook(source):
+            continue
+        sites = (audit_python(full, source=source) if full.endswith(".py")
+                 else audit_text(full, source=source))
+        bad.extend(s for s in sites if s.verdict != OK)
+    if not bad:
+        return 0
+    _emit_block(bad)
+    return 2
+
+
 def hook_mode():
     """PostToolUse gate: block an edit that ships a discarded envelope.
 
@@ -484,6 +567,18 @@ def hook_mode():
     except Exception:
         return 0
     path = (payload.get("tool_input") or {}).get("file_path") or ""
+    if not path:
+        # A Bash write has no file_path, and this session wrote every one of its
+        # own hook fixes through Bash heredocs and python drivers -- so wired on
+        # Edit|Write alone the gate would never have fired on the very edits it
+        # was built for (Codex major, PR #285 round 5).
+        #
+        # Parsing the COMMAND for a path is the wrong layer and this repo already
+        # has the lesson: a guard that reads command text cannot see a computed
+        # path, and the careless wide rewrite is exactly the one that computes
+        # its targets. So look at the EFFECT instead: which hook-bearing files
+        # in the working tree were just written.
+        return _audit_recent_writes(payload)
     if not path.endswith((".py", ".sh", ".js", ".ts")):
         return 0
     try:
@@ -502,6 +597,11 @@ def hook_mode():
     bad = [s for s in sites if s.verdict != OK]
     if not bad:
         return 0
+    _emit_block(bad)
+    return 2
+
+
+def _emit_block(bad):
     lines = ["BLOCKED by hook_envelope_audit: this hook emits an envelope that "
              "Claude Code DISCARDS.",
              "",
@@ -521,7 +621,6 @@ def hook_mode():
                  "audit cannot verify it -- make it literal, or move the emission "
                  "to one chokepoint that is.")
     sys.stderr.write("\n".join(lines) + "\n")
-    return 2
 
 
 def main(argv=None):
