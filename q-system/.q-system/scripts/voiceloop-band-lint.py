@@ -199,11 +199,38 @@ def main():
         # `fingerprint:` line is a NOT CHECKED condition about the corpus, and
         # only what remains is about this draft.
         lines = [l for l in body.splitlines() if l.strip()]
+
+        # DID THE ENGINE ACTUALLY SCORE? (Codex major + minor, PR #278 round 2.)
+        #
+        # A completed `voiceloop score` always prints its tally --
+        # "N finding(s) against M exemplar(s)" -- whether N is 0 or 12. Its
+        # absence means the run did not complete: a crash, a bad argument, a
+        # corpus it could not read. The previous version had no such check, so a
+        # FAILED ENGINE was reported as style findings about the draft, under a
+        # message telling the author to add the skip marker. That is the worst
+        # possible remedy for an engine fault: it silences the detector on that
+        # file permanently, and the file was never the problem.
+        #
+        # And a nonzero exit with NO output emitted nothing at all, on either
+        # channel -- a missing gate reading as a pass, which is the exact defect
+        # class this hook's own docstring is about.
+        scored = any(re.search(r"\d+ finding\(s\) against \d+ exemplar", l)
+                     for l in lines)
+        if not scored:
+            detail = " | ".join(l.strip() for l in lines[:3]) or (
+                "no output at all (exit %d)" % result.returncode)
+            _emit("voiceloop-band-lint NOT CHECKED: `voiceloop score` did not "
+                  f"complete on {file_path}, so bands, templated shapes and "
+                  "corpus echo were NOT checked. This is an ENGINE fault, not a "
+                  "finding about the draft, so the skip marker is the wrong fix: "
+                  f"look at voiceloop itself. Output: {detail}")
+            sys.exit(0)
+
         not_checked = [l for l in lines if l.strip().startswith("fingerprint:")]
         findings = [l for l in lines
                     if l not in not_checked and not l.strip().startswith("NOT CHECKED:")]
-        # A trailing "N finding(s) against M exemplar(s)" summary counts the
-        # fingerprint line too, so it cannot stand in for a real finding.
+        # The tally counts the fingerprint line too, so it cannot stand in for a
+        # real finding.
         real = [l for l in findings
                 if not re.match(r"^\s*\d+ finding\(s\) against \d+ exemplar", l)]
 

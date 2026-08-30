@@ -25,6 +25,9 @@ HOOK = Path(__file__).resolve().parents[1] / "voiceloop-band-lint.py"
 # one is inside that scope (matches the `.*/outreach/.*\.md$` rule).
 IN_SCOPE = "outreach/some-note.md"
 OUT_OF_SCOPE = "notes/internal-memo.md"
+# The remedy text, named once so a case can assert it is ABSENT for an
+# engine fault and PRESENT for a real finding.
+SKIP_HINT = "to silence this file deliberately"
 
 
 def _sealed_path(bin_dir):
@@ -249,3 +252,42 @@ def test_a_non_utf8_draft_exits_zero_and_says_so(tmp_path):
                        capture_output=True, text=True, env=env, timeout=60)
     assert r.returncode == 0, r.stderr
     assert "NOT CHECKED" in _ctx(r), r.stdout
+
+
+def test_a_crashed_engine_is_not_a_finding_about_the_draft(tmp_path):
+    """Codex major, PR #278 round 2.
+
+    A `voiceloop` that crashes exits nonzero and prints a traceback. The
+    previous version put that in the findings bucket and appended "add the skip
+    marker to silence this file" -- which permanently disables the detector on a
+    file that was never the problem. The tally line is the discriminator: a
+    completed score always prints one.
+    """
+    r = _run(tmp_path, IN_SCOPE, "a draft\n", rc=2,
+             stdout="Traceback (most recent call last):\n  ValueError: boom")
+    assert r.returncode == 0
+    ctx = _ctx(r)
+    assert "NOT CHECKED" in ctx, ctx
+    assert "ENGINE fault" in ctx, ctx
+    assert SKIP_HINT not in ctx, "must not offer the skip marker for an engine fault"
+
+
+def test_a_silent_nonzero_exit_still_says_something(tmp_path):
+    """Codex minor, same round: this emitted nothing on either channel.
+
+    A gate that fails and says nothing is indistinguishable from a gate that
+    passed, which is the defect class this whole hook exists to avoid.
+    """
+    r = _run(tmp_path, IN_SCOPE, "a draft\n", rc=1, stdout="")
+    assert r.returncode == 0
+    assert "NOT CHECKED" in _ctx(r), r.stdout
+
+
+def test_a_real_finding_still_carries_the_skip_marker(tmp_path):
+    """Control: the engine-fault branch must not swallow genuine findings."""
+    r = _run(tmp_path, IN_SCOPE, "a draft\n", rc=1,
+             stdout=("band: sentence_mean: 43.0 outside [5.75, 16.22]\n"
+                     "1 finding(s) against 115 exemplar(s)"))
+    ctx = _ctx(r)
+    assert "sentence_mean" in ctx, ctx
+    assert SKIP_HINT in ctx, ctx
