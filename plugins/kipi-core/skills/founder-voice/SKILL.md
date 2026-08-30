@@ -36,8 +36,8 @@ If these files are empty/template, the voice skill cannot run. Ask the founder t
 - Bad: "Organizations often struggle with cross-team coordination challenges."
 
 ### 5. The Contrast Pattern
-- Sharp contrasts, not gradients:
-- "X isn't Y. It's Z." or "X does A. It doesn't do B."
+- Sharp contrasts, not gradients -- but state the thing directly; do not lead with what it is not.
+- The "X isn't Y. It's Z." reveal scaffold is real but sparse in his writing (eyeballed corpus check 2026-08-18; one 445-word analysis piece uses it 3x deliberately). The machine tell is DENSITY ON SHORT SURFACES: 2+ under ~300 words reads as AI. Sparing long-form use is his voice. "X does A. It doesn't do B." same rule.
 
 ### 6. The Question-as-Dagger
 - Questions expose uncomfortable truths, not drive engagement
@@ -72,7 +72,7 @@ Never return a draft with `pass: false` on either linter. After 3 iterations, su
 The linters do not check these. Verify before returning:
 
 1. **Scar test:** Does at least one paragraph anchor in real experience?
-2. **Contrast test:** Is there at least one sharp contrast pattern?
+2. **Contrast test:** Where the material carries a real tension, is it stated sharply and directly? (No scaffold quota -- see rule 5; a draft with zero contrast patterns can pass.)
 3. **Specificity test:** Could any content marketer have written this? If yes, rewrite.
 4. **Burstiness test:** Does sentence length VARY? Mix of short and long?
 5. **Paragraph test:** At least one single-sentence paragraph?

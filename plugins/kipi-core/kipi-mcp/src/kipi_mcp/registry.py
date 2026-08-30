@@ -5,14 +5,25 @@ from pathlib import Path
 
 
 class RegistryManager:
+    # Readers index these directly (list_instances/list_excluded/list_eliminated),
+    # so a registry written before a key existed crashed every read. The live
+    # file drifted to a shape without 'excluded' and took kipi://instances down
+    # with it; found only once the test suite could COLLECT (sp-dcd84af1).
+    _REQUIRED_KEYS = {"instances": [], "excluded": [], "eliminated": []}
+
     def __init__(self, registry_path: Path):
         self.registry_path = registry_path
 
     def load(self) -> dict:
         if not self.registry_path.exists():
-            return {"instances": [], "excluded": [], "eliminated": []}
+            return dict(self._REQUIRED_KEYS)
         with open(self.registry_path) as f:
-            return json.load(f)
+            data = json.load(f)
+        # Persisted external input: tolerate schema drift on read instead of
+        # crashing every consumer (fable-discipline: validating loader).
+        for key, default in self._REQUIRED_KEYS.items():
+            data.setdefault(key, default)
+        return data
 
     def save(self, data: dict) -> None:
         with open(self.registry_path, "w") as f:

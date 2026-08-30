@@ -1,0 +1,1 @@
+"stat-registry.json: NOT expressible as required_data in v1 \u2014 the one instance holding it keeps canonical under its own instance_q_dir (not q-system/) and its registry name differs from its dir basename, so a scoped entry could never fire (grounded 2026-07-23). Declared gap; owning decision + instance detail in spillover sp-72b60bff"

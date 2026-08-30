@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-ask358-round3-mutation.sh",
+ "runner": "bash",
+ "timeout_s": 240
+}
