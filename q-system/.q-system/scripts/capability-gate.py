@@ -68,6 +68,14 @@ WIRING_SURFACE_GLOBS = (
     "kipi*",
     "*.sh",
     "q-system/.q-system/scripts/*.sh",
+    # A launchd plist template IS wiring, and for a SCHEDULED job it is the only
+    # wiring there is. Measured 2026-08-30 (ASK-1178): morning-brief.py and
+    # morning-brief-deadman.py were reported inert while both had a committed
+    # plist naming them and both were loaded and firing on this Mac. The gate was
+    # telling a scheduled job to justify itself as dead code. install-plist.sh
+    # renders these into ~/Library/LaunchAgents, so a name appearing here is a
+    # job that actually runs.
+    "q-system/.q-system/scripts/*.plist",
     "q-system/hooks/*",
     ".claude/**/*.md",
     "plugins/**/*.md",
