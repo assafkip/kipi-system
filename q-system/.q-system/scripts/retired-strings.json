@@ -1,0 +1,39 @@
+{
+  "_comment": [
+    "The retired set for skeleton-owned files: positioning lines that were taken",
+    "out of circulation and must not keep steering drafts from inside a reference",
+    "file. Owner of the values; retired-strings-sweep.py and its test both read",
+    "this file rather than restating any string (ASK-701, sp-36788323).",
+    "",
+    "TIER IS DERIVED, NOT STORED. The sweep counts words with voiceloop.echo and",
+    "compares against echo.NGRAM: at or above the threshold a match is a lift and",
+    "fails the build; below it the phrase is short enough that ordinary prose can",
+    "reach it honestly, so it is reported and does not block. Storing a tier here",
+    "would let it drift from the module that owns what counts as a lift.",
+    "",
+    "This set covers SKELETON files only. The publishing pipeline in the instance",
+    "repos keeps its own retired set for prompt constants; that one is authored",
+    "from live corpus rows (voiceloop exemplar/correction rows with status",
+    "'retired') and is not duplicated here."
+  ],
+  "retired": [
+    {
+      "id": "defenders-reset-attackers-build",
+      "text": "Defenders reset after every incident. Attackers build on every success.",
+      "retired_by": "sp-36788323",
+      "note": "Found verbatim at founder-voice/references/voice-dna.md:55. The finding that opened ASK-701."
+    },
+    {
+      "id": "compliance-theater",
+      "text": "Compliance theater",
+      "retired_by": "sp-36788323",
+      "note": "Short enough to reach honestly. Reported, never blocking; founder-voice references use it as analysis of past writing, not as reusable copy."
+    },
+    {
+      "id": "safety-debt",
+      "text": "Safety debt",
+      "retired_by": "sp-36788323",
+      "note": "Same tier and same reason as compliance-theater."
+    }
+  ]
+}
