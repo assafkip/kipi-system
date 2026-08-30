@@ -211,6 +211,48 @@ class InstallerCase(unittest.TestCase):
         self.assertIsNotNone(refusal, "the differential missed an unprobed disable")
         self.assertIn(verb, refusal, "the refusal does not name what was lost")
 
+    def test_an_env_var_backdoor_is_refused(self):
+        """PR #279 minor, codex's shape exactly: every canary passes because the
+        probe runs with a clean environment and never sets the key.
+
+        `${VAR:-}` is load-bearing in this fixture. A bare `$VAR` aborts under
+        `set -u`, so the hook dies, emits nothing, and the canaries DO catch it
+        -- my first fixture did exactly that and therefore tested nothing. A real
+        backdoor survives the shell it hides in.
+        """
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("inst", INSTALLER)
+        inst = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inst)
+        real = open(SOURCE).read()
+        backdoor = real.replace(
+            'INPUT="$(cat)"',
+            '[ "${KIPI_LET_ME_THROUGH:-}" = 1 ] && exit 0\nINPUT="$(cat)"', 1)
+        self.assertNotEqual(backdoor, real, "the anchor moved")
+
+        # The behavioural canaries alone MISS it, which is the finding.
+        self.assertIsNone(inst.refuse_if_weaker("h.sh", backdoor, None))
+        # Against the installed hook, the new env read is refused.
+        refusal = inst.refuse_if_weaker("h.sh", backdoor, real)
+        self.assertIsNotNone(refusal, "an env-var backdoor installed")
+        self.assertIn("KIPI_LET_ME_THROUGH", refusal,
+                      "the refusal does not name the variable")
+
+    def test_a_source_with_no_shebang_is_refused_on_a_FIRST_install(self):
+        """PR #279 minor. The refusal was gated on the INSTALLED copy having a
+        shebang, so on a first install -- where there is no installed copy -- it
+        never ran."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("inst", INSTALLER)
+        inst = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inst)
+        real = open(SOURCE).read()
+        headless = real.split("\n", 1)[1]
+        self.assertFalse(headless.startswith("#!"))
+        refusal = inst.refuse_if_weaker("h.sh", headless, None)
+        self.assertIsNotNone(refusal, "a shebang-less hook installed on a first run")
+        self.assertIn("shebang", refusal)
+
     def test_an_empty_source_dir_is_a_refusal_not_a_pass(self):
         """A run that finds nothing to install must not report success."""
         with tempfile.TemporaryDirectory() as fake_repo:

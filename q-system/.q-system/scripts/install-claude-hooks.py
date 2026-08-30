@@ -75,6 +75,7 @@ import argparse
 import filecmp
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -280,6 +281,19 @@ def read(path):
         return None
 
 
+# Environment variables a shell script reads: $NAME and ${NAME...}. Deliberately
+# generous -- a false positive costs one refusal and a line in a commit message,
+# while a miss is a backdoor that installs.
+_ENV_READ = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _env_vars_read(text):
+    """Uppercase-ish names only: shell locals are lowercase by convention here,
+    and every local in this hook follows it, so this stays about the environment
+    rather than reporting every variable in the file."""
+    return {m for m in _ENV_READ.findall(text) if m.isupper() or "_" in m}
+
+
 def decision_of(hook_path, tool_name, tool_input, home):
     """Run the hook on one payload and return "deny", "allow" or "error".
 
@@ -321,9 +335,38 @@ def refuse_if_weaker(name, source_text, installed_text):
     Returns a refusal string, or None. Driven against a throwaway HOME so the
     probe writes its audit log there and never touches the real one.
     """
-    if installed_text.startswith("#!") if installed_text else False:
-        if not source_text.startswith("#!"):
-            return "%s: the source drops the shebang" % name
+    # UNCONDITIONAL, not conditional on what is already installed (PR #279
+    # minor). This was gated on the INSTALLED copy having a shebang, so on a
+    # first install -- the case where there is no installed copy at all -- it
+    # never ran, and a hook with no shebang could land. settings.json executes
+    # the file by path, so a missing shebang is a broken hook whatever preceded
+    # it. The prior state is irrelevant to whether this file can run.
+    if not source_text.startswith("#!"):
+        return "%s: the source has no shebang, so the tree cannot execute it" % name
+
+    # AN ENV-VAR BACKDOOR IS INVISIBLE TO A BEHAVIOURAL PROBE (PR #279 minor).
+    # A source can early-exit on a variable the probe does not set:
+    #     [ "$SOME_NEW_VAR" = 1 ] && exit 0
+    # Every canary passes, because the probe runs with a clean environment and
+    # never sets that name. Running the hook cannot find a door whose key it
+    # does not hold.
+    #
+    # So this one check is textual, and DIFFERENTIAL rather than a fixed list:
+    # any environment variable the SOURCE reads that the INSTALLED hook does not
+    # is refused. The installed hook stays the oracle, exactly as the corpus
+    # comparison below uses it.
+    #
+    # HONEST BOUNDARY: this catches a backdoor keyed on a NEW variable. One that
+    # repurposes a variable the hook already reads -- ALLOW_DESTRUCTIVE is the
+    # sanctioned bypass and HOME is read throughout -- is NOT caught here, and no
+    # amount of probing would catch it either. Stated rather than implied away.
+    if installed_text is not None:
+        new_vars = _env_vars_read(source_text) - _env_vars_read(installed_text)
+        if new_vars:
+            return ("%s: the source reads environment variable(s) the installed "
+                    "hook does not (%s). A probe cannot open a door whose key it "
+                    "does not hold, so a new env read is refused rather than "
+                    "tested." % (name, ", ".join(sorted(new_vars))))
 
     probe_home = tempfile.mkdtemp(prefix="hookprobe-")
     try:
