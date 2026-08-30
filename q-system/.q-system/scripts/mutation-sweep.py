@@ -820,7 +820,8 @@ def sweep(root, args):
             # therefore treated as a MISS and re-run. Silently trusting it would
             # be the same defect wearing a compatibility argument.
             fingerprint = test_fingerprint(root, tp, resume.get(tp),
-                                           entry.get("runner"))
+                                           entry.get("runner"),
+                                           entry.get("timeout_s"))
             cached = resume.get(tp)
             if cached is not None and cached.get("test_sha") == fingerprint:
                 results.append(cached)
@@ -860,7 +861,7 @@ def sweep(root, args):
     return results
 
 
-def test_fingerprint(root, test_path, cached, runner=None):
+def test_fingerprint(root, test_path, cached, runner=None, timeout_s=None):
     """Hash the test plus every subject a cached verdict was measured against.
 
     Returns None only when the test file itself cannot be read, and None never
@@ -886,7 +887,14 @@ def test_fingerprint(root, test_path, cached, runner=None):
     # none of them. Keying on file content alone reused the old verdict and never
     # ran the newly enabled ones, which is the zero-execution defect surviving
     # its own fix.
+    # THE DECLARED EXECUTION LIMITS ARE PART OF THE EXPERIMENT TOO (PR #272).
+    # runner was round one of this; timeout_s is the same shape. A verdict
+    # produced under a 60s cap says nothing about the same test under 600s --
+    # a mutant that "survived" may simply have been killed. Any manifest field
+    # that changes HOW the test runs belongs here.
     h.update((runner or "").encode("utf-8"))
+    h.update(b"\0")
+    h.update(str(timeout_s if timeout_s is not None else "").encode("utf-8"))
     h.update(b"\0")
     # THE ENGINE IS MORE THAN ITS TABLES (PR #272 major). Hashing PY_RULES,
     # SH_RULES and VERDICT_RULES covered the DATA and left the CODE out, so

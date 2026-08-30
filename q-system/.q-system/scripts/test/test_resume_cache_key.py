@@ -93,6 +93,20 @@ class ResumeCacheKeyCase(unittest.TestCase):
         self.assertNotEqual(before, after,
                             "an engine edit left the fingerprint unchanged")
 
+    def test_changing_the_declared_timeout_invalidates(self):
+        """PR #272. A verdict produced under a 60s cap says nothing about the
+        same test under 600s -- a mutant that "survived" may simply have been
+        killed. Any manifest field changing HOW the test runs belongs in the
+        key, and runner was round one of exactly this."""
+        a = ms.test_fingerprint(self.tmp, self.test_rel, None, "bash", 60)
+        b = ms.test_fingerprint(self.tmp, self.test_rel, None, "bash", 600)
+        self.assertNotEqual(a, b, "a timeout change reused the old verdict")
+
+    def test_the_same_timeout_still_reuses_the_cache(self):
+        self.assertEqual(
+            ms.test_fingerprint(self.tmp, self.test_rel, None, "bash", 60),
+            ms.test_fingerprint(self.tmp, self.test_rel, None, "bash", 60))
+
     def test_an_unreadable_test_is_a_miss_not_a_hit(self):
         os.remove(self.tmp / self.test_rel)
         self.assertIsNone(self.fp())
