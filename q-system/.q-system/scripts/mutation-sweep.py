@@ -497,9 +497,55 @@ class Sweep:
         _PENDING[target] = bpath
         return bpath
 
-    def _restore(self, target: Path, bpath, orig_sha):
+    def _restore(self, target: Path, bpath, orig_sha, mutant_sha=None):
         """cp from our own backup. NEVER `git checkout --`: that restore form
-        once wiped a whole uncommitted fix out of a working tree."""
+        once wiped a whole uncommitted fix out of a working tree.
+
+        REFUSES TO OVERWRITE SOMEBODY ELSE'S EDIT (PR #272 blocker). This copied
+        the backup over the target unconditionally. If a human saved that file
+        while the sweep held it mutated, their work was replaced by the
+        pre-mutation content -- and the sha check below then PASSED, because the
+        result matched orig_sha exactly as intended. Silent data loss reported as
+        a successful restoration, by a tool whose subject is checks that pass for
+        the wrong reason.
+
+        The sweep lock (added this PR) keeps a second SWEEP out. It cannot keep a
+        person out, and a person is who loses work here.
+
+        So the content on disk is read FIRST. It should be our mutant. If it is
+        already the original, another path restored it and there is nothing to
+        do. Anything else is a third party's edit: the backup is preserved beside
+        the file, their content is left alone, and the run stops.
+        """
+        try:
+            current = sha(target.read_bytes())
+        except OSError:
+            current = None
+
+        # An UNKNOWN mutant_sha (None) must refuse, not permit. It means "we do
+        # not know what we wrote", and treating that as permission to overwrite
+        # is the same fail-open my own first cut had -- caught by this file's
+        # own test rather than by review.
+        #
+        # The absent control passes None legitimately, and it is covered without
+        # a special case: that path DELETES the file, so `current` is None and
+        # the guard is skipped. A file that exists with content we cannot
+        # account for is exactly what should stop the run.
+        if current is not None and current != orig_sha and current != mutant_sha:
+            keep = str(bpath) + ".unrestored"
+            try:
+                shutil.copy2(bpath, keep)
+            except OSError:
+                keep = str(bpath)
+            _PENDING.pop(target, None)
+            raise SystemExit(
+                f"mutation-sweep: {target} changed while the sweep held it "
+                f"mutated -- it is neither our mutant nor the original, so "
+                f"somebody else wrote it.\n"
+                f"  NOT overwriting their content. The pre-mutation copy is at "
+                f"{keep}.\n"
+                f"  Reconcile by hand, then re-run.")
+
         shutil.copy2(bpath, target)
         _PENDING.pop(target, None)
         os.unlink(bpath)
@@ -591,7 +637,8 @@ def probe_pair(sw, entry, subj_rel, baseline, score):
         target.write_text(tripwire)
         trip = sw.run_test(entry, budget)
     finally:
-        sw._restore(target, bpath, orig_sha)
+        sw._restore(target, bpath, orig_sha,
+                    sha(tripwire.encode("utf-8")))
     if trip["timed_out"]:
         return {"verdict": "tripwire-timeout", "tripwire": trip, "score": score}
     if trip["rc"] == 0:
@@ -607,7 +654,10 @@ def probe_pair(sw, entry, subj_rel, baseline, score):
         target.unlink()
         absent = sw.run_test(entry, budget)
     finally:
-        sw._restore(target, bpath, orig_sha)
+        # The absent control DELETES the file, so there is no mutant content to
+        # recognise. A file that reappeared with a stranger's bytes is exactly
+        # what the guard should refuse, and passing None gets that.
+        sw._restore(target, bpath, orig_sha, None)
     if not absent["timed_out"] and absent["rc"] == 0:
         # THE SCORE DECIDES WHAT A PASSING ABSENT-CONTROL MEANS (PR #272 minor).
         #
@@ -658,7 +708,10 @@ def probe_pair(sw, entry, subj_rel, baseline, score):
             return {"verdict": "harness-error-mutant-not-applied"}
         mut = sw.run_test(entry, budget)
     finally:
-        sw._restore(target, bpath, orig_sha)
+        # after_sha may be unbound if write_text raised before it was computed;
+        # None then means "we do not know what we wrote", and the guard treats
+        # an unknown as a refusal rather than as permission.
+        sw._restore(target, bpath, orig_sha, locals().get("after_sha"))
 
     # self-guard 5: the tree is back, so the test must be green again. A red
     # control means this run's verdict is not trustworthy.
