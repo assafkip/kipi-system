@@ -13,6 +13,7 @@ An installer is a write path into the one directory an agent must not be able to
 write, so the tests that matter most here are the REFUSALS.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -39,6 +40,25 @@ class InstallerCase(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="hookinstall-")
         self.hooks = os.path.join(self.tmp, ".claude", "hooks")
         self.dst = os.path.join(self.hooks, "destructive-op-deny.sh")
+        self.register()
+
+    def register(self):
+        """Wire the hook in the synthetic settings.json.
+
+        A copied-but-unregistered hook does not run, so the installer treats it
+        as a FAILURE (PR #279 codex blocker). Every case that expects a
+        successful install therefore needs the tree to actually wire it -- which
+        is the point: without this, the fixtures were asserting success for a
+        gate that would never have fired.
+        """
+        os.makedirs(os.path.join(self.tmp, ".claude"), exist_ok=True)
+        with open(os.path.join(self.tmp, ".claude", "settings.json"), "w") as fh:
+            json.dump({"hooks": {"PreToolUse": [
+                {"hooks": [{"type": "command", "command": self.dst}]}]}}, fh)
+
+    def unregister(self):
+        with open(os.path.join(self.tmp, ".claude", "settings.json"), "w") as fh:
+            json.dump({"hooks": {}}, fh)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -165,6 +185,39 @@ class InstallerCase(unittest.TestCase):
                  "--home", self.tmp],
                 capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 2, "an empty source dir exited clean")
+
+    def test_an_unregistered_hook_is_a_failure_not_a_success(self):
+        """PR #279 codex BLOCKER. A file on disk is not a gate armed.
+
+        The installer verified bytes and the execute bit and printed
+        "installed and verified executable" while nothing in settings.json
+        referenced the file. On a clean machine the guard would sit there,
+        correct and executable, and never run once.
+        """
+        self.unregister()
+        proc = run(self.tmp)
+        self.assertNotEqual(proc.returncode, 0,
+                            "an unregistered hook was reported as installed")
+        self.assertIn("NOT REGISTERED", proc.stdout)
+        self.assertIn(self.dst, proc.stdout, "the message does not name the fix")
+
+    def test_check_flags_an_unregistered_hook(self):
+        run(self.tmp)
+        self.unregister()
+        proc = run(self.tmp, "--check")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("NOT REGISTERED", proc.stdout)
+
+    def test_a_hook_wired_only_in_settings_local_counts_as_registered(self):
+        """A local override still runs it; calling that unregistered would be a
+        false alarm in the other direction."""
+        run(self.tmp)
+        self.unregister()
+        with open(os.path.join(self.tmp, ".claude", "settings.local.json"), "w") as fh:
+            json.dump({"hooks": {"PreToolUse": [
+                {"hooks": [{"type": "command", "command": self.dst}]}]}}, fh)
+        proc = run(self.tmp, "--check")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
     def test_dry_run_writes_nothing(self):
         proc = run(self.tmp, "--dry-run")

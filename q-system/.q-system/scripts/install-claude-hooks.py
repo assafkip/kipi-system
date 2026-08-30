@@ -41,6 +41,19 @@ its own refusals rather than inheriting trust from being called "install":
   5. ALLOWLIST. Only `<repo>/q-system/.q-system/hooks/*.sh`, one level deep,
      installs to `<home>/.claude/hooks/<same name>`. No path arithmetic from
      user input, no recursion.
+  6. REGISTRATION IS CHECKED, NEVER WRITTEN. A hook that is not referenced from
+     settings.json does not run, so "installed" without it is a false success
+     and is now a FAILURE that prints the exact line to add.
+
+     It is not written automatically, and that is a deliberate disagreement with
+     the review that asked for it. settings.json is the file that wires every
+     gate in the tree; apply_claude_changes.py refuses to let its one
+     non-additive op target that file at all, for exactly this reason. An
+     installer that edits it would be a strictly wider hole than the one this
+     script closes -- arming a hook and disarming every other one are the same
+     write. Detecting is the half that can be automated safely; the write stays
+     a human action, and now it is an action the tool names precisely instead of
+     leaving to be discovered.
 
 `--check` is the read-only half and is what a gate should call: it reports drift
 and exits 1 without writing anything.
@@ -48,6 +61,7 @@ and exits 1 without writing anything.
 
 import argparse
 import filecmp
+import json
 import os
 import shutil
 import stat
@@ -97,6 +111,61 @@ def parses_as_bash(path):
     return proc.returncode == 0, (proc.stderr or proc.stdout).strip()
 
 
+def registered_hook_commands(home):
+    """Every command string wired under `hooks` in the tree's settings.json.
+
+    Read from BOTH settings.json and settings.local.json: a hook wired only in
+    the local override still runs, and calling it unregistered would be a false
+    alarm in the opposite direction.
+    """
+    commands = []
+    for name in ("settings.json", "settings.local.json"):
+        path = os.path.join(home, ".claude", name)
+        try:
+            with open(path) as fh:
+                settings = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        hooks = settings.get("hooks")
+        if not isinstance(hooks, dict):
+            continue
+        for entries in hooks.values():
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                for hook in (entry or {}).get("hooks", []) or []:
+                    command = (hook or {}).get("command")
+                    if isinstance(command, str):
+                        commands.append(command)
+    return commands
+
+
+def is_registered(home, dst):
+    """Is this exact file wired as a hook the tree will actually run?
+
+    THE BLOCKER THIS ANSWERS (PR #279, codex). The installer copied the hook,
+    verified its bytes, verified its execute bit, and printed
+    "installed and verified executable" -- while nothing in settings.json
+    referenced it. On a clean machine the guard would sit on disk, correct and
+    executable, and never run once. A file present is not a gate armed, and
+    reporting success for the first while claiming the second is the same false
+    green this whole change is about.
+
+    Matched by path, with $HOME and ~ collapsed, because a hook is wired as a
+    literal path string.
+    """
+    home_real = os.path.realpath(home)
+    spellings = {dst, os.path.realpath(dst)}
+    for spelling in list(spellings):
+        if spelling.startswith(home_real + os.sep):
+            tail = spelling[len(home_real):]
+            spellings.add("~" + tail)
+            spellings.add("$HOME" + tail)
+    return any(spelling in command
+               for command in registered_hook_commands(home)
+               for spelling in spellings)
+
+
 def sources():
     """Every `<repo>/q-system/.q-system/hooks/*.sh`, one level deep."""
     if not os.path.isdir(SOURCE_DIR):
@@ -130,7 +199,7 @@ def refuse_if_weaker(name, source_text, installed_text):
     return None
 
 
-def install_one(name, dest_dir, dry_run):
+def install_one(name, dest_dir, dry_run, home):
     src = os.path.join(SOURCE_DIR, name)
     dst = os.path.join(dest_dir, name)
     source_text = read(src)
@@ -147,8 +216,9 @@ def install_one(name, dest_dir, dry_run):
         return ("REFUSED %s: the source does not parse (`bash -n`), and a hook "
                 "bash cannot parse fails OPEN: %s" % (name, why)), False
 
-    if installed_text == source_text and os.path.exists(dst) and os.access(dst, os.X_OK):
-        return "%s: already installed and executable" % name, False
+    if (installed_text == source_text and os.path.exists(dst)
+            and os.access(dst, os.X_OK) and is_registered(home, dst)):
+        return "%s: already installed, executable and registered" % name, False
 
     if dry_run:
         reason = "not installed" if installed_text is None else "differs"
@@ -177,7 +247,11 @@ def install_one(name, dest_dir, dry_run):
     ok, why = parses_as_bash(dst)
     if not ok:
         return "%s: FAILED, the installed file does not parse: %s" % (name, why), False
-    return "%s: installed, parses, verified executable" % name, True
+    if not is_registered(home, dst):
+        return ("%s: FAILED, installed and executable but NOT REGISTERED in "
+                "settings.json, so it never runs. Wire it as a PreToolUse "
+                "command:\n      \"command\": \"%s\"" % (name, dst)), False
+    return "%s: installed, parses, executable, and registered" % name, True
 
 
 def main(argv=None):
@@ -218,6 +292,9 @@ def main(argv=None):
                 drift.append("%s: installed but NOT EXECUTABLE (the guard is OFF)" % name)
             if not parses_as_bash(dst)[0]:
                 drift.append("%s: installed but DOES NOT PARSE (the guard fails OPEN)" % name)
+            if not is_registered(args.home, dst):
+                drift.append("%s: installed but NOT REGISTERED in settings.json, "
+                             "so it never runs" % name)
         for line in drift:
             print("  " + line)
         if drift:
@@ -228,7 +305,7 @@ def main(argv=None):
 
     failed = False
     for name in names:
-        line, _ = install_one(name, dest_dir, args.dry_run)
+        line, _ = install_one(name, dest_dir, args.dry_run, args.home)
         print("  " + line)
         if line.startswith("REFUSED") or "FAILED" in line:
             failed = True
