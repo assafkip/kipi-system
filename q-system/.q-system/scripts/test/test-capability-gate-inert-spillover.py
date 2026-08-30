@@ -75,7 +75,11 @@ if not hasattr(capgate, "check_inert_spillover_live"):
     fail("capability-gate.py has no check_inert_spillover_live(); the declared_inert "
          "liveness check is missing, so a resolved spillover id silences the gate forever")
 
-MANIFEST_REL = "q-system/.q-system/capability-manifest.json"
+# The manifest is assembled from a per-declaration fragment directory; this
+# suite hands whole manifest dicts around, so it explodes them the same way
+# the gate reads them rather than learning the layout twice.
+sys.path.insert(0, str(GATE.parent))
+import capability_manifest  # noqa: E402
 
 
 def build_repo(tmp, spillover_rows, inert_id="sp-fixture01", skeleton=False):
@@ -98,7 +102,7 @@ def build_repo(tmp, spillover_rows, inert_id="sp-fixture01", skeleton=False):
         }],
     }
     (root / "q-system/.q-system").mkdir(parents=True, exist_ok=True)
-    (root / MANIFEST_REL).write_text(json.dumps(manifest, indent=2))
+    capability_manifest.explode(root, manifest)
     if spillover_rows is not None:
         (root / ".prd-os").mkdir(parents=True, exist_ok=True)
         (root / ".prd-os/spillover.jsonl").write_text(
@@ -267,12 +271,16 @@ if bool(inst_errs) == bool(skel_errs):
 ok("unknown-id verdict differs by mode only: instance skips, skeleton reds")
 
 # --- wiring: main() actually calls this, and the real manifest is clean -------
-real_manifest = json.loads((ROOT / MANIFEST_REL).read_text())
+real_errors = []
+real_manifest = capability_manifest.load(ROOT, real_errors)
+if real_manifest is None:
+    fail("this repo's capability manifest does not assemble: "
+         + " | ".join(real_errors))
 real_errs, real_notes = [], []
 capgate.check_inert_spillover_live(ROOT, real_manifest, real_errs, real_notes,
                                    capgate.detect_mode(ROOT, []))
 if real_errs:
-    fail("this repo's own capability-manifest.json has dead inert pointers: "
+    fail("this repo's own capability manifest has dead inert pointers: "
          + " | ".join(real_errs))
 if any("SKIPPED" in n for n in real_notes):
     # Do NOT claim the manifest is clean when the ledger was never read. This is
@@ -281,7 +289,7 @@ if any("SKIPPED" in n for n in real_notes):
     ok("this checkout has no spillover ledger, so manifest liveness was NOT "
        "checked here (expected in CI; run it where the ledger lives)")
 else:
-    ok("this repo's capability-manifest.json cites only live spillover ids "
+    ok("this repo's capability manifest cites only live spillover ids "
        f"({len(real_manifest.get('declared_inert', []))} entries, ledger read)")
 
 print(f"PASS: {PASS}/{PASS} declared_inert spillover-liveness checks")
