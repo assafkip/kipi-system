@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "_comment": "Each scope is a claim that some check covers some population. The detector runs both commands and subtracts. A scope is registered by hand on purpose: auto-discovering which of this repo's twenty-odd *_PREFIXES tuples are scope claims would guess, and a wrong guess is silent -- the same failure mode being detected. tier=commit must be portable and fast (it runs in pre-commit); tier=periodic may read machine state.",
+  "scopes": [
+    {
+      "id": "capability-gate-test-scope",
+      "tier": "commit",
+      "why": "capability-gate.py SCAN_ROOTS decides which tests can be DECLARED. Anything outside it is invisible to both directions of its declared-vs-actual diff, so an undeclared, unrun test there is indistinguishable from one that does not exist. Measured 2026-08-29: 312 tracked files match the gate's own patterns, 172 are in scope.",
+      "population": "git ls-files | grep -E '(^|/)(test_[^/]*\\.py|test-[^/]*\\.py|test-[^/]*\\.sh|test_[^/]*\\.sh|[^/]*_test\\.py)$'",
+      "covered": "git ls-files | grep -E '(^|/)(test_[^/]*\\.py|test-[^/]*\\.py|test-[^/]*\\.sh|test_[^/]*\\.sh|[^/]*_test\\.py)$' | grep -E '^q-system/\\.q-system/(scripts/|[^/]+$)'",
+      "allow": []
+    },
+    {
+      "id": "launchd-watchdog-families",
+      "tier": "periodic",
+      "why": "launchd-health-check.py WATCHED_PREFIXES decides which job families the watchdog can see. A family outside it dies silently and the watchdog stays green, which is exactly the shape the watchdog exists to prevent.",
+      "population": "launchctl list | awk 'NR>1{print $3}' | grep -vE '^(com\\.apple|application\\.|0x)' | sed -E 's/\\.[^.]*$//' | sort -u",
+      "covered": "python3 -c \"import importlib.util,sys; s=importlib.util.spec_from_file_location('lh','q-system/.q-system/scripts/launchd-health-check.py'); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print('\\n'.join(p.rstrip('.') for p in m.load_watched_prefixes()))\"",
+      "allow": [
+        {"member": "com.docker", "reason": "third-party app, not a fleet job"},
+        {"member": "com.google", "reason": "third-party updater"},
+        {"member": "com.logi", "reason": "third-party device driver"},
+        {"member": "com.logitech", "reason": "third-party device driver"},
+        {"member": "com.contourdesign", "reason": "third-party device driver"},
+        {"member": "com.openssh", "reason": "system service"},
+        {"member": "homebrew.mxcl", "reason": "package manager services"},
+        {"member": "us.zoom", "reason": "third-party app"},
+        {"member": "com.pxkan", "reason": "Pipit2 Sparkle auto-updater, a third-party app, not a fleet job"}
+      ]
+    }
+  ]
+}
