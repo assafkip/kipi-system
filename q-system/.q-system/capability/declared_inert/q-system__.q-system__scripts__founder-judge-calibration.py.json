@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/founder-judge-calibration.py",
+ "reason": "manually-invoked benchmark harness (build/blind/verify/score), run when a calibration question is asked rather than on any schedule; declared inert instead of given fake wiring to clear the gate",
+ "spillover_id": "sp-5de8ca5b"
+}

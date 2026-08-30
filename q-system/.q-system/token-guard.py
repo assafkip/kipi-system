@@ -863,6 +863,32 @@ def actor_transcript_path(hook_input):
     return own if os.path.exists(own) else ""
 
 
+def _transcript_starved_reason(path):
+    """Why this transcript cannot be triaged from, or None when it can.
+
+    Imports the check from fable-escalate.py rather than restating it, so the
+    hook's cap accounting and the script's call decision can never disagree
+    about what "readable" means. `stop_after=1` keeps it to the first renderable
+    record: this runs inside a 5s hook budget against transcripts that reach
+    5MB.
+
+    FAILS OPEN. Any import or read problem returns None, which spends the call
+    exactly as before this change. A guard that silently SUPPRESSED escalations
+    because its own helper broke would be a worse failure than the one being
+    fixed here -- same shape as the missing-script no-op above.
+    """
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "fable_escalate_check", FABLE_ESCALATE_SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        status, _ = module.transcript_status(path, stop_after=1)
+        return None if status == module.TRANSCRIPT_OK else status
+    except Exception:
+        return None
+
+
 def request_escalation(cache, hook_input, trigger, reason, actor):
     """Spawn the triage DETACHED and return a one-line note, or None.
 
@@ -882,13 +908,30 @@ def request_escalation(cache, hook_input, trigger, reason, actor):
         return None
     import subprocess
 
+    # ONE resolution, asked once, used by both the starvation check and the
+    # child. Merge of origin/main 2026-08-29: this branch read the raw
+    # `transcript_path`, main had already replaced it with
+    # actor_transcript_path() so a SUBAGENT's triage is built from its own
+    # records instead of the orchestrator's (the 2026-08-16 prompt-injection
+    # scare). The starvation check has to be asked about the file the child
+    # will actually read, or the two disagree exactly where it matters: for a
+    # subagent the parent transcript is readable while the actor's own is
+    # missing, so checking the raw path would answer "fed", spend a cap slot,
+    # and hand the child an empty packet -- the defect this whole change
+    # exists to close. actor_transcript_path() returning "" for a subagent
+    # whose own transcript is absent is itself a starved case, and is now
+    # reported as one rather than silently degrading to
+    # "(transcript unavailable)".
+    transcript = actor_transcript_path(hook_input)
+    starved_reason = _transcript_starved_reason(transcript)
+
     count = cache.get("fable_escalations", 0)
     capped = count >= _int_env("KIPI_FABLE_CAP", 2)
     args = [
         sys.executable, FABLE_ESCALATE_SCRIPT, "--json",
         "--trigger", trigger,
         "--reason", (reason or "")[:500],
-        "--transcript", actor_transcript_path(hook_input),
+        "--transcript", transcript,
         "--count", str(count),
         "--pending-file", pending_path(actor),
         # Stamped into the payload so the READER can refuse a triage that was
@@ -908,6 +951,23 @@ def request_escalation(cache, hook_input, trigger, reason, actor):
             stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError:
         return None
+
+    # A STARVED ESCALATION IS NOT AN ESCALATION, SO IT DOES NOT SPEND A SLOT.
+    # The child still runs, because its job here is to write the receipt row
+    # that says the transcript could not be read; it just will not call the
+    # model. Not incrementing the counter is what keeps FABLE_CAP meaningful:
+    # the cap is what stops any further triage for this actor, and reaching it
+    # must mean "two real triages ran and did not unstick this", never "two
+    # packets went out empty". Measured 2026-08-03: 23 of 27 calls were
+    # starved, and they were what drove the cap. (The cap itself no longer
+    # pages the founder -- ASK-504 removed that on main because the cap branch
+    # returns before call_fable and so could never carry a diagnosis. The cap
+    # still spends the actor's only two chances at a triage, which is what
+    # starved attempts must not be allowed to burn.)
+    if starved_reason:
+        return ("[Cross-model triage skipped: %s. No model call was spent and "
+                "no escalation slot was consumed; the ledger row is the "
+                "receipt.]" % starved_reason)
 
     if capped:
         # Asserts NOTHING about the founder having been reached. The page is
