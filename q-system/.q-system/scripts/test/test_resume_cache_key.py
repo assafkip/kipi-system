@@ -76,6 +76,25 @@ class ResumeCacheKeyCase(unittest.TestCase):
             ms.test_fingerprint(self.tmp, self.test_rel, None, "pytest"),
             ms.test_fingerprint(self.tmp, self.test_rel, None, "pytest"))
 
+    def test_changing_engine_LOGIC_invalidates_not_just_the_tables(self):
+        """PR #272 major. Hashing PY_RULES/SH_RULES/VERDICT_RULES covered the
+        DATA and left the CODE out, so editing make_disarm or the paren scanner
+        changed what "disarmed" means while every cached verdict stayed valid.
+        The tables are the obvious half; the scanner is just as load-bearing."""
+        before = ms.test_fingerprint(self.tmp, self.test_rel, None, "bash")
+        original = ms.make_disarm
+        try:
+            def patched(text, suffix):        # different source, same behaviour
+                return original(text, suffix)
+            ms.make_disarm = patched
+            after = ms.test_fingerprint(self.tmp, self.test_rel, None, "bash")
+        finally:
+            ms.make_disarm = original
+        self.assertNotEqual(before, after,
+                            "changing the mutation engine's CODE left the "
+                            "fingerprint unchanged, so a resumed run replays "
+                            "verdicts produced by different semantics")
+
     def test_an_unreadable_test_is_a_miss_not_a_hit(self):
         os.remove(self.tmp / self.test_rel)
         self.assertIsNone(self.fp())

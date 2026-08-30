@@ -79,6 +79,7 @@ import ast
 import datetime
 import hashlib
 import importlib.util
+import inspect
 import json
 import os
 import pathlib
@@ -791,6 +792,26 @@ def test_fingerprint(root, test_path, cached, runner=None):
     # its own fix.
     h.update((runner or "").encode("utf-8"))
     h.update(b"\0")
+    # THE ENGINE IS MORE THAN ITS TABLES (PR #272 major). Hashing PY_RULES,
+    # SH_RULES and VERDICT_RULES covered the DATA and left the CODE out, so
+    # editing make_disarm, _disarm_exit_calls or code_only changed what
+    # "disarmed" means while every cached verdict stayed valid. The tables are
+    # the obvious half; the paren scanner and the comment stripper are just as
+    # load-bearing and were invisible.
+    #
+    # inspect.getsource rather than the whole file: hashing mutation-sweep.py
+    # entire would invalidate every cached verdict for a comment or a change to
+    # the report formatter, and a cache that clears on unrelated edits is a
+    # cache nobody keeps. This names the functions that decide what a mutant IS.
+    for fn in (make_disarm, _disarm_exit_calls, syntax_ok):
+        try:
+            h.update(inspect.getsource(fn).encode("utf-8"))
+        except (OSError, TypeError):
+            # Source unavailable (frozen/zipped). Fall back to a miss rather
+            # than to a false hit: an unhashable engine must not read as
+            # unchanged.
+            return None
+        h.update(b"\0")
     for rules in (PY_RULES, SH_RULES, VERDICT_RULES):
         for pat, repl in rules:
             h.update(pat.pattern.encode("utf-8"))
@@ -1340,8 +1361,14 @@ def main():
 
     if args.report_only:
         out = root / "q-system/output/mutation-sweep"
-        rows = latest_per_test(
-            (out / "results.jsonl").read_text().splitlines())
+        ledger = out / "results.jsonl"
+        if not ledger.is_file():
+            # A traceback is a terrible error path for the commonest first-run
+            # state (PR #272 minor). Say what is missing and how to make it.
+            print("mutation-sweep: no ledger at %s -- nothing to report. Run a "
+                  "sweep first (without --report-only)." % ledger, file=sys.stderr)
+            sys.exit(2)
+        rows = latest_per_test(ledger.read_text().splitlines())
         report(rows, out)
         sys.exit(0)
 
