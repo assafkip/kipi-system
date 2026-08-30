@@ -1,0 +1,4 @@
+{
+ "path": "plugins/prd-os/scripts/test/test_spillover_ledger_root.py",
+ "runner": "python3"
+}

@@ -423,6 +423,47 @@ def _run(path, op, rest, ts):
         print(d.get(issue, {}).get(key, default))
         return 0
 
+    if op == "list-flagged":              # list-flagged <flag> -> one issue id per line
+        # THE READ THAT MAKES A CLAIMED FLAG RELEASABLE (codex PR #215, major).
+        #
+        # `claim-flag` announces once per issue and `clear-flag` gives one back,
+        # but nothing could ask WHICH ids are holding a flag. So a caller could
+        # only release an id it already had in hand -- and the id it needs to
+        # release is by definition one that has LEFT the population it is
+        # watching. linear-worker.sh's founder-routed flag was set on the first
+        # page and never cleared on recovery: relabel the issue, and the flag it
+        # left behind suppressed every later recurrence for that same id. A
+        # detector that stops detecting, silently, which is the exact shape the
+        # owner:assaf block exists to end.
+        #
+        # A READ, not a write, and it takes no lock -- same posture as `get`
+        # above. A torn read is impossible because every write goes through
+        # _mutate's temp-then-os.replace, so the path is always a whole file.
+        # Exit 0 with NO output when the flag is held by nobody: an empty
+        # population is an answer, not an error, and a caller sweeping stale
+        # flags must be able to tell "none held" from "the read failed".
+        (flag,) = _args(op, rest, 1)
+        try:
+            with open(path) as fh:
+                d = json.load(fh)
+        except FileNotFoundError:
+            d = {}
+        # A CORRUPT LEDGER IS NOT AN EMPTY ONE. `get` above swallows every
+        # exception and prints a default, which is right for a single scalar with
+        # a caller-supplied fallback. Here a swallowed parse error would print
+        # nothing, and nothing means "no id holds this flag" -- so a sweep would
+        # conclude every announcement is already released and the next run would
+        # re-page the whole population. Fail loudly through the exit-2 catch-all
+        # instead: nothing was written and nothing can be concluded.
+        if not isinstance(d, dict):
+            raise Usage("ledger at %s is not a JSON object (%s); cannot list flags"
+                        % (path, type(d).__name__))
+        for issue in sorted(d):
+            e = d.get(issue)
+            if isinstance(e, dict) and e.get(flag):
+                print(issue)
+        return 0
+
     if op == "bump-attempt":              # bump-attempt <issue> <why>
         issue, why = _args(op, rest, 2)
         _mutate(path, lambda d: op_bump(d, issue, "count", "last", ts, why))

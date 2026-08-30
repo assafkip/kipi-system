@@ -17,6 +17,7 @@ from kipi_mcp.morning_init import (
     deliverables_check,
     retry_notion_queue,
     _check_db_integrity,
+    _parse_objections,
     auto_backup,
 )
 
@@ -299,6 +300,72 @@ class TestCanonicalDigest:
         assert set(result["retired_sources"]) == {
             "talk_tracks", "objections", "current_state"}
         assert result["valid"] is True, result["validation_failed"]
+
+
+# ── Objections: containers and template slots are not objections (ASK-992) ──
+
+
+# The repo's own canonical objections.md, read live rather than invented. A
+# fixture written from memory would test the author's belief about the template;
+# this file IS the template every instance ships with, so it is the only input
+# that can prove the parser stopped recording it.
+REAL_OBJECTIONS_MD = (
+    Path(__file__).resolve().parents[4] / "q-system" / "canonical" / "objections.md"
+)
+
+# Measured 2026-08-24 from the repo root: every record the old parser returned
+# for that file, and not one of them an objection.
+CONTAINER_RECORD_NAMES = {
+    "Objections",
+    "Format <!-- pin -->",
+    '"[Objection as they say it]"',
+    "Active Objections",
+}
+
+
+class TestObjectionsAreRealObjections:
+    """ASK-992 / sp-851714d6. `if heading and body.strip()` accepted every
+    section, so the document title, the `## Format` container, the heading
+    inside the template's code fence and `## Active Objections` all became
+    objection records. On this repo's own file that is 4 records and 0 real
+    ones, and the validity check `len(objections) > 0` read it as healthy."""
+
+    def test_real_objections_md_yields_no_container_records(self):
+        if not REAL_OBJECTIONS_MD.exists():
+            pytest.skip(f"no canonical objections.md at {REAL_OBJECTIONS_MD}")
+        names = [o["name"] for o in _parse_objections(REAL_OBJECTIONS_MD.read_text())]
+        assert not (set(names) & CONTAINER_RECORD_NAMES), names
+
+    def test_container_heading_yields_no_record_but_prose_heading_does(self, paths):
+        content = (
+            "# Objections\n\n"
+            "## Active Objections\n\n"
+            '### "It costs too much"\n'
+            "- **Response:** the pilot pays for itself in two weeks.\n"
+        )
+        _create_file(paths.canonical_dir / "objections.md", content)
+        names = [o["name"] for o in canonical_digest(paths)["objections"]]
+        assert names == ['"It costs too much"'], names
+
+    def test_template_placeholder_heading_yields_no_record(self, paths):
+        content = (
+            "## Active Objections\n\n"
+            '### "[Objection as they say it]"\n'
+            "- **Persona:** (who says this)\n"
+        )
+        _create_file(paths.canonical_dir / "objections.md", content)
+        assert canonical_digest(paths)["objections"] == []
+
+    def test_objections_check_goes_red_on_a_container_only_file(self, paths):
+        """The check exists to catch a file with no objections in it. Before
+        this it could not fail for that reason: the containers kept the count
+        above zero, so `objections: none parsed` never fired."""
+        if not REAL_OBJECTIONS_MD.exists():
+            pytest.skip(f"no canonical objections.md at {REAL_OBJECTIONS_MD}")
+        _create_file(paths.canonical_dir / "objections.md",
+                     REAL_OBJECTIONS_MD.read_text())
+        result = canonical_digest(paths)
+        assert "objections: none parsed" in result["validation_failed"]
 
 
 # ── Canonical Digest: wrong content (ASK-977) ──

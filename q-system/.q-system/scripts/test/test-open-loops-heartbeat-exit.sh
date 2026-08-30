@@ -79,6 +79,304 @@ run_case "failed agent run exits non-zero" 7 nonzero
 # The guard against a fix that just always fails: a clean sweep stays exit 0.
 run_case "clean sweep exits zero" 0 zero
 
+# --- ASK-869: one machine-wide condition is ONE alert, not one per instance ---
+# Measured 2026-08-15: the account hit its weekly limit, every `claude -p` in the
+# sweep died on it, and the heartbeat filed a ticket per instance -- 10, plus a
+# step-audit ticket for the 10 "failed" steps, plus the job's own exit-1 ticket.
+# Twelve tickets for one fact, and the sweep kept waking agents that could not
+# run after the answer was already known.
+#
+# The fixture uses THREE instances and a claude shim that emits the real line from
+# that log. Three is the minimum that can tell "one alert" from "one per instance"
+# AND show that the sweep stopped early rather than merely deduping its output.
+build_env_fixture() {
+  local tmp skel
+  tmp="$(mktemp -d)"
+  skel="$tmp/skel"
+  mkdir -p "$skel/q-system/output" "$skel/q-system/.q-system/scripts" "$tmp/bin"
+  cp "$SUT"   "$skel/q-system/.q-system/scripts/open-loops-heartbeat.sh"
+  cp "$AUDIT" "$skel/q-system/.q-system/scripts/run-step-audit.py"
+
+  # The notify stub COUNTS instead of exiting silently: the whole assertion is
+  # how many times this channel was reached, so a stub that records nothing
+  # could not fail. Still never reaches the founder.
+  printf '#!/bin/bash\necho "$*" >> "%s/notifies"\nexit 0\n' "$tmp" \
+    > "$skel/q-system/.q-system/scripts/slack-notify.sh"
+
+  local names=(alpha bravo charlie) inst
+  local reg='{"instances":['
+  for n in "${names[@]}"; do
+    inst="$tmp/$n"
+    mkdir -p "$inst/q-system/.q-system/scripts"
+    printf 'print("- [ ] fixture loop [needs you] -> do the thing")\n' \
+      > "$inst/q-system/.q-system/scripts/open-loops.py"
+    reg="$reg{\"name\":\"$n\",\"path\":\"$inst\"},"
+  done
+  printf '%s]}\n' "${reg%,}" > "$skel/instance-registry.json"
+
+  # The exact string the live log carried, once per failing instance. Records
+  # every invocation so the test can prove the later instances were never tried.
+  cat > "$tmp/bin/claude" <<EOF
+#!/bin/bash
+echo "\$PWD" >> "$tmp/claude-calls"
+echo "You've hit your weekly limit · resets Aug 18 at 2pm (America/Los_Angeles)"
+exit 1
+EOF
+  chmod +x "$tmp/bin/claude"
+  printf '%s' "$tmp"
+}
+
+TMP="$(build_env_fixture)"
+PATH="$TMP/bin:$PATH" KIPI_REPO="$TMP/skel" \
+  bash "$TMP/skel/q-system/.q-system/scripts/open-loops-heartbeat.sh" >/dev/null 2>&1
+ENV_RC=$?
+N_NOTIFY="$(wc -l < "$TMP/notifies" 2>/dev/null | tr -d ' ')"
+N_CALLS="$(wc -l < "$TMP/claude-calls" 2>/dev/null | tr -d ' ')"
+
+if [ "${N_NOTIFY:-0}" = "1" ]; then
+  echo "PASS  weekly-limit files ONE alert, not one per instance (notifies=$N_NOTIFY)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL  weekly-limit filed $N_NOTIFY alert(s); one machine-wide condition is one alert"
+  FAIL=$((FAIL + 1))
+fi
+
+# The sweep must STOP, not merely stay quiet. Continuing wakes agents that cannot
+# run: every later instance shares the environment that just refused this one.
+if [ "${N_CALLS:-0}" = "1" ]; then
+  echo "PASS  sweep halts on the environmental failure (agent invoked $N_CALLS time)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL  sweep kept waking agents after the environment refused: $N_CALLS invocation(s)"
+  FAIL=$((FAIL + 1))
+fi
+
+# THIS ASSERTION WAS INVERTED ON PURPOSE (PR #198 review, major). It previously
+# demanded a non-zero exit here, on the reading that ASK-184 requires any failed
+# sweep to reach launchd. Measured consequence: the non-zero exit trips the
+# launchd-failing detector under a DIFFERENT dedupe key, so the halt filed its
+# own informative alert AND a generic "job failing" one -- two permanent tickets
+# for the condition this whole change exists to reduce to one. Yesterday's pile
+# carried exactly that pair.
+#
+# ASK-184 guards against a SILENT failure: a dead agent run reaches nobody unless
+# the exit code carries it. An environmental halt is not silent; it files a named
+# alert. The contract keeps its purpose, and the per-instance failure case it was
+# written about still exits non-zero -- pinned by the first two cases above, which
+# is what stops this inversion from quietly disarming the whole contract.
+if [ "$ENV_RC" -eq 0 ]; then
+  echo "PASS  environmental halt does not also trip launchd-failing (exit $ENV_RC, one ticket not two)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL  environmental halt exited $ENV_RC, which files a second generic ticket beside its own alert"
+  FAIL=$((FAIL + 1))
+fi
+
+# The unreached instances must not be recorded as `failed`: nobody attempted them.
+# Logging them as failures is what produced the step-audit ticket on top of the ten.
+#
+# NAMED instances, not a bare grep for the word "skipped". The first cut of this
+# assertion searched the whole run-log for that substring and PASSED against the
+# unfixed script, because instances legitimately skip for other reasons. An
+# assertion that cannot fail is not an assertion -- the exact trap this suite is
+# meant to catch. bravo and charlie are the two the halt must leave untried, and
+# their status is read from their own rows.
+UNREACHED_OK=1
+for n in bravo charlie; do
+  st="$(python3 - "$TMP/skel/q-system/output/heartbeat-run-last.json" "$n" <<'PY' 2>/dev/null || echo missing
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("missing"); raise SystemExit(0)
+steps = d.get("steps", d) if isinstance(d, dict) else d
+row = next((s for s in steps if isinstance(s, dict) and s.get("id") == sys.argv[2]), None)
+print(row.get("status") if row else "missing")
+PY
+)"
+  [ "$st" = "skipped" ] || { UNREACHED_OK=0; echo "      $n status=$st (want skipped)"; }
+done
+if [ "$UNREACHED_OK" = "1" ]; then
+  echo "PASS  unreached instances are recorded as skipped, not failed"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL  an instance the halt never attempted is not recorded as skipped"
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$TMP"
+
+# THE GUARD ON THE GUARD. An ordinary per-instance failure must STILL alert per
+# instance and must NOT halt the sweep. Without this case, a classifier that
+# matched too broadly would turn every routine failure into a fleet-wide halt and
+# a single vague ticket -- strictly worse than the noise being removed, and
+# invisible to every assertion above, all of which only exercise the limit path.
+TMP2="$(build_env_fixture)"
+# Same fixture, ordinary failure: no limit line, just a non-zero exit.
+printf '#!/bin/bash\necho "$PWD" >> "%s/claude-calls"\necho "TypeError: something broke"\nexit 7\n' \
+  "$TMP2" > "$TMP2/bin/claude"
+chmod +x "$TMP2/bin/claude"
+PATH="$TMP2/bin:$PATH" KIPI_REPO="$TMP2/skel" \
+  bash "$TMP2/skel/q-system/.q-system/scripts/open-loops-heartbeat.sh" >/dev/null 2>&1
+ORD_NOTIFY="$(wc -l < "$TMP2/notifies" 2>/dev/null | tr -d ' ')"
+ORD_CALLS="$(wc -l < "$TMP2/claude-calls" 2>/dev/null | tr -d ' ')"
+# 3 instances tried, 3 per-instance alerts (+1 step-audit alert for the 3 failed
+# steps, which is the pre-existing behaviour this change does not touch).
+if [ "${ORD_CALLS:-0}" = "3" ] && [ "${ORD_NOTIFY:-0}" -ge 3 ]; then
+  echo "PASS  an ordinary failure still alerts per instance and does not halt (calls=$ORD_CALLS notifies=$ORD_NOTIFY)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL  ordinary failure path changed: calls=$ORD_CALLS (want 3), notifies=$ORD_NOTIFY (want >=3)"
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$TMP2"
+
+# AGENT PROSE IS NOT THE RUNNER SPEAKING (PR #198 review, minor).
+# An agent working on THIS issue writes the marker into its own transcript. If the
+# classifier matches anywhere in the output, that agent plus a non-zero exit halts
+# the whole fleet and blames a dead runner. A false halt is worse than the noise
+# being removed: it stops work that could have run, and it lies about why.
+# Same shape as ASK-747 -- mentioning a marker is not raising it.
+TMP3="$(build_env_fixture)"
+cat > "$TMP3/bin/claude" <<EOF
+#!/bin/bash
+echo "\$PWD" >> "$TMP3/claude-calls"
+echo "I reviewed ASK-869. The log line was: You've hit your weekly limit - resets Aug 18."
+echo "  quoted indented: You've hit your weekly limit"
+echo "And here it is in a fenced block, at column 0 where the anchor alone matched:"
+# Backticks ESCAPED: this heredoc is unquoted (it interpolates \$TMP3), so a bare
+# backtick opens a command substitution and the fenced lines never reach the
+# fixture -- which made this very case pass vacuously on the first run.
+echo "\`\`\`"
+echo "You've hit your weekly limit - resets Aug 18 at 2pm"
+echo "\`\`\`"
+echo "TypeError: unrelated crash"
+exit 7
+EOF
+chmod +x "$TMP3/bin/claude"
+PATH="$TMP3/bin:$PATH" KIPI_REPO="$TMP3/skel" \
+  bash "$TMP3/skel/q-system/.q-system/scripts/open-loops-heartbeat.sh" >/dev/null 2>&1
+PROSE_CALLS="$(wc -l < "$TMP3/claude-calls" 2>/dev/null | tr -d ' ')"
+if [ "${PROSE_CALLS:-0}" = "3" ]; then
+  echo "PASS  agent prose quoting the marker does not halt the fleet (calls=$PROSE_CALLS)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL  agent prose halted the sweep: only $PROSE_CALLS instance(s) attempted, want 3"
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$TMP3"
+
+# THE HALT'S EXIT 0 IS EARNED, NOT ASSUMED (PR #198 review round 3, major).
+# The halt exits 0 on the grounds that it is not silent -- it files a named alert
+# instead. If that filing FAILS and the failure is swallowed, the run is silent
+# AND reports success: no Linear ticket and no launchd signal, which is strictly
+# worse than the two-ticket problem exit-0 was introduced to fix. So a notify that
+# cannot file must push the run back to a non-zero exit.
+TMP4="$(build_env_fixture)"
+printf '#!/bin/bash\nexit 1\n' > "$TMP4/skel/q-system/.q-system/scripts/slack-notify.sh"
+PATH="$TMP4/bin:$PATH" KIPI_REPO="$TMP4/skel" \
+  bash "$TMP4/skel/q-system/.q-system/scripts/open-loops-heartbeat.sh" >/dev/null 2>&1
+FAILED_ALERT_RC=$?
+if [ "$FAILED_ALERT_RC" -ne 0 ]; then
+  echo "PASS  a halt whose alert could not file exits non-zero, so it is never silent (exit $FAILED_ALERT_RC)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL  the alert failed to file AND the run reported success: no ticket, no launchd signal, nobody told"
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$TMP4"
+
+# THE PRIVATE COPY OF AN AGENT RUN DOES NOT OUTLIVE THE RUN (PR #198 review
+# round 4, minor). work_instance captures each agent's output to a temp file so
+# the environmental classifier reads THIS run rather than a shared log. The
+# cleanup lived inside the FAILURE branch only, so every SUCCESSFUL agent run
+# left that file behind -- one per agent-waking instance, twice a day. The file
+# is the agent's verbatim output, so this is disclosure, not untidiness.
+#
+# THE ASSERTION IS ABOUT CONTENT, NOT ABOUT A COUNT. Counting files in the system
+# temp dir is a shared-resource race with every other process on the machine.
+# Instead the shimmed agent emits a marker unique to this run, and the check is:
+# does any file created during the sweep still carry it. That is the disclosure
+# claim itself, and only the file actually being gone satisfies it.
+#
+# Note for anyone porting this: bare `mktemp` IGNORES $TMPDIR on macOS (measured
+# -- it uses the per-user /var/folders dir), so a fixture that sets TMPDIR and
+# counts files there reports a clean run against a leaking script. That was the
+# first cut of this case and it passed against the unfixed code.
+leak_case() {  # leak_case <script-path> <case-name> <expect: clean|leaks>
+  local sut="$1" case_name="$2" expect="$3"
+  local tmp skel inst marker systmp found
+  tmp="$(mktemp -d)"
+  skel="$tmp/skel"; inst="$tmp/inst"
+  mkdir -p "$skel/q-system/output" "$skel/q-system/.q-system/scripts" \
+           "$inst/q-system/.q-system/scripts" "$tmp/bin"
+  cp "$sut"   "$skel/q-system/.q-system/scripts/open-loops-heartbeat.sh"
+  cp "$AUDIT" "$skel/q-system/.q-system/scripts/run-step-audit.py"
+  printf '#!/bin/bash\nexit 0\n' > "$skel/q-system/.q-system/scripts/slack-notify.sh"
+  printf 'print("- [ ] fixture loop [needs you] -> do the thing")\n' \
+    > "$inst/q-system/.q-system/scripts/open-loops.py"
+  printf '{"instances":[{"name":"fake","path":"%s"}]}\n' "$inst" \
+    > "$skel/instance-registry.json"
+
+  # Unique per invocation so two cases in one run cannot read each other's file.
+  marker="HEARTBEAT-PRIVATE-AGENT-OUTPUT-$$-${case_name}-$(date +%s%N 2>/dev/null || date +%s)"
+  # SUCCEEDS (exit 0). The leak was on the success path; a failing agent shim
+  # would take the branch that always cleaned up and this case would pass
+  # against the unfixed script.
+  printf '#!/bin/bash\necho "%s"\nexit 0\n' "$marker" > "$tmp/bin/claude"
+  chmod +x "$tmp/bin/claude"
+
+  systmp="$(dirname "$(mktemp -u)")"
+  ls -A "$systmp" 2>/dev/null | sort > "$tmp/before.txt"
+  PATH="$tmp/bin:$PATH" KIPI_REPO="$skel" \
+    bash "$skel/q-system/.q-system/scripts/open-loops-heartbeat.sh" >/dev/null 2>&1
+  ls -A "$systmp" 2>/dev/null | sort > "$tmp/after.txt"
+
+  found=""
+  while IFS= read -r n; do
+    [ -f "$systmp/$n" ] || continue
+    if grep -q "$marker" "$systmp/$n" 2>/dev/null; then
+      found="$systmp/$n"
+      rm -f "$systmp/$n" 2>/dev/null || true   # the test does not leak either
+    fi
+  done < <(comm -13 "$tmp/before.txt" "$tmp/after.txt")
+
+  if [ "$expect" = "clean" ] && [ -z "$found" ]; then
+    echo "PASS  $case_name"; PASS=$((PASS + 1))
+  elif [ "$expect" = "leaks" ] && [ -n "$found" ]; then
+    echo "PASS  $case_name (detector fired on $found)"; PASS=$((PASS + 1))
+  elif [ "$expect" = "clean" ]; then
+    echo "FAIL  $case_name: a successful sweep left the agent's output at $found"
+    FAIL=$((FAIL + 1))
+  else
+    echo "FAIL  $case_name: the leak detector found nothing against a script with"
+    echo "      the cleanup deleted, so it cannot fail and proves nothing"
+    FAIL=$((FAIL + 1))
+  fi
+  rm -rf "$tmp"
+}
+
+leak_case "$SUT" "a successful agent run leaves no copy of its output behind" clean
+
+# THE CONTROL, BUILT FROM THE REAL SCRIPT. A leak check that has never seen a
+# leak is decoration. This mutates the shipped file -- deleting the one cleanup
+# call and its EXIT-trap backstop -- and requires the detector to FIRE. If a
+# future refactor renames those lines, the substitutions match nothing, and the
+# guard below fails the suite rather than letting the control pass vacuously
+# against an unmutated copy.
+MUT="$(mktemp -d)/open-loops-heartbeat-nocleanup.sh"
+sed -e 's/^  _drop_agent_tmp$/  : # cleanup deleted by the leak-detector control/' \
+    -e 's/^trap _drop_agent_tmp EXIT$/: # trap deleted by the leak-detector control/' \
+    "$SUT" > "$MUT"
+if [ "$(grep -c 'deleted by the leak-detector control' "$MUT")" = "2" ]; then
+  leak_case "$MUT" "the leak detector goes red when the cleanup is removed" leaks
+else
+  echo "FAIL  the leak-detector control did not apply: expected 2 substitutions,"
+  echo "      got $(grep -c 'deleted by the leak-detector control' "$MUT"). The"
+  echo "      cleanup lines were renamed, so the control tested unmutated code."
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$(dirname "$MUT")"
+
 echo "---"
 echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
