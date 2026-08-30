@@ -136,6 +136,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -807,6 +808,49 @@ def _rule_marks(rules_dir):
     return token_marks, line_marks
 
 
+# The `.claude/` entries census() reads. The staging copy carries these and
+# nothing else.
+#
+# WHY THIS IS AN ALLOWLIST AND NOT AN IGNORE LIST (ASK-1118). The staging copy
+# used to be a full `copytree` of `.claude/`, which is fine for a repo's config
+# tree and makes the tool unusable on the tree that matters most: `~/.claude` is
+# 3.8G on this machine (`projects/` alone is 2.4G of transcripts) against 3.5Gi
+# free on the only volume, so `--root $HOME` died with 128 x [Errno 28] before it
+# read a single line. The one gate an agent must never hand-edit --
+# `~/.claude/hooks/destructive-op-deny.sh` -- therefore had no sanctioned repair
+# path at all, which is the failure this repo is least able to afford: it means
+# the repo cannot fix its own guards.
+#
+# An ignore list fails OPEN. A future census member reading something inside a
+# newly-ignored directory would read as ABSENT in the copy, the ratchet would
+# count zero and wave a removal through. An allowlist fails the same way on its
+# own, which is why it is not on its own: `main` proves the copy census-EQUAL to
+# the live tree on every run before trusting a census taken on it, so a member
+# this tuple does not carry becomes a refusal instead of a blind spot.
+CENSUS_CLAUDE_INPUTS = ("settings.json", "rules", "agents", "output-styles")
+
+
+def stage_census_copy(root, copy_root):
+    """Copy the `.claude/` entries census() reads into copy_root. Nothing else.
+
+    Symlinks are copied AS links, never followed, for the same reason
+    claude-integrity-tripwire.py measures a watched symlink by where it points:
+    following one turns a copy into an arbitrary-read primitive.
+    """
+    src_base = os.path.join(root, ".claude")
+    dst_base = os.path.join(copy_root, ".claude")
+    os.makedirs(dst_base)
+    for name in CENSUS_CLAUDE_INPUTS:
+        src = os.path.join(src_base, name)
+        dst = os.path.join(dst_base, name)
+        if os.path.islink(src):
+            os.symlink(os.readlink(src), dst)
+        elif os.path.isdir(src):
+            shutil.copytree(src, dst, symlinks=True)
+        elif os.path.isfile(src):
+            shutil.copy2(src, dst)
+
+
 def census(root):
     """Count the live enforcement points. Enforcement may only grow."""
     c = {}
@@ -832,6 +876,14 @@ def census(root):
     # list it is handed and never raises: this census is a ratchet input, and a
     # single malformed fragment must not crash the tool that would let you fix
     # it (the file read it replaced swallowed ValueError for the same reason).
+    #
+    # SCAR (PR #274, Codex major). This branch briefly pointed the read back at
+    # the monolithic capability-manifest.json, a file #263 had already deleted.
+    # Nothing failed: os.path.isfile said no, the set stayed empty, and the
+    # census reported manifest_tests 186 -> 0 as a legitimate constant. A ratchet
+    # dimension that reads zero does not refuse removals, it stops seeing them.
+    # If you change this read, the check that catches you is
+    # test_census_counts_manifest_fragments, which pins a NON-ZERO count.
     tests = set()
     capmod = _capability_manifest()
     data = (capmod.load(root, []) if capmod else None) or {}
@@ -1126,7 +1178,7 @@ def main(argv):
     try:
         copy_root = os.path.join(tmp, "root")
         os.makedirs(copy_root)
-        shutil.copytree(os.path.join(root, ".claude"), os.path.join(copy_root, ".claude"), symlinks=True)
+        stage_census_copy(root, copy_root)
         # A DIRECTORY now, not a file. Copying only the file left the copy
         # tree with an empty manifest census, so every declared test read as
         # "would disappear" and the ratchet refused every proposal.
@@ -1134,13 +1186,27 @@ def main(argv):
         src_manifest = os.path.join(root, manifest_rel)
         if os.path.isdir(src_manifest):
             shutil.copytree(src_manifest, os.path.join(copy_root, manifest_rel))
+
+        # The scoped copy is PROVEN census-equal to the live tree, never assumed
+        # (ASK-1118). Taken BEFORE the staged content lands, because after that
+        # the two trees are SUPPOSED to differ and the comparison would say
+        # nothing. If CENSUS_CLAUDE_INPUTS ever stops carrying something census()
+        # reads, that member reads as absent on the copy side, the two censuses
+        # disagree here, and the run refuses -- instead of the ratchet counting
+        # zero for a category and waving a removal through. This is the check
+        # that makes an allowlist safe; deleting it re-opens the hole.
+        before_census = census(root)
+        if census(copy_root) != before_census:
+            raise Refusal(
+                "staging copy is not census-equivalent to the live tree: "
+                "CENSUS_CLAUDE_INPUTS does not carry everything census() reads")
+
         for rel, content in staged.items():
             dest = os.path.join(copy_root, rel)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "w") as fh:
                 fh.write(content)
 
-        before_census = census(root)
         after_census = census(copy_root)
         ratchet_check(before_census, after_census)
         log.append("ratchet ok: hooks %d->%d, rules %d->%d, rule-marks %d->%d, deny %d->%d" % (
@@ -1191,15 +1257,25 @@ def main(argv):
     # OK. The sanctioned write path silently losing its own change is the same
     # outage class as the round-1 scar below, one race narrower. Measured 3/3
     # losses before this lock, 0/3 after (probe_round4_findings phase 3).
+    # Resolved ONCE, before any file lands, from the wiring this run will LEAVE
+    # BEHIND rather than the one it started with. See wired_hook_commands.
+    wired_commands = wired_hook_commands(
+        root, staged[settings_key] if settings_key is not None else None)
+
     with tripwire_lock(root, log):
         try:
             for rel in sorted(staged):
                 full = os.path.join(root, rel)
                 os.makedirs(os.path.dirname(full), exist_ok=True)
+                # Read BEFORE the replace: os.replace swaps the inode, so the
+                # old file's mode is gone the moment it lands (ASK-1118).
+                prior_mode = (stat.S_IMODE(os.stat(full).st_mode)
+                              if os.path.isfile(full) else None)
                 tmp_path = full + ".claude-changes.tmp"
                 with open(tmp_path, "w") as fh:
                     fh.write(staged[rel])
                 os.replace(tmp_path, full)
+                restore_exec_wiring(wired_commands, rel, full, prior_mode, log)
                 written.append(rel)
         except (OSError, IOError) as exc:
             for rel in sorted(staged):
@@ -1330,6 +1406,116 @@ def register_with_tripwire(root, written, log):
         return ", tripwire register FAILED (next tool call may revert this)"
     log.append("tripwire: registered %d sanctioned path(s)" % len(claude_paths))
     return ", tripwire updated"
+
+
+def _hook_commands_from_text(text):
+    """Every hook command string in a settings.json BODY."""
+    try:
+        settings = json.loads(text)
+    except ValueError:
+        return []
+    return [entry.split("|", 2)[2] for entry in _hook_entries(settings)]
+
+
+def wired_hook_commands(root, staged_settings_text=None):
+    """The hook commands this run's wiring will end up with.
+
+    STAGED settings win when the proposal edits them (Codex major, PR #270).
+    Files are written in sorted order, so a proposal that CREATES a hook and
+    wires it in the same transaction writes `.claude/hooks/x.sh` before
+    `.claude/settings.json`. Reading the live file at that moment finds the new
+    hook UNWIRED and ships it 0644 -- the same silent disarm restore_exec_wiring
+    exists to prevent, one step over, and on a brand-new gate rather than an
+    existing one.
+    """
+    if staged_settings_text is not None:
+        return _hook_commands_from_text(staged_settings_text)
+    p = os.path.join(root, ".claude", "settings.json")
+    if not os.path.isfile(p):
+        return []
+    try:
+        with open(p) as fh:
+            return _hook_commands_from_text(fh.read())
+    except OSError:
+        return []
+
+
+_PATH_TAIL = re.compile(r"[A-Za-z0-9_.\-/]")
+
+
+def _names_path(command, path):
+    """True when `command` runs exactly `path`, not a longer path starting with it."""
+    start = 0
+    while True:
+        i = command.find(path, start)
+        if i < 0:
+            return False
+        end = i + len(path)
+        if end >= len(command) or not _PATH_TAIL.match(command[end]):
+            return True
+        start = i + 1
+
+
+def _is_wired_hook_script(wired_commands, full):
+    """True when `full` is the script a wired hook command actually runs.
+
+    Substring match against the path as written and with $HOME collapsed,
+    because a hook is wired as a literal path. This only ever recognises a file
+    the tree ALREADY runs as a hook, and this tool cannot add one (settings.json
+    needs the settings-template pair, which does not exist outside a repo), so
+    the reachable set is exactly the hooks wired today.
+    """
+    home = os.path.expanduser("~")
+    spellings = {full, os.path.realpath(full)}
+    for spelling in list(spellings):
+        if spelling.startswith(home + os.sep):
+            spellings.add("~" + spelling[len(home):])
+            spellings.add("$HOME" + spelling[len(home):])
+    # Bounded, not a bare `in` (Codex minor, PR #274). A hook wired as
+    # `.../a-gate.sh.disabled` CONTAINS `.../a-gate.sh`, so an unbounded
+    # substring match would call the shorter path wired and grant it +x on the
+    # strength of a command that never runs it. The character after the match
+    # has to end the token: a path continues through [A-Za-z0-9_.-] and through
+    # a separator, so anything else (space, quote, end of string) is the end of
+    # the executed path.
+    return any(_names_path(command, s) for command in wired_commands
+               for s in spellings)
+
+
+def restore_exec_wiring(wired_commands, rel, full, prior_mode, log):
+    """Put back the mode os.replace dropped, and never leave a wired hook
+    non-executable.
+
+    SCAR (ASK-1118, 2026-08-29). This tool wrote
+    ~/.claude/hooks/destructive-op-deny.sh through the atomic temp-then-replace
+    path above. The temp file is created at the default 0644, so the replace
+    landed a file that had LOST its execute bit -- and a hook is wired in
+    settings.json as a BARE PATH, so a non-executable script simply does not
+    run. The one gate an agent must never be able to disarm was off, on the
+    whole machine, and nothing said so: no hook error, no audit line, no gate
+    went red. It was found by a canary file that got deleted AFTER the content
+    fix was already correct in the file.
+
+    Mode is wiring, not metadata. Two rules, in order:
+      1. restore whatever mode the file carried before this run touched it;
+      2. if the tree's settings.json wires this exact path as a hook, it ends
+         the run executable whatever rule 1 restored.
+    Rule 2 is scoped to files the tree already runs, so it grants nothing new,
+    and the execute bit is only added where the matching read bit is set.
+    """
+    if prior_mode is not None:
+        os.chmod(full, prior_mode)
+    if not _is_wired_hook_script(wired_commands, full):
+        return
+    mode = stat.S_IMODE(os.stat(full).st_mode)
+    wanted = mode | stat.S_IXUSR
+    for read_bit, exec_bit in ((stat.S_IRGRP, stat.S_IXGRP),
+                               (stat.S_IROTH, stat.S_IXOTH)):
+        if mode & read_bit:
+            wanted |= exec_bit
+    if wanted != mode:
+        os.chmod(full, wanted)
+        log.append("restored the execute bit on wired hook %s" % rel)
 
 
 def restore(root, backup_dir, written):
