@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""voicekit offline suite. No model calls, no network, tmp_path only.
+"""voiceloop offline suite. No model calls, no network, tmp_path only.
 
 Every module gets a negative self-test: neuter the mechanism (or feed the known-bad
 input) and prove the check fails. A test that cannot fail is not a test.
@@ -13,7 +13,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
-from voicekit import assemble, corpus, echo, fingerprint, selector, validate  # noqa: E402
+from voiceloop import assemble, corpus, echo, fingerprint, selector, validate  # noqa: E402
 
 PUNCHY = ("I watched it break. Twice. The fix shipped in a day.\n\n"
           "Nobody asked why. That was the tell. We built the check instead.")

@@ -13,7 +13,7 @@
     {
       "id": "captoken-pr",
       "title": "capability-token PR to dwarvesf/claude-guardrails (issue #14 filed)",
-      "next_action": "Issue FILED: github.com/dwarvesf/claude-guardrails/issues/14 (2026-06-20). Waiting on maintainer reply. When a maintainer approves/invites the PR: re-clone if /tmp wiped, git apply q-system/output/captoken-claude-guardrails.patch, push branch chore/capability-approval, gh pr create with q-system/output/captoken-pr-body.md. Then close this loop.",
+      "next_action": "Issue FILED: github.com/dwarvesf/claude-guardrails/issues/14 (2026-06-20). Still OPEN, still NO maintainer reply. One comment 2026-08-28 from benrrr56-wq (authorAssociation NONE, a third party promoting their own checkpoint layer) -- not an approval, not an invite, do NOT treat it as one. When a MAINTAINER approves/invites the PR: re-clone if /tmp wiped, git apply q-system/output/captoken-claude-guardrails.patch, push branch chore/capability-approval, gh pr create with q-system/output/captoken-pr-body.md. Then close this loop.",
       "needs_founder": true,
       "status": "open",
       "added": "2026-06-20",
