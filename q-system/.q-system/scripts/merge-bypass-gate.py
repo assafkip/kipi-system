@@ -595,8 +595,16 @@ def _receipt_missing(rest: list[str], cwd: str) -> str | None:
 
     prs = [t for t in rest if t.isdigit()]
     if len(prs) != 1:
-        return ("a merge without --auto needs exactly one PR number, so the "
-                "green receipt can be looked up.")
+        # `<n>` really IS optional in the safe shape, and the help is right to
+        # say so: `gh pr merge --auto` infers the PR from the current branch and
+        # GitHub does the holding either way. It is only optional THERE (Codex
+        # minor, PR #269 round 7). This path has to name a file on disk, so it
+        # needs the number, and the message now says which of the two it is
+        # talking about instead of appearing to contradict the shape above it.
+        return ("a merge WITHOUT --auto needs exactly one PR number, so the "
+                "green receipt can be looked up on disk. (`<n>` is optional in "
+                "the safe shape below because `--auto` infers it from the "
+                "current branch; this path cannot.)")
     pr = prs[0]
     # The receipt lives at the REPO ROOT, and `cwd` is wherever the shell
     # happens to be (Codex major, PR #269 round 4). Joining `.prd-os` onto a
