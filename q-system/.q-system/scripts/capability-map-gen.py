@@ -594,10 +594,10 @@ def collect_engines(root: Path) -> list:
     #
     # TIGHTENING THE MATCH TO EXACT WAS TRIED AND REVERTED (codex, PR #164 r2).
     # Requiring the test filename to equal the engine stem looks obviously right
-    # and is wrong: plugins/kipi-core/voicekit/echo.py is genuinely tested by
-    # voicekit/tests/test_voicekit.py, which imports echo and exercises
+    # and is wrong: plugins/kipi-core/voiceloop/echo.py is genuinely tested by
+    # voiceloop/tests/test_voiceloop.py, which imports echo and exercises
     # echo.prompt_echo and echo.opener_echo across ~20 lines. Its stem is
-    # "voicekit", not "echo", so exact matching flipped a real, covered engine to
+    # "voiceloop", not "echo", so exact matching flipped a real, covered engine to
     # UNWIRED -- a false alarm eligible for a permanent Linear issue, which is
     # worse than the false LIVE it was meant to fix. One test file legitimately
     # covers several engines, so filename equality cannot be the rule. The real

@@ -192,8 +192,9 @@ def validate_test_entry(entry, seen, errors, exempt_prefixes=()):
         msg = declaration_scope_error(p, exempt_prefixes)
         if msg:
             errors.append(msg)
-    if entry.get("runner") not in ("python3", "bash"):
-        errors.append(f"expected_tests entry needs runner python3|bash: {p}")
+    if entry.get("runner") not in RUNNERS:
+        errors.append(
+            f"expected_tests entry needs runner {'|'.join(RUNNERS)}: {p}")
     if p in seen:
         errors.append(f"duplicate expected_tests path: {p}")
     seen.add(p)
@@ -201,6 +202,52 @@ def validate_test_entry(entry, seen, errors, exempt_prefixes=()):
     if not (isinstance(t, int) and TIMEOUT_MIN_S <= t <= TIMEOUT_MAX_S):
         errors.append(f"timeout_s out of bounds [{TIMEOUT_MIN_S},{TIMEOUT_MAX_S}]: {p}")
     validate_quarantine(entry, errors)
+
+
+# A declared test's runner has to be the one that actually EXECUTES it.
+#
+# ASK-1145, measured 2026-08-29. 13 manifest entries declared `runner: python3`
+# on pytest-shaped modules -- bare `def test_` at module level, no `__main__`
+# block. `python3 <file>` imports such a module, binds the function names, and
+# exits 0 having run nothing. The gate counted 13 tests, reported them green,
+# and was structurally blind to the 248 real cases inside them. Three of those
+# were FAILING, invisibly, in the fact-propagation leak gate on a public repo.
+#
+# `pytest` is added as a third runner rather than patching a `__main__` block
+# into 13 files, because the 14th file would arrive without one and nothing
+# would say so. The detector below is what makes that true: a python3-declared
+# module that is pytest-shaped is REFUSED at declaration time, so the mistake
+# cannot be made silently again.
+RUNNERS = ("python3", "bash", "pytest")
+
+# Module-level `def test_...`. Indented defs are methods on a unittest class,
+# which `python3 <file>` still cannot run without a `__main__` block, so they
+# count the same way.
+_BARE_TEST_DEF = re.compile(r"^\s*def test_\w*\s*\(", re.M)
+_HAS_MAIN = re.compile(r"^if __name__\s*==\s*[\"']__main__[\"']\s*:", re.M)
+
+
+def executes_nothing(entry, full):
+    """Refuse a python3-declared test that `python3 <file>` cannot execute.
+
+    The check is deliberately narrow: it fires only on a `.py` file declared
+    `python3` that DEFINES test functions and has NO `__main__` entry point.
+    A script that does its work at import time (most of the bash-adjacent
+    python helpers here) defines no `def test_` and is untouched.
+
+    An unreadable file is not a pass and not a failure here -- the missing-file
+    direction is already reported by the manifest diff, so this returns quietly
+    rather than adding a second, differently-worded error for one cause.
+    """
+    if entry.get("runner") != "python3":
+        return False
+    if not str(full).endswith(".py"):
+        return False
+    try:
+        text = full.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return bool(_BARE_TEST_DEF.search(text)) and not _HAS_MAIN.search(text)
 
 
 def validate_data_entry(entry, errors):
@@ -634,7 +681,23 @@ def run_tests(root, manifest, mode, errors, notes):
         full = root / path
         if not full.is_file():
             continue  # already reported by the diff
-        cmd = ["python3", str(full)] if entry["runner"] == "python3" else ["bash", str(full)]
+        if executes_nothing(entry, full):
+            errors.append(
+                f"zero-execution test: {path} defines test functions but has "
+                f"no __main__ block, so `python3 {path}` binds them and exits "
+                f"0 without running one. Declare runner pytest, or add a "
+                f"__main__ entry point (ASK-1145).")
+            continue
+        runner = entry["runner"]
+        if runner == "pytest":
+            # `-p no:cacheprovider` so a gate run leaves no .pytest_cache in the
+            # tree it just measured; `-q` keeps the failure tail readable inside
+            # the 20-line cap below.
+            cmd = ["python3", "-m", "pytest", str(full), "-q", "-p", "no:cacheprovider"]
+        elif runner == "python3":
+            cmd = ["python3", str(full)]
+        else:
+            cmd = ["bash", str(full)]
         timeout = entry.get("timeout_s", DEFAULT_TIMEOUT_S)
         r = run_contained(cmd, root, env, timeout)
         if r.timed_out:

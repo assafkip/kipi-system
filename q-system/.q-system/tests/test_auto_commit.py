@@ -424,7 +424,7 @@ class TestExecutableSourceIsNeverSwept:
     """
 
     SWEPT_ON_2026_08_13 = (
-        "plugins/kipi-core/voicekit/tests/test_length_axis.py",
+        "plugins/kipi-core/voiceloop/tests/test_length_axis.py",
         "q-system/.q-system/scripts/voice-dna-loader.py",
     )
 
@@ -434,7 +434,7 @@ class TestExecutableSourceIsNeverSwept:
             assert auto_commit.system_state_paths([p]) == [], p
 
     def test_source_is_refused_in_every_area(self):
-        for p in ("plugins/kipi-core/voicekit/selector.py",
+        for p in ("plugins/kipi-core/voiceloop/selector.py",
                   "q-system/hooks/auto-commit.py",
                   "q-system/.q-system/agent-pipeline/runner.py",
                   "q-system/canonical/helper.py",

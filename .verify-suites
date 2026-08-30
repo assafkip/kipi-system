@@ -68,7 +68,7 @@
 # the two below.
 plugins/prd-os
 plugins/kipi-dsse
-plugins/kipi-core/voicekit
+plugins/kipi-core/voiceloop
 automation
 rescued/memory-lifecycle
 q-system/.q-system/tests

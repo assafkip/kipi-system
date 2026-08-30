@@ -214,6 +214,12 @@ ARCHIVE_EXCLUDED_SUBTREES = (
 RSYNC_EXCLUDED_ROOT_DIRS = (".git",)
 RSYNC_EXCLUDED_DIRS = ("__pycache__", ".venv", ".pytest_cache")
 RSYNC_EXCLUDED_SUFFIXES = (".pyc",)
+# Exact filenames and name PREFIXES, which a suffix tuple cannot express.
+# `.env` and `.env.*` are excluded by kipi-update.sh's PLUGIN_COPY_EXCLUDES and
+# were missing here (ASK-1145). rsync never copied them, so this was not a leak
+# -- it inflated the baseline with files that cannot propagate.
+RSYNC_EXCLUDED_NAMES = (".env",)
+RSYNC_EXCLUDED_PREFIXES = (".env.",)
 
 # Suffixes that cannot carry a `label: value` record, so an undecodable file
 # with one of them is an asset rather than an unscanned source. This is a DENY
@@ -328,6 +334,10 @@ def _rsync_filter_reason(entry, at_transfer_root: bool) -> str | None:
         return "excluded-by-rsync-filter"
     if is_directory and entry.name in RSYNC_EXCLUDED_DIRS:
         return "excluded-by-rsync-filter"
+    if entry.name in RSYNC_EXCLUDED_NAMES:
+        return True
+    if entry.name.startswith(RSYNC_EXCLUDED_PREFIXES):
+        return True
     if entry.name.endswith(RSYNC_EXCLUDED_SUFFIXES):
         return "excluded-by-rsync-filter"
     return None

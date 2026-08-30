@@ -7,7 +7,7 @@ review said so plainly -- 74 tests passed and not one of them named `target_word
 about the new code. The only evidence it worked was a one-off sweep in a terminal,
 which disappears the moment someone edits the module.
 
-Fixtures are built here rather than read from a founder corpus: voicekit ships to
+Fixtures are built here rather than read from a founder corpus: voiceloop ships to
 every instance and `test_no_founder_data.py` holds that direction.
 """
 import os
@@ -16,7 +16,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
-from voicekit import selector  # noqa: E402
+from voiceloop import selector  # noqa: E402
 
 
 def rows():

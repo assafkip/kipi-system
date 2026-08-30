@@ -139,7 +139,7 @@ def build_context(voice_dna_path, samples_path):
 
 
 def build_context_from_corpus():
-    """The one voice corpus, through voicekit. Returns None when unavailable.
+    """The one voice corpus, through voiceloop. Returns None when unavailable.
 
     why this replaced the 40KB dump (2026-08-13): this hook read
     `founder-voice/references/voice-dna.md` + `writing-samples.md`, 40,527 bytes of
@@ -158,7 +158,7 @@ def build_context_from_corpus():
         return None
     sys.path.insert(0, str(root / "plugins" / "kipi-core"))
     try:
-        from voicekit import corpus, selector
+        from voiceloop import corpus, selector
     except Exception:
         return None
 
@@ -186,7 +186,7 @@ def build_context_from_corpus():
         "Before drafting anything another person reads, run the selector so the "
         "exemplars match the CHANNEL and the LENGTH of the piece:\n\n"
         f"    KIPI_VOICE_DIR={voice_dir} python3 "
-        f"{root}/plugins/kipi-core/voicekit/voice_ref.py --channel x --words <target>\n\n"
+        f"{root}/plugins/kipi-core/voiceloop/voice_ref.py --channel x --words <target>\n\n"
         "Length is a real axis: the x corpus runs 5 to 55 words with one 479-word "
         "row, so a long piece written against short rows comes out formal. "
         "Substance over cadence: with no scar, named thing, test or evidence, the "
@@ -213,7 +213,7 @@ def main():
     user_prompt = payload.get("prompt", "")
     if not user_prompt or not looks_like_writing_request(user_prompt):
         sys.exit(0)
-    # The corpus path first. The legacy dump stays reachable ONLY when voicekit or the
+    # The corpus path first. The legacy dump stays reachable ONLY when voiceloop or the
     # corpus is absent, so this cannot leave an instance with no voice anchor at all;
     # it is no longer the normal path anywhere that has both.
     context = build_context_from_corpus()
