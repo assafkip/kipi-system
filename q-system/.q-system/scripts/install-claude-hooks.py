@@ -51,6 +51,7 @@ import filecmp
 import os
 import shutil
 import stat
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -60,6 +61,40 @@ SOURCE_DIR = os.path.join(REPO, "q-system", ".q-system", "hooks")
 # A hook may be repaired, never disarmed. These are the tokens that make a hook
 # a gate rather than a comment.
 TEETH = ("emit_deny", "exit 2")
+
+
+def code_only(text):
+    """Drop comment bodies before counting teeth.
+
+    THE HOLE THIS CLOSES (PR #279 round 4, blocker). The ratchet counted these
+    tokens as raw text over the whole file, so a source that deletes every real
+    `emit_deny` call and pads the comments with the word `emit_deny` keeps the
+    count identical and installs a gutted hook with every check green. A guard
+    whose bypass is typing a word in a comment is not a guard.
+
+    Line-oriented and deliberately crude: a `#` inside a shell string is treated
+    as a comment start, so a real call after one on the same line is not
+    counted. That direction is SAFE -- undercounting the source can only make
+    the ratchet refuse an install, never wave one through. The opposite mistake
+    is the one that costs a machine.
+    """
+    return "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+
+
+def parses_as_bash(path):
+    """`bash -n`. A hook bash cannot parse does not deny anything.
+
+    PR #279 round 4, major: the installer printed "installed and verified
+    executable" for a file with a syntax error. settings.json runs the hook as a
+    bare path, so an early parse failure means the gate silently allows
+    everything -- fails OPEN, which is the worst direction for this file.
+    """
+    try:
+        proc = subprocess.run(["bash", "-n", path], capture_output=True,
+                              text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+    return proc.returncode == 0, (proc.stderr or proc.stdout).strip()
 
 
 def sources():
@@ -86,8 +121,9 @@ def refuse_if_weaker(name, source_text, installed_text):
         return None  # nothing installed yet; there are no teeth to lose
     if installed_text.startswith("#!") and not source_text.startswith("#!"):
         return "%s: the source drops the shebang" % name
+    installed_code, source_code = code_only(installed_text), code_only(source_text)
     for token in TEETH:
-        was, now = installed_text.count(token), source_text.count(token)
+        was, now = installed_code.count(token), source_code.count(token)
         if now < was:
             return ("%s: the source reduces `%s` call sites (%d -> %d). A hook "
                     "may be repaired, never disarmed." % (name, token, was, now))
@@ -105,6 +141,11 @@ def install_one(name, dest_dir, dry_run):
     refusal = refuse_if_weaker(name, source_text, installed_text)
     if refusal:
         return "REFUSED " + refusal, False
+
+    ok, why = parses_as_bash(src)
+    if not ok:
+        return ("REFUSED %s: the source does not parse (`bash -n`), and a hook "
+                "bash cannot parse fails OPEN: %s" % (name, why)), False
 
     if installed_text == source_text and os.path.exists(dst) and os.access(dst, os.X_OK):
         return "%s: already installed and executable" % name, False
@@ -133,7 +174,10 @@ def install_one(name, dest_dir, dry_run):
         return "%s: FAILED, installed bytes differ from source" % name, False
     if not os.access(dst, os.X_OK):
         return "%s: FAILED, installed file is not executable (the guard is OFF)" % name, False
-    return "%s: installed and verified executable" % name, True
+    ok, why = parses_as_bash(dst)
+    if not ok:
+        return "%s: FAILED, the installed file does not parse: %s" % (name, why), False
+    return "%s: installed, parses, verified executable" % name, True
 
 
 def main(argv=None):
@@ -161,10 +205,19 @@ def main(argv=None):
             src, dst = os.path.join(SOURCE_DIR, name), os.path.join(dest_dir, name)
             if not os.path.exists(dst):
                 drift.append("%s: NOT INSTALLED" % name)
-            elif not filecmp.cmp(src, dst, shallow=False):
+                continue
+            # INDEPENDENT, not an elif chain. The first cut chained these, which
+            # put the parse check behind "bytes differ" -- and a file whose bytes
+            # MATCH a parsing source always parses, so that branch could never
+            # fire for the reason it existed. An unreachable false branch reports
+            # success by construction. All three conditions are asked separately
+            # and every one that holds is reported.
+            if not filecmp.cmp(src, dst, shallow=False):
                 drift.append("%s: INSTALLED COPY DIFFERS from the repo" % name)
-            elif not os.access(dst, os.X_OK):
+            if not os.access(dst, os.X_OK):
                 drift.append("%s: installed but NOT EXECUTABLE (the guard is OFF)" % name)
+            if not parses_as_bash(dst)[0]:
+                drift.append("%s: installed but DOES NOT PARSE (the guard fails OPEN)" % name)
         for line in drift:
             print("  " + line)
         if drift:

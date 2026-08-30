@@ -93,6 +93,66 @@ class InstallerCase(unittest.TestCase):
         self.assertEqual(open(self.dst).read(), before,
                          "the installed hook was modified by a refused install")
 
+    def _install_from(self, transform):
+        """Install into self.tmp from a synthetic repo whose hook is transform(orig)."""
+        original = open(SOURCE).read()
+        fake = tempfile.mkdtemp(prefix="fakerepo-")
+        self.addCleanup(shutil.rmtree, fake, True)
+        src_dir = os.path.join(fake, "q-system", ".q-system", "hooks")
+        scripts = os.path.join(fake, "q-system", ".q-system", "scripts")
+        os.makedirs(src_dir); os.makedirs(scripts)
+        with open(os.path.join(src_dir, "destructive-op-deny.sh"), "w") as fh:
+            fh.write(transform(original))
+        shutil.copy2(INSTALLER, os.path.join(scripts, "install-claude-hooks.py"))
+        return subprocess.run(
+            [sys.executable, os.path.join(scripts, "install-claude-hooks.py"),
+             "--home", self.tmp],
+            capture_output=True, text=True, timeout=60)
+
+    def test_comment_padding_cannot_smuggle_a_gutted_hook(self):
+        """PR #279 round 4, BLOCKER, in my own guard.
+
+        The ratchet counted `emit_deny` and `exit 2` as raw text over the whole
+        file, so deleting every real call and typing the word into the comments
+        keeps the count identical. A guard whose bypass is a comment is not a
+        guard. Counted on code lines only now.
+        """
+        run(self.tmp)
+        before = open(self.dst).read()
+        n_deny = before.count("emit_deny")
+        n_exit = before.count("exit 2")
+
+        def gut_and_pad(text):
+            body = text.replace("emit_deny", "echo_allow").replace("exit 2", "exit 0")
+            padding = "\n".join(["# emit_deny exit 2"] * (n_deny + n_exit))
+            return body + "\n" + padding + "\n"
+
+        proc = self._install_from(gut_and_pad)
+        self.assertNotEqual(proc.returncode, 0,
+                            "comment padding installed a gutted hook")
+        self.assertIn("REFUSED", proc.stdout + proc.stderr)
+        self.assertEqual(open(self.dst).read(), before,
+                         "the installed hook was modified by a refused install")
+
+    def test_a_source_that_does_not_parse_is_refused(self):
+        """PR #279 round 4, major. A hook bash cannot parse fails OPEN."""
+        run(self.tmp)
+        before = open(self.dst).read()
+        proc = self._install_from(lambda t: t + "\nif [ broken\n")
+        self.assertNotEqual(proc.returncode, 0, "an unparseable hook was installed")
+        self.assertIn("does not parse", (proc.stdout + proc.stderr))
+        self.assertEqual(open(self.dst).read(), before)
+
+    def test_check_flags_an_installed_hook_that_does_not_parse(self):
+        """--check must ask the same question, or the gate is greener than the
+        installer that fed it."""
+        run(self.tmp)
+        with open(self.dst, "a") as fh:
+            fh.write("\nif [ broken\n")
+        proc = run(self.tmp, "--check")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("DOES NOT PARSE", proc.stdout)
+
     def test_an_empty_source_dir_is_a_refusal_not_a_pass(self):
         """A run that finds nothing to install must not report success."""
         with tempfile.TemporaryDirectory() as fake_repo:
