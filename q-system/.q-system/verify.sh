@@ -25,6 +25,13 @@ set -euo pipefail
 
 MODE="${1:---full}"
 REPO="$(git rev-parse --show-toplevel)"
+# Where pytest's ordering cache lives. Git's COMMON dir, never the working tree:
+# see the long note at the `-o cache_dir` call below. --path-format=absolute so a
+# `cd` inside the pytest subshell cannot re-root a relative `.git`; the fallback
+# keeps this working on a git too old for that flag.
+VERIFY_CACHE_ROOT="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+[ -n "$VERIFY_CACHE_ROOT" ] || VERIFY_CACHE_ROOT="$REPO/.git"
+VERIFY_CACHE_ROOT="$VERIFY_CACHE_ROOT/kipi-verify-cache"
 RAN=()
 FAILED=()
 TMP=""
@@ -341,8 +348,51 @@ if [ -f "$MANIFEST" ]; then
           continue
         fi
       fi
-      run_check "pytest:$suite" bash -c 'cd "$1/$2" && python3 -m pytest -q --no-header' \
-                _ "$TARGET" "$suite"
+      # THE RETRY COSTS AS MUCH AS THE FIRST RUN, and that is the whole problem
+      # (2026-08-29). A caller with a shorter timeout than the suite kills the hook
+      # mid-run, nothing is committed, the caller retries, and pays the full run
+      # again to reach the same failure. Measured three times in one session on a
+      # ~160s suite.
+      #
+      # Two changes, neither of which weakens the gate:
+      #
+      #   --ff   run the tests that failed LAST time first. The retry hits its
+      #          failure in seconds instead of after the whole suite.
+      #   -x     stop at the first failure. A commit blocked by one failing test is
+      #          blocked either way; there is nothing gained by spending another two
+      #          minutes proving the rest still pass. A GREEN run is unaffected: it
+      #          has no first failure, so it still runs every test. Measured on a
+      #          real hook: a failing pre-commit went 142s -> 2.84s, and a green
+      #          tree still ran all 5800 tests.
+      #
+      # `-o cache_dir` is what makes --ff work at all here. The --staged snapshot
+      # worktree is thrown away after every run, so pytest's cache died with it and
+      # --ff had nothing to read. The cache lives under git's COMMON DIR instead,
+      # keyed per suite. It is a CACHE OF ORDERING, never of verdicts: no run is
+      # skipped, so a corrupt or stale cache can only make the run slower, never
+      # green-by-cache.
+      #
+      # NOT `$REPO/.verify-cache` (Codex major, PR #269). That path is inside the
+      # working tree and matched no .gitignore entry, so every staged run left the
+      # checkout dirty -- and this fleet's unattended jobs commit with `git add -A`,
+      # so pytest cache files would ride into real commits and a human would be
+      # cleaning them at 3am. The common dir is the right home for two reasons at
+      # once: git never reports it in `status`, and it is SHARED across worktrees,
+      # so the primary checkout and every scratch worktree warm one cache instead
+      # of N. A .gitignore entry would have fixed only the first half.
+      #
+      # --full deliberately keeps NEITHER flag. Pre-push and CI want the complete
+      # picture, not the fastest no. The file-entry branch above also keeps neither:
+      # a single test file is already the fast case, so --ff would buy nothing and
+      # -x would hide sibling failures in the same file.
+      if [ "$MODE" = "--staged" ]; then
+        run_check "pytest:$suite" bash -c \
+          'cd "$1/$2" && python3 -m pytest -q --no-header --ff -x -o cache_dir="$3"' \
+          _ "$TARGET" "$suite" "$VERIFY_CACHE_ROOT/$(printf '%s' "$suite" | tr / _)"
+      else
+        run_check "pytest:$suite" bash -c 'cd "$1/$2" && python3 -m pytest -q --no-header' \
+                  _ "$TARGET" "$suite"
+      fi
     done < "$MANIFEST"
   else
     RAN+=("pytest")

@@ -6,7 +6,7 @@ machinery fleet-wide; Assaf's corpus stays in his instance (`q-consult/voice/`).
 kipi-system is a PUBLIC repo, so a corpus line leaking into this tree is not just
 architecture drift, it is founder data published to the world.
 
-The check greps the voicekit tree for distinctive fingerprints of the private
+The check greps the voiceloop tree for distinctive fingerprints of the private
 corpus: phrases from his real writing, his instance paths, and personal
 identifiers. Distinctive-but-harmless probes, chosen so the test itself does not
 become the leak it polices (the public-skeleton rule: name the data class, never
