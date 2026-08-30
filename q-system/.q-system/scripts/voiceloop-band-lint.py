@@ -48,6 +48,7 @@ A crash must not wedge draft writes fleet-wide, so unexpected errors also exit 0
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -84,7 +85,29 @@ def _is_corpus_member(file_path, corpus):
 
 
 def _emit(message):
+    """Say it on BOTH channels, because one of them is discarded.
+
+    Codex major, PR #278. This hook exits 0 by design -- it DETECTS, it does not
+    block. But the PostToolUse contract is that stderr is fed to Claude only on
+    exit 2; on exit 0 it goes nowhere. So every finding this script produced,
+    and every NOT CHECKED warning it produced, was written to a channel nobody
+    reads. The DETECTED claim in the rule surfaced exactly nothing.
+
+    The documented non-blocking channel is exit 0 plus
+    hookSpecificOutput.additionalContext, the same shape
+    code_claim_grounding_guard.py uses and for the same reason. The nesting is
+    load-bearing: a TOP-LEVEL additionalContext is silently ignored (the scar is
+    recorded at token-guard.py:743), which would have reproduced this defect in
+    a new place.
+
+    stderr is kept as well. It is where a human tailing the hook log looks, and
+    it costs nothing.
+    """
     print(message, file=sys.stderr)
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "additionalContext": message,
+    }}))
 
 
 def main():
@@ -118,6 +141,16 @@ def main():
     try:
         text = Path(file_path).read_text(encoding="utf-8")
     except OSError:
+        sys.exit(0)
+    except UnicodeDecodeError:
+        # Codex minor, PR #278: the docstring promises exit 0 on every path, and
+        # a non-UTF-8 draft raised an uncaught UnicodeDecodeError and exited 1 --
+        # which a PostToolUse hook reports as a failed hook, on a file this
+        # script has no opinion about. Not silent: a draft it cannot read is a
+        # draft it did not check, and NOT CHECKED is the honest word.
+        _emit("voiceloop-band-lint NOT CHECKED: could not decode "
+              f"{file_path} as UTF-8, so bands, templated shapes and corpus "
+              "echo were NOT checked on it.")
         sys.exit(0)
     if SKIP_MARKER in text:
         sys.exit(0)
@@ -153,10 +186,39 @@ def main():
 
     if result.returncode != 0:
         body = (result.stdout or "").strip() or (result.stderr or "").strip()
-        _emit(f"voiceloop (bands, templated shapes, corpus echo) on {file_path}:\n"
-              f"{body}\n"
-              "DETECTED, not blocking. Add "
-              f"<!-- {SKIP_MARKER} --> to silence this file deliberately.")
+
+        # A MISSING FINGERPRINT IS NOT A STYLE FINDING (Codex minor, PR #278).
+        # `voiceloop score` emits `fingerprint: no fingerprint.json ...` as a
+        # finding and exits 1, so branching on the return code alone reported
+        # "the corpus has no fingerprint" as though the draft had a style
+        # problem -- on EVERY draft write, in any instance whose corpus has not
+        # been fingerprinted. That is a false positive that arrives constantly,
+        # which is how a detector gets ignored.
+        #
+        # The two are separated by reading the lines, not the exit code: a
+        # `fingerprint:` line is a NOT CHECKED condition about the corpus, and
+        # only what remains is about this draft.
+        lines = [l for l in body.splitlines() if l.strip()]
+        not_checked = [l for l in lines if l.strip().startswith("fingerprint:")]
+        findings = [l for l in lines
+                    if l not in not_checked and not l.strip().startswith("NOT CHECKED:")]
+        # A trailing "N finding(s) against M exemplar(s)" summary counts the
+        # fingerprint line too, so it cannot stand in for a real finding.
+        real = [l for l in findings
+                if not re.match(r"^\s*\d+ finding\(s\) against \d+ exemplar", l)]
+
+        if not_checked and not real:
+            _emit("voiceloop-band-lint NOT CHECKED: the corpus has no "
+                  f"fingerprint, so bands were NOT computed for {file_path}. "
+                  "Run `voiceloop fingerprint` in the corpus directory. "
+                  f"({not_checked[0].strip()})")
+        elif real:
+            _emit(f"voiceloop (bands, templated shapes, corpus echo) on {file_path}:\n"
+                  + "\n".join(real) + "\n"
+                  + ("(bands were NOT computed: "
+                     + not_checked[0].strip() + ")\n" if not_checked else "")
+                  + "DETECTED, not blocking. Add "
+                  f"<!-- {SKIP_MARKER} --> to silence this file deliberately.")
 
     sys.exit(0)
 

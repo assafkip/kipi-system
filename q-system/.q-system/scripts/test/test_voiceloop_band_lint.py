@@ -152,3 +152,100 @@ def test_non_write_tool_is_ignored(tmp_path):
     r = _run(tmp_path, IN_SCOPE, "draft\n", rc=1, tool_name="Read")
     assert r.returncode == 0
     assert r.stderr.strip() == ""
+
+
+def _ctx(result):
+    """The additionalContext this hook emits on stdout, or "" if it emitted none."""
+    out = (result.stdout or "").strip()
+    if not out:
+        return ""
+    return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_the_finding_reaches_the_channel_the_agent_actually_reads(tmp_path):
+    """Codex major, PR #278. stderr on exit 0 goes NOWHERE.
+
+    The PostToolUse contract feeds stderr to Claude only on exit 2. This hook
+    exits 0 by design -- it DETECTS, it does not block -- so every finding it
+    produced was written to a channel nobody reads, and the DETECTED claim
+    surfaced exactly nothing.
+
+    The existing cases all assert on r.stderr, which is why none of them could
+    see it: they were reading the channel the hook writes to, not the one the
+    agent receives.
+    """
+    r = _run(tmp_path, IN_SCOPE, "a long winded draft\n", rc=1)
+    assert r.returncode == 0
+    ctx = _ctx(r)
+    assert ctx, "exit 0 + stderr only is invisible to the agent; needs additionalContext"
+    assert "sentence_mean" in ctx, ctx
+    payload = json.loads(r.stdout)
+    # The nesting is load-bearing: a TOP-LEVEL additionalContext is silently
+    # ignored (scar at token-guard.py:743), which would reproduce this defect.
+    assert payload["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
+    assert "additionalContext" not in payload, "must be nested, not top-level"
+
+
+def test_a_clean_draft_emits_nothing_on_either_channel(tmp_path):
+    """Control for the case above: it must not just always emit."""
+    r = _run(tmp_path, IN_SCOPE, "short one.\n", rc=0, stdout="0 finding(s)")
+    assert r.returncode == 0
+    assert r.stderr.strip() == ""
+    assert (r.stdout or "").strip() == "", r.stdout
+
+
+def test_a_missing_fingerprint_is_not_reported_as_a_style_finding(tmp_path):
+    """Codex minor, PR #278.
+
+    `voiceloop score` emits `fingerprint: no fingerprint.json ...` as a finding
+    and exits 1, so branching on the return code alone reported "the corpus has
+    no fingerprint" as though the DRAFT had a style problem -- on every draft
+    write, in any instance whose corpus was never fingerprinted. A false
+    positive that arrives constantly is how a detector gets ignored.
+    """
+    r = _run(tmp_path, IN_SCOPE, "a draft\n", rc=1,
+             stdout=("fingerprint: no fingerprint.json; run `voiceloop fingerprint` "
+                     "to compute bands before scoring distance\n"
+                     "1 finding(s) against 0 exemplar(s)"))
+    assert r.returncode == 0
+    ctx = _ctx(r)
+    assert "NOT CHECKED" in ctx, ctx
+    assert "fingerprint" in ctx, ctx
+
+
+def test_a_real_finding_alongside_a_missing_fingerprint_is_still_reported(tmp_path):
+    """Control: the fingerprint filter must not swallow genuine findings."""
+    r = _run(tmp_path, IN_SCOPE, "a draft\n", rc=1,
+             stdout=("fingerprint: no fingerprint.json; run `voiceloop fingerprint`\n"
+                     "shape: templated opener detected\n"
+                     "2 finding(s) against 0 exemplar(s)"))
+    ctx = _ctx(r)
+    assert "templated opener" in ctx, ctx
+    assert "DETECTED" in ctx, ctx
+
+
+def test_a_non_utf8_draft_exits_zero_and_says_so(tmp_path):
+    """Codex minor, PR #278: this raised UnicodeDecodeError and exited 1.
+
+    The docstring promises exit 0 on every path, and a PostToolUse hook exiting
+    1 reads as a failed hook -- on a file this script has no opinion about. Not
+    silent either: a draft it cannot read is a draft it did not check.
+    """
+    draft = tmp_path / IN_SCOPE
+    draft.parent.mkdir(parents=True, exist_ok=True)
+    draft.write_bytes(b"\xff\xfe not utf-8 at all \x00\x01")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    _stub_voiceloop(bin_dir, 1, "band: something")
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir(parents=True, exist_ok=True)
+
+    env = dict(os.environ)
+    env["PATH"] = _sealed_path(bin_dir)
+    env["VOICE_LOOP_CORPUS"] = str(corpus_dir)
+    payload = {"tool_name": "Write", "tool_input": {"file_path": str(draft)}}
+    r = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert "NOT CHECKED" in _ctx(r), r.stdout
