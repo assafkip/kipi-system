@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Engine test for the morning brief (ASK-1170).
+"""Engine test for the morning brief (ASK-1178).
 
 RED FIRST. Every case here was written and seen to fail before
 `morning-brief.py`, `morning-brief-deadman.py` or `slack_founder.py` existed.
@@ -452,3 +452,24 @@ def test_plists_are_templates_not_machine_specific(brief):
         assert "__KIPI_REPO__" in text, f"{name} hardcodes a checkout path"
         assert "/Users/" not in text.replace("__HOME__", ""), (
             f"{name} hardcodes a home directory; install-plist.sh renders __HOME__")
+
+
+def test_overnight_puts_failures_above_the_row_cap(brief):
+    """The first live run buried both real failures under 26 paused jobs.
+
+    A section capped at 15 rows whose noise sorts first is a section that
+    reports nothing, however correct each individual row is.
+    """
+    paused = {f"com.cole.paused{i:02d}" for i in range(26)}
+    labels = sorted(paused) + ["com.kipi.bad"]
+
+    def status(label):
+        return ("failing", 127) if label == "com.kipi.bad" else ("not_loaded", None)
+
+    rows, error = brief.collect_overnight(
+        NOW, status_fn=status, labels=labels, paused=paused)
+    assert error is None
+    assert rows[0].startswith("FAILED  com.kipi.bad")
+    rendered = "\n".join(brief._section("Overnight jobs", rows, error))
+    assert "com.kipi.bad" in rendered, "the failure fell below the row cap"
+    assert "26 more paused on purpose" in rendered, "paused jobs vanished entirely"

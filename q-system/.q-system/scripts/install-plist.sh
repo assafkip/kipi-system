@@ -84,7 +84,7 @@ if [ "${1:-}" = "--render-only" ]; then
   RENDER_ONLY="$2"
 fi
 
-# ASK-1170: __USER__ joined __KIPI_REPO__ and __HOME__ because a launchd job that
+# ASK-1178: __USER__ joined __KIPI_REPO__ and __HOME__ because a launchd job that
 # shells the `claude` CLI needs USER/LOGNAME set. Measured 2026-08-30: with them
 # absent the CLI answers "Not logged in - please run /login" (the keychain lookup
 # needs them); with USER set, the same command returned a real calendar answer.
@@ -92,10 +92,17 @@ fi
 # worse half of the change: an unsubstituted placeholder that plutil accepts and
 # launchd fails on at fire time, silently, which is the exact class assert_rendered
 # was written for.
+# ONE LINE, and it has to stay one line. test-install-plist.sh builds its negative
+# self-test by neutering the substituter with `sed -i 's|^  sed -e .*$|  cat ...|'`.
+# The first version of the __USER__ change wrapped this onto a second line; the
+# harness replaced line one and left `      -e "s|__USER__|..."` dangling, so the
+# CONTROL case exited 127 and the whole probe proved nothing. The test was right
+# and the code was wrong: a renderer whose shape the harness depends on is part of
+# the harness contract.
+RENDER_USER="$(id -un)"
 render() {
   # sed with | as the delimiter: the path replacements contain /.
-  sed -e "s|__KIPI_REPO__|$KIPI_REPO|g" -e "s|__HOME__|$HOME|g" \
-      -e "s|__USER__|$(id -un)|g" "$TEMPLATE"
+  sed -e "s|__KIPI_REPO__|$KIPI_REPO|g" -e "s|__HOME__|$HOME|g" -e "s|__USER__|$RENDER_USER|g" "$TEMPLATE"
 }
 
 # A template that still carries a placeholder after substitution is a broken
