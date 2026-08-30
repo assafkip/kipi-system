@@ -494,7 +494,10 @@ class Sweep:
         fd, bpath = tempfile.mkstemp(prefix="msweep-bak-")
         os.close(fd)
         shutil.copy2(target, bpath)
-        _PENDING[target] = bpath
+        # (backup, original sha, what we last wrote). The third is filled in by
+        # _note_wrote once a mutant is on disk, so the emergency path can tell
+        # OUR content from a stranger's without re-deriving anything.
+        _PENDING[target] = [bpath, sha(target.read_bytes()), None]
         return bpath
 
     def _restore(self, target: Path, bpath, orig_sha, mutant_sha=None):
@@ -521,6 +524,10 @@ class Sweep:
             current = sha(target.read_bytes())
         except OSError:
             current = None
+        if mutant_sha is None:
+            entry = _PENDING.get(target)
+            if entry is not None and entry[2] is not None:
+                mutant_sha = entry[2]
 
         # An UNKNOWN mutant_sha (None) must refuse, not permit. It means "we do
         # not know what we wrote", and treating that as permission to overwrite
@@ -565,8 +572,42 @@ def sha(b):
 _PENDING = {}
 
 
+def _note_wrote(target, content_sha):
+    """Record what we just put on disk, for the emergency path."""
+    entry = _PENDING.get(target)
+    if entry is not None:
+        entry[2] = content_sha
+
+
 def _restore_all(*_a):
-    for target, bpath in list(_PENDING.items()):
+    """Emergency restore on SIGTERM / atexit.
+
+    CARRIES THE SAME CONCURRENT-EDIT RULE as _restore (PR #272 blocker). This
+    used to copy the backup over every pending target unconditionally, so the
+    guard added to the normal path was bypassed by the one path that runs when
+    things are going WRONG -- and a kill mid-run permanently overwrote whatever
+    a person had saved. The emergency path is where destroying work is least
+    forgivable, not most.
+
+    Restores when the file is OUR mutant (the whole point: a mutant must never
+    outlive this process) or is missing. Leaves anything else alone and says so
+    on stderr, because a signal handler cannot ask and must not guess.
+    """
+    for target, entry in list(_PENDING.items()):
+        bpath, orig_sha, wrote_sha = entry
+        try:
+            current = sha(Path(target).read_bytes())
+        except OSError:
+            current = None          # gone: restoring it is correct
+        if current is not None and current != orig_sha and current != wrote_sha:
+            try:
+                sys.stderr.write(
+                    "mutation-sweep: NOT restoring %s -- it holds content that "
+                    "is neither our mutant nor the original, so somebody else "
+                    "wrote it. The pre-mutation copy is at %s\n" % (target, bpath))
+            except Exception:
+                pass
+            continue
         try:
             shutil.copy2(bpath, target)
         except OSError:
@@ -635,6 +676,7 @@ def probe_pair(sw, entry, subj_rel, baseline, score):
     bpath = sw._backup(target)
     try:
         target.write_text(tripwire)
+        _note_wrote(target, sha(tripwire.encode("utf-8")))
         trip = sw.run_test(entry, budget)
     finally:
         sw._restore(target, bpath, orig_sha,
@@ -702,6 +744,7 @@ def probe_pair(sw, entry, subj_rel, baseline, score):
     bpath = sw._backup(target)
     try:
         target.write_text(mutated)
+        _note_wrote(target, sha(mutated.encode("utf-8")))
         # self-guard 1: re-read from DISK. "we wrote it" is not "it is there".
         after_sha = sha(target.read_bytes())
         if after_sha == orig_sha:

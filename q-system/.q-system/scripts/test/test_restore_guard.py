@@ -102,5 +102,48 @@ class RestoreGuardCase(unittest.TestCase):
         self.assertEqual(self.target.read_text(), "echo original\n")
 
 
+class EmergencyRestoreCase(unittest.TestCase):
+    """PR #272 blocker, round 2. The signal/atexit path bypassed the guard, so a
+    kill mid-run permanently overwrote whatever a person had saved. The
+    emergency path is where destroying work is LEAST forgivable, not most."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="emergency-"))
+        self.target = self.tmp / "subject.sh"
+        self.target.write_text("echo original\n")
+        self.sw = _Sweep(self.tmp)
+        ms._PENDING.clear()
+
+    def tearDown(self):
+        ms._PENDING.clear()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_mutant_is_restored_on_emergency_exit(self):
+        """The whole point of the handler: a mutant must not outlive the run."""
+        ms.Sweep._backup(self.sw, self.target)
+        mutant = "echo mutated\n"
+        self.target.write_text(mutant)
+        ms._note_wrote(self.target, ms.sha(mutant.encode()))
+        ms._restore_all()
+        self.assertEqual(self.target.read_text(), "echo original\n")
+
+    def test_a_concurrent_edit_survives_emergency_exit(self):
+        """The blocker itself."""
+        ms.Sweep._backup(self.sw, self.target)
+        mutant = "echo mutated\n"
+        self.target.write_text(mutant)
+        ms._note_wrote(self.target, ms.sha(mutant.encode()))
+        self.target.write_text("echo THEIR WORK\n")
+        ms._restore_all()
+        self.assertEqual(self.target.read_text(), "echo THEIR WORK\n",
+                         "the emergency path destroyed a concurrent edit")
+
+    def test_a_deleted_file_is_restored_on_emergency_exit(self):
+        ms.Sweep._backup(self.sw, self.target)
+        self.target.unlink()
+        ms._restore_all()
+        self.assertEqual(self.target.read_text(), "echo original\n")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
