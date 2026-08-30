@@ -298,6 +298,11 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/settings-template-sync-check.py\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/hook_envelope_audit.py\" --hook",
+            "timeout": 10
           }
         ]
       },
