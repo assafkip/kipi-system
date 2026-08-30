@@ -148,12 +148,29 @@ def audit_python(path, source=None):
         else:
             sites.append(Site(path, node.lineno, NO_EVENT_NAME))
 
+    # `hso = {...}` then `out = {"hookSpecificOutput": hso}` is a perfectly
+    # ordinary way to write the delivering shape, and calling it TOP_LEVEL was a
+    # false BLOCK on correct code (Codex minor, PR #285 round 4). One level of
+    # simple-name aliasing is resolved; anything deeper stays unreadable and is
+    # reported as such rather than guessed at.
+    aliases = {}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Dict)):
+            aliases[node.targets[0].id] = node.value
+
+    def _resolve(v):
+        if isinstance(v, ast.Name):
+            return aliases.get(v.id)
+        return v
+
     # An envelope nested under "hookSpecificOutput" is the delivering shape; one
     # that is NOT nested there is top-level and is discarded too. Re-classify.
     nested = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Dict):
-            v = _value_for(node, KEY_ENVELOPE)
+            v = _resolve(_value_for(node, KEY_ENVELOPE))
             if isinstance(v, ast.Dict) and id(v) in envelopes:
                 nested.add(id(v))
         # out["hookSpecificOutput"] = {...}
@@ -162,9 +179,28 @@ def audit_python(path, source=None):
                 if (isinstance(tgt, ast.Subscript)
                         and isinstance(tgt.slice, ast.Constant)
                         and tgt.slice.value == KEY_ENVELOPE
-                        and isinstance(node.value, ast.Dict)
-                        and id(node.value) in envelopes):
-                    nested.add(id(node.value))
+                        and isinstance(_resolve(node.value), ast.Dict)
+                        and id(_resolve(node.value)) in envelopes):
+                    nested.add(id(_resolve(node.value)))
+
+    # `out["hookSpecificOutput"]["additionalContext"] = x` builds the payload by
+    # ASSIGNMENT, so a walk over dict literals sees nothing at all and the gate
+    # passed the file at exit 0 (Codex minor, PR #285 round 4). Absent read as
+    # approved -- the exact confusion this tool exists to end. A subscript in a
+    # TARGET position is a write; the same subscript in a value position is a
+    # read and is left alone, the same discrimination the text scanner makes.
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for tgt in targets:
+            if (isinstance(tgt, ast.Subscript)
+                    and isinstance(tgt.slice, ast.Constant)
+                    and tgt.slice.value == KEY_CONTEXT):
+                sites.append(Site(path, node.lineno, UNKNOWN,
+                                  detail="additionalContext is written by "
+                                         "assignment, so the envelope around it "
+                                         "cannot be read statically"))
 
     by_line = {}
     for node in ast.walk(tree):

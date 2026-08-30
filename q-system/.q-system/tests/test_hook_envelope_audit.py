@@ -296,3 +296,52 @@ def test_a_hook_whose_only_tell_is_json_load_stdin_still_blocks(tmp_path):
                  'payload = json.load(sys.stdin)\n'
                  'print(json.dumps({"additionalContext": "re-anchor"}))\n')
     assert _run_gate(p).returncode == 2
+
+
+# --------------------------------------------------------------------------
+# Codex minors, PR #285 round 4. Two ordinary ways to build the payload that a
+# walk over dict literals alone gets wrong, in both directions.
+# --------------------------------------------------------------------------
+def test_envelope_built_in_a_variable_is_not_called_top_level():
+    """`hso = {...}` then `{"hookSpecificOutput": hso}` is correct code.
+
+    Calling it TOP_LEVEL was a false BLOCK, and a gate that stops correct code
+    is a gate that gets switched off.
+    """
+    src = ('import json, sys\n'
+           'payload = json.load(sys.stdin)\n'
+           'hso = {"hookEventName": "UserPromptSubmit", "additionalContext": "delivered"}\n'
+           'out = {"hookSpecificOutput": hso}\n'
+           'print(json.dumps(out))\n')
+    assert [s.verdict for s in audit.audit_python("<aliased>", source=src)] == [audit.OK]
+
+
+def test_additional_context_written_by_assignment_is_unknown_not_absent(tmp_path):
+    """The payload built by subscript assignment produced NO site at all.
+
+    Absent read as approved, so the gate passed a hook that delivers nothing.
+    """
+    src = ('import json, sys\n'
+           'payload = json.load(sys.stdin)\n'
+           'out = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit"}}\n'
+           'out["hookSpecificOutput"]["additionalContext"] = "lost"\n'
+           'print(json.dumps(out))\n')
+    assert [s.verdict for s in audit.audit_python("<incremental>", source=src)] == [audit.UNKNOWN]
+
+    p = tmp_path / "incremental_hook.py"
+    p.write_text(src)
+    assert _run_gate(p).returncode == 2
+
+
+def test_reading_that_same_subscript_is_still_not_an_emission():
+    """The control that keeps the write-detection honest.
+
+    A subscript in a TARGET position is a write; the same subscript in a value
+    position is a read. Without this case the detector could flag every hook
+    that merely inspects an incoming payload.
+    """
+    src = ('import json, sys\n'
+           'payload = json.load(sys.stdin)\n'
+           'ctx = payload["hookSpecificOutput"]["additionalContext"]\n'
+           'print(ctx)\n')
+    assert audit.audit_python("<read>", source=src) == []
