@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import sys
 import pytest
@@ -21,7 +22,67 @@ _SRC = Path(__file__).resolve().parents[1] / "src"
 if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.append(str(_SRC))
 
-from kipi_mcp.paths import KipiPaths
+# ONE CHOKEPOINT FOR "IS THIS PLUGIN INSTALLED", not one guard per file.
+#
+# Codex major, PR #283. The first version put `pytest.importorskip` in the five
+# files that import yaml or feedparser DIRECTLY. That is the wrong layer, and it
+# was green here for the wrong reason: this machine has no pyyaml, so the guard
+# fired before anything else could. On a machine WITH pyyaml the very same files
+# reach `from pydantic import ...` (pulled in by mcp) and abort collection again.
+# A guard that only works because of what happens to be missing locally is not a
+# guard, it is a coincidence.
+#
+# The real question is not "is yaml importable" but "is this plugin installed",
+# and that has ONE answer for the whole directory. The list is the plugin's own
+# declared dependencies from pyproject.toml, by IMPORT name.
+_REQUIRED = {
+    "mcp": "mcp",
+    "httpx": "httpx",
+    "yaml": "pyyaml",
+    "tenacity": "tenacity",
+    "apify_client": "apify-client",
+    "feedparser": "feedparser",
+    "pytest_mock": "pytest-mock (dev extra)",
+}
+_MISSING = sorted(pkg for mod, pkg in _REQUIRED.items()
+                  if importlib.util.find_spec(mod) is None)
+
+if _MISSING:
+    # Skip the directory rather than let an ImportError abort COLLECTION for the
+    # whole run -- one uninstalled plugin is why `python3 -m pytest` at the root
+    # of most of the fleet exited non-zero having executed nothing (ASK-1129).
+    collect_ignore_glob = ["test_*.py"]
+
+
+_SKIP_NOTE = ("kipi-mcp tests SKIPPED: the plugin is not installed here "
+              "(missing %s). Install it to run them: "
+              "pip install -e plugins/kipi-core/kipi-mcp[dev]" % ", ".join(_MISSING)
+              if _MISSING else "")
+
+
+def pytest_report_header(config):
+    """Say it at the top of the run."""
+    return _SKIP_NOTE or None
+
+
+def pytest_configure(config):
+    """AND as a warning, because the header is not always shown.
+
+    collect_ignore_glob is silent by design, and a suite nobody can see skipping
+    reads exactly like a suite that passes -- the failure this whole change
+    exists to end. So it needs a channel that survives the floor's own flags:
+    verify.sh runs pytest with `-q --no-header`, which SUPPRESSES the header.
+    Measured, not assumed -- the first version used only the header and was
+    invisible in exactly the run that matters. The warnings summary still prints
+    under -q --no-header, so the warning is the load-bearing half and the header
+    is the convenience.
+    """
+    if _SKIP_NOTE:
+        config.issue_config_time_warning(UserWarning(_SKIP_NOTE), stacklevel=2)
+
+
+if not _MISSING:
+    from kipi_mcp.paths import KipiPaths
 
 
 def write_registry(base: Path, repo: Path, instance: str = "test",

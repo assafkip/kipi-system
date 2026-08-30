@@ -33,19 +33,27 @@ sys.path.insert(0, str(GTM_SCRIPTS))
 # non-zero having executed NOTHING. It was one of exactly two such errors, and
 # they are what blocks arming the verify.sh floor across the fleet.
 #
-# A module-level skip is the honest shape here and not a way of hiding a red: in
-# a repo with no gtm/scripts/ there is genuinely no subject, and the skip names
-# the path it looked for so nobody has to guess. Where the subject DOES exist --
-# cole-gtm, the repo this was written against -- the import succeeds and every
-# case below runs exactly as before. What must not happen is a repo without the
-# subject silently reporting the suite as passed; a skip says "did not run",
-# which is the true thing.
+# A module-level skip unblocks collection and is COARSER than it needs to be, so
+# say which rather than dressing it up (Codex minor, PR #283). It is not hiding a
+# red: the skip names the path it looked for, and a skip reads as "did not run",
+# which is the true thing. What must not happen is a repo without the subject
+# reporting the suite as passed. Where the subject DOES exist -- cole-gtm, the
+# repo this was written against -- the import succeeds and every case runs
+# exactly as before.
+#
+# "No subject to test" would OVERSTATE it. 19 test functions live here and only
+# 8 lines touch design_room_pipeline or drr; the rest exercise publish_gate.py,
+# which DOES ship in this repo and could be tested everywhere. Splitting them (a
+# fixture, or a class-scoped importorskip, so the dependent cases skip and the
+# rest run) changes which assertions execute fleet-wide, and that earns its own
+# reproducer instead of riding along on a collection fix. Tracked as sp-947f04c7.
 if not (GTM_SCRIPTS / "design_room_pipeline.py").is_file():
     pytest.skip(
         "design_room_pipeline lives at %s, which does not exist in this repo. "
-        "This suite tests a cole-gtm script through the kipi-design plugin; in a "
-        "repo without that script there is no subject to test. It is SKIPPED, "
-        "not passed." % GTM_SCRIPTS,
+        "This suite tests a cole-gtm script through the kipi-design plugin. The "
+        "whole module is skipped, which is coarser than needed -- most cases here "
+        "need that script, some only need publish_gate.py (sp-947f04c7). It is "
+        "SKIPPED, not passed." % GTM_SCRIPTS,
         allow_module_level=True)
 
 import design_room_pipeline  # noqa: E402

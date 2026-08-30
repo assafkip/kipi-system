@@ -1,29 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
-# THE PLUGIN'S OWN DEPENDENCY, NOT AN OPTIONAL EXTRA (ASK-1129, 2026-08-29).
-# `yaml` is declared in plugins/kipi-core/kipi-mcp/pyproject.toml, so this is
-# not a test reaching for something it should not need -- it is a test of an
-# UNINSTALLED plugin. Without this guard the ImportError lands at COLLECTION
-# time, and pytest then aborts the whole run: one uninstalled plugin is why
-# `python3 -m pytest` at the root of most of the fleet exits non-zero having
-# executed nothing (ASK-1129).
-#
-# IT HAS TO SIT AHEAD OF EVERY OTHER IMPORT, not merely ahead of the kipi_mcp
-# one. Several of these files import `yaml` DIRECTLY a few lines down, so a
-# guard placed lower is dead code the interpreter never reaches. The first
-# revision made exactly that mistake and the collection error did not move.
-#
-# importorskip, not a bare try/except: it records a SKIP with a reason, so a repo
-# that cannot run these says "did not run" instead of "passed". Installing the
-# plugin (`pip install -e plugins/kipi-core/kipi-mcp`) makes every case here run
-# exactly as before.
-pytest.importorskip("yaml", reason="pyyaml is a kipi-mcp dependency and the "
-                    "plugin is not installed here; "
-                    "pip install -e plugins/kipi-core/kipi-mcp")
-
-
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -42,7 +18,6 @@ from kipi_mcp.source_registry import (
     SourceRegistry,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -50,7 +25,6 @@ from kipi_mcp.source_registry import (
 def _write_yaml(path: Path, data: dict) -> Path:
     path.write_text(yaml.dump(data, default_flow_style=False))
     return path
-
 
 def _http_yaml() -> dict:
     return {
@@ -65,7 +39,6 @@ def _http_yaml() -> dict:
         "schedule": {"frequency": "daily"},
     }
 
-
 def _apify_yaml() -> dict:
     return {
         "name": "x-scraper",
@@ -76,7 +49,6 @@ def _apify_yaml() -> dict:
             "records_path": ["items"],
         },
     }
-
 
 def _mcp_yaml() -> dict:
     return {
@@ -89,7 +61,6 @@ def _mcp_yaml() -> dict:
         },
     }
 
-
 def _chrome_yaml() -> dict:
     return {
         "name": "linkedin-feed",
@@ -101,7 +72,6 @@ def _chrome_yaml() -> dict:
         },
     }
 
-
 def _local_yaml() -> dict:
     return {
         "name": "lead-list",
@@ -111,7 +81,6 @@ def _local_yaml() -> dict:
             "format": "json",
         },
     }
-
 
 # ---------------------------------------------------------------------------
 # Model validation
@@ -189,7 +158,6 @@ class TestModelValidation:
                 method="ftp",
             )
 
-
 # ---------------------------------------------------------------------------
 # Chrome .md loading
 # ---------------------------------------------------------------------------
@@ -206,7 +174,6 @@ class TestChromeMarkdown:
         m = SourceManifest(**data)
         result = registry.load_chrome_instructions(m)
         assert result == md_content
-
 
 # ---------------------------------------------------------------------------
 # Schedule filtering
@@ -244,7 +211,6 @@ class TestScheduleFilter:
 
         old = (datetime.now() - timedelta(hours=25)).isoformat()
         assert _matches_schedule(sched, "monday", old) is True
-
 
 # ---------------------------------------------------------------------------
 # Registry loading
@@ -302,7 +268,6 @@ class TestRegistryLoading:
         sources = registry.load_all(last_harvest_times={"linkedin-metrics": old})
         assert len(sources) == 1
 
-
 # ---------------------------------------------------------------------------
 # Variable resolution
 # ---------------------------------------------------------------------------
@@ -330,7 +295,6 @@ class TestVariableResolution:
         m = SourceManifest(**data)
         resolved = registry.resolve_variables(m, env={})
         assert resolved.http.headers["Authorization"] == "Bearer "
-
 
 # ---------------------------------------------------------------------------
 # Schema versioning

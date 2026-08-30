@@ -2,28 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-# THE PLUGIN'S OWN DEPENDENCY, NOT AN OPTIONAL EXTRA (ASK-1129, 2026-08-29).
-# `yaml` is declared in plugins/kipi-core/kipi-mcp/pyproject.toml, so this is
-# not a test reaching for something it should not need -- it is a test of an
-# UNINSTALLED plugin. Without this guard the ImportError lands at COLLECTION
-# time, and pytest then aborts the whole run: one uninstalled plugin is why
-# `python3 -m pytest` at the root of most of the fleet exits non-zero having
-# executed nothing (ASK-1129).
-#
-# IT HAS TO SIT AHEAD OF EVERY OTHER IMPORT, not merely ahead of the kipi_mcp
-# one. Several of these files import `yaml` DIRECTLY a few lines down, so a
-# guard placed lower is dead code the interpreter never reaches. The first
-# revision made exactly that mistake and the collection error did not move.
-#
-# importorskip, not a bare try/except: it records a SKIP with a reason, so a repo
-# that cannot run these says "did not run" instead of "passed". Installing the
-# plugin (`pip install -e plugins/kipi-core/kipi-mcp`) makes every case here run
-# exactly as before.
-pytest.importorskip("yaml", reason="pyyaml is a kipi-mcp dependency and the "
-                    "plugin is not installed here; "
-                    "pip install -e plugins/kipi-core/kipi-mcp")
-
-
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,11 +16,9 @@ from kipi_mcp.signal_core import (
     render_podcast_digest,
 )
 
-
 def _write_json(path: Path, payload: object) -> Path:
     path.write_text(json.dumps(payload, indent=2))
     return path
-
 
 def _watchlist(path: Path) -> Path:
     path.write_text(
@@ -75,7 +51,6 @@ entities:
     )
     return path
 
-
 def _records(path: Path) -> Path:
     return _write_json(
         path,
@@ -104,7 +79,6 @@ def _records(path: Path) -> Path:
         ],
     )
 
-
 def test_item_key_canonicalizes_urls_and_blocks_repeat_records(tmp_path):
     records = load_records(_records(tmp_path / "records.json"))
     ledger_path = tmp_path / "coverage.jsonl"
@@ -131,7 +105,6 @@ def test_item_key_canonicalizes_urls_and_blocks_repeat_records(tmp_path):
     assert item_key(records[0]) == item_key(load_records(_write_json(tmp_path / "dupe.json", [same_story]))[0])
     assert [record.url for record in kept] == ["https://example.com/claude-sonnet-5"]
     assert dropped[0][1] == "covered-exact"
-
 
 def test_signal_buffer_banks_only_fresh_unaired_records(tmp_path):
     now = datetime(2026, 6, 30, 12, tzinfo=timezone.utc).timestamp()
@@ -171,7 +144,6 @@ def test_signal_buffer_banks_only_fresh_unaired_records(tmp_path):
     assert [record.url for record in banked] == ["https://example.com/fresh"]
     assert [record.url for record in drawn] == ["https://example.com/fresh"]
 
-
 def test_render_podcast_digest_turns_market_moves_into_notebooklm_source(tmp_path):
     watchlist = load_watchlist(_watchlist(tmp_path / "watchlist.yaml"))
     report = build_report(watchlist, load_records(_records(tmp_path / "records.json")), week="2026-W27")
@@ -184,7 +156,6 @@ def test_render_podcast_digest_turns_market_moves_into_notebooklm_source(tmp_pat
     assert "Why it matters:" in digest
     assert "Source:" in digest
     assert "Part 2 - Evidence receipts" in digest
-
 
 def test_weekly_workflow_can_write_podcast_digest_and_coverage_ledger(tmp_path):
     report = run_weekly_workflow(

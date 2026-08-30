@@ -30,3 +30,31 @@ its checks genuinely must run at import time.
 """
 
 collect_ignore = ["test_launchd_intent_verify.py"]
+
+
+# --- test_wiring_check.py: the SAME shape, one variation, and NOT excluded ---
+#
+# It is a standalone script whose `main()` builds one temp directory and passes
+# it to each check by hand, so its `test_*` functions take a plain `tmp`
+# parameter. pytest reads that parameter as a FIXTURE REQUEST, finds no fixture
+# called `tmp`, and errors 8 times -- at root scope, where the run that matters
+# happens (ASK-1129).
+#
+# The sweep recorded above looked for a module-level `sys.exit` and correctly
+# reported this file was not one: it guards its exit under `__main__`, so it
+# imports cleanly. The shape it shares is "test_ prefix by convention, not a
+# pytest suite"; the shape it does NOT share is the crash. One AST predicate,
+# two different symptoms.
+#
+# A fixture, NOT another collect_ignore entry. Excluding it would keep the run
+# green by removing 8 real contract checks from it, and those checks are the
+# only thing pinning the nesting detector. Three lines make them run under
+# pytest AND leave `python3 test_wiring_check.py` working exactly as before,
+# which is what the file's own callers still do.
+import pytest  # noqa: E402
+
+
+@pytest.fixture
+def tmp(tmp_path):
+    """`tmp_path` under the name this directory's scripts already ask for."""
+    return tmp_path

@@ -1,35 +1,10 @@
 from __future__ import annotations
 
 import pytest
-
-# THE PLUGIN'S OWN DEPENDENCY, NOT AN OPTIONAL EXTRA (ASK-1129, 2026-08-29).
-# `feedparser` is declared in plugins/kipi-core/kipi-mcp/pyproject.toml, so this is
-# not a test reaching for something it should not need -- it is a test of an
-# UNINSTALLED plugin. Without this guard the ImportError lands at COLLECTION
-# time, and pytest then aborts the whole run: one uninstalled plugin is why
-# `python3 -m pytest` at the root of most of the fleet exits non-zero having
-# executed nothing (ASK-1129).
-#
-# IT HAS TO SIT AHEAD OF EVERY OTHER IMPORT, not merely ahead of the kipi_mcp
-# one. Several of these files import `feedparser` DIRECTLY a few lines down, so a
-# guard placed lower is dead code the interpreter never reaches. The first
-# revision made exactly that mistake and the collection error did not move.
-#
-# importorskip, not a bare try/except: it records a SKIP with a reason, so a repo
-# that cannot run these says "did not run" instead of "passed". Installing the
-# plugin (`pip install -e plugins/kipi-core/kipi-mcp`) makes every case here run
-# exactly as before.
-pytest.importorskip("feedparser", reason="feedparser is a kipi-mcp dependency and the "
-                    "plugin is not installed here; "
-                    "pip install -e plugins/kipi-core/kipi-mcp")
-
-
-import pytest
 import httpx
 
 from kipi_mcp.executors import ExecutorResult
 from kipi_mcp.executors.http_executor import execute
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -49,11 +24,9 @@ def _make_config(**overrides) -> dict:
     base.update(overrides)
     return base
 
-
 def _mock_transport(handler):
     """Return an httpx.MockTransport wrapping *handler*."""
     return httpx.MockTransport(handler)
-
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -98,7 +71,6 @@ async def test_simple_get(monkeypatch):
     assert len(result.records) == 2
     assert result.records[0]["id"] == 1
 
-
 @pytest.mark.asyncio
 async def test_post_with_body(monkeypatch):
     def handler(request: httpx.Request):
@@ -127,7 +99,6 @@ async def test_post_with_body(monkeypatch):
     result = await execute(config)
     assert result.error is None
     assert result.records == [{"result": "ok"}]
-
 
 @pytest.mark.asyncio
 async def test_pagination_cursor(monkeypatch):
@@ -175,7 +146,6 @@ async def test_pagination_cursor(monkeypatch):
     assert len(result.records) == 2
     assert call_count == 2
 
-
 @pytest.mark.asyncio
 async def test_records_path_extraction(monkeypatch):
     def handler(request: httpx.Request):
@@ -198,7 +168,6 @@ async def test_records_path_extraction(monkeypatch):
     assert result.error is None
     assert len(result.records) == 3
     assert result.records[0] == {"x": 1}
-
 
 @pytest.mark.asyncio
 async def test_rss_feed_parsing(monkeypatch):
@@ -236,7 +205,6 @@ async def test_rss_feed_parsing(monkeypatch):
     assert len(result.records) == 2
     assert result.records[0]["title"] == "Article 1"
     assert result.records[1]["link"] == "https://example.com/2"
-
 
 @pytest.mark.asyncio
 async def test_ga4_client_call(monkeypatch):
@@ -283,7 +251,6 @@ async def test_ga4_client_call(monkeypatch):
     assert len(result.records) == 1
     mock_client.run_report.assert_called_once()
 
-
 @pytest.mark.asyncio
 async def test_retry_on_transient_error(monkeypatch):
     call_count = 0
@@ -310,7 +277,6 @@ async def test_retry_on_transient_error(monkeypatch):
     assert len(result.records) == 1
     assert call_count == 2
 
-
 @pytest.mark.asyncio
 async def test_auth_header_injection(monkeypatch):
     def handler(request: httpx.Request):
@@ -332,7 +298,6 @@ async def test_auth_header_injection(monkeypatch):
     assert result.error is None
     assert result.records[0]["authed"] is True
 
-
 @pytest.mark.asyncio
 async def test_timeout_handling(monkeypatch):
     def handler(request: httpx.Request):
@@ -352,7 +317,6 @@ async def test_timeout_handling(monkeypatch):
     assert result.error is not None
     assert "timeout" in result.error.lower() or "timed out" in result.error.lower()
     assert result.records == []
-
 
 @pytest.mark.asyncio
 async def test_empty_response(monkeypatch):

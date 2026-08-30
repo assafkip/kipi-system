@@ -1,29 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
-# THE PLUGIN'S OWN DEPENDENCY, NOT AN OPTIONAL EXTRA (ASK-1129, 2026-08-29).
-# `yaml` is declared in plugins/kipi-core/kipi-mcp/pyproject.toml, so this is
-# not a test reaching for something it should not need -- it is a test of an
-# UNINSTALLED plugin. Without this guard the ImportError lands at COLLECTION
-# time, and pytest then aborts the whole run: one uninstalled plugin is why
-# `python3 -m pytest` at the root of most of the fleet exits non-zero having
-# executed nothing (ASK-1129).
-#
-# IT HAS TO SIT AHEAD OF EVERY OTHER IMPORT, not merely ahead of the kipi_mcp
-# one. Several of these files import `yaml` DIRECTLY a few lines down, so a
-# guard placed lower is dead code the interpreter never reaches. The first
-# revision made exactly that mistake and the collection error did not move.
-#
-# importorskip, not a bare try/except: it records a SKIP with a reason, so a repo
-# that cannot run these says "did not run" instead of "passed". Installing the
-# plugin (`pip install -e plugins/kipi-core/kipi-mcp`) makes every case here run
-# exactly as before.
-pytest.importorskip("yaml", reason="pyyaml is a kipi-mcp dependency and the "
-                    "plugin is not installed here; "
-                    "pip install -e plugins/kipi-core/kipi-mcp")
-
-
 import json
 from pathlib import Path
 
@@ -42,7 +18,6 @@ from kipi_mcp.competitive_intel import (
     run_collect_weekly_workflow,
     run_workflow,
 )
-
 
 def _ai_quality_watchlist(path: Path) -> Path:
     return _write_yaml(
@@ -90,16 +65,13 @@ def _ai_quality_watchlist(path: Path) -> Path:
         },
     )
 
-
 def _write_yaml(path: Path, payload: dict) -> Path:
     path.write_text(yaml.safe_dump(payload, sort_keys=False))
     return path
 
-
 def _write_json(path: Path, payload: object) -> Path:
     path.write_text(json.dumps(payload, indent=2))
     return path
-
 
 def _watchlist(path: Path) -> Path:
     return _write_yaml(
@@ -129,7 +101,6 @@ def _watchlist(path: Path) -> Path:
             ],
         },
     )
-
 
 def _records(path: Path) -> Path:
     return _write_json(
@@ -170,7 +141,6 @@ def _records(path: Path) -> Path:
         ],
     )
 
-
 def test_build_report_connects_cross_entity_theme(tmp_path):
     watchlist = load_watchlist(_watchlist(tmp_path / "watchlist.yaml"))
     records = load_records(_records(tmp_path / "records.json"))
@@ -189,7 +159,6 @@ def test_build_report_connects_cross_entity_theme(tmp_path):
     assert "3 watched entities converged on barrier repair" in newsletter
     assert "North Star Skin" in newsletter
     assert "https://example.com/ig-1" in newsletter
-
 
 def test_run_workflow_writes_markdown_and_json(tmp_path):
     watchlist_path = _watchlist(tmp_path / "watchlist.yaml")
@@ -212,7 +181,6 @@ def test_run_workflow_writes_markdown_and_json(tmp_path):
     parsed = json.loads(json_path.read_text())
     assert parsed["market_moves"][0]["theme"] == "barrier repair"
 
-
 def test_watchlist_validation_rejects_missing_entity_name(tmp_path):
     watchlist_path = _write_yaml(
         tmp_path / "bad-watchlist.yaml",
@@ -225,7 +193,6 @@ def test_watchlist_validation_rejects_missing_entity_name(tmp_path):
     with pytest.raises(ValueError, match="entities\\[0\\].name"):
         load_watchlist(watchlist_path)
 
-
 def test_records_validation_rejects_missing_text(tmp_path):
     records_path = _write_json(
         tmp_path / "bad-records.json",
@@ -234,7 +201,6 @@ def test_records_validation_rejects_missing_text(tmp_path):
 
     with pytest.raises(ValueError, match="records\\[0\\].text"):
         load_records(records_path)
-
 
 def test_output_quality_cleans_html_and_entities_before_rendering(tmp_path):
     watchlist = load_watchlist(_ai_quality_watchlist(tmp_path / "watchlist.yaml"))
@@ -264,7 +230,6 @@ def test_output_quality_cleans_html_and_entities_before_rendering(tmp_path):
     assert "<p>" not in newsletter
     assert "&#x27;" not in newsletter
     assert "What's new in Claude Sonnet 5" in newsletter
-
 
 def test_theme_rules_prevent_false_model_and_new_repo_matches(tmp_path):
     watchlist = load_watchlist(_ai_quality_watchlist(tmp_path / "watchlist.yaml"))
@@ -307,7 +272,6 @@ def test_theme_rules_prevent_false_model_and_new_repo_matches(tmp_path):
     assert all(record.source != "hacker-news" for record in model_move.records)
     assert all(record.source != "arxiv" for move in report.market_moves for record in move.records)
 
-
 def test_newsletter_caps_evidence_and_explains_why_it_matters(tmp_path):
     watchlist = load_watchlist(_ai_quality_watchlist(tmp_path / "watchlist.yaml"))
     records = load_records(
@@ -341,7 +305,6 @@ def test_newsletter_caps_evidence_and_explains_why_it_matters(tmp_path):
     assert len(move.records) == 3
     assert "Why this matters:" in newsletter
     assert "multiple independent sources" in newsletter
-
 
 def test_source_weights_rank_higher_quality_evidence_first(tmp_path):
     watchlist = load_watchlist(_ai_quality_watchlist(tmp_path / "watchlist.yaml"))
@@ -377,7 +340,6 @@ def test_source_weights_rank_higher_quality_evidence_first(tmp_path):
     assert move.records[0].source == "huggingface-ai"
     assert move.records[1].source == "simonwillison"
     assert move.score > 0
-
 
 def test_evidence_cap_preserves_entity_diversity_before_filling(tmp_path):
     watchlist = load_watchlist(_ai_quality_watchlist(tmp_path / "watchlist.yaml"))
@@ -419,7 +381,6 @@ def test_evidence_cap_preserves_entity_diversity_before_filling(tmp_path):
         "AI Research Writers",
         "GitHub Trending",
     }
-
 
 def test_normalize_raw_records_maps_ai_build_chatter(tmp_path):
     raw_path = _write_json(
@@ -477,7 +438,6 @@ def test_normalize_raw_records_maps_ai_build_chatter(tmp_path):
     assert "benchmark evals" in records[0].text
     assert records[1].source == "reddit"
     assert records[2].source == "x"
-
 
 def test_weekly_workflow_writes_ai_trends_outputs(tmp_path):
     watchlist_path = _write_yaml(
@@ -537,7 +497,6 @@ def test_weekly_workflow_writes_ai_trends_outputs(tmp_path):
     assert structured.exists()
     assert "AI Builds Radar Competitive Intel" in newsletter.read_text()
 
-
 def test_main_weekly_subcommand_writes_outputs(tmp_path):
     watchlist_path = _write_yaml(
         tmp_path / "ai-watchlist.yaml",
@@ -585,7 +544,6 @@ def test_main_weekly_subcommand_writes_outputs(tmp_path):
     assert exit_code == 0
     assert (tmp_path / "out" / "competitive-intel" / "2026-06-30.md").exists()
 
-
 def test_source_appendix_dedupes_records_that_support_multiple_themes(tmp_path):
     watchlist = load_watchlist(
         _write_yaml(
@@ -625,7 +583,6 @@ def test_source_appendix_dedupes_records_that_support_multiple_themes(tmp_path):
 
     assert newsletter.count("GitHub Trending / github: https://example.com/gh-1") == 1
     assert newsletter.count("Reddit AI Builders / reddit: https://example.com/rd-1") == 1
-
 
 def test_collect_ai_raw_records_from_public_sources_with_fake_fetchers(tmp_path):
     def fake_json(url: str) -> dict:
@@ -694,7 +651,6 @@ def test_collect_ai_raw_records_from_public_sources_with_fake_fetchers(tmp_path)
         "AI Research Papers",
     ]
     assert normalized[0].engagement["stars"] == 2400
-
 
 def test_collect_ai_raw_records_x_apify_filters_retweets_and_caps_authors(tmp_path):
     config_path = _write_json(
@@ -777,7 +733,6 @@ def test_collect_ai_raw_records_x_apify_filters_retweets_and_caps_authors(tmp_pa
     assert normalized[0].engagement["likes"] == 100
     assert normalized[0].engagement["reposts"] == 20
 
-
 def test_collect_ai_raw_records_x_apify_skips_without_token(tmp_path):
     config_path = _write_json(
         tmp_path / "sources.json",
@@ -800,7 +755,6 @@ def test_collect_ai_raw_records_x_apify_skips_without_token(tmp_path):
     )
 
     assert records == []
-
 
 def test_collect_ai_raw_records_reddit_uses_arctic_with_pullpush_fallback(tmp_path):
     config_path = _write_json(
@@ -854,7 +808,6 @@ def test_collect_ai_raw_records_reddit_uses_arctic_with_pullpush_fallback(tmp_pa
     assert requested_urls[0].startswith("https://arctic-shift.photon-reddit.com/api/posts/search?")
     assert requested_urls[1].startswith("https://api.pullpush.io/reddit/search/submission?")
 
-
 def test_collect_weekly_workflow_collects_then_writes_newsletter(tmp_path):
     watchlist_path = _write_yaml(
         tmp_path / "ai-watchlist.yaml",
@@ -906,7 +859,6 @@ def test_collect_weekly_workflow_collects_then_writes_newsletter(tmp_path):
     assert [move.theme for move in report.market_moves] == ["eval harnesses"]
     assert (tmp_path / "out" / "competitive-intel" / "2026-06-30.raw.json").exists()
     assert (tmp_path / "out" / "competitive-intel" / "2026-06-30.md").exists()
-
 
 def test_main_collect_weekly_subcommand_writes_outputs(tmp_path, monkeypatch):
     watchlist_path = _write_yaml(
