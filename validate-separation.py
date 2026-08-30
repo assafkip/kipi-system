@@ -779,6 +779,35 @@ def phase_1():
             print("\n".join(("    " + l) for l in
                             (gate_run.stdout + gate_run.stderr).splitlines()[-15:]))
 
+    # --- Gate 1.2b: Memory hygiene sweep (ADVISORY, can never fail this gate) ---
+    # memory-lint.py reads the auto-memory corpus, which lives OUTSIDE the repo
+    # (~/.claude/projects/<slug>/memory/). Deliberately warn-only, in both
+    # directions: a stale or unindexed memory is never a reason to refuse a repo
+    # validation, and the corpus predates the as_of/status convention entirely --
+    # 73 of 73 files carry neither field, so a failing gate here would be red on
+    # its whole population from the first run and get switched off.
+    # CLAUDE_PROJECT_DIR is pinned so the sweep resolves the same corpus whatever
+    # directory kipi check was invoked from (two derivations of one path is how a
+    # sweep and a hook end up reading different corpora and both reporting clean).
+    print()
+    print("  --- Gate 1.2b: Memory hygiene (advisory) ---")
+    memory_lint = os.path.join(scripts_dir, "scripts", "memory-lint.py")
+    if not file_exists(memory_lint):
+        warn("Gate 1.2b: memory-lint.py missing")
+    else:
+        lint_env = dict(os.environ, CLAUDE_PROJECT_DIR=SCRIPT_DIR)
+        lint_run = subprocess.run([sys.executable, memory_lint],
+                                  capture_output=True, text=True, env=lint_env)
+        summary = next((l for l in lint_run.stdout.splitlines()
+                        if l.startswith("structural:")), None)
+        if summary is None:
+            warn(f"Gate 1.2b: memory-lint produced no summary (exit {lint_run.returncode})")
+        elif summary.split()[1] != "0":
+            warn(f"Gate 1.2b: memory hygiene -- {summary}. Run: "
+                 f"python3 q-system/.q-system/scripts/memory-lint.py")
+        else:
+            check(f"memory hygiene sweep clean ({summary})", True)
+
     for script in ["audit-morning.py", "verify-schedule.py", "token-guard.py"]:
         check(f"{script} exists", file_exists(os.path.join(scripts_dir, script)))
 
@@ -991,6 +1020,41 @@ def phase_1():
             check("Skill-hook audit: no orphaned skill-hooks", result.returncode == 0)
             if result.returncode != 0 and audit_out:
                 errors.append(audit_out)
+
+    # ENFORCED-claim audit (ASK-965). The sibling question to the one above: that
+    # audit asks whether a SKILL's hook is wired, this asks whether a RULE's
+    # (ENFORCED marker names an executable that exists, is wired in the config it
+    # names, is not neutered there, and has a test pinning the claim.
+    #
+    # Wired in three places on purpose, and they catch different things:
+    #   PostToolUse  feedback on the write that just landed
+    #   lefthook     the commit, which is what makes the invariant persistent
+    #   here         the whole tree, which is what a fleet-wide `check` is for --
+    #                it also sees rule files that arrived by rsync from the
+    #                skeleton, which neither of the other two ever mediates.
+    claim_lint = os.path.join(SCRIPT_DIR, "q-system", ".q-system", "scripts",
+                              "enforced-claim-lint.py")
+    # A MISSING GATE IS A FAILURE, NOT A WARNING (codex-adversarial review of
+    # 536ab18f, major). This integration exists to catch rule files delivered
+    # through paths no hook mediates; warning when the gate itself is absent lets
+    # `kipi check` exit 0 in exactly the situation it was added for.
+    if not file_exists(claim_lint):
+        check("Enforced-claim audit: enforced-claim-lint.py present", False)
+        errors.append("q-system/.q-system/scripts/enforced-claim-lint.py is missing, "
+                      "so no ENFORCED claim in .claude/rules was checked at all.")
+    else:
+        env = dict(os.environ, CLAUDE_PROJECT_DIR=SCRIPT_DIR)
+        result = subprocess.run([sys.executable, claim_lint, "--all"],
+                                capture_output=True, text=True, env=env)
+        claim_out = (result.stdout + result.stderr).strip()
+        check("Enforced-claim audit: every (ENFORCED marker is substantiated or baselined",
+              result.returncode == 0)
+        if result.returncode != 0 and claim_out:
+            errors.append(claim_out)
+        elif claim_out:
+            # The remaining baselined debt, surfaced on green runs too. Debt that
+            # stops being mentioned stops being debt and becomes furniture.
+            print(f"  {claim_out.splitlines()[-1]}")
 
 
 def phase_2():

@@ -666,14 +666,18 @@ assert_block "yq writes with -i" \
 assert_block "a reader-write beside a same-command re-baseline" \
   "sort -o .claude/settings.json /dev/null; python3 $TRIP --baseline"
 
-# The NAMED COST of dropping them, pinned so it stays a measurement. A plain
-# READ through one of these blocks too; that is the fail-closed direction this
-# file's header chooses. The escape hatch is the next two asserts.
+# The NAMED COST of dropping them, pinned so it stays a measurement. Plain
+# awk/sed READS still block; that is the fail-closed direction this file's
+# header chooses, and the pipe escape hatch below is the sanctioned route.
 assert_block "plain awk read of a .claude path" \
   "awk '{print \$1}' .claude/settings.json"
 assert_block "plain sed read of a .claude path" \
   "sed -n 1p .claude/settings.json"
-assert_block "plain find over .claude" \
+# ASK-984 (sp-54b02aa0): plain find became a READER. Enumerating writes
+# nothing, and blocking it refused legitimate recon under .claude/.
+# FIND_WRITE_PRIMARIES keeps every write primary blocked fail-closed; the
+# -fprint assert above stays RED.
+assert_allow "plain find over .claude (reader form, ASK-984)" \
   "find .claude -name '*.md'"
 assert_allow "escape hatch: pipe a .claude file into awk" \
   "cat .claude/settings.json | awk '{print \$1}'"

@@ -1,40 +1,73 @@
-# Last handoff — 2026-08-16 (skills.sh eval -> architecture-review skill -> Sana triage) [provenance: observed — system currentDate context this session]
+# Session handoff, Aug 23 evening [verified: date]. READ THIS FIRST.
 
-Started as an eval of an external marketplace skill (skills.sh/mattpocock/skills/improve-codebase-architecture). It didn't fit as-is (assumes CONTEXT.md + docs/adr/ this repo doesn't have; outputs GitHub issue RFCs, which collides with `linear-first.md` and `no-orphan-findings.md`). Built the useful part in-house instead, ran it once, then handed the triage decision to Sana rather than picking myself — that's her call per `feedback_sana_owns_the_build`.
+## State
 
-## What shipped, verified
+Two Sana sessions have run on the spillover queue. Blocking items: 43 -> 36
+(35 original + sp-a7846d3d filed this session). Census 963 open.
 
-**New skill: `plugins/kipi-core/skills/architecture-review/`.** [verified: `Write` calls this session, files exist at `plugins/kipi-core/skills/architecture-review/SKILL.md` and `references/deep-module-lens.md`]
+Landed on origin/main (all merged, CI green):
+- PR #246: ASK-975/976/977/984/985 stack (bypass_check runs at close, digest
+  parser, guard reader stages, uv-collectible suite). Resolved sp-50db1764,
+  sp-0cf100b3, sp-b82fda60, sp-8804dee7, sp-7e42845e, sp-dcd84af1; voided
+  sp-eea17567, sp-d120853a, sp-ca9351e4, sp-4c0b19ba.
+- PR #247: ASK-988 / sp-4c5a00f3 (crtc-test-manifest check commands point at
+  the harness entrypoint). Also shipped: receipts.jsonl gained `reopened_at`
+  (allowlist + ISO contract), accept-rate.load_receipts and prd_runner's
+  archive coverage now resolve state by parsed event timestamp with
+  same-second ties going to REOPEN. Pinned in
+  q-system/.q-system/scripts/test/test-accept-rate-receipts.py (manifest-declared).
+- crtc-test-manifest itself is REOPENED (status: open in its spec): the
+  enumeration deliverable is NOT done. Do not re-close it for check-command
+  work.
 
-Interpretive skill (no hook, same posture as `research-mode`), applies Ousterhout's deep-module lens to a target code directory. Explicit-ask only, not auto-invoked, no trigger-eval fixture needed. Output routes to a plan doc, never to `spillover` (scoped to findings that interrupt an *active* PRD/issue, not a standalone review's primary output) and never to a GitHub issue.
+## Next pick (Sana's call, but the recon is done)
 
-Ran once against `plugins/` (kipi-ops has no code, skipped). Output at `q-system/output/plans/architecture-review-plugins-2026-08-16.md` holds 4 findings, 3 explicitly out-of-scope-for-this-lens notes, and 2 confirmed-correctly-deep modules. [verified: `Write` call this session, file exists at that path]
+sp-a7846d3d is the natural next item: capability-manifest.json does not
+enumerate plugin tests (65+ files under plugins/*/tests; manifest references
+plugins/ only 12 times) and gate scan scope excludes plugin test discovery.
+This is the defect class that makes other verdicts untrustworthy.
 
-**PR #199 — bus-vocabulary drift reader. MERGED to main (`6671186e`).** [verified: `gh pr view 199 --json state,mergedAt` this session — state MERGED]
+Recon notes for sp-32b3438d (audit --dry-run), measured this session:
+- The flag already exists: prd_runner.py spillover promoted-audit --dry-run
+  ("report only; write nothing", parser line ~2824).
+- Under --dry-run it still queries Linear read-only, prints WOULD RESOLVE,
+  and keeps the SAME exit-code contract (1 on transport failure or fully-blind
+  sweep). See _spillover_promoted_audit, lines ~2160-2243.
+- The fix is one argv element in fleet-health-daily.py detect_promoted_audit
+  (~line 1542): append "--dry-run" to the subprocess.run list.
+- RED first via a source-inspection check appended to
+  q-system/.q-system/scripts/test/test-fleet-health-daily.py (house style:
+  main()-based check() helpers, inspect.getsource assertion like line ~141).
 
-Not the fix I originally proposed (one shared manifest file) — Sana rejected that on inspection: `bus_bridge.py`'s `BUS_TO_STEPS`, `bus_verifier.py`'s `_phase_specs()`, and the JSON schemas hold three genuinely different data shapes, not one duplicated vocabulary. She shipped a read-only drift reader instead (`q-system/.q-system/scripts/bus-vocabulary-drift.py`).
+## Mechanics that burned time this session (do not rediscover)
 
-Along the way she found the drift my review doc undersold as "future risk" had already happened: a rename wave (`notion`→`crm`) reached the agent prompts and `verify-bus.py` but never reached the MCP plugin copies (`crm.json`: 14 producers, `notion.json`: 0 in the schema layer — though `01-notion-pull.md` does write it; the orchestrator just never dispatches that agent, so it's orphaned, not literally producer-less). [provenance: observed — Sana subagent completion reports across multiple resume cycles this session, corrected once by Sana herself mid-session after she found a bug in her own grep] Also found two real pipeline defects along the way: `energy.json` and `dp-pipeline.json` are required with no producer anywhere, and a `canonical-digest.json` check sits on a phase where it can never fire. [provenance: same Sana subagent reports, not independently re-verified by me] Not urgent — the morning pipeline is dormant, last bus activity 2026-07-29 per Sana's report. [provenance: observed — Sana subagent report, not independently re-verified by me]
+- Landing: main is protected. Branch off fresh origin/main, PR, then BOTH
+  required checks: `validate` (CI, ~12 min) and `kipi/reviewer-approved`
+  (posted by q-system/.q-system/scripts/pr-review-agent.sh <pr> --engine
+  codex --post). Reviewer takes ~9 min; timeout of YOUR shell does not mean
+  it failed - check the commit status before assuming anything.
+- Codex review rounds are real: r1-r6 on PR #247 each found a legitimate
+  defect. Fix, do not argue. Expect findings about: parent PRDs retaining
+  what generated specs fixed, receipts/metrics consistency when reopening,
+  union-merge row ordering, UTC-offset timestamps, same-second ties.
+- Every commit touching plugins/** needs a version bump IN THAT COMMIT
+  (plugin-version-bump gate compares per-commit vs HEAD).
+- Commit messages need an ASK-nn reference or [no-issue: reason]
+  (linear-issue-ref hook blocks otherwise).
+- receipts.jsonl has a CLOSED key allowlist (receipts-ledger-check.py,
+  ALLOWED_KEYS); reopen rows use reopened_at + issue_id + prd_id +
+  finding_id + commit_sha. No free text; it ships to a PUBLIC repo.
+- New test files must be declared in q-system/.q-system/capability-manifest.json
+  ({path, runner}) or the capability gate goes undeclared-artifact RED.
+- kipi-mcp tests run under `uv run pytest tests/` from plugins/kipi-core/kipi-mcp.
+- Subagent dispatch was broken all session at the provider level
+  (network_error / instant cancel) while four other opencode sessions ran.
+  If dispatch dies instantly again, execute inline rather than retrying.
 
-**Arming decision — made and recorded, not left open.** [verified: `grep` this session on `q-system/.q-system/capability-manifest.json` — entry exists for `bus-vocabulary-drift.py`, `spillover_id: sp-1798c784`, reason text matches Sana's account]
+## Standing rules that decided everything today
 
-No to fleet-wide `kipi check`, yes to skeleton-only CI, bound to ASK-874's fix as a required DoR deliverable, not left to the non-blocking spillover REPORT bucket which Sana measured at 780 items. [provenance: observed — Sana subagent report, the 780 count not independently re-verified by me] Reasoning: instance `INSTANCE_OWNED_SUBTREES` preserves `my-project, canonical, memory, output, research, .q-system/data, .q-system/agent-pipeline/bus` only — `plugins/`, `verify-bus.py`, and `agent-pipeline/agents/` are overwritten from the skeleton on every sync, so an instance is structurally unable to fix what this check reports. Arming it fleet-wide would be a gate its population can't satisfy, printing one skeleton fact across all instances repeatedly rather than fixing anything. [provenance: observed — Sana subagent report citing `kipi-update.sh`, not independently re-read by me this session]
-
-**PR #202 — CLOSED, not merged.** [verified: `gh pr view 202 --json state` this session — state CLOSED]
-
-Follow-up hardening work went 6 review rounds, every round a real defect, all the same class: a check that could never fire. [provenance: observed — Sana subagent reports, review verdicts not independently re-read by me this session] Sana's own loop cap is 3 rounds; she flagged this as a signal about the detector's foundation (inferring bus-artifact facts from prose has no schema to check itself) rather than grinding a further round. Founder decision, relayed via me mid-session: close without merging, open a scoped follow-up instead of dropping it or continuing to grind.
-
-**ASK-885 filed** — scoped follow-up, owner Sana. [provenance: observed — Sana subagent report, not independently verified via Linear MCP this session] Before filing, Sana re-measured her own earlier recommendation and found it was too simple: the set of agents needing a fix splits into four different cases (most need a simple `## Writes` tag, one is dead/orphaned code that should be deleted not tagged, one writes to `output/` not the bus, and one — `step-orchestrator.md` — isn't an agent at all and covers many script-produced bus files a tag can't express). Wrote the real complexity into the issue's DoR rather than shipping the easy part and calling it done.
-
-## Coordination scars (worth institutional memory)
-
-- **Shared-checkout collision, caught not silent.** While Sana's agent was working, an unattended Stop hook auto-committed a stale `capability-manifest.json` onto the branch (`80b82f84`), which read as deleting the declared-inert entry PR #199 had just landed the same day. A different peer session (`social-voice`) caught it while reviewing branch ancestry and restored it correctly, byte-diffed against `origin/main` rather than hand-merged — per the standing ASK-809 guidance that hand-merges on this exact chokepoint file have gone wrong before. [provenance: observed — commit `86a20c8a` message, read directly this session] Likely what killed one of Sana's background agent rounds mid-run — a `status: killed` task notification arrived in that window with no founder action taken.
-- **`.claude/` edits are hook-locked, not just convention.** Tried to add this new skill to `skill-hook-pairing.md`'s interpretive-skills list; a `claude-integrity-tripwire.py` PostToolUse hook reverted it as an "unsanctioned .claude/ change" and quarantined the diff. Did not fight it — the registry doc is still missing the `architecture-review` entry as a result. Low stakes, doc-only, but worth remembering: `.claude/rules/*.md` edits need a sanctioned path, not a direct Edit from a session. [verified: PostToolUse hook output this session, edit confirmed absent via grep after]
-- **Finding-count drift, self-flagged.** The detector's own reported finding count moved across three different values across review rounds and a mid-flight merge with a parallel worker's independent fix on the same branch. [provenance: observed — Sana subagent reports, not independently re-verified by me] Sana's read: that's the argument for deleting the count from the manifest rather than correcting it again — moot now that #202 is closed.
-
-## Next session, resume here
-
-- Nothing urgent. The value asked for (drift reader + arming decision) shipped and is verified live per this session's own `gh`/`grep` checks above. ASK-885 is filed and owned by Sana; it doesn't need this session to move.
-- If picking up ASK-885: the hard part is the design decision Sana explicitly deferred — where the declaration for the script-produced bus files lives, since a `step-orchestrator.md` `## Writes`-equivalent can't express it. She named two hard bars for whoever does it: the three true positives she confirmed (`energy.json`, `dp-pipeline.json`, `tl-content.json`) must still be caught under any new definition, and zero untrue statements should ship.
-- `q-system/output/plans/architecture-review-plugins-2026-08-16.md` still has findings #2 (dedup) and #3 (BM25 duplication) recorded as parked-with-reasons — not action items, just documented so nobody re-raises them without reading why Sana rejected them first. [verified: file written this session, content confirmed at time of writing]
-- The `.claude/rules/skill-hook-pairing.md` registry entry for `architecture-review` never landed (see coordination scars above). Cosmetic-only; the skill itself works without it.
+Reproducer first, RED before GREEN. Never trust a green you have not seen go
+red. Verify against the installed clone the server actually starts. Quote the
+tool line and sha next to any verdict. Anything real found and not fixed goes
+to spillover add. Engineering calls belong to Sana; publish/spend/delete stay
+with the founder. Pull or rebase, never reset.
