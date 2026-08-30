@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_token_guard_cache_race.py",
+ "runner": "python3",
+ "timeout_s": 120
+}

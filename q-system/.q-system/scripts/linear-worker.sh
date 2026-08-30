@@ -44,6 +44,27 @@
 #
 # Usage:  linear-worker.sh [--apply] [--limit N] [--issue ASK-123]
 # Dry by default: prints what it would pick and stops.
+#
+# THE BRACE AROUND EVERYTHING BELOW IS LOAD-BEARING (ASK-351). Do not remove it,
+# and do not "clean up" the bare `}` on the last line.
+#
+# bash does not load a script into memory. It reads a chunk, executes ONE command,
+# then lseeks back to the byte offset just past that command for the next one. A
+# round here runs up to 1800s inside a repo that agents edit the whole time, so an
+# edit shifts every later byte offset and bash resumes parsing mid-string.
+# ~/.config/kipi/linear-worker.log carries the signature: `ial: command not found`,
+# and `ial` is not a word in this file -- it is the tail of one, read from a
+# slipped offset. converge.sh died the same way on 2026-08-03 and threw away four
+# completed review rounds.
+#
+# bash must parse a compound command to completion before executing any of it, so
+# the brace makes the whole body arrive at startup. The `exit 0` on the last line
+# INSIDE the brace is the other half and is not redundant: measured, a brace wrap
+# alone still dies rc=2, because bash seeks past the closing brace looking for one
+# more command and re-executes leftovers from a file that has grown.
+#
+# Reproducer for both halves: q-system/.q-system/scripts/test/test-script-stable-under-self-edit.sh
+{
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -367,6 +388,21 @@ fi
 # unreadable registry means reachability is UNKNOWN, and reporting unknown as
 # unreachable would fire a loud false alarm on every project at once -- the
 # failure mode this issue exists to remove, pointed the other way.
+#
+# THE ALIAS IS A FIELD, NOT A GUESS (ASK-840). The row's `name` was read as if it
+# WERE the Linear project name. Nothing ever required those two namespaces to
+# agree, and measured against the live board on 2026-08-15 they do not: two rows
+# whose checkouts were on disk that minute carried registry names spelled
+# differently from their board projects, and 17 of the 44 issues reported
+# UNREACHABLE were on them. The log told the operator to clone repos he already
+# had. `linear_project` states the mapping instead of deriving it, because a
+# name-derivation guess is what produced the bug and a smarter guess would only
+# move the day it breaks.
+#
+# ONE DERIVATION, BOTH QUESTIONS. linear_project() below answers "what is this
+# row called on the board" for the repo-identity lookup AND for the reachability
+# set. Deriving the same logical value two ways is how the two sides drifted in
+# the first place, so there is exactly one function and both callers use it.
 REGISTRY_FACTS="$(SKEL_PATH="$TARGET_REPO" REG="$SKEL/instance-registry.json" python3 - <<'PY' 2>/dev/null
 import json, os
 skel = os.path.realpath(os.environ["SKEL_PATH"])
@@ -378,29 +414,61 @@ except Exception:
 entries = reg.get("instances", reg) if isinstance(reg, dict) else reg
 name = ""
 local = []
+
+
+def linear_project(entry):
+    """The name this row carries ON THE BOARD. Explicit field first, name second."""
+    return (entry.get("linear_project") or entry.get("name") or "").strip()
+
+
 for e in entries if isinstance(entries, list) else []:
     if not isinstance(e, dict):
         continue
-    p, n = e.get("path"), e.get("name") or ""
+    p = e.get("path")
     if not p:
         continue
+    proj = linear_project(e)
     if not name and os.path.realpath(p) == skel:
-        name = n
-    if n and os.path.isdir(p):
-        local.append(n)
-print(json.dumps({"name": name, "local_projects": sorted(set(local)), "ok": ok}))
+        name = proj
+    if proj and os.path.isdir(p):
+        # The pinned remote travels WITH the row, because repo-preflight needs it
+        # and re-reading the registry to find it is the second reader ASK-729
+        # already refused to add.
+        d = e.get("dispatch") if isinstance(e.get("dispatch"), dict) else {}
+        local.append({"project": proj, "path": p,
+                      "remote": d.get("expected_remote") or ""})
+local.sort(key=lambda r: r["project"])
+# WHO OWNS THE UNSET POPULATION (codex PR #215 round 6, major). A founder-routed
+# issue with no project is claimed by no repo, so an earlier round widened
+# founder_scope to include unset -- in EVERY instance at once. All 23 workers
+# then paged about the same issue into one Linear queue, each with its own
+# ledger, so the dedup could not collapse them and the operator got N tickets to
+# close by hand. Exactly one worker has to own it, and the registry already
+# DECLARES which one: `skeleton.linear_project`. Read, not guessed -- the same
+# reason linear_project() exists twelve lines up.
+skel_row = reg.get("skeleton") if isinstance(reg, dict) else None
+skeleton_project = linear_project(skel_row) if isinstance(skel_row, dict) else ""
+print(json.dumps({"name": name, "local_repos": local, "ok": ok,
+                  "skeleton_project": skeleton_project}))
 PY
 )"
 _facts_get() { printf '%s' "$REGISTRY_FACTS" | python3 -c "import json,sys;d=json.load(sys.stdin);v=d.get('$1');print('\n'.join(v) if isinstance(v,list) else v)" 2>/dev/null; }
+# Structured facts travel as JSON. _facts_get flattens a list to newlines, which
+# silently mangles a list of objects into the string "[object]"-shaped nonsense.
+_facts_json() { printf '%s' "$REGISTRY_FACTS" | python3 -c "import json,sys;print(json.dumps(json.load(sys.stdin).get('$1')))" 2>/dev/null; }
 
 REPO_PROJECT="${KIPI_LINEAR_PROJECT:-}"
 [ -n "$REPO_PROJECT" ] || REPO_PROJECT="$(_facts_get name)"
 [ -n "$REPO_PROJECT" ] || REPO_PROJECT="$(basename "$TARGET_REPO")"
 export REPO_PROJECT
 
-LOCAL_PROJECTS="$(_facts_get local_projects)"
+LOCAL_REPOS="$(_facts_json local_repos)"
 REGISTRY_OK="$(_facts_get ok)"
-export LOCAL_PROJECTS REGISTRY_OK
+# Empty when the registry is unreadable, or on an instance that carries none.
+# The picker treats empty as "nobody declared an owner", which narrows the scope
+# rather than widening it -- see founder_scope.
+SKELETON_PROJECT="$(_facts_get skeleton_project)"
+export LOCAL_REPOS REGISTRY_OK SKELETON_PROJECT
 
 # --- pick ready issues ------------------------------------------------------
 PICKED="$(python3 - "$ONLY_ISSUE" <<'PY'
@@ -426,12 +494,65 @@ while True:
     after = p["pageInfo"]["endCursor"]
 
 repo_project = os.environ["REPO_PROJECT"]
-# Reachability, from the SAME registry read that produced repo_project (ASK-729).
-local_projects = {p for p in os.environ.get("LOCAL_PROJECTS", "").splitlines() if p}
+# Reachability, from the SAME registry read that produced repo_project (ASK-729),
+# now carrying the board name, the path and the pinned remote per row (ASK-840).
+try:
+    local_repos = json.loads(os.environ.get("LOCAL_REPOS") or "[]") or []
+except Exception:
+    local_repos = []
+local_by_project = {r["project"]: r for r in local_repos if r.get("project")}
 registry_ok = os.environ.get("REGISTRY_OK", "") == "True"
 
 def project_of(i):
     return (i.get("project") or {}).get("name")
+
+# A FLEET ALERT IS A NOTIFICATION, NOT DISPATCH WORK (ASK-839).
+#
+# alert-to-linear.py files these and stamps this marker into every one. Their
+# body is a raw alert line -- "auto-commit left 3 file(s) uncommitted" -- and
+# nobody scoped it. The DoR drafter was writing a Definition of Ready onto them
+# anyway, which does not make one executable; it makes it READY-SHAPED, and that
+# is the only thing this queue checks.
+#
+# Measured against the live board 2026-08-15: 19 issues were ready-shaped AND
+# project-unset, and ALL 19 were alert tickets -- 43 percent of the whole
+# UNREACHABLE bucket, growing by one drafter batch a night out of the remaining
+# 62. THE FORK THIS ANSWERS: backfill a project onto the 81, or declare them not
+# dispatch work. Backfill was refused on the measurement -- only 33 of the 81
+# carry a label that names a real project, 22 were raised from a cwd of / and 16
+# from a worktree directory, so a backfill invents routing for the majority and
+# then hands a worker an alert line as if it were a spec. They stay on the board,
+# labelled and now project-attributed, for a human or a triage pass to convert
+# into a real issue; they do not enter the automatic queue.
+#
+# Keyed on the MARKER THE WRITER ITSELF STAMPS, not the title prefix (prose a
+# human edits) and not owner:sana (shared with every real Sana issue).
+# NO APOSTROPHE IN THIS HEREDOC. It sits inside a $( ) and bash tracks quote
+# state straight through a quoted heredoc there, so one apostrophe in a PYTHON
+# COMMENT takes the whole script to "unexpected EOF" 800 lines away. This comment
+# is the third time that scar has been earned in this file; the first draft of it
+# wrote WRITER-apostrophe-S and the suite went from 24 green to 11 failures.
+ALERT_MARKER = "kipi-alert-fingerprint"
+
+def is_fleet_alert(i):
+    # MATCHED IN THE WRITERS OWN STRUCTURAL FORM (ASK-839, PR #191 round 4):
+    # alert-to-linear.py:515 emits <!-- kipi-alert-fingerprint: <fp> -->. The
+    # bare-name test matched any issue whose body merely DISCUSSES the alert
+    # mechanism and silently dropped it from this queue -- ASK-839 itself is one,
+    # since its description says the tickets carry that marker. Fixed at all three
+    # readers together (here, and both call sites in linear-dor-drafter.py):
+    # leaving one behind splits the predicate, so the drafter would write a DoR
+    # onto an issue this side still refuses to pick.
+    #
+    # Parsed rather than regexed because there is no re import in this heredoc and
+    # adding one is a wider edit than the fix. A comment key must be the WHOLE key,
+    # so prose inside some other HTML comment cannot match either.
+    for chunk in (i.get("description") or "").split("<!--")[1:]:
+        head = chunk.split("-->", 1)[0]
+        name, sep, _rest = head.partition(":")
+        if sep and name.strip() == ALERT_MARKER:
+            return True
+    return False
 
 def in_this_repo(i):
     # Unset project is NOT this repo. "Target unknown" and "target is here" are
@@ -459,6 +580,7 @@ def ready(i):
     # missing tool). Excluded for the same reason, routed somewhere different.
     if "blocked:capability" in labels: return False
     if i["state"]["type"] not in ("backlog", "unstarted"): return False
+    if is_fleet_alert(i):            return False   # ASK-839, see ALERT_MARKER
     if not in_this_repo(i):          return False
     d = i.get("description") or ""
     return "## Definition of Ready" in d or "Definition of Ready" in d
@@ -471,8 +593,16 @@ def ready_ignoring_project(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
     return ("owner:assaf" not in labels and "owner:sana" in labels
             and "needs-scope" not in labels and "blocked:capability" not in labels
+            and not is_fleet_alert(i)
             and i["state"]["type"] in ("backlog", "unstarted")
             and "Definition of Ready" in (i.get("description") or ""))
+
+# BOTH SELECTORS, OR THE FIX IS HALF DONE. ready() alone would stop an alert
+# ticket being WORKED while leaving it in `dropped`, so it would keep being
+# reported UNREACHABLE forever -- the same 19-issue line, now describing work the
+# loop has already decided it will never take. A bucket nobody can act on and
+# nobody intends to act on is not a backlog, it is noise on the one line an
+# operator reads at 3am.
 
 dropped = [i for i in issues if ready_ignoring_project(i) and not in_this_repo(i)]
 
@@ -489,22 +619,119 @@ dropped = [i for i in issues if ready_ignoring_project(i) and not in_this_repo(i
 # Reporting the second as the first is why 45 issues read as a filter doing its
 # job for 13 days. An unset project is UNREACHABLE, not skipped: "target unknown"
 # is not "target is elsewhere", and it needs a human to set the project.
+#
+# A THIRD BUCKET, BECAUSE TWO OF THEM WERE BOTH WRONG FOR THE SAME REPOS
+# (ASK-840). Resolving the alias moves 17 issues out of UNREACHABLE, and the
+# tempting next step -- drop them in with the routine skips -- swaps one false
+# sentence for another. "The rotation reaches it on a later turn" is false
+# FOREVER for a client engagement repo: repo-preflight check 0 refuses it whether
+# or not its name resolves, and no waiting changes that. So reachability answers
+# only "is there a checkout", and the preflight verdict (taken from the REAL
+# script, in the shell, never re-implemented here) splits what is left.
 def has_local_checkout(i):
     name = project_of(i)
-    return bool(name) and name in local_projects
+    return bool(name) and name in local_by_project
 
 # An unreadable registry means reachability is UNKNOWN. Calling every project
 # unreachable there would be a false alarm on the whole board at once, so the
 # classification collapses back to the old single bucket and the shell says why.
 if registry_ok:
-    skipped_local = [i for i in dropped if has_local_checkout(i)]
+    reachable = [i for i in dropped if has_local_checkout(i)]
     unreachable = [i for i in dropped if not has_local_checkout(i)]
 else:
-    skipped_local, unreachable = dropped, []
-def held_with(label):
+    reachable, unreachable = dropped, []
+
+# One row per reachable project, carrying what the shell needs to run preflight
+# against it: the path, the pinned remote, and how many issues ride on the answer.
+# An empty path means "no registry row backs this" -- the unreadable-registry
+# collapse above -- and the shell treats that as the routine skip it reports
+# today, rather than calling a gate it has no target for. NO APOSTROPHE IN THIS
+# HEREDOC: it sits inside a $( ) and bash tracks quote state straight through a
+# quoted heredoc there, so one in a PYTHON COMMENT takes the whole script to
+# "unexpected EOF" 800 lines away. The file carries this scar twice already.
+def reachable_rows():
+    rows = {}
+    for i in reachable:
+        proj = project_of(i) or "(unset)"
+        row = local_by_project.get(proj) or {}
+        r = rows.setdefault(proj, {"project": proj, "path": row.get("path", ""),
+                                   "remote": row.get("remote", ""), "count": 0})
+        r["count"] += 1
+    return [rows[k] for k in sorted(rows)]
+# HELD IS A STATEMENT ABOUT OPEN WORK (ASK-841). The team fetch above is the whole
+# board, closed rows included, and this helper used to select on label + project
+# alone. A refusal label is never removed when the issue finishes -- grep confirms
+# nothing in this file calls issueRemoveLabel -- so every issue that was ever
+# refused stayed in these counts after it was Done, and the counts could only rise.
+# Measured 2026-08-15: the run said "2 issue(s) held at blocked:capability
+# (ASK-284 ASK-281)" while ASK-281 was Done. The true number was 1.
+#
+# That matters because the blocked:capability count is the ONLY signal that this
+# loop is starving on a capability nobody granted (see its reporting site below).
+# A number that never falls reports the same alarm whether or not anything is
+# blocked, which is the same as reporting nothing.
+#
+# TERMINAL types are excluded rather than open types allowlisted, deliberately.
+# An allowlist of (backlog, unstarted, started) would silently drop an issue
+# parked in `triage` -- still open, still refused, still needing someone -- and a
+# held issue missing from the count is invisible in a way an extra one is not.
+# ASK-288 owns re-testing whether a block still applies; this is only the count.
+TERMINAL_STATES = ("completed", "canceled")
+
+def held_with(label, scope=in_this_repo):
     return [i for i in issues
-            if label in {l["name"] for l in i["labels"]["nodes"]} and in_this_repo(i)]
+            if label in {l["name"] for l in i["labels"]["nodes"]} and scope(i)
+            and i["state"]["type"] not in TERMINAL_STATES]
+
+# THE FOUNDER POPULATION IS SCOPED WIDER THAN THE WORK POPULATION (codex PR #215,
+# minor). `in_this_repo` treats an unset project as NOT this repo, which is right
+# for deciding what to WORK -- "target unknown" and "target is here" are different
+# claims and conflating them is how 18 foreign issues got into this queue. It is
+# wrong for deciding what to REPORT: an owner:assaf issue with no project set is
+# founder-routed work that no repo's worker claims, so under the narrow scope
+# every worker in the fleet stays silent about it and it is invisible everywhere.
+# That is the precise failure the directive closes -- a refilling founder queue
+# that looks identical to an empty board.
+#
+# Unset is included; ANOTHER repo's project is still excluded. A worker paging
+# about issues routed at a different checkout would put the same line on every
+# run in the fleet, which is the cry-wolf shape founder-notifications.md names.
+#
+# AND THE UNSET HALF IS OWNED BY ONE WORKER, NOT ALL OF THEM (codex PR #215
+# round 6, major). `or project_of(i) is None` alone put the same unset issue in
+# the founder population of every instance. Each one keeps its own attempts
+# ledger, so the per-id dedup cannot collapse pages across them, and the
+# alert-to-linear fingerprint cannot either: measured here, two workers whose
+# founder populations differ by one id hash differently (d5547a63 vs ff6479df),
+# so the fleet opens one Linear ticket per instance for one mislabelled issue.
+# That is the cry-wolf shape again, arrived at through the fix for invisibility.
+#
+# NOTE: no apostrophes anywhere in this heredoc. It sits inside a $( ) command
+# substitution and bash tracks quote state through a quoted heredoc there.
+#
+# The owner is DECLARED, never derived: the skeleton.linear_project field in
+# instance-registry.json. An empty value -- unreadable registry, or an instance
+# that carries none -- means nobody claims the unset population here, so the
+# scope NARROWS to this repo. Failing narrow is right for a widening: a fleet
+# that under-reports one unset issue is recoverable, a fleet where all 23
+# workers page about it is the flood this rule exists to stop.
+unset_owner = os.environ.get("SKELETON_PROJECT", "").strip()
+owns_unset = bool(unset_owner) and unset_owner == repo_project
+
+
+def founder_scope(i):
+    return in_this_repo(i) or (owns_unset and project_of(i) is None)
+
 deferred = held_with("needs-scope")
+# owner:assaf IS AN ERROR PATH NOW, NOT A QUEUE (ASK-353, founder directive
+# 2026-08-03: nothing should be on me). The archived PRD
+# prd-terminal-state-redrive-2026-08-01 called this label the one place routing
+# to a person is by design. The founder closed that queue and emptied it (85
+# issues), so a non-empty count is a DEFECT and the run has to say so out loud
+# rather than filter it in silence. ready() still excludes these -- working an
+# issue the founder marked hands-off would be worse than reporting it -- but the
+# population is now counted and reported, so a refilling queue is loud.
+founder_routed = held_with("owner:assaf", founder_scope)
 # Counted SEPARATELY from needs-scope. A rising blocked:capability count is a
 # claim about the ENVIRONMENT, and averaging it into "held" would hide the one
 # number that says the loop is starving for a capability nobody has granted.
@@ -527,13 +754,18 @@ print(json.dumps({
     "dropped_out_of_repo": len(dropped),
     "dropped_projects": sorted({project_of(i) or "(unset)" for i in dropped}),
     # ASK-729: the same population, split by whether anyone here can act on it.
-    "skipped_local": len(skipped_local),
-    "skipped_local_projects": sorted({project_of(i) or "(unset)" for i in skipped_local}),
+    # ASK-840: the reachable half is emitted as rows, not a count, because the
+    # shell has to ask repo-preflight about each one before it can say which of
+    # them a later rotation turn actually reaches.
+    "reachable_rows": reachable_rows(),
     "unreachable": len(unreachable),
     "unreachable_projects": sorted({project_of(i) or "(unset)" for i in unreachable}),
     "unreachable_ids": [i["identifier"] for i in unreachable],
     "registry_ok": registry_ok,
     "deferred_needs_scope": len(deferred),
+    # ASK-353. Reported as a DEFECT count, not a queue depth.
+    "founder_routed": len(founder_routed),
+    "founder_routed_ids": [i["identifier"] for i in founder_routed],
     "blocked_capability": len(blocked_cap),
     "blocked_capability_ids": [i["identifier"] for i in blocked_cap],
     # Does the derived repo identity name a project that EXISTS on the board?
@@ -571,8 +803,52 @@ if [ "$PROJECT_KNOWN" = "False" ]; then
   exit 9
 fi
 
-DROPPED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("skipped_local",0))' 2>/dev/null)"
-DROPPED_IN="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(", ".join(json.load(sys.stdin).get("skipped_local_projects",[])))' 2>/dev/null)"
+# THE REACHABLE HALF IS SPLIT BY THE REAL GATE, NOT BY A COPY OF ITS RULES
+# (ASK-840). A project with a checkout is not therefore dispatchable, and the
+# difference is exactly what repo-preflight.sh already decides. Re-implementing
+# its client-repo test here would be a second copy of the one refusal the founder
+# said must hold everywhere -- and the copy is what goes stale. So preflight is
+# executed, once per distinct project, and its own words become the reason.
+#
+# CHEAP FOR THE CASE THAT MATTERS: check 0 is decided on path shape and exits
+# before any network call, so every client repo costs a fork and nothing else.
+# The handful that get past it pay a few gh calls once per run, not per issue.
+PREFLIGHT="$SCRIPT_DIR/repo-preflight.sh"
+# UNIT SEPARATOR, NOT TAB. Tab is an IFS WHITESPACE character, so bash collapses
+# runs of it however IFS is set -- and an unpinned row has an EMPTY remote, which
+# is the common case here (only two registry rows pin one). Measured with a probe
+# on a 4-field row whose third field was empty: read landed the COUNT in $_remote
+# and left $_cnt unset, so every reachable project scored 0 issues and both report
+# lines below vanished entirely. \037 is not IFS whitespace, so an empty field
+# stays an empty field. kipi-dispatch.sh:640 reads its rotation rows the same way
+# and carries the same latent hole (captured as spillover, not fixed here).
+REACH_ROWS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys
+for r in json.load(sys.stdin).get("reachable_rows", []):
+    print("\037".join([r.get("project",""), r.get("path",""), r.get("remote",""), str(r.get("count",0))]))' 2>/dev/null)"
+
+DROPPED=0; DROPPED_IN=""; REFUSED_N=0; REFUSED_IN=""
+while IFS=$'\037' read -r _proj _path _remote _cnt; do
+  [ -n "${_proj:-}" ] || continue
+  _cnt="${_cnt:-0}"
+  # No path means no registry row backs this project (the unreadable-registry
+  # collapse). Reporting it as today's routine skip is the honest answer: we
+  # cannot ask the gate anything without a target.
+  if [ -z "${_path:-}" ] || _pf_out="$(bash "$PREFLIGHT" "$_path" "${_remote:-}" 2>&1)"; then
+    DROPPED=$((DROPPED + _cnt))
+    DROPPED_IN="${DROPPED_IN:+$DROPPED_IN, }$_proj"
+  else
+    REFUSED_N=$((REFUSED_N + _cnt))
+    # THE CHECK NAMES, NOT THE FULL MESSAGES. One failed check carries a fix
+    # command long enough to bury the line it is on, and this is read in a daily
+    # digest. The class of refusal is what tells a permanent one (client-repo)
+    # from a curable one (control-code), which is the decision being supported.
+    _why="$(printf '%s' "$_pf_out" | grep '^FAIL' | sed 's/^FAIL \([^:]*\):.*/\1/' | tr '\n' ',' | sed 's/,$//')"
+    REFUSED_IN="${REFUSED_IN:+$REFUSED_IN; }$_proj (${_why:-refused})"
+  fi
+done <<REACHEOF
+$REACH_ROWS
+REACHEOF
+
 UNREACH="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("unreachable",0))' 2>/dev/null)"
 UNREACH_IN="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(", ".join(json.load(sys.stdin).get("unreachable_projects",[])))' 2>/dev/null)"
 REG_OK="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("registry_ok",True))' 2>/dev/null)"
@@ -582,6 +858,13 @@ say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf
 # Accounted for, never silently dropped. These two lines are what let an operator
 # tell a working filter from a broken query without re-querying Linear by hand.
 [ "${DROPPED:-0}" != "0" ] && say "worker: $DROPPED ready-shaped issue(s) skipped as out-of-repo (other project: $DROPPED_IN) -- this checkout is $REPO_PROJECT and cannot check those out"
+# THE THIRD BUCKET (ASK-840). Reachable, and refused anyway. Stated on its own
+# line for the same reason UNREACHABLE was: the response differs. A routine skip
+# resolves itself on a later rotation turn, an unreachable repo needs a clone, and
+# this one needs either a cure (control-code drift) or nothing at all ever
+# (client-repo, which no rotation and no cure will change). Collapsing it into the
+# skip line promises the operator a turn that is never coming.
+[ "${REFUSED_N:-0}" != "0" ] && say "worker: $REFUSED_N ready-shaped issue(s) REFUSED by preflight: the checkout exists but the gate will not let a dispatcher in -- $REFUSED_IN"
 # UNREACHABLE IS NOT A ROUTINE SKIP, AND NEVER SHARES ITS LINE (ASK-729). A skip
 # resolves itself on a later rotation turn; this does not resolve at all until a
 # human clones or registers the repo. It is stated separately, with the project
@@ -591,6 +874,226 @@ say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf
 # Fail loud rather than classify on a guess (see registry_ok in the picker).
 [ "$REG_OK" = "False" ] && say "worker: WARNING instance-registry.json could not be read, so reachability is UNKNOWN this run and every out-of-repo issue is reported as a routine skip"
 [ "${DEFERRED:-0}" != "0" ] && say "worker: $DEFERRED issue(s) held at needs-scope (refused as unexecutable; the DoR drafter re-scopes them)"
+
+# THE FOUNDER QUEUE IS AN ERROR PATH (ASK-353). Directive 2026-08-03: "nothing
+# should be on me". The archived PRD called owner:assaf the designed destination
+# for founder-routed work; that decision is reversed, the queue was emptied (85
+# issues) and it must never refill. So a non-zero count is stated as a DEFECT on
+# its own line, and paged -- because the failure mode being closed here is
+# exactly the silent one: ready() filtered these out without a word, so a
+# refilling founder queue looked identical to an empty board.
+#
+# NOT a hard exit. Refusing to run would let one mislabelled issue stop the whole
+# loop, which routes MORE work to the founder, not less. Loud and still working
+# is the behaviour the directive asks for.
+FOUNDER_ROUTED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("founder_routed",0))' 2>/dev/null)"
+if [ "${FOUNDER_ROUTED:-0}" != "0" ]; then
+  FOUNDER_IDS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin).get("founder_routed_ids",[])))' 2>/dev/null)"
+  say "worker: DEFECT: owner:assaf is an ERROR PATH, not a queue (founder directive 2026-08-03), and $FOUNDER_ROUTED open issue(s) carry it: ${FOUNDER_IDS:-unknown}"
+  say "worker: DEFECT: whatever routed those to the founder is the bug. Re-label them owner:sana with a DoR, or needs-scope if the spec is not executable."
+
+  # THE LOG LINES ABOVE FIRE EVERY RUN. THE PAGE DOES NOT (codex PR #215, major).
+  # The worker ticks every 15 minutes, so an unguarded page here meant the same
+  # sentence on the founder phone ~96 times a day for as long as one mislabelled
+  # issue sat there -- and this alert asks for a HUMAN relabel, so it necessarily
+  # keeps firing until he acts. That is cry-wolf by construction: the louder it
+  # gets the faster it is muted, and a muted channel is how the silent board this
+  # whole reversal exists to kill comes back wearing a different coat.
+  #
+  # DEDUPED PER ISSUE ID, NOT PER RUN AND NOT PER POPULATION. Per run pages every
+  # tick (the bug). Per population re-pages on every DEPARTURE too -- relabel one
+  # of four and the remaining three look like a new episode -- so the fix would
+  # page most on a queue being correctly drained. Per id is the honest unit: each
+  # newly founder-routed issue is one new instance of the routing bug, and it is
+  # announced once.
+  #
+  # ONE CONSOLIDATED LINE, never one per id (founder-notifications.md). The claim
+  # is about the routing, not about each issue; N pages for N issues is the same
+  # cry-wolf failure in a smaller font. New ids decide WHETHER to page, the full
+  # population is what the line REPORTS.
+  #
+  # Uses the ledger's claim-flag verb directly rather than page_once(), which is
+  # defined ~200 lines below this block. This site cannot move down to reach it:
+  # the `READY_COUNT = 0` early exit sits between them, and an empty board with a
+  # refilling founder queue is exactly the case that must still page.
+  # THE CLAIM IS PROVISIONAL, AND THE RECOVERY IS NOT ON THIS LINE. Read this
+  # before concluding that a kill here mutes the issue forever (codex PR #215
+  # round 7 raised exactly that, having probed only for a `trap` between the
+  # claim and the send; there is none, and none is needed):
+  #
+  #   claim-flag <id> founder-routed         <- here. provisional.
+  #   claim-flag <id> founder-routed-filed   <- only after the notifier exits 0
+  #   the sweep below the FOUNDER_ROUTED block releases any founder-routed flag
+  #   whose -filed marker is absent, on the NEXT tick
+  #
+  # So a SIGKILL, a reboot or launchd stopping the job between these two leaves
+  # a claimed-but-unfiled flag, and the next run releases it and pages. That is
+  # the reclaim-after-the-fact shape; it needs no in-process handler, because a
+  # kill runs no handler. Proven end to end by test-worker-project-scope.sh case
+  # 6h, whose fixture is the exact ledger state a kill leaves, written by the
+  # ledger CLI -- and mutation-killed: treat an unfiled claim as filed and 6h
+  # goes red.
+  FOUNDER_NEW=""
+  for fid in $FOUNDER_IDS; do
+    rc=0
+    python3 "$LEDGER" "$ATTEMPTS" claim-flag "$fid" founder-routed >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+      0) FOUNDER_NEW="$FOUNDER_NEW $fid" ;;
+      1) : ;;   # already announced on an earlier run -- stay quiet
+      # 2 = nothing written, 3 = lock contended. Same routing as ledger_fault():
+      # the caller writes NOTHING, because a page whose dedup did not record is a
+      # page that repeats forever (exit 2) -- the failure being fixed here. Exit 3
+      # defers by one cycle, it does not drop.
+      *) say "WARN: the attempts ledger did not record the founder-routed flag for $fid (exit $rc) -- not paging, to avoid an undeduplicated repeat. Check $ATTEMPTS is writable." ;;
+    esac
+  done
+  # THE CLAIM IS PROVISIONAL UNTIL THE ALERT IS FILED (codex PR #215 round 3,
+  # major). The flag was claimed above and the send's status was thrown away by
+  # `|| true`, so ONE failed send -- a 20s timeout, a Linear 500, an unset API key
+  # on a fresh machine -- marked the issue announced forever. The next tick read
+  # the flag, stayed quiet, and the founder queue refilled in silence: the exact
+  # failure this whole block exists to end, now reached through the fix for it.
+  #
+  # CLAIM-THEN-CLEAR, not send-then-claim. The invariant that ordering protects is
+  # the one the dedup was built for: a page must never go out without its dedup
+  # already recorded, because a page whose flag did not land repeats every 15
+  # minutes forever. Sending first inverts that. So the claim stays first and a
+  # send that did not file gives it back.
+  #
+  # slack-notify.sh's exit contract (its own header) is what makes this decidable
+  # rather than a guess: 0 filed, 1 attempted and failed, 3 no Linear API key
+  # configured, 4 refused as a fixture run. Only 0 means a ticket exists, so only
+  # 0 keeps the claim. 3 and 4 are not errors and still filed nothing -- holding a
+  # claim for them would mean the first page after the key is configured never
+  # goes out.
+  if [ -n "$FOUNDER_NEW" ]; then
+    NRC=0
+    bash "$NOTIFY" "kipi worker: $FOUNDER_ROUTED issue(s) are labelled owner:assaf, which is an error path now, not a queue (${FOUNDER_IDS:-unknown}). New since the last page:${FOUNDER_NEW}. Do: find what routed them there and re-label to owner:sana or needs-scope." 2>/dev/null || NRC=$?
+    if [ "$NRC" = "0" ]; then
+      # THE SECOND HALF OF THE CLAIM (codex PR #215 round 5, major). The claim
+      # above is PROVISIONAL: between it and this line the worker can be killed
+      # -- launchd stopping the job, a reboot, an OOM -- and the release below
+      # only runs when the notifier RETURNED non-zero. A kill returns nothing, so
+      # the flag stood with no ticket behind it and that issue was muted forever.
+      # The sweep further down cannot see it either: the issue is still IN the
+      # founder population, so departure never releases it.
+      #
+      # So "claimed" and "filed" are two facts and they are recorded separately.
+      # A flag that is claimed and not filed is an interrupted announcement, and
+      # the sweep releases it on the next tick.
+      #
+      # A kill in the OTHER window -- after the ticket filed, before this line --
+      # costs ONE duplicate page. That direction is chosen deliberately: a
+      # repeated page is visible and self-correcting, a swallowed one is the
+      # silent founder queue this whole block exists to end.
+      for fid in $FOUNDER_NEW; do
+        frc=0
+        python3 "$LEDGER" "$ATTEMPTS" claim-flag "$fid" founder-routed-filed >/dev/null 2>&1 </dev/null || frc=$?
+        # 0 = recorded here, 1 = already recorded (a duplicate page after a kill
+        # in the narrow window above). Anything else means nothing was written,
+        # so the next run reads an unfiled claim and pages again -- the safe
+        # direction, but say it out loud rather than let a duplicate look random.
+        case "$frc" in
+          0|1) : ;;
+          *) say "WARN: filed the owner:assaf alert for $fid but could not record that (exit $frc) -- it will page once more on the next run." ;;
+        esac
+      done
+    fi
+    if [ "$NRC" != "0" ]; then
+      say "WARN: the owner:assaf alert did NOT file (notifier exit $NRC). Releasing the announce flag for${FOUNDER_NEW} so the next run tries again."
+      for fid in $FOUNDER_NEW; do
+        crc=0
+        python3 "$LEDGER" "$ATTEMPTS" clear-flag "$fid" founder-routed >/dev/null 2>&1 || crc=$?
+        # THE ONE CASE THAT STAYS BROKEN, SAID OUT LOUD. If the release also fails
+        # the flag is set with nothing filed behind it, which is the bug above. It
+        # cannot be fixed from here -- the ledger is the single writer and going
+        # around it is how two runs corrupt it -- so it is named, with the command
+        # that clears it by hand, instead of leaving one id silently muted.
+        [ "$crc" = "0" ] || say "WARN: could not release the founder-routed flag for $fid (exit $crc) -- that issue will NOT page again until: python3 $LEDGER $ATTEMPTS clear-flag $fid founder-routed"
+      done
+    fi
+  fi
+fi
+
+# --- RECOVERY RE-ARMS THE ANNOUNCEMENT (codex PR #215 round 4, major) --------
+#
+# `claim-flag` was set on the first page and cleared on exactly one event: a send
+# that failed. Nothing cleared it when the issue RECOVERED. So: ASK-x is
+# mislabelled owner:assaf, the page fires, the flag sticks; someone re-labels it
+# owner:sana and the issue leaves this population with its flag still held; the
+# same issue is mis-routed again next week and `claim-flag` answers 1 -- already
+# announced -- and the second occurrence is swallowed. Permanently, until someone
+# hand-clears the ledger, which nobody knows to do because there is no page
+# telling them to. A detector that stops detecting is worse than no detector: the
+# board reads quiet for the same reason it read quiet before this whole block
+# existed. Same defect class as clear-automerge in attempts-ledger.py, where a PR
+# armed, unarmed and armed again went permanently silent.
+#
+# THE FLAG MEANS "announced WHILE routed", so departure from the population is
+# what releases it. Clearing on departure never pages -- it only re-arms that id
+# for a future recurrence -- so it does NOT reintroduce the per-population
+# re-paging the block above rejects (relabel one of four and the other three
+# stay claimed, because they are still in the population).
+#
+# RUNS ON EVERY TICK INCLUDING AN EMPTY QUEUE, which is why it sits outside the
+# `FOUNDER_ROUTED != 0` guard: the case being fixed is precisely the one where
+# the population is now empty and the flags from the last episode are still set.
+# It is above the `READY_COUNT = 0` early exit for the same reason the page site
+# is: a board with nothing ready still has to re-arm.
+#
+# SKIPPED, NOT EMPTIED, WHEN THE PICKER OUTPUT IS UNREADABLE. An unparseable
+# $PICKED would make the current population read as empty and this sweep would
+# release every flag it holds, so the next tick re-pages the entire founder queue
+# -- a page storm caused by a broken picker, announcing nothing new. The sentinel
+# says the JSON parsed; without it the sweep does nothing and the flags stand.
+FOUNDER_POP="$(printf '%s' "$PICKED" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print("PARSED")
+print(" ".join(d.get("founder_routed_ids", [])))
+' 2>/dev/null)"
+if [ "$(printf '%s\n' "$FOUNDER_POP" | head -1)" = "PARSED" ]; then
+  FOUNDER_STILL=" $(printf '%s\n' "$FOUNDER_POP" | sed -n '2p') "
+  while IFS= read -r flagged; do
+    [ -n "$flagged" ] || continue
+    # TWO WAYS A CLAIM STOPS STANDING FOR A SENT PAGE.
+    #
+    # (1) The issue LEFT the population: recovered, so the flag must come off or
+    #     the next recurrence of that id is swallowed.
+    # (2) The claim was never FILED: the worker was killed between claim-flag and
+    #     the notifier returning (codex PR #215 round 5, major). Departure alone
+    #     cannot see this one -- the issue is still founder-routed, so it stays
+    #     in FOUNDER_STILL forever while its flag suppresses every later tick.
+    #     The failed-send release below only runs when the notifier RETURNED.
+    #
+    # Checked in that order because a departed id needs no filed-lookup.
+    WHY_RELEASE="is no longer founder-routed"
+    case "$FOUNDER_STILL" in
+      *" $flagged "*)
+        FILED="$(python3 "$LEDGER" "$ATTEMPTS" get "$flagged" founder-routed-filed "" 2>/dev/null </dev/null)"
+        # A read that FAILED returns empty too, and empty means "release it" --
+        # so an unreadable ledger costs a duplicate page, never a swallowed one.
+        [ -n "${FILED:-}" ] && continue
+        WHY_RELEASE="was announced but the alert never filed (worker killed mid-announce)"
+        ;;
+    esac
+    src=0
+    # </dev/null: this loop reads the flagged list from a heredoc on stdin, and a
+    # child inheriting it would eat the remaining ids.
+    python3 "$LEDGER" "$ATTEMPTS" clear-flag "$flagged" founder-routed >/dev/null 2>&1 </dev/null || src=$?
+    python3 "$LEDGER" "$ATTEMPTS" clear-flag "$flagged" founder-routed-filed >/dev/null 2>&1 </dev/null || true
+    if [ "$src" = "0" ]; then
+      say "worker: $flagged $WHY_RELEASE -- released its announce flag, so it can page again"
+    else
+      # Named, not swallowed. A release that did not land leaves that id muted
+      # for its next recurrence, which is the defect this sweep exists to close,
+      # so it gets the hand command exactly like the failed-send release above.
+      say "WARN: could not release the founder-routed flag for $flagged (exit $src) -- that issue will NOT page again if it recurs, until: python3 $LEDGER $ATTEMPTS clear-flag $flagged founder-routed"
+    fi
+  done <<FRECOVEOF
+$(python3 "$LEDGER" "$ATTEMPTS" list-flagged founder-routed 2>/dev/null)
+FRECOVEOF
+fi
 
 BLOCKED_CAP="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("blocked_capability",0))' 2>/dev/null)"
 BLOCKED_IDS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin).get("blocked_capability_ids",[])))' 2>/dev/null)"
@@ -2066,6 +2569,15 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # ASK-275 removed.
     if [ -n "$REFUSED" ]; then
       say "$ISSUE: refused ($REFUSED) and left no PR -- nothing to review, and a refusal is not a failed attempt"
+      # SAY SO WHERE converge CAN READ IT (PR #192 review round 2). converge
+      # stops at exit-7 on "no PR" and charges an attempt when nothing else did.
+      # It cannot tell this refusal from an interrupted worker: both leave the
+      # counter untouched and no PR. Without a durable marker three CORRECT
+      # refusals reach the 3-attempt cap and the issue is falsely marked stuck --
+      # the founder-queue routing ASK-275 removed, re-entering from the driver.
+      # The sentinel files cannot carry it: they are deleted before this line.
+      # The ledger can -- both scripts already share it, through one locked writer.
+      python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" refused_no_pr >/dev/null 2>&1 || true
     else
       bump_attempt "$ISSUE" "run exited 0 but opened no PR on $BRANCH (no output)"
     fi
@@ -2096,4 +2608,8 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
 done
 
 say "worker: run complete"
+# The `exit 0` below is the last statement INSIDE the ASK-351 brace, and it has to
+# stay last and stay unconditional: it is what stops bash from ever reading this
+# file again. See the header. Nothing may be added below the closing brace.
 exit 0
+}
