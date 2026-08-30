@@ -446,7 +446,13 @@ _wt_bail() {  # _wt_bail <worktree-path>
 # whose holder is gone is reclaimed, because an operator who must clear locks by
 # hand eventually clears one while a run is live.
 _wt_lock_path=""
-acquire_wt_lock() {  # acquire_wt_lock <worktree-path> -> 0 held, 1 busy
+# Exit codes are THREE-VALUED on purpose (PR #265 major, round 2). The caller
+# has to tell "nobody has a tree, so clear the stale ref" apart from "somebody
+# else owns this tree RIGHT NOW", because the cleanup that is correct for the
+# first is destructive for the second: the ref belongs to the live holder, and
+# this run never wrote it.
+#   0 = held by us   1 = could not lock (our problem)   2 = busy (their tree)
+acquire_wt_lock() {  # acquire_wt_lock <worktree-path>
   local wt="$1" lock="$1.lock" holder
   mkdir -p "$(dirname "$wt")" 2>/dev/null || return 1
   if ( set -o noclobber; printf '%s' "$$" > "$lock" ) 2>/dev/null; then
@@ -461,7 +467,7 @@ acquire_wt_lock() {  # acquire_wt_lock <worktree-path> -> 0 held, 1 busy
     _wt_lock_path="$lock"; return 0
   fi
   if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
-    return 1
+    return 2
   fi
   # Stale: reclaim once.
   command rm -f "$lock" 2>/dev/null || true
@@ -487,15 +493,23 @@ review_worktree() {  # review_worktree <sha> -> prints path, or nothing
   # Refuse rather than share. A second run returning empty here degrades to the
   # fallback search, which now demands a tree AT the sha and refuses if none --
   # so a concurrent review says so instead of silently reading a moving tree.
-  # EVERY failure to materialise clears the stale ref, this one included. The
-  # first cut returned early on a lock failure and skipped _wt_bail, so the two
-  # bail suites went red: the invariant is not "mkdir failed" or "lock failed",
-  # it is "no tree, therefore no stale ref may survive".
-  if ! acquire_wt_lock "$wt"; then
-    echo "  WARN: another review holds $wt, or its directory could not be created; not reusing a tree a live run can re-checkout under us." >&2
-    _wt_bail "$wt"
-    return 1
-  fi
+  # A failure to materialise clears the stale ref -- EXCEPT when the reason is
+  # that another run owns the tree.
+  #
+  # The first cut cleared on every failure, and codex caught the consequence: a
+  # concurrent reviewer that LOST the lock deleted refs/remotes/pr/<N> out from
+  # under the reviewer that WON it, invalidating a live review's evidence. My own
+  # two fixes colliding -- the ref cleanup is right when nobody has a tree and
+  # destructive when somebody does.
+  acquire_wt_lock "$wt"
+  case "$?" in
+    0) : ;;
+    2) echo "  WARN: another review holds $wt; leaving its ref alone and falling back." >&2
+       return 1 ;;
+    *) echo "  WARN: could not lock $wt; not reusing a tree a live run can re-checkout under us." >&2
+       _wt_bail "$wt"
+       return 1 ;;
+  esac
   mkdir -p "$(dirname "$wt")" 2>/dev/null || _wt_bail "$wt" || return 1
   if [ -d "$wt/.git" ] || [ -f "$wt/.git" ]; then
     git -C "$wt" checkout --detach --force "$sha" >/dev/null 2>&1 || _wt_bail "$wt" || return 1

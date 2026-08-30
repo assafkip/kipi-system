@@ -69,6 +69,33 @@ _wt_lock_path=""
 acquire_wt_lock "$WT" && ok "a stale lock is reclaimed" \
                       || bad "a stale lock needs a human"
 
+# --- 3. losing the lock must NOT delete the winner's ref ---------------------
+# PR #265 major, round 2, and it is my own two fixes colliding: the ref cleanup
+# is correct when nobody has a tree and DESTRUCTIVE when somebody does. A
+# concurrent reviewer that lost the lock was deleting refs/remotes/pr/<N> out
+# from under the reviewer that won it.
+eval "$(sed -n '/^_wt_bail() {/,/^}/p' "$AGENT")"
+declare -f _wt_bail >/dev/null 2>&1 || { echo "FAIL: could not extract _wt_bail" >&2; exit 1; }
+
+sleep 60 &
+LIVE2=$!
+BUSY="$TMP/busy"
+mkdir -p "$BUSY"
+printf '%s' "$LIVE2" > "$BUSY.lock"
+_wt_lock_path=""
+acquire_wt_lock "$BUSY"
+RC=$?
+[ "$RC" -eq 2 ] && ok "contention is reported distinctly (rc=2), not as a plain failure" \
+                || bad "contention returns rc=$RC, so the caller cannot tell it from a real failure"
+kill "$LIVE2" 2>/dev/null; wait "$LIVE2" 2>/dev/null
+
+# And the three-valued contract is what the caller keys on.
+if grep -q '    2) echo "  WARN: another review holds' "$AGENT"; then
+  ok "the caller leaves the holder's ref alone on contention"
+else
+  bad "the caller does not special-case contention; it clears a live holder's ref"
+fi
+
 echo ""
 if [ "$FAILED" -gt 0 ]; then echo "FAILED: $FAILED"; exit 1; fi
 echo "PASS: $PASS checks green"
