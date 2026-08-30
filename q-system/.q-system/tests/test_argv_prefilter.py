@@ -190,6 +190,52 @@ class ArgvPrefilterCase(unittest.TestCase):
                          "the real clean stopped being denied when the coarse "
                          "pattern was removed")
 
+    def test_a_quoted_destructive_behind_admitted_padding_denies_in_time(self):
+        """The axes CROSSED, which is why this bypass survived four rounds.
+
+        The two existing timing tests pad with an UNADMITTED shape and quote
+        nothing, or admit tokens and quote nothing. Neither builds the payload
+        that is actually expensive: padding that is BOTH admitted (`git`, which
+        must be admitted because git can deny) and quoted (so the substring list
+        cannot reach a verdict and only the strip-scan can). Measured on the
+        code this test shipped against, that took 22.85s at 2000 tokens and
+        186.52s at 4000 against a wired 5s timeout, where the hook is killed and
+        its deny DISCARDED -- so the answer silently became allow.
+
+        Padding a test with a shape the current code already handles measures
+        the fix instead of the limit. That is how three previous rounds passed.
+        """
+        quoted_rm = '"' + "r" + 'm" -rf /tmp/zzz_never_exists'
+        for tokens in (2000, 4000):
+            with self.subTest(tokens=tokens):
+                command = " ".join(['"git"'] * tokens) + " " + quoted_rm
+                started = time.time()
+                decision = decision_for(command)[0]
+                elapsed = time.time() - started
+                self.assertEqual(decision, "deny",
+                                 "a quoted destructive behind admitted padding "
+                                 "must still be denied")
+                self.assertLess(elapsed, 5.0,
+                                "the deny arrived after %.1fs, past the wired 5s "
+                                "timeout: the hook is killed there and the verdict "
+                                "is discarded, which is an allow" % elapsed)
+
+    def test_an_overlong_stage_is_refused_rather_than_half_checked(self):
+        """Fail CLOSED at the ceiling. A guard that runs out of time must not
+        answer allow, so a stage past the token cap is refused with a reason
+        that says how to proceed."""
+        command = "git " + " ".join(["status"] * 900)
+        decision, elapsed = decision_for(command)
+        self.assertEqual(decision, "deny",
+                         "a git stage past the token ceiling must be refused, "
+                         "not half-checked")
+        self.assertLess(elapsed, 5.0, "%.2fs" % elapsed)
+
+    def test_the_ceiling_leaves_ordinary_long_commands_alone(self):
+        """The cap has to sit far above real usage or it gets switched off."""
+        command = "git add " + " ".join("file%d.txt" % i for i in range(300))
+        self.assertEqual(decision_for(command)[0], "allow")
+
     def test_ordinary_commands_are_still_allowed(self):
         for command in ("ls -la", "git status", "echo hello"):
             with self.subTest(command=command):

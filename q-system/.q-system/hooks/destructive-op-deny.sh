@@ -297,6 +297,15 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   # timeout that silently discards the verdict.
   _ARGV_WINDOW=64
 
+  # The one ceiling that stays: the git arm below is O(n^2) in its own right
+  # (it rebuilds the remaining-token array at every position), and unlike the
+  # scan loops that cost is not removed by the tr fix. 600 tokens is ~1s here,
+  # five times under the wired 5s timeout, and past any real git invocation.
+  # A cap on the SCAN loops was tried and removed in the same round: it denied
+  # `echo git git ...`, which is ordinary, and a guard that blocks ordinary work
+  # gets switched off.
+  _ARGV_MAX_TOKENS=600
+
   _argv_could_deny_here() {  # _argv_could_deny_here <token>
     case "${1##*/}" in
       rm|git)                                  return 0 ;;
@@ -377,6 +386,35 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
         # Walk git's GLOBAL flags to find the subcommand: `git -C DIR reset
         # --hard` is the same act as `git reset --hard`, and the old pattern saw
         # neither.
+        # THE CEILING SITS WHERE THE COST IS (PR #279 round five).
+        #
+        # The loop below walks every remaining token and rebuilds the
+        # remaining-token array at each step, so ONE call over an n-token git
+        # stage is O(n^2) with a large constant. Round four bounded the two
+        # rescan loops with a 64-token window and wrote, in a comment, that
+        # "the FIRST-position scan still reads the entire stage unbounded".
+        # That sentence was the hole, shipped. Capping the rescan loops moved
+        # the measured timings by nothing, which is how the real site was
+        # found: the first cap fired in the wrong place.
+        #
+        # Measured against the wired 5s timeout, destructive token QUOTED so
+        # only the strip-scan can reach a verdict:
+        #    500 tokens 0.57s   1000 tokens 3.13s
+        #   2000 tokens 22.85s  4000 tokens 186.52s
+        # An overrunning hook is killed and its deny DISCARDED, so past ~1200
+        # tokens the answer silently became allow.
+        #
+        # This refuses instead. "I could not finish checking" is not permission
+        # -- fail closed is the only correct direction for a guard. The cap is
+        # HERE and not at the function entry because the other arms are linear
+        # and cheap: a 4000-word `echo` stage is ordinary and stays allowed,
+        # which matters because a guard that blocks ordinary work gets switched
+        # off. 600 tokens is ~1s here, five times under the budget, and no real
+        # git invocation carries 600 words in one stage.
+        if [ "${#w[@]}" -gt "$_ARGV_MAX_TOKENS" ]; then
+          _ARGV_REASON="this git stage is ${#w[@]} tokens, past the $_ARGV_MAX_TOKENS this guard can finish checking inside its time budget. It refuses rather than answering allow by running out of time. Split the command into separate stages"
+          return 0
+        fi
         local -a g=( "" "${w[@]:1}" ); g=( "${g[@]:1}" )
         local sub="" i=0
         while [ "$i" -lt "${#g[@]}" ]; do
@@ -526,9 +564,27 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   # does not try to tell prose from invocation, and nothing here changes that.
   while IFS= read -r _stage; do
     [ -n "$_stage" ] || continue
-    _norm="${_stage//\"/}"
-    _norm="${_norm//\'/}"
-    _norm="${_norm//\\/}"
+    # ONE FORK, NOT A QUADRATIC (PR #279 round five -- THE fix).
+    #
+    # This was three `${var//x/}` substitutions. On bash 3.2, which is what
+    # macOS ships and what this hook runs under, that operator is O(n^2) in the
+    # string length. Measured here, stripping quotes from a padded stage:
+    #
+    #   tokens   ${var//}    tr -d
+    #    1000       3s        0s
+    #    2000      22s        0s
+    #    4000     175s        0s
+    #
+    # The hook's own end-to-end timings were 3.13s / 22.85s / 186.52s at those
+    # sizes, so this line WAS the bypass: against the wired 5s timeout the hook
+    # was killed here and its deny discarded, which is an allow.
+    #
+    # Four rounds went into the scan loops -- de-forking them, windowing them,
+    # capping them -- and each round re-measured and found the same numbers.
+    # Capping the loops changed the timings by nothing, which is the evidence
+    # that finally pointed here. The scans were never the cost. One `tr` fork
+    # per stage is O(n) and beats every loop optimisation that came before it.
+    _norm="$(printf '%s' "$_stage" | tr -d '"'"'"'\\')"
     [ "$_norm" = "$_stage" ] && continue
     set -f
     _dw=( "" $_norm )
