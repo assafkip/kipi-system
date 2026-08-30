@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Print the voice reference for ONE piece of writing. A CALLER, not a selector.
 
-Every decision belongs to voicekit: `assemble.voice_section` builds the section
+Every decision belongs to voiceloop: `assemble.voice_section` builds the section
 (identity, pov, lexicon, correction SCOPES, exemplars) and `selector` decides which
 rows ride in it. This file resolves the corpus, asks, and prints.
 
 why the boundary is stated this hard: version one of this file WAS a second
 selector with its own rotation and its own random sampling, written before I found
-voicekit. Version two still rebuilt identity and corrections by hand, which quietly
+voiceloop. Version two still rebuilt identity and corrections by hand, which quietly
 dropped correction `scope` -- a correction withheld from the model was still shown.
 Both are the same shape as two voice corpora, which took a night to kill
 (ASK-699, 2026-08-13). A duplicate that agrees today is still a duplicate.
@@ -33,14 +33,14 @@ from pathlib import Path
 # length matching silently never ran. A caller that does not travel with its
 # engine is not wired; it is wired on one machine.
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-# voicekit ships in this repo's kipi-core plugin. Import from HERE, never from
+# voiceloop ships in this repo's kipi-core plugin. Import from HERE, never from
 # whatever the caller's cwd exposes, so the answer cannot change with the directory
 # the founder happened to run from.
 sys.path.insert(0, str(PLUGIN_ROOT))
 
-from voicekit import assemble, corpus, selector  # noqa: E402
+from voiceloop import assemble, corpus, selector  # noqa: E402
 
-# NO DEFAULT CORPUS PATH, deliberately. voicekit ships to every instance and
+# NO DEFAULT CORPUS PATH, deliberately. voiceloop ships to every instance and
 # `test_no_founder_data.py` fails the build on a founder-specific string in this
 # tree -- it caught exactly that when this file was moved in carrying one founder's
 # hardcoded corpus directory. The plugin takes a path; the INSTANCE
@@ -91,7 +91,7 @@ def main() -> int:
 
     # The denominator, derived the SAME way the selector derives it (resolved_pool
     # then length_band), not recounted by hand. A checker that reimplements the rule
-    # it checks is testing its own copy -- voicekit's own docstring makes that point
+    # it checks is testing its own copy -- voiceloop's own docstring makes that point
     # about its validators, and version two of this file made exactly that mistake.
     pool = selector.resolved_pool(rows, args.channel, args.slot_kind, args.k,
                                   args.words)
