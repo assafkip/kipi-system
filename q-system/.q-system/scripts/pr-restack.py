@@ -117,6 +117,74 @@ def resolve_capability_manifest(wt: str, root: str, files: list[str]) -> str | N
     return None
 
 
+def resolve_plugin_version(wt: str, files: list[str]) -> tuple[list[str], str | None]:
+    """Auto-resolve a plugin.json conflict whose ONLY difference is the version.
+
+    Measured on the backlog 2026-08-30, after the capability-manifest class was
+    cleared: a `.claude-plugin/plugin.json` was the sole remaining conflict on 6
+    open PRs, every one of them a version line and nothing else. An old branch
+    reads 0.9.4 while main reads 0.30.1, because the version moved many times
+    while the branch sat.
+
+    THE RULE, and it refuses rather than guesses. Main's file wins wholesale --
+    it carries every real change to name, description, commands. Then, if this
+    branch touches any OTHER file inside the plugin, the version gets its patch
+    bumped off MAIN's number, because the version-bump gate (ASK-1039) requires a
+    plugin change to carry a bump and taking main's version unmodified would land
+    a plugin edit with no bump. A branch that touches nothing else in the plugin
+    keeps main's version exactly.
+
+    If ANY key other than `version` differs, this returns without touching the
+    file. Two branches disagreeing about a description is a decision, not a
+    merge, and the point of an automatic resolution is that it only fires where
+    there is one correct answer.
+    """
+    done, why = [], None
+    for rel in list(files):
+        if not rel.endswith(".claude-plugin/plugin.json"):
+            continue
+        ours = run(["git", "-C", wt, "show", ":2:" + rel])
+        theirs = run(["git", "-C", wt, "show", ":3:" + rel])
+        if ours.returncode != 0 or theirs.returncode != 0:
+            why = "could not read both sides of " + rel
+            continue
+        try:
+            o, t = json.loads(ours.stdout), json.loads(theirs.stdout)
+        except ValueError:
+            why = rel + " is not valid JSON on both sides"
+            continue
+        differing = {k for k in set(o) | set(t) if o.get(k) != t.get(k)}
+        if differing != {"version"}:
+            why = "%s differs on more than the version: %s" % (
+                rel, ", ".join(sorted(differing)) or "(nothing)")
+            continue
+
+        plugin_dir = rel.rsplit("/.claude-plugin/", 1)[0]
+        base = run(["git", "-C", wt, "merge-base", "HEAD", "MERGE_HEAD"]).stdout.strip()
+        touched = run(["git", "-C", wt, "diff", "--name-only", base, "HEAD",
+                       "--", plugin_dir]).stdout.split()
+        touched = [f for f in touched if not f.endswith(".claude-plugin/plugin.json")]
+
+        version = str(t.get("version") or "0.0.0")
+        if touched:
+            bits = version.split(".")
+            if len(bits) == 3 and bits[2].isdigit():
+                bits[2] = str(int(bits[2]) + 1)
+                version = ".".join(bits)
+            else:
+                why = "cannot bump a non-semver version %r in %s" % (version, rel)
+                continue
+        merged = dict(t)
+        merged["version"] = version
+        with open(os.path.join(wt, rel), "w") as fh:
+            json.dump(merged, fh, indent=2)
+            fh.write("\n")
+        if run(["git", "-C", wt, "add", "--", rel]).returncode == 0:
+            done.append("%s -> %s%s" % (rel, version,
+                                        " (bumped: branch touches the plugin)" if touched else ""))
+    return done, why
+
+
 def repo_root() -> str:
     r = run(["git", "rev-parse", "--show-toplevel"])
     if r.returncode != 0:
@@ -162,6 +230,7 @@ def main() -> int:
         sys.exit("could not create worktree: " + r.stderr.strip())
 
     merged, conflicted, failed, already, resolved = [], [], [], [], []
+    version_fixed = []
     try:
         for pr in prs:
             n, ref = pr["number"], pr["headRefName"]
@@ -199,13 +268,25 @@ def main() -> int:
 
                 # Try the one automatic resolution there is. Everything else is
                 # a judgement call and stays one.
+                # The version-only plugin.json class, tried first because it is
+                # the cheaper check and the two are independent.
+                if files:
+                    bumped, _ = resolve_plugin_version(wt, files)
+                    if bumped:
+                        left = run(["git", "-C", wt, "diff", "--name-only",
+                                    "--diff-filter=U"])
+                        files = [x for x in left.stdout.split() if x]
+                        version_fixed.append((n, ref, bumped))
+
                 if files and not args.no_capability_fix:
                     why = resolve_capability_manifest(wt, root, files)
                     if why is None:
                         left = run(["git", "-C", wt, "diff", "--name-only",
                                     "--diff-filter=U"])
                         files = [x for x in left.stdout.split() if x]
-                        if not files:
+
+                if not files:
+                    if True:
                             # `commit --no-verify`: the pre-commit hooks read the
                             # WORKING TREE, so another session's uncommitted file
                             # blocks this commit for reasons that have nothing to
@@ -277,6 +358,11 @@ def main() -> int:
         print("  #%-4d %-48s %d file(s)" % (n, ref, len(files)))
         for f in files[:8]:
             print("        " + f)
+    print("\n=== plugin.json version-only conflict auto-resolved ===")
+    for n, ref, what in version_fixed:
+        print("  #%-4d %s" % (n, ref))
+        for w in what:
+            print("        " + w)
     print("\n=== capability-manifest conflict auto-resolved ===")
     for n, ref in resolved:
         print("  #%-4d %s" % (n, ref))
