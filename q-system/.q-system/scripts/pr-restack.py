@@ -35,6 +35,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def run(args: list[str], cwd: str | None = None, check: bool = False):
@@ -47,6 +48,11 @@ def gh_json(args: list[str]):
         sys.exit("gh failed: " + (r.stderr or r.stdout).strip())
     return json.loads(r.stdout)
 
+
+# How hard to chase a PR whose mergeability GitHub has not computed yet.
+UNKNOWN_ATTEMPTS = 3
+# Overridable so the paired suite does not spend 20 real seconds sleeping.
+UNKNOWN_WAIT_SECONDS = int(os.environ.get("PR_RESTACK_UNKNOWN_WAIT", "10"))
 
 LEGACY_MANIFEST = "q-system/.q-system/capability-manifest.json"
 FRAGMENT_DIR = "q-system/.q-system/capability"
@@ -208,17 +214,49 @@ def main() -> int:
 
     prs = gh_json(["pr", "list", "--state", "open", "--limit", "200",
                    "--json", "number,headRefName,mergeStateStatus,title"])
+    total_open = len(prs)
     if args.only:
         want = {int(x) for x in args.only.split(",") if x.strip()}
         prs = [p for p in prs if p["number"] in want]
+        unknown = []
     else:
+        # UNKNOWN IS NOT "NOT DIRTY" (measured 2026-08-30). GitHub computes
+        # mergeability lazily, and right after a merge to main a large fraction
+        # of the backlog reports UNKNOWN for a minute or two. The first version
+        # filtered for DIRTY and silently dropped those, so a sweep run moments
+        # after a merge examined 1 PR out of 23 and printed "conflicted 1" --
+        # which reads as "the backlog is nearly clean" and was reported upward
+        # as exactly that. Twenty-two branches were never looked at.
+        #
+        # Asking about a single PR forces GitHub to compute it, so an UNKNOWN is
+        # re-queried rather than assumed. A bounded number of attempts, because
+        # a PR that never settles is a fact to report, not a reason to spin.
+        unknown = [p for p in prs if p["mergeStateStatus"] == "UNKNOWN"]
+        for attempt in range(UNKNOWN_ATTEMPTS):
+            if not unknown:
+                break
+            if attempt:
+                time.sleep(UNKNOWN_WAIT_SECONDS)
+            still = []
+            for p in unknown:
+                r = run(["gh", "pr", "view", str(p["number"]),
+                         "--json", "mergeStateStatus", "-q", ".mergeStateStatus"])
+                state = r.stdout.strip() if r.returncode == 0 else "UNKNOWN"
+                p["mergeStateStatus"] = state
+                if state == "UNKNOWN":
+                    still.append(p)
+            unknown = still
         prs = [p for p in prs if p["mergeStateStatus"] == "DIRTY"]
     prs.sort(key=lambda p: p["number"])
     if args.limit:
         prs = prs[: args.limit]
 
     if not prs:
-        print("nothing to restack")
+        print("nothing to restack: %d open PR(s), none reported DIRTY" % total_open)
+        if unknown:
+            print("  WARNING: %d PR(s) never settled out of UNKNOWN and were NOT "
+                  "examined: %s" % (len(unknown),
+                                    ", ".join("#%d" % p["number"] for p in unknown)))
         return 0
 
     # ONE worktree for the whole sweep, detached so no branch is ever "checked
@@ -392,10 +430,18 @@ def main() -> int:
     for n, ref, why in failed:
         print("  #%-4d %-48s %s" % (n, ref, why))
     ver_landed = sum(1 for n, _, _ in version_fixed if n in restacked_nums)
-    print("\nrestacked %d (%d needed the capability fix, %d a plugin version), "
-          "current %d, conflicted %d, failed %d"
-          % (len(merged), len(resolved), ver_landed, len(already),
-             len(conflicted), len(failed)))
+    # SAY HOW MANY WERE LOOKED AT, not only what was found. A count of findings
+    # alone cannot distinguish "examined everything, found little" from
+    # "examined almost nothing".
+    print("\nexamined %d of %d open PR(s): restacked %d (%d needed the capability "
+          "fix, %d a plugin version), current %d, conflicted %d, failed %d"
+          % (len(prs), total_open, len(merged), len(resolved), ver_landed,
+             len(already), len(conflicted), len(failed)))
+    if unknown:
+        print("  WARNING: %d PR(s) never settled out of UNKNOWN after %d attempts "
+              "and were NOT examined: %s"
+              % (len(unknown), UNKNOWN_ATTEMPTS,
+                 ", ".join("#%d" % p["number"] for p in unknown)))
     if len(version_fixed) != ver_landed:
         print("  (%d further branch(es) had their version line resolved but stay "
               "conflicted on something else)" % (len(version_fixed) - ver_landed))
