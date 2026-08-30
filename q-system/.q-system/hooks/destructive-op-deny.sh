@@ -262,6 +262,23 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   # window is deliberately far wider than any real invocation.
   ARGV_FLAG_WINDOW=64
 
+  # And a ceiling on STAGE COUNT (round 7, Codex major -- the fourth report of
+  # this class, one level up). ARGV_SCAN_TOKENS bounds the work inside one
+  # stage; nothing bounded how many stages a command has. Measured, and the
+  # cost is per-stage and independent of content, so it is the fleet loop's
+  # `echo | grep` forks rather than the argv scan:
+  #
+  #    500 stages  3.30s        1000 stages  6.66s   <-- over the 5s timeout
+  #
+  # Identical shape to every other bound here, and the same trade: past this
+  # many stages the per-stage layers stop and the WHOLE-COMMAND substring layers
+  # still run over everything, so a long script degrades to pre-ASK-1131
+  # coverage on its tail instead of killing the hook and returning no decision.
+  # A command block with 200 statements is a script; nobody types one at a
+  # prompt.
+  STAGE_SCAN_LIMIT=200
+
+
   # And a HARD CEILING on how far into one stage the argv layer looks (round 6d).
   # Even with the flag window and the fork both gone, bash re-slices the array at
   # every candidate, so cost still climbed with position: 16000 words of `git
@@ -351,7 +368,10 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     return 1
   }
 
+  _sc=0
+
   while IFS= read -r _stage; do
+    _sc=$((_sc+1)); [ "$_sc" -gt "$STAGE_SCAN_LIMIT" ] && break
     [ -n "$_stage" ] || continue
     argv_deny_reason "$_stage" && \
       emit_deny "destructive invocation: $_ARGV_REASON. This is decided from the command's ARGV, not from where a flag happens to sit in the line (ASK-1131)."
@@ -383,7 +403,9 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   # refused with a message about recursive file deletion. It is still a forced
   # removal, and this hook already refuses far more prose than that, so a
   # fail-closed misnomer is the cheap side of the trade.
+  _sc=0
   while IFS= read -r _stage; do
+    _sc=$((_sc+1)); [ "$_sc" -gt "$STAGE_SCAN_LIMIT" ] && break
     [ -n "$_stage" ] || continue
     set -f
     _sw=( "" $_stage )
@@ -495,7 +517,9 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   # It does mean `echo "rm -rf x"` reaches the rm rule. That string is already
   # denied by the substring list above, deliberately, since 2026-08-07: this hook
   # does not try to tell prose from invocation, and nothing here changes that.
+  _sc=0
   while IFS= read -r _stage; do
+    _sc=$((_sc+1)); [ "$_sc" -gt "$STAGE_SCAN_LIMIT" ] && break
     [ -n "$_stage" ] || continue
     _norm="${_stage//\"/}"
     _norm="${_norm//\'/}"
@@ -760,7 +784,9 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   # emit_deny's exit would end only that subshell and the parent would carry on
   # and log an allow after the deny JSON was already emitted.
   _fleet_preview=0
+  _sc=0
   while IFS= read -r _stage; do
+    _sc=$((_sc+1)); [ "$_sc" -gt "$STAGE_SCAN_LIMIT" ] && break
     [ -n "$_stage" ] || continue
     # ";" is prepended so each pattern's own `[;&|][[:space:]]*` alternative
     # absorbs the stage's leading whitespace. Without it a stage starting with a
