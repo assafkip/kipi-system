@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "slug": "wire-enforced-claim-lint",
+  "reason": "ASK-965: wire enforced-claim-lint.py PostToolUse on Edit/Write/MultiEdit in BOTH .claude/settings.json and settings-template.json. Both or neither, or settings-template-sync-check fails and the fleet gets the script with a dead switch. The lint self-scopes to .claude/rules/**/*.md and fast-exits on everything else, so it costs nothing on ordinary writes; a rule carrying no ENFORCED marker is untouched.",
+  "requires": {
+    "files_present": [
+      "q-system/.q-system/scripts/enforced-claim-lint.py",
+      "q-system/.q-system/scripts/test_enforced_claim_lint.py",
+      "q-system/.q-system/enforced-claim-baseline.json"
+    ],
+    "template_pairs": [
+      "enforced-claim-lint.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/settings.json",
+      "op": "insert_after",
+      "anchor": "            \"command\": \"python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/prompt-only-enforcement-guard.py\\\"\",\n            \"timeout\": 5\n          },",
+      "reason": "Add the enforced-claim lint beside the prompt-only guard: same event, adjacent question. That guard matches enforcement VOCABULARY, this one checks the named executable EXISTS and is wired.",
+      "insert": "\n          {\n            \"type\": \"command\",\n            \"command\": \"python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/enforced-claim-lint.py\\\"\",\n            \"timeout\": 5\n          },"
+    },
+    {
+      "file": "settings-template.json",
+      "op": "insert_after",
+      "anchor": "            \"command\": \"if test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/prompt-only-enforcement-guard.py\\\"; then python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/prompt-only-enforcement-guard.py\\\"; fi\",\n            \"timeout\": 5\n          },",
+      "reason": "The fleet ship path. Guarded with test -f so an instance that has not received the script yet is a no-op rather than a broken hook.",
+      "insert": "\n          {\n            \"type\": \"command\",\n            \"command\": \"if test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/enforced-claim-lint.py\\\"; then python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/enforced-claim-lint.py\\\"; fi\",\n            \"timeout\": 5\n          },"
+    }
+  ]
+}

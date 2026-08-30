@@ -45,17 +45,29 @@ def git_out(args, cwd):
         return 1, ""
 
 
+def is_repo_root(path):
+    """True when `path` is the root of a git checkout.
+
+    `.git` is a DIRECTORY in a normal clone but a FILE ("gitdir: ...") in a git
+    worktree and in a submodule. Probing with isdir() therefore reported every
+    live worktree as "no enclosing git repo", which is the loudest possible
+    wrong answer: the gate told you to `git init` a fresh repo inside another
+    repo's checkout. Scar 2026-08-08 -- 8 kipi-system worktrees, 24 RED rows.
+    """
+    return os.path.exists(os.path.join(path, ".git"))
+
+
 def find_repos(root):
     repos = []
     if not os.path.isdir(root):
         return repos
-    if os.path.isdir(os.path.join(root, ".git")):
+    if is_repo_root(root):
         repos.append(root)
     for dirpath, dirnames, _ in os.walk(root):
         dirnames[:] = [d for d in dirnames if not skip_dir(d)]
         for d in list(dirnames):
             full = os.path.join(dirpath, d)
-            if os.path.isdir(os.path.join(full, ".git")):
+            if is_repo_root(full):
                 repos.append(full)
     return sorted(set(repos))
 
@@ -278,6 +290,40 @@ def self_test():
             ok = False
         else:
             print("  [b] tracked parent repo correctly NOT flagged")
+
+    # b3: a git WORKTREE of a covered repo. Its `.git` is a FILE ("gitdir: ..."),
+    # not a directory, so an isdir() probe reports "no enclosing git repo" and
+    # the gate demands you seed a new repo inside someone else's checkout.
+    # Scar 2026-08-08: 8 live kipi-system worktrees (24 rows) sat RED for a week
+    # for this reason alone, and a permanently-red gate is a gate nobody reads.
+    with tempfile.TemporaryDirectory() as tmp:
+        main_repo = os.path.join(tmp, "main-repo")
+        os.makedirs(main_repo)
+        for a in (["init", "-q"], ["config", "user.email", "t@t"],
+                  ["config", "user.name", "t"]):
+            git_out(a, main_repo)
+        open(os.path.join(main_repo, "CLAUDE.md"), "w").write("main")
+        git_out(["add", "."], main_repo)
+        git_out(["commit", "-qm", "seed"], main_repo)
+        git_out(["remote", "add", "origin",
+                 "https://github.com/example/fake.git"], main_repo)
+        wt = os.path.join(tmp, "main-repo-wt-feature")
+        git_out(["worktree", "add", "-q", "--detach", wt], main_repo)
+
+        cov, _, _, nonrepo = audit(tmp)
+        found = {r["path"] for r in nonrepo}
+        if wt in found:
+            print("FAIL: [b] a git WORKTREE of a covered repo was flagged as "
+                  "'not a git repo' -- .git is a file in a worktree, not a dir")
+            ok = False
+        else:
+            print("  [b] git worktree of a covered repo correctly NOT flagged")
+        if wt not in {r["path"] for r in cov}:
+            print("FAIL: [b] worktree not counted as a covered repo")
+            ok = False
+        else:
+            print("  [b] git worktree correctly counted as covered")
+
     print("SELF-TEST PASS" if ok else "SELF-TEST FAIL")
     return 0 if ok else 1
 

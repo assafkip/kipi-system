@@ -1,6 +1,0 @@
-2026-07-27T21:23:30Z worker: 1 ready issue(s) (owner:sana, has a DoR, not owner:assaf)
-2026-07-27T21:23:30Z skip ASK-100: 6/6 review round cap reached; parked for a human. Resume with: kipi work --reset-rounds --issue ASK-100
-2026-07-27T21:23:30Z worker: run complete
-2026-07-27T21:23:31Z worker: 1 ready issue(s) (owner:sana, has a DoR, not owner:assaf)
-2026-07-27T21:23:31Z [dry] would work ASK-100 (attempt 1/3, round 1/6)
-2026-07-27T21:23:31Z worker: run complete

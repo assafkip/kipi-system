@@ -30,6 +30,9 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 LIB="$ROOT/q-system/.q-system/scripts/pr-verdict-lib.sh"
+. "$ROOT/q-system/.q-system/scripts/repo-slug-lib.sh"
+# The basename the reviewer will write for PR 901 in THIS repo.
+REC901="$(artifact_key "$(slug_for_repo "$ROOT")" 901).verdict.json"
 WORKER="$ROOT/q-system/.q-system/scripts/linear-worker.sh"
 REVIEWER="$ROOT/q-system/.q-system/scripts/pr-review-agent.sh"
 
@@ -45,7 +48,9 @@ trap 'rm -rf "$WORK"' EXIT
 
 # --- fixture: VERBATIM slice, real PR #11 round-2 review (2026-07-26) --------
 cat > "$WORK/r2.md" <<'EOF'
-**The test is not an orphan.** Registered at `q-system/.q-system/capability-manifest.json:17`.
+**The test is not an orphan.** Declared by its own fragment under
+`q-system/.q-system/capability/expected_tests/` (a line number into a shared
+array is exactly the pointer the fragment split removed).
 
 ---
 
@@ -346,12 +351,28 @@ git -C "$W2/skel" remote add origin "$W2/origin"
 git -C "$W2/skel" push -q -u origin main
 
 STUB="$W2/bin"; mkdir -p "$STUB" "$W2/home"
+# The python3 stub fakes exactly TWO things: the Linear issue picker (which would
+# hit the live API) and linear-sync.py (which would post to a live issue).
+#
+# IT DISCRIMINATES ON THE SCRIPT'S CONTENT, not on `$1 = -`. Both drivers run
+# OTHER stdin heredocs -- converge's claim reader, and its receipt writer
+# (ASK-218) -- and a blanket `-` match answered all of them with the picker's
+# ready-JSON. The receipt writer then "wrote" a receipt that was really the
+# picker's payload, and the case failed for a reason that did not exist in
+# production. A stub that answers calls it was not built to answer is a suite
+# testing itself.
 cat > "$STUB/python3" <<EOF
 #!/usr/bin/env bash
 case "\${1:-}" in
-  -)  cat >/dev/null
-      printf '{"ready":[{"id":"ASK-AAA","title":"t","project":"p"}],"total_open":1}\n'
-      exit 0 ;;
+  -)  SRC="\$(mktemp)"; cat > "\$SRC"
+      if grep -q 'linear-sync.py' "\$SRC"; then
+        rm -f "\$SRC"
+        printf '{"ready":[{"id":"ASK-AAA","title":"t","project":"p"}],"total_open":1}\n'
+        exit 0
+      fi
+      shift
+      "$REAL_PY" "\$SRC" "\$@"; RC=\$?
+      rm -f "\$SRC"; exit \$RC ;;
   *linear-sync.py) exit 0 ;;
 esac
 exec "$REAL_PY" "\$@"
@@ -476,7 +497,7 @@ grep -q "conflict round(s) -- a human resolves this one" "$W2/cap1.out" \
       not at gate 20 (unreviewed). The worker said: $(grep -i skip "$W2/cap1.out" | head -1)"
 ok "it stopped at the conflict cap, not as unreviewed"
 
-PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
+PAGES="$({ grep -c . "$W2/pages.txt" 2>/dev/null || echo 0; } | head -1)"
 [ "$PAGES" = "1" ] \
   || fail "expected EXACTLY 1 page across 2 runs at the cap, got $PAGES: $(cat "$W2/pages.txt")"
 grep -q "needs a human" "$W2/pages.txt" || fail "the page does not say a human is needed"
@@ -846,7 +867,7 @@ EOF
 cat > "$SW/gh" <<EOF
 #!/usr/bin/env bash
 case "\$*" in
-  "pr view 901 --json"*) printf '$SHA_A\tpin the sha the review actually read\n' ;;
+  "pr view 901"*) printf '$SHA_A\tpin the sha the review actually read\n' ;;
   *) exit 1 ;;
 esac
 exit 0
@@ -864,7 +885,7 @@ chmod +x "$SW/python3" "$SW/gh" "$SW/claude"
 # "codex is not producing an independent review (PR #901)" to a capture endpoint.
 ( PATH="$SW:$PATH" HOME="$W2/home-writer" KIPI_NOTIFY="/usr/bin/true" \
   bash "$REVIEWER" 901 ) >"$W2/writer.out" 2>&1
-REC="$W2/home-writer/.config/kipi/pr-reviews/pr-901.verdict.json"
+REC="$W2/home-writer/.config/kipi/pr-reviews/$REC901"
 [ -s "$REC" ] \
   || fail "the reviewer wrote no verdict record at all. It said:
 $(sed 's/^/        /' "$W2/writer.out")"
@@ -1039,7 +1060,7 @@ run_status_reviewer "$N4" --post
 [ "$RC" = "0" ] \
   || fail "a failed status POST took the whole review down (exit $RC). The verdict record is the
       loop's hand-off; losing it to a transient GitHub error costs a full re-review."
-[ -s "$N4/home/.config/kipi/pr-reviews/pr-901.verdict.json" ] \
+[ -s "$N4/home/.config/kipi/pr-reviews/$REC901" ] \
   || fail "a failed status POST cost the verdict record, which converge.sh and linear-worker.sh
       both read"
 grep -q "$SHA_A" "$N4/err.txt" \
@@ -1103,7 +1124,23 @@ ok "no comment URL means no target_url (omitted, not invented)"
 #
 # So both drivers are run FOR REAL below, with `gh` stubbed. Re-testing the lib
 # would pass on exactly the code that shipped broken.
-CONV="$ROOT/q-system/.q-system/scripts/converge.sh"
+# KIPI_TEST_CONVERGE is a ref hatch, not a feature: it points this suite at a
+# converge.sh materialized from a pre-fix git ref, so a case added AFTER its own
+# fix can still be watched FAIL. Every case below was written green against code
+# that already worked; the no-identity case (S2b) is the only one whose defect is
+# invisible on a developer machine, so it is the one that most needs proving.
+#
+# THE COPY MUST SIT IN THE REAL scripts/ DIR. converge.sh sources
+# pr-verdict-lib.sh from its own $SCRIPT_DIR, so a copy in /tmp loses the lib and
+# every gate call becomes `command not found` -- which fails an EARLIER case and
+# never reaches the one being proved. A hatch that lands somewhere else is not
+# testing the code, it is testing the path:
+#   cd <repo>
+#   git show <pre-fix-sha>:q-system/.q-system/scripts/converge.sh \
+#     > q-system/.q-system/scripts/.converge-prefix.sh
+#   KIPI_TEST_CONVERGE="$PWD/q-system/.q-system/scripts/.converge-prefix.sh" \
+#     bash q-system/.q-system/scripts/test/test-severity-floor.sh
+CONV="${KIPI_TEST_CONVERGE:-$ROOT/q-system/.q-system/scripts/converge.sh}"
 [ -f "$CONV" ] || fail "converge.sh does not exist at $CONV"
 
 # The fake worker. converge dispatches a round, THEN gates on the verdict record,
@@ -1117,26 +1154,104 @@ EOF
 chmod +x "$STUB/convworker"
 
 CRC=0
-# run_converge <state-dir> <out> [max-rounds]
-run_converge() {
-  ( cd "$W2/skel" \
-    && HOME="$W2/home" KIPI_STATE_DIR="$1" KIPI_NOTIFY="$W2/notify.sh" \
+# run_converge_at <skel> <state-dir> <out> [max-rounds]
+# KIPI_SKEL is PASSED, not defaulted: converge's receipt writer resolves a
+# worktree from `git -C $SKEL worktree list`, so a run without it reads the
+# FOUNDER'S live worktree list from the real repo -- the exact leak KIPI_SKEL was
+# added to close (PR #42 review, finding 1, one layer out).
+run_converge_at() {
+  ( cd "$1" \
+    && HOME="$W2/home" KIPI_SKEL="$1" KIPI_STATE_DIR="$2" KIPI_NOTIFY="$W2/notify.sh" \
        KIPI_CONVERGE_WORKER="$STUB/convworker" \
-       bash "$CONV" --issue ASK-AAA --max-rounds "${3:-1}" ) >"$2" 2>&1
+       bash "$CONV" --issue ASK-AAA --max-rounds "${4:-1}" ) >"$3" 2>&1
   CRC=$?
 }
+# run_converge <state-dir> <out> [max-rounds]
+run_converge() { run_converge_at "$W2/skel" "$1" "$2" "${3:-1}"; }
 
-# seed_record <state-dir> <pr> <verdict> [head_sha]
+# receipt_world <dir> <issue-suffix>
+# A whole repo world of its own: bare origin, skel, and a worktree on
+# sana/ask-<suffix> carrying a seeded ledger, pushed.
+#
+# ONE WORLD PER CASE, and that is the point (PR #42 review, finding 2). The
+# receipt cases used to share a single world and a single ledger, so by the time
+# the negative cases ran, a receipt already sat at the shared sha and the tree
+# head had moved past it. A writer that WRONGLY wrote then dedup'd to "already
+# receipted", or tripped the tree-head guard -- and both wrong behaviours leave
+# the ledger line count unchanged, which was the entire assertion. Two mutants
+# that wrote receipts on REQUEST CHANGES and on a stale approval both left the
+# suite green. A negative case only means something in a world where the write
+# would have SUCCEEDED if the gate had let it through.
+receipt_world() {
+  local dir="$1" n="$2"
+  mkdir -p "$dir"
+  git init -q --bare "$dir/origin"
+  git init -q "$dir/skel"
+  G -C "$dir/skel" commit -q --allow-empty -m c1
+  git -C "$dir/skel" branch -M main
+  git -C "$dir/skel" remote add origin "$dir/origin"
+  git -C "$dir/skel" push -q -u origin main
+  # ASK-<digits> (not ASK-AAA) wherever the gate is involved: linear_branch.py
+  # maps `sana/ask-<digits>` and the gate has no private copy of that convention.
+  git -C "$dir/skel" worktree add -q -B "sana/ask-$n" "$dir/tree" main
+  mkdir -p "$dir/tree/.prd-os"
+  printf '{"issue_id":"issue-unrelated","commit_sha":"deadbee","closed_at":"2026-07-01T00:00:00Z"}\n' \
+    > "$dir/tree/.prd-os/receipts.jsonl"
+  G -C "$dir/tree" add .prd-os/receipts.jsonl
+  G -C "$dir/tree" commit -q -m "seed ledger ASK-$n"
+  G -C "$dir/tree" push -q -u origin "sana/ask-$n"
+}
+
+# run_converge_receipt <world> <issue-suffix> <state-dir> <out>
+RRC=0
+run_converge_receipt() {
+  ( cd "$1/skel" \
+    && HOME="$W2/home" KIPI_SKEL="$1/skel" KIPI_STATE_DIR="$3" \
+       KIPI_NOTIFY="$W2/notify.sh" KIPI_CONVERGE_WORKER="$STUB/convworker" \
+       bash "$CONV" --issue "ASK-$2" --max-rounds 1 ) >"$4" 2>&1
+  RRC=$?
+}
+
+# run_converge_receipt_noident <world> <issue-suffix> <state-dir> <out>
+# Identical, except git can resolve NO committer identity -- the state a CI
+# runner is in and a developer machine never is (git falls back to the passwd
+# gecos name locally, so every case above passes on a laptop regardless).
+#
+# The empty exports reproduce the runner's exact refusal, `fatal: empty ident
+# name`, and they are strictly HARDER than the runner: an exported empty ident
+# also beats `git -c user.name=...`, so a config-level fallback would leave this
+# case red. That is deliberate -- it pins the fix at the env level rather than
+# letting a weaker one look sufficient. HOME is already redirected to an empty
+# dir by every runner here, which is what hides validate.yml's `--global`
+# identity from the code under test.
+run_converge_receipt_noident() {
+  ( cd "$1/skel" \
+    && HOME="$W2/home" KIPI_SKEL="$1/skel" KIPI_STATE_DIR="$3" \
+       KIPI_NOTIFY="$W2/notify.sh" KIPI_CONVERGE_WORKER="$STUB/convworker" \
+       GIT_AUTHOR_NAME="" GIT_COMMITTER_NAME="" \
+       bash "$CONV" --issue "ASK-$2" --max-rounds 1 ) >"$4" 2>&1
+  RRC=$?
+}
+
+# seed_record <state-dir> <pr> <verdict> [head_sha] [ts]
 # Omitting the sha writes the shape EVERY record on the board had before
 # ASK-216, which case O3 needs to stay exactly as it is today.
+#
+# `ts` is the 5th argument because the real producer writes one
+# (pr-review-agent.sh:271-279) and NO fixture here ever did, so the receipt
+# writer's `reviewed_at` branch was dead across the whole suite (PR #42 review,
+# finding 2, related note). Both shapes are now exercised: with a ts the receipt
+# claims reviewed_at, without one it names it unclaimed.
 seed_record() {
   mkdir -p "$1/pr-reviews"
+  local rec
   if [ -n "${4:-}" ]; then
-    printf '{"verdict":"%s","pr":%s,"head_sha":"%s"}\n' "$3" "$2" "$4" \
-      > "$1/pr-reviews/pr-$2.verdict.json"
+    rec="$(printf '{"verdict":"%s","pr":%s,"head_sha":"%s"' "$3" "$2" "$4")"
   else
-    printf '{"verdict":"%s","pr":%s}\n' "$3" "$2" > "$1/pr-reviews/pr-$2.verdict.json"
+    rec="$(printf '{"verdict":"%s","pr":%s' "$3" "$2")"
   fi
+  [ -n "${5:-}" ] && rec="$rec$(printf ',"ts":"%s"' "$5")"
+  printf '%s}\n' "$rec" > "$1/pr-reviews/pr-$2.verdict.json"
 }
 
 # --- O1. converge: an approval at a stale sha is NOT terminal ----------------
@@ -1484,7 +1599,7 @@ grep -q "drift round(s) -- a human resolves this one" "$W2/p3-5.out" \
       gate 10 or gate 20. It said: $(grep -i skip "$W2/p3-5.out" | head -1)"
 ok "it stopped at the drift cap, not as approved or unreviewed"
 
-PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
+PAGES="$({ grep -c . "$W2/pages.txt" 2>/dev/null || echo 0; } | head -1)"
 [ "$PAGES" = "1" ] \
   || fail "expected EXACTLY 1 founder page across 5 runs at the drift cap, got $PAGES. Zero means
       unreviewed code sits at the head of an approved PR with nobody told; more than one is the
@@ -1679,7 +1794,7 @@ ok "an unreadable head does not refill the drift budget"
       the round-2 major this budget was added to fix, wearing a gh hiccup as a coat."
 ok "the drift cap holds across runs whose head could not be read"
 
-P8_PAGES="$(grep -c . "$W2/pages.txt" 2>/dev/null || echo 0)"
+P8_PAGES="$({ grep -c . "$W2/pages.txt" 2>/dev/null || echo 0; } | head -1)"
 [ "$P8_PAGES" = "1" ] \
   || fail "expected EXACTLY 1 founder page across 9 runs, got $P8_PAGES. Zero means the cap was
       never reached, so unreviewed code sits at the head of an approved PR with nobody told. More
@@ -1860,7 +1975,12 @@ run_engine_reviewer() {
   RC=$?
 }
 
-pages_in() { grep -c . "$1/pages.txt" 2>/dev/null || echo 0; }
+# `grep -c` prints 0 AND exits 1 on a zero count, so a bare `|| echo 0`
+# APPENDED a second 0 and the value became "0\n0": that breaks `-eq` with
+# "integer expression expected" and makes a legitimate `= "0"` assertion
+# fail on correct behaviour. `| head -1` keeps whichever 0 arrived first.
+# Missing file: grep prints nothing and the fallback supplies the only 0.
+pages_in() { { grep -c . "$1/pages.txt" 2>/dev/null || echo 0; } | head -1; }
 
 # --- Q1. an approving codex review posts kipi/codex-approved on the read sha ---
 Q1="$W2/eng-approve"
@@ -1993,7 +2113,7 @@ ok "an unusable codex answer is not laundered through the fallback"
 # Q1's fixture is the noisy one on purpose; this reads back what the parser
 # actually extracted from it, because a status assertion alone cannot tell
 # "the noise was ignored" from "the noise happened to be harmless".
-Q1_REVIEW="$(ls -t "$Q1/home/.config/kipi/pr-reviews/codex/pr-901-"*.md 2>/dev/null | head -1)"
+Q1_REVIEW="$(ls -t "$Q1/home/.config/kipi/pr-reviews/codex/${REC901%.verdict.json}-"*.md 2>/dev/null | head -1)"
 [ -n "$Q1_REVIEW" ] \
   || fail "the codex engine wrote no review file under pr-reviews/codex/, so nothing can be
       re-parsed. Tree was: $(find "$Q1/home/.config/kipi/pr-reviews" -type f 2>/dev/null | tr '\n' ' ')"
@@ -2122,10 +2242,10 @@ ok "an unknown PR sha warns and proceeds (a partial clone does not wedge the loo
 # globs pr-<N>-*.md -- count the EXISTING claude rounds as codex's own, arming the
 # anti-re-litigation rule a round early on every PR with review history. So the
 # round counters do not move even though the gate did.
-[ -n "$(ls "$Q7/home/.config/kipi/pr-reviews/pr-901-"*.md 2>/dev/null)" ] \
+[ -n "$(ls "$Q7/home/.config/kipi/pr-reviews/${REC901%.verdict.json}-"*.md 2>/dev/null)" ] \
   || fail "the claude engine stopped writing its review to pr-reviews/ ; the worker's
       \`ls pr-reviews/pr-<N>-*.md\` read would find nothing"
-[ -z "$(ls "$Q1/home/.config/kipi/pr-reviews/pr-901-"*.md 2>/dev/null)" ] \
+[ -z "$(ls "$Q1/home/.config/kipi/pr-reviews/${REC901%.verdict.json}-"*.md 2>/dev/null)" ] \
   || fail "a codex review landed in the CLAUDE review directory. review_round globs
       pr-901-*.md, so every codex run would advance the claude reviewer's round counter."
 ok "the engines keep separate review directories (round counters do not cross-count)"
@@ -2134,15 +2254,15 @@ ok "the engines keep separate review directories (round counters do not cross-co
 # linear-worker.sh:76 both read pr-<N>.verdict.json at the pr-reviews ROOT. Codex
 # is the engine that checks Sana's work, so codex writes THAT file -- and the
 # advisory claude engine must not, or two writers would answer for one gate.
-[ -s "$Q1/home/.config/kipi/pr-reviews/pr-901.verdict.json" ] \
+[ -s "$Q1/home/.config/kipi/pr-reviews/$REC901" ] \
   || fail "THE DEFECT: the codex engine wrote no verdict record at the pr-reviews ROOT, so the
       file converge.sh:36 and linear-worker.sh:76 gate the loop on is never written by the
       engine that actually reviewed. The loop would read a stale or absent verdict."
-[ ! -f "$Q7/home/.config/kipi/pr-reviews/pr-901.verdict.json" ] \
+[ ! -f "$Q7/home/.config/kipi/pr-reviews/$REC901" ] \
   || fail "the ADVISORY claude engine wrote the loop's verdict record (pr-901.verdict.json).
       Two engines answering for one gate is the single-writer defect this repo keeps finding;
       a Claude verdict would drive the loop that exists to be checked by another lab."
-[ -s "$Q7/home/.config/kipi/pr-reviews/claude/pr-901.verdict.json" ] \
+[ -s "$Q7/home/.config/kipi/pr-reviews/claude/$REC901" ] \
   || fail "the claude engine wrote no verdict record of its own, so its advisory opinion is not
       recorded anywhere a later run can read"
 ok "codex writes the loop's verdict record; claude records its advisory one beside its reviews"
@@ -2647,20 +2767,43 @@ AMREC="$S_ARM8/pr-reviews/pr-900.automerge"
 ok "the worker publishes the arm state it read, so the second reporter never has to assert it"
 
 # --- R4. converge reports the RECORDED state, and only that ------------------
+# ITS OWN WORLD, with a worktree the receipt writer can actually write into.
+# Since PR #42 converge's page also carries whether a prd-os receipt covers the
+# head, and a fixture with no worktree on the branch misses one -- which would
+# turn this case into a receipt-miss case and stop it judging the arm half at
+# all. This world lets BOTH halves succeed, so "no human merge needed" here
+# means armed AND receipted, which is the only state in which it is true.
+R_CVARM="$W2/world-conv-armed"; receipt_world "$R_CVARM" aaa
+SHA_AAA="$(git -C "$R_CVARM/tree" rev-parse HEAD)"
 S_CV_ARM="$W2/state-conv-armed"; mkdir -p "$S_CV_ARM/pr-reviews"
-seed_record "$S_CV_ARM" 902 "APPROVE" "$SHA_A"
+seed_record "$S_CV_ARM" 902 "APPROVE" "$SHA_AAA"
 printf 'armed\n' > "$S_CV_ARM/pr-reviews/pr-902.automerge"
-gh_says 902 CLEAN "$SHA_A"
+gh_says 902 CLEAN "$SHA_AAA"
 : > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
-run_converge "$S_CV_ARM" "$W2/conv-armed.out" 1
+run_converge_at "$R_CVARM/skel" "$S_CV_ARM" "$W2/conv-armed.out" 1
 [ "$CRC" = "1" ] \
   || fail "converge exited $CRC on an approved, armed PR; expected 1 (goal met). It said:
 $(sed 's/^/        /' "$W2/conv-armed.out")"
+# THE PAGE NAMES THE LOG; THE FAILURE HAS TO CARRY IT (ASK-218). Every receipt
+# miss reported here ends in "see <state>/linear-worker.log" -- and on a CI runner
+# that log dies with the runner, so the one line that says WHY git refused the
+# receipt commit is unrecoverable after the fact. Diagnosing this failure from the
+# page alone means inferring git's words instead of reading them.
 grep -qi "no human merge needed" "$W2/pages.txt" \
   || fail "the worker recorded PR #902 as armed and converge's page does not say the merge is
       handled. The healthy case has to stay readable or the operator checks every one by hand:
-$(cat "$W2/pages.txt")"
+$(cat "$W2/pages.txt")
+      converge's own log ($S_CV_ARM/linear-worker.log), which carries git's stderr verbatim:
+$(sed 's/^/        /' "$S_CV_ARM/linear-worker.log" 2>/dev/null || echo '        (no log written)')"
 ok "converge says no human owes the merge when the worker RECORDED the PR armed"
+
+# AND THE RECEIPT SENTENCE STAYS OFF THE HEALTHY PAGE. A fix that makes the page
+# louder on every run is the cry-wolf failure this fleet keeps killing: the
+# receipt landed here, so there is nothing to say about it.
+grep -qi "receipt" "$W2/pages.txt" \
+  && fail "the healthy page now carries receipt prose on a run where the receipt LANDED. Every
+      converged PR would page about a problem that is not there: $(cat "$W2/pages.txt")"
+ok "an armed PR whose receipt landed pages exactly what it did before"
 
 S_CV_UN="$W2/state-conv-unarmed"; mkdir -p "$S_CV_UN/pr-reviews"
 seed_record "$S_CV_UN" 903 "APPROVE" "$SHA_A"
@@ -2741,8 +2884,17 @@ ok "the once-only page clears when the PR is seen armed, so a NEW unarmed state 
 # --- wiring: the arm lives in the worker, at the PR_NUM resolution point -----
 grep -q 'pr merge --auto --squash' "$WORKER" \
   || fail "linear-worker.sh never arms auto-merge"
-ARM_SRC="$(grep -n 'pr merge --auto --squash' "$WORKER" | head -1 | cut -d: -f1)"
-REV_SRC="$(grep -n 'REVIEWER_CMD' "$WORKER" | grep -v '^.*REVIEWER_CMD=' | head -1 | cut -d: -f1)"
+# Both greps must find a CALL SITE, not prose. The first `pr merge --auto
+# --squash` in the file is a comment explaining the cwd trap, and the first
+# bare `REVIEWER_CMD` is a comment saying "for the same reason REVIEWER_CMD
+# is" -- which the old `grep -v 'REVIEWER_CMD='` exclusion did not drop,
+# because it only ever excluded the assignment. That made this assertion
+# compare comment line 590 against comment line 85 and report the arm as
+# out of order while the real call sites (604, 1685) were correctly ordered.
+# So: drop comment lines, and match the reviewer on its EXPANSION ($REVIEWER_CMD),
+# which the assignment and the prose both lack.
+ARM_SRC="$(grep -n 'pr merge --auto --squash' "$WORKER" | grep -v ':[[:space:]]*#' | head -1 | cut -d: -f1)"
+REV_SRC="$(grep -n '\$REVIEWER_CMD' "$WORKER" | grep -v ':[[:space:]]*#' | head -1 | cut -d: -f1)"
 [ -n "$ARM_SRC" ] && [ -n "$REV_SRC" ] && [ "$ARM_SRC" -lt "$REV_SRC" ] \
   || fail "the arm does not sit before the reviewer call in linear-worker.sh (arm at
       ${ARM_SRC:-none}, reviewer at ${REV_SRC:-none})"
@@ -2772,6 +2924,981 @@ grep -q 'automerge_from_record' "$CONV" \
   || fail "converge.sh reports on auto-merge without reading the arm state the worker recorded.
       Asserting a state nobody read is what put 'no human merge needed' on an unarmed PR."
 ok "converge wiring: the second reporter READS the arm state instead of asserting it"
+
+# =============================================================================
+# THE RECEIPT HAS A PRODUCER (ASK-218)
+# =============================================================================
+# THE DEFECT: PR #23 adds pr-receipt-gate.py as a blocking step in `validate`,
+# the single required context on main. It refuses any `sana/ask-<n>` branch whose
+# head is not covered by a prd-os receipt. NOTHING in the autonomous path writes
+# one -- the only writer is kipi-dsse's issue_runner, reached through
+# /issue-closeout, which linear-worker.sh:637 explicitly tells the agent NOT to
+# run. So the gate would refuse 100% of worker PRs on the day it merged.
+#
+# THE FIX under test: converge.sh writes the receipt at the ONE moment the claim
+# becomes true -- a terminal approving verdict recorded at the PR's CURRENT head
+# (rework_gate exit 10, sha-matched since ASK-216). Same single-writer chokepoint
+# shape as the verdict record itself.
+#
+# The cases below drive the REAL converge.sh against a REAL git worktree with a
+# REAL (local, bare) origin. `gh` is stubbed -- never the live API -- but the
+# ledger, the commit, and the push are genuine, because "a receipt was written"
+# and "the PR carries a receipt" are different claims and only the second one
+# clears CI.
+RECEIPT_GATE="$ROOT/q-system/.q-system/scripts/pr-receipt-gate.py"
+
+# A whole repo world of its own: its own origin, its own worktree, its own
+# ledger. Never the live .prd-os/receipts.jsonl. `receipt_world` builds it; the
+# negative cases below each get their OWN, for the reason stated on that helper.
+R3="$W2/receipt"; receipt_world "$R3" 901
+RTREE="$R3/tree"
+SHA_901="$(git -C "$RTREE" rev-parse HEAD)"
+RLEDGER="$RTREE/.prd-os/receipts.jsonl"
+
+# run_converge_901 <state-dir> <out> -- converge for ASK-901 against that world.
+# KIPI_SKEL is what keeps this off the REAL repo's worktree list; without it the
+# writer would resolve the live tree and commit into the founder's checkout.
+run_converge_901() { run_converge_receipt "$R3" 901 "$1" "$2"; }
+
+# receipts_for <ledger> <issue> <sha>  -- how many records pin that issue+sha.
+# Reads the ledger as JSON, exactly as the gate does: a raw grep would count
+# `echo ASK-901 >> receipts.jsonl` as a receipt, which is the synthetic receipt
+# the whole mechanism exists to refuse.
+receipts_for() {
+  "$REAL_PY" - "$1" "$2" "$3" <<'PY'
+import json, sys
+path, issue, sha = sys.argv[1:4]
+n = 0
+try:
+    for line in open(path, encoding="utf-8"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if any(isinstance(v, str) and v.upper() == issue.upper() for v in rec.values()) \
+           and rec.get("commit_sha") == sha:
+            n += 1
+except FileNotFoundError:
+    pass
+print(n)
+PY
+}
+
+# --- S1. THE REPRODUCER: a terminal approval at the head writes a receipt ----
+# RED before the writer exists: converge exits 1 (converged) and the ledger is
+# untouched, so `validate` refuses the very PR the loop just approved.
+S_RCPT="$W2/state-receipt"; mkdir -p "$S_RCPT"
+RCPT_TS="2026-07-28T11:22:33Z"
+seed_record "$S_RCPT" 901 "APPROVE WITH NITS" "$SHA_901" "$RCPT_TS"
+gh_says 901 CLEAN "$SHA_901"
+: > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
+run_converge_901 "$S_RCPT" "$W2/conv-receipt.out"
+
+[ "$RRC" = "1" ] \
+  || fail "converge did not converge on an approval at the head: got $RRC, want 1. The receipt
+      writer must not change the exit contract in loop-exits.md. It said:
+$(sed 's/^/        /' "$W2/conv-receipt.out")"
+ok "the receipt writer leaves converge's terminal exit code alone"
+
+[ "$(receipts_for "$RLEDGER" ASK-901 "$SHA_901")" = "1" ] \
+  || fail "THE DEFECT: converge called PR #901 converged at $SHA_901 and wrote NO prd-os
+      receipt pinned to that sha. PR #23's gate is a blocking step in \`validate\`, the only
+      required context on main, so this PR can never merge -- and neither can any other
+      sana/ask-<n> PR the worker opens. Ledger:
+$(sed 's/^/        /' "$RLEDGER")
+      converge said:
+$(sed 's/^/        /' "$W2/conv-receipt.out")"
+ok "a terminal approval at the head writes ONE receipt pinned to that exact sha"
+
+# The receipt may only claim what converge actually observed. `verified_at` is
+# deliberately absent (converge reads no CI, and `validate` is the job that runs
+# this gate, so gating on it would deadlock), and the absence has to be SAID --
+# a field silently dropped reads as an unmade claim nobody knows is missing.
+grep -qi "verified_at" "$W2/conv-receipt.out" \
+  || fail "converge wrote a receipt without naming the prd-os fields it deliberately left
+      unclaimed. A receipt that lies is worse than a missing one; so is one whose gaps are
+      invisible. It said:
+$(sed 's/^/        /' "$W2/conv-receipt.out")"
+ok "converge names on stdout which receipt fields it could not honestly fill"
+
+# AND reviewed_at IS REALLY CARRIED (PR #42 review, finding 2, related note). No
+# fixture in this suite ever wrote a `ts`, so the writer's reviewed_at branch was
+# dead across every case -- the field could have been dropped, or filled with
+# anything, and nothing here would have moved. The real producer writes it
+# (pr-review-agent.sh:271-279), so the fixture does too.
+RCPT_REVIEWED="$("$REAL_PY" - "$RLEDGER" "$SHA_901" <<'PY'
+import json, sys
+led, sha = sys.argv[1:3]
+for line in open(led, encoding="utf-8"):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        rec = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if isinstance(rec, dict) and rec.get("commit_sha") == sha:
+        print(rec.get("reviewed_at", ""))
+        break
+PY
+)"
+[ "$RCPT_REVIEWED" = "$RCPT_TS" ] \
+  || fail "the verdict record carried ts=$RCPT_TS and the receipt claims reviewed_at='$RCPT_REVIEWED'.
+      reviewed_at is the ONE prd-os field converge is entitled to claim; getting it from the
+      record is the whole reason the record is read. Ledger:
+$(sed 's/^/        /' "$RLEDGER")"
+grep -qi "reviewed_at (" "$W2/conv-receipt.out" \
+  && fail "converge had a usable timestamp and still listed reviewed_at as unclaimed. It said:
+$(sed 's/^/        /' "$W2/conv-receipt.out")"
+ok "the receipt carries reviewed_at from the verdict record when the record has one"
+
+# --- S1c. THE RECEIPT DECLARES WHAT IT DOES NOT COVER ------------------------
+# (round 3, finding 2 -- major.) converge can attest exactly one thing: an
+# adversarial review approved this exact sha. It cannot attest verification
+# (`validate` is the job that runs this gate -- gating on it deadlocks), findings
+# triage (never observed) or closure (converge never closes an issue). Those
+# omissions were named on STDOUT only, so the ARTIFACT was indistinguishable
+# from a full prd-os closeout receipt and a consumer could not tell "checked and
+# absent" from "never considered".
+RCPT_SCOPE="$("$REAL_PY" - "$RLEDGER" "$SHA_901" <<'PY'
+import json, sys
+led, sha = sys.argv[1:3]
+for line in open(led, encoding="utf-8"):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        rec = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if isinstance(rec, dict) and rec.get("commit_sha") == sha:
+        print("%s|%s" % (",".join(sorted(rec.get("receipts", {}))),
+                         ",".join(sorted(rec))))
+        break
+PY
+)"
+[ "${RCPT_SCOPE%%|*}" = "reviewed" ] \
+  || fail "the receipt declares its covered receipts as '${RCPT_SCOPE%%|*}', expected exactly
+      'reviewed'. converge proves a review and nothing else; a receipt that does not say so
+      lets a gate read a review-only claim as a completed closeout -- a false green in the one
+      mechanism whose whole job is proving work happened. Ledger:
+$(sed 's/^/        /' "$RLEDGER")"
+# AND IT MAY NOT CLAIM THE THREE IT CANNOT SEE, at top level either. Scoped to
+# converge's OWN record, not the file: receipt_world seeds an unrelated line
+# carrying closed_at, and a whole-ledger grep reads that as converge's claim --
+# which is what the first version of this assertion did.
+for f in verified_at findings_triaged_at closed_at; do
+  case ",${RCPT_SCOPE#*|}," in
+    *",$f,"*) fail "converge's receipt claims $f. It never observes it, so stamping it is a lie
+      the gate would pass on. That record's keys: ${RCPT_SCOPE#*|}" ;;
+  esac
+done
+ok "the receipt names the one receipt it carries and claims none of the three it cannot see"
+
+# --- S2. the PR CARRIES it: committed and pushed, not just written locally ---
+# The ledger is read from the PUSHED head by CI. A receipt that only exists in a
+# worktree is invisible to `validate` and clears nothing.
+PUSHED_901="$(git -C "$R3/origin" rev-parse sana/ask-901 2>/dev/null)"
+[ -n "$PUSHED_901" ] || fail "origin lost the branch entirely"
+[ "$PUSHED_901" != "$SHA_901" ] \
+  || fail "converge wrote the receipt but never pushed it. CI reads the PUSHED head; a receipt
+      sitting in a worktree clears nothing, so PR #23's gate still refuses this PR."
+git -C "$RTREE" merge-base --is-ancestor "$SHA_901" "$PUSHED_901" \
+  || fail "the receipt commit is not a descendant of the sha the review approved -- it landed on
+      another line of history"
+RDIFF="$(git -C "$RTREE" diff --name-only "$SHA_901" "$PUSHED_901")"
+[ "$RDIFF" = ".prd-os/receipts.jsonl" ] \
+  || fail "the receipt commit carried more than the ledger: '$RDIFF'. Anything outside .prd-os/
+      is code the review never read, and PR #23's coverage check refuses it -- correctly."
+ok "the receipt is committed and pushed, and carries nothing but the ledger"
+
+# --- S2b. AND IT LANDS WHERE GIT KNOWS NOBODY (ASK-218) ----------------------
+# Every case above ran on a machine whose git could guess an identity from the
+# passwd gecos field, so the receipt commit's identity was never a variable and
+# this suite never asked the question. On a CI runner gecos is empty and the
+# redirected HOME hides validate.yml's `git config --global`, so git refused
+# every receipt commit with `fatal: empty ident name` -- converge rolled the
+# ledger line back and reported a miss, 100% of the time, on the one path the
+# whole PR exists to make work.
+#
+# It failed FIRST at the armed-page case (R4), and `fail()` exits on first
+# failure, so all twenty receipt assertions below it never executed in CI at all
+# and were green only on laptops. This case is the one that would have caught it.
+R_NOID="$W2/world-noident"; receipt_world "$R_NOID" 904
+SHA_NOID="$(git -C "$R_NOID/tree" rev-parse HEAD)"
+S_NOID="$W2/state-noident"; mkdir -p "$S_NOID/pr-reviews"
+seed_record "$S_NOID" 904 "APPROVE" "$SHA_NOID"
+gh_says 904 CLEAN "$SHA_NOID"
+: > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
+run_converge_receipt_noident "$R_NOID" 904 "$S_NOID" "$W2/conv-noident.out"
+
+PUSHED_NOID="$(git -C "$R_NOID/origin" rev-parse sana/ask-904 2>/dev/null)"
+[ -n "$PUSHED_NOID" ] && [ "$PUSHED_NOID" != "$SHA_NOID" ] \
+  || fail "THE DEFECT: with no ambient git identity -- a CI runner, a container, any sandboxed
+      HOME -- converge wrote NO receipt onto origin/sana/ask-904. This is not a harness
+      artifact: the identity is ambient in production too, so any headless converge run
+      leaves a PR that PR #23's gate refuses forever. converge said:
+$(sed 's/^/        /' "$W2/conv-noident.out")
+      and git said, in converge's own log:
+$(sed 's/^/        /' "$S_NOID/linear-worker.log" 2>/dev/null || echo '        (no log written)')"
+
+# It has to be the RECEIPT that landed, not merely a commit. Same allowance PR
+# #23's gate makes: converge may add exactly one file to a reviewed head.
+NOID_DIFF="$(git -C "$R_NOID/tree" diff --name-only "$SHA_NOID" "$PUSHED_NOID")"
+[ "$NOID_DIFF" = ".prd-os/receipts.jsonl" ] \
+  || fail "the no-identity path pushed '$NOID_DIFF' rather than the ledger alone"
+
+# AND THE SUBSTITUTION IS AUDITABLE. A fallback identity that installs itself
+# silently is a commit whose author is a lie by omission; the run log has to
+# carry that converge, not a person, signed this.
+NOID_COMMITTER="$(git -C "$R_NOID/tree" log -1 --format='%cn <%ce>' "$PUSHED_NOID")"
+[ "$NOID_COMMITTER" = "kipi-converge <converge@kipi.invalid>" ] \
+  || fail "the receipt landed but is signed '$NOID_COMMITTER'. With no resolvable identity the
+      only honest author is converge itself -- anything else means the fallback did not fire
+      and this case is passing for a reason it was not written to test."
+grep -qi "resolves no committer identity" "$W2/conv-noident.out" \
+  || fail "converge substituted its own identity onto a commit and said nothing about it. It said:
+$(sed 's/^/        /' "$W2/conv-noident.out")"
+ok "a receipt lands with no ambient git identity, signed by converge and said out loud"
+
+# --- S2c. A CRASHED RUN'S LEFTOVER LINE IS FINISHED, NOT COUNTED -------------
+# (round 2, finding 1 -- major.) receipt_append dedups on the ledger FILE, and
+# the file is written before the commit. A run killed in that window leaves an
+# uncommitted line; every retry then matched it, skipped the commit, found
+# nothing to push, and reported SUCCESS -- while origin carried zero receipts.
+# The failure got quieter the more it was retried, which is the worst direction.
+R_CRASH="$W2/world-crash"; receipt_world "$R_CRASH" 906
+SHA_CRASH="$(git -C "$R_CRASH/tree" rev-parse HEAD)"
+S_CRASH="$W2/state-crash"; mkdir -p "$S_CRASH/pr-reviews"
+seed_record "$S_CRASH" 906 "APPROVE" "$SHA_CRASH"
+gh_says 906 CLEAN "$SHA_CRASH"
+# The corpse a killed run leaves: the line in the file, nothing committed.
+printf '{"commit_sha": "%s", "issue_id": "ASK-906"}\n' "$SHA_CRASH" \
+  >> "$R_CRASH/tree/.prd-os/receipts.jsonl"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_CRASH" 906 "$S_CRASH" "$W2/conv-crash.out"
+
+PUSHED_CRASH="$(git -C "$R_CRASH/origin" rev-parse sana/ask-906 2>/dev/null)"
+[ -n "$PUSHED_CRASH" ] && [ "$PUSHED_CRASH" != "$SHA_CRASH" ] \
+  || fail "THE DEFECT: a receipt line left uncommitted by a killed run was read as a delivered
+      receipt. converge skipped the commit, pushed nothing, and origin/sana/ask-906 still
+      carries no receipt -- and every retry repeats it, so the PR can never satisfy PR #23's
+      gate. It said:
+$(sed 's/^/        /' "$W2/conv-crash.out")"
+grep -qi "never committed" "$W2/conv-crash.out" \
+  || fail "converge recovered the orphaned line without saying that is what it did. A silent
+      recovery on a durability path is indistinguishable from never having had the bug:
+$(sed 's/^/        /' "$W2/conv-crash.out")"
+ok "a receipt line left uncommitted by a crashed run is finished, not counted as delivered"
+
+# --- S2d. AND ONLY THE REMOTE GETS TO SAY IT LANDED --------------------------
+# The other half of the same finding, and the ONE case no local signal catches.
+# Every other miss here trips a local error the run can see: a refused commit, a
+# failed push, a tree standing on the wrong sha. This one has none. The receipt
+# was genuinely written, committed and pushed, and THEN origin lost it (a force
+# push, a branch rebuilt, a rewound ref).
+#
+# On the next run every local reading still says done: the ledger file carries
+# the line, it is committed, and `rev-list origin/$BRANCH..HEAD` answers 0 --
+# because the remote-TRACKING ref is a local cache that still points at the
+# commit origin no longer has. So the old code returned success without one
+# error to report, and the page said no human was needed. Nothing short of
+# asking the remote can tell this apart from a healthy run.
+R_STALE="$W2/world-stale"; receipt_world "$R_STALE" 907
+SHA_STALE="$(git -C "$R_STALE/tree" rev-parse HEAD)"
+S_STALE="$W2/state-stale"; mkdir -p "$S_STALE/pr-reviews"
+seed_record "$S_STALE" 907 "APPROVE" "$SHA_STALE"
+gh_says 907 CLEAN "$SHA_STALE"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_STALE" 907 "$S_STALE" "$W2/conv-stale1.out"
+DELIVERED_STALE="$(git -C "$R_STALE/origin" rev-parse sana/ask-907 2>/dev/null)"
+[ "$DELIVERED_STALE" != "$SHA_STALE" ] \
+  || fail "the S2d fixture never delivered a receipt on its first run, so it cannot judge what
+      happens when origin loses one:
+$(sed 's/^/        /' "$W2/conv-stale1.out")"
+
+# origin loses the receipt commit; the tree and its tracking ref know nothing.
+git -C "$R_STALE/origin" update-ref refs/heads/sana/ask-907 "$SHA_STALE"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_STALE" 907 "$S_STALE" "$W2/conv-stale2.out"
+
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  && fail "THE DEFECT ON THE PHONE: origin carries no receipt for this head, so CI reads none,
+      and the one line that wakes the founder says the merge is handled. Every local signal
+      said done -- which is exactly why the local signals cannot be the ones that decide. It
+      paged:
+$(cat "$W2/pages.txt")"
+grep -qi "receipt" "$W2/pages.txt" \
+  || fail "origin carries no receipt and the page does not mention one, so the operator is left
+      with a PR that silently never merges: $(cat "$W2/pages.txt")"
+[ "$RRC" = "1" ] \
+  || fail "an undelivered receipt changed converge's exit code to $RRC. The writer is
+      best-effort by design; only the REPORT moves."
+ok "a receipt origin no longer carries is a miss, however done the worktree looks"
+
+# --- S2e. THE TRANSACTION IS GUARDED ----------------------------------------
+# (round 2, finding 2 -- major.) Two convergence runs on one issue -- a hand
+# `kipi converge` next to the scheduled one -- both read "no receipt", both
+# append, and then contend on the same git index; both commits can fail and
+# origin ends with nothing after TWO terminal approvals. Same read-decide-write
+# shape sp-53b02cc4 records across five other sites in this fleet.
+#
+# Driven at the lock itself rather than by racing two processes: a race that
+# passes because the timing happened to work proves nothing on a quiet runner.
+R_LOCK="$W2/world-lock"; receipt_world "$R_LOCK" 908
+SHA_LOCK="$(git -C "$R_LOCK/tree" rev-parse HEAD)"
+S_LOCK="$W2/state-lock"; mkdir -p "$S_LOCK/pr-reviews"
+seed_record "$S_LOCK" 908 "APPROVE" "$SHA_LOCK"
+gh_says 908 CLEAN "$SHA_LOCK"
+# A LIVE holder: this shell's own pid is by definition running, so the liveness
+# check must read this lock as held and refuse to break it.
+printf '%s:0:0\n' "$$" > "$S_LOCK/receipt-sana-ask-908.lock"
+: > "$W2/pages.txt"
+( cd "$R_LOCK/skel" \
+  && HOME="$W2/home" KIPI_SKEL="$R_LOCK/skel" KIPI_STATE_DIR="$S_LOCK" \
+     KIPI_NOTIFY="$W2/notify.sh" KIPI_CONVERGE_WORKER="$STUB/convworker" \
+     KIPI_RECEIPT_LOCK_TRIES=3 \
+     bash "$CONV" --issue "ASK-908" --max-rounds 1 ) >"$W2/conv-lock.out" 2>&1
+
+grep -qi "receipt lock" "$W2/conv-lock.out" \
+  || fail "converge entered the receipt transaction without ever consulting a lock, so two runs
+      can interleave inside the read-decide-write and both lose. It said:
+$(sed 's/^/        /' "$W2/conv-lock.out")"
+# A TIMEOUT MUST NOT PROCEED (round 3, finding 1 -- major). The first version
+# returned SUCCESS after the timeout and entered the transaction holding nothing,
+# so two runs could be inside it each believing they were serialized.
+PUSHED_LOCK="$(git -C "$R_LOCK/origin" rev-parse sana/ask-908 2>/dev/null)"
+[ "$PUSHED_LOCK" = "$SHA_LOCK" ] \
+  || fail "THE DEFECT: converge could not take the receipt lock and wrote a receipt anyway. The
+      lock is held by a LIVE pid, so the only correct outcome is to write nothing and say so --
+      entering the transaction here is two runs inside one read-decide-write. It said:
+$(sed 's/^/        /' "$W2/conv-lock.out")"
+# ...AND THE LIVE HOLDER'S LOCK IS STILL THERE. The old release removed the lock
+# by PATH, so the run that failed to acquire deleted the lock belonging to the
+# run that held it -- strictly worse than having no lock at all.
+[ -f "$S_LOCK/receipt-sana-ask-908.lock" ] \
+  || fail "THE DEFECT: converge deleted a lock it never owned. The holder is still inside its
+      transaction and its lock is gone, so the next run walks straight in."
+[ "$(cat "$S_LOCK/receipt-sana-ask-908.lock")" = "$$:0:0" ] \
+  || fail "the live holder's lock was overwritten by the run that could not take it:
+      $(cat "$S_LOCK/receipt-sana-ask-908.lock")"
+# AND IT SAYS SO ON THE PAGE. Writing no receipt is the right call, but a silent
+# skip is a PR that never merges with nobody knowing why.
+grep -qi "receipt" "$W2/pages.txt" \
+  || fail "converge skipped the receipt for lock contention and paged nothing about it:
+$(cat "$W2/pages.txt")"
+ok "a run that cannot take the receipt lock writes nothing and leaves the holder's lock alone"
+
+# --- S2e2. A CORPSE LOCK DOES NOT WEDGE THE RECEIPT FOREVER ------------------
+# The other side of refusing to force: a lock left by a killed run must not block
+# every future receipt. Broken on OWNER LIVENESS -- pid 2147483647 is not running.
+rm -f "$S_LOCK/receipt-sana-ask-908.lock"
+printf '2147483647:0:0\n' > "$S_LOCK/receipt-sana-ask-908.lock"
+: > "$W2/pages.txt"
+( cd "$R_LOCK/skel" \
+  && HOME="$W2/home" KIPI_SKEL="$R_LOCK/skel" KIPI_STATE_DIR="$S_LOCK" \
+     KIPI_NOTIFY="$W2/notify.sh" KIPI_CONVERGE_WORKER="$STUB/convworker" \
+     KIPI_RECEIPT_LOCK_TRIES=3 \
+     bash "$CONV" --issue "ASK-908" --max-rounds 1 ) >"$W2/conv-lock2.out" 2>&1
+
+PUSHED_LOCK2="$(git -C "$R_LOCK/origin" rev-parse sana/ask-908 2>/dev/null)"
+[ -n "$PUSHED_LOCK2" ] && [ "$PUSHED_LOCK2" != "$SHA_LOCK" ] \
+  || fail "a lock left behind by a dead run blocked the receipt permanently. Refusing to force a
+      LIVE lock is right; honouring a corpse means no receipt is ever written again. It said:
+$(sed 's/^/        /' "$W2/conv-lock2.out")"
+[ -f "$S_LOCK/receipt-sana-ask-908.lock" ] \
+  && fail "converge finished its transaction and left its own lock behind, so the next run has
+      to break it as a corpse before it can do anything"
+ok "a lock left by a dead run is broken, delivered, and released"
+
+# --- S2e3. THE RELEASE ONLY EVER REMOVES A LOCK THIS RUN OWNS ----------------
+# The second half of round 3's finding 1: the old release removed the lock by
+# PATH. Reached only on a SUCCESSFUL acquisition, so once the timeout stopped
+# lying there is no ordinary path into it holding someone else's lock -- which is
+# exactly why it needed a case built on purpose. A mutant that reverted the
+# release to `rm -f "$1"` SURVIVED the whole suite until this case existed.
+#
+# The lock is made to change hands INSIDE the transaction: the tree's pre-commit
+# hook fires between take and drop, and here it stamps a foreign token over the
+# lock. A release that trusts the path deletes it; one that checks its own token
+# leaves it.
+R_OWN="$W2/world-lockown"; receipt_world "$R_OWN" 910
+SHA_OWN="$(git -C "$R_OWN/tree" rev-parse HEAD)"
+S_OWN="$W2/state-lockown"; mkdir -p "$S_OWN/pr-reviews"
+seed_record "$S_OWN" 910 "APPROVE" "$SHA_OWN"
+gh_says 910 CLEAN "$SHA_OWN"
+mkdir -p "$R_OWN/skel/.git/hooks"
+{ printf '#!/bin/sh\n'
+  printf 'printf "foreign:0:0\\n" > "%s/receipt-sana-ask-910.lock"\n' "$S_OWN"
+  printf 'exit 0\n'; } > "$R_OWN/skel/.git/hooks/pre-commit"
+chmod +x "$R_OWN/skel/.git/hooks/pre-commit"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_OWN" 910 "$S_OWN" "$W2/conv-lockown.out"
+
+[ -f "$S_OWN/receipt-sana-ask-910.lock" ] \
+  || fail "THE DEFECT: the lock changed hands during the transaction and converge's release
+      deleted it anyway. Releasing by path means whichever run finishes first unlocks the run
+      that is still inside its own transaction. It said:
+$(sed 's/^/        /' "$W2/conv-lockown.out")"
+[ "$(cat "$S_OWN/receipt-sana-ask-910.lock")" = "foreign:0:0" ] \
+  || fail "the release removed another run's lock and left something else in its place:
+      $(cat "$S_OWN/receipt-sana-ask-910.lock")"
+grep -qi "NOT releasing" "$W2/conv-lockown.out" \
+  || fail "converge declined to release a lock it did not own and never said so. A silent
+      non-release is indistinguishable from a leaked lock the next run has to break:
+$(sed 's/^/        /' "$W2/conv-lockown.out")"
+ok "a release refuses a lock that no longer carries this run's token, and says so"
+
+# --- S2f. THE COMMIT-FAILURE REMEDY HAS TO BE RUNNABLE -----------------------
+# (round 2, finding 3 -- minor.) The page told the operator to commit a ledger
+# line that the rollback immediately above it had already removed, so the
+# copy-paste died with `nothing to commit`. A remedy that cannot work teaches the
+# one human who reads pages to stop reading them -- the same category as the
+# alert findings on ASK-283.
+R_HOOK="$W2/world-hookfail"; receipt_world "$R_HOOK" 909
+SHA_HOOK="$(git -C "$R_HOOK/tree" rev-parse HEAD)"
+S_HOOK="$W2/state-hookfail"; mkdir -p "$S_HOOK/pr-reviews"
+seed_record "$S_HOOK" 909 "APPROVE" "$SHA_HOOK"
+gh_says 909 CLEAN "$SHA_HOOK"
+# A refusing pre-commit hook is how this actually happens here: the real repo
+# runs lefthook, and gitleaks/receipts-ledger can and do refuse a commit.
+mkdir -p "$R_HOOK/skel/.git/hooks"
+printf '#!/bin/sh\nexit 1\n' > "$R_HOOK/skel/.git/hooks/pre-commit"
+chmod +x "$R_HOOK/skel/.git/hooks/pre-commit"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_HOOK" 909 "$S_HOOK" "$W2/conv-hookfail.out"
+
+grep -q "commit -m 'chore(receipt)" "$W2/pages.txt" "$W2/conv-hookfail.out" \
+  && fail "the page still hands the operator a bare \`git commit -- .prd-os/receipts.jsonl\`.
+      The rollback already removed that line, so their copy-paste dies with 'nothing to
+      commit' and the page reads as broken rather than the commit. It said:
+$(cat "$W2/pages.txt")"
+grep -qi "kipi converge --issue ASK-909" "$W2/pages.txt" \
+  || fail "the commit was refused and the page names no remedy that can actually re-create the
+      receipt. Only another converge run writes that line: $(cat "$W2/pages.txt")"
+ok "a refused receipt commit pages a remedy that can actually be run"
+
+# --- S3. THE GATE AND THE PRODUCER, CHECKED AGAINST EACH OTHER ---------------
+# Not each against a fixture. pr-receipt-gate.py rides on PR #23's branch and is
+# NOT in this tree until that merges, so this arms itself the moment it lands.
+# The skip is loud on purpose: a check that quietly does nothing reads as a pass.
+if [ -f "$RECEIPT_GATE" ]; then
+  ( cd "$RTREE" && "$REAL_PY" "$RECEIPT_GATE" --branch sana/ask-901 \
+      --head-sha "$SHA_901" --receipts "$RLEDGER" ) >"$W2/gate-at-sha.out" 2>&1 \
+    || fail "pr-receipt-gate.py REFUSED the receipt this writer just produced at $SHA_901.
+      The gate and its producer disagree, which is the ASK-210 round-3 defect again. It said:
+$(sed 's/^/        /' "$W2/gate-at-sha.out")"
+  ok "pr-receipt-gate.py exits 0 at the sha the writer pinned"
+
+  ( cd "$RTREE" && "$REAL_PY" "$RECEIPT_GATE" --branch sana/ask-901 \
+      --head-sha "$PUSHED_901" --receipts "$RLEDGER" ) >"$W2/gate-at-head.out" 2>&1 \
+    || fail "pr-receipt-gate.py refused the PUSHED head $PUSHED_901, which is the sha CI
+      actually checks. Passing only at the pinned sha would mean the gate still blocks every
+      real PR. It said:
+$(sed 's/^/        /' "$W2/gate-at-head.out")"
+  ok "pr-receipt-gate.py exits 0 at the pushed head CI will actually see"
+else
+  echo "  SKIP: pr-receipt-gate.py is not in this tree (it rides on PR #23, still open)."
+  echo "        The producer<->gate cases above are NOT running. They arm themselves the"
+  echo "        moment PR #23 merges; until then this suite proves the producer only."
+fi
+
+# --- S4. a REQUEST CHANGES verdict writes NO receipt -------------------------
+# IN A WORLD WHERE THE WRITE WOULD HAVE SUCCEEDED. Run against S1's world this
+# case could not fail: S1's receipt already sat at the shared sha (so a wrong
+# write dedup'd away) and the tree head had moved past it (so a wrong write hit
+# the tree-head guard). Both left the line count unchanged -- the whole
+# assertion -- and a mutant that wrote a receipt for EVERY verdict passed it
+# (PR #42 review, finding 2). Fresh world, fresh ledger, tree standing exactly at
+# the head: the ONLY thing between this verdict and a receipt is the gate.
+R_S4="$W2/world-receipt-rc"; receipt_world "$R_S4" 902
+S4_TREE="$R_S4/tree"; S4_LEDGER="$S4_TREE/.prd-os/receipts.jsonl"
+SHA_902="$(git -C "$S4_TREE" rev-parse HEAD)"
+S4_ORIGIN_BEFORE="$(git -C "$R_S4/origin" rev-parse sana/ask-902)"
+S_RC="$W2/state-receipt-rc"; mkdir -p "$S_RC"
+seed_record "$S_RC" 902 "REQUEST CHANGES" "$SHA_902" "$RCPT_TS"
+gh_says 902 CLEAN "$SHA_902"
+run_converge_receipt "$R_S4" 902 "$S_RC" "$W2/conv-rc.out"
+[ "$(receipts_for "$S4_LEDGER" ASK-902 "$SHA_902")" = "0" ] \
+  || fail "a REQUEST CHANGES verdict produced a receipt. The receipt asserts a review happened
+      and concluded; a rework round has concluded nothing. Ledger:
+$(sed 's/^/        /' "$S4_LEDGER")"
+[ "$(git -C "$R_S4/origin" rev-parse sana/ask-902)" = "$S4_ORIGIN_BEFORE" ] \
+  || fail "a REQUEST CHANGES round pushed a commit to origin/sana/ask-902. Whatever it wrote, CI
+      now reads it -- and this branch of converge is entitled to write nothing."
+ok "a REQUEST CHANGES verdict writes no receipt"
+
+# --- S5. an approval at a STALE sha writes NO receipt ------------------------
+# THE CASE THAT DECIDES THE BLAST RADIUS. rework_gate returns 40 here: the review
+# approved code that is no longer the head. A receipt written from that approval
+# would tell `validate` that unreviewed code was reviewed -- the gate would then
+# rubber-stamp exactly what it exists to refuse, fleet-wide through kipi update.
+#
+# Its OWN world for the same reason as S4, and it is the one that most needed it:
+# the PR body stakes the whole change on this case, and a mutant that called the
+# writer from the gate-40 branch passed it (PR #42 review, finding 2). Here the
+# tree stands at the head, so such a mutant WRITES, and this fails.
+R_S5="$W2/world-receipt-stale"; receipt_world "$R_S5" 903
+S5_TREE="$R_S5/tree"; S5_LEDGER="$S5_TREE/.prd-os/receipts.jsonl"
+SHA_903="$(git -C "$S5_TREE" rev-parse HEAD)"
+S5_ORIGIN_BEFORE="$(git -C "$R_S5/origin" rev-parse sana/ask-903)"
+S_STALE="$W2/state-receipt-stale"; mkdir -p "$S_STALE"
+seed_record "$S_STALE" 903 "APPROVE WITH NITS" "$SHA_A" "$RCPT_TS"
+gh_says 903 CLEAN "$SHA_903"
+run_converge_receipt "$R_S5" 903 "$S_STALE" "$W2/conv-stale.out"
+[ "$(receipts_for "$S5_LEDGER" ASK-903 "$SHA_903")" = "0" ] \
+  || fail "AN APPROVAL AT A STALE SHA WROTE A RECEIPT AT THE HEAD. The verdict was recorded at
+      $SHA_A and the head is $SHA_903, so nobody has read the code at the head.
+      This receipt would clear PR #23's gate on unreviewed code. Ledger:
+$(sed 's/^/        /' "$S5_LEDGER")"
+[ "$(receipts_for "$S5_LEDGER" ASK-903 "$SHA_A")" = "0" ] \
+  || fail "the stale round wrote a receipt at the REVIEWED sha $SHA_A. The gate matches on the
+      head, so this clears nothing -- but it is still converge asserting a prd-os claim about a
+      commit it decided not to converge on. Ledger:
+$(sed 's/^/        /' "$S5_LEDGER")"
+[ "$(git -C "$R_S5/origin" rev-parse sana/ask-903)" = "$S5_ORIGIN_BEFORE" ] \
+  || fail "the stale round pushed to origin/sana/ask-903; CI reads that head"
+ok "an approving verdict at a stale sha (gate 40) writes no receipt"
+
+# --- S6. re-running on an already-receipted head does not double-write -------
+# converge is re-run by hand and by the dispatcher; a ledger that grows one line
+# per invocation is a ledger nobody can audit.
+S_AGAIN="$W2/state-receipt-again"; mkdir -p "$S_AGAIN"
+seed_record "$S_AGAIN" 901 "APPROVE WITH NITS" "$SHA_901"
+gh_says 901 CLEAN "$SHA_901"
+run_converge_901 "$S_AGAIN" "$W2/conv-again.out"
+[ "$RRC" = "1" ] || fail "the idempotent re-run stopped converging: got $RRC, want 1"
+[ "$(receipts_for "$RLEDGER" ASK-901 "$SHA_901")" = "1" ] \
+  || fail "converge wrote a SECOND receipt for $SHA_901 on a re-run. Ledger:
+$(sed 's/^/        /' "$RLEDGER")"
+# Pin WHY it did not write, or this passes for any reason converge declines --
+# including the tree having moved, which would make the case vacuous.
+grep -qi "already" "$W2/conv-again.out" \
+  || fail "converge skipped the write without saying the head was already receipted, so this
+      case cannot tell dedup from an unrelated refusal. It said:
+$(sed 's/^/        /' "$W2/conv-again.out")"
+ok "re-running on an already-receipted head writes nothing and says why"
+
+# --- S7. a record with NO ts leaves reviewed_at UNCLAIMED, and says so -------
+# The other half of the reviewed_at branch (finding 2, related note). Every
+# record written before the reviewer emitted `ts` lacks one, and the receipt must
+# then claim two fields, not three. A receipt that lies is worse than a missing
+# one; the claim has to shrink to what was observed.
+R_S7="$W2/world-receipt-nots"; receipt_world "$R_S7" 904
+S7_LEDGER="$R_S7/tree/.prd-os/receipts.jsonl"
+SHA_904="$(git -C "$R_S7/tree" rev-parse HEAD)"
+S_NOTS="$W2/state-receipt-nots"; mkdir -p "$S_NOTS"
+seed_record "$S_NOTS" 904 "APPROVE" "$SHA_904"
+gh_says 904 CLEAN "$SHA_904"
+run_converge_receipt "$R_S7" 904 "$S_NOTS" "$W2/conv-nots.out"
+[ "$(receipts_for "$S7_LEDGER" ASK-904 "$SHA_904")" = "1" ] \
+  || fail "a verdict record with no ts produced NO receipt at all. The missing field is
+      reviewed_at, not the receipt. Ledger:
+$(sed 's/^/        /' "$S7_LEDGER")"
+grep -q '"reviewed_at"' "$S7_LEDGER" \
+  && fail "the record carried no ts and the receipt claims reviewed_at anyway -- an invented
+      timestamp on a prd-os claim. Ledger:
+$(sed 's/^/        /' "$S7_LEDGER")"
+grep -qi "reviewed_at (" "$W2/conv-nots.out" \
+  || fail "converge silently dropped reviewed_at instead of naming it unclaimed. A gap nobody
+      states reads as a field that was checked. It said:
+$(sed 's/^/        /' "$W2/conv-nots.out")"
+ok "a record with no usable timestamp yields a receipt that claims reviewed_at from nobody"
+
+# --- S8. THE PAGE CARRIES A RECEIPT MISS -------------------------------------
+# PR #42 review, finding 1 (major). Every failure path in the writer reported
+# through `say` -- stdout and the run log -- and the terminal report under it
+# paged "auto-merge armed, no human merge needed" regardless. At 3am the PR goes
+# red in `validate`, auto-merge never fires, and the founder's phone says the
+# opposite. The log is not what wakes anyone.
+#
+# The branch exists with no worktree on it: the writer's own "no tree to commit
+# into" exit, verbatim.
+R_S8="$W2/world-receipt-nowt"; receipt_world "$R_S8" 905
+SHA_905="$(git -C "$R_S8/tree" rev-parse HEAD)"
+git -C "$R_S8/skel" worktree remove --force "$R_S8/tree"
+S_NOWT="$W2/state-receipt-nowt"; mkdir -p "$S_NOWT/pr-reviews"
+seed_record "$S_NOWT" 905 "APPROVE" "$SHA_905" "$RCPT_TS"
+printf 'armed\n' > "$S_NOWT/pr-reviews/pr-905.automerge"
+gh_says 905 CLEAN "$SHA_905"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_S8" 905 "$S_NOWT" "$W2/conv-nowt.out"
+[ "$RRC" = "1" ] \
+  || fail "a receipt miss changed converge's exit code to $RRC. The writer is best-effort by
+      design and the exit contract in loop-exits.md is what other code reads; only the REPORT
+      changes. It said:
+$(sed 's/^/        /' "$W2/conv-nowt.out")"
+[ -s "$W2/pages.txt" ] || fail "converge converged and paged nobody at all"
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  && fail "THE DEFECT ON THE PHONE: no prd-os receipt covers the head, so pr-receipt-gate.py
+      fails \`validate\` -- the single required context on main -- and auto-merge never fires.
+      The one line that reaches the founder says the opposite. It said:
+$(cat "$W2/pages.txt")"
+grep -qi "receipt" "$W2/pages.txt" \
+  || fail "the page does not name the receipt at all, so the operator is woken by a PR that
+      silently never merges: $(cat "$W2/pages.txt")"
+grep -qi "needs a human" "$W2/pages.txt" \
+  || fail "the page reports the receipt miss without saying anyone has to act on it:
+$(cat "$W2/pages.txt")"
+grep -q "sana/ask-905" "$W2/pages.txt" \
+  || fail "the page names no branch, so the operator cannot act on it without reading the log --
+      which is the channel this whole case exists because nobody reads: $(cat "$W2/pages.txt")"
+# AND IT MAY NOT PREDICT AN OUTCOME IT CANNOT SEE (PR #42 review round 2,
+# finding 1, the second half). The page asserted "validate refuses it, so GitHub
+# will NOT land it". converge cannot know that: pr-receipt-gate.py rides on PR
+# #23 and this change merges FIRST, so on the day this ships an armed PR with no
+# receipt merges rather than sitting red. Both outcomes are bad and both need the
+# same human, so the page names the state and the risk, never the verdict of a
+# job it never read.
+grep -qi "will NOT land it\|does not merge until one lands" "$W2/pages.txt" "$W2/conv-nowt.out" \
+  && fail "the page/log still predicts what \`validate\` does to this PR. The gate it is
+      predicting is on an UNMERGED branch (PR #23), so today the opposite happens: armed +
+      green means GitHub merges a head no receipt covers. A page that names the wrong failure
+      teaches the operator to distrust it. It said:
+$(cat "$W2/pages.txt")"
+grep -qi "nothing proves it was reviewed" "$W2/pages.txt" \
+  || fail "the page reports the receipt miss without saying what is actually at stake -- that
+      nothing on this PR proves a review happened, whichever way validate goes:
+$(cat "$W2/pages.txt")"
+ok "a receipt the writer could not land reaches the PAGE, not just the run log"
+ok "the page names the receipt miss without predicting a gate it never read"
+
+# --- S9. a FAILED PUSH reaches the page too ----------------------------------
+# The second failure exit, and the one that looks most like success from inside:
+# the ledger line is written, the commit lands, and only the push fails. CI reads
+# the PUSHED head, so the PR carries nothing.
+R_S9="$W2/world-receipt-pushfail"; receipt_world "$R_S9" 906
+SHA_906="$(git -C "$R_S9/tree" rev-parse HEAD)"
+git -C "$R_S9/skel" remote set-url origin "$W2/no-such-origin"
+S_PUSHFAIL="$W2/state-receipt-pushfail"; mkdir -p "$S_PUSHFAIL/pr-reviews"
+seed_record "$S_PUSHFAIL" 906 "APPROVE" "$SHA_906" "$RCPT_TS"
+printf 'armed\n' > "$S_PUSHFAIL/pr-reviews/pr-906.automerge"
+gh_says 906 CLEAN "$SHA_906"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_S9" 906 "$S_PUSHFAIL" "$W2/conv-pushfail.out"
+grep -qi "push to origin/sana/ask-906 FAILED" "$W2/conv-pushfail.out" \
+  || fail "the push could not have succeeded (origin points at $W2/no-such-origin) and converge
+      never said it failed, so this case is not exercising the branch it names. It said:
+$(sed 's/^/        /' "$W2/conv-pushfail.out")"
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  && fail "the receipt is committed locally and never reached origin. CI reads the pushed head,
+      so \`validate\` refuses this PR -- and the page says no human is needed:
+$(cat "$W2/pages.txt")"
+grep -q "push origin sana/ask-906" "$W2/pages.txt" \
+  || fail "the page knows the push failed and does not carry the one command that fixes it:
+$(cat "$W2/pages.txt")"
+ok "a receipt that was committed but never pushed reaches the page with its fix"
+
+# --- S10. NO TRACKING REF IS NOT 'NOTHING TO PUSH' ---------------------------
+# PR #42 review, finding 3. The push guard read
+# `rev-list --count origin/$BRANCH..HEAD 2>/dev/null || echo 0`, so a clone with
+# no refs/remotes/origin/<branch> -- a worktree cut before its first fetch of
+# that branch -- answered "0 commits ahead". The whole push block was skipped
+# WITHOUT PRINTING ANYTHING, the committed receipt never left the machine, and
+# every re-run repeated the same skip, so the retry the guard exists for could
+# never happen on that tree.
+R_S10="$W2/world-receipt-notrack"; receipt_world "$R_S10" 907
+SHA_907="$(git -C "$R_S10/tree" rev-parse HEAD)"
+S10_ORIGIN_BEFORE="$(git -C "$R_S10/origin" rev-parse sana/ask-907)"
+git -C "$R_S10/skel" update-ref -d refs/remotes/origin/sana/ask-907
+git -C "$R_S10/skel" rev-parse --verify -q refs/remotes/origin/sana/ask-907 >/dev/null \
+  && fail "the tracking ref survived the delete, so S10 is not in the state it describes"
+S_NOTRACK="$W2/state-receipt-notrack"; mkdir -p "$S_NOTRACK/pr-reviews"
+seed_record "$S_NOTRACK" 907 "APPROVE" "$SHA_907" "$RCPT_TS"
+printf 'armed\n' > "$S_NOTRACK/pr-reviews/pr-907.automerge"
+gh_says 907 CLEAN "$SHA_907"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_S10" 907 "$S_NOTRACK" "$W2/conv-notrack.out"
+S10_ORIGIN_AFTER="$(git -C "$R_S10/origin" rev-parse sana/ask-907)"
+[ "$S10_ORIGIN_AFTER" != "$S10_ORIGIN_BEFORE" ] \
+  || fail "THE DEFECT: with no tracking ref, git could not answer 'how far ahead is this tree'
+      and the guard read that error as 'nothing to push'. The receipt is committed locally and
+      origin/sana/ask-907 still stands at $S10_ORIGIN_BEFORE, so CI -- which reads the pushed
+      head -- sees no receipt, on this run and on every re-run. It said:
+$(sed 's/^/        /' "$W2/conv-notrack.out")"
+git -C "$R_S10/origin" show "sana/ask-907:.prd-os/receipts.jsonl" 2>/dev/null \
+  | grep -q "$SHA_907" \
+  || fail "origin moved but the ledger AT ORIGIN does not carry a receipt pinned to $SHA_907,
+      which is the only sha CI checks. Origin's ledger:
+$(git -C "$R_S10/origin" show "sana/ask-907:.prd-os/receipts.jsonl" 2>&1 | sed 's/^/        /')"
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  || fail "the receipt DID land and the page still reports a problem. A guard that pages on a
+      healthy run is the cry-wolf failure: $(cat "$W2/pages.txt")"
+ok "a missing tracking ref pushes the receipt instead of silently reading the error as zero"
+
+# --- S11. A RUN THAT WROTE NO RECEIPT PUSHES NOTHING -------------------------
+# PR #42 review ROUND 2, finding 1 (major). The push block was conditioned only
+# on `ahead`, so the writer's own refusal -- exit 5, "the tree is not at the
+# reviewed sha, no receipt written" -- fell straight THROUGH it and pushed
+# whatever that worktree was carrying to origin/sana/ask-<n>, while auto-merge
+# sat armed on the PR. Source no reviewer read, delivered to the branch by the
+# guard whose entire job is to stop that.
+#
+# The blast radius is not theoretical-at-the-margin: this PR merges BEFORE #23
+# by its own account, so pr-receipt-gate.py is not in `validate` yet. Armed +
+# green = GitHub squash-merges the unread commit into main on a public repo.
+R_S11="$W2/world-receipt-nopush"; receipt_world "$R_S11" 908
+S11_TREE="$R_S11/tree"
+SHA_908="$(git -C "$S11_TREE" rev-parse HEAD)"        # the reviewed head, on origin
+S11_ORIGIN_BEFORE="$(git -C "$R_S11/origin" rev-parse sana/ask-908)"
+printf 'x = 1  # never reviewed\n' > "$S11_TREE/src.py"
+G -C "$S11_TREE" add src.py
+G -C "$S11_TREE" commit -q -m "local work nobody has read (ASK-908)"
+S11_LOCAL="$(git -C "$S11_TREE" rev-parse HEAD)"
+[ "$S11_LOCAL" != "$SHA_908" ] || fail "S11 did not move the worktree off the reviewed head"
+S_NOPUSH="$W2/state-receipt-nopush"; mkdir -p "$S_NOPUSH/pr-reviews"
+seed_record "$S_NOPUSH" 908 "APPROVE" "$SHA_908" "$RCPT_TS"
+printf 'armed\n' > "$S_NOPUSH/pr-reviews/pr-908.automerge"
+gh_says 908 CLEAN "$SHA_908"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_S11" 908 "$S_NOPUSH" "$W2/conv-nopush.out"
+
+# Pin the precondition FIRST: without the writer's refusal this case proves
+# nothing about the push, it just describes a tree.
+grep -qi "no receipt written" "$W2/conv-nopush.out" \
+  || fail "S11 never reached the writer's refusal, so whatever the push did here is not the
+      behaviour this case is named for. It said:
+$(sed 's/^/        /' "$W2/conv-nopush.out")"
+[ "$(git -C "$R_S11/origin" rev-parse sana/ask-908)" = "$S11_ORIGIN_BEFORE" ] \
+  || fail "THE DEFECT: converge wrote NO receipt by its own guard and PUSHED ANYWAY.
+      origin/sana/ask-908 moved $S11_ORIGIN_BEFORE -> $(git -C "$R_S11/origin" rev-parse sana/ask-908),
+      carrying commits no reviewer read onto a PR with auto-merge ARMED. Files origin gained:
+$(git -C "$S11_TREE" diff --name-only "$SHA_908" "$(git -C "$R_S11/origin" rev-parse sana/ask-908)" 2>&1 | sed 's/^/        /')
+      converge said:
+$(sed 's/^/        /' "$W2/conv-nopush.out")"
+git -C "$R_S11/origin" show "sana/ask-908:src.py" >/dev/null 2>&1 \
+  && fail "origin's branch now carries src.py, which existed only in the local worktree and no
+      review ever read. Auto-merge is armed on this PR."
+# The write stopping must not make the REPORT stop: the page is the only thing
+# that reaches a phone, and rc 5 is exactly the state a human has to unstick.
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  && fail "converge refused to write a receipt AND refused to push, and still paged that no
+      human is needed: $(cat "$W2/pages.txt")"
+grep -qi "receipt" "$W2/pages.txt" \
+  || fail "the push was correctly refused and the page never mentions the receipt, so the fix
+      bought silence: $(cat "$W2/pages.txt")"
+grep -qi "not pushing" "$W2/conv-nopush.out" \
+  || fail "converge skipped the push without saying so. A push that silently does not happen is
+      the same defect class as a push that silently does. It said:
+$(sed 's/^/        /' "$W2/conv-nopush.out")"
+# ROUND-2 FINDING 2, on the same run. The success line was unconditional, so it
+# printed 'origin now carries it' one line under the writer saying it had written
+# nothing. An operator reading the log was told validate would now pass.
+grep -qi "now carries it" "$W2/conv-nopush.out" \
+  && fail "converge wrote no receipt and the log still says origin carries one. The line that
+      reports a push may only run on a run that had something to push. It said:
+$(sed 's/^/        /' "$W2/conv-nopush.out")"
+ok "a run that wrote no receipt pushes nothing, and still pages"
+ok "the push-success line cannot run on a run that wrote no receipt"
+
+# --- S12. A RECEIPT DOES NOT LICENSE PUSHING WHAT IS SITTING NEXT TO IT -------
+# The same hole one rc over. receipt_append dedups on the ledger FILE (rc 3)
+# BEFORE the tree-head guard, so "a receipt for this head exists" does not mean
+# the tree stands where the reviewer stood. Gating the push on the writer's rc
+# alone would still hand origin a tree carrying unreviewed source, as long as a
+# receipt happened to be in the ledger next to it. What origin GAINS has to be
+# the ledger and nothing else.
+R_S12="$W2/world-receipt-mixed"; receipt_world "$R_S12" 909
+S12_TREE="$R_S12/tree"
+SHA_909="$(git -C "$S12_TREE" rev-parse HEAD)"
+S12_ORIGIN_BEFORE="$(git -C "$R_S12/origin" rev-parse sana/ask-909)"
+printf '{"issue_id":"ASK-909","commit_sha":"%s","reviewed_at":"%s"}\n' "$SHA_909" "$RCPT_TS" \
+  >> "$S12_TREE/.prd-os/receipts.jsonl"
+G -C "$S12_TREE" add .prd-os/receipts.jsonl
+G -C "$S12_TREE" commit -q -m "chore(receipt): prd-os receipt for ASK-909"
+printf 'y = 2  # never reviewed\n' > "$S12_TREE/src.py"
+G -C "$S12_TREE" add src.py
+G -C "$S12_TREE" commit -q -m "local work nobody has read (ASK-909)"
+S_MIXED="$W2/state-receipt-mixed"; mkdir -p "$S_MIXED/pr-reviews"
+seed_record "$S_MIXED" 909 "APPROVE" "$SHA_909" "$RCPT_TS"
+printf 'armed\n' > "$S_MIXED/pr-reviews/pr-909.automerge"
+gh_says 909 CLEAN "$SHA_909"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_S12" 909 "$S_MIXED" "$W2/conv-mixed.out"
+
+grep -qi "already receipted" "$W2/conv-mixed.out" \
+  || fail "S12 did not reach the dedup exit, so it is not exercising the rc it is named for.
+      It said:
+$(sed 's/^/        /' "$W2/conv-mixed.out")"
+git -C "$R_S12/origin" show "sana/ask-909:src.py" >/dev/null 2>&1 \
+  && fail "THE DEFECT: a receipt already sat in the ledger, so the push went ahead and took the
+      unreviewed src.py commit with it onto a branch with auto-merge ARMED. A receipt licenses
+      pushing THE RECEIPT, never whatever else is parked in the tree."
+[ "$(git -C "$R_S12/origin" rev-parse sana/ask-909)" = "$S12_ORIGIN_BEFORE" ] \
+  || fail "origin/sana/ask-909 moved $S12_ORIGIN_BEFORE -> $(git -C "$R_S12/origin" rev-parse sana/ask-909)
+      on a tree whose commits beyond the reviewed head are more than the ledger."
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  && fail "converge refused to push a receipt it holds and told nobody: the receipt never reaches
+      CI and the page says no human is needed. Silence bought by a guard:
+$(cat "$W2/pages.txt")"
+ok "a receipt in the ledger does not license pushing unreviewed commits next to it"
+
+# --- S13. NO RECEIPT MEANS NO PUSH, EVEN WHEN THE PUSH LOOKS HARMLESS --------
+# The half of round-2 finding 1 that the two cases above cannot see. In S11/S12
+# the tree carries unreviewed SOURCE, so the "what does origin gain" gate stops
+# the push even with the "did the writer get somewhere" gate removed -- the two
+# guards cover for each other there and neither is pinned alone.
+#
+# Here the tree is ledger-only ahead of the reviewed head (a receipt commit for
+# ANOTHER issue, which is exactly what a shared worktree accumulates), so that
+# gate passes and only the writer's own decision is left. Nothing was written for
+# THIS issue, so nothing may be pushed for it and nothing may claim it was: this
+# is the state where the old unconditional success line said "origin now carries
+# it" about a receipt that does not exist.
+R_S13="$W2/world-receipt-otherledger"; receipt_world "$R_S13" 910
+S13_TREE="$R_S13/tree"
+SHA_910="$(git -C "$S13_TREE" rev-parse HEAD)"
+S13_ORIGIN_BEFORE="$(git -C "$R_S13/origin" rev-parse sana/ask-910)"
+printf '{"issue_id":"ASK-777","commit_sha":"cafef00d"}\n' >> "$S13_TREE/.prd-os/receipts.jsonl"
+G -C "$S13_TREE" add .prd-os/receipts.jsonl
+G -C "$S13_TREE" commit -q -m "chore(receipt): prd-os receipt for ASK-777"
+S13_DIFF="$(git -C "$S13_TREE" diff --name-only "$SHA_910" HEAD)"
+[ "$S13_DIFF" = ".prd-os/receipts.jsonl" ] \
+  || fail "S13 wanted a ledger-ONLY tree so the what-origin-gains gate cannot be what stops the
+      push; the tree is ahead by '$S13_DIFF'"
+S_OTHER="$W2/state-receipt-otherledger"; mkdir -p "$S_OTHER/pr-reviews"
+seed_record "$S_OTHER" 910 "APPROVE" "$SHA_910" "$RCPT_TS"
+printf 'armed\n' > "$S_OTHER/pr-reviews/pr-910.automerge"
+gh_says 910 CLEAN "$SHA_910"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_S13" 910 "$S_OTHER" "$W2/conv-otherledger.out"
+grep -qi "no receipt written" "$W2/conv-otherledger.out" \
+  || fail "S13 never reached the writer's refusal, so it is not testing the gate it names. It said:
+$(sed 's/^/        /' "$W2/conv-otherledger.out")"
+[ "$(receipts_for "$S13_TREE/.prd-os/receipts.jsonl" ASK-910 "$SHA_910")" = "0" ] \
+  || fail "S13 wrote a receipt for ASK-910 after all; the case is vacuous"
+[ "$(git -C "$R_S13/origin" rev-parse sana/ask-910)" = "$S13_ORIGIN_BEFORE" ] \
+  || fail "THE DEFECT, isolated: converge wrote NO receipt for ASK-910 and pushed the branch
+      anyway, because another issue's ledger commit happened to be sitting in the tree.
+      origin/sana/ask-910 moved $S13_ORIGIN_BEFORE -> $(git -C "$R_S13/origin" rev-parse sana/ask-910).
+      A push converge cannot name a reason for is a push it should not make. It said:
+$(sed 's/^/        /' "$W2/conv-otherledger.out")"
+grep -qi "now carries it" "$W2/conv-otherledger.out" \
+  && fail "no receipt for ASK-910 exists and the log claims origin now carries one:
+$(sed 's/^/        /' "$W2/conv-otherledger.out")"
+ok "no receipt written means no push, even when the push would carry only a ledger"
+
+# --- S14. A RECORD THAT PINS NOTHING MINTS NO RECEIPT ------------------------
+# PR #42 review round 3, finding 1 (major). The comment above the writer's call
+# site claimed gate 10 "is the one state where a terminal approving verdict is
+# pinned to the sha that IS the head." rework_gate returns 10 from THREE states,
+# and the second is an explicit fallback: a record with no `head_sha` (every
+# record written before ASK-216) prints "cannot tell an approval from one
+# inherited by a later push -- falling back to verdict-only" and lands on 10
+# anyway. converge printed that sentence and then minted a receipt at the current
+# head. NOTHING compared the reviewed code to that commit -- the same consequence
+# the whole change is staked on, arriving through a door nobody checked. Not a
+# constructed shape: 13 approving records on the live board carry no head_sha,
+# including PR #23's, the very PR this one blocks on.
+#
+# S5 (gate 40) could not see it: there the sha is present and DIFFERENT, so the
+# gate stops the run before the writer. Here the gate waves it through. O3 covers
+# the same record shape but in a world with no worktree on the branch, so the
+# writer exits at "no tree to commit into" before it can write -- it scores the
+# same with the defect and with the fix, which is what no coverage looks like.
+#
+# So: its own world, tree standing AT the head, auto-merge armed. Every guard
+# downstream of the pin check would let this through, which is the only way the
+# pin check itself is what this case measures.
+R_S14="$W2/world-receipt-nopin"; receipt_world "$R_S14" 920
+S14_TREE="$R_S14/tree"; S14_LEDGER="$S14_TREE/.prd-os/receipts.jsonl"
+SHA_920="$(git -C "$S14_TREE" rev-parse HEAD)"
+S14_ORIGIN_BEFORE="$(git -C "$R_S14/origin" rev-parse sana/ask-920)"
+[ "$S14_ORIGIN_BEFORE" = "$SHA_920" ] \
+  || fail "S14 wanted the tree standing exactly at the head origin carries, so that a wrong
+      write SUCCEEDS and this case can fail. Tree $SHA_920, origin $S14_ORIGIN_BEFORE"
+S_NOPIN="$W2/state-receipt-nopin"; mkdir -p "$S_NOPIN/pr-reviews"
+# 4th argument omitted: the pre-ASK-216 record shape. The 5th is a real ts, so a
+# receipt minted here would look completely well-formed -- reviewed_at and all.
+seed_record "$S_NOPIN" 920 "APPROVE WITH NITS" "" "$RCPT_TS"
+printf 'armed\n' > "$S_NOPIN/pr-reviews/pr-920.automerge"
+gh_says 920 CLEAN "$SHA_920"
+: > "$W2/pages.txt"
+run_converge_receipt "$R_S14" 920 "$S_NOPIN" "$W2/conv-nopin.out"
+[ "$RRC" = "1" ] \
+  || fail "refusing to mint an unpinned receipt changed converge's exit code to $RRC, want 1.
+      The writer is best-effort and loop-exits.md is what other code reads; only the REPORT
+      may change. It said:
+$(sed 's/^/        /' "$W2/conv-nopin.out")"
+[ "$(receipts_for "$S14_LEDGER" ASK-920 "$SHA_920")" = "0" ] \
+  || fail "THE DEFECT: the verdict record names NO head_sha, so nothing ever compared the
+      reviewed code to $SHA_920 -- converge said so itself in the fallback NOTE -- and it
+      minted a prd-os receipt asserting ASK-920 was reviewed there anyway. That receipt
+      clears PR #23's gate on code no reviewer is recorded as having read. Ledger:
+$(sed 's/^/        /' "$S14_LEDGER")"
+[ "$(git -C "$R_S14/origin" rev-parse sana/ask-920)" = "$S14_ORIGIN_BEFORE" ] \
+  || fail "THE DEFECT, delivered: converge pushed the unpinned receipt to origin/sana/ask-920
+      ($S14_ORIGIN_BEFORE -> $(git -C "$R_S14/origin" rev-parse sana/ask-920)). CI reads the
+      pushed head, so the claim is now the one \`validate\` acts on. It said:
+$(sed 's/^/        /' "$W2/conv-nopin.out")"
+# THE WRITE STOPPING MAY NOT BECOME THE REPORT STOPPING. Refusing to mint buys a
+# receipt miss that is now real, and a miss the operator is never told about is
+# the round-1 defect wearing a fix. The page has to carry it.
+[ -s "$W2/pages.txt" ] || fail "converge converged on an unpinned record and paged nobody at all"
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  && fail "no receipt covers the head and the one line that reaches the founder still says
+      nobody has to touch it: $(cat "$W2/pages.txt")"
+grep -qi "head_sha" "$W2/pages.txt" \
+  || fail "the page reports a receipt miss without naming WHY, so it reads identically to a
+      broken worktree or a refused commit -- and the fix for those does not fix this one.
+      The operator needs a re-review, not a git command: $(cat "$W2/pages.txt")"
+grep -qi "needs a human" "$W2/pages.txt" \
+  || fail "the page names the unpinned record without saying anyone has to act on it:
+$(cat "$W2/pages.txt")"
+grep -qi "now carries it" "$W2/conv-nopin.out" \
+  && fail "no receipt for ASK-920 was written and the log claims origin now carries one:
+$(sed 's/^/        /' "$W2/conv-nopin.out")"
+ok "a verdict record that pins no head mints no receipt, and the page says why"
+
+# --- S15. THE THIRD DOOR INTO GATE 10 ----------------------------------------
+# Enumerating rework_gate instead of trusting the PR body's framing is what round
+# 3 said was missing, so all three doors get pinned, not just the one that was
+# found open. APPROVE reaches 10 from: both shas absent, the reviewed sha absent
+# (S14), and the CURRENT head unreadable -- `gh pr view` down, which O4 exists
+# because it happens. That third one falls toward terminal by design, and the
+# writer's empty-sha guard has refused it since the first commit. Nothing proved
+# it: O4 runs in a world with no worktree on the branch, so the writer would have
+# stopped one line later anyway, and no receipt-capable world ever asked.
+#
+# A guard that is right and untested is the shape this PR has now been caught by
+# three times. Here the tree stands at the head with the ledger writable, so a
+# writer that pinned "whatever sha it could find" would succeed.
+R_S15="$W2/world-receipt-nohead"; receipt_world "$R_S15" 921
+S15_TREE="$R_S15/tree"; S15_LEDGER="$S15_TREE/.prd-os/receipts.jsonl"
+SHA_921="$(git -C "$S15_TREE" rev-parse HEAD)"
+S15_ORIGIN_BEFORE="$(git -C "$R_S15/origin" rev-parse sana/ask-921)"
+S_NOHEAD="$W2/state-receipt-nohead"; mkdir -p "$S_NOHEAD/pr-reviews"
+seed_record "$S_NOHEAD" 921 "APPROVE" "$SHA_921" "$RCPT_TS"
+printf 'armed\n' > "$S_NOHEAD/pr-reviews/pr-921.automerge"
+gh_says 921 CLEAN ""          # the record pins a sha; gh cannot say what the head IS
+: > "$W2/pages.txt"
+run_converge_receipt "$R_S15" 921 "$S_NOHEAD" "$W2/conv-nohead.out"
+[ "$RRC" = "1" ] \
+  || fail "an unreadable head changed converge's exit code to $RRC, want 1. ASK-212's posture
+      is that a manufactured re-review round costs the whole fleet at once. It said:
+$(sed 's/^/        /' "$W2/conv-nohead.out")"
+[ "$(receipts_for "$S15_LEDGER" ASK-921 "$SHA_921")" = "0" ] \
+  || fail "converge could not read the PR's current head and pinned a receipt to the reviewed
+      sha from the record anyway. Nothing confirmed that sha is still the head, which is the
+      whole reason gate 40 exists. Ledger:
+$(sed 's/^/        /' "$S15_LEDGER")"
+[ "$(git -C "$R_S15/origin" rev-parse sana/ask-921)" = "$S15_ORIGIN_BEFORE" ] \
+  || fail "converge pushed to origin/sana/ask-921 on a run where it could not read the head"
+[ -s "$W2/pages.txt" ] || fail "an unreadable head converged and paged nobody at all"
+grep -qi "no human merge needed" "$W2/pages.txt" \
+  && fail "no receipt covers the head, the head could not even be read, and the page still says
+      nobody has to touch it: $(cat "$W2/pages.txt")"
+ok "an unreadable current head mints no receipt either, and still reaches the page"
+
+# --- wiring: the writer lives in converge, at the terminal-approve branch ----
+grep -q 'receipts.jsonl' "$CONV" \
+  || fail "converge.sh does not mention the receipt ledger at all -- the producer is not here"
+ok "converge wiring: the receipt writer is in converge.sh"
 
 bash -n "$CONV" || fail "converge.sh does not parse"
 ok "converge.sh parses (bash -n)"

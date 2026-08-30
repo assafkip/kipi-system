@@ -540,7 +540,7 @@ def test_record_review_rejects_manual_source(
 
 
 # --- Truthful reviewer provenance (slice 0, 2026-07-26) --------------------
-# Codex is out of credits until 2026-08-24, so the reviewer is a Claude
+# When Codex is unavailable, the reviewer is a Claude
 # senior-staff-engineer subagent. With only codex-* accepted, that reviewer had
 # two bad options: stamp `codex-adversarial` and write a FALSE provenance
 # record, or skip the stamp and never be able to approve. These lock the honest

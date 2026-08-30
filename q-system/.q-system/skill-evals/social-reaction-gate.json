@@ -1,0 +1,8 @@
+{"skill":"social-reaction-gate","fired_marker":"extract","cases":[
+ {"prompt":"here's a post someone wrote about threat intel budgets -- write me a comment on it","should_trigger":true},
+ {"prompt":"reply to this thread for me","should_trigger":true},
+ {"prompt":"quote-post this with my take","should_trigger":true},
+ {"prompt":"DM this guy about the article he shared","should_trigger":true},
+ {"prompt":"write me a linkedin post about threat intel","should_trigger":false},
+ {"prompt":"list the files in this directory","should_trigger":false}
+]}

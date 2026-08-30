@@ -29,6 +29,7 @@ build_skeleton() {
            "$sk/q-system/marketing" "$sk/plugins"
   cp "$ROOT/kipi-update.sh" "$sk/kipi-update.sh"
   cp "$ROOT/kipi-update-preserve-scan.py" "$sk/kipi-update-preserve-scan.py"
+cp "$ROOT/kipi-update-deletion-guard.py" "$sk/kipi-update-deletion-guard.py"
   cp "$ROOT/$GATE_REL" "$sk/$GATE_REL"
   cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
      "$sk/q-system/.q-system/scripts/containment-targets.py"

@@ -10,7 +10,7 @@
   "enabledPlugins": {
     "kipi-core@kipi": true
   },
-  "outputStyle": "Entrepreneur OS",
+  "outputStyle": "AUDHD",
   "effortLevel": "thorough",
   "autoMemoryEnabled": true,
   "cleanupPeriodDays": 30,
@@ -132,6 +132,20 @@
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/sycophancy-monthly-check.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/sycophancy-monthly-check.py\" 2>/dev/null || true",
             "timeout": 35
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/miyo-session-pull.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/miyo-session-pull.py\" 2>/dev/null || true",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\" --drain-only; fi"
           }
         ]
       }
@@ -172,6 +186,31 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-path-write-guard.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-path-write-guard.py\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/merge-bypass-gate.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/merge-bypass-gate.py\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Grep|Glob|WebSearch|WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/miyo-research-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/miyo-research-gate.py\"; fi",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -182,6 +221,16 @@
             "type": "command",
             "command": "if [ -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\"; fi",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "for R in q-system/.q-system/scripts/claude-path-write-guard.py q-system/.q-system/scripts/claude-integrity-tripwire.py; do [ -f \"$CLAUDE_PROJECT_DIR/$R\" ] && continue; git -C \"$CLAUDE_PROJECT_DIR\" checkout -- \"$R\" >/dev/null 2>&1; N=\"${KIPI_NOTIFY:-$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/slack-notify.sh}\"; if [ -f \"$CLAUDE_PROJECT_DIR/$R\" ]; then \"$N\" \"SECURITY: $R was deleted; restored from git\" >/dev/null 2>&1; else \"$N\" \"SECURITY: $R was deleted and git could not restore it -- that layer is DOWN\" >/dev/null 2>&1; echo \"SECURITY: $R is missing and could not be restored\" >&2; exit 2; fi; done",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-integrity-tripwire.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-integrity-tripwire.py\" --enforce --quiet",
+            "timeout": 20
           }
         ]
       },
@@ -191,6 +240,11 @@
           {
             "type": "command",
             "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/prompt-only-enforcement-guard.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/prompt-only-enforcement-guard.py\"; fi",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/enforced-claim-lint.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/enforced-claim-lint.py\"; fi",
             "timeout": 5
           },
           {
@@ -225,7 +279,15 @@
           },
           {
             "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/linear-filer-label-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/linear-filer-label-lint.py\""
+          },
+          {
+            "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/headline-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/headline-lint.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/spillover-ratchet.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/spillover-ratchet.py\""
           },
           {
             "type": "command",
@@ -238,6 +300,10 @@
           {
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/wiring-check.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/wiring-check.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/plan-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/plan-lint.py\""
           },
           {
             "type": "command",
@@ -287,6 +353,11 @@
           },
           {
             "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/blocked-claim-evidence-lint.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/blocked-claim-evidence-lint.py\"; fi",
+            "timeout": 15
+          },
+          {
+            "type": "command",
             "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"; fi",
             "timeout": 30
           },
@@ -304,6 +375,11 @@
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory_autocapture.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory_autocapture.py\" 2>/dev/null || true",
             "async": true
+          },
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/kb-graph-guard.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/kb-graph-guard.py\"; fi",
+            "timeout": 15
           }
         ]
       }
