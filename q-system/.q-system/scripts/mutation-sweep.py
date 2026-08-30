@@ -722,7 +722,8 @@ def sweep(root, args):
             # A cached row from before this change carries no test_sha, and is
             # therefore treated as a MISS and re-run. Silently trusting it would
             # be the same defect wearing a compatibility argument.
-            fingerprint = test_fingerprint(root, tp, resume.get(tp))
+            fingerprint = test_fingerprint(root, tp, resume.get(tp),
+                                           entry.get("runner"))
             cached = resume.get(tp)
             if cached is not None and cached.get("test_sha") == fingerprint:
                 results.append(cached)
@@ -762,7 +763,7 @@ def sweep(root, args):
     return results
 
 
-def test_fingerprint(root, test_path, cached):
+def test_fingerprint(root, test_path, cached, runner=None):
     """Hash the test plus every subject a cached verdict was measured against.
 
     Returns None only when the test file itself cannot be read, and None never
@@ -782,6 +783,14 @@ def test_fingerprint(root, test_path, cached):
     # test+subject would replay those verdicts unchanged under the new rules.
     # Hashing the rule tables means changing an operator invalidates the cache
     # by construction, with nobody having to remember to clear it.
+    # THE DECLARED RUNNER IS PART OF THE EXPERIMENT (PR #272 major). Flipping a
+    # test from python3 to pytest is exactly what ASK-1145 did to 13 files, and
+    # it CHANGES WHICH ASSERTIONS EXECUTE -- python3 on a pytest module runs
+    # none of them. Keying on file content alone reused the old verdict and never
+    # ran the newly enabled ones, which is the zero-execution defect surviving
+    # its own fix.
+    h.update((runner or "").encode("utf-8"))
+    h.update(b"\0")
     for rules in (PY_RULES, SH_RULES, VERDICT_RULES):
         for pat, repl in rules:
             h.update(pat.pattern.encode("utf-8"))

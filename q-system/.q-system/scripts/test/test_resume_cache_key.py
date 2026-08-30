@@ -61,6 +61,21 @@ class ResumeCacheKeyCase(unittest.TestCase):
         self.assertIsNone(legacy.get("test_sha"))
         self.assertNotEqual(legacy.get("test_sha"), self.fp(legacy))
 
+    def test_changing_the_declared_runner_invalidates(self):
+        """PR #272 major. ASK-1145 flipped 13 tests from python3 to pytest, and
+        that CHANGES WHICH ASSERTIONS EXECUTE -- python3 on a pytest module runs
+        none of them. Keying on file content alone reused the old verdict and
+        never ran the newly enabled ones: the zero-execution defect surviving its
+        own fix."""
+        a = ms.test_fingerprint(self.tmp, self.test_rel, None, "python3")
+        b = ms.test_fingerprint(self.tmp, self.test_rel, None, "pytest")
+        self.assertNotEqual(a, b, "flipping the runner reused the old verdict")
+
+    def test_the_same_runner_still_reuses_the_cache(self):
+        self.assertEqual(
+            ms.test_fingerprint(self.tmp, self.test_rel, None, "pytest"),
+            ms.test_fingerprint(self.tmp, self.test_rel, None, "pytest"))
+
     def test_an_unreadable_test_is_a_miss_not_a_hit(self):
         os.remove(self.tmp / self.test_rel)
         self.assertIsNone(self.fp())
