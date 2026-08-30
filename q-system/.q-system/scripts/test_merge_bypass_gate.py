@@ -15,6 +15,7 @@ Run: python3 test_merge_bypass_gate.py
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 import tempfile
@@ -48,6 +49,12 @@ def _make_repo(root: Path, name: str, origin: str, branch: str) -> Path:
 
 
 GH = "https://github.com/example/repo.git"
+# The push deny is scoped to protected remotes (sp-9154c64d). Pin the fixture
+# repo into the set so every existing deny case still exercises the deny path;
+# the scoping itself is tested against GH_OTHER / GH_WEIRD below.
+os.environ["MERGE_GATE_PROTECTED_REPOS"] = "example/repo"
+GH_OTHER = "https://github.com/other/standalone.git"
+GH_WEIRD = "https://github.com/justowner"
 
 FAILURES: list[str] = []
 CHECKS = 0
@@ -72,6 +79,20 @@ def main() -> int:
         gh_main = _make_repo(root, "gh_main", GH, "main")
         # The shape every test script in this repo uses: origin is a local path.
         local_origin = _make_repo(root, "local", str(root / "bare.git"), "main")
+        # A GitHub repo OUTSIDE the protected set (a personal standalone repo):
+        # no required checks exist there, so the push deny must not fire.
+        gh_other = _make_repo(root, "gh_other", GH_OTHER, "main")
+        # A GitHub URL the owner/name parser cannot read: stays protected.
+        gh_weird = _make_repo(root, "gh_weird", GH_WEIRD, "main")
+        # A FLEET INSTANCE: unlisted remote, but q-system/ in the tree. The
+        # hook ships to every instance, so the marker must deny on its own
+        # (PR #226 review, major).
+        gh_fleet = _make_repo(root, "gh_fleet", GH_OTHER, "main")
+        (gh_fleet / "q-system").mkdir()
+        # Same protected repo under different URL casing and a .git suffix:
+        # GitHub treats these as one repo, so must the set.
+        gh_cased = _make_repo(root, "gh_cased",
+                              "https://github.com/EXAMPLE/REPO.git", "main")
 
         # --- the bypass forms: must DENY ---
         check("admin flag last", "gh pr merge 999 --squash --admin", gh_feature, "deny")
@@ -118,6 +139,40 @@ def main() -> int:
         # origin is not GitHub, so pushing main there is nobody's bypass.
         check("push main to a local origin",
               "git push origin main", local_origin, "allow")
+        # GitHub, but outside the protected set: the checks the deny protects do
+        # not exist there, so the push is allowed (sp-9154c64d).
+        check("push main to an unprotected github repo",
+              "git push origin main", gh_other, "allow")
+        check("push master to an unprotected github repo",
+              "git push origin master", gh_other, "allow")
+        # GitHub URL the parser cannot read: fail closed, still denied.
+        check("push main to an unparseable github url",
+              "git push origin main", gh_weird, "deny")
+        # Fleet marker alone denies, remote set not consulted.
+        check("push main in a fleet-marker tree with an unlisted remote",
+              "git push origin main", gh_fleet, "deny")
+        # The marker lives at the WORKTREE ROOT: a push from a subdirectory
+        # must still see it (PR #226 review round 2, major).
+        (gh_fleet / "sub").mkdir()
+        check("push main from a subdirectory of a fleet-marker tree",
+              "git push origin main", gh_fleet / "sub", "deny")
+        # The shipped default set is load-bearing when no override is set and
+        # no marker is in the tree: mutating it to garbage must kill this.
+        gh_kipi = _make_repo(root, "gh_kipi",
+                             "https://github.com/assafkip/kipi-system.git", "main")
+        saved_env = os.environ.pop("MERGE_GATE_PROTECTED_REPOS")
+        check("default set protects kipi-system with no env override",
+              "git push origin main", gh_kipi, "deny")
+        os.environ["MERGE_GATE_PROTECTED_REPOS"] = saved_env
+        # Case-folded, .git-tolerant set matching.
+        check("push main under different URL casing of a protected repo",
+              "git push origin main", gh_cased, "deny")
+        # An explicit override that parses to zero valid entries fails CLOSED,
+        # same direction as the URL parser (PR #226 review, minor).
+        os.environ["MERGE_GATE_PROTECTED_REPOS"] = "  ,garbage,no-slash-here/"
+        check("malformed explicit override fails closed",
+              "git push origin main", gh_other, "deny")
+        os.environ["MERGE_GATE_PROTECTED_REPOS"] = "example/repo"
         check("push main to a local origin via -C",
               f"git -C {local_origin} push origin main", root, "allow")
         # A script-local variable this process never had: unresolvable, so allow

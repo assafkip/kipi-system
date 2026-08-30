@@ -177,13 +177,25 @@ def fire_parallel_blocks(actor_key, ledger_dir, tmp_path, count=PARALLEL_FIRES):
     })
     runner = tmp_path / "barrier_runner.py"
     runner.write_text(_BARRIER_RUNNER)
+    # A REAL transcript, not "". These cases are about the escalation COUNTER
+    # under concurrency, and an escalation now refuses to spend a call or a cap
+    # slot when it cannot read the session. With an empty path every parallel
+    # fire takes the starvation path, the counter legitimately stays 0, and the
+    # race assertions pass against a guard with no locking at all -- green for
+    # the wrong reason. The payload has to be one the counter actually moves on.
+    transcript = tmp_path / "race-transcript.jsonl"
+    transcript.write_text("".join(
+        json.dumps({"type": "assistant", "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "session line %d" % i}]}}) + "\n"
+        for i in range(30)))
     payload = tmp_path / "payload.json"
     payload.write_text(json.dumps({
         "session_id": actor_key,
         "hook_event_name": "PreToolUse",
         "tool_name": "Read",
         "tool_input": {"file_path": "/etc/hostname"},
-        "transcript_path": "",
+        "transcript_path": str(transcript),
     }))
     barrier = tmp_path / "barrier"
 

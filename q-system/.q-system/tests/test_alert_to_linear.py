@@ -116,6 +116,7 @@ class FakeLinear:
         # a FIELD OF THE PAYLOAD, so the fixture has to keep the payload; a test
         # that only reads the returned identifier cannot see the field at all.
         self.create_input = None
+        self.labels_created = []
         self.projects = [{"id": "proj-kipi", "name": "kipi-system",
                           "description": ""}]
 
@@ -129,6 +130,16 @@ class FakeLinear:
         if "labels(first" in query:
             return {"team": {"labels": {"nodes": [
                 {"id": "lab-1", "name": "owner:sana"}]}}}
+        if "issueLabelCreate" in query:
+            # The team owns `owner:sana` and NOT `needs-triage`, so the healthy
+            # path creates the second one. This branch was missing: the mutation
+            # fell through to `return {}`, `needs-triage` never resolved, and
+            # every "healthy" file in this suite was quietly DEGRADED with no
+            # test able to see it -- the fixture was modelling a broken Linear
+            # and calling it the happy path (found by the round-5 control).
+            self.labels_created.append(variables["input"]["name"])
+            return {"issueLabelCreate": {"issueLabel": {
+                "id": f"lab-new-{len(self.labels_created)}"}}}
         if "projects(first" in query:
             return {"team": {"projects": {"nodes": self.projects}}}
         if "issueCreate" in query:
@@ -228,14 +239,169 @@ def test_label_failure_still_files_the_ticket(isolated_state, monkeypatch):
             return FakeLinear.graphql(self, query, variables)
 
     monkeypatch.setattr(mod, "_load_linear", lambda: NoLabels())
-    code, _ = mod.file_alert(AUTOCOMMIT[0], now=1000.0)
-    assert code == mod.EXIT_OK and _  # filed anyway
+    code, line = mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    assert code == mod.EXIT_OK and line  # filed anyway
+    # ROUND 5: this test used to stop at "filed anyway", and that weak
+    # assertion is what let the finding through -- it is true of both a
+    # correctly-degraded file and a silently unlabelled one.
+    assert "DEGRADED" in line, line
+
+
+def test_the_label_query_failing_outright_is_reported_degraded(
+        isolated_state, monkeypatch):
+    """ROUND 5 MAJOR. Two failure points, only one of them visible.
+
+    The round-4 fix taught the per-label CREATE path to record an unresolved
+    name, so a create that failed for a real reason reached the caller's
+    `[DEGRADED: ...]` suffix. The earlier point -- the LABELS_QUERY itself
+    raising -- kept a bare `return []` and skipped both out-lists. A labels
+    endpoint timeout therefore filed a ticket with NO labels, exit 0, and a
+    result line indistinguishable from a fully-labelled file, which is the one
+    thing the triage measurement cannot afford to be blind to.
+
+    Reproduced on the PR head: degraded_visible=False, labelIds absent.
+    """
+    class LabelsEndpointDown(FakeLinear):
+        def graphql(self, query, variables):
+            if "labels(first" in query:
+                raise RuntimeError("labels endpoint timeout")
+            return FakeLinear.graphql(self, query, variables)
+
+    fake = LabelsEndpointDown()
+    monkeypatch.setattr(mod, "_load_linear", lambda: fake)
+    code, line = mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+
+    # the alert still lands: a dropped alert is worse than an unlabelled one
+    assert code == mod.EXIT_OK
+    assert fake.created == 1
+    assert "labelIds" not in (fake.create_input or {})
+    # and the run's own summary line says so
+    assert "DEGRADED" in line, line
+    assert mod.TRIAGE_LABEL in line, line
+
+
+def test_a_fully_labelled_file_is_never_marked_degraded(
+        isolated_state, monkeypatch):
+    """The negative control. A suffix that is always present says nothing.
+
+    FakeLinear resolves `owner:sana` from the team and creates `needs-triage`,
+    so this is the healthy path and it must come back clean.
+    """
+    fake = FakeLinear()
+    monkeypatch.setattr(mod, "_load_linear", lambda: fake)
+    code, line = mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    assert code == mod.EXIT_OK
+    assert "DEGRADED" not in line, line
 
 
 def test_title_is_one_bounded_line():
     long_msg = "[x] " + ("word " * 80)
     title = mod.title_for(long_msg)
     assert "\n" not in title and len(title) <= 113
+
+
+# --- noise suppression: pure all-clear pings never become a ticket -----------
+#
+# THE SCAR. The 2026-08-16 Linear cleanup found 50 open tickets that were pure
+# status confirmations -- heartbeat resumed, tripwire baselined, a scheduled
+# post posted -- filed by this script alongside real problems, indistinguishable
+# without opening each one. The founder asked for the source fixed so it stops
+# happening, not just cleaned up once.
+#
+# Every message string below is a REAL line read directly from a live Linear
+# ticket during that cleanup (get_issue, not paraphrased), same evidence
+# standard as the AUTOCOMMIT fixtures above.
+
+NOISE_EXAMPLES = [
+    "[kipi-system] kipi heartbeat: RESUMED after 885 min down",
+    "[dryco] kipi heartbeat: RESUMED after 99 min down",
+    "[assafkip_kipi-system__pr-191] armed .claude/ integrity tripwire: 45 file(s) baselined",
+    "[cole-gtm] Reddit paste-list 2026-08-13: nothing due to paste. Job ran fine",
+    "[/] Daily X tool post scheduled for 2026-08-13T14:00:00-04:00. Tags: "
+    "@guillaumemeyer @cathrynlavery @dillon_mulroy. (auto-posted, cancel in Publer if off)",
+    "[kipi-system] converge ASK-700: APPROVE, PR #141 auto-merge armed",
+    "[/] delivery self-heal tier 3 STARTED on build-radar-needs: build-radar-needs: "
+    "log stale 440h (> 72h) -- the delivery job may have stopped running entirely. "
+    "— dispatching a fix-agent (reproduce → fix → test → commit).",
+    "[kipi-wt-729base] probe: local endpoints only, ASK-447",
+    # ASK-884, filed 2026-08-16T21:17 AFTER the classifier shipped earlier the
+    # same day -- a shape nobody had seen when the list above was built. Text
+    # read from the ticket (get_issue) and matched byte for byte against its
+    # producer, kipi-dispatch.sh:818.
+    "[kipi-system] kipi dispatch: hit the daily cap of 10 issues (~60 agent "
+    "sessions). Not an error -- the loop is resting until 7am, then it picks "
+    "up again on its own. Do: nothing, or raise KIPI_DISPATCH_DAILY_MAX in "
+    "com.kipi.dispatch.plist to go faster.",
+]
+
+
+def test_every_noise_example_is_recognized_as_noise():
+    for msg in NOISE_EXAMPLES:
+        assert mod.is_noise(msg), f"should be suppressed, was not: {msg}"
+
+
+def test_real_problems_are_never_suppressed():
+    """The negative self-test. A classifier broad enough to catch the noise
+    examples above must not also catch messages describing an actual problem
+    -- these are REAL lines from tickets that had to stay filed."""
+    real_problems = [
+        "[/] Daily podcast failed (2026-08-12): candidate contract failed "
+        "(invented URL or missing evidence)",
+        "[/] BLOCK daily-podcast: uncaught exit rc=1",
+        "[kipi-system] review-redrive: ASK-294 PR #72 still has "
+        "kipi/reviewer-approved failing after the machine tier.",
+        "[kipi-system] converge ASK-701: stalled at 'BLOCK', no code change in round 2",
+        "[kipi-system] SECURITY: unsanctioned .claude/ change -- 1 modified, "
+        "0 added, 0 removed: .claude/rules/skill-hook-pairing.md | reverted 1, "
+        "quarantined at q-system/output/claude-integrity/quarantine/20260816T173315Z",
+        # The two OTHER things kipi-dispatch.sh can page about (its own
+        # kipi-dispatch.sh:1335 and :1379 strings). The daily-cap pattern is
+        # written narrowly so a dispatch FAILURE never rides in behind the
+        # routine cap notice -- these are the same emitter, opposite meaning.
+        "[kipi-system] kipi dispatch: could not launch the converge run for "
+        "ASK-884, so NO work is happening even though the loop looks alive. "
+        "Do: run `bash kipi-dispatch.sh` by hand and read the error.",
+        "[kipi-system] kipi dispatch: ASK-884 was launched but died immediately "
+        "-- the loop is spending budget and doing no work. Do: check "
+        "~/.config/kipi/converge-ASK-884.log and whether launchd is reaping the child.",
+    ]
+    for msg in real_problems:
+        assert not mod.is_noise(msg), f"a real problem was suppressed: {msg}"
+
+
+def test_the_security_override_beats_every_noise_pattern():
+    """THE ASK-870 REGRESSION TEST. A tripwire message that both mentions
+    'armed'/'tripwire' (the noise shape) AND 'unsanctioned'/'reverted' (a real
+    detection) must file, every time. This is the exact confusion that caused
+    ASK-870 to be wrongly canceled by a reviewer during the 2026-08-16 cleanup."""
+    real_detection = (
+        "[kipi-system] SECURITY: unsanctioned .claude/ change -- 1 modified, "
+        "0 added, 0 removed: .claude/rules/skill-hook-pairing.md | reverted 1, "
+        "quarantined at q-system/output/claude-integrity/quarantine/20260816T173315Z"
+    )
+    assert not mod.is_noise(real_detection)
+    # Also guard the inverse shape directly, independent of the fixture above
+    # drifting: "armed" + "tripwire" alone is noise, the same message plus
+    # "reverted" must not be.
+    baseline_only = "[x] armed .claude/ integrity tripwire: 3 file(s) baselined"
+    with_revert = baseline_only + " | 1 unsanctioned change reverted"
+    assert mod.is_noise(baseline_only)
+    assert not mod.is_noise(with_revert)
+
+
+def test_noise_is_logged_locally_not_filed_as_a_ticket(isolated_state, monkeypatch):
+    """A suppressed alert is never dropped -- it goes to a local log instead of
+    Linear, so nothing here can accidentally hide a message that should have
+    filed. Linear is never touched: no fake client is even wired up, so a
+    regression that stopped checking is_noise would fail this test by trying
+    to load the real module and hitting the missing-key path, not by a mock
+    silently accepting a create call."""
+    code, line = mod.file_alert(NOISE_EXAMPLES[0], now=1000.0)
+    assert code == mod.EXIT_OK
+    assert "suppressed" in line.lower()
+    with open(mod._noise_log_path(), encoding="utf-8") as fh:
+        logged = fh.read()
+    assert NOISE_EXAMPLES[0] in logged
 
 
 if __name__ == "__main__":
