@@ -184,7 +184,7 @@ Examples:
 | Generic Security Content | Assaf's Writing |
 |---|---|
 | "Organizations face increasing cyber threats" | "The same attacker came back four months later. Nobody connected the two." |
-| "AI can help automate security operations" | "AI isn't a feature. It's a system. Most companies are still treating AI like a demo." |
+| "AI can help automate security operations" | "Most companies are still treating AI like a demo. A system carries the work end to end." |
 | "Cross-team collaboration is important" | "Four teams fought the same attacker. None of them knew." |
 | "Threat intelligence needs to be actionable" | "0.09% of shared threat intelligence becomes actionable rules. That's not a tools problem." |
 | "Signal sharing between organizations is valuable" | "It looks like collaboration. In practice, it is a checkbox." |
@@ -245,7 +245,7 @@ Do NOT import the spoken disfluency (like, you know, false starts, repetition-as
 
 > From the Catalyst investor conversation plus re-analysis of the clean corpus. This is his PITCH voice, distinct from the personal and casual registers above.
 
-- Silos to shared nervous system. Frames the product not as another tool but as connective tissue between teams that do not talk. "It's not a monitoring layer. It's a shared nervous system."
+- Silos to shared nervous system. Frames the product not as another tool but as connective tissue between teams that do not talk. "It's not a monitoring layer. It's a shared nervous system." [SPOKEN-ONLY: pitch-register transcript quote; in WRITING, state the thing directly -- see the negation note below]
 - The LLM as an eager-to-please liar. Anthropomorphizes the model as something that wants to fool you and must be caught. "they really wanna please you and say, yes I did this. No you didn't" / "it tries so hard to hallucinate."
 - Zero hallucination where it counts. Rejects a percentage error rate in security; review in test before production, never straight to prod. "no hallucination where it counts, where the rule is created" / "companies say well it's 3%. No. You can't do that in security."
 - Judge-LLM skepticism. Stacking an agent to watch an agent does not fix hallucination; you have to compare against the actual source that came in. "we're just having another agent. That's not how that works. If you're not comparing it to the actual thing that came in, you don't know."
@@ -260,7 +260,7 @@ Do NOT import the spoken disfluency (like, you know, false starts, repetition-as
 - Sentence closers: he lands flat on small words, no flourish. Top closers: yeah, it, that, like, okay, this, now, me. Closing on "now" (17x) is a tell: he ends on immediacy.
 - "because" is over-indexed (81x): he constantly explains causation. Pairs with the causal-chain argument pattern above.
 - Reported speech is core: said (49), tell (23), say (23). He narrates by replaying the exchange. "and I said... and she said..." is how he tells a story.
-- Defines by negation: don't (80), didn't (23), no, not. He states what things are NOT as much as what they are.
+- Defines by negation [SPOKEN-ONLY]: don't (80), didn't (23), no, not -- real counts, but from the SPOKEN corpus. The WRITTEN corpus refutes it as a writing trait: measured 2026-08-18 against the live 72-row corpus, then EYEBALLED after two regex passes disagreed (raw counts are shape-dependent; both prior numbers were wrong): the reveal is real but sparse in his writing, and one 445-word analysis piece deliberately uses it 3x. The machine tell is DENSITY ON SHORT SURFACES -- the flagged AI draft stacked 3x in 120 words, a rate nothing in the corpus approaches. A fresh AI draft stacked it 3x in 120 words and the founder caught it as a machine tell -- the draft was obeying this file. RULE for published copy: density-relative -- 2+ reveals under ~300 words is the machine tell; sparing use in long-form analysis is genuinely his (corrections.jsonl row 2026-08-18-no-negation-reveal in consulting; lint follow-up sp-26a41902 in THIS repo's ledger, since voice-lint.py lives here -- not yet live, a stacked draft passes today).
 - Confident but hedged: strong claims wrapped in maybe (22), "I don't know" (1.4 per 1k), whatever, "we'll see." Assertion and uncertainty coexist without contradiction.
 - Fillers [SPOKEN-ONLY]: "like" (12.9 per 1k) and "so" (11 per 1k) dominate; "dude" and "man" are occasional and usable in casual writing; NOT "um" or "you know." Know the rhythm, do not transcribe it.
 - Absence, the strongest signal: 0 of 27 corporate cliches across 11,563 words. Zero leverage, synergy, robust, seamless, innovative, disrupt, empower, ecosystem, circling back, deep dive, north star, double-click. Deterministic proof of the anti-corporate rule already in this file.

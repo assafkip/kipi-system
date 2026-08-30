@@ -238,117 +238,57 @@ def test_classify_covers_skeleton_and_instance_alike():
     assert mod.classify("q-consult/pipeline/x.py") == mod.SKIP_UNCLASSIFIED
 
 
-def test_the_skipped_report_reaches_a_channel_a_human_reads(tmp_path, monkeypatch):
-    """finding-4. The hook is wired `async` and the fleet template appends
-    2>/dev/null, so a bare print() is a report nobody receives. Slack is this repo's
-    single sanctioned founder channel (founder-notifications.md)."""
-    import importlib
+def test_the_hook_never_alerts_at_all(tmp_path, monkeypatch):
+    """THE INVARIANT, founder-directed 2026-08-10: this hook alerts nobody.
+
+    It used to shell out to slack-notify.sh, throttled by a digest of the file
+    set (ASK-603). The throttle could not work: during active work the file set
+    changes nearly every turn, so the digest changes nearly every turn, so it
+    spoke nearly every turn. 51 of 100 #general messages in one 4.5-hour window
+    were this hook, burying four security reverts and a dead job.
+
+    A subprocess spawn of ANY kind from report_skipped is the regression, which
+    is why this asserts on subprocess.run rather than on the word "slack" -- the
+    fleet alert path was renamed once already and a string check would have
+    missed it."""
     mod = _hook_module()
     calls = []
     monkeypatch.setattr(mod.os.path, "isfile", lambda p: True)
     monkeypatch.setattr(mod.subprocess, "run",
                         lambda *a, **k: calls.append(a[0]) or None)
     mod.report_skipped(["q-consult/pipeline/x.py"])
-    assert calls, "nothing was sent to the notification channel"
-    assert "slack-notify.sh" in " ".join(calls[0])
-    assert "q-consult/pipeline/x.py" in " ".join(calls[0])
+    assert not calls, f"report_skipped spawned a process: {calls}"
 
 
-def test_a_missing_slack_script_never_breaks_the_stop_hook(tmp_path):
+def test_the_skipped_files_are_still_named_on_the_transcript(tmp_path, capsys):
+    """Not alerting is not the same as staying silent. Removing the ping must
+    not also remove the record -- that would recreate the original defect in
+    reverse, work sitting uncommitted with nobody told anywhere."""
     mod = _hook_module()
-    mod.PROJ_DIR = str(tmp_path)          # no slack-notify.sh under here
+    mod.report_skipped(["q-consult/pipeline/x.py"])
+    out = capsys.readouterr().out
+    assert "q-consult/pipeline/x.py" in out
+    assert "NOT committed" in out
+
+
+def test_report_skipped_never_raises_into_session_exit(tmp_path):
+    mod = _hook_module()
+    mod.PROJ_DIR = str(tmp_path)
     mod.report_skipped(["a/b.py"])        # must not raise
+    mod.report_skipped([])                # nor on the empty case
 
 
-# ---------------------------------------------------- ASK-603 notify throttle
 
+# The module handle the classifier suites below use. It lived under the
+# ASK-603 throttle heading until that throttle was deleted (2026-08-10); the
+# tests that used it did not go away with it, so the loader moved here rather
+# than out.
 import importlib.util  # noqa: E402
 import json  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("auto_commit", HOOK)
 auto_commit = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(auto_commit)
-
-
-class TestTheSlackLineDoesNotRepeatItself:
-    """ASK-603. 41 of 60 #general messages in a 75-MINUTE window were this one
-    hook, naming the identical two files every time. A 16-day-dead job and four
-    security reverts were posted into that same hour and read as wallpaper.
-
-    Same idea as ASK-594 on the ask-crm watchdog: report what CHANGED, not what
-    is true.
-    """
-    FILES = ["RECONCILED_THROUGH", "q-consult/config/source-weights.yaml"]
-
-    def test_the_first_time_it_speaks(self, tmp_path):
-        say, _ = auto_commit.should_notify(
-            self.FILES, now=1000.0, path=str(tmp_path / "s.json"))
-        assert say
-
-    def test_the_same_files_again_are_silent(self, tmp_path):
-        p = str(tmp_path / "s.json")
-        say, digest = auto_commit.should_notify(self.FILES, now=1000.0, path=p)
-        auto_commit.record_notified(digest, now=1000.0, path=p)
-        say, _ = auto_commit.should_notify(self.FILES, now=1060.0, path=p)
-        assert not say, "24 identical lines in 75 minutes is the defect"
-
-    def test_file_order_does_not_count_as_a_change(self, tmp_path):
-        """git does not promise ordering; a reordered list is the same news."""
-        p = str(tmp_path / "s.json")
-        _, digest = auto_commit.should_notify(self.FILES, now=1000.0, path=p)
-        auto_commit.record_notified(digest, now=1000.0, path=p)
-        say, _ = auto_commit.should_notify(
-            list(reversed(self.FILES)), now=1060.0, path=p)
-        assert not say
-
-    def test_a_different_file_set_speaks(self, tmp_path):
-        p = str(tmp_path / "s.json")
-        _, digest = auto_commit.should_notify(self.FILES, now=1000.0, path=p)
-        auto_commit.record_notified(digest, now=1000.0, path=p)
-        say, _ = auto_commit.should_notify(
-            self.FILES + ["new_thing.py"], now=1060.0, path=p)
-        assert say, "a NEW uncommitted file is real news"
-
-    def test_it_speaks_again_after_the_remind_window(self, tmp_path):
-        """A file uncommitted for a week must not go permanently silent."""
-        p = str(tmp_path / "s.json")
-        _, digest = auto_commit.should_notify(self.FILES, now=1000.0, path=p)
-        auto_commit.record_notified(digest, now=1000.0, path=p)
-        later = 1000.0 + (auto_commit.REMIND_AFTER_HOURS * 3600) + 1
-        say, _ = auto_commit.should_notify(self.FILES, now=later, path=p)
-        assert say
-
-    def test_a_corrupt_state_file_speaks_rather_than_swallows(self, tmp_path):
-        """Fail loud. A broken cache must never silence a real notification."""
-        p = tmp_path / "s.json"
-        p.write_text("{not json")
-        say, _ = auto_commit.should_notify(self.FILES, now=1000.0, path=str(p))
-        assert say
-
-    def test_state_lives_outside_the_repo(self, tmp_path):
-        """The trap: state written INTO the repo becomes an uncommitted file,
-        which this very hook then reports on, which rewrites the state. Its own
-        cache would be its own alarm."""
-        path = auto_commit.notify_state_path("/Users/x/projects/consulting")
-        assert "/projects/consulting" not in path, \
-            "the cache would sit inside the repo it reports on"
-        # And the DEFAULT (no test override) still lands under the user's cache.
-        monkeypatch = pytest.MonkeyPatch()
-        monkeypatch.delenv("KIPI_CACHE_HOME", raising=False)
-        try:
-            assert auto_commit.notify_state_path("/Users/x/projects/consulting") \
-                .startswith(os.path.join(os.path.expanduser("~"), ".cache"))
-        finally:
-            monkeypatch.undo()
-
-    def test_two_projects_do_not_silence_each_other(self, tmp_path):
-        a = auto_commit.notify_state_path("/Users/x/projects/consulting")
-        b = auto_commit.notify_state_path("/Users/x/projects/Pure_spectrum_Q")
-        assert a != b, "consulting and Pure_spectrum_Q both spam; both need a slot"
-
-    def test_recording_never_raises_on_an_unwritable_path(self):
-        """A Stop hook never fails because its cache did."""
-        auto_commit.record_notified("d", now=1.0, path="/nope/nope/s.json")
 
 
 class TestTheFleetSyncSharesThisClassifier:
@@ -470,3 +410,148 @@ class TestTheNeverList:
         """Not a .prd-os special case: a lock is a race wherever it lives."""
         assert auto_commit.system_state_paths(
             ["q-system/memory/open-loops.json.lock"]) == []
+
+
+class TestExecutableSourceIsNeverSwept:
+    """ASK-498 removed the generic fallback but scoped the fix by DIRECTORY, and two
+    AREA_MAP rows are named for directories that hold Python: `plugins/` (kipi-core is
+    a package) and `q-system/.q-system/` (holds scripts/).
+
+    Measured 2026-08-13 in one session on this fleet: `test_length_axis.py` was
+    committed as "feat: update plugins" and `voice-dna-loader.py` as "chore: update
+    system infrastructure", both while an agent was still editing them and before it
+    could write a message carrying a Linear id.
+    """
+
+    SWEPT_ON_2026_08_13 = (
+        "plugins/kipi-core/voiceloop/tests/test_length_axis.py",
+        "q-system/.q-system/scripts/voice-dna-loader.py",
+    )
+
+    def test_the_two_files_actually_swept_are_now_reported(self):
+        for p in self.SWEPT_ON_2026_08_13:
+            assert auto_commit.classify(p) == auto_commit.SKIP_UNCLASSIFIED, p
+            assert auto_commit.system_state_paths([p]) == [], p
+
+    def test_source_is_refused_in_every_area(self):
+        for p in ("plugins/kipi-core/voiceloop/selector.py",
+                  "q-system/hooks/auto-commit.py",
+                  "q-system/.q-system/agent-pipeline/runner.py",
+                  "q-system/canonical/helper.py",
+                  "scripts/voice_ref.py",
+                  "sites/build.mjs",
+                  "q-system/marketing/gen.sh"):
+            assert auto_commit.classify(p) == auto_commit.SKIP_UNCLASSIFIED, p
+
+    def test_the_generated_state_safety_net_still_commits(self):
+        """Removing the sweep must not disable the net it was built for."""
+        for p in ("q-system/canonical/voice-sources.md",
+                  "q-system/memory/last-handoff.md",
+                  "q-system/marketing/brand-voice.md",
+                  ".prd-os/spillover.jsonl"):
+            assert not isinstance(auto_commit.classify(p), str), p
+
+    def test_a_plugin_manifest_is_not_source(self):
+        """plugin.json must still be taken: the version-bump gate refuses a plugin
+        commit until it is bumped, so refusing it here would deadlock that gate."""
+        r = auto_commit.classify("plugins/kipi-core/.claude-plugin/plugin.json")
+        assert not isinstance(r, str), r
+
+
+# --- the commit message must say what changed, not just where (2026-08-16) ----
+#
+# THE INCIDENT. Commit 80b82f84 on kipi-system read:
+#
+#     chore: update system infrastructure
+#     - q-system/.q-system/capability-manifest.json
+#
+# and silently reverted five lines of a real capability-manifest entry. The
+# path was ALREADY in the message; naming files was never the gap. Direction and
+# magnitude were, so a deletion was indistinguishable from an update and a
+# second session had to diff the commit by hand to find it. These cases pin the
+# half that was missing, and `test_an_addition_is_not_labelled_a_deletion` is
+# the discrimination control -- without it, a hook that stamped
+# "DELETIONS ONLY" on every commit would pass the reproducer.
+
+
+def _last_msg(run):
+    return run("git", "log", "-1", "--format=%B").stdout
+
+
+def _seed_tracked(root, run, rel, body):
+    """A file that EXISTS AT HEAD, so the next write is a real diff and not an
+    add. The incident was an edit to a long-tracked file; an untracked file
+    would only ever produce insertions and could not reproduce it."""
+    _write(root, rel, body)
+    run("git", "add", "--", rel)
+    run("git", "commit", "-q", "-m", "seed " + rel)
+
+
+MANIFEST = "q-system/.q-system/capability-manifest.json"
+
+
+def test_a_pure_deletion_is_named_as_a_deletion(tmp_path):
+    """The 80b82f84 reproducer: five lines removed, nothing added."""
+    root, run = _repo(tmp_path)
+    _seed_tracked(root, run, MANIFEST,
+                  "".join(f"line-{n}\n" for n in range(8)))
+    (root / MANIFEST).write_text("".join(f"line-{n}\n" for n in range(3)))
+    _fire(root)
+    msg = _last_msg(run)
+    assert MANIFEST in msg, f"the changed path left the message entirely\n{msg}"
+    assert "+0/-5" in msg, (
+        "the message did not carry the line counts, so a 5-line revert still "
+        f"reads exactly like an ordinary update\n{msg}")
+    assert "DELETIONS ONLY" in msg, (
+        f"a pure deletion was not called out in words\n{msg}")
+
+
+def test_an_addition_is_not_labelled_a_deletion(tmp_path):
+    """DISCRIMINATION CONTROL. A hook that always stamped the deletion marker
+    would pass the reproducer above and be worthless. This is the case that
+    must stay quiet."""
+    root, run = _repo(tmp_path)
+    _seed_tracked(root, run, MANIFEST, "line-0\n")
+    (root / MANIFEST).write_text("".join(f"line-{n}\n" for n in range(6)))
+    _fire(root)
+    msg = _last_msg(run)
+    assert "+5/-0" in msg, f"insertions were not counted\n{msg}"
+    assert "DELETIONS ONLY" not in msg, (
+        f"a pure ADDITION was labelled a deletion\n{msg}")
+
+
+def test_a_mixed_edit_reports_both_directions(tmp_path):
+    root, run = _repo(tmp_path)
+    _seed_tracked(root, run, MANIFEST, "a\nb\nc\n")
+    (root / MANIFEST).write_text("a\nCHANGED\nc\n")
+    _fire(root)
+    msg = _last_msg(run)
+    assert "+1/-1" in msg, f"a mixed edit lost its counts\n{msg}"
+    assert "DELETIONS ONLY" not in msg, (
+        f"an edit that also added lines was labelled a pure deletion\n{msg}")
+
+
+def test_the_subject_line_carries_the_stat(tmp_path):
+    """`git log --oneline` shows the SUBJECT and nothing else. That is where the
+    80b82f84 review actually happened, so the body alone does not close it."""
+    root, run = _repo(tmp_path)
+    _seed_tracked(root, run, MANIFEST, "".join(f"l{n}\n" for n in range(6)))
+    (root / MANIFEST).write_text("l0\n")
+    _fire(root)
+    subject = run("git", "log", "-1", "--format=%s").stdout.strip()
+    assert "+0/-5" in subject, (
+        f"the one-line log still hides the direction of the change\n{subject}")
+
+
+def test_a_binary_file_degrades_instead_of_crashing(tmp_path):
+    """git reports `-` for binary line counts. The hook must still commit."""
+    root, run = _repo(tmp_path)
+    rel = "q-system/.q-system/blob.bin"
+    _write(root, rel, "seed\n")
+    run("git", "add", "--", rel)
+    run("git", "commit", "-q", "-m", "seed blob")
+    (root / rel).write_bytes(b"\x00\x01\x02binary\xff")
+    _fire(root)
+    msg = _last_msg(run)
+    assert rel in msg, f"the binary file was dropped from the message\n{msg}"
+    assert "binary" in msg, f"the binary file was not marked as such\n{msg}"

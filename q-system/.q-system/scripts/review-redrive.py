@@ -151,6 +151,16 @@ REWORK_VERDICTS = {"REQUEST CHANGES", "BLOCK"}
 REWORK = "rework"
 REREVIEW = "re-review"
 
+# Where a PR's head lives, as the board answered it. ALIASED, NOT REDEFINED
+# (PR #211 round 3, MAJOR 1). Round 2 put this predicate here, and the finding
+# that followed was ci-redrive.candidates() -- the OTHER reader of the same two
+# attacker-chosen facts -- having no such check at all. The field is requested in
+# ci-redrive's PR_FIELDS, so the answer to "whose head is this" belongs in the
+# module that asks the question, and every reader names that one copy.
+SAME_REPO = CI.SAME_REPO
+FORK = CI.FORK
+UNSTATED = CI.UNSTATED
+
 
 def record_path(records_dir, pr):
     return os.path.join(records_dir, "pr-%s.verdict.json" % pr)
@@ -331,9 +341,45 @@ def classify(record, head_sha):
     return None, "verdict %s is not a refusal" % verdict
 
 
+# THE ONE PLACE THE QUESTION IS ANSWERED, and since round 3 that place is
+# ci-redrive.py. Round 2 answered it here and ci-redrive.candidates() -- reading
+# the very same two attacker-chosen facts -- still had no check, which is exactly
+# the "two copies of one trust rule, owned by neither" shape this name was
+# introduced to end. Bound here so both callers below read as they did.
+head_provenance = CI.head_provenance
+
+
 def candidates(repo_dir, records_dir):
     out = []
     for pr_obj in CI.list_prs(repo_dir):
+        # A FORK IS NEVER A CANDIDATE (PR #211 round 2, MAJOR 1; captured first
+        # as sp-f7e6334d and arriving here as a finding).
+        #
+        # On a public repo anyone can open `sana/evil` titled "(ASK-352)", and
+        # both of those are facts `CI.attribute` believes. That made an external
+        # PR a REWORK candidate for someone else's issue. The second cost is the
+        # expensive one: field 5 then carries `sana/evil` into `branch_guard`,
+        # which compares it against `sana/ask-352`, refuses, and PARKS the real
+        # issue every cycle until a human closes the external PR. The guard built
+        # to stop wrong-target work becomes the thing that stalls the queue.
+        #
+        # THE POSTURE HERE IS THE OPPOSITE OF `branch_for`'s, FROM THE SAME
+        # PREDICATE, and that asymmetry is the point rather than an oversight.
+        # A skip in `branch_for` degrades to "no branch known", whose caller
+        # already treats that as proceed -- fail-open. A skip HERE degrades to
+        # "offer nothing", which silently stalls the whole redrive lane, the
+        # exact defect class of the sibling finding in this same review. So a
+        # CONFIRMED fork is dropped, and an UNSTATED provenance is kept as a
+        # candidate but loses its branch below: an unconfirmed head may not route
+        # work, and it may not switch the lane off either.
+        provenance = head_provenance(pr_obj)
+        if provenance == FORK:
+            continue
+        # An unconfirmed head is still worked, but it never ROUTES the work. The
+        # dispatcher reads an empty field 5 as "no earlier observation" and takes
+        # its fail-open arm, so the branch the naming rule produces is used --
+        # which is the legitimate branch, never a head we could not vouch for.
+        head_branch = pr_obj.get("headRefName") if provenance == SAME_REPO else None
         # A DRAFT IS THE AUTHOR SAYING NOT YET, and re-entering one spends a
         # converge round or a codex call on a tree nobody asked to be judged.
         #
@@ -394,7 +440,7 @@ def candidates(repo_dir, records_dir):
                     "action": action, "reason": reason,
                     "issue": issue, "agent": agent, "issue_source": source,
                     "pr": pr, "url": pr_obj.get("url"),
-                    "branch": pr_obj.get("headRefName"),
+                    "branch": head_branch,
                     "head_sha": head_sha, "slots": [],
                 })
                 continue
@@ -420,7 +466,7 @@ def candidates(repo_dir, records_dir):
                     "reason": "the reviewer has never posted a verdict for this PR",
                     "issue": issue, "agent": agent, "issue_source": source,
                     "pr": pr, "url": pr_obj.get("url"),
-                    "branch": pr_obj.get("headRefName"),
+                    "branch": head_branch,
                     "head_sha": pr_obj.get("headRefOid") or "",
                     "slots": [],
                 })
@@ -444,10 +490,93 @@ def candidates(repo_dir, records_dir):
         out.append({
             "action": action, "reason": reason, "issue": issue, "agent": agent,
             "issue_source": source, "pr": pr, "url": pr_obj.get("url"),
-            "branch": pr_obj.get("headRefName"), "head_sha": head_sha,
+            "branch": head_branch, "head_sha": head_sha,
             "slots": slots,
         })
     return out
+
+
+def branch_for(repo_dir, issue):
+    """The ONE branch this issue's OPEN PRs live on, or a refusal (ASK-358).
+
+    WHY (measured on ASK-352). converge.sh:83 derives the branch it commits into
+    from the issue id alone -- `BRANCH="sana/$(lower ISSUE)"`. ASK-352 has TWO
+    branches: `sana/ask-352` backs PR #90, which is CLOSED, and `sana/ask-352-clean`
+    backs PR #91, which is open. So a rework dispatched for ASK-352 lands on the
+    closed branch, where no PR and no reviewer will ever read it. That is
+    silent-wrong-target, which is worse than a stall: the work looks done and is
+    unreachable.
+
+    `candidates()` above already fetches `headRefName` into every candidate dict
+    and nothing downstream ever reads it. This is the reader.
+
+    ONLY OPEN PRs, because `CI.list_prs` is `--state open` -- and that is the
+    point rather than an accident. The closed branch is invisible here by
+    construction, so "the issue's branch" and "the open PR's branch" differing is
+    the whole signal.
+
+    AMBIGUITY IS REFUSED, NOT RESOLVED, the same rule `title_issue` already
+    applies to two ids in one title: two live branches for one issue means any
+    pick is a guess, and the wrong branch worked is the defect this exists to
+    stop. Returns a LIST so the caller can name them; the caller decides.
+
+    FORK PRs ARE NOT EVIDENCE (PR #211 round 1, MAJOR 2). `CI.attribute` reads
+    two facts and a fork's author chooses both: the head branch name and the PR
+    title. On a public repo that means anyone can open `sana/evil` titled
+    "... (ASK-352)" and this function would answer `sana/evil` for ASK-352 --
+    which does not merely mislead, it PARKS the issue, because the guard
+    downstream then sees a mismatch every cycle until a human closes the external
+    PR. So the branch namespace is only believed from a head that lives in this
+    repo, which requires push access to create.
+
+    ABSENCE IS NOT CONFIRMATION. `isCrossRepository` is requested in PR_FIELDS,
+    so a PR arriving without it is a board that did not answer the question, not
+    a board answering "same repo". Unconfirmed provenance is skipped: the cost is
+    an unresolved branch, which the caller already treats as "proceed", and that
+    is the fail-open-on-not-knowing posture the whole guard is built on.
+    """
+    branches = []
+    for pr_obj in CI.list_prs(repo_dir):
+        # ONE PREDICATE, SHARED WITH `candidates()` (PR #211 round 2, MAJOR 1).
+        # Both readers trust the same two attacker-chosen facts, so both ask the
+        # same question through `head_provenance`. Here BOTH non-same-repo answers
+        # skip, because this caller's skip is fail-OPEN: fewer branches means rc 1,
+        # which the guard already treats as "round one, proceed".
+        if head_provenance(pr_obj) != SAME_REPO:
+            continue
+        attributed = CI.attribute(pr_obj)
+        if attributed is None:
+            continue
+        if attributed[0].upper() != issue.upper():
+            continue
+        head = pr_obj.get("headRefName")
+        if head and head not in branches:
+            branches.append(head)
+    return sorted(branches)
+
+
+def cmd_branch_for(repo_dir, issue):
+    """rc 0 = the one branch (printed), 1 = no open PR, 3 = ambiguous.
+
+    rc 2 is reserved for `gh could not answer` and is raised by the caller in
+    main(), so a caller can never read an unreadable board as a fact. Three
+    distinct non-zero codes because the caller's move differs for each: proceed
+    (no PR yet, round one), refuse and name the branch (mismatch), refuse and
+    name all of them (ambiguous).
+    """
+    branches = branch_for(repo_dir, issue)
+    if not branches:
+        sys.stderr.write(
+            "review-redrive: %s has no OPEN PR, so no branch to resolve.\n" % issue)
+        return 1
+    if len(branches) > 1:
+        sys.stderr.write(
+            "review-redrive: %s maps to %d live branches (%s) -- refusing to "
+            "guess which one the work belongs on.\n"
+            % (issue, len(branches), ", ".join(branches)))
+        return 3
+    print(branches[0])
+    return 0
 
 
 def flag(cand):
@@ -547,6 +676,18 @@ def cmd_select(cands, show_all):
 
     path = CI.attempts_path()
     for c in cands:
+        # THE CAP-OUT PARK, FIRST (ASK-871). converge.sh stopping this ISSUE at
+        # its round cap is a refusal to touch it at all, so it outranks every
+        # question below -- which action, is anything live, is the attempt spent.
+        #
+        # IMPORTED FROM ci-redrive, NOT REIMPLEMENTED, for the same reason
+        # `is_reviewer_slot` is: both redrives must refuse the same parked issue,
+        # and two copies of one refusal rule is how a state ends up owned by
+        # neither. It reads a fact, writes nothing, and cannot page -- so putting
+        # it ahead of the in-flight gates does not reintroduce the false-page
+        # hazard those gates exist for.
+        if CI.capout_skip(path, c["issue"], "review-redrive", c["pr"]):
+            continue
         # IN-FLIGHT GATES, BOTH ACTIONS, BEFORE THE LEDGER IS READ. Each action
         # launches a different long-running process, so each needs its own
         # liveness question -- but the reason is one reason, and the ledger read
@@ -594,14 +735,28 @@ def cmd_select(cands, show_all):
             continue
         sys.stderr.write("review-redrive: %s PR #%s -> %s (%s)\n"
                          % (c["issue"], c["pr"], c["action"], c["reason"]))
-        print("%s\t%s\t%s\t%s" % (c["action"], c["issue"], c["pr"], c["head_sha"]))
+        # FIELD 5 IS THE BRANCH (PR #211 round 1, MAJOR 3). candidates() has
+        # always carried headRefName and this line dropped it, so the dispatcher
+        # had to ask gh a SECOND time to learn where the work belonged. Two reads
+        # of mutable state is a window: PR #91 closing in between makes the second
+        # answer "no open PR", which the guard reads as round one and lets the
+        # work land on exactly the branch it exists to reject. Appended rather
+        # than inserted so every existing `cut -f1..f4` reader is untouched.
+        print("%s\t%s\t%s\t%s\t%s" % (c["action"], c["issue"], c["pr"],
+                                      c["head_sha"], c.get("branch") or ""))
         return 0
     return 1
 
 
 def cmd_mark_dispatched(issue, action, pr, head_sha):
+    # THE SAME SHARED CLAIM ci-redrive uses, not `ledger_claim` (codex on PR #210).
+    # `cmd_select`'s capout gate gates the OFFER; this is where the attempt is
+    # spent, and a cap-out recorded between the two used to sail straight through
+    # it. Imported rather than reimplemented for the reason `capout_skip` is: two
+    # copies of one refusal rule is how a state ends up owned by neither.
     cand = {"action": action, "pr": pr, "head_sha": head_sha}
-    return 0 if CI.ledger_claim(CI.attempts_path(), issue, flag(cand)) else 1
+    return 0 if CI.claim_unless_capped(
+        CI.attempts_path(), issue, flag(cand), "review-redrive", pr) else 1
 
 
 def main(argv):
@@ -620,9 +775,21 @@ def main(argv):
     mark.add_argument("--pr", required=True)
     mark.add_argument("--head-sha", default="")
 
+    bfp = sub.add_parser("branch-for")
+    bfp.add_argument("--issue", required=True)
+
     args = ap.parse_args(argv)
     if args.cmd == "mark-dispatched":
         return cmd_mark_dispatched(args.issue, args.action, args.pr, args.head_sha)
+    if args.cmd == "branch-for":
+        try:
+            return cmd_branch_for(args.repo_dir, args.issue)
+        except CI.GhUnavailable as exc:
+            # Same rc as `select`, and for the same reason: an unreadable board
+            # is not the fact "no branch". The caller must be able to tell them
+            # apart or it will refuse a dispatch over one gh outage.
+            sys.stderr.write("review-redrive: %s -- no branch resolved.\n" % exc)
+            return 2
     try:
         cands = candidates(args.repo_dir, args.records_dir)
     except CI.GhUnavailable as exc:

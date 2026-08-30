@@ -774,3 +774,210 @@ def test_ledger_lock_degrades_when_it_cannot_be_taken(repo):
         "it degraded SILENTLY -- an unlocked write with no warning is the "
         "failure mode nobody notices")
     assert json.loads(_ledger_lines(repo)[-1])["status"] == "resolved"
+
+
+# --- sp-8c0b2d87: the exit for an item fixed OUTSIDE a PRD manifest ----------
+#
+# THE HOLE. `no-orphan-findings.md` names exactly two exits: resolve against a
+# CLOSED issue, or void with a reason. But issue_runner.py has no `create` verb
+# (load/status/scope/gate/mark/verify/triage/approve/amend/close/clear/
+# allowed-files/complete-review/record-review) and prd_split is the only issue
+# minter, so an item discovered outside a PRD -- or fixed outside its parent
+# PRD's manifest -- can be FIXED and never RESOLVED. It is not voidable (it was
+# real) and there is no closed issue to point at. Measured live on sp-d912cc82
+# and sp-3aa375a6, both fixed and merged into main and both still reading open.
+#
+# THE EXIT: the merged code itself. A commit that (1) exists, (2) is an ancestor
+# of the integration branch, and (3) NAMES this item in its message is evidence
+# no operator can assert into being -- it takes a real commit on the real branch.
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(repo), *args],
+                          capture_output=True, text=True)
+
+
+@pytest.fixture
+def git_repo(repo: Path) -> Path:
+    """The `repo` fixture only MKDIRs `.git`; the commit exit needs a real one.
+
+    Identity is set per-repo rather than inherited: a CI box with no global
+    git identity would otherwise fail every commit here for a reason that has
+    nothing to do with what is under test.
+    """
+    (repo / ".git").rmdir()
+    _git(repo, "init", "--quiet", "--initial-branch", "main")
+    _git(repo, "config", "user.email", "t@example.test")
+    _git(repo, "config", "user.name", "T")
+    return repo
+
+
+def _commit(repo: Path, filename: str, message: str) -> str:
+    """Commit `filename` with unique content and return its full sha.
+
+    Content carries the filename because a fixture that writes the same bytes
+    with the same message inside the same second produces the SAME sha in two
+    "different" repos, and a test asserting on a sha then passes for the wrong
+    reason.
+    """
+    (repo / filename).write_text(f"content of {filename}\n")
+    _git(repo, "add", filename)
+    _git(repo, "commit", "--quiet", "--no-verify", "-m", message)
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_a_merged_fix_commit_resolves_the_item(git_repo):
+    """REPRODUCER for sp-8c0b2d87. Watched failing at 0143ab9 before the fix:
+
+        >       assert ok.returncode == 0, ok.stderr
+        E       AssertionError: usage: prd_runner.py [-h] [--repo-root REPO_ROOT]
+        E                              {new,load,status,advance,archive,clear,gates,spillover} ...
+        E         prd_runner.py: error: unrecognized arguments: --resolution-commit
+        E         c713d41e3202ba287f287e6578335a810d434547
+        E       assert 2 == 0
+
+    The item is fixed. The fix is merged. Neither existing exit can say so:
+    `--resolution-ref` has no issue to point at and `--void` would record that
+    a real defect was not real.
+    """
+    sha = _commit(git_repo, "fix.py", "fix(x): stop the leak\n\nsp1 was real.\n")
+    run(git_repo, "spillover", "add", "--source", "rca-x", "--desc", "leak", "--id", "sp1")
+
+    ok = run(git_repo, "spillover", "resolve", "sp1", "--resolution-commit", sha)
+    assert ok.returncode == 0, ok.stderr
+
+    last = [json.loads(l) for l in _ledger_lines(git_repo) if json.loads(l)["id"] == "sp1"][-1]
+    assert last["status"] == "resolved"
+    assert last["resolution_commit"] == sha
+    assert last["resolution_tracker"] == "git"
+    assert run(git_repo, "spillover", "check").returncode == 0
+
+
+# The negative half. Each of these is a way the commit exit could become the
+# hand-clear no-orphan-findings.md refuses, so each has to be watched refusing.
+
+
+def test_an_unmerged_commit_is_refused(git_repo):
+    """The branch that wants the item cleared cannot vouch for itself.
+
+    This is the failure mode a naive `--is-ancestor <sha> HEAD` ships: you make
+    the fix commit on your feature branch and resolve from that same branch,
+    which is every commit ever written.
+    """
+    _commit(git_repo, "base.py", "chore: base")
+    _git(git_repo, "checkout", "--quiet", "-b", "feature")
+    sha = _commit(git_repo, "fix.py", "fix: sp1 handled\n")
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+
+    bad = run(git_repo, "spillover", "resolve", "sp1", "--resolution-commit", sha)
+    assert bad.returncode == 2
+    assert "not merged" in bad.stderr, bad.stderr
+    assert run(git_repo, "spillover", "check").returncode == 1  # still open
+    assert len(_ledger_lines(git_repo)) == 1  # refusal wrote nothing
+
+
+def test_a_merged_commit_that_does_not_name_the_item_is_refused(git_repo):
+    """Any merged sha would otherwise clear any item. This is THE property."""
+    sha = _commit(git_repo, "other.py", "fix: an unrelated thing\n")
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+
+    bad = run(git_repo, "spillover", "resolve", "sp1", "--resolution-commit", sha)
+    assert bad.returncode == 2
+    assert "does not name sp1" in bad.stderr, bad.stderr
+    assert run(git_repo, "spillover", "check").returncode == 1
+
+
+def test_a_commit_naming_a_different_item_is_refused(git_repo):
+    """Neighbouring ids must not be interchangeable: sp1's fix is not sp2's."""
+    sha = _commit(git_repo, "fix.py", "fix: sp1 handled\n")
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "a", "--id", "sp1")
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "b", "--id", "sp2")
+
+    assert run(git_repo, "spillover", "resolve", "sp1", "--resolution-commit", sha).returncode == 0
+    bad = run(git_repo, "spillover", "resolve", "sp2", "--resolution-commit", sha)
+    assert bad.returncode == 2
+    assert "does not name sp2" in bad.stderr, bad.stderr
+
+
+def test_the_id_is_read_from_the_message_never_the_diff(git_repo):
+    """A file that merely QUOTES an id must not resolve it.
+
+    RCA docs, plans and review notes quote spillover ids by the dozen here, so
+    a diff-based match would let a docs commit clear the very item it describes.
+    """
+    (git_repo / "rca.md").write_text("The finding sp1 is described here.\n")
+    _git(git_repo, "add", "rca.md")
+    _git(git_repo, "commit", "--quiet", "--no-verify", "-m", "docs: write up the rca")
+    sha = _git(git_repo, "rev-parse", "HEAD").stdout.strip()
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+
+    bad = run(git_repo, "spillover", "resolve", "sp1", "--resolution-commit", sha)
+    assert bad.returncode == 2
+    assert "does not name sp1" in bad.stderr, bad.stderr
+
+
+def test_a_nonexistent_sha_is_refused(git_repo):
+    _commit(git_repo, "base.py", "chore: base")
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    bad = run(git_repo, "spillover", "resolve", "sp1",
+              "--resolution-commit", "0" * 40)
+    assert bad.returncode == 2
+    assert "no commit" in bad.stderr, bad.stderr
+
+
+def test_a_tree_sha_is_refused(git_repo):
+    """`^{commit}` peeling, not mere object existence: a tree is not evidence."""
+    _commit(git_repo, "base.py", "chore: base")
+    tree = _git(git_repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    bad = run(git_repo, "spillover", "resolve", "sp1", "--resolution-commit", tree)
+    assert bad.returncode == 2
+    assert "no commit" in bad.stderr, bad.stderr
+
+
+def test_no_integration_branch_refuses_rather_than_falling_back(git_repo):
+    """With no main/master and no origin/HEAD there is nothing to be merged INTO.
+
+    The tempting fallback is HEAD, which would silently make every commit in
+    every repo count as merged. Refuse and say why.
+    """
+    _commit(git_repo, "base.py", "chore: base")
+    sha = _commit(git_repo, "fix.py", "fix: sp1 handled\n")
+    _git(git_repo, "branch", "--quiet", "-m", "main", "trunk")
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+
+    bad = run(git_repo, "spillover", "resolve", "sp1", "--resolution-commit", sha)
+    assert bad.returncode == 2
+    assert "no integration branch" in bad.stderr, bad.stderr
+
+
+def test_resolve_takes_exactly_one_exit(git_repo):
+    sha = _commit(git_repo, "fix.py", "fix: sp1 handled\n")
+    run(git_repo, "spillover", "add", "--source", "s", "--desc", "leak", "--id", "sp1")
+    bad = run(git_repo, "spillover", "resolve", "sp1",
+              "--resolution-commit", sha, "--void", "not real")
+    assert bad.returncode == 2
+    assert "exactly one exit" in bad.stderr, bad.stderr
+    assert run(git_repo, "spillover", "check").returncode == 1
+
+
+def test_the_commit_exit_unblocks_archive(git_repo):
+    """The step this hole actually blocked: archive refuses on ANY open item the
+    PRD opened, and an item fixed outside a manifest had no way to stop being
+    open. Asserted end to end rather than on the resolve call alone.
+    """
+    created = run(git_repo, "new", "arch-commit-exit", "--title", "T")
+    assert created.returncode == 0, created.stderr
+    prd_id = json.loads(created.stdout)["created"]
+    run(git_repo, "advance", "draft")
+    sha = _commit(git_repo, "fix.py", "fix: sp1 handled\n")
+    run(git_repo, "spillover", "add", "--source", prd_id, "--desc", "leak", "--id", "sp1")
+
+    blocked = run(git_repo, "archive")
+    assert blocked.returncode != 0
+    assert "refusing to archive" in blocked.stderr, blocked.stderr
+
+    assert run(git_repo, "spillover", "resolve", "sp1",
+               "--resolution-commit", sha).returncode == 0
+    after = run(git_repo, "archive")
+    assert after.returncode == 0, after.stderr + after.stdout
