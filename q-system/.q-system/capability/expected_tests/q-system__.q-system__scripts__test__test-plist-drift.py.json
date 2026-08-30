@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-plist-drift.py",
+ "runner": "python3"
+}
