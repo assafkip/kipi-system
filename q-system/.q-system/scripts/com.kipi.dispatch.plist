@@ -78,9 +78,20 @@
 		     12 x 6 = 72 `claude -p` sessions a day; one interactive night on
 		     2026-07-28 spent 89, so this stays inside a night the founder has
 		     already paid for once. Lower it here if that is too much; nothing
-		     in the code depends on the number. -->
+		     in the code depends on the number.
+
+		     LOWERED 12 -> 10, founder-set 2026-08-15, after a run hit the
+		     account's usage limit. The limit did NOT arrive as an error: a
+		     killed agent exits 0 having written nothing, and the worker reads
+		     that as "ran, opened no PR" and retries. Measured that day, three
+		     issues (ASK-734, ASK-747, ASK-833) each reached attempt 4 of a
+		     3-attempt cap with empty branches, and the live plist had drifted
+		     to 40 while this committed copy still read 12 -- so the ceiling
+		     the founder had set was not the ceiling that ran. 10 is the
+		     founder's number; the drift is the part that made the spend
+		     unbounded, and it is fixed by writing BOTH copies. -->
 		<key>KIPI_DISPATCH_DAILY_MAX</key>
-		<string>12</string>
+		<string>10</string>
 
 		<!-- WHEN THE ALLOWANCE REFILLS, local hour. Founder-set 2026-07-28,
 		     for safety rather than tidiness: a midnight reset hands a full

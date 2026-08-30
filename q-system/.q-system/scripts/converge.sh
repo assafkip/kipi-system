@@ -25,6 +25,34 @@
 #                        (1800s work) and the reviewer (2400s review)
 #
 # Usage: converge.sh --issue ASK-150 [--max-rounds 4] [--dry]
+#
+# THE BRACE AROUND EVERYTHING BELOW IS LOAD-BEARING (ASK-351). Do not remove it,
+# and do not "clean up" the bare `}` on the last line.
+#
+# bash does not load a script into memory. It reads a chunk, executes ONE command,
+# then lseeks back to the byte offset just past that command for the next one.
+# This script runs for hours inside a repo that agents edit the whole time, so an
+# edit shifts every later byte offset and bash resumes parsing mid-string. Measured
+# 2026-08-03, ~/.config/kipi/converge-ASK-288.log, four completed review rounds
+# thrown away at the exit:
+#
+#   converge.sh: line 872: of: command not found
+#   converge.sh: line 872: not: command not found
+#   converge.sh: line 876: syntax error near unexpected token `fi'
+#
+# Line 872 on disk is `fi`. `of` and `not` exist only INSIDE the quoted STALL_LOG
+# strings, so no correct read can execute them, and `bash -n` passes on every
+# committed version -- the file was never syntactically wrong. Commit d142466
+# landed seven minutes into that run. That is the edit.
+#
+# bash must parse a compound command to completion before executing any of it, so
+# the brace makes the whole body arrive at startup. The `exit 2` on the last line
+# INSIDE the brace is the other half and is not redundant: measured, a brace wrap
+# alone still dies rc=2, because bash seeks past the closing brace looking for one
+# more command and re-executes leftovers from a file that has grown.
+#
+# Reproducer for both halves: q-system/.q-system/scripts/test/test-script-stable-under-self-edit.sh
+{
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,6 +68,19 @@ NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
 STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
 REVIEWS_DIR="$STATE_DIR/pr-reviews"
 LOG="$STATE_DIR/linear-worker.log"
+# THE SAME LEDGER THE WORKER WRITES, AND DELIBERATELY NOT A SECOND ONE (ASK-833).
+# The 3-attempt cap keys on this file. converge stops at exit-7 without the worker
+# having recorded anything whenever the worker did not RUN TO COMPLETION -- the
+# account's usage limit, a timeout, a SIGTERM. The worker's own "exited 0 but
+# opened no PR" bump cannot cover that: it is a line inside the worker, and a
+# killed worker never reaches its own lines. With no entry the cap never trips, so
+# the issue is re-picked every cycle it wins the rotation, spending a budget slot
+# each time and producing nothing. Measured 2026-08-15: ASK-128 stopped at exit-7
+# twice in one hour and was absent from the ledger entirely; ASK-734, ASK-747 and
+# ASK-833 each reached attempt 4 of a 3-attempt cap on empty branches.
+ATTEMPTS="$STATE_DIR/linear-worker-attempts.json"
+LEDGER="$SCRIPT_DIR/attempts-ledger.py"
+attempt_count() { python3 "$LEDGER" "$ATTEMPTS" get "$1" count 0 2>/dev/null || echo 0; }
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
 # THE ONE SLUG DERIVATION (ASK-738). gh binds to cwd and ignores every path
 # variable here, so every gh call below is scoped with -R from this lib.
@@ -753,11 +794,58 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   # One full round: work phase, then the adversarial review, both bounded inside
   # the worker. A nonzero rc is the worker's own failure handling (it already
   # bumped attempts and pinged); the verdict check below decides what to do.
+  # READ THE COUNTER FIRST so the exit-7 branch below can tell "the worker
+  # recorded this failure" from "nobody did" (ASK-833).
+  ATT_BEFORE="$(attempt_count "$ISSUE")"
+  # CLEAR THE REFUSAL MARKER FIRST so only THIS round's worker can set it. A
+  # marker left behind by an earlier round (converge killed between the worker
+  # setting it and the exit-7 branch reading it) would otherwise suppress a real
+  # failure's attempt forever, which is the bug this file is fixing, inverted.
+  # Best-effort on purpose: the safety-critical write is the bump below, and an
+  # unwritable ledger is caught there with exit 8 rather than twice.
+  python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" refused_no_pr >>"$LOG" 2>&1 \
+    || say "note: could not clear the stale refusal marker for $ISSUE; see $LOG"
   $WORKER_CMD --apply --limit 1 --issue "$ISSUE" >>"$LOG" 2>&1
   WRC=$?
 
   PR="$(pr_for_branch)"
   if [ -z "$PR" ]; then
+    # CHARGE THE ATTEMPT ONLY IF THE WORKER DID NOT (ASK-833). Comparing the
+    # counter across the run is what makes this idempotent: the worker's own
+    # "exited 0 but opened no PR" bump already moved it, and charging a second
+    # one for the same round would mark a retryable issue stuck after two
+    # failures instead of three -- the same starvation bug pointed the other way.
+    # A refusal is NOT counted here for the same reason the worker does not count
+    # it: a correctly-refused issue is labelled and left, never marked stuck.
+    ATT_AFTER="$(attempt_count "$ISSUE")"
+    # A REFUSAL IS A CORRECT TERMINAL OUTCOME, NOT A FAILED ATTEMPT (PR #192
+    # review round 2, major). An unchanged counter cannot on its own tell "the
+    # worker refused this spec" from "the worker was interrupted": both leave no
+    # PR and touch nothing. Charging the first would let three CORRECT refusals
+    # reach the 3-attempt cap and falsely mark the issue stuck -- the founder-queue
+    # routing ASK-275 removed, re-entering from the driver instead of the worker.
+    # The worker now records the refusal in the shared ledger; this reads it.
+    REFUSED_MARK="$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" refused_no_pr "" 2>/dev/null || echo "")"
+    if [ -n "$REFUSED_MARK" ] && [ "$REFUSED_MARK" != "None" ]; then
+      say "$ISSUE was REFUSED by the worker and left no PR. A refusal is a correct terminal outcome, so it costs no attempt; the issue is held at its refusal label, not marked stuck."
+    elif [ "$ATT_AFTER" = "$ATT_BEFORE" ]; then
+      # A FAILED BUMP IS NOT A DETAIL TO SWALLOW (PR #192 review, major).
+      # The first cut ended this call in `|| true`. That converts an unwritable
+      # ledger into a silent success, the counter stays put, and the retry-forever
+      # bug this whole change closes comes straight back -- now with a fix in
+      # place that reads as working. Reproduced by the reviewer against a ledger
+      # path that cannot be written: before=0 after=0 final=0, branch reported
+      # success. An attempt that was not PERSISTED did not happen, so the run
+      # says so and stops on its own exit code rather than blending into the
+      # ordinary no-PR case that the dispatcher expects to see repeatedly.
+      if ! python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$ISSUE" \
+           "converge stopped at exit-7: no PR on $BRANCH after round $ROUND (worker rc=$WRC, recorded nothing itself)" \
+           >>"$LOG" 2>&1; then
+        say "STOP exit-8: could not record the attempt in $ATTEMPTS. The 3-attempt cap keys on that file, so it cannot trip while the write fails and this issue would retry forever. Fix the ledger before re-dispatching; see $LOG"
+        bash "$NOTIFY" "converge $ISSUE: attempts ledger unwritable -- the retry cap is not enforceable until it is fixed" 2>/dev/null || true
+        exit 8
+      fi
+    fi
     say "STOP exit-7: no PR on $BRANCH after round $ROUND (worker rc=$WRC). Sana could not open one; see $LOG"
     bash "$NOTIFY" "converge $ISSUE: stopped, no PR after round $ROUND" 2>/dev/null || true
     exit 7
@@ -904,6 +992,32 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   say "round $ROUND -> $VERDICT (head $SHA); reworking"
 done
 
-say "STOP exit-2: hit the $MAX_ROUNDS-round cap still at '$LAST_VERDICT'. A cap-out means the reviewer and Sana disagree persistently; read the last review before raising the cap."
-bash "$NOTIFY" "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT" 2>/dev/null || true
+CAPOUT_WHY="hit the $MAX_ROUNDS-round cap still at '$LAST_VERDICT'${PR:+ on PR #$PR}"
+say "STOP exit-2: $CAPOUT_WHY. A cap-out means the reviewer and Sana disagree persistently; read the last review before raising the cap."
+# THE MACHINE-READABLE HALF, AND IT IS THE POINT OF ASK-871. Until this line the
+# cap-out announced itself to a human twice -- the `say` above and the page below
+# -- and to a machine not at all. So ci-redrive.py and review-redrive.py, whose
+# whole job is to re-enter a PR nobody else will, correctly-by-their-own-rules
+# re-entered this one: 2026-08-16, ASK-830 capped out at 15:59:53Z and was handed
+# back at 16:14:01Z, six rounds and five Opus reviews in one morning. Their caps
+# key per PR per head sha and every round moved the head, so nothing they read
+# was stale. Nothing bounded dispatches PER ISSUE. This record is that bound.
+#
+# WRITTEN BEFORE THE PAGE. The page names the command that clears the park, and a
+# page telling the founder to clear a record that was never written is worse than
+# no page. If the ledger refuses (a lock timeout, a read-only disk) the run says
+# so and still pages, because a cap-out the founder never hears about is the
+# 29-hour park with the alarm removed.
+CAPOUT_NOTE=""
+if ! python3 "$LEDGER" "$ATTEMPTS" record-capout "$ISSUE" "$CAPOUT_WHY" 2>>"$LOG"; then
+  CAPOUT_NOTE=" WARNING: the cap-out could NOT be recorded in $ATTEMPTS, so the redrives may re-enter this issue -- check that file."
+  say "WARNING: record-capout failed for $ISSUE; the redrives cannot see this cap-out."
+fi
+bash "$NOTIFY" "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT. Parked -- no redrive will re-enter it until you clear it: python3 q-system/.q-system/scripts/attempts-ledger.py $ATTEMPTS clear-capout $ISSUE$CAPOUT_NOTE" 2>/dev/null || true
+# The `exit 2` on the line BELOW this comment -- not the `bash "$NOTIFY"` above it --
+# is the last statement INSIDE the ASK-351 brace, and it has to stay last and stay
+# unconditional: it is what stops bash from ever reading this file again. See the
+# header. Nothing may be added between it and the closing brace, and nothing may be
+# added below the closing brace.
 exit 2
+}

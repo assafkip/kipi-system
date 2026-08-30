@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_reach_audit_divergence.py",
+ "runner": "python3",
+ "timeout_s": 300
+}

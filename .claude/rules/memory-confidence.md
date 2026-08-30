@@ -64,6 +64,86 @@ Reads), index lines for low-trust memories get a `[low-conf]` prefix, mirroring 
 This makes the trust risk visible at a glance without opening the file. A memory can
 carry both markers (`[fast] [low-conf]`).
 
+## Supersession and `as_of` (the correction axis)
+
+`decay` tracks TIME, `confidence` tracks TRUST. This adds the CORRECTION axis:
+what happens to a memory once it turns out to be wrong.
+
+The old convention was "delete memories that turn out to be wrong". Deleting the
+correction destroys the most useful thing in the file: that this belief was once
+held, and what replaced it. A reader who only sees the successor cannot tell a
+fact that was always true from one that reversed.
+
+So a corrected memory is SUPERSEDED, not deleted:
+
+```yaml
+---
+name: some-fact
+status: superseded
+superseded_by: some-fact-v2
+as_of: 2026-05-11
+---
+```
+
+and the successor points back:
+
+```yaml
+---
+name: some-fact-v2
+status: current
+supersedes: some-fact
+as_of: 2026-08-19
+---
+```
+
+| Field | Meaning |
+|---|---|
+| `status` | `current` or `superseded`. Absent means `current`. |
+| `superseded_by` | The successor's `name:` slug. REQUIRED when `status: superseded`. |
+| `supersedes` | The predecessor's `name:` slug, on the successor. |
+| `as_of` | `YYYY-MM-DD`: when the claim was actually TRUE. |
+
+`as_of` is not the write date and it is not the file's mtime. A memory rewritten
+for formatting today can still be as-of a fact last verified in May. Staleness is
+judged against `as_of`, so using the write date would make every touched file look
+freshly verified when nothing was re-checked.
+
+### Deletion is now narrow
+
+Delete only a memory that was NEVER true: a mis-file, a test artifact, something
+recorded about the wrong person or project. There is no successor to point at and
+no correction to preserve. Everything else is superseded. A `superseded` memory
+with no `superseded_by` is refused at the write, because a dead end tells the
+reader the memory is wrong and nothing about what replaced it, which is strictly
+worse than the deletion this replaces.
+
+### Grandfathering
+
+Both fields are OPTIONAL and absence is legal, exactly like `decay` and
+`confidence`. The pre-existing corpus carries neither. A convention that made ~70
+files invalid on day one would be red on its whole population from the first run,
+which is how a gate gets switched off and then protects nothing. The linter
+reports the gap; nothing blocks.
+
+### The two executables
+
+- **Shape, at write time:** `memory-confidence-validator.py` (the same PostToolUse
+  chokepoint that owns `confidence` and `provenance`) BLOCKS a `status` outside the
+  enum, an `as_of` that is not a real `YYYY-MM-DD` date, a `superseded` with no
+  `superseded_by`, and an empty link field. Absent fields pass.
+- **Graph, across the corpus:** `q-system/.q-system/scripts/memory-lint.py` sweeps
+  a memory directory and REPORTS dangling `[[wiki-links]]`, `superseded_by` /
+  `supersedes` that resolve to no memory, MEMORY.md index lines with no backing
+  file, memory files with no index line, duplicate `name:` slugs, and
+  `status: current` memories whose `as_of` is older than N months (default 6).
+  It is report-only, it never auto-fixes, and it exits 0 in advisory mode; the
+  `--strict` flag exits 1 on structural findings for CI-style use. Wired as an
+  advisory Gate 1.2b in `validate-separation.py` (`kipi check`), warn-only.
+
+Cross-file checks live in the sweep and NOT in the hook on purpose: at write time
+the successor may not exist yet, so a hook enforcing link resolution would refuse a
+correct pair of edits for arriving in the wrong order.
+
 ## When this rule fires
 
 Same trigger as freshness: when about to recommend an action, draft a claim, or

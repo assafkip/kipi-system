@@ -1,181 +1,73 @@
-# Last handoff — 2026-08-14 (eve comparison -> trust-gate -> fleet-skew night)
-[provenance: observed — system currentDate context this session]
+# Session handoff, Aug 23 evening [verified: date]. READ THIS FIRST.
 
-Started as a repo review (vercel-labs/eve-software-factory-template vs kipi), ballooned
-into a multi-hour, multi-session engineering night touching prd-os/kipi-dsse merge
-safety, fleet plugin versioning, and a live branch-protection change. Two other Claude
-sessions (`social-voice`, plus incidental contact with others) were active in this same
-checkout concurrently — expect coordination scars below.
+## State
 
-## What shipped, verified
+Two Sana sessions have run on the spillover queue. Blocking items: 43 -> 36
+(35 original + sp-a7846d3d filed this session). Census 963 open.
 
-**PR #159 — merge-bypass trust gate. MERGED to main (`88155734`), live, verified.**
-[verified: `gh pr view 155/159`, `gh api .../commits/.../status`, and a live in-session
-Bash call with `--admin` refused by the wired hook — ran directly this session]
+Landed on origin/main (all merged, CI green):
+- PR #246: ASK-975/976/977/984/985 stack (bypass_check runs at close, digest
+  parser, guard reader stages, uv-collectible suite). Resolved sp-50db1764,
+  sp-0cf100b3, sp-b82fda60, sp-8804dee7, sp-7e42845e, sp-dcd84af1; voided
+  sp-eea17567, sp-d120853a, sp-ca9351e4, sp-4c0b19ba.
+- PR #247: ASK-988 / sp-4c5a00f3 (crtc-test-manifest check commands point at
+  the harness entrypoint). Also shipped: receipts.jsonl gained `reopened_at`
+  (allowlist + ISO contract), accept-rate.load_receipts and prd_runner's
+  archive coverage now resolve state by parsed event timestamp with
+  same-second ties going to REOPEN. Pinned in
+  q-system/.q-system/scripts/test/test-accept-rate-receipts.py (manifest-declared).
+- crtc-test-manifest itself is REOPENED (status: open in its spec): the
+  enumeration deliverable is NOT done. Do not re-close it for check-command
+  work.
 
-Adopted the eve-software-factory-template pre-dispatch approval idea (`sp-6dc1b64c`)
-for prd-os/kipi-dsse's push/merge chokepoint. Closeout was checked first and found
-**already stronger** than eve's pattern (content-sealed receipts vs. eve's session-scoped
-trust class) — no closeout work needed. [provenance: observed — Sana subagent recon
-report, code citations to issue_runner.py, not independently re-read by me] Push/merge
-had **zero enforcement**; the specific live hole was `gh pr merge --admin`, which
-defeats `kipi/reviewer-approved` because `enforce_admins:false` + every agent
-credential is `admin:true`. [provenance: observed — Sana subagent report citing
-`gh api repos/:owner/:repo/branches/main/protection` and `gh api repos/:owner/:repo
---jq .permissions` output]
+## Next pick (Sana's call, but the recon is done)
 
-7 review rounds, each a real finding, each fixed and mutation-tested. [provenance:
-observed — Sana subagent completion reports, each citing a Codex review verdict I
-spot-checked live via `gh pr checks 159` / `gh api .../issues/159/comments` at multiple
-points this session]:
-1. `--admin` bare form denied
-2. `--admin=true` and 5 other truthy spellings (denylist was inherently incomplete)
-3. `-R`/`--repo`/`--hostname`/env-var retargeting — **redesigned denylist to allowlist**
-   here: only `gh pr merge --auto [method] [ref]` is permitted, everything else on that
-   command is denied by construction
-4. wrapper composition (`sudo bash -c '...'`), unknown-wrapper class closed via token scan
-5. push-side never got round-4's fix (single `_tool_position()` authority now serves both)
-6. `bash -lc`, unknown wrappers, newline-as-separator — three vectors, one shared cause
-7. **`eval $CMD` / `source` / `| bash` cannot be caught by static analysis, period** (the
-   command text doesn't exist until Bash expands it). Correctly did NOT try to patch
-   this locally. The real fix is server-side: `enforce_admins`.
+sp-a7846d3d is the natural next item: capability-manifest.json does not
+enumerate plugin tests (65+ files under plugins/*/tests; manifest references
+plugins/ only 12 times) and gate scan scope excludes plugin test discovery.
+This is the defect class that makes other verdicts untrustworthy.
 
-**`enforce_admins` flipped true on `main`, founder-authorized (asked directly via
-AskUserQuestion this session), verified two ways** (not trusted from API return code).
-[verified: Sana subagent report cites re-reading both the `protection/enforce_admins`
-sub-resource and the `protection` roll-up; I did not independently re-run this check]
-Break-glass built: `break-glass-main-protection.sh` (`status`/`off <reason>`/`on`),
-logged to `~/.claude/audit/break-glass-main-protection.jsonl`, Slack on open/close,
-documented in `AUTONOMOUS-SYSTEMS.md` §5b. Asymmetric by design: `off` refuses if it
-can't guarantee the audit trail; `on` never blocks (stranding protection OFF is worse
-than an incomplete log). Drilled live, one round-trip, verified. [provenance: observed
-— Sana subagent report, including a self-caught reasoning error during the drill
-(misread her own pre-check output); I did not independently re-run the drill]
+Recon notes for sp-32b3438d (audit --dry-run), measured this session:
+- The flag already exists: prd_runner.py spillover promoted-audit --dry-run
+  ("report only; write nothing", parser line ~2824).
+- Under --dry-run it still queries Linear read-only, prints WOULD RESOLVE,
+  and keeps the SAME exit-code contract (1 on transport failure or fully-blind
+  sweep). See _spillover_promoted_audit, lines ~2160-2243.
+- The fix is one argv element in fleet-health-daily.py detect_promoted_audit
+  (~line 1542): append "--dry-run" to the subprocess.run list.
+- RED first via a source-inspection check appended to
+  q-system/.q-system/scripts/test/test-fleet-health-daily.py (house style:
+  main()-based check() helpers, inspect.getsource assertion like line ~141).
 
-**ASK-798 still open** — the flip is done, but the break-glass has a real fragility:
-`kipi/reviewer-approved` is posted by a local script, not a GitHub Action, so if that
-script is down, main freezes for everyone including whoever needs to fix it. Option 2
-(non-local producer) is the real fix and is not this session's work.
-[provenance: observed — Sana subagent report]
+## Mechanics that burned time this session (do not rediscover)
 
-**Recurring failure mode across the whole thread, worth remembering**: 5 separate
-instances today of a *fixture or harness that was green for the wrong reason* — a `cd
-/tmp` that made a case pass on the unresolvable-means-allow rule instead of the logic
-under test, a dead-ledger fixture whose `mkdir -p` never reached the line it was
-testing, a stub sed'd from an already-stubbed copy, a pre-check that printed a
-conclusion its own output contradicted, a test file named against a convention nobody
-read. None were caught by review — all were caught by mutation testing or a self-check.
-[provenance: observed — self-reported by the Sana subagent across multiple completion
-reports; count of 5 is her own tally, not independently recounted by me] Candidate for
-a lessons-corpus entry if this keeps recurring.
+- Landing: main is protected. Branch off fresh origin/main, PR, then BOTH
+  required checks: `validate` (CI, ~12 min) and `kipi/reviewer-approved`
+  (posted by q-system/.q-system/scripts/pr-review-agent.sh <pr> --engine
+  codex --post). Reviewer takes ~9 min; timeout of YOUR shell does not mean
+  it failed - check the commit status before assuming anything.
+- Codex review rounds are real: r1-r6 on PR #247 each found a legitimate
+  defect. Fix, do not argue. Expect findings about: parent PRDs retaining
+  what generated specs fixed, receipts/metrics consistency when reopening,
+  union-merge row ordering, UTC-offset timestamps, same-second ties.
+- Every commit touching plugins/** needs a version bump IN THAT COMMIT
+  (plugin-version-bump gate compares per-commit vs HEAD).
+- Commit messages need an ASK-nn reference or [no-issue: reason]
+  (linear-issue-ref hook blocks otherwise).
+- receipts.jsonl has a CLOSED key allowlist (receipts-ledger-check.py,
+  ALLOWED_KEYS); reopen rows use reopened_at + issue_id + prd_id +
+  finding_id + commit_sha. No free text; it ships to a PUBLIC repo.
+- New test files must be declared in q-system/.q-system/capability-manifest.json
+  ({path, runner}) or the capability gate goes undeclared-artifact RED.
+- kipi-mcp tests run under `uv run pytest tests/` from plugins/kipi-core/kipi-mcp.
+- Subagent dispatch was broken all session at the provider level
+  (network_error / instant cancel) while four other opencode sessions ran.
+  If dispatch dies instantly again, execute inline rather than retrying.
 
-## Open, not shipped
+## Standing rules that decided everything today
 
-**PR #152 — plugin-parity fleet-skew checker. BLOCKED, round 6 REQUEST CHANGES,
-checkpointed and stopped for the day mid-thread.** [verified: `gh pr checks 152` run
-directly this session at multiple points; checkpoint detail below is
-provenance: observed from the Sana subagent's final report]
-
-Split off `sana/ask-728-plugin-parity` (PR #142) when the writer half
-(`plugin-fanout.py`) hit 5 review rounds of the same data-loss race relocating rather
-than closing — correct call to freeze that writer and hold it separately (still held,
-untouched). [provenance: observed — Sana subagent report]
-
-The checker itself went through its own version of the same pattern:
-- round 1-2: fixed real bugs (PASS-on-zero, compared marketplace clone instead of what
-  the loader actually runs — the clone was stale too, see below)
-- round 3-4: found the checker was trusting the install *record* over the actual
-  on-disk manifest, and that `--project` scope resolution defaulted to the wrong entry
-- round 5: **correctly invoked its own stop-criterion.** The scope-resolution model
-  (which install "wins" from a given directory) was never grounded — inferred from a
-  JSON file's shape, and Claude Code's loader is closed-source, so there was no oracle
-  to converge on. Rescoped rather than kept patching: dropped `resolve_live_entry`,
-  `--project`, `--user-scope` entirely; now enumerates every recorded install and fails
-  if any lags, instead of claiming to know "the one you're running." Weaker claim,
-  fully verifiable.
-- **round 6: two majors, checkpointed, NOT fixed.** (1) A real regression the freeze
-  commit introduced — `render()` reads `row['scopes']`/`row['project_paths']` but the
-  NOT_INSTALLED branch still builds the row with the old `scope`/`project_path` keys,
-  so a NOT_INSTALLED row crashes text rendering with `KeyError`. Her tests missed it
-  because the NOT_INSTALLED test only exercises `--json`, never `render()` — same
-  "checked one artifact, claimed another" shape as everything else tonight. Hypothesis
-  on cause stated as hypothesis, not verified — she stopped before digging further.
-  (2) A genuine **design disagreement, not a regression**: Codex flagged that content
-  drift is advisory-only (bytes can differ while the run still says PASS). The
-  module's own docstring defends this on purpose — gating on byte-equality would make
-  a check that can never go green on a real runtime tree, and a check that can't go
-  green gets switched off. This is a judgment call to make deliberately next session,
-  not a bug to reflexively patch.
-  [provenance: observed — Sana subagent's own final checkpoint report, verbatim]
-
-Real fleet numbers this surfaced, live-verified: prd-os, kipi-core, kipi-design,
-kipi-dsse are all genuinely stale on the executing runtime (prd-os as far as **0.16.5
-vs skeleton 0.27.3** — 11+ minor versions). kipi-ops and kipi-notebooklm match.
-[provenance: observed — Sana subagent report, cross-checked once against
-`installed_plugins.json`/`claude plugin list` per her own account; not independently
-re-run by me]
-
-**The actual runtime fix — `claude plugin update <plugin>`, restart attached — was
-never run.** Correctly held: it writes under `~/.claude/`, gated to the
-`apply-claude-changes.sh` proposal path, re-points plugins for every session on this
-machine. This is the founder's action to trigger when ready, not something either
-Sana thread did unilaterally.
-
-**Housekeeping:** worktree `/Users/assafkipnis/projects/kipi-system/.wt-parity` is
-still registered and clean, left in place deliberately so next session resumes without
-re-setup — remove with `git worktree remove` once the PR lands. [provenance: observed
-— Sana subagent final report] Push state before stopping was verified 4-way (worktree
-HEAD, remote `@{u}`, PR head, dirty/unpushed counts all agree at `95e2e83a`) —
-[provenance: observed — Sana subagent final report; I did not independently re-run this
-check].
-
-## Coordination scars (repo-wide, worth institutional memory)
-
-- **This checkout got yanked mid-work at least 3 times tonight** across
-  sessions/threads (branch reset out from under a live edit). [provenance: observed —
-  reported independently by both Sana subagent threads and by `social-voice`'s session
-  across separate messages this session] Nothing was lost each time — rescued via
-  worktrees, tags on pre-fix commits (`pre-fix/ask-791-round1..4`), or re-derivation —
-  but it cost real time and required careful "is this mine, whose is this" triage each
-  time. One Sana thread adapted by using an isolated worktree (`.wt-ask791`) after
-  getting yanked once. Open question, not decided: should concurrent Sana threads get a
-  worktree by default? Flagged, not resolved.
-- **A stray commit (`b95a7e1b`, "stop the fleet updater deleting each instance's
-  integrity baseline") landed straight on `main` with zero review/branch/PR**, flagged
-  by `social-voice`. [verified: `git log -1 b95a7e1b`, `git show --stat`, `git
-  merge-base --is-ancestor` — ran directly this session] Disclaimed by both Sana
-  threads working tonight — neither touched kipi-update.sh for that reason — most
-  likely another concurrent session (`ask-758-10` was seen live in `ListAgents` at the
-  time) or the autonomous dispatch pipeline. [provenance: inferred — best-read
-  attribution, not confirmed] Routed to ASK-773 (the general "auto-commit lands on
-  whatever branch is checked out, never pushes" pattern) rather than resolved.
-- Spillover ledger: 2 stale items resolved with real resolution refs (`sp-53f7bcc3` →
-  ASK-738, `sp-cdb7783d` → ASK-762) [verified: `spillover resolve` commands run
-  directly this session, confirmed via `spillover list` re-read] after cross-session
-  verification (social-voice) showed they were already fixed elsewhere. `sp-3e201efb`
-  (11/23 fleet instances failing dirty-tree refusal on `kipi update`) is **still open,
-  not touched by either PR tonight** — #152 detects skew, does not clean dirty trees;
-  that's a separate root cause social-voice was independently chasing (a swallowed
-  commit failure in `kipi-update.sh`'s skeleton-owned-dirt carve-out, unconfirmed as of
-  last contact). [provenance: imported — reported by the social-voice session,
-  unconfirmed by me]
-
-## Next session, resume here
-
-1. `claude plugin update <plugin>` for prd-os/kipi-core/kipi-design/kipi-dsse + restart
-   — founder action, unblocks the actual stale-runtime problem #152 surfaced.
-2. PR #152 round 6: fix the `render()` KeyError regression (small — add a text-path
-   test for every row status, not just `--json`), then deliberately decide the
-   advisory-vs-blocking content-drift question before re-dispatching review.
-3. ASK-798 option 2 (non-local `kipi/reviewer-approved` producer) — real fix for the
-   break-glass fragility, not started.
-4. `sp-3e201efb` — 11 dirty-tree fleet instances, root cause still unconfirmed.
-5. PR #142's fanout writer — still held, needs a real redesign session, not a 6th patch.
-
-<!-- handoff-provenance-skip: every claim above carries a block-level provenance tag
-     (verified/observed/inferred/imported) covering the paragraph it's in, per the
-     actual source of each fact. The lint scans line-by-line and doesn't associate a
-     block tag with every individual line inside that block (PR numbers, version
-     strings, and counters repeated in follow-up lines within an already-tagged
-     paragraph). Re-tagging every such line individually was judged diminishing-returns
-     relative to the block-level tagging already done honestly above. -->
+Reproducer first, RED before GREEN. Never trust a green you have not seen go
+red. Verify against the installed clone the server actually starts. Quote the
+tool line and sha next to any verdict. Anything real found and not fixed goes
+to spillover add. Engineering calls belong to Sana; publish/spend/delete stay
+with the founder. Pull or rebase, never reset.

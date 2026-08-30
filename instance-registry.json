@@ -1,7 +1,8 @@
 {
   "skeleton": {
     "path": "/Users/assafkipnis/projects/kipi-system",
-    "remote": "https://github.com/assafkip/kipi-system.git"
+    "remote": "https://github.com/assafkip/kipi-system.git",
+    "linear_project": "kipi-system"
   },
   "instances": [
     {
@@ -26,6 +27,7 @@
     },
     {
       "name": "ASK_AI_consultant",
+      "linear_project": "ASK Consulting",
       "path": "/Users/assafkipnis/projects/consulting",
       "subtree_prefix": "q-system",
       "instance_q_dir": "q-consult",
@@ -110,11 +112,17 @@
     },
     {
       "name": "gtm-partner",
+      "linear_project": "cole-GTM",
       "path": "/Users/assafkipnis/projects/cole-gtm",
       "subtree_prefix": "q-system",
       "instance_q_dir": null,
       "type": "subtree",
-      "has_git": true
+      "has_git": true,
+      "dispatch": {
+        "enabled": false,
+        "decision": "ASK-842",
+        "reason": "Decided OFF 2026-08-14, recorded as a value because an absent dispatch key is a default and a default is not a refusal. This path is a ROOT, not a leaf: measured, it tracks 0 files under projects/ while holding 9 nested SEPARATE git repos there (strategy, website, personal-brand, event_coordinator, signal-desk, vc-signals-feed, competitive-analysis, notebooklm-daily-podcast, reddit-build-radar). That is the exact shape ASK-754 refused at the consulting root: preflight check 5 (dirty) is structurally blind to all nine while a dispatched agent still has filesystem reach into them, so an OK here would be an OK the gate cannot back. The root also tracks 3001 files under gtm/, the live outbound engine, so an agent-authored PR can reach an audience. Its 3 issues (ASK-127, ASK-717, ASK-718) are audits and a watchdog fix -- read-then-report work a supervised founder-initiated run handles without an unattended self-merging loop. NOT blocked on preflight: the 5 remaining failures are all curable (worker drift, merge-bypass-gate.py, pin the remote, commit WIP, enable branch protection). The reason is blast radius, not cost."
+      }
     },
     {
       "name": "travel-agent",
@@ -161,6 +169,11 @@
       "has_git": true,
       "skip_agent_check": true,
       "skeleton_managed": false,
+      "dispatch": {
+        "enabled": false,
+        "decision": "ASK-842",
+        "reason": "Decided OFF 2026-08-14. Its preflight failure was filed as control-code DRIFT, curable by propagating one file. Measured, it is not drift, it is ABSENCE: linear-worker.sh is missing entirely (no worker to run) and .claude/settings.json is missing (no hook fires). That follows directly from skeleton_managed=false above -- the deliberate ASK-117 record that this repo takes zero skeleton propagation and therefore carries none of the fleet enforcement layer. Curing the failure means onboarding it into skeleton management, which reverses ASK-117 rather than clearing drift, so option (c) is the expensive path and not the cheap one it looks like from outside. Its 1 issue (ASK-146, audit 11 unwired engines) is read-then-report work for a supervised founder-initiated run."
+      },
       "note": "Standalone Reddit consensus signal engine for weekly build recommendations. No q-system subtree because local git lacks git-subtree. skeleton_managed=false is the deliberate record (ASK-117): it receives zero skeleton propagation, so it carries none of the fleet enforcement layer (no token-guard.py, no .claude/rules/, no capability gate) and must be excluded from fleet-wide governance counts rather than counted as a governed instance."
     },
     {
