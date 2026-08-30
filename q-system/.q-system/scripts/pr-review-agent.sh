@@ -539,15 +539,45 @@ fi
 if [ "$HEAD_SHA_ISOLATED" != "1" ] && [ -n "$HEAD_SHA" ]; then
   if ! git -C "$REVIEW_REPO" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
     echo "  WARN: $REVIEW_REPO does not have commit $HEAD_SHA, so the tree/PR match cannot be proven (stale or partial clone?). Proceeding; a review of the wrong tree would report findings absent from this diff." >&2
-  elif ! git -C "$REVIEW_REPO" merge-base --is-ancestor "$HEAD_SHA" HEAD 2>/dev/null; then
-    # SKEL does not contain the PR. Find a worktree that does. `worktree list
-    # --porcelain` emits a `worktree <path>` line per tree, SKEL included; testing
-    # SKEL again is harmless and keeps the loop free of a special case.
+  elif [ "$(git -C "$REVIEW_REPO" rev-parse HEAD 2>/dev/null)" != "$HEAD_SHA" ]; then
+    # THE TRIGGER HAD THE SAME BUG AS THE SELECTION, and my own reproducer for
+    # the selection is what found it. This asked whether $REVIEW_REPO CONTAINS
+    # the PR head, and short-circuited to reviewing $REVIEW_REPO when it did --
+    # so a checkout ten commits past the PR was used directly, with no check at
+    # all. Fixing only the loop below would have left the commoner path open.
+    #
+    # Now: $REVIEW_REPO qualifies only when it is checked out AT the sha.
+    # Anything else falls into the search, which also demands exact equality and
+    # refuses if nothing matches.
+    #
+    # Blast radius is small by construction: the PRIMARY path is an isolated
+    # worktree materialised AT the sha, and this whole branch runs only when that
+    # materialisation failed. Tightening a degraded path costs refusals that name
+    # the commit; leaving it costs confident reviews of code the PR does not have.
+    #
+    # SKEL does not hold the PR at its head. Find a worktree that does.
+    # `worktree list --porcelain` emits a `worktree <path>` line per tree, SKEL
+    # included; testing SKEL again is harmless and keeps the loop free of a
+    # special case.
+    # EXACTLY AT THE SHA, not merely containing it (PR #265 codex major).
+    #
+    # This asked `--is-ancestor "$HEAD_SHA" HEAD`, which is true for every
+    # DESCENDANT. A worktree ten commits past the PR head satisfied it, so the
+    # reviewer read FILES from newer code and the verdict was stamped with the
+    # captured older sha -- findings cited lines the PR does not contain, and the
+    # provenance said otherwise. That is the same false-provenance defect the
+    # isolated-worktree path above exists to prevent, reached through its
+    # fallback.
+    #
+    # Tightening this means MORE refusals, and that is the correct direction: the
+    # refusal below names the commit and how to get it, while a descendant tree
+    # produces a confident review of the wrong code with nothing saying so. No
+    # answer beats a wrong one, and this is the degraded path, not the normal one.
     FOUND_ROOT=""
     while IFS= read -r wt; do
       [ -n "$wt" ] || continue
       [ -d "$wt" ] || continue
-      if git -C "$wt" merge-base --is-ancestor "$HEAD_SHA" HEAD 2>/dev/null; then
+      if [ "$(git -C "$wt" rev-parse HEAD 2>/dev/null)" = "$HEAD_SHA" ]; then
         FOUND_ROOT="$wt"; break
       fi
     done < <(git -C "$REVIEW_REPO" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10)}')
@@ -556,7 +586,7 @@ if [ "$HEAD_SHA_ISOLATED" != "1" ] && [ -n "$HEAD_SHA" ]; then
       REVIEW_ROOT="$FOUND_ROOT"
       echo "  tree: $REVIEW_ROOT (holds PR #$PR at ${HEAD_SHA:0:8}; the script itself lives in $SKEL, the code under review in $REVIEW_REPO)"
     else
-      echo "REFUSING: PR #$PR is at $HEAD_SHA, which is not in the history of $REVIEW_REPO (HEAD $(git -C "$REVIEW_REPO" rev-parse --short HEAD 2>/dev/null)) or of any worktree it lists." >&2
+      echo "REFUSING: PR #$PR is at $HEAD_SHA, and no worktree of $REVIEW_REPO (HEAD $(git -C "$REVIEW_REPO" rev-parse --short HEAD 2>/dev/null)) is checked out AT that commit. A tree that merely CONTAINS it holds newer files, which would be reviewed and then stamped with this sha." >&2
       echo "  The reviewer reads FILES from a tree and the DIFF from the PR. With no tree holding this commit, every finding would cite code that is not in this PR, stamped with this PR's sha." >&2
       echo "  Fetch the PR's head, or run it from a tree that has it. No review was dispatched and NO status was posted -- absent is not approved." >&2
       exit 1
