@@ -1,0 +1,4 @@
+{
+  "path": "q-system/.q-system/tests/separation/test_containment_scoped_checks.py",
+  "runner": "pytest"
+}
