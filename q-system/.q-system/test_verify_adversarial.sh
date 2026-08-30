@@ -198,6 +198,44 @@ printf 'def test_green():\n    assert True\n' > "$R/suite/test_green.py"
 git -C "$R" add .verify-suites suite/test_green.py
 run "$R" --staged; check "passing test in staged suite PASSES" 0 $?; rm -rf "$R"
 
+# --- THE FLOOR MAY NOT LEAVE ANYTHING BEHIND IN THE TREE IT IS GRADING. ---
+#
+# Codex major, PR #269, PARTIALLY confirmed. The staged path passes pytest
+# `-o cache_dir`, and that path used to be `$REPO/.verify-cache`: a directory
+# created inside the working tree of the repo being graded.
+#
+# What was NOT reproducible is the harm Codex named. Measured 2026-08-29 on a
+# throwaway repo: after a staged run against the old path, `.verify-cache/`
+# exists on disk and `git status --porcelain` is EMPTY, because pytest writes a
+# `.gitignore` containing `*` into its own cache dir. So `git add -A` picks up
+# nothing and no cache file can ride into a commit. A porcelain assertion here
+# would have been decoration: it passes against the defect.
+#
+# The real cost is smaller and still real: a stray directory in the source tree,
+# and one cache per worktree instead of one shared cache. The cure is the same
+# either way, and it is the stronger one -- git's COMMON dir, which git never
+# walks for status and which every worktree of the repo shares.
+#
+# So this case measures the FILESYSTEM, not git: no path may appear under the
+# repo root that was not there before. That is what actually changes, so it is
+# what can actually fail.
+R=$(newrepo)
+mkdir -p "$R/suite"
+printf 'suite\n' > "$R/.verify-suites"
+printf 'def test_green():\n    assert True\n' > "$R/suite/test_green.py"
+git -C "$R" add .verify-suites suite/test_green.py
+BEFORE=$(find "$R" -mindepth 1 -maxdepth 1 -not -name .git | sort)
+run "$R" --staged >/dev/null 2>&1
+AFTER=$(find "$R" -mindepth 1 -maxdepth 1 -not -name .git | sort)
+if [ "$BEFORE" = "$AFTER" ]; then
+  check "staged run leaves nothing behind in the tree" 0 0
+else
+  echo "  tree gained paths:"
+  comm -13 <(printf '%s\n' "$BEFORE") <(printf '%s\n' "$AFTER") | sed 's/^/    /'
+  check "staged run leaves nothing behind in the tree" 0 1
+fi
+rm -rf "$R"
+
 echo
 echo "adversarial: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

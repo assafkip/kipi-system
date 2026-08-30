@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/update-preservation-manifest.py",
+ "reason": "built for prd-fail-closed-fleet-updater and never wired; the updater carries its own inline preservation path",
+ "spillover_id": "sp-0f773063"
+}
