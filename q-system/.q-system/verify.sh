@@ -350,6 +350,15 @@ TESTFILES="$(git -C "$REPO" ls-files 'test_*.py' '*/test_*.py')"
 # .verify-suites comment below was written about, and the fastest way to get a
 # gate switched off. On a runner it prints a SKIP line rather than passing
 # silently: a check that could not run has to say so.
+# THE DENYLIST MUST NAME SERVERS THAT EXIST (ASK-1144). Operation-keyed denial
+# makes a MISSING namespace harmless; it does not make a DEAD one visible, and a
+# dead entry reading as coverage is what let the Linear hole survive review.
+# Machine-independent by construction (declared namespaces, not discovered), so
+# it means the same thing on a runner as on a laptop.
+run_check "mcp-denylist-namespaces" \
+  python3 "$TARGET/q-system/.q-system/scripts/mcp-denylist-namespace-check.py" \
+  --hook "$TARGET/q-system/.q-system/hooks/destructive-op-deny.sh"
+
 if [ -d "$HOME/.claude/hooks" ]; then
   run_check "installed-hooks-match-repo" \
     python3 "$TARGET/q-system/.q-system/scripts/install-claude-hooks.py" --check
