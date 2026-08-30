@@ -124,10 +124,18 @@ def audit_python(path, source=None):
             continue
         keys = _literal_keys(node)
         if keys is None:
-            # A dict with a computed/starred key that mentions the context key
-            # anywhere cannot be judged statically.
-            if any(isinstance(k, ast.Constant) and k.value == KEY_CONTEXT
-                   for k in node.keys if k is not None):
+            # A dict with a computed or **-unpacked key cannot be judged
+            # statically. It is UNKNOWN, never absent: emitting no site at all
+            # let `k = "additionalContext"` inside an otherwise literal envelope
+            # walk straight through the blocking gate (Codex minor, PR #285
+            # round 3). Two ways to recognise it as an envelope worth reporting:
+            # it names the context key literally somewhere among its keys, or it
+            # is envelope-shaped because it carries a literal hookEventName.
+            named = any(isinstance(k, ast.Constant) and k.value == KEY_CONTEXT
+                        for k in node.keys if k is not None)
+            shaped = any(isinstance(k, ast.Constant) and k.value == KEY_EVENT
+                         for k in node.keys if k is not None)
+            if named or shaped:
                 sites.append(Site(path, node.lineno, UNKNOWN,
                                   detail="dict has non-literal or **-unpacked keys"))
                 envelopes.add(id(node))
@@ -412,7 +420,13 @@ HOOK_MARKERS = (
     "tool_input",
     "tool_name",
     "CLAUDE_PROJECT_DIR",
-    "sys.stdin",
+    # Reading a JSON object off stdin, not merely touching stdin. Bare
+    # `sys.stdin` caught any filter program that happens to carry an
+    # additionalContext field (Codex minor, PR #285 round 3); this still catches
+    # the leanest real offender, focus-kit's echo-of-prompt.py, whose only hook
+    # tell is exactly this call.
+    "json.load(sys.stdin)",
+    "json.loads(sys.stdin",
 )
 
 

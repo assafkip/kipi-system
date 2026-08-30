@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import sys
+import uuid
 
 import pytest
 
@@ -101,7 +102,12 @@ def test_every_live_hook_emits_the_delivering_shape():
 def test_userpromptsubmit_hooks_deliver_end_to_end(script, prompt):
     """Not the source shape -- the bytes the hook actually prints."""
     path = os.path.join(REPO, "q-system", ".q-system", "scripts", script)
-    payload = json.dumps({"session_id": "pytest",
+    # A FRESH session id per run. A fixed one made lessons-inject.py emit
+    # nothing on the second run ever -- its seen-cache had already recorded the
+    # lessons as shown -- so this arm silently skipped instead of checking the
+    # bytes. A skip that looks like a pass is the defect this whole file exists
+    # to catch.
+    payload = json.dumps({"session_id": "pytest-%s" % uuid.uuid4().hex[:12],
                           "hook_event_name": "UserPromptSubmit",
                           "prompt": prompt})
     env = dict(os.environ, CLAUDE_PROJECT_DIR=REPO)
@@ -247,3 +253,46 @@ def test_reporting_path_still_surfaces_the_ordinary_dict(tmp_path):
     """Only the BLOCK is scoped. A human reading a full audit wants everything."""
     src = 'payload = {"additionalContext": "ordinary API field"}\n'
     assert [s.verdict for s in audit.audit_python("<api>", source=src)] == [audit.TOP_LEVEL]
+
+
+# --------------------------------------------------------------------------
+# Codex minors, PR #285 round 3. Both are the same mistake in opposite
+# directions: the audit deciding something it could not see.
+# --------------------------------------------------------------------------
+def test_computed_key_inside_a_literal_envelope_is_unknown_not_absent(tmp_path):
+    """It used to emit NO site at all, so the gate passed it at exit 0.
+
+    `k = "additionalContext"` is a real way to write a hook, and an audit that
+    silently sees nothing there is indistinguishable from an audit that checked
+    and approved.
+    """
+    src = ('import json,sys\n'
+           'k = "additionalContext"\n'
+           'out = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", k: "x"}}\n'
+           'print(json.dumps(out))\n')
+    assert [s.verdict for s in audit.audit_python("<dynamic>", source=src)] == [audit.UNKNOWN]
+
+    p = tmp_path / "dynamic_hook.py"
+    p.write_text(src)
+    proc = _run_gate(p)
+    assert proc.returncode == 2, proc.stdout
+    assert "UNKNOWN" in proc.stderr
+
+
+def test_a_stdin_filter_is_not_a_hook(tmp_path):
+    """Bare `sys.stdin` was too weak: any filter program matched it."""
+    p = tmp_path / "wc_like_filter.py"
+    p.write_text('import sys\n'
+                 'record = {"additionalContext": "ordinary field"}\n'
+                 'for line in sys.stdin:\n'
+                 '    record["additionalContext"] = line\n')
+    assert _run_gate(p).returncode == 0
+
+
+def test_a_hook_whose_only_tell_is_json_load_stdin_still_blocks(tmp_path):
+    """The control. focus-kit's echo-of-prompt.py is exactly this shape."""
+    p = tmp_path / "echo_like_hook.py"
+    p.write_text('import json,sys\n'
+                 'payload = json.load(sys.stdin)\n'
+                 'print(json.dumps({"additionalContext": "re-anchor"}))\n')
+    assert _run_gate(p).returncode == 2
