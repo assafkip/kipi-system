@@ -10,7 +10,8 @@ crashed in 23. Nothing declared what was supposed to exist, so nothing could
 detect what was missing. Silent absences are invisible to exit codes; this
 gate makes absence loud in both directions.
 
-Manifest: q-system/.q-system/capability-manifest.json (canonical, synced).
+Manifest: q-system/.q-system/capability/ (canonical, synced) -- one JSON
+          fragment per declaration, assembled by capability_manifest.py.
 Overlay:  <repo-root>/capability-manifest.local.json (instance-local, ADD-only).
 
 Exit codes: 0 green, 1 red, 3 refused (worktree copy).
@@ -20,16 +21,23 @@ import argparse
 import datetime
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
 import threading
 from pathlib import Path
 
+# Same directory, and this script is invoked by path from several
+# roots (lefthook, kipi check, CI), so the parent dir is put on the
+# path explicitly rather than relying on the caller's cwd.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import capability_manifest  # noqa: E402
+
 SCHEMA_VERSION = 1
 ALLOWED_TOP_KEYS = {
     "schema_version", "expected_tests", "required_data",
-    "skeleton_only", "declared_inert", "uncovered_known",
+    "skeleton_only", "declared_inert", "uncovered_known", "scope_exempt",
 }
 OVERLAY_ALLOWED_KEYS = {"expected_tests", "required_data"}
 TEST_PATTERNS = ("test_*.py", "test-*.py", "test-*.sh")
@@ -92,14 +100,19 @@ def detect_mode(root, errors):
 
 
 def load_manifest(root, errors):
-    path = root / "q-system/.q-system/capability-manifest.json"
-    if not path.is_file():
-        errors.append(f"manifest missing: {path.relative_to(root)}")
-        return None
-    try:
-        data = json.loads(path.read_text())
-    except json.JSONDecodeError as exc:
-        errors.append(f"manifest malformed JSON: {exc}")
+    """Assemble the manifest from its fragment directory, then validate it.
+
+    The manifest used to be one hand-maintained file with one unsorted
+    182-entry `expected_tests` array, so every branch that declared a test
+    appended to the same lines and collided with every other branch: it was the
+    conflict in 37 of 41 conflicting PRs and the ONLY conflict in 16. It is now
+    one file per declaration under q-system/.q-system/capability/; two branches
+    adding two declarations write two different filenames and never collide.
+    Only the ASSEMBLY moved -- every rule below still reads the same dict, so
+    the declared-vs-actual diff is unchanged in both directions.
+    """
+    data = capability_manifest.load(root, errors)
+    if data is None:
         return None
     validate_manifest(data, errors)
     return data
@@ -116,13 +129,69 @@ def unsafe_path(p):
     return ".." in p.split("/")
 
 
-def validate_test_entry(entry, seen, errors):
+def validate_scope_exempt(data, errors):
+    """Read `scope_exempt` and return the path prefixes it declares.
+
+    This is the ONLY way a declaration may sit outside SCAN_ROOTS, and it exists
+    because the alternative shapes both fail (ASK-972, measured 2026-08-22 on
+    this repo): refusing every unscanned path outright is RED on 15 entries the
+    day it ships, and widening discovery to the repo root surfaces 123
+    undeclared test-pattern files. A gate red on its own population gets
+    switched off, and a gate that is off protects nothing.
+
+    So the boundary is not removed, it is made LEGIBLE: every escape is named
+    with a reason in one reviewable place, counted in the summary of every run,
+    and still subject to the existence check. What it buys is that a NEW escape
+    can no longer happen in silence, which is the whole defect.
+
+    What this deliberately does NOT do is close the undeclared-artifact
+    direction inside an exempt tree; that population and its design call are
+    captured as sp-c3d0f4d3 rather than left as a comment. # spillover-skip
+    """
+    prefixes = []
+    for item in data.get("scope_exempt", []):
+        if not isinstance(item, dict) or not item.get("prefix") or not item.get("reason"):
+            errors.append(f"scope_exempt entry needs prefix+reason: {item!r}")
+            continue
+        if unsafe_path(item["prefix"]):
+            errors.append(f"unsafe or non-relative prefix in scope_exempt: {item['prefix']!r}")
+            continue
+        prefixes.append(item["prefix"])
+    return prefixes
+
+
+def declaration_scope_error(path, exempt_prefixes):
+    """The message for a declaration that neither scan root covers.
+
+    Named separately so the refusal text is written once and both the canonical
+    manifest and the instance overlay refuse with the identical wording.
+    """
+    if any(path.startswith(pref) for pref in exempt_prefixes):
+        return None
+    return (f"declared outside the scan roots and not exempt: {path} — "
+            f"expected_tests paths live under {SCAN_ROOTS[0]}/ or directly in "
+            f"{SCAN_ROOTS[1]}/, because the undeclared-artifact direction of the "
+            "diff can only see what those roots discover. Move it, or add a "
+            "scope_exempt {prefix, reason} entry saying why this tree is not "
+            "scanned.")
+
+
+def validate_test_entry(entry, seen, errors, exempt_prefixes=()):
     """One validator for canonical AND overlay entries (finding: overlay
     entries were appended after validation and never validated themselves)."""
     p = entry.get("path", "")
     if unsafe_path(p):
         errors.append(f"unsafe or non-relative path in expected_tests: {p!r}")
         return
+    if not in_scan_scope(p):
+        # ASK-972: this was the silent escape. `in_scan_scope` was consulted only
+        # by the diff, which then had nothing to compare an unscanned path
+        # against, so such a path skipped the undeclared-artifact direction
+        # entirely and nothing said so. Refusing at DECLARATION time is the
+        # earliest point the two scopes can be held equal.
+        msg = declaration_scope_error(p, exempt_prefixes)
+        if msg:
+            errors.append(msg)
     if entry.get("runner") not in ("python3", "bash"):
         errors.append(f"expected_tests entry needs runner python3|bash: {p}")
     if p in seen:
@@ -160,9 +229,10 @@ def validate_manifest(data, errors):
     unknown = set(data) - ALLOWED_TOP_KEYS
     if unknown:
         errors.append(f"manifest unknown top-level keys: {sorted(unknown)}")
+    exempt = validate_scope_exempt(data, errors)
     seen = set()
     for entry in data.get("expected_tests", []):
-        validate_test_entry(entry, seen, errors)
+        validate_test_entry(entry, seen, errors, exempt)
     for set_name in ("required_data", "skeleton_only", "declared_inert"):
         items = data.get(set_name, [])
         paths = [i if isinstance(i, str) else (i or {}).get("path", "") for i in items]
@@ -178,6 +248,129 @@ def validate_manifest(data, errors):
             errors.append(f"declared_inert entry needs path+reason+spillover_id: {entry}")
         elif unsafe_path(entry["path"]):
             errors.append(f"unsafe or non-relative path in declared_inert: {entry['path']!r}")
+
+
+def spillover_ledger_path(root):
+    """The ONE spillover ledger for this checkout and all of its worktrees.
+
+    Mirrors prd_runner._ledger_root deliberately rather than importing it: this
+    gate is synced to every instance by `kipi update` and must run where
+    plugins/prd-os is absent. The rule it copies is load-bearing — `*.jsonl` is
+    gitignored, so resolving the ledger from a per-worktree root gives every
+    worktree a private copy, and a gate reading the wrong copy reports a safety
+    it cannot provide (sp-bc42f1d3, 26 private ledgers / 71 invisible findings).
+    `--git-common-dir` is shared across the worktree set, so its parent is the
+    main checkout no matter which worktree calls us.
+
+    Falls back to `root` when git cannot answer. Degraded, never fatal: the
+    caller treats a missing ledger as "not mine to judge".
+    """
+    ledger_root = Path(root)
+    try:
+        out = subprocess.run(["git", "rev-parse", "--git-common-dir"],
+                             cwd=str(root), capture_output=True, text=True, timeout=10)
+        if out.returncode == 0 and out.stdout.strip():
+            common = Path(out.stdout.strip())
+            if not common.is_absolute():
+                common = Path(root) / common
+            parent = common.resolve().parent
+            # Only trust it if it really looks like a checkout root; a bare
+            # repo's parent is an arbitrary directory.
+            if (parent / ".git").exists():
+                ledger_root = parent
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return ledger_root / ".prd-os" / "spillover.jsonl"
+
+
+# A row present with status None is not the same as an id with no row at all;
+# `status.get(sid)` collapses both to None and would make a real row look absent.
+_ABSENT = object()
+
+
+def check_inert_spillover_live(root, manifest, errors, notes=None, mode="instance"):
+    """A declared_inert entry must cite a spillover id that is still a LIVE
+    decision (ASK-345).
+
+    `validate_manifest` only checked that `spillover_id` is a non-empty string.
+    So the pointer that makes "parked as inert" a tracked wire-or-retire
+    decision could aim at a `resolved` ledger row, and the gate stayed GREEN
+    about a silencer that now silences nothing but itself. Measured on main
+    2026-08-19: memory_outcomes.py, memory_reflect.py and session_recall.py all
+    cited sp-cac8540c, status `resolved`. That is the gate's own silent-absence
+    class turned inward.
+
+    `resolved` is the ONLY terminal status prd_runner writes (both the fixed and
+    the voided paths land there), so it is the only one judged dead. `promoted`
+    stays live on purpose: promotion creates a Linear issue that
+    `spillover promoted-audit` re-reads, so the decision is still open.
+
+    TWO SKIPS, both fleet-safety and not lenience — `kipi update` runs this gate
+    in all 20+ instances:
+      * no ledger file -> skip, and SAY SO in notes (see the blindness note).
+      * id not in THIS ledger -> skip IN INSTANCE MODE ONLY. An instance WITH
+        prd-os has its own ids, so "unknown" means "another ledger's row", not
+        "dead pointer"; judging it would turn every declared_inert entry RED
+        fleet-wide. In SKELETON mode the ledger is this manifest's own ledger,
+        so an unknown id is a typo'd or fabricated pointer and goes RED. All 19
+        real ids resolve in the skeleton ledger today (measured 2026-08-19), so
+        the strict half reds nothing that exists (PR #224 review, minor).
+
+    WHERE THIS IS BLIND, AND WHY THE SKIP IS LOUD (PR #224 review, major):
+    `.gitignore:43` excludes `*.jsonl` and un-ignores only `receipts.jsonl`, so
+    `.prd-os/spillover.jsonl` is never committed. Every `actions/checkout` in
+    `.github/workflows/validate.yml` therefore takes the no-ledger branch, and CI
+    CANNOT catch a dead pointer — do not count that step as coverage. Liveness is
+    enforced wherever a ledger is readable: the founder's skeleton checkout via
+    `kipi check`, any worktree of it (git-common-dir), and any instance carrying
+    prd-os. The skip appends a note rather than returning quietly, because a
+    silent GREEN reads as "checked, clean" when it means "not checked" — the same
+    silent-absence class this whole gate exists to make loud.
+    """
+    path = spillover_ledger_path(root)
+    if not path.is_file():
+        if notes is not None:
+            notes.append(
+                f"inert-spillover-liveness: SKIPPED, no ledger at {path}. "
+                f"{len(manifest.get('declared_inert', []))} declared_inert pointer(s) "
+                "were NOT checked for a closed decision. Expected in CI (*.jsonl is "
+                "gitignored) and in instances without prd-os; this run proves nothing "
+                "about pointer liveness.")
+        return
+    status = {}
+    try:
+        text = path.read_text(errors="ignore")
+    except OSError as exc:
+        errors.append(f"spillover ledger unreadable at {path}: {exc}")
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # append-only log; one corrupt line must not blind the rest
+        if isinstance(rec, dict) and rec.get("id"):
+            status[rec["id"]] = rec.get("status")  # last row wins
+    for entry in manifest.get("declared_inert", []):
+        sid = entry.get("spillover_id")
+        if not sid:
+            continue  # validate_manifest already owns the empty-string error
+        st = status.get(sid, _ABSENT)
+        if st == "resolved":
+            errors.append(
+                f"declared_inert {entry.get('path')} cites {sid}, which is RESOLVED "
+                "in the spillover ledger: the wire-or-retire decision it points at "
+                "is closed, so nothing tracks this script any more. Repoint it at an "
+                "open item or decide the script.")
+        elif st is _ABSENT and mode == "skeleton":
+            errors.append(
+                f"declared_inert {entry.get('path')} cites {sid}, which matches NO "
+                f"row in {path}. In the skeleton that ledger IS this manifest's "
+                "ledger, so an id it has never heard of is a typo or a fabricated "
+                "pointer, and a pointer nothing can resolve tracks nothing. (An "
+                "INSTANCE skips this: its ledger legitimately holds other ids.)")
 
 
 def validate_quarantine(entry, errors):
@@ -214,6 +407,12 @@ def load_overlay(root, manifest, errors):
     if unknown:
         errors.append(f"overlay may only ADD {sorted(OVERLAY_ALLOWED_KEYS)}; found: {sorted(unknown)}")
     canonical = {e.get("path") for e in manifest.get("expected_tests", [])}
+    # The overlay reads the CANONICAL exemptions and cannot declare its own:
+    # `scope_exempt` is absent from OVERLAY_ALLOWED_KEYS on purpose. An overlay
+    # that could mint its own exemption would be a per-instance hatch out of the
+    # scan roots, which is the bypass surface load_overlay exists to refuse.
+    exempt = [i["prefix"] for i in manifest.get("scope_exempt", [])
+              if isinstance(i, dict) and i.get("prefix")]
     seen = set(canonical)
     for entry in data.get("expected_tests", []):
         if entry.get("path") in canonical:
@@ -221,7 +420,7 @@ def load_overlay(root, manifest, errors):
         elif entry.get("quarantine"):
             errors.append(f"overlay may not quarantine: {entry.get('path')}")
         else:
-            validate_test_entry(entry, seen, errors)
+            validate_test_entry(entry, seen, errors, exempt)
             manifest.setdefault("expected_tests", []).append(entry)
     canonical_data = {e.get("path") for e in manifest.get("required_data", [])}
     for entry in data.get("required_data", []):
@@ -255,7 +454,7 @@ def in_scan_scope(path):
     return path.startswith(SCAN_ROOTS[1] + "/") and "/" not in path[len(SCAN_ROOTS[1]) + 1:]
 
 
-def diff_declared_vs_actual(root, manifest, errors):
+def diff_declared_vs_actual(root, manifest, errors, mode="skeleton"):
     """The two-direction diff. One direction alone would miss F3 (an artifact
     that appears without a declaration) or mask a vanished test."""
     declared = {e["path"] for e in manifest.get("expected_tests", []) if e.get("path")}
@@ -264,9 +463,25 @@ def diff_declared_vs_actual(root, manifest, errors):
     for missing in sorted(in_scope_declared - discovered):
         errors.append(f"declared-but-missing: {missing}")
     for extra in sorted(discovered - declared):
-        errors.append(f"present-but-undeclared: {extra} — add to expected_tests "
-                      "in capability-manifest.json")
+        # Name the exact file to create. The old message said "add to
+        # expected_tests" and every author then appended to the same array,
+        # which is what made this manifest the conflict in 37 of 41
+        # conflicting PRs. A declaration is one file now, so the refusal hands
+        # over its path rather than a section name.
+        frag = capability_manifest.fragment_name("expected_tests", {"path": extra})
+        errors.append(
+            f"present-but-undeclared: {extra} — declare it by creating "
+            f"{capability_manifest.FRAGMENT_DIR}/expected_tests/{frag} "
+            'containing {"path": "%s", "runner": "python3"|"bash"}' % extra)
+    skeleton_only = set(manifest.get("skeleton_only", []))
     for outside in sorted(declared - in_scope_declared):
+        if mode == "instance" and outside in skeleton_only:
+            # A skeleton-only test is ABSENT from every instance by design;
+            # only run_tests consulted skeleton_only, so this check turned the
+            # whole fleet RED for a file that must not exist there (codex,
+            # PR #216). In skeleton mode the check still bites: the skeleton
+            # is where the file must exist.
+            continue
         if not (root / outside).is_file():
             errors.append(f"declared-but-missing (outside scan root): {outside}")
 
@@ -465,6 +680,77 @@ def gather_wiring_text(root, exclude_names):
     return "\n".join(chunks)
 
 
+def references_engine(name, surface):
+    """True when `surface` references this engine by FILENAME or by Python import.
+
+    Scar (ASK-517): the matcher was `p.name in surface`, i.e. the filename WITH
+    its .py extension, while a Python import names the module by its STEM. So
+    q-system/.q-system/scripts/loops_path.py -- imported by
+    q-system/hooks/session-start.py, which is wired in both .claude/settings.json
+    and settings-template.json -- was reported as a dead engine. That reddened
+    origin/main and blocked every merge in the repo until this fix. An engine
+    wired by `import` was structurally invisible to the one check built to find
+    dead engines.
+
+    The import form is matched EXPLICITLY, never by bare stem. A bare stem would
+    make a script called utils.py read as wired anywhere the word "utils"
+    appears, which turns the check off without anyone noticing -- trading a
+    false positive for a silent false negative, in the check whose whole job is
+    catching things nobody noticed.
+    """
+    if name in surface:
+        return True
+    if not name.endswith(".py"):
+        return False
+    stem = re.escape(name[:-3])
+    return re.search(r"\bimport\s+%s\b|\bfrom\s+%s\s+import\b" % (stem, stem),
+                     surface) is not None
+
+
+# A file the TEST RUNNER loads by name, with no import and no call site anywhere
+# by design. The textual-reference model this whole check rests on structurally
+# cannot express "the runner picks this up by convention", so such a file can
+# only ever be a false positive here -- and the only way to silence it with a
+# reference would be to write a fake one.
+RUNNER_LOADED_NAMES = frozenset({"conftest.py"})
+
+# The `__main__` guard as SYNTAX: start of a line, not anywhere in the bytes.
+_MAIN_GUARD_RE = re.compile(r"^\s*if\s+__name__\s*==\s*['\"]__main__['\"]\s*:",
+                            re.MULTILINE)
+
+
+def is_runnable_engine(path, text):
+    """True when this file RUNS, as opposed to being read or imported.
+
+    Scar (sp-7773af84's neighbour, measured 2026-08-14; main had been red on it
+    since 2026-08-10). The test used to be:
+
+        os.access(p, os.X_OK) or "__main__" in text
+
+    a bare substring over the whole file. `conftest.py` has no exec bit and no
+    guard -- the only `__main__` in it is one line of PROSE inside its module
+    docstring, advising future authors to guard their exits under
+    `if __name__ == "__main__":`. That sentence alone promoted it to a candidate,
+    and because pytest loads conftest by NAME it could never then prove itself
+    wired, so the gate reported it inert on every run forever.
+
+    Two separate defects, so both are closed: a substring cannot tell code from a
+    comment ABOUT code, hence the guard is now matched as syntax at the start of
+    a line; and a runner-loaded file is not an engine at all, hence
+    RUNNER_LOADED_NAMES. Fixing only the first would have hidden the second by
+    accident, because THIS conftest happens to lack an exec bit -- one that
+    carried the exec bit would still be flagged wrongly.
+
+    Deliberately NOT widened past that. The check keeps its own scar in view: it
+    exists because two dead engines citing each other stayed invisible for
+    months, so anything that makes it blind is a bigger cost than a false
+    positive, which is loud and resolved by a declared_inert entry.
+    """
+    if path.name in RUNNER_LOADED_NAMES:
+        return False
+    return os.access(path, os.X_OK) or _MAIN_GUARD_RE.search(text) is not None
+
+
 def check_inert_engines(root, manifest, errors, notes):
     """F2 class: a runnable .py with zero textual references across the wiring
     surfaces and no declared_inert entry is a silently-dead engine.
@@ -475,6 +761,27 @@ def check_inert_engines(root, manifest, errors, notes):
     fixed point so hook -> script A -> script B chains still count."""
     declared = {e["path"]: e for e in manifest.get("declared_inert", [])}
     base = root / "q-system/.q-system"
+    # plugins/ carries the runnable scripts this fleet actually ships, and the
+    # candidate scan never looked there -- a dead script under plugins/ was
+    # invisible to the one check built to see dead scripts. Widened 2026-08-05
+    # after an adversarial sweep whose every finding lived in that tree.
+    #
+    # REPORT-ONLY for now, on purpose. The change cannot be validated from a
+    # .claude/worktrees copy: calling this function directly against a worktree
+    # reports 28 inert errors with the UNMODIFIED gate, on a repo whose gate is
+    # meant to be green, so surface gathering is unreliable there. Shipping it
+    # BLOCKING on an unvalidatable measurement could red 27 plugin scripts
+    # across 22 governed instances. Notes carry the signal at zero blast
+    # radius; promoting to `errors` is a one-line change once a real run in the
+    # primary checkout confirms the delta is zero (sp-1cb1a348).
+    plugin_candidates = set()
+    for p in (list(root.glob("plugins/*/scripts/**/*.py"))
+              + list(root.glob("plugins/*/hooks/*.py"))
+              + list(root.glob("plugins/*/skills/*/scripts/*.py"))):
+        if p.is_file() and not p.name.startswith(("test_", "test-")) \
+                and not any(part in ("test", "tests") for part in p.parts):
+            if is_runnable_engine(p, p.read_text(errors="ignore")):
+                plugin_candidates.add(p)
     candidates = set()
     for p in list(base.glob("*.py")) + list((base / "scripts").rglob("*.py")):
         if not p.is_file() or p.name.startswith(("test_", "test-")):
@@ -482,9 +789,9 @@ def check_inert_engines(root, manifest, errors, notes):
         if any(part in ("test", "tests") for part in p.parts):
             continue
         # runnable contract: exec bit or a __main__ guard; a pure library
-        # module with neither is not an "engine" (standard-review minor)
-        text = p.read_text(errors="ignore")
-        if os.access(p, os.X_OK) or "__main__" in text:
+        # module with neither is not an "engine" (standard-review minor).
+        # One authority for that question -- see is_runnable_engine.
+        if is_runnable_engine(p, p.read_text(errors="ignore")):
             candidates.add(p)
     surface = gather_wiring_text(root, {p.name for p in candidates})
     wired = set()
@@ -492,7 +799,7 @@ def check_inert_engines(root, manifest, errors, notes):
     while changed:
         changed = False
         for p in sorted(candidates - wired):
-            if p.name in surface:
+            if references_engine(p.name, surface):
                 wired.add(p)
                 surface += "\n" + p.read_text(errors="ignore")
                 changed = True
@@ -504,6 +811,23 @@ def check_inert_engines(root, manifest, errors, notes):
             continue
         errors.append(f"inert-engine: {rel} has no reference on any wiring surface "
                       "and no declared_inert entry")
+
+    # Same walk over plugins/, reported not enforced (see the note above).
+    plugin_surface = gather_wiring_text(root, {p.name for p in plugin_candidates})
+    p_wired, changed = set(), True
+    while changed:
+        changed = False
+        for p in sorted(plugin_candidates - p_wired):
+            if references_engine(p.name, plugin_surface):
+                p_wired.add(p)
+                plugin_surface += "\n" + p.read_text(errors="ignore")
+                changed = True
+    for p in sorted(plugin_candidates - p_wired):
+        rel = str(p.relative_to(root))
+        if rel in declared:
+            continue
+        notes.append(f"INERT-ENGINE (report-only, plugins/): {rel} has no "
+                     "reference on any wiring surface")
 
 
 def main():
@@ -522,6 +846,11 @@ def main():
         report(mode, errors, notes)
         sys.exit(1)
     load_overlay(root, manifest, errors)
+    # Needs the filesystem (the ledger), so it cannot live inside
+    # validate_manifest, which is handed data only. Placed before the
+    # fail-closed exit below: a declared_inert entry pointing at a closed
+    # decision is a structural manifest problem, not a finding about the repo.
+    check_inert_spillover_live(root, manifest, errors, notes, mode)
     # counts note BEFORE the structural early-exit: an expired quarantine is a
     # structural error, and exiting first meant exactly those runs lost the
     # quarantine count the contract promises in EVERY summary (codex,
@@ -531,6 +860,16 @@ def main():
     notes.append(f"declared: {len(expected)} tests ({q_count} quarantined), "
                  f"{len(manifest.get('skeleton_only', []))} skeleton-only, "
                  f"{len(manifest.get('declared_inert', []))} declared-inert")
+    # ASK-972: say the coverage boundary out loud on EVERY run. The escape used
+    # to be a property of the source you had to go read; a GREEN that silently
+    # meant "some of these were only half-checked" is the same silent-absence
+    # class the whole gate exists to make loud.
+    n_exempt = sum(1 for e in expected
+                   if isinstance(e, dict) and e.get("path")
+                   and not in_scan_scope(e["path"]))
+    notes.append(f"scan scope: {len(expected) - n_exempt} declared entries inside "
+                 f"the scan roots (checked BOTH directions), {n_exempt} exempt "
+                 "from undeclared-artifact detection (existence-checked only)")
     if errors:  # fail closed on structural problems before trusting the sets
         report(mode, errors, notes)
         sys.exit(1)
@@ -540,7 +879,7 @@ def main():
             if q:
                 notes.append(f"QUARANTINED (until {q['expires']}, {q['spillover_id']}): "
                              f"{e['path']} — {q['reason']}")
-    diff_declared_vs_actual(root, manifest, errors)
+    diff_declared_vs_actual(root, manifest, errors, mode)
     check_required_data(root, manifest, mode, errors)
     # Inert-engine detection is a SKELETON-mode check. An instance's synced
     # scripts are wired by skeleton-root surfaces (validate.yml,

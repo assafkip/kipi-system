@@ -55,9 +55,9 @@ DEFAULT_FINDINGS_SUBDIR = "findings"
 
 SEVERITIES = ("blocker", "major", "minor", "nit")
 # The issue-level twin of prd-os's REVIEWER_SOURCES. Widened 2026-07-26 for the
-# same reason: Codex is out of credits until 2026-08-24 and the reviewer is a
-# Claude senior-staff-engineer subagent, so accepting only codex-* forced that
-# reviewer to either stamp a false provenance record or record nothing. Fixing
+# same reason: whichever vendor is unavailable on a given day, the reviewer that
+# steps in must be able to stamp itself honestly. Accepting only codex-* forced a
+# non-Codex reviewer to either stamp a false provenance record or record nothing. Fixing
 # this only at the PRD level left the issue path still lying.
 SOURCES = (
     "codex-review",
@@ -304,6 +304,68 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _sync_spillover(repo_root, issue_id: str, finding: dict) -> None:
+    """A `deferred` finding must not be terminal. Mirror it as an OPEN
+    spillover row so the standing gate keeps it visible; moving the finding
+    off `deferred` resolves the row.
+
+    sp-5642a835: no-orphan-findings.md promises this on BOTH findings
+    systems. prd-os's findings_writer grew its half (sp-5bcfbfe8); this
+    path -- the one every increment of a split PRD actually runs -- kept
+    dropping deferrals silently. Ledger format matches prd_runner's
+    append-only, last-write-wins shape; the file is written directly so
+    this plugin stays independent of prd-os at import time.
+    """
+    ledger = Path(repo_root) / ".prd-os" / "spillover.jsonl"
+    sid = f"defer-{issue_id}-{finding.get('id')}"
+    existing: dict = {}
+    if ledger.is_file():
+        for raw in ledger.read_text().splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rec, dict) and rec.get("id") == sid:
+                existing = rec
+
+    disposition = finding.get("disposition")
+    if disposition == "deferred":
+        if existing and existing.get("status") == "open":
+            return  # idempotent: already tracked open
+        record = {
+            "id": sid,
+            "source": issue_id,
+            "finding_id": finding.get("id"),
+            "description": (
+                f"deferred finding {finding.get('id')}: "
+                f"{str(finding.get('body', ''))[:120]} | rationale: "
+                f"{str(finding.get('rationale', ''))[:160]}"
+            ),
+            "severity": finding.get("severity", "minor"),
+            "status": "open",
+            "created_at": _now_iso(),
+        }
+        if finding.get("affected_path"):
+            record["affected_path"] = finding["affected_path"]
+    elif existing and existing.get("status") == "open":
+        record = dict(existing)
+        record.update(
+            status="resolved",
+            void_reason=f"finding re-dispositioned to {disposition}",
+            resolved_at=_now_iso(),
+        )
+    else:
+        return
+
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with ledger.open("a") as fh:
+        fh.write(json.dumps(record) + "\n")
+        fh.flush()
+
+
 def cmd_set_disposition(args: argparse.Namespace) -> int:
     if args.disposition not in DISPOSITIONS:
         sys.stderr.write(f"disposition must be in {DISPOSITIONS}\n")
@@ -319,8 +381,10 @@ def cmd_set_disposition(args: argparse.Namespace) -> int:
         sys.stderr.write(f"{exc}\n")
         return 2
     found = False
+    target = None
     for rec in records:
         if rec.get("id") == args.finding_id:
+            target = rec
             found = True
             old = rec.get("disposition")
             rec["disposition"] = args.disposition
@@ -344,6 +408,8 @@ def cmd_set_disposition(args: argparse.Namespace) -> int:
         sys.stderr.write(f"finding {args.finding_id!r} not found in {path}\n")
         return 2
     _write_all(path, records)
+    if target is not None:
+        _sync_spillover(repo_root, args.issue_id, target)
     print(json.dumps({"set": args.finding_id, "disposition": args.disposition}))
     return 0
 

@@ -20,3 +20,21 @@ Do NOT apply voice rules to:
 - Internal notes, logs, system output
 - Analysis, summaries, or recommendations for the founder's eyes only
 - Code, config files, documentation
+
+## Enforcement (the executables)
+
+Enforced by `voice-lint.py` and `voice-substance-lint.py` (PostToolUse on Edit/Write) and `voice-stop-gate.py` (Stop hook), each wired in BOTH `.claude/settings.json` and `settings-template.json` so `kipi update` ships the switch and not only the script. Bypass the two lints per file with `<!-- voice-lint-skip -->`; the Stop gate honors no marker. A rule claiming ENFORCED while naming no executable is prompt-only, which is what `test-voice-enforcement-rule-wired.sh` holds.
+
+<!-- enforcement -->
+```json
+[
+  {
+    "clause": "Voice Rule",
+    "status": "ENFORCED",
+    "exec": "q-system/.q-system/scripts/voice-lint.py",
+    "config": ".claude/settings.json",
+    "test": "q-system/.q-system/scripts/test/test-voice-enforcement-rule-wired.sh",
+    "directives": 1
+  }
+]
+```

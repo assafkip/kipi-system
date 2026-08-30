@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "slug": "ask140-voice-enforcement-names-its-executables",
+  "reason": "ASK-140. voice-enforcement.md claims ENFORCED but names no executable, so the reproducer test-voice-enforcement-rule-wired.sh is red. The three enforcing scripts already exist, are executable, and are already wired in BOTH .claude/settings.json and settings-template.json - only the rule text is silent. This is additive text naming what is already true. No hook is added or removed, so the hook count must not move.",
+  "requires": {
+    "files_present": [
+      ".claude/rules/voice-enforcement.md",
+      "q-system/.q-system/scripts/voice-lint.py",
+      "q-system/.q-system/scripts/voice-substance-lint.py",
+      "q-system/.q-system/scripts/voice-stop-gate.py"
+    ],
+    "template_pairs": [
+      "scripts/voice-lint.py",
+      "scripts/voice-substance-lint.py",
+      "scripts/voice-stop-gate.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/rules/voice-enforcement.md",
+      "op": "append",
+      "insert": "\n## Enforcement (the executables)\n\nEnforced by `voice-lint.py` and `voice-substance-lint.py` (PostToolUse on Edit/Write) and `voice-stop-gate.py` (Stop hook), each wired in BOTH `.claude/settings.json` and `settings-template.json` so `kipi update` ships the switch and not only the script. Bypass the two lints per file with `<!-- voice-lint-skip -->`; the Stop gate honors no marker. A rule claiming ENFORCED while naming no executable is prompt-only, which is what `test-voice-enforcement-rule-wired.sh` holds.\n",
+      "reason": "Name the three already-wired enforcing executables so the ENFORCED claim is checkable by the reproducer instead of taken on trust."
+    }
+  ]
+}

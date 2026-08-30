@@ -109,6 +109,12 @@ How to move through complex work without shipping a confident wrong answer.
    version; a cross-cutting invariant needs a written scope + a self-enumerating
    guard. Check only the classes the change touches.
 
+7. **Least-code bias.** Prefer the smallest change that solves it. Reach for
+   delete-and-reuse before you write new code; the best fix is often a line
+   removed, not a line added. When you catch yourself writing the third
+   near-identical thing, stop and generalize the mechanism instead of adding a
+   third copy.
+
 ---
 
 ## Consistency rules

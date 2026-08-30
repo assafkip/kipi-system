@@ -18,7 +18,7 @@ fires on the diff (same gate as any other code change).
 CLI:
 
   python3 plugins/prd-os/scripts/propose_skeptic_antipatterns.py <prd-id>
-      Writes the proposal to q-system/output/skeptic-proposals/<prd-id>-proposal.md
+      Writes the proposal to cfg.skeptic_proposals_dir/<prd-id>-proposal.md
 
   python3 plugins/prd-os/scripts/propose_skeptic_antipatterns.py <prd-id> --dry-run
       Prints the proposal to stdout (no file write). Used by tests.
@@ -50,7 +50,6 @@ from phase0_measure import (  # noqa: E402
 )
 
 
-PROPOSAL_DIR_RELPATH = "q-system/output/skeptic-proposals"
 
 SKEPTIC_QUESTIONS = {
     "Q1": "What is the strongest argument against doing this?",
@@ -80,8 +79,8 @@ ANTIPATTERN_TEMPLATES = {
 ACCEPTED_SEVERITIES = {"blocker", "major"}
 # Every source that represents a real independent review pass, not just Codex's
 # standard one. Was the single literal "codex-review", which silently dropped
-# `codex-adversarial` too. Found by adversarial review 2026-07-26: with Codex
-# out of credits until 2026-08-24, 100% of reviews are `claude-*`, so this loop
+# `codex-adversarial` too. Found by adversarial review 2026-07-26: during a spell
+# when Codex was unavailable, 100% of reviews were `claude-*`, so this loop
 # was discarding every finding and printing "Nothing to learn from this round"
 # -- a false claim, not an empty one.
 ACCEPTED_SOURCES = (
@@ -324,13 +323,18 @@ def propose(cfg: Config, prd_id: str) -> tuple[str, Path | None]:
     selected = select_findings_for_review(records)
 
     text = render_proposal(prd_id, skeptic_answers, selected)
-    output_path = write_proposal(cfg.repo_root, prd_id, text)
+    output_path = write_proposal(cfg, prd_id, text)
     return text, output_path
 
 
-def write_proposal(repo_root: Path, prd_id: str, content: str) -> Path:
-    """Write proposal markdown to q-system/output/skeptic-proposals/."""
-    out_dir = repo_root / PROPOSAL_DIR_RELPATH
+def write_proposal(cfg, prd_id: str, content: str) -> Path:
+    """Write proposal markdown to the configured proposals dir.
+
+    Resolved from config (default `.prd-os/skeptic-proposals`) rather than the
+    old hardcoded `q-system/output/skeptic-proposals`, which created a kipi
+    tree in every repo that archived a PRD.
+    """
+    out_dir = cfg.skeptic_proposals_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{prd_id}-proposal.md"
     out_path.write_text(content)
@@ -365,7 +369,7 @@ def main() -> int:
         sys.stdout.write(text)
         return 0
 
-    out_path = write_proposal(cfg.repo_root, args.prd_id, text)
+    out_path = write_proposal(cfg, args.prd_id, text)
     print(json.dumps({"proposal_written": str(out_path)}))
     return 0
 
