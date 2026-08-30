@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "slug": "disposition-pass-batch-1",
+  "reason": "ASK-965 disposition pass, batch 1: give five ENFORCED markers across four rules a machine-checkable disposition, shrinking the baseline from 32. Every status was derived by RUNNING the lint's own checks against the real wiring, not by reading the rules' prose - which is the class of claim this PRD exists to distrust.",
+  "requires": {
+    "files_present": [
+      "q-system/.q-system/scripts/enforced-claim-lint.py",
+      "q-system/.q-system/scripts/voice-lint.py",
+      "q-system/.q-system/token-guard.py",
+      "q-system/.q-system/scripts/linear-issue-ref-check.py",
+      "q-system/.q-system/scripts/wiring-check.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/rules/voice-enforcement.md",
+      "op": "append",
+      "reason": "Disposition its one marker. voice-lint.py is wired PostToolUse in settings.json, exits non-zero, and test-voice-enforcement-rule-wired.sh pins the claim - one of only two rules in the repo that already carried a receipt.",
+      "insert": "\n<!-- enforcement -->\n```json\n[\n  {\n    \"clause\": \"Voice Rule\",\n    \"status\": \"ENFORCED\",\n    \"exec\": \"q-system/.q-system/scripts/voice-lint.py\",\n    \"config\": \".claude/settings.json\",\n    \"test\": \"q-system/.q-system/scripts/test/test-voice-enforcement-rule-wired.sh\",\n    \"directives\": 1\n  }\n]\n```\n"
+    },
+    {
+      "file": ".claude/rules/linear-first.md",
+      "op": "append",
+      "reason": "Disposition its one marker. linear-issue-ref-check.py blocks at lefthook's commit-msg stage - a real blocking gate that the first version of the allowlist could not represent, which would have forced this honestly-enforced rule to declare ADVISORY.",
+      "insert": "\n<!-- enforcement -->\n```json\n[\n  {\n    \"clause\": \"Linear-First: work that isn't recorded didn't happen\",\n    \"status\": \"ENFORCED\",\n    \"exec\": \"q-system/.q-system/scripts/linear-issue-ref-check.py\",\n    \"config\": \"lefthook.yml\",\n    \"test\": \"q-system/.q-system/scripts/test/test-linear-issue-ref-check.sh\",\n    \"directives\": 0\n  }\n]\n```\n"
+    },
+    {
+      "file": ".claude/rules/coding-audhd.md",
+      "op": "append",
+      "reason": "Disposition its one marker as DETECTED, which is what the rule's own body already says: wiring-check.py exits 0 on every path by documented contract, so it surfaces findings and never blocks. The heading keeps its marker because the sanctioned path cannot remove it; the block records the honest posture.",
+      "insert": "\n<!-- enforcement -->\n```json\n[\n  {\n    \"clause\": \"AUDHD Coding Rules\",\n    \"status\": \"DETECTED\",\n    \"exec\": \"q-system/.q-system/scripts/wiring-check.py\",\n    \"config\": \".claude/settings.json\",\n    \"directives\": 7\n  }\n]\n```\n"
+    },
+    {
+      "file": ".claude/rules/token-discipline.md",
+      "op": "append",
+      "reason": "Disposition BOTH its markers. token-guard.py is wired PreToolUse/PostToolUse/UserPromptSubmit and blocks; test-token-discipline-rule-wired.sh pins the labelling claim. The rule's own text already scopes each marker honestly, and this makes that scoping machine-checkable.",
+      "insert": "\n<!-- enforcement -->\n```json\n[\n  {\n    \"clause\": \"Cleanup / Migration Rule\",\n    \"status\": \"ENFORCED\",\n    \"exec\": \"q-system/.q-system/token-guard.py\",\n    \"config\": \".claude/settings.json\",\n    \"test\": \"q-system/.q-system/scripts/test/test-token-discipline-rule-wired.sh\",\n    \"directives\": 0\n  },\n  {\n    \"clause\": \"Pre-Action Echo\",\n    \"status\": \"ENFORCED\",\n    \"exec\": \"q-system/.q-system/token-guard.py\",\n    \"config\": \".claude/settings.json\",\n    \"test\": \"q-system/.q-system/scripts/test/test-token-discipline-rule-wired.sh\",\n    \"directives\": 1\n  }\n]\n```\n"
+    }
+  ]
+}

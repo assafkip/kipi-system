@@ -127,9 +127,13 @@ JSON
   }
 }
 JSON
-  cat > "$r/q-system/.q-system/capability-manifest.json" <<'JSON'
-{ "schema_version": 1, "expected_tests": [ { "path": "a/b.py", "runner": "python3" } ] }
-JSON
+  # One fragment per declaration -- census() reads the assembled view, so the
+  # fixture has to be written in the layout the engine actually walks.
+  mkdir -p "$r/q-system/.q-system/capability/expected_tests"
+  echo '{ "schema_version": 1 }' \
+    > "$r/q-system/.q-system/capability/manifest.json"
+  echo '{ "path": "a/b.py", "runner": "python3" }' \
+    > "$r/q-system/.q-system/capability/expected_tests/a__b.py.json"
 }
 
 run_engine() {  # run_engine <engine> <proposal> <root>  -> sets RC and OUT

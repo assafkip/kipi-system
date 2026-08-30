@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-gh-repo-scope-reviewer.sh",
+ "runner": "bash"
+}
