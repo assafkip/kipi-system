@@ -799,19 +799,31 @@ def test_fingerprint(root, test_path, cached, runner=None):
     # the obvious half; the paren scanner and the comment stripper are just as
     # load-bearing and were invisible.
     #
-    # inspect.getsource rather than the whole file: hashing mutation-sweep.py
-    # entire would invalidate every cached verdict for a comment or a change to
-    # the report formatter, and a cache that clears on unrelated edits is a
-    # cache nobody keeps. This names the functions that decide what a mutant IS.
-    for fn in (make_disarm, _disarm_exit_calls, syntax_ok):
-        try:
-            h.update(inspect.getsource(fn).encode("utf-8"))
-        except (OSError, TypeError):
-            # Source unavailable (frozen/zipped). Fall back to a miss rather
-            # than to a false hit: an unhashable engine must not read as
-            # unchanged.
-            return None
-        h.update(b"\0")
+    # THE WHOLE MODULE, because hand-listing the engine's functions is itself
+    # the stale-hand-list defect (PR #272, three rounds).
+    #
+    # Round 1 hashed the rule TABLES. Round 2 added make_disarm,
+    # _disarm_exit_calls and syntax_ok. Round 3 found candidate_subjects and
+    # probe_pair still missing -- the functions deciding WHICH subject a test is
+    # paired with and how the pair is probed, which are as much "the experiment"
+    # as the mutation itself. Each round I enumerated, and each round the list
+    # was short by exactly the parts I had not thought about.
+    #
+    # A list that needs a human to stay complete will be incomplete. Hashing the
+    # module ENDS the class instead of shortening it once more.
+    #
+    # ACCEPTED COST, stated rather than discovered later: a comment or a change
+    # to the report formatter now invalidates the cache and the sweep re-runs.
+    # That is the SAFE direction. Under-invalidation costs a confident verdict
+    # about semantics that no longer exist; over-invalidation costs CPU on a
+    # tool that is already slow and whose resumed runs are the exception.
+    try:
+        h.update(Path(__file__).read_bytes())
+    except OSError:
+        # Unreadable module: a MISS, never a false hit. An engine that cannot be
+        # hashed must not read as unchanged.
+        return None
+    h.update(b"\0")
     for rules in (PY_RULES, SH_RULES, VERDICT_RULES):
         for pat, repl in rules:
             h.update(pat.pattern.encode("utf-8"))
@@ -1379,10 +1391,22 @@ def main():
     results = sweep(root, args)
 
     # Closing proof that the tree came back exactly as it started.
+    #
+    # COMPARE THE SET, NOT THE COUNT (PR #272 minor). This tested `len(after) !=
+    # len(dirty)`, so a SWAP -- one path restored while a different one was left
+    # mutated -- kept the count identical and printed "git status unchanged"
+    # over a tree that had not been restored. A closing proof that can be
+    # satisfied by coincidence is not a proof, which is this tool's own subject.
     after = dirty_tree(root)
-    if len(after) != len(dirty):
-        print(f"\nmutation-sweep: TREE NOT RESTORED "
-              f"({len(dirty)} dirty before, {len(after)} after)", file=sys.stderr)
+    before_set, after_set = set(dirty), set(after)
+    if before_set != after_set:
+        appeared = sorted(after_set - before_set)
+        vanished = sorted(before_set - after_set)
+        print("\nmutation-sweep: TREE NOT RESTORED", file=sys.stderr)
+        for path in appeared:
+            print("  now dirty and was not: %s" % path, file=sys.stderr)
+        for path in vanished:
+            print("  was dirty and is not: %s" % path, file=sys.stderr)
         sys.exit(3)
     print("tree restored: git status unchanged")
     sys.exit(0)
