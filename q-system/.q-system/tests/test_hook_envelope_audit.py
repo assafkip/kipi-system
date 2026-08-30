@@ -75,11 +75,22 @@ def test_reads_and_assertions_are_not_emissions():
 # --------------------------------------------------------------------------
 # The live hooks. A new hook added with the nameless envelope turns these red.
 # --------------------------------------------------------------------------
+# token-guard.py sits at q-system/.q-system/ , NOT in scripts/ , so a list of
+# directories missed a WIRED emitter while the test's own name promised "every
+# live hook" (round 9 minor). The list is now the whole .q-system tree plus the
+# other two roots, and the assertion below proves the walk actually reached
+# token-guard.py rather than trusting the path list to be complete.
 LIVE_HOOK_DIRS = [
-    os.path.join(REPO, "q-system", ".q-system", "scripts"),
+    os.path.join(REPO, "q-system", ".q-system"),
     os.path.join(REPO, "q-system", "hooks"),
     os.path.join(REPO, "plugins"),
 ]
+WIRED_EMITTERS_THAT_MUST_BE_REACHED = (
+    os.path.join("q-system", ".q-system", "token-guard.py"),
+    os.path.join("q-system", ".q-system", "scripts", "voice-dna-loader.py"),
+    os.path.join("q-system", ".q-system", "scripts", "lessons-inject.py"),
+    os.path.join("q-system", "hooks", "lessons-index.py"),
+)
 
 
 def test_every_live_hook_emits_the_delivering_shape():
@@ -90,6 +101,12 @@ def test_every_live_hook_emits_the_delivering_shape():
         for path in audit.walk([root]):
             sites.extend(audit.audit_file(path))
     assert sites, "audited nothing -- the walk is broken, not the hooks"
+    reached = {os.path.relpath(s.path, REPO) for s in sites}
+    missing = [rel for rel in WIRED_EMITTERS_THAT_MUST_BE_REACHED
+               if rel not in reached]
+    assert not missing, (
+        "the walk never reached these WIRED emitters, so a green result here "
+        "says nothing about them: %r" % (missing,))
     bad = [(s.path, s.line, s.verdict) for s in sites if s.verdict != audit.OK]
     assert bad == [], (
         "these hooks emit an envelope Claude Code discards: %r" % (bad,))
@@ -743,3 +760,63 @@ def test_a_real_js_emission_is_still_seen():
     src = 'process.stdout.write(JSON.stringify({"additionalContext": "x"}));\n'
     verdicts = [s.verdict for s in audit.audit_text("<hook.js>", source=src)]
     assert verdicts == [audit.TOP_LEVEL], verdicts
+
+
+# --------------------------------------------------------------------------
+# Round 9. The raw-string detection added in round 6 judged the SOURCE LINE the
+# call starts on, not the string's content, so a correct multi-line envelope was
+# blocked fleet-wide with a false "DISCARDS" claim.
+# --------------------------------------------------------------------------
+MULTILINE_CORRECT = (
+    'import sys\n'
+    'payload = sys.stdin.read()\n'
+    'sys.stdout.write("""{\n'
+    '  "hookSpecificOutput": {\n'
+    '    "hookEventName": "UserPromptSubmit",\n'
+    '    "additionalContext": "delivered"\n'
+    '  }\n'
+    '}""")\n'
+)
+MULTILINE_BROKEN = (
+    'import sys\n'
+    'payload = sys.stdin.read()\n'
+    'sys.stdout.write("""{\n'
+    '  "additionalContext": "discarded"\n'
+    '}""")\n'
+)
+
+
+def test_a_correct_multiline_raw_envelope_is_not_blocked(tmp_path):
+    verdicts = [s.verdict for s in audit.audit_python("<multi>", source=MULTILINE_CORRECT)]
+    assert verdicts == [audit.OK], verdicts
+    p = tmp_path / "multiline_hook.py"
+    p.write_text(MULTILINE_CORRECT)
+    assert _run_gate(p).returncode == 0
+
+
+def test_a_broken_multiline_raw_envelope_is_still_blocked(tmp_path):
+    """The control. Without it the fix above could just stop reporting."""
+    verdicts = [s.verdict for s in audit.audit_python("<multi>", source=MULTILINE_BROKEN)]
+    assert verdicts and all(v != audit.OK for v in verdicts), verdicts
+    p = tmp_path / "broken_multiline_hook.py"
+    p.write_text(MULTILINE_BROKEN)
+    proc = _run_gate(p)
+    assert proc.returncode == 2
+    assert "DISCARDS" in proc.stderr
+
+
+def test_the_live_hook_walk_actually_reaches_token_guard():
+    """The claim in the other test's name, made checkable.
+
+    token-guard.py sits at q-system/.q-system/ rather than in scripts/, so a list
+    of directories silently excluded a WIRED emitter while the test promised
+    "every live hook". A green result over a walk that never reached a file says
+    nothing about that file.
+    """
+    sites = []
+    for root in LIVE_HOOK_DIRS:
+        if os.path.isdir(root):
+            for path in audit.walk([root]):
+                sites.extend(audit.audit_file(path))
+    reached = {os.path.relpath(s.path, REPO) for s in sites}
+    assert os.path.join("q-system", ".q-system", "token-guard.py") in reached

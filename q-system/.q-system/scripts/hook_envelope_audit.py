@@ -228,7 +228,7 @@ def audit_python(path, source=None):
     # actually emits: a literal string handed straight to print() or
     # sys.stdout.write(). A fixture bound to a name, or passed to write_text, is
     # not an emission and stays invisible.
-    emitted = set()
+    emitted = {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -242,14 +242,19 @@ def audit_python(path, source=None):
         for arg in node.args:
             if (isinstance(arg, ast.Constant) and isinstance(arg.value, str)
                     and EMIT_KEY_RE.search(arg.value)):
-                emitted.add(node.lineno)
+                emitted[node.lineno] = arg.value
     seen_lines = {s.line for s in sites}
-    for line in sorted(emitted - seen_lines):
-        text = source.split("\n")[line - 1]
-        verdict = OK if KEY_EVENT in text and KEY_ENVELOPE in text else (
-            NO_EVENT_NAME if KEY_ENVELOPE in text else TOP_LEVEL)
-        sites.append(Site(path, line, verdict,
-                          detail="envelope emitted as a raw JSON string"))
+    for line, text in sorted(emitted.items()):
+        if line in seen_lines:
+            continue
+        # Judge the STRING'S OWN CONTENT with the text scanner, not the source
+        # line the call starts on. Reading one line verdicted a CORRECT
+        # multi-line envelope as TOP_LEVEL and blocked it fleet-wide with a false
+        # "Claude Code DISCARDS" claim (round 9 major) -- a false block on
+        # correct code, which is how a gate gets switched off.
+        for inner in audit_text(path, source=text):
+            sites.append(Site(path, line, inner.verdict, event=inner.event,
+                              detail="envelope emitted as a raw JSON string"))
 
     by_line = {}
     for node in ast.walk(tree):
