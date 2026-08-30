@@ -127,6 +127,8 @@
 {"commit_sha": "f590ed790ee23d5d076c6d943a75ebf63c4714b8", "issue_id": "ASK-291", "receipts": {"reviewed": "2026-08-10T16:24:51Z"}, "reviewed_at": "2026-08-10T16:24:51Z"}
 {"commit_sha": "22a5e26299635a9de3a958ab742e82e514a2a7cf", "issue_id": "ASK-700", "receipts": {"reviewed": "2026-08-13T16:41:18Z"}, "reviewed_at": "2026-08-13T16:41:18Z"}
 {"commit_sha": "1b9e8f0d58cf71a10d295d7d6091491ea4b0d436", "issue_id": "ASK-758", "receipts": {"reviewed": "2026-08-14T20:14:57Z"}, "reviewed_at": "2026-08-14T20:14:57Z"}
+{"commit_sha": "d835cbb6f4dcfee8423e6de2a87e9da25844074b", "issue_id": "ASK-831", "receipts": {"reviewed": "2026-08-15T04:37:03Z"}, "reviewed_at": "2026-08-15T04:37:03Z"}
+{"commit_sha": "a474aad272a29fb4e0813eb85505c1b60dd61503", "issue_id": "ASK-831", "receipts": {"reviewed": "2026-08-15T05:29:14Z"}, "reviewed_at": "2026-08-15T05:29:14Z"}
 {"commit_sha": "ed1a901e0a5b7e8e9c004032c836123c6f49bb7c", "issue_id": "ASK-842", "receipts": {"reviewed": "2026-08-15T06:47:50Z"}, "reviewed_at": "2026-08-15T06:47:50Z"}
 {"commit_sha": "53d1b42256ac5b1da930a569e27e458534824089", "issue_id": "ASK-841", "receipts": {"reviewed": "2026-08-15T08:18:54Z"}, "reviewed_at": "2026-08-15T08:18:54Z"}
 {"commit_sha": "d652455f4a1f9d9fe347cba7cc217cba7cb41ec9", "issue_id": "ASK-839", "receipts": {"reviewed": "2026-08-15T10:39:41Z"}, "reviewed_at": "2026-08-15T10:39:41Z"}
@@ -158,3 +160,4 @@
 {"closed_at": "2026-08-23T20:09:37Z", "commit_sha": "2872c4c358c46216c4b28da2bc176e97265188c3", "finding_id": "finding-1", "findings_triaged_at": "2026-08-23T20:08:42Z", "issue_id": "crtc-test-manifest", "prd_id": "prd-complete-repo-test-contract-2026-07-24", "reviewed_at": "2026-08-23T20:08:42Z", "verified_at": "2026-08-23T20:07:16Z"}
 {"reopened_at": "2026-08-23T20:30:00Z", "commit_sha": "63e5b80b", "finding_id": "finding-1", "issue_id": "crtc-test-manifest", "prd_id": "prd-complete-repo-test-contract-2026-07-24"}
 {"commit_sha": "e9c89efed5ca5fc73aef05fd68965a1b0055b46a", "issue_id": "ASK-992", "receipts": {"reviewed": "2026-08-24T15:16:10Z"}, "reviewed_at": "2026-08-24T15:16:10Z"}
+{"commit_sha": "e01b55b130360ae5875f3c574f7463d961a8beff", "issue_id": "ASK-831", "receipts": {"reviewed": "2026-08-30T16:54:42Z"}, "reviewed_at": "2026-08-30T16:54:42Z"}
