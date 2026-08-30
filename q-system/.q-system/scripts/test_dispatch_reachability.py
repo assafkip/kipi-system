@@ -70,6 +70,17 @@ def harness(tmp_path):
     (skel / "q-system" / ".q-system").mkdir(parents=True)
     shutil.copytree(SCRIPTS, skel / "q-system" / ".q-system" / "scripts")
     (skel / "q-system" / ".q-system" / "scripts" / "linear-sync.py").write_text(STUB_SYNC)
+    # PREFLIGHT STUBBED, AND ONLY HERE (ASK-840). This file asserts ONE thing: a
+    # project with a checkout is not the same fact as a project without one. Since
+    # ASK-840 the worker also asks repo-preflight whether the checkout it found may
+    # be entered, and `haslocal` below is a bare mkdir -- not a git repo, no remote
+    # -- so the real gate refuses it and it lands in the third bucket. That would
+    # make this file fail for a reason it is not about. The bucket the real gate
+    # feeds is asserted against the REAL script in
+    # test_dispatch_alias_reachability.py, which is where that claim belongs.
+    pf = skel / "q-system" / ".q-system" / "scripts" / "repo-preflight.sh"
+    pf.write_text('#!/usr/bin/env bash\nprintf "OK %s\\n" "${1:-}"\nexit 0\n')
+    pf.chmod(0o755)
 
     # git fetch runs before any of the reporting under test, so origin has to be
     # real or the run exits 9 and this test measures the guard instead.

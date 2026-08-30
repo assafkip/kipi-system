@@ -81,9 +81,31 @@ def worker_predicates(repo_project: str):
 
     tree = ast.parse(hits[0])
     want = {"project_of", "in_this_repo", "ready"}
+    # KEEP EVERY FUNCTION, NOT AN ALLOWLIST OF THREE (ASK-839, PR #191).
+    # This used to keep only `want`. ready() then grew one helper call
+    # (is_fleet_alert, reading the module-level ALERT_MARKER) and this extractor
+    # silently dropped both, so the shipped predicate raised NameError from
+    # inside the test -- three suites red on a fix that was itself correct. An
+    # allowlist of callees is a second copy of the consumer's call graph, and it
+    # goes stale the first time the consumer adds a line. Defining a function
+    # does not run its body, so carrying the unused ones costs nothing.
+    #
+    # Module-level names are carried only when they are literal constants. The
+    # heredoc also assigns `here`/`ls`/`pool`/`dropped` from Calls and
+    # comprehensions over names that only exist mid-run; exec-ing those would
+    # run the worker instead of extracting from it.
+    def _is_literal(node):
+        if isinstance(node, ast.Constant):
+            return True
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            return all(isinstance(e, ast.Constant) for e in node.elts)
+        return False
+
     keep = [n for n in tree.body
-            if isinstance(n, ast.FunctionDef) and n.name in want]
-    missing = want - {n.name for n in keep}
+            if isinstance(n, ast.FunctionDef)
+            or (isinstance(n, ast.Assign) and _is_literal(n.value))]
+    got = {n.name for n in keep if isinstance(n, ast.FunctionDef)}
+    missing = want - got
     if missing:
         raise AssertionError(f"linear-worker.sh no longer defines {missing}")
 
@@ -693,6 +715,118 @@ class ReadOnlyLockTest(unittest.TestCase):
             self.assertTrue(ran, "an unlockable directory must not stop a promotion")
             self.assertIn("UNLOCKED", buf.getvalue(),
                           "an unlocked promotion has to say so out loud")
+
+
+class TestProjectComesFromTheInstanceRegistry(unittest.TestCase):
+    """The THIRD RUNG: instance-registry alias, between env and basename.
+
+    the scar (2026-08-27): this script derived the board project as
+    `KIPI_LINEAR_PROJECT or root.name`. linear-worker.sh has always had a third
+    rung, the instance-registry alias, and the old comment here said replicating
+    it would give one decision two writers. So the rung was simply absent, and
+    every instance whose directory name is not its board name refused every
+    promotion: `refused: no Linear project named 'consulting'` while the board
+    carried 'ASK Consulting' and the registry row carried it too. Three ledger
+    rows (sp-421fa27d, sp-08fae4fc, sp-f227a6fd) described that one gap, and the
+    whole escalation route in no-orphan-findings.md was dead on this instance.
+
+    These tests use a tmpdir root whose basename matches NO project, so the
+    registry rung is the only thing that can make them pass.
+    """
+
+    def _registry(self, root, alias):
+        reg = Path(root) / "registry.json"
+        reg.write_text(json.dumps({
+            "skeleton": {"path": "/nowhere/skeleton",
+                         "linear_project": "skeleton-proj"},
+            "instances": [{"name": "SOME_INSTANCE", "path": str(root),
+                           "linear_project": alias}]}))
+        return {"KIPI_INSTANCE_REGISTRY": str(reg)}
+
+    def test_the_registry_alias_resolves_a_repo_whose_basename_is_not_its_board_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._registry(tmp, "kipi-system")
+            rc, stub, root = run_promote(tmp, repo_project=None, extra_env=env)
+            self.assertEqual(rc, 0, "promotion refused despite a registry alias")
+            self.assertEqual(stub.created["projectId"], PROJECT_IDS["kipi-system"],
+                             "issue filed against the wrong project")
+
+    def test_without_the_registry_row_the_same_promotion_refuses(self):
+        """The negative self-test. Same tmpdir shape, same everything, no row.
+
+        Without this the test above would pass on any change that made the
+        script resolve a project by luck rather than by the alias."""
+        with tempfile.TemporaryDirectory() as tmp:
+            reg = Path(tmp) / "registry.json"
+            reg.write_text(json.dumps({"instances": [
+                {"name": "ELSEWHERE", "path": "/some/other/checkout",
+                 "linear_project": "kipi-system"}]}))
+            rc, stub, _ = run_promote(
+                tmp, repo_project=None,
+                extra_env={"KIPI_INSTANCE_REGISTRY": str(reg)})
+            self.assertEqual(rc, 2, "a checkout with no registry row must refuse")
+            self.assertIsNone(stub.created, "refused run still filed an issue")
+
+    def test_an_explicit_env_override_still_wins_over_the_registry(self):
+        """Rung order, not just rung presence. The env var is the escape hatch
+        people were told to use while this was broken; it must keep working."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._registry(tmp, "not-a-real-project")
+            rc, stub, _ = run_promote(tmp, repo_project="kipi-system",
+                                      extra_env=env)
+            self.assertEqual(rc, 0, "env override did not take precedence")
+            self.assertEqual(stub.created["projectId"], PROJECT_IDS["kipi-system"])
+
+    def test_a_git_worktree_resolves_to_its_registered_main_checkout(self):
+        """codex major on PR #260. The registry records ONE path per instance,
+        the main checkout. linear-worker.sh works in WORKTREES, which live
+        somewhere else entirely, so matching realpath(root) rejected every
+        unattended run: no row matched, the derivation fell through to the
+        worktree basename, and the promotion refused.
+
+        The rung would have worked whenever a human ran it by hand in the
+        checkout and failed every time the worker ran it, which is the split
+        that makes a bug survive."""
+        import subprocess as sp
+        with tempfile.TemporaryDirectory() as tmp:
+            main = Path(tmp) / "checkout"
+            main.mkdir()
+            for cmd in (["init", "-q", "."], ["config", "user.email", "t@t"],
+                        ["config", "user.name", "t"]):
+                sp.run(["git", "-C", str(main)] + cmd, check=True,
+                       capture_output=True)
+            (main / "f.txt").write_text("x")
+            sp.run(["git", "-C", str(main), "add", "f.txt"], check=True,
+                   capture_output=True)
+            sp.run(["git", "-C", str(main), "commit", "-qm", "init"], check=True,
+                   capture_output=True)
+            wt = Path(tmp) / "wt"
+            sp.run(["git", "-C", str(main), "worktree", "add", "--detach",
+                    str(wt)], check=True, capture_output=True)
+
+            mod = load_promote()
+            # The worktree is a real repo at a different path than the registry row.
+            self.assertEqual(mod._main_checkout(wt), os.path.realpath(str(main)),
+                             "a worktree did not resolve to its main checkout")
+            # NEGATIVE SELF-TEST: without the resolution this is the worktree
+            # itself, which is what made every unattended promotion refuse.
+            self.assertNotEqual(os.path.realpath(str(wt)),
+                                os.path.realpath(str(main)),
+                                "fixture is wrong: worktree and checkout share a path")
+            # An ordinary checkout must be unchanged by the same call.
+            self.assertEqual(mod._main_checkout(main), os.path.realpath(str(main)))
+
+    def test_an_unreadable_registry_falls_through_and_never_invents_a_project(self):
+        """A registry that cannot be read must not become a guess. Filing into
+        the wrong board is worse than refusing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "not-json.json"
+            bad.write_text("{ this is not json")
+            rc, stub, _ = run_promote(
+                tmp, repo_project=None,
+                extra_env={"KIPI_INSTANCE_REGISTRY": str(bad)})
+            self.assertEqual(rc, 2)
+            self.assertIsNone(stub.created)
 
 
 if __name__ == "__main__":

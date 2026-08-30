@@ -379,7 +379,29 @@ GENERATED_SURFACE_PREFIXES = ("q-system/output/",)
 # NOT a bare leading-dot rule. `.claude/` and `.q-system/` are this fleet's
 # PRIMARY wiring locations; treating every dotted component as scratch is what
 # made _witness_rank cite the wrong file (Fable A1).
-SCRATCH_DIR_RE = re.compile(r"^\.pr\d+rev|^\.prd-os$|^worktrees$|^review-trees$")
+# `.review-scratch/` AND `.review-tmp-*` ARE COMMITTED, AND WERE NOT MATCHED.
+# Measured 2026-08-14: `git ls-files` returns 20 tracked files under those two
+# prefixes, including full copies of linear-worker.sh, linear-claim.py and
+# pr-review-agent.sh. Because the pattern only knew `.prNNrev`, every one of
+# those copies was walked as a live surface -- emitted as a capability and
+# eligible to sync into a duplicate permanent Linear issue for a script that
+# already has one. Being COMMITTED is what made them invisible to this rule and
+# to a `git status` check alike.
+#
+# `.wt-`, `.fable-wt` and `.sana-tmp` are here for the same reason, not as
+# scope creep: repo-preflight.sh's `_shipping()` already excludes exactly that
+# set, and two scratch definitions that disagree is the defect this file keeps
+# rediscovering (sp-505140ae was the same shape in test-repo-preflight.sh).
+# Keep the two lists in step.
+#
+# STILL NOT a bare leading-dot rule. `.claude/` and `.q-system/` are this
+# fleet's PRIMARY wiring locations; treating every dotted component as scratch
+# is what made _witness_rank cite the wrong file (Fable A1). Each prefix here is
+# named on purpose.
+SCRATCH_DIR_RE = re.compile(
+    r"^\.pr\d+rev|^\.prd-os$|^worktrees$|^review-trees$"
+    r"|^\.review-|^\.wt-|^\.fable-wt|^\.sana-tmp"
+)
 
 
 def _is_excluded_part(part: str) -> bool:
@@ -554,8 +576,37 @@ def collect_engines(root: Path) -> list:
     # shape survived inside the very change written to eliminate it. The count
     # of consumers is not fixed at three; grep is_excluded_tree before adding a
     # new walk over the repo.
+    # A DOCUMENT IS NOT A TEST, AND A MENTION IS NOT A PAIRING.
+    #
+    # This used to collect every file whose NAME starts with "test", regardless
+    # of extension, and `has_test` then asked whether the engine's stem appeared
+    # ANYWHERE inside one of those names as a substring. Two ways that goes wrong,
+    # and both were live:
+    #
+    #   1. A Markdown fixture (`test-something.md`, a DoR dump, a review note)
+    #      counted as a test. That is the Fable B2 shape one layer down -- a
+    #      document that merely NAMES a script was the thing certifying it tested.
+    #   2. The substring made `_sync_all` match `test_sync_all_helpers.md`, so
+    #      unwired copies of _sync_all.py reported LIVE.
+    #
+    # So only EXECUTABLE test files count. The substring match itself is kept
+    # deliberately -- see the scar below.
+    #
+    # TIGHTENING THE MATCH TO EXACT WAS TRIED AND REVERTED (codex, PR #164 r2).
+    # Requiring the test filename to equal the engine stem looks obviously right
+    # and is wrong: plugins/kipi-core/voiceloop/echo.py is genuinely tested by
+    # voiceloop/tests/test_voiceloop.py, which imports echo and exercises
+    # echo.prompt_echo and echo.opener_echo across ~20 lines. Its stem is
+    # "voiceloop", not "echo", so exact matching flipped a real, covered engine to
+    # UNWIRED -- a false alarm eligible for a permanent Linear issue, which is
+    # worse than the false LIVE it was meant to fix. One test file legitimately
+    # covers several engines, so filename equality cannot be the rule. The real
+    # signal is the CONTENT reference (test_sources); making that reliable is
+    # ASK-810, not a filename heuristic.
+    TEST_SUFFIXES = {".py", ".sh"}
     tests = {p.name for p in root.rglob("test*")
-             if p.is_file() and not is_vendored(p) and not is_excluded_tree(p, root)}
+             if p.is_file() and p.suffix in TEST_SUFFIXES
+             and not is_vendored(p) and not is_excluded_tree(p, root)}
 
     engines = []
     for p in root.rglob("*.py"):
