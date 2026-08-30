@@ -49,16 +49,36 @@ QROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 REPO = os.path.abspath(os.path.join(QROOT, ".."))
 DEFAULT_HOOK = os.path.join(QROOT, ".q-system", "hooks", "destructive-op-deny.sh")
 
-# Namespaces served by claude.ai account connectors. Not discoverable from any
-# file: they are provisioned per account. Declared, not measured -- so a stale
-# entry here is a blind spot this script cannot close, and saying that plainly is
-# the point of putting them in one named tuple instead of a regex exemption.
-KNOWN_CONNECTOR_NAMESPACES = (
-    "mcp__claude_ai_Gmail__",
-    "mcp__claude_ai_Google_Calendar__",
-    "mcp__claude_ai_Google_Drive__",
-    "mcp__claude_ai_Notion__",
-)
+# Namespaces that exist for this account but are not discoverable from any file
+# on a clean checkout. Each carries a written reason, the same shape
+# test-propagation-entrypoints.py uses for its EXEMPT list, because a bare
+# allowlist is a place to hide a dead entry and a reason is what makes hiding
+# one a visible act.
+#
+# WHY THIS IS NOT AN OPTIONAL NICETY (PR #279, codex major). The first cut
+# discovered plugin servers by walking ~/.claude/plugins. That made the verdict
+# depend on which plugins the developer happened to have installed: on a clean
+# CI runner with no HOME plugins, `mcp__plugin_vercel_vercel__` read DEAD and the
+# check failed on an entry nobody had touched. A gate whose answer changes with
+# the machine is not measuring the hook, and a red CI on a correct rule is how a
+# gate gets switched off.
+#
+# Declared, not measured. A stale entry here is a blind spot this script cannot
+# close, and saying so plainly is the point of the reasons.
+DECLARED_NAMESPACES = {
+    "mcp__claude_ai_Gmail__": "claude.ai account connector, provisioned per "
+    "account and present in no file on disk",
+    "mcp__claude_ai_Google_Calendar__": "claude.ai account connector, "
+    "provisioned per account and present in no file on disk",
+    "mcp__claude_ai_Google_Drive__": "claude.ai account connector, provisioned "
+    "per account and present in no file on disk",
+    "mcp__claude_ai_Notion__": "claude.ai account connector, provisioned per "
+    "account and present in no file on disk",
+    "mcp__plugin_vercel_vercel__": "the vercel plugin ships an MCP server and is "
+    "installed per developer, so a clean CI checkout cannot discover it; the "
+    "server is real and appears in the live tool roster as "
+    "mcp__plugin_vercel_vercel__authenticate",
+}
 
 # `mcp__` + a name + `__`, optionally followed by a shell-glob `*` or a literal
 # operation. Only the namespace half is extracted.
@@ -144,7 +164,13 @@ def plugin_server_namespaces():
 
 
 def known_namespaces():
-    names = set(KNOWN_CONNECTOR_NAMESPACES)
+    """Declared namespaces FIRST, so the verdict does not move with the machine.
+
+    Discovery still runs and still helps: it is what lets a namespace stop
+    needing a declaration once its server is checked into the repo. But nothing
+    is called dead solely because this particular box has not installed it.
+    """
+    names = set(DECLARED_NAMESPACES)
     names |= plain_server_namespaces()
     names |= plugin_server_namespaces()
     return names

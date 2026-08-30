@@ -42,6 +42,7 @@ namespace visible, and a dead entry is what let this survive: someone read
 the servers actually registered, and goes red on one that matches nothing.
 """
 
+import importlib.util
 import json
 import os
 import shutil
@@ -205,6 +206,40 @@ class MCPNamespaceCase(unittest.TestCase):
         self.assertEqual(
             proc.returncode, 0, "dead namespace(s):\n%s%s" % (proc.stdout, proc.stderr)
         )
+
+    def test_namespace_check_is_green_with_a_clean_HOME(self):
+        """The verdict must not move with which plugins this box has installed.
+
+        PR #279 codex major, verbatim reproducer. The first cut discovered
+        plugin servers by walking ~/.claude/plugins, so on a clean CI runner
+        `mcp__plugin_vercel_vercel__` read DEAD and the check failed on a rule
+        nobody had touched. A gate whose answer depends on the developer's
+        machine is not measuring the hook.
+        """
+        env = dict(os.environ)
+        env["HOME"] = os.path.join(self.tmp, "clean-home")
+        proc = subprocess.run(
+            [sys.executable, NS_CHECK, "--hook", HOOK],
+            capture_output=True, text=True, cwd=REPO, env=env, timeout=60,
+        )
+        self.assertEqual(
+            proc.returncode, 0,
+            "the checker is machine-dependent:\n%s%s" % (proc.stdout, proc.stderr))
+
+    def test_every_declared_namespace_carries_a_real_reason(self):
+        """A bare allowlist is a place to hide a dead entry.
+
+        The reason is what makes hiding one a visible act, the same shape
+        test-propagation-entrypoints.py already uses for its EXEMPT list.
+        """
+        spec = importlib.util.spec_from_file_location("ns_check", NS_CHECK)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertTrue(mod.DECLARED_NAMESPACES, "the declaration list is empty")
+        for ns, reason in mod.DECLARED_NAMESPACES.items():
+            self.assertGreaterEqual(
+                len(str(reason).split()), 8,
+                "%s is declared with no real reason" % ns)
 
     def test_namespace_check_goes_red_on_a_planted_dead_namespace(self):
         """Every measurement needs a case whose answer you already know."""
