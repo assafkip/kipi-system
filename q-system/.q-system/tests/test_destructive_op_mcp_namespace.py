@@ -188,6 +188,29 @@ class MCPNamespaceCase(unittest.TestCase):
         _, decision = drive(self.hook, "Bash", command="rm -rf /tmp/some-dir")
         self.assertEqual(decision, "deny")
 
+    # ---- camelCase compounds (PR #279 minor) ----
+
+    def test_camelcase_compound_deletions_are_denied(self):
+        """`batchDelete` lowercases to `batchdelete`, where `delete` sits behind
+        a letter, so the anchored verb rule missed it. MCP servers name
+        operations both ways, so the boundary has to cover both."""
+        for tool in ("mcp__linear__batchDelete",
+                     "mcp__linear__deleteIssue",
+                     "mcp__supabase__deleteBranch",
+                     "mcp__linear__bulkRemoveItems"):
+            with self.subTest(tool=tool):
+                self.assertEqual(drive(self.hook, tool)[1], "deny")
+
+    def test_camelcase_reads_and_un_forms_stay_allowed(self):
+        """The `un` guard has to survive the new boundary: `untrashMessage`
+        RESTORES, and turning the recovery path into a blocked path is worse
+        than the hole it closed."""
+        for tool in ("mcp__linear__listIssues",
+                     "mcp__claude_ai_Gmail__untrashMessage",
+                     "mcp__claude_ai_Gmail__untrash_message"):
+            with self.subTest(tool=tool):
+                self.assertEqual(drive(self.hook, tool)[1], "allow")
+
     # ---- the dead-namespace detector ----
 
     def test_namespace_check_exists(self):

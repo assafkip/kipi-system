@@ -622,7 +622,15 @@ if [ "${TOOL_NAME:0:5}" = "mcp__" ]; then
   # single underscore (`claude_ai_Gmail`), so the last separator is the only one
   # that reliably splits vendor from operation.
   MCP_OP="${TOOL_NAME##*__}"
-  MCP_OP_LOWER="$(printf '%s' "$MCP_OP" | tr '[:upper:]' '[:lower:]')"
+  # camelCase IS a word boundary (PR #279 minor). `batchDelete` lowercases to
+  # `batchdelete`, where `delete` is preceded by a letter, so the anchored verb
+  # rule below did not match and a compound deletion was ALLOWED. MCP servers
+  # name operations both ways -- `delete_branch` and `batchDelete` -- so the
+  # separator has to cover both. An underscore is inserted at every lower-to-
+  # upper transition before folding case.
+  MCP_OP_LOWER="$(printf '%s' "$MCP_OP" \
+    | sed 's/\([a-z0-9]\)\([A-Z]\)/\1_\2/g' \
+    | tr '[:upper:]' '[:lower:]')"
 
   # Read-only auth handshakes, exempt on every server. Checked FIRST so no verb
   # rule below can ever deny the call that makes a server usable.

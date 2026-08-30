@@ -499,16 +499,14 @@ echo "Branch: $SKELETON_BRANCH"
 [ "$DRY_RUN" = "--dry-run" ] && echo "MODE: DRY RUN (no changes)"
 echo ""
 
-# CALLED, not merely defined (ASK-1144). A helper with no call site is the
-# defect class this whole change is about: it looks like wiring and enforces
-# nothing. A dry run must not write, so it reports the drift instead.
+# The DRY RUN half runs here because it only READS. The install itself is
+# deliberately further down, after the source-provenance preflight -- see the
+# call site below.
 if [ "$DRY_RUN" = "--dry-run" ]; then
   _hook_installer="$SCRIPT_DIR/q-system/.q-system/scripts/install-claude-hooks.py"
   [ -f "$_hook_installer" ] && python3 "$_hook_installer" --check || true
-else
-  install_vendored_hooks
+  echo ""
 fi
-echo ""
 
 # Preflight: refuse to propagate if an enforcement hook is wired in the skeleton's
 # runtime .claude/settings.json but missing from settings-template.json -- it would
@@ -731,6 +729,22 @@ MODEL_RUN=0
 DRY_MODEL_ROOT=""
 ARCHIVE_TMP=""
 DRY_TMP=""
+
+# INSTALL ONLY ONCE THE SOURCE IS PROVEN (PR #279 major).
+#
+# This ran near the top, before the source-provenance preflight had shown the
+# working tree clean and equal to origin/$SKELETON_BRANCH. So an update that
+# ABORTED on an unverified source had already replaced the machine's live
+# destructive-op guard with whatever was in that tree -- an unreviewed gate
+# installed by a run that then refused to do anything else, which is the worst
+# possible order.
+#
+# Everything above this line either reads or refuses. Reaching here means the
+# source is the reviewed one, and only then is it allowed to become the guard.
+if [ "$DRY_RUN" != "--dry-run" ]; then
+  install_vendored_hooks
+  echo ""
+fi
 
 cleanup_dry_model() {
   if [ "${MODEL_RUN:-0}" = "1" ] && [ -n "${DRY_MODEL_ROOT:-}" ]; then
