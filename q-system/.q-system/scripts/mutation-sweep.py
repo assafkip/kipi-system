@@ -74,6 +74,7 @@ working tree while it runs, so it refuses a dirty tree unless forced.
 """
 
 import argparse
+import atexit
 import ast
 import datetime
 import hashlib
@@ -1175,6 +1176,68 @@ def self_test():
 
 # ----------------------------------------------------------------------- main
 
+# ONE SWEEP PER REPO, ENFORCED ACROSS PROCESSES (PR #272 major).
+#
+# The sweep mutates TRACKED SOURCE in place and restores it from its own backup.
+# Two overlapping sweeps therefore interleave on the same file: A backs up the
+# original, B backs up A's MUTANT believing it is the original, and whichever
+# restores last writes the wrong bytes into the working tree. The result is not a
+# bad measurement, it is corrupted source -- and the restore's own sha check
+# cannot see it, because each process verifies against the sha IT captured.
+#
+# The dirty-tree refusal does not cover this: the second sweep starts while the
+# first has the tree momentarily clean between pairs, so it sees nothing wrong.
+#
+# `O_CREAT | O_EXCL` is the primitive, for the same reason the rest of this fleet
+# uses mkdir: it is atomic on every filesystem that matters and needs no daemon.
+# The lock records its pid so a human finding one can tell a live sweep from a
+# corpse, and a stale lock whose pid is gone is reclaimed rather than requiring a
+# manual delete -- an operator who has to clear a lock by hand eventually clears
+# it while a sweep IS running.
+def acquire_sweep_lock(root):
+    """Return a release() callable, or exit 3 if another sweep holds the repo."""
+    lock = root / "q-system/output/mutation-sweep/.sweep.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(2):
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+
+            def release():
+                try:
+                    if lock.read_text().strip() == str(os.getpid()):
+                        lock.unlink()
+                except OSError:
+                    pass
+            return release
+        except FileExistsError:
+            try:
+                holder = int(lock.read_text().strip())
+            except (OSError, ValueError):
+                holder = None
+            alive = False
+            if holder is not None:
+                try:
+                    os.kill(holder, 0)
+                    alive = True
+                except OSError:
+                    alive = False
+            if alive:
+                print("mutation-sweep: another sweep (pid %s) holds %s. Two sweeps "
+                      "mutate the same tracked files and restore each other's "
+                      "mutants into the working tree." % (holder, root),
+                      file=sys.stderr)
+                sys.exit(3)
+            # Stale: the holder is gone. Reclaim and retry once.
+            try:
+                lock.unlink()
+            except OSError:
+                pass
+    print("mutation-sweep: could not acquire the sweep lock", file=sys.stderr)
+    sys.exit(3)
+
+
 def dirty_tree(root):
     r = subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
                        capture_output=True, text=True, timeout=60)
@@ -1214,6 +1277,12 @@ def main():
     # mode can do that, and refusing them just made the tool unusable mid-work.
     read_only = args.report_only or args.zero_exec_scan
     dirty = dirty_tree(root)
+    # Held for the whole mutating run. Read-only modes mutate nothing and are
+    # deliberately not serialised: refusing a report because a sweep is running
+    # would make the tool unusable exactly when you want to look at it.
+    if not read_only:
+        _release_lock = acquire_sweep_lock(root)
+        atexit.register(_release_lock)
     if dirty and not read_only and not args.force_dirty:
         print("mutation-sweep: refusing to run on a dirty tree "
               f"({len(dirty)} path(s)). Commit, stash, or pass --force-dirty.",

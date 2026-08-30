@@ -50,3 +50,23 @@ case "$out" in
     exit 1
     ;;
 esac
+
+# THE DECLARED CHECK HAS TO RUN THE OTHER SUITES (PR #272 major). This ran
+# --self-test and nothing else, so the resume-cache and sweep-lock regressions
+# lived outside CI: green here proved nothing about either. Both are green and
+# both are wired.
+for suite in test_resume_cache_key.py test_sweep_lock.py; do
+  if ! python3 -m pytest "$ROOT/q-system/.q-system/scripts/test/$suite" -q \
+       -p no:cacheprovider; then
+    echo "FAIL: $suite" >&2
+    exit 1
+  fi
+  echo "ok: $suite"
+done
+
+# NOT WIRED, and the reason is not caution. mutate-mutation-sweep.py exits 1
+# today because all five components it probes survive --self-test, so wiring it
+# would either turn this suite red for work nobody has done yet or get softened
+# into a check that cannot fail -- and a check that cannot fail is the thing this
+# tool exists to find. Order: make --self-test cover those five (sp-66a98810),
+# then wire it. Recorded in the ledger rather than only here.
