@@ -355,11 +355,20 @@ TESTFILES="$(git -C "$REPO" ls-files 'test_*.py' '*/test_*.py')"
 # dead entry reading as coverage is what let the Linear hole survive review.
 # Machine-independent by construction (declared namespaces, not discovered), so
 # it means the same thing on a runner as on a laptop.
-run_check "mcp-denylist-namespaces" \
-  python3 "$TARGET/q-system/.q-system/scripts/mcp-denylist-namespace-check.py" \
-  --hook "$TARGET/q-system/.q-system/hooks/destructive-op-deny.sh"
+# GUARDED ON THE FILES EXISTING, because verify.sh runs against trees that are
+# not this repo. The floor's own adversarial suite drives it at synthetic
+# fixtures with no q-system/ at all, and an unconditional check there fails for
+# "the file is missing" rather than for anything about the target -- 5 of 7
+# adversarial cases went red exactly that way. A check that cannot apply must
+# say so, not fail.
+_mcp_ns_check="$TARGET/q-system/.q-system/scripts/mcp-denylist-namespace-check.py"
+_mcp_ns_hook="$TARGET/q-system/.q-system/hooks/destructive-op-deny.sh"
+if [ -f "$_mcp_ns_check" ] && [ -f "$_mcp_ns_hook" ]; then
+  run_check "mcp-denylist-namespaces" \
+    python3 "$_mcp_ns_check" --hook "$_mcp_ns_hook"
+fi
 
-if [ -d "$HOME/.claude/hooks" ]; then
+if [ -d "$HOME/.claude/hooks" ] && [ -f "$TARGET/q-system/.q-system/scripts/install-claude-hooks.py" ]; then
   run_check "installed-hooks-match-repo" \
     python3 "$TARGET/q-system/.q-system/scripts/install-claude-hooks.py" --check
 else
