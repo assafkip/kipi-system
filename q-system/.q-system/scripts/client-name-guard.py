@@ -118,8 +118,19 @@ def staged_added_lines():
     defect. Fails CLOSED -- we only reach here with an armed token list, and a
     guard that cannot see what is being committed must not report all clear.
     """
+    # DECODE WITH REPLACEMENT, NOT STRICTLY. `text=True` decodes as UTF-8 with
+    # errors="strict", and one undecodable byte anywhere in the diff raises
+    # UnicodeDecodeError -- which is not "no client name found", it is the guard
+    # dying and taking the commit with it. Hit 2026-08-29 merging origin/main:
+    # main deletes a scratch tree that had loose git objects (zlib bytes) checked
+    # into it, git renders those deletions inline, and the commit became
+    # impossible with a traceback rather than a verdict. Replacement is the right
+    # trade for THIS check: the tokens are ASCII, so a run of undecodable bytes
+    # can only ever have hidden an ASCII name that was already unreadable as
+    # text, while strict decoding hid the whole rest of the diff behind one byte.
     r = subprocess.run(["git", "diff", "--cached", "-U0"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip() or "git diff --cached failed")
     return "\n".join(l for l in r.stdout.splitlines()

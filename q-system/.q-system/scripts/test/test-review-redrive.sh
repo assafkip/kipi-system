@@ -56,7 +56,7 @@ pr_entry() {   # pr_entry <number> <issue-lower> <sha>
   cat <<EOS
 {"number": $1, "headRefName": "sana/$2", "headRefOid": "$3",
  "url": "https://example.invalid/pr/$1", "title": "work ($(echo "$2" | tr a-z A-Z))",
- "isDraft": false,
+ "isDraft": false, "isCrossRepository": false,
  "statusCheckRollup": [
    {"__typename": "StatusContext", "context": "kipi/codex-approved", "state": "FAILURE"},
    {"__typename": "CheckRun", "name": "validate", "status": "COMPLETED", "conclusion": "SUCCESS"}
@@ -215,6 +215,15 @@ record 98 "REQUEST CHANGES" "REQUEST CHANGES" true cccc9999
 PICK1="$(select_one)"
 [ "$(printf '%s' "$PICK1" | cut -f1)" = "rework" ] && ok "select (single pick) offers the candidate" \
   || bad "select offered '$PICK1' -- the dispatcher's own path returns nothing"
+
+# FIELD 5 IS THE BRANCH THIS PR IS ON (PR #211 round 1, MAJOR 3). candidates()
+# has always carried headRefName and select dropped it, so kipi-dispatch.sh had
+# to ask gh a SECOND time to learn where the work belonged -- and a PR closing
+# between the two answers made the guard fail open onto the wrong branch. The
+# selector already knows; it says so here, and the dispatcher stops re-asking.
+[ "$(printf '%s' "$PICK1" | cut -f5)" = "sana/ask-298" ] \
+  && ok "select carries the PR's branch, so the dispatcher need not re-query it" \
+  || bad "select emitted no branch ('$PICK1') -- the fact it already holds is dropped again"
 
 LEDGER_AFTER="$(cat "$LEDGER")"
 [ "$LEDGER_AFTER" = '{}' ] && ok "select wrote NOTHING to the ledger -- the offer is not the claim" \
@@ -392,6 +401,100 @@ PICK5="$(select_ps "$WORK/ps-idle.txt")"
 [ "$(printf '%s' "$PICK5" | cut -f1)" = "re-review" ] \
   && ok "the same fresh PR IS offered once the table reads clean -- not a wall" \
   || bad "readable-and-idle table still offered nothing: '$PICK5'"
+
+# --- PR #211 round 2, MAJOR 1: the SELECTOR trusted a fork ------------------
+# Round 1 put the same-repo test in `branch_for` ONLY, and said so in the
+# spillover (sp-f7e6334d). This is that item arriving as a review finding.
+#
+# `candidates()` reads exactly what `branch_for` reads -- CI.attribute over the
+# head branch name and the PR title -- and on a public repo a fork's author
+# chooses both. So `sana/evil` titled "(ASK-352)" became a REWORK CANDIDATE for
+# somebody else's issue. Two costs, and the second is the expensive one: a
+# converge round is spent on an attacker's tree, and field 5 then carries
+# `sana/evil` into branch_guard, which compares it against `sana/ask-352`,
+# refuses, and PARKS the legitimate issue on every cycle until a human closes
+# the external PR. The guard built to stop wrong-target work becomes the
+# mechanism that stalls the queue.
+#
+# THE TWO CALL SITES TAKE OPPOSITE POSTURES FROM ONE PREDICATE, on purpose.
+# Skipping a PR in `branch_for` degrades to "no branch known", and the guard's
+# fail-OPEN arm runs the dispatch. Skipping a PR in `candidates()` degrades to
+# "offer nothing", which is a silent stall of the whole redrive lane -- the
+# exact defect class of the sibling finding in this same review. So a CONFIRMED
+# fork is dropped outright, while an UNSTATED provenance stays a candidate and
+# loses only its BRANCH: an unconfirmed head may not route work, but it also may
+# not switch the lane off.
+echo
+echo "-- fork PRs and the selector --"
+pr_fork() {   # pr_fork <number> <branch> <issue-upper> <sha>
+  cat <<EOS
+{"number": $1, "headRefName": "$2", "headRefOid": "$4",
+ "url": "https://example.invalid/pr/$1", "title": "attacker-controlled ($3)",
+ "isDraft": false, "isCrossRepository": true,
+ "statusCheckRollup": [
+   {"__typename": "StatusContext", "context": "kipi/codex-approved", "state": "FAILURE"}
+ ]}
+EOS
+}
+pr_unstated() {   # pr_unstated <number> <issue-lower> <sha>   (no isCrossRepository at all)
+  cat <<EOS
+{"number": $1, "headRefName": "sana/$2", "headRefOid": "$3",
+ "url": "https://example.invalid/pr/$1", "title": "work ($(echo "$2" | tr a-z A-Z))",
+ "isDraft": false,
+ "statusCheckRollup": [
+   {"__typename": "StatusContext", "context": "kipi/codex-approved", "state": "FAILURE"}
+ ]}
+EOS
+}
+
+# The fork ALONE, wearing a real issue's id. It must not be offered at all.
+printf '[%s]\n' "$(pr_fork 666 sana/evil ASK-352 dddd4444)" > "$WORK/board.json"
+record 666 "REQUEST CHANGES" "REQUEST CHANGES" true dddd4444
+FORK_PICK="$(select_all)"
+[ -z "$FORK_PICK" ] \
+  && ok "THE REPRODUCER: a fork PR is never a candidate, whatever its title claims" \
+  || bad "THE DEFECT: the selector offered an external PR: '$FORK_PICK'"
+
+# Beside the real one. The fork must vanish and the legitimate PR must survive:
+# a filter that drops both would close the hole by stopping the lane.
+printf '[%s,%s]\n' "$(pr_fork 667 sana/evil ASK-353 dddd5555)" \
+                   "$(pr_entry 68 ask-353 eeee7777)" > "$WORK/board.json"
+record 667 "REQUEST CHANGES" "REQUEST CHANGES" true dddd5555
+record 68 "REQUEST CHANGES" "REQUEST CHANGES" true eeee7777
+BOTH="$(select_all)"
+printf '%s' "$BOTH" | awk -F'\t' '$3 == 667' | grep -q . \
+  && bad "THE DEFECT: the fork survived alongside the real PR -- it can still park ASK-353" \
+  || ok "the fork is dropped while the real PR beside it is still offered"
+printf '%s' "$BOTH" | awk -F'\t' '$3 == 68' | grep -q . \
+  && ok "the legitimate same-repo PR is untouched by the fork filter" \
+  || bad "THE DEFECT: the filter took the real PR too -- the lane is off, not guarded"
+
+# Provenance UNSTATED. Still a candidate (a stalled lane is the other finding in
+# this review), but field 5 must be EMPTY: the guard reads an empty branch as
+# "no earlier observation" and takes its fail-open arm, so an unconfirmed head
+# can never be the reason a legitimate issue is refused.
+printf '[%s]\n' "$(pr_unstated 69 ask-354 ffff8888)" > "$WORK/board.json"
+record 69 "REQUEST CHANGES" "REQUEST CHANGES" true ffff8888
+# FIELD 5 IS THE BRANCH ONLY ON THE SINGLE-PICK PATH. `select --all` prints the
+# REASON there instead (cmd_select:622 vs :694), so these two asserts drive
+# `select_ps`, the path the dispatcher actually consumes. Written against
+# `select_all` first, where they passed and failed for reasons that had nothing
+# to do with a branch.
+UNSTATED="$(select_ps "$WORK/ps-idle.txt")"
+[ "$(printf '%s' "$UNSTATED" | cut -f3)" = "69" ] \
+  && ok "an unstated provenance is still offered -- absence must not switch the lane off" \
+  || bad "THE DEFECT: an unanswered field stalled the redrive lane entirely: '$UNSTATED'"
+[ -z "$(printf '%s' "$UNSTATED" | cut -f5)" ] \
+  && ok "but it carries NO branch: an unconfirmed head may not route work" \
+  || bad "THE DEFECT: field 5 carried '$(printf '%s' "$UNSTATED" | cut -f5)' from an unconfirmed head"
+
+# And the confirmed same-repo PR still carries its branch, or the round-1 fix
+# (field 5) has been undone by the round-2 one.
+printf '[%s]\n' "$(pr_entry 70 ask-355 aaaa9999)" > "$WORK/board.json"
+record 70 "REQUEST CHANGES" "REQUEST CHANGES" true aaaa9999
+[ "$(select_ps "$WORK/ps-idle.txt" | cut -f5)" = "sana/ask-355" ] \
+  && ok "a confirmed same-repo PR still carries its branch in field 5" \
+  || bad "THE DEFECT: the fork filter cost field 5 its value on a same-repo PR"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

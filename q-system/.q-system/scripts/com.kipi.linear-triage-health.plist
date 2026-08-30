@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Triage-queue health: is the owner:sana -> kipi-dispatch.sh drain keeping pace,
+     and what has gone dormant? (ASK-882)
+
+     Measured 2026-08-16: 873 issues, 229 with no project. Inflow is automated and
+     outflow is manual, so nothing was watching the gap. This is the meter.
+
+     TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized by
+     install-plist.sh, the same as every sibling here. A plist written straight into
+     ~/Library/LaunchAgents with a home path baked in is the b2df00e / ASK-113 scar:
+     unusable on another machine, invisible to validate-separation, and it makes the
+     script it runs read as an inert engine to the capability gate because nothing in
+     the repo references it.
+
+     WHY 09:00 DAILY, AND WHY --apply IS ON.
+
+     Daily rather than hourly because the numbers move on a human timescale; an
+     hourly meter on a queue that changes daily is a cry-wolf generator. 09:00 local
+     puts the read before the 03:00 DoR drafter's output has been sitting all day and
+     before the 16:00 digest, so the digest reports a board this already looked at.
+
+     --apply lets it write dormancy comments. That is safe to automate in a way
+     closing is not: the comment is idempotent (DORMANT_MARKER is checked per issue
+     before writing) and it changes no state. Nothing here closes an issue.
+
+     THE ALERT IS SELF-LIMITING. It fires only on a threshold breach, and
+     slack-notify.sh dedupes by alert SHAPE with every digit stripped, so a daily
+     breach collapses onto ONE ticket with a counter rather than one ticket a day.
+     The script also excludes its own tickets from its own counts.
+
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.linear-triage-health -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.linear-triage-health</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <!-- Through a login shell so the Linear API key resolves the same way it does
+         for a human. launchd does NOT inherit a login environment, and a job that
+         runs blind because its credentials are absent is what com.cole.delivery-watch
+         did for 19 days before anyone noticed (ASK-718). -->
+    <string>python3 __KIPI_REPO__/q-system/.q-system/scripts/linear-triage-health.py --apply</string>
+  </array>
+  <!-- Local 09:00. launchd calendar intervals are LOCAL time, so this is 9am
+       Pacific year-round without tracking PST/PDT. -->
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/linear-triage-health.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/linear-triage-health.err.log</string>
+</dict>
+</plist>

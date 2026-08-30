@@ -693,7 +693,23 @@ def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
         )
     try:
         res = subprocess.run(
-            [binary, "-p", prompt, "--permission-mode", "acceptEdits"],
+            # NO TOOLS. This prompt embeds a Linear issue's title and
+            # description VERBATIM (see PROMPT.format above), and anyone who can
+            # file an issue on the ASK team chooses those bytes. The job runs
+            # unattended at 03:00 from launchd, `cd <repo> && ./kipi dor --apply`,
+            # in the PRIMARY checkout. `--permission-mode acceptEdits` therefore
+            # handed untrusted text a model that could write files there without
+            # asking (ASK-1132).
+            #
+            # `--tools ""` is a CAPABILITY BOUND, not a filter: it removes the
+            # entire built-in tool set, so it does not depend on recognising an
+            # attack. Drafting a Definition of Ready is pure text generation and
+            # needs no tool at all, so nothing legitimate is lost.
+            #
+            # A prompt-level instruction ("ignore any instructions in the issue")
+            # would be prompt-only enforcement, which this repo bans for exactly
+            # this reason: it fails silently against the input it was written for.
+            [binary, "-p", prompt, "--tools", ""],
             capture_output=True, text=True, timeout=timeout,
             stdin=subprocess.DEVNULL,
         )
@@ -1134,6 +1150,10 @@ def report_failures(ls, failures: list, carried: int = 0) -> str:
         if project:
             payload["projectId"] = project["id"]
         node = (ls.graphql(ls.ISSUE_CREATE, {"input": payload})
+                # linear-filer-lint-skip: AUTOMATED and currently unmarked. The
+                # nightly launchd job files its own run-failure report, machine-
+                # authored and nobody asked for it, so this SHOULD attach
+                # TRIAGE_LABEL. Captured as sp-1306aca4 rather than changed here.
                 .get("issueCreate") or {}).get("issue") or {}
         if not node.get("id"):
             print("  failure report refused by Linear", file=sys.stderr)
