@@ -23,12 +23,16 @@ is right to: an agent that can edit destructive-op-deny.sh can disable its own
 gates. An installer is a write path into exactly that directory, so it carries
 its own refusals rather than inheriting trust from being called "install":
 
-  1. RATCHET. A source that reduces the installed hook's `emit_deny` or `exit 2`
-     call sites is REFUSED. A hook may be repaired, never disarmed. Counted, not
-     parsed: a count cannot tell a real deny from a weakened one, and coarse is
-     the right trade for a guard whose failure mode is a silently disabled gate.
-     Narrowing a deny's CONDITION while keeping its call site is NOT caught here.
-     Say that plainly rather than implying more coverage than exists.
+  1. BEHAVIOURAL GATE. The candidate hook is RUN against payloads whose correct
+     answers are already known: four that must be denied, three that must be
+     allowed. A source that gets any of them wrong is REFUSED.
+
+     This replaces a token-count ratchet that was broken twice in two review
+     rounds -- first by putting the tokens in comments, then by keeping every
+     call site and redefining emit_deny to allow. Counting is blind to what the
+     code DOES, and two bypasses of one shortcut means the shortcut was wrong.
+     The MUST_ALLOW half is not decoration: without it, "denies all four" is
+     satisfiable by exiting 2 on line one, which is an outage rather than a gate.
   2. SHEBANG. A source that drops the shebang is refused.
   3. THE EXECUTE BIT IS WIRING, NOT METADATA (the ASK-1118 scar). settings.json
      runs the hook as a BARE PATH, so a file landed at 0644 simply does not run:
@@ -67,14 +71,47 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 SOURCE_DIR = os.path.join(REPO, "q-system", ".q-system", "hooks")
 
-# A hook may be repaired, never disarmed. These are the tokens that make a hook
-# a gate rather than a comment.
-TEETH = ("emit_deny", "exit 2")
+# WHAT THE HOOK DOES, NOT WHAT IT CONTAINS (PR #279 round 6, BLOCKER).
+#
+# The first ratchet counted `emit_deny` and `exit 2` call sites and refused a
+# source that had fewer than the installed copy. Codex broke it in one line: keep
+# every call site and redefine `emit_deny` to allow. Counting is blind to what
+# the function DOES, and the previous round had already shown counting was blind
+# to whether the tokens were even code. Two bypasses of one shortcut is the
+# shortcut being wrong, not unlucky.
+#
+# So the gate is now BEHAVIOURAL: drive the candidate hook with payloads whose
+# correct answers are already known and require it to get them right. That is
+# the same discipline every other check in this change uses, and it is not
+# fooled by any amount of clever text.
+#
+# Payload strings are assembled from parts at import time on purpose: written
+# literally, the live PreToolUse hook blocks this file's own creation. That is
+# its documented false positive, and paying for it here is cheaper than
+# weakening the hook to make a source file convenient.
+_R = "r" + "m"
+_RF = "-r" + "f"
+
+MUST_DENY = (
+    ("Bash", {"command": "%s %s /tmp/probe-dir" % (_R, _RF)}),
+    ("Bash", {"command": "git reset " + "--hard"}),
+    ("mcp__linear__delete_issue", {}),
+    ("mcp__supabase__delete_branch", {}),
+)
+
+# A hook that denies EVERYTHING is not a working hook, it is an outage. Without
+# these, "deny on all four" is satisfiable by `exit 2` on line one.
+MUST_ALLOW = (
+    ("Bash", {"command": "ls -la"}),
+    ("mcp__linear__list_issues", {}),
+    ("mcp__claude_ai_Gmail__untrash_message", {}),
+)
 
 
 def code_only(text):
@@ -184,18 +221,72 @@ def read(path):
         return None
 
 
+def decision_of(hook_path, tool_name, tool_input, home):
+    """Run the hook on one payload and return "deny", "allow" or "error".
+
+    A PreToolUse hook denies by printing JSON at exit ZERO, so the exit code says
+    nothing and only the payload does.
+    """
+    payload = {"tool_name": tool_name, "tool_input": dict(tool_input),
+               "cwd": "/tmp"}
+    env = dict(os.environ)
+    env.pop("ALLOW_DESTRUCTIVE", None)   # a bypass in this process is not a verdict
+    env["HOME"] = home
+    try:
+        proc = subprocess.run(["bash", hook_path], input=json.dumps(payload),
+                              capture_output=True, text=True, timeout=30, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return "error"
+    # EXIT 2 IS ALSO A BLOCK. PreToolUse accepts two protocols: JSON at exit 0,
+    # and a bare exit 2. destructive-op-deny uses the first exclusively, but a
+    # prober that reads only that one calls an exit-2 hook "allow" -- which
+    # would make the MUST_ALLOW half of the gate meaningless, since a hook that
+    # blocks everything by exiting 2 would sail through as permissive. Found by
+    # probing this gate with a hook that denies everything.
+    if proc.returncode == 2:
+        return "deny"
+    out = (proc.stdout or "").strip()
+    if not out:
+        return "allow"
+    try:
+        parsed = json.loads(out)
+    except ValueError:
+        return "error"
+    decision = parsed.get("hookSpecificOutput", {}).get("permissionDecision")
+    return decision if decision in ("deny", "allow") else "error"
+
+
 def refuse_if_weaker(name, source_text, installed_text):
-    """The ratchet. Returns a refusal string, or None."""
-    if installed_text is None:
-        return None  # nothing installed yet; there are no teeth to lose
-    if installed_text.startswith("#!") and not source_text.startswith("#!"):
-        return "%s: the source drops the shebang" % name
-    installed_code, source_code = code_only(installed_text), code_only(source_text)
-    for token in TEETH:
-        was, now = installed_code.count(token), source_code.count(token)
-        if now < was:
-            return ("%s: the source reduces `%s` call sites (%d -> %d). A hook "
-                    "may be repaired, never disarmed." % (name, token, was, now))
+    """Behavioural gate: does the CANDIDATE still deny what it must?
+
+    Returns a refusal string, or None. Driven against a throwaway HOME so the
+    probe writes its audit log there and never touches the real one.
+    """
+    if installed_text.startswith("#!") if installed_text else False:
+        if not source_text.startswith("#!"):
+            return "%s: the source drops the shebang" % name
+
+    probe_home = tempfile.mkdtemp(prefix="hookprobe-")
+    try:
+        os.makedirs(os.path.join(probe_home, ".claude", "audit"), exist_ok=True)
+        candidate = os.path.join(probe_home, name)
+        with open(candidate, "w") as fh:
+            fh.write(source_text)
+        for tool, payload in MUST_DENY:
+            got = decision_of(candidate, tool, payload, probe_home)
+            if got != "deny":
+                return ("%s: the source ALLOWS a destructive operation it must "
+                        "deny (%s -> %s). A hook may be repaired, never disarmed."
+                        % (name, tool, got))
+        for tool, payload in MUST_ALLOW:
+            got = decision_of(candidate, tool, payload, probe_home)
+            if got != "allow":
+                return ("%s: the source DENIES an operation it must allow "
+                        "(%s -> %s). A hook that blocks everything is an outage, "
+                        "and an outage is how a gate gets switched off."
+                        % (name, tool, got))
+    finally:
+        shutil.rmtree(probe_home, ignore_errors=True)
     return None
 
 

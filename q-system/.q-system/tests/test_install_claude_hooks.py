@@ -91,6 +91,14 @@ class InstallerCase(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, "a 0644 hook was reported clean")
         self.assertIn("NOT EXECUTABLE", proc.stdout)
 
+    # A REAL DISARM, not a rename. The first version of these mutants did
+    # `.replace("emit_deny", "echo_allow")`, which renames the FUNCTION
+    # DEFINITION too -- so the hook kept denying and the mutants were semantic
+    # no-ops. They passed only because the old ratchet counted the token, which
+    # is the shortcut codex broke twice. Flipping the emitted verdict is what
+    # actually turns the gate off.
+    DISARM = ('permissionDecision: "deny"', 'permissionDecision: "allow"')
+
     def test_a_source_that_removes_denies_is_refused(self):
         """The negative self-test. If this passes, the installer is the hole."""
         run(self.tmp)
@@ -100,7 +108,8 @@ class InstallerCase(unittest.TestCase):
             os.makedirs(src_dir)
             scripts = os.path.join(fake_repo, "q-system", ".q-system", "scripts")
             os.makedirs(scripts)
-            gutted = before.replace("emit_deny", "echo_allow")
+            gutted = before.replace(*self.DISARM)
+            self.assertNotEqual(gutted, before, "the disarm did not change anything")
             with open(os.path.join(src_dir, "destructive-op-deny.sh"), "w") as fh:
                 fh.write(gutted)
             shutil.copy2(INSTALLER, os.path.join(scripts, "install-claude-hooks.py"))
@@ -143,7 +152,8 @@ class InstallerCase(unittest.TestCase):
         n_exit = before.count("exit 2")
 
         def gut_and_pad(text):
-            body = text.replace("emit_deny", "echo_allow").replace("exit 2", "exit 0")
+            body = text.replace(*self.DISARM)
+            assert body != text, "the disarm did not change anything"
             padding = "\n".join(["# emit_deny exit 2"] * (n_deny + n_exit))
             return body + "\n" + padding + "\n"
 
