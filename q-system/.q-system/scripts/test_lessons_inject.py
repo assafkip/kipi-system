@@ -189,7 +189,13 @@ def case_same_session_does_not_re_inject() -> bool:
         return False
     if not second.strip():
         return True                      # nothing left to say: correct
-    return _ctx(first) != _ctx(second)   # or at minimum, not the same payload
+    # NOT `!=` (Codex minor, PR #277). Two payloads differ for a hook that walks
+    # the whole corpus three lessons at a time, which is the behaviour the
+    # per-session budget exists to stop -- so a `!=` assertion goes green against
+    # it and shows nothing. The property with teeth: no lesson SHOWN in turn one
+    # appears again in turn two.
+    a, b = _ctx(first), _ctx(second)
+    return not any(f"[{lid}]" in a and f"[{lid}]" in b for lid in LESSONS)
 
 
 def case_a_different_session_still_gets_it() -> bool:
@@ -245,6 +251,78 @@ def case_engineering_words_still_trigger() -> bool:
                    "the allowlist timeout is a defect"):
         rc, out = run(repo, prompt)
         if rc != 0 or not out.strip():
+            return False
+    return True
+
+def _big_repo(n: int = 60) -> Path:
+    """A corpus large enough that a per-turn cap is not a per-session cap."""
+    tmp = Path(tempfile.mkdtemp())
+    d = tmp / "q-system" / "lessons"
+    d.mkdir(parents=True)
+    body = ("A gate whose allowlist covers five destinations is blind everywhere "
+            "else, and the timeout budget hides it. " * 30)
+    for i in range(n):
+        (d / f"lesson-{i:03d}.md").write_text(
+            f"---\nid: lesson-{i:03d}\nkind: pattern\ntitle: Gate {i} allowlist "
+            f"timeout budget\ndate: 2026-08-01\n---\n\n{body}\n",
+            encoding="utf-8")
+    return tmp
+
+
+def _ceilings():
+    import importlib.util as _ilu
+    spec = _ilu.spec_from_file_location("li", HOOK)
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.SESSION_CEILING_CHARS, mod.PAYLOAD_CEILING_CHARS
+
+
+def case_a_long_session_is_bounded() -> bool:
+    """The case the dedupe made necessary (Codex major, PR #277).
+
+    Before the dedupe, a long session got the SAME three lessons over and over:
+    wasteful, bounded. After it, every turn brought three NEW ones, so a long
+    session walked the entire corpus into context -- measured at 394,822 chars
+    against a 375,528-byte corpus. One missing budget explains both.
+
+    Sixty turns against a sixty-lesson corpus, summing what each turn injected.
+    Without SESSION_CEILING_CHARS the sum reaches the whole corpus; with it the
+    sum stops. Paired negative control below.
+    """
+    repo = _big_repo(60)
+    sid = "sess-budget-" + uuid.uuid4().hex
+    prompt = "widen the blocking gate allowlist because the timeout budget fires"
+    total = 0
+    for _ in range(60):
+        _, out = run(repo, prompt, raw=json.dumps(
+            {"prompt": prompt, "session_id": sid}))
+        if out.strip():
+            total += len(_ctx(out))
+    # The ceiling is read BEFORE a turn spends, so the last turn can overshoot by
+    # at most one payload. Beyond that is a walk, not a budget.
+    session_ceiling, payload_ceiling = _ceilings()
+    return 0 < total <= session_ceiling + payload_ceiling
+
+
+def case_the_budget_is_not_just_the_corpus_being_small() -> bool:
+    """Negative control for the case above.
+
+    A 60-lesson corpus has to be able to exceed the ceiling, or the bound above
+    is satisfied by arithmetic rather than by the budget.
+    """
+    repo = _big_repo(60)
+    corpus = sum(len(f.read_text(encoding="utf-8"))
+                 for f in (repo / "q-system" / "lessons").glob("*.md"))
+    session_ceiling, _ = _ceilings()
+    return corpus > session_ceiling
+
+
+def case_non_object_json_is_silent() -> bool:
+    """Valid JSON that is not an object has no .get (Codex nit, PR #277)."""
+    repo = _repo()
+    for raw in ("4", '"a string"', "[]", "null"):
+        rc, out = run(repo, "", raw=raw)
+        if rc != 0 or out.strip():
             return False
     return True
 

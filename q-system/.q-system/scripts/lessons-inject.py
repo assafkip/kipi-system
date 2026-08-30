@@ -76,6 +76,21 @@ from pathlib import Path
 
 TOP_K = 3
 PAYLOAD_CEILING_CHARS = 12000
+
+# PER SESSION, across every firing. Codex major, PR #277.
+#
+# The dedupe alone made this worse, not better. Before it, a long session got the
+# SAME three lessons over and over -- wasteful, but bounded. After it, every turn
+# brought three NEW ones, so a long session walked the entire corpus into
+# context: measured at 394,822 chars against a 375,528-byte corpus, with
+# relevance decaying to noise long before the end.
+#
+# Both failures are the same missing thing: a budget. 40k chars is roughly ten
+# thousand tokens, and about a dozen lessons -- past that, term overlap is
+# selecting from what is left rather than from what is relevant, and the header
+# already tells the model the SessionStart title index is the authority on what
+# exists. Spending the budget is not an error and says so.
+SESSION_CEILING_CHARS = 40000
 MIN_TERM_LEN = 4
 
 # Engineering intent. Deliberately NOT "every prompt": this costs real tokens on
@@ -118,32 +133,64 @@ def _seen_path(session_id):
 
 
 def load_seen(session_id):
-    # NO SESSION ID, NO DEDUPE. The first version fell back to a single
-    # "nosession" key, which is a GLOBAL record shared by every caller that
-    # omits the field -- so a second run saw the first run's lessons as already
-    # injected and stayed silent. Found by this file's own suite going 7/8 then
-    # 5/8 on identical input: a dedupe scoped wider than a session makes the
-    # thing it dedupes disappear.
+    """(already-injected ids, chars spent so far) for this session.
+
+    NO SESSION ID, NO DEDUPE AND NO BUDGET. The first version fell back to a
+    single "nosession" key, which is a GLOBAL record shared by every caller that
+    omits the field -- so a second run saw the first run's lessons as already
+    injected and stayed silent. Found by this file's own suite going 7/8 then
+    5/8 on identical input: a dedupe scoped wider than a session makes the thing
+    it dedupes disappear.
+
+    Reads the legacy list shape too, so a record written by the previous version
+    does not read as corrupt and reset a live session's budget to zero.
+    """
     path = _seen_path(session_id)
     if path is None:
-        return set()
+        return set(), 0
     try:
-        return set(json.loads(path.read_text()))
+        raw = json.loads(path.read_text())
+        if isinstance(raw, list):          # the shape before the budget existed
+            return set(raw), 0
+        return set(raw.get("ids") or []), int(raw.get("chars") or 0)
     except Exception:
         # No record, unreadable record, corrupt record: all mean "inject". This
         # fails OPEN on purpose. The failure mode of a broken dedupe must be a
         # repeated injection, never a silent nothing -- the whole point of this
         # hook is that the words reach the model.
-        return set()
+        return set(), 0
 
 
-def save_seen(session_id, ids):
+def save_seen(session_id, ids, chars):
     p = _seen_path(session_id)
     if p is None:
         return
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(sorted(ids)))
+        p.write_text(json.dumps({"ids": sorted(ids), "chars": int(chars)}))
+        _prune(p.parent)
+    except OSError:
+        pass
+
+
+def _prune(d, max_age_seconds=48 * 3600):
+    """Drop records older than two days. Nothing else prunes this directory.
+
+    Codex nit, PR #277: 31 files accumulated in two minutes of testing, and no
+    pruner existed anywhere in the repo. A session's record is worthless once
+    that session is over, and the temp dir is not somebody else's problem just
+    because it is outside the repo. Best-effort and silent: a failed prune must
+    never cost an injection.
+    """
+    import time
+    cutoff = time.time() - max_age_seconds
+    try:
+        for f in d.glob("*.json"):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except OSError:
+                pass
     except OSError:
         pass
 
@@ -230,6 +277,11 @@ def main():
         payload = json.load(sys.stdin)
     except Exception:
         return 0
+    if not isinstance(payload, dict):
+        # `4`, `"x"` and `[]` are all valid JSON and none of them has .get.
+        # The docstring promises exit 0 and no output on any error; without this
+        # they exited 1 with an AttributeError traceback (Codex nit, PR #277).
+        return 0
     prompt = payload.get("prompt") or ""
     if not prompt.strip() or not TRIGGER_RE.search(prompt):
         return 0
@@ -266,7 +318,13 @@ def main():
     # has already been shown this lesson's TEXT in this session, and that stays
     # true even when a later prompt would have ranked it differently.
     session_id = payload.get("session_id") or ""
-    seen = load_seen(session_id)
+    seen, spent = load_seen(session_id)
+    if session_id and spent >= SESSION_CEILING_CHARS:
+        # Budget spent. Silent by design: the SessionStart title index is still
+        # there and is the authority on what exists, which the payload header
+        # says every time. Continuing past here is how three relevant lessons
+        # become a hundred and fifty irrelevant ones.
+        return 0
     ranked = rank(lessons, terms(prompt))
     picked = [r for r in ranked if r[1] not in seen][:TOP_K]
     if not picked:
@@ -296,7 +354,7 @@ def main():
     # of the session -- the dedupe would have caused the silent miss the header
     # warns about.
     emitted = {lid for _, lid, _, _ in picked[:len(parts) - 1]}
-    save_seen(session_id, seen | emitted)
+    save_seen(session_id, seen | emitted, spent + used)
 
     sys.stdout.write(json.dumps(
         {"hookSpecificOutput": {"additionalContext": "".join(parts)}}))
