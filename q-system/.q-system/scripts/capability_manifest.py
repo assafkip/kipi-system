@@ -239,6 +239,44 @@ def _canon(entry):
     return json.dumps(entry, sort_keys=True)
 
 
+import contextlib
+import fcntl
+
+
+@contextlib.contextmanager
+def _fragment_lock(root):
+    """Serialise the read-decide-write across processes AND threads.
+
+    add_delta reads a fragment, decides whether it still holds the base version,
+    and writes. Nothing held the file between those three steps, so two replays
+    that passed the check at the same moment both wrote and both returned clean,
+    losing one declaration silently. Reproduced 5 of 5 with real threads and real
+    files (Codex major, PR #288).
+
+    Narrowing the window is not a fix, it is a rarer bug. The lock is what makes
+    the check mean anything, and it has to cover the READ as well as the write:
+    a lock taken just before writing still lets both readers see the base
+    version first.
+
+    OUTSIDE the fragment directory. The first version put the lock file inside
+    it, and the assembler reads that tree, so the lock itself became a stray
+    entry and turned the replayed repo RED. Caught immediately by the existing
+    `replay: the replayed repo is GREEN` case.
+
+    One lock for the whole fragment directory rather than per file. Two replays
+    of the SAME declaration are the race; this is a manual rebase tool run
+    occasionally, so the simpler thing that cannot be subtly wrong wins.
+    """
+    d = fragment_dir(root)
+    d.parent.mkdir(parents=True, exist_ok=True)
+    with open(d.parent / ".add-delta.lock", "w") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _read_fragment(path):
     """The declaration currently on disk at `path`, or None if there is none."""
     try:
@@ -280,6 +318,11 @@ def add_delta(root, base, head, errors=None):
                 which case it is, and a check that cannot read must not pass.
       REMOVAL   key only in base            -> reported, never acted on.
     """
+    with _fragment_lock(root):
+        return _add_delta_locked(root, base, head, errors)
+
+
+def _add_delta_locked(root, base, head, errors=None):
     written, removed, conflicted = [], [], []
     for section in LIST_SECTIONS:
         base_by, head_by = {}, {}
