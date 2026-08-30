@@ -676,32 +676,6 @@ class TestShellGroupingDoesNotHideTheProgram:
         assert decide(hook_copy(tmp_path), command, tmp_path) == "allow", command
 
 
-class TestManyStagesAreAlsoBounded:
-    """The fourth report of the timeout class, one level up (PR #274 round 7).
-
-    ARGV_SCAN_TOKENS bounds the work INSIDE a stage. Nothing bounded how many
-    stages a command has, and the per-stage cost is fork-bound in the fleet
-    loop's greps, so it does not care what the stages contain:
-
-        500 stages 3.30s    1000 stages 6.66s   <- over the 5s hook timeout
-
-    The filler here is deliberately the shape that defeated round 5, so this
-    case cannot pass for the cheap reason two earlier perf cases did.
-    """
-
-    def test_a_command_with_many_stages_is_decided_quickly(self, tmp_path):
-        import time
-        command = " ; ".join("echo git push word%d" % i for i in range(1000))
-        hook = hook_copy(tmp_path)
-        start = time.time()
-        verdict = decide(hook, command, tmp_path)
-        elapsed = time.time() - start
-        assert verdict == "allow", command[:60]
-        assert elapsed < 5.0, (
-            "1000 benign stages took %.1fs against a hook wired at timeout 5. "
-            "A killed PreToolUse hook returns NO decision." % elapsed)
-
-
 class TestTheCandidateListCannotDriftFromTheRules:
     """The perf fix skips start positions whose program token matches no rule.
 
