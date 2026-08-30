@@ -1,0 +1,11 @@
+{"skill":"fable-escalation","fired_marker":"fable-escalate","cases":[
+ {"prompt":"I already told you twice to fix the timeout, why do you keep changing the retry count instead","should_trigger":true},
+ {"prompt":"that's wrong. no. that is the second time you gave me the same broken diff for this file","should_trigger":true},
+ {"prompt":"the hook is wired, I can see the filename in settings.json, so the guard is live right","should_trigger":true},
+ {"prompt":"there are two reasonable ways to structure this migration and no data telling us which is better. pick one","should_trigger":true},
+ {"prompt":"every test is green but the producer reads CLAUDE_SESSION_ID and the consumer reads the stdin payload","should_trigger":true},
+ {"prompt":"add a docstring to this function","should_trigger":false},
+ {"prompt":"what does VOLUME_CEILING default to","should_trigger":false},
+ {"prompt":"rename the variable retry_count to attempt_count in this one file","should_trigger":false},
+ {"prompt":"summarize what changed in the last commit","should_trigger":false}
+]}

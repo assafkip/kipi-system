@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/instance-fact-inventory.py",
+ "reason": "built for prd-skeleton-data-containment and never wired; its only references are that PRD's specs and its own test",
+ "spillover_id": "sp-0f773063"
+}

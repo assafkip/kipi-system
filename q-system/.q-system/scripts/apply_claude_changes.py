@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """apply-claude-changes engine: land agent-authored edits inside .claude/ without
-any human reading a diff, and without a path that can weaken enforcement.
+any human reading a diff, and without a MECHANICALLY DETECTABLE path that can
+weaken enforcement -- which means REMOVAL, never meaning.
+
+Read that line no wider than it is written. Text that leaves every enforcement
+point intact and appends a paragraph mooting it is accepted at exit 0, on
+purpose and with a decision behind it: see APPEND-NEGATION IS ACCEPTED at the
+end of this docstring before treating this tool as a semantic gate.
 
 WHY THIS SHAPE (measured 2026-08-01, do not "simplify" any of it away):
 
@@ -74,15 +80,102 @@ its line count passes. Marker placement is checked at heading granularity only:
 moving it between two headings of the same file is invisible here. That is the
 deliberate trade: a ratchet that judged prose would refuse the honest
 corrections this op exists to enable.
+
+APPEND-NEGATION IS ACCEPTED, DELIBERATELY (ASK-293, decided 2026-08-03). This is
+the sharpest instance of the residue above and it has a decision, not an
+oversight. Keep every censused line byte-identical and APPEND a paragraph saying
+the rules above are retired, and the tool applies it at exit 0: nothing is
+removed, no marker moves, no route dies, the line count GROWS. The census is
+membership-only by construction, so it cannot see it. Reproducer:
+scripts/test/ask293-append-negation-repro.sh. Pinned by 16a-16d in the suite.
+
+  Why not a negation-phrase detector. Built and measured, not reasoned about
+  (scripts/test/ask293-decision-evidence.sh). An 11-phrase list refuses the
+  literal payload and applies a paraphrase carrying none of its vocabulary while
+  saying the same thing. The guard matches vocabulary; the attacker picks the
+  vocabulary. This is the token-check class this repo has already shipped and
+  holed twice (the #68 census, the unbounded exec-ref pattern).
+
+  Why not a cap on append position. Also built and measured. Refusing text after
+  a rule's last substantive line refuses the literal payload and the paraphrase,
+  and then the SAME sentence anchored on the H1 lands ABOVE the rules it moots --
+  a strictly stronger position for the reader. Position is a proxy for authority
+  and the top of a document is not the weaker end.
+
+  Why not a body digest with an opt-in field. A field the PROPOSAL declares is
+  worth nothing here: point 3 above says there is no privileged caller, so the
+  proposer is the threat model, and a self-declared `intent` is exactly the
+  `disables_enforcement: true` smuggle that ALLOWED_PROPOSAL_KEYS exists to
+  refuse, wearing a permitted name. A digest pinned in a file this tool cannot
+  write IS a real defense -- and its cost is a second actor on EVERY rule edit,
+  which is the diff review the founder rejected (point 1) and the additive-only
+  paralysis ASK-289 existed to end. It buys back the bottleneck to close a hole
+  the honest edits share a door with.
+
+  What the acceptance rests on. Semantic negation is not mechanically separable
+  from honest clarification -- both are text added to a rule that changes how a
+  reader weighs the text around it. Every guard that claims otherwise is
+  matching a proxy (words, position), and a proxy the attacker controls is
+  decoration that reads as coverage. The residual risk is real and is stated
+  here rather than papered over: rules fan out to every instance from HEAD via
+  kipi update's `git archive`, and the only gate on that path is
+  propagation-leak-gate.py, which scans for secrets and never reads meaning. The
+  narrowing that does exist is incidental, not a defense: this engine writes the
+  WORKING TREE, kipi update propagates HEAD, so a negation has to be committed
+  before it fans out, and the commit-msg gate checks for an issue id, not intent.
+
+  What would change the decision. A defense that refuses ALL THREE payloads in
+  the evidence script (literal, paraphrased, hoisted) without refusing the
+  clarifying append in case 16d. Cases 16a-16c go red together the moment such a
+  guard lands, which is the point: they make the next change deliberate rather
+  than silent.
 """
+import contextlib
+import importlib.util
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+
+CAPABILITY_FRAGMENT_DIR = os.path.join("q-system", ".q-system", "capability")
+
+
+def _capability_manifest():
+    """Locate the fragment assembler beside this engine, or return None.
+
+    SOFT on purpose. This file's own suite mutation-tests the engine by copying
+    it to a TEMPDIR and running the copy (`mutate` writes $T/mutant_*.py), so a
+    module-level `import capability_manifest` resolved against __file__'s
+    directory raised ModuleNotFoundError there and killed 13 mutation cases at
+    import time -- every one of them reported as "mutant did not write", which
+    reads as a non-load-bearing test rather than a broken harness.
+
+    Absence degrades to "no declared tests", which is exactly what the file read
+    this replaced did when the manifest was missing. It is not a silent hole:
+    capability-gate.py imports the same module HARD, so a real disappearance is
+    RED on the next gate run, not quietly tolerated here.
+    """
+    for base in (os.path.dirname(os.path.abspath(__file__)),
+                 os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "q-system", ".q-system", "scripts")):
+        mod_path = os.path.join(base, "capability_manifest.py")
+        if not os.path.isfile(mod_path):
+            continue
+        spec = importlib.util.spec_from_file_location("capability_manifest",
+                                                      mod_path)
+        mod = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(mod)
+        except Exception:
+            return None
+        return mod
+    return None
+
 
 SCHEMA_VERSION = 1
 
@@ -715,6 +808,49 @@ def _rule_marks(rules_dir):
     return token_marks, line_marks
 
 
+# The `.claude/` entries census() reads. The staging copy carries these and
+# nothing else.
+#
+# WHY THIS IS AN ALLOWLIST AND NOT AN IGNORE LIST (ASK-1118). The staging copy
+# used to be a full `copytree` of `.claude/`, which is fine for a repo's config
+# tree and makes the tool unusable on the tree that matters most: `~/.claude` is
+# 3.8G on this machine (`projects/` alone is 2.4G of transcripts) against 3.5Gi
+# free on the only volume, so `--root $HOME` died with 128 x [Errno 28] before it
+# read a single line. The one gate an agent must never hand-edit --
+# `~/.claude/hooks/destructive-op-deny.sh` -- therefore had no sanctioned repair
+# path at all, which is the failure this repo is least able to afford: it means
+# the repo cannot fix its own guards.
+#
+# An ignore list fails OPEN. A future census member reading something inside a
+# newly-ignored directory would read as ABSENT in the copy, the ratchet would
+# count zero and wave a removal through. An allowlist fails the same way on its
+# own, which is why it is not on its own: `main` proves the copy census-EQUAL to
+# the live tree on every run before trusting a census taken on it, so a member
+# this tuple does not carry becomes a refusal instead of a blind spot.
+CENSUS_CLAUDE_INPUTS = ("settings.json", "rules", "agents", "output-styles")
+
+
+def stage_census_copy(root, copy_root):
+    """Copy the `.claude/` entries census() reads into copy_root. Nothing else.
+
+    Symlinks are copied AS links, never followed, for the same reason
+    claude-integrity-tripwire.py measures a watched symlink by where it points:
+    following one turns a copy into an arbitrary-read primitive.
+    """
+    src_base = os.path.join(root, ".claude")
+    dst_base = os.path.join(copy_root, ".claude")
+    os.makedirs(dst_base)
+    for name in CENSUS_CLAUDE_INPUTS:
+        src = os.path.join(src_base, name)
+        dst = os.path.join(dst_base, name)
+        if os.path.islink(src):
+            os.symlink(os.readlink(src), dst)
+        elif os.path.isdir(src):
+            shutil.copytree(src, dst, symlinks=True)
+        elif os.path.isfile(src):
+            shutil.copy2(src, dst)
+
+
 def census(root):
     """Count the live enforcement points. Enforcement may only grow."""
     c = {}
@@ -734,17 +870,18 @@ def census(root):
     c["agents"] = _dir_names(os.path.join(root, ".claude", "agents"))
     c["output_styles"] = _dir_names(os.path.join(root, ".claude", "output-styles"))
 
-    manifest = os.path.join(root, "q-system", ".q-system", "capability-manifest.json")
+    # The manifest is assembled from q-system/.q-system/capability/ -- one JSON
+    # fragment per declaration, so two branches declaring two tests write two
+    # files instead of colliding on one array. `load` records problems into the
+    # list it is handed and never raises: this census is a ratchet input, and a
+    # single malformed fragment must not crash the tool that would let you fix
+    # it (the file read it replaced swallowed ValueError for the same reason).
     tests = set()
-    if os.path.isfile(manifest):
-        try:
-            with open(manifest) as fh:
-                data = json.load(fh)
-            for entry in data.get("expected_tests") or []:
-                if isinstance(entry, dict) and "path" in entry:
-                    tests.add(entry["path"])
-        except ValueError:
-            pass
+    capmod = _capability_manifest()
+    data = (capmod.load(root, []) if capmod else None) or {}
+    for entry in data.get("expected_tests") or []:
+        if isinstance(entry, dict) and "path" in entry:
+            tests.add(entry["path"])
     c["manifest_tests"] = tests
     return c
 
@@ -1033,19 +1170,37 @@ def main(argv):
     try:
         copy_root = os.path.join(tmp, "root")
         os.makedirs(copy_root)
-        shutil.copytree(os.path.join(root, ".claude"), os.path.join(copy_root, ".claude"), symlinks=True)
-        manifest_rel = os.path.join("q-system", ".q-system", "capability-manifest.json")
+        stage_census_copy(root, copy_root)
+
+        # The manifest is a DIRECTORY now, not a file -- one JSON fragment per
+        # declaration (#263). Copying only the old single file left the copy
+        # tree with an empty manifest census, so every declared test read as
+        # "would disappear" and the ratchet refused every proposal.
+        manifest_rel = CAPABILITY_FRAGMENT_DIR
         src_manifest = os.path.join(root, manifest_rel)
-        if os.path.isfile(src_manifest):
-            os.makedirs(os.path.dirname(os.path.join(copy_root, manifest_rel)), exist_ok=True)
-            shutil.copy2(src_manifest, os.path.join(copy_root, manifest_rel))
+        if os.path.isdir(src_manifest):
+            shutil.copytree(src_manifest, os.path.join(copy_root, manifest_rel))
+
+        # The scoped copy is PROVEN census-equal to the live tree, never assumed
+        # (ASK-1118). Taken BEFORE the staged content lands, because after that
+        # the two trees are SUPPOSED to differ and the comparison would say
+        # nothing. If CENSUS_CLAUDE_INPUTS ever stops carrying something census()
+        # reads, that member reads as absent on the copy side, the two censuses
+        # disagree here, and the run refuses -- instead of the ratchet counting
+        # zero for a category and waving a removal through. This is the check
+        # that makes an allowlist safe; deleting it re-opens the hole.
+        before_census = census(root)
+        if census(copy_root) != before_census:
+            raise Refusal(
+                "staging copy is not census-equivalent to the live tree: "
+                "CENSUS_CLAUDE_INPUTS does not carry everything census() reads")
+
         for rel, content in staged.items():
             dest = os.path.join(copy_root, rel)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "w") as fh:
                 fh.write(content)
 
-        before_census = census(root)
         after_census = census(copy_root)
         ratchet_check(before_census, after_census)
         log.append("ratchet ok: hooks %d->%d, rules %d->%d, rule-marks %d->%d, deny %d->%d" % (
@@ -1089,41 +1244,225 @@ def main(argv):
     #             observed half-written (replace is atomic within a filesystem).
     #   per-run:  ANY exception restores every target that has a backup, not just
     #             the ones already written, since the in-flight file may be torn.
-    try:
-        for rel in sorted(staged):
-            full = os.path.join(root, rel)
-            os.makedirs(os.path.dirname(full), exist_ok=True)
-            tmp_path = full + ".claude-changes.tmp"
-            with open(tmp_path, "w") as fh:
-                fh.write(staged[rel])
-            os.replace(tmp_path, full)
-            written.append(rel)
-    except (OSError, IOError) as exc:
-        for rel in sorted(staged):
-            leftover = os.path.join(root, rel) + ".claude-changes.tmp"
-            if os.path.isfile(leftover):
-                os.remove(leftover)
-        restore(root, backup_dir, sorted(staged))
-        log.append("write failed after %d of %d file(s): %s" % (len(written), len(staged), exc))
-        log.append("AUTO-REVERTED from %s" % backup_dir)
-        return emit("REVERTED %s: write failed on %s, %d file(s) restored, no partial apply"
-                    % (slug, _snip(str(exc)), len(staged)), log, root, 3)
-    log.append("wrote: %s" % ", ".join(written))
+    # THE WHOLE WRITE->REGISTER SEQUENCE HOLDS THE TRIPWIRE'S BASELINE LOCK
+    # (review finding, PR #85 round 3). Writing and registering are two steps, so
+    # a PostToolUse `--enforce` firing between them saw this applier's write as
+    # unsanctioned drift and reverted it -- while this function went on to print
+    # OK. The sanctioned write path silently losing its own change is the same
+    # outage class as the round-1 scar below, one race narrower. Measured 3/3
+    # losses before this lock, 0/3 after (probe_round4_findings phase 3).
+    with tripwire_lock(root, log):
+        try:
+            for rel in sorted(staged):
+                full = os.path.join(root, rel)
+                os.makedirs(os.path.dirname(full), exist_ok=True)
+                # Read BEFORE the replace: os.replace swaps the inode, so the
+                # old file's mode is gone the moment it lands (ASK-1118).
+                prior_mode = (stat.S_IMODE(os.stat(full).st_mode)
+                              if os.path.isfile(full) else None)
+                tmp_path = full + ".claude-changes.tmp"
+                with open(tmp_path, "w") as fh:
+                    fh.write(staged[rel])
+                os.replace(tmp_path, full)
+                restore_exec_wiring(root, rel, full, prior_mode, log)
+                written.append(rel)
+        except (OSError, IOError) as exc:
+            for rel in sorted(staged):
+                leftover = os.path.join(root, rel) + ".claude-changes.tmp"
+                if os.path.isfile(leftover):
+                    os.remove(leftover)
+            restore(root, backup_dir, sorted(staged))
+            log.append("write failed after %d of %d file(s): %s" % (len(written), len(staged), exc))
+            log.append("AUTO-REVERTED from %s" % backup_dir)
+            return emit("REVERTED %s: write failed on %s, %d file(s) restored, no partial apply"
+                        % (slug, _snip(str(exc)), len(staged)), log, root, 3)
+        log.append("wrote: %s" % ", ".join(written))
 
-    # ---- L3 gates AFTER, auto-revert on any regression.
-    gates_after = run_gates(root)
-    log.append("gates after: %s" % _fmt_gates(gates_after))
-    bad = gate_regression(gates_before, gates_after)
-    if bad:
-        restore(root, backup_dir, written)
-        log.append("AUTO-REVERTED from %s" % backup_dir)
-        return emit("REVERTED %s: gate %r regressed pass->fail, %d file(s) restored"
-                    % (slug, bad, len(written)), log, root, 3)
+        # ---- L3 gates AFTER, auto-revert on any regression.
+        gates_after = run_gates(root)
+        log.append("gates after: %s" % _fmt_gates(gates_after))
+        bad = gate_regression(gates_before, gates_after)
+        if bad:
+            restore(root, backup_dir, written)
+            log.append("AUTO-REVERTED from %s" % backup_dir)
+            return emit("REVERTED %s: gate %r regressed pass->fail, %d file(s) restored"
+                        % (slug, bad, len(written)), log, root, 3)
 
-    return emit("OK applied %s: %d edit(s), %d file(s), hooks %d->%d, gates held"
+        registered = register_with_tripwire(root, written, log)
+
+    return emit("OK applied %s: %d edit(s), %d file(s), hooks %d->%d, gates held%s"
                 % (slug, len(prop["edits"]), len(written),
-                   len(before_census["hooks"]), len(after_census["hooks"])),
+                   len(before_census["hooks"]), len(after_census["hooks"]), registered),
                 log, root, 0)
+
+
+def _tripwire_module(root):
+    """Import the tripwire as a module so the lock has exactly ONE definition.
+    A second copy of the flock dance here would drift from the original, and two
+    locks that disagree about their file name are no lock at all."""
+    path = os.path.join(root, "q-system", ".q-system", "scripts",
+                        "claude-integrity-tripwire.py")
+    if not os.path.isfile(path):
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("claude_integrity_tripwire", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod if hasattr(mod, "baseline_lock") else None
+    except Exception:
+        return None
+
+
+@contextlib.contextmanager
+def tripwire_lock(root, log):
+    """Hold the tripwire's baseline lock across this apply's write AND register.
+
+    Without it the two steps are separately serialized and the gap between them
+    is the race: a PostToolUse `--enforce` firing there reverts the write this
+    applier is about to sanction, and the applier still reports OK.
+
+    The child `--register` process cannot inherit a flock (it is per open file
+    description), so it would block forever on a lock its own parent owns. The
+    handoff is therefore explicit: set the tripwire's own LOCK_HELD_ENV for the
+    duration, restore the prior value after. A tree with no tripwire adopted
+    proceeds unserialized rather than refusing to apply.
+    """
+    mod = _tripwire_module(root)
+    if mod is None:
+        log.append("tripwire lock unavailable; apply proceeds unserialized")
+        yield
+        return
+    prior = os.environ.get(mod.LOCK_HELD_ENV)
+    with mod.baseline_lock(root):
+        os.environ[mod.LOCK_HELD_ENV] = "1"
+        try:
+            yield
+        finally:
+            if prior is None:
+                os.environ.pop(mod.LOCK_HELD_ENV, None)
+            else:
+                os.environ[mod.LOCK_HELD_ENV] = prior
+
+
+def register_with_tripwire(root, written, log):
+    """Record this apply's .claude/ writes as sanctioned content (ASK-291).
+
+    SCAR, observed live 2026-08-03 15:22Z, one tool call after the tripwire was
+    armed: this applier wrote .claude/settings.json, exited OK, and the very next
+    PostToolUse hook run saw the arming itself as unsanctioned drift and reverted
+    it --
+
+        SECURITY: unsanctioned .claude/ change -- 1 modified ... | reverted 1
+
+    -- leaving the runtime unarmed while settings-template.json (unwatched) kept
+    the change, i.e. exactly the split state settings-template-sync-check calls
+    red. This applier IS the sanctioned write path; a Layer 2 that reverts it
+    turns the one legitimate route into an outage, and an outage on the safe
+    route is how a gate gets switched off.
+
+    The tripwire already exposed the fix (`--register PATH...`, its own docstring
+    calls it "the sanctioned-apply hook"). Nothing called it. Same defect as
+    kipi update's, fixed the same way: whoever writes .claude/ through a reviewed
+    path re-records what it wrote.
+
+    Scoped to what THIS run wrote, never a blanket --baseline: a full re-baseline
+    would also absorb any unrelated drift sitting in the tree at that moment,
+    which is the blinding version of this fix.
+    """
+    claude_paths = [rel for rel in written
+                    if canonical_rel(rel).startswith(".claude" + os.sep)]
+    if not claude_paths:
+        return ""
+    tripwire = os.path.join(root, "q-system", ".q-system", "scripts",
+                            "claude-integrity-tripwire.py")
+    if not os.path.isfile(tripwire):
+        return ""  # tripwire not adopted here; nothing to keep in sync
+    try:
+        out = subprocess.run(
+            # --register is nargs="*", so it MUST come last: any flag placed
+            # after it terminates the path list and argparse then rejects the
+            # paths as unrecognized positionals. Caught by phase 5 of
+            # probe_apply_on_copy.sh, which reported the register as FAILED.
+            [sys.executable, tripwire, "--root", root, "--quiet", "--register"]
+            + claude_paths,
+            capture_output=True, text=True, timeout=60,
+            env=dict(os.environ, KIPI_NOTIFY="/usr/bin/true"))
+        if out.returncode != 0:
+            log.append("tripwire register FAILED rc=%d: %s" % (out.returncode, out.stderr.strip()))
+            return ", tripwire register FAILED (next tool call may revert this)"
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.append("tripwire register error: %s" % exc)
+        return ", tripwire register FAILED (next tool call may revert this)"
+    log.append("tripwire: registered %d sanctioned path(s)" % len(claude_paths))
+    return ", tripwire updated"
+
+
+def _wired_hook_commands(root):
+    """Every hook command string wired in <root>/.claude/settings.json."""
+    p = os.path.join(root, ".claude", "settings.json")
+    if not os.path.isfile(p):
+        return []
+    try:
+        with open(p) as fh:
+            settings = json.load(fh)
+    except ValueError:
+        return []
+    return [entry.split("|", 2)[2] for entry in _hook_entries(settings)]
+
+
+def _is_wired_hook_script(root, full):
+    """True when `full` is the script a wired hook command actually runs.
+
+    Substring match against the path as written and with $HOME collapsed,
+    because a hook is wired as a literal path. This only ever recognises a file
+    the tree ALREADY runs as a hook, and this tool cannot add one (settings.json
+    needs the settings-template pair, which does not exist outside a repo), so
+    the reachable set is exactly the hooks wired today.
+    """
+    home = os.path.expanduser("~")
+    spellings = {full, os.path.realpath(full)}
+    for spelling in list(spellings):
+        if spelling.startswith(home + os.sep):
+            spellings.add("~" + spelling[len(home):])
+            spellings.add("$HOME" + spelling[len(home):])
+    return any(any(s in command for s in spellings)
+               for command in _wired_hook_commands(root))
+
+
+def restore_exec_wiring(root, rel, full, prior_mode, log):
+    """Put back the mode os.replace dropped, and never leave a wired hook
+    non-executable.
+
+    SCAR (ASK-1118, 2026-08-29). This tool wrote
+    ~/.claude/hooks/destructive-op-deny.sh through the atomic temp-then-replace
+    path above. The temp file is created at the default 0644, so the replace
+    landed a file that had LOST its execute bit -- and a hook is wired in
+    settings.json as a BARE PATH, so a non-executable script simply does not
+    run. The one gate an agent must never be able to disarm was off, on the
+    whole machine, and nothing said so: no hook error, no audit line, no gate
+    went red. It was found by a canary file that got deleted AFTER the content
+    fix was already correct in the file.
+
+    Mode is wiring, not metadata. Two rules, in order:
+      1. restore whatever mode the file carried before this run touched it;
+      2. if the tree's settings.json wires this exact path as a hook, it ends
+         the run executable whatever rule 1 restored.
+    Rule 2 is scoped to files the tree already runs, so it grants nothing new,
+    and the execute bit is only added where the matching read bit is set.
+    """
+    if prior_mode is not None:
+        os.chmod(full, prior_mode)
+    if not _is_wired_hook_script(root, full):
+        return
+    mode = stat.S_IMODE(os.stat(full).st_mode)
+    wanted = mode | stat.S_IXUSR
+    for read_bit, exec_bit in ((stat.S_IRGRP, stat.S_IXGRP),
+                               (stat.S_IROTH, stat.S_IXOTH)):
+        if mode & read_bit:
+            wanted |= exec_bit
+    if wanted != mode:
+        os.chmod(full, wanted)
+        log.append("restored the execute bit on wired hook %s" % rel)
 
 
 def restore(root, backup_dir, written):

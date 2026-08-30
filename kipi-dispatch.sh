@@ -43,7 +43,18 @@ REPO="${KIPI_REPO:-/Users/assafkipnis/projects/kipi-system}"
 # prepending to PATH instead, which adds no knob to the shipped code.
 PREFLIGHT="$REPO/q-system/.q-system/scripts/repo-preflight.sh"
 LOG="$HOME/.config/kipi/dispatch.log"
-MAX_CONCURRENT="${KIPI_DISPATCH_MAX:-2}"
+# THE GLOBAL CAP IS NOW A SPEND CEILING, NOT THE CONFLICT GUARD (ASK-804).
+# One-run-per-repo is enforced structurally in the selection loop below, so this
+# number no longer decides whether two agents can collide on a file -- it decides
+# how many `claude -p` pairs may be in flight at once.
+#
+# 3 IS DERIVED, NOT PICKED. Measured from instance-registry.json 2026-08-14:
+# exactly two instances carry dispatch.enabled true, plus the home repo this
+# script runs out of, which the selection loop treats as its own dispatchable
+# target. Three repos, one run each, so a fourth slot could never be filled by a
+# conflict-free pick anyway. Raising it past the number of dispatchable repos
+# buys nothing and only loosens the spend bound.
+MAX_CONCURRENT="${KIPI_DISPATCH_MAX:-3}"
 MAX_ROUNDS="${KIPI_DISPATCH_ROUNDS:-3}"
 NOTIFY="${KIPI_NOTIFY:-$REPO/q-system/.q-system/scripts/slack-notify.sh}"
 # Founder decision 2026-08-01: the converge/worker claude -p calls inherit this;
@@ -305,7 +316,163 @@ stale_check || exit 0
 
 # `pgrep -c` exits 1 with no match, which under `set -e` would look like failure
 # and under a bare assignment yields an empty string. Force a number.
-live_converges() { pgrep -f "converge.sh --issue" 2>/dev/null | grep -c . || true; }
+# COUNTS DISPATCH'S OWN RE-REVIEW CHILDREN -- AND ONLY ITS OWN.
+#
+# A dispatch does not always launch a converge. On a reviewer redrive it launches
+#   bash .../pr-review-agent.sh <PR> --issue ASK-nnn --post
+# which a `converge.sh --issue` pattern never matched, so those children spent a
+# `claude -p` pair outside the cap.
+#
+# WIDENING THE pgrep PATTERN TO MATCH THEM WAS WRONG, AND IT STOPPED DISPATCH IN
+# PRODUCTION. Measured 2026-08-14T23:46:15Z, first tick after arming:
+#   skip: 5 converge run(s) live, cap 3
+# There were ZERO converges. All five were pr-review-agent processes belonging to
+# an interactive session reviewing PRs by hand. pgrep reads the machine-wide
+# process table and cannot tell dispatch's child from anyone else's, so ordinary
+# review work became a hard block on the whole loop. That is strictly worse than
+# the under-count it replaced: the old bug leaked some spend, this one dispatched
+# nothing at all.
+#
+# So the two populations are counted from the two sources that can actually
+# identify them:
+#   - CONVERGES via pgrep, because a hand-run converge SHOULD count -- it is real
+#     work in a repo and the cap exists to bound exactly that;
+#   - RE-REVIEWS via the ledger, because only dispatch writes it, so a row there
+#     is by construction a child dispatch launched.
+# A third party's review is in neither, which is the point.
+LIVE_PATTERN="${KIPI_DISPATCH_LIVE_PATTERN:-converge\.sh --issue}"
+
+live_converges() {
+  local conv rr pid issue repo
+  conv="$(pgrep -f "$LIVE_PATTERN" 2>/dev/null | grep -c . || true)"
+  conv="${conv:-0}"
+  rr=0
+  if [ -f "$LIVE_LEDGER" ]; then
+    while IFS=$'\t' read -r pid issue repo; do
+      case "$pid" in ''|*[!0-9]*) continue ;; esac
+      kill -0 "$pid" 2>/dev/null || continue
+      # Only the re-review shape; a dispatch-launched converge is already in conv.
+      ps -p "$pid" -o args= 2>/dev/null | grep -q 'pr-review-agent' || continue
+      ps -p "$pid" -o args= 2>/dev/null | grep -qE -- "--issue $issue([[:space:]]|\$)" || continue
+      rr=$((rr + 1))
+    done < "$LIVE_LEDGER"
+  fi
+  printf '%s' "$((conv + rr))"
+}
+
+# --- PER-REPO CONCURRENCY (sp-e45251f7) --------------------------------------
+# WHY THE GLOBAL CAP WAS 1, AND WHY THIS IS THE HONEST WAY TO RAISE IT.
+#
+# com.kipi.dispatch pinned KIPI_DISPATCH_MAX=1 with a written precondition:
+# "Raise this only once dispatch is file-disjointness aware." That was correct.
+# The dispatcher picks by READINESS and has no idea which files an issue touches,
+# so two concurrent runs IN ONE REPO can land on the same file -- observed
+# 2026-07-28, ASK-223 editing the same linear-worker.sh region as the live
+# ASK-222. Unattended, that yields conflicted PRs, which is worse than half the
+# throughput.
+#
+# TWO RUNS IN DIFFERENT REPOS CANNOT CONFLICT. They share no working tree, no
+# branch namespace and no file. So the conflict argument -- the whole reason the
+# cap was 1 -- says nothing about cross-repo concurrency. This makes the rule
+# structural instead of numeric: the GLOBAL cap becomes a spend ceiling, and
+# a BUSY-REPO PREFERENCE is applied where a repo is chosen: a repo with a live
+# run is deprioritised, and taken only when it is the only candidate.
+#
+# NOT A GUARANTEE, AND THE WORDING MATTERS (codex major, PR #163 r2). An earlier
+# version of this comment said "at most ONE live run per repo is enforced", which
+# the fallback below plainly does not do. A safety claim in a comment that the
+# code does not keep is how the next person reasons themselves into raising the
+# cap. What is enforced is the preference plus the GLOBAL cap; same-repo overlap
+# is possible when only one repo is dispatchable, and that is ASK-811.
+#
+# This deliberately does NOT unlock same-repo concurrency. File-disjointness is
+# still unbuilt, and sp-f3a2ad81 shows why the obvious version is not enough:
+# capability-manifest.json WAS a magnet file every test-adding issue appended
+# to (resolved 2026-08-29: it is a per-declaration fragment directory now),
+# so a naive disjointness rule would serialize the whole board on it anyway
+# (sp-4caf5d7b measured 19 of 22 conflicting PRs conflicting on that one file).
+# Cross-repo is the slice that is safe TODAY, on the conflict argument's own terms.
+#
+# WHY A LEDGER AND NOT pgrep. The converge argv is `./kipi converge --issue N`;
+# the target repo crosses as the KIPI_TARGET_REPO env var, which converge.sh
+# inherits. Environment is not in the process command line, so pgrep can count
+# live runs but CANNOT attribute one to a repo. Recording the pair at launch is
+# what makes the question answerable at all.
+LIVE_LEDGER="${KIPI_DISPATCH_LIVE_LEDGER:-$HOME/.config/kipi/dispatch-live.tsv}"
+
+# A pid alone is not proof: pids are reused, and a recycled pid pointing at some
+# unrelated process would hold a repo hostage forever. Both halves must agree --
+# the pid is alive AND that pid is still the converge for that issue.
+live_repos() {
+  [ -f "$LIVE_LEDGER" ] || return 0
+  local pid issue repo
+  while IFS=$'\t' read -r pid issue repo; do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    [ -n "$repo" ] || continue
+    kill -0 "$pid" 2>/dev/null || continue
+    # BOUNDED, because ASK-10 is a prefix of ASK-100 (codex minor, PR #163).
+    # A plain substring match let a live ASK-100 converge satisfy the identity
+    # check for a dead ASK-10 row, marking the wrong repo busy until the real
+    # process exited. The id must be followed by whitespace or end-of-line.
+    ps -p "$pid" -o args= 2>/dev/null | grep -qE -- "--issue $issue([[:space:]]|\$)" || continue
+    printf '%s\n' "$repo"
+  done < "$LIVE_LEDGER"
+}
+
+# Append-only at launch; compacted here so a long-lived box does not grow the
+# file without bound. Compaction rewrites via temp+rename so a reader never sees
+# a torn file.
+# A FAILED LEDGER WRITE IS NOT A SUCCESSFUL ONE (codex major, PR #163 r1).
+#
+# This ended in `|| true`, which is the right instinct for a notifier and the
+# wrong one here. An unwritten row means the run is invisible to live_repos(),
+# which silently DISABLES the per-repo exclusion for that repo -- the guard is
+# off and nothing says so. Read-only .config, a full disk, or a bad permission
+# all produce exactly that, quietly.
+#
+# It still must not take dispatch down: the run has already been launched and
+# killing the script here would strand it. So the write is checked, and a failure
+# is made LOUD instead of fatal.
+#
+# AND THE PAGE SAYS WHAT IS ACTUALLY TRUE (codex major, PR #163 r2). An earlier
+# version of this text promised "dispatch will refuse to enter any repo until it
+# finishes", which was true of the unattributed-run HALT that used to sit in the
+# selection loop. That halt was removed -- it broke test-dispatch-liveness 6a and
+# turned one hand-run converge into a fleet-wide stall -- and the promise was left
+# behind. A page that describes a guard which no longer exists is worse than no
+# page: it is read at the exact moment someone is deciding whether to act. The
+# honest consequence is that the repo may be picked again.
+record_live_run() {
+  local pid="$1" issue="$2" repo="$3"
+  mkdir -p "$(dirname "$LIVE_LEDGER")" 2>/dev/null || true
+  if ! printf '%s\t%s\t%s\n' "$pid" "$issue" "$repo" >> "$LIVE_LEDGER" 2>/dev/null; then
+    say "LEDGER WRITE FAILED for $issue in $repo ($LIVE_LEDGER): this run is unattributed, so the busy-repo preference cannot see it and that repo may be picked again"
+    page "kipi dispatch: could not record a live run to $LIVE_LEDGER. The busy-repo preference is blind to $issue, so its repo can be picked again and two agents may land on the same files. Do: check permissions and free space on that path."
+    return 1
+  fi
+}
+
+compact_live_ledger() {
+  [ -f "$LIVE_LEDGER" ] || return 0
+  local tmp pid issue repo
+  tmp="$(mktemp "${LIVE_LEDGER}.XXXXXX")" || return 0
+  while IFS=$'\t' read -r pid issue repo; do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    kill -0 "$pid" 2>/dev/null || continue
+    # BOUNDED, because ASK-10 is a prefix of ASK-100 (codex minor, PR #163).
+    # A plain substring match let a live ASK-100 converge satisfy the identity
+    # check for a dead ASK-10 row, marking the wrong repo busy until the real
+    # process exited. The id must be followed by whitespace or end-of-line.
+    ps -p "$pid" -o args= 2>/dev/null | grep -qE -- "--issue $issue([[:space:]]|\$)" || continue
+    printf '%s\t%s\t%s\n' "$pid" "$issue" "$repo" >> "$tmp"
+  done < "$LIVE_LEDGER"
+  mv -f "$tmp" "$LIVE_LEDGER" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+}
+# --- END PER-REPO CONCURRENCY ---
+# The marker is load-bearing, not decoration. test-dispatch-per-repo-concurrency.sh
+# cuts this block out of THIS file and sources it, so the test exercises shipped
+# code instead of a copy that can drift green. Delimiting on `^}$` would have
+# ended the cut at the first function; it silently captured one of three.
 
 # --- FLEET SELECTION (finding-8 and finding-9) ----------------------------
 # 18 ready owner:sana issues sit across 14 projects and no worker can pick them up,
@@ -404,9 +571,15 @@ cursor_get() {
 #
 # OPT-IN IS DEFAULT OFF, AND STRICTLY SO: a row joins the fleet only when it
 # carries dispatch.enabled === true (JSON boolean). A missing dispatch key, false,
-# the string "true", or 1 all mean NO. Every one of the 23 rows in the shipped
-# registry is therefore off, which is the correct state to ship the dangerous piece
-# in -- the fleet stays exactly as it is today until a human opts a repo in by hand.
+# the string "true", or 1 all mean NO.
+#
+# The registry shipped with all 23 rows off, which was the correct state to ship the
+# dangerous piece in. Two are now on: ktlyst and interview-coach (ASK-754). Stating
+# the count here was a comment that had to be edited the first time anyone used the
+# feature it describes, so it names the opted-in rows instead -- and the authority is
+# the registry, not this line. Opt-in is still consent and never safety:
+# repo-preflight.sh is what decides whether entering one is safe NOW, and it refuses
+# a client engagement repo and the engagement root even when the row says true.
 fleet_candidates() {
   local registry="${KIPI_DISPATCH_REGISTRY:-$REPO/instance-registry.json}"
   printf '%s\t%s\t%s\n' "$(basename "$REPO")" "$REPO" ""
@@ -464,19 +637,39 @@ rotation() {
 # carries on past it; a repo that is permanently unsafe must not stall the repos
 # behind it forever.
 pick_list() {
-  local name path remote
+  local name path remote out client_n=0 client_names=""
   while IFS=$'\t' read -r name path remote; do
     [ -n "$name" ] || continue
     if [ "$path" = "$REPO" ]; then
       printf '%s\t%s\n' "$name" "$path"
       continue
     fi
-    if bash "$PREFLIGHT" "$path" "$remote" >/dev/null 2>&1; then
+    # STDOUT IS CAPTURED, NOT DISCARDED (ASK-741). This used to be
+    # `>/dev/null 2>&1`, so the preflight named every failed check on stdout and
+    # the dispatcher threw all of it away, logging only "REFUSED". A founder
+    # reading that line cannot tell a client-repo refusal from an expired token
+    # from an empty queue -- and "silent refusal is indistinguishable from nothing
+    # to do" is the exact failure this issue exists to remove. The reason the gate
+    # gives is the only thing that makes the gate legible.
+    if out="$(bash "$PREFLIGHT" "$path" "$remote" 2>&1)"; then
       printf '%s\t%s\n' "$name" "$path"
     else
-      say "preflight REFUSED $name ($path); not entering it"
+      say "preflight REFUSED $name ($path); not entering it -- $(printf '%s' "$out" | grep '^FAIL' | tr '\n' ';' | sed 's/;$//')"
+      case "$out" in
+        *"FAIL client-repo:"*)
+          client_n=$((client_n + 1))
+          client_names="${client_names:+$client_names, }$name" ;;
+      esac
     fi
   done < <(rotation)
+  # COUNTED, AND IN THE DIGEST'S OWN SHAPE. daily-linear-digest.py's third section
+  # ("tried, could not be worked") scrapes this log for `N thing(s) <what>` lines,
+  # so a refusal phrased any other way is invisible in the one surface the founder
+  # actually reads once a day. Emitted only when it happened: a client repo being
+  # refused is a real event, and a "0 refused" line every 15 minutes is the
+  # cry-wolf noise that gets a channel muted.
+  [ "$client_n" -gt 0 ] && say "$client_n repo(s) REFUSED as client engagement repos (unattended dispatch is not allowed there, even when opted in): $client_names"
+  return 0
 }
 
 # --- LIVENESS BEACON: page when the heartbeat COMES BACK ------------------
@@ -677,16 +870,99 @@ if [ "${KIPI_DISPATCH_PICK_DRY:-0}" = "1" ]; then
   exit 0
 fi
 
+# FLEET POSTURE, STATED EVERY RUN (ASK-729). The HOLD line below only prints when
+# a non-home repo actually wins a turn, and `dispatch.enabled` is true for 0 of the
+# 23 registry rows -- so the rotation reaches nothing, the HOLD never fires, and
+# the whole cross-repo gap has been invisible in this log since 2026-08-01. That
+# silence is what let sp-09c61b20 stay the record for 13 days while the code had
+# already moved past it.
+#
+# Both numbers, unconditionally, even when they are zero: "0 opted in" is the
+# single most useful fact about why no client repo is being served, and a line
+# that only appears when something happens cannot say it.
+FLEET_TOTAL="$(python3 -c 'import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: sys.exit(0)
+print(len(d.get("instances",[])))' "${KIPI_DISPATCH_REGISTRY:-$REPO/instance-registry.json}" 2>/dev/null)"
+FLEET_OPTED="$(fleet_candidates 2>/dev/null | awk -F'\t' -v h="$REPO" 'NF && $2 != h' | wc -l | tr -d ' ')"
+# NO "HELD" COUNT ANY MORE. This line was written while kipi-dispatch.sh:726 held
+# every non-home target on unfinished cross-repo gh scoping, and it counted each
+# such pick as held. ASK-738 (#146) scoped every gh call and DROPPED that hold, so
+# the same number now describes repos the run ENTERS. Reporting them as held while
+# entering them is worse than the silence this line replaced: a reader would take
+# it as the reason nothing ran. Caught by the Codex review of #143 after the two
+# branches merged; each was correct alone.
+#
+# The opted-in count survives because it is the useful half: "0 of 25 opted in" is
+# still the single most useful fact about why no other repo is being served, and a
+# line that only appears when something happens cannot say it.
+say "dispatch: ${FLEET_OPTED:-0} of ${FLEET_TOTAL:-0} registered repo(s) opted in for cross-repo dispatch"
+
 TARGET_NAME=""
 TARGET_PATH=""
+# THE PER-REPO RULE IS ENFORCED HERE, WHERE A REPO IS CHOSEN (sp-e45251f7).
+# A repo that already has a live converge is SKIPPED rather than aborting the
+# cycle, so the rotation continues to the next repo instead of the whole fleet
+# stalling behind one busy one -- skipping is the entire throughput win, and an
+# early `exit 0` here would leave the cap at 1 by another name.
+LIVE_REPOS="$(live_repos)"
+
+# ONE LIVE RUN PER REPO, for every run DISPATCH LAUNCHES. Founder decision
+# 2026-08-15 [USER-DIRECTED], recorded in ASK-811: asked whether two agents may
+# work one repo at once, the answer was "no, only one per repo".
+#
+# NOT THE WORD "ABSOLUTE", AND THE PRECISION IS THE POINT (codex major, PR #178).
+# This binds what dispatch itself starts, because the ledger is the only thing
+# that can say WHICH REPO a run is in. A converge started by hand carries its
+# target repo in an env var; environment is not in the process table, so no
+# pgrep can attribute it, and such a run does not mark its repo busy. A failed
+# ledger write leaves the same hole, loudly -- record_live_run pages when it
+# cannot record. Calling the rule absolute would promise a guarantee the
+# mechanism cannot keep, which is how someone later raises the cap believing
+# they are safe. The residual is ASK-824.
+#
+# A repo with a live run is SKIPPED and the rotation continues to the next repo.
+# If every dispatchable repo is busy, this cycle enters nothing and the next
+# 900s tick tries again. There is no fallback; that is the point of the decision.
+#
+# WHAT THIS COSTS, STATED PLAINLY. test-ci-redrive 14g was written because a live
+# converge used to starve the ready queue: a redrive offered the already-live
+# issue, NEXT was overwritten with it, and the issue that WAS dispatchable was
+# thrown away every heartbeat. Under this rule a busy repo genuinely does defer
+# its other ready issues. The difference from that scar is that the deferral is
+# now DELIBERATE, LOGGED, and costs no budget -- the issue stays ready and is
+# picked up as soon as the repo frees. 14g is updated to assert exactly that,
+# because the protection worth keeping is "nothing is silently consumed", not
+# "something is always dispatched".
+#
+# The conflict risk this removes is the reason: the dispatcher picks by readiness
+# and has NO idea which files an issue touches, so two runs in one repo can edit
+# the same region (observed 2026-07-28, ASK-223 vs live ASK-222) and hand back
+# conflicting PRs for a human to untangle.
 while IFS=$'\t' read -r PNAME PPATH; do
   [ -n "$PNAME" ] || continue
+  # Exact line match. A substring test would let ~/projects/foo suppress
+  # ~/projects/foo-bar, silently starving a repo nothing is running in.
+  if [ -n "$LIVE_REPOS" ] && printf '%s\n' "$LIVE_REPOS" | grep -qxF -- "$PPATH"; then
+    say "skip $PNAME: a converge run is already live in $PPATH (one run per repo, ASK-811)"
+    continue
+  fi
   TARGET_NAME="$PNAME"
   TARGET_PATH="$PPATH"
   break
 done <<PICKEOF
 $PICKS
 PICKEOF
+
+if [ -z "$TARGET_NAME" ]; then
+  say "no free repo this cycle: every dispatchable repo already has a live run; nothing entered, nothing claimed, retrying next tick"
+fi
+# --- END REPO SELECTION ---
+# The marker is load-bearing. The test cuts this whole block out and sources it,
+# and a cut that ended at PICKEOF stopped one line before the fallback -- so the
+# suite tested a selection loop that could never fall back and reported the
+# missing behaviour as a failure of the code rather than of the cut. That is the
+# fourth incomplete-extract in this file's history; delimit explicitly.
 
 if [ -z "$TARGET_NAME" ]; then
   say "no dispatchable repo this cycle"
@@ -703,28 +979,51 @@ fi
 # which forwards only its own arguments to the worker.
 WORK_ARGS=""
 if [ "$TARGET_PATH" != "$REPO" ]; then
-  # HELD: cleared preflight, and STILL not entered (sp-9421b9b7).
+  # THE HOLD IS GONE (ASK-738). It was here from sp-9421b9b7 because `gh`
+  # resolves its repository from the process cwd and ignores every path variable
+  # this script carries -- and line 205 cd's into the home checkout and stays. So
+  # `git -C` worked in the target while `gh` answered about kipi-system. Three
+  # paths did that; the worst, pr-review-agent.sh, would review the wrong repo's
+  # code and post `kipi/reviewer-approved` on it, so the wrong-repo failure ran
+  # through the gate itself. All three are now scoped with -R from ONE derivation
+  # (repo-slug-lib.sh), and review artifacts are keyed by repo AND PR so two
+  # repos' PR #42 cannot consume each other's records.
   #
-  # The worker's --repo argument redirects `git -C`, and that part is built and
-  # tested. It does NOT redirect `gh`, and codex found three paths that silently
-  # bind to the home checkout anyway:
-  #   1. the worker's existing-PR lookup, merge-state/head queries and reviewer
-  #      invocation are unqualified `gh` calls;
-  #   2. converge.sh runs pr_for_branch / pr_head_sha from the home checkout, so
-  #      after the worker opens a PR in the target it finds none and stops;
-  #   3. pr-review-agent.sh derives its repo from its own location, so an external
-  #      PR number resolves against the HOME repo -- and if that number exists,
-  #      the wrong code is reviewed and gets the verdict.
-  # Review artifacts are also keyed pr-<number>.* in one shared state dir, so two
-  # repos with PR #42 consume each other's records.
+  # WHAT PROTECTS CLIENT REPOS IS NOT THIS LINE, AND NEVER WAS. Founder,
+  # 2026-08-13: "no. unattended agents should not reach a client repo." That is
+  # enforced by repo-preflight.sh check 0, which #144 landed and which pick_list
+  # above runs BEFORE any repo reaches this point -- a client-shaped path is
+  # refused there even when its registry row says dispatch.enabled: true. This
+  # HOLD was a blunt stand-in for a gate that did not exist yet. It exists now,
+  # upstream, and it fails closed. Removing a stand-in is only safe because the
+  # real thing landed first; if check 0 is ever weakened, that is the line that
+  # matters, not this one.
   #
-  # Any one of those is enough to act on the wrong repository, and two of the
-  # three files are outside this issue's contract. A gate that lets an agent into
-  # a client repo on that footing is worse than the gap it closes, so entry stays
-  # shut until the gh-scoping issue lands. The rotation still OFFERS the turn and
-  # advances past it, so nothing starves behind this.
-  say "HOLD $TARGET_NAME: cleared preflight, but cross-repo gh scoping is unfinished (sp-9421b9b7); not entering"
-  exit 0
+  # TWO CARRIERS FOR ONE FACT, as the comment above says: --repo is the explicit
+  # argument the worker parses, and KIPI_TARGET_REPO crosses the converge.sh
+  # boundary by inheritance because converge forwards only its own arguments.
+  # Setting one and not the other dispatches the work to the target and then
+  # converges against home, which is the defect wearing the other hat.
+  #
+  # WHITESPACE **AND GLOB CHARACTERS** REFUSE. $WORK_ARGS is spliced unquoted into
+  # `bash ./kipi work` below (it must be, so that empty expands to nothing), which
+  # means the shell does BOTH word-splitting and pathname expansion on it:
+  #   - a space splits the path into two wrong arguments, and the worker runs
+  #     against the home repo with a garbage --repo;
+  #   - a `*`, `?` or `[` is glob-expanded against the CWD, so --repo silently
+  #     becomes some unrelated matching path, or the literal path if nothing
+  #     matches. Either way the agent is aimed somewhere nobody chose.
+  # The glob half was missed on the first cut and caught by codex on PR #146
+  # (sp-b2f0627e). Loud refusal beats a silent wrong target: this decides which
+  # repository an unattended self-merging loop enters.
+  case "$TARGET_PATH" in
+    *[[:space:]]*|*'*'*|*'?'*|*'['*|*']'*)
+      say "REFUSING $TARGET_NAME: its registry path contains whitespace or a glob character ($TARGET_PATH), which cannot be passed safely as an unquoted --repo; not entering"
+      exit 0 ;;
+  esac
+  WORK_ARGS="--repo $TARGET_PATH"
+  export KIPI_TARGET_REPO="$TARGET_PATH"
+  say "entering $TARGET_NAME ($TARGET_PATH) -- cleared preflight, gh scoped to its own remote"
 fi
 # Consume the turn HERE, not after a successful dispatch. A repo that took its turn
 # and had nothing ready must still hand the next turn on, or an idle home repo
@@ -831,7 +1130,7 @@ NEXT="$(printf '%s' "$WORK_OUT" | grep -oE '\[dry\] would work ASK-[0-9]+' | gre
 # paying for, and only the Python side can also suppress the founder page (that
 # page is finding 1). Its stderr lands in this log, so the skip is visible here.
 REDRIVE="$REPO/q-system/.q-system/scripts/ci-redrive.py"
-REDRIVE_NEXT=""; REDRIVE_SIG=""; REDRIVE_SHA=""
+REDRIVE_NEXT=""; REDRIVE_SIG=""; REDRIVE_SHA=""; REDRIVE_BRANCH=""; REDRIVE_PR=""
 if [ -f "$REDRIVE" ]; then
   REDRIVE_LINE="$(KIPI_NOTIFY="$NOTIFY" python3 "$REDRIVE" \
                     --repo-dir "$TARGET_PATH" redrive 2>>"$LOG")"
@@ -840,10 +1139,60 @@ if [ -f "$REDRIVE" ]; then
     REDRIVE_NEXT="$(printf '%s' "$REDRIVE_LINE" | cut -f1)"
     REDRIVE_SIG="$(printf '%s' "$REDRIVE_LINE" | cut -f2)"
     REDRIVE_SHA="$(printf '%s' "$REDRIVE_LINE" | cut -f3)"
+    # The branch the selected PR is ACTUALLY on, as the selector read it, and the
+    # PR number so the refusal can name it. Kept for the same reason REVIEW_BRANCH
+    # is kept below: branch_guard must not ask gh a question it has just been
+    # answered -- see its FROM THE SELECTOR note. Empty when ci-redrive could not
+    # confirm the head lives in this repo, which branch_guard reads as "no earlier
+    # observation" and handles on its fail-open arm.
+    REDRIVE_BRANCH="$(printf '%s' "$REDRIVE_LINE" | cut -f4)"
+    REDRIVE_PR="$(printf '%s' "$REDRIVE_LINE" | cut -f5)"
     say "red-CI redrive: handing $REDRIVE_NEXT back to its agent ahead of the fresh pick${NEXT:+ ($NEXT waits)}"
     NEXT="$REDRIVE_NEXT"
   elif [ "$REDRIVE_RC" = "2" ]; then
     say "red-CI redrive: gh could not read PR state in $TARGET_NAME -- fresh pick stands, nothing claimed"
+  fi
+fi
+
+# --- REVIEWER REDRIVE (ASK-352) ----------------------------------------------
+# The OTHER half of a failing status check. ci-redrive.py above deliberately
+# EXCLUDES the reviewer's own verdict slots from what it calls red CI, and that
+# exclusion stays -- including them re-dispatched PRs whose build was passing
+# (PR #73, live). But its docstring justified the exclusion by asserting the
+# reviewer's Linear comment already caused a re-dispatch, and no such selector
+# existed. Six PRs sat parked ~29 hours. This is that selector: one consumer per
+# event, neither reading the other's slot.
+#
+# AFTER ci-redrive AND ONLY IF IT PASSED. Red CI outranks a reviewer refusal --
+# a build that does not compile makes any review of it moot, and re-reviewing a
+# broken tree spends a codex call to be told the build is broken.
+#
+# TWO ACTIONS, NOT ONE, and this is the whole reason the selector exists. A
+# `failure` on the reviewer slot means either "someone objected" (rework: the
+# review is the spec) or "nobody read the code" (re-review: there is no spec).
+# The verdict does not separate them -- PR #80 recorded REQUEST CHANGES from the
+# prompt's own echoed grading rule. review-redrive.py reads the `usable` key
+# pr-review-agent.sh now persists, and answers with the action.
+#
+# rc 2 (gh could not answer) leaves the fresh pick standing, same as above.
+REVIEW_REDRIVE="$REPO/q-system/.q-system/scripts/review-redrive.py"
+REVIEW_ACTION=""; REVIEW_NEXT=""; REVIEW_PR=""; REVIEW_SHA=""; REVIEW_BRANCH=""
+if [ -z "$REDRIVE_NEXT" ] && [ -f "$REVIEW_REDRIVE" ]; then
+  REVIEW_LINE="$(python3 "$REVIEW_REDRIVE" --repo-dir "$TARGET_PATH" select 2>>"$LOG")"
+  REVIEW_RC=$?
+  if [ "$REVIEW_RC" = "0" ] && [ -n "$REVIEW_LINE" ]; then
+    REVIEW_ACTION="$(printf '%s' "$REVIEW_LINE" | cut -f1)"
+    REVIEW_NEXT="$(printf '%s' "$REVIEW_LINE" | cut -f2)"
+    REVIEW_PR="$(printf '%s' "$REVIEW_LINE" | cut -f3)"
+    REVIEW_SHA="$(printf '%s' "$REVIEW_LINE" | cut -f4)"
+    # The branch the selected PR is ACTUALLY on, as the selector read it. Kept so
+    # branch_guard below need not ask gh the same question a second time -- see
+    # its FROM THE SELECTOR note.
+    REVIEW_BRANCH="$(printf '%s' "$REVIEW_LINE" | cut -f5)"
+    say "reviewer redrive: $REVIEW_NEXT PR #$REVIEW_PR needs $REVIEW_ACTION${NEXT:+ ($NEXT waits)}"
+    NEXT="$REVIEW_NEXT"
+  elif [ "$REVIEW_RC" = "2" ]; then
+    say "reviewer redrive: gh could not read PR state in $TARGET_NAME -- fresh pick stands, nothing claimed"
   fi
 fi
 
@@ -879,6 +1228,121 @@ if [[ "$PS_SNAPSHOT" =~ converge\.sh\ --issue\ ${NEXT}([[:space:]]|$) ]]; then
   exit 0
 fi
 
+# --- BRANCH TARGET GUARD (ASK-358) -------------------------------------------
+# Refuse to dispatch an issue whose work would land on a branch no open PR is on.
+#
+# THE DEFECT, measured on ASK-352. converge.sh:83 derives the branch it commits
+# into from the issue id alone -- BRANCH="sana/$(lower ISSUE)". ASK-352 has TWO
+# branches: sana/ask-352 backs PR #90, which is CLOSED, and sana/ask-352-clean
+# backs PR #91, which is open. So a rework dispatched for ASK-352 commits onto
+# the closed branch, where no PR and no reviewer will ever read it. Silent
+# wrong-target is worse than a stall: the work looks done and is unreachable.
+#
+# ON EVERY DISPATCH, NOT ONLY THE REDRIVE ONES. The reviewer redrive is where the
+# defect was found, but the naming rule is converge's and converge runs for the
+# fresh pick too -- a guard on one path is this repo's recurring class (two
+# paths, one guarded). One chokepoint, above every selector, before the attempt
+# is claimed: refusing after mark-dispatched would burn the PR's one attempt.
+#
+# IT REFUSES RATHER THAN RETARGETS. Retargeting means passing a branch through to
+# converge, and converge.sh is not in this change's scope; more to the point, a
+# dispatcher that silently rewrites where work lands is the same class of surprise
+# as the bug. The refusal names the branch, so the next move is a human's and it
+# is one line long.
+#
+# FAILS OPEN ON NOT KNOWING, closed on knowing -- the posture stale_check already
+# takes on a failed fetch. rc 2 (gh could not answer) and a missing resolver both
+# RUN: one gh outage must not halt the loop. rc 1 (no open PR) also runs, because
+# round one legitimately has no PR yet.
+#
+# IT GUARDS COMMITS, SO IT SKIPS THE ONE ACTION THAT MAKES NONE (PR #211 round 1,
+# MAJOR 1). A `re-review` runs pr-review-agent.sh against a PR NUMBER; converge's
+# branch rule never applies to it and it cannot land work anywhere. Refusing one
+# parks a PR overnight over a condition it structurally cannot cause -- and a
+# gate that blocks the harmless case is a gate that gets switched off. `rework`
+# and the fresh pick both become a converge, so both stay guarded.
+#
+# FROM THE SELECTOR, NOT FROM A SECOND QUERY (PR #211 round 1, MAJOR 3; extended
+# to the red-CI lane in round 3, MAJOR 2). When EITHER redrive picked this issue
+# it already READ the branch its PR is on, and asking gh again opens a window
+# between the two answers: PR #91 closing in between makes the second answer "no
+# open PR", the fail-open arm fires, and the work lands on precisely the branch
+# this guard exists to reject. The carried value is also the more correct
+# question -- it describes the PR whose one attempt is about to be spent, where a
+# fresh query describes the issue's board now. The fresh pick has no earlier
+# observation, so it still asks; so does a redrive whose selector could not
+# confirm the head lives in this repo, which arrives as an empty carried branch.
+# A REFUSAL NOBODY IS TOLD ABOUT IS A SILENT PARK (PR #211 round 2, MAJOR 2).
+# Every arm below used to end in `say`, which appends to dispatch.log and nothing
+# else. From outside, the guard doing its job was indistinguishable from the loop
+# having nothing to do: the same candidate refused every 15 minutes, the issue
+# never moving, and the queue starving behind it with nobody learning why.
+#
+# A branch mismatch and an ambiguous board are the two refusals here that CANNOT
+# SELF-HEAL -- both need a human to rename a branch, reopen a PR, or close a
+# stale one. That is what earns a page. The fail-open arms do not get one: they
+# RUN the dispatch, so there is no stall to report, and paging on a gh outage is
+# noise on top of an outage.
+#
+# page_once rather than page, because this code path fires on every beat while
+# the condition holds, and `founder-notifications.md` is explicit that repeating
+# "still waiting" each cycle is noise rather than a page. The dedupe (and its
+# 24h re-ping) already exists above and is what makes paging from a per-beat path
+# safe at all. Its matching page_clear runs on the healthy exit, or the marker
+# outlives its condition and swallows the NEXT park for the whole window.
+#
+# ONE VERDICT, THEN ONE ACTION. The arms compute a message and fall through to a
+# single exit, rather than each arm remembering to say AND page AND return. Six
+# return sites each owning three obligations is how the log-only refusal survived
+# round 1 in the first place.
+branch_guard() {
+  local expect actual rc key msg
+  # The producer's rule, mirrored. Drift here is silent, so the anti-drift check
+  # is the test asserting converge.sh still builds the branch this same way.
+  expect="sana/$(printf '%s' "$NEXT" | tr 'A-Z' 'a-z')"
+  key="branch-guard-$NEXT"
+  msg=""
+  if [ -n "$REDRIVE_NEXT" ] && [ "$NEXT" = "$REDRIVE_NEXT" ]; then
+    # THE RED-CI LANE READS ITS OWN OBSERVATION TOO (PR #211 round 3, MAJOR 2).
+    # Round 2 carried the branch for the reviewer redrive only. The red-CI
+    # selector read the branch and dropped it, so this lane fell through to the
+    # elif below and asked gh a SECOND time -- and that second answer is the
+    # fail-open one: if the PR closed between the two calls, `branch-for` says
+    # "no open PR", rc 1 runs the dispatch, and the work lands on the branch this
+    # guard exists to reject. Fail-open in the guard whose thesis is "refuse a
+    # dispatch that would land on a branch no open PR is on" is the PR
+    # contradicting itself.
+    #
+    # No `re-review` carve-out here: every red-CI hand-back becomes a converge,
+    # so converge's naming rule always applies to it.
+    if [ -n "$REDRIVE_BRANCH" ] && [ "$REDRIVE_BRANCH" != "$expect" ]; then
+      msg="skip $NEXT: its open PR #$REDRIVE_PR is on $REDRIVE_BRANCH, but converge would commit onto $expect -- work there reaches no PR and no reviewer. Rename the branch to $expect, or reopen the PR on it."
+    fi
+  elif [ -n "$REVIEW_ACTION" ] && [ "$NEXT" = "$REVIEW_NEXT" ]; then
+    if [ "$REVIEW_ACTION" != "re-review" ] && [ -n "$REVIEW_BRANCH" ] \
+       && [ "$REVIEW_BRANCH" != "$expect" ]; then
+      msg="skip $NEXT: its open PR #$REVIEW_PR is on $REVIEW_BRANCH, but converge would commit onto $expect -- work there reaches no PR and no reviewer. Rename the branch to $expect, or reopen the PR on it."
+    fi
+  elif [ -f "$REVIEW_REDRIVE" ]; then
+    actual="$(python3 "$REVIEW_REDRIVE" --repo-dir "$TARGET_PATH" \
+              branch-for --issue "$NEXT" 2>>"$LOG")"
+    rc=$?
+    case "$rc" in
+      0) [ "$actual" = "$expect" ] || msg="skip $NEXT: its open PR is on $actual, but converge would commit onto $expect -- work there reaches no PR and no reviewer. Rename the branch to $expect, or reopen the PR on it." ;;
+      3) msg="skip $NEXT: it maps to more than one live branch, so which one the work belongs on is a guess (see $LOG). Close the stale PR, or say which branch is current." ;;
+      *) ;;
+    esac
+  fi
+  if [ -z "$msg" ]; then
+    page_clear "$key"
+    return 0
+  fi
+  say "$msg"
+  page_once "$key" "kipi dispatch: $msg"
+  return 1
+}
+branch_guard || exit 0
+
 # --- RED-CI REDRIVE: MARK-DISPATCHED (ASK-295) -------------------------------
 # Past every guard that can still abort, and immediately before the launch. This
 # is where the PR's one machine attempt is spent, and the call is the atomic
@@ -889,6 +1353,21 @@ if [ -n "$REDRIVE_SIG" ] && [ "$NEXT" = "$REDRIVE_NEXT" ]; then
   if ! python3 "$REDRIVE" mark-dispatched --issue "$NEXT" \
        --signature "$REDRIVE_SIG" --head-sha "$REDRIVE_SHA" 2>>"$LOG"; then
     say "red-CI redrive: the attempt for $NEXT is already claimed -- not dispatching"
+    exit 0
+  fi
+fi
+
+# Same contract for the reviewer redrive (ASK-352): the OFFER above wrote
+# nothing, and THIS is the atomic claim. rc non-zero means another run owns it,
+# or the ledger could not be written -- the same answer either way, because
+# nothing was recorded so nothing may act as though it was. The cap is one
+# attempt per PR per action per HEAD SHA, so a PR that pushes a real fix is
+# eligible again while a re-review that keeps coming back phantom at the same sha
+# is not retried.
+if [ -n "$REVIEW_ACTION" ] && [ "$NEXT" = "$REVIEW_NEXT" ]; then
+  if ! python3 "$REVIEW_REDRIVE" mark-dispatched --issue "$NEXT" \
+       --action "$REVIEW_ACTION" --pr "$REVIEW_PR" --head-sha "$REVIEW_SHA" 2>>"$LOG"; then
+    say "reviewer redrive: the $REVIEW_ACTION attempt for $NEXT PR #$REVIEW_PR is already claimed -- not dispatching"
     exit 0
   fi
 fi
@@ -928,8 +1407,30 @@ CONVERGE_LOG="$HOME/.config/kipi/converge-$NEXT.log"
 printf '\n===== dispatch %s  %s  rounds=%s =====\n' \
   "$NEXT" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MAX_ROUNDS" >> "$CONVERGE_LOG"
 
+# WHAT THIS DISPATCH ACTUALLY RUNS (ASK-352). Converge for everything except a
+# reviewer redrive that asked for a RE-REVIEW, where the right action is another
+# review and not another rework round: the PR is parked because nobody read the
+# code, so there are no findings for a converge to work from and it would come
+# back to this same failing slot having spent a full round.
+#
+# --post is required and is the point. Without it the reviewer writes a verdict
+# record and never touches the commit status, so the slot that parked the PR
+# stays failing and the next heartbeat picks the same PR again -- a loop that
+# looks like progress. --invoker labels it dispatcher-driven (sp-53aad86f), so a
+# hand-run review can never pass as evidence the loop closed itself.
+#
+# ONE ARRAY, EXPANDED ONCE BELOW. The launch machinery underneath (setsid, the
+# pid capture, the liveness assert) is proven and is not duplicated per action;
+# only the argv differs.
+DISPATCH_ARGV=(./kipi converge --issue "$NEXT" --max-rounds "$MAX_ROUNDS")
+if [ "$REVIEW_ACTION" = "re-review" ] && [ "$NEXT" = "$REVIEW_NEXT" ]; then
+  DISPATCH_ARGV=(bash "$REPO/q-system/.q-system/scripts/pr-review-agent.sh" \
+                 "$REVIEW_PR" --issue "$NEXT" --post)
+  export KIPI_REVIEW_INVOKER="dispatcher"
+fi
+
 CHILD_PID="$(python3 - "$CONVERGE_LOG" \
-         ./kipi converge --issue "$NEXT" --max-rounds "$MAX_ROUNDS" <<'PY'
+         "${DISPATCH_ARGV[@]}" <<'PY'
 import subprocess, sys
 log_path, argv = sys.argv[1], sys.argv[2:]
 # Append, never truncate: a re-dispatch of the same issue must not erase the
@@ -943,6 +1444,18 @@ print(p.pid)
 PY
 )"
 RC=$?
+# RECORD BEFORE THE LIVENESS WAIT, NOT AFTER (sp-e45251f7). The assert below
+# watches the child for 10 seconds. Recording after it would leave a window in
+# which this repo has a live run that live_repos() cannot see, and a concurrent
+# tick landing in that window would pick the same repo -- rebuilding the very
+# same-file collision the per-repo rule exists to prevent. A row for a child that
+# dies immediately costs nothing: live_repos() drops it on the next read, because
+# the pid is gone.
+case "$CHILD_PID" in
+  ''|*[!0-9]*) : ;;
+  *) record_live_run "$CHILD_PID" "$NEXT" "${TARGET_PATH:-$REPO}" ;;
+esac
+compact_live_ledger
 if [ "$RC" -ne 0 ]; then
   # A launch that failed must NOT report success -- that is the same shape as
   # the bug above. The budget slot is already spent, so say so plainly.

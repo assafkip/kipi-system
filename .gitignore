@@ -13,6 +13,13 @@ security-remediation/
 Thumbs.db
 
 # Output (generated daily, don't commit)
+# ASK-605: the whole directory, not a list of extensions. auto-commit.py
+# declares q-system/output/ skip-because-gitignored; when that claim was
+# only true for *.html/*.json/*.log, a .md file there was invisible to the
+# hook AND blocked every fleet sync. Keep the negation for .gitkeep so the
+# directory survives a clone.
+q-system/output/**
+!q-system/output/.gitkeep
 q-system/output/*.html
 q-system/output/*.json
 q-system/output/*.log
@@ -75,6 +82,13 @@ __pycache__/
 *.pyo
 
 # prd-os runtime state (per plugins/prd-os/skills/prd-os/SKILL.md: never committed)
+#
+# pr-receipts/ is a MACHINE-LOCAL claim about a machine-local test run (Codex
+# major, PR #269 round 7). It is meaningless to anyone else -- it names a sha and
+# says "the floor was run here" -- and this fleet's unattended jobs commit with
+# `git add -A`, so an unignored receipt directory rides into the public repo and
+# then looks like a receipt everybody agreed to.
+.prd-os/pr-receipts/
 .claude/state/active-prd.json
 .claude/state/active-issue.json
 .claude/state/prdos-stop-gate-firings.json
@@ -102,9 +116,64 @@ q-system/output/.update-check-*
 q-system/output/capability-maps/
 .runs/
 
+# Lock files beside the prd-os ledgers. flock targets, recreated on every
+# resolve/reclassify, and they were standing untracked-and-unignored inside a
+# TRACKED directory. sp-a21cb27c predicted an unattended auto-commit would sweep
+# them in; measured 2026-08-14 that is false -- auto-commit.py's NEVER list
+# already refuses any .lock, so system_state_paths returns [] for both. What was
+# left was permanent noise in `git status`, which is its own cost: a status that
+# is never clean is a status nobody reads.
+.prd-os/*.lock
+.prd-os/.judgments.lock
+
+# THE STANZA BETWEEN THESE MARKERS IS SHIPPED TO EVERY INSTANCE (sp-097d2e23).
+# kipi-update-gitignore-block.py parses it out of this file and writes it into
+# each instance's root .gitignore as a managed block. Root .gitignore is not in
+# the updater's sync set, so until 2026-08-14 these rules existed only here --
+# and an instance that does not ignore these paths has git report them, which
+# hands them straight to auto-commit.py (q-system/.q-system/ classifies as
+# "chore", which the fleet sync commits unattended). Five of 22 instances had
+# already committed their own baseline or armed marker, the most recent that
+# same day. Add a path here and every instance gets it on the next update; the
+# writer refuses rather than guessing if these markers ever go missing.
+# >>> kipi-instance-local-stanza >>>
 # .claude/ integrity baseline is INSTANCE-LOCAL (ASK-282). Never commit it:
 # kipi update propagates the skeleton, but each instance regenerates
 # .claude/settings.json from settings-template.json, so a shared baseline can
 # never match and would Slack-page every instance daily.
 q-system/.q-system/claude-integrity-baseline.json
+q-system/.q-system/claude-integrity-baseline.json.lock
 q-system/output/claude-integrity/
+# The armed marker (ASK-291 round 11) is ignored for the SAME reason and it is
+# load-bearing that it stays that way: a committed marker propagates via kipi
+# update, so every fresh instance would claim prior arming, refuse to arm, and
+# Slack-page SECURITY on its first run -- the round-2 outage exactly.
+q-system/.q-system/.claude-integrity-armed
+# Daily update stamps. Pure updater exhaust, and the reason this line moved
+# into the shipped stanza: instances carry hundreds of them, many already
+# committed by the pre-ASK-498 generic-fallback sweep.
+q-system/output/.update-check-*
+# <<< kipi-instance-local-stanza <<<
+
+# PR-review scratch trees. 537 of these files were swept into the repo by an
+# unattended `chore: update project files` auto-commit (ec5efddf). Removing them
+# without ignoring the pattern just waits for the next sweep to re-add them.
+.pr*rev*/
+.review-scratch/
+.fable-wt/
+
+# Agent refusal sentinels. These are TRANSIENT and worktree-local: the agent
+# writes one, the worker reads it, labels the issue, and deletes it. Committing
+# one is a live defect, not clutter -- on merge it lands at the root of main, so
+# every worktree cut from main afterwards materializes it at checkout BEFORE any
+# agent runs. The worker then reads a sentinel it did not write and refuses an
+# unrelated issue, carrying the previous issue's reason text into that issue's
+# Linear comment and needs-scope label.
+#
+# Observed on PR #141 (ASK-700): a refusal was written here and swept in by
+# `git add -A`. The ignore is the fix rather than a review checklist -- a path
+# `git add -A` cannot stage cannot be committed by any future agent on any
+# future branch. Asserted by case 13 of test-worker-refusal.sh.
+.sana-needs-scope
+.sana-blocked-capability
+.codex-blocked-capability
