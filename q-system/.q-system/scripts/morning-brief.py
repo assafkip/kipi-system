@@ -219,24 +219,55 @@ def collect_mail(now: dt.datetime, runner=None):
 ASSIGNED_Q = """
 query {
   viewer {
-    assignedIssues(first: 100, filter: {state: {type: {nin: ["completed", "canceled"]}}}) {
-      nodes { identifier title state { name type } }
+    assignedIssues(first: 250, filter: {state: {type: {nin: ["completed", "canceled"]}}}) {
+      nodes { identifier title dueDate state { name type } labels { nodes { name } } }
     }
   }
 }
 """
 
+# The label the fleet already uses to say whose work an issue is. Not invented
+# here: 50 of the 72 open issues assigned to the founder carry it.
+SANA_LABEL = "owner:sana"
+FOUNDER_LABEL = "owner:assaf"
+
 
 def collect_owed(now: dt.datetime, qroot=None, graphql=None):
-    """(rows, error). TWO producers, and a failure in one must not erase the other.
+    """(rows, error). Leads with what is HIS; counts the rest without hiding it.
 
-    An earlier shape returned `([], error)` the moment Linear failed, which threw
-    away the open loops that had been read successfully. A section that discards
-    the half it HAS because the other half broke is a worse liar than one that
-    just says nothing: it reports a partial truth with no marker.
+    ## Why this is not a flat list of everything assigned to him
+
+    Measured 2026-08-30 against the live board, before choosing the shape:
+
+        72 open issues assigned to the founder
+        50 carry owner:sana        <- his engineer's queue, mis-assigned to him
+         1 carries owner:assaf
+        21 carry no owner label, and ~19 of those are engineering too
+         1 has a due date at all, overdue since 2026-08-10
+
+    A flat list renders Sana's queue as the founder's morning. The first live
+    run printed 15 engineering issues and "...and 57 more", which is a section
+    that costs attention and returns nothing.
+
+    ## Why not a due-date filter, which was the obvious pick
+
+    One issue in seventy-two has a due date. A "due today" tier would render
+    empty almost every morning: a guard that cannot fire reads as protection and
+    is not. So due-date is ONE of three lead signals, never the only one.
+
+    ## What the three tiers are
+
+    LEAD (things only he can do): open loops flagged needs_founder, issues
+    labelled owner:assaf, and issues due today or overdue.
+    TAIL: one counted line per remaining group, split by owner label so the
+    50-issue mis-assignment stays visible every morning instead of being
+    silently dropped. Counted, never hidden -- dropping them would make this
+    function lie by omission, which is the same defect as a silent zero.
     """
     qroot = Path(qroot) if qroot else QROOT
-    rows, errors = [], []
+    lead, errors = [], []
+    sana_count = other_count = 0
+    today = now.strftime("%Y-%m-%d")
 
     if graphql is None:
         try:
@@ -249,8 +280,18 @@ def collect_owed(now: dt.datetime, qroot=None, graphql=None):
             data = graphql(ASSIGNED_Q, {})
             nodes = ((data or {}).get("viewer") or {}).get("assignedIssues", {}).get("nodes") or []
             for n in nodes:
-                rows.append(f"{n.get('identifier')}  [{(n.get('state') or {}).get('name')}]  "
-                            f"{str(n.get('title', ''))[:80]}")
+                labels = {l.get("name") for l in ((n.get("labels") or {}).get("nodes") or [])}
+                due = n.get("dueDate")
+                ident = n.get("identifier")
+                title = str(n.get("title", ""))[:80]
+                if due and due <= today:
+                    lead.append(f"DUE {due}  {ident}  {title}")
+                elif FOUNDER_LABEL in labels:
+                    lead.append(f"{ident}  {title}")
+                elif SANA_LABEL in labels:
+                    sana_count += 1
+                else:
+                    other_count += 1
         except Exception as exc:  # noqa: BLE001
             errors.append(f"linear: {type(exc).__name__}: {str(exc)[:140]}")
 
@@ -266,10 +307,20 @@ def collect_owed(now: dt.datetime, qroot=None, graphql=None):
         else:
             for loop in loops:
                 if loop.get("status") == "open" and loop.get("needs_founder"):
-                    rows.append(f"loop {loop.get('id')}  {str(loop.get('title', ''))[:80]}")
+                    lead.append(f"loop {loop.get('id')}  {str(loop.get('title', ''))[:80]}")
     except Exception as exc:  # noqa: BLE001
         errors.append(f"loops: {type(exc).__name__}: {str(exc)[:120]}")
 
+    # The tail goes LAST and reads as a count, never as a task. It stays because
+    # 50 issues labelled owner:sana sitting on the founder's assignee is itself
+    # the finding; deleting the line would hide it the morning after it is fixed
+    # and every morning it is not.
+    rows = list(lead)
+    if sana_count:
+        rows.append(f"({sana_count} more assigned to you but labelled {SANA_LABEL} "
+                    f"-- Sana's queue, not yours)")
+    if other_count:
+        rows.append(f"({other_count} more assigned to you with no owner label)")
     return rows, ("; ".join(errors) if errors else None)
 
 

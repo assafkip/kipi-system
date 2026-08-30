@@ -328,8 +328,13 @@ def test_owed_lists_linear_and_loops_together(brief, tmp_path):
     (tmp_path / "memory").mkdir()
     (tmp_path / "memory" / "open-loops.json").write_text(json.dumps({"loops": [
         {"id": "L1", "title": "reply to Ally", "status": "open", "needs_founder": True}]}))
-    nodes = [{"identifier": "ASK-9", "title": "sign the SOW",
-              "state": {"name": "Todo", "type": "unstarted"}}]
+    # owner:assaf, because after the 2026-08-30 reshape an unlabelled issue is
+    # counted in the tail rather than listed. What this case still proves is the
+    # part that matters: BOTH producers reach the output in one call. The
+    # tail-vs-lead routing is covered by its own cases below.
+    nodes = [{"identifier": "ASK-9", "title": "sign the SOW", "dueDate": None,
+              "state": {"name": "Todo", "type": "unstarted"},
+              "labels": {"nodes": [{"name": "owner:assaf"}]}}]
     rows, error = brief.collect_owed(
         NOW, qroot=tmp_path,
         graphql=lambda q, v: {"viewer": {"assignedIssues": {"nodes": nodes}}})
@@ -473,3 +478,93 @@ def test_overnight_puts_failures_above_the_row_cap(brief):
     rendered = "\n".join(brief._section("Overnight jobs", rows, error))
     assert "com.kipi.bad" in rendered, "the failure fell below the row cap"
     assert "26 more paused on purpose" in rendered, "paused jobs vanished entirely"
+
+
+# --------------------------------------------------------------------------
+# "Owed today", second shape. Measured 2026-08-30 before choosing it:
+#   72 open issues assigned to the founder
+#   50 carry owner:sana, 1 carries owner:assaf, 21 carry no owner label
+#   1 has a due date at all (overdue since 2026-08-10)
+# A due-date filter alone would render one row today and zero most days: a
+# guard that cannot fire. A flat list renders his engineer's queue as his day.
+# So the section leads with what is HIS and keeps the rest as counted tail
+# lines -- visible, never hidden, never mistakable for an action.
+# --------------------------------------------------------------------------
+
+def _loops_at(tmp_path, loops):
+    (tmp_path / "memory").mkdir(exist_ok=True)
+    (tmp_path / "memory" / "open-loops.json").write_text(json.dumps({"loops": loops}))
+    return tmp_path
+
+
+def _issue(ident, title, labels=(), due=None, priority=0):
+    return {"identifier": ident, "title": title, "dueDate": due, "priority": priority,
+            "state": {"name": "Todo", "type": "unstarted"},
+            "labels": {"nodes": [{"name": n} for n in labels]}}
+
+
+def test_owed_leads_with_founder_owned_and_counts_the_rest(brief, tmp_path):
+    _loops_at(tmp_path, [])
+    nodes = [
+        _issue("ASK-1", "sign the SOW", labels=["owner:assaf"]),
+        _issue("ASK-2", "overdue thing", due="2026-08-10"),
+        _issue("ASK-3", "sana engineering a", labels=["owner:sana"]),
+        _issue("ASK-4", "sana engineering b", labels=["owner:sana"]),
+        _issue("ASK-5", "unlabelled engineering"),
+    ]
+    rows, error = brief.collect_owed(
+        NOW, qroot=tmp_path,
+        graphql=lambda q, v: {"viewer": {"assignedIssues": {"nodes": nodes}}})
+    assert error is None
+    body = "\n".join(rows)
+    assert "ASK-1" in body and "ASK-2" in body
+    # The tail is a COUNT, not five more rows competing for the 15-row cap.
+    assert "ASK-3" not in body and "ASK-4" not in body
+    assert "2 " in body and "owner:sana" in body, "Sana's count vanished instead of being counted"
+    assert "1 " in body, "the unlabelled remainder vanished"
+    # A counted tail must not read like something to do.
+    assert rows.index([r for r in rows if "ASK-1" in r][0]) < rows.index(
+        [r for r in rows if "owner:sana" in r][0])
+
+
+def test_owed_needs_founder_loops_are_in_the_lead_tier(brief, tmp_path):
+    _loops_at(tmp_path, [
+        {"id": "L1", "title": "reply to Ally", "status": "open", "needs_founder": True},
+        {"id": "L2", "title": "sana's", "status": "open", "needs_founder": False},
+    ])
+    rows, error = brief.collect_owed(
+        NOW, qroot=tmp_path,
+        graphql=lambda q, v: {"viewer": {"assignedIssues": {"nodes": []}}})
+    assert error is None
+    assert any("reply to Ally" in r for r in rows)
+    assert not any("sana's" in r for r in rows)
+
+
+def test_owed_all_sana_renders_a_real_empty_lead_tier(brief, tmp_path):
+    """Nothing owed by him is a legitimate answer and must not read as broken."""
+    _loops_at(tmp_path, [])
+    nodes = [_issue(f"ASK-{i}", "eng", labels=["owner:sana"]) for i in range(30)]
+    rows, error = brief.collect_owed(
+        NOW, qroot=tmp_path,
+        graphql=lambda q, v: {"viewer": {"assignedIssues": {"nodes": nodes}}})
+    assert error is None
+    body = "\n".join(rows)
+    assert "30 " in body and "owner:sana" in body
+    assert "COULD NOT READ" not in body
+
+
+def test_owed_still_separates_broken_from_empty_after_the_reshape(brief, tmp_path):
+    """The constraint that does not move, re-asserted against the new shape."""
+    _loops_at(tmp_path, [])
+
+    def boom(q, v):
+        raise RuntimeError("403 forbidden")
+
+    rows, error = brief.collect_owed(NOW, qroot=tmp_path, graphql=boom)
+    assert error and "403" in error
+    empty_rows, empty_error = brief.collect_owed(
+        NOW, qroot=tmp_path,
+        graphql=lambda q, v: {"viewer": {"assignedIssues": {"nodes": []}}})
+    assert empty_error is None
+    assert brief._section("Owed today", rows, error) != brief._section(
+        "Owed today", empty_rows, empty_error)
