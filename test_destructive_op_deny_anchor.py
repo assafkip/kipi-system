@@ -619,12 +619,23 @@ class TestTheScanIsNotQuadratic:
     # it stayed green at 0.35s while a git-dense document of the same length
     # took 8.43s and blew the hook timeout (Codex major, PR #274 round 5). A
     # perf case whose input avoids the expensive path is decoration.
-    @pytest.mark.parametrize("filler", ["git", "rm"])
+    # THE FILLER IS THE INSTRUMENT, and it has been wrong twice (Codex major,
+    # PR #274 rounds 5 and 6). Round 4 used plain words: no candidate token, so
+    # the filter skipped every position and it measured nothing. Round 5 used
+    # bare `git`: rejected by the subcommand pre-filter in one iteration, so it
+    # passed at 1.29s while `git push` prose took 8.28s. Each filler was picked
+    # to exercise the path the PREVIOUS fix added, and each time the real cost
+    # had moved. So the parameters below are the three shapes in order, and the
+    # `git push` one is the load-bearing case: it reaches the full rule at every
+    # candidate, which is the only input that can still be quadratic.
+    @pytest.mark.parametrize("filler", [["word", "text"], ["git", "word"],
+                                        ["git", "push"]])
     def test_a_long_benign_command_dense_in_candidates_is_decided_quickly(
             self, tmp_path, filler):
         import time
-        body = " ".join(filler if i % 4 == 0 else "word%d" % i
-                        for i in range(4000))
+        body = " ".join((filler[0] if i % 2 == 0 else filler[1])
+                        if (i // 2) % 2 == 0 else "w%d" % i
+                        for i in range(8000))
         command = "cat > /tmp/doc.md <<'EOF'\n%s\nEOF" % body
         hook = hook_copy(tmp_path)
         start = time.time()
@@ -632,10 +643,10 @@ class TestTheScanIsNotQuadratic:
         elapsed = time.time() - start
         assert verdict == "allow", "the filler heredoc should not be denied"
         assert elapsed < 5.0, (
-            "a 4000-word benign command carrying 1000 %r tokens took %.1fs. "
-            "The hook is wired at timeout 5, and a PreToolUse hook that is "
-            "killed returns NO decision -- so a real deletion buried in a long "
-            "enough command is never refused." % (filler, elapsed))
+            "an 8000-word benign command built from %r took %.1fs. The hook is "
+            "wired at timeout 5, and a PreToolUse hook that is killed returns "
+            "NO decision -- so a real deletion buried in a long enough command "
+            "is never refused." % (filler, elapsed))
 
 
 # Every one of these ALLOWED before round 5. The token is `(rm`, whose

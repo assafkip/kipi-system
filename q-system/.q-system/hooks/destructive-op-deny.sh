@@ -202,6 +202,21 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     return 1
   }
 
+  _argv_has_long_prefix() {  # _argv_has_long_prefix <stem> <token>...
+    # rsync's delete family: --delete, --delete-after, --delete-before,
+    # --delete-during, --delete-delay, --delete-excluded. Every one of them
+    # removes files at the destination, and _argv_has_long matches the exact
+    # name only -- so the argv rule was NARROWER than the positional regex it
+    # was added to backstop, which catches the whole family by substring
+    # (Codex minor, PR #274 round 5).
+    local stem="$1"; shift
+    local tok
+    for tok in "$@"; do
+      case "$tok" in "--$stem"|"--$stem"[-=]*) return 0 ;; esac
+    done
+    return 1
+  }
+
   _argv_has_long() {  # _argv_has_long <name> <token>...
     local name="$1"; shift
     local tok
@@ -215,7 +230,59 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   # /bin/bash this runs under) treats "${arr[@]}" on an EMPTY array as an unbound
   # variable under `set -u`, which would abort the hook and, since a hook that
   # dies produces no decision, fail OPEN on the one gate that must not.
-  argv_deny_reason() {  # argv_deny_reason <stage> -> echoes a reason, rc 0 = deny
+  # ASK-1131 round 6 (Codex major, PR #274, THIRD report of one class).
+  #
+  # Rounds 4 and 5 each made the scan cheaper and each moved the cost somewhere
+  # else. Round 4 skipped non-rm/git positions; prose about `git` paid in full
+  # (8.43s). Round 5 rejected a `git` whose next word is not a subcommand; prose
+  # about `git push` paid in full, and MEASURED WORSE than what it replaced:
+  #
+  #     1000 words   1.62s
+  #     2000 words   6.55s   <-- already over the hook's 5s timeout
+  #     4000 words  25.27s
+  #
+  # Three rounds of the same defect is a statement about the SURFACE, not about
+  # the filters. The cost is quadratic because each candidate position scans
+  # EVERY remaining token for a flag, so any input that is dense in candidates
+  # is quadratic no matter which candidates you skip. A fourth filter would move
+  # it a fourth time.
+  #
+  # So the fix is a BOUND, not another filter. A program's own flags sit next to
+  # it: `git push -q --force origin main` and `rm -v -rf DIR` put everything
+  # that matters within a handful of tokens, and stages are already split on
+  # `;`, `|` and `&`, so a stage IS one command's argv. Past this window the
+  # tokens are not that command's flags.
+  #
+  # THE TRADE, stated plainly, because it is a real one. A bounded window can
+  # miss a flag written more than ARGV_FLAG_WINDOW tokens after its program --
+  # `rm <200 filenames> -rf`, which is legal and which nobody types. An
+  # UNBOUNDED window misses everything on a long command, because the hook is
+  # killed at its timeout and a killed PreToolUse hook returns no decision at
+  # all. Bounded loses a pathological case; unbounded loses the whole gate. The
+  # window is deliberately far wider than any real invocation.
+  ARGV_FLAG_WINDOW=64
+
+  # And a HARD CEILING on how far into one stage the argv layer looks (round 6d).
+  # Even with the flag window and the fork both gone, bash re-slices the array at
+  # every candidate, so cost still climbed with position: 16000 words of `git
+  # push` prose took 9.01s against a 5s timeout. Beyond this many tokens a stage
+  # is a document, not an invocation -- no command names its own program 2000
+  # tokens in. Past the ceiling the argv layer stops and the substring layers,
+  # which are line-oriented and cheap, still run over the whole command: the
+  # degradation is back to pre-ASK-1131 coverage on the tail of a very long
+  # stage, which is bounded and stated, rather than a hook that is killed and
+  # returns no decision at all.
+  ARGV_SCAN_TOKENS=2000
+
+
+  # Sets _ARGV_REASON and returns 0, rather than ECHOING the reason (PR #274
+  # round 6). `$(argv_deny_reason ...)` forked a subshell at every candidate
+  # position, and on prose dense in candidates that fork WAS the cost: 2000
+  # `git push` pairs meant 2000 forks, which no amount of filtering removes.
+  # A global is the wrong shape everywhere except a hot loop in bash 3.2, which
+  # has no other way to return a string without a process.
+  argv_deny_reason() {  # argv_deny_reason <stage> -> sets _ARGV_REASON, rc 0 = deny
+    _ARGV_REASON=""
     local stage="$1"
     set -f
     local -a w=( $stage )
@@ -232,7 +299,7 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     done
     [ "${#w[@]}" -gt 0 ] || return 1
     local prog="${w[0]##*/}"
-    local -a rest=( "" "${w[@]:1}" )
+    local -a rest=( "" "${w[@]:1:$ARGV_FLAG_WINDOW}" )
 
     case "$prog" in
       rm)
@@ -240,7 +307,7 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
            || _argv_has_short f "${rest[@]}" \
            || _argv_has_long recursive "${rest[@]}" \
            || _argv_has_long force "${rest[@]}"; then
-          echo "rm carries a recursive or force flag (argv-inspected: a leading flag cannot hide it)"
+          _ARGV_REASON="rm carries a recursive or force flag (argv-inspected: a leading flag cannot hide it)"
           return 0
         fi
         ;;
@@ -248,7 +315,7 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
         # Walk git's GLOBAL flags to find the subcommand: `git -C DIR reset
         # --hard` is the same act as `git reset --hard`, and the old pattern saw
         # neither.
-        local -a g=( "" "${w[@]:1}" ); g=( "${g[@]:1}" )
+        local -a g=( "" "${w[@]:1:$ARGV_FLAG_WINDOW}" ); g=( "${g[@]:1}" )
         local sub="" i=0
         while [ "$i" -lt "${#g[@]}" ]; do
           case "${g[$i]}" in
@@ -258,26 +325,26 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
           esac
         done
         [ -n "$sub" ] || return 1
-        local -a ga=( "" "${g[@]:$((i+1))}" )
+        local -a ga=( "" "${g[@]:$((i+1)):$ARGV_FLAG_WINDOW}" )
         case "$sub" in
           reset)
-            _argv_has_long hard "${ga[@]}" && { echo "git reset --hard discards the working tree"; return 0; } ;;
+            _argv_has_long hard "${ga[@]}" && { _ARGV_REASON="git reset --hard discards the working tree"; return 0; } ;;
           push)
             if _argv_has_long force "${ga[@]}" || _argv_has_long force-with-lease "${ga[@]}" \
                || _argv_has_short f "${ga[@]}"; then
-              echo "git push is forced, which rewrites published history"; return 0
+              _ARGV_REASON="git push is forced, which rewrites published history"; return 0
             fi ;;
           branch)
-            _argv_has_short D "${ga[@]}" && { echo "git branch -D deletes a branch unmerged"; return 0; } ;;
+            _argv_has_short D "${ga[@]}" && { _ARGV_REASON="git branch -D deletes a branch unmerged"; return 0; } ;;
           clean)
             if _argv_has_short f "${ga[@]}" || _argv_has_short d "${ga[@]}" \
                || _argv_has_short x "${ga[@]}" || _argv_has_long force "${ga[@]}"; then
-              echo "git clean removes untracked files"; return 0
+              _ARGV_REASON="git clean removes untracked files"; return 0
             fi ;;
           filter-branch|filter-repo)
-            echo "git $sub rewrites every commit in the repository"; return 0 ;;
+            _ARGV_REASON="git $sub rewrites every commit in the repository"; return 0 ;;
           update-ref)
-            _argv_has_short d "${ga[@]}" && { echo "git update-ref -d deletes a ref"; return 0; } ;;
+            _argv_has_short d "${ga[@]}" && { _ARGV_REASON="git update-ref -d deletes a ref"; return 0; } ;;
         esac
         ;;
     esac
@@ -286,8 +353,8 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
 
   while IFS= read -r _stage; do
     [ -n "$_stage" ] || continue
-    _argv_reason="$(argv_deny_reason "$_stage")" && \
-      emit_deny "destructive invocation: $_argv_reason. This is decided from the command's ARGV, not from where a flag happens to sit in the line (ASK-1131)."
+    argv_deny_reason "$_stage" && \
+      emit_deny "destructive invocation: $_ARGV_REASON. This is decided from the command's ARGV, not from where a flag happens to sit in the line (ASK-1131)."
   done < <(printf '%s\n' "$COMMAND" | tr ';|&' '\n\n\n')
 
   # ASK-1131 round 2 (Codex major, PR #274). A transparent prefix that takes its
@@ -322,7 +389,7 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     _sw=( "" $_stage )
     set +f
     _i=1; _seen_rm=0
-    while [ "$_i" -lt "${#_sw[@]}" ]; do
+    while [ "$_i" -lt "${#_sw[@]}" ] && [ "$_i" -le "$ARGV_SCAN_TOKENS" ]; do
       # ASK-1131 round 4 (Codex major, PR #274). MEASURED, on this machine,
       # against a `cat > f <<EOF` heredoc of filler words -- how this fleet
       # writes RCAs and PRDs, and the input that pays the full cost because a
@@ -403,8 +470,8 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
           ;;
         *) _i=$((_i+1)); continue ;;
       esac
-      _argv_reason="$(argv_deny_reason "${_sw[*]:$_i}")" && \
-        emit_deny "destructive invocation: $_argv_reason. Decided from the command's ARGV at every starting position, so neither a leading flag nor a prefix carrying its own options can move it out of view (ASK-1131)."
+      argv_deny_reason "${_sw[*]:$_i:$((ARGV_FLAG_WINDOW+1))}" && \
+        emit_deny "destructive invocation: $_ARGV_REASON. Decided from the command's ARGV at every starting position, so neither a leading flag nor a prefix carrying its own options can move it out of view (ASK-1131)."
       _i=$((_i+1))
     done
   done < <(printf '%s\n' "$COMMAND" | tr ';|&' '\n\n\n')
@@ -453,7 +520,7 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     _dw=( "" $_norm )
     set +f
     _i=1; _seen_rm_d=0
-    while [ "$_i" -lt "${#_dw[@]}" ]; do
+    while [ "$_i" -lt "${#_dw[@]}" ] && [ "$_i" -le "$ARGV_SCAN_TOKENS" ]; do
       # Same filter as the loop above, same reason and the same equivalence
       # argument (PR #274 rounds 4 and 5). Duplicated rather than factored out
       # because bash 3.2 has no namerefs, and passing the slice to a helper
@@ -482,8 +549,8 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
           ;;
         *) _i=$((_i+1)); continue ;;
       esac
-      _argv_reason="$(argv_deny_reason "${_dw[*]:$_i}")" && \
-        emit_deny "destructive invocation: $_argv_reason. The program token was quoted or escaped; the shell strips that before exec, so this scan does too (ASK-1131)."
+      argv_deny_reason "${_dw[*]:$_i:$((ARGV_FLAG_WINDOW+1))}" && \
+        emit_deny "destructive invocation: $_ARGV_REASON. The program token was quoted or escaped; the shell strips that before exec, so this scan does too (ASK-1131)."
       _i=$((_i+1))
     done
   done < <(printf '%s\n' "$COMMAND" | tr ';|&' '\n\n\n')
@@ -517,8 +584,15 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   #
   # THE WHOLE-STRING BLOCK BELOW IS LEFT IN PLACE ON PURPOSE, twice over. It can
   # only ever DENY, so leaving it keeps the fail-closed direction for anything
-  # this split does not see (`kipi` and `update` separated by a newline is the
-  # real case). And it could not have been removed anyway: the only write path
+  # this split does not see.
+  #
+  # ITS STATED REASON WAS WRONG and is corrected here rather than quietly
+  # dropped (Codex minor, PR #274, raised twice). The comment used to claim it
+  # covered `kipi` and `update` separated by a NEWLINE. `grep -E` is
+  # line-oriented, so that case matches in neither the whole-string block nor
+  # the per-stage one -- measured ALLOW in both. The block is kept because it is
+  # deny-only and costs nothing, not because it catches that; and it could not
+  # have been removed anyway: the only write path
   # an agent has into ~/.claude is apply-claude-changes.sh, which is
   # additive-only and cannot change an existing predicate. That limitation is
   # reported alongside this fix, not worked around.
@@ -571,12 +645,12 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     done
     [ "${#w[@]}" -gt 0 ] || return 1
     local prog="${w[0]##*/}"
-    local -a rest=( "" "${w[@]:1}" )
+    local -a rest=( "" "${w[@]:1:$ARGV_FLAG_WINDOW}" )
     local i tok
     case "$prog" in
       rsync)
-        _argv_has_long delete "${rest[@]}" && {
-          echo "rsync --delete (argv-inspected, so a path, a prefix or a quoted name cannot move it out of view)"
+        _argv_has_long_prefix delete "${rest[@]}" && {
+          echo "rsync --delete* (argv-inspected, so a path, a prefix or a quoted name cannot move it out of view)"
           return 0; }
         ;;
       kipi)
@@ -648,7 +722,7 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     # Candidate positions only, for the reason argued at length above the rm/git
     # loop: this runs on every Bash tool call and must not be quadratic.
     i=2
-    while [ "$i" -lt "${#sw[@]}" ]; do
+    while [ "$i" -lt "${#sw[@]}" ] && [ "$i" -le "$ARGV_SCAN_TOKENS" ]; do
       # `rsync` ONLY, and the omission of `kipi` is load-bearing (PR #274).
       # Word-splitting does not honour quotes, so every token of a commit
       # message is offered as a program: `git commit -m "the kipi update path
@@ -661,7 +735,7 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
         rsync) ;;
         *) i=$((i+1)); continue ;;
       esac
-      r="$(fleet_argv_reason "${sw[*]:$i}" 0)" && { echo "$r"; return 0; }
+      r="$(fleet_argv_reason "${sw[*]:$i:$((ARGV_FLAG_WINDOW+1))}" 0)" && { echo "$r"; return 0; }
       i=$((i+1))
     done
     return 1
