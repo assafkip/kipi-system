@@ -217,6 +217,40 @@ def audit_python(path, source=None):
                                          "assignment, so the envelope around it "
                                          "cannot be read statically"))
 
+    # A .py hook can PRINT the envelope as a raw JSON string -- no dict node
+    # exists, so everything above is blind to it (Opus fallback minor, PR #285
+    # round 6).
+    #
+    # The first attempt ran the whole text scanner as a second pass and reported
+    # 28 broken sites across this repo, nearly all of them fixture strings inside
+    # this tool's OWN test file. A .py file is full of JSON-shaped strings that
+    # are inputs, not outputs. So the match is narrowed to the one construct that
+    # actually emits: a literal string handed straight to print() or
+    # sys.stdout.write(). A fixture bound to a name, or passed to write_text, is
+    # not an emission and stays invisible.
+    emitted = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        is_print = isinstance(fn, ast.Name) and fn.id == "print"
+        is_write = (isinstance(fn, ast.Attribute) and fn.attr == "write"
+                    and isinstance(fn.value, ast.Attribute)
+                    and fn.value.attr in ("stdout",))
+        if not (is_print or is_write):
+            continue
+        for arg in node.args:
+            if (isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+                    and EMIT_KEY_RE.search(arg.value)):
+                emitted.add(node.lineno)
+    seen_lines = {s.line for s in sites}
+    for line in sorted(emitted - seen_lines):
+        text = source.split("\n")[line - 1]
+        verdict = OK if KEY_EVENT in text and KEY_ENVELOPE in text else (
+            NO_EVENT_NAME if KEY_ENVELOPE in text else TOP_LEVEL)
+        sites.append(Site(path, line, verdict,
+                          detail="envelope emitted as a raw JSON string"))
+
     by_line = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Dict) and id(node) in envelopes:
@@ -478,6 +512,10 @@ HOOK_MARKERS = (
     # tell is exactly this call.
     "json.load(sys.stdin)",
     "json.loads(sys.stdin",
+    # The scar shape the probe itself generates drains stdin and emits, without
+    # ever parsing it (Opus fallback minor, PR #285 round 6). `for line in
+    # sys.stdin` still does not match, which is what keeps an ordinary filter out.
+    "sys.stdin.read()",
 )
 
 
@@ -547,7 +585,14 @@ def _audit_recent_writes(payload):
             continue
         sites = (audit_python(full, source=source) if full.endswith(".py")
                  else audit_text(full, source=source))
-        bad.extend(s for s in sites if s.verdict != OK)
+        # DEFINITE verdicts only. UNKNOWN means "this shape is unreadable", and a
+        # correct hook built with dict() kwargs is UNKNOWN -- blocking every Bash
+        # call for 120s because some other recently-written file is unreadable is
+        # how a gate gets switched off (Opus fallback major, PR #285 round 6).
+        # The file_path leg still blocks on UNKNOWN: there it knows exactly which
+        # file you just edited and the feedback is actionable. This leg is
+        # inferring which file the command touched, so it only acts on certainty.
+        bad.extend(s for s in sites if s.verdict in (NO_EVENT_NAME, TOP_LEVEL))
     if not bad:
         return 0
     _emit_block(bad)

@@ -263,7 +263,12 @@ def add_delta(root, base, head, errors=None):
     someone's declaration. PR #207 is exactly that case (sp-6b25c567).
 
     Three outcomes, and the two refusals are the point:
-      ADD       key only in head            -> fragment written.
+      ADD       key only in head            -> fragment written, but ONLY if
+                nothing is already on disk under that name. If main added the
+                same declaration independently, overwriting it replaces main's
+                version with the branch's and reports success (Opus fallback
+                major, PR #285 round 6). Same loss the EDIT branch already
+                refuses, one branch over.
       EDIT      key in both, content differs -> written ONLY if the fragment on
                 disk EXISTS, is readable, and still holds the base version.
                 Anything else is reported. If main edited the same declaration,
@@ -291,6 +296,15 @@ def add_delta(root, base, head, errors=None):
             sdir = fragment_dir(root) / section
             name = fragment_name(section, new_entry)
             target = sdir / name
+            if old_entry is None and target.exists():
+                current = _read_fragment(target)
+                if current is None or _canon(current) != _canon(new_entry):
+                    conflicted.append(
+                        "%s: %s (a different declaration is already on disk "
+                        "under this name; main added it independently)"
+                        % (section, key))
+                    continue
+                continue                  # identical: nothing to write
             if old_entry is not None:
                 current = _read_fragment(target)
                 if current is None or _canon(current) != _canon(old_entry):

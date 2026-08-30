@@ -440,3 +440,128 @@ def test_an_ordinary_dict_call_is_not_an_emission():
     """The control for the dict() rule."""
     src = 'rows = dict(name="a", value="b")\nprint(rows)\n'
     assert audit.audit_python("<ordinary>", source=src) == []
+
+
+# --------------------------------------------------------------------------
+# Opus-fallback review, PR #285 round 6. Codex was rate-limited; the fallback
+# posted DEGRADED and found four real things anyway.
+# --------------------------------------------------------------------------
+def test_raw_json_string_emission_is_seen(tmp_path):
+    """A .py hook can print the envelope as a string. No dict node exists."""
+    src = ('import json, sys\n'
+           'payload = json.load(sys.stdin)\n'
+           'print(\'{"additionalContext": "discarded"}\')\n')
+    verdicts = [s.verdict for s in audit.audit_python("<raw>", source=src)]
+    assert verdicts and all(v != audit.OK for v in verdicts), verdicts
+
+    p = tmp_path / "raw_hook.py"
+    p.write_text(src)
+    assert _run_gate(p).returncode == 2
+
+
+def test_a_json_shaped_fixture_string_is_not_an_emission():
+    """The control, and the reason the first version of this was reverted.
+
+    Running the whole text scanner as a second pass reported 28 broken sites in
+    this repo, nearly all of them fixture strings inside this tool's own test
+    file. A .py file is full of JSON-shaped strings that are inputs.
+    """
+    src = ('BAD = \'{"hookSpecificOutput": {"additionalContext": "x"}}\'\n'
+           'def test_thing(tmp_path):\n'
+           '    (tmp_path / "h.py").write_text(BAD)\n')
+    assert audit.audit_python("<fixture>", source=src) == []
+
+
+def test_bash_leg_does_not_wedge_on_a_shape_it_merely_cannot_read(tmp_path):
+    """UNKNOWN is "unreadable", not "broken".
+
+    A correct hook built with dict() kwargs is UNKNOWN. Blocking every Bash call
+    for 120 seconds because some other recently-written file is unreadable is how
+    a gate gets switched off.
+    """
+    root = _init_repo(tmp_path / "repo")
+    (root / "dict_built_hook.py").write_text(
+        'import json, sys\n'
+        'payload = json.load(sys.stdin)\n'
+        'print(json.dumps({"hookSpecificOutput": dict('
+        'hookEventName="UserPromptSubmit", additionalContext="x")}))\n')
+    assert _run_bash_gate(root).returncode == 0
+
+
+def test_file_path_leg_still_blocks_on_unknown(tmp_path):
+    """The asymmetry is deliberate, so it gets an assertion.
+
+    The file_path leg knows exactly which file you just edited, so UNKNOWN there
+    is actionable feedback. The Bash leg is inferring which file the command
+    touched, so it acts only on certainty.
+    """
+    p = tmp_path / "dict_built_hook.py"
+    p.write_text('import json, sys\n'
+                 'payload = json.load(sys.stdin)\n'
+                 'print(json.dumps({"hookSpecificOutput": dict('
+                 'hookEventName="UserPromptSubmit", additionalContext="x")}))\n')
+    assert _run_gate(p).returncode == 2
+
+
+def test_a_hook_that_only_drains_stdin_is_still_a_hook(tmp_path):
+    """The shape probe_hook_envelope.py itself generates.
+
+    It reads stdin without parsing it, then emits. looks_like_a_hook missed it,
+    so the blocking gate passed the original TOP_LEVEL scar shape.
+    """
+    p = tmp_path / "probe_like_hook.py"
+    p.write_text('import sys\n'
+                 'sys.stdin.read()\n'
+                 'sys.stdout.write(\'{"additionalContext": "x"}\')\n')
+    assert _run_gate(p).returncode == 2
+
+
+def test_add_branch_refuses_to_overwrite_a_fragment_main_already_has(tmp_path):
+    """The ADD branch's own version of the loss the EDIT branch already refuses.
+
+    A key absent from the merge base but already present on disk means main added
+    that declaration independently. Writing the branch's version over it replaces
+    main's and reports success. Opus fallback major, PR #285 round 6.
+    """
+    import json as _json
+    import subprocess as _sp
+
+    cm_path = os.path.join(REPO, "q-system", ".q-system", "scripts",
+                           "capability_manifest.py")
+    spec = importlib.util.spec_from_file_location("capability_manifest", cm_path)
+    cm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cm)
+
+    root = tmp_path / "repo"
+    sdir = root / cm.FRAGMENT_DIR / "expected_tests"
+    sdir.mkdir(parents=True)
+
+    ours = {"path": "tests/x.py", "runner": "bash"}
+    theirs = {"path": "tests/x.py", "runner": "sh"}
+    frag = sdir / cm.fragment_name("expected_tests", ours)
+    frag.write_text(_json.dumps(theirs, indent=1, sort_keys=True) + "\n")
+
+    errors = []
+    written = cm.add_delta(str(root), {"expected_tests": []},
+                           {"expected_tests": [ours]}, errors)
+    assert written == [], written
+    assert errors and "already on disk" in errors[0], errors
+    assert _json.loads(frag.read_text())["runner"] == "sh", "main's version was replaced"
+
+
+def test_add_branch_still_writes_a_genuinely_new_declaration(tmp_path):
+    """The control. Without it the fix above could just refuse everything."""
+    cm_path = os.path.join(REPO, "q-system", ".q-system", "scripts",
+                           "capability_manifest.py")
+    spec = importlib.util.spec_from_file_location("capability_manifest", cm_path)
+    cm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cm)
+
+    root = tmp_path / "repo"
+    entry = {"path": "tests/brand_new.py", "runner": "python3"}
+    errors = []
+    written = cm.add_delta(str(root), {"expected_tests": []},
+                           {"expected_tests": [entry]}, errors)
+    assert written == ["expected_tests/%s"
+                       % cm.fragment_name("expected_tests", entry)], written
+    assert errors == [], errors
