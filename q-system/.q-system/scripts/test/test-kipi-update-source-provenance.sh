@@ -7,7 +7,7 @@
 # it happens to be checked out on. Nothing checked which branch that was.
 #
 # Measured 2026-08-14: kipi-system sat on sana/ask-728-plugin-parity with an
-# uncommitted partial forward-port of plugins/kipi-core/voicekit/selector.py --
+# uncommitted partial forward-port of plugins/kipi-core/voiceloop/selector.py --
 # the nearest-length ranking without the anchor-survives fix Codex caught in
 # #147 and main already carried. A run from that state would have written code
 # strictly older than main into every config-sync instance and printed PASS.
