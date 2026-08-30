@@ -205,6 +205,10 @@ def main() -> int:
         if project:
             payload["projectId"] = project["id"]
         data = ls.graphql(ls.ISSUE_CREATE, {"input": payload})
+        # linear-filer-lint-skip: AUTOMATED and currently unmarked. inventory()
+        # enumerates every plist and files one templated issue per discovered
+        # job, so this SHOULD attach TRIAGE_LABEL. Captured as sp-1306aca4
+        # rather than changed here -- a behaviour change to live inflow.
         node = (data.get("issueCreate") or {}).get("issue") or {}
         if not node.get("id"):
             print(f"BLOCK: create returned nothing for {issue['key']}", file=sys.stderr)

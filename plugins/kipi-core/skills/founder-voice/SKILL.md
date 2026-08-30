@@ -36,16 +36,24 @@ If these files are empty/template, the voice skill cannot run. Ask the founder t
 - Bad: "Organizations often struggle with cross-team coordination challenges."
 
 ### 5. The Contrast Pattern
-- Sharp contrasts, not gradients:
-- "X isn't Y. It's Z." or "X does A. It doesn't do B."
+- Sharp contrasts, not gradients -- but state the thing directly; do not lead with what it is not.
+- The "X isn't Y. It's Z." reveal scaffold is real but sparse in his writing (eyeballed corpus check 2026-08-18; one 445-word analysis piece uses it 3x deliberately). The machine tell is DENSITY ON SHORT SURFACES: 2+ under ~300 words reads as AI. Sparing long-form use is his voice. "X does A. It doesn't do B." same rule.
 
 ### 6. The Question-as-Dagger
 - Questions expose uncomfortable truths, not drive engagement
 - Questions should make the reader uncomfortable, not curious
 
 ### 7. Ending Pattern
-- Social posts: end with a direct question or sharp statement. Never "Thoughts?" or "Agree?"
-- Articles: end with a reflective question that reframes the whole piece
+- Social posts (LinkedIn, X, Substack): end on a VERDICT. NEVER a question.
+  Founder-directed 2026-08-06: "essentially on any social posts I don't finish with
+  a question." Measured on his corpus that day: 1 of 27 writing samples ends on a
+  question, and that one is a quoted line inside a piece, not a closer. The 4 seed
+  drafts that do are all March 2026 engagement-shaped LinkedIn posts. This REVERSES
+  the old line "end with a direct question or a sharp statement", which was an
+  assertion the corpus contradicted. Enforced by `ending_gate._closing_question_signals`
+  in the content engine, not by this bullet.
+- Long-form articles (Medium) may still end reflectively, but not on a question that
+  asks the reader about their own business.
 - Emails/DMs: end with one clear ask or one specific question
 
 ## Pre-Publish Check (BLOCKING)
@@ -64,7 +72,7 @@ Never return a draft with `pass: false` on either linter. After 3 iterations, su
 The linters do not check these. Verify before returning:
 
 1. **Scar test:** Does at least one paragraph anchor in real experience?
-2. **Contrast test:** Is there at least one sharp contrast pattern?
+2. **Contrast test:** Where the material carries a real tension, is it stated sharply and directly? (No scaffold quota -- see rule 5; a draft with zero contrast patterns can pass.)
 3. **Specificity test:** Could any content marketer have written this? If yes, rewrite.
 4. **Burstiness test:** Does sentence length VARY? Mix of short and long?
 5. **Paragraph test:** At least one single-sentence paragraph?

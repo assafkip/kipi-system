@@ -70,6 +70,15 @@ cat > "$TMP/gh" <<'SH'
 #!/usr/bin/env bash
 [ "${GH_RC:-0}" = "0" ] || { echo "gh: could not read PRs" >&2; exit "${GH_RC}"; }
 cat "$GH_FIXTURE"
+# THE RACE, MADE DETERMINISTIC (ASK-358 round 3, MAJOR 2). When GH_THEN names a
+# file, this call answers with today's world and then REPLACES it -- so the very
+# next reader sees the board a moment later. That is the whole TOCTOU: a PR that
+# was open when the selector read it and closed when the guard re-read it. A
+# call counter would need to know how many gh calls precede the one under test;
+# swapping the world does not, and the assertions below still pin that the first
+# reader saw the red PR.
+[ -n "${GH_THEN:-}" ] && cp "$GH_THEN" "$GH_FIXTURE"
+exit 0
 SH
 chmod +x "$TMP/gh"
 
@@ -412,6 +421,77 @@ check "an unreadable process table offers nothing rather than guessing" "$RC" "1
 check "an unreadable process table pages nobody" "$(pages)" "0"
 printf '#!/bin/sh\ncat "${PS_FIXTURE:-/dev/null}"\n' > "$OLD_PS"; chmod +x "$OLD_PS"
 
+# --- 13b. AN ADVERSARIAL PR: A FORK IS NEVER WORK (PR #211 round 3, MAJOR 1) ---
+# This repo is PUBLIC. Everything `attribute()` reads is chosen by whoever opened
+# the PR -- the head branch name and the PR title -- so a stranger can hand this
+# selector both halves of a perfect agent PR. The fixtures below are hostile on
+# purpose: `sana/ask-<N>` is the exact branch converge would build, and the title
+# carries the same id, so every attribution rule in this file says yes. The ONLY
+# thing that separates them is `isCrossRepository`, which GitHub asserts and the
+# author cannot set. It was requested in PR_FIELDS and never read, so the query
+# looked defended and answered nothing.
+#
+# If this section goes green with the `provenance == FORK` test deleted from
+# candidates(), it is measuring nothing -- a `return []` would satisfy 13b-13g on
+# its own, which is why 13h-13k assert the identical same-repo PR IS work. That
+# mutation is run for real in test-ask358-round3-mutation.sh, section 1.
+FORK_ISS="ASK-358"
+FORK_BRANCH="sana/ask-358"
+# One hostile PR, shaped to pass every other rule this file has.
+HOSTILE="[{\"number\":900,\"headRefName\":\"$FORK_BRANCH\",\"isDraft\":false,
+  \"isCrossRepository\":true,
+  \"headRefOid\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",
+  \"url\":\"https://x/900\",\"title\":\"totally legitimate work ($FORK_ISS)\",
+  \"statusCheckRollup\":[{\"__typename\":\"CheckRun\",\"name\":\"validate\",
+   \"status\":\"COMPLETED\",\"conclusion\":\"FAILURE\",
+   \"workflowName\":\"Skeleton Validation\"}]}]"
+
+fresh_state fork
+fixture "$HOSTILE"
+OUT="$(run scan)"; RC=$?
+check "13b a fork-only world exits 0 (it is answerable, just empty)" "$RC" "0"
+lacks "13c the hostile fork PR is NOT a candidate" "$OUT" '"pr": 900'
+lacks "13d and its issue id is not attributed to anything" "$OUT" "$FORK_ISS"
+run redrive >/dev/null; RC=$?
+check "13e a fork is never OFFERED as work for a real issue" "$RC" "1"
+check "13f and a fork does not page the founder either" "$(pages)" "0"
+contains "13g the refusal names the reason on stderr" "$(cat "$TMP/err")" "lives in a fork"
+
+# THE SAME PR FROM THIS REPO IS WORK. Without this pair the check above is
+# satisfied by anything that drops every PR -- a `return []` passes 13b-13g.
+fresh_state samerepo
+fixture "$(printf '%s' "$HOSTILE" | sed 's/"isCrossRepository":true/"isCrossRepository":false/')"
+OUT="$(run scan)"; RC=$?
+contains "13h the identical PR opened IN this repo IS a candidate" "$OUT" '"pr": 900'
+OUT="$(run redrive)"; RC=$?
+check "13i and it is offered" "$RC" "0"
+check "13j field 4 carries the branch the selector observed" \
+  "$(printf '%s' "$OUT" | cut -f4)" "$FORK_BRANCH"
+check "13k field 5 carries the PR number, so a refusal can name it" \
+  "$(printf '%s' "$OUT" | cut -f5)" "900"
+
+# ABSENCE IS NOT CONFIRMATION, AND IT IS NOT A KILL SWITCH EITHER. A board that
+# stops returning the field must not silently switch the whole red-CI lane off
+# (that is the sibling finding's defect class), so the PR is still worked -- but
+# it may not ROUTE the work, so field 4 goes out empty and branch_guard falls
+# back to the naming rule.
+fresh_state unstated
+fixture "$(printf '%s' "$HOSTILE" | sed 's/"isCrossRepository":true,//')"
+OUT="$(run redrive)"; RC=$?
+check "13l an unstated head is still offered (the lane does not switch off)" "$RC" "0"
+check "13m but it carries NO branch: an unconfirmed head may not route work" \
+  "$(printf '%s' "$OUT" | cut -f4)" ""
+
+# A fork sitting next to a real red PR must not shadow it. The cost the finding
+# names is not only "a fork gets picked": it is that the fork is picked INSTEAD
+# of the genuine PR whose one attempt is then never spent.
+fresh_state forkbeside
+fixture "${HOSTILE%\]},${WORLD#"["}"
+OUT="$(run redrive)"; RC=$?
+check "13n with a fork beside it, the genuine red PR is still offered" "$RC" "0"
+check "13o and the issue offered is the genuine one" \
+  "$(printf '%s' "$OUT" | cut -f1)" "ASK-288"
+
 # --- 14. the shell integration, driven for real (PR #73 review r2, finding 3) --
 # Round 2 shipped the entire kipi-dispatch.sh wiring covered by `bash -n` alone:
 # syntax, not behaviour. `bash -n` cannot tell whether the offer is adopted,
@@ -447,6 +527,22 @@ mkdir -p "$SCRIPTS" "$DROOT/home/.config/kipi" "$DROOT/bin"
 # attempts-ledger.py off its own directory. Both real, both copied.
 cp "$REDRIVE" "$SCRIPTS/ci-redrive.py"
 cp "$REPO_ROOT/q-system/.q-system/scripts/attempts-ledger.py" "$SCRIPTS/attempts-ledger.py"
+# review-redrive.py is STAGED, not installed. branch_guard's fallback arm is
+# `[ -f "$REVIEW_REDRIVE" ]`, so without that file the arm is DEAD here and case
+# 14k below would pass against the UNFIXED dispatcher -- a green test measuring
+# an absent file rather than the fix. 14k installs it and 14p takes it away
+# again, for a reason worth writing down:
+#
+# INSTALLING IT FOR THE WHOLE SECTION TURNS 14g RED, AND 14g IS RIGHT. With the
+# reviewer selector live, case 14g's red PR (which has no posted verdict) is
+# selected for a RE-REVIEW even though a converge for its issue is already
+# running; NEXT is overwritten with it, the dispatcher's own duplicate guard
+# fires, and the fresh pick is discarded -- the exact defect 14g exists to pin,
+# arriving through the other lane. That is a real open item, already captured as
+# sp-9f03aac0 (ASK-872), and it is NOT this PR's to fix. So the file is present
+# only for the two cases that need it, and this comment is the reason, not an
+# oversight. When sp-9f03aac0 lands, install it once at setup and delete this.
+cp "$REPO_ROOT/q-system/.q-system/scripts/review-redrive.py" "$DROOT/review-redrive.py"
 
 cp "$TMP/gh" "$DROOT/bin/gh"
 cp "$TMP/ps" "$DROOT/bin/ps-stub"
@@ -483,7 +579,8 @@ run_dispatch() {  # run_dispatch [GH_RC]
       KIPI_REPO="$FAKE_REPO" KIPI_NOTIFY="$TMP/notify.sh" \
       KIPI_DISPATCH_DAILY_MAX=9 KIPI_DISPATCH_MAX=999 \
       KIPI_ATTEMPTS="$D_LEDGER" KIPI_GH="$DROOT/bin/gh" KIPI_PS="$DROOT/bin/ps-stub" \
-      GH_FIXTURE="$D_PRS" GH_RC="${1:-0}" PS_FIXTURE="${PS_FIXTURE:-$TMP/ps-empty}" \
+      GH_FIXTURE="$D_PRS" GH_RC="${1:-0}" GH_THEN="${GH_THEN:-}" \
+      PS_FIXTURE="${PS_FIXTURE:-$TMP/ps-empty}" \
       NOTIFY_LOG="$D_PAGES" \
       bash "$DISPATCH" >/dev/null 2>&1 )
 }
@@ -498,6 +595,10 @@ d_reset() {
   : > "$D_PAGES"; : > "$DROOT/dispatched"
   rm -f "$D_LEDGER"
   PS_FIXTURE="$TMP/ps-empty"
+  # Cleared here or one race case poisons every case after it: GH_THEN swaps the
+  # board out from under the reader, and a leftover swap is a world that changes
+  # for no reason the failing case can name.
+  GH_THEN=""
   pkill -f "$DROOT/converge.sh" 2>/dev/null
 }
 
@@ -546,6 +647,65 @@ check "14h and no founder page is sent about a run that is still running" \
   "$([ -s "$D_PAGES" ] && cat "$D_PAGES" || echo silent)" "silent"
 cp "$DROOT/ps-stub.bak" "$DROOT/bin/ps-stub"
 kill "$DECOY" 2>/dev/null
+pkill -f "$DROOT/converge.sh" 2>/dev/null
+
+# 14k. THE RACE, THROUGH THE REAL DISPATCHER (round 3, MAJOR 2). Section 15 of
+# test-dispatch-stale-checkout.sh drives branch_guard extracted into a harness,
+# which proves the ARM is right and proves nothing about whether the dispatcher
+# ever fills REDRIVE_BRANCH. That is the wiring, and a green unit test never
+# shows the value is actually carried. So this case runs the real kipi-dispatch.sh
+# against the real ci-redrive.py and the real review-redrive.py, and only the
+# board moves underneath it. The paired mutation -- blank REDRIVE_BRANCH and
+# watch this case go green-to-red -- is test-ask358-round3-mutation.sh section 2.
+#
+# The setup is the finding, verbatim. A red PR whose head branch does NOT match
+# what converge would build (`sana/wrong-name`, with the issue id in the title,
+# which is a shape this repo really produces -- see case 2). ci-redrive selects
+# it and reads that branch. Then the PR closes. If the guard asks gh again it is
+# told "no open PR", takes the fail-OPEN arm, and converge commits onto
+# sana/ask-<N> where no PR and no reviewer will ever see it.
+cp "$DROOT/review-redrive.py" "$SCRIPTS/review-redrive.py"   # see the staging note above
+d_reset
+RACE_WORLD="[{\"number\":91,\"headRefName\":\"sana/wrong-name\",\"isDraft\":false,
+  \"isCrossRepository\":false,
+  \"headRefOid\":\"9999999999999999999999999999999999999999\",
+  \"url\":\"https://x/91\",\"title\":\"t ($RED_ISS)\",
+  \"statusCheckRollup\":[{\"__typename\":\"CheckRun\",\"name\":\"validate\",
+   \"status\":\"COMPLETED\",\"conclusion\":\"FAILURE\",
+   \"workflowName\":\"Skeleton Validation\"}]}]"
+printf '%s' "$RACE_WORLD" > "$D_PRS"
+printf '[]' > "$DROOT/prs-closed.json"
+GH_THEN="$DROOT/prs-closed.json"
+run_dispatch
+GH_THEN=""
+contains "14k the selector DID see the red PR before it closed" \
+  "$(dlog)" "handing $RED_ISS back"
+check "14l THE RACE: nothing is dispatched -- the closed PR cannot un-refuse it" \
+  "$(dispatched)" ""
+contains "14m and the refusal names the branch the selector observed" \
+  "$(dlog)" "is on sana/wrong-name"
+contains "14n and it names the PR whose attempt was about to be spent" \
+  "$(dlog)" "PR #91"
+if grep -q "skip $RED_ISS: its open PR #91 is on sana/wrong-name" "$D_PAGES" 2>/dev/null; then
+  ok "14o a red-CI park reaches a human, not just dispatch.log"
+else
+  bad "14o a red-CI park reaches a human, not just dispatch.log" "$(cat "$D_PAGES" 2>/dev/null)"
+fi
+pkill -f "$DROOT/converge.sh" 2>/dev/null
+
+# 14p. A MATCHING branch still dispatches with the board gone. Without this the
+# case above is satisfied by a guard that refuses everything, and 14a only covers
+# the board STAYING put.
+d_reset
+printf '%s' "$RED_WORLD" > "$D_PRS"
+printf '[]' > "$DROOT/prs-closed.json"
+GH_THEN="$DROOT/prs-closed.json"
+run_dispatch
+GH_THEN=""
+check "14p a matching carried branch dispatches even after the PR closes" \
+  "$(dispatched)" "$RED_ISS"
+# Uninstalled again, so 14i/14j below see the same world every earlier case did.
+mv "$SCRIPTS/review-redrive.py" "$DROOT/review-redrive.py"
 pkill -f "$DROOT/converge.sh" 2>/dev/null
 
 # 14i. nothing red -> the ordinary path is untouched.

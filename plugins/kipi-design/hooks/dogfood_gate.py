@@ -199,7 +199,46 @@ def _in_range(hsl, rng):
     return h_ok and s_ok and l_ok
 
 
-def scan_html(content, fp):
+BRAND_FILES = ("marketing/brand-kit.html", "q-consult/marketing/brand-kit.html",
+               ".kipi-brand.json", "brand-kit.html")
+
+
+def brand_colors_for(path):
+    """Colours the project has DECLARED as its own, walking up from `path`.
+
+    why this exists (ASK-511, 2026-08-08): the palette tells catch a hue family
+    that is the current AI default -- amber/orange among them. ASK's documented
+    primary accent is copper #B8860B, which lives in that family, so the gate
+    flagged every page of askconsulting.io for using the brand on purpose. The
+    detector is right in general and cannot tell "amber because it is the
+    default" from "amber because it is mine". The project can. A colour written
+    down in the project's own brand kit is a chosen colour, so it is exempt;
+    everything else still trips the tell.
+
+    Fails open to an empty set: a project with no brand kit gets the old
+    behaviour exactly.
+    """
+    out = set()
+    try:
+        here = os.path.abspath(path)
+        for _ in range(8):
+            here = os.path.dirname(here)
+            if not here or here == "/":
+                break
+            for rel in BRAND_FILES:
+                bf = os.path.join(here, rel)
+                if os.path.exists(bf):
+                    with open(bf, "r", errors="ignore") as fh:
+                        body = fh.read()
+                    out.update(c.lower() for c in
+                               re.findall(r"#[0-9a-fA-F]{6}\b", body))
+                    return out
+    except OSError:
+        pass
+    return out
+
+
+def scan_html(content, fp, brand=None):
     """Return a list of {label, fix} findings. Public so it is unit-testable."""
     # Strip HTML comments first: a page that NAMES a tell in a comment (e.g.
     # "no Powered by AI here") must not be flagged for it. The rendered detector
@@ -234,16 +273,33 @@ def scan_html(content, fp):
     palette = active_tokens(fp, "palette")
     if palette:
         colors = re.findall(r"#[0-9a-f]{3,6}\b|rgba?\([^)]*\)|hsla?\([^)]*\)", cl)
+        # why the split (ASK-511, 2026-08-08): this scanned EVERY colour literal
+        # in the stylesheet and matched them against every palette token,
+        # including "warm-cream-bg". askconsulting.io is a near-black page whose
+        # body TEXT is a warm near-white (#e8e6e1), so the cream-BACKGROUND tell
+        # fired on cream text over black -- the opposite of the thing it exists
+        # to catch. It blocked five correct edits. A tell about backgrounds now
+        # only reads colours that are actually assigned to one; every other
+        # palette tell keeps scanning the whole sheet, because an accent hue is
+        # a tell wherever it appears.
+        bg_colors = set()
+        for decl in re.findall(r"(?:background(?:-color)?|--[\w-]*bg[\w-]*)\s*:\s*([^;{}]+)", cl):
+            bg_colors.update(re.findall(r"#[0-9a-f]{3,6}\b|rgba?\([^)]*\)|hsla?\([^)]*\)", decl))
         seen = set()
         for col in colors:
             rgb = parse_color(col)
             if not rgb:
                 continue
+            if brand and col.lower() in brand:
+                continue          # declared in the project's own brand kit
             hsl = _hsl(*rgb)
             if hsl[1] <= 0.04:        # only truly achromatic is exempt; a warm near-white (cream/tan) IS a tell
                 continue
             for t in palette:
                 rng = t.get("range")
+                # A "-bg" token only speaks about background colours.
+                if "bg" in t["value"] and col not in bg_colors:
+                    continue
                 if rng and t["value"] not in seen and _in_range(hsl, rng):
                     seen.add(t["value"])
                     findings.append({"label": "Default palette: %s" % t.get("label", t["value"]),
@@ -266,7 +322,15 @@ def scan_html(content, fp):
                          "fix": "Drop it. Let the product speak."})
 
     # 7) UX: no interactive primary action anywhere
-    if "<form" not in cl and "<input" not in cl and "<button" not in cl:
+    # why anchors count (ASK-511, 2026-08-08): this demanded a form, input or
+    # button, while test_site.py MANDATES `<a class="btn">` as the site's
+    # primary action. Two gates in the same repo requiring opposite markup means
+    # one of them is always red, and the one that blocks is the one that gets
+    # switched off. A link styled as a button is a clear action for a visitor;
+    # the tell is a page with NO action at all, which is still caught below.
+    action_link = re.search(r'<a\b[^>]*(class="[^"]*\b(btn|button|cta)\b|role="button")', cl)
+    if ("<form" not in cl and "<input" not in cl and "<button" not in cl
+            and not action_link):
         findings.append({"label": "No form/input/button — no clear action for a visitor to take.",
                          "fix": "Put the primary action in the first screen."})
 
@@ -354,7 +418,7 @@ def main():
     # scan itself errors, block (exit 2) and point to the manual render check, rather
     # than crashing to exit 1 (which the hook contract treats as a no-op = page ships).
     try:
-        findings = scan_html(content, fp)
+        findings = scan_html(content, fp, brand=brand_colors_for(path))
     except Exception as e:
         sys.stderr.write(
             "dogfood gate errored on %s (%s). Failing CLOSED — run the deep read manually:\n"

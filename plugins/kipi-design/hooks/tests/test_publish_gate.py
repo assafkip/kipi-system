@@ -15,10 +15,52 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 HOOK = Path(__file__).resolve().parents[1] / "publish_gate.py"
 REPO_ROOT = Path(__file__).resolve().parents[4]
 GTM_SCRIPTS = REPO_ROOT / "gtm" / "scripts"
 sys.path.insert(0, str(GTM_SCRIPTS))
+
+# THIS SUITE'S SUBJECT LIVES IN ANOTHER REPO, and until now it said so by
+# crashing (ASK-1129, measured 2026-08-29). `design_room_pipeline` is a cole-gtm
+# script at <repo>/gtm/scripts/. The kipi-design PLUGIN ships fleet-wide, so this
+# file lands in 24 repos, and in every one of them -- INCLUDING the skeleton --
+# the import raised ModuleNotFoundError at collection time.
+#
+# A collection error is not one red test. pytest aborts the whole run, so this
+# single file is why `python3 -m pytest` at the root of most of the fleet exits
+# non-zero having executed NOTHING. It was one of exactly two such errors, and
+# they are what blocks arming the verify.sh floor across the fleet.
+#
+# A module-level skip unblocks collection and is COARSER than it needs to be, so
+# say which rather than dressing it up (Codex minor, PR #283). It is not hiding a
+# red: the skip names the path it looked for, and a skip reads as "did not run",
+# which is the true thing. What must not happen is a repo without the subject
+# reporting the suite as passed. Where the subject DOES exist -- cole-gtm, the
+# repo this was written against -- the import succeeds and every case runs
+# exactly as before.
+#
+# "No subject to test" would OVERSTATE it. 19 test functions live here and only
+# 8 lines touch design_room_pipeline or drr; the rest exercise publish_gate.py,
+# which DOES ship in this repo and could be tested everywhere. Splitting them (a
+# fixture, or a class-scoped importorskip, so the dependent cases skip and the
+# rest run) changes which assertions execute fleet-wide, and that earns its own
+# reproducer instead of riding along on a collection fix. Tracked as sp-947f04c7.
+# BOTH modules, not just the first (Codex minor, PR #283). This file imports
+# design_room_pipeline AND design_room_run; guarding on one leaves a half-present
+# gtm/scripts/ aborting collection exactly as before, which is the failure the
+# guard was added to end.
+_NEEDED = ("design_room_pipeline.py", "design_room_run.py")
+if not all((GTM_SCRIPTS / m).is_file() for m in _NEEDED):
+    pytest.skip(
+        "design_room_pipeline and design_room_run live at %s, and at least one "
+        "is not in this repo. "
+        "This suite tests a cole-gtm script through the kipi-design plugin. The "
+        "whole module is skipped, which is coarser than needed -- most cases here "
+        "need that script, some only need publish_gate.py (sp-947f04c7). It is "
+        "SKIPPED, not passed." % GTM_SCRIPTS,
+        allow_module_level=True)
 
 import design_room_pipeline  # noqa: E402
 import design_room_run as drr  # noqa: E402

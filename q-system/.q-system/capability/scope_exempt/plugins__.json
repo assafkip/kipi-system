@@ -1,0 +1,4 @@
+{
+ "prefix": "plugins/",
+ "reason": "plugin trees carry their own harness (see uncovered_known: plugins/*/tests are run by the plugin's own harness). The declared entries here are the subset the gate also runs. Discovery is NOT widened: 83 tracked test-pattern files live under plugins/, and declaring all of them is a fleet-wide design call captured as sp-c3d0f4d3."
+}

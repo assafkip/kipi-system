@@ -15,6 +15,19 @@
 # hand-run, never as dispatcher-driven. Absent is not approved -- the same posture
 # the reviewer's commit status takes. Case 3 is that assertion, and it is the one
 # a careless default would break.
+# COST, AND WHY THIS ENTRY CARRIES timeout_s=240 IN THE CAPABILITY MANIFEST
+# (ASK-505). Cases 4, 5 and 6 each drive verify-codex-review-live.sh, and that
+# script shells `launchctl list` -- measured on the founder's box 2026-08-08 at
+# 21.56s / 29.45s / 23.92s per invocation, so this suite costs ~65-90s wall
+# against roughly 3s of CPU. It is waiting on launchd, not computing.
+#
+# The manifest gave this entry NO timeout_s, so it inherited the gate's
+# DEFAULT_TIMEOUT_S of 60. Three ~25s calls cannot fit in 60s, so the test was
+# killed mid-case-6 on every run: the capability gate reported a `test-timeout`
+# that read like a broken test, while the test itself passes in 65s standalone.
+# It had never passed under the gate. Do not "fix" a recurrence by shrinking the
+# assertions -- measure launchctl first, because the cost scales with how many
+# jobs are loaded on the machine and this box carries a lot of them.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
