@@ -115,3 +115,52 @@ def test_userpromptsubmit_hooks_deliver_end_to_end(script, prompt):
     hso = out["hookSpecificOutput"]
     assert hso.get("hookEventName") == "UserPromptSubmit", hso
     assert hso.get("additionalContext", "").strip(), "delivered an empty payload"
+
+
+# --------------------------------------------------------------------------
+# PostToolUse gate mode. exit 2 = block, exit 0 = pass (skill-hook-pairing.md).
+# --------------------------------------------------------------------------
+def _run_gate(file_path):
+    payload = json.dumps({"tool_name": "Write",
+                          "tool_input": {"file_path": str(file_path)}})
+    return subprocess.run([sys.executable, AUDIT, "--hook"], input=payload,
+                          capture_output=True, text=True, timeout=60)
+
+
+def test_gate_blocks_a_discarded_envelope(tmp_path):
+    bad = tmp_path / "badhook.py"
+    bad.write_text('import json,sys\nsys.stdout.write(json.dumps('
+                   '{"hookSpecificOutput": {"additionalContext": "x"}}))\n')
+    proc = _run_gate(bad)
+    assert proc.returncode == 2, proc.stdout
+    assert "DISCARDS" in proc.stderr
+
+
+def test_gate_passes_the_delivering_envelope(tmp_path):
+    good = tmp_path / "goodhook.py"
+    good.write_text('import json,sys\nsys.stdout.write(json.dumps('
+                    '{"hookSpecificOutput": {"hookEventName": "SessionStart", '
+                    '"additionalContext": "x"}}))\n')
+    assert _run_gate(good).returncode == 0
+
+
+def test_gate_fast_exits_on_an_unrelated_edit(tmp_path):
+    other = tmp_path / "notes.md"
+    other.write_text("# nothing to do with hooks\n")
+    assert _run_gate(other).returncode == 0
+
+
+def test_gate_passes_when_its_own_self_test_is_broken(tmp_path, monkeypatch):
+    """A gate that cannot run must not block the session.
+
+    The pytest layer above is what catches the envelope when this is inert; the
+    gate's job is fast feedback, not being the only line.
+    """
+    bad = tmp_path / "badhook.py"
+    bad.write_text('import json,sys\nsys.stdout.write(json.dumps('
+                   '{"hookSpecificOutput": {"additionalContext": "x"}}))\n')
+    mod = _load()
+    monkeypatch.setattr(mod, "self_test", lambda verbose=True: [("broken", None, [])])
+    monkeypatch.setattr(sys, "stdin", __import__("io").StringIO(json.dumps(
+        {"tool_name": "Write", "tool_input": {"file_path": str(bad)}})))
+    assert mod.hook_mode() == 0

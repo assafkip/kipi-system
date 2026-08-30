@@ -341,15 +341,71 @@ def self_test(verbose=True):
     return failures
 
 
+def hook_mode():
+    """PostToolUse gate: block an edit that ships a discarded envelope.
+
+    Self-scoped by tool_input.file_path (token discipline: this must not walk a
+    tree on every Edit). Exit 2 = block with stderr fed back to Claude, exit 0 =
+    pass. Anything unreadable or unparseable passes -- a gate that cannot run
+    must not block the session, and the pytest layer catches what this misses.
+    """
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        return 0
+    path = (payload.get("tool_input") or {}).get("file_path") or ""
+    if not path.endswith((".py", ".sh", ".js", ".ts")):
+        return 0
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            source = fh.read()
+    except OSError:
+        return 0
+    if KEY_CONTEXT not in source:
+        return 0                      # the fast exit for every other edit
+    if self_test(verbose=False):
+        return 0                      # broken audit blocks nothing
+    sites = (audit_python(path, source=source) if path.endswith(".py")
+             else audit_text(path, source=source))
+    bad = [s for s in sites if s.verdict != OK]
+    if not bad:
+        return 0
+    lines = ["BLOCKED by hook_envelope_audit: this hook emits an envelope that "
+             "Claude Code DISCARDS.",
+             "",
+             "Measured 2026-08-30 (probe_hook_envelope.py, three headless runs "
+             "with a positive control): additionalContext reaches the model ONLY as",
+             '    {"hookSpecificOutput": {"hookEventName": "<Event>", '
+             '"additionalContext": "..."}}',
+             "Both a missing hookEventName and a top-level additionalContext were "
+             "measured ABSENT. The published docs call the key optional; they are wrong.",
+             ""]
+    for s in bad:
+        lines.append("  %s:%d  %s%s" % (s.path, s.line, s.verdict,
+                                        "  (%s)" % s.detail if s.detail else ""))
+    lines.append("")
+    lines.append("Set hookEventName to the event this hook is wired to. "
+                 "UNKNOWN means the envelope is not a literal dict here, so the "
+                 "audit cannot verify it -- make it literal, or move the emission "
+                 "to one chokepoint that is.")
+    sys.stderr.write("\n".join(lines) + "\n")
+    return 2
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("roots", nargs="*", help="files or directories to audit")
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--hook", action="store_true",
+                    help="PostToolUse mode: hook JSON on stdin, exit 2 to block")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--all", action="store_true",
                     help="print OK sites too (default: only the broken ones)")
     args = ap.parse_args(argv)
+
+    if args.hook:
+        return hook_mode()
 
     if args.self_test:
         print("self-test:")
