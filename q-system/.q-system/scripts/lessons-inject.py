@@ -348,7 +348,7 @@ def main():
         "overlap and is crude: it can MISS the relevant lesson silently, so the full "
         "title index from SessionStart remains the authority on what exists.\n"
     )
-    parts, used = [header], len(header)
+    parts, used, shown = [header], len(header), []
     for score, lid, title, body in picked:
         chunk = f"\n=== [{lid}] {title}  (relevance {score:.1f}) ===\n\n{body}\n"
         if used + len(chunk) > PAYLOAD_CEILING_CHARS:
@@ -361,15 +361,24 @@ def main():
             continue
         parts.append(chunk)
         used += len(chunk)
-    if len(parts) == 1:
+        shown.append(lid)
+    if not shown:
         return 0
 
-    # Record only what actually FIT under the ceiling. A lesson trimmed by the
-    # payload cap was never shown, so marking it seen would lose it for the rest
-    # of the session -- the dedupe would have caused the silent miss the header
-    # warns about.
-    emitted = {lid for _, lid, _, _ in picked[:len(parts) - 1]}
-    save_seen(session_id, seen | emitted, spent + used)
+    # Record what was actually SHOWN, collected as each chunk is appended.
+    #
+    # It used to slice `picked[:len(parts) - 1]`, which is only correct while the
+    # loop above stops at the first oversized lesson. Changing that `break` to a
+    # `continue` broke the positional assumption in the same commit and neither
+    # the comment nor any case noticed (Codex minor, PR #277 round 4): skip the
+    # first of three and the slice records the SKIPPED one as shown -- silently
+    # suppressing it for the rest of the session -- while the third, which really
+    # was shown, goes unrecorded and gets re-injected next turn. Both halves
+    # wrong, from one stale index.
+    #
+    # A list appended beside the payload cannot drift from it, because there is
+    # no longer a second thing to keep in sync.
+    save_seen(session_id, seen | set(shown), spent + used)
 
     # hookEventName IS PART OF THE ENVELOPE (Codex major, PR #277). Without it
     # the payload is discarded and not one word of any lesson reaches the model,

@@ -383,6 +383,57 @@ def case_an_oversized_top_lesson_does_not_starve_the_rest() -> bool:
     ctx = _ctx(out)
     return "[small-a]" in ctx or "[small-b]" in ctx
 
+def _skip_repo() -> Path:
+    """A corpus whose TOP-ranked lesson is too large to fit, with two that fit."""
+    tmp = Path(tempfile.mkdtemp())
+    d = tmp / "q-system" / "lessons"
+    d.mkdir(parents=True)
+    (d / "huge.md").write_text(
+        "---\nid: huge\nkind: pattern\ntitle: Gate allowlist timeout budget hook\n"
+        "date: 2026-08-01\n---\n\n"
+        + ("gate allowlist timeout budget hook blocking " * 4000) + "\n",
+        encoding="utf-8")
+    for slug in ("small-a", "small-b"):
+        (d / (slug + ".md")).write_text(
+            f"---\nid: {slug}\nkind: pattern\ntitle: Gate allowlist {slug}\n"
+            "date: 2026-08-01\n---\n\n"
+            "A gate allowlist covering five destinations is blind everywhere "
+            "else and the timeout budget hides it.\n",
+            encoding="utf-8")
+    return tmp
+
+
+def case_what_is_recorded_is_what_was_shown() -> bool:
+    """Codex minor, PR #277 round 4. One stale index, two wrong halves.
+
+    The emitted set was `picked[:len(parts) - 1]`, correct only while the loop
+    stopped at the first oversized lesson. Turning that `break` into a `continue`
+    broke the positional assumption in the same commit. Skip the first of three
+    and the slice records the SKIPPED lesson as shown -- suppressing it for the
+    rest of the session -- while the third, which really was shown, goes
+    unrecorded and is re-injected next turn.
+
+    Turn one shows the two small lessons. Turn two, same session, shows neither
+    again -- which holds only when what was recorded is what was shown. This
+    function is the checker.
+    """
+    repo = _skip_repo()
+    sid = "sess-shown-" + uuid.uuid4().hex
+    prompt = "widen the blocking gate allowlist before the timeout budget fires"
+    _, first = run(repo, prompt, raw=json.dumps(
+        {"prompt": prompt, "session_id": sid}))
+    if not first.strip():
+        return False
+    a = _ctx(first)
+    if "[small-a]" not in a and "[small-b]" not in a:
+        return False
+    _, second = run(repo, prompt, raw=json.dumps(
+        {"prompt": prompt, "session_id": sid}))
+    if not second.strip():
+        return True                      # nothing left to show: correct
+    b = _ctx(second)
+    return not any(tag in a and tag in b for tag in ("[small-a]", "[small-b]"))
+
 CASES = [v for k, v in sorted(globals().items()) if k.startswith("case_")]
 
 if __name__ == "__main__":
