@@ -64,6 +64,28 @@ else
   ok "an early bail clears the stale ref, so the next round self-heals"
 fi
 
+# THE EARLIEST BAIL OF ALL: mkdir (PR #265 codex major, round 2). When mkdir
+# fails there is no review tree to clear the ref THROUGH, so a fix that only
+# cleared $wt left the previous round's ref exactly where it was. This is the
+# case neither suite covered, and it is the one a real run hits on a full disk.
+git -C "$WT" update-ref "refs/remotes/pr/$PR" "$SHA1"
+mkdir() { return 1; }
+review_tree_path() { echo "$TMP/never-created/wt"; }
+review_worktree "$SHA2" >/dev/null 2>&1
+RC=$?
+unset -f mkdir
+review_tree_path() { echo "$WT"; }
+
+[ "$RC" -ne 0 ] && ok "a mkdir bail returns nonzero" \
+                || bad "a mkdir bail returns nonzero (got $RC)"
+
+if command git -C "$REPO" rev-parse "refs/remotes/pr/$PR" >/dev/null 2>&1; then
+  LEFT="$(command git -C "$REPO" rev-parse --short=8 "refs/remotes/pr/$PR")"
+  bad "a mkdir bail leaves the ref in REVIEW_REPO (still at $LEFT)"
+else
+  ok "a mkdir bail clears the ref through REVIEW_REPO too"
+fi
+
 # THE CALL SITE IS THE WIRING (PR #265 codex minor). The stale-ref suite stayed
 # fully green when the only call to assert_pr_ref_not_stale was deleted: it
 # exercised the guard as a function and never asserted that anything invokes it.

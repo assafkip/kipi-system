@@ -416,6 +416,13 @@ REVIEW_ROOT="$SKEL"
 _wt_bail() {  # _wt_bail <worktree-path>
   local wt="${1:-}"
   [ -n "$wt" ] && git -C "$wt" update-ref -d "refs/remotes/pr/$PR" >/dev/null 2>&1
+  # AND THROUGH $REVIEW_REPO (PR #265 codex major, round 2). The earliest bail
+  # is mkdir, and when THAT fails there is no review tree to clear through, so
+  # clearing only $wt left the previous round's ref exactly where it was and
+  # assert_pr_ref_not_stale wedged every later unattended review. For a real
+  # `git worktree` the two share one ref store and the second clear is a no-op;
+  # where they do not, it is the only one that runs.
+  git -C "$REVIEW_REPO" update-ref -d "refs/remotes/pr/$PR" >/dev/null 2>&1
   return 1
 }
 
@@ -464,6 +471,7 @@ review_worktree() {  # review_worktree <sha> -> prints path, or nothing
   if ! git -C "$wt" update-ref "refs/remotes/pr/$PR" "$sha" >/dev/null 2>&1 ||
      [ "$(git -C "$wt" rev-parse "refs/remotes/pr/$PR" 2>/dev/null)" != "$sha" ]; then
     git -C "$wt" update-ref -d "refs/remotes/pr/$PR" >/dev/null 2>&1 || true
+    git -C "$REVIEW_REPO" update-ref -d "refs/remotes/pr/$PR" >/dev/null 2>&1 || true
     return 1
   fi
   printf '%s' "$wt"
