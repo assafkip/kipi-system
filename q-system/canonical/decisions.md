@@ -245,3 +245,41 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Revisit:** If alert tickets start needing to be worked automatically, the
   right move is a converter that turns one into a scoped issue, not re-admitting
   raw alert bodies to the queue.
+
+## Retire the 9-phase /q-morning pipeline (2026-08-30)
+
+### RULE-2026-08-30-A: The morning routine is one Slack message, not a 37-agent pipeline
+- **Origin:** [USER-DIRECTED]
+- **Decision:** The 9-phase `/q-morning` agent pipeline is RETIRED. It is replaced
+  by `q-system/.q-system/scripts/morning-brief.py`, a scheduled job
+  (`com.kipi.morning-brief`, 07:00 local) that posts one Slack message with four
+  sections: today's calendar, mail needing an answer, owed today, overnight jobs.
+  No HTML, no action cards, no scores. Its freshness is watched by a SEPARATE
+  launchd job, `com.kipi.morning-brief-deadman`, on a different trigger class.
+- **Reason:** Founder-directed 2026-08-30: fully automated, no HTML page, one
+  Slack message each morning. Measured the same day: the pipeline's last artifact
+  is `schedule-data-2026-04-04.json`, 148 days old, and `find . -name
+  'morning-log*'` returns zero files. It died silently and no decision record
+  retired it, so it was neither running nor formally dead.
+
+  Three causes, all measured, none of them fixable by trying again:
+  1. `preflight.md` probed `Google_Calendar__gcal_list_events` and
+     `Gmail__gmail_search_messages`. Both tools were renamed (`list_events`,
+     `search_threads`) and the fallback for both rows was "None. Halt."
+  2. The same table listed Chrome MCP as CRITICAL with fallback "None. Halt.",
+     so a headless run was impossible by construction. A 7am job has no browser.
+  3. It was never automated at all: it needed the founder to open a session and
+     type a command, and it returned an HTML page. An output nobody opens is the
+     same as no output.
+
+  Not revived rather than rebuilt because most of what the nine phases did
+  (LinkedIn posts, engagement hitlist, lead sourcing, prospect pipeline, content
+  intel) is covered TODAY by live `com.cole.*` launchd jobs. Reviving the
+  orchestrator would build a second copy of running work. What was genuinely
+  missing is only the briefing.
+- **Date:** 2026-08-30
+- **Revisit:** The 37 agent prompt files under
+  `q-system/.q-system/agent-pipeline/agents/` STAY ON DISK until the brief has
+  run green for a week (earliest removal 2026-09-06), and removing them is a
+  separate deliberate act, not a cleanup. `morning-pipeline.md` and
+  `preflight.md` still describe the retired pipeline; they are the follow-up.
