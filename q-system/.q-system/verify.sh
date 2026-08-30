@@ -200,12 +200,33 @@ echo "verify.sh ${MODE} in ${TARGET}"
 # anything downstream, and this repo has no ruff installed to catch it.
 PYFILES="$(git -C "$REPO" ls-files '*.py' | head -4000)"
 if [ -n "$PYFILES" ]; then
+  # ast.parse, NOT py_compile, and that is the whole fix (2026-08-29).
+  #
+  # py_compile WRITES a .pyc. So any write failure surfaces through a check
+  # labelled "python syntax", and the label is a lie about the cause. Measured
+  # during a full-disk stop: this printed `python syntax FAILED` and "a tree that
+  # does not parse cannot be tested" while every file parsed fine and the real
+  # errors were hundreds of `[Errno 28] No space left on device` from compileall.
+  # It sent the reader to debug their own code, which is the most expensive place
+  # a wrong error message can send someone.
+  #
+  # Reproducer, no full disk required: put a valid .py in a directory, chmod 500
+  # it, and run the old line. `[Errno 13] Permission denied: '"'"'__pycache__'"'"'`,
+  # reported as a syntax failure on a syntactically perfect file. The ast.parse
+  # form passes.
+  #
+  # Relabelling the error would have been the smaller fix and the worse one: this
+  # check has no reason to write anything, so removing the write removes the whole
+  # failure class rather than renaming it. A control that cannot fail for a reason
+  # unrelated to what it measures is better than one that reports that reason well.
   run_check "python syntax" bash -c '
     cd "$1" || exit 1
     fail=0
     while IFS= read -r f; do
       [ -f "$f" ] || continue
-      python3 -m py_compile "$f" 2>&1 || fail=1
+      python3 -c "import ast,sys
+src=open(sys.argv[1],encoding=\"utf-8\").read()
+ast.parse(src,sys.argv[1])" "$f" 2>&1 || fail=1
     done <<< "$2"
     exit $fail
   ' _ "$TARGET" "$PYFILES"
