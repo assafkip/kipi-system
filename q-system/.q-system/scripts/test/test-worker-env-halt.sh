@@ -426,6 +426,316 @@ else
       "is_environmental says yes but environmental_reason returned empty -- the two patterns have drifted"
 fi
 
+# ============================================================================
+# RUN C -- A CONCURRENT WORKER'S OUTPUT IN THE SHARED LOG (PR #200 review r3)
+# ============================================================================
+# Concurrent workers are SUPPORTED here (test-linear-worker-parallel.sh, the
+# per-worktree claim lock). They all append to one $LOG. The classifier used to
+# read THIS run's output as a byte slice of that shared file, so any line another
+# worker appended inside the window landed in the slice.
+#
+# That breaks the detector in the direction that costs money. is_environmental
+# requires EVERY non-blank line to be the machine's, so one foreign "ok ASK-999"
+# in the slice turns a real outage into ordinary output: no halt, and the issue
+# is charged an attempt for the machine's condition -- the exact ASK-873 defect,
+# re-entered through the log instead of through the ledger.
+#
+# The stub below is the other worker: it appends one ordinary line straight to
+# the shared log, then speaks the measured limit line as its own output.
+STUB_C="$WORK/stub-c"; mkdir -p "$STUB_C"
+cp "$WORK/gh" "$STUB_C/gh"
+cat > "$STUB_C/claude" <<SH
+#!/usr/bin/env bash
+printf 'ok ASK-999 (a concurrent worker, mid-dispatch, writing to the shared log)\n' \\
+  >> "\$KIPI_STATE_DIR/linear-worker.log"
+printf '%s\n' "$LIMIT_LINE"
+exit 0
+SH
+chmod +x "$STUB_C/claude"
+
+SKEL_C="$(make_skel "$WORK/run-c")"
+STATE_C="$WORK/state-c"
+NOTIFY_C="$WORK/notify-c.log"
+PATH="$STUB_C:$PATH" \
+   KIPI_SKEL="$SKEL_C" KIPI_STATE_DIR="$STATE_C" \
+   KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+   KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+   KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" \
+   KIPI_NOTIFY="$WORK/recording-notify.sh" \
+   TEST_NOTIFY_LOG="$NOTIFY_C" \
+   bash "$WORKER" --apply --limit 2 > "$WORK/run-c.out" 2>&1
+RC_C=$?
+OUT_C="$(cat "$WORK/run-c.out" 2>/dev/null)
+$(cat "$STATE_C/linear-worker.log" 2>/dev/null)"
+ATT_C="$STATE_C/linear-worker-attempts.json"
+
+if grep -q "start ASK-811" <<<"$OUT_C"; then
+  ok "positive self-test: run C dispatched ASK-811"
+else
+  bad "positive self-test: run C dispatched ASK-811" \
+      "output: $(tr '\n' '|' <<<"$OUT_C" | cut -c1-400)"
+fi
+
+if [ -f "$ATT_C" ] && python3 -c "
+import json,sys
+d=json.load(open('$ATT_C'))
+sys.exit(0 if d.get('ASK-811',{}).get('count',0)>0 else 1)" 2>/dev/null; then
+  bad "a concurrent worker's log line does not hide the outage" \
+      "THE DEFECT: another worker's line landed in this run's classifier slice, so a real outage read as ordinary output and ASK-811 was charged: $(cat "$ATT_C")"
+else
+  ok "a concurrent worker's log line does not hide the outage (no attempt charged)"
+fi
+
+if grep -q "start ASK-812" <<<"$OUT_C"; then
+  bad "the dispatcher still halts despite the shared log" \
+      "THE DEFECT: the outage was classified as ordinary output, so the loop marched on to ASK-812"
+else
+  ok "the dispatcher still halts despite a concurrent writer in the shared log"
+fi
+
+if [ "$RC_C" -ne 0 ]; then
+  ok "the halted run still exits non-zero with a contaminated shared log (rc=$RC_C)"
+else
+  bad "the halted run exits non-zero with a contaminated shared log" \
+      "rc=0 -- launchd sees a healthy run"
+fi
+
+# ============================================================================
+# RUN D -- ONE RUN'S HALT MARKER MUST NOT SPEAK FOR ANOTHER (PR #200 r3)
+# ============================================================================
+# The halt marker lived at ONE path under $STATE_DIR and was never removed after
+# it was read. Two supported concurrent runs therefore share it:
+#
+#   t0  run D-healthy starts, clears the shared path, dispatches a slow issue
+#   t1  run D-outage starts, hits the outage, WRITES the shared path, exits 9
+#   t2  run D-healthy finishes its loop, reads the marker D-outage left, and
+#       reports a halt it never had -- a second page for one condition, and a
+#       healthy run reporting failure to launchd.
+#
+# Each run gets its own skeleton so the only thing they share is the state dir,
+# which is the resource under test; the shared-worktree collision is already
+# owned by test-linear-worker-parallel.sh.
+STATE_D="$WORK/state-d"          # SHARED between the two runs, on purpose.
+NOTIFY_D_HEALTHY="$WORK/notify-d-healthy.log"
+NOTIFY_D_OUTAGE="$WORK/notify-d-outage.log"
+
+STUB_D_HEALTHY="$WORK/stub-d-healthy"; mkdir -p "$STUB_D_HEALTHY"
+cp "$WORK/gh" "$STUB_D_HEALTHY/gh"
+# Slow ON PURPOSE: the window this defect lives in is "one run is still working
+# while another finishes", and a 10s dispatch makes that window deterministic
+# rather than a race the suite would only lose sometimes.
+cat > "$STUB_D_HEALTHY/claude" <<'SH'
+#!/usr/bin/env bash
+sleep 10
+printf 'Read the DoR. No changes were needed.\n'
+exit 0
+SH
+chmod +x "$STUB_D_HEALTHY/claude"
+
+STUB_D_OUTAGE="$WORK/stub-d-outage"; mkdir -p "$STUB_D_OUTAGE"
+cp "$WORK/gh" "$STUB_D_OUTAGE/gh"
+cat > "$STUB_D_OUTAGE/claude" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "$LIMIT_LINE"
+exit 0
+SH
+chmod +x "$STUB_D_OUTAGE/claude"
+
+SKEL_D_HEALTHY="$(make_skel "$WORK/run-d-healthy")"
+SKEL_D_OUTAGE="$(make_skel "$WORK/run-d-outage")"
+
+PATH="$STUB_D_HEALTHY:$PATH" \
+   KIPI_SKEL="$SKEL_D_HEALTHY" KIPI_STATE_DIR="$STATE_D" \
+   KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+   KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+   KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" \
+   KIPI_NOTIFY="$WORK/recording-notify.sh" \
+   TEST_NOTIFY_LOG="$NOTIFY_D_HEALTHY" \
+   bash "$WORKER" --apply --limit 1 > "$WORK/run-d-healthy.out" 2>&1 &
+D_HEALTHY_PID=$!
+sleep 3
+PATH="$STUB_D_OUTAGE:$PATH" \
+   KIPI_SKEL="$SKEL_D_OUTAGE" KIPI_STATE_DIR="$STATE_D" \
+   KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+   KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+   KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" \
+   KIPI_NOTIFY="$WORK/recording-notify.sh" \
+   TEST_NOTIFY_LOG="$NOTIFY_D_OUTAGE" \
+   bash "$WORKER" --apply --limit 1 > "$WORK/run-d-outage.out" 2>&1
+RC_D_OUTAGE=$?
+wait "$D_HEALTHY_PID"; RC_D_HEALTHY=$?
+OUT_D_HEALTHY="$(cat "$WORK/run-d-healthy.out" 2>/dev/null)"
+
+# POSITIVE SELF-TEST: the outage run really did halt and really did write a
+# marker. Without it the assertions below pass on a run that never halted.
+if [ "$RC_D_OUTAGE" -eq 9 ] && grep -qi 'runner itself is unavailable' "$NOTIFY_D_OUTAGE" 2>/dev/null; then
+  ok "positive self-test: the concurrent outage run halted and paged (rc=$RC_D_OUTAGE)"
+else
+  bad "positive self-test: the concurrent outage run halted and paged" \
+      "rc=$RC_D_OUTAGE, alerts: $(cat "$NOTIFY_D_OUTAGE" 2>/dev/null | tr '\n' '|' | cut -c1-300)"
+fi
+
+if [ "$RC_D_HEALTHY" -eq 0 ]; then
+  ok "a healthy concurrent run exits 0 (it does not inherit another run's halt)"
+else
+  bad "a healthy concurrent run exits 0" \
+      "THE DEFECT: rc=$RC_D_HEALTHY -- the healthy run read the halt marker another run left at the shared path"
+fi
+
+if grep -qi 'HALTED' <<<"$OUT_D_HEALTHY"; then
+  bad "a healthy concurrent run does not report another run's halt" \
+      "THE DEFECT: it announced a halt it never had: $(grep -i HALTED <<<"$OUT_D_HEALTHY" | head -2)"
+else
+  ok "a healthy concurrent run does not report another run's halt"
+fi
+
+if [ -s "$NOTIFY_D_HEALTHY" ] && grep -qi 'runner itself is unavailable' "$NOTIFY_D_HEALTHY" 2>/dev/null; then
+  bad "one machine condition pages once, not once per concurrent run" \
+      "THE DEFECT: the healthy run sent a SECOND page for the other run's outage: $(cat "$NOTIFY_D_HEALTHY")"
+else
+  ok "one machine condition pages once, not once per concurrent run"
+fi
+
+# ============================================================================
+# RUN E -- THE CODEX FALLBACK'S OWN OUTAGE (PR #200 review r3)
+# ============================================================================
+# When Sana refuses on a missing capability the issue is handed to Codex before
+# parking. That second runner's output was never classified, so an exhausted
+# Codex account -- a condition of the MACHINE, identical for every issue -- read
+# as "Codex left no commit" and the issue was parked `blocked:capability`
+# FOREVER: the label pulls it out of the picker and only a human takes it back.
+#
+# That is ASK-873's defect one runner deeper, and worse than the original,
+# because a charged attempt decays and a park does not.
+#
+# It must NOT halt the whole dispatcher, and that is the second assertion here.
+# Sana is THE runner, so her outage makes every later dispatch waste; Codex is
+# reached only on a capability refusal, so stopping the queue for it would trade
+# a rare park for a fleet-wide stop -- the false-halt cost this file already
+# spent two review rounds refusing to pay.
+STUB_E="$WORK/stub-e"; mkdir -p "$STUB_E"
+cp "$WORK/gh" "$STUB_E/gh"
+cat > "$STUB_E/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s' "the harness refused the sensitive path .claude/settings.json" \
+  > .sana-blocked-capability
+printf 'Not equipped for this one; wrote the capability sentinel.\n'
+exit 0
+SH
+chmod +x "$STUB_E/claude"
+
+cat > "$WORK/quota-codex.sh" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "$LIMIT_LINE"
+exit 0
+SH
+
+SKEL_E="$(make_skel "$WORK/run-e")"
+STATE_E="$WORK/state-e"
+NOTIFY_E="$WORK/notify-e.log"
+PATH="$STUB_E:$PATH" \
+   KIPI_SKEL="$SKEL_E" KIPI_STATE_DIR="$STATE_E" \
+   KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+   KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+   KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/quota-codex.sh" \
+   KIPI_NOTIFY="$WORK/recording-notify.sh" \
+   TEST_NOTIFY_LOG="$NOTIFY_E" \
+   bash "$WORKER" --apply --limit 2 > "$WORK/run-e.out" 2>&1
+RC_E=$?
+OUT_E="$(cat "$WORK/run-e.out" 2>/dev/null)
+$(cat "$STATE_E/linear-worker.log" 2>/dev/null)"
+ATT_E="$STATE_E/linear-worker-attempts.json"
+
+if grep -q "handing to the Codex runner" <<<"$OUT_E"; then
+  ok "positive self-test: run E reached the Codex fallback"
+else
+  bad "positive self-test: run E reached the Codex fallback" \
+      "the capability sentinel path never ran, so every assertion below is vacuous: $(tr '\n' '|' <<<"$OUT_E" | cut -c1-500)"
+fi
+
+if grep -qi 'second runner is unavailable' <<<"$OUT_E"; then
+  ok "an exhausted Codex is named as the machine's condition, not the issue's"
+else
+  bad "an exhausted Codex is named as the machine's condition" \
+      "THE DEFECT: the Codex outage was not classified at all: $(grep -i codex <<<"$OUT_E" | tr '\n' '|' | cut -c1-400)"
+fi
+
+if grep -qi 'Codex is ALSO not equipped\|Codex left no commit' <<<"$OUT_E"; then
+  bad "an exhausted Codex does not park the issue as blocked:capability" \
+      "THE DEFECT: a machine outage was recorded as a permanent capability block -- the picker never offers the issue again"
+else
+  ok "an exhausted Codex does not park the issue as blocked:capability"
+fi
+
+if [ -f "$ATT_E" ] && python3 -c "
+import json,sys
+d=json.load(open('$ATT_E'))
+sys.exit(0 if d.get('ASK-811',{}).get('count',0)>0 else 1)" 2>/dev/null; then
+  bad "a Codex outage charges the issue no attempt" \
+      "ledger: $(cat "$ATT_E")"
+else
+  ok "a Codex outage charges the issue no attempt"
+fi
+
+# ...and it does NOT stop the queue. Sana is fine; only the rarely-reached
+# fallback is down.
+if grep -q "start ASK-812" <<<"$OUT_E"; then
+  ok "a Codex outage does not halt the dispatcher (Sana is still healthy)"
+else
+  bad "a Codex outage does not halt the dispatcher" \
+      "THE OVERREACH: the whole queue stopped because the SECOND runner was down"
+fi
+
+# ============================================================================
+# RUN F -- NEGATIVE FIXTURE for run E: an honest Codex refusal STILL parks
+# ============================================================================
+# Without this, "never park on a Codex refusal" would be a silent way to pass
+# run E, and the park -- which is the correct outcome when neither runner is
+# equipped -- would be gone.
+STUB_F="$WORK/stub-f"; mkdir -p "$STUB_F"
+cp "$WORK/gh" "$STUB_F/gh"
+cp "$STUB_E/claude" "$STUB_F/claude"
+
+cat > "$WORK/refusing-codex.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s' "codex has no browser and the DoR needs one" > .codex-blocked-capability
+printf 'I am also not equipped for this.\n'
+exit 0
+SH
+
+SKEL_F="$(make_skel "$WORK/run-f")"
+STATE_F="$WORK/state-f"
+NOTIFY_F="$WORK/notify-f.log"
+PATH="$STUB_F:$PATH" \
+   KIPI_SKEL="$SKEL_F" KIPI_STATE_DIR="$STATE_F" \
+   KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+   KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+   KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/refusing-codex.sh" \
+   KIPI_NOTIFY="$WORK/recording-notify.sh" \
+   TEST_NOTIFY_LOG="$NOTIFY_F" \
+   bash "$WORKER" --apply --limit 2 > "$WORK/run-f.out" 2>&1
+OUT_F="$(cat "$WORK/run-f.out" 2>/dev/null)
+$(cat "$STATE_F/linear-worker.log" 2>/dev/null)"
+
+if grep -qi 'Codex is ALSO not equipped' <<<"$OUT_F"; then
+  ok "NEGATIVE FIXTURE: an honest Codex capability refusal still parks the issue"
+else
+  bad "NEGATIVE FIXTURE: an honest Codex capability refusal still parks the issue" \
+      "THE REGRESSION: the environmental branch swallowed a real refusal: $(grep -i codex <<<"$OUT_F" | tr '\n' '|' | cut -c1-400)"
+fi
+
+if grep -qi 'second runner is unavailable' <<<"$OUT_F"; then
+  bad "NEGATIVE FIXTURE: an honest refusal is not called an outage" \
+      "a reasoned refusal was classified as a machine condition"
+else
+  ok "NEGATIVE FIXTURE: an honest refusal is not called an outage"
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

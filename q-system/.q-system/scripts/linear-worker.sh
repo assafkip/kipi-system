@@ -129,7 +129,28 @@ REVIEWS_DIR="$STATE_DIR/pr-reviews"
 # The one alert has to name how many issues went unattempted, and that number is
 # only knowable after the loop, so the halt crosses the subshell boundary as a
 # FILE. Under $STATE_DIR so the suite's KIPI_STATE_DIR seam covers it too.
-ENV_HALT_FILE="${KIPI_STATE_DIR:-$HOME/.config/kipi}/linear-worker-env-halt"
+#
+# PER-PROCESS, NOT ONE SHARED PATH (Codex round 3 on PR #200, major). Concurrent
+# workers are supported -- that is what the per-worktree claim lock and
+# test-linear-worker-parallel.sh are for -- and they all share $STATE_DIR. At one
+# shared path the marker stops meaning "THIS run halted":
+#   * the file is not removed after it is read, so a run still working when
+#     another run halts reads that other run's marker at the end of its own loop
+#     and reports a halt it never had -- a second page for one machine condition
+#     and a healthy run handing launchd an exit 9;
+#   * and the clear-before-the-loop below would, at a shared path, erase a
+#     marker a concurrent run had just written and was about to read.
+# `$$` is this script's pid and is unique among LIVE processes, which is exactly
+# the scope of the collision. A recycled pid can only ever meet a file left by a
+# DEAD run, and the clear below runs before the loop for that case.
+ENV_HALT_FILE="${KIPI_STATE_DIR:-$HOME/.config/kipi}/linear-worker-env-halt.$$"
+# THIS RUN'S OWN COPY OF THE AGENT'S OUTPUT, for the same reason. The classifier
+# used to read a byte slice of the shared $LOG, so one line another worker
+# appended inside the window landed in the slice -- and is_environmental requires
+# EVERY non-blank line to be the machine's, so a foreign "ok ASK-999" turns a
+# real outage into ordinary output and the issue is charged for it. Same defect
+# as the marker, pointed at the ledger instead of the alert.
+RUN_OUT_FILE="${KIPI_STATE_DIR:-$HOME/.config/kipi}/linear-worker-runout.$$"
 
 MAX_ATTEMPTS=3
 # Conflict rounds are capped SEPARATELY from failed attempts (ASK-212).
@@ -1495,7 +1516,10 @@ DONE=0
 # run halted. A marker left by a previous run would otherwise alert every 15
 # minutes about an outage that ended days ago -- the cry-wolf failure that
 # teaches the reader to mute the channel (founder-notifications.md).
-rm -f "$ENV_HALT_FILE" 2>/dev/null || true
+# Now that the path carries `$$` this clears only OUR OWN file, which is what
+# makes it safe to run while another worker is mid-loop. The unsuffixed name is
+# swept too: it is what pre-upgrade runs wrote, and nothing reads it any more.
+rm -f "$ENV_HALT_FILE" "$RUN_OUT_FILE" "$STATE_DIR/linear-worker-env-halt" 2>/dev/null || true
 printf '%s' "$PICKED" | python3 -c 'import json,sys;[print(i["id"]) for i in json.load(sys.stdin)["ready"]]' | \
 while IFS= read -r ISSUE; do
   [ "$DONE" -ge "$LIMIT" ] && break
@@ -2086,14 +2110,19 @@ Anything real you find and are not fixing: capture it, never just mention it:
   # before the Codex dispatch. This is the same move at the Sana dispatch, so
   # both runners establish the freshness their own readers assume.
   rm -f "$TREE/.sana-needs-scope" "$TREE/.sana-blocked-capability"
-  # Byte offset BEFORE the run so the classifier below reads exactly THIS run's
-  # output. Reading a fixed tail of $LOG instead would let a PREVIOUS dispatch's
-  # limit line -- the log persists across runs -- halt a healthy one, which is
-  # this bug pointed the other way.
-  LOG_BEFORE="$(wc -c < "$LOG" 2>/dev/null || echo 0)"
+  # A PRIVATE CAPTURE, not a byte slice of the shared log (Codex round 3, major).
+  # The classifier has to read exactly THIS dispatch's output: a fixed tail of
+  # $LOG would let a PREVIOUS dispatch's limit line halt a healthy run, and an
+  # offset slice of $LOG lets a CONCURRENT worker's line land inside this one --
+  # which hides a real outage, because is_environmental requires every non-blank
+  # line to be the machine's. `tee -a` keeps the shared log streaming live for a
+  # human tailing it; the classifier reads the file nobody else writes.
+  # `set -o pipefail` inside the `bash -c`: shell options do not cross into a new
+  # bash, so without it run_bounded would score tee's exit status, not claude's.
   ENV_FAIL=""
-  if run_bounded "$TIMEOUT_SECONDS" bash -c "cd '$TREE' && KIPI_AGENT='$AGENT' claude -p \"\$1\" </dev/null >>'$LOG' 2>&1" _ "$PROMPT"; then
-    AGENT_OUT="$(tail -c "+$((LOG_BEFORE + 1))" "$LOG" 2>/dev/null)"
+  : > "$RUN_OUT_FILE" 2>/dev/null || true
+  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' claude -p \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT"; then
+    AGENT_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
     # THE OBSERVED SHAPE EXITS 0 (ASK-873). On 2026-08-15 every `claude -p` on
     # the machine printed the weekly-limit line and exited SUCCESSFULLY, so the
     # rc!=0 branch below never ran and the run reached the no-PR bump at step 5
@@ -2108,7 +2137,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
     fi
   else
     rc=$?
-    AGENT_OUT="$(tail -c "+$((LOG_BEFORE + 1))" "$LOG" 2>/dev/null)"
+    AGENT_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
     if is_environmental "$AGENT_OUT"; then
       # NOT bump_attempt. An exhausted account is a property of the machine,
       # identical for every issue the loop has not reached yet; charging it to
@@ -2231,7 +2260,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
     # RESET PER ISSUE, like $REFUSED above: this loop reuses every variable across
     # iterations, so a $CODEX_WHY that survived would attach the previous issue's
     # Codex refusal to the next issue's Linear comment.
-    CODEX_WHY=""; CODEX_CONTINUED=""
+    CODEX_WHY=""; CODEX_CONTINUED=""; CODEX_ENV=""
     if [ "$REFUSE_KIND" = "capability" ]; then
       # A stale sentinel from a previous run would be read as this run's refusal,
       # which is the same defect the Sana sentinel already has a comment about.
@@ -2273,10 +2302,24 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       # run_bounded, not a bare call: an unbounded second runner at 3am is the
       # failure mode loop-exits.md exit 7 exists for. ONE invocation, no retry --
       # a dead Codex must cost one timeout, not a spend loop.
-      if run_bounded "$TIMEOUT_SECONDS" bash -c "cd '$TREE' && $CODEX_CMD \"\$1\" </dev/null >>'$LOG' 2>&1" _ "$CODEX_PROMPT"; then
+      # Captured privately and classified, exactly like Sana's run above. Until
+      # Codex round 3 this output went straight into the shared log and was never
+      # read: an exhausted Codex account printed its limit line, left no commit
+      # and no sentinel, and the issue was parked `blocked:capability` FOREVER
+      # for a condition of the machine. That is ASK-873's own defect one runner
+      # deeper, and strictly worse than the original -- an attempt count decays
+      # and gets retried; a park pulls the issue out of the picker until a human
+      # takes it back.
+      : > "$RUN_OUT_FILE" 2>/dev/null || true
+      if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $CODEX_CMD \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT"; then
         crc=0
       else
         crc=$?
+      fi
+      CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
+      CODEX_ENV=""
+      if is_environmental "$CODEX_OUT"; then
+        CODEX_ENV="$(environmental_reason "$CODEX_OUT")"
       fi
       if [ -f "$TREE/.codex-blocked-capability" ]; then
         CODEX_WHY="$(head -c 1500 "$TREE/.codex-blocked-capability" 2>/dev/null)"
@@ -2306,7 +2349,25 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
          && [ "$CODEX_HEAD_AFTER" != "$CODEX_HEAD_BEFORE" ]; then
         CODEX_CHANGED_FILES="$(git -C "$TREE" diff --name-only "$CODEX_HEAD_BEFORE" "$CODEX_HEAD_AFTER" 2>/dev/null || true)"
       fi
-      if [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; then
+      # CHECKED FIRST, before any of the outcomes below. A runner that could not
+      # answer produced none of them: no commit, no sentinel, no refusal. Reading
+      # its silence as "Codex is also not equipped" is the category error this
+      # whole issue is about, so the machine's condition gets its own branch
+      # rather than falling into the park.
+      #
+      # IT DOES NOT HALT THE DISPATCHER, and that asymmetry is deliberate. Sana
+      # is THE runner: her outage makes every later dispatch in the queue waste
+      # ~31 minutes to learn a fact already known, so stopping is the cheap move.
+      # Codex is reached only on a capability refusal, which is rare, so halting
+      # the whole queue for it would trade one rare park for a fleet-wide stop --
+      # the false-halt cost env-failure-lib.sh spent two review rounds refusing.
+      # The issue simply is not parked: it keeps no label, returns to the pool,
+      # and the next run retries both runners once the account can answer again.
+      if [ -n "$CODEX_ENV" ]; then
+        say "$ISSUE the second runner is unavailable ($CODEX_ENV) -- a condition of the machine, not of this issue. NOT parking it."
+        # The label is the permanent damage; withholding it is the entire fix.
+        REFUSE_LABEL=""
+      elif [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; then
         CODEX_CONTINUED="$CODEX_HEAD_AFTER"
         say "$ISSUE Codex CONTINUED the work Sana was not equipped for (HEAD $CODEX_HEAD_BEFORE -> $CODEX_HEAD_AFTER) -- not parking it"
         # Clearing the label is the whole point: with it applied the picker never
@@ -2329,7 +2390,9 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       fi
     fi
     if [ -z "$REFUSE_LABEL" ]; then
-      : # Codex continued it; there is nothing to park and no label to apply.
+      : # Either Codex continued the work, or Codex itself was unavailable.
+        # Both mean there is nothing to park and no label to apply; the say line
+        # in each branch above already recorded which of the two happened.
     elif python3 "$SYNC" label "$ISSUE" "$REFUSE_LABEL" >>"$LOG" 2>&1; then
       say "$ISSUE labelled $REFUSE_LABEL -- the picker will stop offering it"
     else
@@ -2350,6 +2413,16 @@ $SCOPE_WHY
 The Codex runner was handed the same issue and committed on \`$BRANCH\` (HEAD now \`$CODEX_CONTINUED\`). A capability one runner lacks is not a capability the fleet lacks.
 
 **Next:** review the branch/PR as normal. No capability grant is needed and no founder decision is pending."
+    elif [ -n "$CODEX_ENV" ]; then
+      REFUSE_NOTE="**Not parked: the second runner was unavailable.** No label was applied, so this issue stays in the pool and the loop picks it up again.
+
+Sana stopped here:
+
+$SCOPE_WHY
+
+The Codex runner is handed the issue before parking, and it could not answer: \`$CODEX_ENV\`. That is a condition of the MACHINE, identical for every issue, so it says nothing about whether Codex is equipped for THIS one. Parking on it would pull the issue out of the picker permanently for a state that clears itself.
+
+**Next:** nothing per issue, and no founder decision. The next run tries both runners again; if Codex is genuinely not equipped either, it parks then with both refusals named."
     elif [ "$REFUSE_KIND" = "capability" ]; then
       REFUSE_NOTE="**Blocked on a missing capability, not on scope.** Labelled \`blocked:capability\`; the picker will not offer it again until the capability exists.
 
@@ -2663,8 +2736,13 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
   # partial diff is a real approval of the code that is there. It is not a
   # statement about the ISSUE, which is still held at $REFUSE_LABEL and is not
   # done. The closing line is the one an operator scans, so it says which.
-  if [ -n "$REFUSED" ]; then
+  if [ -n "$REFUSED" ] && [ -n "$REFUSE_LABEL" ]; then
     say "$ISSUE is NOT done: held at $REFUSE_LABEL. Any PR above carries only the half that shipped before the block, and the verdict on it is a verdict on that half."
+  elif [ -n "$REFUSED" ]; then
+    # A refusal that was NOT parked: Codex was unavailable, so no label was
+    # applied. Saying "held at " with nothing after it reads as a bug in the
+    # line rather than the fact it is reporting.
+    say "$ISSUE is NOT done and is NOT held: no label was applied, so it returns to the pool. Any PR above carries only the half that shipped before the block."
   fi
   # A REFUSAL COSTS A TURN, NOT A DISPATCH. This was a `continue` before the
   # DONE++ at the sentinel above; the fall-through moved the skip here so the
@@ -2679,8 +2757,14 @@ done
 # it can state how many issues went UNATTEMPTED -- that number is only knowable
 # once the loop has stopped. One machine-wide condition, one ticket, naming what
 # a human would otherwise reconstruct from eleven identical TERMINAL lines.
+rm -f "$RUN_OUT_FILE" 2>/dev/null || true
 if [ -f "$ENV_HALT_FILE" ]; then
   HALT_RAW="$(cat "$ENV_HALT_FILE" 2>/dev/null)"
+  # CONSUMED ON READ. The marker has now done its whole job, and leaving it on
+  # disk is how a run's halt outlives the run: the path is per-pid, so a recycled
+  # pid would find a stale marker, and the clear-before-the-loop is then the only
+  # thing standing between a dead run's outage and a live run's exit 9.
+  rm -f "$ENV_HALT_FILE" 2>/dev/null || true
   HALT_ISSUE="${HALT_RAW%%|*}"
   HALT_REASON="${HALT_RAW#*|*|}"
   HALT_DONE="$(printf '%s' "$HALT_RAW" | cut -d'|' -f2)"
