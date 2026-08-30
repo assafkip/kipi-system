@@ -682,12 +682,34 @@ def sweep(root, args):
     try:
         for i, entry in enumerate(pop, 1):
             tp = entry["path"]
-            if tp in resume:
-                results.append(resume[tp])
+            # THE CACHE KEY IS THE CONTENT, NOT THE PATH (PR #272 major).
+            #
+            # --resume matched on test path alone, so editing a test and
+            # resuming replayed the OLD verdict under the NEW file's name. An
+            # unattended report then described a version of the code that no
+            # longer exists, with no marker saying so -- and a resumed run is
+            # exactly the run nobody is watching.
+            #
+            # Both halves matter and both are hashed: a verdict is a claim about
+            # a TEST and the SUBJECT it was measured against, so a changed
+            # subject invalidates it just as a changed test does.
+            #
+            # A cached row from before this change carries no test_sha, and is
+            # therefore treated as a MISS and re-run. Silently trusting it would
+            # be the same defect wearing a compatibility argument.
+            fingerprint = test_fingerprint(root, tp, resume.get(tp))
+            cached = resume.get(tp)
+            if cached is not None and cached.get("test_sha") == fingerprint:
+                results.append(cached)
                 print(f"[{i}/{len(pop)}] cached {tp}", flush=True)
                 continue
+            if cached is not None:
+                why = ("no fingerprint on the cached row"
+                       if cached.get("test_sha") is None else "content changed")
+                print(f"[{i}/{len(pop)}] re-running ({why}) {tp}", flush=True)
             base = sw.run_test(entry)
             rec = {"test": tp, "runner": entry["runner"], "baseline": base,
+                   "test_sha": fingerprint,
                    "pairs": [], "ts": datetime.datetime.now().isoformat(timespec="seconds")}
             if base["timed_out"] or base["rc"] != 0:
                 # self-guard 4: you cannot measure whether a mutation turns a
@@ -713,6 +735,30 @@ def sweep(root, args):
 
     report(results, outdir)
     return results
+
+
+def test_fingerprint(root, test_path, cached):
+    """Hash the test plus every subject a cached verdict was measured against.
+
+    Returns None only when the test file itself cannot be read, and None never
+    equals a stored fingerprint, so an unreadable test is a cache MISS rather
+    than a silent hit.
+    """
+    paths = [test_path]
+    for pair in (cached or {}).get("pairs", []) or []:
+        subject = pair.get("subject")
+        if subject and subject not in paths:
+            paths.append(subject)
+    h = hashlib.sha256()
+    try:
+        for rel in paths:
+            h.update(rel.encode("utf-8"))
+            h.update(b"\0")
+            h.update((root / rel).read_bytes())
+            h.update(b"\0")
+    except OSError:
+        return None
+    return h.hexdigest()[:16]
 
 
 def latest_per_test(lines):
