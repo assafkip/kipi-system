@@ -62,10 +62,27 @@ _OVERRIDE = os.environ.get("KIPI_DESTRUCTIVE_HOOK")
 # cannot quietly become a different program that passes its own tests.
 VENDORED = pathlib.Path(__file__).parent / "q-system/.q-system/hooks/destructive-op-deny.sh"
 
+# THE VENDORED COPY, ON EVERY MACHINE (Codex minor 4, PR #274 -- and the defect
+# turned out to be wider than the finding said).
+#
+# This used to prefer the LIVE hook whenever one existed, on the reasoning that
+# the live hook is what really runs. The consequence, measured when verify.sh
+# refused the round-4 commit: the suite graded ~/.claude/hooks/... on the
+# founder's laptop and the repo copy in CI, so the SAME suite was green about two
+# different programs depending on where it ran -- exactly the false green the
+# drift case below was written to prevent, arriving through the door next to it.
+#
+# It also made a hook change uncommittable. Nine cases pinning THIS branch's fix
+# failed locally against a live hook that predates the fix, and the only way to
+# make them pass would have been to deploy unreviewed guard code to the machine
+# first. A gate you can only clear by shipping the thing under review is not a
+# gate.
+#
+# So: the repo copy is the artifact under review, it is what CI executes, and it
+# is what every behavioural case here grades. KIPI_DESTRUCTIVE_HOOK still points
+# this at the live file for a deliberate check of the deployed copy.
 if _OVERRIDE:
     _UNDER_TEST = pathlib.Path(_OVERRIDE)
-elif HOOK.is_file():
-    _UNDER_TEST = HOOK
 else:
     _UNDER_TEST = VENDORED
 
@@ -76,6 +93,21 @@ ANCHORED = (
     r"'(^|[;&|]|\$\(|`)[[:space:]]*"
     r"([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*kipi[[:space:]]+update'"
 )
+
+# The REVIEWED copy: this file as it stands on origin/main. Compared against the
+# live hook below, deliberately NOT against the working tree -- comparing to the
+# working tree makes every in-progress hook edit look like machine drift and
+# blocks the commit that would fix it.
+_VENDORED_REL = "q-system/.q-system/hooks/destructive-op-deny.sh"
+try:
+    _SHIPPED = subprocess.run(
+        ["git", "-C", str(pathlib.Path(__file__).parent), "show",
+         "origin/main:%s" % _VENDORED_REL],
+        capture_output=True, check=True).stdout
+except Exception:
+    # No origin/main, no git, or the file is not on main yet (it is NEW in
+    # PR #274). Nothing to compare against; the case skips and says so.
+    _SHIPPED = None
 
 pytestmark = pytest.mark.skipif(
     not _UNDER_TEST.is_file(),
@@ -441,16 +473,40 @@ class TestFlagPositionDoesNotMoveTheTarget:
     def test_the_fleet_shapes_are_unaffected(self, tmp_path, command):
         assert decide(hook_copy(tmp_path), command, tmp_path) == "deny", command
 
-    @pytest.mark.skipif(not HOOK.is_file(),
-                        reason="no live hook on this machine; nothing to drift from")
-    def test_the_vendored_copy_has_not_drifted(self):
-        """The vendored copy is what CI actually executes. If it drifts from the
-        hook that really runs, CI is green about a different program -- which is
-        the same false green vendoring was added to remove, one layer over."""
+    @pytest.mark.skipif(not HOOK.is_file() or _SHIPPED is None,
+                        reason="needs BOTH a live hook and a copy of this file "
+                               "on origin/main; one of them is absent here")
+    def test_the_live_hook_is_running_reviewed_code(self):
+        """The vendored copy and the live hook are byte-identical, ON A MACHINE
+        THAT HAS BOTH.
+
+        READ THIS CASE'S SILENCE NARROWLY (Codex minor, PR #274). An earlier
+        docstring here said "the vendored copy is what CI actually executes, so
+        if it drifts CI is green about a different program" -- which reads as a
+        promise that CI is protected. It is not, and cannot be: the skipif right
+        above tests HOOK, which is ~/.claude/hooks/destructive-op-deny.sh, and
+        this module's own premise is that a runner does not have that file. So
+        in CI this case SKIPS, every time, and nothing about drift is checked
+        there at all.
+
+        What it does cover is still worth having, and it is where drift is
+        CREATED rather than where it is suffered: the founder's laptop, the only
+        machine with a live hook to edit. Editing the live copy and forgetting to
+        re-vendor goes red here on the next local run.
+
+        What nothing covers: a push whose vendored copy was never re-synced, by
+        someone whose laptop never ran the suite. Closing that needs a
+        pre-push-side check with the live hook in hand, which is a different
+        gate with a different blast radius, not a wider assertion here.
+        """
         assert VENDORED.is_file(), "the vendored reference copy is missing: %s" % VENDORED
-        assert VENDORED.read_bytes() == HOOK.read_bytes(), (
-            "the vendored copy and the live hook have diverged. Re-vendor with:\n"
-            "  cat %s > %s" % (HOOK, VENDORED))
+        assert HOOK.read_bytes() == _SHIPPED, (
+            "the live hook on this machine is not the reviewed copy on "
+            "origin/main. Deploy it through the sanctioned path -- "
+            "apply-claude-changes.sh, never by hand -- or, if the live file is "
+            "AHEAD, vendor it into the repo so it gets reviewed.\n"
+            "  live:   %s\n"
+            "  wanted: origin/main:%s" % (HOOK, _VENDORED_REL))
 
     def test_git_clean_dry_run_is_a_known_false_positive(self, tmp_path):
         """`git clean -n -d` is a PREVIEW and is refused anyway.
@@ -476,6 +532,200 @@ class TestFlagPositionDoesNotMoveTheTarget:
         it sits beside is kept precisely so this stays as decided in 2026-08-07."""
         hook = hook_copy(tmp_path)
         assert decide(hook, 'echo "never run rm -rf on a volume"', tmp_path) == "deny"
+
+
+# ---------------------------------------------------------------------------
+# PR #274 round 4 (Codex review of the round-3 branch). Two majors, both about
+# the same edit: closing the argv holes for `rm`/`git` regressed the FLEET rules
+# and made every Bash tool call quadratic.
+# ---------------------------------------------------------------------------
+
+# Each of these DENIED before this PR and ALLOWED on the branch as reviewed.
+# Measured, not reasoned: probe output is in the commit message. The shape is
+# always the same -- a preview stage sets the exemption, the apply stage escapes
+# the POSITIONAL fleet regex, nothing denies, and the preview's early exit then
+# allows the whole command.
+FLEET_APPLY_BEHIND_A_PREVIEW = [
+    # absolute path: the regex wants `rsync` at command position
+    "rsync -n --delete /a/ /b/ && /usr/bin/rsync -a --delete /a/ /b/",
+    # a transparent prefix moves it along
+    "rsync -avn --delete /a/ /b/ ; time rsync -a --delete /a/ /b/",
+    "kipi update --dry ; env FOO=1 rsync -a --delete /a/ /b/",
+]
+
+# The quoted forms. Round 3 of this PR added a whole quote-stripping layer
+# because `"rm" -rf` slipped; the identical shape on the fleet delete was not
+# covered, and it needs no preview stage to get through.
+FLEET_APPLY_QUOTED = [
+    '"rsync" -a --delete /a/ /b/',
+    "'rsync' -a --delete /a/ /b/",
+]
+
+# The other direction. A fix that denies these is not a fix, it is the gate
+# being switched off by whoever hits them.
+FLEET_MUST_STILL_RUN = [
+    "kipi update --dry",
+    # kipi-update-deletion-guard.py's own documented usage line
+    "rsync -ain --delete /a/ /b/ | python3 guard.py",
+    # reading the script is not running it (see the comment above FLEET_DENY)
+    "sed -n '1,20p' kipi-update.sh",
+    "ls -l /usr/bin/rsync",
+    "rsync -av /a/ /b/",
+    "rsync --dry-run --delete /a/ /b/",
+]
+
+
+class TestFleetDeleteIsDecidedFromArgv:
+    """The fleet rules must not be weaker than they were before this PR."""
+
+    @pytest.mark.parametrize("command",
+                             FLEET_APPLY_BEHIND_A_PREVIEW + FLEET_APPLY_QUOTED)
+    def test_a_real_fleet_apply_is_refused(self, tmp_path, command):
+        assert decide(hook_copy(tmp_path), command, tmp_path) == "deny", (
+            "this fleet-wide delete was ALLOWED. A guard fix that permits more "
+            "than it did before is worse than the holes it closes: %r" % command)
+
+    @pytest.mark.parametrize("command", FLEET_MUST_STILL_RUN)
+    def test_the_previews_and_the_reads_still_run(self, tmp_path, command):
+        assert decide(hook_copy(tmp_path), command, tmp_path) == "allow", (
+            "the fleet argv rules refused an ordinary command: %r" % command)
+
+    def test_a_bare_apply_is_still_refused(self, tmp_path):
+        """The pre-existing positional rules did not stop working."""
+        for command in ("rsync -a --delete /a/ /b/", "kipi update",
+                        "rsync -a --delete /a/ /b/ | head -n 20"):
+            assert decide(hook_copy(tmp_path), command, tmp_path) == "deny", command
+
+
+class TestTheScanIsNotQuadratic:
+    """This hook runs PreToolUse on EVERY Bash call, so its cost is a property.
+
+    Measured on the branch as reviewed, against a `cat > f <<EOF` heredoc of
+    filler words -- how this fleet writes RCAs and PRDs, and the input that pays
+    the whole cost because a denial short-circuits and a benign command does not:
+
+        1000 words 1.41s    3000 words 9.93s    6000 words 34.77s
+
+    After the candidate filter: 0.12s / 0.20s / 0.35s, and 12000 words in 0.75s.
+
+    The ceiling below is deliberately loose. A tight one turns an unrelated slow
+    runner into a red build and gets the case deleted; 5s still catches a return
+    of the quadratic, which was 70x over that at this size and rising.
+    """
+
+    def test_a_long_benign_command_is_decided_quickly(self, tmp_path):
+        import time
+        body = " ".join("word%d" % i for i in range(6000))
+        command = "cat > /tmp/doc.md <<'EOF'\n%s\nEOF" % body
+        hook = hook_copy(tmp_path)
+        start = time.time()
+        verdict = decide(hook, command, tmp_path)
+        elapsed = time.time() - start
+        assert verdict == "allow", "the filler heredoc should not be denied"
+        assert elapsed < 5.0, (
+            "a 6000-word benign command took %.1fs. The every-start-position "
+            "scan is quadratic again; past ~8000 words it crosses the hook "
+            "timeout and this gate returns NO decision at all." % elapsed)
+
+
+class TestTheCandidateListCannotDriftFromTheRules:
+    """The perf fix skips start positions whose program token matches no rule.
+
+    That is only outcome-identical while the skip list names every rule. A rule
+    added to argv_deny_reason and forgotten here would never be offered a
+    position and would read exactly like a rule that works -- so this parses BOTH
+    out of the hook and compares them, rather than trusting a comment that says
+    to keep them in sync.
+    """
+
+    @staticmethod
+    def _arms(text, header):
+        """The labels of the first `case` block whose header line matches."""
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            if header not in line:
+                continue
+            # Depth-tracked. A flat "stop at the first esac" scan returned the
+            # arms of the NESTED case that walks git's global flags (-C, -c,
+            # --git-dir), which is a confidently wrong answer rather than an
+            # error -- the failure mode this whole class exists to prevent.
+            arms, depth = set(), 1
+            for rest in lines[i + 1:]:
+                stripped = rest.strip()
+                if re.search(r"\bcase\b.*\bin\b", stripped):
+                    depth += 1
+                    continue
+                if stripped.startswith("esac"):
+                    depth -= 1
+                    if depth == 0:
+                        return arms
+                    continue
+                if depth != 1:
+                    continue
+                m = re.match(r"^([A-Za-z0-9_.|\-]+)\)", stripped)
+                if m:
+                    arms |= {a for a in m.group(1).split("|") if a != "*"}
+            raise AssertionError("unterminated case block for header %r" % header)
+        raise AssertionError("no case block found for header %r" % header)
+
+    def test_every_argv_rule_has_a_candidate_position(self):
+        text = _UNDER_TEST.read_text(encoding="utf-8")
+        rules = self._arms(text, 'case "$prog" in')
+        assert rules, "parsed no rules out of argv_deny_reason; this test is inert"
+        for header in ('case "${_sw[$_i]##*/}" in', 'case "${_dw[$_i]##*/}" in'):
+            candidates = self._arms(text, header)
+            assert rules <= candidates, (
+                "argv_deny_reason handles %s but the candidate filter at %s only "
+                "offers positions to %s. The missing rule is never evaluated and "
+                "there is nothing to see: it fails exactly like a rule that never "
+                "matches." % (sorted(rules), header, sorted(candidates)))
+
+
+class TestAcceptedFalsePositives:
+    """Pinned because they are a CHOICE, not an oversight (Codex minor, #274).
+
+    Basename matching at every start position means a token that is a PATH TO
+    `rm`, followed by any short cluster containing r, R or f, is refused:
+
+        cp /bin/rm /tmp/x -f    -> deny
+
+    It is the same trade already taken one step out for `docker rm -f`, and the
+    fix in the other direction is worse than the bug. Skipping slash-carrying
+    tokens at non-initial positions would let `sudo -u root /bin/rm -rf DIR`
+    through, which is a real deletion, to save a refused `cp`. This file's
+    standing trade since 2026-08-07 is that a miss costs a deleted volume and a
+    false positive costs one tool call, so it stays fail-closed.
+
+    If this ever flips to allow, that is a deliberate widening and it needs to
+    arrive with the `sudo -u root /bin/rm` case still denied.
+    """
+
+    def test_a_path_to_rm_as_an_argument_is_refused(self, tmp_path):
+        assert decide(hook_copy(tmp_path), "cp /bin/rm /tmp/x -f",
+                      tmp_path) == "deny"
+
+    def test_and_the_deletion_it_protects_stays_denied(self, tmp_path):
+        assert decide(hook_copy(tmp_path), "sudo -u root /bin/rm -rf /tmp/d",
+                      tmp_path) == "deny"
+
+    def test_prose_naming_an_rsync_delete_is_refused(self, tmp_path):
+        """New with the fleet argv scan, and stated rather than discovered.
+
+        `set -f; ( $stage )` word-splits without honouring quotes, so a commit
+        message that NAMES `rsync ... --delete` is read as an invocation. The
+        anchored regex it joins did not do this.
+
+        Consistent with what this hook has done since 2026-08-07 -- `echo "rm -rf
+        x"` is denied on purpose, and the deny message names the way out: write
+        docs with the Write/Edit tool, not a heredoc. The `kipi` arm was pulled
+        back out of the anywhere-scan precisely because it cost this on the
+        FLEET rule's own prose cases and bought no coverage; rsync keeps it
+        because its regex is anchored and the argv pass is the only thing that
+        catches `/usr/bin/rsync -a --delete`.
+        """
+        assert decide(hook_copy(tmp_path),
+                      'git commit -m "note: rsync -a --delete wiped the tree"',
+                      tmp_path) == "deny"
 
 
 if __name__ == "__main__":

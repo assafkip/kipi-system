@@ -323,6 +323,34 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     set +f
     _i=1
     while [ "$_i" -lt "${#_sw[@]}" ]; do
+      # ASK-1131 round 4 (Codex major, PR #274). MEASURED, on this machine,
+      # against a `cat > f <<EOF` heredoc of filler words -- how this fleet
+      # writes RCAs and PRDs, and the input that pays the full cost because a
+      # denial short-circuits and a benign command never does:
+      #
+      #   1000 words 1.41s   3000 words 9.93s   6000 words 34.77s
+      #
+      # Quadratic: every token opened a subshell that re-split the whole
+      # remaining argv. Past roughly 8000 words it crosses the hook timeout, at
+      # which point this gate returns NO DECISION at all -- the one failure mode
+      # it cannot have. A guard nobody can afford to leave on gets switched off.
+      #
+      # The filter is outcome-identical, not a heuristic trade. argv_deny_reason
+      # returns 1 immediately for any position whose program token is not one of
+      # its `case` arms, so skipping those positions cannot change a verdict; and
+      # a position that only reaches a rule THROUGH prefix-stripping always has
+      # the real program token at a LATER position, which is itself a candidate
+      # (`sudo -u root rm -rf x` is caught at `rm`, not at `sudo`).
+      #
+      # THIS LIST MUST NAME EVERY `case` ARM IN argv_deny_reason. A rule added
+      # there and forgotten here would never be offered a position and would
+      # read exactly like a rule that works. That is not left to memory:
+      # test_candidate_list_covers_every_argv_rule parses both out of this file
+      # and fails on a mismatch.
+      case "${_sw[$_i]##*/}" in
+        rm|git) ;;
+        *) _i=$((_i+1)); continue ;;
+      esac
       _argv_reason="$(argv_deny_reason "${_sw[*]:$_i}")" && \
         emit_deny "destructive invocation: $_argv_reason. Decided from the command's ARGV at every starting position, so neither a leading flag nor a prefix carrying its own options can move it out of view (ASK-1131)."
       _i=$((_i+1))
@@ -359,6 +387,11 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     set +f
     _i=1
     while [ "$_i" -lt "${#_dw[@]}" ]; do
+      # Same candidate filter as the loop above, same reason (PR #274 major).
+      case "${_dw[$_i]##*/}" in
+        rm|git) ;;
+        *) _i=$((_i+1)); continue ;;
+      esac
       _argv_reason="$(argv_deny_reason "${_dw[*]:$_i}")" && \
         emit_deny "destructive invocation: $_argv_reason. The program token was quoted or escaped; the shell strips that before exec, so this scan does too (ASK-1131)."
       _i=$((_i+1))
@@ -399,6 +432,145 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   # an agent has into ~/.claude is apply-claude-changes.sh, which is
   # additive-only and cannot change an existing predicate. That limitation is
   # reported alongside this fix, not worked around.
+  # ASK-1118 round 2 (Codex major, PR #274). THE ARGV FIX NEVER REACHED THE FLEET
+  # RULES, and the per-stage preview turned that gap into a REGRESSION: commands
+  # this guard used to refuse now ran.
+  #
+  # Measured, before this function existed, on the branch as reviewed:
+  #
+  #   ALLOW  rsync -n --delete /a/ /b/ && /usr/bin/rsync -a --delete /a/ /b/
+  #   ALLOW  rsync -avn --delete /a/ /b/ ; time rsync -a --delete /a/ /b/
+  #   ALLOW  kipi update --dry ; env FOO=1 rsync -a --delete /a/ /b/
+  #   ALLOW  "rsync" -a --delete /a/ /b/
+  #   ALLOW  'rsync' -a --delete /a/ /b/
+  #
+  # The first two USED TO DENY. The mechanism: the preview stage sets
+  # _fleet_preview, the apply stage escapes the positional FLEET_DENY regex via
+  # an absolute path, a `time` prefix or a quoted name, nothing denies, and the
+  # early `exit 0` below then ALLOWS the whole thing. Closing holes 1 and 3 for
+  # `rm` and `git` opened a wider one on the rule the file's own comment calls
+  # "strictly more destructive... this hits twenty" instances.
+  #
+  # A guard fix that makes the guard permit MORE than before is worse than the
+  # holes it closes. Same shape as this PR's round-1 finding: a correct fix that
+  # turned the gate off.
+  #
+  # WHY THESE TWO RULES ARE SAFE AT ANY START POSITION and the script-name rules
+  # are not. `rsync` and `kipi` each demand corroborating evidence from the REST
+  # of their argv -- a `--delete` flag, an `update` subcommand -- so a token that
+  # merely NAMES them is inert: `ls -l /usr/bin/rsync` finds no --delete and
+  # allows. `kipi-update.sh` carries no such requirement, so offering it every
+  # position would deny `sed -n '1,20p' kipi-update.sh`, and the comment above
+  # FLEET_DENY records why that matters: reading a file is not running it, and a
+  # gate that blocks reads is a gate someone switches off. The script forms are
+  # therefore reached only at the stage's own program position, which still
+  # covers a transparent prefix because prefix-stripping runs first.
+  fleet_argv_reason() {  # fleet_argv_reason <stage> <at-program-position> -> reason, rc 0
+    local stage="$1" at_prog="$2"
+    set -f
+    local -a w=( $stage )
+    set +f
+    [ "${#w[@]}" -gt 0 ] || return 1
+    while [ "${#w[@]}" -gt 0 ]; do
+      case "${w[0]}" in
+        *=*)                             w=( "" "${w[@]:1}" ); w=( "${w[@]:1}" ) ;;
+        sudo|command|nohup|nice|time|env) w=( "" "${w[@]:1}" ); w=( "${w[@]:1}" ) ;;
+        *) break ;;
+      esac
+      [ "${#w[@]}" -gt 0 ] || return 1
+    done
+    [ "${#w[@]}" -gt 0 ] || return 1
+    local prog="${w[0]##*/}"
+    local -a rest=( "" "${w[@]:1}" )
+    local i tok
+    case "$prog" in
+      rsync)
+        _argv_has_long delete "${rest[@]}" && {
+          echo "rsync --delete (argv-inspected, so a path, a prefix or a quoted name cannot move it out of view)"
+          return 0; }
+        ;;
+      kipi)
+        i=1
+        while [ "$i" -lt "${#rest[@]}" ]; do
+          tok="${rest[$i]}"
+          case "$tok" in
+            -*) i=$((i+1)); continue ;;
+            update) echo "kipi update (argv-inspected)"; return 0 ;;
+            *) break ;;
+          esac
+        done
+        ;;
+    esac
+    [ "$at_prog" = "1" ] || return 1
+    case "$prog" in
+      kipi-update.sh) echo "kipi-update.sh run directly"; return 0 ;;
+      bash|sh|zsh|source|.)
+        i=1
+        while [ "$i" -lt "${#rest[@]}" ]; do
+          case "${rest[$i]##*/}" in
+            kipi-update.sh) echo "kipi-update.sh run through an interpreter"; return 0 ;;
+          esac
+          i=$((i+1))
+        done
+        ;;
+    esac
+    return 1
+  }
+
+  # One place that answers "is this stage a fleet-wide delete", used by BOTH the
+  # deny arm and the preview arm below. Two callers asking the question two ways
+  # is how the preview and the apply came to disagree about what a command is in
+  # the first place.
+  fleet_stage_reason() {  # fleet_stage_reason <stage> -> reason, rc 0
+    local stage="$1" pat norm r
+    # ";" is prepended so each pattern's own `[;&|][[:space:]]*` alternative
+    # absorbs the stage's leading whitespace. Without it a stage starting with a
+    # space matches neither `^` nor a boundary and the deny silently vanishes.
+    for pat in "${FLEET_DENY[@]}"; do
+      if echo ";$stage" | grep -Eq "$pat"; then echo "pattern $pat"; return 0; fi
+    done
+    r="$(_fleet_argv_scan "$stage")" && { echo "$r"; return 0; }
+    # Quote and backslash stripped, exactly as the rm/git layer does it: the
+    # shell removes them before exec, so `"rsync" -a --delete` is an rsync run.
+    # Stripping can only REVEAL a program name, never hide one, so this arm is
+    # deny-only and can clear nothing.
+    norm="${stage//\"/}"
+    norm="${norm//\'/}"
+    norm="${norm//\\/}"
+    if [ "$norm" != "$stage" ]; then
+      r="$(_fleet_argv_scan "$norm")" && { echo "$r"; return 0; }
+    fi
+    return 1
+  }
+
+  _fleet_argv_scan() {  # _fleet_argv_scan <text> -> reason, rc 0
+    local text="$1" i r
+    set -f
+    local -a sw=( "" $text )
+    set +f
+    r="$(fleet_argv_reason "${sw[*]:1}" 1)" && { echo "$r"; return 0; }
+    # Candidate positions only, for the reason argued at length above the rm/git
+    # loop: this runs on every Bash tool call and must not be quadratic.
+    i=2
+    while [ "$i" -lt "${#sw[@]}" ]; do
+      # `rsync` ONLY, and the omission of `kipi` is load-bearing (PR #274).
+      # Word-splitting does not honour quotes, so every token of a commit
+      # message is offered as a program: `git commit -m "the kipi update path
+      # never shipped"` read as an invocation and denied. FLEET_DENY's
+      # `kipi[[:space:]]+update` has no position anchor and already catches
+      # `/usr/local/bin/kipi update` and `time kipi update`, both measured, so
+      # scanning for it here added no coverage and cost a real false positive.
+      # The rsync entry is the anchored one, so it is the one that needs this.
+      case "${sw[$i]##*/}" in
+        rsync) ;;
+        *) i=$((i+1)); continue ;;
+      esac
+      r="$(fleet_argv_reason "${sw[*]:$i}" 0)" && { echo "$r"; return 0; }
+      i=$((i+1))
+    done
+    return 1
+  }
+
   fleet_stage_is_preview() {
     case "$1" in
       *--dry*) return 0 ;;
@@ -424,16 +596,12 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     # absorbs the stage's leading whitespace. Without it a stage starting with a
     # space matches neither `^` nor a boundary and the deny silently vanishes.
     if fleet_stage_is_preview "$_stage"; then
-      for pat in "${FLEET_DENY[@]}"; do
-        if echo ";$_stage" | grep -Eq "$pat"; then _fleet_preview=1; break; fi
-      done
+      fleet_stage_reason "$_stage" >/dev/null && _fleet_preview=1
       continue
     fi
-    for pat in "${FLEET_DENY[@]}"; do
-      if echo ";$_stage" | grep -Eq "$pat"; then
-        emit_deny "fleet-wide delete: this rsyncs the skeleton into EVERY registered instance with a delete flag, and a source tree missing a package removes it from all of them at once (2026-08-07: voicekit deleted from 19 instances). Preview it first with --dry-run IN ITS OWN TOOL CALL and read what will be REMOVED, not only what changes -- a preview sharing a command block with the apply does not exempt the apply (ASK-1118). Pattern: $pat"
-      fi
-    done
+    if _fleet_reason="$(fleet_stage_reason "$_stage")"; then
+      emit_deny "fleet-wide delete: this rsyncs the skeleton into EVERY registered instance with a delete flag, and a source tree missing a package removes it from all of them at once (2026-08-07: voicekit deleted from 19 instances). Preview it first with --dry-run IN ITS OWN TOOL CALL and read what will be REMOVED, not only what changes -- a preview sharing a command block with the apply does not exempt the apply (ASK-1118). Match: $_fleet_reason"
+    fi
   done < <(printf '%s\n' "$COMMAND" | tr ';|&' '\n\n\n')
 
   if [ "$_fleet_preview" = "1" ]; then
