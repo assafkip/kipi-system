@@ -266,7 +266,26 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
             if _argv_has_long force "${ga[@]}" || _argv_has_long force-with-lease "${ga[@]}" \
                || _argv_has_short f "${ga[@]}"; then
               echo "git push is forced, which rewrites published history"; return 0
-            fi ;;
+            fi
+            # THE LEADING-PLUS REFSPEC IS ALSO A FORCE PUSH (PR #279 major).
+            #
+            # `git push origin +main` rewrites remote history exactly as
+            # `--force` does, and this checked only the FLAGS. Every spelling of
+            # the flag was covered and the form that needs no flag at all was
+            # not, which is the shape ASK-1131 already found once: a rule that
+            # reads how the dangerous thing is usually written rather than what
+            # it does.
+            #
+            # Matched on the ARGV token, so `+` inside some other word cannot
+            # trigger it and a refspec is recognised wherever it sits in the
+            # line. `+` alone is not a refspec, so the token needs something
+            # after it.
+            local _tok
+            for _tok in "${ga[@]:1}"; do
+              case "$_tok" in
+                +?*) echo "git push with a leading-plus refspec ($_tok) is a force push and rewrites published history"; return 0 ;;
+              esac
+            done ;;
           branch)
             _argv_has_short D "${ga[@]}" && { echo "git branch -D deletes a branch unmerged"; return 0; } ;;
           clean)
