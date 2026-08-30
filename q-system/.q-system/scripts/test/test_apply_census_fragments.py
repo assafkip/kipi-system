@@ -69,3 +69,15 @@ def test_census_counts_manifest_fragments():
     finally:
         if tmpname:
             os.unlink(tmpname)
+
+
+# The capability manifest declares this file with runner `python3`, and a pytest
+# MODULE run that way defines a function and exits 0 without calling it -- so the
+# declared regression test was inert and returned success even against the
+# revision it exists to catch (Codex major, PR #274). Measured: `python3 <this
+# file>` exited 0 having run nothing. The sibling declared tests all carry an
+# entrypoint for the same reason; a declared test with no way to fail is worse
+# than no declaration, because the manifest then counts it.
+if __name__ == "__main__":
+    import pytest as _pytest
+    raise SystemExit(_pytest.main([__file__, "-q"]))
