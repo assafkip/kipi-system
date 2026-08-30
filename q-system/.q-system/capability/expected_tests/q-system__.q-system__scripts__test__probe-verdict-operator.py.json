@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/probe-verdict-operator.py",
+ "runner": "python3"
+}
