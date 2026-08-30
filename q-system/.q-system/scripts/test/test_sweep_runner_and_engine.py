@@ -14,6 +14,9 @@ verdicts.
 """
 
 import importlib.util
+import subprocess
+import shutil
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -202,6 +205,116 @@ class CITargetsCase(unittest.TestCase):
         """The negative cases above are worthless if nothing passes."""
         self.assertEqual(self._targets("      - run: pytest realdir -q\n"),
                          ["realdir"])
+
+class PartialPopulationCase(unittest.TestCase):
+    """PR #272 codex major: a bounded run made an unbounded claim.
+
+    "no declared test guards this" is a statement about EVERY declared test.
+    Under --only or --limit most never ran, so a subject guarded by a test
+    outside the filter read as guarded by nothing, and --report-only over the
+    full ledger then said the opposite.
+    """
+
+    RESULTS = [{"test": "test_a.py", "status": "SURVIVED",
+                "pairs": [{"subject": "s.py", "verdict": "SURVIVED",
+                           "sites": 1, "tripwire_rc": 97}]}]
+
+    def _report(self, partial):
+        import io
+        import contextlib
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ms.report(self.RESULTS, out, partial=partial)
+            return buf.getvalue(), json.loads((out / "summary.json").read_text())
+
+    def test_a_full_run_makes_the_repo_wide_claim(self):
+        text, summary = self._report(None)
+        self.assertIn("subjects NO declared test guards", text)
+        self.assertIn("unguarded_subjects", summary)
+
+    def test_a_filtered_run_does_not(self):
+        text, summary = self._report("--limit 5")
+        self.assertNotIn("subjects NO declared test guards", text,
+                         "a bounded run repeated the repo-wide claim")
+        self.assertIn("IN THIS FILTERED RUN", text)
+        self.assertIn("--limit 5", text)
+        self.assertNotIn("unguarded_subjects", summary,
+                         "summary.json still carries the repo-wide key, so a "
+                         "consumer reads a bounded result as repo-wide")
+        self.assertIn("unguarded_subjects_in_filtered_population", summary)
+
+    def test_every_unguarded_row_names_the_command_that_confirms_it(self):
+        text, _ = self._report(None)
+        self.assertIn("--subject s.py", text)
+
+
+class OverlayPopulationCase(unittest.TestCase):
+    """PR #272 codex major: the sweep swept fewer tests than the gate declares.
+
+    capability-gate.py reads capability-manifest.local.json as an ADD-only
+    overlay, so on an instance the gate declares more than the skeleton
+    manifest. load_population read only the canonical half.
+    """
+
+    def _pop(self, with_overlay):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scripts = root / "q-system/.q-system/scripts"
+            scripts.mkdir(parents=True)
+            here = Path(ms.__file__).resolve().parent
+            for f in ("capability-gate.py", "capability_manifest.py"):
+                shutil.copy2(here / f, scripts / f)
+            (scripts / "test_canon.py").write_text("import sys; sys.exit(0)\n")
+            (scripts / "test_local.py").write_text("import sys; sys.exit(0)\n")
+            cm = ms.load_manifest_module(root)
+            cm.explode(root, {"schema_version": 1, "expected_tests": [
+                {"path": "q-system/.q-system/scripts/test_canon.py",
+                 "runner": "python3"}]})
+            if with_overlay:
+                (root / "capability-manifest.local.json").write_text(json.dumps(
+                    {"expected_tests": [
+                        {"path": "q-system/.q-system/scripts/test_local.py",
+                         "runner": "python3"}]}))
+            return {e["path"].split("/")[-1] for e in ms.load_population(root)}
+
+    def test_an_overlay_test_is_in_the_population(self):
+        self.assertEqual(self._pop(True), {"test_canon.py", "test_local.py"})
+
+    def test_without_the_overlay_only_the_canonical_half(self):
+        """The negative half: without it, the case above could pass against a
+        loader that returns every file it finds."""
+        self.assertEqual(self._pop(False), {"test_canon.py"})
+
+
+class DirtyTreeCase(unittest.TestCase):
+    """PR #272 codex minor: the closing proof cried wolf at its own test output."""
+
+    def test_untracked_paths_are_not_source_corruption(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+            (root / "tracked.txt").write_text("one\n")
+            subprocess.run(["git", "-C", str(root), "add", "-A"], check=True,
+                           capture_output=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.email=t@t",
+                            "-c", "user.name=t", "commit", "-qm", "x"],
+                           check=True, capture_output=True)
+
+            before = ms.dirty_tree(root)
+            # What a test leaves behind while it runs.
+            (root / "scratch.log").write_text("noise\n")
+            self.assertEqual(ms.dirty_tree(root), before,
+                             "an untracked artifact was read as a dirty tree, "
+                             "so the closing proof exits 3 over a tree that was "
+                             "restored")
+
+            # And the thing the proof is actually for still shows.
+            (root / "tracked.txt").write_text("MUTATED\n")
+            self.assertNotEqual(ms.dirty_tree(root), before,
+                                "a tracked modification must still be visible, "
+                                "or the proof proves nothing")
 
 
 if __name__ == "__main__":

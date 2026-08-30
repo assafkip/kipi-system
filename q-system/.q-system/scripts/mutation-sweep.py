@@ -199,6 +199,33 @@ def load_population(root):
             "mutation-sweep: the declared population is EMPTY. Refusing to "
             "report survival over zero tests -- a harness that runs nothing "
             "reports perfect survival and looks identical to a healthy one.")
+    # THE INSTANCE-LOCAL OVERLAY IS PART OF THE POPULATION (codex major).
+    #
+    # capability-gate.py reads capability-manifest.local.json as an ADD-only
+    # overlay, so on an INSTANCE the gate declares more tests than the skeleton
+    # manifest lists. This assembled only the canonical half, so the sweep
+    # reported survival over a smaller population than the gate declares --
+    # silently, and on exactly the instances this tool's placement rationale
+    # says it is for. A detector that sees fewer tests than the gate is the
+    # blind-spot class it exists to find.
+    #
+    # Validation stays with the gate: it is the thing that REFUSES a bad
+    # overlay, and a second copy of those rules here would be the drift this
+    # file keeps warning about. The sweep only needs to know what would run.
+    overlay = root / "capability-manifest.local.json"
+    if overlay.is_file():
+        try:
+            extra = json.loads(overlay.read_text()).get("expected_tests", [])
+        except (ValueError, OSError) as exc:
+            raise SystemExit(
+                "mutation-sweep: capability-manifest.local.json is unreadable "
+                "(%s). The gate declares tests from it, so sweeping without it "
+                "would report over a smaller population than the gate does. "
+                "Refusing rather than reporting a partial result." % exc)
+        known = {e.get("path") for e in declared}
+        declared = list(declared) + [e for e in extra
+                                     if e.get("path") not in known]
+
     out = []
     for entry in declared:
         p = entry.get("path", "")
@@ -961,7 +988,13 @@ def sweep(root, args):
     finally:
         fh.close()
 
-    report(results, outdir)
+    # Name the filter so the report can say what its numbers cover.
+    _filters = []
+    if args.only:
+        _filters.append("--only %s" % args.only)
+    if args.limit:
+        _filters.append("--limit %s" % args.limit)
+    report(results, outdir, partial=", ".join(_filters) or None)
     return results
 
 
@@ -1137,7 +1170,10 @@ def subject_rollup(results):
     return by_subject, unguarded
 
 
-def report(results, outdir):
+def report(results, outdir, partial=None):
+    """`partial` describes the filter when the population was narrowed, e.g.
+    "--limit 5". It is None for a full run, and the per-subject headline reads
+    differently in each case because only one of them supports the claim."""
     import collections
     c = collections.Counter(r["status"] for r in results)
     print("\n=== MUTATION SWEEP ===")
@@ -1164,15 +1200,38 @@ def report(results, outdir):
     by_subject, unguarded = subject_rollup(results)
     print(f"\n--- per-subject rollup ---")
     print(f"subjects with at least one confirmed test: {len(by_subject)}")
-    print(f"subjects NO declared test guards the failure path of: {len(unguarded)}")
+    if partial:
+        # A BOUNDED RUN CANNOT MAKE AN UNBOUNDED CLAIM (codex major, PR #272).
+        #
+        # "no declared test guards this" is a statement about EVERY declared
+        # test. Under --only or --limit most of them never ran, so a subject
+        # guarded by a test outside the filter was reported as guarded by
+        # nothing -- and `--report-only` over the full ledger then said the
+        # opposite. Same defect as the first-confirmed-subject break, one layer
+        # up: a claim computed from a population narrower than the claim.
+        #
+        # The number is still useful for the filtered set, so it is printed with
+        # its scope attached rather than suppressed, and summary.json carries a
+        # different key so a consumer cannot read a bounded result as a
+        # repo-wide one by accident.
+        print(f"subjects whose every test IN THIS FILTERED RUN survived: "
+              f"{len(unguarded)}")
+        print(f"  ({partial}) -- this is NOT the repo-wide claim; re-run "
+              f"without the filter, or use --subject <file>")
+    else:
+        print(f"subjects NO declared test guards the failure path of: {len(unguarded)}")
     for s, v in sorted(unguarded.items()):
         print(f"  {s}\n      survived in: {', '.join(v['survived'])}")
-    (outdir / "summary.json").write_text(json.dumps(
-        {"schema_version": SCHEMA_VERSION, "counts": dict(c),
-         "survived": [r["test"] for r in surv],
-         "survived_absent": [r["test"] for r in gone],
-         "unguarded_subjects": {s: v["survived"] for s, v in unguarded.items()},
-         }, indent=2))
+        print(f"      confirm with: --subject {s}")
+    summary = {"schema_version": SCHEMA_VERSION, "counts": dict(c),
+               "survived": [r["test"] for r in surv],
+               "survived_absent": [r["test"] for r in gone]}
+    key = ("unguarded_subjects_in_filtered_population" if partial
+           else "unguarded_subjects")
+    summary[key] = {s: v["survived"] for s, v in unguarded.items()}
+    if partial:
+        summary["population"] = partial
+    (outdir / "summary.json").write_text(json.dumps(summary, indent=2))
     print(f"\nledger: {outdir}/results.jsonl")
 
 
@@ -1569,9 +1628,22 @@ def acquire_sweep_lock(root):
 
 
 def dirty_tree(root):
+    """TRACKED changes only (codex minor, PR #272).
+
+    The closing proof compares this before and after the sweep. Reading
+    untracked paths too made it report the tests' OWN artifacts -- scratch
+    files, caches, ledgers they write while running -- as source corruption,
+    and exit 3 over a tree that was restored perfectly.
+
+    Dropping them costs nothing the proof was buying: every mutant this tool
+    writes goes over a file that is already tracked, so a restoration failure
+    always shows up as a tracked modification. A proof that cries wolf at its
+    own test output is one people learn to ignore, which is this tool's subject.
+    """
     r = subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
                        capture_output=True, text=True, timeout=60)
-    return [l for l in r.stdout.splitlines() if l.strip()]
+    return [l for l in r.stdout.splitlines()
+            if l.strip() and not l.startswith("??")]
 
 
 def main():
