@@ -329,6 +329,11 @@
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/handoff-provenance-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/handoff-provenance-lint.py\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/hook_envelope_audit.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/hook_envelope_audit.py\" --hook",
+            "timeout": 10
           }
         ]
       },

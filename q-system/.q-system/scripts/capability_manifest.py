@@ -235,37 +235,80 @@ def explode(root, manifest, errors=None):
     return written
 
 
+def _canon(entry):
+    return json.dumps(entry, sort_keys=True)
+
+
+def _read_fragment(path):
+    """The declaration currently on disk at `path`, or None if there is none."""
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
 def add_delta(root, base, head, errors=None):
-    """Write a fragment for every declaration `head` has that `base` does not.
+    """Replay onto the working tree every declaration `head` changed vs `base`.
 
-    The rebase tool for the 37 open branches that predate the split. Their
-    manifest edit is almost always one appended entry; replaying it by hand
-    means re-reading main's whole manifest per PR, which is what did not scale.
-    Feed it the merge-base manifest and the branch-head manifest and it writes
-    exactly that branch's additions as fragments, touching nothing else.
+    The rebase tool for the open branches that predate the split. Their manifest
+    edit is almost always one appended entry; replaying it by hand means
+    re-reading main's whole manifest per PR, which is what did not scale. Feed it
+    the merge-base manifest and the branch-head manifest and it writes exactly
+    that branch's changes as fragments, touching nothing else.
 
-    Additive ONLY. A branch that REMOVED a declaration is reported, never acted
-    on: deleting someone else's declaration during a rebase is the silent loss
-    this whole change exists to prevent, so it is surfaced for a human.
+    Entries are matched by their IDENTITY (entry_key: the declared path, or the
+    prefix, or the note), never by their serialized bytes. Byte-matching was the
+    original shape and it read an EDIT as a removal plus an addition, so a branch
+    that merely changed a declaration's runner was refused as if it had deleted
+    someone's declaration. PR #207 is exactly that case (sp-6b25c567).
+
+    Three outcomes, and the two refusals are the point:
+      ADD       key only in head            -> fragment written.
+      EDIT      key in both, content differs -> written ONLY if the fragment on
+                disk still holds the base version. If main edited the same
+                declaration, taking the branch's version would silently drop
+                main's, which is the same loss class as a deletion, so it is
+                reported instead.
+      REMOVAL   key only in base            -> reported, never acted on.
     """
-    written, removed = [], []
+    written, removed, conflicted = [], [], []
     for section in LIST_SECTIONS:
-        seen = {json.dumps(e, sort_keys=True) for e in (base.get(section) or [])}
-        have = {json.dumps(e, sort_keys=True) for e in (head.get(section) or [])}
-        for raw in sorted(have - seen):
-            entry = json.loads(raw)
+        base_by, head_by = {}, {}
+        for e in (base.get(section) or []):
+            base_by[entry_key(section, e)] = e
+        for e in (head.get(section) or []):
+            head_by[entry_key(section, e)] = e
+
+        for key in sorted(head_by):
+            new_entry = head_by[key]
+            old_entry = base_by.get(key)
+            if old_entry is not None and _canon(old_entry) == _canon(new_entry):
+                continue                       # the branch did not touch it
             sdir = fragment_dir(root) / section
+            name = fragment_name(section, new_entry)
+            target = sdir / name
+            if old_entry is not None:
+                current = _read_fragment(target)
+                if current is not None and _canon(current) != _canon(old_entry):
+                    conflicted.append("%s: %s" % (section, key))
+                    continue
             sdir.mkdir(parents=True, exist_ok=True)
-            name = fragment_name(section, entry)
-            (sdir / name).write_text(json.dumps(entry, indent=1,
-                                                sort_keys=True) + "\n")
+            target.write_text(json.dumps(new_entry, indent=1,
+                                         sort_keys=True) + "\n")
             written.append("%s/%s" % (section, name))
-        for raw in sorted(seen - have):
-            removed.append("%s: %s" % (section, raw))
+
+        for key in sorted(set(base_by) - set(head_by)):
+            removed.append("%s: %s" % (section, _canon(base_by[key])))
+
     if removed:
         _err(errors, "this branch also REMOVED %d declaration(s); replay those "
                      "by hand rather than silently: %s"
                      % (len(removed), " | ".join(removed)))
+    if conflicted:
+        _err(errors, "this branch EDITED %d declaration(s) that main has also "
+                     "changed since the merge base; replay those by hand rather "
+                     "than dropping main's version: %s"
+                     % (len(conflicted), " | ".join(conflicted)))
     return written
 
 
