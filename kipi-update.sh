@@ -591,7 +591,7 @@ fi
 # branch it is checked out on. Nothing asked which branch that was.
 #
 # Scar 2026-08-14 (sp-ea9c1628): kipi-system sat on sana/ask-728-plugin-parity
-# holding an uncommitted partial forward-port of voicekit/selector.py -- the
+# holding an uncommitted partial forward-port of voiceloop/selector.py -- the
 # nearest-length ranking without the anchor-survives fix Codex caught in #147
 # and main already carried. A run from that state writes code strictly OLDER
 # than main into every config-sync instance and prints PASS. Silent, plausible,

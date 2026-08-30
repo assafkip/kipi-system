@@ -26,7 +26,18 @@ EXEMPLAR_KINDS = ("post", "article-excerpt", "article", "comment", "dm", "email"
 # replaced their excerpts in the corpus. Deliberately absent from
 # selector.ELIGIBLE_KINDS -- a 1,400-word article is reference material for the
 # authorship region, not a slot exemplar a 280-char draft should imitate.
-EXEMPLAR_CHANNELS = ("linkedin", "x", "substack", "medium", "any")
+# "reddit" added 2026-08-29. A real founder-written Reddit comment was banked as
+# an exemplar and the corpus refused it, correctly: the row named a channel this
+# tuple did not know. The convention every `kind: "comment"` row already follows
+# is channel-of-origin, where he actually wrote it, so the two honest fixes were
+# widening this tuple or relabelling the row "any". Relabelling was rejected: it
+# would have made this the one comment row whose channel does not say where it
+# came from, and `/q-reddit` drafts replies for that channel, so a Reddit
+# reference row is material the selector should be able to see. Nothing new
+# opens as a result. `check_pools`, `CHECKED_SLOTS` and `check_budget` each
+# iterate ("linkedin", "x") by name, so a wider allowlist creates no additional
+# pool that has to meet MIN_ROWS_PER_POOL.
+EXEMPLAR_CHANNELS = ("linkedin", "x", "substack", "medium", "reddit", "any")
 
 
 def read_jsonl(path):
