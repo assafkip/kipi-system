@@ -264,6 +264,109 @@ ok "kill case leaves no orphan behind (nothing outlives the suite)"
 grep -q 'trap .*TERM' "$CONV" || fail "converge lost its TERM trap"
 ok "TERM/INT/HUP traps wired"
 
+# --- ASK-833: a converge that dies before opening a PR must COST an attempt ---
+# THE DEFECT: exit-7 stops the run but records nothing. The 3-attempt cap keys on
+# the attempts ledger, so an issue that fails this way is re-picked every cycle it
+# wins the rotation, forever -- spending a budget slot each time and producing
+# nothing. Measured 2026-08-15: ASK-128 stopped at exit-7 twice in one hour and
+# was ABSENT from the ledger entirely.
+#
+# WHY THE WORKER'S OWN BUMP DOES NOT COVER THIS. linear-worker.sh already bumps on
+# "exited 0 but opened no PR". That line is only reached by a worker that RUNS TO
+# COMPLETION. A worker killed mid-flight -- the account's usage limit, a timeout,
+# a SIGTERM -- never reaches it, and that is precisely the case converge sees as
+# "no PR". The fake worker here writes no ledger entry, which models exactly that.
+ATT="$WORK/state/linear-worker-attempts.json"
+att_count() { python3 -c "
+import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: d={}
+print(d.get(sys.argv[2],{}).get('count',0))" "$ATT" "$1"; }
+
+rm -f "$ATT"
+echo "" > "$FAKE_PR_FILE"; echo "0" > "$FAKE_ROUND_FILE"
+export FAKE_SEQ="REQUEST CHANGES;sha1"
+set +e; bash "$CONV" --issue ASK-T833 --max-rounds 4 >"$WORK/out" 2>&1; RC=$?; set -e
+[ "$RC" = "7" ] || fail "no-PR must still exit 7, got rc=$RC"
+[ "$(att_count ASK-T833)" = "1" ] \
+  || fail "exit-7 recorded NO attempt, so the cap can never trip (ASK-833): count=$(att_count ASK-T833)"
+ok "exit-7 with no PR costs an attempt, so three of them mark the issue stuck"
+
+# IDEMPOTENCE, THE OTHER HALF. When the worker DID reach its own bump, converge
+# must not charge a second one for the same round: double-counting would mark a
+# genuinely-retryable issue stuck after two failures instead of three, which is
+# the same starvation bug pointed the other way.
+cat > "$WORK/bin/bumpingworker" <<'EOF'
+#!/usr/bin/env bash
+python3 "$REAL_LEDGER" "$KIPI_STATE_DIR/linear-worker-attempts.json" \
+  bump-attempt "$ISSUE_UNDER_TEST" "worker bumped this one itself"
+exit 0
+EOF
+chmod +x "$WORK/bin/bumpingworker"
+export REAL_LEDGER="$ROOT/q-system/.q-system/scripts/attempts-ledger.py"
+export ISSUE_UNDER_TEST=ASK-T834
+rm -f "$ATT"
+echo "" > "$FAKE_PR_FILE"; echo "0" > "$FAKE_ROUND_FILE"
+# set +e: this case also ends at exit-7, and run_case leaves `set -e` in effect,
+# so an unguarded call aborts the whole suite silently at rc=7 -- which reads as
+# a pass to anything that only greps for FAIL.
+set +e
+KIPI_CONVERGE_WORKER="$WORK/bin/bumpingworker" \
+  bash "$CONV" --issue ASK-T834 --max-rounds 4 >"$WORK/out" 2>&1
+set -e
+[ "$(att_count ASK-T834)" = "1" ] \
+  || fail "converge double-charged an attempt the worker already recorded: count=$(att_count ASK-T834)"
+ok "an attempt the worker already recorded is not charged twice"
+unset REAL_LEDGER ISSUE_UNDER_TEST
+
+# AN ATTEMPT THAT WAS NOT PERSISTED DID NOT HAPPEN (PR #192 review, major).
+# The first cut of the fix above ended its bump in `|| true`, so an unwritable
+# ledger became a silent success: counter unmoved, run reports the ordinary
+# exit-7, and the retry-forever bug returns with a fix in place that reads as
+# working. The cap keys on this file; if the write fails the cap cannot trip, so
+# that case gets its own exit code instead of blending into the no-PR case the
+# dispatcher expects to see repeatedly.
+# A DIRECTORY where the ledger file belongs is the portable unwritable path --
+# no chmod, no root, and it fails the same way on every platform.
+rm -rf "$ATT"; mkdir -p "$ATT"
+echo "" > "$FAKE_PR_FILE"; echo "0" > "$FAKE_ROUND_FILE"
+export FAKE_SEQ="REQUEST CHANGES;sha1"
+set +e; bash "$CONV" --issue ASK-T835 --max-rounds 4 >"$WORK/out" 2>&1; RC=$?; set -e
+[ "$RC" = "8" ] \
+  || fail "an unrecordable attempt must exit 8, not blend into exit-7: got rc=$RC"
+grep -q 'exit-8' "$WORK/out" || fail "exit-8 produced no operator-readable line"
+ok "a ledger that cannot be written stops the run loudly, it is not swallowed"
+rm -rf "$ATT"
+
+# A REFUSAL COSTS NO ATTEMPT (PR #192 review round 2, major).
+# An unchanged counter cannot by itself tell "the worker refused this spec" from
+# "the worker was interrupted": both leave no PR and touch nothing. Charging the
+# first would let three CORRECT refusals reach the cap and falsely mark the issue
+# stuck -- the founder-queue routing ASK-275 removed, re-entering from the driver.
+# This worker refuses the way the real one does: it records the refusal marker in
+# the shared ledger and opens no PR.
+cat > "$WORK/bin/refusingworker" <<'EOF'
+#!/usr/bin/env bash
+python3 "$REAL_LEDGER" "$KIPI_STATE_DIR/linear-worker-attempts.json" \
+  claim-flag "$ISSUE_UNDER_TEST" refused_no_pr >/dev/null 2>&1
+exit 0
+EOF
+chmod +x "$WORK/bin/refusingworker"
+export REAL_LEDGER="$ROOT/q-system/.q-system/scripts/attempts-ledger.py"
+export ISSUE_UNDER_TEST=ASK-T836
+rm -f "$ATT"
+echo "" > "$FAKE_PR_FILE"; echo "0" > "$FAKE_ROUND_FILE"
+set +e
+KIPI_CONVERGE_WORKER="$WORK/bin/refusingworker" \
+  bash "$CONV" --issue ASK-T836 --max-rounds 4 >"$WORK/out" 2>&1
+RC=$?
+set -e
+[ "$RC" = "7" ] || fail "a refusal still ends the run at exit 7, got rc=$RC"
+[ "$(att_count ASK-T836)" = "0" ] \
+  || fail "a REFUSAL was charged as a failed attempt; three would falsely mark the issue stuck (ASK-275): count=$(att_count ASK-T836)"
+ok "a refusal costs no attempt, so correct refusals never accumulate into stuck"
+unset REAL_LEDGER ISSUE_UNDER_TEST
+
 # --- wiring ------------------------------------------------------------------
 grep -q 'pr-verdict-lib.sh' "$CONV" || fail "converge.sh must use the shared verdict lib"
 grep -q 'rework_gate'       "$CONV" || fail "converge.sh must gate on rework_gate, not its own regex"

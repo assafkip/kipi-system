@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-prompt-echo-not-a-review.sh",
+ "runner": "bash"
+}

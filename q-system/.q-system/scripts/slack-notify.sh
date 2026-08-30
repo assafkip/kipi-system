@@ -47,6 +47,50 @@ if [ -z "$LABEL" ]; then
 fi
 MSG="[$LABEL] $MSG"
 
+# THE LABEL ABOVE IS NOT ROUTING, AND WAS BEING ASKED TO BE (ASK-839, PR #191
+# review). alert-to-linear.py resolves the ticket's Linear project from a
+# candidate list whose second rung is the repo PATH through
+# instance-registry.json -- "the only rung that survives a worktree or a renamed
+# directory", per its own docstring, which then said this script resolves that
+# path. It did not. KIPI_ALERT_REPO_PATH was unset on every real alert, so rung 2
+# was dead in production and only the basename above was left to route on.
+#
+# WHAT THAT COSTS. A checkout whose basename is not its board alias misses rung 3
+# (basename vs registry `name`) and rung 4 (basename as a project name) and lands
+# on rung 5 -- the checkout alert-to-linear.py itself lives in -- so the ticket is
+# filed against kipi-system instead of the repo that raised the alert. Measured
+# against the live registry 2026-08-15: 7 of 25 instances are that shape
+# (an alias that adds a brand prefix the directory lacks, one written as spaced
+# prose, one that drops a prefix the directory keeps), plus every worktree,
+# which is how the fleet's own agents run. The live pairs stay in
+# instance-registry.json: this script ships to every instance of a PUBLIC repo.
+#
+# --git-common-dir, NOT --show-toplevel. From a worktree, --show-toplevel returns
+# the WORKTREE, which equals no registry row, so rung 2 would still match nothing
+# while looking supplied. --git-common-dir points at the MAIN checkout's .git in
+# both a worktree and an ordinary clone, and the main checkout is what the
+# registry stores. Same correction linear-claim.py needed at ASK-188.
+#
+# NOTHING IS INVENTED OUTSIDE A REPO. 22 of the 81 unset alert tickets were
+# raised from a cwd of `/`. Exporting that would hand rung 2 a guaranteed miss and
+# make the candidate list longer without making it truer; rung 5 already covers
+# that case honestly. An explicit caller value is never overwritten -- rung 1 is
+# "an explicit statement by the caller" and a derived value must not outrank it.
+if [ -z "${KIPI_ALERT_REPO_PATH:-}" ]; then
+  # --path-format is git 2.31+; without it --git-common-dir is relative to the
+  # cwd in an ordinary clone (`.git`) and must be resolved before dirname.
+  _KCOMMON="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+    || _KCOMMON=""
+  if [ -z "$_KCOMMON" ]; then
+    _KCOMMON="$(git rev-parse --git-common-dir 2>/dev/null)" || _KCOMMON=""
+    case "$_KCOMMON" in ""|/*) ;; *) _KCOMMON="$PWD/$_KCOMMON" ;; esac
+  fi
+  if [ -n "$_KCOMMON" ]; then
+    _KREPO="$(cd "$(dirname "$_KCOMMON")" 2>/dev/null && pwd -P)" || _KREPO=""
+    [ -n "$_KREPO" ] && export KIPI_ALERT_REPO_PATH="$_KREPO"
+  fi
+fi
+
 # --- fixture-run guard: a test must never open a live ticket -------------------
 # SCAR 2026-08-01. Three tests were found paging the founder's real Slack and
 # were fixed by stubbing KIPI_NOTIFY per test (PR #54). While that PR sat open,

@@ -48,7 +48,9 @@ trap 'rm -rf "$WORK"' EXIT
 
 # --- fixture: VERBATIM slice, real PR #11 round-2 review (2026-07-26) --------
 cat > "$WORK/r2.md" <<'EOF'
-**The test is not an orphan.** Registered at `q-system/.q-system/capability-manifest.json:17`.
+**The test is not an orphan.** Declared by its own fragment under
+`q-system/.q-system/capability/expected_tests/` (a line number into a shared
+array is exactly the pointer the fragment split removed).
 
 ---
 

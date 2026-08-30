@@ -126,6 +126,12 @@ BLOCKED_PATTERNS = (
     # stranded and why, every day, instead of the gap living in one log line
     # nobody reads.
     re.compile(r"\d+ ready-shaped issue\(s\) UNREACHABLE: no local checkout[^\n]*"),
+    # ASK-840. The third bucket: the checkout exists, and repo-preflight refuses
+    # entry anyway. It needs its own line here because the response differs from
+    # both neighbours -- a routine skip resolves on a later rotation turn, an
+    # unreachable repo needs a clone, and this one needs a cure or is permanent
+    # (a client engagement repo is refused forever, whatever its name resolves to).
+    re.compile(r"\d+ ready-shaped issue\(s\) REFUSED by preflight[^\n]*"),
     re.compile(r"\d+ repo\(s\) HELD \(cross-repo gh scoping[^\n]*"),
 )
 

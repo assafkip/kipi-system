@@ -47,6 +47,7 @@ usage() {
   echo "  kipi work [--apply]  Autonomous worker: take a ready issue, branch, PR (never merges/closes)"
   echo "  kipi converge --issue <ASK-n> [--max-rounds N]  Drive one issue to an APPROVED PR (work+review+rework, capped)"
   echo "  kipi dor [--apply]   Draft a Definition of Ready onto issues that lack one (bounded)"
+  echo "  kipi alert-triage <list|promote|close> [--apply]  Triage the fleet-alert bucket"
   echo "  kipi health          Fleet health check: dark/failing jobs, double schedules, open spillover"
   echo "  kipi health --apply  ...and file each finding as a deduped Linear issue"
   echo "  kipi lessons-run     Run the daily auto-learn heartbeat once (distill->publish->propagate->slack)"
@@ -128,6 +129,20 @@ case "${1:-help}" in
     shift || true
     ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-claude-opus-5}" \
       python3 "$KIPI_HOME/q-system/.q-system/scripts/linear-dor-drafter.py" "$@"
+    ;;
+  alert-triage)
+    # Triage the fleet-alert bucket. alert-to-linear.py files
+    # tickets that BOTH linear-dor-drafter.py and linear-worker.sh refuse by
+    # design (ASK-839); nothing moved them out of that bucket, so 151 sat inert
+    # over a red main and a full disk (ASK-1127). Promote-or-hold only: this lane
+    # never closes an issue silently: a close records its reason first and
+    # refuses if that comment did not land. Verbs: list, promote, close.
+    # The UNATTENDED nightly lane is deliberately not here yet; it is split out
+    # to its own issue after nine review rounds put seven of eight majors inside
+    # it. Model pinned anyway, so a future subcommand cannot inherit the default.
+    shift || true
+    ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-claude-opus-5}" \
+      python3 "$KIPI_HOME/q-system/.q-system/scripts/linear-alert-triage.py" "$@"
     ;;
   health)
     # Daily fleet health. Every detector must DETECT, ACT (file a deduped Linear
