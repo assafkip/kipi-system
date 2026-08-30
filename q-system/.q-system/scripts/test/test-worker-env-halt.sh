@@ -780,6 +780,160 @@ else
   ok "NEGATIVE FIXTURE: an honest refusal is not called an outage"
 fi
 
+# ============================================================================
+# ONE MACHINE CONDITION, ONE PAGE -- ACROSS PROCESSES (PR #200 review round 5)
+# ============================================================================
+# Run A asserted "exactly one alert" WITHIN one process. That is the wrong unit.
+# The condition being reported is a property of the MACHINE, and every dispatcher
+# process on that machine meets it: two supported concurrent workers (the
+# per-worktree claim lock and test-linear-worker-parallel.sh are what make them
+# supported) each halt on the same exhausted account and each page, so one outage
+# arrives as two identical tickets at 3am and a human diffs them to find they are
+# the same fact. The 15-minute launchd tick is the same defect on the time axis:
+# a six-hour outage was twenty-four halted runs, so "one alert per run" is
+# twenty-four pages for one condition -- the cry-wolf shape founder-notifications.md
+# names, and the one that teaches the reader to mute the channel.
+#
+# So the dedupe has to live where the condition lives: one shared claim in
+# $STATE_DIR, which concurrent workers already share (that sharing is exactly what
+# forced the halt marker and the run-output file to become per-pid in round 3).
+# The claim is NOT per-pid for the same reason those two are.
+
+# --- H. the primitive is atomic under real concurrency ----------------------
+# Asserted on the primitive rather than only through the worker because "exactly
+# one of N concurrent processes wins" is the whole claim, and eight racing
+# subshells can assert it in milliseconds where eight racing workers could not be
+# made deterministic. mkdir is the atomicity: it is a single syscall that either
+# creates the directory or fails because it exists, with no read-then-write window
+# for a second process to land in (a `[ -f ] && >` claim has exactly that window).
+CLAIM_STATE="$WORK/claim-race"; mkdir -p "$CLAIM_STATE"
+CLAIM_WINNERS="$WORK/claim-winners"; : > "$CLAIM_WINNERS"
+CLAIM_PIDS=""
+for _i in 1 2 3 4 5 6 7 8; do
+  (
+    . "$REPO_SCRIPTS/env-failure-lib.sh" 2>/dev/null || exit 0
+    # A start barrier, so the eight actually overlap instead of running in file
+    # order. Without it the first would finish before the second began and the
+    # case would pass on a non-atomic claim too -- a test that cannot go red.
+    # Bounded, because a barrier that can wait forever is a hung suite rather
+    # than a failing one, and a suite that hangs reports nothing at all.
+    _spins=0
+    while [ ! -f "$WORK/claim-go" ] && [ "$_spins" -lt 2000000 ]; do _spins=$((_spins+1)); done
+    if env_alert_claim "$CLAIM_STATE" 2>/dev/null; then printf 'win\n' >> "$CLAIM_WINNERS"; fi
+  ) &
+  CLAIM_PIDS="$CLAIM_PIDS $!"
+done
+: > "$WORK/claim-go"
+# EACH PID EXPLICITLY, never a bare `wait`. The fixture HTTP server above is also
+# a background child of this shell and it serves forever, so a bare `wait` never
+# returns and the whole suite hangs at this line instead of reporting.
+for _p in $CLAIM_PIDS; do wait "$_p" 2>/dev/null || true; done
+N_WIN="$(grep -c '^win$' "$CLAIM_WINNERS" 2>/dev/null)" || true
+if [ "${N_WIN:-0}" -eq 1 ]; then
+  ok "the alert claim is atomic: exactly 1 of 8 concurrent processes may page"
+else
+  bad "the alert claim is atomic: exactly 1 of 8 concurrent processes may page" \
+      "got ${N_WIN:-0} winner(s). 0 means no shared claim exists at all (every process pages); >1 means the claim has a read-then-write window and concurrent workers still double-page."
+fi
+
+# ...and a claim that can never be released is a permanent mute, which is a worse
+# failure than the duplicate it prevents: the NEXT outage, weeks later, would page
+# nobody. Released explicitly, so this can go red on its own.
+if command -v env_alert_release >/dev/null 2>&1 || type env_alert_release >/dev/null 2>&1; then
+  env_alert_release "$CLAIM_STATE" 2>/dev/null || true
+  if env_alert_claim "$CLAIM_STATE" 2>/dev/null; then
+    ok "a released claim can be taken again (the guard is not a permanent mute)"
+    env_alert_release "$CLAIM_STATE" 2>/dev/null || true
+  else
+    bad "a released claim can be taken again" \
+        "THE PERMANENT MUTE: once one outage pages, no later outage ever can"
+  fi
+else
+  bad "a released claim can be taken again" "env_alert_release is not defined"
+fi
+
+# --- G. two dispatcher runs, one machine, one page --------------------------
+# ONE skeleton and ONE $STATE_DIR across both runs, because that is the production
+# shape: launchd runs the same worker against the same checkout every 15 minutes.
+# Separate state dirs would make each run its own island and the assertion vacuous
+# -- the thing under test is precisely what crosses the process boundary.
+SKEL_G="$(make_skel "$WORK/run-g")"
+STATE_G="$WORK/state-g"
+NOTIFY_G="$WORK/notify-g.log"
+
+run_g() {  # run_g <stub-dir> <out-file>
+  PATH="$1:$PATH" \
+     KIPI_SKEL="$SKEL_G" KIPI_STATE_DIR="$STATE_G" \
+     KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+     KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+     KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
+     KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" \
+     KIPI_NOTIFY="$WORK/recording-notify.sh" \
+     TEST_NOTIFY_LOG="$NOTIFY_G" \
+     bash "$WORKER" --apply --limit 2 > "$2" 2>&1
+}
+
+# The outage stub is run A's, verbatim: same measured line, same exit 0.
+STUB_G="$WORK/stub-g"; mkdir -p "$STUB_G"
+cp "$WORK/gh" "$STUB_G/gh"; cp "$STUB_A/claude" "$STUB_G/claude"
+
+run_g "$STUB_G" "$WORK/run-g1.out"; RC_G1=$?
+run_g "$STUB_G" "$WORK/run-g2.out"; RC_G2=$?
+
+# POSITIVE SELF-TEST FIRST. Both cases below read a COUNT, and a second run that
+# never dispatched anything would hold the count at 1 for free -- passing the
+# assertion while proving nothing about dedupe.
+if grep -q "start ASK-811" "$WORK/run-g2.out" "$STATE_G/linear-worker.log" 2>/dev/null; then
+  ok "positive self-test: the second run really did dispatch and halt again"
+else
+  bad "positive self-test: the second run really dispatched" \
+      "the second run reached no issue, so the alert count below is 1 for the wrong reason: $(tr '\n' '|' < "$WORK/run-g2.out" | cut -c1-400)"
+fi
+
+N_G="$(grep -c 'runner itself is unavailable' "$NOTIFY_G" 2>/dev/null)" || true
+if [ "${N_G:-0}" -eq 1 ]; then
+  ok "two halted runs on one machine send ONE page, not one page each"
+else
+  bad "two halted runs on one machine send ONE page, not one page each" \
+      "THE DEFECT: got ${N_G:-0} page(s) for one machine condition. At the 15-minute tick a six-hour outage is 24 of these; two concurrent workers double it again."
+fi
+
+# The suppression is of the PAGE, never of the halt. A run that stays quiet must
+# still refuse to march into a dead environment and must still hand launchd a
+# failure -- otherwise dedupe has silently bought back the ASK-184 blindness.
+if [ "$RC_G2" -ne 0 ] && ! grep -q "start ASK-812" "$WORK/run-g2.out" 2>/dev/null; then
+  ok "the un-paging run still halts and still exits non-zero (rc=$RC_G2)"
+else
+  bad "the un-paging run still halts and still exits non-zero" \
+      "rc=$RC_G2, and ASK-812 dispatched=$(grep -c 'start ASK-812' "$WORK/run-g2.out" 2>/dev/null). Suppressing the page must not suppress the halt or the exit code."
+fi
+
+# --- G3/G4. the machine recovers, and the NEXT outage pages ------------------
+# The re-arm is what keeps this a dedupe rather than a mute. There is no "the
+# outage ended" event to subscribe to, so the release is the observation that
+# stands in for one: a run that completed WITHOUT halting saw a working runner.
+# That is founder-notifications.md's "alert on state change, once" -- the page
+# fires on the healthy->down edge, and the edge re-arms on the way back up.
+STUB_G3="$WORK/stub-g3"; mkdir -p "$STUB_G3"
+cp "$WORK/gh" "$STUB_G3/gh"; cp "$STUB_B/claude" "$STUB_G3/claude"
+run_g "$STUB_G3" "$WORK/run-g3.out"; RC_G3=$?
+
+if [ "$RC_G3" -eq 0 ]; then
+  ok "positive self-test: the recovery run completed healthy (rc=0), so it could release"
+else
+  bad "positive self-test: the recovery run completed healthy" \
+      "rc=$RC_G3 -- it did not reach the release, so the re-arm case below cannot fail honestly"
+fi
+
+run_g "$STUB_G" "$WORK/run-g4.out"
+N_G4="$(grep -c 'runner itself is unavailable' "$NOTIFY_G" 2>/dev/null)" || true
+if [ "${N_G4:-0}" -eq 2 ]; then
+  ok "after the runner recovers, the NEXT outage pages again (2 pages, 2 outages)"
+else
+  bad "after the runner recovers, the NEXT outage pages again" \
+      "expected 2 total pages for 2 separate outages, got ${N_G4:-0}. 1 means the claim is never released and every future outage is silent -- a worse failure than the duplicate this fixes."
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
