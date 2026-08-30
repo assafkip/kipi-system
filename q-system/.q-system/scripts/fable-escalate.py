@@ -14,11 +14,20 @@ doing / next path / the refuting check) and Opus keeps the work.
 
 Contract with token-guard: one JSON object on stdout —
   {"triage": str|null, "escalated": bool, "capped": bool, "notified": bool,
-   "delivered": bool, "failure": str|null}
+   "delivered": bool, "handed_off": bool, "starved": bool, "failure": str|null}
 `notified` means a page was ATTEMPTED; `delivered` means it could actually have
 left the machine. They are separate because slack-notify.sh exits 0 having sent
 nothing when no webhook resolves, so one field cannot carry both facts without
 lying about one of them.
+`escalated` means Fable answered; `handed_off` means that answer actually landed
+at the pending file the guard collects from. Same reason they are two fields: a
+triage that was computed and could not be written is a spend with no delivery,
+and when it happens `failure` says so rather than staying null (ASK-886).
+`starved` means no call was made at all because the transcript could not be read.
+It is not the negation of `escalated`: a call that ran and failed is also
+`escalated: false`, and the two need different next actions -- a starved run is a
+plumbing defect on this machine, a failed one is a model or timeout problem. A
+starved run also spends no cap slot (token-guard.py's request_escalation).
 Exit is ALWAYS 0. A non-zero exit from here would turn a triage attempt into a
 guard crash, and the guard's job (blocking a runaway loop) outranks this one.
 
@@ -141,6 +150,73 @@ def transcript_tail(path, window=TRANSCRIPT_WINDOW):
     return lines[-window:]
 
 
+def _fixture_refusal():
+    """The single definition of "a suite must not spend a real model call".
+
+    Lives here rather than inline in call_fable because escalate() has to CHECK
+    IT FIRST, ahead of the starvation refusal below. Both refuse the call, so
+    neither can bill anything, but they record different reasons and the fixture
+    reason is the one a suite author needs to see. Ordering it second would have
+    hidden the chokepoint behind starvation for every test that passes an empty
+    transcript_path, which is how most of them are written -- a safety guard
+    that stops being reachable stops being tested, and an untested guard is the
+    one that is broken when it finally matters.
+    """
+    if os.environ.get("KIPI_FABLE_CLAUDE_CMD"):
+        return None
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return "fixture run: refused to spend a real Fable call"
+    return None
+
+
+TRANSCRIPT_OK = "ok"
+
+
+def transcript_status(path, stop_after=None):
+    """(status, renderable_record_count) for a session transcript.
+
+    WHY THIS IS ITS OWN FUNCTION AND NOT A BOOL INSIDE build_packet.
+    Measured 2026-08-03: 31 escalations ran, and 23 of them sent a packet whose
+    entire session tail was the literal "(transcript unavailable)". Nothing in
+    the ledger said so. The row recorded packet_bytes and a confident-looking
+    diagnosis, and that diagnosis was Fable paraphrasing the trigger line back
+    at us, because the trigger line was the only content in the packet. The
+    empty packets were only findable at all because they are byte-identical
+    (845 for the volume-ceiling reason, 757 for exact-retry), which is a
+    forensic accident, not observability. So the REASON a packet had no
+    transcript is now recorded on the row rather than re-derived from byte
+    sizes by the next person.
+
+    `stop_after` exists for the hook: token-guard runs on a 5s budget and only
+    needs "is there anything at all to read", so it stops at the first
+    renderable record instead of rendering a 5MB transcript.
+    """
+    if not path:
+        return "no transcript path supplied", 0
+    if not os.path.exists(path):
+        return "transcript path does not exist: %s" % path, 0
+    count = 0
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if _render(record):
+                    count += 1
+                    if stop_after and count >= stop_after:
+                        return TRANSCRIPT_OK, count
+    except OSError as exc:
+        return "transcript unreadable: %s" % exc, 0
+    if not count:
+        return "transcript has no renderable records", 0
+    return TRANSCRIPT_OK, count
+
+
 def build_packet(trigger, reason, transcript_path):
     """Header + as much recent tail as fits + the four-section ASK.
 
@@ -212,8 +288,8 @@ def call_fable(packet, timeout):
     # is total in both directions, which is what makes it safe to refuse on.
     # An explicit KIPI_FABLE_CLAUDE_CMD overrides it, because a suite that
     # points at its own stub has already opted out of the live path.
-    if not command and os.environ.get("PYTEST_CURRENT_TEST"):
-        return None, "fixture run: refused to spend a real Fable call"
+    if not command and _fixture_refusal():
+        return None, _fixture_refusal()
 
     command = command or shutil.which("claude")
     if not command or not os.path.exists(command):
@@ -454,7 +530,26 @@ def notify_send(message, notify=None, timeout=20):
 
 
 def notify_cap(trigger, count):
-    """Page the founder once when cross-model triage did not unstick the run.
+    """Page once when cross-model triage did not unstick the run.
+
+    NO LIVE CALLER SINCE ASK-504. `escalate()` used to call this from the cap
+    branch and no longer does: that branch returns before call_fable, so the
+    page it sent could never carry a diagnosis (measured over the whole ledger,
+    2026-08-08: 6 capped rows, `diagnosis` None on all 6). Kept, not deleted,
+    because it is the only place the notifier's delivery vocabulary is mapped
+    into the ledger's `notify_*` namespace.
+
+    MERGE NOTE, 2026-08-29 (this branch's starvation work vs main's ASK-504).
+    This branch grew a `transcript_state` argument here so a cap reached by
+    STARVED escalations would not page a claim that the machine tier had been
+    spent. Main removed the cap page outright, for a stronger and later-measured
+    reason, and a page that never goes out cannot make that claim. So the
+    argument is not carried forward -- it would guard a branch nothing can
+    reach, which reads as protection and is not. The property it existed for is
+    kept where it is still live and still consumed: the capped ROW records
+    `cap_basis` (fed/starved) plus `transcript_status`, so a reader of
+    `--report` can still tell "two real triages ran and did not unstick this"
+    from "two packets went out empty".
 
     Returns a record of what is KNOWN, never a bare claim of success.
 
@@ -491,43 +586,84 @@ def notify_cap(trigger, count):
 # entry
 # --------------------------------------------------------------------------
 
-def write_pending(path, trigger, triage):
-    """Hand the triage back to the guard, atomically.
+def write_pending(path, trigger, triage, actor=""):
+    """Hand the triage back to the guard, atomically and addressed.
 
     tmp + rename in the SAME directory, so a hook reading concurrently sees
     either no file or the whole file. A plain open("w") would expose a window
     where the reader gets half a JSON object and silently discards the triage
     (json.load raises, the guard's except returns None) -- a loss that looks
     exactly like "the model had nothing to say".
+
+    `actor` is the addressee. The executable that acts on it is
+    `pending_payload_is_trustworthy()` in token-guard.py, tested by
+    tests/test_fable_escalation.py; nothing here enforces anything. The field is
+    written even when empty so it always exists, since an absent addressee and a
+    wrong one are the same fact to that check (sp-39c0d7bd).
+
+    The file is created 0600 inside a directory created 0700, and the guard
+    picks that directory precisely because only this uid may write into it
+    (ASK-877, `pending_dir()` in token-guard.py). Both layers are kept: the mode
+    is what stops another local account reading a slice of this session's
+    transcript back out of the file (sp-3caa724d), and the private directory is
+    what stops one PARKING a file at this name that can never be displaced.
+
+    Returns whether the triage actually landed at `path`. It used to return
+    nothing and swallow every OSError, which is how the squat above stayed
+    silent: os.replace() onto a foreign-owned file in sticky /tmp raises EACCES,
+    and an unchecked exception made a permanently dead channel look exactly like
+    a model that had nothing to say.
     """
     if not path:
-        return
+        return False
     tmp = "%s.%d.tmp" % (path, os.getpid())
     try:
         directory = os.path.dirname(path)
         if directory:
-            os.makedirs(directory, exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"trigger": trigger, "triage": triage, "ts": _now()}, fh)
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"trigger": trigger, "triage": triage, "ts": _now(),
+                       "actor": actor or ""}, fh)
         os.replace(tmp, path)
+        return True
     except OSError:
         try:
             os.remove(tmp)
         except OSError:
             pass
+        return False
 
 
 def escalate(trigger, reason, transcript_path, count, capped_notified,
-             pending_file=""):
+             pending_file="", actor=""):
     result = {"triage": None, "escalated": False, "capped": False,
-              "notified": False, "delivered": False, "failure": None}
+              "notified": False, "delivered": False, "handed_off": False,
+              "failure": None, "starved": False}
 
     cap = _int_env("KIPI_FABLE_CAP", DEFAULT_CAP)
     if count >= cap:
         result["capped"] = True
         result["failure"] = "cap reached (%d)" % cap
+        # WHAT THIS CAP WAS REACHED ON IS DECIDED HERE, off the transcript the
+        # cap fired on, not off an invariant maintained in another file.
+        # token-guard is what keeps starved escalations from counting toward the
+        # cap, but the row that OUTLIVES the episode must not depend on a caller
+        # having upheld that for its truth.
+        #
+        # This started life as the input to the page below. Merging origin/main
+        # 2026-08-29 removed that page entirely (ASK-504, reasoned in the block
+        # under this row), and `cap_basis` is what survives the removal: a
+        # reader of `--report` can still separate "two real triages ran and did
+        # not unstick this" from "two packets went out empty", which is the
+        # whole distinction this branch exists to make. Measured 2026-08-03:
+        # 23 of 27 calls were starved, and starved calls were what drove the cap.
+        cap_state, _ = transcript_status(transcript_path)
         row = {"ts": _now(), "trigger": trigger, "capped": True,
                "fable_ok": False, "failure": result["failure"],
+               "transcript_status": cap_state,
+               "transcript_path": transcript_path or "",
+               "cap_basis": "fed" if cap_state == TRANSCRIPT_OK else "starved",
                "call_timeout_s": 0, "next_path_taken": None}
         # THE CAP NO LONGER PAGES THE FOUNDER (ASK-504).
         #
@@ -562,11 +698,81 @@ def escalate(trigger, reason, transcript_path, count, capped_notified,
         log_row(row)
         return result
 
+    # STARVED ESCALATIONS DO NOT SPEND A CALL AND DO NOT SPEND A CAP SLOT.
+    # Measured 2026-08-03: of 27 attempted calls, 23 went out on a packet with
+    # zero transcript records. 8 of those 23 then burned the full 45s timeout,
+    # while 0 of the 4 packets that DID carry a tail timed out -- so the empty
+    # packets were not cheap, they were the expensive ones. Worse, two of them
+    # were enough to hit FABLE_CAP and page the founder with a message asserting
+    # the machine tier had been spent. It had not been spent, it had been
+    # starved, and those are different conditions with different next actions.
+    # A triage that cannot read its input has nothing to add to the refusal, so
+    # the correct move is to refuse the call and record why.
+    status, records = transcript_status(transcript_path)
+    if status != TRANSCRIPT_OK:
+        result["failure"] = "starved: %s" % status
+        result["starved"] = True
+        log_row({
+            "ts": _now(),
+            "trigger": trigger,
+            "reason": (reason or "")[:300],
+            "fable_ok": False,
+            "starved": True,
+            "call_spent": False,
+            "failure": result["failure"],
+            "transcript_status": status,
+            "transcript_records": 0,
+            "transcript_path": transcript_path or "",
+            "duration_s": 0,
+            "diagnosis": "",
+            "next_path_taken": None,
+            "capped": False,
+        })
+        return result
+
     packet = build_packet(trigger, reason, transcript_path)
     started = time.time()
     triage, failure = call_fable(packet, _int_env("KIPI_FABLE_TIMEOUT",
                                                   DEFAULT_TIMEOUT))
     duration = round(time.time() - started, 2)
+
+    result["triage"] = triage
+    result["escalated"] = triage is not None
+
+    # THE HAND-OFF RUNS BEFORE THE ROW, AND THE ROW CARRIES ITS OUTCOME
+    # (ASK-886, PR #203 round 2 Codex major).
+    #
+    # cc1cbc06 taught write_pending to RETURN whether the triage landed, and
+    # then this caller threw that answer away. Reproduced on this branch with
+    # every `claude-fable-<uid>` candidate obstructed: pending_path() is "",
+    # write_pending() returns False, and escalate() still reported
+    # `escalated: true` with `failure: null`. The triage vanished and the only
+    # record of the episode said the escalation worked -- the same confident
+    # success over a dead channel that cc1cbc06 closed, one level up the stack.
+    #
+    # `escalated` stays TRUE here on purpose. Fable was called and it answered;
+    # that call cost money and this ledger is the only place the spend is
+    # recorded. Flipping the flag would erase the call to describe a delivery
+    # failure, so delivery gets its own field -- the same split already made
+    # between `notified` (a page was attempted) and `delivered` (it could
+    # actually have left the machine).
+    #
+    # The row is written AFTER the hand-off so it can state the outcome. A row
+    # written first would have to assert a hand-off that had not happened yet,
+    # and a receipt for an action that did not occur is the
+    # rca-specification-reported-as-state class.
+    handoff_note = None
+    if triage:
+        result["handed_off"] = write_pending(pending_file, trigger, triage,
+                                             actor)
+        if not result["handed_off"]:
+            handoff_note = ("write refused at %s" % pending_file
+                            if pending_file else
+                            "no hand-off path: every private directory "
+                            "candidate was obstructed")
+            failure = failure or (
+                "triage computed but not handed off (%s)" % handoff_note)
+    result["failure"] = failure
 
     log_row({
         "ts": _now(),
@@ -575,19 +781,22 @@ def escalate(trigger, reason, transcript_path, count, capped_notified,
         "packet_sha256": hashlib.sha256(packet.encode()).hexdigest(),
         "packet_bytes": len(packet.encode()),
         "fable_ok": triage is not None,
+        "starved": False,
+        "call_spent": True,
+        "transcript_status": status,
+        "transcript_records": records,
+        "transcript_path": transcript_path or "",
         "failure": failure,
         "duration_s": duration,
         "diagnosis": (triage or "")[:1500],
         # Filled by nothing today. A field with no writer is a lie, so it is
         # recorded as unknown rather than as a claim about what Opus did next.
         "next_path_taken": None,
+        "handoff_attempted": bool(triage),
+        "handed_off": result["handed_off"],
+        "handoff_note": handoff_note,
         "capped": False,
     })
-    result["triage"] = triage
-    result["escalated"] = triage is not None
-    result["failure"] = failure
-    if triage:
-        write_pending(pending_file, trigger, triage)
     return result
 
 
@@ -614,6 +823,7 @@ def report():
         print("no escalations recorded (%s)" % directory)
         return
     total = 0
+    starved = 0
     for name in sorted(os.listdir(directory)):
         if not name.endswith(".jsonl"):
             continue
@@ -625,6 +835,8 @@ def report():
             except ValueError:
                 continue
             total += 1
+            if row.get("starved"):
+                starved += 1
             status = "ok" if row.get("fable_ok") else (
                 row.get("failure") or "failed")
             print("%s  %-16s %-6.6ss  %s" % (
@@ -633,6 +845,14 @@ def report():
             first = (row.get("diagnosis") or "").splitlines()
             if first:
                 print("    %s" % first[0][:110])
+            # A row whose triage never reached the agent reads as an ordinary
+            # success on the status column (`fable_ok` is about the MODEL, not
+            # about delivery), so the hand-off failure gets its own line. A
+            # field written to the ledger that nothing ever prints is a
+            # producer with no consumer (ASK-886).
+            if row.get("handoff_attempted") and not row.get("handed_off"):
+                print("    hand-off: NOT DELIVERED (%s)"
+                      % (row.get("handoff_note") or "reason not recorded"))
             # The cap row is the one a human needs to trust, so it never prints
             # a bare "notified". It prints whether the page could have LEFT the
             # machine, and why not when it could not.
@@ -643,7 +863,13 @@ def report():
                          row.get("notify_delivered"),
                          " (%s)" % row["notify_note"]
                          if row.get("notify_note") else ""))
-    print("%d escalation(s) in %s" % (total, directory))
+            # A starved row is the one a reader would otherwise mistake for a
+            # thin triage. It names the plumbing failure instead.
+            if row.get("starved"):
+                print("    STARVED: no call spent, no cap slot used (%s)"
+                      % row.get("transcript_status"))
+    print("%d escalation(s) in %s (%d starved: never had a transcript to read)"
+          % (total, directory, starved))
 
 
 def main():
@@ -660,16 +886,24 @@ def main():
     parser.add_argument("--capped-notified", action="store_true")
     parser.add_argument("--pending-file", default="",
                         help="where to drop the triage for the guard to collect")
+    parser.add_argument("--actor", default="",
+                        help="the actor this triage is FOR; the guard refuses "
+                             "to deliver it to any other actor")
     parser.add_argument("--json", action="store_true",
                         help="machine output (the token-guard contract)")
     args = parser.parse_args()
 
     if os.environ.get("KIPI_FABLE_ESCALATION") == "0":
+        # Every key the contract above names, on every path. A consumer that
+        # has to ask whether a field exists before reading it is a consumer
+        # that will one day read the absence as False and be wrong.
         out = {"triage": None, "escalated": False, "capped": False,
-               "notified": False, "delivered": False, "failure": "disabled"}
+               "notified": False, "delivered": False, "handed_off": False,
+               "starved": False, "failure": "disabled"}
     else:
         out = escalate(args.trigger, args.reason, args.transcript,
-                       args.count, args.capped_notified, args.pending_file)
+                       args.count, args.capped_notified, args.pending_file,
+                       args.actor)
 
     if args.json:
         print(json.dumps(out))

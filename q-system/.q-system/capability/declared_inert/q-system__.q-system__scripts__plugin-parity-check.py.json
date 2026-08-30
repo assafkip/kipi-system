@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/plugin-parity-check.py",
+ "reason": "operator tool: compares the RUNTIME marketplace clone against the skeleton. That clone lives outside the repo, so no repo surface can call it and CI cannot see the thing it inspects; wiring it to one would be a fake reference. It is how the 34-version prd-os drift was found (ASK-721).",
+ "spillover_id": "sp-ff11d191"
+}

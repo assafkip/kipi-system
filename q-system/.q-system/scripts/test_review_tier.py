@@ -267,6 +267,14 @@ def section_unknown():
         check("unknown: reason says unknown is not safe",
               "matches no self-review category" in out, out[:300])
 
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_sandbox(tmp)
+        code, out = run_tier(diff_capability_fragment(root), root)
+        check("required-check: a capability fragment ESCALATES",
+              code == EXIT_ESCALATE, out[:400])
+        check("required-check: reason names the required check",
+              "adds or removes a required check" in out, out[:400])
+
     # One unknown file poisons an otherwise self-safe change.
     with tempfile.TemporaryDirectory() as tmp:
         root = make_sandbox(tmp)
@@ -274,6 +282,25 @@ def section_unknown():
         code, out = run_tier(mixed, root)
         check("unknown: one unknown file among safe ones still ESCALATES",
               code == EXIT_ESCALATE, out[:300])
+
+
+def diff_capability_fragment(root):
+    """A test declaration edited in the layout declarations actually live in.
+
+    The manifest used to be one file, so REQUIRED_CHECK_FILES could match it by
+    name. It is a directory of one-JSON-per-declaration now (the single array
+    was the merge conflict in 37 of 41 conflicting PRs), and a fragment is named
+    after the test it declares -- no basename match can ever see it. Without the
+    prefix rule the split would have quietly demoted every test-adding PR out of
+    the review tier, which is the same silent-absence class the manifest exists
+    to catch. So this case is the wiring proof for that prefix.
+    """
+    rel = ("q-system/.q-system/capability/expected_tests/"
+           "q-system__.q-system__scripts__test__test-new.sh.json")
+    return produce_diff(
+        root, rel, '{\n "path": "q-system/.q-system/scripts/test/test-new.sh"\n}\n',
+        '{\n "path": "q-system/.q-system/scripts/test/test-new.sh",\n'
+        ' "runner": "bash"\n}\n')
 
 
 def section_self():

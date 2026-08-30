@@ -33,12 +33,41 @@ on-a-missing-script-blocks-the-fix-too).
 
 ## Bypass
 
-Intentional (a public case study with recorded permission): put
-`client-name-guard-skip` in the commit message.
+Intentional (a public case study with recorded permission): put the bypass token
+on its OWN LINE in the commit message, optionally with a reason:
+
+    client-name-guard-skip: case study, permission recorded 2026-08-01
+
+Naming the token in prose bypasses nothing. The guard reads a TRAILER, not a
+mention, and the line must start at column 0 so an indented quote of this very
+docstring is not an invocation.
+
+## One stage, and why (ASK-747)
+
+There is ONE scan and it runs at commit-msg. That is the only stage where both
+facts hold at once:
+
+  * the REAL message for THIS commit arrives as the argument -- no persistence,
+    no cross-commit leak, and it is present for `git commit -m` exactly as for an
+    editor commit;
+  * `git diff --cached` still returns the staged content, because the commit
+    object does not exist yet.
+
+The previous shape ran a second scan at pre-commit. That stage cannot see the
+message, so it could not honour a legitimate bypass, and the first fix attempt
+(PR #194) tried to reach the message through $GIT_DIR/COMMIT_EDITMSG. Both
+consequences were measured, not argued:
+
+  * COMMIT_EDITMSG PERSISTS from the previous commit, so a legitimate bypass in
+    commit N authorised the scan of commit N+1 -- a client name passed;
+  * COMMIT_EDITMSG is ABSENT at pre-commit for `git commit -m`, so the documented
+    bypass did not exist there at all, which routes an author to --no-verify and
+    disarms every other hook in the repo.
+
+Earlier feedback is not worth a gate that contradicts its own escape hatch.
 
 Usage:
-    client-name-guard.py --staged            # staged diff content (pre-commit)
-    client-name-guard.py --message <file>    # commit message (commit-msg)
+    client-name-guard.py --message <file>    # commit-msg: the one authoritative scan
 """
 
 import argparse
@@ -50,6 +79,62 @@ from pathlib import Path
 
 TOKENS_FILE = Path.home() / ".config" / "kipi" / "client-tokens"
 SKIP = "client-name-guard-skip"
+
+# A BYPASS IS AN ACT, NOT A WORD (ASK-747).
+#
+# This was `if SKIP in text`, which cannot tell an author INVOKING the bypass
+# from prose that merely NAMES it. The guard's own introducing commit proved it:
+# that message documented the token, both stages printed `bypassed`, and the
+# guard never scanned the commit that introduced it.
+#
+# ANCHORED AT COLUMN 0, deliberately. Allowing leading whitespace would let an
+# indented quote of the usage docstring above count as an invocation -- the same
+# mention-vs-use confusion one level down. Anchoring also means a git comment
+# line cannot match, without needing a claim about when git strips them (it does
+# NOT strip them for `git commit -m`, so a rule that relied on that would be
+# wrong).
+_BYPASS_LINE = re.compile(rf"^{re.escape(SKIP)}(?::[ \t]*\S.*?)?[ \t]*$")
+
+
+def bypass_reason(message):
+    """The trailer authorising a bypass, or None.
+
+    Reads the MESSAGE ONLY. Content is never consent: a diff can contain any
+    text at all, including this file, which is exactly how the pre-commit stage
+    used to disarm itself (it tested the skip token against its own staged
+    diff, so any commit touching a file containing the token was unscanned).
+    """
+    for line in (message or "").splitlines():
+        if _BYPASS_LINE.match(line):
+            return line.strip()
+    return None
+
+
+def staged_added_lines():
+    """Added lines of the staged diff, still readable at commit-msg time.
+
+    The commit object does not exist yet, so --cached IS this commit's content.
+    Only ADDED lines: a diff that REMOVES a client name is the fix, not the
+    defect. Fails CLOSED -- we only reach here with an armed token list, and a
+    guard that cannot see what is being committed must not report all clear.
+    """
+    # DECODE WITH REPLACEMENT, NOT STRICTLY. `text=True` decodes as UTF-8 with
+    # errors="strict", and one undecodable byte anywhere in the diff raises
+    # UnicodeDecodeError -- which is not "no client name found", it is the guard
+    # dying and taking the commit with it. Hit 2026-08-29 merging origin/main:
+    # main deletes a scratch tree that had loose git objects (zlib bytes) checked
+    # into it, git renders those deletions inline, and the commit became
+    # impossible with a traceback rather than a verdict. Replacement is the right
+    # trade for THIS check: the tokens are ASCII, so a run of undecodable bytes
+    # can only ever have hidden an ASCII name that was already unreadable as
+    # text, while strict decoding hid the whole rest of the diff behind one byte.
+    r = subprocess.run(["git", "diff", "--cached", "-U0"],
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip() or "git diff --cached failed")
+    return "\n".join(l for l in r.stdout.splitlines()
+                      if l.startswith("+") and not l.startswith("+++"))
 
 
 def load_tokens():
@@ -78,8 +163,12 @@ def hits(text, tokens):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--staged", action="store_true")
-    ap.add_argument("--message", type=Path)
+    # --staged is GONE. It was a second scan at a stage that cannot see the
+    # message, so it could neither honour a bypass nor be trusted to refuse one;
+    # it tested the skip token against its own staged diff. One stage, one
+    # verdict -- see the module docstring for the measurements behind that.
+    ap.add_argument("--message", type=Path, required=True,
+                    help="the commit message file (lefthook commit-msg passes {1})")
     args = ap.parse_args()
 
     tokens = load_tokens()
@@ -90,31 +179,37 @@ def main() -> int:
     if not tokens:
         return 0
 
-    if args.message:
-        text = args.message.read_text() if args.message.exists() else ""
-        where = "commit message"
-    else:
-        text = subprocess.run(
-            ["git", "diff", "--cached", "-U0"],
-            capture_output=True, text=True).stdout
-        # only ADDED lines; a diff that REMOVES a client name is the fix, not the defect
-        text = "\n".join(l for l in text.splitlines()
-                         if l.startswith("+") and not l.startswith("+++"))
-        where = "staged content"
+    message = args.message.read_text() if args.message.exists() else ""
 
-    if SKIP in text:
-        print(f"client-name-guard: bypassed via {SKIP}")
+    # The bypass is decided by the message and nothing else, before any scan.
+    reason = bypass_reason(message)
+    if reason:
+        print(f"client-name-guard: bypassed via trailer {reason!r}")
         return 0
 
-    found = hits(text, tokens)
+    # BOTH SURFACES IN ONE PASS. The message and the staged content are separate
+    # leak paths, and each used to be checked by a stage the other could disarm.
+    try:
+        content = staged_added_lines()
+    except RuntimeError as exc:
+        print(f"BLOCK: cannot read the staged diff ({exc}).")
+        print("Refusing rather than reporting all clear. The token list is armed,")
+        print("so passing here would be an unverified claim that nothing leaked.")
+        return 1
+
+    found = [(where, hits(text, tokens))
+             for where, text in (("commit message", message),
+                                 ("staged content", content))]
+    found = [(w, h) for w, h in found if h]
     if not found:
         return 0
 
-    print(f"BLOCK: client name in {where}: {', '.join(found)}")
+    for where, names in found:
+        print(f"BLOCK: client name in {where}: {', '.join(names)}")
     print("This repo is PUBLIC. Client names never go public without recorded")
     print("permission. The pattern is the post, the client is not.")
     print("  fix   : rename to a generic label (example_instance, a client engagement)")
-    print(f"  intend: add '{SKIP}' to the commit message")
+    print(f"  intend: put '{SKIP}: <reason>' on its OWN LINE in the commit message")
     return 1
 
 

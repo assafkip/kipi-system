@@ -424,7 +424,7 @@ class TestExecutableSourceIsNeverSwept:
     """
 
     SWEPT_ON_2026_08_13 = (
-        "plugins/kipi-core/voicekit/tests/test_length_axis.py",
+        "plugins/kipi-core/voiceloop/tests/test_length_axis.py",
         "q-system/.q-system/scripts/voice-dna-loader.py",
     )
 
@@ -434,7 +434,7 @@ class TestExecutableSourceIsNeverSwept:
             assert auto_commit.system_state_paths([p]) == [], p
 
     def test_source_is_refused_in_every_area(self):
-        for p in ("plugins/kipi-core/voicekit/selector.py",
+        for p in ("plugins/kipi-core/voiceloop/selector.py",
                   "q-system/hooks/auto-commit.py",
                   "q-system/.q-system/agent-pipeline/runner.py",
                   "q-system/canonical/helper.py",
@@ -456,3 +456,102 @@ class TestExecutableSourceIsNeverSwept:
         commit until it is bumped, so refusing it here would deadlock that gate."""
         r = auto_commit.classify("plugins/kipi-core/.claude-plugin/plugin.json")
         assert not isinstance(r, str), r
+
+
+# --- the commit message must say what changed, not just where (2026-08-16) ----
+#
+# THE INCIDENT. Commit 80b82f84 on kipi-system read:
+#
+#     chore: update system infrastructure
+#     - q-system/.q-system/capability-manifest.json
+#
+# and silently reverted five lines of a real capability-manifest entry. The
+# path was ALREADY in the message; naming files was never the gap. Direction and
+# magnitude were, so a deletion was indistinguishable from an update and a
+# second session had to diff the commit by hand to find it. These cases pin the
+# half that was missing, and `test_an_addition_is_not_labelled_a_deletion` is
+# the discrimination control -- without it, a hook that stamped
+# "DELETIONS ONLY" on every commit would pass the reproducer.
+
+
+def _last_msg(run):
+    return run("git", "log", "-1", "--format=%B").stdout
+
+
+def _seed_tracked(root, run, rel, body):
+    """A file that EXISTS AT HEAD, so the next write is a real diff and not an
+    add. The incident was an edit to a long-tracked file; an untracked file
+    would only ever produce insertions and could not reproduce it."""
+    _write(root, rel, body)
+    run("git", "add", "--", rel)
+    run("git", "commit", "-q", "-m", "seed " + rel)
+
+
+MANIFEST = "q-system/.q-system/capability-manifest.json"
+
+
+def test_a_pure_deletion_is_named_as_a_deletion(tmp_path):
+    """The 80b82f84 reproducer: five lines removed, nothing added."""
+    root, run = _repo(tmp_path)
+    _seed_tracked(root, run, MANIFEST,
+                  "".join(f"line-{n}\n" for n in range(8)))
+    (root / MANIFEST).write_text("".join(f"line-{n}\n" for n in range(3)))
+    _fire(root)
+    msg = _last_msg(run)
+    assert MANIFEST in msg, f"the changed path left the message entirely\n{msg}"
+    assert "+0/-5" in msg, (
+        "the message did not carry the line counts, so a 5-line revert still "
+        f"reads exactly like an ordinary update\n{msg}")
+    assert "DELETIONS ONLY" in msg, (
+        f"a pure deletion was not called out in words\n{msg}")
+
+
+def test_an_addition_is_not_labelled_a_deletion(tmp_path):
+    """DISCRIMINATION CONTROL. A hook that always stamped the deletion marker
+    would pass the reproducer above and be worthless. This is the case that
+    must stay quiet."""
+    root, run = _repo(tmp_path)
+    _seed_tracked(root, run, MANIFEST, "line-0\n")
+    (root / MANIFEST).write_text("".join(f"line-{n}\n" for n in range(6)))
+    _fire(root)
+    msg = _last_msg(run)
+    assert "+5/-0" in msg, f"insertions were not counted\n{msg}"
+    assert "DELETIONS ONLY" not in msg, (
+        f"a pure ADDITION was labelled a deletion\n{msg}")
+
+
+def test_a_mixed_edit_reports_both_directions(tmp_path):
+    root, run = _repo(tmp_path)
+    _seed_tracked(root, run, MANIFEST, "a\nb\nc\n")
+    (root / MANIFEST).write_text("a\nCHANGED\nc\n")
+    _fire(root)
+    msg = _last_msg(run)
+    assert "+1/-1" in msg, f"a mixed edit lost its counts\n{msg}"
+    assert "DELETIONS ONLY" not in msg, (
+        f"an edit that also added lines was labelled a pure deletion\n{msg}")
+
+
+def test_the_subject_line_carries_the_stat(tmp_path):
+    """`git log --oneline` shows the SUBJECT and nothing else. That is where the
+    80b82f84 review actually happened, so the body alone does not close it."""
+    root, run = _repo(tmp_path)
+    _seed_tracked(root, run, MANIFEST, "".join(f"l{n}\n" for n in range(6)))
+    (root / MANIFEST).write_text("l0\n")
+    _fire(root)
+    subject = run("git", "log", "-1", "--format=%s").stdout.strip()
+    assert "+0/-5" in subject, (
+        f"the one-line log still hides the direction of the change\n{subject}")
+
+
+def test_a_binary_file_degrades_instead_of_crashing(tmp_path):
+    """git reports `-` for binary line counts. The hook must still commit."""
+    root, run = _repo(tmp_path)
+    rel = "q-system/.q-system/blob.bin"
+    _write(root, rel, "seed\n")
+    run("git", "add", "--", rel)
+    run("git", "commit", "-q", "-m", "seed blob")
+    (root / rel).write_bytes(b"\x00\x01\x02binary\xff")
+    _fire(root)
+    msg = _last_msg(run)
+    assert rel in msg, f"the binary file was dropped from the message\n{msg}"
+    assert "binary" in msg, f"the binary file was not marked as such\n{msg}"

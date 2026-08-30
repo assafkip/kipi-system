@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/plugin-fanout.py",
+ "reason": "operator tool: propagates a skeleton plugin into OTHER checkouts, hash-classified and without delete, as the bounded alternative to the fleet updater whose delete flag removed voicekit from 19 instances on 2026-08-07. Its targets are other repos, so nothing here calls it.",
+ "spillover_id": "sp-89be8c6d"
+}

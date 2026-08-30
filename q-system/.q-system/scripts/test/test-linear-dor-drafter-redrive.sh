@@ -178,7 +178,15 @@ PY
 }
 
 run_drafter() {  # run_drafter <args...>  -> stdout+stderr in $WORK/out.txt
-  STUB_MODE="${STUB_MODE:-good}" python3 "$DRAFTER" "$@" > "$WORK/out.txt" 2>&1
+  # KIPI_NOTIFY IS PART OF THE ISOLATION, NOT A NICETY. The drafter's notify()
+  # shells slack-notify.sh, which now FILES A LIVE LINEAR TICKET rather than
+  # posting to a webhook, and this suite drives paths that call it. The scar is
+  # already on the board twice: three tests were found paging the founder's real
+  # channel on 2026-08-01, and a worktree cut before the fix paged again while
+  # that fix sat unmerged. Per-test stubbing only protects tests someone
+  # remembered, so the stub lives at the single runner every case goes through.
+  STUB_MODE="${STUB_MODE:-good}" KIPI_NOTIFY="/usr/bin/true" \
+    python3 "$DRAFTER" "$@" > "$WORK/out.txt" 2>&1
 }
 
 board() { cat > "$WORK/board.json"; }
