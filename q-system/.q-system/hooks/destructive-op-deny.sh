@@ -344,6 +344,26 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   # so it changed the timings by nothing. The cost is here, in the count.
   _ARGV_MAX_RESCANS=500
 
+  # THE CEILING BOUNDS THE INVOCATION, NOT THE STAGE (round seven, same bypass).
+  #
+  # Round six added the ceiling and reset it at the top of every `;`-separated
+  # stage, so a command bought a fresh 500 rescans per stage and the bound was
+  # only ever per-stage. Measured by codex on that build: 14 padded stages,
+  # 21KB, reached 5.55s against the wired 5s timeout, where the hook is killed
+  # and its deny DISCARDED. The headline claim of the previous commit -- "bound
+  # the rescan COUNT" -- was therefore false as shipped.
+  #
+  # The counter is initialised ONCE here and never reset, so the ceiling is a
+  # budget for the whole invocation. Splitting a payload across stages now
+  # spends the same budget instead of multiplying it, which is the property the
+  # word "bound" was claiming all along.
+  #
+  # Seventh instance of one bypass in one predicate. That is a signal about the
+  # SURFACE -- a 5s-timeout-bounded shell scanner is a poor shape for a refusal
+  # that must hold under adversarial padding -- and it is captured as its own
+  # row rather than answered with an eighth round here.
+  _rescans=0
+
   # The one ceiling that stays: the git arm below is O(n^2) in its own right
   # (it rebuilds the remaining-token array at every position), and unlike the
   # scan loops that cost is not removed by the tr fix. 600 tokens is ~1s here,
@@ -591,7 +611,6 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     set -f
     _sw=( "" $_stage )
     set +f
-    _rescans=0
     _i=1
     while [ "$_i" -lt "${#_sw[@]}" ]; do
       # Skip positions that provably cannot deny, so the fork below runs a
@@ -654,7 +673,6 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     set -f
     _dw=( "" $_norm )
     set +f
-    _rescans=0
     _i=1
     while [ "$_i" -lt "${#_dw[@]}" ]; do
       # THE SAME PRE-FILTER AS THE OTHER SCAN (PR #279 major). This loop had

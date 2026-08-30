@@ -162,6 +162,35 @@ class ArgvPrefilterCase(unittest.TestCase):
                                 "the refusal itself must arrive inside the "
                                 "timeout: %.2fs" % elapsed)
 
+    def test_the_ceiling_bounds_the_invocation_not_the_stage(self):
+        """Round seven, and the reason round six's headline was false.
+
+        The ceiling was reset at the top of every `;`-separated stage, so a
+        command bought a fresh 500 rescans per stage and the bound was only ever
+        per-stage. Codex measured 14 padded stages, 21KB, at 5.55s against the
+        wired 5s timeout, where the hook is killed and its deny DISCARDED.
+
+        No existing timing test drove more than one stage, so the suite could not
+        observe the reset. Every one of them padded a SINGLE stage harder, which
+        is why six rounds of green suites sat on top of an open bypass: the tests
+        kept growing along the axis that was already fixed.
+
+        Each stage here sits UNDER the per-stage ceiling on its own, so this can
+        only go red on the multiplication, not on stage size."""
+        stage = " ".join(["rm"] * 400)
+        for stages in (14, 30):
+            with self.subTest(stages=stages):
+                command = " ; ".join([stage] * stages)
+                decision, elapsed = decision_for(command)
+                self.assertEqual(decision, "deny",
+                                 "a padded multi-stage command must still reach "
+                                 "a verdict")
+                self.assertLess(elapsed, HOOK_TIMEOUT_S,
+                                "%d stages took %.2fs against a %.0fs timeout: "
+                                "the ceiling is bounding each stage rather than "
+                                "the invocation"
+                                % (stages, elapsed, HOOK_TIMEOUT_S))
+
     def test_the_rescan_ceiling_leaves_ordinary_commands_alone(self):
         """The ceiling has to sit far above real usage or it gets switched off.
 
