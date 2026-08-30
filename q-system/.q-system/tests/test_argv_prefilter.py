@@ -124,10 +124,16 @@ class ArgvPrefilterCase(unittest.TestCase):
                         "%.2fs against a %.0fs timeout" % (elapsed, HOOK_TIMEOUT_S))
 
     def test_the_admitted_token_shape_is_bounded(self):
-        """The filter now admits ONLY tokens that can themselves deny, so the
-        fork count follows the number of rm/git tokens rather than command
-        length. Padding with the admitted shape is therefore the worst case."""
-        command = "echo " + " ".join(["git"] * 300)
+        """THE worst case, because it cannot be filtered away.
+
+        `git` and `rm` must be admitted -- they are the tokens that can deny --
+        so a line padded with them is unbounded by construction, and three
+        rounds of narrowing the filter only moved the threshold. 4000 admitted
+        tokens took 21.24s before the scans were de-forked and windowed.
+
+        4000 rather than 300: my earlier version used a count the then-current
+        code already handled, so it measured the fix rather than the limit."""
+        command = "echo " + " ".join(["git"] * 4000)
         decision, elapsed = decision_for(command)
         self.assertEqual(decision, "allow")
         self.assertLess(elapsed, HOOK_TIMEOUT_S,
@@ -149,9 +155,11 @@ class ArgvPrefilterCase(unittest.TestCase):
         self.assertEqual(decision_for("A=1 B=2 %s" % DANGER)[0], "deny")
 
     def test_a_flag_shaped_assignment_does_not_hide_a_deny(self):
-        """`--grep=x` is excluded from the filter for speed. Any deny after it is
-        still reachable from the program token, which is always scanned -- so
-        excluding it must not lose the verdict."""
+        """The filter now admits ONLY `rm` and `git`; flags, assignments and
+        transparent prefixes were all removed across four rounds. Each removal
+        rests on the same argument, so each needs the same check: a deny after
+        the skipped token must still be found from the program token, which is
+        always scanned."""
         self.assertEqual(decision_for("--grep=x %s" % DANGER)[0], "deny")
         self.assertEqual(
             decision_for("git log --grep=x ; %s" % DANGER)[0], "deny")

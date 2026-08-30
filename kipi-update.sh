@@ -304,10 +304,24 @@ install_vendored_hooks() {
   local installer="$SCRIPT_DIR/q-system/.q-system/scripts/install-claude-hooks.py"
   [ -f "$installer" ] || return 0
   echo "==> installing vendored hooks into ~/.claude/hooks"
-  if ! python3 "$installer"; then
-    echo "WARNING: a vendored hook did not install. The guard on this machine may" >&2
-    echo "         be older than the reviewed one. Re-run:" >&2
-    echo "         python3 $installer" >&2
+  # REPORT WHAT HAPPENED, NOT A GUESS AT WHY (PR #279 minor).
+  #
+  # This said "a vendored hook did not install, the guard may be older than the
+  # reviewed one" on EVERY non-zero exit -- including a deliberate ratchet
+  # refusal, where the installed copy is intact and the SOURCE was rejected.
+  # Naming a cause the run has not established is the same defect as the
+  # "dead consumer" liveness message fixed in ASK-1146: a confident diagnosis
+  # attached to a signal that does not support it.
+  #
+  # The installer already prints one precise line per hook. Showing that line is
+  # both shorter and true.
+  local _out _rc
+  _out="$(python3 "$installer" 2>&1)"; _rc=$?
+  printf '%s\n' "$_out"
+  if [ "$_rc" -ne 0 ]; then
+    echo "WARNING: the hook install reported a problem above (exit $_rc). The guard" >&2
+    echo "         running on this machine may not match the reviewed copy. Check with:" >&2
+    echo "         python3 $installer --check" >&2
   fi
 }
 

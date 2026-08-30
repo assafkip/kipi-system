@@ -277,6 +277,26 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   # return 0 -- skipping it changes no outcome. The two lists are deliberately
   # adjacent, and test_argv_prefilter_matches_reasons pins them together so
   # adding a program arm without adding it here is caught.
+  # HOW FAR A RESCAN LOOKS FROM A PROGRAM TOKEN.
+  #
+  # De-forking the per-position scans was necessary and not sufficient: each call
+  # still slices `"${arr[*]:$i}"`, rebuilding the whole remaining string, so the
+  # loop stayed O(n^2). Measured after the fork was removed: 2000 admitted
+  # tokens took 5.44s and 4000 took 21.24s, against a wired 5s timeout.
+  #
+  # Filtering cannot fix this. `git` and `rm` MUST be admitted -- they are the
+  # tokens that can deny -- so an adversarial line padded with them is unbounded
+  # by construction. The window is the only lever that does not give up the scan.
+  #
+  # WHAT THIS COSTS, stated rather than discovered later: in these RESCANS, a
+  # decisive flag more than 64 tokens after its own program token is not seen.
+  # The FIRST-position scan still reads the entire stage unbounded, so an
+  # ordinary `git push ... --force` at any length is still caught there; what the
+  # rescans add is coverage of a program token HIDDEN mid-line, and 64 tokens is
+  # far past any real invocation's flags. A bound that is stated is better than a
+  # timeout that silently discards the verdict.
+  _ARGV_WINDOW=64
+
   _argv_could_deny_here() {  # _argv_could_deny_here <token>
     case "${1##*/}" in
       rm|git)                                  return 0 ;;
@@ -311,7 +331,20 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     esac
   }
 
-  argv_deny_reason() {  # argv_deny_reason <stage> -> echoes a reason, rc 0 = deny
+  # REASON IN A VARIABLE, NOT ON STDOUT (PR #279, round four of one bypass).
+  #
+  # Callers used `$(argv_deny_reason ...)` to capture the reason, and a command
+  # substitution is a FORK. The every-position scan therefore forked once per
+  # admitted token, so padding with an admitted shape -- `git`, `rm`, the two
+  # that must be admitted because they can actually deny -- pushed the hook past
+  # its wired 5s timeout at roughly 2000 tokens. An overrunning hook is killed
+  # and its deny DISCARDED.
+  #
+  # Three previous rounds narrowed which tokens are admitted. That only moved the
+  # threshold, because the admitted set can never be empty. The cost was never
+  # the scan; it was the fork around it. Setting a global and returning a status
+  # removes it, and the loop becomes ordinary function calls in one shell.
+  argv_deny_reason() {  # sets _ARGV_REASON, rc 0 = deny
     local stage="$1"
     set -f
     local -a w=( $stage )
@@ -336,7 +369,7 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
            || _argv_has_short f "${rest[@]}" \
            || _argv_has_long recursive "${rest[@]}" \
            || _argv_has_long force "${rest[@]}"; then
-          echo "rm carries a recursive or force flag (argv-inspected: a leading flag cannot hide it)"
+          _ARGV_REASON="rm carries a recursive or force flag (argv-inspected: a leading flag cannot hide it)"
           return 0
         fi
         ;;
@@ -357,11 +390,11 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
         local -a ga=( "" "${g[@]:$((i+1))}" )
         case "$sub" in
           reset)
-            _argv_has_long hard "${ga[@]}" && { echo "git reset --hard discards the working tree"; return 0; } ;;
+            _argv_has_long hard "${ga[@]}" && { _ARGV_REASON="git reset --hard discards the working tree"; return 0; } ;;
           push)
             if _argv_has_long force "${ga[@]}" || _argv_has_long force-with-lease "${ga[@]}" \
                || _argv_has_short f "${ga[@]}"; then
-              echo "git push is forced, which rewrites published history"; return 0
+              _ARGV_REASON="git push is forced, which rewrites published history"; return 0
             fi
             # THE LEADING-PLUS REFSPEC IS ALSO A FORCE PUSH (PR #279 major).
             #
@@ -386,20 +419,20 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
             # in a second rule keeps every "push destroys something" case in one
             # place, which is the drift the ASK-1131 comment above warns about.
             if _argv_has_long delete "${ga[@]}" || _argv_has_short d "${ga[@]}"; then
-              echo "git push --delete removes a published ref"; return 0
+              _ARGV_REASON="git push --delete removes a published ref"; return 0
             fi
             if _argv_has_long mirror "${ga[@]}"; then
-              echo "git push --mirror deletes every remote ref this repo lacks"; return 0
+              _ARGV_REASON="git push --mirror deletes every remote ref this repo lacks"; return 0
             fi
             local _tok
             for _tok in "${ga[@]:1}"; do
               case "$_tok" in
-                +?*) echo "git push with a leading-plus refspec ($_tok) is a force push and rewrites published history"; return 0 ;;
-                :?*) echo "git push with a colon refspec ($_tok) deletes the remote ref"; return 0 ;;
+                +?*) _ARGV_REASON="git push with a leading-plus refspec ($_tok) is a force push and rewrites published history"; return 0 ;;
+                :?*) _ARGV_REASON="git push with a colon refspec ($_tok) deletes the remote ref"; return 0 ;;
               esac
             done ;;
           branch)
-            _argv_has_short D "${ga[@]}" && { echo "git branch -D deletes a branch unmerged"; return 0; } ;;
+            _argv_has_short D "${ga[@]}" && { _ARGV_REASON="git branch -D deletes a branch unmerged"; return 0; } ;;
           clean)
             # A PREVIEW REMOVES NOTHING (PR #279 minor). `git clean -nd` and
             # `--dry-run` only LIST what would go, and denying a preview is how a
@@ -411,12 +444,12 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
             fi
             if _argv_has_short f "${ga[@]}" || _argv_has_short d "${ga[@]}" \
                || _argv_has_short x "${ga[@]}" || _argv_has_long force "${ga[@]}"; then
-              echo "git clean removes untracked files"; return 0
+              _ARGV_REASON="git clean removes untracked files"; return 0
             fi ;;
           filter-branch|filter-repo)
-            echo "git $sub rewrites every commit in the repository"; return 0 ;;
+            _ARGV_REASON="git $sub rewrites every commit in the repository"; return 0 ;;
           update-ref)
-            _argv_has_short d "${ga[@]}" && { echo "git update-ref -d deletes a ref"; return 0; } ;;
+            _argv_has_short d "${ga[@]}" && { _ARGV_REASON="git update-ref -d deletes a ref"; return 0; } ;;
         esac
         ;;
     esac
@@ -425,7 +458,7 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
 
   while IFS= read -r _stage; do
     [ -n "$_stage" ] || continue
-    _argv_reason="$(argv_deny_reason "$_stage")" && \
+    _ARGV_REASON=""; argv_deny_reason "$_stage" && _argv_reason="$_ARGV_REASON" && \
       emit_deny "destructive invocation: $_argv_reason. This is decided from the command's ARGV, not from where a flag happens to sit in the line (ASK-1131)."
   done < <(printf '%s\n' "$COMMAND" | tr ';|&' '\n\n\n')
 
@@ -465,7 +498,7 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
       # Skip positions that provably cannot deny, so the fork below runs a
       # handful of times instead of once per token. See _argv_could_deny_here.
       if _argv_could_deny_here "${_sw[$_i]}"; then
-        _argv_reason="$(argv_deny_reason "${_sw[*]:$_i}")" && \
+        _ARGV_REASON=""; argv_deny_reason "${_sw[*]:$_i:$_ARGV_WINDOW}" && _argv_reason="$_ARGV_REASON" && \
           emit_deny "destructive invocation: $_argv_reason. Decided from the command's ARGV at every starting position, so neither a leading flag nor a prefix carrying its own options can move it out of view (ASK-1131)."
       fi
       _i=$((_i+1))
@@ -507,7 +540,7 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
       # per word: 3000 words took 6.99s against a 5s timeout. Fixing one of two
       # identical loops is how a bypass survives being "fixed".
       if _argv_could_deny_here "${_dw[$_i]}"; then
-        _argv_reason="$(argv_deny_reason "${_dw[*]:$_i}")" && \
+        _ARGV_REASON=""; argv_deny_reason "${_dw[*]:$_i:$_ARGV_WINDOW}" && _argv_reason="$_ARGV_REASON" && \
           emit_deny "destructive invocation: $_argv_reason. The program token was quoted or escaped; the shell strips that before exec, so this scan does too (ASK-1131)."
       fi
       _i=$((_i+1))
@@ -652,9 +685,19 @@ if [ "${TOOL_NAME:0:5}" = "mcp__" ]; then
   # name operations both ways -- `delete_branch` and `batchDelete` -- so the
   # separator has to cover both. An underscore is inserted at every lower-to-
   # upper transition before folding case.
+  # `un` STAYS ATTACHED THROUGH THE FOLD (PR #279 minor). The camelCase rule
+  # above turns `unDelete` into `un_delete`, where `delete` sits behind an
+  # underscore -- a non-letter -- so the anchored verb rule matched and a RESTORE
+  # was denied. My camelCase fix broke my own un-guard, and both were mine.
+  #
+  # The second sed re-joins `un` to whatever follows it, so `unDelete`,
+  # `unTrash` and `unRemove` end as `undelete`, `untrash`, `unremove` -- the
+  # exact shape the guard was written for -- while `batchDelete` still becomes
+  # `batch_delete` and denies.
   MCP_OP_LOWER="$(printf '%s' "$MCP_OP" \
     | sed 's/\([a-z0-9]\)\([A-Z]\)/\1_\2/g' \
-    | tr '[:upper:]' '[:lower:]')"
+    | tr '[:upper:]' '[:lower:]' \
+    | sed 's/^un_/un/')"
 
   # Read-only auth handshakes, exempt on every server. Checked FIRST so no verb
   # rule below can ever deny the call that makes a server usable.
