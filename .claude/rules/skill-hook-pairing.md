@@ -20,7 +20,7 @@ For each rule in a skill, ask: can it be caught by regex, string match, char cou
 
 ## Override
 
-Hooks block by default. Bypass per-file with an explicit marker (one per hook, no stacking): `<!-- voice-lint-skip -->`, `# headline-lint-skip`, etc.
+Hooks block by default. Bypass per-file with an explicit marker (one per hook, no stacking): `<!-- voice-lint-skip -->`, `# headline-lint-skip`, `# hook-envelope-skip`, etc.
 
 ## Wired pairings (status)
 
