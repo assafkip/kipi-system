@@ -341,6 +341,57 @@ def self_test(verbose=True):
     return failures
 
 
+# --------------------------------------------------------------------------
+# Repair. Deliberately narrow: it only ever ADDS the missing hookEventName to a
+# hookSpecificOutput dict that already carries additionalContext, and it refuses
+# every other verdict. TOP_LEVEL needs a human to decide which event the payload
+# belongs to and where the envelope should live; UNKNOWN is by definition
+# unreadable. A repair that guessed at those would be the same class of defect
+# as the bug: a tool reporting success on work it could not see.
+# --------------------------------------------------------------------------
+def fix_no_event_name(path, event, source=None, dry_run=False):
+    """Insert hookEventName into every NO_EVENT_NAME site. Returns (n, text)."""
+    if source is None:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            source = fh.read()
+    sites = [s for s in (audit_python(path, source=source) if path.endswith(".py")
+                         else audit_text(path, source=source))
+             if s.verdict == NO_EVENT_NAME]
+    if not sites:
+        return 0, source
+    out = source
+    n = 0
+    # Rewrite right-to-left so earlier offsets stay valid.
+    for m in sorted(re.finditer(r'(["\'])%s\1(\s*):' % KEY_CONTEXT, out),
+                    key=lambda m: -m.start()):
+        line = out.count("\n", 0, m.start()) + 1
+        # Only touch a line the audit actually flagged.
+        if not any(abs(s.line - line) <= 6 for s in sites):
+            continue
+        head = out.rfind("{", 0, m.start())
+        if head < 0:
+            continue
+        seg = out[head:m.start()]
+        if KEY_EVENT in seg or KEY_EVENT in out[m.start():m.start() + 400]:
+            continue
+        q = m.group(1)
+        indent = ""
+        ls = out.rfind("\n", 0, m.start()) + 1
+        if out[ls:m.start()].strip() == "":
+            indent = out[ls:m.start()]
+            insert = "%s%s%s%s: %s%s%s,\n" % (q, KEY_EVENT, q, "", q, event, q)
+            insert = "%s%s%s: %s%s%s,\n%s" % (q + KEY_EVENT + q, "", "",
+                                               q, event, q, indent)
+        else:
+            insert = "%s%s%s: %s%s%s, " % (q, KEY_EVENT, q, q, event, q)
+        out = out[:m.start()] + insert + out[m.start():]
+        n += 1
+    if n and not dry_run:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(out)
+    return n, out
+
+
 def hook_mode():
     """PostToolUse gate: block an edit that ships a discarded envelope.
 
@@ -397,6 +448,9 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("roots", nargs="*", help="files or directories to audit")
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--fix", metavar="EVENT",
+                    help="add the missing hookEventName=EVENT to every "
+                         "NO_EVENT_NAME site (never TOP_LEVEL/UNKNOWN)")
     ap.add_argument("--hook", action="store_true",
                     help="PostToolUse mode: hook JSON on stdin, exit 2 to block")
     ap.add_argument("--json", action="store_true")
@@ -426,6 +480,19 @@ def main(argv=None):
     if failures:
         print("SELF-TEST FAILED, refusing to audit: %r" % (failures,), file=sys.stderr)
         return 2
+
+    if args.fix:
+        total, files = 0, 0
+        for path in walk(args.roots):
+            try:
+                n, _ = fix_no_event_name(path, args.fix)
+            except OSError:
+                continue
+            if n:
+                total += n
+                files += 1
+                print("fixed %d site(s) in %s" % (n, path))
+        print("\n%d site(s) across %d file(s)" % (total, files))
 
     sites = []
     for path in walk(args.roots):

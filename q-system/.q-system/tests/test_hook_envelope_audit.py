@@ -164,3 +164,53 @@ def test_gate_passes_when_its_own_self_test_is_broken(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "stdin", __import__("io").StringIO(json.dumps(
         {"tool_name": "Write", "tool_input": {"file_path": str(bad)}})))
     assert mod.hook_mode() == 0
+
+
+# --------------------------------------------------------------------------
+# --fix. Narrow on purpose: it adds a missing hookEventName and nothing else.
+# --------------------------------------------------------------------------
+def test_fix_adds_the_missing_event_name_and_the_result_runs(tmp_path):
+    p = tmp_path / "hook.py"
+    p.write_text('import json,sys\nsys.stdout.write(json.dumps('
+                 '{"hookSpecificOutput": {"additionalContext": "x"}}))\n')
+    n, _ = audit.fix_no_event_name(str(p), "UserPromptSubmit")
+    assert n == 1
+    assert [s.verdict for s in audit.audit_python(str(p))] == [audit.OK]
+    proc = subprocess.run([sys.executable, str(p)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert out["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    assert out["hookSpecificOutput"]["additionalContext"] == "x"
+
+
+def test_fix_refuses_top_level_and_unknown(tmp_path):
+    """The two verdicts a machine must not guess at.
+
+    TOP_LEVEL needs a human to say which event owns the payload and where the
+    envelope belongs; UNKNOWN is unreadable by definition. Silently 'repairing'
+    either would be the same defect as the bug it fixes.
+    """
+    top = tmp_path / "top.py"
+    top.write_text('import json,sys\n'
+                   'sys.stdout.write(json.dumps({"additionalContext": "x"}))\n')
+    before = top.read_text()
+    assert audit.fix_no_event_name(str(top), "PreToolUse")[0] == 0
+    assert top.read_text() == before
+
+    unk = tmp_path / "unk.py"
+    unk.write_text('import json,sys\nk = "additional" + "Context"\n'
+                   'sys.stdout.write(json.dumps({"hookSpecificOutput": {k: "x"}, '
+                   '"additionalContext": "y", **{}}))\n')
+    before = unk.read_text()
+    assert audit.fix_no_event_name(str(unk), "PreToolUse")[0] == 0
+    assert unk.read_text() == before
+
+
+def test_fix_is_idempotent(tmp_path):
+    p = tmp_path / "hook.py"
+    p.write_text('import json,sys\nsys.stdout.write(json.dumps('
+                 '{"hookSpecificOutput": {"additionalContext": "x"}}))\n')
+    assert audit.fix_no_event_name(str(p), "SessionStart")[0] == 1
+    once = p.read_text()
+    assert audit.fix_no_event_name(str(p), "SessionStart")[0] == 0
+    assert p.read_text() == once
