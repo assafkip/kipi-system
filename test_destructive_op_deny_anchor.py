@@ -613,9 +613,18 @@ class TestTheScanIsNotQuadratic:
     of the quadratic, which was 70x over that at this size and rising.
     """
 
-    def test_a_long_benign_command_is_decided_quickly(self, tmp_path):
+    # 1 word in 4 is a CANDIDATE token. The first version of this case used
+    # filler with zero rm/git tokens in it, so the candidate filter skipped
+    # every position and it measured the one input the filter already handled:
+    # it stayed green at 0.35s while a git-dense document of the same length
+    # took 8.43s and blew the hook timeout (Codex major, PR #274 round 5). A
+    # perf case whose input avoids the expensive path is decoration.
+    @pytest.mark.parametrize("filler", ["git", "rm"])
+    def test_a_long_benign_command_dense_in_candidates_is_decided_quickly(
+            self, tmp_path, filler):
         import time
-        body = " ".join("word%d" % i for i in range(6000))
+        body = " ".join(filler if i % 4 == 0 else "word%d" % i
+                        for i in range(4000))
         command = "cat > /tmp/doc.md <<'EOF'\n%s\nEOF" % body
         hook = hook_copy(tmp_path)
         start = time.time()
@@ -623,9 +632,37 @@ class TestTheScanIsNotQuadratic:
         elapsed = time.time() - start
         assert verdict == "allow", "the filler heredoc should not be denied"
         assert elapsed < 5.0, (
-            "a 6000-word benign command took %.1fs. The every-start-position "
-            "scan is quadratic again; past ~8000 words it crosses the hook "
-            "timeout and this gate returns NO decision at all." % elapsed)
+            "a 4000-word benign command carrying 1000 %r tokens took %.1fs. "
+            "The hook is wired at timeout 5, and a PreToolUse hook that is "
+            "killed returns NO decision -- so a real deletion buried in a long "
+            "enough command is never refused." % (filler, elapsed))
+
+
+# Every one of these ALLOWED before round 5. The token is `(rm`, whose
+# basename is `(rm`, so no rule matched and no candidate position was offered.
+# Round 3 added a whole layer to strip `"` `\'` and `\\` from the program token
+# and stopped one character short of the class it was written for.
+GROUPED = [
+    "(rm -v -rf /tmp/d)",
+    "$(rm -v -rf /tmp/d)",
+    "`rm -v -rf /tmp/d`",
+    "(git push -q --force origin main)",
+    "(git -C /tmp/r reset -q --hard)",
+    "(rsync -a --delete /a/ /b/)",
+]
+
+
+class TestShellGroupingDoesNotHideTheProgram:
+    @pytest.mark.parametrize("command", GROUPED)
+    def test_a_grouped_invocation_is_refused(self, tmp_path, command):
+        assert decide(hook_copy(tmp_path), command, tmp_path) == "deny", (
+            "shell grouping walked through the argv scan: %r" % command)
+
+    @pytest.mark.parametrize("command", ["echo hello", "ls -la /tmp",
+                                         "python3 -c 'print(1)'"])
+    def test_stripping_them_does_not_deny_ordinary_commands(self, tmp_path,
+                                                            command):
+        assert decide(hook_copy(tmp_path), command, tmp_path) == "allow", command
 
 
 class TestTheCandidateListCannotDriftFromTheRules:

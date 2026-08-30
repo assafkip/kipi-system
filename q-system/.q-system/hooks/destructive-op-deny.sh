@@ -321,7 +321,7 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     set -f
     _sw=( "" $_stage )
     set +f
-    _i=1
+    _i=1; _seen_rm=0
     while [ "$_i" -lt "${#_sw[@]}" ]; do
       # ASK-1131 round 4 (Codex major, PR #274). MEASURED, on this machine,
       # against a `cat > f <<EOF` heredoc of filler words -- how this fleet
@@ -347,8 +347,60 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
       # read exactly like a rule that works. That is not left to memory:
       # test_candidate_list_covers_every_argv_rule parses both out of this file
       # and fails on a mismatch.
+      # ASK-1131 round 5 (Codex major, PR #274). The round-4 filter was not
+      # enough, and its test could not say so: the filler it used carried ZERO
+      # rm/git tokens, so every position was skipped and the case measured the
+      # one input the filter already handled. Prose ABOUT git pays in full.
+      #
+      # MEASURED on the round-4 code, 1 word in 4 being `git`:
+      #    500 words  0.29s     2000 words  2.51s
+      #   1000 words  0.61s     4000 words  8.43s   <-- over the 5s hook timeout
+      #
+      # Past that the hook is KILLED, and a killed PreToolUse hook returns no
+      # decision at all. The reviewer's case delivers the point exactly: a real
+      # `sudo -u root rm -v -rf DIR` buried in a long enough command is never
+      # refused, because the guard never finishes deciding.
+      #
+      # Both arms below are EQUIVALENT to trying every position, not cheaper
+      # approximations:
+      #
+      #   rm   the rule is a flag scan over everything after the program, and
+      #        the tail at an EARLIER position is a superset of the tail at a
+      #        later one. So if any rm position denies, the first rm position
+      #        denies. Evaluating later ones cannot change the verdict.
+      #
+      #   git  argv_deny_reason's own first discriminator is the SUBCOMMAND, and
+      #        it returns 1 for anything outside the list below. Resolving the
+      #        subcommand inline costs a couple of array reads; paying a subshell
+      #        to be told `word37` is not a subcommand is the whole bill. In
+      #        prose each `git` is followed by an ordinary word and is rejected
+      #        in one iteration.
       case "${_sw[$_i]##*/}" in
-        rm|git) ;;
+        rm)
+          [ "$_seen_rm" = "0" ] || { _i=$((_i+1)); continue; }
+          _seen_rm=1
+          ;;
+        git)
+          # Walk git's GLOBAL flags to the subcommand, exactly as the rule does.
+          # The lookahead is bounded so this stays linear; running OFF the bound
+          # falls through to the full rule rather than skipping, because the
+          # cheap half must never be the one that decides to allow.
+          _j=$((_i+1)); _sub=""; _bounded=1
+          while [ "$_j" -lt "${#_sw[@]}" ]; do
+            if [ "$_j" -ge $((_i+12)) ]; then _bounded=0; break; fi
+            case "${_sw[$_j]}" in
+              -C|-c|--git-dir|--work-tree|--namespace|--exec-path) _j=$((_j+2)) ;;
+              --*=*|-*) _j=$((_j+1)) ;;
+              *) _sub="${_sw[$_j]}"; break ;;
+            esac
+          done
+          if [ "$_bounded" = "1" ]; then
+            case "$_sub" in
+              reset|push|branch|clean|filter-branch|filter-repo|update-ref) ;;
+              *) _i=$((_i+1)); continue ;;
+            esac
+          fi
+          ;;
         *) _i=$((_i+1)); continue ;;
       esac
       _argv_reason="$(argv_deny_reason "${_sw[*]:$_i}")" && \
@@ -381,15 +433,53 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     _norm="${_stage//\"/}"
     _norm="${_norm//\'/}"
     _norm="${_norm//\\/}"
+    # Shell GROUPING characters too (Codex major, PR #274 round 5). Measured
+    # ALLOW before this line existed, every one a plain invocation a person
+    # would type: `(rm -v -rf DIR)`, `$(rm -v -rf DIR)`,
+    # `(git push -q --force origin main)`, `(git -C D reset -q --hard)`,
+    # `(rsync -a --delete a/ b/)`. The token is `(rm`, its basename is `(rm`,
+    # and nothing matched -- the round-3 quote layer stripped `"` `'` `\` and
+    # stopped one character short of the class it was written for.
+    #
+    # Same argument as the quote layer, unchanged: the shell removes these
+    # before exec, stripping can only REVEAL a program name and never hide one,
+    # so this stays deny-only and can clear nothing.
+    _norm="${_norm//(/}"
+    _norm="${_norm//)/}"
+    _norm="${_norm//\`/}"
+    _norm="${_norm//$/}"
     [ "$_norm" = "$_stage" ] && continue
     set -f
     _dw=( "" $_norm )
     set +f
-    _i=1
+    _i=1; _seen_rm_d=0
     while [ "$_i" -lt "${#_dw[@]}" ]; do
-      # Same candidate filter as the loop above, same reason (PR #274 major).
+      # Same filter as the loop above, same reason and the same equivalence
+      # argument (PR #274 rounds 4 and 5). Duplicated rather than factored out
+      # because bash 3.2 has no namerefs, and passing the slice to a helper
+      # rebuilds the array per position -- which is the cost being removed.
       case "${_dw[$_i]##*/}" in
-        rm|git) ;;
+        rm)
+          [ "$_seen_rm_d" = "0" ] || { _i=$((_i+1)); continue; }
+          _seen_rm_d=1
+          ;;
+        git)
+          _j=$((_i+1)); _sub=""; _bounded=1
+          while [ "$_j" -lt "${#_dw[@]}" ]; do
+            if [ "$_j" -ge $((_i+12)) ]; then _bounded=0; break; fi
+            case "${_dw[$_j]}" in
+              -C|-c|--git-dir|--work-tree|--namespace|--exec-path) _j=$((_j+2)) ;;
+              --*=*|-*) _j=$((_j+1)) ;;
+              *) _sub="${_dw[$_j]}"; break ;;
+            esac
+          done
+          if [ "$_bounded" = "1" ]; then
+            case "$_sub" in
+              reset|push|branch|clean|filter-branch|filter-repo|update-ref) ;;
+              *) _i=$((_i+1)); continue ;;
+            esac
+          fi
+          ;;
         *) _i=$((_i+1)); continue ;;
       esac
       _argv_reason="$(argv_deny_reason "${_dw[*]:$_i}")" && \
@@ -537,6 +627,12 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     norm="${stage//\"/}"
     norm="${norm//\'/}"
     norm="${norm//\\/}"
+    # Grouping characters too -- `(rsync -a --delete a/ b/)` allowed without
+    # these (PR #274 round 5).
+    norm="${norm//(/}"
+    norm="${norm//)/}"
+    norm="${norm//\`/}"
+    norm="${norm//$/}"
     if [ "$norm" != "$stage" ]; then
       r="$(_fleet_argv_scan "$norm")" && { echo "$r"; return 0; }
     fi
