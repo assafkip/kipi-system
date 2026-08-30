@@ -1,0 +1,5 @@
+# kipi-system
+
+> Kipi System remembers every conversation, decision, and artifact in files you can read with cat, search with rg, and version with git. No vector database, no embeddings.
+
+
