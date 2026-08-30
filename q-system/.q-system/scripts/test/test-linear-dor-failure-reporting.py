@@ -12,7 +12,8 @@ stderr and stopped at ~/.config/kipi/linear-dor.err -- a file that did not exist
 on 2026-07-26, because the script had never once run under its own scheduler.
 
 The executable blocker for that gap is report_failures() in linear-dor-drafter.py
-plus this test file, registered in capability-manifest.json so capability-gate.py
+plus this test file, declared by its own fragment under
+q-system/.q-system/capability/expected_tests/ so capability-gate.py
 runs it. The checks below are the blocker: the report reaches Linear, one permanent
 issue takes a comment per failing run instead of forking, a CLOSED permanent issue
 is reopened rather than commented into the void, an unreachable Linear pings the
@@ -347,13 +348,19 @@ check("...and that one does ping, because nothing reached the board",
 # prose onto the operator's failure log.
 ls = FakeLinear()
 dor.report_failures(ls, FAILS)
+# Both fixtures carry a project: selection_mode refuses an issue with no project
+# set (ASK-839, "unroutable"). Without one, the NEXT check would read False for
+# the wrong reason -- it would pass with the FAILURE_MARKER branch deleted, which
+# is a test that cannot fail for the thing it names.
 _filed_issue = {"identifier": "ASK-999", "title": dor.FAILURE_TITLE,
                 "description": ls.created[0]["description"],
+                "project": {"name": "kipi-system"},
                 "state": {"name": "Backlog", "type": "backlog"}}
 check("the job's own failure record is not a draft target",
       dor.needs_dor(_filed_issue), False)
 check("...but an ordinary backlog issue still is",
       dor.needs_dor({"identifier": "ASK-1", "description": "a human wrote this",
+                     "project": {"name": "kipi-system"},
                      "state": {"name": "Backlog", "type": "backlog"}}), True)
 
 # --- a clean run reports nothing -------------------------------------------

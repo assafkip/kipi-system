@@ -1,0 +1,27 @@
+{
+  "_doc": "Source of truth for skill -> hook pairing in the SKELETON. plugins/kipi-core/scripts/skill-hook-audit.py enforces it (invoked by validate-separation.py, so by kipi check): every skill on disk is triaged, every 'wired' claim names a hook that EXISTS and is REFERENCED in a tracked wired config (this is the orphan catch), and debt may only SHRINK. Created 2026-08-21 for ASK-965 finding-13. Each status below was verified by reading .claude/settings.json and every plugins/*/hooks/hooks.json, not by trusting the prose in .claude/rules/skill-hook-pairing.md -- that prose is exactly the class of unverified claim ASK-965 exists to stop.",
+  "status_meaning": {
+    "wired": "deterministic rules gated by a hook that exists AND is referenced in a tracked wired config",
+    "debt": "has deterministic rules but no firing hook yet (a ratcheted shortfall, may only shrink)",
+    "in-script": "deterministic validation runs inside the skill's own code / a shared choke point, no separate hook",
+    "interpretive": "judgment-based or runtime-behavioral rules, not file-content-on-a-path; no content hook applies"
+  },
+  "skills": {
+    "founder-voice": {"status": "wired", "hooks": ["voice-lint.py", "voice-substance-lint.py", "voice-stop-gate.py"]},
+    "audhd-executive-function": {"status": "wired", "hooks": ["audhd-lint.py"]},
+    "headline-engineering": {"status": "wired", "hooks": ["headline-lint.py"]},
+    "linkedin-brand": {"status": "wired", "hooks": ["linkedin-format-lint.py"]},
+    "rca": {"status": "wired", "hooks": ["rca-lint.py", "rca-notify.py"]},
+    "fable-discipline": {"status": "wired", "hooks": ["fable-discipline-lint.py"], "note": "prd-os plugin hooks.json; blocks a test touching a live data path"},
+    "prd-os": {"status": "wired", "hooks": ["scope_hook.py", "stop_gate.py"]},
+    "deck-ai": {"status": "in-script", "note": "validation lives in the renderer, not a content hook"},
+    "architecture-review": {"status": "interpretive", "note": "its own SKILL.md says so: a judgment skill, no paired hook, same posture as research-mode"},
+    "research-mode": {"status": "interpretive", "note": "runtime tool-call caps + attribution judgment, not file content; token-guard caps calls"},
+    "learn-from-correction": {"status": "interpretive", "note": "core rule 'never auto-edit the target' is behavioral, not a file-content check"},
+    "council": {"status": "interpretive", "note": "debate logic is judgment; the decisions.md origin-tag rule is gated separately by decision-origin-tag-lint"},
+    "brand": {"status": "interpretive", "note": "no deterministic rules; voice lives in founder-voice"},
+    "design": {"status": "interpretive", "note": "token validators are optional CLI tools; per the skill-hook-pairing decision rule"},
+    "ui-ux-pro-max": {"status": "interpretive", "note": "code-skill carve-out, checked by its own build"}
+  },
+  "debt_baseline": []
+}

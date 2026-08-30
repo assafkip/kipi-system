@@ -44,10 +44,15 @@ def _lexicon_positive(lexicon):
 
 
 def voice_section(voice, channel, counter, slot_index=0, k=selector.DEFAULT_K,
-                  slot_kind="post"):
-    """(text, provenance) for one slot. Pure; empty Voice -> ('', empty provenance)."""
+                  slot_kind="post", target_words=None):
+    """(text, provenance) for one slot. Pure; empty Voice -> ('', empty provenance).
+
+    `target_words` threads the length axis (selector.length_band) to the one place
+    that assembles a prompt. Default None is the pre-2026-08-13 answer byte for byte.
+    """
     picked = selector.select(voice.active_exemplars(), channel, counter,
-                             slot_index=slot_index, k=k, slot_kind=slot_kind)
+                             slot_index=slot_index, k=k, slot_kind=slot_kind,
+                             target_words=target_words)
     corrections = voice.active_corrections()
 
     parts = []

@@ -55,6 +55,37 @@ def prompt_echo(candidate, prompt_texts, n=NGRAM):
     return sorted(" ".join(gram) for gram in hits)
 
 
+# The closed-set path, for phrases too SHORT to form an n-gram (item 7).
+#
+# why NGRAM is not simply lowered: at n=2-3 it fires on ordinary idiom and the gate gets
+# switched off within a week. Two corpora, two mechanisms. This one is safe because the
+# set is CLOSED and hand-maintained -- a candidate cannot trip it by writing well, only
+# by reproducing a phrase somebody deliberately retired.
+def exact_echo(candidate, phrases):
+    """Retired phrases reproduced verbatim, however they are spaced or cased.
+
+    Normalised through the same `_words` the n-gram path uses, so a reflowed line break
+    or a double space cannot walk a phrase past it -- the failure class that let a curly
+    apostrophe defeat the refusal filter one issue earlier.
+    """
+    words = _words(candidate)
+    hits = []
+    for phrase in phrases or ():
+        needle = _words(phrase)
+        if not needle:
+            continue
+        # WORD-ALIGNED, not a substring. The first version joined both sides and used
+        # `in`, so "noncompliance theater" matched the retired "compliance theater" --
+        # the needle landed inside a longer word (adversarial review). A false positive
+        # here blocks a legitimate post for a phrase it never used, which is the fastest
+        # way to get a gate switched off.
+        span = len(needle)
+        if any(words[i:i + span] == needle for i in range(len(words) - span + 1)):
+            if phrase not in hits:
+                hits.append(phrase)
+    return hits
+
+
 def opener(text, k=OPENER_WORDS):
     return _words(text)[:k]
 

@@ -22,7 +22,7 @@
 
 **Body (3-5 short paragraphs):**
 - Develop the point with specifics
-- Use contrast patterns ("X isn't Y. It's Z.")
+- Sharp contrast where the material earns it -- stated directly, not the "X isn't Y. It's Z." reveal scaffold (real but sparse in his writing; 2+ reveals in a short post reads as AI -- density is the tell, not presence)
 - Include at least one real example or named experience
 - Short paragraphs (1-3 sentences each)
 

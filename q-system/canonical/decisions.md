@@ -180,3 +180,68 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
   this; they get decided by an agent with evidence rather than escalated as questions.
 - **Date:** 2026-08-05
 - **Revisit:** Permanent
+
+### RULE-016: A Root That Holds Nested Repos Is Not Dispatchable, Even Outside An Engagement Root
+- **Origin:** [SYSTEM-INFERRED]
+- **Decision:** ASK-842 option (b). `cole-gtm` (registry `gtm-partner`) and
+  `reddit-build-radar` stay OFF for unattended dispatch. Their 4 issues (ASK-127,
+  ASK-717, ASK-718, ASK-146) are worked as supervised founder-initiated runs. The
+  decision is stored as `dispatch.enabled: false` carrying its issue id and reason,
+  not as an absent key, and `test-ask842-dispatch-decision.sh` turns red if either
+  row is flipped without editing the record.
+- **Reason:** Measured 2026-08-14. `cole-gtm` tracks **0 files under `projects/`**
+  while holding **9 nested separate git repos** there, and tracks 3001 files under
+  `gtm/`, the live outbound engine. That is the identical shape ASK-754 refused at
+  the consulting root: preflight check 5 (dirty) is structurally blind to all nine
+  nested repos while a dispatched agent still has filesystem reach into them, so an
+  `OK` from the gate would be an OK the gate cannot back. Check 0 does not catch it
+  because `cole-gtm` is a persona root, not an engagement root, so the blast-radius
+  property is present with no refusal in front of it. `reddit-build-radar` was filed
+  as curable control-code *drift*; it is *absence* -- no `linear-worker.sh` and no
+  `.claude/settings.json` at all, which follows from its deliberate
+  `skeleton_managed: false` (ASK-117). Curing it reverses ASK-117 rather than
+  clearing drift, so option (c) is the expensive path, not the cheap one.
+  Explicitly NOT decided on cost: every remaining `cole-gtm` preflight failure is
+  curable. The reason is blast radius.
+- **Date:** 2026-08-14
+- **Revisit:** When preflight can see into nested repos a dispatch root does not
+  track (`sp` captured), or when the 4 issues are worked and the surfaces go quiet
+
+## A fleet alert is a notification, not dispatch work (ASK-839)
+
+- **Origin:** [SYSTEM-INFERRED]
+- **Decision:** Two halves, both shipped together.
+  1. `alert-to-linear.py` now sets a `projectId` on every ticket it files,
+     derived from the alerting repo through `instance-registry.json`'s
+     `linear_project` field. Attribution, so a ticket says which instance raised
+     it in a field a query can filter on.
+  2. Alert tickets are **excluded from the automatic dispatch queue** by their
+     `kipi-alert-fingerprint` marker: `linear-worker.sh` drops them from both
+     `ready()` and `ready_ignoring_project()`, and `linear-dor-drafter.py`
+     refuses to draft onto them. They stay on the board, labelled `owner:sana`
+     and now project-attributed, for a human or a triage pass to convert into a
+     real issue. They do not enter the loop as pre-scoped work.
+- **The fork this answers:** ASK-839 asked for the 81 existing project-unset
+  alert tickets to be BACKFILLED with a project, OR for an explicit decision
+  that they are not dispatch work. Backfill was refused on the measurement, not
+  on taste: of the 81 open unset alert tickets, only 33 carry a `[label]` prefix
+  that names a real project. 22 were raised from a cwd of `/` and 16 more from a
+  worktree directory (`.wt-ask791`, `kipi-wt-ask729`, `cleanmain`). A backfill
+  invents routing for the majority and then hands a worker a raw alert line
+  ("auto-commit left 3 file(s) uncommitted") as if it were a spec.
+- **Second question, answered in the same change:** yes, the DoR drafter refuses
+  to draft onto a project-unset issue. Drafting a Definition of Ready onto an
+  unroutable ticket does not make it executable, it makes it READY-SHAPED, and
+  ready-shaped is the only thing the worker queue checks. That promotion is what
+  moved these from "not ready" (honest) to "ready and reachable by nobody".
+  Refusals of REAL unrouted issues are counted and named on stdout rather than
+  silently skipped.
+- **Measured 2026-08-15, live ASK board (832 issues):** 81 open alert tickets,
+  all project-unset. 19 already drafted onto, and all 19 were ready-shaped and
+  unset -- 100% of that population and 43% of the 20-issue UNREACHABLE bucket.
+  After the change the worker dry run reports 1 unreachable issue and no
+  `(unset)` at all.
+- **Date:** 2026-08-15
+- **Revisit:** If alert tickets start needing to be worked automatically, the
+  right move is a converter that turns one into a scoped issue, not re-admitting
+  raw alert bodies to the queue.

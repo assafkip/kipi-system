@@ -125,21 +125,78 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # grepping the review prose with their own regex is two readers with different
 # semantics -- the defect class review round 2 flagged on this very PR line.
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
+# THE ONE SLUG DERIVATION (ASK-738).
+. "$SCRIPT_DIR/repo-slug-lib.sh"
+
+
 
 # CODEX BY DEFAULT. Env-overridable so a codex outage long enough to matter is a
 # config change (`KIPI_REVIEW_ENGINE=claude`), not an edit to the script that
 # gates every PR in the repo.
-PR=""; ISSUE=""; POST=0; ENGINE="${KIPI_REVIEW_ENGINE:-codex}"
+PR=""; ISSUE=""; POST=0; ENGINE="${KIPI_REVIEW_ENGINE:-codex}"; TARGET_REPO_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --issue)  shift; ISSUE="${1:-}" ;;
     --engine) shift; ENGINE="${1:-}" ;;
+    # WHICH REPO THE WORK IS IN (ASK-738). $SKEL is where this CODE lives; it is
+    # not where the PR lives. Before this argument the two were the same
+    # variable, so a review of an external PR number resolved against the home
+    # repo -- and if that number existed there, the wrong repository's code was
+    # reviewed and got the verdict and the commit status.
+    --repo)   shift; TARGET_REPO_ARG="${1:-}" ;;
     --post)   POST=1 ;;
     -*) echo "unknown arg: $1" >&2; exit 1 ;;
     *) PR="$1" ;;
   esac
   shift || true
 done
+
+# RESOLVED AFTER THE ARGUMENT LOOP, and that placement is the whole point.
+# This block first sat above the loop, so it read TARGET_REPO_ARG before the
+# loop had parsed it AND before line "PR=\"\"; ISSUE=..." reset it to empty --
+# `--repo` was a DEAD FLAG that silently fell through to $SKEL. Caught by codex
+# on PR #146; my own test missed it because it drove the env form
+# (KIPI_TARGET_REPO), which resolves the same either way. A flag with no test
+# that exercises the FLAG is an untested flag.
+# REVIEW_REPO is the repo UNDER REVIEW. $SKEL stays what it always was: where the
+# control code lives. Every git read that asks "does this tree hold the PR"
+# targets REVIEW_REPO; every gh call is scoped to its slug. Defaults to $SKEL, so
+# every existing caller behaves exactly as before.
+# WHAT MODE THIS RUN IS IN, DERIVED ONCE (ASK-758). The OUTWARD side effects --
+# the PR comment, the commit status, the Linear post -- are inside `if POST=1`,
+# but the verdict line and the closing line are not, so a default invocation
+# printed `verdict: APPROVE` and `done` with nothing a human or a required check
+# could see. The dry transcript and the real approving transcript were the same
+# text; the difference was only discoverable by going and proving zero statuses
+# exist. One derivation, appended at both places a reader forms a belief, so the
+# two can never disagree about the mode.
+#
+# THE NOTE SAYS WHAT IS AND IS NOT TRUE, and the first draft got the second half
+# wrong: it read "no gate moved". A dry run DOES move a gate. The verdict record
+# is written below at the `verdict_record_write_path` call, ~100 lines ABOVE the
+# `if [ "$POST" = "1" ]` block -- so it is written on every run -- and that
+# record is the one converge.sh:748 and linear-worker.sh:1054 read to decide
+# approve-vs-rework. Telling a reader no gate moved is the same silent-dry-run
+# defect aimed at the reader who did read the label, and worse, because they
+# trusted it. So the note names both halves: what was withheld, and what landed.
+DRY_NOTE=""
+[ "$POST" = "1" ] || DRY_NOTE=" (DRY RUN -- nothing posted to GitHub or Linear; the verdict record WAS written and the loop still gates on it; re-run with --post)"
+
+REVIEW_REPO="${TARGET_REPO_ARG:-${KIPI_TARGET_REPO:-$SKEL}}"
+[ -d "$REVIEW_REPO" ] || { echo "--repo: no such directory: $REVIEW_REPO" >&2; exit 1; }
+REVIEW_REPO="$(cd "$REVIEW_REPO" && pwd)"
+REVIEW_SLUG="$(slug_for_repo "$REVIEW_REPO" "${KIPI_SLUG_REGISTRY:-$SKEL/instance-registry.json}")"
+KIPI_GH_REPO_ARGS="$(gh_repo_args "$REVIEW_SLUG")"
+export KIPI_GH_REPO_ARGS
+# The prompt below tells the MODEL to run `gh pr view` / `gh pr diff` itself. An
+# unscoped instruction there reads another repository's diff no matter what this
+# script does, so the scope has to travel INTO the prompt text too.
+GH_R_PROMPT=""
+[ -n "$REVIEW_SLUG" ] && GH_R_PROMPT="-R $REVIEW_SLUG "
+# `gh api` cannot take -R (see post_status). Empty slug keeps the placeholder
+# form, which is what every pre-ASK-738 caller and fixture already relies on.
+STATUS_REPO_PATH="{owner}/{repo}"
+[ -n "$REVIEW_SLUG" ] && STATUS_REPO_PATH="$REVIEW_SLUG"
 [ -n "$PR" ] || { echo "usage: pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post] [--engine claude|codex]" >&2; exit 1; }
 
 # WHAT THE ENGINE CHANGES. Everything else below this block is shared, which is
@@ -211,7 +268,7 @@ REVIEW_UNUSABLE=0
 
 mkdir -p "$ENGINE_DIR" "$VERDICT_DIR"
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-REVIEW="$ENGINE_DIR/pr-$PR-$(date +%Y%m%d-%H%M%S).md"
+REVIEW="$ENGINE_DIR/$(artifact_key "$REVIEW_SLUG" "$PR")-$(date +%Y%m%d-%H%M%S).md"
 
 # Same bash wall clock as the worker: macOS ships no `timeout` without coreutils,
 # and a review that never returns is worse than one that fails.
@@ -231,7 +288,7 @@ command -v gh >/dev/null 2>&1 || { echo "gh CLI required" >&2; exit 1; }
 # the other way (a push between here and the reviewer's own `gh pr diff`) pins
 # the OLDER sha, which reads as drift and routes to a re-review. Safe direction.
 # The sha is first in the tuple so a tab inside a PR title cannot displace it.
-PR_META="$(gh pr view "$PR" --json headRefOid,title -q '.headRefOid + "\t" + .title' 2>/dev/null)" \
+PR_META="$(gh pr view "$PR" $KIPI_GH_REPO_ARGS --json headRefOid,title -q '.headRefOid + "\t" + .title' 2>/dev/null)" \
   || { echo "no PR #$PR" >&2; exit 1; }
 HEAD_SHA="${PR_META%%$'\t'*}"
 PR_TITLE="${PR_META#*$'\t'}"
@@ -257,7 +314,7 @@ PR_TITLE="${PR_META#*$'\t'}"
 # asked for the sha+title tuple, so the two strings never matched and the check
 # refused every review. Caught by test-review-tree-guard going 1/23.
 sleep 3
-PR_META_CONFIRM="$(gh pr view "$PR" --json headRefOid,title -q '.headRefOid + "\t" + .title' 2>/dev/null || true)"
+PR_META_CONFIRM="$(gh pr view "$PR" $KIPI_GH_REPO_ARGS --json headRefOid,title -q '.headRefOid + "\t" + .title' 2>/dev/null || true)"
 HEAD_SHA_CONFIRM="${PR_META_CONFIRM%%$'\t'*}"
 if [ -n "$HEAD_SHA_CONFIRM" ] && [ "$HEAD_SHA_CONFIRM" != "$HEAD_SHA" ]; then
   echo "REFUSING: PR #$PR's head moved between two reads (${HEAD_SHA:0:8} then ${HEAD_SHA_CONFIRM:0:8})." >&2
@@ -332,12 +389,15 @@ REVIEW_ROOT="$SKEL"
 # removal is a destructive op on a path this script does not own, and re-checkout
 # reaches the same state.
 review_worktree() {  # review_worktree <sha> -> prints path, or nothing
-  local sha="$1" wt="$HOME/.config/kipi/review-trees/pr-$PR"
+  # KEYED BY REPO AND PR (ASK-738). One shared review-trees/pr-<N> path meant
+  # two repos' PR #42 shared a single detached worktree, re-checked out to
+  # whichever repo asked last -- a review reading the wrong repository's files.
+  local sha="$1" wt; wt="$(review_tree_path "$HOME/.config/kipi" "$REVIEW_SLUG" "$PR")"
   mkdir -p "$(dirname "$wt")" 2>/dev/null || return 1
   if [ -d "$wt/.git" ] || [ -f "$wt/.git" ]; then
     git -C "$wt" checkout --detach --force "$sha" >/dev/null 2>&1 || return 1
   else
-    git -C "$SKEL" worktree add --detach "$wt" "$sha" >/dev/null 2>&1 || return 1
+    git -C "$REVIEW_REPO" worktree add --detach "$wt" "$sha" >/dev/null 2>&1 || return 1
   fi
   # Prove it landed where we asked. A worktree silently sitting at the wrong sha
   # is the same false-provenance bug in a new costume.
@@ -345,7 +405,7 @@ review_worktree() {  # review_worktree <sha> -> prints path, or nothing
   printf '%s' "$wt"
 }
 
-if [ -n "$HEAD_SHA" ] && git -C "$SKEL" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+if [ -n "$HEAD_SHA" ] && git -C "$REVIEW_REPO" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
   ISOLATED="$(review_worktree "$HEAD_SHA" || true)"
   if [ -n "$ISOLATED" ]; then
     REVIEW_ROOT="$ISOLATED"
@@ -372,9 +432,9 @@ else
 fi
 
 if [ "$HEAD_SHA_ISOLATED" != "1" ] && [ -n "$HEAD_SHA" ]; then
-  if ! git -C "$SKEL" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
-    echo "  WARN: $SKEL does not have commit $HEAD_SHA, so the tree/PR match cannot be proven (stale or partial clone?). Proceeding; a review of the wrong tree would report findings absent from this diff." >&2
-  elif ! git -C "$SKEL" merge-base --is-ancestor "$HEAD_SHA" HEAD 2>/dev/null; then
+  if ! git -C "$REVIEW_REPO" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+    echo "  WARN: $REVIEW_REPO does not have commit $HEAD_SHA, so the tree/PR match cannot be proven (stale or partial clone?). Proceeding; a review of the wrong tree would report findings absent from this diff." >&2
+  elif ! git -C "$REVIEW_REPO" merge-base --is-ancestor "$HEAD_SHA" HEAD 2>/dev/null; then
     # SKEL does not contain the PR. Find a worktree that does. `worktree list
     # --porcelain` emits a `worktree <path>` line per tree, SKEL included; testing
     # SKEL again is harmless and keeps the loop free of a special case.
@@ -385,13 +445,13 @@ if [ "$HEAD_SHA_ISOLATED" != "1" ] && [ -n "$HEAD_SHA" ]; then
       if git -C "$wt" merge-base --is-ancestor "$HEAD_SHA" HEAD 2>/dev/null; then
         FOUND_ROOT="$wt"; break
       fi
-    done < <(git -C "$SKEL" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10)}')
+    done < <(git -C "$REVIEW_REPO" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10)}')
 
     if [ -n "$FOUND_ROOT" ]; then
       REVIEW_ROOT="$FOUND_ROOT"
-      echo "  tree: $REVIEW_ROOT (holds PR #$PR at ${HEAD_SHA:0:8}; the script itself lives in $SKEL)"
+      echo "  tree: $REVIEW_ROOT (holds PR #$PR at ${HEAD_SHA:0:8}; the script itself lives in $SKEL, the code under review in $REVIEW_REPO)"
     else
-      echo "REFUSING: PR #$PR is at $HEAD_SHA, which is not in the history of $SKEL (HEAD $(git -C "$SKEL" rev-parse --short HEAD 2>/dev/null)) or of any worktree it lists." >&2
+      echo "REFUSING: PR #$PR is at $HEAD_SHA, which is not in the history of $REVIEW_REPO (HEAD $(git -C "$REVIEW_REPO" rev-parse --short HEAD 2>/dev/null)) or of any worktree it lists." >&2
       echo "  The reviewer reads FILES from a tree and the DIFF from the PR. With no tree holding this commit, every finding would cite code that is not in this PR, stamped with this PR's sha." >&2
       echo "  Fetch the PR's head, or run it from a tree that has it. No review was dispatched and NO status was posted -- absent is not approved." >&2
       exit 1
@@ -415,7 +475,7 @@ if [ "$ROUND" -gt 1 ]; then
 
 ## THIS IS REVIEW ROUND $ROUND OF THIS PR
 
-Earlier rounds are in the PR comments (\`gh pr view $PR --comments\`). Read them
+Earlier rounds are in the PR comments (\`gh ${GH_R_PROMPT}pr view $PR --comments\`). Read them
 AFTER you have formed your own read of the code, never before -- your value is
 that you did not inherit anyone's frame.
 
@@ -460,8 +520,8 @@ fail safe for the author -- it just burns a round.
 
 ## Read the change
 
-  gh pr view $PR
-  gh pr diff $PR
+  gh ${GH_R_PROMPT}pr view $PR
+  gh ${GH_R_PROMPT}pr diff $PR
 
 ## What your fresh eyes are FOR
 
@@ -742,7 +802,7 @@ else
   VERDICT="$STATED_VERDICT"
   echo "  NOTE: no FINDINGS block; verdict read from prose (weaker)"
 fi
-echo "  verdict: ${VERDICT:-unstated}"
+echo "  verdict: ${VERDICT:-unstated}$DRY_NOTE"
 
 # Single writer for verdict state. The worker's rework gate reads THIS record,
 # never the review prose. Keyed by PR number, latest round wins; history stays
@@ -819,11 +879,14 @@ REVIEWED_BY="$CODEX_MODEL"
 # no record would be written, and the suite would report a break in the test
 # rather than the defect. Keep the derivation adjacent to the python3 call.
 
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" "$REVIEWED_BY" "$DEGRADED" <<'PY'
+# The record path comes from the ONE resolver (repo-slug-lib.sh), passed in as
+# argv 16 rather than rebuilt in python -- a second place that knows the naming
+# rule is a second writer, which is the defect class this repo keeps finding.
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" "$REVIEWED_BY" "$DEGRADED" "$(verdict_record_write_path "$VERDICT_DIR" "$REVIEW_SLUG" "$PR")" <<'PY'
 import json, sys
 (pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir,
  engine, invoker, usable, reviewed_by, degraded) = sys.argv[1:16]
-out = f"{verdict_dir}/pr-{pr}.verdict.json"
+out = sys.argv[16]
 json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "stated": stated, "derived": derived,
            "source": "findings" if derived else "prose",
@@ -902,7 +965,10 @@ post_reviewer_status() {
   # second opinion, and the whole point of this engine is that it is not Claude.
   [ "$DEGRADED" = "1" ] && desc="DEGRADED (codex down, Opus fallback): $desc"
   desc="$(printf '%.140s' "$desc")"
-  local args=(api -X POST "repos/{owner}/{repo}/statuses/$sha"
+  # STATUS_REPO_PATH, not {owner}/{repo}: `gh api` resolves those placeholders
+  # from the CWD repo and accepts no -R, so an unattended run posted
+  # kipi/reviewer-approved onto the home repo for a review of another one.
+  local args=(api -X POST "repos/$STATUS_REPO_PATH/statuses/$sha"
               -f "state=$state" -f "context=$context" -f "description=$desc")
   # Link only a real URL. The PR comment just above is what --post creates; when
   # that failed there is nothing to link, and a local file path is not a URL.
@@ -960,7 +1026,7 @@ if [ "$POST" = "1" ]; then
   # between a size rejection, an auth failure and a closed PR -- the same
   # discard-the-reason defect PR #46 fixed one call lower down.
   COMMENT_ERR="$(mktemp "${TMPDIR:-/tmp}/pr-review-comment-err.XXXXXX" 2>/dev/null)" || COMMENT_ERR=/dev/null
-  if COMMENT_URL="$(gh pr comment "$PR" --body-file "$POST_FILE" 2>"$COMMENT_ERR")"; then
+  if COMMENT_URL="$(gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body-file "$POST_FILE" 2>"$COMMENT_ERR")"; then
     echo "  posted to PR #$PR ($(wc -c <"$POST_FILE" | tr -d ' ') bytes rendered from $(wc -c <"$REVIEW" | tr -d ' '))"
   else
     COMMENT_URL=""
@@ -1037,5 +1103,5 @@ Sana: reply to this comment on THIS issue. For each finding, either the file:lin
   fi
 fi
 
-echo "$(TS) done"
+echo "$(TS) done$DRY_NOTE"
 exit 0
