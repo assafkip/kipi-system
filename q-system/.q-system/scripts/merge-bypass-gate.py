@@ -707,7 +707,15 @@ def classify(command: str, cwd: str, _depth: int = 0) -> tuple[str, str]:
             resolved = _resolve_dir(seg[1], cur_dir)
             cur_dir = resolved if resolved else cur_dir
             continue
-        reason = _merge_verdict(seg, cwd, note)
+        # `cur_dir`, NOT `cwd` (Codex major, PR #269 round 3). `cd` is tracked
+        # a few lines up precisely because a chained command can move repos
+        # mid-line, and _push_verdict below already asked in the tracked
+        # directory. The merge side did not, so
+        #     cd /other/repo && gh pr merge 9 --squash
+        # looked up the receipt in the ORIGINAL repo: a green receipt for PR 9
+        # here authorized merging a different PR 9 over there. Two neighbouring
+        # calls, one rule, and only one of them was asking in the right place.
+        reason = _merge_verdict(seg, cur_dir, note)
         if reason:
             return "deny", reason
         reason = _push_verdict(seg, cur_dir)

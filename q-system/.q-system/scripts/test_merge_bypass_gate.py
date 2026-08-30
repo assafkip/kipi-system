@@ -60,7 +60,15 @@ FAILURES: list[str] = []
 CHECKS = 0
 
 
-def check(name: str, command: str, cwd: Path, want: str) -> None:
+def check(name: str, command: str, cwd: Path, want: str,
+          contains: str | None = None) -> None:
+    """Assert the decision, and optionally a substring of the REASON.
+
+    `contains` exists because two denials are not the same denial. The
+    cd-into-another-repo case below denies either way; what separates the defect
+    from the fix is WHICH directory the gate consulted, and the reason text is
+    the only place that shows.
+    """
     global CHECKS
     CHECKS += 1
     got, reason = classify(command, str(cwd))
@@ -68,6 +76,12 @@ def check(name: str, command: str, cwd: Path, want: str) -> None:
         FAILURES.append(
             f"{name}\n    command : {command}\n    want    : {want}\n"
             f"    got     : {got}\n    reason  : {reason}")
+        return
+    if contains is not None and contains not in (reason or ""):
+        FAILURES.append(
+            f"{name}\n    command : {command}\n"
+            f"    want reason containing : {contains}\n"
+            f"    got reason             : {reason}")
 
 
 def main() -> int:
@@ -201,6 +215,32 @@ def main() -> int:
         # green by way of a gate that refuses everything.
         check("--auto --squash is still allowed",
               "gh pr merge --auto --squash 9", gh_feature, "allow")
+
+        # --- A CHAINED cd MOVES THE REPO, AND THE RECEIPT MUST MOVE WITH IT ---
+        #
+        # Codex major, PR #269 round 3, CONFIRMED. `cd` is tracked in classify
+        # so `_push_verdict` can ask in the right directory; `_merge_verdict`
+        # was handed the ORIGINAL cwd instead. A green receipt for PR 9 in THIS
+        # repo therefore authorized `cd other && gh pr merge 9 --squash` over
+        # there -- a different PR 9, in a different repo, on this repo's word.
+        #
+        # Both the defect and the fix DENY here, so the decision alone cannot
+        # tell them apart. The reason can: consulting gh_feature finds the
+        # receipt and stalls at the head re-read ("could not read PR #9's
+        # current head"); consulting gh_other finds no receipt at all. Pinning
+        # "no green receipt" is therefore an assertion about WHICH DIRECTORY was
+        # read, which is the whole defect.
+        (gh_feature / ".prd-os" / "pr-receipts").mkdir(parents=True)
+        (gh_feature / ".prd-os" / "pr-receipts" / "pr-9.json").write_text(
+            '{"result": "green", "sha": "deadbeef"}\n')
+        check("cd to another repo does not borrow this repo's receipt",
+              "cd " + str(gh_other) + " && gh pr merge 9 --squash",
+              gh_feature, "deny", contains="no green receipt")
+        # The control: with no cd, the same command DOES consult this repo, so
+        # the case above cannot be green by way of a gate that ignores receipts.
+        check("without a cd, the receipt in this repo is the one consulted",
+              "gh pr merge 9 --squash", gh_feature, "deny",
+              contains="could not read PR #9's current head")
 
         # --- degenerate input ---
         check("empty command", "", gh_feature, "allow")
