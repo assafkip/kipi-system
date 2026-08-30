@@ -388,6 +388,24 @@ def find_final_user_text(transcript_path):
 NOT_CHECKED = "NOT_CHECKED"
 
 
+def report_not_checked(lines, out=None, err=None):
+    """Surface NOT CHECKED on the channel a SUCCESSFUL hook is actually read on.
+
+    The first version of this wrote to stderr only, on a path that then exits 0.
+    A Stop hook's stderr is fed back when it exits 2; on the success path it goes
+    nowhere. So the warning that a draft had not been graded was itself never
+    delivered -- the exact defect this whole change exists to close, reproduced
+    inside the fix for it (Codex major, PR #290).
+
+    Both streams on purpose. stdout is what a successful hook is read on; stderr
+    keeps the line present if this is ever called from the blocking path, where
+    stdout is not surfaced. Writing to one and hoping is what got us here.
+    """
+    for line in lines:
+        (out or sys.stdout).write(line + "\n")
+        (err or sys.stderr).write(line + "\n")
+
+
 def run_check(script, file_path):
     if not script.exists():
         return (NOT_CHECKED,
@@ -470,13 +488,7 @@ def main():
             violations_output.append(out2)
         elif code2 == NOT_CHECKED:
             not_checked.append(out2)
-        # Surfaced on EVERY affected turn, and deliberately not a block. A Stop
-        # hook that hard-refuses on its own missing dependency wedges the session
-        # with no way forward -- this gate honours no bypass marker by design
-        # (voice-enforcement.md). Loud and passing beats silent and passing;
-        # blocking is a separate decision with a much larger blast radius.
-        for line in not_checked:
-            sys.stderr.write(line + "\n")
+        report_not_checked(not_checked)
         if violations_output:
             sys.stderr.write(
                 "voice-stop-gate: assistant final message has voice violations.\n"

@@ -118,3 +118,37 @@ class TestTheNormalPathStillWorks:
 # invocation actually run the assertions.
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "--no-header"]))
+
+
+class TestTheWarningIsActuallyDelivered:
+    """Codex major, PR #290. The first fix returned the right VALUE and delivered
+    it on a channel nobody reads.
+
+    stderr from a Stop hook is fed back when it exits 2. This path exits 0, so
+    the NOT CHECKED line went nowhere. Every test above passed, because they all
+    asserted the return value and none asserted delivery -- the same
+    output-versus-input blindness the whole change exists to close, reproduced
+    inside the fix for it.
+    """
+
+    def test_the_line_reaches_stdout(self):
+        """stdout is what a SUCCESSFUL hook is read on. This is the arm that
+        was missing."""
+        import io
+        out, err = io.StringIO(), io.StringIO()
+        gate.report_not_checked(["voice-stop-gate: X is MISSING"], out=out, err=err)
+        assert "X is MISSING" in out.getvalue(), "nothing reached stdout"
+
+    def test_the_line_also_reaches_stderr(self):
+        """Kept for the blocking path, where stdout is not surfaced."""
+        import io
+        out, err = io.StringIO(), io.StringIO()
+        gate.report_not_checked(["voice-stop-gate: X is MISSING"], out=out, err=err)
+        assert "X is MISSING" in err.getvalue()
+
+    def test_nothing_is_written_when_every_lint_ran(self):
+        """The control. A gate that always shouts is a gate that gets muted."""
+        import io
+        out, err = io.StringIO(), io.StringIO()
+        gate.report_not_checked([], out=out, err=err)
+        assert out.getvalue() == "" and err.getvalue() == ""
