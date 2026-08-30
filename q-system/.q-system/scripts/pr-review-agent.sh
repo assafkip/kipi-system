@@ -388,20 +388,51 @@ REVIEW_ROOT="$SKEL"
 # One tree per PR, reused across rounds by re-detaching rather than removing --
 # removal is a destructive op on a path this script does not own, and re-checkout
 # reaches the same state.
+# EVERY bail out of review_worktree clears the ref, not just the last one.
+#
+# CODEX MAJOR ON PR #265, round 2 -- this change reviewing itself, twice. The
+# first cut deleted the ref only on the update-ref failure at the bottom. The
+# four EARLIER bails (mkdir, checkout, worktree add, sha mismatch) returned
+# without touching it, so a round that failed to materialise its tree left
+# whatever the PREVIOUS round wrote. assert_pr_ref_not_stale then found a ref
+# pointing at an old sha and `exit 1`s -- with no self-heal, on every subsequent
+# round, until a human runs update-ref -d by hand. A guard whose only recovery
+# is a human is an outage with a good error message.
+#
+# CLEARS BOTH TREES, and that is not belt-and-braces. refs/remotes/* lives in the
+# common ref store for a real `git worktree`, so one clear would be enough THERE
+# -- but the review tree is not always that. The suite's fixture builds it as an
+# independent checkout with its OWN ref store, and clearing only through
+# $REVIEW_REPO left the stale ref exactly where it was. Two cases went red
+# immediately. That is the whole reason to run the test instead of trusting the
+# reasoning about how git stores refs.
+#
+# $wt may not exist yet on the earliest bail; `git -C` on a missing directory
+# just fails, and the redirect absorbs it, so passing it unconditionally is safe.
+#
+# Clearing is the safe direction, for the reason the bottom of this function
+# already records: absent fails CLOSED (`git show pr/<N>:<file>` errors, which is
+# answerable), stale fails OPEN (the same command silently returns old content).
+_wt_bail() {  # _wt_bail <worktree-path>
+  local wt="${1:-}"
+  [ -n "$wt" ] && git -C "$wt" update-ref -d "refs/remotes/pr/$PR" >/dev/null 2>&1
+  return 1
+}
+
 review_worktree() {  # review_worktree <sha> -> prints path, or nothing
   # KEYED BY REPO AND PR (ASK-738). One shared review-trees/pr-<N> path meant
   # two repos' PR #42 shared a single detached worktree, re-checked out to
   # whichever repo asked last -- a review reading the wrong repository's files.
   local sha="$1" wt; wt="$(review_tree_path "$HOME/.config/kipi" "$REVIEW_SLUG" "$PR")"
-  mkdir -p "$(dirname "$wt")" 2>/dev/null || return 1
+  mkdir -p "$(dirname "$wt")" 2>/dev/null || _wt_bail "$wt" || return 1
   if [ -d "$wt/.git" ] || [ -f "$wt/.git" ]; then
-    git -C "$wt" checkout --detach --force "$sha" >/dev/null 2>&1 || return 1
+    git -C "$wt" checkout --detach --force "$sha" >/dev/null 2>&1 || _wt_bail "$wt" || return 1
   else
-    git -C "$REVIEW_REPO" worktree add --detach "$wt" "$sha" >/dev/null 2>&1 || return 1
+    git -C "$REVIEW_REPO" worktree add --detach "$wt" "$sha" >/dev/null 2>&1 || _wt_bail "$wt" || return 1
   fi
   # Prove it landed where we asked. A worktree silently sitting at the wrong sha
   # is the same false-provenance bug in a new costume.
-  [ "$(git -C "$wt" rev-parse HEAD 2>/dev/null)" = "$sha" ] || return 1
+  [ "$(git -C "$wt" rev-parse HEAD 2>/dev/null)" = "$sha" ] || _wt_bail "$wt" || return 1
 
   # REFRESH refs/remotes/pr/<N> TOO. Re-detaching moved HEAD but left this ref
   # wherever the FIRST round put it, and the reviewer's reproducers read the PR
