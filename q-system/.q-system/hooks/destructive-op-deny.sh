@@ -130,7 +130,6 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     'rm[[:space:]]+(-[a-zA-Z]*[rRf][a-zA-Z]*[[:space:]])'
     'rm[[:space:]]+-[a-zA-Z]*[rRf]'
     'git[[:space:]]+reset[[:space:]]+--hard'
-    'git[[:space:]]+push[[:space:]]+(-[a-zA-Z]*f[a-zA-Z]*|--force)'
     'git[[:space:]]+branch[[:space:]]+-D'
     'git[[:space:]]+filter-(branch|repo)'
     'git[[:space:]]+update-ref[[:space:]]+-d'
@@ -173,6 +172,22 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     '(^|[;&|][[:space:]]*)[./~][^[:space:]]*kipi-update\.sh'
     '(^|[;&|][[:space:]]*)rsync[[:space:]]+[^|;]*--delete'
   )
+  # THE COARSE PUSH PATTERN IS GONE TOO, FOR THE SAME REASON (round six).
+  #
+  # It matched `--force` anywhere after `push`, so a `--dry-run` preview was
+  # refused before the argv rule -- which handles the preview correctly -- ever
+  # ran. That left this one change carrying both halves of a contradiction:
+  # `git clean --dry-run` allowed, the equivalent push denied.
+  #
+  # Removed rather than taught to spell "force but not dry-run", because the
+  # argv rule already covers strictly MORE: --force, --force-with-lease, -f, a
+  # leading-plus refspec, --delete, :branch and --mirror, none of which this
+  # regex saw. Two copies of one rule is the drift this file keeps warning
+  # about, and the weaker copy was winning by running first.
+  #
+  # Pinned by test_argv_prefilter.py: --force, +main and -f still deny; the
+  # three --dry-run spellings do not.
+  #
   # THE COARSE `git clean` PATTERN IS GONE, ON PURPOSE (PR #279 minor).
   #
   # It read `-[a-zA-Z]*[fdx]`, so `git clean -nd` matched on the `d` and a DRY
@@ -296,6 +311,38 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   # far past any real invocation's flags. A bound that is stated is better than a
   # timeout that silently discards the verdict.
   _ARGV_WINDOW=64
+
+  # A CEILING PADDING CANNOT MOVE (PR #279, round six of one bypass).
+  #
+  # Five rounds narrowed constants: which tokens are admitted, whether the scan
+  # forks, how far each rescan looks, and finally the quadratic quote strip.
+  # Every one of them MOVED the threshold and none removed it, because the loop
+  # runs once per admitted token and `rm` and `git` must be admitted -- they are
+  # the tokens that can deny. Measured after the quote-strip fix, padding a
+  # stage with bare program names:
+  #
+  #     tokens     pad=rm     pad=git
+  #      2000       1.84s       0.73s
+  #      4000       4.06s       1.95s
+  #      6000       6.96s       3.63s   <- past the wired 5s timeout
+  #      8000      10.16s       5.85s
+  #
+  # An overrunning hook is killed and its deny DISCARDED, so past ~5000 rm
+  # tokens the answer silently became "allow". A cheaper inner loop would only
+  # move the crossing again; a COUNT ceiling is the only bound an attacker
+  # cannot pad past.
+  #
+  # Refusing is the correct direction. "I could not finish checking" is not
+  # permission. 500 rescans is ~0.5s of scanning here, ten times under the
+  # budget, and reaching it takes 500 bare `rm`/`git`-shaped words in ONE stage
+  # -- the pre-filter admits only known deniers, so an ordinary long command
+  # (file lists, paths, flags) never approaches it. The refusal says what
+  # happened and says to split the command.
+  #
+  # An earlier version of this cap was written, measured and removed in round
+  # five because it fired in the wrong place: it was checked before the cost,
+  # so it changed the timings by nothing. The cost is here, in the count.
+  _ARGV_MAX_RESCANS=500
 
   # The one ceiling that stays: the git arm below is O(n^2) in its own right
   # (it rebuilds the remaining-token array at every position), and unlike the
@@ -430,6 +477,19 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
           reset)
             _argv_has_long hard "${ga[@]}" && { _ARGV_REASON="git reset --hard discards the working tree"; return 0; } ;;
           push)
+            # A PREVIEW PUSHES NOTHING (codex minor, PR #279 round six).
+            #
+            # `git push --force --dry-run` was DENIED while `git clean --dry-run`
+            # was allowed fifty lines below, on the opposite reasoning -- one
+            # change carrying both halves of a contradiction. The clean arm's
+            # own note says it plainly: previewing is how you EARN the run, and
+            # denying the preview is how a gate gets switched off.
+            #
+            # `--dry-run` on a push reports what WOULD be sent and updates no
+            # ref, forced or not. Same reasoning, so the same answer.
+            if _argv_has_long dry-run "${ga[@]}"; then
+              return 1
+            fi
             if _argv_has_long force "${ga[@]}" || _argv_has_long force-with-lease "${ga[@]}" \
                || _argv_has_short f "${ga[@]}"; then
               _ARGV_REASON="git push is forced, which rewrites published history"; return 0
@@ -531,11 +591,16 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     set -f
     _sw=( "" $_stage )
     set +f
+    _rescans=0
     _i=1
     while [ "$_i" -lt "${#_sw[@]}" ]; do
       # Skip positions that provably cannot deny, so the fork below runs a
       # handful of times instead of once per token. See _argv_could_deny_here.
       if _argv_could_deny_here "${_sw[$_i]}"; then
+        _rescans=$((_rescans+1))
+        if [ "$_rescans" -gt "$_ARGV_MAX_RESCANS" ]; then
+          emit_deny "this command stage carries more than $_ARGV_MAX_RESCANS program-name-shaped tokens, more than this guard can finish checking inside its time budget. It refuses rather than answering allow by running out of time. Split the command into separate stages."
+        fi
         _ARGV_REASON=""; argv_deny_reason "${_sw[*]:$_i:$_ARGV_WINDOW}" && _argv_reason="$_ARGV_REASON" && \
           emit_deny "destructive invocation: $_argv_reason. Decided from the command's ARGV at every starting position, so neither a leading flag nor a prefix carrying its own options can move it out of view (ASK-1131)."
       fi
@@ -589,6 +654,7 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     set -f
     _dw=( "" $_norm )
     set +f
+    _rescans=0
     _i=1
     while [ "$_i" -lt "${#_dw[@]}" ]; do
       # THE SAME PRE-FILTER AS THE OTHER SCAN (PR #279 major). This loop had
@@ -596,6 +662,10 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
       # per word: 3000 words took 6.99s against a 5s timeout. Fixing one of two
       # identical loops is how a bypass survives being "fixed".
       if _argv_could_deny_here "${_dw[$_i]}"; then
+        _rescans=$((_rescans+1))
+        if [ "$_rescans" -gt "$_ARGV_MAX_RESCANS" ]; then
+          emit_deny "this command stage carries more than $_ARGV_MAX_RESCANS program-name-shaped tokens after quote stripping, more than this guard can finish checking inside its time budget. It refuses rather than answering allow by running out of time. Split the command into separate stages."
+        fi
         _ARGV_REASON=""; argv_deny_reason "${_dw[*]:$_i:$_ARGV_WINDOW}" && _argv_reason="$_ARGV_REASON" && \
           emit_deny "destructive invocation: $_argv_reason. The program token was quoted or escaped; the shell strips that before exec, so this scan does too (ASK-1131)."
       fi

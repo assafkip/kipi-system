@@ -131,14 +131,48 @@ class ArgvPrefilterCase(unittest.TestCase):
         rounds of narrowing the filter only moved the threshold. 4000 admitted
         tokens took 21.24s before the scans were de-forked and windowed.
 
-        4000 rather than 300: my earlier version used a count the then-current
-        code already handled, so it measured the fix rather than the limit."""
-        command = "echo " + " ".join(["git"] * 4000)
-        decision, elapsed = decision_for(command)
-        self.assertEqual(decision, "allow")
-        self.assertLess(elapsed, HOOK_TIMEOUT_S,
-                        "even the admitted shape must stay under the timeout: "
-                        "%.2fs" % elapsed)
+        PADS WITH `rm`, NOT `git` (codex minor, round six). Both are admitted,
+        and this test padded with the CHEAPER of the two, so it could not go red
+        for the reason it exists. Measured after the quote-strip fix and before
+        the count ceiling:
+
+            tokens     pad=rm     pad=git
+             4000       4.06s       1.95s
+             6000       6.96s       3.63s
+             8000      10.16s       5.85s
+
+        Against a 5s timeout, `git` padding still passed at 6000 while `rm`
+        padding had already crossed. Choosing the shape the current code handles
+        best measures the fix instead of the limit, which is how this bypass
+        survived five rounds of green suites.
+
+        The expectation is now DENY, and that is the change this round makes on
+        purpose. This asserted allow-and-fast, and past ~5000 tokens those two
+        cannot both be true: the hook is killed at 5s and its verdict discarded,
+        so "fast" was only ever achieved by not finishing. A guard that runs out
+        of time must refuse, not permit."""
+        for tokens in (4000, 8000):
+            with self.subTest(tokens=tokens):
+                command = "echo " + " ".join(["rm"] * tokens)
+                decision, elapsed = decision_for(command)
+                self.assertEqual(decision, "deny",
+                                 "a stage past the rescan ceiling must be "
+                                 "refused rather than half-checked")
+                self.assertLess(elapsed, HOOK_TIMEOUT_S,
+                                "the refusal itself must arrive inside the "
+                                "timeout: %.2fs" % elapsed)
+
+    def test_the_rescan_ceiling_leaves_ordinary_commands_alone(self):
+        """The ceiling has to sit far above real usage or it gets switched off.
+
+        The pre-filter admits only known deniers, so what counts toward the
+        ceiling is bare `rm`/`git`-shaped WORDS in one stage -- not file names,
+        paths or flags, which is what a genuinely long command is made of."""
+        for command in ("echo " + " ".join(["rm"] * 100),
+                        "git add " + " ".join("file%d.txt" % i for i in range(400)),
+                        "echo " + " ".join("path/to/file%d" % i for i in range(3000))):
+            with self.subTest(command=command[:40]):
+                self.assertEqual(decision_for(command)[0], "allow")
 
     def test_transparent_prefixes_still_deny(self):
         """What the pre-filter could plausibly have broken. Each of these has a
@@ -235,6 +269,31 @@ class ArgvPrefilterCase(unittest.TestCase):
         """The cap has to sit far above real usage or it gets switched off."""
         command = "git add " + " ".join("file%d.txt" % i for i in range(300))
         self.assertEqual(decision_for(command)[0], "allow")
+
+    def test_a_preview_is_allowed_for_push_the_same_as_for_clean(self):
+        """Both halves of a contradiction shipped in one change.
+
+        `git push --force --dry-run` was denied while `git clean --dry-run` was
+        allowed fifty lines away, on the opposite reasoning. The clean arm's own
+        note is the correct one: previewing is how you EARN the run, and denying
+        a preview is how a gate gets switched off. A dry-run push updates no ref.
+        """
+        for command in ("git push --force --dry-run origin main",
+                        "git push --dry-run --force origin main",
+                        "git clean -n -d"):
+            with self.subTest(command=command):
+                self.assertEqual(decision_for(command)[0], "allow",
+                                 "a preview changes nothing and must not be "
+                                 "denied")
+
+        # The negative half. Without it this passes against a hook that allows
+        # every push.
+        for command in ("git push --force origin main",
+                        "git push origin +main",
+                        "git push -f origin main"):
+            with self.subTest(command=command):
+                self.assertEqual(decision_for(command)[0], "deny",
+                                 "the real forced push must still be denied")
 
     def test_ordinary_commands_are_still_allowed(self):
         for command in ("ls -la", "git status", "echo hello"):
