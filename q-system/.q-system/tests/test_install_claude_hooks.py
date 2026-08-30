@@ -183,6 +183,34 @@ class InstallerCase(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("DOES NOT PARSE", proc.stdout)
 
+    def test_the_differential_catches_an_unprobed_disable(self):
+        """PR #279 codex major, round 7, made runnable.
+
+        A candidate that passes every hard-coded canary while disabling an
+        operation nobody probed. The verb below is touched by neither MUST_DENY
+        nor MUST_ALLOW, so the canaries alone ACCEPT the gutted hook -- which is
+        precisely the finding. The differential, which uses the RUNNING hook as
+        its oracle instead of a list someone wrote, refuses it and names it.
+        """
+        import importlib.util
+        verb = "mk" + "fs"
+        spec = importlib.util.spec_from_file_location("inst", INSTALLER)
+        inst = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inst)
+
+        real = open(SOURCE).read()
+        candidate = real.replace("    '%s'\n" % verb, "")
+        self.assertNotEqual(candidate, real, "the pattern anchor moved")
+
+        self.assertIsNone(inst.refuse_if_weaker("h.sh", real, real),
+                          "the real hook was refused")
+        self.assertIsNone(inst.refuse_if_weaker("h.sh", candidate, None),
+                          "the canaries were expected to MISS this; if they now "
+                          "catch it, pick an operation they still do not probe")
+        refusal = inst.refuse_if_weaker("h.sh", candidate, real)
+        self.assertIsNotNone(refusal, "the differential missed an unprobed disable")
+        self.assertIn(verb, refusal, "the refusal does not name what was lost")
+
     def test_an_empty_source_dir_is_a_refusal_not_a_pass(self):
         """A run that finds nothing to install must not report success."""
         with tempfile.TemporaryDirectory() as fake_repo:

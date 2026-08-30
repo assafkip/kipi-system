@@ -33,6 +33,14 @@ its own refusals rather than inheriting trust from being called "install":
      code DOES, and two bypasses of one shortcut means the shortcut was wrong.
      The MUST_ALLOW half is not decoration: without it, "denies all four" is
      satisfiable by exiting 2 on line one, which is an outage rather than a gate.
+
+     Then a DIFFERENTIAL pass, because a fixed canary list cannot see an
+     operation nobody thought to probe: both hooks run the same corpus, and
+     everything the INSTALLED hook denies the candidate must deny too. The
+     guarantee is "you cannot be weaker than what is already running", with no
+     expected answers written down. It is a floor rather than a proof -- an
+     operation the corpus omits is still invisible -- and that is stated here
+     rather than implied away.
   2. SHEBANG. A source that drops the shebang is refused.
   3. THE EXECUTE BIT IS WIRING, NOT METADATA (the ASK-1118 scar). settings.json
      runs the hook as a BARE PATH, so a file landed at 0644 simply does not run:
@@ -103,6 +111,57 @@ MUST_DENY = (
     ("Bash", {"command": "git reset " + "--hard"}),
     ("mcp__linear__delete_issue", {}),
     ("mcp__supabase__delete_branch", {}),
+)
+
+# THE INSTALLED HOOK IS THE ORACLE (PR #279 major, round 7).
+#
+# MUST_DENY is a fixed list, so a candidate that keeps those four and quietly
+# drops some operation nobody thought to probe passes every canary. A LONGER
+# list has the same hole one item further out; the shape is wrong, not the
+# length.
+#
+# So the real gate is DIFFERENTIAL: run both hooks over this corpus and require
+# that everything the INSTALLED hook denies, the candidate denies too. No
+# expected answers are written down, which is the point -- the guarantee becomes
+# "you cannot be weaker than what is already running", and it holds for any
+# operation in the corpus whether or not anyone reasoned about it.
+#
+# HONEST BOUNDARY: differential over a corpus is strictly stronger than fixed
+# expectations and still cannot see an operation the corpus omits. It is a
+# floor, not a proof, and MUST_DENY stays as the absolute floor for a first
+# install where there is no installed hook to compare against.
+DIFFERENTIAL_CORPUS = (
+    ("Bash", {"command": "%s %s /tmp/x" % (_R, _RF)}),
+    ("Bash", {"command": "%s -f /tmp/x" % _R}),
+    ("Bash", {"command": "git reset " + "--hard HEAD~1"}),
+    ("Bash", {"command": "git push origin +main"}),
+    ("Bash", {"command": "git push --force origin main"}),
+    ("Bash", {"command": "git branch -D feature"}),
+    ("Bash", {"command": "git clean -fd"}),
+    ("Bash", {"command": "git filter-repo --path x"}),
+    ("Bash", {"command": "find . -name x -delete"}),
+    ("Bash", {"command": "mkfs.ext4 /dev/sda1"}),
+    ("Bash", {"command": "dd if=/dev/zero of=/dev/sda"}),
+    ("Bash", {"command": "shred -u /tmp/x"}),
+    ("Bash", {"command": "chmod -R 777 /"}),
+    ("Bash", {"command": "kipi update"}),
+    ("Bash", {"command": "rsync -a --delete /a/ /b/"}),
+    ("mcp__linear__delete_issue", {}),
+    ("mcp__linear__delete_project", {}),
+    ("mcp__supabase__delete_branch", {}),
+    ("mcp__supabase__reset_branch", {}),
+    ("mcp__claude_ai_Gmail__delete_label", {}),
+    ("mcp__claude_ai_Gmail__trash_thread", {}),
+    ("mcp__claude_ai_Google_Drive__trash_file", {}),
+    ("mcp__claude_ai_Google_Calendar__delete_event", {}),
+    ("mcp__claude_ai_Notion__notion-move-pages", {}),
+    ("mcp__plugin_vercel_vercel__deploy", {}),
+    # Present so a candidate cannot pass by denying everything.
+    ("Bash", {"command": "ls -la"}),
+    ("Bash", {"command": "git status"}),
+    ("mcp__linear__list_issues", {}),
+    ("mcp__claude_ai_Gmail__untrash_message", {}),
+    ("mcp__playwright__browser_drop", {}),
 )
 
 # A hook that denies EVERYTHING is not a working hook, it is an outage. Without
@@ -285,6 +344,25 @@ def refuse_if_weaker(name, source_text, installed_text):
                         "(%s -> %s). A hook that blocks everything is an outage, "
                         "and an outage is how a gate gets switched off."
                         % (name, tool, got))
+
+        # Differential, against the hook already running. Skipped on a first
+        # install, where there is nothing to be weaker THAN.
+        if installed_text is not None:
+            reference = os.path.join(probe_home, "installed-" + name)
+            with open(reference, "w") as fh:
+                fh.write(installed_text)
+            for tool, payload in DIFFERENTIAL_CORPUS:
+                was = decision_of(reference, tool, payload, probe_home)
+                if was != "deny":
+                    continue          # the installed hook allows it; not a regression
+                now = decision_of(candidate, tool, payload, probe_home)
+                if now != "deny":
+                    detail = payload.get("command", tool)
+                    return ("%s: the installed hook DENIES `%s` and the source "
+                            "does not (%s). A hook may be repaired, never "
+                            "disarmed -- and this was found by comparing against "
+                            "what is running, not against a list someone wrote."
+                            % (name, detail, now))
     finally:
         shutil.rmtree(probe_home, ignore_errors=True)
     return None
