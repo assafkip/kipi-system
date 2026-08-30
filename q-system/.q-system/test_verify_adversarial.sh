@@ -236,6 +236,57 @@ else
 fi
 rm -rf "$R"
 
+# --- THE COMPILER'S CHECKS, NOT ONLY THE PARSER'S ---
+#
+# Codex major, PR #277. The python-syntax check moved from py_compile to
+# ast.parse to stop a full disk being reported as a syntax error. Removing the
+# write was right; removing the COMPILER with it was the accident. ast.parse
+# only parses, and six real SyntaxError classes are raised by the compiler
+# rather than the parser -- every one of them previously caught, and every one
+# waved through afterwards.
+#
+# The fifteen existing cases could not see it: the only python case was
+# `def (`, a genuine PARSE error, which ast.parse catches too. A check whose
+# single fixture passes under both implementations cannot tell them apart.
+#
+# One case per class, so this can fail for each reason separately.
+for case in "return 1:return-outside-function" \
+            "break:break-outside-loop" \
+            "continue:continue-outside-loop" \
+            "yield 1:yield-outside-function"; do
+  body="${case%%:*}"; label="${case##*:}"
+  R=$(newrepo); printf '%s\n' "$body" > "$R/bad.py"; git -C "$R" add bad.py
+  run "$R" --staged; check "compiler-only: $label BLOCKS" 1 $?
+  rm -rf "$R"
+done
+
+# The two that need more than one line.
+R=$(newrepo)
+printf 'def f(a, a):\n    pass\n' > "$R/bad.py"; git -C "$R" add bad.py
+run "$R" --staged; check "compiler-only: duplicate parameter BLOCKS" 1 $?
+rm -rf "$R"
+
+R=$(newrepo)
+printf 'def f():\n    await g()\n' > "$R/bad.py"; git -C "$R" add bad.py
+run "$R" --staged; check "compiler-only: await outside async BLOCKS" 1 $?
+rm -rf "$R"
+
+# --- AND A VALID FILE WITH A UTF-8 BOM MUST STILL PASS ---
+#
+# Codex minor, same PR. Reading source as plain utf-8 leaves the BOM in the
+# string and the compiler then reports a SyntaxError on a file the interpreter
+# itself runs happily. tokenize.open strips it and honours the PEP 263 coding
+# cookie, which is what the interpreter does on load.
+#
+# No such file is in the repo today. That is exactly why it needs a case: a
+# false FAIL on a valid file is how a floor gets switched off, and this one
+# would have waited for the first contributor on an editor that writes BOMs.
+R=$(newrepo)
+printf '\xef\xbb\xbfdef f():\n    return 1\n' > "$R/withbom.py"
+git -C "$R" add withbom.py
+run "$R" --staged; check "valid file with a UTF-8 BOM still PASSES" 0 $?
+rm -rf "$R"
+
 echo
 echo "adversarial: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
