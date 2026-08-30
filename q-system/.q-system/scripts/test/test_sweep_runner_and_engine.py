@@ -245,6 +245,42 @@ class PartialPopulationCase(unittest.TestCase):
                          "consumer reads a bounded result as repo-wide")
         self.assertIn("unguarded_subjects_in_filtered_population", summary)
 
+    def test_report_only_inherits_the_ledger_scope_not_a_default(self):
+        """PR #272 codex major: the same false claim, out the other door.
+
+        report() was taught to refuse the repo-wide claim on a filtered run, at
+        ONE entry point. --report-only re-derives from results.jsonl and knew
+        nothing about how that ledger was made, so it reprinted the unbounded
+        claim over a bounded ledger and contradicted --subject again.
+        """
+        import io, contextlib
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            # A ledger from a FILTERED run records its scope.
+            (out / "scope.json").write_text(json.dumps({"partial": "--limit 5"}))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ms.report(self.RESULTS, out, partial=json.loads(
+                    (out / "scope.json").read_text())["partial"])
+            text = buf.getvalue()
+            self.assertNotIn("subjects NO declared test guards", text)
+            self.assertIn("--limit 5", text)
+
+    def test_an_unrecorded_scope_is_not_treated_as_a_full_run(self):
+        """No scope.json means the ledger predates the record or was hand-made.
+        Defaulting to 'full' is exactly how the bounded claim escaped."""
+        import io, contextlib
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ms.report(self.RESULTS, out, partial="scope of this ledger is "
+                          "unrecorded -- re-run the sweep to establish it")
+            text = buf.getvalue()
+            self.assertNotIn("subjects NO declared test guards", text,
+                             "an unknown scope was reported as a full run")
+            self.assertIn("unrecorded", text)
+
     def test_every_unguarded_row_names_the_command_that_confirms_it(self):
         text, _ = self._report(None)
         self.assertIn("--subject s.py", text)

@@ -14,12 +14,18 @@ assembled through capability_manifest.load().
 
 ## The two-stage probe
 
-Stage 1 -- ABSENT (attribution proof, and the positive control).
-  Move a candidate subject file out of the tree, run the test, move it back.
-  A test that still passes with its subject GONE does not depend on that file.
-  This is what makes stage 2 trustworthy: it is a control that must go RED, and
-  it is runner-agnostic (an import error and a `python3 missing.py` both fail),
-  so it works for the 95 bash tests as well as the 87 python ones.
+Stage 1 -- TRIPWIRE (attribution proof), then ABSENT (a secondary signal).
+  The TRIPWIRE is what gates stage 2: a test that does not react to its subject
+  at all has no dependency worth disarming, so the pair stops there.
+  ABSENT is the separate question of whether the test passes with the subject
+  file GONE. It no longer short-circuits: a passing ABSENT is carried forward
+  and the DISARM runs anyway, because `python3` on a missing file exits 2 and
+  2 is this repo's convention for "blocked" -- so a test asserting rc == 2
+  passes with the subject deleted by exit-code collision while still seeing its
+  verdict perfectly. Survive both and the verdict is SURVIVED-ABSENT; killed by
+  the disarm and the verdict is KILLED, with the absent pass recorded beside it.
+  The earlier text described ABSENT as the stage-1 gate, which stopped being
+  true when the absent control was made contradictable.
 
 Stage 2 -- DISARM (the finding).
   Only for pairs ABSENT confirmed. Neuter every failure-signalling site in the
@@ -994,7 +1000,17 @@ def sweep(root, args):
         _filters.append("--only %s" % args.only)
     if args.limit:
         _filters.append("--limit %s" % args.limit)
-    report(results, outdir, partial=", ".join(_filters) or None)
+    _partial = ", ".join(_filters) or None
+    # WRITE THE SCOPE DOWN, because the next reader is a different entry point
+    # (codex major, PR #272). --report-only re-derives from results.jsonl and
+    # cannot otherwise know whether the run behind it was filtered, so it
+    # reprinted the repo-wide claim over a bounded ledger. Teaching report() to
+    # refuse that claim was not enough while only one caller knew the scope.
+    (outdir / "scope.json").write_text(json.dumps(
+        {"schema_version": SCHEMA_VERSION,
+         "partial": _partial,
+         "ts": datetime.datetime.now().isoformat(timespec="seconds")}, indent=2))
+    report(results, outdir, partial=_partial)
     return results
 
 
@@ -1704,7 +1720,23 @@ def main():
                   "sweep first (without --report-only)." % ledger, file=sys.stderr)
             sys.exit(2)
         rows = latest_per_test(ledger.read_text().splitlines())
-        report(rows, out)
+        # THE SCOPE COMES FROM THE LEDGER, NOT FROM THIS INVOCATION.
+        #
+        # A ledger written by a --only/--limit run supports only a claim about
+        # that filtered set. If scope.json is missing the ledger predates this
+        # record or was written by hand, and the honest answer is that the scope
+        # is unknown -- NOT that it was a full run. Defaulting to "full" is how
+        # the bounded claim escaped in the first place.
+        scope_file = out / "scope.json"
+        if scope_file.is_file():
+            try:
+                partial = json.loads(scope_file.read_text()).get("partial")
+            except ValueError:
+                partial = "scope record unreadable"
+        else:
+            partial = ("scope of this ledger is unrecorded -- re-run the sweep "
+                       "to establish it")
+        report(rows, out, partial=partial)
         sys.exit(0)
 
     if args.zero_exec_scan:

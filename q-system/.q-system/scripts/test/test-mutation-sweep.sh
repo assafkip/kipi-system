@@ -9,10 +9,13 @@
 # on the day someone remembers to check it.
 #
 # --self-test builds a fixture whose answers are known by construction and
-# asserts all four: a test that reads its subject's verdict is KILLED, one that
+# asserts all FIVE: a test that reads its subject's verdict is KILLED, one that
 # only checks "something was printed" is SURVIVED-ABSENT, one that calls the
-# subject and ignores the answer is SURVIVED, and one that names no subject
-# yields no candidate. It also asserts four baselines actually executed and
+# subject and ignores the answer is SURVIVED, one that asserts only the block
+# exit code is KILLED (the exit-2 collision, where deleting the subject also
+# yields rc 2 and the absent control alone would call it blind), and one that
+# names no subject
+# yields no candidate. It also asserts five baselines actually executed and
 # that every scored mutant changed the file's sha.
 #
 # It went red twice during development before it went green (an operator whose
@@ -42,7 +45,7 @@ out="$(python3 "$SWEEP" --self-test 2>&1)" || {
 # sweep exists to find, so it is not left to $?.
 case "$out" in
   *"sighted=KILLED"*"blind=SURVIVED-ABSENT"*"shallow=SURVIVED"*)
-    echo "ok: mutation-sweep self-test discriminated all four fixture shapes"
+    echo "ok: mutation-sweep self-test discriminated all five fixture shapes"
     ;;
   *)
     echo "$out"

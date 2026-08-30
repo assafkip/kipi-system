@@ -82,16 +82,40 @@ class ResumeCacheKeyCase(unittest.TestCase):
         Each round the hand-list was short by exactly what I had not thought
         about, which is the stale-hand-list defect itself. The module is now the
         fingerprint, so there is no list to keep complete."""
-        before = ms.test_fingerprint(self.tmp, self.test_rel, None, "bash")
-        src = Path(ms.__file__)
-        original = src.read_bytes()
-        try:
-            src.write_bytes(original + b"\n# an unrelated comment\n")
-            after = ms.test_fingerprint(self.tmp, self.test_rel, None, "bash")
-        finally:
-            src.write_bytes(original)
+        # MUTATE A COPY, NEVER THE LIVE ENGINE (codex minor, PR #272).
+        #
+        # This appended to the tracked mutation-sweep.py and restored it in a
+        # `finally`. A `finally` does not run on SIGKILL, on a power loss, or
+        # when the interpreter dies mid-write, so an interrupted run left the
+        # repo's own engine corrupted with a stray comment -- or worse, truncated.
+        # That is precisely the signal-unsafe pattern this PR documents as a scar
+        # and refuses elsewhere, committed inside the test suite that guards it.
+        #
+        # A second module loaded from a temp path gives the same measurement with
+        # nothing tracked in the blast radius.
+        import importlib.util as _ilu
+        import shutil as _shutil
+
+        copy_path = Path(self.tmp) / "engine_copy.py"
+        _shutil.copy2(ms.__file__, copy_path)
+        spec = _ilu.spec_from_file_location("engine_copy", copy_path)
+        engine = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(engine)
+
+        live_before = Path(ms.__file__).read_bytes()
+        before = engine.test_fingerprint(self.tmp, self.test_rel, None, "bash")
+        copy_path.write_bytes(copy_path.read_bytes() + b"\n# an unrelated comment\n")
+        after = engine.test_fingerprint(self.tmp, self.test_rel, None, "bash")
+
         self.assertNotEqual(before, after,
                             "an engine edit left the fingerprint unchanged")
+        # Compared against bytes captured BEFORE the mutation. The first version of
+        # this line compared the live file to itself, which is true by
+        # construction and checks nothing -- the decorative-assertion shape this
+        # whole tool exists to find.
+        self.assertEqual(Path(ms.__file__).read_bytes(), live_before,
+                         "the live engine was modified; this test must only "
+                         "ever write to its copy")
 
     def test_changing_the_declared_timeout_invalidates(self):
         """PR #272. A verdict produced under a 60s cap says nothing about the
