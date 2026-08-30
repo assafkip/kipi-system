@@ -75,12 +75,36 @@ emit_deny() {
   # once. Fail closed: a missing or failing token script denies.
   local reason="$1"
   local _ct="$HOME/.claude/bin/capability-token.sh"
-  if [ -x "$_ct" ] && "$_ct" check "$COMMAND" "$CWD"; then
+
+  # THE TOKEN'S SCOPE IS THE WHOLE INVOCATION, NOT THE BASH FIELD (ASK-1144).
+  #
+  # `$COMMAND` is read from `.tool_input.command`, which ONLY Bash payloads
+  # carry. Every MCP denial therefore hashed the SAME empty string, so one
+  # `kipi-approve <hash>` covered every destructive MCP call on every server --
+  # while the deny message said "Approve THIS command". A single-use,
+  # command-scoped grant that is neither.
+  #
+  # It was always wrong and it is load-bearing NOW: before the operation-keyed
+  # deny in this change, almost no MCP call reached emit_deny at all, so the
+  # shared hash had nothing to unlock. Closing one hole exposed the other, which
+  # is why this lands in the same change rather than after it.
+  #
+  # `jq -cS` sorts keys, so two payloads that differ only in key ORDER hash the
+  # same and a token minted for one is not refused for the other. Without -S the
+  # scope would be unstable and every grant a coin flip.
+  local _scope
+  if [ "$TOOL_NAME" = "Bash" ]; then
+    _scope="$COMMAND"
+  else
+    _scope="$TOOL_NAME $(printf '%s' "$INPUT" | jq -cS '.tool_input // {}' 2>/dev/null || echo '{}')"
+  fi
+
+  if [ -x "$_ct" ] && "$_ct" check "$_scope" "$CWD"; then
     log_decision "allow" "capability token consumed"
     exit 0
   fi
   local _hash=""
-  [ -x "$_ct" ] && _hash="$("$_ct" hash "$COMMAND" "$CWD" 2>/dev/null || true)"
+  [ -x "$_ct" ] && _hash="$("$_ct" hash "$_scope" "$CWD" 2>/dev/null || true)"
   log_decision "deny" "$reason"
   jq -nc --arg reason "$reason" --arg hash "$_hash" '{
     hookSpecificOutput: {
