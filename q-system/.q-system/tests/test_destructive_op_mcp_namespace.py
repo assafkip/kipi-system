@@ -311,6 +311,57 @@ class MCPNamespaceCase(unittest.TestCase):
         )
         self.assertIn("no_such_server_at_all", proc.stdout + proc.stderr)
 
+    def test_the_verdict_does_not_move_with_the_machine(self):
+        """A namespace installed HERE but declared nowhere must still read DEAD.
+
+        The earlier version widened the known set with the local box's servers.
+        That closed one direction -- nothing read DEAD merely because this
+        machine lacked a plugin -- and left the other open: an undeclared
+        namespace that happened to be installed here PASSED here and would fail
+        on a clean runner. Either way the answer moved with the machine, which
+        is what a gate must not do.
+
+        So this plants a server in a fake $HOME, which is exactly the state that
+        used to confer a pass, and demands the verdict be unchanged.
+        """
+        import json as _json
+        import tempfile as _tempfile
+
+        planted = os.path.join(self.tmp, "hook-machine-local.sh")
+        with open(HOOK) as fh:
+            body = fh.read()
+        anchor = "        mcp__plugin_vercel_vercel__*)"
+        self.assertIn(anchor, body, "the plant anchor moved; the plant is a no-op")
+        with open(planted, "w") as fh:
+            fh.write(body.replace(
+                anchor,
+                "        mcp__only_on_this_box__delete_everything|"
+                "mcp__plugin_vercel_vercel__*)", 1))
+
+        fake_home = _tempfile.mkdtemp(prefix="nsmachine-")
+        with open(os.path.join(fake_home, ".claude.json"), "w") as fh:
+            _json.dump({"mcpServers": {"only_on_this_box": {"command": "true"}}}, fh)
+
+        env = dict(os.environ)
+        env["HOME"] = fake_home
+        proc = subprocess.run(
+            [sys.executable, NS_CHECK, "--hook", planted],
+            capture_output=True, text=True, cwd=REPO, timeout=60, env=env,
+        )
+        self.assertNotEqual(
+            proc.returncode, 0,
+            "a namespace installed only on this box conferred a PASS, so the "
+            "verdict still moves with the machine")
+        self.assertIn("only_on_this_box", proc.stdout + proc.stderr)
+
+        # And the escape hatch still reports what a local install WOULD add.
+        proc2 = subprocess.run(
+            [sys.executable, NS_CHECK, "--hook", planted, "--include-machine-local"],
+            capture_output=True, text=True, cwd=REPO, timeout=60, env=env,
+        )
+        self.assertEqual(proc2.returncode, 0,
+                         "--include-machine-local should see the planted server")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

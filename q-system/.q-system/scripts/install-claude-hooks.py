@@ -73,6 +73,8 @@ and exits 1 without writing anything.
 
 import argparse
 import filecmp
+import time
+import hashlib
 import json
 import os
 import re
@@ -506,6 +508,32 @@ def install_one(name, dest_dir, dry_run, home):
         return "%s: WOULD INSTALL (%s)" % (name, reason), True
 
     os.makedirs(dest_dir, exist_ok=True)
+
+    # KEEP WHAT WE ARE ABOUT TO DESTROY (codex minor, PR #279).
+    #
+    # This overwrote the live guard with no copy kept. The installed hook is not
+    # a checkout of anything: it is whatever was last written into $HOME, and
+    # before this PR merges, that content exists in NO git object. So the first
+    # `kipi update` on a machine whose hook had drifted, or had been hand-edited
+    # during an incident, discarded the only copy of it, unrecoverably and
+    # without saying so.
+    #
+    # The backup is written BEFORE the replace and only when the bytes actually
+    # differ, so a no-op install leaves nothing behind. It is named by timestamp
+    # and content hash: re-installing over the same drifted file collapses to one
+    # backup, and the order stays readable.
+    backup_note = ""
+    if installed_text is not None and installed_text != source_text:
+        backups = os.path.join(dest_dir, ".backups")
+        os.makedirs(backups, exist_ok=True)
+        digest = hashlib.sha256(
+            installed_text.encode("utf-8", "replace")).hexdigest()[:12]
+        stamp = time.strftime("%Y%m%dT%H%M%S")
+        backup = os.path.join(backups, "%s.%s.%s" % (name, stamp, digest))
+        if not os.path.exists(backup):
+            shutil.copyfile(dst, backup)
+        backup_note = " (previous copy kept at %s)" % backup
+
     tmp = dst + ".install.tmp"
     shutil.copyfile(src, tmp)
 
@@ -532,7 +560,8 @@ def install_one(name, dest_dir, dry_run, home):
         return ("%s: FAILED, installed and executable but NOT REGISTERED in "
                 "settings.json, so it never runs. Wire it as a PreToolUse "
                 "command:\n      \"command\": \"%s\"" % (name, dst)), False
-    return "%s: installed, parses, executable, and registered" % name, True
+    return ("%s: installed, parses, executable, and registered%s"
+            % (name, backup_note)), True
 
 
 def main(argv=None):

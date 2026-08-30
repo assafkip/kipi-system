@@ -163,16 +163,44 @@ def plugin_server_namespaces():
     return names
 
 
-def known_namespaces():
-    """Declared namespaces FIRST, so the verdict does not move with the machine.
+def known_namespaces(include_machine_local=False):
+    """The known set is REPO state, not machine state (codex minor, PR #279).
 
-    Discovery still runs and still helps: it is what lets a namespace stop
-    needing a declaration once its server is checked into the repo. But nothing
-    is called dead solely because this particular box has not installed it.
+    Declarations plus servers configured in files this repo tracks. Nothing from
+    $HOME by default.
+
+    The earlier version added the local box's servers too. That fixed one
+    direction -- a namespace no longer read DEAD just because this machine had
+    not installed it -- and left the other open: a hook entry that is undeclared
+    but happens to be installed HERE passed here and would fail on a clean
+    runner. Either way the verdict moved with the machine, which is the thing a
+    gate must not do. A check whose answer depends on who runs it is not
+    measuring the hook.
+
+    So the box is consulted only when explicitly asked (--include-machine-local),
+    where it is a developer convenience for seeing what a local install would
+    add, and never the basis for a verdict.
     """
     names = set(DECLARED_NAMESPACES)
-    names |= plain_server_namespaces()
-    names |= plugin_server_namespaces()
+    names |= repo_server_namespaces()
+    if include_machine_local:
+        names |= plain_server_namespaces()
+        names |= plugin_server_namespaces()
+    return names
+
+
+def repo_server_namespaces():
+    """Servers configured in files THIS REPO tracks -- identical on every box."""
+    names = set()
+    for name in _servers_from_mcp_json(os.path.join(REPO, ".mcp.json")):
+        names.add("mcp__%s__" % name)
+    for path in glob.glob(os.path.join(REPO, "plugins", "*", ".mcp.json")) + \
+            glob.glob(os.path.join(REPO, "plugins", "*", ".claude-plugin", ".mcp.json")):
+        plugin = os.path.basename(os.path.dirname(path))
+        if plugin == ".claude-plugin":
+            plugin = os.path.basename(os.path.dirname(os.path.dirname(path)))
+        for server in _servers_from_mcp_json(path):
+            names.add("mcp__plugin_%s_%s__" % (plugin, server))
     return names
 
 
@@ -205,11 +233,17 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hook", default=DEFAULT_HOOK, help="hook file to inspect")
     parser.add_argument(
+        "--include-machine-local", action="store_true",
+        help="also count servers installed under $HOME. A developer convenience "
+             "for seeing what a local install adds; never the basis for a verdict, "
+             "because a check whose answer moves with the machine is not measuring "
+             "the hook (codex minor, PR #279).")
+    parser.add_argument(
         "--list", action="store_true", help="print every known namespace and exit 0"
     )
     args = parser.parse_args(argv)
 
-    known = known_namespaces()
+    known = known_namespaces(include_machine_local=args.include_machine_local)
 
     if args.list:
         for ns in sorted(known):
@@ -235,7 +269,7 @@ def main(argv=None):
     dead = [ns for ns in declared if ns not in known]
 
     print("namespaces named by the hook: %d" % len(declared))
-    print("servers known to this machine: %d" % len(known))
+    print("namespaces known from repo state: %d" % len(known))
     for ns in declared:
         print("  %-46s %s" % (ns, "OK" if ns in known else "DEAD"))
 

@@ -343,6 +343,48 @@ class InstallerCase(unittest.TestCase):
         self.assertIn("already installed", proc.stdout)
         self.assertEqual(os.stat(self.dst).st_size, first.st_size)
 
+    def test_the_replaced_hook_is_kept_and_is_recoverable(self):
+        """The live hook is not a checkout of anything.
+
+        It is whatever was last written into $HOME, so a drifted or
+        hand-edited-during-an-incident copy exists in no git object. Overwriting
+        it with no backup destroys the only copy. This plants a drifted hook,
+        installs over it, and reads the backup back byte for byte.
+        """
+        os.makedirs(self.hooks, exist_ok=True)
+        # A REAL drifted hook, not a stub: the installer's ratchet refuses a
+        # source that reads env vars the installed copy does not, and a stub
+        # trips that instead of exercising the backup. Drift here is what it is
+        # in the field -- the shipped guard plus a local edit.
+        with open(SOURCE) as fh:
+            drifted = fh.read() + "\n# LOCAL EMERGENCY EDIT, in no git object\n"
+        with open(self.dst, "w") as fh:
+            fh.write(drifted)
+        os.chmod(self.dst, 0o755)
+
+        proc = run(self.tmp)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("previous copy kept at", proc.stdout,
+                      "the installer overwrote the live hook without saying "
+                      "where the old one went")
+
+        backups = os.path.join(self.hooks, ".backups")
+        kept = os.listdir(backups)
+        self.assertEqual(len(kept), 1, "expected exactly one backup, got %r" % kept)
+        with open(os.path.join(backups, kept[0])) as fh:
+            self.assertEqual(fh.read(), drifted,
+                             "the backup does not match what was replaced")
+
+    def test_a_no_op_install_leaves_no_backup(self):
+        """A backup per run would bury the one that matters."""
+        run(self.tmp)
+        backups = os.path.join(self.hooks, ".backups")
+        before = sorted(os.listdir(backups)) if os.path.isdir(backups) else []
+        proc = run(self.tmp)
+        after = sorted(os.listdir(backups)) if os.path.isdir(backups) else []
+        self.assertIn("already installed", proc.stdout)
+        self.assertEqual(before, after, "a no-op install wrote a backup")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
