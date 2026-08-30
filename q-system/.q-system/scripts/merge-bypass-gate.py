@@ -446,7 +446,7 @@ _SAFE_SHAPE = ("the only merge this gate permits is:\n"
                "no other flags.")
 
 
-def _merge_verdict(seg: list[str], note: str | None = None) -> str | None:
+def _merge_verdict(seg: list[str], cwd: str, note: str | None = None) -> str | None:
     """An unsafe `gh ... merge` invocation -> reason. Anything else -> None.
 
     The trigger is deliberately broad -- a `gh` token ANYWHERE plus a `merge`
@@ -510,6 +510,13 @@ def _merge_verdict(seg: list[str], note: str | None = None) -> str | None:
         # that someone actually ran the tests. This LOOSENS nothing: --auto is
         # still accepted unchanged wherever real checks exist, and --admin is
         # still refused above.
+        # `cwd` is a PARAMETER, not a global (Codex major, PR #269 round 2).
+        # The receipt deferral was added reading a `cwd` that _merge_verdict
+        # never took, so every non---auto merge raised NameError and the hook
+        # exited 1. Exit 1 is not a block: PreToolUse treats a crashed hook as
+        # no opinion, so the one shape this gate exists to refuse was the one
+        # shape that walked straight through. A gate that fails open on its
+        # own error is worse than no gate, because it is trusted.
         reason = _receipt_missing(rest, cwd)
         if reason:
             return reason + "\n  " + _SAFE_SHAPE
@@ -700,7 +707,7 @@ def classify(command: str, cwd: str, _depth: int = 0) -> tuple[str, str]:
             resolved = _resolve_dir(seg[1], cur_dir)
             cur_dir = resolved if resolved else cur_dir
             continue
-        reason = _merge_verdict(seg, note)
+        reason = _merge_verdict(seg, cwd, note)
         if reason:
             return "deny", reason
         reason = _push_verdict(seg, cur_dir)

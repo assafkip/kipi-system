@@ -112,9 +112,15 @@ REASON_CASES: list[tuple[str, str, str]] = [
     ("an unknown flag is named in the refusal",
      "gh pr merge 155 --auto --squash --admin",
      "unrecognised argument"),
+    # The DEFERRAL TARGET moved (see the 2026-08-25 note in _merge_verdict):
+    # from "--auto, so GitHub holds it" to "a green receipt naming this head",
+    # because on a repo with no branch protection --auto is refused outright and
+    # the required contexts are never posted. So the message this case pins moved
+    # with it. It is still a SPECIFIC string, not "any deny": a gate that refused
+    # everything with a generic reason would still fail this case.
     ("a missing --auto says so",
      "gh pr merge 155 --squash",
-     "does not defer to the required checks"),
+     "no green receipt"),
     ("an env prefix is explained as a retarget",
      "GH_REPO=other/repo gh pr merge 155 --auto --squash",
      "an environment prefix"),

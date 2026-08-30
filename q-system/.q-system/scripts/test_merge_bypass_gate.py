@@ -180,6 +180,28 @@ def main() -> int:
         check("unresolvable cd target",
               'cd "$WORK/seed" && git push origin HEAD:main', root, "allow")
 
+        # --- THE GATE MUST NOT CRASH ON THE SHAPE IT EXISTS TO REFUSE ---
+        #
+        # Codex major, PR #269 round 2, CONFIRMED by running it. The receipt
+        # deferral was added reading a `cwd` that `_merge_verdict` did not take,
+        # so a plain `gh pr merge <n> --squash` raised NameError. The hook exited
+        # 1, and exit 1 is not a block -- PreToolUse reads a crashed hook as no
+        # opinion, so the merge proceeded unchecked.
+        #
+        # `check` asserts the SPECIFIC decision, so a crash cannot be mistaken
+        # for a refusal: an exception inside classify propagates out of this
+        # call and the run goes red rather than counting a pass.
+        check("plain squash merge, no --auto",
+              "gh pr merge 9 --squash", gh_feature, "deny")
+        check("plain merge, no flags at all",
+              "gh pr merge 9", gh_feature, "deny")
+        check("merge with --delete-branch but no --auto",
+              "gh pr merge 9 --squash --delete-branch", gh_feature, "deny")
+        # And the permitted shape still passes, so the three above cannot be
+        # green by way of a gate that refuses everything.
+        check("--auto --squash is still allowed",
+              "gh pr merge --auto --squash 9", gh_feature, "allow")
+
         # --- degenerate input ---
         check("empty command", "", gh_feature, "allow")
         check("unbalanced quote hiding admin",
