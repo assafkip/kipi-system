@@ -583,7 +583,19 @@ def probe_pair(sw, entry, subj_rel, baseline, score):
     finally:
         sw._restore(target, bpath, orig_sha)
     if not absent["timed_out"] and absent["rc"] == 0:
-        if True:
+        # THE SCORE DECIDES WHAT A PASSING ABSENT-CONTROL MEANS (PR #272 minor).
+        #
+        # This read `if True:`, and STRONG_ATTRIBUTION was defined and never
+        # referenced anywhere in the file. So the distinction the comment above
+        # the constant describes -- "named by the test ITSELF" versus "this
+        # harness's guess" -- did not exist in the code, and every weakly-paired
+        # candidate was booked as a real finding about the test.
+        #
+        # That is the same shape the sweep hunts: a predicate whose false branch
+        # is unreachable reports one answer by construction. Here it inflated
+        # SURVIVED-ABSENT, which is the loudest verdict the tool emits, with
+        # pairings the tool itself had only guessed at.
+        if score >= STRONG_ATTRIBUTION:
             # The test names this file and still passes with the file DELETED.
             # Strictly worse than surviving a disarm: there is no version of
             # the subject this test could fail on. Found by the harness's own
@@ -594,6 +606,12 @@ def probe_pair(sw, entry, subj_rel, baseline, score):
                     "tripwire_rc": trip["rc"], "score": score,
                     "orig_sha": orig_sha[:12],
                     "mutant_sha": "n/a-file-removed"}
+        # Below the bar the PAIRING is the suspect, not the test. A test that
+        # passes without a file it was never really about is the expected
+        # result, and reporting it as a blind test would train the reader to
+        # ignore the verdict that matters.
+        return {"verdict": "UNMEASURED-weak-attribution", "score": score,
+                "tripwire_rc": trip["rc"], "orig_sha": orig_sha[:12]}
 
     # ---- Stage 2: DISARM.
     text = orig.decode("utf-8", errors="replace")
@@ -697,6 +715,41 @@ def sweep(root, args):
     return results
 
 
+def latest_per_test(lines):
+    """One row per test, the most recent. Ledger order is chronological.
+
+    PR #272 major. results.jsonl is APPEND-ONLY and --report-only read every
+    line, so a second sweep of the same population reported each test twice: the
+    population count doubled, and a SURVIVED from an old run kept being reported
+    long after the test was fixed, because its superseding KILLED row sat beside
+    it rather than replacing it. A report that cannot age out a fixed finding
+    trains the reader to ignore it.
+
+    Malformed lines are SKIPPED and COUNTED, never silently dropped: a ledger
+    this cannot parse is a broken writer, and a reader that hides that reports a
+    smaller, cleaner population than actually exists -- which is the failure mode
+    this whole tool is about.
+    """
+    latest, bad = {}, 0
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            bad += 1
+            continue
+        key = row.get("test")
+        if key is None:
+            bad += 1
+            continue
+        latest[key] = row          # later line wins
+    if bad:
+        print(f"WARNING: {bad} unreadable ledger row(s) skipped; the population "
+              f"below is smaller than the file", file=sys.stderr)
+    return list(latest.values())
+
+
 def summarize(rec):
     vs = [p["verdict"] for p in rec["pairs"]]
     if "SURVIVED-ABSENT" in vs:
@@ -712,6 +765,8 @@ def summarize(rec):
             return v
     if "no-disarm-site" in vs:
         return "UNMEASURED-no-disarm-site"
+    if "UNMEASURED-weak-attribution" in vs:
+        return "UNMEASURED-weak-attribution"
     if not vs:
         return "UNMEASURED-no-candidate-subject"
     return "UNMEASURED-no-dependency"
@@ -1124,8 +1179,8 @@ def main():
 
     if args.report_only:
         out = root / "q-system/output/mutation-sweep"
-        rows = [json.loads(l) for l in (out / "results.jsonl").read_text().splitlines()
-                if l.strip()]
+        rows = latest_per_test(
+            (out / "results.jsonl").read_text().splitlines())
         report(rows, out)
         sys.exit(0)
 
