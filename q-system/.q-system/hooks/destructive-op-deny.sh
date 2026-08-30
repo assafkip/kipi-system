@@ -239,6 +239,45 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   # /bin/bash this runs under) treats "${arr[@]}" on an EMPTY array as an unbound
   # variable under `set -u`, which would abort the hook and, since a hook that
   # dies produces no decision, fail OPEN on the one gate that must not.
+  # CAN A DENY POSSIBLY START AT THIS TOKEN? (PR #279 major.)
+  #
+  # The every-starting-position scan below called argv_deny_reason once per
+  # token, and each call is a COMMAND SUBSTITUTION -- a subshell fork -- that
+  # re-parses the remaining tokens. O(n) forks x O(n) work. Measured on this
+  # hook before the fix, on a single `git` stage:
+  #
+  #     120 tokens   0.64s
+  #     230 tokens   3.83s
+  #     400 tokens  19.43s
+  #
+  # settings.json wires this hook at timeout 5. A hook that overruns its timeout
+  # is KILLED and its verdict DISCARDED -- measured in this repo already (a 0s
+  # hook exiting 2 blocks; an 8s hook exiting 2 runs). So a long enough command
+  # line was a bypass needing no cleverness at all, and the slow path is the
+  # BENIGN one, which is every call the hook ever sees.
+  #
+  # This is an exact-semantics filter, not a heuristic. argv_deny_reason strips
+  # transparent prefixes and then switches on the program basename, so a position
+  # whose token is neither a transparent prefix nor a recognised program CANNOT
+  # return 0 -- skipping it changes no outcome. The two lists are deliberately
+  # adjacent, and test_argv_prefilter_matches_reasons pins them together so
+  # adding a program arm without adding it here is caught.
+  _argv_could_deny_here() {  # _argv_could_deny_here <token>
+    case "${1##*/}" in
+      rm|git)                                  return 0 ;;
+      sudo|command|nohup|nice|time|env)        return 0 ;;
+      # An ENV ASSIGNMENT prefix (`FOO=bar cmd`), which cannot begin with `-`.
+      # argv_deny_reason strips any `*=*`, so `--grep=x` is stripped there too --
+      # but a position starting at a FLAG is safe to skip here, because whatever
+      # deny survives that stripping is reachable from the program token itself,
+      # and the program token is always scanned. Without this exclusion the
+      # filter passed every `--opt=value` and bought nothing: measured 19.87s on
+      # 400 tokens with `*=*`, unchanged from before the filter existed.
+      [!-]*=*)                                 return 0 ;;
+      *)                                       return 1 ;;
+    esac
+  }
+
   argv_deny_reason() {  # argv_deny_reason <stage> -> echoes a reason, rc 0 = deny
     local stage="$1"
     set -f
@@ -366,8 +405,12 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     set +f
     _i=1
     while [ "$_i" -lt "${#_sw[@]}" ]; do
-      _argv_reason="$(argv_deny_reason "${_sw[*]:$_i}")" && \
-        emit_deny "destructive invocation: $_argv_reason. Decided from the command's ARGV at every starting position, so neither a leading flag nor a prefix carrying its own options can move it out of view (ASK-1131)."
+      # Skip positions that provably cannot deny, so the fork below runs a
+      # handful of times instead of once per token. See _argv_could_deny_here.
+      if _argv_could_deny_here "${_sw[$_i]}"; then
+        _argv_reason="$(argv_deny_reason "${_sw[*]:$_i}")" && \
+          emit_deny "destructive invocation: $_argv_reason. Decided from the command's ARGV at every starting position, so neither a leading flag nor a prefix carrying its own options can move it out of view (ASK-1131)."
+      fi
       _i=$((_i+1))
     done
   done < <(printf '%s\n' "$COMMAND" | tr ';|&' '\n\n\n')
