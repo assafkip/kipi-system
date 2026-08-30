@@ -287,6 +287,30 @@ fleet_authored_blob() {
   return 1
 }
 
+# INSTALL THE VENDORED HOOKS INTO THE TREE THAT RUNS THEM (ASK-1144).
+#
+# The fleet updater is the one deterministic, founder-invoked path that already
+# exists for "make this machine match the skeleton", so the hook install belongs
+# here rather than in a habit somebody has to remember. Before this, a corrected
+# destructive-op-deny.sh could be reviewed and merged while ~/.claude/hooks kept
+# the stale copy, and nothing reported the gap.
+#
+# NEVER FATAL TO THE UPDATE. The installer refuses a source that would weaken a
+# hook and refuses a short write, and either refusal is worth reading -- but an
+# update that aborts 23 instances because one hook did not install is a denial
+# of service where a loud warning is the right answer. Same reasoning the
+# source-provenance preflight above records for itself.
+install_vendored_hooks() {
+  local installer="$SCRIPT_DIR/q-system/.q-system/scripts/install-claude-hooks.py"
+  [ -f "$installer" ] || return 0
+  echo "==> installing vendored hooks into ~/.claude/hooks"
+  if ! python3 "$installer"; then
+    echo "WARNING: a vendored hook did not install. The guard on this machine may" >&2
+    echo "         be older than the reviewed one. Re-run:" >&2
+    echo "         python3 $installer" >&2
+  fi
+}
+
 plugin_copy_rsync_flags() {
   local entry
   for entry in "${PLUGIN_COPY_EXCLUDES[@]}"; do
@@ -473,6 +497,17 @@ echo "=== Kipi System Update ==="
 echo "Remote: $SKELETON_REMOTE"
 echo "Branch: $SKELETON_BRANCH"
 [ "$DRY_RUN" = "--dry-run" ] && echo "MODE: DRY RUN (no changes)"
+echo ""
+
+# CALLED, not merely defined (ASK-1144). A helper with no call site is the
+# defect class this whole change is about: it looks like wiring and enforces
+# nothing. A dry run must not write, so it reports the drift instead.
+if [ "$DRY_RUN" = "--dry-run" ]; then
+  _hook_installer="$SCRIPT_DIR/q-system/.q-system/scripts/install-claude-hooks.py"
+  [ -f "$_hook_installer" ] && python3 "$_hook_installer" --check || true
+else
+  install_vendored_hooks
+fi
 echo ""
 
 # Preflight: refuse to propagate if an enforcement hook is wired in the skeleton's
