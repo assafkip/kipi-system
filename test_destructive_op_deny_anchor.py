@@ -50,24 +50,35 @@ HOOK = pathlib.Path(os.environ.get("HOME", "")) / ".claude/hooks/destructive-op-
 # that skips reads exactly like a suite that passes.
 _OVERRIDE = os.environ.get("KIPI_DESTRUCTIVE_HOOK")
 
-# A VENDORED reference copy, so this suite can run somewhere other than one
-# laptop (Codex major, PR #274). The hook is machine-local with no repo copy, so
-# every case here skipped on every runner and verify.sh reported
-# `pytest:test_destructive_op_deny_anchor.py ok` having executed NOTHING: 89
+# THE REPO COPY, so this suite can run somewhere other than one laptop (Codex
+# major, PR #274). The hook is machine-local, so with no copy in the repo every
+# case here skipped on every runner and verify.sh reported
+# `pytest:test_destructive_op_deny_anchor.py ok` having executed NOTHING: 95
 # assertions about the fleet's most destructive guard, gated by a false green.
 #
+# THIS PR DOES NOT ADD THAT FILE, deliberately. ASK-1144 / PR #279 lands it, with
+# a namespace checker and its own tests, and it owns the deny SEMANTICS too. An
+# earlier revision of this branch vendored a byte-identical copy at the same path;
+# that was two branches adding one file, which is a guaranteed conflict and a
+# second owner for a gate that must have exactly one. Codex reviewed the copy as
+# if it were the enforcement (PR #269 round 4, the vendor-wide MCP wildcard) and
+# was right to: a shell script under `hooks/` reads as live, because it is.
+#
+# So the reference is a PATH, not a file this branch ships. Today it does not
+# exist and the module still skips, exactly as before. The moment #279 lands, the
+# suite starts running on every machine with nothing further to do here. The
+# drift check below is written for that world and skips until then.
+#
 # The live hook is still the one that runs, and it is still what these cases
-# prefer. The vendored copy is the CI fallback, and test_the_vendored_copy_has_
-# not_drifted below pins the two byte-identical whenever both exist, so the copy
-# cannot quietly become a different program that passes its own tests.
-VENDORED = pathlib.Path(__file__).parent / "q-system/.q-system/hooks/destructive-op-deny.sh"
+# prefer. sp-66e74091 carries the coupling.
+REPO_COPY = pathlib.Path(__file__).parent / "q-system/.q-system/hooks/destructive-op-deny.sh"
 
 if _OVERRIDE:
     _UNDER_TEST = pathlib.Path(_OVERRIDE)
 elif HOOK.is_file():
     _UNDER_TEST = HOOK
 else:
-    _UNDER_TEST = VENDORED
+    _UNDER_TEST = REPO_COPY
 
 CURRENT = "'kipi[[:space:]]+update'"
 # Command position, allowing an env-var assignment prefix and command
@@ -447,10 +458,13 @@ class TestFlagPositionDoesNotMoveTheTarget:
         """The vendored copy is what CI actually executes. If it drifts from the
         hook that really runs, CI is green about a different program -- which is
         the same false green vendoring was added to remove, one layer over."""
-        assert VENDORED.is_file(), "the vendored reference copy is missing: %s" % VENDORED
-        assert VENDORED.read_bytes() == HOOK.read_bytes(), (
-            "the vendored copy and the live hook have diverged. Re-vendor with:\n"
-            "  cat %s > %s" % (HOOK, VENDORED))
+        if not REPO_COPY.is_file():
+            pytest.skip("the repo copy does not exist yet; ASK-1144 / PR #279 "
+                        "lands it. Nothing to compare, and asserting its absence "
+                        "here would put a second owner on that file.")
+        assert REPO_COPY.read_bytes() == HOOK.read_bytes(), (
+            "the repo copy and the live hook have diverged. Re-sync with:\n"
+            "  cat %s > %s" % (HOOK, REPO_COPY))
 
     def test_git_clean_dry_run_is_a_known_false_positive(self, tmp_path):
         """`git clean -n -d` is a PREVIEW and is refused anyway.
