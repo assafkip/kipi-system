@@ -55,6 +55,14 @@ HONEST BOUNDARY (the part people skip):
   What it does NOT do: fire on prompts with no engineering intent, rank at
   SessionStart, or block anything.
 
+  AND IT STOPS. There is a per-session budget (SESSION_CEILING_CHARS), so a long
+  session gets roughly a dozen lessons and then silence -- not because nothing is
+  relevant, but because term overlap past that point is selecting from what is
+  left rather than from what fits. An earlier draft of this docstring promised
+  the bodies "every time the trigger fires", which the budget contradicts on
+  about the fifth engineering prompt (Codex minor, PR #277). The SessionStart
+  title index remains the authority on what exists, and it is not budgeted.
+
   It also does not make read-first-gate redundant. That gate is a PreToolUse
   BLOCKING check on write targets; this is an additive UserPromptSubmit path.
   Different surfaces. In particular sp-6ff00dd5 (a subagent that DID open both
@@ -62,7 +70,8 @@ HONEST BOUNDARY (the part people skip):
   addressed here.
 
 Contract: UserPromptSubmit hook, hook JSON on stdin, JSON on stdout with
-hookSpecificOutput.additionalContext (the shape voice-dna-loader.py uses).
+hookSpecificOutput.{hookEventName, additionalContext} -- BOTH keys; see the
+note at the emit for why the second one is not optional.
 Self-test: python3 test_lessons_inject.py. stdlib only.
 """
 from __future__ import annotations
@@ -343,7 +352,13 @@ def main():
     for score, lid, title, body in picked:
         chunk = f"\n=== [{lid}] {title}  (relevance {score:.1f}) ===\n\n{body}\n"
         if used + len(chunk) > PAYLOAD_CEILING_CHARS:
-            break
+            # SKIP IT, do not stop (Codex minor, PR #277). `break` meant one
+            # oversized top-ranked lesson returned the header alone -- and since
+            # `len(parts) == 1` then returns 0 without recording anything, that
+            # same lesson ranked first again next turn and blocked the smaller,
+            # equally relevant ones behind it for the whole session. Permanent
+            # starvation caused by one long file.
+            continue
         parts.append(chunk)
         used += len(chunk)
     if len(parts) == 1:
@@ -356,8 +371,25 @@ def main():
     emitted = {lid for _, lid, _, _ in picked[:len(parts) - 1]}
     save_seen(session_id, seen | emitted, spent + used)
 
-    sys.stdout.write(json.dumps(
-        {"hookSpecificOutput": {"additionalContext": "".join(parts)}}))
+    # hookEventName IS PART OF THE ENVELOPE (Codex major, PR #277). Without it
+    # the payload is discarded and not one word of any lesson reaches the model,
+    # which makes this whole hook an expensive no-op that looks like it is
+    # working: it fires, it ranks, it writes to stdout, and nothing arrives.
+    #
+    # This repo already recorded the shape and the scar. token-guard.py:1046
+    # carries it verbatim -- "must be nested under hookSpecificOutput with
+    # hookEventName; a top-level additionalContext key is silently ignored by
+    # Claude Code, which left every warning tier invisible until 2026-07-02".
+    # Every emitter here that is known to deliver includes the key.
+    #
+    # The docstring said this copies voice-dna-loader.py's shape, and it does --
+    # including that file's omission of the same key. Copying a shape is not
+    # checking it. voice-dna-loader.py has the identical defect and is captured
+    # separately rather than widened into this PR.
+    sys.stdout.write(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "UserPromptSubmit",
+        "additionalContext": "".join(parts),
+    }}))
     return 0
 
 

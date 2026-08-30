@@ -326,6 +326,63 @@ def case_non_object_json_is_silent() -> bool:
             return False
     return True
 
+def case_the_envelope_carries_the_hook_event_name() -> bool:
+    """Codex major, PR #277: without it the payload is DISCARDED.
+
+    Every other case in this file reads the payload through `_ctx`, which
+    reaches straight into hookSpecificOutput.additionalContext and never looks
+    at the envelope around it. So the whole suite went green while the hook
+    emitted an envelope Claude Code drops on the floor -- it fired, it ranked,
+    it wrote to stdout, and not one word arrived.
+
+    token-guard.py:1046 records the measurement this repo already paid for:
+    the key is required, and its absence is silent.
+    """
+    repo = _repo()
+    _, out = run(repo, "widen the blocking gate allowlist so the hook fires")
+    if not out.strip():
+        return False
+    payload = json.loads(out)
+    hso = payload.get("hookSpecificOutput")
+    if not isinstance(hso, dict):
+        return False
+    # And nothing at the TOP level, which is the other half of the same scar.
+    return (hso.get("hookEventName") == "UserPromptSubmit"
+            and "additionalContext" in hso
+            and "additionalContext" not in payload)
+
+
+def case_an_oversized_top_lesson_does_not_starve_the_rest() -> bool:
+    """Codex minor, PR #277: `break` let one long file block every other lesson.
+
+    A top-ranked lesson bigger than the payload cap returned the header alone,
+    and because a header-only payload returns 0 without recording anything, that
+    same lesson ranked first again next turn and blocked the smaller relevant
+    ones behind it for the whole session.
+    """
+    tmp = Path(tempfile.mkdtemp())
+    d = tmp / "q-system" / "lessons"
+    d.mkdir(parents=True)
+    # One lesson far past the payload cap, sharing the prompt's vocabulary so it
+    # ranks first, plus two small ones that must still get through.
+    (d / "huge.md").write_text(
+        "---\nid: huge\nkind: pattern\ntitle: Gate allowlist timeout budget\n"
+        "date: 2026-08-01\n---\n\n"
+        + ("gate allowlist timeout budget hook blocking " * 4000) + "\n",
+        encoding="utf-8")
+    for i, slug in enumerate(("small-a", "small-b")):
+        (d / (slug + ".md")).write_text(
+            f"---\nid: {slug}\nkind: pattern\ntitle: Gate {i} allowlist\n"
+            "date: 2026-08-01\n---\n\n"
+            "A gate allowlist that covers five destinations is blind everywhere "
+            "else and the timeout budget hides it.\n",
+            encoding="utf-8")
+    _, out = run(tmp, "widen the blocking gate allowlist before the timeout budget fires")
+    if not out.strip():
+        return False
+    ctx = _ctx(out)
+    return "[small-a]" in ctx or "[small-b]" in ctx
+
 CASES = [v for k, v in sorted(globals().items()) if k.startswith("case_")]
 
 if __name__ == "__main__":
