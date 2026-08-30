@@ -1,0 +1,5 @@
+{
+ "path": "plugins/prd-os/tests/test_virgin_repo_lifecycle.py",
+ "runner": "python3",
+ "timeout_s": 120
+}

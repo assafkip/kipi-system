@@ -48,7 +48,7 @@
 #
 # Usage:
 #   ci-shaped-run.sh <test-path>...     run those tests CI-shaped
-#   ci-shaped-run.sh --all              run every test in capability-manifest.json
+#   ci-shaped-run.sh --all              run every declared test in q-system/.q-system/capability/
 #   ci-shaped-run.sh --diff <test>      run BOTH ways and report the divergence
 #
 # Exit 0 = all passed CI-shaped. Exit 1 = at least one failed.
@@ -56,13 +56,20 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE" && git rev-parse --show-toplevel 2>/dev/null || echo "$HERE/../../..")"
-MANIFEST="$REPO/q-system/.q-system/capability-manifest.json"
-
 # One sandbox HOME per invocation, discarded after. Never the real one: the whole
 # point is that the real one is contaminated with the state under suspicion.
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/ci-shaped.XXXXXX")"
 cleanup() { [ -n "${SANDBOX:-}" ] && [ -d "$SANDBOX" ] && /bin/rm -rf "$SANDBOX"; }
 trap cleanup EXIT
+
+# The manifest is a fragment DIRECTORY (q-system/.q-system/capability/), not a
+# file: one JSON per declaration, so branches that each add a test no longer
+# collide on one array. Assemble it once here into the sandbox and keep every
+# reader below reading a plain file -- the layout is capability_manifest.py's
+# business, not this script's.
+MANIFEST="$SANDBOX/capability-manifest.assembled.json"
+python3 "$REPO/q-system/.q-system/scripts/capability_manifest.py" \
+  --root "$REPO" --print >"$MANIFEST" 2>/dev/null || : >"$MANIFEST"
 
 # HONOUR THE DECLARED RUNNER. The manifest carries `runner` per test (bash or
 # python3) and the first cut of this script ran `bash` on everything -- so every

@@ -101,13 +101,43 @@ def cache_path(actor):
     return f"/tmp/claude-guard-{actor}.json"
 
 
+_DEFAULT_TRANSCRIPT = []
+
+
+def default_transcript():
+    """A real, renderable transcript for payloads not testing the transcript.
+
+    An escalation now REFUSES to spend a model call when it cannot read the
+    session, so a payload carrying transcript_path="" no longer exercises the
+    escalation path -- it exercises the starvation path, and every assertion
+    about a triage silently becomes an assertion about a refusal. A test that
+    means "a stuck agent escalates" has to hand over a session, the same way the
+    runtime does. Measured 2026-08-03: 23 of 27 real escalations went out on an
+    empty packet precisely because nothing forced that path to carry one.
+    """
+    if not _DEFAULT_TRANSCRIPT:
+        import tempfile
+        directory = tempfile.mkdtemp(prefix="fable-default-transcript-")
+        path = os.path.join(directory, "transcript.jsonl")
+        with open(path, "w", encoding="utf-8") as fh:
+            for i in range(30):
+                fh.write(json.dumps({
+                    "type": "assistant",
+                    "message": {"role": "assistant",
+                                "content": [{"type": "text",
+                                             "text": "session line %d" % i}]},
+                }) + "\n")
+        _DEFAULT_TRANSCRIPT.append(path)
+    return _DEFAULT_TRANSCRIPT[0]
+
+
 def edit_payload(actor, file_path="/tmp/spiral-target.py"):
     return {
         "session_id": actor,
         "hook_event_name": "PreToolUse",
         "tool_name": "Edit",
         "tool_input": {"file_path": file_path, "old_string": "a", "new_string": "b"},
-        "transcript_path": "",
+        "transcript_path": default_transcript(),
     }
 
 
@@ -242,7 +272,7 @@ def deliver(actor, env, extra=None):
     seed(actor)
     return run_guard({"session_id": actor, "hook_event_name": "PreToolUse",
                       "tool_name": "Read", "tool_input": {"file_path": "/tmp/x"},
-                      "transcript_path": ""}, e)
+                      "transcript_path": default_transcript()}, e)
 
 
 
@@ -350,7 +380,7 @@ def test_volume_ceiling_block_escalates(actor, env):
     r = run_guard(
         {"session_id": actor, "hook_event_name": "PreToolUse",
          "tool_name": "Read", "tool_input": {"file_path": "/tmp/x"},
-         "transcript_path": ""},
+         "transcript_path": default_transcript()},
         guard_env(env))
     assert r.returncode == 2
     assert REQUEST_NOTE in r.stderr
@@ -443,6 +473,103 @@ def _transcript(tmp_path, canary, tail_marker, filler=60):
                                              "content": [{"type": "text", "text": tail_marker}]}})
     p.write_text("\n".join(json.dumps(r) for r in recs))
     return str(p)
+
+
+# --------------------------------------------------------------------------
+# starvation: an escalation that could not read its own input
+#
+# The production shape these pin, measured on the 2026-08-03 ledger: 23 of 27
+# attempted calls went out on a packet whose entire session tail was
+# "(transcript unavailable)". Two of them were enough to reach FABLE_CAP and
+# page the founder claiming cross-model triage had been spent. It had not been
+# spent, it had been starved.
+# --------------------------------------------------------------------------
+
+def _guard_cache(actor):
+    with open(f"/tmp/claude-guard-{actor}.json", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def test_a_starved_escalation_spends_no_model_call(actor, env):
+    """A packet with no session content buys nothing, so it is not sent."""
+    seed(actor, edit_targets={"/tmp/spiral-target.py": EDIT_FAIL_LIMIT - 1})
+    payload = edit_payload(actor)
+    payload["transcript_path"] = ""
+
+    r = run_guard(payload, guard_env(env))
+
+    assert r.returncode == 2, "the refusal itself must survive starvation"
+    row = settled_rows(env)[0]
+    assert row["starved"] is True
+    assert row["call_spent"] is False
+    assert row["fable_ok"] is False
+    assert row["transcript_status"] == "no transcript path supplied", (
+        f"the reason must be recorded, not re-derived: {row!r}")
+
+
+def test_a_starved_escalation_does_not_consume_a_cap_slot(actor, env):
+    """FABLE_CAP decides whether a human gets paged, so only a triage that
+    actually ran may spend a slot."""
+    seed(actor, edit_targets={"/tmp/spiral-target.py": EDIT_FAIL_LIMIT - 1})
+    payload = edit_payload(actor)
+    payload["transcript_path"] = ""
+
+    run_guard(payload, guard_env(env))
+
+    assert _guard_cache(actor).get("fable_escalations", 0) == 0, (
+        "a starved attempt spent a cap slot; two of these page the founder")
+
+
+# These two were written as page/no-page assertions. Merging origin/main
+# 2026-08-29 removed the cap page entirely (ASK-504: the cap branch returns
+# before call_fable, so 6 of 6 capped ledger rows carried `diagnosis: None` and
+# the page could never say what was stuck). `notify_attempted is False` is now
+# true on BOTH sides, so a page assertion no longer separates them and would
+# pass for the wrong reason. What still separates them, and what this branch
+# actually exists to make visible, is `cap_basis` on the row: whether the cap
+# was reached by triages that READ a session or by packets that went out empty.
+# So the pair is kept and re-pointed at that, not deleted.
+
+
+def test_a_starved_cap_is_recorded_as_starved(actor, env):
+    """A cap reached with no readable transcript must say so on the row.
+
+    Without this the row is indistinguishable from a cap reached by two real
+    triages, which is the exact confusion that let 23 of 27 empty packets look
+    like spent machine effort on the 2026-08-03 ledger.
+    """
+    seed(actor, edit_targets={"/tmp/spiral-target.py": EDIT_FAIL_LIMIT - 1},
+         fable_escalations=99)
+    payload = edit_payload(actor)
+    payload["transcript_path"] = ""
+
+    run_guard(payload, guard_env(env))
+
+    row = settled_rows(env)[0]
+    assert row["capped"] is True
+    assert row["cap_basis"] == "starved", (
+        f"a starved cap is recorded as spent machine effort: {row!r}")
+    assert row["transcript_status"] == "no transcript path supplied", (
+        f"the reason must be recorded, not re-derived: {row!r}")
+    # ASK-504: no page from the cap, whatever it was reached on.
+    assert row["notify_attempted"] is False
+    assert "ASK-504" in (row["notify_note"] or ""), "the row must say why no page"
+
+
+def test_a_fed_cap_is_recorded_as_fed(actor, env):
+    """The paired positive. Without it `cap_basis` could be hardcoded
+    "starved" and the assertion above would still pass, which would make the
+    field useless in the one case it exists to distinguish."""
+    seed(actor, edit_targets={"/tmp/spiral-target.py": EDIT_FAIL_LIMIT - 1},
+         fable_escalations=99)
+
+    run_guard(edit_payload(actor), guard_env(env))
+
+    row = settled_rows(env)[0]
+    assert row["capped"] is True
+    assert row["cap_basis"] == "fed"
+    assert row["transcript_status"] == "ok"
+    assert row["notify_attempted"] is False
 
 
 def test_child_gets_no_session_continuation(actor, env, tmp_path):
@@ -1184,9 +1311,16 @@ def _run_escalate(tmp_path, pending_file, actor):
     ledger = tmp_path / "ledger"
     stub = _stub(tmp_path, "fable-handoff-stub", "#!/usr/bin/env python3\n"
                  "import sys; sys.stdin.read(); print(%r)\n" % TRIAGE_TEXT)
+    # --transcript is REQUIRED here, not incidental. These cases are about what
+    # happens AFTER the model answers, and an escalation now refuses to call the
+    # model at all when it cannot read the session. Omitting it (the shape this
+    # helper shipped with) makes every hand-off assertion silently become an
+    # assertion about the starvation refusal, and the control below would pin a
+    # working channel as broken.
     proc = subprocess.run(
         [sys.executable, _escalate_script(), "--json",
          "--trigger", "edit-spiral", "--reason", "hand-off reproducer",
+         "--transcript", default_transcript(),
          "--count", "0", "--pending-file", pending_file, "--actor", actor],
         capture_output=True, text=True, timeout=60,
         env=dict(os.environ, KIPI_FABLE_CLAUDE_CMD=stub,
@@ -1282,10 +1416,15 @@ def _one_line_transcript(path, text):
     return path
 
 
-def _subagent_run(env, tmp_path, agent_id, with_own_transcript):
+def _subagent_run(env, tmp_path, agent_id, with_own_transcript,
+                  expect_call=True):
     """A stuck block fired by a SUBAGENT, exactly as the runner delivers it:
     the payload carries the parent's transcript_path and its own agent_id.
-    Returns the packet the child was handed."""
+
+    Returns the packet the child was handed, or None when `expect_call` is False
+    and no child was spawned at all. The caller says which it expects, so "no
+    call happened" can never be read as "a call happened with empty content".
+    """
     session = "fable-sub-" + uuid.uuid4().hex[:10]
     parent = str(tmp_path / (session + ".jsonl"))
     _one_line_transcript(parent, ORCHESTRATOR_MARK)
@@ -1302,6 +1441,13 @@ def _subagent_run(env, tmp_path, agent_id, with_own_transcript):
     try:
         r = run_guard(payload, guard_env(env))
         assert r.returncode == 2, "the subagent was not blocked at all"
+        if not expect_call:
+            # quiet(), not `calls(...) == []`: a child that is merely slow to
+            # land would otherwise let this pass by timing.
+            assert quiet(env["_dump"]), (
+                "a model call was spent on a subagent with no transcript: %r"
+                % (calls(env["_dump"]),))
+            return None
         call = settled_calls(env["_dump"])[0]
         return " ".join(call["argv"]) + call["stdin"]
     finally:
@@ -1328,11 +1474,22 @@ def test_a_subagent_triage_is_built_from_its_own_transcript(env, tmp_path):
 
 
 def test_a_subagent_with_no_transcript_of_its_own_sends_none(env, tmp_path):
-    """Fail closed on the fallback. build_packet already degrades to trigger +
-    guard message; a thin triage beats a confident one about another actor."""
-    packet = _subagent_run(env, tmp_path, "a" + uuid.uuid4().hex[:16], False)
-    assert ORCHESTRATOR_MARK not in packet
-    assert "(transcript unavailable)" in packet
+    """Fail closed on the fallback: nothing of the ORCHESTRATOR reaches it.
+
+    This asserted that the child was still called and handed a packet reading
+    "(transcript unavailable)" -- thin beats wrong. Merging the starvation work
+    2026-08-29 made the refusal stronger than the fallback: there is now no call
+    at all, so there is no packet for the orchestrator's context to leak into.
+    The test's own name was always "sends none"; this is that, taken to the end.
+
+    Why stronger and not merely different, measured on the 2026-08-03 ledger:
+    23 of 27 calls went out on exactly this "(transcript unavailable)" packet,
+    8 of them burned the full 45s timeout, and 0 of the 4 packets that carried a
+    real tail did. The fallback was not cheap, it was the expensive path, and
+    what it bought back was Fable paraphrasing the trigger line.
+    """
+    assert _subagent_run(env, tmp_path, "a" + uuid.uuid4().hex[:16], False,
+                         expect_call=False) is None
 
 
 def test_the_main_actor_still_sends_its_session_transcript(actor, env, tmp_path):
