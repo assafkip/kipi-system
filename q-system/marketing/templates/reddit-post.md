@@ -46,7 +46,9 @@ First comment: [Your take on the link. Why you're sharing it. A question.]
 - Community-first. You are a participant, not a broadcaster.
 - No product mentions. No links to your own content unless the subreddit explicitly allows it.
 - Answer the question or add to the discussion. If you can't, don't post.
-- Use the subreddit's language and norms, not your brand voice.
+- Match the subreddit's language and norms. That is a REGISTER choice inside the
+  founder voice, never an exemption from it: the canonical voice route still owns
+  this post. Reddit format rules are independent of X; the voice source is not.
 - Comments should read like a practitioner sharing experience, not a founder marketing.
 - Engage in the thread after posting. Reply to replies.
 - No "As a [title] at [company]" openers unless directly relevant.
@@ -58,6 +60,21 @@ Save to: `output/marketing/reddit/reddit-[subreddit]-YYYY-MM-DD.md`
 
 ## Post-Generation
 
-1. Voice skill does NOT apply (Reddit uses community voice, not brand voice)
+1. The canonical voice route APPLIES, and has precedence over anything in this
+   template. Until approved Reddit-native post exemplars exist, the Reddit route
+   draws on the X voice corpus and MUST report that provenance as `x` on the
+   receipt. Reporting `reddit` provenance before those exemplars exist is a lie
+   about where the voice came from.
+
+   why this line changed (2026-08-29): it used to grant this channel a blanket
+   exemption from the voice route, in one sentence, in this list. The exact
+   wording is deliberately NOT quoted here: a generator reads this file as
+   instructions, and a banned instruction reproduced as history is still a
+   banned instruction sitting in the file. test_reddit_template_contract.py
+   caught precisely that when the first draft of this note quoted it.
+   That exemption contradicted the canonical rules, which name Reddit as a real
+   content channel, and it gave the generator a written excuse to skip the one
+   route every external post is required to take. A template that can opt out of
+   the voice route silently is the routing gap this rule exists to close.
 2. Check subreddit self-promotion rules before posting original content
 3. Log in CRM if the thread contains a prospect interaction

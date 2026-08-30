@@ -165,6 +165,77 @@ git -C "$R" add .verify-suites suite/test_tracked.py
     bash q-system/.q-system/verify.sh --staged >/dev/null 2>&1 )
 check "git-aware test correct under hook env" 0 $?; rm -rf "$R"
 
+# --- A FAILING TEST INSIDE A STAGED MANIFEST SUITE MUST BLOCK. ---
+#
+# THE HOLE THIS FILLS (2026-08-29). Fifteen cases existed and not one of them
+# ran a suite that FAILS. Every manifest case asserted a STRUCTURAL refusal --
+# missing directory, wrong manifest, deletion-only -- so the line that actually
+# invokes pytest was never graded on a red suite. Measured by mutation: replace
+# the --staged pytest invocation with `true` and all 16 cases still passed. A
+# floor whose whole job is running your tests had no test proving it runs them.
+#
+# It matters more now that --staged and --full invoke pytest DIFFERENTLY
+# (--ff -x -o cache_dir on the staged path only). That split doubled the number
+# of call sites a mutation can hide in, and the two cases below grade both.
+R=$(newrepo)
+mkdir -p "$R/suite"
+printf 'suite\n' > "$R/.verify-suites"
+printf 'def test_red():\n    assert False\n' > "$R/suite/test_red.py"
+git -C "$R" add .verify-suites suite/test_red.py
+run "$R" --staged; check "failing test in staged suite BLOCKS" 1 $?
+# The same red suite through the OTHER invocation. --full keeps neither --ff nor
+# -x, so it is a genuinely separate code path and a mutation of one does not
+# show up in the other.
+git -C "$R" commit -qm "commit the red suite"
+run "$R" --full; check "failing test in suite BLOCKS --full" 1 $?; rm -rf "$R"
+
+# --- AND THE GREEN CASE, so the two above cannot pass by always-refusing. ---
+# Without this a verify.sh that returned 1 unconditionally would score 18/18.
+R=$(newrepo)
+mkdir -p "$R/suite"
+printf 'suite\n' > "$R/.verify-suites"
+printf 'def test_green():\n    assert True\n' > "$R/suite/test_green.py"
+git -C "$R" add .verify-suites suite/test_green.py
+run "$R" --staged; check "passing test in staged suite PASSES" 0 $?; rm -rf "$R"
+
+# --- THE FLOOR MAY NOT LEAVE ANYTHING BEHIND IN THE TREE IT IS GRADING. ---
+#
+# Codex major, PR #269, PARTIALLY confirmed. The staged path passes pytest
+# `-o cache_dir`, and that path used to be `$REPO/.verify-cache`: a directory
+# created inside the working tree of the repo being graded.
+#
+# What was NOT reproducible is the harm Codex named. Measured 2026-08-29 on a
+# throwaway repo: after a staged run against the old path, `.verify-cache/`
+# exists on disk and `git status --porcelain` is EMPTY, because pytest writes a
+# `.gitignore` containing `*` into its own cache dir. So `git add -A` picks up
+# nothing and no cache file can ride into a commit. A porcelain assertion here
+# would have been decoration: it passes against the defect.
+#
+# The real cost is smaller and still real: a stray directory in the source tree,
+# and one cache per worktree instead of one shared cache. The cure is the same
+# either way, and it is the stronger one -- git's COMMON dir, which git never
+# walks for status and which every worktree of the repo shares.
+#
+# So this case measures the FILESYSTEM, not git: no path may appear under the
+# repo root that was not there before. That is what actually changes, so it is
+# what can actually fail.
+R=$(newrepo)
+mkdir -p "$R/suite"
+printf 'suite\n' > "$R/.verify-suites"
+printf 'def test_green():\n    assert True\n' > "$R/suite/test_green.py"
+git -C "$R" add .verify-suites suite/test_green.py
+BEFORE=$(find "$R" -mindepth 1 -maxdepth 1 -not -name .git | sort)
+run "$R" --staged >/dev/null 2>&1
+AFTER=$(find "$R" -mindepth 1 -maxdepth 1 -not -name .git | sort)
+if [ "$BEFORE" = "$AFTER" ]; then
+  check "staged run leaves nothing behind in the tree" 0 0
+else
+  echo "  tree gained paths:"
+  comm -13 <(printf '%s\n' "$BEFORE") <(printf '%s\n' "$AFTER") | sed 's/^/    /'
+  check "staged run leaves nothing behind in the tree" 0 1
+fi
+rm -rf "$R"
+
 echo
 echo "adversarial: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
