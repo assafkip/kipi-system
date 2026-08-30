@@ -14,7 +14,7 @@ then rejected (sp-36788323). Those files are SKELETON-owned: `kipi update` rsync
 flag copy the instance is not allowed to fix. The skeleton is the chokepoint, so
 the check lives here.
 
-Tier is derived, never stored: a match of `voicekit.echo.NGRAM` words or more is
+Tier is derived, never stored: a match of `voiceloop.echo.NGRAM` words or more is
 a lift and fails; anything shorter is reported and passes. `echo` already owns
 "long enough that a shared idiom cannot fire, short enough that a lifted sentence
 cannot hide" -- reusing its number keeps one definition instead of two.
@@ -48,10 +48,10 @@ DEFAULT_RETIRED_SET = Path(__file__).resolve().parent / "retired-strings.json"
 
 
 def _echo_module():
-    """voicekit.echo owns the word tokenizer and the lift threshold. Import it
+    """voiceloop.echo owns the word tokenizer and the lift threshold. Import it
     rather than re-deriving either; a second copy of NGRAM is a second answer."""
     sys.path.insert(0, str(REPO_ROOT / "plugins" / "kipi-core"))
-    from voicekit import echo
+    from voiceloop import echo
 
     return echo
 

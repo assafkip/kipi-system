@@ -13,7 +13,7 @@ test suite runs; nothing here relies on guidance being read and obeyed.
 
 Nothing here restates the retired strings. Every expectation is derived from the
 data file that owns them (`retired-strings.json`) and from the word-count
-threshold owned by `voicekit.echo` -- restating either would let the test agree
+threshold owned by `voiceloop.echo` -- restating either would let the test agree
 with a stale copy of itself.
 """
 from __future__ import annotations
@@ -47,10 +47,10 @@ def retired_entries():
 
 def blocking_entries():
     """Entries the sweep must treat as blocking, derived the way the sweep
-    derives them: word count against voicekit.echo.NGRAM. If the threshold moves,
+    derives them: word count against voiceloop.echo.NGRAM. If the threshold moves,
     this moves with it."""
     sys.path.insert(0, str(REPO / "plugins" / "kipi-core"))
-    from voicekit import echo  # noqa: PLC0415  (path must be set first)
+    from voiceloop import echo  # noqa: PLC0415  (path must be set first)
 
     return [e for e in retired_entries() if len(echo._words(e["text"])) >= echo.NGRAM]
 
