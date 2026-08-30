@@ -443,8 +443,32 @@ class Sweep:
         disk. Semantics are otherwise untouched.
         """
         full = self.root / entry["path"]
-        cmd = (["python3", str(full)] if entry["runner"] == "python3"
-               else ["bash", str(full)])
+        # THE RUNNER TABLE HAS TO MATCH THE GATE'S (PR #272 major).
+        #
+        # ASK-1145 added `pytest` as a third runner in capability-gate.py and
+        # flipped 13 declarations to it, because those modules define test
+        # functions and `python3 <file>` executes none of them. This dispatch
+        # still knew only two values, so every pytest-declared entry fell to the
+        # `else` and was run through BASH -- which fails immediately, so the
+        # sweep booked all 13 as EXCLUDED-baseline-red and measured nothing.
+        #
+        # Two components each correct on their own and wrong together: the gate
+        # learned a runner the sweep never heard about. An unknown runner is now
+        # a hard failure rather than a silent fall-through to bash, so the next
+        # one cannot be absorbed the same way.
+        runner = entry["runner"]
+        if runner == "pytest":
+            cmd = ["python3", "-m", "pytest", str(full), "-q",
+                   "-p", "no:cacheprovider"]
+        elif runner == "python3":
+            cmd = ["python3", str(full)]
+        elif runner == "bash":
+            cmd = ["bash", str(full)]
+        else:
+            raise SystemExit(
+                "mutation-sweep: unknown runner %r for %s. Add it here and in "
+                "capability-gate.py together, or the sweep silently measures "
+                "nothing for every test that declares it." % (runner, entry["path"]))
         cache = tempfile.mkdtemp(prefix="msweep-pyc-")
         env = dict(os.environ,
                    QROOT=str(self.root / "q-system"),
@@ -751,6 +775,19 @@ def test_fingerprint(root, test_path, cached):
         if subject and subject not in paths:
             paths.append(subject)
     h = hashlib.sha256()
+    # THE ENGINE IS PART OF THE FINGERPRINT (PR #272 major). A verdict is a
+    # claim about a test, a subject, AND the mutation semantics that produced
+    # it. Adding VERDICT_RULES changed what "disarmed" means, so every cached
+    # row from before it describes a different experiment -- and keying only on
+    # test+subject would replay those verdicts unchanged under the new rules.
+    # Hashing the rule tables means changing an operator invalidates the cache
+    # by construction, with nobody having to remember to clear it.
+    for rules in (PY_RULES, SH_RULES, VERDICT_RULES):
+        for pat, repl in rules:
+            h.update(pat.pattern.encode("utf-8"))
+            h.update(b"\0")
+            h.update(str(repl).encode("utf-8"))
+            h.update(b"\0")
     try:
         for rel in paths:
             h.update(rel.encode("utf-8"))

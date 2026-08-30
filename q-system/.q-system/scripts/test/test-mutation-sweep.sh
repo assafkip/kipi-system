@@ -55,7 +55,7 @@ esac
 # --self-test and nothing else, so the resume-cache and sweep-lock regressions
 # lived outside CI: green here proved nothing about either. Both are green and
 # both are wired.
-for suite in test_resume_cache_key.py test_sweep_lock.py; do
+for suite in test_resume_cache_key.py test_sweep_lock.py test_sweep_runner_and_engine.py; do
   if ! python3 -m pytest "$ROOT/q-system/.q-system/scripts/test/$suite" -q \
        -p no:cacheprovider; then
     echo "FAIL: $suite" >&2
