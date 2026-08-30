@@ -265,10 +265,14 @@ def add_delta(root, base, head, errors=None):
     Three outcomes, and the two refusals are the point:
       ADD       key only in head            -> fragment written.
       EDIT      key in both, content differs -> written ONLY if the fragment on
-                disk still holds the base version. If main edited the same
-                declaration, taking the branch's version would silently drop
-                main's, which is the same loss class as a deletion, so it is
-                reported instead.
+                disk EXISTS, is readable, and still holds the base version.
+                Anything else is reported. If main edited the same declaration,
+                taking the branch's version silently drops main's. If the
+                fragment is GONE, main deliberately removed that declaration and
+                writing it back resurrects a gate main chose to retire -- the
+                same loss class as a deletion, pointing the other way (Codex
+                major, PR #285 round 1). If it is unreadable, this cannot tell
+                which case it is, and a check that cannot read must not pass.
       REMOVAL   key only in base            -> reported, never acted on.
     """
     written, removed, conflicted = [], [], []
@@ -289,8 +293,14 @@ def add_delta(root, base, head, errors=None):
             target = sdir / name
             if old_entry is not None:
                 current = _read_fragment(target)
-                if current is not None and _canon(current) != _canon(old_entry):
-                    conflicted.append("%s: %s" % (section, key))
+                if current is None or _canon(current) != _canon(old_entry):
+                    if not target.exists():
+                        why = "no fragment on disk; main removed this declaration"
+                    elif current is None:
+                        why = "fragment on disk is unreadable"
+                    else:
+                        why = "main changed it too"
+                    conflicted.append("%s: %s (%s)" % (section, key, why))
                     continue
             sdir.mkdir(parents=True, exist_ok=True)
             target.write_text(json.dumps(new_entry, indent=1,
@@ -305,9 +315,10 @@ def add_delta(root, base, head, errors=None):
                      "by hand rather than silently: %s"
                      % (len(removed), " | ".join(removed)))
     if conflicted:
-        _err(errors, "this branch EDITED %d declaration(s) that main has also "
-                     "changed since the merge base; replay those by hand rather "
-                     "than dropping main's version: %s"
+        _err(errors, "this branch EDITED %d declaration(s) whose fragment on "
+                     "disk is not the base version (main changed it, removed it, "
+                     "or it is unreadable); replay those by hand rather than "
+                     "guessing: %s"
                      % (len(conflicted), " | ".join(conflicted)))
     return written
 
