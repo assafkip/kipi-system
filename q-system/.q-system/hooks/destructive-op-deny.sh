@@ -132,7 +132,6 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     'git[[:space:]]+reset[[:space:]]+--hard'
     'git[[:space:]]+push[[:space:]]+(-[a-zA-Z]*f[a-zA-Z]*|--force)'
     'git[[:space:]]+branch[[:space:]]+-D'
-    'git[[:space:]]+clean[[:space:]]+-[a-zA-Z]*[fdx]'
     'git[[:space:]]+filter-(branch|repo)'
     'git[[:space:]]+update-ref[[:space:]]+-d'
     'find[[:space:]]+.+-delete'
@@ -174,6 +173,22 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     '(^|[;&|][[:space:]]*)[./~][^[:space:]]*kipi-update\.sh'
     '(^|[;&|][[:space:]]*)rsync[[:space:]]+[^|;]*--delete'
   )
+  # THE COARSE `git clean` PATTERN IS GONE, ON PURPOSE (PR #279 minor).
+  #
+  # It read `-[a-zA-Z]*[fdx]`, so `git clean -nd` matched on the `d` and a DRY
+  # RUN was refused. Denying a preview is how a gate gets switched off: this
+  # file already records that previewing is how you EARN the run, and FLEET_DENY
+  # carves out --dry-run for exactly that reason.
+  #
+  # It is REMOVED rather than made cleverer because the argv rule below covers
+  # the same ground and covers it better: it reads the flags instead of pattern-
+  # matching a cluster, so it denies -f/-d/-x/--force and returns for -n and
+  # --dry-run. Teaching a regex to mean "contains f, d or x but not n" would be
+  # a second, worse copy of a decision the argv path already makes correctly,
+  # and two copies of one rule is the drift this file keeps warning about.
+  #
+  # Pinned by test_argv_prefilter.py's clean cases: -fd still denies, -nd and
+  # --dry-run do not.
   for pat in "${BASH_DENY[@]}"; do
     if echo "$COMMAND" | grep -Eq "$pat"; then
       emit_deny "Bash command matches destructive pattern: $pat"
@@ -343,15 +358,39 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
             # trigger it and a refspec is recognised wherever it sits in the
             # line. `+` alone is not a refspec, so the token needs something
             # after it.
+            # DELETION IS NOT SPELLED --force EITHER (PR #279 minors). The
+            # +refspec rule above closed one flagless form and left three:
+            #   git push origin --delete <branch>
+            #   git push origin :<branch>        (the colon refspec)
+            #   git push --mirror origin         (deletes every remote ref the
+            #                                     local repo does not have)
+            # All three destroy published refs. Grouping them here rather than
+            # in a second rule keeps every "push destroys something" case in one
+            # place, which is the drift the ASK-1131 comment above warns about.
+            if _argv_has_long delete "${ga[@]}" || _argv_has_short d "${ga[@]}"; then
+              echo "git push --delete removes a published ref"; return 0
+            fi
+            if _argv_has_long mirror "${ga[@]}"; then
+              echo "git push --mirror deletes every remote ref this repo lacks"; return 0
+            fi
             local _tok
             for _tok in "${ga[@]:1}"; do
               case "$_tok" in
                 +?*) echo "git push with a leading-plus refspec ($_tok) is a force push and rewrites published history"; return 0 ;;
+                :?*) echo "git push with a colon refspec ($_tok) deletes the remote ref"; return 0 ;;
               esac
             done ;;
           branch)
             _argv_has_short D "${ga[@]}" && { echo "git branch -D deletes a branch unmerged"; return 0; } ;;
           clean)
+            # A PREVIEW REMOVES NOTHING (PR #279 minor). `git clean -nd` and
+            # `--dry-run` only LIST what would go, and denying a preview is how a
+            # gate gets switched off: the fleet rule above already records that
+            # previewing is how you EARN the run, and the FLEET_DENY list carves
+            # out --dry-run for exactly this reason. This arm did not.
+            if _argv_has_short n "${ga[@]}" || _argv_has_long dry-run "${ga[@]}"; then
+              return 1
+            fi
             if _argv_has_short f "${ga[@]}" || _argv_has_short d "${ga[@]}" \
                || _argv_has_short x "${ga[@]}" || _argv_has_long force "${ga[@]}"; then
               echo "git clean removes untracked files"; return 0

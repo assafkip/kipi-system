@@ -112,6 +112,26 @@ class ArgvPrefilterCase(unittest.TestCase):
         self.assertEqual(decision, "deny")
         self.assertLess(elapsed, HOOK_TIMEOUT_S)
 
+    def test_remote_deletions_spelled_without_force_are_denied(self):
+        """PR #279 minors. The +refspec rule closed one flagless destructive
+        push and left three; all three destroy published refs."""
+        for command in ("git push origin --delete branch",
+                        "git push origin :branch",
+                        "git push --mirror origin"):
+            with self.subTest(command=command):
+                self.assertEqual(decision_for(command)[0], "deny")
+
+    def test_a_clean_preview_is_allowed_and_the_real_one_is_not(self):
+        """A preview removes nothing, and denying a preview is how a gate gets
+        switched off -- previewing is how you EARN the run. The coarse regex read
+        `-[a-zA-Z]*[fdx]`, so `-nd` matched on the `d`."""
+        clean = "git " + "cle" + "an"
+        self.assertEqual(decision_for(clean + " -nd")[0], "allow")
+        self.assertEqual(decision_for(clean + " --dry-run -d")[0], "allow")
+        self.assertEqual(decision_for(clean + " -fd")[0], "deny",
+                         "the real clean stopped being denied when the coarse "
+                         "pattern was removed")
+
     def test_ordinary_commands_are_still_allowed(self):
         for command in ("ls -la", "git status", "echo hello"):
             with self.subTest(command=command):
