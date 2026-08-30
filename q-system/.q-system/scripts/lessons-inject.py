@@ -219,8 +219,17 @@ def main():
     if len(parts) == 1:
         return 0
 
-    sys.stdout.write(json.dumps(
-        {"hookSpecificOutput": {"additionalContext": "".join(parts)}}))
+    # hookEventName is REQUIRED, not optional. Claude Code silently DISCARDS
+    # a hook payload whose hookSpecificOutput carries no hookEventName --
+    # measured 2026-08-30 by probe_hook_envelope.py, three headless runs with
+    # a positive control; the published docs say optional and are wrong. This
+    # hook emitted the nameless shape from the day it was written, so nothing
+    # it injected ever reached the model, and no downstream gate could see it:
+    # they all measure the OUTPUT, none check that the INPUT arrived.
+    sys.stdout.write(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "UserPromptSubmit",
+        "additionalContext": "".join(parts),
+    }}))
     return 0
 
 

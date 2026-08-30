@@ -221,7 +221,17 @@ def main():
         voice_dna_path = resolve_path(VOICE_DNA_REL_PATH)
         samples_path = resolve_path(WRITING_SAMPLES_REL_PATH)
         context = build_context(voice_dna_path, samples_path)
-    output = {"hookSpecificOutput": {"additionalContext": context}}
+    # hookEventName is REQUIRED, not optional. Claude Code silently DISCARDS
+    # a hook payload whose hookSpecificOutput carries no hookEventName --
+    # measured 2026-08-30 by probe_hook_envelope.py, three headless runs with
+    # a positive control; the published docs say optional and are wrong. This
+    # hook emitted the nameless shape from the day it was written, so nothing
+    # it injected ever reached the model, and no downstream gate could see it:
+    # they all measure the OUTPUT, none check that the INPUT arrived.
+    output = {"hookSpecificOutput": {
+        "hookEventName": "UserPromptSubmit",
+        "additionalContext": context,
+    }}
     sys.stdout.write(json.dumps(output))
     sys.exit(0)
 
