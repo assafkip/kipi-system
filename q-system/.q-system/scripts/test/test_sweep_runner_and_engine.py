@@ -112,6 +112,97 @@ class EngineFingerprintCase(unittest.TestCase):
         self.assertEqual(ms.test_fingerprint(self.tmp, self.rel, None),
                          ms.test_fingerprint(self.tmp, self.rel, None))
 
+class SubjectRollupCase(unittest.TestCase):
+    """PR #272 codex major: the loudest line was a known over-count.
+
+    `sweep()` settled each test on its FIRST confirmed subject and broke, so a
+    test guarding two subjects was credited against one. `subject_rollup` reads
+    those same pairs, so the second subject read "no declared test guards its
+    failure path" -- while the tool's own `--subject` mode, walking every
+    declared test, reported it GUARDED. The tool contradicted itself on one
+    fixture.
+    """
+
+    @staticmethod
+    def _results(truncate):
+        """One test that KILLS subject A and SURVIVES subject B.
+
+        `truncate` reproduces the old break: keep only the first confirmed pair.
+        """
+        pairs = [{"subject": "a.py", "verdict": "KILLED"},
+                 {"subject": "b.py", "verdict": "SURVIVED"}]
+        if truncate:
+            pairs = pairs[:1]
+        return [{"test": "test_both.py", "pairs": pairs},
+                {"test": "test_shallow.py",
+                 "pairs": [{"subject": "b.py", "verdict": "SURVIVED"}]}]
+
+    @staticmethod
+    def _results_b_killed(truncate):
+        """One test that SURVIVES subject A and KILLS subject B.
+
+        Ordered so the truncation drops the KILL: this is the shape that made a
+        guarded subject read unguarded, and the order matters because the old
+        break kept whichever pair came first.
+        """
+        pairs = [{"subject": "a.py", "verdict": "SURVIVED"},
+                 {"subject": "b.py", "verdict": "KILLED"}]
+        if truncate:
+            pairs = pairs[:1]
+        return [{"test": "test_both.py", "pairs": pairs}]
+
+    def test_a_subject_guarded_by_a_multi_subject_test_is_not_called_unguarded(self):
+        by_subject, unguarded = ms.subject_rollup(self._results_b_killed(False))
+        self.assertIn("test_both.py", by_subject["b.py"]["killed"],
+                      "the test that kills b.py is not credited against it")
+        self.assertNotIn("b.py", unguarded,
+                         "b.py is killed by a declared test and must not be "
+                         "reported as guarded by nothing: %r" % (unguarded,))
+
+    def test_the_truncated_shape_is_what_produced_the_wrong_headline(self):
+        """The negative half. Without it, the case above could pass for a reason
+        unrelated to the fix -- so this shows the same population going WRONG
+        under the old break."""
+        by_subject, unguarded = ms.subject_rollup(self._results_b_killed(True))
+        self.assertNotIn("b.py", by_subject,
+                         "truncation should drop the KILLED pair this fix "
+                         "restores; if it does not, the fixture proves nothing")
+
+    def test_the_sweep_loop_does_not_settle_on_the_first_confirmed_subject(self):
+        src = SWEEP.read_text()
+        self.assertNotIn("break  # first CONFIRMED subject settles this test", src,
+                         "the break is back; the per-subject rollup over-counts "
+                         "again")
+
+class CITargetsCase(unittest.TestCase):
+    """PR #272 codex minor: a commented-out CI step is not coverage."""
+
+    def _targets(self, workflow_text):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / ".github/workflows/ci.yml").write_text(workflow_text)
+            (root / "realdir").mkdir()
+            return ms.ci_pytest_targets(root)
+
+    def test_a_commented_out_invocation_is_not_a_target(self):
+        """verify.yml carries one of these today. Counting it claimed a runner
+        that does not run, which is the failure this whole tool hunts."""
+        self.assertEqual(self._targets("      # pytest realdir\n"), [])
+
+    def test_prose_is_not_a_path(self):
+        """`pytest must exist BEFORE the gate` yielded a target named `must`."""
+        self.assertEqual(
+            self._targets("      # pytest must exist BEFORE the gate\n"), [])
+        self.assertEqual(
+            self._targets("      run: pytest must exist BEFORE the gate\n"), [],
+            "a bare word that names no path in the tree is prose")
+
+    def test_a_real_invocation_is_still_found(self):
+        """The negative cases above are worthless if nothing passes."""
+        self.assertEqual(self._targets("      - run: pytest realdir -q\n"),
+                         ["realdir"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

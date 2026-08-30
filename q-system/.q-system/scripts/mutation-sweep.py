@@ -770,24 +770,39 @@ def probe_pair(sw, entry, subj_rel, baseline, score):
         # SURVIVED-ABSENT, which is the loudest verdict the tool emits, with
         # pairings the tool itself had only guessed at.
         if score >= STRONG_ATTRIBUTION:
-            # The test names this file and still passes with the file DELETED.
-            # Strictly worse than surviving a disarm: there is no version of
-            # the subject this test could fail on. Found by the harness's own
-            # self-test, where a probe asserting only "the gate printed
-            # something" stayed green against a gate that was not there --
-            # stderr from the missing-file error satisfied it.
-            return {"verdict": "SURVIVED-ABSENT", "absent": absent,
-                    "tripwire_rc": trip["rc"], "score": score,
-                    "orig_sha": orig_sha[:12],
-                    "mutant_sha": "n/a-file-removed"}
-        # Below the bar the PAIRING is the suspect, not the test. A test that
-        # passes without a file it was never really about is the expected
-        # result, and reporting it as a blind test would train the reader to
-        # ignore the verdict that matters.
-        return {"verdict": "UNMEASURED-weak-attribution", "score": score,
-                "tripwire_rc": trip["rc"], "orig_sha": orig_sha[:12]}
+            # THE DISARM GETS TO CONTRADICT THIS (codex minor, PR #272).
+            #
+            # This used to RETURN here, so the loudest verdict the tool emits
+            # was decided by the absent control alone and nothing could argue
+            # with it. The absent control deletes the file, and `python3` on a
+            # missing file exits 2 -- which is this repo's own convention for
+            # "blocked" (skill-hook-pairing.md). So a test asserting `rc == 2`
+            # against a gate PASSES with the gate deleted, purely by exit-code
+            # collision, and was reported as blind to a subject it actually
+            # observes: disarming that gate's `sys.exit(2)` turns the same test
+            # red.
+            #
+            # A test that survives BOTH is genuinely blind, and that is the
+            # claim worth printing. So the absent result is carried forward and
+            # the disarm stage runs: if the disarm KILLS, the test sees its
+            # subject and the honest verdict is KILLED, with the absent pass
+            # recorded beside it as the weaker signal it is.
+            #
+            # Codex found no producer in this repo today and dropped the
+            # severity for it. The shape is reachable given the exit-2
+            # convention, and a verdict that cannot be contradicted is the
+            # tool's own failure mode, so it is fixed rather than noted.
+            absent_pass = {"absent": absent, "score": score}
+        else:
+            # Below the bar the PAIRING is the suspect, not the test. A test
+            # that passes without a file it was never really about is the
+            # expected result, and reporting it as a blind test would train the
+            # reader to ignore the verdict that matters.
+            return {"verdict": "UNMEASURED-weak-attribution", "score": score,
+                    "tripwire_rc": trip["rc"], "orig_sha": orig_sha[:12]}
 
     # ---- Stage 2: DISARM.
+    absent_pass = locals().get("absent_pass")
     text = orig.decode("utf-8", errors="replace")
     mutated, n_sites = make_disarm(text, suffix)
     if n_sites == 0:
@@ -821,8 +836,14 @@ def probe_pair(sw, entry, subj_rel, baseline, score):
 
     if mut["timed_out"]:
         return {"verdict": "mutant-timeout", "mutant": mut}
+    verdict = "KILLED" if mut["rc"] != 0 else "SURVIVED"
+    if absent_pass is not None and verdict == "SURVIVED":
+        # Survived the disarm AND passed with the file gone: no version of the
+        # subject could turn this test red. That is the claim SURVIVED-ABSENT
+        # was always meant to make.
+        verdict = "SURVIVED-ABSENT"
     res = {
-        "verdict": "KILLED" if mut["rc"] != 0 else "SURVIVED",
+        "verdict": verdict,
         "sites": n_sites,
         "tripwire_rc": trip["rc"],
         "mutant_rc": mut["rc"],
@@ -830,6 +851,12 @@ def probe_pair(sw, entry, subj_rel, baseline, score):
         "mutant_sha": after_sha[:12],
         "mutant": mut,
     }
+    if absent_pass is not None:
+        # Recorded whichever way the disarm went. When the disarm KILLED, this
+        # is the exit-code collision described above, and seeing both numbers is
+        # how the next reader recognises it instead of rediscovering it.
+        res["absent"] = absent_pass["absent"]
+        res["absent_passed"] = True
     return res
 
 
@@ -898,13 +925,34 @@ def sweep(root, args):
                 print(f"[{i}/{len(pop)}] EXCLUDED (baseline rc={base['rc']}) {tp}",
                       flush=True)
             else:
+                # EVERY CANDIDATE SUBJECT, NOT THE FIRST CONFIRMED ONE
+                # (codex major, PR #272).
+                #
+                # This used to `break` on the first confirmed subject, on the
+                # reasoning that one confirmation settles the TEST. It does --
+                # but the loudest line this tool prints is a per-SUBJECT claim,
+                # "subjects no declared test guards the failure path of", and
+                # that number is computed from these same pairs. A test that
+                # guards two subjects was credited against one, so the other
+                # read unguarded.
+                #
+                # The tool then contradicted itself on the same data: `--subject`
+                # walks every declared test that names or imports the file and
+                # reported it GUARDED, while the rollup reported it unguarded. A
+                # checker whose loudest number is a known over-count teaches the
+                # operator to stop reading it, and the cost lands on whoever
+                # opens a test that already guards the file to write assertions
+                # it does not need.
+                #
+                # Cost of the fix is bounded by --max-subjects (default 4), and
+                # this is an on-demand tool, not a per-commit gate. Paying up to
+                # 4 probes per test to stop printing a wrong headline is the
+                # right trade.
                 subs = candidate_subjects(root, tp, args.max_subjects)
                 for s, score in subs:
                     v = probe_pair(sw, entry, s, base, score)
                     v["subject"] = s
                     rec["pairs"].append(v)
-                    if v["verdict"] in ("KILLED", "SURVIVED", "SURVIVED-ABSENT"):
-                        break  # first CONFIRMED subject settles this test
                 rec["status"] = summarize(rec)
                 print(f"[{i}/{len(pop)}] {rec['status']:<28} {tp}", flush=True)
             results.append(rec)
@@ -1140,21 +1188,41 @@ def ci_pytest_targets(root):
     """Paths CI hands to pytest, so a declared test can be checked against the
     population that actually runs it.
 
-    This is the scope-vs-population diff, and it is the half that decides how
-    bad a finding is: of the 10 files this scan flags in kipi-system, one IS
-    collected by `pytest plugins/prd-os/tests/` in CI and nine execute nowhere.
-    Reporting all 10 identically would have overstated it by one and, worse,
-    hidden that the other nine have no runner at all.
+    WHAT THIS SCAN FINDS TODAY (measured on kipi-system, not remembered):
+    `zero_exec_scan` flags ZERO files. The docstring here used to say ten, one
+    of them collected by `pytest plugins/prd-os/tests/` and nine executing
+    nowhere. That was true when it was written and stopped being true when
+    capability-gate.py grew a `pytest` runner and started refusing the shape at
+    declaration time -- so the number survived the thing it described. Codex
+    caught it; a stated measurement that no run reproduces is the same defect
+    class this whole tool exists to find.
+
+    COMMENT LINES ARE NOT CI STEPS. The scan used to read every line, so on this
+    repo it returned four "targets", two of them fiction: `must`, out of the
+    prose "pytest must exist BEFORE the gate", and
+    `q-system/.q-system/tests`, out of a COMMENTED-OUT invocation in verify.yml.
+    A commented-out step runs nothing, and counting it as coverage is a checker
+    claiming a guard that is not there -- so a target now has to survive comment
+    stripping and look like a path.
     """
     targets = []
     wf = root / ".github/workflows"
     if not wf.is_dir():
         return targets
     for f in sorted(wf.glob("*.yml")) + sorted(wf.glob("*.yaml")):
-        for line in f.read_text(errors="ignore").splitlines():
+        for raw in f.read_text(errors="ignore").splitlines():
+            line = raw.split("#", 1)[0]
             m = re.search(r"\bpytest\s+([^\s|;&]+)", line)
-            if m and not m.group(1).startswith("-"):
-                targets.append(m.group(1).strip())
+            if not m:
+                continue
+            tok = m.group(1).strip()
+            if tok.startswith("-"):
+                continue
+            # A bare word is prose, not a path. Every real target names a
+            # directory or a file, and both exist in the tree being scanned.
+            if not (root / tok).exists():
+                continue
+            targets.append(tok)
     return targets
 
 
@@ -1311,6 +1379,21 @@ print("ok")
 # verdict, and stderr from a missing-file error satisfies it just as well as a
 # real run -- so it passes with the subject DELETED. The worst shape in the
 # class: no version of the subject could turn this test red.
+# Asserts ONLY the block exit code. This is the shape that made the absent
+# control lie (codex minor, PR #272): `python3` on a DELETED file also exits 2,
+# and 2 is this repo's own convention for "blocked", so the assertion passes
+# against a gate that is not there. The test is NOT blind -- disarming the
+# gate's `sys.exit(2)` to `sys.exit(0)` turns it red -- so the honest verdict is
+# KILLED, and the absent pass is a coincidence of exit codes rather than
+# evidence about the test.
+SELF_TEST_EXIT2 = '''#!/usr/bin/env python3
+import subprocess, sys, pathlib
+g = str(pathlib.Path(__file__).parent / "fixture_gate.py")
+r = subprocess.run([sys.executable, g, "bad input"], capture_output=True, text=True)
+assert r.returncode == 2, f"expected rc=2, got {r.returncode}"
+print("ok")
+'''
+
 SELF_TEST_BLIND = '''#!/usr/bin/env python3
 import subprocess, sys, pathlib
 g = str(pathlib.Path(__file__).parent / "fixture_gate.py")
@@ -1361,6 +1444,7 @@ def self_test():
     (scripts / "test_fixture_blind.py").write_text(SELF_TEST_BLIND)
     (scripts / "test_fixture_shallow.py").write_text(SELF_TEST_SHALLOW)
     (scripts / "test_fixture_unrelated.py").write_text(SELF_TEST_UNRELATED)
+    (scripts / "test_fixture_exit2.py").write_text(SELF_TEST_EXIT2)
     # Fragments via the real explode(), so the fixture exercises the same
     # assembly path production uses. A fixture that hand-wrote one JSON file
     # would have kept passing through #263 while the sweep read a deleted file.
@@ -1370,6 +1454,7 @@ def self_test():
         {"path": "q-system/.q-system/scripts/test_fixture_blind.py", "runner": "python3"},
         {"path": "q-system/.q-system/scripts/test_fixture_shallow.py", "runner": "python3"},
         {"path": "q-system/.q-system/scripts/test_fixture_unrelated.py", "runner": "python3"},
+        {"path": "q-system/.q-system/scripts/test_fixture_exit2.py", "runner": "python3"},
     ]})
 
     args = argparse.Namespace(only=None, limit=None,
@@ -1385,6 +1470,11 @@ def self_test():
         "test_fixture_shallow.py": "SURVIVED",
         # unrelated: names no subject at all
         "test_fixture_unrelated.py": "UNMEASURED-no-candidate-subject",
+        # exit-2 collision: passes with the file GONE, but the disarm still
+        # turns it red, so it is sighted. Before the absent control was made
+        # contradictable this read SURVIVED-ABSENT, the loudest verdict the
+        # tool emits, about a test that does its job.
+        "test_fixture_exit2.py": "KILLED",
     }
     fails = []
     for k, want in expect.items():
@@ -1394,8 +1484,8 @@ def self_test():
     # The harness must also prove it EXECUTED something. A sweep that ran no
     # tests reports clean survival and looks identical to a healthy one.
     ran = sum(1 for r in results if r.get("baseline", {}).get("rc") is not None)
-    if ran != 4:
-        fails.append(f"  executed baselines: expected 4, got {ran}")
+    if ran != 5:
+        fails.append(f"  executed baselines: expected 5, got {ran}")
     for r in results:
         for p in r.get("pairs", []):
             if p["verdict"] in ("KILLED", "SURVIVED"):
@@ -1409,7 +1499,8 @@ def self_test():
         return 1
     print("mutation-sweep --self-test: ok (sighted=KILLED, "
           "blind=SURVIVED-ABSENT, shallow=SURVIVED, unrelated=no-candidate, "
-          "4 baselines executed, mutants byte-verified)")
+          "exit2-collision=KILLED, 5 baselines executed, "
+          "mutants byte-verified)")
     return 0
 
 
