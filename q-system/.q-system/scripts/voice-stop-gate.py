@@ -375,9 +375,24 @@ def find_final_user_text(transcript_path):
     return text
 
 
+# A MISSING CHECK IS NOT A PASS. This returned (0, "") when its script was
+# absent, and 0 is the same value a clean draft produces, so a run on a machine
+# where voice-lint.py had moved was byte-for-byte indistinguishable from a run
+# that graded the draft and found nothing wrong. The turn completed, stderr was
+# empty, and the founder got a post no gate had read.
+#
+# The shape is copied from `resolve_reporter` twenty lines up, which was written
+# against this same defect: return the NAMED thing even when it is missing and
+# let the caller decide, so a reader can say "the check named X, which does not
+# exist" instead of seeing silence.
+NOT_CHECKED = "NOT_CHECKED"
+
+
 def run_check(script, file_path):
     if not script.exists():
-        return (0, "")
+        return (NOT_CHECKED,
+                "voice-stop-gate: %s is MISSING at %s, so this draft was NOT "
+                "CHECKED by it. That is not a pass." % (script.name, script))
     try:
         result = subprocess.run(
             ["python3", str(script), file_path],
@@ -444,12 +459,24 @@ def main():
         tmp_path = tmp.name
     try:
         violations_output = []
+        not_checked = []
         code1, out1 = run_check(VOICE_LINT, tmp_path)
         if code1 == 2 and out1:
             violations_output.append(out1)
+        elif code1 == NOT_CHECKED:
+            not_checked.append(out1)
         code2, out2 = run_check(SUBSTANCE_LINT, tmp_path)
         if code2 == 2 and out2:
             violations_output.append(out2)
+        elif code2 == NOT_CHECKED:
+            not_checked.append(out2)
+        # Surfaced on EVERY affected turn, and deliberately not a block. A Stop
+        # hook that hard-refuses on its own missing dependency wedges the session
+        # with no way forward -- this gate honours no bypass marker by design
+        # (voice-enforcement.md). Loud and passing beats silent and passing;
+        # blocking is a separate decision with a much larger blast radius.
+        for line in not_checked:
+            sys.stderr.write(line + "\n")
         if violations_output:
             sys.stderr.write(
                 "voice-stop-gate: assistant final message has voice violations.\n"
