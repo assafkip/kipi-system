@@ -15,10 +15,38 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 HOOK = Path(__file__).resolve().parents[1] / "publish_gate.py"
 REPO_ROOT = Path(__file__).resolve().parents[4]
 GTM_SCRIPTS = REPO_ROOT / "gtm" / "scripts"
 sys.path.insert(0, str(GTM_SCRIPTS))
+
+# THIS SUITE'S SUBJECT LIVES IN ANOTHER REPO, and until now it said so by
+# crashing (ASK-1129, measured 2026-08-29). `design_room_pipeline` is a cole-gtm
+# script at <repo>/gtm/scripts/. The kipi-design PLUGIN ships fleet-wide, so this
+# file lands in 24 repos, and in every one of them -- INCLUDING the skeleton --
+# the import raised ModuleNotFoundError at collection time.
+#
+# A collection error is not one red test. pytest aborts the whole run, so this
+# single file is why `python3 -m pytest` at the root of most of the fleet exits
+# non-zero having executed NOTHING. It was one of exactly two such errors, and
+# they are what blocks arming the verify.sh floor across the fleet.
+#
+# A module-level skip is the honest shape here and not a way of hiding a red: in
+# a repo with no gtm/scripts/ there is genuinely no subject, and the skip names
+# the path it looked for so nobody has to guess. Where the subject DOES exist --
+# cole-gtm, the repo this was written against -- the import succeeds and every
+# case below runs exactly as before. What must not happen is a repo without the
+# subject silently reporting the suite as passed; a skip says "did not run",
+# which is the true thing.
+if not (GTM_SCRIPTS / "design_room_pipeline.py").is_file():
+    pytest.skip(
+        "design_room_pipeline lives at %s, which does not exist in this repo. "
+        "This suite tests a cole-gtm script through the kipi-design plugin; in a "
+        "repo without that script there is no subject to test. It is SKIPPED, "
+        "not passed." % GTM_SCRIPTS,
+        allow_module_level=True)
 
 import design_room_pipeline  # noqa: E402
 import design_room_run as drr  # noqa: E402

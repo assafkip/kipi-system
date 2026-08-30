@@ -10,6 +10,17 @@ from pathlib import Path
 # test_validator.py, which is a helper, not a fixture, and so cannot receive one.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# AND the package this plugin ships, which lives beside these tests at src/.
+# Without it `kipi_mcp` only imports where someone has pip-installed the plugin,
+# and a conftest that raises ImportError does not fail one test -- it aborts
+# COLLECTION for the whole run. Measured 2026-08-29 on a fresh instance: this
+# was one of exactly two errors standing between the fleet and an armed
+# verify.sh floor (ASK-1129). An installed copy still wins: sys.path is only
+# APPENDED to here, so a real install earlier on the path is used unchanged.
+_SRC = Path(__file__).resolve().parents[1] / "src"
+if _SRC.is_dir() and str(_SRC) not in sys.path:
+    sys.path.append(str(_SRC))
+
 from kipi_mcp.paths import KipiPaths
 
 
