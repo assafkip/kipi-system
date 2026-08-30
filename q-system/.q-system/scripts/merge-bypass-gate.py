@@ -560,10 +560,18 @@ def _receipt_missing(rest: list[str], cwd: str) -> str | None:
         with open(path) as fh:
             receipt = json.load(fh)
     except Exception:
+        # THE PATH HAS TO NAME A FILE THAT EXISTS (Codex major, PR #269 r5).
+        # This said `automation/pr_verify.py`, which was in no repo in the fleet,
+        # and nothing wrote .prd-os/pr-receipts/ either -- so this branch could
+        # never be satisfied and every non---auto merge was refused forever. The
+        # gate was not looser than it looked, it was INERT in the one direction
+        # it had just been widened. The producer now exists at the path below and
+        # is the only writer of that directory.
         return (f"no green receipt for PR #{pr}. Run:\n"
-                f"      python3 automation/pr_verify.py {pr}\n"
-                "  which runs the PR's tests and treats a zero-test run as a "
-                "FAILURE, the case that let two red PRs look mergeable.")
+                f"      python3 q-system/.q-system/scripts/pr_verify.py {pr}\n"
+                "  which runs verify.sh --full against the PR head and treats a "
+                "zero-test run as a FAILURE, the case that let two red PRs look "
+                "mergeable.")
     if receipt.get("result") != "green":
         return f"the receipt for PR #{pr} does not say green."
     try:
