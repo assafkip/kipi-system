@@ -60,6 +60,26 @@ CASES = [
     ("neither field -> pass", fm(), True, 0),
     ("no frontmatter -> pass", "just body text\n", True, 0),
     ("invalid value but off-scope -> pass", fm(confidence="1.5"), False, 0),
+    # --- supersession convention (status / as_of / superseded_by) ---
+    # Grandfathering is the load-bearing case: the pre-existing corpus carries
+    # none of these fields and must keep passing untouched.
+    ("status current -> pass", fm(status="current"), True, 0),
+    ("status superseded with successor -> pass",
+     fm(status="superseded", superseded_by="newer-memory"), True, 0),
+    ("status superseded with NO successor -> block",
+     fm(status="superseded"), True, 2),
+    ("status archived (not in enum) -> block", fm(status="archived"), True, 2),
+    ("supersedes present but empty -> block", fm(supersedes=""), True, 2),
+    ("as_of well-formed -> pass", fm(as_of="2026-08-19"), True, 0),
+    ("as_of month 13 -> block", fm(as_of="2026-13-01"), True, 2),
+    ("as_of feb 30 (parses as digits, not a real date) -> block",
+     fm(as_of="2026-02-30"), True, 2),
+    ("as_of prose -> block", fm(as_of="last tuesday"), True, 2),
+    ("as_of US format -> block", fm(as_of="08/19/2026"), True, 2),
+    ("full valid set -> pass",
+     fm(confidence="0.9", provenance="corrected", status="superseded",
+        superseded_by="newer-memory", as_of="2026-08-19"), True, 0),
+    ("bad status but off-scope -> pass", fm(status="archived"), False, 0),
 ]
 
 
@@ -81,10 +101,36 @@ def main():
     if not teeth_ok:
         failures.append("negative self-test")
 
+    # Second negative self-test, on the supersession branch specifically. The
+    # first one only proves the CONFIDENCE branch has teeth; a status check that
+    # silently never fired would sit green behind it.
+    valid_status = run_case(fm(status="superseded", superseded_by="x"), in_scope=True)
+    corrupt_status = run_case(fm(status="superseded"), in_scope=True)
+    status_teeth_ok = valid_status == 0 and corrupt_status == 2
+    print(f"[{'PASS' if status_teeth_ok else 'FAIL'}] negative self-test (supersession): "
+          f"with successor passes ({valid_status}), without blocks ({corrupt_status})")
+    if not status_teeth_ok:
+        failures.append("negative self-test (supersession)")
+
+    # The mid-`kipi update` fallback literal must equal the shared table, or an
+    # instance that has the validator but not memory_conventions.py silently
+    # enforces a different enum. Same guard the provenance fallback carries.
+    sys.path.insert(0, HERE)
+    from memory_conventions import STATUS_VALUES  # noqa: E402
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("mcv", VALIDATOR)
+    mcv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mcv)
+    fallback_ok = tuple(mcv._FALLBACK_STATUS) == tuple(STATUS_VALUES)
+    print(f"[{'PASS' if fallback_ok else 'FAIL'}] fallback status literal matches "
+          f"memory_conventions.STATUS_VALUES")
+    if not fallback_ok:
+        failures.append("fallback status literal drift")
+
     if failures:
         print(f"\nFAILED: {len(failures)} case(s): {failures}")
         sys.exit(1)
-    print(f"\nOK: all {len(CASES) + 1} checks passed")
+    print(f"\nOK: all {len(CASES) + 3} checks passed")
     sys.exit(0)
 
 

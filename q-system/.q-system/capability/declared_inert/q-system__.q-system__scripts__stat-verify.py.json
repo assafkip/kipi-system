@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/stat-verify.py",
+ "reason": "802-line stat verification engine; zero hook wiring and its stat-registry.json data file exists in exactly one instance \u2014 wiring it is a founder product decision",
+ "spillover_id": "sp-72b60bff"
+}
