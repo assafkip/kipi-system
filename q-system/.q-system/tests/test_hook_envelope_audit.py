@@ -214,3 +214,36 @@ def test_fix_is_idempotent(tmp_path):
     once = p.read_text()
     assert audit.fix_no_event_name(str(p), "SessionStart")[0] == 0
     assert p.read_text() == once
+
+
+# --------------------------------------------------------------------------
+# The blocking path is scoped to files that are actually hooks (Codex minor,
+# PR #285 round 2). A gate that stops an ordinary dict key gets switched off.
+# --------------------------------------------------------------------------
+def test_gate_ignores_an_ordinary_dict_key(tmp_path):
+    """The reviewer's reproducer: an unrelated API payload must not be blocked."""
+    p = tmp_path / "ordinary_api.py"
+    p.write_text('payload = {"additionalContext": "ordinary API field"}\n')
+    assert _run_gate(p).returncode == 0
+
+
+def test_gate_still_blocks_a_real_hook_with_the_same_shape(tmp_path):
+    """The control that keeps the scoping honest.
+
+    The body markers are taken from the files that actually carried the defect,
+    not invented: focus-kit's echo-of-prompt.py is the leanest of them and its
+    only hook tell is reading its payload off stdin.
+    """
+    p = tmp_path / "echo_like_hook.py"
+    p.write_text('import json,sys\n'
+                 'payload = json.load(sys.stdin)\n'
+                 'print(json.dumps({"additionalContext": "re-anchor"}))\n')
+    proc = _run_gate(p)
+    assert proc.returncode == 2, proc.stdout
+    assert "DISCARDS" in proc.stderr
+
+
+def test_reporting_path_still_surfaces_the_ordinary_dict(tmp_path):
+    """Only the BLOCK is scoped. A human reading a full audit wants everything."""
+    src = 'payload = {"additionalContext": "ordinary API field"}\n'
+    assert [s.verdict for s in audit.audit_python("<api>", source=src)] == [audit.TOP_LEVEL]

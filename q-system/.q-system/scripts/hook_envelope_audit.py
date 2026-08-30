@@ -392,6 +392,35 @@ def fix_no_event_name(path, event, source=None, dry_run=False):
     return n, out
 
 
+# A dict key named additionalContext is not proof of a hook. `payload =
+# {"additionalContext": "ordinary API field"}` in unrelated code is a perfectly
+# ordinary line, and a BLOCKING gate that stops that edit is a gate the fleet
+# switches off -- the same reasoning that made the text scanner learn to skip
+# reads and assertions (Codex minor, PR #285 round 2).
+#
+# So the blocking path additionally demands evidence that the file IS a hook.
+# These markers are taken from the files that actually carried the defect, not
+# invented: every stale token-guard fork mentions hook_event_name and tool_input,
+# and the leanest one (focus-kit's echo-of-prompt.py) still reads its payload
+# with json.load(sys.stdin). The REPORTING path does not apply this filter -- a
+# human reading a full audit wants to see everything, and only a block needs to
+# be sure.
+HOOK_MARKERS = (
+    "hookSpecificOutput",
+    "hookEventName",
+    "hook_event_name",
+    "tool_input",
+    "tool_name",
+    "CLAUDE_PROJECT_DIR",
+    "sys.stdin",
+)
+
+
+def looks_like_a_hook(source):
+    """True when the file carries any marker only a Claude Code hook would."""
+    return any(marker in source for marker in HOOK_MARKERS)
+
+
 def hook_mode():
     """PostToolUse gate: block an edit that ships a discarded envelope.
 
@@ -414,6 +443,8 @@ def hook_mode():
         return 0
     if KEY_CONTEXT not in source:
         return 0                      # the fast exit for every other edit
+    if not looks_like_a_hook(source):
+        return 0                      # an ordinary dict key, not a hook payload
     if self_test(verbose=False):
         return 0                      # broken audit blocks nothing
     sites = (audit_python(path, source=source) if path.endswith(".py")
