@@ -34,6 +34,28 @@ It does NOT check whether the brief was any good. A brief with four COULD NOT
 READ sections still delivered, and the founder can see that himself. This alarm
 is for the case where he sees nothing at all.
 
+## KNOWN LIMIT: this is off the JOB, not off the MACHINE
+
+The lesson `a-freshness-deadman-must-live-off-the-machine-it-watches` is stricter
+than what this satisfies. Both jobs run on the same Mac, so a machine that is
+off, asleep or wedged silences the brief AND its alarm together.
+
+The gap is narrower than it sounds, and the narrowing is why StartInterval was
+chosen over StartCalendarInterval. A StartCalendarInterval job that misses its
+fire time is skipped outright; launchd does not catch up on wake. A StartInterval
+job with RunAtLoad DOES run on the next wake. So a Mac that was off at 07:00 and
+opens at 11:00 gets the alarm within thirty minutes of waking, not never.
+
+What remains uncovered is precisely: the machine stays off past the moment the
+founder wanted to know. He is also not at his desk in that window, which is why
+this is recorded as a bounded limit rather than treated as the same defect.
+
+The real fix is an alarm keyed on the OUTPUT rather than the receipt -- something
+off this machine asking Slack "did a message from colenotify with 'Morning brief'
+land today?" That needs no local state, so unlike the brief itself it is not
+blocked by the cloud sandbox's lack of access to ~/.config/kipi. It is captured,
+not built here, because it is a different job with its own delivery proof.
+
 ## Who watches this watcher
 
 `launchd-health-check.py` (com.kipi.launchd-health) auto-discovers every
