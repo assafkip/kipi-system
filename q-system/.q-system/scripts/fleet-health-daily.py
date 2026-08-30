@@ -994,10 +994,11 @@ def detect_open_spillover(_ctx) -> list:
             "RED while any is open, so these block every closeout in the repo.\n\n"
             + "\n".join(f"- `{i}`" for i in shown)
             + (f"\n- ...and {more} more (`prd_runner.py spillover list --open`)" if more else "")
-            + "\n\n## Action\nEach leaves the ledger exactly two ways: fixed through the "
-              "normal issue flow then `spillover resolve <id> --resolution-ref <closed-issue>`, "
-              "or `spillover resolve <id> --void \"<reason>\"`. There is no third way, and "
-              "hand-clearing the gate is not possible."
+            + "\n\n## Action\nEach leaves the ledger through a recorded resolution: "
+              "`spillover resolve <id>` with `--resolution-ref <closed-issue>`, "
+              "`--resolution-commit <merged-sha>`, `--resolution-proof '<cmd with {tree}>' "
+              "--broken-at <sha>`, or `--void \"<reason>\"`. Hand-clearing the gate "
+              "is not possible."
         ),
     }]
 
@@ -1225,7 +1226,361 @@ def detect_stale_runtime_plugins(_ctx) -> list:
     }]
 
 
+# ---------------------------------------------------------------------------
+# The INSTALLED job vs its RENDERED COMMITTED template (ASK-860)
+#
+# THE SCAR. 2026-08-15 the dispatch daily cap read 12 in
+# `q-system/.q-system/scripts/com.kipi.dispatch.plist` and **40** in
+# `~/Library/LaunchAgents/com.kipi.dispatch.plist`. The committed file is the one
+# a reader inspects to answer "what is the cap?"; the installed one is the cap
+# that actually runs. For an unknown period the loop was authorised to start 40
+# issues a day against a stated ceiling of 12 -- roughly 240 agent sessions a day
+# against a stated 72 -- and nothing in the fleet compared the two copies.
+#
+# `install-plist.sh` makes rendering correct when it is USED. It cannot notice a
+# job installed some other way, or edited in place after the fact. This detector
+# is the thing that notices.
+#
+# WHY HERE AND NOT A COMMIT HOOK. The drift lives on the MACHINE, not in the
+# diff: both copies can be individually correct in git and still disagree at
+# rest. CI has no `~/Library/LaunchAgents` to look at, so a CI-only check is
+# structurally blind -- the same reasoning `detect_stale_runtime_plugins`
+# documents for the plugin registry.
+#
+# REPORT, NEVER REPAIR. A live value may have been set deliberately during an
+# incident. Overwriting it silently is how a deliberate change becomes an
+# unexplained regression, so the finding names the divergence and offers the
+# render command; the human chooses.
+# ---------------------------------------------------------------------------
+
+PLIST_TEMPLATE_DIR = HERE
+PLIST_INSTALLER = HERE / "install-plist.sh"
+
+# A published value is capped, not redacted. This bounds a body, it does not
+# pretend to be a secret filter -- that job is done structurally below.
+_VALUE_CAP = 200
+
+# An XML comment, stripped before parsing. NOT a leniency about plist DATA:
+# comments carry none. It exists because the fleet's own committed templates
+# contain `--` inside comments (they are long prose blocks citing PR rounds),
+# which CoreFoundation accepts -- so launchd loads them and the jobs run -- while
+# expat, the parser behind `plistlib`, rejects the document outright. Reading a
+# live job with a stricter parser than the one launchd uses would report every
+# commented template as unreadable, which is a blind spot wearing an error's
+# clothes. Non-greedy: a comment containing `--` but not `-->` is one comment.
+# A literal `<!--` cannot appear inside a plist <string>, which would have to
+# escape the `<` as `&lt;` to be XML at all.
+_XML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+
+# A binary plist's magic. An installed job is NOT required to be XML: `defaults
+# write <plist> KEY value` -- the canonical in-place launchd edit, and exactly
+# the hand-edit this detector exists to catch -- rewrites the file as bplist00,
+# as does `plutil -convert binary1` and every GUI launchd editor. launchd loads
+# both formats, so both are legitimate live jobs and both must be READ, not
+# decoded at.
+_BINARY_PLIST_MAGIC = b"bplist00"
+
+
+def plist_pairs(source) -> dict:
+    """A plist's leaf values, keyed by dotted path. Raises ValueError if unreadable.
+
+    Takes str (XML) or bytes (either format). Flattened rather than compared as
+    nested objects so a finding can NAME THE KEY that moved
+    (`EnvironmentVariables.KIPI_DISPATCH_DAILY_MAX`) instead of saying two dicts
+    differ, which is what the operator needs to act.
+
+    BYTES ARE NEVER DECODED LENIENTLY, and that is the whole point of this
+    signature. Reading a live job with `read_text(errors="ignore")` silently
+    drops every byte that is not valid UTF-8; re-encoding then yields a SHORTER
+    binary plist whose offset table still parses, so `plistlib` ACCEPTS the
+    corrupted document instead of raising. The result was the worst of both:
+    a byte-identical binary job filed a permanent 13-key "your dispatcher has no
+    ProgramArguments" issue, while the real cap drift it was built for went
+    unnamed, and `_unrenderable` never engaged because nothing ever failed
+    (PR #196 round 1). So a binary plist reaches plistlib untouched, and an XML
+    one is decoded STRICTLY -- a decode failure becomes a finding rather than a
+    confident wrong answer.
+    """
+    import plistlib
+
+    try:
+        raw = source.encode() if isinstance(source, str) else bytes(source)
+        if not raw.startswith(_BINARY_PLIST_MAGIC):
+            # Comment stripping is an XML-only leniency (see _XML_COMMENT_RE);
+            # binary plists carry no comments, and a `<!--` byte run inside one
+            # would be payload, not syntax.
+            raw = _XML_COMMENT_RE.sub("", raw.decode("utf-8")).encode()
+        data = plistlib.loads(raw)
+    except Exception as exc:  # noqa: BLE001 - any parse failure is "unreadable"
+        raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+    out: dict = {}
+    _flatten(data, "", out)
+    return out
+
+
+def _flatten(node, prefix: str, out: dict) -> None:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            _flatten(value, f"{prefix}.{key}" if prefix else str(key), out)
+    elif isinstance(node, (list, tuple)):
+        for index, value in enumerate(node):
+            _flatten(value, f"{prefix}[{index}]", out)
+    else:
+        out[prefix] = str(node)
+
+
+def _render_committed(path: Path) -> str:
+    """The committed template AS INSTALL-PLIST.SH WOULD WRITE IT.
+
+    Shelling the installer rather than re-implementing its `sed` is the point:
+    two substituters would be two definitions of "rendered", and the drift
+    between THEM would be invisible in exactly the way this detector exists to
+    end. `--render-only` writes to a path and touches no live job.
+    """
+    import tempfile
+
+    label = path.stem
+    with tempfile.TemporaryDirectory() as work:
+        out = Path(work) / f"{label}.plist"
+        res = subprocess.run(
+            ["bash", str(PLIST_INSTALLER), label, "--render-only", str(out)],
+            capture_output=True, text=True, timeout=60)
+        if res.returncode != 0 or not out.is_file():
+            raise RuntimeError(
+                f"install-plist.sh --render-only exited {res.returncode}")
+        return out.read_text()
+
+
+def _shown(value: str, other: str = None) -> str:
+    """A value capped for display, WINDOWED ON THE DIVERGENCE when there is one.
+
+    Head-truncating both sides renders two values that first differ past
+    `_VALUE_CAP` as two byte-identical cells, so the finding asserts a
+    difference while displaying none (PR #196 round 1). With a counterpart
+    supplied, the window is centred on the first offset at which they differ,
+    which is the only part of a long value the operator came to read.
+    """
+    if len(value) <= _VALUE_CAP:
+        return value
+    start = 0
+    if other is not None:
+        shared = min(len(value), len(other))
+        first_diff = next((i for i in range(shared) if value[i] != other[i]), shared)
+        if first_diff >= _VALUE_CAP:
+            start = first_diff - _VALUE_CAP // 2
+    head = "" if start == 0 else "(truncated) ..."
+    tail = "" if start + _VALUE_CAP >= len(value) else "... (truncated)"
+    return f"{head}{value[start:start + _VALUE_CAP]}{tail}"
+
+
+def _unrenderable(label: str, reason: str) -> dict:
+    """A job whose two copies could not be COMPARED. Unknown, never clean.
+
+    The silent-disable shape this file has been corrected for three times over:
+    a `return []` here would make "I could not look" print identically to "I
+    looked and the job matches". Its own subject, so it cannot collide with a
+    real drift finding for the same label.
+    """
+    return {
+        "subject": f"{label}--unrenderable",
+        "title": f"cannot compare {label} against its committed template",
+        "body": (
+            f"`{label}` could not be compared with its committed template: {reason}\n\n"
+            "While this is true, NOTHING checks whether the installed copy of this "
+            "job matches the one in the repo. Absence of a drift finding for "
+            f"`{label}` is not evidence the two copies agree.\n\n"
+            "## Action\n```bash\n"
+            f"bash q-system/.q-system/scripts/install-plist.sh {label} "
+            "--render-only /tmp/render.plist\n"
+            f"diff /tmp/render.plist ~/Library/LaunchAgents/{label}.plist\n```\n"
+            "Fix what that reports, then confirm this issue stops re-filing."
+        ),
+    }
+
+
+def _drift_finding(label: str, changed: list, only_committed: list,
+                   only_live: list) -> dict:
+    sections = []
+    if changed:
+        sections.append(
+            "## Values that differ\n"
+            "| Key | Committed | Live |\n| -- | -- | -- |\n"
+            + "\n".join(f"| `{k}` | `{_shown(c, l)}` | `{_shown(l, c)}` |"
+                        for k, c, l in changed))
+    if only_committed:
+        sections.append(
+            "## Declared in the repo, absent from the installed job\n"
+            + "\n".join(f"- `{k}` (committed `{_shown(v)}`)" for k, v in only_committed))
+    if only_live:
+        # KEY NAMES ONLY, and that is structural rather than a filter over the
+        # text (ASK-204). A key the repo DECLARES is the repo's own knob, so its
+        # live value is the answer the operator came for. A key that exists only
+        # on the installed copy is operator-authored -- the one place a
+        # hand-added credential could sit -- and a Linear issue is permanent.
+        # Nine review rounds found nine bypasses of a value-shaped denylist; this
+        # splits on WHO AUTHORED THE KEY, which has no bypass to find.
+        sections.append(
+            "## Present only on the installed job\n"
+            "Key names only: these were not authored in the repo, and a Linear "
+            "issue is permanent (ASK-204). Read the values in the file itself.\n"
+            + "\n".join(f"- `{k}`" for k in only_live))
+    sections.append(
+        "## Action — read it, then decide\n"
+        "This is REPORTED, not repaired. A live value may have been set "
+        "deliberately during an incident, and overwriting it silently is how a "
+        "deliberate change becomes an unexplained regression.\n\n"
+        "```bash\n"
+        f"bash q-system/.q-system/scripts/install-plist.sh {label} "
+        "--render-only /tmp/render.plist\n"
+        f"diff /tmp/render.plist ~/Library/LaunchAgents/{label}.plist\n```\n"
+        "Then EITHER commit the live value into the template, OR re-install from "
+        f"the template (`install-plist.sh {label}`, which also reloads the job). "
+        "Whichever you pick, both copies end up saying the same thing."
+    )
+    return {
+        # The LABEL, so one job is one permanent issue however many keys move.
+        # A key-set subject would fork a new permanent issue every time the set
+        # of divergent keys changed.
+        "subject": label,
+        "title": f"installed job drifted from its committed template: {label} "
+                 f"({len(changed) + len(only_committed) + len(only_live)} key(s))",
+        "body": "\n\n".join(sections),
+    }
+
+
+def plist_drift_findings(template_dir=None, launch_agents=None, render=None) -> list:
+    """Every committed `com.kipi.*` template vs the job installed from it.
+
+    Injectable so the compare is provable against fixtures: a test that pointed
+    at the real `~/Library/LaunchAgents` would pass or fail on the state of
+    whoever's laptop ran it.
+    """
+    templates = Path(template_dir) if template_dir else PLIST_TEMPLATE_DIR
+    agents = Path(launch_agents) if launch_agents else LAUNCH_AGENTS
+    if render is None:
+        # THE TWO KNOBS ARE NOT INDEPENDENT. `_render_committed` shells
+        # install-plist.sh, which resolves its templates from ITS OWN directory
+        # and cannot be pointed at another one. So a caller who moves
+        # `template_dir` without supplying a matching `render` would compare
+        # files from one tree against renders from a different tree and read the
+        # difference as drift. Refuse rather than compare (PR #196 round 1).
+        if templates != PLIST_TEMPLATE_DIR:
+            raise ValueError(
+                f"template_dir={templates} needs a matching render=; "
+                "install-plist.sh renders only from its own directory")
+        render = _render_committed
+
+    out = []
+    for template in sorted(templates.glob("com.kipi.*.plist")):
+        label = template.stem
+        live_path = agents / f"{label}.plist"
+        # NOT INSTALLED IS NOT DRIFT. `detect_dark_jobs` already owns "a job that
+        # should be running is not"; filing it here too would put one condition
+        # on two permanent issues.
+        if not live_path.is_file():
+            continue
+        try:
+            committed = plist_pairs(render(template))
+            # BYTES, not text: the installed copy may be binary (`defaults
+            # write` writes bplist00) and a lenient decode mangles it into a
+            # confident wrong answer. See plist_pairs.
+            live = plist_pairs(live_path.read_bytes())
+        except (ValueError, RuntimeError, OSError) as exc:
+            out.append(_unrenderable(label, str(exc)))
+            continue
+        changed = [(k, committed[k], live[k]) for k in sorted(committed)
+                   if k in live and committed[k] != live[k]]
+        only_committed = [(k, committed[k]) for k in sorted(committed) if k not in live]
+        only_live = [k for k in sorted(live) if k not in committed]
+        if changed or only_committed or only_live:
+            out.append(_drift_finding(label, changed, only_committed, only_live))
+    return out
+
+
+def detect_plist_drift(_ctx) -> list:
+    """`plist_drift_findings`, refused from a worktree.
+
+    `install-plist.sh` resolves `__KIPI_REPO__` from ITS OWN location, so
+    rendering from a git worktree produces `ProgramArguments` pointing at that
+    worktree -- and EVERY installed job would read as drifted on a path nobody
+    changed. A permanent false issue per job is the most expensive outcome
+    available here, so a worktree render is reported as UNKNOWN rather than
+    guessed at. Same discriminator `install-plist.sh --all` already refuses on:
+    a worktree's `.git` is a file, a primary checkout's is a directory.
+    """
+    if not (REPO_ROOT / ".git").is_dir():
+        return [{
+            "subject": "render-root-is-a-worktree",
+            "title": "plist drift cannot be checked from a worktree",
+            "body": (
+                f"`{REPO_ROOT}` is a git worktree, not the primary checkout. "
+                "`install-plist.sh` resolves `__KIPI_REPO__` from its own location, "
+                "so every rendered template would point at this directory and every "
+                "installed job would read as drifted on a path nobody touched.\n\n"
+                "No comparison was made. That is UNKNOWN, not clean.\n\n"
+                "## Action\nRun `kipi health` from the primary checkout. The 08:15 "
+                "LaunchAgent already does; this finding means something ran it from "
+                "somewhere else."
+            ),
+        }]
+    return plist_drift_findings()
+
+
+def detect_promoted_audit(_ctx) -> list:
+    """RUN the promoted-rows audit daily; file a finding only when it cannot.
+
+    This is the audit's operational caller (Codex, kipi-system PR #213 r4: the
+    command existed and nothing scheduled it, so unattended promoted rows were
+    never re-checked). The sweep itself resolves rows whose Linear issue closed;
+    a finding is filed only when the audit ran and could verify NOTHING (its
+    exit 1), which means the tracker was unreachable for the whole sweep.
+    """
+    runner = REPO_ROOT / "plugins/prd-os/scripts/prd_runner.py"
+    if not runner.is_file():
+        return []
+    try:
+        res = subprocess.run(["python3", str(runner), "spillover", "promoted-audit"],
+                             capture_output=True, text=True, timeout=300, cwd=REPO_ROOT)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # A timeout IS a blind sweep, not a skip (Codex, PR #213 r5: silently
+        # converting it to zero findings made a hung audit look healthy).
+        return [{
+            "subject": "promoted-audit-blind",
+            "title": "The promoted-rows audit did not run to completion",
+            "body": ("`prd_runner.py spillover promoted-audit` failed to complete: "
+                     f"`{exc.__class__.__name__}`. Promoted rows went unchecked today.\n\n"
+                     "## Action\nRun the audit by hand and check why it hung."),
+        }]
+    if res.returncode == 0:
+        return []
+    return [{
+        "subject": "promoted-audit-blind",
+        "title": "The promoted-rows audit could verify nothing against Linear",
+        "body": (
+            "`prd_runner.py spillover promoted-audit` exited nonzero: every tracker "
+            "lookup failed, so promoted rows went another day unchecked.\n\n```\n"
+            + (res.stderr or res.stdout).strip()[-600:] + "\n```\n\n## Action\n"
+            "Check Linear auth (`KIPI_LINEAR_API_KEY` / ~/.config/kipi/linear-api-key) "
+            "and re-run the audit by hand."
+        ),
+    }]
+
+
 DETECTORS = [
+    {
+        "id": "promoted-audit",
+        "description": "daily re-check of promoted spillover rows against Linear; files only when the whole sweep was blind",
+        "detect": detect_promoted_audit,
+        "action": "file_issue",
+        "lesson": "a-gate-that-cannot-run-must-not-pass",
+    },
+    {
+        "id": "plist-drift",
+        "description": "an installed launchd job disagrees with its rendered committed template",
+        "detect": detect_plist_drift,
+        "action": "file_issue",
+        "lesson": "the-running-code-may-not-be-the-code-you-read",
+    },
     {
         "id": "runtime-plugin-stale",
         "description": "the RUNNING plugin copy is older than the merged one, or hand-edited",
@@ -1564,6 +1919,11 @@ def _create_one(ls, finding: dict, apply: bool, team_id: str, project,
     if project:
         payload["projectId"] = project["id"]
     data = ls.graphql(ls.ISSUE_CREATE, {"input": payload})
+    # linear-filer-lint-skip: AUTOMATED and currently unmarked. A nightly launchd
+    # detector sweep files one issue per finding, so this SHOULD attach
+    # TRIAGE_LABEL. Captured as sp-1306aca4 (see also sp-2ea6e19c, which named the
+    # same five-writer class) rather than changed here -- relabelling live inflow
+    # is a behaviour change, not a lint fix.
     node = (data.get("issueCreate") or {}).get("issue") or {}
     if not node.get("id"):
         # A create that returned no issue is a FAILURE, not a quiet zero. The

@@ -307,6 +307,62 @@ SYSTEM_OWNED_PATHS=(
   "q-system/.q-system/claude-integrity-baseline.json"
   ".claude/state/stop-gate-firings.json"
 )
+
+# INSTANCE-LOCAL, AND COMMITTING IT IS WHAT DESTROYS IT (measured 2026-08-14, 6 instances).
+#
+# Measured 2026-08-14: 6 instances lost their integrity baseline to `kipi update`
+# and the tripwire then refused EVERY tool call on them
+# (claude-integrity-tripwire.py: "BASELINE MISSING on an armed tree", exit 2).
+# The chain is a loop this file closes on itself:
+#
+#   1. the block below COMMITS the baseline, so it becomes tracked;
+#   2. the skeleton's `git archive HEAD` does not contain it (.gitignore:116 --
+#      it is instance-local by ASK-282, and a shared baseline can never match a
+#      per-instance .claude/settings.json);
+#   3. kipi-update-preserve-scan.py rule 3 protects only paths the skeleton NEVER
+#      tracked. The skeleton DID track this one (e25734cb / 629d01b2) and then
+#      deleted it, so the scan reads a deliberate skeleton deletion and correctly
+#      lets `rsync --delete` propagate it.
+#
+# Step 3 is not the bug and must not be "fixed": a never-delete exemption there
+# would make preserve-scan lie about its own rule, which exists so real skeleton
+# deletions reach the fleet. The two instances that escaped did so only because
+# their baseline was still untracked, which is the state this list restores.
+#
+# It is a SEPARATE list applied AFTER both feeders, not an edit to the array
+# above, and that is the whole point. Two independent things append to
+# sys_owned_dirty: this hand list, and auto-commit.py --system-state, which
+# classifies the entire tree. Removing the path from the array alone leaves the
+# classifier free to re-add it -- and the classifier demonstrably does exactly
+# that, having committed .claude-integrity-armed (a path this array never named)
+# during the same 2026-08-14 sweep. One filter, past both, or it is not a fix.
+SYSTEM_NEVER_COMMIT=(
+  "q-system/.q-system/claude-integrity-baseline.json"
+  "q-system/.q-system/claude-integrity-baseline.json.lock"
+  # THE COMMENT ABOVE NAMED THIS PATH AND THE ARRAY DID NOT, AND THAT GAP COST
+  # 13 OF 22 INSTANCES (measured 2026-08-14 by fleet-reach-audit.py, ASK-797).
+  #
+  # The marker's one line is a TIMESTAMP -- "armed 2026-08-14T20:13:59Z" -- that
+  # claude-integrity-tripwire.py rewrites every time it arms. So committing it is
+  # not merely untidy, it is self-poisoning, and the run that does it is the run
+  # that blocks the next one:
+  #
+  #   13:10  this updater commits the marker as system state
+  #   20:13  the tripwire arms and rewrites the timestamp
+  #   next run: tracked, dirty, inside the synced prefix -> the dirty-tree guard
+  #             refuses, forever, and the instance never receives another update
+  #
+  # Verified in two registered instances (commits bdcf7a2 and 50040a6): the sole
+  # commit that ever added the path is this updater's own "commit system-written
+  # state before skeleton sync". Nothing founder-authored is in the loop at all.
+  #
+  # The skeleton has gitignored this path since .gitignore:123 and has never
+  # tracked it. Instances only carry it tracked because auto-commit.py classifies
+  # it as `chore` exhaust and no filter stopped the commit -- which is exactly the
+  # "one filter, past both" the comment above demands. Naming it here puts it past
+  # both: the classifier can still propose it, and the chokepoint now declines.
+  "q-system/.q-system/.claude-integrity-armed"
+)
 # Skeleton-managed plugin dirs are appended at run time from the SAME
 # enumeration the sync itself uses (managed_plugin_names), never as a blanket
 # "plugins" entry. The blanket version classified the WHOLE tree as system-owned
@@ -1190,6 +1246,32 @@ is_instance_wip() {
       [ -f "$instance_file" ] && cmp -s "$instance_file" "$skeleton_file"; then
     return 1
   fi
+  # AN OLDER SKELETON BLOB IS ALSO NOT WORK (sp-940bcf47, measured 2026-08-14 PT).
+  #
+  # The byte-identical test above only recognises THIS sync's own output. An
+  # untracked file written by an EARLIER sync, differing from the current
+  # skeleton copy, looked like work-in-progress and refused the instance on
+  # every run afterwards. one registered instance sat exactly there with an untracked
+  # q-system/.q-system/scripts/merge-bypass-gate.py, and fleet-reach-audit.py
+  # reported WOULD-SYNC for it the whole time because the audit does not model
+  # this check. Real reach was 21 of 22 while the number on screen said 22.
+  #
+  # The exemption is EXACTLY as narrow as fleet-unblock's `commit` proof, and
+  # for the same reason: a founder hand-edit does not produce bytes that collide
+  # with a blob the skeleton itself once held at the same path. Anything the
+  # skeleton never wrote there is still work and still refuses.
+  #
+  # Fail closed. The helper exits 2 when it cannot decide, and only exit 0 --
+  # "the skeleton demonstrably shipped this blob here" -- excuses the file. A
+  # missing helper therefore refuses, which is the behaviour before this change.
+  local skeleton_repo_path="${4:-}"
+  if [ -n "$skeleton_repo_path" ] && [ -f "$instance_file" ] &&
+      [ -f "$SCRIPT_DIR/kipi-update-wip-check.py" ] &&
+      python3 "$SCRIPT_DIR/kipi-update-wip-check.py" \
+        --skeleton "$SCRIPT_DIR" --skeleton-path "$skeleton_repo_path" \
+        --file "$instance_file" 2>/dev/null; then
+    return 1
+  fi
   return 0
 }
 
@@ -1230,12 +1312,33 @@ reject_untracked_config_collisions() {
     # GENERATED by kipi-settings-merge.py from settings-template.json, so the
     # skeleton's own copy is not what gets written there and comparing against
     # it would excuse a file this sync never produced.
+    # THE HISTORICAL-BLOB EXEMPTION BELONGS HERE TOO (PR #185 review, major).
+    #
+    # sp-940bcf47 wired it into the q-system collision path only, so updater
+    # residue under .claude/ or plugins/ from an EARLIER sync -- differing from
+    # the current skeleton copy, so the byte-identical carve-out above misses it
+    # -- still aborted the instance on every run. Same defect, same blast
+    # radius, one call site further down. Wiring one and not the other is how a
+    # carve-out gets a reputation for not working.
+    #
+    # The mapping is IDENTITY here: .claude/ and plugins/ live at the skeleton
+    # root, so the instance's spelling of the path is the skeleton repo's too.
+    # That is why the argument is passed per call site instead of derived inside
+    # the helper -- the q-system path needs a q-system/ prefix and this one
+    # must not have one.
+    #
+    # settings.json keeps its carve-out for BOTH checks. It is GENERATED by
+    # kipi-settings-merge.py from settings-template.json, so no blob in skeleton
+    # history is what belongs in an instance; excusing a file because the
+    # skeleton once shipped that content would excuse a copy this sync never
+    # produced and would never produce.
     case "$relative" in
-      .claude/settings.json) counterpart="" ;;
-      *) counterpart="$SCRIPT_DIR/$relative" ;;
+      .claude/settings.json) counterpart=""; skeleton_rel="" ;;
+      *) counterpart="$SCRIPT_DIR/$relative"; skeleton_rel="$relative" ;;
     esac
     if config_source_manages "$relative" &&
-        is_instance_wip "$target/$relative" "$counterpart" clears-build-artifacts; then
+        is_instance_wip "$target/$relative" "$counterpart" clears-build-artifacts \
+          "$skeleton_rel"; then
       echo "  ERROR: untracked WIP collides with managed config: $relative"
       return 1
     fi
@@ -1554,6 +1657,120 @@ PY
       git merge --abort 2>/dev/null || true
     fi
 
+    # THE OTHER HALF OF THE UNTRACK BELOW, and it must run FIRST (sp-097d2e23).
+    #
+    # `git rm --cached` leaves the file on disk, UNTRACKED. In the skeleton that
+    # is invisible, because root .gitignore has covered these paths since
+    # .gitignore:123. No instance has ever had those lines: root .gitignore is
+    # not in this script's sync set (q-system/, .claude/{agents,output-styles,
+    # rules}/*.md, .claude/settings.json, plugins/). So on an instance the
+    # untracked marker is REPORTED by git status, auto-commit.py classifies
+    # q-system/.q-system/ as `chore` exhaust, and the next ordinary session
+    # commits it straight back. The migration below would then have to run
+    # again, and again, forever.
+    #
+    # That is not a prediction. SYSTEM_NEVER_COMMIT closes this script's own
+    # commit path; the commit that re-added the marker to an instance at
+    # 2026-08-14 14:22 carried auto-commit.py's subject ("chore: update system
+    # infrastructure"), not this script's ("...before skeleton sync"). Two
+    # writers, and the array only ever guarded one of them.
+    #
+    # Ignoring the path guards every writer at once -- this script, the Stop
+    # hook, a stray `git add -A`, the founder's own commit -- because it works
+    # at the layer all of them read. The stanza is PARSED from the skeleton's
+    # own .gitignore, so adding a fourth never-commit path there reaches all 22
+    # instances without touching this file.
+    #
+    # ADVISORY FOR THE UPDATE, A HARD PRECONDITION FOR THE UNTRACK
+    # (PR #165 review round 6, major -- a defect in this block's first version).
+    #
+    # That version said: "an instance that cannot take the block is not a reason
+    # to abandon an otherwise good update, and the untrack below still runs."
+    # The first half is right and the second half is the bug. `git rm --cached`
+    # leaves the marker on disk UNTRACKED; if the ignore rules are not in place
+    # at that moment, git reports it and the next ordinary session's auto-commit
+    # puts it straight back. So a failed block turned the untrack from a repair
+    # into the exact regression the ordering exists to prevent -- and it would do
+    # it again on every run, because the marker's one line is a timestamp the
+    # tripwire rewrites on every arm.
+    #
+    # Leaving the marker TRACKED is the stable state. It is where 5 instances
+    # already sit, the sync still works, and the next run can retry. Untracking
+    # without ignoring is strictly worse than not untracking at all.
+    #
+    # So: the sync continues (advisory), the untrack does not (gated).
+    GITIGNORE_BLOCK="$SCRIPT_DIR/kipi-update-gitignore-block.py"
+    GITIGNORE_BLOCK_OK=0
+    if [ -f "$GITIGNORE_BLOCK" ]; then
+      if python3 "$GITIGNORE_BLOCK" --skeleton "$SCRIPT_DIR" --instance "$path"; then
+        GITIGNORE_BLOCK_OK=1
+      else
+        echo "    WARN: could not write the .gitignore managed block; skipping the never-commit untrack so the marker is not left untracked AND unignored"
+      fi
+    else
+      echo "    WARN: .gitignore block writer missing; skipping the never-commit untrack so the marker is not left untracked AND unignored"
+    fi
+
+    # ONE-TIME MIGRATION, and it must run BEFORE the block below (measured 2026-08-14, 6 instances).
+    #
+    # The chokepoint stops the baseline from BECOMING tracked. It does nothing for
+    # the 6 instances where it already is: on those, preserve-scan rule 3 still
+    # hands the committed copy to `rsync --delete` on the very next run. Untracking
+    # is the only thing that moves them into the state the two healthy instances
+    # are already in.
+    #
+    # Idempotent by construction: `ls-files --error-unmatch` is the test, so once
+    # the path is untracked every later run skips it and this costs one git call.
+    #
+    # NEVER a working-tree delete. `git rm --cached` unstages the file and leaves
+    # the instance's real baseline on disk, which is the whole point -- deleting it
+    # would cause by hand the exact outage this is repairing.
+    #
+    # THE PATHSPEC TRAP, and it is the reason for the assert. `git commit -- <path>`
+    # commits WORKTREE content and disregards the index, so the obvious
+    #
+    #     git rm --cached X && git commit -- X
+    #
+    # silently RE-ADDS X and undoes the untrack. The commit here therefore takes no
+    # pathspec -- which is only safe because the index was proved to hold nothing
+    # else, first by refusing outright when the founder has staged work (not ours to
+    # package, same rule as the dirty guard below), then by asserting the staged set
+    # is exactly this one path before committing.
+    for sys_path in "${SYSTEM_NEVER_COMMIT[@]}"; do
+      # Gated on the managed block being in place -- see the WARN above. A first
+      # attempt at this guard used ${GITIGNORE_BLOCK_OK:+...} on the array, which
+      # is wrong: the flag is 0 or 1 and "0" is non-empty, so it expanded on
+      # failure exactly as before. Plain and readable beats clever here.
+      [ "$GITIGNORE_BLOCK_OK" = "1" ] || continue
+      git ls-files --error-unmatch -- "$sys_path" >/dev/null 2>&1 || continue
+      if [ -n "$(git diff --cached --name-only 2>/dev/null)" ]; then
+        say "  WARNING: $sys_path is tracked, but the index already holds staged work."
+        say "           Leaving it. It will be deleted by this sync until it is untracked."
+        continue
+      fi
+      if ! git rm --cached --quiet -- "$sys_path" 2>/dev/null; then
+        say "  WARNING: could not untrack $sys_path"
+        continue
+      fi
+      sys_staged="$(git diff --cached --name-only 2>/dev/null)"
+      if [ "$sys_staged" != "$sys_path" ]; then
+        say "  WARNING: staging $sys_path produced an unexpected index; backing out"
+        git reset --quiet -q -- "$sys_path" >/dev/null 2>&1 || true
+        continue
+      fi
+      if git commit -q -m "chore: untrack instance-local $sys_path [no-issue: fleet updater instance-local untrack]
+
+This file is instance-local (ASK-282) and gitignored by policy. While it was
+tracked, the skeleton sync deleted it -- the skeleton once tracked the path and
+then removed it, so preserve-scan correctly treats it as a propagating deletion.
+The file itself is untouched on disk." 2>/dev/null; then
+        say "  untracking instance-local file: $sys_path"
+      else
+        say "  WARNING: could not commit the untrack of $sys_path; backing out"
+        git reset --quiet -q -- "$sys_path" >/dev/null 2>&1 || true
+      fi
+    done
+
     # Clear the system's OWN artifacts first, so the guard below judges founder
     # work only. Each path is committed individually and only if it is actually
     # dirty; nothing outside SYSTEM_OWNED_PATHS is ever touched here.
@@ -1598,6 +1815,33 @@ PY
       # against a scratch repo rather than by reading it.
       done < <(git status --porcelain -uall 2>/dev/null | cut -c4- \
                  | python3 "$sys_classifier" --system-state 2>/dev/null)
+    fi
+
+    # THE CHOKEPOINT (measured 2026-08-14, 6 instances). Both feeders have now run; this is the only place
+    # that can see everything either of them produced. See SYSTEM_NEVER_COMMIT for
+    # why committing these paths is what gets them deleted.
+    #
+    # `${arr[@]+"${arr[@]}"}` and the explicit empty branch are not style. This is
+    # /bin/bash 3.2 on macOS under `set -u`, where expanding an EMPTY array errors
+    # out (ASK-607 aborted a sync exactly this way), and where
+    # `arr=("${maybe_empty[@]:-}")` silently builds a ONE-element array holding the
+    # empty string -- which would then be printed as a committed file and handed to
+    # `git add ""`.
+    if [ "${#sys_owned_dirty[@]}" -gt 0 ]; then
+      sys_kept=()
+      for sys_path in ${sys_owned_dirty[@]+"${sys_owned_dirty[@]}"}; do
+        case " ${SYSTEM_NEVER_COMMIT[*]} " in
+          *" $sys_path "*)
+            say "  Leaving instance-local file uncommitted: $sys_path"
+            ;;
+          *) sys_kept+=("$sys_path") ;;
+        esac
+      done
+      if [ "${#sys_kept[@]}" -eq 0 ]; then
+        sys_owned_dirty=()
+      else
+        sys_owned_dirty=("${sys_kept[@]}")
+      fi
     fi
 
     # sp-46c73c76. This read `[ "$DRY_RUN" != "1" ]`, and DRY_RUN is only ever ""
@@ -1912,8 +2156,13 @@ because this commit is pathspec-limited." -- "${sys_add_paths[@]}" 2>&1)"; then
           source_path="$ARCHIVE_TMP/q-system/$relative"
           # No third argument: this rsync is a plain --delete with no filters,
           # so a build artifact here is content, not debris.
+          # 4th arg: the path as the SKELETON REPO spells it. The archive is
+          # `git archive HEAD` extracted with q-system/ inside, so a file the
+          # instance keeps at <prefix>/<relative> is q-system/<relative> in the
+          # skeleton. Passed per call site rather than derived inside the
+          # helper, because the plugins call site maps differently.
           if { [ -e "$source_path" ] || [ -L "$source_path" ]; } &&
-              is_instance_wip "$uf" "$source_path" ""; then
+              is_instance_wip "$uf" "$source_path" "" "q-system/$relative"; then
             echo "  ERROR: untracked WIP collides with skeleton path: $uf"
             COLLISION=1
           fi
@@ -2027,7 +2276,7 @@ PY
         CHANGES=$(git diff --cached --name-only 2>/dev/null | wc -l | tr -d ' ')
         if [ "$CHANGES" != "0" ]; then
           if ! guarded_commit "$path" \
-              "chore: sync q-system from skeleton $(date +%Y-%m-%d)"; then
+              "chore: sync q-system from skeleton $(date +%Y-%m-%d) [no-issue: fleet updater skeleton sync]"; then
             abandon_instance "  ERROR: could not commit q-system sync" && continue
           fi
           say "  OK ($CHANGES files updated)"
@@ -2226,10 +2475,24 @@ print("\n".join(mod.EXTRA_WATCHED))
           git rm -r -q --cached plugins/memory-lifecycle
         fi &&
         { stage_config_sync "$path" || { unstage_scope "$path" .claude/ plugins/; false; }; } &&
-        if ! git diff --cached --quiet 2>/dev/null; then
-          guarded_commit "$path" \
-            "chore: sync .claude config + plugins from skeleton $(date +%Y-%m-%d)"
-        fi
+        # THE COMMIT HALF NEEDS THE SAME UNWIND AS THE STAGING HALF (ASK-797).
+        # unstage_scope was wired to stage_config_sync's failure only, so a
+        # staging error unwound cleanly and a COMMIT error did not -- it left the
+        # index fully staged and abandoned the instance. The comment on
+        # unstage_scope already describes what that costs ("EVERY later run
+        # aborts at the dirty-tree guard, because that guard reads `git diff
+        # --cached`"); it just did not cover this exit.
+        #
+        # Measured 2026-08-14: 2 instances were carrying 10 staged additions each
+        # under a plugin the skeleton had already dropped, byte-identical across
+        # both repos, with clean worktrees. Nothing but this path produces that
+        # shape, and no later run could clear it -- a worktree checkout does not
+        # touch the index, so it looked like founder work forever.
+        { if ! git diff --cached --quiet 2>/dev/null; then
+            guarded_commit "$path" \
+              "chore: sync .claude config + plugins from skeleton $(date +%Y-%m-%d) [no-issue: fleet updater skeleton sync]" ||
+              { unstage_scope "$path" .claude/ plugins/; false; }
+          fi; }
       ); then
         CONFIG_FAILED=1
       fi
