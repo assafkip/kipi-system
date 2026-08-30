@@ -1,5 +1,4 @@
 {
-  "path": "q-system/.q-system/scripts/test/test_apply_census_fragments.py",
-  "capability": "the ratchet census counts capability-manifest fragments, so a declared test cannot be removed unseen",
-  "declared": "2026-08-29"
+ "path": "q-system/.q-system/scripts/test/test_apply_census_fragments.py",
+ "runner": "python3"
 }
