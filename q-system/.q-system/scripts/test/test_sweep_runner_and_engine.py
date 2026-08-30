@@ -57,6 +57,35 @@ class RunnerCase(unittest.TestCase):
                           "the sweep does not handle %s" % runner)
 
 
+class ExitCallDisarmCase(unittest.TestCase):
+    """PR #272 major. `sys.exit(main())` rewritten to `sys.exit(0)` does not
+    disarm a verdict -- it DELETES THE CALL. main() never runs, the mutant does
+    nothing, and every test asserting normal output goes red for a reason
+    unrelated to failure signalling. Those were then scored KILLED, the
+    false-confident direction."""
+
+    def test_a_call_argument_is_not_disarmed(self):
+        out, n = ms._disarm_exit_calls("    sys.exit(main())\n")
+        self.assertEqual(n, 0, "the call was replaced, so main() never runs")
+        self.assertIn("main()", out)
+
+    def test_a_name_argument_is_not_disarmed(self):
+        out, n = ms._disarm_exit_calls("    sys.exit(rc)\n")
+        self.assertEqual(n, 0)
+        self.assertIn("rc", out)
+
+    def test_a_literal_exit_code_is_still_disarmed(self):
+        """The rule has to keep WORKING, or the sweep measures nothing."""
+        out, n = ms._disarm_exit_calls("    sys.exit(1)\n")
+        self.assertEqual(n, 1)
+        self.assertIn("sys.exit(0)", out)
+
+    def test_raise_systemexit_with_a_literal_is_disarmed(self):
+        out, n = ms._disarm_exit_calls("    raise SystemExit(2)\n")
+        self.assertEqual(n, 1)
+        self.assertIn("SystemExit(0)", out)
+
+
 class EngineFingerprintCase(unittest.TestCase):
 
     def setUp(self):

@@ -23,10 +23,26 @@ Stage 1 -- ABSENT (attribution proof, and the positive control).
 
 Stage 2 -- DISARM (the finding).
   Only for pairs ABSENT confirmed. Neuter every failure-signalling site in the
-  subject at once: nonzero `sys.exit` -> `sys.exit(0)`, `return False` ->
-  `return True`, bash `exit 1` -> `exit 0`. The subject can no longer report
-  failure. If the test STILL passes, the test cannot observe this subject's
+  subject at once and see whether the test notices. The subject can no longer
+  report failure; if the test STILL passes, it cannot observe this subject's
   verdict. That is the founder's class stated as an executable experiment.
+
+  WHAT COUNTS AS A SITE, and what deliberately does not:
+    yes  `sys.exit(<literal>)` / `raise SystemExit(<literal>)` -> 0
+    yes  bash `exit <n>` / `return <n>` -> 0
+    yes  a JSON verdict: permissionDecision "deny" -> "allow", which is how a
+         PreToolUse hook denies (at exit ZERO, so no exit rule can see it)
+    NO   `sys.exit(main())` or `sys.exit(rc)`. Replacing the ARGUMENT deletes
+         the call: main() never runs, the mutant does nothing, and tests
+         asserting normal output go red for unrelated reasons -- scored KILLED,
+         which is the false-confident direction.
+    NO   `return False -> return True`. It matched every predicate, not the ones
+         carrying a verdict, so a kill could be earned by unrelated logic
+         breaking. Removed; the cost is captured as sp-aa0cd5da.
+
+  The rule behind both exclusions: mutating an expression whose VALUE is the
+  verdict is not the same as mutating the verdict, and a harness that cannot
+  tell them apart invents coverage.
 
 A single "total disarm" mutant per (test, subject) rather than N per-site
 mutants is deliberate: 182 tests x N x runtime is a sweep nobody runs twice.
@@ -397,6 +413,22 @@ def _disarm_exit_calls(line):
                 continue
             arg = line[m.end():i - 1].strip()
             if arg == "0":
+                pos = i
+                continue
+            # ONLY A LITERAL EXIT CODE IS A VERDICT (PR #272 major).
+            #
+            # `sys.exit(main())` rewritten to `sys.exit(0)` does not disarm a
+            # verdict -- it DELETES THE CALL. main() never runs, the mutant does
+            # nothing at all, and every test asserting normal output goes red for
+            # a reason that has nothing to do with failure signalling. Those
+            # tests were then scored KILLED, which is the false-confident
+            # direction: KILLED means "this one is fine, move on".
+            #
+            # Same shape as the `return False` rule removed earlier in this PR.
+            # Mutating an expression whose VALUE is the verdict is not the same
+            # as mutating the verdict, and a harness that cannot tell them apart
+            # invents coverage.
+            if not arg.isdigit():
                 pos = i
                 continue
             line = line[:m.end()] + "0" + line[i - 1:]
