@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
-"""Every test file is reached by SOME runner, or it is named in the baseline.
+"""Every test file is EXECUTED BY A GATE, or it is named in the baseline.
+
+THE PREDICATE, STATED EXACTLY, because a looser word here is the same defect
+this file exists to catch. "Reached" is measured as: declared in
+expected_tests/, OR named by a pytest/python3 invocation in .github/workflows/,
+OR under a directory a CI step runs wholesale. That is the set of ways a test
+can fail a merge.
+
+It is NOT the same as "collects under pytest". A bare root `pytest` collects
+plenty that CI never runs -- the four voiceloop suites collect 84 tests and
+gate nothing. Reachable and never reached is the shape that survives a casual
+audit: someone greps, sees them collect, and moves on. So the baselined entries
+are not dead code and must not be deleted on sight; the fix for one is almost
+always to DECLARE it, which is why the file that lists them says so in its own
+header.
 
 THE GAP THIS CLOSES. The capability gate answers one direction: a test DECLARED
 in the manifest must actually execute (that is the silent-absence gate,
@@ -7,9 +21,10 @@ prd-silent-absence-capability-gate-2026-07-23, and it works). Nothing answered
 the other direction: a test file that is present, green, and declared NOWHERE.
 
 Measured on main at 569b0ec0: 176 tracked `test_*.py`, 108 of them undeclared.
-Ten of those, all in `q-system/.q-system/tests/`, were reached by no runner at
-all -- not the manifest, not a CI pytest path, not the separation harness. They
-pass. 174 assertions, green, invisible. A capability gate whose whole job is
+Ten of those, all in `q-system/.q-system/tests/`, were executed by nothing that
+gates a merge -- not the manifest, not a CI pytest path, not the separation
+harness. They pass. 174 assertions, green, and no run that could go red on
+them. A capability gate whose whole job is
 catching a check that does not run could not see ten whole files of them,
 because it only ever looked at what someone had already declared.
 
@@ -126,7 +141,22 @@ def main():
 
     if args.write_baseline:
         (root / BASELINE).write_text(json.dumps(
-            {"_why": "See reachability-check.py. This set may only SHRINK.",
+            {"_what_this_list_is":
+                 "Test files that NO GATE EXECUTES: not declared in "
+                 "q-system/.q-system/capability/expected_tests/, and not named "
+                 "or covered by any pytest/python3 invocation in "
+                 ".github/workflows/. Several of them PASS and several collect "
+                 "fine under a bare root `pytest` -- they are live tests that "
+                 "gate nothing, NOT dead code.",
+             "_how_to_remove_an_entry":
+                 "Declare the file in expected_tests/ (or add it to a CI step), "
+                 "and delete its path from this array in the SAME change. "
+                 "reachability-check.py fails while a listed file has become "
+                 "reached, which is how this list drains instead of rotting. "
+                 "Deleting the TEST FILE is almost never the right move: check "
+                 "whether it passes first.",
+             "_why": "This set may only SHRINK. A new unreached test fails the "
+                     "check. See reachability-check.py.",
              "unreached": unreached}, indent=1) + "\n")
         print(f"baseline written: {len(unreached)} unreached test files frozen")
         return 0
@@ -146,13 +176,13 @@ def main():
 
     if not new and not stale:
         print(f"reachability-check: OK ({len(tests)} test files, "
-              f"{len(frozen)} baselined unreached, 0 new)")
+              f"{len(frozen)} baselined as executed by no gate, 0 new)")
         return 0
 
     rc = 0
     if new:
         rc = 2
-        print("reachability-check: FAIL -- new test file reached by no runner:",
+        print("reachability-check: FAIL -- new test file that no gate executes:",
               file=sys.stderr)
         for f in new:
             print(f"  {f}", file=sys.stderr)

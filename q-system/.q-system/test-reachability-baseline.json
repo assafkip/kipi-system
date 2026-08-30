@@ -1,5 +1,7 @@
 {
- "_why": "See test-reachability.py. This set may only SHRINK.",
+ "_what_this_list_is": "Test files that NO GATE EXECUTES: not declared in q-system/.q-system/capability/expected_tests/, and not named or covered by any pytest/python3 invocation in .github/workflows/. Several of them PASS and several collect fine under a bare root `pytest` -- they are live tests that gate nothing, NOT dead code.",
+ "_how_to_remove_an_entry": "Declare the file in expected_tests/ (or add it to a CI step), and delete its path from this array in the SAME change. reachability-check.py fails while a listed file has become reached, which is how this list drains instead of rotting. Deleting the TEST FILE is almost never the right move: check whether it passes first.",
+ "_why": "This set may only SHRINK. A new unreached test fails the check. See reachability-check.py.",
  "unreached": [
   "automation/test_voice_refresh.py",
   "automation/test_voice_refresh_command.py",
