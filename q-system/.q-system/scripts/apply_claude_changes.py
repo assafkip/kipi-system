@@ -141,6 +141,41 @@ import sys
 import tempfile
 import time
 
+CAPABILITY_FRAGMENT_DIR = os.path.join("q-system", ".q-system", "capability")
+
+
+def _capability_manifest():
+    """Locate the fragment assembler beside this engine, or return None.
+
+    SOFT on purpose. This file's own suite mutation-tests the engine by copying
+    it to a TEMPDIR and running the copy (`mutate` writes $T/mutant_*.py), so a
+    module-level `import capability_manifest` resolved against __file__'s
+    directory raised ModuleNotFoundError there and killed 13 mutation cases at
+    import time -- every one of them reported as "mutant did not write", which
+    reads as a non-load-bearing test rather than a broken harness.
+
+    Absence degrades to "no declared tests", which is exactly what the file read
+    this replaced did when the manifest was missing. It is not a silent hole:
+    capability-gate.py imports the same module HARD, so a real disappearance is
+    RED on the next gate run, not quietly tolerated here.
+    """
+    for base in (os.path.dirname(os.path.abspath(__file__)),
+                 os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "q-system", ".q-system", "scripts")):
+        mod_path = os.path.join(base, "capability_manifest.py")
+        if not os.path.isfile(mod_path):
+            continue
+        spec = importlib.util.spec_from_file_location("capability_manifest",
+                                                      mod_path)
+        mod = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(mod)
+        except Exception:
+            return None
+        return mod
+    return None
+
+
 SCHEMA_VERSION = 1
 
 # L1: the op vocabulary. Additive ops reach anything under .claude/.
@@ -791,17 +826,18 @@ def census(root):
     c["agents"] = _dir_names(os.path.join(root, ".claude", "agents"))
     c["output_styles"] = _dir_names(os.path.join(root, ".claude", "output-styles"))
 
-    manifest = os.path.join(root, "q-system", ".q-system", "capability-manifest.json")
+    # The manifest is assembled from q-system/.q-system/capability/ -- one JSON
+    # fragment per declaration, so two branches declaring two tests write two
+    # files instead of colliding on one array. `load` records problems into the
+    # list it is handed and never raises: this census is a ratchet input, and a
+    # single malformed fragment must not crash the tool that would let you fix
+    # it (the file read it replaced swallowed ValueError for the same reason).
     tests = set()
-    if os.path.isfile(manifest):
-        try:
-            with open(manifest) as fh:
-                data = json.load(fh)
-            for entry in data.get("expected_tests") or []:
-                if isinstance(entry, dict) and "path" in entry:
-                    tests.add(entry["path"])
-        except ValueError:
-            pass
+    capmod = _capability_manifest()
+    data = (capmod.load(root, []) if capmod else None) or {}
+    for entry in data.get("expected_tests") or []:
+        if isinstance(entry, dict) and "path" in entry:
+            tests.add(entry["path"])
     c["manifest_tests"] = tests
     return c
 
@@ -1091,11 +1127,13 @@ def main(argv):
         copy_root = os.path.join(tmp, "root")
         os.makedirs(copy_root)
         shutil.copytree(os.path.join(root, ".claude"), os.path.join(copy_root, ".claude"), symlinks=True)
-        manifest_rel = os.path.join("q-system", ".q-system", "capability-manifest.json")
+        # A DIRECTORY now, not a file. Copying only the file left the copy
+        # tree with an empty manifest census, so every declared test read as
+        # "would disappear" and the ratchet refused every proposal.
+        manifest_rel = CAPABILITY_FRAGMENT_DIR
         src_manifest = os.path.join(root, manifest_rel)
-        if os.path.isfile(src_manifest):
-            os.makedirs(os.path.dirname(os.path.join(copy_root, manifest_rel)), exist_ok=True)
-            shutil.copy2(src_manifest, os.path.join(copy_root, manifest_rel))
+        if os.path.isdir(src_manifest):
+            shutil.copytree(src_manifest, os.path.join(copy_root, manifest_rel))
         for rel, content in staged.items():
             dest = os.path.join(copy_root, rel)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
