@@ -309,8 +309,32 @@ def candidate_subjects(root, test_rel, max_subjects):
 _LEAD = r"^([ \t]*(?:(?:\|\||&&|then|else|do)[ \t]+)?)"
 _PY_TAIL = r"([ \t]*(?:\#.*)?\r?\n?)$"
 _SH_TAIL = r"([ \t]*;{0,2}[ \t]*(?:\#.*)?\r?\n?)$"
+# `return False -> return True` IS GONE (PR #272 major).
+#
+# It matched every predicate in the file, not the ones carrying a verdict. A test
+# could then go red because some helper's internal logic broke, and the sweep
+# booked that as "this test guards the subject's ability to report failure" --
+# a KILL earned by an unrelated change.
+#
+# A false KILLED is the dangerous direction for this tool specifically. SURVIVED
+# says "look at this test"; KILLED says "this one is fine, move on". Over-claiming
+# coverage retires exactly the tests someone should have checked, and it does it
+# quietly.
+#
+# So the rule is removed rather than narrowed. Narrowing means guessing which
+# `return False` is a verdict from its name or position, and a guess here
+# produces the same confident-wrong-answer it would be trying to prevent. The
+# exit-code rules below still cover the real verdict paths, which is where
+# process-level failure signalling actually lives.
+#
+# WHAT THIS COSTS, stated rather than hidden: a Python gate whose deny IS
+# `return False` becomes unmeasurable by this harness and will report
+# no-disarm-site instead of a verdict. That is a real loss of coverage and it is
+# captured, not accepted silently -- the replacement is a verdict-POSITION-aware
+# rule (the returns of a function whose value reaches sys.exit or a caller's
+# failure branch), which needs call-graph awareness this regex layer does not
+# have.
 PY_RULES = [
-    (re.compile(r"^([ \t]*)return[ \t]+False" + _PY_TAIL), r"\g<1>return True\g<2>"),
     (re.compile(r"^([ \t]*)return[ \t]+[1-9][0-9]*" + _PY_TAIL), r"\g<1>return 0\g<2>"),
 ]
 SH_RULES = [
