@@ -202,38 +202,55 @@ run_check() {
 echo "verify.sh ${MODE} in ${TARGET}"
 
 # --- python: syntax, every tracked .py -----------------------------------
-# py_compile is not a linter and is not pretending to be one. It is the floor
-# under the floor: a file that does not parse cannot be reasoned about by
-# anything downstream, and this repo has no ruff installed to catch it.
+# This is not a linter and is not pretending to be one. It is the floor under
+# the floor: a file that does not compile cannot be reasoned about by anything
+# downstream, and this repo has no ruff installed to catch it.
 PYFILES="$(git -C "$REPO" ls-files '*.py' | head -4000)"
 if [ -n "$PYFILES" ]; then
-  # ast.parse, NOT py_compile, and that is the whole fix (2026-08-29).
+  # compile(), NOT py_compile, and NOT ast.parse either. Two fixes, one line.
   #
-  # py_compile WRITES a .pyc. So any write failure surfaces through a check
-  # labelled "python syntax", and the label is a lie about the cause. Measured
-  # during a full-disk stop: this printed `python syntax FAILED` and "a tree that
-  # does not parse cannot be tested" while every file parsed fine and the real
-  # errors were hundreds of `[Errno 28] No space left on device` from compileall.
-  # It sent the reader to debug their own code, which is the most expensive place
-  # a wrong error message can send someone.
+  # WHY NOT py_compile (2026-08-29). It WRITES a .pyc, so any write failure
+  # surfaces through a check labelled "python syntax", and the label is a lie
+  # about the cause. Measured during a full-disk stop: this printed
+  # `python syntax FAILED` and "a tree that does not parse cannot be tested"
+  # while every file parsed fine and the real errors were hundreds of
+  # `[Errno 28] No space left on device` from compileall. It sent the reader to
+  # debug their own code, which is the most expensive place a wrong error
+  # message can send someone. Reproducer without a full disk: put a valid .py in
+  # a directory, chmod 500 it, run the old line, and read
+  # `[Errno 13] Permission denied` reported as a syntax failure.
   #
-  # Reproducer, no full disk required: put a valid .py in a directory, chmod 500
-  # it, and run the old line. `[Errno 13] Permission denied: '"'"'__pycache__'"'"'`,
-  # reported as a syntax failure on a syntactically perfect file. The ast.parse
-  # form passes.
+  # WHY NOT ast.parse, which was the first fix and was too weak (Codex major,
+  # PR #277). ast.parse only PARSES. The compiler runs a second layer of checks
+  # that the parser does not, and every one of them is a real SyntaxError that
+  # py_compile used to catch and ast.parse waves through. Measured, all six:
   #
-  # Relabelling the error would have been the smaller fix and the worse one: this
-  # check has no reason to write anything, so removing the write removes the whole
-  # failure class rather than renaming it. A control that cannot fail for a reason
-  # unrelated to what it measures is better than one that reports that reason well.
+  #     case                      ast.parse   compile()
+  #     return outside function   pass        CAUGHT
+  #     break outside loop        pass        CAUGHT
+  #     continue outside loop     pass        CAUGHT
+  #     yield outside function    pass        CAUGHT
+  #     duplicate parameter       pass        CAUGHT
+  #     await outside async       pass        CAUGHT
+  #
+  # compile() keeps the property the change was FOR -- it writes nothing -- while
+  # restoring everything py_compile caught. Removing the write was the right
+  # idea; removing the compiler with it was the accident.
+  #
+  # tokenize.open, not open(encoding="utf-8"): it honours the PEP 263 coding
+  # cookie and strips a UTF-8 BOM, exactly as the interpreter does when it loads
+  # the file. Plain utf-8 leaves the BOM in the string and compile() then
+  # reports a SyntaxError on a file Python itself runs happily. No such file is
+  # in the repo today, which is precisely why it would have been found late.
   run_check "python syntax" bash -c '
     cd "$1" || exit 1
     fail=0
     while IFS= read -r f; do
       [ -f "$f" ] || continue
-      python3 -c "import ast,sys
-src=open(sys.argv[1],encoding=\"utf-8\").read()
-ast.parse(src,sys.argv[1])" "$f" 2>&1 || fail=1
+      python3 -c "import sys,tokenize
+with tokenize.open(sys.argv[1]) as fh:
+    src = fh.read()
+compile(src, sys.argv[1], \"exec\")" "$f" 2>&1 || fail=1
     done <<< "$2"
     exit $fail
   ' _ "$TARGET" "$PYFILES"
