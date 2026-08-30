@@ -446,7 +446,7 @@ _SAFE_SHAPE = ("the only merge this gate permits is:\n"
                "no other flags.")
 
 
-def _merge_verdict(seg: list[str], note: str | None = None) -> str | None:
+def _merge_verdict(seg: list[str], cwd: str, note: str | None = None) -> str | None:
     """An unsafe `gh ... merge` invocation -> reason. Anything else -> None.
 
     The trigger is deliberately broad -- a `gh` token ANYWHERE plus a `merge`
@@ -510,10 +510,50 @@ def _merge_verdict(seg: list[str], note: str | None = None) -> str | None:
         # that someone actually ran the tests. This LOOSENS nothing: --auto is
         # still accepted unchanged wherever real checks exist, and --admin is
         # still refused above.
+        # `cwd` is a PARAMETER, not a global (Codex major, PR #269 round 2).
+        # The receipt deferral was added reading a `cwd` that _merge_verdict
+        # never took, so every non---auto merge raised NameError and the hook
+        # exited 1. Exit 1 is not a block: PreToolUse treats a crashed hook as
+        # no opinion, so the one shape this gate exists to refuse was the one
+        # shape that walked straight through. A gate that fails open on its
+        # own error is worse than no gate, because it is trusted.
         reason = _receipt_missing(rest, cwd)
         if reason:
             return reason + "\n  " + _SAFE_SHAPE
     return None
+
+
+def _protection_exists(cwd: str) -> bool | None:
+    """True when the repo's default branch has required status checks.
+
+    None means the question could not be answered, and every caller treats that
+    as "assume it does", because the receipt path must never open on a repo whose
+    protection state is unknown.
+    """
+    try:
+        r = subprocess.run(
+            ["gh", "api", "repos/{owner}/{repo}/branches/{branch}/protection"
+             .replace("{branch}", "main"),
+             "-q", ".required_status_checks.contexts | length"],
+            cwd=cwd, capture_output=True, text=True, timeout=20)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        # ONLY GitHub's own sentence counts as "not protected". A BARE 404 is
+        # ambiguous -- it is also what a missing repo, a revoked token and a
+        # typo'd remote return -- and reading it as "unprotected" would open the
+        # local-receipt path on exactly the failures where you least want it
+        # open. Measured against the fixture repos in this suite: their origin
+        # points at a repo that does not exist, and a bare-404 rule classified
+        # them as unprotected, which is the wrong answer arrived at by accident.
+        blob = (r.stderr or "") + (r.stdout or "")
+        if "Branch not protected" in blob:
+            return False
+        return None
+    try:
+        return int(r.stdout.strip()) > 0
+    except ValueError:
+        return None
 
 
 def _receipt_missing(rest: list[str], cwd: str) -> str | None:
@@ -524,20 +564,84 @@ def _receipt_missing(rest: list[str], cwd: str) -> str | None:
     cannot be read at all this fails CLOSED, because "could not check" and
     "checked and fine" are the two answers a gate must never merge.
     """
+    # A LOCAL FILE MAY NOT OUTRANK A REQUIRED CHECK (Codex major, PR #269 r6).
+    #
+    # The receipt is written by pr_verify.py, in this working tree, by the same
+    # actor this gate constrains. Nothing stops that actor writing
+    # {"result": "green", "sha": <the real head>} by hand instead of running the
+    # floor. It cannot be made unforgeable against a local agent, and pretending
+    # otherwise is worse than admitting it: the receipt defends against
+    # FORGETTING to verify, never against a deliberate bypass.
+    #
+    # So it is only ever offered where there is nothing better. The deferral
+    # exists for repos with NO branch protection, where `--auto` is refused by
+    # GitHub outright and the required contexts are never posted -- there, a
+    # receipt beats nothing. Where protection DOES exist, GitHub is holding the
+    # real line and no local file may step in front of it.
+    #
+    # Unknown counts as protected. "Could not check" and "checked and fine" are
+    # the two answers a gate must never merge.
+    protected = _protection_exists(cwd)
+    if protected is not False:
+        why = ("this branch is protected, so GitHub is already holding the "
+               "required checks" if protected
+               else "the protection state could not be read, so this assumes it "
+                    "is protected")
+        return ("a merge without --auto is refused here: %s. A green receipt is "
+                "a LOCAL file written by the same actor this gate constrains, "
+                "so it may not outrank a required check.\n"
+                "  Let the machinery merge it:  gh pr merge --auto --squash <n>"
+                % why)
+
     prs = [t for t in rest if t.isdigit()]
     if len(prs) != 1:
-        return ("a merge without --auto needs exactly one PR number, so the "
-                "green receipt can be looked up.")
+        # `<n>` really IS optional in the safe shape, and the help is right to
+        # say so: `gh pr merge --auto` infers the PR from the current branch and
+        # GitHub does the holding either way. It is only optional THERE (Codex
+        # minor, PR #269 round 7). This path has to name a file on disk, so it
+        # needs the number, and the message now says which of the two it is
+        # talking about instead of appearing to contradict the shape above it.
+        return ("a merge WITHOUT --auto needs exactly one PR number, so the "
+                "green receipt can be looked up on disk. (`<n>` is optional in "
+                "the safe shape below because `--auto` infers it from the "
+                "current branch; this path cannot.)")
     pr = prs[0]
-    path = os.path.join(cwd, ".prd-os", "pr-receipts", f"pr-{pr}.json")
+    # The receipt lives at the REPO ROOT, and `cwd` is wherever the shell
+    # happens to be (Codex major, PR #269 round 4). Joining `.prd-os` onto a
+    # subdirectory finds nothing, so a perfectly good green receipt read as
+    # absent and the gate refused an unattended merge it should have allowed.
+    # It fails CLOSED, so this was a false BLOCK and not a hole -- and a gate
+    # that blocks correct work is how a gate gets switched off, which is the
+    # slower version of the same failure.
+    #
+    # `--show-toplevel` from `cwd`, and only that: if `cwd` is not inside a
+    # repository there is nothing to resolve and the old behaviour stands,
+    # which still fails closed.
+    root = cwd
+    try:
+        top = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=10)
+        if top.returncode == 0 and top.stdout.strip():
+            root = top.stdout.strip()
+    except Exception:
+        pass
+    path = os.path.join(root, ".prd-os", "pr-receipts", f"pr-{pr}.json")
     try:
         with open(path) as fh:
             receipt = json.load(fh)
     except Exception:
+        # THE PATH HAS TO NAME A FILE THAT EXISTS (Codex major, PR #269 r5).
+        # This said `automation/pr_verify.py`, which was in no repo in the fleet,
+        # and nothing wrote .prd-os/pr-receipts/ either -- so this branch could
+        # never be satisfied and every non---auto merge was refused forever. The
+        # gate was not looser than it looked, it was INERT in the one direction
+        # it had just been widened. The producer now exists at the path below and
+        # is the only writer of that directory.
         return (f"no green receipt for PR #{pr}. Run:\n"
-                f"      python3 automation/pr_verify.py {pr}\n"
-                "  which runs the PR's tests and treats a zero-test run as a "
-                "FAILURE, the case that let two red PRs look mergeable.")
+                f"      python3 q-system/.q-system/scripts/pr_verify.py {pr}\n"
+                "  which runs verify.sh --full against the PR head and treats a "
+                "zero-test run as a FAILURE, the case that let two red PRs look "
+                "mergeable.")
     if receipt.get("result") != "green":
         return f"the receipt for PR #{pr} does not say green."
     try:
@@ -700,7 +804,15 @@ def classify(command: str, cwd: str, _depth: int = 0) -> tuple[str, str]:
             resolved = _resolve_dir(seg[1], cur_dir)
             cur_dir = resolved if resolved else cur_dir
             continue
-        reason = _merge_verdict(seg, note)
+        # `cur_dir`, NOT `cwd` (Codex major, PR #269 round 3). `cd` is tracked
+        # a few lines up precisely because a chained command can move repos
+        # mid-line, and _push_verdict below already asked in the tracked
+        # directory. The merge side did not, so
+        #     cd /other/repo && gh pr merge 9 --squash
+        # looked up the receipt in the ORIGINAL repo: a green receipt for PR 9
+        # here authorized merging a different PR 9 over there. Two neighbouring
+        # calls, one rule, and only one of them was asking in the right place.
+        reason = _merge_verdict(seg, cur_dir, note)
         if reason:
             return "deny", reason
         reason = _push_verdict(seg, cur_dir)

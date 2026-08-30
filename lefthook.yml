@@ -84,8 +84,15 @@ pre-commit:
     # lefthook (the ACTIVE framework) rather than .githooks (which core.hooksPath
     # does not point at) so they actually run on commit. Skeleton-only by nature.
     plugin-version-bump:
-      run: python3 q-system/.q-system/scripts/plugin-version-bump-check.py --staged
-      fail_text: "A changed plugin must bump its .claude-plugin/plugin.json version (else the version-keyed cache serves the stale copy)."
+      # --fix, not refuse (sp-97303649 / ASK-1039). Refusing deadlocked with the
+      # token-guard call ceiling (only `git commit` is exempt, and the bump needs
+      # an edit) AND left the refused changes STAGED, so the follow-up bump commit
+      # silently absorbed them -- the ASK-999 port landed under a message naming
+      # only a version bump, and fixing that needs a hook-blocked force-push. The
+      # patch bump is derivable, so it is derived and announced on stderr.
+      run: python3 q-system/.q-system/scripts/plugin-version-bump-check.py --staged --fix
+      stage_fixed: true
+      fail_text: "A changed plugin needs a .claude-plugin/plugin.json version bump and the auto-bump could not derive one (non-numeric patch?). Bump it by hand."
 
     settings-template-sync:
       run: CLAUDE_PROJECT_DIR="$(git rev-parse --show-toplevel)" python3 q-system/.q-system/scripts/settings-template-sync-check.py --check

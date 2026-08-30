@@ -44,6 +44,50 @@ import pytest
 
 HOOK = pathlib.Path(os.environ.get("HOME", "")) / ".claude/hooks/destructive-op-deny.sh"
 
+# The ref hatch has to beat the machine-local skip, or it cannot rescue anything
+# (Codex minor, PR #270): pointing KIPI_DESTRUCTIVE_HOOK at a candidate copy on a
+# machine WITHOUT the live hook skipped the whole module, silently, and a suite
+# that skips reads exactly like a suite that passes.
+_OVERRIDE = os.environ.get("KIPI_DESTRUCTIVE_HOOK")
+
+# THE REPO COPY, so this suite can run somewhere other than one laptop (Codex
+# major, PR #274). The hook is machine-local, so with no copy in the repo every
+# case here skipped on every runner and verify.sh reported
+# `pytest:test_destructive_op_deny_anchor.py ok` having executed NOTHING: 95
+# assertions about the fleet's most destructive guard, gated by a false green.
+#
+# WHERE THE COPY LIVES IS THE WHOLE ARGUMENT (PR #269, rounds 4 and 5).
+#
+# Round 4: an earlier revision put a byte-identical copy at
+# q-system/.q-system/hooks/destructive-op-deny.sh. Codex reviewed it as
+# ENFORCEMENT and flagged its MCP wildcards. It was right to -- a shell script
+# under `hooks/` reads as live, the capability gate treats it as a wiring
+# surface, and ASK-1144 / PR #279 was already landing that exact path. Two
+# branches adding one file is a guaranteed conflict and a second owner for a gate
+# that must have exactly one.
+#
+# Round 5: referencing that path WITHOUT shipping a file left all 95 cases
+# skipping and the suite exiting 0, which is the false green this whole thing was
+# reported for. Deferring to #279 made the report true for longer.
+#
+# So: a FIXTURE, under tests/fixtures/, non-executable, with `.reference.` in its
+# name. It cannot be mistaken for the gate by a reader, by the capability gate,
+# or by a reviewer, and it collides with nothing. The deny SEMANTICS stay with
+# ASK-1144; this file only has to be the same bytes, and the drift check below
+# fails the moment it is not.
+#
+# The live hook is still the one that runs, and it is still what these cases
+# prefer. sp-66e74091 carries the coupling.
+REPO_COPY = (pathlib.Path(__file__).parent
+             / "q-system/.q-system/tests/fixtures/destructive-op-deny.reference.sh")
+
+if _OVERRIDE:
+    _UNDER_TEST = pathlib.Path(_OVERRIDE)
+elif HOOK.is_file():
+    _UNDER_TEST = HOOK
+else:
+    _UNDER_TEST = REPO_COPY
+
 CURRENT = "'kipi[[:space:]]+update'"
 # Command position, allowing an env-var assignment prefix and command
 # substitution, because those really do invoke it.
@@ -53,13 +97,20 @@ ANCHORED = (
 )
 
 pytestmark = pytest.mark.skipif(
-    not HOOK.is_file(), reason="destructive-op-deny.sh is machine-local; not present here")
+    not _UNDER_TEST.is_file(),
+    reason="destructive-op-deny.sh is machine-local; not present here and "
+           "KIPI_DESTRUCTIVE_HOOK names no readable copy either")
 
 
 def variants(tmp_path):
-    """(live copy, patched copy). The live hook is READ, never written."""
+    """(live copy, patched copy). The hook is READ, never written.
+
+    Reads _UNDER_TEST, not HOOK: on a machine with no live hook these classes
+    used to fail rather than skip once the module stopped skipping wholesale,
+    which is 23 cases that were green only because one laptop had the file.
+    """
     live = tmp_path / "live.sh"
-    shutil.copy(HOOK, live)
+    shutil.copy(_UNDER_TEST, live)
     text = live.read_text(encoding="utf-8")
     assert CURRENT in text, (
         "the unanchored pattern is gone from the live hook -- either this was "
@@ -207,7 +258,7 @@ _HOOK_ENV = "KIPI_DESTRUCTIVE_HOOK"
 def hook_copy(tmp_path):
     """A copy of the hook under test. Never the live file: decide() runs it, and
     a hook run with HOME redirected still writes an audit log."""
-    src = pathlib.Path(os.environ.get(_HOOK_ENV) or HOOK)
+    src = _UNDER_TEST
     assert src.is_file(), "%s does not exist: %s" % (_HOOK_ENV, src)
     dst = tmp_path / "under-test.sh"
     shutil.copy(src, dst)
@@ -296,6 +347,161 @@ class TestTheDryExemptionIsPerSegment:
                         # must not reach it: this is an rm, not a preview.
                         "rm -rf /tmp/whatever --dry-run"):
             assert decide(hook, command, tmp_path) == "deny", command
+
+
+# ===================================================================== ASK-1131
+# THE THIRD HOLE IN THE SAME PREDICATE: IT IS POSITIONAL.
+#
+#     'rm[[:space:]]+-[a-zA-Z]*[rRf]'
+#     'git[[:space:]]+reset[[:space:]]+--hard'
+#
+# Each pattern requires the dangerous token to sit IMMEDIATELY after the command
+# name. Insert any innocuous flag ahead of it and the match position moves, so
+# the delete runs unguarded. Proven with a canary: the plain recursive-force
+# delete of a directory is BLOCKED, the same delete with -v inserted first
+# EXECUTED and the directory was gone.
+#
+# This is worse than the dry-run hole. That one needs a compound command; this
+# is a single natural invocation, and adding -v to watch what is being removed
+# is something people type deliberately.
+#
+# HOW IT SURFACED, because the method matters more than the bug. Two agents
+# measured the same guard and disagreed: one saw the git removal form BLOCKED,
+# the other had run it successfully twice with -q inserted. Neither was wrong,
+# and it was nearly filed as a long-flag-versus-short-flag runbook nit. Two
+# contradictory measurements of one guard meant the guard was broken.
+#
+# THE FIX IS NOT A FOURTH PATTERN. Three patterns for three holes leaves the
+# fourth. The hook now inspects each stage's ARGV -- program, subcommand, and
+# every flag wherever it sits -- instead of regexing a substring of the line.
+# The substring list is KEPT: it can only ever DENY, so nothing it already
+# catches (including the deliberate prose false positives) changes.
+
+# Every one of these really does destroy something, and every one currently
+# slips the positional patterns. None may ever be allowed.
+FLAG_POSITION = [
+    # The coordinator's canary, verbatim in shape.
+    "rm -v -rf /tmp/ask1131-canary",
+    "rm -i -r /tmp/ask1131-canary",
+    "rm --verbose -rf /tmp/ask1131-canary",
+    "rm -v --recursive --force /tmp/ask1131-canary",
+    "git push -q --force origin main",
+    "git push --quiet --force-with-lease origin main",
+    "git branch -q -D feature/x",
+    "git clean -q -fd",
+    "git reset -q --hard",
+    # A global flag is a flag too: `git -C dir` moves the subcommand along.
+    "git -C /tmp/repo reset --hard",
+    "git -c user.name=x push --force origin main",
+    # In a LATER stage, so the scan has to split the line before it can read an
+    # argv at all: over the whole string the program reads as `echo`/`cd`.
+    # (Added from mutation: replacing the stage split with `cat` survived every
+    # case above.)
+    "echo preparing; rm -v -rf /tmp/ask1131-canary",
+    "cd /tmp && git push -q --force origin main",
+    # A transparent prefix that takes its OWN options. Stripping the prefix name
+    # alone leaves the prefix's option sitting where the program should be, so
+    # the scan reads the program as `-u` and finds no rule. These are NOT caught
+    # by the substring list either: the leading -v/-i is hole 3 again, so both
+    # layers miss them together. (Codex major, PR #274.)
+    "sudo -u root rm -v -rf /tmp/ask1131-canary",
+    "env -i rm -v -rf /tmp/ask1131-canary",
+    "nice -n 10 rm -i -r /tmp/ask1131-canary",
+    "sudo -u root git push -q --force origin main",
+    # The program token QUOTED or escaped. `"rm" -rf DIR` runs rm, and the
+    # substring list misses it too because there is a quote between the name and
+    # the space it wants. Escaping the name is also how you bypass an alias, so
+    # it is a form people type on purpose. (Codex major, PR #274 round 2.)
+    '"rm" -rf /tmp/ask1131-canary',
+    "'rm' -rf /tmp/ask1131-canary",
+    "\\rm -rf /tmp/ask1131-canary",
+    '"git" push --force origin main',
+]
+
+# The other half of the fix, and the half a pattern-per-hole approach loses:
+# ordinary commands that merely LOOK like the shapes above must still run.
+FLAG_POSITION_SAFE = [
+    "rm /tmp/one-file.txt",
+    "rm -- /tmp/one-file.txt",
+    # A LONG flag that happens to spell r, f and d inside it. A short-flag test
+    # that forgets to skip `--` reads "interactive" as -r -f and refuses an
+    # ordinary single-file delete. (Added from mutation: dropping that skip
+    # survived every other case here.)
+    "rm --interactive=once /tmp/one-file.txt",
+    "ls -rf /tmp",
+    "git push origin main",
+    "git branch -q feature/x",
+    "git reset -q HEAD~1",
+    "git clean -n",
+    "grep -rf patterns.txt src/",
+    "git -C /tmp/repo status",
+    # The same option-bearing prefixes in front of something harmless. Offering
+    # the rules every starting position must not turn a prefix's own option into
+    # a finding.
+    "sudo -u root ls -rf /tmp",
+    "nice -n 10 rm /tmp/one-file.txt",
+]
+
+
+class TestFlagPositionDoesNotMoveTheTarget:
+
+    @pytest.mark.parametrize("command", FLAG_POSITION)
+    def test_a_leading_flag_does_not_hide_the_dangerous_one(self, tmp_path, command):
+        assert decide(hook_copy(tmp_path), command, tmp_path) == "deny", (
+            "a leading flag moved the dangerous one out of match position "
+            "and the command ran unguarded: %r" % command)
+
+    @pytest.mark.parametrize("command", FLAG_POSITION_SAFE)
+    def test_an_ordinary_command_still_runs(self, tmp_path, command):
+        assert decide(hook_copy(tmp_path), command, tmp_path) == "allow", (
+            "argv inspection blocked an ordinary command: %r" % command)
+
+    @pytest.mark.parametrize("command", REAL)
+    def test_the_fleet_shapes_are_unaffected(self, tmp_path, command):
+        assert decide(hook_copy(tmp_path), command, tmp_path) == "deny", command
+
+    @pytest.mark.skipif(not HOOK.is_file(),
+                        reason="no live hook on this machine; nothing to drift from")
+    def test_the_vendored_copy_has_not_drifted(self):
+        """The vendored copy is what CI actually executes. If it drifts from the
+        hook that really runs, CI is green about a different program -- which is
+        the same false green vendoring was added to remove, one layer over."""
+        assert REPO_COPY.is_file(), (
+            "the reference fixture is missing: %s. Without it this whole module "
+            "skips on any machine but one laptop, and a suite that skips reads "
+            "exactly like a suite that passes." % REPO_COPY)
+        if not HOOK.is_file():
+            pytest.skip("no live hook on this machine, so there is nothing to "
+                        "compare the fixture against. The other %d cases still "
+                        "ran, against the fixture." % 94)
+        assert REPO_COPY.read_bytes() == HOOK.read_bytes(), (
+            "the reference fixture and the live hook have diverged. Re-sync:\n"
+            "  cat %s > %s" % (HOOK, REPO_COPY))
+
+    def test_git_clean_dry_run_is_a_known_false_positive(self, tmp_path):
+        """`git clean -n -d` is a PREVIEW and is refused anyway.
+
+        This pins what the hook does, not what it should do (Codex minor, PR
+        #274 round 2). The rule lives inside a block that the only write path an
+        agent has cannot modify: apply-claude-changes is additive-only, so a
+        rule can be superseded by an earlier DENY but never loosened, and every
+        earlier loop fires before anything new could clear this. Fixing it needs
+        `replace` to reach hook text, which is sp-ae47f005 and is a deliberate
+        widening with its own blast radius, not a side effect of this change.
+
+        Left standing rather than hidden because the cost sits on the side this
+        file already chose in 2026-08-07: the miss costs a deleted volume, the
+        false positive costs one tool call. `git clean -n` alone still passes.
+        When sp-ae47f005 lands, this test flips and that is the signal.
+        """
+        assert decide(hook_copy(tmp_path), "git clean -n -d", tmp_path) == "deny"
+
+    def test_the_prose_false_positive_is_unchanged(self, tmp_path):
+        """The hook deliberately does NOT tell prose from invocation, and argv
+        inspection must not quietly change that either way: the substring list
+        it sits beside is kept precisely so this stays as decided in 2026-08-07."""
+        hook = hook_copy(tmp_path)
+        assert decide(hook, 'echo "never run rm -rf on a volume"', tmp_path) == "deny"
 
 
 if __name__ == "__main__":
