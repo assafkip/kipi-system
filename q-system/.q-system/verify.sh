@@ -25,6 +25,13 @@ set -euo pipefail
 
 MODE="${1:---full}"
 REPO="$(git rev-parse --show-toplevel)"
+# Where pytest's ordering cache lives. Git's COMMON dir, never the working tree:
+# see the long note at the `-o cache_dir` call below. --path-format=absolute so a
+# `cd` inside the pytest subshell cannot re-root a relative `.git`; the fallback
+# keeps this working on a git too old for that flag.
+VERIFY_CACHE_ROOT="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+[ -n "$VERIFY_CACHE_ROOT" ] || VERIFY_CACHE_ROOT="$REPO/.git"
+VERIFY_CACHE_ROOT="$VERIFY_CACHE_ROOT/kipi-verify-cache"
 RAN=()
 FAILED=()
 TMP=""
@@ -360,9 +367,19 @@ if [ -f "$MANIFEST" ]; then
       #
       # `-o cache_dir` is what makes --ff work at all here. The --staged snapshot
       # worktree is thrown away after every run, so pytest's cache died with it and
-      # --ff had nothing to read. The cache lives beside the repo instead, keyed per
-      # suite. It is a CACHE OF ORDERING, never of verdicts: no run is skipped, so a
-      # corrupt or stale cache can only make the run slower, never green-by-cache.
+      # --ff had nothing to read. The cache lives under git's COMMON DIR instead,
+      # keyed per suite. It is a CACHE OF ORDERING, never of verdicts: no run is
+      # skipped, so a corrupt or stale cache can only make the run slower, never
+      # green-by-cache.
+      #
+      # NOT `$REPO/.verify-cache` (Codex major, PR #269). That path is inside the
+      # working tree and matched no .gitignore entry, so every staged run left the
+      # checkout dirty -- and this fleet's unattended jobs commit with `git add -A`,
+      # so pytest cache files would ride into real commits and a human would be
+      # cleaning them at 3am. The common dir is the right home for two reasons at
+      # once: git never reports it in `status`, and it is SHARED across worktrees,
+      # so the primary checkout and every scratch worktree warm one cache instead
+      # of N. A .gitignore entry would have fixed only the first half.
       #
       # --full deliberately keeps NEITHER flag. Pre-push and CI want the complete
       # picture, not the fastest no. The file-entry branch above also keeps neither:
@@ -371,7 +388,7 @@ if [ -f "$MANIFEST" ]; then
       if [ "$MODE" = "--staged" ]; then
         run_check "pytest:$suite" bash -c \
           'cd "$1/$2" && python3 -m pytest -q --no-header --ff -x -o cache_dir="$3"' \
-          _ "$TARGET" "$suite" "$REPO/.verify-cache/$(printf '%s' "$suite" | tr / _)"
+          _ "$TARGET" "$suite" "$VERIFY_CACHE_ROOT/$(printf '%s' "$suite" | tr / _)"
       else
         run_check "pytest:$suite" bash -c 'cd "$1/$2" && python3 -m pytest -q --no-header' \
                   _ "$TARGET" "$suite"
