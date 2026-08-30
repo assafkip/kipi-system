@@ -87,15 +87,30 @@ def load_yesterday_cards(project_dir):
 
 
 def load_open_loops(project_dir):
-    """Read open-loops.json for loop state summary."""
+    """Loop state for the session banner.
+
+    why this goes through loops_path (scar 2026-08-08): this function built its
+    own `qroot/output/open-loops.json` while the writer, the statusline and the
+    fleet board each resolved somewhere else. None of the three was the file
+    that had the data. It returned None for nine weeks and the banner rendered
+    that as "nothing to report", while a prospect's direct question sat
+    unanswered for 46 days inside the ledger nobody could find, with two more
+    warm leads beside it.
+
+    A ledger that cannot be READ is now reported as such. "Cannot read" and
+    "nothing open" are different sentences and must never share one.
+    """
     qroot = get_qroot(project_dir)
-    loops_path = qroot / "output" / "open-loops.json"
-    if not loops_path.exists():
+    sys.path.insert(0, str(qroot / ".q-system" / "scripts"))
+    try:
+        import loops_path
+    except ImportError:
         return None
     try:
-        with open(loops_path) as f:
-            data = json.load(f)
-        loops = [l for l in data.get("loops", []) if l.get("status") == "open"]
+        loops, status = loops_path.open_loops(qroot)
+        if status != loops_path.FOUND:
+            return ("LOOP LEDGER UNREADABLE -- this is not 'no open loops'. "
+                    "Any follow-up recorded in it is invisible.", [])
         if not loops:
             return None
         counts = {0: 0, 1: 0, 2: 0, 3: 0}

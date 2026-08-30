@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/memory_outcomes.py",
+ "reason": "auto-capture referee merged (PR #7) but gated OFF fleet-wide; activates with the held kipi update",
+ "spillover_id": "sp-b8eb2928"
+}
