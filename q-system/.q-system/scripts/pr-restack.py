@@ -278,15 +278,28 @@ def main() -> int:
                         files = [x for x in left.stdout.split() if x]
                         version_fixed.append((n, ref, bumped))
 
+                capability_ran = False
                 if files and not args.no_capability_fix:
                     why = resolve_capability_manifest(wt, root, files)
+                    capability_ran = why is None
                     if why is None:
                         left = run(["git", "-C", wt, "diff", "--name-only",
                                     "--diff-filter=U"])
                         files = [x for x in left.stdout.split() if x]
 
                 if not files:
-                    if True:
+                            # SAY WHICH RESOLVER RAN (Codex minor, PR #282). This
+                            # block is reached by BOTH, and it used to append to
+                            # `resolved` and print "capability fix" every time --
+                            # so a branch fixed only by the version resolver was
+                            # counted and reported as a manifest fix. The summary
+                            # is what a human reads to decide whether the tool did
+                            # what they think, and a false one is worse than no
+                            # summary at all. Measured on the live sweep: it said
+                            # "6 of which 6 needed the capability fix" while 8
+                            # branches had taken a version fix.
+                            did_cap = capability_ran
+                            label = " +capfix" if did_cap else " +verfix"
                             # `commit --no-verify`: the pre-commit hooks read the
                             # WORKING TREE, so another session's uncommitted file
                             # blocks this commit for reasons that have nothing to
@@ -297,13 +310,16 @@ def main() -> int:
                                      "--no-edit"])
                             if c.returncode != 0:
                                 run(["git", "-C", wt, "merge", "--abort"])
-                                failed.append((n, ref, "capability fix staged but "
+                                failed.append((n, ref, "auto-resolution staged but "
                                                "commit failed: "
                                                + (c.stderr or c.stdout).strip()[-160:]))
                                 continue
-                            resolved.append((n, ref))
+                            if did_cap:
+                                resolved.append((n, ref))
                             if args.dry_run:
-                                merged.append((n, ref, "would push (capability fix)"))
+                                merged.append((n, ref, "would push (%s)"
+                                               % ("capability fix" if did_cap
+                                                  else "version fix")))
                                 continue
                             head = run(["git", "-C", wt, "rev-parse", "HEAD"]).stdout.strip()
                             p = run(["git", "-C", wt, "push", "origin",
@@ -312,7 +328,7 @@ def main() -> int:
                                 failed.append((n, ref, (p.stderr or p.stdout)
                                                .strip()[-160:]))
                             else:
-                                merged.append((n, ref, head[:8] + " +capfix"))
+                                merged.append((n, ref, head[:8] + label))
                             continue
 
                 if not files:
@@ -358,9 +374,15 @@ def main() -> int:
         print("  #%-4d %-48s %d file(s)" % (n, ref, len(files)))
         for f in files[:8]:
             print("        " + f)
+    # A version fix is ATTEMPTED per branch and only lands if nothing else was
+    # left conflicting, so the two are counted separately and labelled. Reporting
+    # the attempt as an outcome is how "restacked 0, 2 a plugin version" got
+    # printed, which reads as a contradiction because it is one.
+    restacked_nums = {n for n, _, _ in merged}
     print("\n=== plugin.json version-only conflict auto-resolved ===")
     for n, ref, what in version_fixed:
-        print("  #%-4d %s" % (n, ref))
+        landed = " (landed)" if n in restacked_nums else " (other conflicts remain)"
+        print("  #%-4d %s%s" % (n, ref, landed))
         for w in what:
             print("        " + w)
     print("\n=== capability-manifest conflict auto-resolved ===")
@@ -369,9 +391,14 @@ def main() -> int:
     print("\n=== failed ===")
     for n, ref, why in failed:
         print("  #%-4d %-48s %s" % (n, ref, why))
-    print("\nrestacked %d (of which %d needed the capability fix), current %d, "
-          "conflicted %d, failed %d"
-          % (len(merged), len(resolved), len(already), len(conflicted), len(failed)))
+    ver_landed = sum(1 for n, _, _ in version_fixed if n in restacked_nums)
+    print("\nrestacked %d (%d needed the capability fix, %d a plugin version), "
+          "current %d, conflicted %d, failed %d"
+          % (len(merged), len(resolved), ver_landed, len(already),
+             len(conflicted), len(failed)))
+    if len(version_fixed) != ver_landed:
+        print("  (%d further branch(es) had their version line resolved but stay "
+              "conflicted on something else)" % (len(version_fixed) - ver_landed))
     return 0
 
 
