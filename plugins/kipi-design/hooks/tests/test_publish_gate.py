@@ -47,9 +47,15 @@ sys.path.insert(0, str(GTM_SCRIPTS))
 # fixture, or a class-scoped importorskip, so the dependent cases skip and the
 # rest run) changes which assertions execute fleet-wide, and that earns its own
 # reproducer instead of riding along on a collection fix. Tracked as sp-947f04c7.
-if not (GTM_SCRIPTS / "design_room_pipeline.py").is_file():
+# BOTH modules, not just the first (Codex minor, PR #283). This file imports
+# design_room_pipeline AND design_room_run; guarding on one leaves a half-present
+# gtm/scripts/ aborting collection exactly as before, which is the failure the
+# guard was added to end.
+_NEEDED = ("design_room_pipeline.py", "design_room_run.py")
+if not all((GTM_SCRIPTS / m).is_file() for m in _NEEDED):
     pytest.skip(
-        "design_room_pipeline lives at %s, which does not exist in this repo. "
+        "design_room_pipeline and design_room_run live at %s, and at least one "
+        "is not in this repo. "
         "This suite tests a cole-gtm script through the kipi-design plugin. The "
         "whole module is skipped, which is coarser than needed -- most cases here "
         "need that script, some only need publish_gate.py (sp-947f04c7). It is "

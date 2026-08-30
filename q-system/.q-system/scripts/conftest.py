@@ -58,3 +58,40 @@ import pytest  # noqa: E402
 def tmp(tmp_path):
     """`tmp_path` under the name this directory's scripts already ask for."""
     return tmp_path
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    """Make `expect()` fail the pytest case, not just print (Codex major, #283).
+
+    These standalone scripts report through a module-level FAILURES list:
+    expect() prints PASS or FAIL and appends, and only `main()` reads the list at
+    the end to pick an exit code. Under pytest there IS no main(), so the test
+    function returns normally whatever expect() saw, and every case passes by
+    construction.
+
+    That is worse than not collecting them. The previous revision of this PR gave
+    those tests a `tmp` fixture so they would run, which added 8 green checks to
+    the floor that cannot go red -- a floor that got LONGER and no stronger, and
+    read as an improvement.
+
+    A hookwrapper on the CALL phase, not an autouse fixture. The fixture version
+    raised in TEARDOWN, which pytest reports as `1 error` while still counting
+    the case under `passed` -- a run that says "2 passed, 1 error" about two
+    tests, one of which failed. Raising inside the call phase makes it a plain
+    FAILED, which is what it is. Measured both ways with a throwaway probe
+    module before choosing.
+
+    Generic on purpose: any module in this directory that grows a FAILURES list
+    is covered without a second edit, and a module without one is untouched.
+    """
+    failures = getattr(item.module, "FAILURES", None)
+    before = len(failures) if failures is not None else None
+    outcome = yield
+    if before is None:
+        return
+    added = failures[before:]
+    if added and outcome.excinfo is None:
+        raise AssertionError(
+            "expect() recorded %d failure(s) that pytest would otherwise have "
+            "reported as a pass: %s" % (len(added), "; ".join(map(str, added))))

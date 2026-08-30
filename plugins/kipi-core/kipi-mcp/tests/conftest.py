@@ -43,6 +43,14 @@ _REQUIRED = {
     "apify_client": "apify-client",
     "feedparser": "feedparser",
     "pytest_mock": "pytest-mock (dev extra)",
+    # pytest-asyncio, and its absence is NOT harmless (Codex minor, PR #283).
+    # This plugin's pyproject sets asyncio_mode = "auto"; without the package
+    # that setting is an unknown config option and the 21 async tests here FAIL
+    # rather than skip. A machine holding the other seven would collect the
+    # directory and go red, which is the outcome this whole guard exists to
+    # prevent. The list is the plugin's declared dependencies, dev extra
+    # included -- all of them, not the ones that happened to break first.
+    "pytest_asyncio": "pytest-asyncio (dev extra)",
 }
 _MISSING = sorted(pkg for mod, pkg in _REQUIRED.items()
                   if importlib.util.find_spec(mod) is None)

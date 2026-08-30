@@ -18,6 +18,7 @@ from kipi_mcp.source_registry import (
     SourceRegistry,
 )
 
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -25,6 +26,7 @@ from kipi_mcp.source_registry import (
 def _write_yaml(path: Path, data: dict) -> Path:
     path.write_text(yaml.dump(data, default_flow_style=False))
     return path
+
 
 def _http_yaml() -> dict:
     return {
@@ -39,6 +41,7 @@ def _http_yaml() -> dict:
         "schedule": {"frequency": "daily"},
     }
 
+
 def _apify_yaml() -> dict:
     return {
         "name": "x-scraper",
@@ -49,6 +52,7 @@ def _apify_yaml() -> dict:
             "records_path": ["items"],
         },
     }
+
 
 def _mcp_yaml() -> dict:
     return {
@@ -61,6 +65,7 @@ def _mcp_yaml() -> dict:
         },
     }
 
+
 def _chrome_yaml() -> dict:
     return {
         "name": "linkedin-feed",
@@ -72,6 +77,7 @@ def _chrome_yaml() -> dict:
         },
     }
 
+
 def _local_yaml() -> dict:
     return {
         "name": "lead-list",
@@ -81,6 +87,7 @@ def _local_yaml() -> dict:
             "format": "json",
         },
     }
+
 
 # ---------------------------------------------------------------------------
 # Model validation
@@ -158,6 +165,7 @@ class TestModelValidation:
                 method="ftp",
             )
 
+
 # ---------------------------------------------------------------------------
 # Chrome .md loading
 # ---------------------------------------------------------------------------
@@ -174,6 +182,7 @@ class TestChromeMarkdown:
         m = SourceManifest(**data)
         result = registry.load_chrome_instructions(m)
         assert result == md_content
+
 
 # ---------------------------------------------------------------------------
 # Schedule filtering
@@ -211,6 +220,7 @@ class TestScheduleFilter:
 
         old = (datetime.now() - timedelta(hours=25)).isoformat()
         assert _matches_schedule(sched, "monday", old) is True
+
 
 # ---------------------------------------------------------------------------
 # Registry loading
@@ -268,6 +278,7 @@ class TestRegistryLoading:
         sources = registry.load_all(last_harvest_times={"linkedin-metrics": old})
         assert len(sources) == 1
 
+
 # ---------------------------------------------------------------------------
 # Variable resolution
 # ---------------------------------------------------------------------------
@@ -295,6 +306,7 @@ class TestVariableResolution:
         m = SourceManifest(**data)
         resolved = registry.resolve_variables(m, env={})
         assert resolved.http.headers["Authorization"] == "Bearer "
+
 
 # ---------------------------------------------------------------------------
 # Schema versioning

@@ -13,6 +13,7 @@ from kipi_mcp.executors import ExecutorResult
 from kipi_mcp.harvest_store import HarvestStore
 from kipi_mcp.source_registry import SourceRegistry
 
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -20,6 +21,7 @@ from kipi_mcp.source_registry import SourceRegistry
 def _write_yaml(path: Path, data: dict) -> Path:
     path.write_text(yaml.dump(data, default_flow_style=False))
     return path
+
 
 def _http_source(name: str = "test-http", **overrides) -> dict:
     d = {
@@ -38,6 +40,7 @@ def _http_source(name: str = "test-http", **overrides) -> dict:
     d.update(overrides)
     return d
 
+
 def _local_source(name: str = "test-local", file_path: str = "/tmp/data.json") -> dict:
     return {
         "name": name,
@@ -45,6 +48,7 @@ def _local_source(name: str = "test-local", file_path: str = "/tmp/data.json") -
         "local": {"file_path": file_path, "format": "json"},
         "schedule": {"frequency": "daily"},
     }
+
 
 def _apify_source(name: str = "test-apify") -> dict:
     return {
@@ -57,6 +61,7 @@ def _apify_source(name: str = "test-apify") -> dict:
         },
         "schedule": {"frequency": "daily"},
     }
+
 
 def _chrome_source(name: str = "test-chrome") -> dict:
     return {
@@ -71,6 +76,7 @@ def _chrome_source(name: str = "test-chrome") -> dict:
         "output": {"schema": {"title": "str", "url": "str"}},
     }
 
+
 def _mcp_source(name: str = "test-mcp") -> dict:
     return {
         "name": name,
@@ -84,6 +90,7 @@ def _mcp_source(name: str = "test-mcp") -> dict:
         "output": {"schema": {"name": "str"}},
     }
 
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -94,6 +101,7 @@ def store(tmp_path):
     s.init_db()
     return s
 
+
 @pytest.fixture
 def sources_dir(tmp_path):
     d = tmp_path / "sources"
@@ -101,9 +109,11 @@ def sources_dir(tmp_path):
     (d / "chrome").mkdir()
     return d
 
+
 @pytest.fixture
 def registry(sources_dir):
     return SourceRegistry(plugin_sources_dir=sources_dir)
+
 
 def _make_orchestrator(store, sources_dir, extra_yamls=None, apify_token=None):
     from kipi_mcp.harvest_orchestrator import HarvestOrchestrator
@@ -114,6 +124,7 @@ def _make_orchestrator(store, sources_dir, extra_yamls=None, apify_token=None):
 
     reg = SourceRegistry(plugin_sources_dir=sources_dir)
     return HarvestOrchestrator(store=store, registry=reg, apify_token=apify_token)
+
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -158,6 +169,7 @@ class TestFullHarvestPythonSources:
         run = store.get_run(result.run_id)
         assert run["status"] == "complete"
 
+
 class TestIncrementalUsesCursors:
     @pytest.mark.asyncio
     async def test_incremental_uses_cursors(self, store, sources_dir):
@@ -177,6 +189,7 @@ class TestIncrementalUsesCursors:
             assert call_args[1].get("cursor") == "old-cursor-val" or \
                    (len(call_args[0]) > 1 and call_args[0][1] == "old-cursor-val")
 
+
 class TestFullModeIgnoresCursors:
     @pytest.mark.asyncio
     async def test_full_mode_ignores_cursors(self, store, sources_dir):
@@ -194,6 +207,7 @@ class TestFullModeIgnoresCursors:
             call_args = mock_http.execute.call_args
             cursor_val = call_args[1].get("cursor") if "cursor" in (call_args[1] or {}) else call_args[0][1] if len(call_args[0]) > 1 else None
             assert cursor_val is None
+
 
 class TestResumeContinuesPartialRun:
     @pytest.mark.asyncio
@@ -223,6 +237,7 @@ class TestResumeContinuesPartialRun:
         assert "src-b" in result.python_results
         assert "src-a" not in result.python_results
 
+
 class TestSkipIfRecent:
     @pytest.mark.asyncio
     async def test_skip_if_recent(self, store, sources_dir):
@@ -250,6 +265,7 @@ class TestSkipIfRecent:
 
         assert "src-recent" in result.skipped
 
+
 class TestBudgetBlocksApify:
     @pytest.mark.asyncio
     async def test_budget_blocks_apify(self, store, sources_dir):
@@ -268,6 +284,7 @@ class TestBudgetBlocksApify:
             result = await orch.harvest(mode="full")
 
         assert "src-apify" in result.errors
+
 
 class TestPartialFailureContinuesOthers:
     @pytest.mark.asyncio
@@ -307,6 +324,7 @@ class TestPartialFailureContinuesOthers:
         assert run["status"] == "partial"
         assert len(result.errors) >= 1
 
+
 class TestRunStatePersisted:
     @pytest.mark.asyncio
     async def test_run_state_persisted(self, store, sources_dir):
@@ -341,6 +359,7 @@ class TestRunStatePersisted:
         finally:
             conn.close()
 
+
 class TestChromePromptGenerated:
     @pytest.mark.asyncio
     async def test_chrome_prompt_generated(self, store, sources_dir):
@@ -357,6 +376,7 @@ class TestChromePromptGenerated:
         assert "src-chrome" in result.chrome_agent_prompt
         assert "Navigate to site" in result.chrome_agent_prompt
 
+
 class TestMcpPromptGenerated:
     @pytest.mark.asyncio
     async def test_mcp_prompt_generated(self, store, sources_dir):
@@ -369,6 +389,7 @@ class TestMcpPromptGenerated:
         assert result.mcp_agent_prompt is not None
         assert "src-mcp" in result.mcp_agent_prompt
         assert "notion" in result.mcp_agent_prompt
+
 
 class TestFilterByMethod:
     @pytest.mark.asyncio
