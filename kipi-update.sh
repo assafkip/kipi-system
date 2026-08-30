@@ -287,6 +287,44 @@ fleet_authored_blob() {
   return 1
 }
 
+# INSTALL THE VENDORED HOOKS INTO THE TREE THAT RUNS THEM (ASK-1144).
+#
+# The fleet updater is the one deterministic, founder-invoked path that already
+# exists for "make this machine match the skeleton", so the hook install belongs
+# here rather than in a habit somebody has to remember. Before this, a corrected
+# destructive-op-deny.sh could be reviewed and merged while ~/.claude/hooks kept
+# the stale copy, and nothing reported the gap.
+#
+# NEVER FATAL TO THE UPDATE. The installer refuses a source that would weaken a
+# hook and refuses a short write, and either refusal is worth reading -- but an
+# update that aborts 23 instances because one hook did not install is a denial
+# of service where a loud warning is the right answer. Same reasoning the
+# source-provenance preflight above records for itself.
+install_vendored_hooks() {
+  local installer="$SCRIPT_DIR/q-system/.q-system/scripts/install-claude-hooks.py"
+  [ -f "$installer" ] || return 0
+  echo "==> installing vendored hooks into ~/.claude/hooks"
+  # REPORT WHAT HAPPENED, NOT A GUESS AT WHY (PR #279 minor).
+  #
+  # This said "a vendored hook did not install, the guard may be older than the
+  # reviewed one" on EVERY non-zero exit -- including a deliberate ratchet
+  # refusal, where the installed copy is intact and the SOURCE was rejected.
+  # Naming a cause the run has not established is the same defect as the
+  # "dead consumer" liveness message fixed in ASK-1146: a confident diagnosis
+  # attached to a signal that does not support it.
+  #
+  # The installer already prints one precise line per hook. Showing that line is
+  # both shorter and true.
+  local _out _rc
+  _out="$(python3 "$installer" 2>&1)"; _rc=$?
+  printf '%s\n' "$_out"
+  if [ "$_rc" -ne 0 ]; then
+    echo "WARNING: the hook install reported a problem above (exit $_rc). The guard" >&2
+    echo "         running on this machine may not match the reviewed copy. Check with:" >&2
+    echo "         python3 $installer --check" >&2
+  fi
+}
+
 plugin_copy_rsync_flags() {
   local entry
   for entry in "${PLUGIN_COPY_EXCLUDES[@]}"; do
@@ -474,6 +512,15 @@ echo "Remote: $SKELETON_REMOTE"
 echo "Branch: $SKELETON_BRANCH"
 [ "$DRY_RUN" = "--dry-run" ] && echo "MODE: DRY RUN (no changes)"
 echo ""
+
+# The DRY RUN half runs here because it only READS. The install itself is
+# deliberately further down, after the source-provenance preflight -- see the
+# call site below.
+if [ "$DRY_RUN" = "--dry-run" ]; then
+  _hook_installer="$SCRIPT_DIR/q-system/.q-system/scripts/install-claude-hooks.py"
+  [ -f "$_hook_installer" ] && python3 "$_hook_installer" --check || true
+  echo ""
+fi
 
 # Preflight: refuse to propagate if an enforcement hook is wired in the skeleton's
 # runtime .claude/settings.json but missing from settings-template.json -- it would
@@ -696,6 +743,22 @@ MODEL_RUN=0
 DRY_MODEL_ROOT=""
 ARCHIVE_TMP=""
 DRY_TMP=""
+
+# INSTALL ONLY ONCE THE SOURCE IS PROVEN (PR #279 major).
+#
+# This ran near the top, before the source-provenance preflight had shown the
+# working tree clean and equal to origin/$SKELETON_BRANCH. So an update that
+# ABORTED on an unverified source had already replaced the machine's live
+# destructive-op guard with whatever was in that tree -- an unreviewed gate
+# installed by a run that then refused to do anything else, which is the worst
+# possible order.
+#
+# Everything above this line either reads or refuses. Reaching here means the
+# source is the reviewed one, and only then is it allowed to become the guard.
+if [ "$DRY_RUN" != "--dry-run" ]; then
+  install_vendored_hooks
+  echo ""
+fi
 
 cleanup_dry_model() {
   if [ "${MODEL_RUN:-0}" = "1" ] && [ -n "${DRY_MODEL_ROOT:-}" ]; then
