@@ -533,5 +533,30 @@
     "instance": "Prodigy_Gold",
     "status": "published",
     "date": "2026-08-17"
+  },
+  "937e16b1236c5934": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-08-24"
+  },
+  "9f0bf1c88c290ed8": {
+    "instance": "ASK_AI_consultant",
+    "status": "held",
+    "date": "2026-08-24"
+  },
+  "d087efe8e967f45a": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-08-24"
+  },
+  "44c32a08cd50007a": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-08-24"
+  },
+  "a284efcfe4d114cd": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-08-24"
   }
 }

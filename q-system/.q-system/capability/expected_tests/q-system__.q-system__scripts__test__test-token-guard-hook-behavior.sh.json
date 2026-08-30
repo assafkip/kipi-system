@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-token-guard-hook-behavior.sh",
+ "runner": "bash"
+}

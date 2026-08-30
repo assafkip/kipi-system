@@ -30,6 +30,7 @@ import fcntl
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -408,6 +409,82 @@ def promote_locked(args, root: Path, ledger: Path, rec: dict) -> int:
     return 0
 
 
+def _main_checkout(root: Path) -> str:
+    """The registered checkout path for `root`, resolving a git WORKTREE to it.
+
+    the finding (codex, PR #260): matching realpath(root) against the registry
+    rejected every real worktree. instance-registry.json records ONE path per
+    instance, the main checkout, and a worktree lives somewhere else entirely,
+    often under /private/tmp. No row matched, the derivation fell through to the
+    worktree's basename, and the promotion refused.
+
+    That is precisely the UNATTENDED path: linear-worker.sh does its work in
+    worktrees. The rung would have worked every time a human ran it by hand in
+    the checkout and failed every time the worker ran it. Same by-hand-versus-
+    real split verify.sh hit with the hook environment, one repo over, which is
+    why it was worth taking the finding seriously rather than arguing scope.
+
+    `--git-common-dir` is the resolution: inside a worktree it points at the MAIN
+    repo's .git, whose parent is the registered path. In an ordinary checkout it
+    is that checkout's own .git, so this is a no-op there. Any failure falls back
+    to realpath(root), the previous behaviour.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "rev-parse",
+             "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True)
+        common = (out.stdout or "").strip()
+        if out.returncode == 0 and common and os.path.basename(common) == ".git":
+            return os.path.realpath(os.path.dirname(common))
+    except Exception:
+        pass
+    return os.path.realpath(str(root))
+
+
+def registry_project(root: Path) -> str:
+    """The board project this checkout maps to, per instance-registry.json.
+
+    THE THIRD RUNG. linear-worker.sh has always had it and this script did not,
+    so `project_name` fell through to the checkout basename. On the consulting
+    instance that is "consulting", the board project is "ASK Consulting", and
+    every promotion from that repo was refused with "no Linear project named
+    'consulting'". Measured 2026-08-27 against the live board: 19 projects, no
+    "consulting", and "ASK Consulting" present as 6497f378. The registry row has
+    carried `linear_project: "ASK Consulting"` the whole time. Nothing was
+    missing in Linear; this script was asking for the wrong name.
+
+    The old comment here said replicating the rule would give one decision two
+    writers, which was right, so this IMPORTS the decision instead of copying
+    it. `_linear_project_of` in alert-to-linear.py owns the precedence
+    (explicit `linear_project`, then `name`) and stays the only place that rule
+    is written. What lives here is the path match, which is mechanics.
+
+    Returns "" on any failure, so the derivation falls through to the basename
+    exactly as before. A registry that cannot be read must not invent a project
+    name -- filing into the wrong board is worse than refusing.
+    """
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "a2l", HERE.parent / "alert-to-linear.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        rows = mod._registry_rows()
+        target = _main_checkout(root)
+    except Exception:
+        return ""
+    for row in rows:
+        row_path = row.get("path")
+        if not row_path:
+            continue
+        try:
+            if os.path.realpath(row_path) == target:
+                return mod._linear_project_of(row)
+        except OSError:
+            continue
+    return ""
+
+
 def create_issue(ls, args, root: Path, body: str):
     """The issue, or an int exit code when a required name does not resolve."""
     tid = ls.graphql('query{teams(filter:{key:{eq:"%s"}}){nodes{id}}}' % TEAM_KEY,
@@ -426,20 +503,27 @@ def create_issue(ls, args, root: Path, body: str):
             return 2
         label_ids.append(lid)
 
-    # Same derivation ORDER as linear-worker.sh: explicit env override, then the
-    # checkout basename. The worker has a third step (instance-registry lookup)
-    # that this does not replicate -- duplicating that rule would give one
-    # decision two writers and they would drift. See the spillover item filed
-    # with this change: on the three instances whose project name is not their
-    # basename, set KIPI_LINEAR_PROJECT until the derivation is shared.
-    project_name = os.environ.get("KIPI_LINEAR_PROJECT") or root.name
+    # The SAME THREE RUNGS as linear-worker.sh, in the same order: explicit env
+    # override, then the instance-registry alias, then the checkout basename.
+    # The third rung used to be missing here and that was the whole bug: every
+    # instance whose directory name is not its board name refused every
+    # promotion, which on this fleet is 8 of 25 (measured 2026-08-15, recorded
+    # in _registry_path). sp-421fa27d, sp-08fae4fc and sp-f227a6fd are three
+    # ledger rows describing that one gap.
+    project_name = (os.environ.get("KIPI_LINEAR_PROJECT")
+                    or registry_project(root)
+                    or root.name)
     pid = resolve_one(ls, PROJECT_BY_NAME, project_name, "projects")
     if not pid:
         sys.stderr.write(
             f"refused: no Linear project named '{project_name}'.\n"
             "in_this_repo() treats an unset or foreign project as NOT this repo,\n"
-            "so this issue would never be picked by any worker. Set\n"
-            "KIPI_LINEAR_PROJECT to the project this checkout maps to.\n")
+            "so this issue would never be picked by any worker.\n"
+            f"Tried, in order: KIPI_LINEAR_PROJECT (unset), instance-registry\n"
+            f"alias for {root} ({registry_project(root) or 'no row'}), "
+            f"basename ({root.name}).\n"
+            "Add a `linear_project` to this checkout's instance-registry row, or\n"
+            "set KIPI_LINEAR_PROJECT.\n")
         return 2
 
     res = ls.graphql(ls.ISSUE_CREATE, {"input": {

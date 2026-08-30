@@ -1,0 +1,90 @@
+name: Reviewer Floor
+
+# Turn an ABSENT reviewer verdict into a FAILING one, on the PR (ASK-361).
+#
+# `kipi/reviewer-approved` is a REQUIRED context on main, but its only producer
+# (pr-review-agent.sh) runs off a 15-minute launchd poll on ONE Mac keyed on a
+# LINEAR ISSUE -- it has no PR-open trigger and no push trigger. `validate` runs
+# on `pull_request`. So the two required contexts have completely different
+# liveness, and the reviewer's is routinely absent: measured 2026-08-03, PRs #88,
+# #69, #50 and #23 each carried ZERO reviewer statuses at their head.
+#
+# Absence is why `enforce_admins` could not be enabled. This job closes that gap
+# by giving the required context a PR-native trigger that can only ever post RED.
+on:
+  pull_request:
+    # synchronize matters most: every push makes a NEW head sha carrying no
+    # statuses at all, which is the ordinary way absence is (re)created.
+    types: [opened, reopened, synchronize]
+
+# Least privilege: this job writes commit statuses and reads nothing else.
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  # NAMED `reviewer-floor`, NOT `kipi/reviewer-approved`. GitHub requires that a
+  # context named as a required check actually report; a job sharing the required
+  # context's name would itself become a second reporter for that slot and race
+  # the real reviewer. The job is the mechanism, the posted STATUS is the slot.
+  reviewer-floor:
+    runs-on: ubuntu-latest
+    steps:
+      # CHECK OUT THE BASE, NOT THE PR (Codex major, PR #96).
+      #
+      # This job holds `statuses: write` and then RUNS a script out of the
+      # checkout. Without a ref: that checkout is PR-controlled code, so on a
+      # same-repository PR the author could edit reviewer-floor.sh to post
+      # `success` and mint the very required context this workflow exists to
+      # defend -- the ASK-312 phantom-approval hole (unreviewed PRs merging on a
+      # forged kipi/reviewer-approved, twice on PR #74), re-entered through the
+      # workflow's own permissions rather than through the script's logic.
+      #
+      # Pinning to base.sha means the code that runs is always the version
+      # already on main and reviewed to get there. The PR head is still what
+      # gets INSPECTED and posted to -- that is the sha argument below, which is
+      # data, not code.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          # Only the floor script is needed; no history is read.
+          fetch-depth: 1
+          # The job posts through GH_TOKEN explicitly; it never needs the
+          # checkout's stored credentials, and leaving them out means a script
+          # here cannot push with them.
+          persist-credentials: false
+
+      # THE HEAD SHA, NOT github.sha. On a `pull_request` event github.sha is the
+      # ephemeral MERGE commit, which is not the commit branch protection
+      # evaluates. Posting there would leave the real head untouched and the PR
+      # still wedged on an absent context.
+      - name: Post the floor when no reviewer verdict exists at this head
+        run: |
+          set -euo pipefail
+          FLOOR=q-system/.q-system/scripts/reviewer-floor.sh
+          # BOOTSTRAP, and the only safe direction out of it. The step above
+          # checks out the BASE so the code that runs is trusted -- but on the
+          # PR that INTRODUCES this workflow the script is not on base yet, and
+          # `bash <missing>` exits 127 (rc=127 on PR #96, this exact commit).
+          #
+          # Posting nothing is the correct response, not a fallback to the PR's
+          # own copy: that fallback IS the vulnerability. It leaves
+          # kipi/reviewer-approved ABSENT, which branch protection treats as
+          # unsatisfied, so the PR stays blocked. Absent-and-blocked is the safe
+          # direction; a forged success is not.
+          #
+          # Same reasoning covers the script being deleted later: the floor goes
+          # quiet and PRs stop merging, rather than the floor going quiet and
+          # PRs merging unreviewed.
+          if [ ! -f "$FLOOR" ]; then
+            echo "reviewer-floor.sh is not on the base ref yet."
+            echo "No trusted copy to run, so this posts NOTHING and kipi/reviewer-approved stays absent."
+            echo "That leaves this PR blocked, which is the intended direction. Once this lands on main, base carries the script and the floor runs normally."
+            exit 0
+          fi
+          bash "$FLOOR" "${{ github.event.pull_request.head.sha }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Makes the {owner}/{repo} placeholders resolve from the event rather
+          # than from git remote parsing.
+          GH_REPO: ${{ github.repository }}
