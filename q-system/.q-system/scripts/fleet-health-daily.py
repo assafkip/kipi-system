@@ -994,10 +994,11 @@ def detect_open_spillover(_ctx) -> list:
             "RED while any is open, so these block every closeout in the repo.\n\n"
             + "\n".join(f"- `{i}`" for i in shown)
             + (f"\n- ...and {more} more (`prd_runner.py spillover list --open`)" if more else "")
-            + "\n\n## Action\nEach leaves the ledger exactly two ways: fixed through the "
-              "normal issue flow then `spillover resolve <id> --resolution-ref <closed-issue>`, "
-              "or `spillover resolve <id> --void \"<reason>\"`. There is no third way, and "
-              "hand-clearing the gate is not possible."
+            + "\n\n## Action\nEach leaves the ledger through a recorded resolution: "
+              "`spillover resolve <id>` with `--resolution-ref <closed-issue>`, "
+              "`--resolution-commit <merged-sha>`, `--resolution-proof '<cmd with {tree}>' "
+              "--broken-at <sha>`, or `--void \"<reason>\"`. Hand-clearing the gate "
+              "is not possible."
         ),
     }]
 
@@ -1525,7 +1526,54 @@ def detect_plist_drift(_ctx) -> list:
     return plist_drift_findings()
 
 
+def detect_promoted_audit(_ctx) -> list:
+    """RUN the promoted-rows audit daily; file a finding only when it cannot.
+
+    This is the audit's operational caller (Codex, kipi-system PR #213 r4: the
+    command existed and nothing scheduled it, so unattended promoted rows were
+    never re-checked). The sweep itself resolves rows whose Linear issue closed;
+    a finding is filed only when the audit ran and could verify NOTHING (its
+    exit 1), which means the tracker was unreachable for the whole sweep.
+    """
+    runner = REPO_ROOT / "plugins/prd-os/scripts/prd_runner.py"
+    if not runner.is_file():
+        return []
+    try:
+        res = subprocess.run(["python3", str(runner), "spillover", "promoted-audit"],
+                             capture_output=True, text=True, timeout=300, cwd=REPO_ROOT)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # A timeout IS a blind sweep, not a skip (Codex, PR #213 r5: silently
+        # converting it to zero findings made a hung audit look healthy).
+        return [{
+            "subject": "promoted-audit-blind",
+            "title": "The promoted-rows audit did not run to completion",
+            "body": ("`prd_runner.py spillover promoted-audit` failed to complete: "
+                     f"`{exc.__class__.__name__}`. Promoted rows went unchecked today.\n\n"
+                     "## Action\nRun the audit by hand and check why it hung."),
+        }]
+    if res.returncode == 0:
+        return []
+    return [{
+        "subject": "promoted-audit-blind",
+        "title": "The promoted-rows audit could verify nothing against Linear",
+        "body": (
+            "`prd_runner.py spillover promoted-audit` exited nonzero: every tracker "
+            "lookup failed, so promoted rows went another day unchecked.\n\n```\n"
+            + (res.stderr or res.stdout).strip()[-600:] + "\n```\n\n## Action\n"
+            "Check Linear auth (`KIPI_LINEAR_API_KEY` / ~/.config/kipi/linear-api-key) "
+            "and re-run the audit by hand."
+        ),
+    }]
+
+
 DETECTORS = [
+    {
+        "id": "promoted-audit",
+        "description": "daily re-check of promoted spillover rows against Linear; files only when the whole sweep was blind",
+        "detect": detect_promoted_audit,
+        "action": "file_issue",
+        "lesson": "a-gate-that-cannot-run-must-not-pass",
+    },
     {
         "id": "plist-drift",
         "description": "an installed launchd job disagrees with its rendered committed template",

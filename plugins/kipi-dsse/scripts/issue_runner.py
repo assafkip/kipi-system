@@ -1135,6 +1135,30 @@ def _enforce_spine_contract(paths, fm: dict, marker: dict, issue_id: str) -> str
                             "path must be GONE, not shadowed.\n")
     bypass_check = _decode_bypass_check(fm.get("bypass_check") or "")
     if bypass_check:
+        # RUN it before recording it. Registration alone wrote a permanently
+        # red standing gate into a registry that only grows and has no
+        # hand-clear (sp-50db1764): measured across 64 open issue specs, 2 of
+        # the 6 reachable bypass_checks exited 5 (pytest collected nothing).
+        # A green that was never executed is not evidence of anything.
+        import subprocess as _subprocess_run
+        try:
+            result = _subprocess_run.run(
+                bypass_check, shell=True, cwd=paths.repo_root,
+                capture_output=True, text=True, timeout=900)
+        except _subprocess_run.TimeoutExpired:
+            return (f"cannot close {issue_id}: bypass_check exceeded 900s "
+                    "without exiting — nothing registered.\n")
+        if result.returncode == 5:
+            tail = "\n".join(
+                (result.stdout + result.stderr).strip().splitlines()[-5:])
+            return (f"cannot close {issue_id}: bypass_check exited 5 "
+                    "(pytest collected NOTHING — a zero-selection gate can "
+                    f"never go green):\n{tail}\n")
+        if result.returncode != 0:
+            tail = "\n".join(
+                (result.stdout + result.stderr).strip().splitlines()[-5:])
+            return (f"cannot close {issue_id}: bypass_check exited "
+                    f"{result.returncode}:\n{tail}\n")
         try:
             sys.path.insert(0, str(paths.repo_root / "plugins" / "prd-os" / "scripts"))
             import prd_runner as _prd_runner

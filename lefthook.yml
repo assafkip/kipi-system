@@ -4,6 +4,22 @@
 pre-commit:
   parallel: true
   commands:
+    verify:
+      # GATE 1 OF 3. The floor. The SAME script CI runs, so a commit that passes
+      # here is a commit that passes there.
+      #
+      # WIRED 2026-08-27, and it should have been wired in the commit that added
+      # the script. Codex review of PR #259 filed a major: verify.sh shipped to
+      # this repo with no caller anywhere, and its reproducer was a git grep for
+      # callers that returned empty. It was right. A floor nothing invokes is an
+      # aspiration, which is the exact thing wiring-check.md exists to refuse.
+      #
+      # --staged checks the INDEX, materialised as a real throwaway worktree, so
+      # what is verified is what the commit will contain and not what happens to
+      # be lying in the working tree.
+      run: bash q-system/.q-system/verify.sh --staged
+      fail_text: "verify.sh failed on the STAGED snapshot. The same script runs in CI, so this will not pass later."
+
     gitleaks:
       # ~/.gitleaks.toml extends the defaults with kipi-specific rules (ntn_ etc.).
       # It used to ride a hand-chained .git/hooks/pre-commit; when lefthook took
@@ -68,8 +84,15 @@ pre-commit:
     # lefthook (the ACTIVE framework) rather than .githooks (which core.hooksPath
     # does not point at) so they actually run on commit. Skeleton-only by nature.
     plugin-version-bump:
-      run: python3 q-system/.q-system/scripts/plugin-version-bump-check.py --staged
-      fail_text: "A changed plugin must bump its .claude-plugin/plugin.json version (else the version-keyed cache serves the stale copy)."
+      # --fix, not refuse (sp-97303649 / ASK-1039). Refusing deadlocked with the
+      # token-guard call ceiling (only `git commit` is exempt, and the bump needs
+      # an edit) AND left the refused changes STAGED, so the follow-up bump commit
+      # silently absorbed them -- the ASK-999 port landed under a message naming
+      # only a version bump, and fixing that needs a hook-blocked force-push. The
+      # patch bump is derivable, so it is derived and announced on stderr.
+      run: python3 q-system/.q-system/scripts/plugin-version-bump-check.py --staged --fix
+      stage_fixed: true
+      fail_text: "A changed plugin needs a .claude-plugin/plugin.json version bump and the auto-bump could not derive one (non-numeric patch?). Bump it by hand."
 
     settings-template-sync:
       run: CLAUDE_PROJECT_DIR="$(git rev-parse --show-toplevel)" python3 q-system/.q-system/scripts/settings-template-sync-check.py --check
@@ -79,6 +102,15 @@ pre-commit:
     # Ratchet, not absolute: the 300-line target was 214 under water when revived,
     # so this gates REGRESSION of the always-on total (baseline auto-tightens).
     # The 514->300 trim is its own spillover item.
+    # ASK-965. PostToolUse is FEEDBACK AFTER THE WRITE LANDS, so an interrupted
+    # session, a shell heredoc, a merge, or the skeleton updater can all leave a
+    # false ENFORCED claim in the tree that no PostToolUse hook ever saw. This is
+    # the persistence half. --all exits 1 on any unsubstantiated claim, and prints
+    # the remaining baselined debt on every green run so it stays visible.
+    enforced-claim:
+      run: CLAUDE_PROJECT_DIR="$(git rev-parse --show-toplevel)" python3 q-system/.q-system/scripts/enforced-claim-lint.py --all
+      fail_text: "A rule claims (ENFORCED) that nothing substantiates. Declare ENFORCED / DETECTED / ADVISORY in its enforcement block, or fix the wiring."
+
     instruction-budget:
       run: python3 q-system/.q-system/scripts/instruction-budget-audit.py --ratchet
       fail_text: "Always-on instruction lines grew past the ratchet baseline. Trim what you added or scope a rule with paths: frontmatter."

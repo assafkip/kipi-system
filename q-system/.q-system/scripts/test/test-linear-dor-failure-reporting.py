@@ -12,7 +12,8 @@ stderr and stopped at ~/.config/kipi/linear-dor.err -- a file that did not exist
 on 2026-07-26, because the script had never once run under its own scheduler.
 
 The executable blocker for that gap is report_failures() in linear-dor-drafter.py
-plus this test file, registered in capability-manifest.json so capability-gate.py
+plus this test file, declared by its own fragment under
+q-system/.q-system/capability/expected_tests/ so capability-gate.py
 runs it. The checks below are the blocker: the report reaches Linear, one permanent
 issue takes a comment per failing run instead of forking, a CLOSED permanent issue
 is reopened rather than commented into the void, an unreachable Linear pings the
