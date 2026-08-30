@@ -47,7 +47,22 @@ git -C "$WT" update-ref refs/remotes/pr/99 "$SHA1"
 # this test cannot drift from the implementation it claims to pin.
 PR=99
 REVIEW_REPO="$REPO"; REVIEW_SLUG="t/t"
+eval "$(sed -n '/^_wt_bail() {/,/^}/p' "$AGENT")"
+eval "$(sed -n '/^acquire_wt_lock() {/,/^}/p' "$AGENT")"
+eval "$(sed -n '/^release_wt_lock() {/,/^}/p' "$AGENT")"
 eval "$(sed -n '/^review_worktree() {/,/^}/p' "$AGENT")"
+# EVERY EXTRACTION MUST HAVE DEFINED SOMETHING. These suites lift functions out
+# of the agent by NAME, so a rename or a new dependency makes the extraction
+# silently empty and every case then fails for a reason unrelated to what it
+# asserts -- which is exactly what happened when review_worktree grew a call to
+# acquire_wt_lock. Fail loudly on the extraction instead.
+for _fn in review_worktree acquire_wt_lock release_wt_lock _wt_bail; do
+  if ! declare -f "$_fn" >/dev/null 2>&1; then
+    echo "FAIL: could not extract $_fn from $AGENT (renamed, or its shape changed)" >&2
+    exit 1
+  fi
+done
+
 review_tree_path() { echo "$WT"; }
 review_worktree "$SHA2" >/dev/null 2>&1
 

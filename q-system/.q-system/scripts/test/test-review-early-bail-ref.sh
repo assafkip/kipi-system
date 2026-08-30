@@ -31,7 +31,22 @@ SHA2="$(git rev-parse HEAD)"
 # Source the agent's function definitions without running a review.
 SKEL="$ROOT"; REVIEW_REPO="$REPO"; REVIEW_SLUG="t_repo"; PR=97
 eval "$(sed -n '/^_wt_bail() {/,/^}/p' "$AGENT")"
+eval "$(sed -n '/^_wt_bail() {/,/^}/p' "$AGENT")"
+eval "$(sed -n '/^acquire_wt_lock() {/,/^}/p' "$AGENT")"
+eval "$(sed -n '/^release_wt_lock() {/,/^}/p' "$AGENT")"
 eval "$(sed -n '/^review_worktree() {/,/^  printf/p' "$AGENT"; echo '}')"
+# EVERY EXTRACTION MUST HAVE DEFINED SOMETHING. These suites lift functions out
+# of the agent by NAME, so a rename or a new dependency makes the extraction
+# silently empty and every case then fails for a reason unrelated to what it
+# asserts -- which is exactly what happened when review_worktree grew a call to
+# acquire_wt_lock. Fail loudly on the extraction instead.
+for _fn in review_worktree acquire_wt_lock release_wt_lock _wt_bail; do
+  if ! declare -f "$_fn" >/dev/null 2>&1; then
+    echo "FAIL: could not extract $_fn from $AGENT (renamed, or its shape changed)" >&2
+    exit 1
+  fi
+done
+
 
 WT="$TMP/wt"
 git -C "$REPO" worktree add --detach "$WT" "$SHA1" >/dev/null 2>&1

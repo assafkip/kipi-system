@@ -364,7 +364,16 @@ echo "  head sha under review: ${HEAD_SHA:-unknown}"
 # database, so the answer is discoverable: ask each worktree. Refusal is kept for
 # the case where NO tree holds the commit -- that is the sp-a72a9567 shape, and it
 # still must never be reviewed.
-REVIEW_ROOT="$SKEL"
+# THE DEFAULT IS THE REPO UNDER REVIEW, NOT THE SCRIPT'S OWN (PR #265 major).
+#
+# This defaulted to $SKEL, the tree this script lives in. For an EXTERNAL target
+# (--target / KIPI_TARGET_REPO) that is a different repository entirely, and the
+# WARN-and-proceed branch below leaves the default in place -- so the reviewer
+# read files out of the skeleton and stamped the verdict with another repo's PR
+# sha. Findings about a repository nobody asked about, with provenance saying
+# otherwise. When no target is given REVIEW_REPO already IS $SKEL, so this
+# changes nothing for the common case and fixes the case that was wrong.
+REVIEW_ROOT="$REVIEW_REPO"
 
 # REVIEW IN A DEDICATED DETACHED WORKTREE, NEVER IN A CHECKOUT SOMEONE IS USING
 # (sp-8f95bba0). The search below correctly finds A tree holding the PR head --
@@ -426,11 +435,67 @@ _wt_bail() {  # _wt_bail <worktree-path>
   return 1
 }
 
+# ONE RUN PER REVIEW TREE (PR #265 major). review_worktree re-detaches a SHARED
+# path (review-trees/<slug>__pr-<N>) rather than making a fresh one, so two
+# concurrent reviews of the same repo and PR point at one mutable checkout: run A
+# is reading files while run B re-checkouts it to a different sha. Neither run
+# can tell, and both stamp their verdicts with the sha they THINK they read.
+#
+# Same primitive as mutation-sweep's sweep lock (ASK-1147) and for the same
+# reason: O_CREAT|O_EXCL is atomic everywhere and needs no daemon. A stale lock
+# whose holder is gone is reclaimed, because an operator who must clear locks by
+# hand eventually clears one while a run is live.
+_wt_lock_path=""
+acquire_wt_lock() {  # acquire_wt_lock <worktree-path> -> 0 held, 1 busy
+  local wt="$1" lock="$1.lock" holder
+  mkdir -p "$(dirname "$wt")" 2>/dev/null || return 1
+  if ( set -o noclobber; printf '%s' "$$" > "$lock" ) 2>/dev/null; then
+    _wt_lock_path="$lock"; return 0
+  fi
+  holder="$(cat "$lock" 2>/dev/null || true)"
+  # RE-ENTRANT for this run. review_worktree is called more than once per review,
+  # and the lock exists to keep OTHER processes out, not this one. Without this
+  # the second call in a single run refuses on a lock it placed itself -- caught
+  # immediately by the existing suites, which went 5 and 2 red.
+  if [ "$holder" = "$$" ]; then
+    _wt_lock_path="$lock"; return 0
+  fi
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+    return 1
+  fi
+  # Stale: reclaim once.
+  command rm -f "$lock" 2>/dev/null || true
+  if ( set -o noclobber; printf '%s' "$$" > "$lock" ) 2>/dev/null; then
+    _wt_lock_path="$lock"; return 0
+  fi
+  return 1
+}
+release_wt_lock() {
+  [ -n "$_wt_lock_path" ] || return 0
+  if [ "$(cat "$_wt_lock_path" 2>/dev/null || true)" = "$$" ]; then
+    command rm -f "$_wt_lock_path" 2>/dev/null || true
+  fi
+  _wt_lock_path=""
+}
+trap 'release_wt_lock' EXIT
+
 review_worktree() {  # review_worktree <sha> -> prints path, or nothing
   # KEYED BY REPO AND PR (ASK-738). One shared review-trees/pr-<N> path meant
   # two repos' PR #42 shared a single detached worktree, re-checked out to
   # whichever repo asked last -- a review reading the wrong repository's files.
   local sha="$1" wt; wt="$(review_tree_path "$HOME/.config/kipi" "$REVIEW_SLUG" "$PR")"
+  # Refuse rather than share. A second run returning empty here degrades to the
+  # fallback search, which now demands a tree AT the sha and refuses if none --
+  # so a concurrent review says so instead of silently reading a moving tree.
+  # EVERY failure to materialise clears the stale ref, this one included. The
+  # first cut returned early on a lock failure and skipped _wt_bail, so the two
+  # bail suites went red: the invariant is not "mkdir failed" or "lock failed",
+  # it is "no tree, therefore no stale ref may survive".
+  if ! acquire_wt_lock "$wt"; then
+    echo "  WARN: another review holds $wt, or its directory could not be created; not reusing a tree a live run can re-checkout under us." >&2
+    _wt_bail "$wt"
+    return 1
+  fi
   mkdir -p "$(dirname "$wt")" 2>/dev/null || _wt_bail "$wt" || return 1
   if [ -d "$wt/.git" ] || [ -f "$wt/.git" ]; then
     git -C "$wt" checkout --detach --force "$sha" >/dev/null 2>&1 || _wt_bail "$wt" || return 1
