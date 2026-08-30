@@ -528,6 +528,11 @@ def looks_like_a_hook(source):
 # Wide enough to cover a slow command, narrow enough that a file broken last week
 # does not wedge every Bash call in the session -- a gate that blocks unrelated
 # work is a gate that gets switched off.
+# The per-file bypass every blocking hook in this repo is required to have
+# (skill-hook-pairing.md, "Override"). This one shipped without it, which left no
+# way past a false block except switching the gate off (round 7 minor).
+SKIP_MARKER = "hook-envelope-skip"
+
 RECENT_WRITE_SECONDS = 120
 # Cost ceiling for the Bash path: this runs after EVERY Bash call, so it reads a
 # bounded number of recently-written files and no more (token discipline).
@@ -539,14 +544,21 @@ def _recently_written(root, now=None):
     import subprocess
     import time
     now = time.time() if now is None else now
+    # `git status --porcelain` prints paths relative to the GIT ROOT, not to the
+    # directory passed with -C. Joining them onto a project dir that sits below
+    # the root produces paths that do not exist, and every one is skipped -- the
+    # gate goes silently inert exactly where it looks busiest (round 7 minor).
     try:
+        top = subprocess.run(["git", "-C", root, "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=10)
         r = subprocess.run(["git", "-C", root, "status", "--porcelain",
                             "--untracked-files=all"],
                            capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return []
-    if r.returncode != 0:
+    if r.returncode != 0 or top.returncode != 0:
         return []
+    root = top.stdout.strip() or root
     out = []
     for line in r.stdout.splitlines():
         rel = line[3:].strip()
@@ -633,6 +645,8 @@ def hook_mode():
         return 0
     if KEY_CONTEXT not in source:
         return 0                      # the fast exit for every other edit
+    if SKIP_MARKER in source:
+        return 0                      # explicit per-file bypass
     if not looks_like_a_hook(source):
         return 0                      # an ordinary dict key, not a hook payload
     if self_test(verbose=False):
@@ -647,8 +661,13 @@ def hook_mode():
 
 
 def _emit_block(bad):
-    lines = ["BLOCKED by hook_envelope_audit: this hook emits an envelope that "
-             "Claude Code DISCARDS.",
+    certain = [s for s in bad if s.verdict in (NO_EVENT_NAME, TOP_LEVEL)]
+    headline = ("BLOCKED by hook_envelope_audit: this hook emits an envelope that "
+                "Claude Code DISCARDS." if certain else
+                "BLOCKED by hook_envelope_audit: this hook builds its envelope in "
+                "a shape this audit CANNOT READ, so it cannot confirm the payload "
+                "is delivered. This is not a claim that it is broken.")
+    lines = [headline,
              "",
              "Measured 2026-08-30 (probe_hook_envelope.py, three headless runs "
              "with a positive control): additionalContext reaches the model ONLY as",
@@ -665,6 +684,9 @@ def _emit_block(bad):
                  "UNKNOWN means the envelope is not a literal dict here, so the "
                  "audit cannot verify it -- make it literal, or move the emission "
                  "to one chokepoint that is.")
+    lines.append("If the shape is deliberate and you have verified delivery "
+                 "yourself, put `%s` in the file to bypass this gate for it."
+                 % SKIP_MARKER)
     sys.stderr.write("\n".join(lines) + "\n")
 
 

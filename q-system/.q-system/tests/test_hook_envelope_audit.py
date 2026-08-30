@@ -565,3 +565,98 @@ def test_add_branch_still_writes_a_genuinely_new_declaration(tmp_path):
     assert written == ["expected_tests/%s"
                        % cm.fragment_name("expected_tests", entry)], written
     assert errors == [], errors
+
+
+# --------------------------------------------------------------------------
+# Round 7. Three minors: a replay that fought itself, a gate that went inert
+# where it looked busiest, and a block with no way past it.
+# --------------------------------------------------------------------------
+def test_the_skip_marker_bypasses_the_gate(tmp_path):
+    """Every blocking hook in this repo is required to have one.
+
+    skill-hook-pairing.md, "Override". This one shipped without it, which left no
+    way past a false block except switching the gate off.
+    """
+    p = tmp_path / "deliberate_hook.py"
+    p.write_text('import json, sys\n'
+                 '# hook-envelope-skip: verified by hand against the live model\n'
+                 'payload = json.load(sys.stdin)\n'
+                 'print(json.dumps({"additionalContext": "x"}))\n')
+    assert _run_gate(p).returncode == 0
+
+
+def test_without_the_marker_that_same_file_is_blocked(tmp_path):
+    """The control. A bypass nothing can fail is not a bypass."""
+    p = tmp_path / "same_hook.py"
+    p.write_text('import json, sys\n'
+                 'payload = json.load(sys.stdin)\n'
+                 'print(json.dumps({"additionalContext": "x"}))\n')
+    assert _run_gate(p).returncode == 2
+
+
+def test_an_unknown_block_does_not_claim_the_payload_is_discarded(tmp_path):
+    """The audit must not assert something about a shape it could not read."""
+    p = tmp_path / "dict_built_hook.py"
+    p.write_text('import json, sys\n'
+                 'payload = json.load(sys.stdin)\n'
+                 'print(json.dumps({"hookSpecificOutput": dict('
+                 'hookEventName="UserPromptSubmit", additionalContext="x")}))\n')
+    proc = _run_gate(p)
+    assert proc.returncode == 2
+    assert "CANNOT READ" in proc.stderr, proc.stderr
+    assert "DISCARDS" not in proc.stderr.split("\n")[0], proc.stderr
+    assert "hook-envelope-skip" in proc.stderr
+
+
+def test_a_definite_block_still_says_discarded(tmp_path):
+    """The other half of that control."""
+    p = tmp_path / "broken_hook.py"
+    p.write_text('import json, sys\n'
+                 'payload = json.load(sys.stdin)\n'
+                 'print(json.dumps({"additionalContext": "x"}))\n')
+    assert "DISCARDS" in _run_gate(p).stderr
+
+
+def test_bash_leg_works_when_the_project_dir_is_below_the_git_root(tmp_path):
+    """`git status --porcelain` prints paths relative to the GIT ROOT.
+
+    Joining them onto a project dir one level down produced paths that do not
+    exist, so every file was skipped and the gate went silently inert exactly
+    where it looked busiest.
+    """
+    root = _init_repo(tmp_path / "repo")
+    sub = root / "subproject"
+    sub.mkdir()
+    (sub / "sneaky_hook.py").write_text(
+        'import json, sys\n'
+        'payload = json.load(sys.stdin)\n'
+        'print(json.dumps({"additionalContext": "discarded"}))\n')
+    assert _run_bash_gate(sub).returncode == 2
+
+
+def test_add_delta_edit_replay_is_idempotent(tmp_path):
+    """A second run must not report its own prior write as main's conflict."""
+    import json as _json
+    cm_path = os.path.join(REPO, "q-system", ".q-system", "scripts",
+                           "capability_manifest.py")
+    spec = importlib.util.spec_from_file_location("capability_manifest", cm_path)
+    cm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cm)
+
+    root = tmp_path / "repo"
+    sdir = root / cm.FRAGMENT_DIR / "expected_tests"
+    sdir.mkdir(parents=True)
+    old = {"path": "tests/x.py", "runner": "python3"}
+    new = {"path": "tests/x.py", "runner": "bash"}
+    frag = sdir / cm.fragment_name("expected_tests", old)
+    frag.write_text(_json.dumps(old, indent=1, sort_keys=True) + "\n")
+
+    base, head = {"expected_tests": [old]}, {"expected_tests": [new]}
+    first_errors = []
+    assert cm.add_delta(str(root), base, head, first_errors)
+    assert first_errors == [], first_errors
+
+    second_errors = []
+    assert cm.add_delta(str(root), base, head, second_errors) == []
+    assert second_errors == [], second_errors
+    assert _json.loads(frag.read_text())["runner"] == "bash"

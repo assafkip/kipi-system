@@ -307,6 +307,9 @@ def add_delta(root, base, head, errors=None):
                 continue                  # identical: nothing to write
             if old_entry is not None:
                 current = _read_fragment(target)
+                if current is not None and _canon(current) == _canon(new_entry):
+                    continue          # this replay already ran; re-running it is
+                                      # not a conflict with main (round 7 minor)
                 if current is None or _canon(current) != _canon(old_entry):
                     if not target.exists():
                         why = "no fragment on disk; main removed this declaration"
