@@ -1211,6 +1211,11 @@ def main(argv):
     # OK. The sanctioned write path silently losing its own change is the same
     # outage class as the round-1 scar below, one race narrower. Measured 3/3
     # losses before this lock, 0/3 after (probe_round4_findings phase 3).
+    # Resolved ONCE, before any file lands, from the wiring this run will LEAVE
+    # BEHIND rather than the one it started with. See wired_hook_commands.
+    wired_commands = wired_hook_commands(
+        root, staged[settings_key] if settings_key is not None else None)
+
     with tripwire_lock(root, log):
         try:
             for rel in sorted(staged):
@@ -1224,7 +1229,7 @@ def main(argv):
                 with open(tmp_path, "w") as fh:
                     fh.write(staged[rel])
                 os.replace(tmp_path, full)
-                restore_exec_wiring(root, rel, full, prior_mode, log)
+                restore_exec_wiring(wired_commands, rel, full, prior_mode, log)
                 written.append(rel)
         except (OSError, IOError) as exc:
             for rel in sorted(staged):
@@ -1357,20 +1362,55 @@ def register_with_tripwire(root, written, log):
     return ", tripwire updated"
 
 
-def _wired_hook_commands(root):
-    """Every hook command string wired in <root>/.claude/settings.json."""
-    p = os.path.join(root, ".claude", "settings.json")
-    if not os.path.isfile(p):
-        return []
+def _hook_commands_from_text(text):
+    """Every hook command string in a settings.json BODY."""
     try:
-        with open(p) as fh:
-            settings = json.load(fh)
+        settings = json.loads(text)
     except ValueError:
         return []
     return [entry.split("|", 2)[2] for entry in _hook_entries(settings)]
 
 
-def _is_wired_hook_script(root, full):
+def wired_hook_commands(root, staged_settings_text=None):
+    """The hook commands this run's wiring will end up with.
+
+    STAGED settings win when the proposal edits them (Codex major, PR #270).
+    Files are written in sorted order, so a proposal that CREATES a hook and
+    wires it in the same transaction writes `.claude/hooks/x.sh` before
+    `.claude/settings.json`. Reading the live file at that moment finds the new
+    hook UNWIRED and ships it 0644 -- the same silent disarm restore_exec_wiring
+    exists to prevent, one step over, and on a brand-new gate rather than an
+    existing one.
+    """
+    if staged_settings_text is not None:
+        return _hook_commands_from_text(staged_settings_text)
+    p = os.path.join(root, ".claude", "settings.json")
+    if not os.path.isfile(p):
+        return []
+    try:
+        with open(p) as fh:
+            return _hook_commands_from_text(fh.read())
+    except OSError:
+        return []
+
+
+_PATH_TAIL = re.compile(r"[A-Za-z0-9_.\-/]")
+
+
+def _names_path(command, path):
+    """True when `command` runs exactly `path`, not a longer path starting with it."""
+    start = 0
+    while True:
+        i = command.find(path, start)
+        if i < 0:
+            return False
+        end = i + len(path)
+        if end >= len(command) or not _PATH_TAIL.match(command[end]):
+            return True
+        start = i + 1
+
+
+def _is_wired_hook_script(wired_commands, full):
     """True when `full` is the script a wired hook command actually runs.
 
     Substring match against the path as written and with $HOME collapsed,
@@ -1385,11 +1425,18 @@ def _is_wired_hook_script(root, full):
         if spelling.startswith(home + os.sep):
             spellings.add("~" + spelling[len(home):])
             spellings.add("$HOME" + spelling[len(home):])
-    return any(any(s in command for s in spellings)
-               for command in _wired_hook_commands(root))
+    # Bounded, not a bare `in` (Codex minor, PR #274). A hook wired as
+    # `.../a-gate.sh.disabled` CONTAINS `.../a-gate.sh`, so an unbounded
+    # substring match would call the shorter path wired and grant it +x on the
+    # strength of a command that never runs it. The character after the match
+    # has to end the token: a path continues through [A-Za-z0-9_.-] and through
+    # a separator, so anything else (space, quote, end of string) is the end of
+    # the executed path.
+    return any(_names_path(command, s) for command in wired_commands
+               for s in spellings)
 
 
-def restore_exec_wiring(root, rel, full, prior_mode, log):
+def restore_exec_wiring(wired_commands, rel, full, prior_mode, log):
     """Put back the mode os.replace dropped, and never leave a wired hook
     non-executable.
 
@@ -1412,7 +1459,7 @@ def restore_exec_wiring(root, rel, full, prior_mode, log):
     """
     if prior_mode is not None:
         os.chmod(full, prior_mode)
-    if not _is_wired_hook_script(root, full):
+    if not _is_wired_hook_script(wired_commands, full):
         return
     mode = stat.S_IMODE(os.stat(full).st_mode)
     wanted = mode | stat.S_IXUSR

@@ -127,9 +127,13 @@ JSON
   }
 }
 JSON
-  cat > "$r/q-system/.q-system/capability-manifest.json" <<'JSON'
-{ "schema_version": 1, "expected_tests": [ { "path": "a/b.py", "runner": "python3" } ] }
-JSON
+  # One fragment per declaration -- census() reads the assembled view, so the
+  # fixture has to be written in the layout the engine actually walks.
+  mkdir -p "$r/q-system/.q-system/capability/expected_tests"
+  echo '{ "schema_version": 1 }' \
+    > "$r/q-system/.q-system/capability/manifest.json"
+  echo '{ "path": "a/b.py", "runner": "python3" }' \
+    > "$r/q-system/.q-system/capability/expected_tests/a__b.py.json"
 }
 
 run_engine() {  # run_engine <engine> <proposal> <root>  -> sets RC and OUT
@@ -1636,6 +1640,229 @@ if grep -q 'Bash(:\*)' "$T/.claude/settings.json"; then
 else
   bad "MUTATION spelling: mutant did not widen permissions - case 15p is not load-bearing"
 fi
+rm -r "$T"
+
+# --------------------------------------------- 16. mode is wiring (ASK-1118)
+#
+# A hook is wired in settings.json as a BARE PATH, so a file that loses its
+# execute bit does not run -- and nothing reports it: no hook error, no audit
+# line, no gate goes red. This engine's atomic temp-then-replace creates the
+# temp file at the default 0644, so landing a CORRECT content fix into
+# ~/.claude/hooks/destructive-op-deny.sh turned that guard OFF machine-wide. It
+# was found only because a canary file got deleted after the fix was already in
+# the file. Mode is wiring, not metadata.
+mk_mode_root() {  # mk_mode_root -> prints a fresh root with one WIRED hook
+  local r; r=$(mktemp -d); mk_fixture "$r"
+  mkdir -p "$r/.claude/hooks"
+  printf '#!/bin/bash\n# ANCHOR LINE\nexit 0\n' > "$r/.claude/hooks/a-gate.sh"
+  chmod 755 "$r/.claude/hooks/a-gate.sh"
+  printf '#!/bin/bash\n# ANCHOR LINE\nexit 0\n' > "$r/.claude/hooks/not-wired.sh"
+  chmod 644 "$r/.claude/hooks/not-wired.sh"
+  # Wired as a BARE PATH, which is exactly how destructive-op-deny.sh is wired
+  # and why a lost execute bit is silent rather than loud.
+  cat > "$r/.claude/settings.json" <<JSON
+{ "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [
+  { "type": "command", "command": "$r/.claude/hooks/a-gate.sh" } ] } ] } }
+JSON
+  printf '%s' "$r"
+}
+
+mk_mode_proposal() {  # mk_mode_proposal <out> <rel>
+  cat > "$1" <<JSON
+{ "schema_version": 1, "slug": "mode-is-wiring", "reason": "mode is wiring",
+  "edits": [ { "file": "$2", "op": "insert_after", "anchor": "# ANCHOR LINE\n",
+               "reason": "rewrite the file so the mode path runs",
+               "insert": "# added by the mode case\n" } ] }
+JSON
+}
+
+T=$(mk_mode_root)
+mk_mode_proposal "$T/p.json" ".claude/hooks/a-gate.sh"
+run_engine "$ENGINE" "$T/p.json" "$T"
+if [ -x "$T/.claude/hooks/a-gate.sh" ]; then
+  ok "16a an executable wired hook is still executable after a write (rc=$RC)"
+else
+  bad "16a the engine disarmed a wired hook :: $(ls -l "$T/.claude/hooks/a-gate.sh") :: $OUT"
+fi
+rm -r "$T"
+
+# The repair half. A hook already sitting at 0644 is a DISARMED hook, and this
+# engine is the only sanctioned writer that can reach it, so it must not leave
+# it that way.
+T=$(mk_mode_root)
+chmod 644 "$T/.claude/hooks/a-gate.sh"
+mk_mode_proposal "$T/p.json" ".claude/hooks/a-gate.sh"
+run_engine "$ENGINE" "$T/p.json" "$T"
+if [ -x "$T/.claude/hooks/a-gate.sh" ]; then
+  ok "16b a wired hook found non-executable ends the run executable (rc=$RC)"
+else
+  bad "16b a wired hook stayed disarmed :: $(ls -l "$T/.claude/hooks/a-gate.sh") :: $OUT"
+fi
+rm -r "$T"
+
+# The negative half, and it is the one that keeps 16b honest: the execute bit is
+# granted ONLY to a path the tree already runs as a hook. Without this, "restore
+# the bit" would be "make anything under .claude/ executable".
+T=$(mk_mode_root)
+mk_mode_proposal "$T/p.json" ".claude/hooks/not-wired.sh"
+run_engine "$ENGINE" "$T/p.json" "$T"
+if [ -x "$T/.claude/hooks/not-wired.sh" ]; then
+  bad "16c the engine made a NON-wired file executable :: $(ls -l "$T/.claude/hooks/not-wired.sh")"
+else
+  ok "16c a file no hook command names is left non-executable (rc=$RC)"
+fi
+rm -r "$T"
+
+# 16d. A hook WIRED BY THE SAME PROPOSAL (Codex major, PR #270). Files land in
+# sorted order, so `.claude/hooks/a-gate.sh` is written before
+# `.claude/settings.json`. Reading the LIVE settings at that moment finds the new
+# hook unwired and ships it 0644 -- the same silent disarm, one step over, and on
+# a brand-new gate that has never once run.
+T=$(mktemp -d); mk_fixture "$T"
+mkdir -p "$T/.claude/hooks"
+printf '#!/bin/bash\n# ANCHOR LINE\nexit 0\n' > "$T/.claude/hooks/a-gate.sh"
+chmod 644 "$T/.claude/hooks/a-gate.sh"
+cat > "$T/.claude/settings.json" <<JSON
+{ "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [
+  { "type": "command", "command": "$T/.claude/hooks/placeholder.sh" } ] } ] } }
+JSON
+cat > "$T/settings-template.json" <<JSON
+{ "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [
+  { "type": "command", "command": "$T/.claude/hooks/placeholder.sh" },
+  { "type": "command", "command": "$T/.claude/hooks/a-gate.sh" } ] } ] } }
+JSON
+cat > "$T/p.json" <<JSON
+{ "schema_version": 1, "slug": "wire-and-create", "reason": "wire a hook and edit it in one transaction",
+  "requires": { "template_pairs": ["$T/.claude/hooks/a-gate.sh"] },
+  "edits": [
+    { "file": ".claude/hooks/a-gate.sh", "op": "insert_after", "anchor": "# ANCHOR LINE\n",
+      "reason": "the hook body", "insert": "# armed\n" },
+    { "file": ".claude/settings.json", "op": "insert_after",
+      "anchor": "\"command\": \"$T/.claude/hooks/placeholder.sh\" }",
+      "reason": "wire it",
+      "insert": ",\n  { \"type\": \"command\", \"command\": \"$T/.claude/hooks/a-gate.sh\" }" } ] }
+JSON
+run_engine "$ENGINE" "$T/p.json" "$T"
+if [ -x "$T/.claude/hooks/a-gate.sh" ]; then
+  ok "16d a hook wired by the SAME proposal ends the run executable (rc=$RC)"
+else
+  bad "16d a newly wired hook shipped disarmed :: $(ls -l "$T/.claude/hooks/a-gate.sh") :: $OUT"
+fi
+rm -r "$T"
+
+# 16e. A LONGER path that merely starts with this one (Codex minor, PR #274).
+# `.../a-gate.sh.disabled` contains `.../a-gate.sh`, so an unbounded substring
+# match calls the shorter path wired and grants +x on the strength of a command
+# that never runs it.
+T=$(mktemp -d); mk_fixture "$T"
+mkdir -p "$T/.claude/hooks"
+printf '#!/bin/bash\n# ANCHOR LINE\nexit 0\n' > "$T/.claude/hooks/a-gate.sh"
+chmod 644 "$T/.claude/hooks/a-gate.sh"
+cat > "$T/.claude/settings.json" <<JSON
+{ "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [
+  { "type": "command", "command": "$T/.claude/hooks/a-gate.sh.disabled" } ] } ] } }
+JSON
+mk_mode_proposal "$T/p.json" ".claude/hooks/a-gate.sh"
+run_engine "$ENGINE" "$T/p.json" "$T"
+if [ -x "$T/.claude/hooks/a-gate.sh" ]; then
+  bad "16e a path that is only a PREFIX of the wired one was made executable"
+else
+  ok "16e a longer wired path does not make its prefix executable (rc=$RC)"
+fi
+rm -r "$T"
+
+# --- mutation: read the LIVE settings instead of the staged ones ---
+MUT=$(mktemp -d)/engine.py
+python3 - "$ENGINE" "$MUT" <<'PY'
+import sys, pathlib
+src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = src.read_text()
+old = "    wired_commands = wired_hook_commands(\n        root, staged[settings_key] if settings_key is not None else None)"
+assert text.count(old) == 1, "mutation anchor hits: %d" % text.count(old)
+dst.write_text(text.replace(old, "    wired_commands = wired_hook_commands(root, None)"))
+PY
+T=$(mktemp -d); mk_fixture "$T"
+mkdir -p "$T/.claude/hooks"
+printf '#!/bin/bash\n# ANCHOR LINE\nexit 0\n' > "$T/.claude/hooks/a-gate.sh"
+chmod 644 "$T/.claude/hooks/a-gate.sh"
+cat > "$T/.claude/settings.json" <<JSON
+{ "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [
+  { "type": "command", "command": "$T/.claude/hooks/placeholder.sh" } ] } ] } }
+JSON
+cat > "$T/settings-template.json" <<JSON
+{ "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [
+  { "type": "command", "command": "$T/.claude/hooks/placeholder.sh" },
+  { "type": "command", "command": "$T/.claude/hooks/a-gate.sh" } ] } ] } }
+JSON
+cat > "$T/p.json" <<JSON
+{ "schema_version": 1, "slug": "wire-and-create", "reason": "wire a hook and edit it in one transaction",
+  "requires": { "template_pairs": ["$T/.claude/hooks/a-gate.sh"] },
+  "edits": [
+    { "file": ".claude/hooks/a-gate.sh", "op": "insert_after", "anchor": "# ANCHOR LINE\n",
+      "reason": "the hook body", "insert": "# armed\n" },
+    { "file": ".claude/settings.json", "op": "insert_after",
+      "anchor": "\"command\": \"$T/.claude/hooks/placeholder.sh\" }",
+      "reason": "wire it",
+      "insert": ",\n  { \"type\": \"command\", \"command\": \"$T/.claude/hooks/a-gate.sh\" }" } ] }
+JSON
+run_engine "$MUT" "$T/p.json" "$T"
+if [ -x "$T/.claude/hooks/a-gate.sh" ]; then
+  bad "MUTATION staged-wiring: the bit came back anyway - 16d is not load-bearing"
+else
+  ok "MUTATION staged-wiring: live settings read instead of staged -> the new hook shipped disarmed (rc=$RC), 16d goes RED as required"
+fi
+rm -r "$T"
+
+# --- mutation: stop restoring the execute bit ---
+# 16a and 16b both pass trivially if the engine simply never touches mode, so
+# neither is load-bearing until the guard is watched to fail.
+MUT=$(mktemp -d)/engine.py
+python3 - "$ENGINE" "$MUT" <<'PY'
+import sys, pathlib
+src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = src.read_text()
+old = "    if prior_mode is not None:\n        os.chmod(full, prior_mode)\n"
+assert text.count(old) == 1, "mutation anchor hits: %d" % text.count(old)
+text = text.replace(old, "    return\n")
+dst.write_text(text)
+PY
+T=$(mk_mode_root)
+chmod 644 "$T/.claude/hooks/a-gate.sh"
+mk_mode_proposal "$T/p.json" ".claude/hooks/a-gate.sh"
+run_engine "$MUT" "$T/p.json" "$T"
+if [ -x "$T/.claude/hooks/a-gate.sh" ]; then
+  bad "MUTATION mode: the bit came back anyway - 16b is not load-bearing"
+else
+  ok "MUTATION mode: restore removed -> the wired hook stayed disarmed (rc=$RC), 16b goes RED as required"
+fi
+rm -r "$T"
+
+# --- mutation: let CENSUS_CLAUDE_INPUTS stop carrying something census() reads ---
+# The staging copy is SCOPED (a full copytree of ~/.claude is 3.8G and cannot be
+# staged at all), and a scoped copy fails OPEN on its own: a census member living
+# in an uncopied directory reads as ABSENT, the ratchet counts zero for that
+# category and waves a removal through. The equality check in main() is what
+# makes the allowlist safe, so it has to be watched to fire.
+MUT=$(mktemp -d)/engine.py
+python3 - "$ENGINE" "$MUT" <<'PY'
+import sys, pathlib
+src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = src.read_text()
+old = 'CENSUS_CLAUDE_INPUTS = ("settings.json", "rules", "agents", "output-styles")'
+assert text.count(old) == 1, "mutation anchor hits: %d" % text.count(old)
+dst.write_text(text.replace(old, 'CENSUS_CLAUDE_INPUTS = ("settings.json", "agents", "output-styles")'))
+PY
+T=$(mktemp -d); mk_fixture "$T"
+echo "print('new')" > "$T/q-system/.q-system/scripts/new-lint.py"
+mk_mode_proposal "$T/p.json" ".claude/rules/coding-standards.md"
+cat > "$T/.claude/rules/coding-standards.md" <<'MD'
+# Standards
+
+# ANCHOR LINE
+MD
+run_engine "$MUT" "$T/p.json" "$T"
+check "MUTATION census-scope: allowlist drops rules/ -> the copy is no longer census-equivalent and the run refuses" \
+      2 "not census-equivalent" "$RC" "$OUT"
 rm -r "$T"
 
 echo

@@ -142,6 +142,13 @@ import inspect  # noqa: E402 - local to this assertion
 
 check("main() reports through outcome_line", "outcome_line(" in inspect.getsource(fh.main), True)
 
+# --- sp-32b3438d: verify --dry-run is present in detect_promoted_audit
+check(
+    "detect_promoted_audit includes --dry-run",
+    "--dry-run" in inspect.getsource(fh.detect_promoted_audit),
+    True,
+)
+
 
 # ===========================================================================
 # ASK-204: a finding carries a REFERENCE, never untrusted text
