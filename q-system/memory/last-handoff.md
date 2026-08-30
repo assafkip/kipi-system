@@ -1,53 +1,73 @@
-# Session handoff -- 2026-08-19 (evening)
+# Session handoff, Aug 23 evening [verified: date]. READ THIS FIRST.
 
-## What shipped today
+## State
 
-- Reviewed github.com/ayghri/i-have-adhd against kipi's AUDHD layer; verdict:
-  kipi deeper everywhere except output-quality evals. Founder picked options 2+3.
-- PR #225 MERGED [verified: gh pr view 225 --json state -> MERGED]: H2 eval
-  harness (audhd-output-eval.py, blind paired judging, release gate), 12-case
-  fixture, 22-test suite, 2 style rules (debug spiral brake, pre-send check).
-  Linear ASK-924 Done.
-- PR #226 MERGED [verified: gh pr view 226 --json state -> MERGED after watcher
-  exit 0]: merge-bypass-gate push deny scoped to protected repos (fleet marker
-  at worktree root + remote set). 3 review rounds. Linear ASK-925 Done;
-  sp-9154c64d resolved against it.
-- Public repo shipped: github.com/assafkip/adhd-output-style (MIT, main,
-  personal-data-scrubbed). Renamed from audhd- per founder.
-- Upstream PR OPEN: github.com/ayghri/i-have-adhd/pull/124 [verified: gh pr create returned this URL in-session]
-  (RSD rule for their rule 8, Author:AI disclosed). Open loop: i-have-adhd-pr-124.
-- ASK-923 created (audhd.md TTS example wording, from sp-7c696491).
+Two Sana sessions have run on the spillover queue. Blocking items: 43 -> 36
+(35 original + sp-a7846d3d filed this session). Census 963 open.
 
-## Founder action (one, 2 min, not urgent)
+Landed on origin/main (all merged, CI green):
+- PR #246: ASK-975/976/977/984/985 stack (bypass_check runs at close, digest
+  parser, guard reader stages, uv-collectible suite). Resolved sp-50db1764,
+  sp-0cf100b3, sp-b82fda60, sp-8804dee7, sp-7e42845e, sp-dcd84af1; voided
+  sp-eea17567, sp-d120853a, sp-ca9351e4, sp-4c0b19ba.
+- PR #247: ASK-988 / sp-4c5a00f3 (crtc-test-manifest check commands point at
+  the harness entrypoint). Also shipped: receipts.jsonl gained `reopened_at`
+  (allowlist + ISO contract), accept-rate.load_receipts and prd_runner's
+  archive coverage now resolve state by parsed event timestamp with
+  same-second ties going to REOPEN. Pinned in
+  q-system/.q-system/scripts/test/test-accept-rate-receipts.py (manifest-declared).
+- crtc-test-manifest itself is REOPENED (status: open in its spec): the
+  enumeration deliverable is NOT done. Do not re-close it for check-command
+  work.
 
-- Read the diff on ayghri/i-have-adhd pull request 124, 10 inserted lines [verified: git commit printed "2 files changed, 10 insertions"],
-  and tick its final-accountability checkbox.
+## Next pick (Sana's call, but the recon is done)
 
-## Known state for the next session
+sp-a7846d3d is the natural next item: capability-manifest.json does not
+enumerate plugin tests (65+ files under plugins/*/tests; manifest references
+plugins/ only 12 times) and gate scan scope excludes plugin test discovery.
+This is the defect class that makes other verdicts untrustworthy.
 
-- Local kipi main is ahead of origin by squash-merged duplicates
-  [verified: git log origin/main..HEAD --oneline | wc -l -> 4 at wrap time].
-  Reconcile on a clean tree with founder-gated
-  `ALLOW_DESTRUCTIVE=1 git reset --hard origin/main`, or hand to Sana.
-  Two uncommitted files (merge-bypass-gate.py + its test) are local duplicates
-  of content already merged via PR #226 [verified: git status --short showed
-  exactly those two modified; identical copies were pushed on the PR branch];
-  the reset clears them too.
-- Open spillover items from review nits: sp-b099e96c (4 eval-harness nits, one
-  small issue fixes all; mirror fixes to the public repo) and sp-c9061dbd
-  (2 gate nits: comment overclaims instance branch protection; override-entry
-  normalization untested).
-- Pre-existing spillover piles surfaced but out of scope today:
-  capability-manifest.json and CLAUDE.md notes {{UNVERIFIED}} counts, see
-  `prd_runner.py spillover list --open`.
-- Codex reviewer is DOWN; Opus fallback produced all reviews today (DEGRADED
-  label on the kipi/reviewer-approved statuses).
-- Fleet loop board republished at a NEW artifact URL (old one was deleted):
-  https://claude.ai/code/artifact/ee66305f-1fd5-4f94-8c9d-f06ea0eb5f0f
+Recon notes for sp-32b3438d (audit --dry-run), measured this session:
+- The flag already exists: prd_runner.py spillover promoted-audit --dry-run
+  ("report only; write nothing", parser line ~2824).
+- Under --dry-run it still queries Linear read-only, prints WOULD RESOLVE,
+  and keeps the SAME exit-code contract (1 on transport failure or fully-blind
+  sweep). See _spillover_promoted_audit, lines ~2160-2243.
+- The fix is one argv element in fleet-health-daily.py detect_promoted_audit
+  (~line 1542): append "--dry-run" to the subprocess.run list.
+- RED first via a source-inspection check appended to
+  q-system/.q-system/scripts/test/test-fleet-health-daily.py (house style:
+  main()-based check() helpers, inspect.getsource assertion like line ~141).
 
-## Effort log
+## Mechanics that burned time this session (do not rediscover)
 
-Commits merged to kipi main via 2 PRs; 1 public repo created and hardened
-through 2 review-fix pushes; 1 upstream OSS PR filed; 2 Linear issues opened
-and closed same-day; 5 spillover items touched (1 promoted to ASK-923,
-1 resolved, 3 batches captured).
+- Landing: main is protected. Branch off fresh origin/main, PR, then BOTH
+  required checks: `validate` (CI, ~12 min) and `kipi/reviewer-approved`
+  (posted by q-system/.q-system/scripts/pr-review-agent.sh <pr> --engine
+  codex --post). Reviewer takes ~9 min; timeout of YOUR shell does not mean
+  it failed - check the commit status before assuming anything.
+- Codex review rounds are real: r1-r6 on PR #247 each found a legitimate
+  defect. Fix, do not argue. Expect findings about: parent PRDs retaining
+  what generated specs fixed, receipts/metrics consistency when reopening,
+  union-merge row ordering, UTC-offset timestamps, same-second ties.
+- Every commit touching plugins/** needs a version bump IN THAT COMMIT
+  (plugin-version-bump gate compares per-commit vs HEAD).
+- Commit messages need an ASK-nn reference or [no-issue: reason]
+  (linear-issue-ref hook blocks otherwise).
+- receipts.jsonl has a CLOSED key allowlist (receipts-ledger-check.py,
+  ALLOWED_KEYS); reopen rows use reopened_at + issue_id + prd_id +
+  finding_id + commit_sha. No free text; it ships to a PUBLIC repo.
+- New test files must be declared in q-system/.q-system/capability-manifest.json
+  ({path, runner}) or the capability gate goes undeclared-artifact RED.
+- kipi-mcp tests run under `uv run pytest tests/` from plugins/kipi-core/kipi-mcp.
+- Subagent dispatch was broken all session at the provider level
+  (network_error / instant cancel) while four other opencode sessions ran.
+  If dispatch dies instantly again, execute inline rather than retrying.
+
+## Standing rules that decided everything today
+
+Reproducer first, RED before GREEN. Never trust a green you have not seen go
+red. Verify against the installed clone the server actually starts. Quote the
+tool line and sha next to any verdict. Anything real found and not fixed goes
+to spillover add. Engineering calls belong to Sana; publish/spend/delete stay
+with the founder. Pull or rebase, never reset.

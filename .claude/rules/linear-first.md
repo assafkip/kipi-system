@@ -21,3 +21,17 @@ gate's own stderr carries the full fix, so it teaches on failure. Holes:
 existence or status; uncommitted work is outside the gate. `auto-commit.py`
 declares the hatch by design (unattended, cannot know the issue). kipi-system only
 for now; fleet needs the lefthook stage in the instance template.
+
+<!-- enforcement -->
+```json
+[
+  {
+    "clause": "Linear-First: work that isn't recorded didn't happen",
+    "status": "ENFORCED",
+    "exec": "q-system/.q-system/scripts/linear-issue-ref-check.py",
+    "config": "lefthook.yml",
+    "test": "q-system/.q-system/scripts/test/test-linear-issue-ref-check.sh",
+    "directives": 0
+  }
+]
+```

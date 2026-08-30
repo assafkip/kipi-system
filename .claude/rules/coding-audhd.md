@@ -85,3 +85,16 @@ Use: "Here's what changed." "That works. Next." "Two approaches ruled out." "Goo
 - After hard debugging: next item is a quick win. Recovery buffer.
 - After 3+ complex changes without checkpoint: commit, test, or demo.
 - Never end on a broken state. Find a clean stopping point.
+
+<!-- enforcement -->
+```json
+[
+  {
+    "clause": "AUDHD Coding Rules",
+    "status": "DETECTED",
+    "exec": "q-system/.q-system/scripts/wiring-check.py",
+    "config": ".claude/settings.json",
+    "directives": 7
+  }
+]
+```

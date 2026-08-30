@@ -47,7 +47,11 @@ MANIFEST_NAME = "system-manifest.json"
 
 
 def manifest_path(repo=None) -> Path:
-    return instance_root(repo) / "canonical" / MANIFEST_NAME
+    # allow_unregistered: this module only ever READS, and health() promises its
+    # unattended Stop-hook caller that it never raises. A hard refusal here surfaced
+    # as "the manifest is unreadable" on a healthy manifest (2026-08-22). Ambiguous
+    # and no-canonical repos are still refused.
+    return instance_root(repo, allow_unregistered=True) / "canonical" / MANIFEST_NAME
 
 
 MANIFEST_OK = "ok"

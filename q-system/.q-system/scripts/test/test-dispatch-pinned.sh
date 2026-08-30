@@ -12,8 +12,15 @@
 # an assertion that has only ever been green cannot tell "the wrapper refuses to
 # force" from "the test cannot see forcing".
 set -uo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WRAPPER="$HERE/kipi-dispatch-pinned.sh"
+# The subject lives at the REPO ROOT (RULE-2026-06-30-A: instance automation is
+# not written into the synced q-system/ subtree), while this test lives in a
+# capability-gate scan root -- same split as test-kipi-update-safety.sh and its
+# root-level subject. Moved here for ASK-972: at the repo root the declaration
+# sat outside both scan roots, so it was invisible to the undeclared-artifact
+# direction of the gate's diff. Renamed test_ -> test- because discover_tests
+# globs TEST_PATTERNS, and `test_*.sh` matches none of them (scar 18a39135).
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+WRAPPER="$ROOT/kipi-dispatch-pinned.sh"
 fails=0
 ok()   { printf 'ok   %s\n' "$1"; }
 bad()  { printf 'FAIL %s\n     %s\n' "$1" "${2:-}"; fails=$((fails + 1)); }
@@ -167,7 +174,7 @@ PAGE_SINK="$NOTE2" KIPI_NOTIFY="$R4/notify.sh" run_wrapper "$R4" "$STRIPPED" >/d
 # Without this the wrapper is dead code: the scheduler keeps running dispatch out
 # of the shared checkout and merging changes nothing. A test that only exercises
 # the wrapper cannot see that, which is exactly how it was missed.
-PLIST="$HERE/q-system/.q-system/scripts/com.kipi.dispatch.plist"
+PLIST="$ROOT/q-system/.q-system/scripts/com.kipi.dispatch.plist"
 if [ -f "$PLIST" ]; then
   grep -q 'kipi-dispatch-pinned.sh' "$PLIST" \
     && ok "T6 the plist runs the pinned wrapper, so it has a production invoker" \
