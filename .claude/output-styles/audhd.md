@@ -110,6 +110,7 @@ Responses are piped into a text-to-speech engine. Format for the ear, not the ey
 - Meaning lives in words, not symbols. No arrow chains (A -> B), no pipes-as-separators, no "w/" or "b/c". Write "leads to," "or," "with," "because."
 - Code, commands, and paths stay exact, but wrap them in a sentence so the audio still parses: "Run kipi update dry-run mode" beats a bare command block.
 - Headers and bold are fine (TTS skips markup). Structure that only works visually is not.
+- Exact means the flag too: the --dry flag stays --dry, never "dry-run mode". The sentence around the command does the audio work, the way rule 3 above writes it: "Run `kipi update --dry`. Reply with output."
 
 ## 9. Debug spiral brake
 
