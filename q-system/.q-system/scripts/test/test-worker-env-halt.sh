@@ -363,6 +363,50 @@ continue|Invalid API key, expired token and logged-out CLI are all handled now.
 CASES
 
 # ----------------------------------------------------------------------------
+# THE SEPARATOR-TAIL FALSE HALT (PR #200 review round 4, major)
+# ----------------------------------------------------------------------------
+# Ending the line at the marker was still not enough, because the tail exemption
+# that let the machine's own line through -- "a separator, then anything" -- is
+# also the commonest way English continues a clause. A dash after a noun phrase
+# is a summary bullet, not machine formatting:
+#   Invalid API key - fixed by adding a retry with backoff.
+# All four lines below halted the fleet on the `.*` tail. The exemption exists
+# for exactly two observed machine tails and must admit only those shapes: a
+# `resets ...` clause, or a SECOND marker (`· Please run /login`). A tail that
+# resumes with any other word is prose.
+#
+# The halt rows are the negative self-test for that narrowing: tighten the tail
+# past the observed machine lines and they go red here rather than silently
+# turning the detector off.
+while IFS='|' read -r want text; do
+  [ -n "$want" ] || continue
+  if is_environmental "$text"; then got=halt; else got=continue; fi
+  if [ "$got" = "$want" ]; then
+    ok "detector, separator tail: $want <- $text"
+  else
+    bad "detector, separator tail: expected $want, got $got" "input: $text"
+  fi
+done <<'CASES'
+continue|Invalid API key - fixed by adding a retry with backoff.
+continue|usage limit reached - added a regression test for the reset path.
+continue|Please run /login - documented in the runbook.
+continue|Credit balance is too low - the top-up flow now handles it.
+halt|You've hit your weekly limit - resets Aug 18 at 2pm (America/Los_Angeles)
+halt|You've hit your 5-hour limit - resets at 2pm
+halt|Invalid API key · Please run /login
+CASES
+
+# The pipe is the field separator of the two tables above, so the pipe-tail case
+# cannot live in one. It is the same defect: `|` is in the separator class, and
+# an agent writing a table row would halt the fleet.
+env_pipe_case="Credit balance is too low | see the fixture table in the test."
+if is_environmental "$env_pipe_case"; then
+  bad "detector, separator tail: expected continue, got halt" "input: $env_pipe_case"
+else
+  ok "detector, separator tail: continue <- $env_pipe_case"
+fi
+
+# ----------------------------------------------------------------------------
 # THE QUOTED-MARKER FALSE HALT (PR #200 review round 2, major)
 # ----------------------------------------------------------------------------
 # Whole-LINE anchoring is still not enough, because an agent that is WORKING on

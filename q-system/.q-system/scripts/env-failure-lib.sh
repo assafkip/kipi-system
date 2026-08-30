@@ -42,9 +42,10 @@
 # runner's ENTIRE utterance. The machine says its piece and stops; agent prose
 # continues past the marker into more sentence. So the line must END at the
 # marker, allowing only a SEPARATOR-LED tail (`- resets Aug 18 ...`,
-# `· Please run /login`) -- machine formatting, which prose does not use to
-# continue a clause -- plus a bare final period. A tail that resumes with a word
-# is prose and is not a halt. Same shape as ASK-747: content that MENTIONS a
+# `· Please run /login`) plus a bare final period. A separator alone does NOT
+# make the tail the machine's -- prose uses a dash to continue a clause all the
+# time, which is round 4 below; the tail body is what decides. Otherwise a tail
+# that resumes with a word is prose. Same shape as ASK-747: content that MENTIONS a
 # marker is not the marker being raised.
 #
 # AND THE MARKER MUST BE THE WHOLE OUTPUT, NOT MERELY A LINE OF IT. Whole-line
@@ -80,16 +81,35 @@
 # an indented quote inside agent prose does not reach that far left.
 ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]+-hour) limit|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login"
 
-# Separator-led remainder of the machine's own line, or nothing. Kept as one
-# string so is_environmental and environmental_reason cannot drift: a reason
-# computed from a looser pattern than the decision would page with an empty
-# "why", and a tighter one would page with none at all.
-# `.*` and not `[^\n]*`: in an ERE bracket `\n` is the two literal characters,
-# so `[^\n]*` excludes every tail containing the LETTER n -- which silently
-# un-matched "- resets Aug 18 ... (America/Los_Angeles)" and "· Please run
-# /login", i.e. both observed machine lines. grep is line-oriented, so `.` is
-# already newline-safe here.
-ENV_LINE_TAIL="([[:space:]]*([-|]|·|–|—).*)?[[:space:]]*[.!]?[[:space:]]*"
+# AND THE SEPARATOR MUST LEAD SOMEWHERE THE MACHINE GOES. Allowing a separator
+# plus ANYTHING was the third attempt and it was wrong for the same reason as the
+# first two, one layer further out: the tail exemption that admits the machine's
+# own line is also the commonest way English continues a clause. A dash after a
+# noun phrase is an ordinary summary bullet:
+#   Invalid API key - fixed by adding a retry with backoff.
+#   usage limit reached - added a regression test for the reset path.
+# Both are agent SUCCESS reports and both halted the fleet. Measured on PR #200's
+# review round 4; four shapes, including a markdown table row, whose `|` is in
+# the separator class.
+#
+# The exemption exists for exactly two tails an actual log carried, so it admits
+# exactly those two shapes and no third:
+#   - resets Aug 18 at 2pm (America/Los_Angeles)   -> a `resets ...` clause
+#   · Please run /login                            -> a SECOND marker
+# A tail that resumes with any other word is prose. `resets` is matched word-led
+# rather than by date shape on purpose: the CLI has already varied the clause
+# ("resets at 2pm", "resets in 3 hours") and pinning a format would break on the
+# next wording, which is the missing-an-outage direction but needlessly.
+#
+# Kept as one string so is_environmental and environmental_reason cannot drift: a
+# reason computed from a looser pattern than the decision would page with an
+# empty "why", and a tighter one would page with none at all.
+# `.*` and not `[^\n]*` inside the reset clause: in an ERE bracket `\n` is the
+# two literal characters, so `[^\n]*` excludes every tail containing the LETTER
+# n -- which silently un-matched "- resets Aug 18 ... (America/Los_Angeles)".
+# grep is line-oriented, so `.` is already newline-safe here.
+ENV_TAIL_BODY="resets[[:space:]].*|$ENV_MARKERS"
+ENV_LINE_TAIL="([[:space:]]*([-|]|·|–|—)[[:space:]]*($ENV_TAIL_BODY))?[[:space:]]*[.!]?[[:space:]]*"
 
 # ONE regex, built once, used by the counter and by the reason. Two spellings of
 # "is this the machine's line" is the drift this whole file exists to prevent.
