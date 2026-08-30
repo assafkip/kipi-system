@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-case "$*" in
-  "pr list"*) echo 888 ;;
-  "pr view 888 --json mergeable"*) echo MERGEABLE ;;
-esac
-exit 0

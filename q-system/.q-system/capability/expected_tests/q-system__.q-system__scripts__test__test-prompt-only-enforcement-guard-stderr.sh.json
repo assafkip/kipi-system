@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-prompt-only-enforcement-guard-stderr.sh",
+ "runner": "bash"
+}

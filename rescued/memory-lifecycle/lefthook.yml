@@ -1,0 +1,35 @@
+# Lefthook template — copy into repo root as lefthook.yml, then `lefthook install`
+# Gate 1: secrets. Gate 2: huge files. Gate 3: gitignored files trying to sneak in.
+
+pre-commit:
+  parallel: true
+  commands:
+    gitleaks:
+      run: gitleaks protect --staged --redact --no-banner
+      fail_text: "Secret detected. Run 'gitleaks protect --staged -v' for details."
+
+    large-files:
+      run: |
+        staged=$(git diff --cached --name-only --diff-filter=A)
+        [ -z "$staged" ] && exit 0
+        for f in $staged; do
+          [ -f "$f" ] || continue
+          size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")
+          if [ "$size" -gt 10485760 ]; then
+            echo "BLOCK: $f is $((size / 1048576))MB (>10MB). Use git-lfs or exclude."
+            exit 1
+          fi
+        done
+
+    blocked-paths:
+      run: |
+        # Block .env, .envrc, .env.<env>, *.pem/*.key (incl. rotations like key.pem.old), *.jsonl,
+        # and known AI-tooling caches. Allow .env.example / .env.sample / .env.template.
+        # Gitleaks is the deeper safety-net for anything that slips through.
+        blocked=$(git diff --cached --name-only | grep -E '(^|/)(\.env$|\.envrc$|\.env\.local$|\.env\.(production|staging|development|test)($|\..+)|.*\.pem(\..*)?$|.*\.key(\..*)?$|.*\.jsonl$|\.claude/(plans|sessions|skills|MEMORY)/|__pycache__/)' || true)
+        if [ -n "$blocked" ]; then
+          echo "BLOCK: these paths should not be committed:"
+          echo "$blocked"
+          echo "Rename .env.example/.env.sample/.env.template if you meant to commit an example file."
+          exit 1
+        fi

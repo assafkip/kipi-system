@@ -199,6 +199,27 @@ def _walk_to_in_review(repo, run_prd_runner):
     assert run_prd_runner(repo, "advance", "in-review").returncode == 0
 
 
+def _capture_receipts(run_findings_writer, repo: Path, prd_id: str,
+                      decisions: list[tuple]) -> None:
+    """Re-record each disposition through the PRODUCER so it carries a receipt.
+
+    `_write_findings` injects records straight to disk, which no production
+    path does: a real disposition goes through findings_writer, which writes
+    the judgment receipt in the same critical section. The approval gate
+    requires a receipt for every PRD created on or after the floor, and
+    `prd_runner new` dates these fixtures today, so the hand-written shortcut
+    is what made them unrealistic -- not the gate. Before the PRD-level floor
+    these passed only because the injected records carry no `resolved_at` and
+    the old gate skipped undateable findings, which is exactly the hole the
+    floor closes (PR #101 round 8).
+    """
+    for finding_id, disposition, rationale in decisions:
+        extra = ["--rationale", rationale] if rationale else []
+        proc = run_findings_writer(repo, "set-disposition", prd_id,
+                                   finding_id, disposition, *extra)
+        assert proc.returncode == 0, proc.stderr
+
+
 def _write_findings(repo: Path, prd_id: str, records: list[dict]) -> Path:
     path = repo / ".prd-os/findings" / f"{prd_id}-findings.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -280,7 +301,8 @@ def test_approve_blocked_by_pending_finding(fake_repo, write_config, run_prd_run
     assert "pending" in r.stderr.lower()
 
 
-def test_approve_allowed_when_all_dispositioned(fake_repo, write_config, run_prd_runner):
+def test_approve_allowed_when_all_dispositioned(fake_repo, write_config, run_prd_runner,
+                                                run_findings_writer):
     _bootstrap(fake_repo, write_config)
     assert run_prd_runner(fake_repo, "new", "disp-ok").returncode == 0
     prd_id = _read_state(fake_repo)["prd_id"]
@@ -325,6 +347,9 @@ def test_approve_allowed_when_all_dispositioned(fake_repo, write_config, run_prd
             },
         ],
     )
+    _capture_receipts(run_findings_writer, fake_repo, prd_id,
+                      [("finding-1", "accepted", None),
+                       ("finding-2", "deferred", "later")])
     r = run_prd_runner(fake_repo, "advance", "approved")
     assert r.returncode == 0, r.stderr
 
@@ -576,7 +601,8 @@ def test_advance_archived_also_runs_manifest_gate(
     assert "via-advance-issue-1" in r.stderr
 
 
-def test_approve_blocked_without_bypass_check_or_exempt(fake_repo, write_config, run_prd_runner):
+def test_approve_blocked_without_bypass_check_or_exempt(fake_repo, write_config, run_prd_runner,
+                                                        run_findings_writer):
     """Spine contract: an entry with neither bypass_check nor bypass_exempt
     cannot approve; adding either unblocks."""
     _bootstrap(fake_repo, write_config)
@@ -591,6 +617,8 @@ def test_approve_blocked_without_bypass_check_or_exempt(fake_repo, write_config,
         "id": "finding-1", "prd_id": prd_id, "source": "codex-review",
         "severity": "minor", "disposition": "accepted", "body": "ok",
         "created_at": "2026-04-16T00:00:00Z"}])
+    _capture_receipts(run_findings_writer, fake_repo, prd_id,
+                      [("finding-1", "accepted", None)])
     r = run_prd_runner(fake_repo, "advance", "approved")
     assert r.returncode == 2
     assert "bypass_check" in r.stderr and "bypass_exempt" in r.stderr
@@ -611,7 +639,7 @@ def test_approve_blocked_without_bypass_check_or_exempt(fake_repo, write_config,
 
 
 def test_umbrella_kind_approves_empty_and_archives_on_real_coverage(
-        fake_repo, write_config, run_prd_runner):
+        fake_repo, write_config, run_prd_runner, run_findings_writer):
     """kind: umbrella — empty manifest approves when accepted findings carry
     covered_by; archive verifies coverage targets exist and are past idea."""
     _bootstrap(fake_repo, write_config)
@@ -627,6 +655,8 @@ def test_umbrella_kind_approves_empty_and_archives_on_real_coverage(
         "severity": "major", "disposition": "accepted", "body": "phase work",
         "created_at": "2026-04-16T00:00:00Z",
         "covered_by": "prd-missing-phase-2099-01-01"}])
+    _capture_receipts(run_findings_writer, fake_repo, prd_id,
+                      [("finding-1", "accepted", None)])
     r = run_prd_runner(fake_repo, "advance", "approved")
     assert r.returncode == 0, r.stderr  # approval: coverage NAMED is enough
     # archive: the named coverage must EXIST and be past idea
@@ -669,3 +699,36 @@ def test_depends_on_blocks_activation_on_red_gate(
         "registered_at": "2026-01-01T00:00:00Z"}) + "\n")
     r = run_prd_runner(fake_repo, "load", two_id)
     assert r.returncode == 0, r.stderr
+
+
+def test_advance_emits_the_decision_disagreement_warning_at_rc_zero(
+        fake_repo, write_config, run_prd_runner, run_findings_writer):
+    """The judgment gate returns (0, warning) when the mutable findings copy
+    has drifted off the immutable receipt. `cmd_advance` wrote `err` only when
+    `rc != 0`, which would have swallowed that text entirely and turned the
+    round-6/7/8 demotion into a silent drop instead of a report.
+    """
+    _bootstrap(fake_repo, write_config)
+    assert run_prd_runner(fake_repo, "new", "warn-x").returncode == 0
+    prd_id = _read_state(fake_repo)["prd_id"]
+    _walk_to_in_review(fake_repo, run_prd_runner)
+    _stamp_reviewed(fake_repo, prd_id)
+    _write_manifest(fake_repo, prd_id, [{
+        "id": "i1", "title": "t", "finding_id": "finding-1",
+        "allowed_files": ["a.py"], "required_checks": ["pytest"],
+        "bypass_exempt": "test fixture"}])
+    _write_findings(fake_repo, prd_id, [{
+        "id": "finding-1", "prd_id": prd_id, "source": "codex-review",
+        "severity": "minor", "disposition": "accepted", "body": "ok",
+        "created_at": "2026-04-16T00:00:00Z"}])
+    _capture_receipts(run_findings_writer, fake_repo, prd_id,
+                      [("finding-1", "accepted", None)])
+    path = fake_repo / ".prd-os/findings" / f"{prd_id}-findings.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()
+            if line.strip()]
+    rows[0]["rationale"] = "rewritten after the receipt was frozen"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    r = run_prd_runner(fake_repo, "advance", "approved")
+    assert r.returncode == 0, r.stderr
+    assert "WARNING" in r.stderr, r.stderr
+    assert "finding-1" in r.stderr, r.stderr

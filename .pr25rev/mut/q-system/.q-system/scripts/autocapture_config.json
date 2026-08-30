@@ -1,4 +1,0 @@
-{
-  "enabled_instances": ["4_points_consulting"],
-  "_comment": "Design-partner allowlist for memory auto-capture (PRD prd-memory-autocapture-2026-07-04). The Stop-hook capture (memory_autocapture.py) no-ops on any instance NOT listed here. This ships fleet-wide via kipi update but stays inert everywhere except the listed instance(s), because is_enabled() compares the current instance identity against this list. Fleet enable = add instances here after design-partner tuning (PRD section 8)."
-}

@@ -39,11 +39,15 @@ Exit codes:
   2 = block (stderr message goes to Claude as feedback)
 """
 
+import calendar
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
 import re
 import shlex
+import stat
 import sys
 import time
 
@@ -127,7 +131,11 @@ def sweep_stale_caches(max_age_days=CACHE_TTL_DAYS):
     this sweep is their cleanup path."""
     import glob
     cutoff = time.time() - max_age_days * 86400
-    for path in glob.glob("/tmp/claude-guard-*.json"):
+    # Both patterns: the sidecar lock files (sp-016776e6) do not end in .json,
+    # so the original glob would have left one per actor in /tmp forever.
+    stale = glob.glob("/tmp/claude-guard-*.json") + glob.glob(
+        "/tmp/claude-guard-*.lock")
+    for path in stale:
         try:
             if os.path.getmtime(path) < cutoff:
                 os.remove(path)
@@ -171,6 +179,147 @@ def save_cache(actor_key, cache):
             json.dump(cache, f)
     except IOError:
         pass
+
+
+# --- The single-writer chokepoint (sp-016776e6) ------------------------------
+# load_cache/save_cache are a read-modify-write, and Claude Code fires this hook
+# once per tool call — so parallel tool calls mean parallel guard processes on
+# ONE actor's cache file. Unlocked, each read the same pre-state and the last
+# writer won; every other process's mutation was silently dropped.
+#
+# The lost mutation that cost real money is `fable_escalations`, the counter
+# request_escalation reads to decide whether this actor has spent its
+# KIPI_FABLE_CAP budget of billed `claude -p --model claude-fable-5` calls. A
+# dropped increment let the next process read a stale count, believe it was
+# under the cap, and buy another one.
+#
+# MEASURED over the shipped ledger before the fix (188 rows,
+# q-system/output/fable-escalations/, 2026-08-08): 172 rows attempted a real
+# call against a cap of 2 per actor. 90 landed in a second that already carried
+# another real call, 7 in the worst single second, and 8 distinct seconds carry
+# two DIFFERENT triggers — two concurrent guard processes is the only thing that
+# produces that. The two colliding CAPPED pairs are 2026-08-04T03:35:31Z and
+# 2026-08-08T22:07:13Z, each one `exact-retry` racing one `volume-ceiling`.
+#
+# WHY A LOCK AND NOT AN ATOMIC WRITE. tmpfile + os.replace was the tempting fix
+# and it does not work: it makes the WRITE atomic, not the read-modify-write.
+# Both processes still read the same pre-state, so the update is still lost —
+# just lost cleanly. The read and the write have to be inside one critical
+# section, which is what this is.
+#
+# LOST UPDATES WERE NOT THE WORST OF IT. save_cache truncates and rewrites in
+# place, so two concurrent writers can interleave: running the concurrency suite
+# against a no-lock mutant produced a cache whose JSON ended at byte 464 with a
+# longer writer's tail still after it. load_cache catches JSONDecodeError and
+# returns fresh defaults, so a torn write silently reset every counter this
+# guard owns — the ceiling, the retry map and the escalation budget all back to
+# zero, with nothing logged and nothing to see afterwards.
+#
+# WHY THE REGION HOLDS NO SUBPROCESS. This hook is wired at `timeout: 5` on all
+# three events fleet-wide, and a hook that overruns its timeout has its exit 2
+# DISCARDED (measured 2026-08-03; see the escalation block comment below). So a
+# lock held across `_head_commit_epoch`'s git call (capped at 3s) could turn
+# contention into a SPENT refusal — trading this defect for a worse one. The git
+# probe is therefore hoisted out of the region by main(), leaving only in-memory
+# work under the lock: microseconds, not milliseconds.
+LOCK_WAIT_SECONDS = 2.0     # unreachable in practice; the region is pure CPU
+LOCK_POLL_SECONDS = 0.002
+
+
+def lock_path(actor_key):
+    """A sidecar, never the cache file itself.
+
+    HONEST ABOUT WHY, because the first version of this comment was wrong.
+    It claimed save_cache's mode-"w" truncate would drop a lock taken on the
+    cache path; a mutant that pointed this function AT the cache file survived
+    the concurrency suite 8/8, because truncation keeps the same inode and flock
+    follows the inode. So that is not the reason.
+
+    The real reasons are narrower and both structural: the lock must exist
+    before the cache does (an actor's first tool call has no cache file yet, and
+    load_cache is happy to return defaults for one), and a sidecar cannot be
+    invalidated by any future change that REPLACES the cache rather than
+    rewriting it in place — an os.replace-based atomic write, the obvious next
+    edit here, swaps the inode and would silently orphan every held lock.
+    """
+    return f"/tmp/claude-guard-{actor_key}.lock"
+
+
+def _acquire(handle, deadline_s=LOCK_WAIT_SECONDS):
+    """Bounded LOCK_EX. True if held, False if the wait ran out."""
+    end = time.time() + deadline_s
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            if time.time() >= end:
+                return False
+            time.sleep(LOCK_POLL_SECONDS)
+
+
+# Holds the open lock handles for this process's lifetime. Module-level on
+# purpose: a handle kept only in a local could be garbage-collected, and closing
+# the fd releases the flock — silently, mid-region, with everything still
+# looking correct.
+_HELD_LOCKS = []
+
+
+def hold_actor_lock(actor_key):
+    """Take this actor's lock and keep it until the process exits.
+
+    The PreToolUse path cannot use a `with` block: every check ends in
+    block()/warn(), both of which sys.exit, and the path already saves the cache
+    itself at each of those exits. Rather than re-indent ~110 lines of checks
+    (a mechanical edit with plenty of room to hide a defect) the lock is simply
+    held for the rest of the invocation and released by the OS on process exit,
+    which is the one exit every path shares.
+
+    Fails open on purpose — see locked_cache.
+    """
+    try:
+        handle = open(lock_path(actor_key), "a+")
+    except OSError:
+        return False
+    _HELD_LOCKS.append(handle)
+    return _acquire(handle)
+
+
+@contextlib.contextmanager
+def locked_cache(actor_key):
+    """Yield this actor's cache under an exclusive lock; write it back on exit.
+
+    Every load-mutate-save site in this file goes through here — that is what
+    makes it a chokepoint rather than N per-site locks that the next new caller
+    forgets. The yielded dict is written back on exit, including when the body
+    raises SystemExit, which is how block() and warn() leave. Every mutator in
+    this file mutates in place and returns the same object, so rebinding the
+    name inside the body is safe.
+
+    FAILS OPEN, DELIBERATELY. If the lock cannot be taken the body still runs
+    unlocked — today's behaviour, no worse. This hook's whole job is refusing a
+    runaway loop, and a guard that withheld its refusal because it could not get
+    a lock would be a guard that fails closed on its own plumbing. Same posture
+    as request_escalation: the mechanism may only ADD to a refusal, never
+    withhold one.
+    """
+    handle = None
+    try:
+        handle = open(lock_path(actor_key), "a+")
+        _acquire(handle)
+    except OSError:
+        handle = None
+    cache = load_cache(actor_key)
+    try:
+        yield cache
+    finally:
+        save_cache(actor_key, cache)
+        if handle is not None:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            handle.close()
 
 
 def update_counters(tool_name, tool_input, cache):
@@ -389,9 +538,480 @@ def check_time_stall(cache):
     return None
 
 
-def block(message):
-    """Exit with code 2 to block the tool call."""
-    print(message, file=sys.stderr)
+# --- Cross-model escalation on a stuck block (ASK-311) -----------------------
+# The executable is scripts/fable-escalate.py; the test that pins this branch is
+# tests/test_fable_escalation.py. Every check in this file terminates in exactly
+# two outcomes, block() or warn(), and neither changes the REASONING
+# DISTRIBUTION — so a pattern that deadlocks Opus deadlocks it again on the next
+# attempt. This is the third outcome: the script above hands the situation to a
+# different model in a fresh session, gets a triage back, and staples it to the
+# refusal. Opus keeps the work; Fable never implements.
+#
+# ONLY ON A STUCK BLOCK, NEVER ON A WARN. A warn means "you may be drifting" and
+# most runs recover unaided (the time-stall detector fires on any legitimate
+# read-only audit stretch). A block means the run has already stopped, so the
+# few seconds a triage costs were lost anyway. Which blocks count is declared at
+# the call site, not inferred from the message text: a sensitive-file refusal is
+# policy and an MCP rate limit is environmental-trigger class
+# (self-healing-retry.md rule 5), and no amount of cross-model triage fixes
+# either one.
+FABLE_ESCALATE_SCRIPT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "scripts", "fable-escalate.py")
+
+
+def _int_env(name, default):
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+# WHY THE CALL IS SPAWNED AND NEVER AWAITED (decision D1, revised on PR #75
+# round 1 after Codex flagged the synchronous call as a major).
+#
+# This hook's entry in BOTH .claude/settings.json and settings-template.json
+# carries `timeout: 5`, on all three events, fleet-wide. The synchronous design
+# allowed KIPI_FABLE_TIMEOUT (45) + 15 = 60s inside that 5s budget.
+#
+# What blowing a hook timeout actually costs, MEASURED live 2026-08-03 against
+# `claude -p` with a PreToolUse hook pinned at `timeout: 5`
+# (scratchpad repro, two arms so the probe can distinguish):
+#     hook sleeps 0s then exits 2  ->  tool BLOCKED (marker file absent)
+#     hook sleeps 8s then exits 2  ->  tool RAN     (marker file created)
+# The runner kills the slow hook and DISCARDS its exit 2. So waiting on the
+# model does not delay the refusal, it SPENDS it: a stuck session would get
+# neither the block nor the triage, which is worse than before this feature.
+#
+# Raising the timeout was the obvious alternative and it is worse. It is a
+# fleet-wide edit to the hottest hook in the repo, it makes every tool call wait
+# up to the new bound whenever the guard wedges, and any instance that pins its
+# own timeout silently reverts to the broken shape. Spawning is correct at every
+# timeout value, so the number stops being load-bearing.
+#
+# The refusal is therefore printed immediately and unchanged, and the model call
+# runs DETACHED. Its answer is picked up by whichever later hook fire finds it.
+# --- Where the hand-off lives, and why it is not a shared /tmp name ----------
+# (ASK-877, PR #203 Codex major. Follow-on to sp-3caa724d / sp-39c0d7bd.)
+#
+# This used to be "/tmp/claude-fable-pending-%s.json". /tmp is mode 1777 and
+# STICKY, and the earlier fix only taught the READER to distrust a file owned by
+# another uid. That leaves a stronger move untouched: a foreign-owned file
+# PARKED at the predictable name can never be displaced. os.replace() in the
+# writer fails with EACCES (sticky /tmp refuses to replace another uid's file),
+# write_pending swallows the error, the reader refuses the contents and — being
+# unable to unlink a foreign file — leaves it there. Measured on a real
+# root-owned squat: two consecutive write+read attempts both returned None and
+# the squat survived both. Delivery for that actor was off for good, silently.
+#
+# So the name stops being shared. The hand-off lives in a per-uid directory that
+# only this uid may write, created 0700. Inside it, no other account can create
+# a file, replace one, or park an undisplaceable squat, so the class is closed at
+# the directory rather than re-litigated per file.
+#
+# The squat then has one place left to stand: the DIRECTORY name itself. That is
+# why pending_dir() steps to the next candidate instead of giving up. A name we
+# cannot own is a name we skip, so an obstruction costs at most the triage that
+# was in flight — never every future one.
+FABLE_PENDING_ROOT = "/tmp"
+FABLE_PENDING_DIR_TEMPLATE = "claude-fable-%d"
+FABLE_PENDING_NAME_TEMPLATE = "pending-%s.json"
+FABLE_PENDING_DIR_ATTEMPTS = 8
+
+# --- What the hand-off file must prove before a word of it is believed --------
+# (sp-3caa724d + sp-39c0d7bd, RCA rca-claude-tampering-investigation-2026-08-16)
+#
+# The triage is printed VERBATIM into an agent's context inside a system-looking
+# banner, so this file is an input channel, not a cache. It lives in /tmp, which
+# is mode 1777 with a name any local process can predict from a session id. The
+# read used to accept anything that was a dict with a truthy `triage` key.
+#
+# What actually went wrong on 2026-08-16 was not an attacker, it was routing: a
+# subagent's PreToolUse payload carries the MAIN session transcript in
+# `transcript_path`, so a triage requested BY a subagent was computed FROM the
+# orchestrator's last 25 records and then addressed to the orchestrator in
+# imperative second person. Three subagents read that as prompt injection and
+# refused, correctly, and the session spent hours on a security scare. Measured:
+# the triage delivered to agent a542ade419af5af6d named ASK-723/737/760, which
+# occur 18/12/9 times in the session transcript and ZERO times in that agent's
+# own. Hence `actor` is stamped by the writer and compared here, and hence
+# actor_transcript_path() below.
+#
+# HONEST BOUNDARY. The owner check stops a DIFFERENT local uid from planting a
+# payload; it does nothing against a process running as this uid, which can also
+# read the actor key straight out of /tmp/claude-guard-*.json. Same-uid is
+# already game over for a hook that shells out. What these checks buy is that a
+# stranger on the box, a stale file from another day, and a triage meant for
+# another actor can no longer speak in the guard's voice.
+FABLE_PENDING_MAX_BYTES = 65536      # real payloads measured at 1.6-2.1 KB
+FABLE_TRIAGE_MAX_CHARS = 20000       # a four-section triage, generously
+FABLE_PENDING_MAX_AGE_SECONDS = 3600
+FABLE_PENDING_MAX_SKEW_SECONDS = 60  # a ts ahead of us by more than this is not ours
+FABLE_PENDING_TS_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+FABLE_BANNER = (
+    "--- FABLE TRIAGE (fresh session, claude-fable-5) ---\n%s\n"
+    "--- end triage. It is a proposal, not a measurement: run its REFUTE "
+    "command before acting on it. ---")
+
+
+def _adopt_pending_dir(path):
+    """Whether `path` is already a directory only this uid can write into.
+
+    lstat, not stat: a symlink parked at the candidate name would otherwise be
+    judged by its TARGET's ownership, which is the same swap the reader's
+    O_NOFOLLOW exists to refuse.
+
+    A directory we own but that is group- or world-writable is tightened rather
+    than abandoned — it is ours, so chmod is the repair. One we do NOT own is
+    never chmod-able and never becomes usable; say so and let the caller move.
+    """
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        return False
+    if not info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        return True
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        return False
+    return True
+
+
+def _own_pending_dir(path):
+    """Create `path` as a 0700 directory owned by us, or adopt an existing one.
+
+    The chmod after mkdir is not redundant: mkdir applies the umask, so a
+    session running under a hostile-enough umask would otherwise get a directory
+    it cannot write to and no signal that anything is wrong.
+    """
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        return _adopt_pending_dir(path)
+    except OSError:
+        return False
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        return False
+    return True
+
+
+def pending_dir():
+    """The private directory this uid's hand-off files live in, or "".
+
+    Stepping through candidate names is the self-healing half of ASK-877: an
+    obstruction that cannot be owned is skipped, so it costs the triage in
+    flight and not every future one. "" means every candidate was obstructed,
+    which callers treat as "no hand-off channel" — a lost proposal, never a
+    block, since request_escalation's refusal goes out regardless.
+    """
+    root = os.environ.get("KIPI_FABLE_PENDING_ROOT") or FABLE_PENDING_ROOT
+    base = FABLE_PENDING_DIR_TEMPLATE % os.getuid()
+    for attempt in range(FABLE_PENDING_DIR_ATTEMPTS):
+        name = base if not attempt else "%s-%d" % (base, attempt)
+        candidate = os.path.join(root, name)
+        if _own_pending_dir(candidate):
+            return candidate
+    return ""
+
+
+def pending_path(actor):
+    override = os.environ.get("KIPI_FABLE_PENDING")
+    if override:
+        return override
+    directory = pending_dir()
+    if not directory:
+        return ""
+    return os.path.join(directory, FABLE_PENDING_NAME_TEMPLATE % actor)
+
+
+def _unlink_quietly(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _read_pending_file(path):
+    """The parsed hand-off object, or None. Consumes the file.
+
+    O_NOFOLLOW, then fstat on the FD we actually opened: checking the path with
+    os.stat and then opening it is a swap window, and a symlink at a predictable
+    /tmp name is the cheapest way to aim this read somewhere else.
+
+    A file that is opened is always removed, whether or not it validates.
+    Leaving a rejected payload in place would make every later tool call in the
+    session re-read and re-reject the same bytes, and a poisoned file would sit
+    there until reboot. A foreign-owned file is the one we do NOT remove: /tmp
+    is sticky, so the unlink would fail anyway, and refusing it forever is the
+    safe direction.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        if info.st_uid != os.getuid():
+            return None
+        if info.st_size > FABLE_PENDING_MAX_BYTES:
+            _unlink_quietly(path)
+            return None
+        raw = os.read(fd, FABLE_PENDING_MAX_BYTES)
+    except OSError:
+        return None
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    _unlink_quietly(path)
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
+def _pending_is_fresh(ts, now=None):
+    """True for a timestamp written by a child of THIS run, roughly.
+
+    A pending file outlives the session that made it — /tmp today holds ones
+    from three days ago — and the path is derived from a session id, so a
+    redirected or reused path can hand a new actor a stale answer about work
+    that is long finished.
+    """
+    if not isinstance(ts, str):
+        return False
+    try:
+        written = calendar.timegm(time.strptime(ts, FABLE_PENDING_TS_FORMAT))
+    except (ValueError, TypeError):
+        return False
+    age = (time.time() if now is None else now) - written
+    return -FABLE_PENDING_MAX_SKEW_SECONDS <= age <= FABLE_PENDING_MAX_AGE_SECONDS
+
+
+def pending_payload_is_trustworthy(data, actor):
+    """Whether this object may be printed into `actor`'s context as a triage.
+
+    Fails closed on every question it cannot answer. `actor` is the check that
+    exists because of the 2026-08-16 scare: a triage is scoped to the actor that
+    requested it, and correct advice for a coordinator ("skip what is already
+    done", "the next output is the final report") reads as an instruction to
+    hide work and fabricate results when a worker receives it.
+    """
+    if not isinstance(data, dict):
+        return False
+    triage = data.get("triage")
+    if not isinstance(triage, str) or not triage.strip():
+        return False
+    if len(triage) > FABLE_TRIAGE_MAX_CHARS:
+        return False
+    if not isinstance(data.get("trigger"), str):
+        return False
+    if not isinstance(data.get("actor"), str) or data["actor"] != actor:
+        return False
+    return _pending_is_fresh(data.get("ts"))
+
+
+def take_pending_triage(actor):
+    """The triage from THIS actor's own earlier escalation, consumed once.
+
+    The child writes tmp+rename, so a read here sees either the whole file or no
+    file; there is no partial-JSON window. Removing it on read is what makes it
+    deliver once instead of on every later tool call.
+
+    Every rejection is silent by design: this runs inside a PreToolUse hook that
+    fires on every tool call, so raising here would break the session rather
+    than the injection. Silence costs one undelivered proposal.
+    """
+    if not isinstance(actor, str) or not actor:
+        return None
+    data = _read_pending_file(pending_path(actor))
+    if not pending_payload_is_trustworthy(data, actor):
+        return None
+    return data["triage"]
+
+
+def actor_transcript_path(hook_input):
+    """The transcript of the ACTOR this hook fired for, never the session's.
+
+    A subagent's payload carries the parent's `transcript_path` (the same field
+    the cache key exists to work around) while its own records live beside it in
+    `<session>/subagents/agent-<agent_id>.jsonl`. Feeding the parent's file to
+    the triage model is what produced orchestrator-addressed advice inside three
+    subagents on 2026-08-16 and read, correctly, as prompt injection.
+
+    Returns "" rather than the parent's path when a subagent's own transcript
+    cannot be found: build_packet already degrades to trigger + guard message
+    ("(transcript unavailable)"), which is a thin triage. Another actor's
+    context is a wrong one, and thin beats wrong here.
+    """
+    path = hook_input.get("transcript_path") or ""
+    agent_id = hook_input.get("agent_id")
+    if not agent_id:
+        return path
+    if not path:
+        return ""
+    base, ext = os.path.splitext(path)
+    own = os.path.join(base, "subagents", "agent-%s%s" % (agent_id, ext or ".jsonl"))
+    return own if os.path.exists(own) else ""
+
+
+def _transcript_starved_reason(path):
+    """Why this transcript cannot be triaged from, or None when it can.
+
+    Imports the check from fable-escalate.py rather than restating it, so the
+    hook's cap accounting and the script's call decision can never disagree
+    about what "readable" means. `stop_after=1` keeps it to the first renderable
+    record: this runs inside a 5s hook budget against transcripts that reach
+    5MB.
+
+    FAILS OPEN. Any import or read problem returns None, which spends the call
+    exactly as before this change. A guard that silently SUPPRESSED escalations
+    because its own helper broke would be a worse failure than the one being
+    fixed here -- same shape as the missing-script no-op above.
+    """
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "fable_escalate_check", FABLE_ESCALATE_SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        status, _ = module.transcript_status(path, stop_after=1)
+        return None if status == module.TRANSCRIPT_OK else status
+    except Exception:
+        return None
+
+
+def request_escalation(cache, hook_input, trigger, reason, actor):
+    """Spawn the triage DETACHED and return a one-line note, or None.
+
+    Returns in milliseconds. It never waits on the model, so it cannot blow this
+    hook's budget and cannot cost the refusal (see the block comment above).
+
+    EVERY failure path returns None so the caller emits today's plain refusal.
+    The lesson this is built against is
+    `a-hook-that-fails-closed-on-a-missing-script-blocks-the-fix-too`: a
+    fail-closed hook whose own dependency is missing blocks the repair too. A
+    missing script and an unspawnable child are both a no-op here. The
+    escalation can only ADD to a refusal, never withhold one.
+    """
+    if os.environ.get("KIPI_FABLE_ESCALATION") == "0":
+        return None
+    if not os.path.exists(FABLE_ESCALATE_SCRIPT):
+        return None
+    import subprocess
+
+    # ONE resolution, asked once, used by both the starvation check and the
+    # child. Merge of origin/main 2026-08-29: this branch read the raw
+    # `transcript_path`, main had already replaced it with
+    # actor_transcript_path() so a SUBAGENT's triage is built from its own
+    # records instead of the orchestrator's (the 2026-08-16 prompt-injection
+    # scare). The starvation check has to be asked about the file the child
+    # will actually read, or the two disagree exactly where it matters: for a
+    # subagent the parent transcript is readable while the actor's own is
+    # missing, so checking the raw path would answer "fed", spend a cap slot,
+    # and hand the child an empty packet -- the defect this whole change
+    # exists to close. actor_transcript_path() returning "" for a subagent
+    # whose own transcript is absent is itself a starved case, and is now
+    # reported as one rather than silently degrading to
+    # "(transcript unavailable)".
+    transcript = actor_transcript_path(hook_input)
+    starved_reason = _transcript_starved_reason(transcript)
+
+    count = cache.get("fable_escalations", 0)
+    capped = count >= _int_env("KIPI_FABLE_CAP", 2)
+    args = [
+        sys.executable, FABLE_ESCALATE_SCRIPT, "--json",
+        "--trigger", trigger,
+        "--reason", (reason or "")[:500],
+        "--transcript", transcript,
+        "--count", str(count),
+        "--pending-file", pending_path(actor),
+        # Stamped into the payload so the READER can refuse a triage that was
+        # not computed for it. Without it the hand-off carries no addressee at
+        # all and any file at the path speaks with the guard's authority.
+        "--actor", str(actor or ""),
+    ]
+    if cache.get("fable_capped_notified"):
+        args.append("--capped-notified")
+    try:
+        # start_new_session detaches the child from this hook's process group,
+        # so the runner killing the hook on timeout does not take it down too.
+        # DEVNULL on all three streams matters: a child holding an inherited
+        # pipe can wedge a later read of it long after the parent is gone.
+        subprocess.Popen(
+            args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        return None
+
+    # A STARVED ESCALATION IS NOT AN ESCALATION, SO IT DOES NOT SPEND A SLOT.
+    # The child still runs, because its job here is to write the receipt row
+    # that says the transcript could not be read; it just will not call the
+    # model. Not incrementing the counter is what keeps FABLE_CAP meaningful:
+    # the cap is what stops any further triage for this actor, and reaching it
+    # must mean "two real triages ran and did not unstick this", never "two
+    # packets went out empty". Measured 2026-08-03: 23 of 27 calls were
+    # starved, and they were what drove the cap. (The cap itself no longer
+    # pages the founder -- ASK-504 removed that on main because the cap branch
+    # returns before call_fable and so could never carry a diagnosis. The cap
+    # still spends the actor's only two chances at a triage, which is what
+    # starved attempts must not be allowed to burn.)
+    if starved_reason:
+        return ("[Cross-model triage skipped: %s. No model call was spent and "
+                "no escalation slot was consumed; the ledger row is the "
+                "receipt.]" % starved_reason)
+
+    if capped:
+        # Asserts NOTHING about the founder having been reached. The page is
+        # best-effort and its real outcome lands in the ledger; the reliable
+        # route to a human is the agent's own reply, so that is what is asked
+        # for. Scar (PR #75 round 1, Codex major): the previous text claimed
+        # "the founder has been paged" off a notifier exit code, and
+        # slack-notify.sh exits 0 having sent nothing when no webhook resolves.
+        cache["fable_capped_notified"] = True
+        return ("[Fable escalation cap spent for this actor. Cross-model triage "
+                "did not unstick this. Whether a page actually reached the "
+                "founder is recorded per-row in the ledger; the script "
+                "`fable-escalate.py --report` is what answers that, and nothing "
+                "here should be read as a claim that anyone was reached.]")
+
+    cache["fable_escalations"] = count + 1
+    return ("[Cross-model triage requested (trigger: %s). It arrives on a later "
+            "tool call in this session, or read it with `fable-escalate.py "
+            "--report`.]" % trigger)
+
+
+def block(message, cache=None, hook_input=None, trigger=None, actor=None,
+          triage=None):
+    """Exit with code 2 to block the tool call.
+
+    `trigger` is what opts a refusal into cross-model escalation, and it is set
+    per call site rather than sniffed from the text. `triage` is the answer to an
+    EARLIER escalation that happened to land before this call; it rides along on
+    whatever the guard was going to say anyway.
+
+    The refusal itself is never delayed and never conditional: the escalation
+    only appends. Untagged call sites with nothing pending keep the exact
+    behaviour they had before ASK-311, byte for byte, and
+    tests/test_fable_escalation.py asserts that against a literal.
+    """
+    parts = [message]
+    if triage:
+        parts.append(FABLE_BANNER % triage)
+    if trigger and cache is not None and hook_input is not None:
+        note = request_escalation(cache, hook_input, trigger, message, actor)
+        if note:
+            parts.append(note)
+        save_cache(actor, cache)
+    print("\n\n".join(parts), file=sys.stderr)
     sys.exit(2)
 
 
@@ -851,16 +1471,22 @@ def _head_commit_epoch():
     return None
 
 
-def reset_volume_if_committed(cache):
+def reset_volume_if_committed(cache, head_epoch):
     """The commit-progress valve, PreToolUse side. A repo HEAD commit newer
     than the last volume reset means the run is shipping — zero the volume
     counters (gate lack-of-progress, not raw volume). Only consulted once the
     counter is near the ceiling, so the common path stays subprocess-free.
     Works even when PostToolUse delivery is missing (the dead-valve defect
-    this issue closes)."""
+    this issue closes).
+
+    `head_epoch` is PASSED IN, not read here (sp-016776e6). This function now
+    runs inside the cache lock, and _head_commit_epoch shells out to git with a
+    3s cap — long enough that holding the lock across it could push a waiting
+    hook past its own 5s timeout, at which point the runner discards its exit 2
+    and the refusal is lost. The subprocess stays outside the region; only the
+    comparison happens inside."""
     if cache.get("tool_calls_since_user", 0) < VOLUME_WARNING:
         return cache
-    head_epoch = _head_commit_epoch()
     if head_epoch and head_epoch > cache.get("last_volume_reset", 0):
         cache["tool_calls_since_user"] = 0
         cache["agent_calls_since_user"] = 0
@@ -893,9 +1519,8 @@ def main():
     # Only the main actor receives this event; subagent caches age out via
     # the TTL sweep.
     if hook_event == "UserPromptSubmit":
-        cache = load_cache(actor)
-        cache = reset_per_message_counters(cache)
-        save_cache(actor, cache)
+        with locked_cache(actor) as cache:
+            reset_per_message_counters(cache)
         sweep_stale_caches()
         sys.exit(0)
 
@@ -913,9 +1538,9 @@ def main():
                 isinstance(resp, str) and resp.strip().lower().startswith(
                     ("error", "edit failed", "no match", "string not found")))
             if not failed:
-                cache = load_cache(actor)
-                cache.get("edit_targets", {}).pop(tool_input.get("file_path", ""), None)
-                save_cache(actor, cache)
+                with locked_cache(actor) as cache:
+                    cache.get("edit_targets", {}).pop(
+                        tool_input.get("file_path", ""), None)
         # A SUCCESSFUL `git commit` is a durable check-in, so it resets the volume counter —
         # the same shape as the edit-spiral reset above (progress clears the counter). The
         # 50-call ceiling exists to catch a stuck/spinning run, NOT to punish a run that is
@@ -924,13 +1549,12 @@ def main():
         # makes the guard gate lack-of-progress, not raw volume. (sr-staff call 2026-06-11.)
         elif tool_name == "Bash" and _is_successful_commit(
                 tool_input.get("command", ""), hook_input.get("tool_response")):
-            cache = load_cache(actor)
-            cache["tool_calls_since_user"] = 0
-            cache["agent_calls_since_user"] = 0
-            cache["warnings_issued"] = 0
-            cache["last_volume_reset"] = time.time()
-            cache = clear_gate_grace(cache)
-            save_cache(actor, cache)
+            with locked_cache(actor) as cache:
+                cache["tool_calls_since_user"] = 0
+                cache["agent_calls_since_user"] = 0
+                cache["warnings_issued"] = 0
+                cache["last_volume_reset"] = time.time()
+                clear_gate_grace(cache)
         # A commit REFUSED by a pre-commit gate is the other half of the valve.
         # It is not progress, so it must not reset the counter — but the gate's
         # precondition needs an Edit the ceiling blocks, so the run gets a bounded
@@ -939,17 +1563,42 @@ def main():
             gate = _commit_gate_refusal(
                 tool_input.get("command", ""), hook_input.get("tool_response"))
             if gate:
-                cache = load_cache(actor)
-                cache = grant_gate_grace(cache, gate)
-                save_cache(actor, cache)
+                with locked_cache(actor) as cache:
+                    grant_gate_grace(cache, gate)
         sys.exit(0)
+
+    # The commit probe shells out to git, so it runs BEFORE the lock is taken —
+    # holding the cache lock across a 3s subprocess could push a waiting hook
+    # past its own 5s timeout, and an overrun hook has its exit 2 discarded
+    # (sp-016776e6; see the chokepoint comment above reset_volume_if_committed).
+    #
+    # The peek deciding whether to pay for the probe is an unlocked read. Being
+    # wrong about it costs one wasted or one skipped probe on a single tool
+    # call, never correctness: the authoritative count is re-read under the lock
+    # on the very next line, and a missed reset lands on the following call.
+    head_epoch = None
+    if load_cache(actor).get("tool_calls_since_user", 0) >= VOLUME_WARNING:
+        head_epoch = _head_commit_epoch()
+
+    # Everything from here to process exit runs under this actor's lock, so the
+    # load-mutate-save below is one critical section rather than a race. The
+    # existing save_cache calls at each block/warn exit are unchanged; they now
+    # simply happen while the lock is held.
+    hold_actor_lock(actor)
 
     # Load cache, update counters from this invocation. The commit-progress
     # valve runs before the checks so a freshly-shipped commit lifts the
     # ceiling even when the PostToolUse event never arrived (wiring B).
     cache = load_cache(actor)
     cache = update_counters(tool_name, tool_input, cache)
-    cache = reset_volume_if_committed(cache)
+    cache = reset_volume_if_committed(cache, head_epoch)
+
+    # A triage from an earlier stuck refusal, if the detached call has landed.
+    # One cheap open() on the common path (the file is absent almost always).
+    # Consumed HERE rather than only on the next refusal: the point is to reach
+    # the agent while it is still deciding, and waiting for another block would
+    # deliver the advice after the decision it was meant to inform.
+    pending_triage = take_pending_triage(actor)
 
     # --- Run checks in priority order ---
 
@@ -958,14 +1607,15 @@ def main():
     if msg:
         cache = uncount_blocked_attempt(cache, tool_name, tool_input)
         save_cache(actor, cache)
-        block(msg)
+        block(msg, triage=pending_triage)
 
     # 2. Exact retry detection
     msg = check_exact_retry(tool_name, tool_input, cache)
     if msg:
         cache = uncount_blocked_attempt(cache, tool_name, tool_input)
         save_cache(actor, cache)
-        block(msg)
+        block(msg, cache=cache, hook_input=hook_input,
+              trigger="exact-retry", actor=actor, triage=pending_triage)
 
     # 3. Volume ceiling/warning — EXEMPT a git commit. A commit is the checkpoint the
     # ceiling is asking for; blocking it deadlocks the run (the PostToolUse commit-reset
@@ -983,6 +1633,8 @@ def main():
     def emit_warning(message):
         if pending_warning and message != pending_warning:
             message = pending_warning + "\n\n" + message
+        if pending_triage and (FABLE_BANNER % pending_triage) != message:
+            message = (FABLE_BANNER % pending_triage) + "\n\n" + message
         warn(message)
 
     if not _is_commit_command(tool_name, tool_input):
@@ -992,7 +1644,9 @@ def main():
             if level == "block":
                 cache = uncount_blocked_attempt(cache, tool_name, tool_input)
                 save_cache(actor, cache)
-                block(msg)
+                block(msg, cache=cache, hook_input=hook_input,
+                      trigger="volume-ceiling", actor=actor,
+                      triage=pending_triage)
             pending_warning = msg
 
     # 4. Subagent ceiling
@@ -1000,14 +1654,14 @@ def main():
     if msg:
         cache = uncount_blocked_attempt(cache, tool_name, tool_input)
         save_cache(actor, cache)
-        block(msg)
+        block(msg, triage=pending_triage)
 
     # 5. MCP rate limit
     msg = check_mcp_rate(tool_name, cache)
     if msg:
         cache = uncount_blocked_attempt(cache, tool_name, tool_input)
         save_cache(actor, cache)
-        block(msg)
+        block(msg, triage=pending_triage)
 
     # 6. Read spiral warning
     msg = check_read_spiral(tool_name, cache)
@@ -1032,7 +1686,8 @@ def main():
     if msg:
         cache = uncount_blocked_attempt(cache, tool_name, tool_input)
         save_cache(actor, cache)
-        block(msg)
+        block(msg, cache=cache, hook_input=hook_input,
+              trigger="edit-spiral", actor=actor, triage=pending_triage)
 
     # 10. Agent no-output warning
     msg = check_agent_no_output(tool_name, cache)
@@ -1046,8 +1701,11 @@ def main():
         save_cache(actor, cache)
         emit_warning(msg)
 
-    # All clear
+    # All clear. A triage that landed since the last call is delivered here —
+    # the ordinary case, because the agent is usually working when it arrives.
     save_cache(actor, cache)
+    if pending_triage:
+        emit_warning(FABLE_BANNER % pending_triage)
     if pending_warning:
         warn(pending_warning)
     sys.exit(0)
