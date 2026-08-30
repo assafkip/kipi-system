@@ -473,9 +473,12 @@ class TestFlagPositionDoesNotMoveTheTarget:
     def test_the_fleet_shapes_are_unaffected(self, tmp_path, command):
         assert decide(hook_copy(tmp_path), command, tmp_path) == "deny", command
 
-    @pytest.mark.skipif(not HOOK.is_file() or _SHIPPED is None,
-                        reason="needs BOTH a live hook and a copy of this file "
-                               "on origin/main; one of them is absent here")
+    @pytest.mark.skipif(
+        not os.environ.get("KIPI_CHECK_DEPLOYED_HOOK")
+        or not HOOK.is_file() or _SHIPPED is None,
+        reason="deployment check: opt in with KIPI_CHECK_DEPLOYED_HOOK=1, and "
+               "it also needs a live hook plus a copy of this file on "
+               "origin/main")
     def test_the_live_hook_is_running_reviewed_code(self):
         """The vendored copy and the live hook are byte-identical, ON A MACHINE
         THAT HAS BOTH.
@@ -498,6 +501,24 @@ class TestFlagPositionDoesNotMoveTheTarget:
         someone whose laptop never ran the suite. Closing that needs a
         pre-push-side check with the live hook in hand, which is a different
         gate with a different blast radius, not a wider assertion here.
+
+        WHY THIS IS OPT-IN AND NOT A COMMIT GATE (Codex major, PR #274 round 7).
+        It skips today only because the vendored copy is new in this PR. The
+        moment the PR merges it would start FAILING on the founder's laptop --
+        the live hook is by definition behind a change that has only just
+        landed -- and lefthook runs verify.sh on every commit, so it would block
+        EVERY commit on that machine until someone hand-deployed the hook. This
+        PR ships no deploy step, and a gate whose only clearing move is
+        deploying is a gate that gets switched off within the day.
+
+        It is not a correctness gate any more, and it should not pretend to be
+        one: since _UNDER_TEST is the repo copy, the suite already grades the
+        program under review on every machine. What remains here is a DEPLOYMENT
+        signal, so it runs when asked for:
+
+            KIPI_CHECK_DEPLOYED_HOOK=1 python3 -m pytest <this file>
+
+        The missing deploy step is sp-48d1f1e8, not a TODO in a comment.
         """
         assert VENDORED.is_file(), "the vendored reference copy is missing: %s" % VENDORED
         assert HOOK.read_bytes() == _SHIPPED, (
