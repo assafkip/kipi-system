@@ -2780,8 +2780,23 @@ behind = len(ids) - (ids.index(halt) + 1) if halt in ids else 0
 budget = max(0, limit - done - 1)
 print(max(0, min(behind, budget)))
 ' "$HALT_ISSUE" "$HALT_DONE" "$LIMIT" 2>/dev/null || echo 0)"
+  # THE LOCAL LINE IS UNCONDITIONAL. Whatever the paging decision below, this
+  # run's own log has to say why it stopped, or a reader tracing a quiet exit 9
+  # finds nothing at all.
   say "worker: HALTED on $HALT_ISSUE -- the runner itself is unavailable ($HALT_REASON). $UNATTEMPTED issue(s) not attempted."
-  bash "$NOTIFY" "kipi worker: dispatch HALTED, the runner itself is unavailable ($HALT_REASON). $HALT_ISSUE was not attempted and neither were $UNATTEMPTED issue(s) behind it -- one machine-wide condition, not one fault per issue. No attempts were charged. Nothing to fix per issue; the loop resumes on its own when the runner is available." 2>/dev/null || true
+  # ONE PAGE PER CONDITION, NOT ONE PER RUN (Codex round 5 on PR #200, major).
+  # The alert above was already "one per run", and a run is the wrong unit for a
+  # fact about the MACHINE: concurrent workers each meet the same dead account
+  # and each file a ticket, and at the 15-minute tick the measured six-hour
+  # outage was 24 halted runs. The claim is shared across processes on purpose --
+  # the exact opposite of $ENV_HALT_FILE and $RUN_OUT_FILE above, because those
+  # carry this RUN's state and this carries the machine's. See env-failure-lib.sh
+  # for why mkdir and not a flag file, and for how the claim is released.
+  if env_alert_claim "$STATE_DIR"; then
+    bash "$NOTIFY" "kipi worker: dispatch HALTED, the runner itself is unavailable ($HALT_REASON). $HALT_ISSUE was not attempted and neither were $UNATTEMPTED issue(s) behind it -- one machine-wide condition, not one fault per issue. No attempts were charged. Nothing to fix per issue; the loop resumes on its own when the runner is available." 2>/dev/null || true
+  else
+    say "worker: this condition is already filed by another run; not filing a duplicate ticket for it"
+  fi
   # 9, THE EXISTING INFRA CODE, never 0. ASK-184 pinned that a failed run must
   # not report success to launchd or fleet-health-daily.py's launchd-failing
   # detector goes blind to this job, and a halt is a failed run: the dispatcher
@@ -2791,6 +2806,12 @@ print(max(0, min(behind, budget)))
   exit 9
 fi
 
+# THE STATE CHANGE BACK UP, and it is what keeps the guard above a dedupe rather
+# than a mute. Reaching this line means the loop finished with no environmental
+# halt, so this run OBSERVED a working runner -- the closest thing to an
+# "outage ended" event that exists, since nothing tells us when the account
+# resets. Releasing here re-arms the edge, so the next outage pages again.
+env_alert_release "$STATE_DIR"
 say "worker: run complete"
 # The `exit 0` below is the last statement INSIDE the ASK-351 brace, and it has to
 # stay last and stay unconditional: it is what stops bash from ever reading this

@@ -130,3 +130,75 @@ environmental_reason() {  # environmental_reason <runner-output> -> one line, <=
     | grep -iE "$ENV_LINE_RE" \
     | head -1 | tr -d '\n' | cut -c1-120
 }
+
+# ---------------------------------------------------------------------------
+# ONE PAGE PER CONDITION, NOT ONE PER PROCESS (Codex round 5 on PR #200, major)
+# ---------------------------------------------------------------------------
+# Everything above answers WHOSE failure it is. This answers HOW MANY TIMES the
+# answer gets said out loud, and it belongs in the same file because it is the
+# same category error one layer out.
+#
+# The caller already promised "one machine-wide condition, one ticket" and kept
+# it PER RUN, which is the wrong unit for a fact that is a property of the
+# machine. Every process on that machine meets the identical condition:
+#   * concurrent workers are supported (that is what the per-worktree claim lock
+#     exists for, and it is why the halt marker and the run-output file above had
+#     to become per-pid in round 3) -- so two of them halt on one exhausted
+#     account and file two identical tickets a human then diffs at 3am;
+#   * and at a 15-minute launchd tick, the measured six-hour outage of 2026-08-15
+#     was twenty-four halted runs, so "one per run" is twenty-four pages for one
+#     fact. That is exactly the cry-wolf shape founder-notifications.md names as
+#     the thing that teaches the reader to mute the channel.
+#
+# So the claim is deliberately NOT per-pid, unlike the two files above. Those had
+# to be private because they carry THIS RUN's state; this one has to be shared
+# because it carries the MACHINE's, and $STATE_DIR is the scope both halves of
+# that sentence already agree on.
+#
+# `mkdir` IS the atomicity, and it is the whole reason this is not a plain file.
+# It is one syscall that either creates the directory or fails because it exists,
+# with no window in between. A `[ -f ] && : > file` claim has exactly that window,
+# and two workers hitting the same outage inside it both read "unclaimed" and both
+# page -- the defect, reproduced rather than fixed. Eight racing subshells in
+# test-worker-env-halt.sh pin that exactly one wins.
+#
+# NO STATE DIR MEANS PAGE. A caller that passes nothing gets a claim, because the
+# failure direction here matters: a missing page for a real outage is silence a
+# human cannot detect, and a duplicate page is noise they can.
+ENV_ALERT_CLAIM_NAME="env-alert.claim"
+
+env_alert_claim() {  # env_alert_claim <state-dir> -> 0 when THIS process may page
+  local state="${1:-}"
+  [ -n "$state" ] || return 0
+  mkdir -p "$state" 2>/dev/null || return 0
+  mkdir "$state/$ENV_ALERT_CLAIM_NAME" 2>/dev/null || return 1
+  # Written for the human reading $STATE_DIR later, never read by this code: the
+  # directory's existence is the whole protocol, so a corrupt or missing holder
+  # file cannot change a decision.
+  printf 'pid=%s claimed_at=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" \
+    > "$state/$ENV_ALERT_CLAIM_NAME/holder" 2>/dev/null || true
+  return 0
+}
+
+# THE RE-ARM, AND WITHOUT IT THIS IS A PERMANENT MUTE -- a worse failure than the
+# duplicate it prevents, because the next outage weeks later would page nobody.
+#
+# There is no "the outage ended" event to subscribe to, so the release stands in
+# for one: a caller that finished its work WITHOUT hitting an environmental
+# failure has observed a working runner, and that observation is the state change.
+# The page therefore fires on the healthy->down EDGE and the edge re-arms on the
+# way back up, which is founder-notifications.md's "alert on state change, once"
+# rather than a TTL guessed against a reset time the machine never tells us.
+#
+# A run killed mid-outage leaves the claim held, and that is correct: the outage
+# is still on, so the next run should stay quiet. The claim comes off at the first
+# healthy completion, which during an outage is the first run after recovery. The
+# only cost of a stuck claim is a missed page, and the halted run still exits 9,
+# so fleet-health-daily.py's launchd-failing detector sees the outage either way.
+env_alert_release() {  # env_alert_release <state-dir>
+  local state="${1:-}"
+  [ -n "$state" ] || return 0
+  rm -f "$state/$ENV_ALERT_CLAIM_NAME/holder" 2>/dev/null || true
+  rmdir "$state/$ENV_ALERT_CLAIM_NAME" 2>/dev/null || true
+  return 0
+}
