@@ -316,6 +316,27 @@ SH_RULES = [
     (re.compile(_LEAD + r"return[ \t]+[1-9][0-9]*" + _SH_TAIL), r"\g<1>return 0\g<2>"),
 ]
 
+# THE VERDICT IS NOT ALWAYS AN EXIT CODE (ASK-1147).
+#
+# A PreToolUse hook denies by printing `permissionDecision: "deny"` and exiting
+# ZERO. Every rule above rewrites a failure EXIT, so on those files make_disarm
+# found no site, returned `no-disarm-site`, and the subject was booked
+# UNMEASURED. That bucket is not a discard pile -- it is where the deny-side
+# security gates live, which is to say the subjects whose tests most need to be
+# proven capable of going red.
+#
+# Measured before this rule: destructive-op-deny.sh and merge-bypass-gate.py
+# both deny at exit 0, and both were unmeasurable for that reason alone.
+#
+# The disarm is the semantic one: flip the verdict the process actually emits.
+# Applied to BOTH suffixes, because the same JSON is built by a python dict
+# (`"permissionDecision": "deny"`) and by a shell jq template
+# (`permissionDecision: "deny"`), and a rule that only knew one spelling would
+# leave half the population unmeasured while reporting the other half fine.
+VERDICT_RULES = [
+    (re.compile(r'(permissionDecision"?[ \t]*:[ \t]*")deny(")'), r"\g<1>allow\g<2>"),
+]
+
 
 # Call heads whose argument is the process's verdict. Rewritten by balanced
 # paren scan, NOT by regex: `[^)]*(\))` stopped at the FIRST `)`, so the very
@@ -372,7 +393,7 @@ def make_disarm(text, suffix):
         if suffix == ".py":
             new, k = _disarm_exit_calls(new)
             n += k
-        for pat, repl in rules:
+        for pat, repl in list(rules) + VERDICT_RULES:
             new2 = pat.sub(repl, new)
             if new2 != new:
                 n += 1
