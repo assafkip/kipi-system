@@ -100,6 +100,7 @@ import re
 import shlex
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 # Hardcoded, not queried. A PreToolUse hook runs on every Bash call under a 5s
@@ -446,7 +447,7 @@ _SAFE_SHAPE = ("the only merge this gate permits is:\n"
                "no other flags.")
 
 
-def _merge_verdict(seg: list[str], note: str | None = None) -> str | None:
+def _merge_verdict(seg: list[str], cwd: str, note: str | None = None) -> str | None:
     """An unsafe `gh ... merge` invocation -> reason. Anything else -> None.
 
     The trigger is deliberately broad -- a `gh` token ANYWHERE plus a `merge`
@@ -700,7 +701,7 @@ def classify(command: str, cwd: str, _depth: int = 0) -> tuple[str, str]:
             resolved = _resolve_dir(seg[1], cur_dir)
             cur_dir = resolved if resolved else cur_dir
             continue
-        reason = _merge_verdict(seg, note)
+        reason = _merge_verdict(seg, cur_dir, note)
         if reason:
             return "deny", reason
         reason = _push_verdict(seg, cur_dir)
@@ -722,6 +723,58 @@ REMEDY = (
 )
 
 
+def _in_jurisdiction(command: str) -> bool:
+    """Does this command reach for something this gate governs?
+
+    RAW SUBSTRINGS, NO TOKENIZING, ON PURPOSE. This runs only after the real
+    classifier has already crashed, and the classifier crashed while tokenizing.
+    A jurisdiction test that could raise the same way would put the error path
+    back inside the bug it exists to survive.
+
+    Deliberately broad, matching the trigger philosophy _merge_verdict already
+    states: over-triggering costs a rephrase, under-triggering costs an unchecked
+    merge into main. On the crash path the command is anomalous anyway.
+    """
+    low = command.lower()
+    return ("merge" in low and "gh" in low) or "push" in low
+
+
+def _crash_verdict(command: str) -> tuple[str, str]:
+    """What this gate does when its own classifier raises.
+
+    ## The decision, encoded rather than left to luck (ASK-1179)
+
+    Before this existed, classify() was called OUTSIDE main()'s try/except and
+    every path in main() returned 0. The deny travels by print(json.dumps(...)),
+    NOT by an exit code, so an exception before that print emitted no deny JSON
+    and blocked nothing. A NameError in _merge_verdict therefore turned the plain
+    squash merge with no auto flag -- an immediate merge that waits for no check,
+    the single form this gate exists to refuse -- into a silent allow. Measured
+    2026-08-30 through this hook's own stdin: EXIT=1, empty stdout, no deny.
+
+    A gate whose error path does not deny reports success by construction.
+
+    ## Why not deny on EVERY exception
+
+    The PreToolUse matcher is Bash, so this runs on every shell command in the
+    session. A blanket deny would let one classifier bug brick every command,
+    including the ones needed to fix it.
+
+    So the split is by JURISDICTION, not by luck: a command that reaches for a
+    merge or a push and cannot be classified is DENIED, because "I could not
+    tell" and "it is safe" are different answers and only one of them is honest.
+    Anything else is allowed, since this gate never had an opinion on it -- but
+    the traceback goes to stderr either way, because the failure mode being
+    repaired here is a gate that broke quietly.
+    """
+    traceback.print_exc(file=sys.stderr)
+    if _in_jurisdiction(command):
+        return "deny", ("this gate CRASHED while classifying a command that reaches "
+                        "for a merge or a push, so it cannot say the command is "
+                        "safe. Refusing rather than guessing.\n  " + _SAFE_SHAPE)
+    return "allow", ""
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
@@ -732,7 +785,10 @@ def main() -> int:
     command = (payload.get("tool_input") or {}).get("command") or ""
     cwd = payload.get("cwd") or os.getcwd()
 
-    decision, reason = classify(command, cwd)
+    try:
+        decision, reason = classify(command, cwd)
+    except Exception:  # noqa: BLE001
+        decision, reason = _crash_verdict(command)
     if decision == "allow":
         return 0
 

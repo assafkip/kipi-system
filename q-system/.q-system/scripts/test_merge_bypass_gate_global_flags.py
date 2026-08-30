@@ -112,9 +112,20 @@ REASON_CASES: list[tuple[str, str, str]] = [
     ("an unknown flag is named in the refusal",
      "gh pr merge 155 --auto --squash --admin",
      "unrecognised argument"),
-    ("a missing --auto says so",
+    # UPDATED 2026-08-30 (ASK-1179), and it was red for TWO reasons stacked.
+    # The outer one was a NameError that crashed the classifier on this exact
+    # command. Fixing that exposed this one, which had never actually run: the
+    # case pinned the pre-d666594d refusal wording ("does not defer to the
+    # required checks"), while d666594d deliberately moved the deferral target
+    # from a required check that may not exist to a local green receipt.
+    #
+    # The VERDICT never changed -- this form is still denied -- so only the
+    # explanation is re-pinned, and it is re-pinned to a specific string rather
+    # than relaxed to "any deny", because the explanation is what tells the
+    # operator which shape to use.
+    ("a merge without --auto is refused and names the receipt it wants",
      "gh pr merge 155 --squash",
-     "does not defer to the required checks"),
+     "no green receipt"),
     ("an env prefix is explained as a retarget",
      "GH_REPO=other/repo gh pr merge 155 --auto --squash",
      "an environment prefix"),
