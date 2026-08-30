@@ -242,6 +242,28 @@ def main() -> int:
               "gh pr merge 9 --squash", gh_feature, "deny",
               contains="could not read PR #9's current head")
 
+        # --- THE RECEIPT LIVES AT THE REPO ROOT, THE SHELL DOES NOT ---
+        #
+        # Codex major, PR #269 round 4. `_receipt_missing` joined `.prd-os` onto
+        # `cwd`, so running the same merge from any subdirectory found no receipt
+        # and refused. It fails closed, so this was a false BLOCK rather than a
+        # hole -- and a gate that blocks correct work is how a gate gets switched
+        # off, which is the slower version of the same failure.
+        #
+        # The reason is what discriminates again: from a subdirectory the
+        # unpatched gate says "no green receipt"; the patched one finds it and
+        # moves on to the head re-read. Same decision, different cause.
+        (gh_feature / "sub" / "dir").mkdir(parents=True)
+        check("a receipt at the repo root is found from a subdirectory",
+              "gh pr merge 9 --squash", gh_feature / "sub" / "dir", "deny",
+              contains="could not read PR #9's current head")
+        # Control: a directory that is NOT in any repo has no root to resolve, so
+        # it still reports the receipt missing. Without this, a gate that simply
+        # stopped checking receipts would pass the case above.
+        check("outside any repo there is no root, so the receipt is missing",
+              "gh pr merge 9 --squash", root, "deny",
+              contains="no green receipt")
+
         # --- degenerate input ---
         check("empty command", "", gh_feature, "allow")
         check("unbalanced quote hiding admin",

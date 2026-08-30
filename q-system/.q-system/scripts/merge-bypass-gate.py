@@ -536,7 +536,26 @@ def _receipt_missing(rest: list[str], cwd: str) -> str | None:
         return ("a merge without --auto needs exactly one PR number, so the "
                 "green receipt can be looked up.")
     pr = prs[0]
-    path = os.path.join(cwd, ".prd-os", "pr-receipts", f"pr-{pr}.json")
+    # The receipt lives at the REPO ROOT, and `cwd` is wherever the shell
+    # happens to be (Codex major, PR #269 round 4). Joining `.prd-os` onto a
+    # subdirectory finds nothing, so a perfectly good green receipt read as
+    # absent and the gate refused an unattended merge it should have allowed.
+    # It fails CLOSED, so this was a false BLOCK and not a hole -- and a gate
+    # that blocks correct work is how a gate gets switched off, which is the
+    # slower version of the same failure.
+    #
+    # `--show-toplevel` from `cwd`, and only that: if `cwd` is not inside a
+    # repository there is nothing to resolve and the old behaviour stands,
+    # which still fails closed.
+    root = cwd
+    try:
+        top = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=10)
+        if top.returncode == 0 and top.stdout.strip():
+            root = top.stdout.strip()
+    except Exception:
+        pass
+    path = os.path.join(root, ".prd-os", "pr-receipts", f"pr-{pr}.json")
     try:
         with open(path) as fh:
             receipt = json.load(fh)
