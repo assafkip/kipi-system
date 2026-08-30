@@ -2288,7 +2288,15 @@ def cmd_spillover(cfg: Config, args) -> int:
         record = {
             "id": sid, "source": args.source, "description": args.desc,
             "severity": args.severity, "status": "open", "created_at": _now_iso(),
+            # RULE-2026-08-24-B [USER-DIRECTED]: "Everything should be owned by
+            # Sana." Never blank, never the founder. Consistent with
+            # founder-notifications.md, where engineering signals go to Sana's
+            # triage and never to his desk. `--owner` exists so a future second
+            # engineer is expressible without another schema change; it does not
+            # exist so an agent can file work onto nobody.
+            "owner": (getattr(args, "owner", None) or DEFAULT_SPILLOVER_OWNER),
         }
+
         # STORE THE DoR (Codex review of #147, major). The --no-promote path replied
         # "DoR recorded; no Linear issue created" while this record discarded it, so
         # the DoR existed only in the caller's argv and `needs-dor` could never use
@@ -2331,6 +2339,38 @@ def cmd_spillover(cfg: Config, args) -> int:
               f"(allowed files, a reproducer that fails first, acceptance), then\n"
               f"    python3 q-system/.q-system/scripts/spillover-promote.py <id> "
               f"--title '...' --dor-file <f>")
+        return 0
+    if sub == "own":
+        # BACKFILL AND CORRECTION, through the same locked read-append chokepoint
+        # as reclassify and resolve. Never an in-place edit: the ledger is
+        # append-only and a prior event is evidence, not a draft.
+        owner = (args.owner or DEFAULT_SPILLOVER_OWNER).strip()
+        if not owner:
+            sys.stderr.write("--owner cannot be empty; ownership is never blank\n")
+            return 2
+        with _spillover_lock(cfg):
+            items = _read_spillover(cfg)
+            if args.all_open:
+                targets = [r for r in items.values() if r.get("status") == "open"]
+            else:
+                rec = items.get(args.id)
+                if rec is None:
+                    sys.stderr.write(
+                        f"unknown spillover id: {args.id!r}. own never creates an "
+                        "item -- a typo must not invent owned work.\n")
+                    return 2
+                targets = [rec]
+            changed = 0
+            for rec in targets:
+                if rec.get("owner") == owner:
+                    continue          # idempotent: no event for a no-op
+                new_rec = dict(rec)
+                new_rec.update({"owner": owner, "owner_set_at": _now_iso(),
+                                "owner_was": rec.get("owner")})
+                _spillover_append(cfg, new_rec)
+                changed += 1
+        print(json.dumps({"owner": owner, "considered": len(targets),
+                          "changed": changed}))
         return 0
     if sub == "reclassify":
         # Correct a severity through a NEW EVENT, never a mutation. Approved
@@ -2516,6 +2556,15 @@ SPILLOVER_BLOCKING_SEVERITIES = ("blocker", "major", "high")
 # louder the label the quieter the gate got. Fail-closed here and validate at the
 # CLI: an unknown severity is a triage failure, never a silent pass (ASK-402).
 SPILLOVER_NONBLOCKING_SEVERITIES = ("minor", "low", "medium")
+
+# RULE-2026-08-24-B [USER-DIRECTED 2026-08-24]: "Everything should be owned
+# by Sana." One constant so the default cannot drift between the add door,
+# the backfill verb and the tests that pin them.
+DEFAULT_SPILLOVER_OWNER = "sana"
+# Least -> most severe. Separate from the membership tuples above ON PURPOSE:
+# those answer "does this block?", this answers "which way did it move?", and
+# conflating the two is how `blocker -> high` read as a raise.
+SPILLOVER_SEVERITY_ORDER = ("low", "minor", "medium", "high", "major", "blocker")
 # Least -> most severe. Separate from the membership tuples above ON PURPOSE:
 # those answer "does this block?", this answers "which way did it move?", and
 # conflating the two is how `blocker -> high` read as a raise.
@@ -2562,9 +2611,92 @@ def _spillover_blocks(record: dict, scope: str | None) -> bool:
     # the still-open status are all untouched.
     if scope is not None and record.get("acked_by_issue") == scope:
         return False
-    if scope is None or record.get("source") == scope:
+    if scope is None:
+        # SCOPELESS RUNS BLOCK ON UNOWNED BLOCKERS, NOT ON THE WHOLE BACKLOG.
+        #
+        # Measured 2026-08-24, this repo: 419 open items, 54 at blocking
+        # severity, active-issue.json and active-prd.json both null. So every
+        # ad-hoc `gates run` -- the normal state between issues -- failed closed
+        # over the entire ledger and had been RED for weeks. A verdict that is
+        # red with probability 1 carries no information about your diff, which
+        # is the exact defect ASK-526 removed for SCOPED runs and left standing
+        # here. A gate nobody can ever turn green stops being read, so
+        # fail-closed produced fail-open in practice.
+        #
+        # This is a RE-TARGET, not a relaxation. You still cannot dodge by
+        # clearing scope: an unowned blocker blocks every run, scoped or not.
+        # What stops blocking is a blocker that already has an address -- a
+        # Linear ref or a DoR -- because that is tracked work with a person on
+        # it, and a second blunter alarm on top of it buys nothing. What keeps
+        # blocking is a blocker nobody can pick up, which is a triage failure
+        # and is precisely what should stop the line.
+        #
+        # Honesty check on the numbers, so this cannot be mistaken for a trick
+        # to lower a count: of the 54 blocking items, 0 had a Linear ref and 5
+        # had a DoR. This exempts FIVE. The gate stays red on the other 33 and
+        # the path to green is to give each one an owner, which is the action
+        # that was wanted all along.
+        return _is_blocking_severity(severity) and not _spillover_has_tracker_ref(record)
+    if record.get("source") == scope:
         return _is_blocking_severity(severity)
     return severity == "blocker"
+
+
+# OWNERSHIP IS POLICY. AN ADDRESS IS EARNED. Keep these two apart.
+#
+# Founder, 2026-08-24, verbatim: "Everything should be owned by Sana." That is
+# RULE-2026-08-24-B and it settles the owner field: every item defaults to sana
+# at the add door, so no finding can ever again be filed with nobody on it.
+#
+# THE TRAP THAT CREATES, and why this function does NOT read `owner`. Earlier
+# today the gate's cost for a blocking severity was "has an owner". If owner
+# auto-fills on every add, that cost is paid automatically, filing at blocking
+# severity is free again, and I would have rebuilt the exact asymmetry measured
+# this morning: 611 filed against 169 resolved, 0 of 419 carrying a tracker ref.
+# A check its own default satisfies is not a check.
+#
+# So the cost moves to the one thing a default cannot mint: a TRACKER REF. A
+# blocker that is worth stopping a run over is worth an issue in the queue
+# somebody actually works. `spillover-promote.py` creates it and Linear was
+# probed reachable before this shipped, so the path to green is real and
+# automated, not aspirational.
+#
+# A DoR NO LONGER EXEMPTS, and that is the point. A DoR is the INPUT to
+# promotion; the tracker ref is its RECEIPT. Accepting the promise instead of
+# the receipt is how 5 items sat "ready" with no issue behind them. Require the
+# receipt, which cannot be written by intending to do something.
+#
+# WHAT ACTUALLY MOVES AN ITEM OUT OF THE BLOCKING SET, stated precisely because
+# a comment that overclaims is the defect this whole day was spent removing.
+# `spillover-promote.py` sets status=promoted, and `_spillover_open` filters on
+# status=="open", so PROMOTION is the mechanism; this predicate is the belt for
+# the leftover case, an item that carries a ref and is still open (a reopen, or a
+# ref written by hand). Measured at ship time it fires on ZERO of 327 open rows.
+# It is deliberately kept rather than deleted: without it, an item that is
+# reopened after promotion would block despite having a real address.
+#
+# PROMOTION IS NOT A HAND-CLEAR, and that claim is checkable rather than hopeful.
+# `spillover promoted-audit` re-reads every promoted row against Linear, resolves
+# the ones whose issue actually closed, and reports the rest with their age. It is
+# wired into q-system/.q-system/scripts/fleet-health-daily.py:1542 and raises a
+# `promoted-audit-blind` alarm if it cannot run. Probed 2026-08-24: 25 promoted
+# rows audited, 0 unverifiable, four reported still open at 16d, 14d, 14d and 4d.
+#
+# Honesty check, same standard as _spillover_blocks: measured at ship time, 0 of
+# 39 blocking items carried a tracker ref, so this change exempts ZERO and is
+# strictly tighter than the DoR-accepting rule it replaces. It cannot be read as
+# a move to lower a count.
+def _spillover_has_tracker_ref(record):
+    """A blocking item's earned address: an issue in the tracker, not a promise.
+
+    `linear` is what spillover-promote.py writes, `linear_ref` what the promoted
+    audit reads. Both count -- keying on one would silently un-address every item
+    filed through the other door.
+    """
+    return bool(str(record.get("linear") or "").strip()
+                or str(record.get("linear_ref") or "").strip())
+
+
 
 
 def _is_blocking_severity(value: str) -> bool:
@@ -2814,6 +2946,16 @@ def main(argv: list[str] | None = None) -> int:
     sp_add.add_argument("--title", help="issue title used when auto-promoting")
     sp_add.add_argument("--no-promote", dest="no_promote", action="store_true",
                         help="record only; skip the automatic Linear issue")
+    sp_add.add_argument("--owner", default=None,
+                        help=f"who owns it (default {DEFAULT_SPILLOVER_OWNER}); "
+                             "never blank, see RULE-2026-08-24-B")
+    sp_own = spill_sub.add_parser(
+        "own", help="set the owner on one item or backfill every open item")
+    sp_own.add_argument("id", nargs="?")
+    sp_own.add_argument("--owner", default=None,
+                        help=f"default {DEFAULT_SPILLOVER_OWNER}")
+    sp_own.add_argument("--all-open", dest="all_open", action="store_true",
+                        help="backfill every open item")
     sp_list = spill_sub.add_parser("list")
     sp_list.add_argument("--open", dest="open_only", action="store_true", help="only open items")
     sp_list.add_argument("--json", dest="as_json", action="store_true")
