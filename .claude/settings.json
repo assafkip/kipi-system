@@ -145,6 +145,11 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-dna-loader.py\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/lessons-inject.py\"",
+            "timeout": 5
           }
         ]
       }
@@ -274,6 +279,11 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voiceloop-band-lint.py\"",
+            "timeout": 35
           },
           {
             "type": "command",
