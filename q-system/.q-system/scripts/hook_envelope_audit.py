@@ -286,7 +286,10 @@ TEXT_ENVELOPE_RE = re.compile(r'["\']?%s["\']?\s*[:=]' % KEY_ENVELOPE)
 # So: the key must be FOLLOWED by a colon (it is a key, not an index or an
 # operand) and must NOT be immediately PRECEDED by '[' (that is a subscript).
 EMIT_KEY_RE = re.compile(r'(?<!\[)["\']%s["\']\s*:' % KEY_CONTEXT)
-COMMENT_LINE_RE = re.compile(r'^\s*#')
+# `#` for shell and python, `//` for js/ts. A scar comment quoting the broken
+# envelope verbatim -- which is exactly how this repo documents a scar -- was
+# being read as an emission in a .js or .ts hook (round 8 minor).
+COMMENT_LINE_RE = re.compile(r'^\s*(#|//)')
 
 
 def _strip_comment_lines(source):
@@ -324,10 +327,14 @@ def audit_text(path, source=None):
                     break
         blob = scan[start:end]
         before = scan[max(0, start - 120):start]
-        if KEY_EVENT not in blob:
-            sites.append(Site(path, line, NO_EVENT_NAME))
-        elif not TEXT_ENVELOPE_RE.search(before) and KEY_ENVELOPE not in blob:
+        # Order matters: ask "is it nested at all" BEFORE "does it name the
+        # event". Asking the other way round labelled a bare top-level
+        # {"additionalContext": ...} as NO_EVENT_NAME, which blocks correctly but
+        # tells the reader the wrong thing about their own code.
+        if not TEXT_ENVELOPE_RE.search(before) and KEY_ENVELOPE not in blob:
             sites.append(Site(path, line, TOP_LEVEL))
+        elif KEY_EVENT not in blob:
+            sites.append(Site(path, line, NO_EVENT_NAME))
         else:
             ev = re.search(r'["\']%s["\']\s*:\s*["\']([A-Za-z]+)["\']' % KEY_EVENT, blob)
             sites.append(Site(path, line, OK, event=ev.group(1) if ev else "<non-literal>"))
@@ -559,7 +566,7 @@ def _recently_written(root, now=None):
     if r.returncode != 0 or top.returncode != 0:
         return []
     root = top.stdout.strip() or root
-    out = []
+    candidates = []
     for line in r.stdout.splitlines():
         rel = line[3:].strip()
         if " -> " in rel:                       # a rename: take the destination
@@ -569,14 +576,27 @@ def _recently_written(root, now=None):
             continue
         full = os.path.join(root, rel)
         try:
-            if now - os.path.getmtime(full) > RECENT_WRITE_SECONDS:
-                continue
+            mtime = os.path.getmtime(full)
         except OSError:
             continue
-        out.append(full)
-        if len(out) >= MAX_RECENT_FILES:
-            break
-    return out
+        if now - mtime > RECENT_WRITE_SECONDS:
+            continue
+        candidates.append((mtime, full))
+    # The cap used to break out of the loop in GIT PATH ORDER, so a broken hook
+    # whose path sorted late was never read at all and the gate exited 0 -- the
+    # silent-blindness class this tool exists to end, reintroduced by its own
+    # cost bound (round 8 major). Most-recently-written first, so the files the
+    # command just wrote are the ones that survive the cap, and truncation is
+    # reported rather than assumed harmless.
+    candidates.sort(reverse=True)
+    kept = [full for _, full in candidates[:MAX_RECENT_FILES]]
+    dropped = len(candidates) - len(kept)
+    if dropped:
+        sys.stderr.write(
+            "hook_envelope_audit: %d recently-written file(s) beyond the %d-file "
+            "cap were NOT examined; this pass is partial.\n"
+            % (dropped, MAX_RECENT_FILES))
+    return kept
 
 
 def _audit_recent_writes(payload):
@@ -593,8 +613,10 @@ def _audit_recent_writes(payload):
                 source = fh.read()
         except OSError:
             continue
-        if KEY_CONTEXT not in source or not looks_like_a_hook(source):
-            continue
+        if (KEY_CONTEXT not in source or SKIP_MARKER in source
+                or not looks_like_a_hook(source)):
+            continue                  # the same bypass the block message names;
+                                      # this leg ignored it (round 8 major)
         sites = (audit_python(full, source=source) if full.endswith(".py")
                  else audit_text(full, source=source))
         # DEFINITE verdicts only. UNKNOWN means "this shape is unreadable", and a

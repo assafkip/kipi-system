@@ -660,3 +660,86 @@ def test_add_delta_edit_replay_is_idempotent(tmp_path):
     assert cm.add_delta(str(root), base, head, second_errors) == []
     assert second_errors == [], second_errors
     assert _json.loads(frag.read_text())["runner"] == "bash"
+
+
+# --------------------------------------------------------------------------
+# Round 8. Both majors are regressions the earlier fixes introduced: a cost
+# bound that reintroduced silent blindness, and a bypass the message advertised
+# but one leg ignored.
+# --------------------------------------------------------------------------
+def test_bash_leg_cap_keeps_the_most_recently_written_not_the_alphabetically_first(tmp_path):
+    """The cap used to break out in GIT PATH ORDER.
+
+    A broken hook whose path sorted late was never read at all and the gate
+    exited 0 -- the silent-blindness class this tool exists to end, reintroduced
+    by its own cost bound.
+    """
+    import time
+    root = _init_repo(tmp_path / "repo")
+    # Enough clean files to fill the cap, all named to sort BEFORE the bad one.
+    for i in range(audit.MAX_RECENT_FILES + 5):
+        (root / ("aaa_clean_%03d.py" % i)).write_text(
+            'import json, sys\n'
+            'payload = json.load(sys.stdin)\n'
+            'print(json.dumps({"hookSpecificOutput": {'
+            '"hookEventName": "PreToolUse", "additionalContext": "ok"}}))\n')
+    time.sleep(0.05)
+    bad = root / "zzz_broken.py"          # sorts last by path, written last
+    bad.write_text('import json, sys\n'
+                   'payload = json.load(sys.stdin)\n'
+                   'print(json.dumps({"additionalContext": "discarded"}))\n')
+    proc = _run_bash_gate(root)
+    assert proc.returncode == 2, (proc.returncode, proc.stdout, proc.stderr)
+    assert "zzz_broken.py" in proc.stderr
+
+
+def test_bash_leg_says_so_when_it_could_not_examine_everything(tmp_path):
+    """Truncation is reported, never assumed harmless."""
+    root = _init_repo(tmp_path / "repo")
+    for i in range(audit.MAX_RECENT_FILES + 3):
+        (root / ("hook_%03d.py" % i)).write_text(
+            'import json, sys\n'
+            'payload = json.load(sys.stdin)\n'
+            'print(json.dumps({"hookSpecificOutput": {'
+            '"hookEventName": "PreToolUse", "additionalContext": "ok"}}))\n')
+    proc = _run_bash_gate(root)
+    assert "NOT examined" in proc.stderr, proc.stderr
+
+
+def test_bash_leg_honours_the_skip_marker(tmp_path):
+    """The block message names this bypass; this leg used to ignore it."""
+    root = _init_repo(tmp_path / "repo")
+    (root / "deliberate_hook.py").write_text(
+        'import json, sys\n'
+        '# hook-envelope-skip: verified by hand against the live model\n'
+        'payload = json.load(sys.stdin)\n'
+        'print(json.dumps({"additionalContext": "x"}))\n')
+    assert _run_bash_gate(root).returncode == 0
+
+
+def test_bash_leg_without_the_marker_still_blocks_that_file(tmp_path):
+    """The control. A bypass nothing can fail is not a bypass."""
+    root = _init_repo(tmp_path / "repo")
+    (root / "same_hook.py").write_text(
+        'import json, sys\n'
+        'payload = json.load(sys.stdin)\n'
+        'print(json.dumps({"additionalContext": "x"}))\n')
+    assert _run_bash_gate(root).returncode == 2
+
+
+def test_a_double_slash_scar_comment_is_not_an_emission():
+    """This repo documents a scar by quoting the broken envelope verbatim.
+
+    In a .js or .ts hook that comment was being audited as code.
+    """
+    src = ('// Scar: this used to print {"additionalContext": "x"} at the top\n'
+           '//   level, which Claude Code discards.\n'
+           'console.log(JSON.stringify({hookSpecificOutput: {}}));\n')
+    assert audit.audit_text("<hook.js>", source=src) == []
+
+
+def test_a_real_js_emission_is_still_seen():
+    """The control for the comment rule."""
+    src = 'process.stdout.write(JSON.stringify({"additionalContext": "x"}));\n'
+    verdicts = [s.verdict for s in audit.audit_text("<hook.js>", source=src)]
+    assert verdicts == [audit.TOP_LEVEL], verdicts
