@@ -184,7 +184,13 @@ def plan(repo: str) -> dict:
         rel = os.path.relpath(path, repo)
         base = os.path.basename(path)
         ext = os.path.splitext(base)[1].lower()
-        if has_token(base):
+        # A FILENAME follows the same record/source split as file CONTENT, and
+        # not gating it on the extension was a live defect: the first version
+        # queued `q-system/output/plans/ask-565-voicekit-fleet-skew-2026-08-09.md`
+        # for rename. That plan is a dated record, its name is part of the
+        # record, and other documents cite it by that name. Only a module the
+        # import system resolves by filename (test_voicekit.py) has to move.
+        if has_token(base) and ext in REWRITE_EXTS:
             renames.append(rel)
         if ext not in REWRITE_EXTS:
             # Cheap membership test first; only files we might edit are read.

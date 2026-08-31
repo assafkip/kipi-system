@@ -2102,6 +2102,44 @@ because this commit is pathspec-limited." -- "${sys_add_paths[@]}" 2>&1)"; then
     fi
   fi
 
+  # voicekit -> voiceloop, BEFORE the rsync that would strand the imports.
+  #
+  # sp-8d55455a. The skeleton renamed the voice package in cf6acdb4. plugins/
+  # rsyncs with --delete, so the sync alone lands voiceloop/, removes voicekit/,
+  # and cannot touch the code that imports it -- that code is instance-owned and
+  # lives OUTSIDE plugins/ (consulting's q-consult/pipeline/voice.py puts
+  # <repo>/plugins/kipi-core on sys.path and imports the package by name).
+  # Measured 2026-08-30: 24 of 25 registered instances still carried the old
+  # name, so this sync was armed to break the voice pipeline in every one.
+  #
+  # It runs HERE and the placement is the safety argument, the same one
+  # checkpoint_instance makes directly above:
+  #   * AFTER the dirty-tree guard, so the tree is proven clean and every change
+  #     below is one THIS run made;
+  #   * AFTER the checkpoint, so a later failure restores through the normal path;
+  #   * BEFORE the rsync, so the package already answers to the new name when the
+  #     skeleton's copy lands on top of it and --delete has nothing to strand.
+  #
+  # A migration is not a one-time script somebody remembers to run. An instance
+  # that syncs next month without this step breaks in exactly the same way, so
+  # it belongs in the update path or it does not exist.
+  #
+  # The helper commits its own work: it writes outside $prefix/, which the sync
+  # commit below is pathspec-limited away from, and an uncommitted rewrite would
+  # leave the instance permanently dirty and refused at this very guard forever.
+  # Non-zero means it could not finish; abandoning is correct, because the
+  # alternative is running the --delete rsync against imports it did not fix.
+  VOICELOOP_MIGRATE="$SCRIPT_DIR/kipi-update-voiceloop-migrate.py"
+  if [ -f "$VOICELOOP_MIGRATE" ] && [ -d "$path/plugins/kipi-core" ]; then
+    if [ "$DRY_RUN" != "--dry-run" ] || [ "$MODEL_RUN" = "1" ]; then
+      if ! python3 "$VOICELOOP_MIGRATE" --repo "$path" --apply; then
+        abandon_instance "  ERROR: voiceloop migration failed; rsync not started" && continue
+      fi
+    else
+      python3 "$VOICELOOP_MIGRATE" --repo "$path" | sed 's/^/  voiceloop: /' || true
+    fi
+  fi
+
   if [ "$itype" = "direct-clone" ]; then
     echo "  Direct clone - pulling from origin..."
     if [ "$DRY_RUN" != "--dry-run" ] || [ "$MODEL_RUN" = "1" ]; then
