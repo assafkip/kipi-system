@@ -184,6 +184,15 @@ def test_an_unknown_lint_input_holds(tmp_path):
     # -- the conservative direction. Guessing a channel off unrelated prose is
     # the direction that misroutes.
     ("We talked about LinkedIn earlier. Here's the draft:\n\n> body", ""),
+    # Codex MINOR round 3: unmistakable publish framing whose marker carries no
+    # platform. Marker-only scoping sent this to the default lints, which is the
+    # wrong rulebook again, just quieter.
+    ("Reddit version, ready to paste:\n\n> draft body", "reddit"),
+    ("Medium piece, ready to publish:\n\n> draft body", "medium"),
+    # And the round-1 case still resolves the same way, because a platform named
+    # INSIDE the framing outranks one merely sharing its sentence.
+    ("I rewrote this from LinkedIn for Reddit. Here is the reddit post, "
+     "ready to paste:\n\n> draft body", "reddit"),
 ])
 def test_detect_channel(text, expected):
     assert gate.detect_channel(text) == expected
@@ -365,7 +374,7 @@ def test_a_non_object_channels_field_holds_rather_than_crashing(tmp_path):
     assert ASSAF_SPOKE not in result.stderr
 
 
-@pytest.mark.parametrize("bad", [[], "", 0, False])
+@pytest.mark.parametrize("bad", [[], "", 0, False, None])
 def test_an_EMPTY_non_object_channels_field_also_holds(tmp_path, bad):
     """Codex MINOR round 3, and it is why the guard alone was not enough.
 

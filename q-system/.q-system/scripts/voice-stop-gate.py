@@ -446,6 +446,11 @@ DEFAULT_LINT_INPUT = "text_file"
 # publish-intent matcher already captures and then discards.
 _CHANNEL_RE = re.compile(r"(?i)\b" + _PLAT + r"\b")
 _CHANNEL_ALIASES = {"twitter": "x"}
+# Sentence boundaries, and blank-line/newline boundaries too, because a draft is
+# not one paragraph. This is the window `detect_channel` searches: wide enough to
+# hold framing and subject together, narrow enough that a platform named two
+# sentences earlier as CONTEXT cannot claim the draft.
+_SENTENCE_RE = re.compile(r"(?<=[.!?:])\s+|\n+")
 
 
 class ChannelRegistryError(Exception):
@@ -512,8 +517,24 @@ def detect_channel(text):
     prose is the direction that misroutes, so framing that names no platform yields no
     channel even when one is named elsewhere in the message.
     """
-    for marker in _PUBLISH_MARKER_RE.finditer(text or ""):
-        found = _CHANNEL_RE.search(marker.group(0))
+    for chunk in _SENTENCE_RE.split(text or ""):
+        markers = list(_PUBLISH_MARKER_RE.finditer(chunk))
+        if not markers:
+            continue
+        # A platform INSIDE the framing wins, and it has to be checked first.
+        # "I rewrote this from LinkedIn for Reddit." names both in one sentence
+        # and only the framing ("for Reddit") says which one it is FOR.
+        for marker in markers:
+            found = _CHANNEL_RE.search(marker.group(0))
+            if found:
+                name = found.group(1).lower()
+                return _CHANNEL_ALIASES.get(name, name)
+        # Then the rest of the framing's own sentence. Codex MINOR round 3:
+        # "Reddit version, ready to paste" is unmistakable publish framing whose
+        # marker ("ready to paste") carries no platform, and marker-only scoping
+        # sent it to the default lints. The sentence is the window because it is
+        # the smallest one that still holds the framing and its subject together.
+        found = _CHANNEL_RE.search(chunk)
         if found:
             name = found.group(1).lower()
             return _CHANNEL_ALIASES.get(name, name)
@@ -550,12 +571,20 @@ def channel_surface_lint(registry_path, channel, instance_root):
     # see it, so exactly the malformed registries that look emptiest sailed
     # through to the default lints unvalidated.
     #
-    # Only an ABSENT key is an empty mapping. A present-but-wrong one is a
-    # malformed registry and takes the explicit hold path, because a registry
-    # this gate cannot read must never quietly become "no registry".
-    channels = data.get("channels")
-    if channels is None:
+    # PRESENCE, not falsiness, and not `is None` either. Codex narrowed this
+    # three rounds running and each round the hole was the same shape: a
+    # registry the gate cannot read quietly becoming "no registry". Round 3 was
+    # `"channels": null` -- an explicit null is a present-but-wrong value, but
+    # `.get()` returns None for it and for an ABSENT key alike, so the null
+    # sailed through as an empty mapping.
+    #
+    # `in` is the only test that separates the two, so it is the test used. Only
+    # a key that is genuinely not there means "no channels"; anything present
+    # and not an object is a malformed registry and takes the hold path.
+    if "channels" not in data:
         channels = {}
+    else:
+        channels = data["channels"]
     if not isinstance(channels, dict):
         raise ChannelRegistryError(
             f"voice-channels registry at {registry_path}: 'channels' must be an "
