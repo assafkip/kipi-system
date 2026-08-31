@@ -209,15 +209,29 @@ def plan(repo: str) -> dict:
         if has_token(text):
             rewrite.append(rel)
 
+    # STAGED-BUT-UNCOMMITTED MIGRATION WORK IS UNFINISHED WORK, and reading the
+    # disk alone cannot see that. Measured 2026-08-30 on one instance: its own
+    # commit-msg gate refused the migration commit, so the files were moved and
+    # rewritten and left staged. The very next run then read the tree, saw the
+    # new name everywhere, reported `already` / needs_work=False, and walked past
+    # an instance that was dirty and one gate away from being permanently
+    # refused by the updater's dirty-tree check. "Recovers rather than
+    # corrupting" has to include recovering the COMMIT, not just the bytes.
+    staged = _git(repo, "diff", "--cached", "--name-only", "--", PLUGIN_PARENT)
+    staged_migration = sorted(l for l in staged.stdout.splitlines() if l.strip()) \
+        if staged.returncode == 0 else []
+
     return {
         "repo": repo,
         "package_action": package_action,
         "rewrite": sorted(rewrite),
         "renames": sorted(renames),
         "history_left": sorted(history),
+        "staged_migration": staged_migration,
         # The one line a caller can branch on. `already`/`absent` with nothing to
-        # rewrite is a finished instance.
-        "needs_work": package_action in ("move", "both_present") or bool(rewrite) or bool(renames),
+        # rewrite AND nothing staged is a finished instance.
+        "needs_work": (package_action in ("move", "both_present")
+                       or bool(rewrite) or bool(renames) or bool(staged_migration)),
     }
 
 
@@ -316,7 +330,11 @@ def apply(repo: str, commit: bool = True) -> dict:
     # No --no-verify. The kipi-update.sh precedent is scoped to ITS auto-commit;
     # a hook that rejects this commit is a hook doing its job, and the honest
     # answer is a loud failure, not a bypass.
-    touched = bool(result["moved"] or result["rewritten"] or result["renamed"])
+    # `p["staged_migration"]` is why a re-run finishes an interrupted one: this
+    # run may have touched nothing because a PREVIOUS run already did the writes
+    # and only its commit failed.
+    touched = bool(result["moved"] or result["rewritten"] or result["renamed"]
+                   or p["staged_migration"])
     if commit and touched and not result["errors"]:
         add = _git(repo, "add", "-A", "--", PLUGIN_PARENT)
         if add.returncode != 0:
@@ -339,9 +357,17 @@ def apply(repo: str, commit: bool = True) -> dict:
             _git(repo, "add", "--", src, dst)
         staged = _git(repo, "diff", "--cached", "--name-only")
         if staged.stdout.strip():
+            # The `[no-issue:]` hatch, with a reason, is required and not
+            # optional decoration. Measured 2026-08-30: one client engagement's
+            # own commit-msg hook rejected the first fleet run, because a
+            # spillover id does not match its issue pattern
+            # ([A-Z][A-Z0-9]{1,9}-\d+), which left that instance rewritten,
+            # staged and uncommitted. A per-instance gate is not a thing to route
+            # around with --no-verify; this is the sanctioned hatch, and it is
+            # written to that repo's bypass ledger.
             msg = (
                 "migrate: voicekit -> voiceloop, package and imports together "
-                "(sp-8d55455a)\n\n"
+                "[no-issue: fleet migration, sp-8d55455a tracks it]\n\n"
                 "kipi update rsyncs plugins/ with --delete, so a sync alone "
                 "delivers voiceloop/, removes voicekit/, and cannot rewrite the "
                 "instance-owned imports that still ask for the old name. The "

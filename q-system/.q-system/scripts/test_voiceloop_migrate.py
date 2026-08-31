@@ -139,6 +139,47 @@ class EngineTest(unittest.TestCase):
         self.assertTrue(os.path.exists(
             os.path.join(r, f"q-system/output/plans/ask-565-{OLD}-skew-2026-08-09.md")))
 
+    def test_a_failed_commit_is_finished_by_the_next_run(self):
+        """Reading the disk cannot see that the commit never happened.
+
+        Measured 2026-08-30 on one instance: its own commit-msg gate refused
+        the migration commit, so the bytes were right and the work sat staged. The
+        next run saw the new name everywhere and reported already/needs_work=
+        False, walking past a dirty tree that the updater's dirty guard would
+        then refuse forever.
+        """
+        r = build_instance(os.path.join(self.tmp, "i"))
+        subprocess.run(["git", "-C", r, "init", "-q"], check=True)
+        subprocess.run(["git", "-C", r, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", r, "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "base"], check=True)
+        mig.apply(r, commit=False)          # writes, never commits: the mid state
+        subprocess.run(["git", "-C", r, "add", "-A"], check=True)
+
+        p = mig.plan(r)
+        self.assertEqual(p["package_action"], "already")   # disk looks finished
+        self.assertTrue(p["staged_migration"], "staged work not detected")
+        self.assertTrue(p["needs_work"], "a staged-but-uncommitted migration "
+                                         "reported as finished")
+
+        out = mig.apply(r, commit=True)
+        self.assertTrue(out["committed"], out["errors"])
+        left = subprocess.run(["git", "-C", r, "diff", "--cached", "--name-only"],
+                              capture_output=True, text=True).stdout.strip()
+        self.assertEqual(left, "", "staged work survived the recovery run")
+
+    def test_a_finished_instance_is_still_finished(self):
+        """Negative control for the test above: the new signal must not make
+        every already-migrated instance look like it needs work."""
+        r = build_instance(os.path.join(self.tmp, "i"), package=NEW)
+        subprocess.run(["git", "-C", r, "init", "-q"], check=True)
+        subprocess.run(["git", "-C", r, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", r, "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "base"], check=True)
+        p = mig.plan(r)
+        self.assertEqual(p["staged_migration"], [])
+        self.assertFalse(p["needs_work"])
+
     def test_refuses_to_run_against_the_skeleton(self):
         r = build_instance(os.path.join(self.tmp, "i"))
         open(os.path.join(r, "instance-registry.json"), "w").write("{}")
