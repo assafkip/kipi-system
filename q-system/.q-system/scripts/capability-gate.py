@@ -74,6 +74,19 @@ WIRING_SURFACE_GLOBS = (
     "q-system/.q-system/**/*.md",
     "q-system/.q-system/**/*.py",
     "q-system/.q-system/*.py",
+    # launchd plists. Same argument the lefthook line above records: a committed
+    # plist installed by install-plist.sh is the strongest wiring a scheduled
+    # script can have, and it is how this repo's whole autonomous layer is
+    # wired. Added 2026-08-31 when browser_session_health.py and
+    # browser_session_deadman.py were reported inert while each was named in its
+    # own committed com.kipi.*.plist.
+    "q-system/.q-system/scripts/*.plist",
+    # The kipi-core MCP server. It is the agent-facing wiring surface: a script
+    # reachable as an MCP tool is callable in every session, which is stronger
+    # wiring than a slash command. Scoped to the server source deliberately
+    # rather than plugins/**/*.py, which would let any plugin file mentioning a
+    # name switch this check off.
+    "plugins/*/kipi-mcp/src/kipi_mcp/*.py",
 )
 
 
