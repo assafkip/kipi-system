@@ -46,6 +46,7 @@ UPDATER_HELPERS = (
     "kipi-settings-merge.py",
     "kipi-update-gitignore-block.py",
     "kipi-update-wip-check.py",
+    "kipi-update-voiceloop-migrate.py",
     "settings-template.json",
 )
 
