@@ -541,12 +541,21 @@ def channel_surface_lint(registry_path, channel, instance_root):
     if not isinstance(data, dict):
         raise ChannelRegistryError(
             f"voice-channels registry at {registry_path} must be an object")
-    channels = data.get("channels") or {}
-    # Codex MINOR on PR #291: a non-object `channels` reached `.get` and raised an
-    # uncaught AttributeError. main() catches ChannelRegistryError and exits 2;
+    # `.get()` and NOT `.get(...) or {}`, which is the whole point. Codex found
+    # this twice. Round 2: a non-object `channels` reached `.get` and raised an
+    # uncaught AttributeError -- main() catches ChannelRegistryError and exits 2,
     # an AttributeError escapes it, Python exits 1, and a Stop hook exiting 1
-    # does NOT hold the turn. A malformed registry has to fail through the
-    # explicit hold path, not around it.
+    # does NOT hold the turn. Round 3: the `or {}` I added the guard behind
+    # coerced every FALSY non-object ([], "", 0) to {} BEFORE the guard could
+    # see it, so exactly the malformed registries that look emptiest sailed
+    # through to the default lints unvalidated.
+    #
+    # Only an ABSENT key is an empty mapping. A present-but-wrong one is a
+    # malformed registry and takes the explicit hold path, because a registry
+    # this gate cannot read must never quietly become "no registry".
+    channels = data.get("channels")
+    if channels is None:
+        channels = {}
     if not isinstance(channels, dict):
         raise ChannelRegistryError(
             f"voice-channels registry at {registry_path}: 'channels' must be an "

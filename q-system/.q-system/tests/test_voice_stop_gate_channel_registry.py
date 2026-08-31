@@ -363,3 +363,43 @@ def test_a_non_object_channels_field_holds_rather_than_crashing(tmp_path):
     assert "Traceback" not in result.stderr, (
         "crashed out of the hold path instead of taking it: " + result.stderr)
     assert ASSAF_SPOKE not in result.stderr
+
+
+@pytest.mark.parametrize("bad", [[], "", 0, False])
+def test_an_EMPTY_non_object_channels_field_also_holds(tmp_path, bad):
+    """Codex MINOR round 3, and it is why the guard alone was not enough.
+
+    The guard was added behind `data.get("channels") or {}`, and `or {}` turns
+    every FALSY non-object into an empty mapping BEFORE the guard can see it. So
+    the malformed registries that look emptiest were exactly the ones that
+    sailed through to the default lints unvalidated -- a registry the gate could
+    not read quietly becoming "no registry", which is the wrong-rulebook bug this
+    branch exists to end.
+
+    An ABSENT key is the only thing that means "no channels".
+    """
+    _stub_lints(tmp_path)
+    data_dir = tmp_path / "q-system" / ".q-system" / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "voice-channels.json").write_text(
+        json.dumps({"channels": bad}), encoding="utf-8")
+    result = _run_gate(tmp_path, DRAFT)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "channel registry error" in result.stderr, result.stderr
+    assert ASSAF_SPOKE not in result.stderr, (
+        "a malformed registry silently selected the default lints")
+
+
+def test_a_registry_with_no_channels_key_at_all_is_not_an_error(tmp_path):
+    """The control. `or {}` existed for a reason and the fix must keep it:
+    a registry that declares only a default, with no `channels` key, is
+    well-formed and routes to that default rather than holding the turn."""
+    _stub_lints(tmp_path)
+    data_dir = tmp_path / "q-system" / ".q-system" / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "voice-channels.json").write_text(
+        json.dumps({"default": {"voice_ref": "voice", "lint": "assaf"}}),
+        encoding="utf-8")
+    result = _run_gate(tmp_path, DRAFT)
+    assert "channel registry error" not in result.stderr, result.stderr
+    assert ASSAF_SPOKE in result.stderr, result.stderr
