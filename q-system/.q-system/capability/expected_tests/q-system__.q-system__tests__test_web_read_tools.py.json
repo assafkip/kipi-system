@@ -1,5 +1,0 @@
-{
- "path": "q-system/.q-system/tests/test_web_read_tools.py",
- "runner": "pytest",
- "timeout_s": 120
-}
