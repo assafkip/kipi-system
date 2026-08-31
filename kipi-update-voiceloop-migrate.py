@@ -234,7 +234,12 @@ def apply(repo: str, commit: bool = True) -> dict:
     repo = os.path.abspath(repo)
     p = plan(repo)
     result = {**p, "moved": False, "rewritten": [], "renamed": [], "committed": False,
-              "errors": []}
+              "errors": [], "left_untracked": []}
+    # Snapshot tracked-ness BEFORE any write, because `git mv` and the rewrites
+    # change it. Empty set when this is not a git repo, which makes every path
+    # "untracked" and the commit step a no-op -- correct for a scratch copy.
+    ls = _git(repo, "ls-files")
+    tracked_before = set(ls.stdout.splitlines()) if ls.returncode == 0 else set()
 
     # --- step 1: the package gets the new name -------------------------------
     if p["package_action"] == "move":
@@ -316,8 +321,19 @@ def apply(repo: str, commit: bool = True) -> dict:
         add = _git(repo, "add", "-A", "--", PLUGIN_PARENT)
         if add.returncode != 0:
             result["errors"].append("git add (plugins): " + add.stderr.strip())
+        # ONLY files git already tracked. An UNTRACKED file in the rewrite set is
+        # somebody's work in progress -- measured 2026-08-30, consulting had
+        # q-consult/pipeline/tests/audit_channel_wiring.py untracked while another
+        # live session worked in that tree. `git add` on it would commit a peer's
+        # WIP inside a migration commit, which is the auto-commit-sweeps-the-wrong
+        # -branch scar. It still gets REWRITTEN, because leaving it importing a
+        # package that no longer exists is the breakage this whole file prevents;
+        # it just stays untracked, exactly as its author left it.
         for rel in result["rewritten"]:
-            _git(repo, "add", "--", rel)
+            if rel in tracked_before:
+                _git(repo, "add", "--", rel)
+            else:
+                result["left_untracked"].append(rel)
         for pair in result["renamed"]:
             src, dst = pair.split(" -> ")
             _git(repo, "add", "--", src, dst)
