@@ -57,6 +57,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from concurrency import ConcurrencyError, assert_no_active_prd  # noqa: E402
+from linear_branch import current_branch, issue_id_for_branch  # noqa: E402
 
 
 RECEIPT_FIELDS = ("verified", "reviewed", "findings_triaged")
@@ -1040,6 +1041,20 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
         "findings_triaged_at": state["receipts"].get("findings_triaged"),
         "commit_sha": sha,
     }
+    # ASK-210. A DSSE spec id is a descriptive slug minted by prd_split.py
+    # (`receipt-gate-e2e`); nothing ties it to the Linear issue the work came
+    # from, so the receipt was unattributable to Linear and the PR receipt gate
+    # could never match one -- it blocked 100% of `sana/ask-*` PRs and a
+    # complete, correct closeout did not clear it. The branch is the reliable
+    # carrier (linear-worker.sh:192 mints it), and the SAME module the gate
+    # reads resolves it here, so the two cannot drift apart.
+    #
+    # Omitted, not blanked, when the branch carries no Linear id: a closeout on
+    # `main` or a chore branch is legitimate and the ledger's key allowlist
+    # refuses non-string values anyway.
+    linear_issue_id = issue_id_for_branch(current_branch(paths.repo_root))
+    if linear_issue_id:
+        receipt["linear_issue_id"] = linear_issue_id
     _append_receipt(paths.receipts_path, receipt)
     new_text = re.sub(
         r"(?m)^status:\s*.+$", "status: closed", text, count=1

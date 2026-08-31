@@ -48,6 +48,13 @@ ALLOWED_KEYS = {
     "prd_id",
     "finding_id",
     "issue_id",
+    # ASK-210: the Linear issue the closeout branch belonged to, e.g. `ASK-210`.
+    # Added here in the SAME change that taught issue_runner.py to emit it --
+    # a producer key missing from this allowlist makes every closeout commit
+    # die at pre-commit, which is a worse failure than the gate it unblocks.
+    # The `_id` suffix means SLUG_RE already bounds it; a Linear identifier is
+    # a team key plus digits, so it carries nothing identifying.
+    "linear_issue_id",
     "closed_at",
     "commit_sha",
     "findings_triaged_at",
