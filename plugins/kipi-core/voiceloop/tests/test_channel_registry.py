@@ -228,8 +228,11 @@ def _channel_literals(source):
     return found
 
 
-VALIDATE_PY = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "validate.py")
+# From the IMPORTED module, never from this file's path. The public mirror puts
+# tests/ at the repo root while the skeleton puts them inside the package, so a
+# dirname walk finds validate.py in one tree and nothing in the other. Asking the
+# module where it lives also checks the copy that actually got imported.
+VALIDATE_PY = os.path.abspath(validate.__file__)
 
 
 def test_validate_holds_no_channel_literal():

@@ -60,9 +60,9 @@ DEFAULT_ASSEMBLED = ("linkedin", "x")
 # KNOWN_LINT_INPUTS, for the same reason.
 KNOWN_ROLES = ("scope", "assembled")
 
-# Both live under q-system/.q-system/data/, which is in the skeleton sync's
-# INSTANCE_OWNED_SUBTREES, so `kipi update` never overwrites or deletes them
-# (RULE-2026-06-30-A).
+# Both live under q-system/.q-system/data/, which the fleet sync treats as
+# instance-owned, so a sync never overwrites or deletes them. A file placed next
+# to this module instead would be replaced by the next sync.
 REGISTRY_REL = os.path.join("q-system", ".q-system", "data", "voice-channels.json")
 POINTER_REL = os.path.join("q-system", ".q-system", "data", "voice-channels.path")
 
@@ -137,8 +137,9 @@ def load(registry_path):
     to the pre-registry behavior.
 
     A registry with no `channel_vocabulary` key also returns DEFAULT. That is not
-    laziness: cole-gtm's live registry answers the SURFACE question only, and a
-    registry gaining a new consumer must not change what it already answers.
+    laziness: the registries already in the field answer the SURFACE question
+    only, and a registry gaining a new consumer must not change what it already
+    answers to its existing ones.
 
     Raises ChannelRegistryError on a present-but-untrustworthy registry.
     """
