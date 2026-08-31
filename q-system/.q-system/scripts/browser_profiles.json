@@ -60,11 +60,11 @@
       "unmonitored_surfaces": [
         {
           "host": "reddit.com",
-          "reason": "FORBIDDEN. Canon 2026-07-17 (reddit_driver.py): a Playwright-driven Reddit session is WAF-blocked. This capability is headful and read-only, which is a real difference from the headless driver the canon was written against, but an UNMEASURED one, and the cost of being wrong is an account that cannot be un-banned. Refused in code at load, not just here."
+          "reason": "FORBIDDEN, and separately FOUNDER-DECLINED 2026-08-31 (\"dont watch linkedin or reddit\"). The refusal stands on its own: canon 2026-07-17 (reddit_driver.py) is that a Playwright-driven Reddit session is WAF-blocked, and this capability being headful and read-only is a real but UNMEASURED difference. Reddit actions go through the Chrome extension, not through this. Enforced at load by FORBIDDEN_PROBE_HOSTS; declining to watch is not permission to probe."
         },
         {
           "host": "linkedin.com",
-          "reason": "NOT AUTHORISED YET. Probing LinkedIn every 30 minutes with an automated browser carries account risk that is irreversible and is the founder's to accept, not mine. Declared here so the gap is on every run's output instead of being invisible."
+          "reason": "FOUNDER-DECLINED 2026-08-31, verbatim: \"no. dont watch linkedin or reddit.\" He does not want continuity monitoring on this surface; he wants an ACTION path to it. Declining to watch is not permission to probe, so nothing here probes it."
         }
       ]
     }
