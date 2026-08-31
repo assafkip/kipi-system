@@ -95,9 +95,18 @@ PROFILE_HELD_MARKERS = (
 )
 
 
-def _looks_held(text: str) -> bool:
+def looks_held(text: str) -> bool:
+    """Is this failure another Chrome holding the profile?
+
+    Public because the agent-facing adapter has to answer the same question:
+    `held` is a state the caller acts on (close your window), not an error.
+    """
     low = (text or "").lower()
     return any(marker in low for marker in PROFILE_HELD_MARKERS)
+
+
+def _looks_held(text: str) -> bool:
+    return looks_held(text)
 
 # Far enough off any plausible desktop that the window never appears, near
 # enough that Chrome still lays out and renders normally.
