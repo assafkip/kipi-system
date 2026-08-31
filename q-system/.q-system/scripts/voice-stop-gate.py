@@ -406,14 +406,168 @@ def report_not_checked(lines, out=None, err=None):
         (err or sys.stderr).write(line + "\n")
 
 
-def run_check(script, file_path):
+# --- the OPTIONAL instance channel registry ----------------------------------
+#
+# The un-shipped half of prd-voice-gate-platform-aware-2026-07-22. That PRD built the
+# instance half (cole-gtm/gtm/scripts/voice_channel_registry.py) and named the constraint
+# on this half in its section 4: this file lives in the SKELETON and reaches 26 instances
+# via `kipi push`, so "the recurrence guard must live where every instance loads it, not
+# in one instance's gtm/". Measured 2026-08-30, thirteen months of drift later:
+# `grep -c "voice_channel_registry\|channel_registry"` against this file returned 0.
+#
+# THE HARD CONSTRAINT, and it outranks the feature: an instance with NO registry must
+# behave exactly as it did before this block existed. 26 instances have no registry and
+# none of them asked for one. So the registry is opt-in, resolved from an INSTANCE-OWNED
+# path, and absent means `channel_surface_lint` returns None and the two assaf lints run
+# with the identical argv they always ran with.
+#
+# WHAT THIS HALF CONSUMES, and what it does not. The registry carries two axes: `voice_ref`
+# (whose voice) and `surface_ref` + `lint` (what surface the channel imposes). This gate
+# has no corpus and no semantic judge -- it runs pattern lints -- so it consumes only the
+# SURFACE axis: `lint_script` (the executable) and `lint_input` (how that executable wants
+# the draft). The voice axis is consumed by the instance's own judge. Saying so here rather
+# than reading `voice_ref` and doing nothing with it, because a field fetched and never
+# read is how a docstring starts making promises the code does not keep.
+#
+# FAIL-CLOSED, same rule as every other check in this file. A registry that is PRESENT and
+# unreadable, or that names a lint_script which is absent, HOLDS the turn. Silently falling
+# back to the assaf lints there would grade a reddit draft on the wrong rulebook, which is
+# the entire defect the registry exists to prevent.
+CHANNEL_REGISTRY_REL = Path("q-system") / ".q-system" / "data" / "voice-channels.json"
+CHANNEL_REGISTRY_POINTER_REL = (
+    Path("q-system") / ".q-system" / "data" / "voice-channels.path")
+
+# How a surface lint wants the draft handed to it. A typo must fail closed, not route a
+# channel to an invocation shape its lint cannot parse and read the exit code as a verdict.
+KNOWN_LINT_INPUTS = {"text_file", "json_body"}
+DEFAULT_LINT_INPUT = "text_file"
+
+# Channels this gate can name from publish framing. Same vocabulary as _PLAT, which the
+# publish-intent matcher already captures and then discards.
+_CHANNEL_RE = re.compile(r"(?i)\b" + _PLAT + r"\b")
+_CHANNEL_ALIASES = {"twitter": "x"}
+
+
+class ChannelRegistryError(Exception):
+    """A registry that is present and cannot be trusted. Callers HOLD the turn."""
+
+
+def resolve_channel_registry(instance_root):
+    """This instance's channel registry path, or None. Shape copied from
+    `resolve_reporter` above rather than invented, for the reason written there.
+
+    Two sources, in order:
+
+    1. `q-system/.q-system/data/voice-channels.json` in the instance.
+    2. A pointer file beside it naming the real location, because an instance that
+       already owns a registry keeps it with its own config (consulting:
+       `q-consult/config/voice-channels.json`; cole-gtm: `gtm/config/voice-channels.json`)
+       and there is no fleet-wide answer to which subtree that is.
+
+    Both live under `q-system/.q-system/data/`, which is in the skeleton sync's
+    INSTANCE_OWNED_SUBTREES, so `kipi update` never overwrites or deletes them
+    (RULE-2026-06-30-A). A file next to this script would be erased by the next sync.
+
+    Returns the NAMED path even when it does not exist, so a caller can say "the pointer
+    names X, which is missing" instead of "no registry" -- the resolve_reporter scar.
+    """
+    local = Path(instance_root) / CHANNEL_REGISTRY_REL
+    if local.is_file():
+        return local
+    pointer = Path(instance_root) / CHANNEL_REGISTRY_POINTER_REL
+    try:
+        named = pointer.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    named = "".join(ln for ln in named.splitlines()
+                    if ln.strip() and not ln.lstrip().startswith("#")).strip()
+    if not named:
+        return None
+    named_path = Path(os.path.expanduser(named))
+    if not named_path.is_absolute():
+        named_path = Path(instance_root) / named_path
+    return named_path.resolve()
+
+
+def detect_channel(text):
+    """The channel this draft is framed for, or ''. First platform named wins.
+
+    `_PLAT` already sits inside `_PUBLISH_MARKER_RE`, which matched to get here and then
+    throws the platform away. This reads the same vocabulary rather than a second one:
+    two lists of channel names is the drift this whole change is about.
+    """
+    match = _CHANNEL_RE.search(text or "")
+    if not match:
+        return ""
+    name = match.group(1).lower()
+    return _CHANNEL_ALIASES.get(name, name)
+
+
+def channel_surface_lint(registry_path, channel, instance_root):
+    """(script Path, input mode) for this channel's SURFACE lint, or None.
+
+    None means "no channel-specific surface": run the assaf lints, which is what every
+    instance without a registry does and what a registered assaf channel does too.
+
+    Raises ChannelRegistryError when the registry is present and untrustworthy.
+    """
+    if registry_path is None:
+        return None
+    try:
+        data = json.loads(Path(registry_path).read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ChannelRegistryError(
+            f"voice-channels registry named at {registry_path} is unreadable: {exc}") from exc
+    except ValueError as exc:
+        raise ChannelRegistryError(
+            f"voice-channels registry at {registry_path} is malformed: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ChannelRegistryError(
+            f"voice-channels registry at {registry_path} must be an object")
+    channels = data.get("channels") or {}
+    entry = channels.get(channel) if channel else None
+    if entry is None:
+        entry = data.get("default")
+    if entry is None:
+        return None
+    if not isinstance(entry, dict):
+        raise ChannelRegistryError(
+            f"voice-channels entry for {channel!r} must be an object")
+    script = entry.get("lint_script")
+    if not script:
+        return None
+    mode = entry.get("lint_input", DEFAULT_LINT_INPUT)
+    if mode not in KNOWN_LINT_INPUTS:
+        raise ChannelRegistryError(
+            f"voice-channels entry for {channel!r} has unknown lint_input {mode!r}; "
+            f"known: {sorted(KNOWN_LINT_INPUTS)}")
+    script_path = Path(script)
+    if not script_path.is_absolute():
+        script_path = Path(instance_root) / script_path
+    if not script_path.is_file():
+        raise ChannelRegistryError(
+            f"voice-channels entry for {channel!r} names lint_script {script_path}, "
+            f"which does not exist; holding rather than grading on the wrong rulebook")
+    return (script_path, mode)
+
+
+def _lint_argv(script, file_path, mode):
+    """The invocation shape a lint declared. text_file is the shape every skeleton lint
+    has always used, so an instance with no registry produces a byte-identical argv."""
+    if mode == "json_body":
+        return ["python3", str(script), "--file", file_path]
+    return ["python3", str(script), file_path]
+
+
+def run_check(script, file_path, mode=DEFAULT_LINT_INPUT, json_path=None):
     if not script.exists():
         return (NOT_CHECKED,
                 "voice-stop-gate: %s is MISSING at %s, so this draft was NOT "
                 "CHECKED by it. That is not a pass." % (script.name, script))
+    target = json_path if mode == "json_body" else file_path
     try:
         result = subprocess.run(
-            ["python3", str(script), file_path],
+            _lint_argv(script, target, mode),
             capture_output=True,
             text=True,
             timeout=15,
@@ -470,24 +624,53 @@ def main():
         # measurement no longer rides on it.
         authorship_spool(extract_setoff_draft(text), text, request)
         finish_ok()
+    # WHICH RULEBOOK. An instance with no registry resolves to None here and the two
+    # assaf lints below run exactly as they did before this block existed -- the hard
+    # constraint, because 26 instances have no registry. An instance WITH one routes the
+    # channel to its surface lint instead, which is what "a reddit draft was graded on the
+    # wrong rulebook and shipped AI-sounding" (scar 2026-07-22) was waiting for.
+    #
+    # A present-but-broken registry HOLDS. Falling back to the assaf lints there would be
+    # the wrong-rulebook bug wearing a fix.
+    try:
+        surface = channel_surface_lint(
+            resolve_channel_registry(INSTANCE_ROOT), detect_channel(text), INSTANCE_ROOT)
+    except ChannelRegistryError as exc:
+        sys.stderr.write(
+            "voice-stop-gate: channel registry error, holding the turn (fail-closed).\n"
+            f"{exc}\n")
+        sys.exit(2)
+
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".md", delete=False, encoding="utf-8"
     ) as tmp:
         tmp.write(draft)
         tmp_path = tmp.name
+    # A surface lint may want the draft as JSON rather than a text file (the reddit
+    # persona lint reads {title?,subject?,body}). Written ONLY when a lint asked for that
+    # form. Writing it unconditionally would be simpler and would spend a tempfile per
+    # gated turn on 26 instances that have no registry and get nothing from it -- and it
+    # would make "an instance with no registry behaves exactly as before" false in a way
+    # no test here would have caught, because none of them look at the filesystem.
+    tmp_json_path = None
+    if surface and surface[1] == "json_body":
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as tmp_json:
+            json.dump({"body": draft}, tmp_json)
+            tmp_json_path = tmp_json.name
     try:
         violations_output = []
         not_checked = []
-        code1, out1 = run_check(VOICE_LINT, tmp_path)
-        if code1 == 2 and out1:
-            violations_output.append(out1)
-        elif code1 == NOT_CHECKED:
-            not_checked.append(out1)
-        code2, out2 = run_check(SUBSTANCE_LINT, tmp_path)
-        if code2 == 2 and out2:
-            violations_output.append(out2)
-        elif code2 == NOT_CHECKED:
-            not_checked.append(out2)
+        checks = ([(surface[0], surface[1])] if surface
+                  else [(VOICE_LINT, DEFAULT_LINT_INPUT),
+                        (SUBSTANCE_LINT, DEFAULT_LINT_INPUT)])
+        for script, mode in checks:
+            code, out = run_check(script, tmp_path, mode, tmp_json_path)
+            if code == 2 and out:
+                violations_output.append(out)
+            elif code == NOT_CHECKED:
+                not_checked.append(out)
         report_not_checked(not_checked)
         if violations_output:
             sys.stderr.write(
@@ -504,10 +687,13 @@ def main():
             # refused, which Claude is about to replace.
             sys.exit(2)
     finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        for path in (tmp_path, tmp_json_path):
+            if path is None:
+                continue
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
     # THE CLEAN PATH. Score this draft (backgrounded, arrives next turn) and
     # surface whatever a previous turn's worker finished.
