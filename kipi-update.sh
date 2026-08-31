@@ -2296,10 +2296,65 @@ PY
             $(rsync_owned_excludes) 2>/dev/null; then
           abandon_instance "  ERROR: q-system sync failed" && continue
         fi
-        # Restore any untracked file the rsync --delete removed (skeleton doesn't manage it).
+        # Restore any preserved file the rsync --delete removed (skeleton doesn't manage it).
+        #
+        # THE MESSAGE NAMES WHICH KIND IT WAS (sp-a94c203c). This loop preserves
+        # BOTH untracked files and TRACKED instance-only ones, and it used to
+        # print "restored untracked: <path>" for every single one -- the string
+        # was written when only untracked files came through here and was never
+        # revisited when tracked ones were added.
+        #
+        # It cost an hour of wrong belief on 2026-08-06. Reading that line for a
+        # TRACKED file produced a filed defect claiming instance-only files were
+        # being silently de-tracked on every update across four live instances.
+        # They are not: this restore runs BEFORE stage_q_system_sync, so by
+        # staging time the content matches HEAD, git sees no change, and tracking
+        # survives. Verified with ls-files, status --porcelain and cat-file on
+        # both a fixture and two live instances; the item was voided.
+        #
+        # A log line that names a git state the code never computes is the same
+        # class as a docstring claiming coverage it never computes. Ask git,
+        # which knows, and say what actually happened to the file.
         if ! ( cd "$path" && while IFS= read -r -d '' uf; do
             if ! { [ -e "$uf" ] || [ -L "$uf" ]; } && { [ -e "$SNAP/f/$uf" ] || [ -L "$SNAP/f/$uf" ]; }; then
-              mkdir -p "$(dirname "$uf")" && cp -a "$SNAP/f/$uf" "$uf" && say "  restored untracked: $uf"
+              # sp-a94c203c. This loop restores BOTH untracked files and tracked
+              # instance-only ones, and printed "restored untracked:" for every
+              # one -- a string written when only untracked files came through
+              # here and never revisited when tracked ones were added. It cost an
+              # hour of wrong belief.
+              #
+              # The UNTRACKED line is deliberately byte-identical to what it has
+              # always been. Two existing suites grep for it exactly
+              # (test-kipi-update-preserve-integration.sh at 5 sites,
+              # test-kipi-update-dry-tagging.sh at 2), so renaming both cases --
+              # which is what the branch originally did -- turns a message fix
+              # into a test break. Only the case that was being MISreported gets
+              # new words.
+              #
+              # `say`, not `echo`: say prefixes "DRY | " in dry mode, and
+              # test-kipi-update-dry-tagging.sh asserts every one of these lines
+              # carries that prefix.
+              #
+              # ASK THE LIVE INSTANCE, NOT $path. In a dry run $path has been
+              # repointed at the throwaway model clone, and the model stages
+              # everything to reproduce state -- so `git ls-files` there answers
+              # "tracked" for EVERY restored file, untracked ones included.
+              # Measured against test-kipi-update-preserve-integration.sh, which
+              # restored a genuinely untracked note and was told it was tracked
+              # instance-only. Querying $path would have replaced one false
+              # message with a different false message, in the mode most runs
+              # use.
+              #
+              # The index of the ORIGINAL instance still lists a tracked
+              # instance-only file -- rsync --delete touched the worktree only --
+              # so this reads the pre-sync tracking state, which is the one the
+              # operator cares about.
+              mkdir -p "$(dirname "$uf")" && cp -a "$SNAP/f/$uf" "$uf"
+              if git -C "$ORIGINAL_PATH" ls-files --error-unmatch -- "$uf" >/dev/null 2>&1; then
+                say "  restored tracked instance-only (still tracked, nothing changed in git): $uf"
+              else
+                say "  restored untracked: $uf"
+              fi
             fi
           done < "$SNAP/list" ); then
           abandon_instance "  ERROR: preserved-file restore failed" && continue
