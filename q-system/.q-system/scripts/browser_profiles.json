@@ -1,37 +1,74 @@
 {
   "_why": [
-    "Profiles are DECLARED here, never discovered by scanning a directory. A",
-    "scanner would pick up ~/.config/kipi/reddit-profile, and a Playwright",
-    "profile login for Reddit is WAF-blocked and forbidden (canon 2026-07-17,",
-    "reddit_driver.py). Declaring is what keeps a forbidden surface out.",
+    "Profiles are DECLARED, never discovered by scanning a directory.",
     "",
-    "Every entry MUST carry a liveness_probe. browser_session_health.load_profiles",
-    "refuses the whole file otherwise: a profile whose liveness cannot be checked",
-    "is not a persistent session, it is a guess.",
+    "A profile is an IDENTITY. A surface is a probe. Decided 2026-08-31 after one",
+    "jar was measured holding LinkedIn, Reddit, Google and YouTube at once, which",
+    "is the shared-computer shape the Grok Bot research rejected, arriving from",
+    "the other direction. The plan's isolation constraint only ever separated",
+    "research from the real Chrome, never research profiles from each other.",
+    "Splitting this jar needs the founder's sign-ins, so it is captured as",
+    "spillover rather than done here; expected_cookie_hosts makes the drift",
+    "visible in the meantime.",
     "",
-    "logged_in_marker is a string that appears ONLY when signed in. It is matched",
-    "case-insensitively against the loaded page. Pick the sign-OUT control, never",
-    "the sign-in one: a page that failed to render also lacks the sign-in link.",
+    "logged_in_marker must be measured ABSENT on a signed-out load before it is",
+    "declared. A marker that is PRESENT while signed out reports alive forever,",
+    "and alive is silent, which is the worst failure available here. Measured",
+    "2026-08-31 against a throwaway signed-out profile:",
+    "  myaccount.google.com  'SignOutOptions' absent, 'Sign out' PRESENT (rejected)",
+    "  www.youtube.com       'SignOutOptions' absent, 'avatar'   PRESENT (rejected)",
+    "  news.ycombinator.com  'logout'         absent, 'login'    present",
+    "A marker never yet seen TRUE reports state 'unverified', never 'dead', so a",
+    "wrong guess cannot page the founder with a false death.",
     "",
-    "kill_switch: touch that file and the profile is skipped entirely, no browser",
-    "opened and no alert, with no config edit and no deploy.",
-    "",
-    "Adding a profile is this file plus a human sign-in. Alerting is already",
-    "per-profile (browser_session_health.run_once keys alerted_state by name), so",
-    "a second entry needs no code change."
+    "unmonitored_surfaces are sessions this jar holds that are deliberately NOT",
+    "probed. They stay on the receipt and print on every run, because the blind",
+    "spot that started all of this was invisible, not accepted."
   ],
   "research_root": "~/.config/kipi/browser-profiles",
   "profiles": [
     {
       "name": "research-hn",
       "dir": "~/.config/kipi/browser-profiles/research-hn",
-      "identity": "research identity, Hacker News",
-      "purpose": "Reference profile for the persistent-browsing capability. Neutral surface with a real signed-in/signed-out distinction and a cheap page, chosen so continuity is provable without pointing this at any client target.",
+      "identity": "the founder's own identity, currently sharing one jar across several surfaces",
+      "purpose": "Reference profile for the persistent-browsing capability. Continuity monitoring for the sessions this jar holds.",
       "kill_switch": "~/.config/kipi/browser-profiles/research-hn.disabled",
-      "liveness_probe": {
-        "url": "https://news.ycombinator.com/news",
-        "logged_in_marker": "logout"
-      }
+      "expected_cookie_hosts": [
+        "news.ycombinator.com",
+        "google.com",
+        "accounts.google.com",
+        "youtube.com",
+        "linkedin.com",
+        "reddit.com",
+        "bing.com"
+      ],
+      "liveness_probes": [
+        {
+          "name": "hn",
+          "url": "https://news.ycombinator.com/news",
+          "logged_in_marker": "logout"
+        },
+        {
+          "name": "google",
+          "url": "https://myaccount.google.com/",
+          "logged_in_marker": "SignOutOptions"
+        },
+        {
+          "name": "youtube",
+          "url": "https://www.youtube.com/",
+          "logged_in_marker": "SignOutOptions"
+        }
+      ],
+      "unmonitored_surfaces": [
+        {
+          "host": "reddit.com",
+          "reason": "FORBIDDEN. Canon 2026-07-17 (reddit_driver.py): a Playwright-driven Reddit session is WAF-blocked. This capability is headful and read-only, which is a real difference from the headless driver the canon was written against, but an UNMEASURED one, and the cost of being wrong is an account that cannot be un-banned. Refused in code at load, not just here."
+        },
+        {
+          "host": "linkedin.com",
+          "reason": "NOT AUTHORISED YET. Probing LinkedIn every 30 minutes with an automated browser carries account risk that is irreversible and is the founder's to accept, not mine. Declared here so the gap is on every run's output instead of being invisible."
+        }
+      ]
     }
   ]
 }
