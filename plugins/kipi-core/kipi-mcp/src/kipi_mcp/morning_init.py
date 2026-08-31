@@ -442,6 +442,17 @@ _SUPERSEDED_BANNER_RE = re.compile(r"\bSUPERSEDED\b")  # uppercase: a banner, no
 _DECISION_REF_RE = re.compile(r"\bASK-\d+\b")
 
 _ITEM_CAP = 10
+_TEXT_CAP = 500
+
+# Scar ASK-976: the live talk-tracks.md carries NO heading containing
+# "definition" -- it names that same content `### One-liner` / `### Category`
+# under `## Core Positioning`. Matching the word "definition" alone left the
+# `talk_tracks: no definition` check permanently red against a file that does
+# define the product, so `valid=True` was unreachable for a LIVE source (the
+# thing ASK-977's retirement accounting deliberately refused to fake). These
+# are explicit heading names, never a positional fallback, so an unrelated
+# section can never satisfy the check by accident.
+_DEFINITION_HEADINGS = ("definition", "one-liner", "one liner", "category")
 
 
 def _heading_depth(line: str) -> int | None:
@@ -513,6 +524,22 @@ def _accumulate(existing: list[str], items: list[str], cap: int | None = _ITEM_C
     return merged if cap is None else merged[:cap]
 
 
+def _accumulate_text(existing: str, body: str) -> str:
+    """Append a section body to a TEXT field instead of REPLACING it.
+
+    Scar ASK-977, same shape one field over: assignment was last-match-wins, so
+    when two headings feed one field the later one silently erased the earlier.
+    The live talk-tracks.md hits exactly that -- `One-liner` and `Category` both
+    carry definition content -- so a plain assignment would ship the category
+    line alone and drop the one-liner it was standing next to.
+    """
+    addition = body.strip()
+    if not addition or addition in existing:
+        return existing[:_TEXT_CAP]
+    joined = f"{existing}\n\n{addition}" if existing else addition
+    return joined[:_TEXT_CAP]
+
+
 def _extract_list_items(text: str) -> list[str]:
     return [
         line.lstrip("-*").strip()
@@ -527,8 +554,8 @@ def _parse_talk_tracks(content: str) -> dict:
         hl = heading.lower()
         if "metaphor" in hl:
             result["metaphor"] = body.strip()[:500]
-        elif "definition" in hl:
-            result["definition"] = body.strip()[:500]
+        elif any(name in hl for name in _DEFINITION_HEADINGS):
+            result["definition"] = _accumulate_text(result["definition"], body)
         elif "wedge" in hl:
             result["wedge"] = body.strip()[:500]
         elif "banned" in hl:
