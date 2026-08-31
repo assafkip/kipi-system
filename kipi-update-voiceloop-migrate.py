@@ -280,6 +280,30 @@ def _tracked(repo: str, rel: str) -> bool:
     return _git(repo, "ls-files", "--error-unmatch", "--", rel).returncode == 0
 
 
+def _dirty_tracked(repo: str, rels: list) -> list:
+    """Tracked files among `rels` carrying uncommitted changes, staged or not.
+
+    UNTRACKED files are deliberately NOT included. This module already decided to
+    rewrite those and leave them untracked rather than let them import a package
+    that no longer exists (see the git add block); widening this to untracked
+    would silently reverse that decision.
+    """
+    if not rels:
+        return []
+    r = _git(repo, "status", "--porcelain", "--", *sorted(set(rels)))
+    if r.returncode != 0:
+        return []
+    out = []
+    for line in r.stdout.splitlines():
+        if not line.strip() or line.startswith("??"):
+            continue
+        path = line[3:].strip()
+        if " -> " in path:                      # a staged rename: take the source
+            path = path.split(" -> ")[0]
+        out.append(path.strip('"'))
+    return sorted(set(out))
+
+
 def apply(repo: str, commit: bool = True) -> dict:
     repo = os.path.abspath(repo)
     p = plan(repo)
@@ -290,6 +314,29 @@ def apply(repo: str, commit: bool = True) -> dict:
     # "untracked" and the commit step a no-op -- correct for a scratch copy.
     ls = _git(repo, "ls-files")
     tracked_before = set(ls.stdout.splitlines()) if ls.returncode == 0 else set()
+
+    # A FILE THE FOUNDER IS ALREADY EDITING IS NOT THIS SCRIPT'S TO REWRITE.
+    #
+    # Codex MAJOR round 2 on PR #292: pathspec-limiting the commit stopped it
+    # absorbing an UNRELATED staged file and left the case where the founder's
+    # staged edit sits in the VERY file the token swap has to touch. The swap and
+    # the edit are then the same file and no pathspec can separate them.
+    #
+    # So nothing is written. The error propagates, the caller abandons this
+    # instance BEFORE the --delete rsync, and the founder's work is exactly where
+    # they left it. The instance stays on the old package name, which is inert:
+    # the rsync that would strand its imports never runs either. Loud and
+    # reversible beats a migration commit that quietly carries somebody's WIP.
+    #
+    # Checked ONCE, here, against the PRE-MOVE paths. After `git mv` the package's
+    # own files read as staged renames and would false-trip this.
+    blocked = _dirty_tracked(repo, p["rewrite"] + p["renames"])
+    if blocked:
+        result["errors"].append(
+            "refusing to rewrite %d file(s) with uncommitted changes; commit or "
+            "stash them and re-run: %s" % (len(blocked), ", ".join(blocked[:5])))
+        result["verified"] = False
+        return result
 
     # --- step 1: the package gets the new name -------------------------------
     if p["package_action"] == "move":

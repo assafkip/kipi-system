@@ -227,6 +227,67 @@ class EngineTest(unittest.TestCase):
         self.assertIn(NEW, head_voice)
         self.assertNotIn(OLD, head_voice)
 
+    def test_a_founder_edit_in_a_file_the_migration_rewrites_abandons_it(self):
+        """Codex MAJOR round 2 on PR #292: the residual the pathspec did not close.
+
+        Scoping the commit stopped it absorbing an UNRELATED staged file. It left
+        the case where the founder's staged edit is in the VERY file the token
+        swap has to touch: the swap and the edit are then the same file and no
+        pathspec can separate them.
+
+        So the migration does not write at all. It reports the error, the caller
+        abandons the instance BEFORE the --delete rsync, and the founder's work is
+        exactly where they left it. Loud and reversible beats a migration commit
+        that quietly carries somebody's work in progress. The instance stays on
+        the old package name, which is inert -- the rsync that would strand its
+        imports never runs.
+        """
+        r = build_instance(os.path.join(self.tmp, "i"))
+        subprocess.run(["git", "-C", r, "init", "-q"], check=True)
+        subprocess.run(["git", "-C", r, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", r, "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "base"], check=True)
+        voice = os.path.join(r, "pipeline", "voice.py")
+        before = open(voice).read()
+        open(voice, "a").write("# founder work in progress\n")
+        subprocess.run(["git", "-C", r, "add", "--", "pipeline/voice.py"], check=True)
+
+        out = mig.apply(r, commit=True)
+        self.assertFalse(out["verified"], "wrote over a file the founder was editing")
+        self.assertTrue(out["errors"])
+        self.assertFalse(out["committed"])
+        self.assertFalse(out["rewritten"], "rewrote despite refusing")
+
+        # Nothing moved, so the instance is unchanged rather than half-migrated.
+        self.assertTrue(os.path.isdir(os.path.join(r, "plugins/kipi-core", OLD)))
+        # The founder's edit is byte-for-byte where they left it, still staged.
+        now = open(voice).read()
+        self.assertEqual(now, before + "# founder work in progress\n")
+        self.assertIn(OLD, now, "the token was swapped under a refusal")
+        staged = subprocess.run(["git", "-C", r, "diff", "--cached", "--name-only"],
+                                capture_output=True, text=True).stdout.split()
+        self.assertIn("pipeline/voice.py", staged)
+
+    def test_an_untracked_file_in_the_rewrite_set_does_not_abandon(self):
+        """Negative control for the refusal, and it pins a DELIBERATE decision.
+
+        An untracked file in the rewrite set is somebody's WIP too, but this
+        module already decided to rewrite it and leave it untracked rather than
+        let it import a package that no longer exists. If the refusal above
+        widened to untracked files it would silently reverse that, so the
+        refusal is scoped to TRACKED files with uncommitted changes.
+        """
+        r = build_instance(os.path.join(self.tmp, "i"), extra=[
+            ("scratch/wip.py", "from " + OLD + " import x\n")])
+        subprocess.run(["git", "-C", r, "init", "-q"], check=True)
+        subprocess.run(["git", "-C", r, "add", "--", "pipeline", "plugins"], check=True)
+        subprocess.run(["git", "-C", r, "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "base"], check=True)
+        out = mig.apply(r, commit=True)
+        self.assertTrue(out["verified"], out["errors"])
+        self.assertIn("scratch/wip.py", out["rewritten"])
+        self.assertIn("scratch/wip.py", out["left_untracked"])
+
     def test_a_finished_instance_is_still_finished(self):
         """Negative control for the test above: the new signal must not make
         every already-migrated instance look like it needs work."""
