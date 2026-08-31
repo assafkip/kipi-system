@@ -36,11 +36,9 @@
       "expected_cookie_hosts": [
         "news.ycombinator.com",
         "google.com",
-        "accounts.google.com",
         "youtube.com",
         "linkedin.com",
-        "reddit.com",
-        "bing.com"
+        "reddit.com"
       ],
       "liveness_probes": [
         {
