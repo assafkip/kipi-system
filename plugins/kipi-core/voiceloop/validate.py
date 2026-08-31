@@ -14,7 +14,7 @@ import json
 import os
 import re
 
-from . import assemble, corpus, fingerprint, selector
+from . import assemble, channel_registry, corpus, fingerprint, selector
 
 MIN_ROWS_PER_POOL = 3      # below this, selection silently narrows to repetition;
                            # the fix is curation, so the message says so.
@@ -77,9 +77,10 @@ CORRECTION_CLASSES = ("deterministic", "interpretive")
 CORRECTION_STATUSES = ("active", "promoted", "retired")
 
 
-def check_corrections(path):
+def check_corrections(path, channels=None):
     """corrections.jsonl schema health (voice-2 review: the ledger had no
     validator at all, so a malformed or duplicate row passed the gate green)."""
+    channels = channels or channel_registry.DEFAULT
     if not os.path.exists(path):
         return []                      # an absent ledger is a valid empty ledger
     problems = []
@@ -107,17 +108,20 @@ def check_corrections(path):
             if row.get("status") not in CORRECTION_STATUSES:
                 problems.append(f"{rid}: status {row.get('status')!r}")
             for ch in row.get("scope") or []:
-                if ch not in ("linkedin", "x", "substack", "medium", "dm",
-                              "email", "comment"):
-                    problems.append(f"{rid}: unknown scope {ch!r}")
+                if ch not in channels.scopes:
+                    problems.append(
+                        f"{rid}: unknown scope {ch!r}; the channel vocabulary is "
+                        f"{list(channels.scopes)} (from "
+                        f"{channels.source or 'the built-in default, no registry'})")
     return problems
 
 
-def check_pools(voice):
+def check_pools(voice, channels=None):
     """Selection starvation check: every (channel, kind) pool a slot can ask for."""
+    channels = channels or channel_registry.DEFAULT
     problems = []
     rows = voice.active_exemplars()
-    for channel in ("linkedin", "x"):
+    for channel in channels.assembled:
         for kind in ("post",):
             n = sum(1 for r in rows if r.get("kind") == kind
                     and r.get("channel", "any") in (channel, "any"))
@@ -134,12 +138,26 @@ def check_pools(voice):
 # zero anchors while all three checks stayed silent: ELIGIBLE_KINDS maps
 # comment/dm to a ('comment','dm') primary tier that most corpora have no rows
 # for, so it is the slot most likely to be thin and the one nobody looks at.
-CHECKED_SLOTS = tuple((channel, slot_kind)
-                      for channel in ("linkedin", "x")
-                      for slot_kind in ("post", "comment"))
+SLOT_KINDS = ("post", "comment")
 
 
-def _resolved_slots(voice, k):
+def checked_slots(channels=None):
+    """(channel, slot_kind) for every slot a caller can ask for, channels from
+    the registry. The slot KINDS are a property of this engine's selector, not of
+    an instance, so they stay here; the channels are not, so they do not."""
+    channels = channels or channel_registry.DEFAULT
+    return tuple((channel, slot_kind)
+                 for channel in channels.assembled
+                 for slot_kind in SLOT_KINDS)
+
+
+# Kept as a module attribute because reviews and docs reference it by name. It is
+# DERIVED from the one authority, so it is a view of the default vocabulary and
+# not a fifth copy of the channel list.
+CHECKED_SLOTS = checked_slots()
+
+
+def _resolved_slots(voice, k, channels=None):
     """(channel, slot_kind, primary, pool) for each slot, POOL FROM THE SELECTOR.
 
     Both checks below used to count primary-kind rows by hand, which equals the
@@ -150,13 +168,13 @@ def _resolved_slots(voice, k):
     A checker that re-derives the rule it checks is testing its own copy.
     """
     rows = voice.active_exemplars()
-    for channel, slot_kind in CHECKED_SLOTS:
+    for channel, slot_kind in checked_slots(channels):
         primary, _ = selector.eligible(rows, channel, slot_kind)
         yield (channel, slot_kind, primary,
                selector.resolved_pool(rows, channel, slot_kind, k))
 
 
-def check_anchor_diversity(voice, k=selector.DEFAULT_K):
+def check_anchor_diversity(voice, k=selector.DEFAULT_K, channels=None):
     """Anchors must ROTATE within the pool a slot actually draws from.
 
     The pairing this exists for (finding-5, prd-content-engine-sameness-2026-08-09):
@@ -192,7 +210,7 @@ def check_anchor_diversity(voice, k=selector.DEFAULT_K):
     corpus_has_anchors = any(r.get("anchor") for r in voice.active_exemplars())
     if not corpus_has_anchors:
         return problems
-    for channel, slot_kind, _primary, pool in _resolved_slots(voice, k):
+    for channel, slot_kind, _primary, pool in _resolved_slots(voice, k, channels):
         reachable = [r for r in pool if r.get("anchor")]
         if len(reachable) < MIN_ANCHORS_PER_KIND:
             problems.append(
@@ -204,7 +222,7 @@ def check_anchor_diversity(voice, k=selector.DEFAULT_K):
     return problems
 
 
-def check_rotation_headroom(voice, k=selector.DEFAULT_K):
+def check_rotation_headroom(voice, k=selector.DEFAULT_K, channels=None):
     """A pool no larger than k cannot rotate: `select` takes min(k, len(pool)).
 
     Found by adversarial review 2026-08-09, measured over counters 0-29 with k=4
@@ -236,7 +254,7 @@ def check_rotation_headroom(voice, k=selector.DEFAULT_K):
     """
     problems = []
     floor = k + 1
-    for channel, slot_kind, primary, pool in _resolved_slots(voice, k):
+    for channel, slot_kind, primary, pool in _resolved_slots(voice, k, channels):
         if not pool:
             continue                    # an empty pool is check_pools' story
         if len(pool) <= k:
@@ -290,12 +308,13 @@ def check_fingerprint_fresh(voice):
     return problems
 
 
-def check_budget(voice, channels=("linkedin", "x")):
+def check_budget(voice, channels=None):
     """The largest legal assembly must fit the budget. Suite-time, so the daily
     job never needs a runtime cap -- the cap that failed loudly here cannot slice
     silently there."""
+    channels = channels or channel_registry.DEFAULT
     problems = []
-    for channel in channels:
+    for channel in channels.assembled:
         worst = 0
         for counter in range(12):        # one rotation lap is enough to find the max
             text, _ = assemble.voice_section(voice, channel, counter)
@@ -306,16 +325,24 @@ def check_budget(voice, channels=("linkedin", "x")):
     return problems
 
 
-def check_all(voice_dir):
-    """Every check, one list. [] is a healthy corpus."""
+def check_all(voice_dir, channels=None):
+    """Every check, one list. [] is a healthy corpus.
+
+    `channels` is a `channel_registry.Channels`. None means the built-in default,
+    which is what every instance without a registry gets and is byte-identical to
+    the behavior before the registry existed. An instance seam that owns a
+    registry passes `channel_registry.for_instance(<repo root>)`.
+    """
+    channels = channels or channel_registry.DEFAULT
     voice = corpus.load(voice_dir)
     problems = check_exemplars(os.path.join(voice_dir, corpus.EXEMPLARS))
-    problems += check_corrections(os.path.join(voice_dir, corpus.CORRECTIONS))
-    problems += check_pools(voice)
-    problems += check_anchor_diversity(voice)
-    problems += check_rotation_headroom(voice)
+    problems += check_corrections(os.path.join(voice_dir, corpus.CORRECTIONS),
+                                  channels)
+    problems += check_pools(voice, channels)
+    problems += check_anchor_diversity(voice, channels=channels)
+    problems += check_rotation_headroom(voice, channels=channels)
     problems += check_fingerprint_fresh(voice)
-    problems += check_budget(voice)
+    problems += check_budget(voice, channels)
     if voice.skipped_rows:
         problems.append(f"{voice.skipped_rows} corrupt JSONL row(s) skipped by the "
                         f"loader -- fix or remove them")
