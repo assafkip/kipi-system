@@ -647,13 +647,18 @@ def main():
         tmp.write(draft)
         tmp_path = tmp.name
     # A surface lint may want the draft as JSON rather than a text file (the reddit
-    # persona lint reads {title?,subject?,body}). Written unconditionally so the cleanup
-    # in `finally` has one shape; costs one small tempfile per gated turn.
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", delete=False, encoding="utf-8"
-    ) as tmp_json:
-        json.dump({"body": draft}, tmp_json)
-        tmp_json_path = tmp_json.name
+    # persona lint reads {title?,subject?,body}). Written ONLY when a lint asked for that
+    # form. Writing it unconditionally would be simpler and would spend a tempfile per
+    # gated turn on 26 instances that have no registry and get nothing from it -- and it
+    # would make "an instance with no registry behaves exactly as before" false in a way
+    # no test here would have caught, because none of them look at the filesystem.
+    tmp_json_path = None
+    if surface and surface[1] == "json_body":
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as tmp_json:
+            json.dump({"body": draft}, tmp_json)
+            tmp_json_path = tmp_json.name
     try:
         violations_output = []
         not_checked = []
@@ -683,6 +688,8 @@ def main():
             sys.exit(2)
     finally:
         for path in (tmp_path, tmp_json_path):
+            if path is None:
+                continue
             try:
                 os.unlink(path)
             except OSError:
