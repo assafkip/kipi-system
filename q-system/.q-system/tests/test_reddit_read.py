@@ -596,3 +596,61 @@ def test_comment_count_is_unchanged_by_a_submission_row(rr, real_html):
     """Coverage is computed off this list, so a parser that swallowed or
     invented a row would quietly move the coverage number too."""
     assert len(rr.parse_comments(SUBMISSION_ROW + real_html)) == len(rr.parse_comments(real_html))
+
+
+# ---------------------------------------------------------------------------
+# Codex round 2, MAJOR: absolute non-Reddit URLs were fetched and reported as
+# successful Reddit reads.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("url,why", [
+    ("http://localhost:8080/r/x/comments/a/b/", "loopback"),
+    ("http://127.0.0.1/r/x/comments/a/b/", "loopback literal"),
+    ("file:///etc/passwd", "file scheme"),
+    ("https://evil.example/r/x/comments/a/b/", "another host"),
+    ("//evil.example/r/x/comments/a/b/", "protocol-relative"),
+    ("/etc/passwd", "not a permalink"),
+    ("/r/x/../../admin", "traversal"),
+    ("r/x/comments/a/b/", "no leading slash"),
+])
+def test_thread_url_refuses_anything_that_is_not_reddit(rr, url, why):
+    """It fetched these and stamped the artifact as a Reddit read, so a consumer
+    saw a reddit result with no way to know the bytes came from localhost. That
+    is request forgery that also lies about its source."""
+    with pytest.raises(rr.UrlRefused):
+        rr.thread_url(url)
+
+
+@pytest.mark.parametrize("url", [
+    "/r/programming/comments/1w3blbq/please_i_beg_you/",
+    "/r/programming/comments/1w3blbq",
+    "https://old.reddit.com/r/programming/comments/1w3blbq/x/",
+    "https://www.reddit.com/r/programming/comments/1w3blbq/x/",
+])
+def test_thread_url_still_accepts_legitimate_reddit_urls(rr, url):
+    """THE NEGATIVE ARM. Without it a guard that refuses everything ships and
+    nobody notices until the tool is useless."""
+    built = rr.thread_url(url)
+    assert built.startswith("https://old.reddit.com/r/programming/comments/1w3blbq")
+    assert "limit=500" in built
+
+
+def test_read_thread_refuses_before_it_fetches(rr):
+    """The guard is at the boundary, so a bad URL never reaches the transport."""
+    calls = []
+    with pytest.raises(rr.UrlRefused):
+        rr.read_thread("file:///etc/passwd",
+                       transport=lambda u, h, t: (calls.append(u), (200, "x"))[1],
+                       pacer=rr.NullPacer())
+    assert calls == [], "a refused URL was still fetched"
+
+
+def test_listing_url_refuses_a_smuggled_subreddit(rr):
+    for bad in ("x/../../admin", "evil.example/x", "x?a=b", "../etc"):
+        with pytest.raises(rr.DiscoveryRefused):
+            rr.listing_url(bad)
+
+
+def test_listing_url_still_accepts_a_real_subreddit(rr):
+    assert rr.listing_url("sysadmin", period="month").startswith(
+        "https://old.reddit.com/r/sysadmin/top/")

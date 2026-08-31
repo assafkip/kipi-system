@@ -474,3 +474,60 @@ def test_capability_fragment_declares_this_test_file():
     # runner binds the test functions and exits 0 having run none of them.
     # The capability gate calls that a "zero-execution test" and it is right.
     assert data["runner"] == "pytest"
+
+
+# ---------------------------------------------------------------------------
+# Codex round 2, MAJOR: the browser tool forwarded arbitrary URLs, including
+# file:, and returned the content.
+# ---------------------------------------------------------------------------
+
+PUBLIC = lambda host: ["93.184.216.34"]
+LOOPBACK = lambda host: ["127.0.0.1"]
+PRIVATE = lambda host: ["10.0.0.5"]
+
+
+@pytest.mark.parametrize("url,resolver,why", [
+    ("file:///Users/someone/.ssh/id_rsa", PUBLIC, "arbitrary local file read"),
+    ("data:text/html,<b>hi", PUBLIC, "inline document"),
+    ("about:config", PUBLIC, "browser internals"),
+    ("ftp://example.com/x", PUBLIC, "non-http scheme"),
+    ("https://user:pw@example.com/", PUBLIC, "embedded credentials"),
+    ("http://localhost:8080/admin", LOOPBACK, "loopback by name"),
+    ("http://127.0.0.1/admin", LOOPBACK, "loopback literal"),
+    ("http://10.0.0.5/admin", PRIVATE, "private range"),
+    ("https://public-looking.example/", LOOPBACK, "public name, loopback record"),
+])
+def test_assert_fetchable_refuses_local_and_non_http(session, url, resolver, why):
+    """These tools are callable from every session in the fleet. A fetch that
+    accepts file:// and returns the bytes is an arbitrary local read with an
+    agent-friendly interface, and none of the profile isolation touches it:
+    the profile is not the vector, the URL is."""
+    with pytest.raises(session.UrlRefused):
+        session.assert_fetchable(url, resolver=resolver)
+
+
+@pytest.mark.parametrize("url", [
+    "https://www.nodeseek.com/",
+    "http://example.com/page?q=1",
+    "https://news.ycombinator.com/news",
+])
+def test_assert_fetchable_still_allows_public_http(session, url):
+    """THE NEGATIVE ARM. This tool exists to reach surfaces an HTTP client
+    cannot, so the host allowlist stays open and only the floor is refused. A
+    guard that refused everything would be invisible until the tool was
+    useless."""
+    assert session.assert_fetchable(url, resolver=PUBLIC) == url
+
+
+def test_fetch_html_applies_the_guard_before_launching_a_browser(session):
+    """At the boundary, not at the caller: the CLI and the MCP adapter both go
+    through fetch_html, so neither can forget."""
+    with pytest.raises(session.UrlRefused):
+        session.fetch_html("unused", "file:///etc/passwd", resolver=PUBLIC)
+
+
+def test_an_unresolvable_host_is_refused_not_fetched(session):
+    def boom(host):
+        raise OSError("no such host")
+    with pytest.raises(session.UrlRefused):
+        session.assert_fetchable("https://nope.invalid/", resolver=boom)

@@ -138,7 +138,17 @@ def browser_fetch(profile: str, url: str, fetcher=None, timeout_ms: int = 45000)
     profile_row = _profile_or_refuse(profile)
     session = load_script("browser_session.py")
     fetcher = fetcher or session.fetch_html
-    html, error = fetcher(profile_row["dir"], url, timeout_ms=timeout_ms)
+
+    # `held` IS DOCUMENTED AND MUST BE RETURNED, NOT RAISED. fetch_html lets a
+    # LAUNCH failure propagate as BrowserEnvError (only page-level failures come
+    # back as an error string), so the documented held status never happened on
+    # the real path. The first test for this injected a fetcher returning
+    # (None, error), which is not what the producer does -- the same
+    # fixture-not-from-the-producer mistake that hid the comment misattribution.
+    try:
+        html, error = fetcher(profile_row["dir"], url, timeout_ms=timeout_ms)
+    except Exception as exc:  # noqa: BLE001
+        error, html = f"{type(exc).__name__}: {exc}", None
 
     if error:
         held = session.looks_held(error)

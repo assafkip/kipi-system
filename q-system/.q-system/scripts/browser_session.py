@@ -76,6 +76,75 @@ REAL_CHROME = Path(os.path.expanduser("~/Library/Application Support/Google/Chro
 
 DEFAULT_TIMEOUT_MS = 45000
 
+# URL POLICY, AND IT LIVES HERE BECAUSE THIS IS THE BOUNDARY.
+#
+# These lanes became callable from every session in the fleet the moment they
+# were exposed as MCP tools. A fetch tool that accepts file:///Users/... and
+# returns the bytes is an arbitrary local file read with an agent-friendly
+# interface, and none of the profile-isolation work touches it: the profile is
+# not the vector, the URL is. Same for a host that resolves to loopback, which
+# turns the tool into request forgery against whatever is listening locally.
+#
+# THE POLICY, written down because this tool cannot use a fixed domain list.
+# Its entire purpose is reaching surfaces an HTTP client cannot, so the host
+# allowlist has to stay open. What it REFUSES is the floor:
+#
+#   any scheme except http/https   file:, data:, ftp:, javascript:, about:,
+#                                  chrome:, view-source: -- all of which a
+#                                  browser will happily render
+#   embedded credentials           https://user:pass@host
+#   any host resolving to a        loopback, private (RFC1918), link-local,
+#   non-public address             unique-local, multicast or reserved
+#
+# The resolution is checked, not the string: `localhost` and a public hostname
+# with an A record of 127.0.0.1 are the same attack and only one of them looks
+# like it.
+ALLOWED_SCHEMES = ("http", "https")
+
+
+def _addresses(host: str) -> list:
+    import socket
+    return [info[4][0] for info in socket.getaddrinfo(host, None)]
+
+
+def assert_fetchable(url: str, resolver=None) -> str:
+    """Return `url` or raise UrlRefused. The single gate every fetch passes."""
+    import ipaddress
+    from urllib.parse import urlparse
+
+    raw = (url or "").strip()
+    parts = urlparse(raw)
+    if parts.scheme.lower() not in ALLOWED_SCHEMES:
+        raise UrlRefused(
+            f"refusing {raw[:120]!r}: scheme {parts.scheme or '(none)'!r} is not "
+            f"one of {ALLOWED_SCHEMES}. A browser renders file: and data: happily, "
+            "which would make this tool an arbitrary local read.")
+    if parts.username or parts.password:
+        raise UrlRefused(f"refusing {raw[:80]!r}: embedded credentials in a URL")
+    host = parts.hostname
+    if not host:
+        raise UrlRefused(f"refusing {raw[:80]!r}: no host")
+
+    resolver = resolver or _addresses
+    try:
+        addresses = resolver(host)
+    except Exception as exc:  # noqa: BLE001
+        raise UrlRefused(f"refusing {host!r}: cannot resolve ({exc})") from exc
+    if not addresses:
+        raise UrlRefused(f"refusing {host!r}: resolves to nothing")
+    for address in addresses:
+        try:
+            ip = ipaddress.ip_address(address.split("%")[0])
+        except ValueError:
+            raise UrlRefused(f"refusing {host!r}: unparseable address {address!r}")
+        if (ip.is_loopback or ip.is_private or ip.is_link_local
+                or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+            raise UrlRefused(
+                f"refusing {host!r}: resolves to the non-public address {ip}. "
+                "A hostname with a loopback A record is the same request forgery "
+                "as localhost and only one of them looks like it.")
+    return raw
+
 # A Chrome persistent context is SINGLE-HOLDER. When the founder has his own
 # window open on a research profile, Playwright cannot launch against it at all.
 # Measured live 2026-08-31 08:13, verbatim from the receipt:
@@ -111,6 +180,10 @@ def _looks_held(text: str) -> bool:
 # Far enough off any plausible desktop that the window never appears, near
 # enough that Chrome still lays out and renders normally.
 OFFSCREEN_ARGS = ("--window-position=-32000,-32000", "--window-size=1280,900")
+
+
+class UrlRefused(Exception):
+    """A URL this module will not open. Never caught internally."""
 
 
 class ProfileRefused(Exception):
@@ -198,7 +271,8 @@ def _context(p, profile_dir: Path):
         raise BrowserEnvError(f"browser launch failed for {profile_dir}: {exc}") from exc
 
 
-def fetch_html(profile_dir, url: str, timeout_ms: int = DEFAULT_TIMEOUT_MS):
+def fetch_html(profile_dir, url: str, timeout_ms: int = DEFAULT_TIMEOUT_MS,
+               resolver=None):
     """(html, error). Never raises for a page-level failure.
 
     Returning a pair rather than raising is constraint 5 at the lowest level:
@@ -206,6 +280,7 @@ def fetch_html(profile_dir, url: str, timeout_ms: int = DEFAULT_TIMEOUT_MS):
     way up, and an exception erases the difference between "nothing was there"
     and "we never got to look".
     """
+    assert_fetchable(url, resolver=resolver)
     directory = resolve_profile_dir(profile_dir)
     directory.mkdir(parents=True, exist_ok=True)
     sync_playwright = _playwright()
@@ -238,7 +313,7 @@ def probe(name: str, profile_dir, url: str, logged_in_marker: str,
     fetcher = fetcher or fetch_html
     try:
         html, error = fetcher(profile_dir, url, timeout_ms=timeout_ms)
-    except (ProfileRefused, BrowserEnvError) as exc:
+    except (ProfileRefused, BrowserEnvError, UrlRefused) as exc:
         text = f"{type(exc).__name__}: {exc}"
         return ProbeResult(profile=name, url=url, reachable=False, logged_in=None,
                            error=text, reason=None, content_len=0, at=at,
@@ -259,6 +334,7 @@ def probe(name: str, profile_dir, url: str, logged_in_marker: str,
 def screenshot(profile_dir, url: str, out_path,
                timeout_ms: int = DEFAULT_TIMEOUT_MS):
     """(path, error). Same pair contract as fetch_html."""
+    assert_fetchable(url)
     directory = resolve_profile_dir(profile_dir)
     directory.mkdir(parents=True, exist_ok=True)
     out = Path(out_path)

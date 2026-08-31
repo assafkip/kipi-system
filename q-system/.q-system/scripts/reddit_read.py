@@ -81,6 +81,7 @@ import time
 from pathlib import Path
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 
 # Honest identification. Any UA that is not empty and is not curl's default gets
 # a 200, so there is nothing to gain by impersonating a browser and the tests
@@ -414,12 +415,59 @@ def assert_coverage_recorded(artifact: dict) -> None:
 # URLs
 # ---------------------------------------------------------------------------
 
+# WHAT read_thread WILL ACCEPT, ENFORCED HERE AT THE BOUNDARY.
+#
+# The first version did `permalink if permalink.startswith("http") else BASE +
+# permalink`, so an absolute URL to any host was fetched and the artifact came
+# back stamped as a successful Reddit read. That is request forgery that also
+# LIES about what it read: a consumer sees a reddit artifact and has no way to
+# know the bytes came from localhost.
+#
+# Only two shapes are legitimate: a relative permalink, or an absolute URL on a
+# reddit host we already rewrite to. Everything else is a refusal with a reason,
+# never a fetch.
+ALLOWED_THREAD_HOSTS = ("old.reddit.com", "www.reddit.com", "reddit.com",
+                        "np.reddit.com")
+_PERMALINK_RE = re.compile(r"^/r/[A-Za-z0-9_]+/comments/[A-Za-z0-9]+(?:/[^/?#]*)?/?$")
+_SUBREDDIT_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+
+
+class UrlRefused(Exception):
+    """A URL this lane will not fetch. Never caught internally."""
+
+
 def thread_url(permalink: str) -> str:
-    """?limit=500 moved one thread from 201 to 215 of 214 declared. It is one
-    query param and it is worth taking; it does not rescue large threads."""
-    path = permalink if permalink.startswith("http") else BASE + permalink
-    joiner = "&" if "?" in path else "?"
-    return f"{path}{joiner}limit=500"
+    """The fetch URL for one thread, or a refusal.
+
+    ?limit=500 moved one thread from 201 to 215 of 214 declared. It is one query
+    param and it is worth taking; it does not rescue large threads.
+    """
+    raw = (permalink or "").strip()
+    if "://" in raw or raw.startswith("//"):
+        candidate = raw if "://" in raw else "https:" + raw
+        parts = urlparse(candidate)
+        if parts.scheme.lower() != "https":
+            raise UrlRefused(
+                f"refusing {raw[:100]!r}: only https is accepted here, and a "
+                "scheme like file: would be read and reported as a Reddit thread.")
+        host = (parts.hostname or "").lower()
+        if host not in ALLOWED_THREAD_HOSTS:
+            raise UrlRefused(
+                f"refusing host {host!r}: read_thread fetches Reddit and stamps "
+                f"its artifact as a Reddit read. Allowed: {ALLOWED_THREAD_HOSTS}.")
+        path = parts.path
+    else:
+        if not raw.startswith("/") or raw.startswith("//"):
+            raise UrlRefused(
+                f"refusing {raw[:100]!r}: a permalink must start with / (e.g. "
+                "/r/programming/comments/abc123/slug/).")
+        path = raw
+
+    if not _PERMALINK_RE.match(path):
+        raise UrlRefused(
+            f"refusing path {path[:100]!r}: not a thread permalink. Expected "
+            "/r/<subreddit>/comments/<id>[/<slug>].")
+    return f"{BASE}{path}?limit=500"
 
 
 def listing_url(subreddit: str, period: str = "month", path_override=None) -> str:
@@ -430,6 +478,10 @@ def listing_url(subreddit: str, period: str = "month", path_override=None) -> st
     A silent fallback to the throttling endpoint is how a lane starts reporting
     zeros that are really refusals.
     """
+    if path_override is None and not _SUBREDDIT_RE.match((subreddit or "").strip()):
+        raise DiscoveryRefused(
+            f"refusing subreddit {subreddit!r}: names are letters, digits and "
+            "underscores. Anything else is a path or a host smuggled into a URL.")
     path = path_override or f"/r/{subreddit}/top/"
     if ".rss" in path or path.endswith(".xml"):
         raise DiscoveryRefused(

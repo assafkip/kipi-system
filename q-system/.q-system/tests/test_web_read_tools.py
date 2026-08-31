@@ -361,3 +361,34 @@ def test_browser_probe_reports_held_rather_than_a_dead_session(wr, monkeypatch):
     out = wr.browser_probe("p", prober=lambda p, s: {"reachable": False,
                                                      "logged_in": None, "held": True})
     assert out["surfaces"][0]["state"] == "held"
+
+
+# ---------------------------------------------------------------------------
+# Codex round 2, MINOR: held was documented and raised instead.
+# ---------------------------------------------------------------------------
+
+def test_a_launch_failure_that_RAISES_still_returns_held(wr):
+    """fetch_html lets a LAUNCH failure propagate as BrowserEnvError; only
+    page-level failures come back as an error string. So the documented `held`
+    status never happened on the real path, and the earlier test missed it by
+    injecting a fetcher that returned (None, error) instead of raising, which is
+    not what the producer does."""
+    class BrowserEnvError(Exception):
+        pass
+
+    def raising(profile_dir, url, timeout_ms=None):
+        raise BrowserEnvError(
+            "browser launch failed for /x: Opening in existing browser session. "
+            "This usually means that the profile is already in use by another "
+            "instance of Chromium.")
+
+    out = wr.browser_fetch("research-hn", "https://example.invalid/", fetcher=raising)
+    assert out["status"] == "held", out
+    assert "already in use" in out["reason"].lower()
+
+
+def test_a_raising_launch_failure_that_is_not_held_is_an_error(wr):
+    def raising(profile_dir, url, timeout_ms=None):
+        raise RuntimeError("Executable doesn't exist at /nope")
+    out = wr.browser_fetch("research-hn", "https://example.invalid/", fetcher=raising)
+    assert out["status"] == "error"
