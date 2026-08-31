@@ -1844,6 +1844,19 @@ The file itself is untouched on disk." 2>/dev/null; then
       fi
     fi
 
+    # sp-46c73c76, second half. The flag test below answers "did the operator ask
+    # for a dry run". This answers "did the throwaway-model repointing actually
+    # happen" -- the invariant the flag test is standing in for. A dry run is safe
+    # because $path was repointed at the clone, not because a string comparison
+    # came out a particular way, so the repointing is what gets asserted: a check
+    # that CAN fail, in the one script whose job is not destroying founder data.
+    # If that repointing is ever moved after this block, or silently fails, this
+    # fires instead of auto-committing into a LIVE instance during a run the
+    # operator believes is read-only.
+    if [ "$DRY_RUN" = "--dry-run" ] && [ "$path" = "$ORIGINAL_PATH" ]; then
+      abandon_instance "  ERROR: dry run reached the system-state auto-commit with \$path still pointing at the LIVE instance ($path); the throwaway-model repointing did not happen (sp-46c73c76)" && continue
+    fi
+
     # sp-46c73c76. This read `[ "$DRY_RUN" != "1" ]`, and DRY_RUN is only ever ""
     # or the literal "--dry-run" (set at :22/:26) -- so the guard was ALWAYS true
     # and a --dry-run really did commit into live instances. Every other site in
@@ -1851,6 +1864,7 @@ The file itself is untouched on disk." 2>/dev/null; then
     # (a dry run operates on a throwaway clone, where writing is the point).
     # Found while extending this very block for ASK-605, which would have made a
     # "dry" run commit MORE.
+
     if [ "${#sys_owned_dirty[@]}" -gt 0 ] &&
         { [ "$DRY_RUN" != "--dry-run" ] || [ "$MODEL_RUN" = "1" ]; }; then
       say "  Committing ${#sys_owned_dirty[@]} system-written file(s) so they do not block the sync:"
