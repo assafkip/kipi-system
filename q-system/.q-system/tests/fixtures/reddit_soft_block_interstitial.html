@@ -1,0 +1,41 @@
+<!-- FIXTURE PROVENANCE: real bytes from a SOFT-BLOCKED Reddit response.
+     https://old.reddit.com/r/programming/comments/1w3blbq/...?limit=500
+     captured 2026-08-31 with UA 'kipi-research/1.0'.
+     HTTP 200. 321920 bytes. <title>Welcome to Reddit</title>. Zero comments,
+     zero thread ids, no data-comments-count. Every UA tried that hour got the
+     same page (bare, with-contact, desktop Chrome, Python-urllib), so this is
+     an IP-level soft block and not a UA one.
+
+     HEAVILY TRIMMED AND SCRUBBED. Only two ~260-byte windows are kept, around
+     the two markers the classifier keys on. 3 token-shaped strings were
+     replaced with REDACTED-TOKEN: the full capture carried a reCAPTCHA site
+     key that gitleaks correctly refused. Those keys are public page assets,
+     but a committed fixture is not the place for captured third-party
+     credentials of any kind, and the smaller slice is also a better fixture.
+     The markers themselves are untouched, which is what the test asserts. -->
+<title>Welcome to Reddit</title>
+> { window.__servedByRes = resolve; });</script>
+      </head>
+      <body>
+        <a rpl class="
+button-medium px-[calc(var(--rem12)-var(--button-border-width,0px))]
+button-primary
+
+
+
+items-center justify-center
+button inline-flex " href="#main-content" id="shreddit-skip-link"><span class="flex items-center justify-center">
+      
+      <span class="flex items-center gap-xs">Skip to main content</span>
+    </span>
+    </a>
+        <script nonce="+73hOMRFmfyfvyYz5CSEpg==">
+          window.hasTabBeenBackgrounded =
+<!-- ...trimmed... -->
+
+    SML.load(["Bvlx87qiak","C7C5MjAIvC"], 'en-US/', 'high');
+  </script>
+      
+    
+        
+        <link rel="stylesheet" href="https://www.redditstatic.com/shreddit/styles-css-D5x5FsAx.css" data-testid="styles-css"><style nonce="+73hOMRFmfyfvyYz5CSEpg==" id="tailwind" data-testid="tailwind-css-inlined">REDACTED-TOKEN{display:contents}REDACTED-TOKEN>details>summary{list-style-type:none}REDACTED-TOKEN>details>summary::-webkit-details-marker,faceplate

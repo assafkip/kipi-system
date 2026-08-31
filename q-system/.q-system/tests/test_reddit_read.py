@@ -49,6 +49,7 @@ HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent / "scripts"
 MODULE = SCRIPTS / "reddit_read.py"
 FIXTURE = HERE / "fixtures" / "old_reddit_thread_trimmed.html"
+INTERSTITIAL = HERE / "fixtures" / "reddit_soft_block_interstitial.html"
 
 
 def _load(path: Path, name: str):
@@ -447,3 +448,108 @@ def test_the_fixture_records_its_own_provenance(real_html):
     assert "FIXTURE PROVENANCE" in real_html
     assert "old.reddit.com" in real_html
     assert "TRIMMED" in real_html
+
+
+# ---------------------------------------------------------------------------
+# SOFT BLOCK. HTTP 200, full-size page, wrong page.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def interstitial_html():
+    """Real bytes from an actual soft-blocked response, not a mock."""
+    return INTERSTITIAL.read_text()
+
+
+def test_classify_page_recognises_a_real_soft_block(rr, interstitial_html):
+    assert rr.classify_page(interstitial_html) == "interstitial"
+
+
+def test_classify_page_recognises_real_old_reddit(rr, real_html):
+    """The other arm, and it is the one that is easy to skip. A classifier
+    verified only against the failing case can be a function that returns
+    "interstitial" for everything."""
+    assert rr.classify_page(real_html) == "old_reddit"
+
+
+def test_an_unknown_page_is_its_own_answer(rr):
+    """Not folded into either neighbour: calling it old_reddit lets a future
+    block shape report zero as fact, calling it a block refuses pages nobody
+    has seen yet."""
+    assert rr.classify_page("<html><body>hello</body></html>") == "unrecognised"
+
+
+def test_a_soft_block_is_a_REFUSAL_not_an_empty_subreddit(rr, interstitial_html):
+    """Measured 2026-08-31: `listing sysadmin --period month` returned
+    http_status 200, refused False, thread_count 0, having parsed a "Welcome to
+    Reddit" page. The same call returned three threads that morning."""
+    out = rr.read_listing("sysadmin", transport=lambda u, h, t: (200, interstitial_html),
+                          pacer=rr.NullPacer(), now=dt.datetime(2026, 8, 31, 12, 0))
+    assert out["refused"] is True
+    assert out["thread_count"] is None, "a refusal must not report a count of 0"
+    assert out["page_class"] == "interstitial"
+    assert "soft block" in out["reason"]
+
+
+def test_a_soft_block_reads_differently_from_a_429(rr, interstitial_html):
+    """Same category, distinct reason, so a caller can tell them apart."""
+    soft = rr.read_listing("x", transport=lambda u, h, t: (200, interstitial_html),
+                           pacer=rr.NullPacer(), now=dt.datetime(2026, 8, 31, 12, 0))
+    rate = rr.read_listing("x", transport=lambda u, h, t: (429, ""),
+                           pacer=rr.NullPacer(), now=dt.datetime(2026, 8, 31, 12, 0))
+    assert soft["refused"] and rate["refused"]
+    assert soft["reason"] != rate["reason"]
+    assert "429" in rate["reason"]
+    assert soft["http_status"] == 200 and rate["http_status"] == 429
+
+
+def test_a_genuinely_empty_listing_still_reports_zero(rr, real_html):
+    """THE NEGATIVE ARM. Without it the classifier becomes a thing that can only
+    ever report failure. Derived from the real old.reddit fixture by removing
+    the thread-row attributes, which is exactly the shape of a listing whose
+    period holds no posts: real chrome, no rows."""
+    empty = real_html.replace("data-permalink=", "data-x-permalink=") \
+                     .replace("data-comments-count=", "data-x-comments-count=")
+    out = rr.read_listing("quiet", transport=lambda u, h, t: (200, empty),
+                          pacer=rr.NullPacer(), now=dt.datetime(2026, 8, 31, 12, 0))
+    assert out["refused"] is False
+    assert out["thread_count"] == 0
+    assert out["page_class"] == "old_reddit"
+
+
+def test_assert_listing_verified_refuses_a_count_with_no_page_class(rr):
+    with pytest.raises(rr.ListingNotVerified):
+        rr.assert_listing_verified({"thread_count": 3})
+
+
+# ---------------------------------------------------------------------------
+# The safe path is the FREE path
+# ---------------------------------------------------------------------------
+
+class _RecordingPacer:
+    made = 0
+    def __init__(self, *a, **k):
+        type(self).made += 1
+        self.waits = 0
+    def wait(self):
+        self.waits += 1
+
+
+@pytest.mark.parametrize("call", ["thread", "listing"])
+def test_omitting_the_pacer_gives_you_a_real_one(rr, monkeypatch, real_html, call):
+    """It used to default to NullPacer, so anything importing these functions
+    rather than shelling the CLI got zero pacing silently, while the entire
+    reliability story of this lane is a 10 second interval. A safety default
+    that only applies through the CLI is not a default."""
+    _RecordingPacer.made = 0
+    monkeypatch.setattr(rr, "Pacer", _RecordingPacer)
+    fn = rr.read_thread if call == "thread" else rr.read_listing
+    arg = "/r/x/comments/a/t/" if call == "thread" else "x"
+    fn(arg, transport=lambda u, h, t: (200, real_html),
+       now=dt.datetime(2026, 8, 31, 12, 0))
+    assert _RecordingPacer.made == 1, "no pacer was constructed by default"
+
+
+def test_the_null_pacer_must_be_asked_for_explicitly(rr):
+    """NullPacer still exists for tests; it is just no longer what you get by
+    forgetting."""
+    assert rr.NullPacer().wait() is None

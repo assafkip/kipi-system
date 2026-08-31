@@ -137,6 +137,65 @@ LARGE_THREAD_MIN = 600
 
 DEFAULT_TIMEOUT_S = 45
 
+# PAGE CLASSIFICATION. A soft block answers HTTP 200 with a full-size page that
+# is not the page you asked for, so the status code cannot be the check.
+#
+# Measured 2026-08-31: `reddit_read.py listing sysadmin --period month` returned
+# http_status 200, refused False, thread_count 0. The same command returned three
+# threads that morning. The page was a 321KB "Welcome to Reddit" interstitial. A
+# soft block and a genuinely quiet subreddit produced identical output, and the
+# honest-looking one was the wrong one.
+#
+# THE CLASSIFIER DETECTS THE INTERSTITIAL POSITIVELY, rather than requiring a
+# listing marker to be present. That direction matters: a real but EMPTY listing
+# has no thread rows either, so keying on "listing markers present" would refuse
+# the one case that is legitimately zero. Refusing only on a positive
+# interstitial match keeps `thread_count: 0` reachable and truthful.
+#
+# Both arms are verified against captured bytes, not just the failing one:
+#   present in tests/fixtures/reddit_soft_block_interstitial.html (real block)
+#   absent  in tests/fixtures/old_reddit_thread_trimmed.html      (real old.reddit)
+# The interstitial is the NEW reddit shell, which is why its markers can never
+# appear on a server-rendered old.reddit page.
+INTERSTITIAL_MARKERS = ("shreddit-skip-link", 'id="tailwind"')
+OLD_REDDIT_MARKERS = ("data-subreddit=", "data-fullname=")
+
+
+def classify_page(html: str) -> str:
+    """old_reddit / interstitial / unrecognised.
+
+    `unrecognised` is a real third answer and is NOT folded into either
+    neighbour: calling it old_reddit would let a future block shape report zero
+    threads as fact, and calling it a block would refuse pages nobody has seen
+    yet.
+    """
+    text = html or ""
+    if any(m in text for m in INTERSTITIAL_MARKERS):
+        return "interstitial"
+    if any(m in text for m in OLD_REDDIT_MARKERS):
+        return "old_reddit"
+    return "unrecognised"
+
+
+class ListingNotVerified(Exception):
+    """A listing artifact reporting a count without saying what page it parsed."""
+
+
+def assert_listing_verified(artifact: dict) -> None:
+    """The same gatekeeper assert_coverage_recorded applies to threads, one call
+    out. read_thread refuses to hand back comments without declared/fetched/
+    coverage; read_listing had no equivalent contract at all, so it could report
+    thread_count with nothing saying whether the page was a listing."""
+    if artifact.get("thread_count") is None:
+        return
+    missing = [k for k in ("page_class", "refused") if k not in artifact]
+    if missing:
+        raise ListingNotVerified(
+            f"listing artifact reports a count but is missing {missing}. A count "
+            "with no page classification cannot tell a soft block from a quiet "
+            "subreddit, and the soft block is the one that looks healthy.")
+
+
 _DECLARED_RE = re.compile(r'data-comments-count="(\d+)"')
 _COMMENT_RE = re.compile(r'data-fullname="(t1_[a-z0-9]+)"')
 _AUTHOR_RE = re.compile(r'data-author="([^"]*)"')
@@ -394,7 +453,12 @@ def read_thread(permalink: str, transport=None, pacer=None, now=None,
                 timeout: int = DEFAULT_TIMEOUT_S) -> dict:
     """One thread, one artifact. Read only."""
     transport = transport or _default_transport
-    pacer = pacer or NullPacer()
+    # A REAL PACER IS THE FREE PATH. It used to default to NullPacer, so anything
+    # importing this function instead of shelling the CLI got zero pacing
+    # silently, while the whole reliability story of this lane is a 10s interval.
+    # A safety default that only applies when you go through the CLI is not a
+    # default. Tests inject NullPacer explicitly; callers get pacing for free.
+    pacer = Pacer() if pacer is None else pacer
     now = now or dt.datetime.now().astimezone()
     url = thread_url(permalink)
     pacer.wait()
@@ -411,7 +475,7 @@ def read_listing(subreddit: str, period: str = "month", transport=None,
     """Candidate threads with the size Reddit declares for each, so a caller can
     pick by size before spending a request per thread."""
     transport = transport or _default_transport
-    pacer = pacer or NullPacer()
+    pacer = Pacer() if pacer is None else pacer  # see read_thread: safe path is free
     now = now or dt.datetime.now().astimezone()
     url = listing_url(subreddit, period)
     pacer.wait()
@@ -419,6 +483,23 @@ def read_listing(subreddit: str, period: str = "month", transport=None,
     if status != 200:
         out = _refusal(url, status, now)
         out["threads"] = None
+        out["thread_count"] = None
+        out["page_class"] = None
+        out["reason"] = f"HTTP {status}"
+        return out
+
+    page_class = classify_page(body)
+    if page_class == "interstitial":
+        # A soft block belongs in the same category as the 429 above, with its
+        # own reason so a caller can tell them apart. Reporting it as zero
+        # threads is how a rate-limited sweep reports every room as quiet.
+        out = _refusal(url, status, now)
+        out["threads"] = None
+        out["thread_count"] = None
+        out["page_class"] = page_class
+        out["reason"] = ("soft block: Reddit answered HTTP 200 with its logged-out "
+                         "interstitial instead of the listing. This is a refusal, "
+                         "not an empty subreddit.")
         return out
 
     found = {}
@@ -430,13 +511,16 @@ def read_listing(subreddit: str, period: str = "month", transport=None,
             found[permalink] = count
     threads = [{"permalink": p, "declared": c, "strategy": choose_strategy(c)}
                for p, c in sorted(found.items(), key=lambda kv: kv[1])]
-    return {
+    artifact = {
         "url": url, "refused": False, "http_status": status,
+        "page_class": page_class,
         "fetched_at": now.isoformat(timespec="seconds"),
         "subreddit": subreddit, "period": period,
         "threads": threads, "thread_count": len(threads),
         "user_agent": user_agent(), "comments": None,
     }
+    assert_listing_verified(artifact)
+    return artifact
 
 
 def main(argv=None) -> int:
