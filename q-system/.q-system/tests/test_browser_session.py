@@ -418,8 +418,25 @@ def test_health_plist_uses_an_interpreter_that_actually_has_playwright():
     """
     data = plistlib.loads(HEALTH_PLIST.read_bytes())
     interp = data["ProgramArguments"][0]
+
+    # MACHINE-INDEPENDENT, so it runs everywhere including CI: the plist must not
+    # name the system python. This is a property of the committed file.
     assert interp != "/usr/bin/python3", "this job needs playwright; /usr/bin/python3 has none"
-    assert Path(interp).exists(), f"{interp} does not exist on this machine"
+
+    # HOST-SPECIFIC, so it can only be answered where the job actually runs.
+    # These plists are launchd files for the founder's Mac; a Linux CI runner has
+    # no /opt/homebrew and cannot tell us anything about whether that interpreter
+    # imports playwright. Asserting the path exists was a claim about the machine
+    # running the TEST rather than about the plist, and it turned CI red on a
+    # correct file (measured 2026-08-31, run 33415635699).
+    #
+    # It SKIPS rather than passing: "we could not check" must not render as "we
+    # checked and it was fine", which is the same rule the health prober's
+    # unknown state exists for.
+    if not Path(interp).exists():
+        pytest.skip(f"{interp} is not on this host, so whether it imports "
+                    "playwright is unanswerable here. This is a macOS launchd "
+                    "plist; the check is real on the Mac that runs the job.")
     rc = subprocess.run([interp, "-c", "import playwright"],
                         capture_output=True).returncode
     assert rc == 0, f"{interp} cannot import playwright"
