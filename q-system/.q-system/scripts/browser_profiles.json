@@ -1,0 +1,37 @@
+{
+  "_why": [
+    "Profiles are DECLARED here, never discovered by scanning a directory. A",
+    "scanner would pick up ~/.config/kipi/reddit-profile, and a Playwright",
+    "profile login for Reddit is WAF-blocked and forbidden (canon 2026-07-17,",
+    "reddit_driver.py). Declaring is what keeps a forbidden surface out.",
+    "",
+    "Every entry MUST carry a liveness_probe. browser_session_health.load_profiles",
+    "refuses the whole file otherwise: a profile whose liveness cannot be checked",
+    "is not a persistent session, it is a guess.",
+    "",
+    "logged_in_marker is a string that appears ONLY when signed in. It is matched",
+    "case-insensitively against the loaded page. Pick the sign-OUT control, never",
+    "the sign-in one: a page that failed to render also lacks the sign-in link.",
+    "",
+    "kill_switch: touch that file and the profile is skipped entirely, no browser",
+    "opened and no alert, with no config edit and no deploy.",
+    "",
+    "Adding a profile is this file plus a human sign-in. Alerting is already",
+    "per-profile (browser_session_health.run_once keys alerted_state by name), so",
+    "a second entry needs no code change."
+  ],
+  "research_root": "~/.config/kipi/browser-profiles",
+  "profiles": [
+    {
+      "name": "research-hn",
+      "dir": "~/.config/kipi/browser-profiles/research-hn",
+      "identity": "research identity, Hacker News",
+      "purpose": "Reference profile for the persistent-browsing capability. Neutral surface with a real signed-in/signed-out distinction and a cheap page, chosen so continuity is provable without pointing this at any client target.",
+      "kill_switch": "~/.config/kipi/browser-profiles/research-hn.disabled",
+      "liveness_probe": {
+        "url": "https://news.ycombinator.com/news",
+        "logged_in_marker": "logout"
+      }
+    }
+  ]
+}
