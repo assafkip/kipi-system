@@ -152,8 +152,20 @@ def _disabled(profile) -> bool:
 
 
 def _module(filename: str):
-    spec = importlib.util.spec_from_file_location(filename[:-3], HERE / filename)
+    """Load a sibling script by path.
+
+    THE sys.modules REGISTRATION IS NOT OPTIONAL. Measured 2026-08-30: without
+    it, Python 3.14's @dataclass decorator raises AttributeError while building
+    ProbeResult, because dataclasses resolves the owning module out of
+    sys.modules to check its annotations. The whole suite was green at the time
+    -- every test injects its own prober, so nothing exercised this loader, and
+    the live job died on import on every single run.
+    """
+    import sys
+    name = filename[:-3]
+    spec = importlib.util.spec_from_file_location(name, HERE / filename)
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -253,7 +265,7 @@ def run_once(profiles=None, prober=None, sender=None, receipt_path=None,
     return out
 
 
-def main(argv=None) -> int:
+def main(argv=None, runner=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true",
                     help="probe and print; send nothing, write no receipt")
@@ -278,14 +290,28 @@ def main(argv=None) -> int:
             print(f"[dry-run] would send:\n{message}")
         return 0
 
-    result = run_once()
+    result = (runner or run_once)()
     for send in result["sends"]:
         print(f"[send] {send['profile']} -> {json.dumps(send['result'])}")
     dead = [n for n, e in result["profiles"].items() if e["state"] == "dead"]
     print(f"[health] {result['at']} "
           f"{len(result['profiles'])} profiles, {len(dead)} dead, "
           f"{len(result['sends'])} sent")
-    return 1 if dead else 0
+    # EXIT 0 FOR A COMPLETED CYCLE, EVEN WITH A DEAD PROFILE.
+    #
+    # Measured under launchd 2026-08-30: the first real run exited 1 because one
+    # profile was signed out, and launchd records that as the job's status.
+    # launchd-health-check.py auto-discovers every com.kipi.* label and reports a
+    # failing one, so a profile that stays signed out for a week would have made
+    # this job look broken every 30 minutes forever -- reintroducing the exact
+    # "continuously alerting" the per-profile suppression exists to prevent, just
+    # through a second channel the founder never agreed to.
+    #
+    # A dead session is a REPORTED state, not a job failure (constraint 4). The
+    # report is the alert and the receipt. The exit code answers a different
+    # question: did this checker run. Non-zero is reserved for the checker
+    # itself failing, which argparse and an unhandled exception already cover.
+    return 0
 
 
 if __name__ == "__main__":

@@ -109,9 +109,14 @@ def _write_state(path, payload: dict) -> None:
 
 
 def _founder_sender(message: str) -> dict:
+    import sys
     spec = importlib.util.spec_from_file_location(
         "slack_founder", HERE / "slack_founder.py")
     mod = importlib.util.module_from_spec(spec)
+    # Registered for the same reason browser_session_health._module registers:
+    # a module built off a spec and never put in sys.modules breaks anything
+    # that resolves its own __module__ (dataclasses, typing, pickle).
+    sys.modules["slack_founder"] = mod
     spec.loader.exec_module(mod)
     return mod.deliver(message)
 

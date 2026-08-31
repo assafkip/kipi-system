@@ -461,6 +461,42 @@ def test_c6_a_kill_switched_profile_is_never_probed(tmp_path, health):
     assert out["profiles"]["research-hn"]["state"] == "disabled"
 
 
+def test_health_can_actually_load_the_browser_module(health):
+    """The LIVE path, which no injected prober ever touches.
+
+    Measured 2026-08-30, after 34 green tests and 21 killed mutants: _module()
+    built browser_session without registering it in sys.modules, and Python
+    3.14's @dataclass then raised AttributeError on ProbeResult. The job died
+    on import on every run and the suite could not see it, because every test
+    injects its own prober. A green unit test never proves the helper is called.
+
+    IT MUST RUN IN A CLEAN INTERPRETER. First attempt at this test called
+    health._module() in-process and stayed GREEN with the fix removed, because
+    the `session` fixture had already registered browser_session in sys.modules
+    under the same name -- so the dataclass found what a sibling test put there,
+    not what the loader did. A subprocess is the only place this loader is
+    observed doing its own work, and it is also what launchd actually runs.
+    """
+    code = (
+        "import importlib.util, sys;"
+        f"spec = importlib.util.spec_from_file_location('h', r'{HEALTH_PY}');"
+        "m = importlib.util.module_from_spec(spec); sys.modules['h'] = m;"
+        "spec.loader.exec_module(m);"
+        "bs = m._module('browser_session.py');"
+        "r = bs.ProbeResult(profile='p', url='u', reachable=True, logged_in=True,"
+        " error=None, reason=None, content_len=1, at='t');"
+        "print(sorted(r.as_dict()))"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr[-1200:]
+    assert "logged_in" in done.stdout
+
+
+def test_health_can_actually_load_the_founder_sender(health):
+    mod = health._module("slack_founder.py")
+    assert callable(mod.deliver)
+
+
 # ---------------------------------------------------------------------------
 # The declared profile set
 # ---------------------------------------------------------------------------
@@ -489,6 +525,20 @@ def test_shipped_profile_dirs_all_resolve_under_the_research_root(health, sessio
         d = Path(os.path.expanduser(p["dir"]))
         d.mkdir(parents=True, exist_ok=True)
         session.resolve_profile_dir(d)  # raises ProfileRefused if outside
+
+
+def test_a_dead_profile_is_not_a_failed_job(health):
+    """Exit 0 for a completed cycle, even with a dead profile.
+
+    Measured under launchd 2026-08-30: the first live run exited 1 on a
+    signed-out profile. launchd-health-check auto-discovers every com.kipi.*
+    label and reports a failing one, so a profile signed out for a week would
+    have made this job look broken every 30 minutes -- the founder's
+    "continuously alerting" failure, reintroduced through a second channel.
+    """
+    dead_cycle = {"at": "t", "sends": [],
+                  "profiles": {"research-hn": {"state": "dead"}}}
+    assert health.main([], runner=lambda: dead_cycle) == 0
 
 
 # ---------------------------------------------------------------------------
