@@ -470,4 +470,7 @@ def test_capability_fragment_declares_this_test_file():
     assert frag.exists(), f"no capability fragment at {frag}"
     data = json.loads(frag.read_text())
     assert data["path"] == "q-system/.q-system/tests/test_browser_session.py"
-    assert data["runner"] == "python3"
+    # pytest, not python3: these files have no __main__ block, so a python3
+    # runner binds the test functions and exits 0 having run none of them.
+    # The capability gate calls that a "zero-execution test" and it is right.
+    assert data["runner"] == "pytest"
