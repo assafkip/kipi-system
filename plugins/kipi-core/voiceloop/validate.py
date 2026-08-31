@@ -328,12 +328,22 @@ def check_budget(voice, channels=None):
 def check_all(voice_dir, channels=None):
     """Every check, one list. [] is a healthy corpus.
 
-    `channels` is a `channel_registry.Channels`. None means the built-in default,
-    which is what every instance without a registry gets and is byte-identical to
-    the behavior before the registry existed. An instance seam that owns a
-    registry passes `channel_registry.for_instance(<repo root>)`.
+    `channels` is a `channel_registry.Channels`. None LOADS the registry that owns
+    `voice_dir`, and falls back to the built-in default when nothing does -- which
+    is what every instance without a registry gets and is byte-identical to the
+    behavior before the registry existed.
+
+    THIS IS THE LOAD PATH AND IT USED TO BE A SENTENCE. The line above said "an
+    instance seam that owns a registry passes for_instance(<repo root>)" and no
+    caller in this repo ever did: measured on PR #291, `for_instance` had one
+    definition and zero non-test callers, so every corpus was graded against the
+    built-in vocabulary no matter what its instance declared. The one instance
+    that owns a registry today declares a scope the built-in default does not
+    carry, so its first correction in that scope would have been refused by its
+    own suite as unknown. Documenting a seam is not wiring one.
     """
-    channels = channels or channel_registry.DEFAULT
+    if channels is None:
+        channels = channel_registry.for_path(voice_dir)
     voice = corpus.load(voice_dir)
     problems = check_exemplars(os.path.join(voice_dir, corpus.EXEMPLARS))
     problems += check_corrections(os.path.join(voice_dir, corpus.CORRECTIONS),

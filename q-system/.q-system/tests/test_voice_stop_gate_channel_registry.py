@@ -341,3 +341,25 @@ def test_a_violating_lint_is_not_reported_as_a_crash(tmp_path):
     assert ASSAF_SPOKE in result.stderr
     assert NOT_GRADED not in result.stderr, (
         "a clean exit 0 or an honest exit 2 was misreported as a crash")
+
+
+def test_a_non_object_channels_field_holds_rather_than_crashing(tmp_path):
+    """Codex MINOR on PR #291, and it is the fail-open class again.
+
+    `data["channels"]` as a LIST reached `.get` and raised an uncaught
+    AttributeError. main() catches ChannelRegistryError and exits 2; an
+    AttributeError escapes it and Python exits 1, and a Stop hook exiting 1 does
+    not hold the turn. So the one registry shape that crashed was also the one
+    that let the draft through.
+    """
+    _stub_lints(tmp_path)
+    data_dir = tmp_path / "q-system" / ".q-system" / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "voice-channels.json").write_text(
+        json.dumps({"channels": ["reddit"]}), encoding="utf-8")
+    result = _run_gate(tmp_path, DRAFT)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "channel registry error" in result.stderr, result.stderr
+    assert "Traceback" not in result.stderr, (
+        "crashed out of the hold path instead of taking it: " + result.stderr)
+    assert ASSAF_SPOKE not in result.stderr

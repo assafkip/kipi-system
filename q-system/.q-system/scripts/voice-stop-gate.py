@@ -542,6 +542,15 @@ def channel_surface_lint(registry_path, channel, instance_root):
         raise ChannelRegistryError(
             f"voice-channels registry at {registry_path} must be an object")
     channels = data.get("channels") or {}
+    # Codex MINOR on PR #291: a non-object `channels` reached `.get` and raised an
+    # uncaught AttributeError. main() catches ChannelRegistryError and exits 2;
+    # an AttributeError escapes it, Python exits 1, and a Stop hook exiting 1
+    # does NOT hold the turn. A malformed registry has to fail through the
+    # explicit hold path, not around it.
+    if not isinstance(channels, dict):
+        raise ChannelRegistryError(
+            f"voice-channels registry at {registry_path}: 'channels' must be an "
+            f"object, got {type(channels).__name__}")
     entry = channels.get(channel) if channel else None
     if entry is None:
         entry = data.get("default")

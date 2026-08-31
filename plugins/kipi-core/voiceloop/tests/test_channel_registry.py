@@ -253,3 +253,60 @@ def test_the_literal_detector_can_fail():
         "for channel in channels.assembled:",
         'for channel in ("linkedin", "x"):', 1)
     assert _channel_literals(mutated) == {"linkedin", "x"}
+
+
+# ------------------------------------------- the seam has to be LOADED, not documented ----
+
+def _instance(tmp_path, with_registry):
+    """An instance tree whose voice dir sits BELOW the registry, as the real one does.
+
+    The registered instance keeps its corpus several levels under its root while
+    the registry lives in the synced data dir, so the validator is handed a path
+    well below the instance root and has to find that root itself. A fixture that
+    put the two side by side would pass against a resolver that never walks.
+    """
+    root = tmp_path / "inst"
+    voice = root / "instance-content" / "voice"
+    voice.mkdir(parents=True)
+    row = {"id": "r-1", "date": "2026-08-30", "instruction": "no CTA here",
+           "class": "interpretive", "status": "active", "scope": ["reddit"]}
+    (voice / corpus.CORRECTIONS).write_text(json.dumps(row) + "\n", encoding="utf-8")
+    if with_registry:
+        _write(os.path.join(str(root), cr.REGISTRY_REL),
+               {"channel_vocabulary": {"linkedin": ["scope", "assembled"],
+                                       "x": ["scope", "assembled"],
+                                       "reddit": ["scope"]}})
+    return str(voice)
+
+
+UNKNOWN_REDDIT = "unknown scope 'reddit'"
+
+
+def test_check_all_loads_the_instance_registry(tmp_path):
+    """Codex MAJOR on PR #291: the registry was never LOADED by the validator.
+
+    `check_all` documented that "an instance seam that owns a registry passes
+    channel_registry.for_instance(<repo root>)" and no caller in this repo ever
+    did. Measured: `for_instance` had exactly one definition and zero non-test
+    callers, so every instance validated its corpus against the built-in
+    vocabulary no matter what its registry declared.
+
+    That is live, not theoretical. The one registered instance declares `reddit`
+    as a scope, in a registry reached through the pointer file beside the synced
+    data dir. Its first reddit-scoped correction would be refused by its own
+    suite as an unknown scope, which is the same wrong-vocabulary failure this whole change exists to
+    end, arriving at suite time instead of runtime.
+    """
+    problems = validate.check_all(_instance(tmp_path, with_registry=True))
+    assert not [p for p in problems if UNKNOWN_REDDIT in p], problems
+
+
+def test_check_all_without_a_registry_still_uses_the_built_in_vocabulary(tmp_path):
+    """The control, and the constraint the fix must not break.
+
+    Without this the test above passes on a `check_all` that accepts every scope.
+    26 instances have no registry and must behave byte-identically to before, so
+    an unregistered `reddit` is still an unknown scope.
+    """
+    problems = validate.check_all(_instance(tmp_path, with_registry=False))
+    assert [p for p in problems if UNKNOWN_REDDIT in p], problems
