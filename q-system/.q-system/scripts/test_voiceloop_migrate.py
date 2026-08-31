@@ -168,6 +168,65 @@ class EngineTest(unittest.TestCase):
                               capture_output=True, text=True).stdout.strip()
         self.assertEqual(left, "", "staged work survived the recovery run")
 
+    def test_the_commit_never_absorbs_unrelated_staged_work(self):
+        """Codex MAJOR on PR #292 (sp-27bbf105): the commit carried no pathspec.
+
+        The ADD was already scoped and the COMMIT was not, so `git commit -m`
+        wrote the WHOLE index. The updater's dirty guard deliberately PERMITS
+        staged work outside q-system/, .claude/ and plugins/, so a founder file
+        in that permitted space landed inside a migration commit.
+
+        This is feedback_defect_class_relocates: an earlier fix in this same
+        file moved the hole from `git add` to `git commit` and the suite could
+        not see it, because the only commit test staged everything with
+        `git add -A` and then asserted the index came back EMPTY -- an
+        assertion that only passes while the commit is unscoped. That test
+        pinned the defect. Both halves are asserted here: unrelated staged work
+        SURVIVES staged, and the migration itself still lands.
+        """
+        r = build_instance(os.path.join(self.tmp, "i"))
+        os.makedirs(os.path.join(r, "notes"), exist_ok=True)
+        open(os.path.join(r, "notes", "founder.md"), "w").write("before\n")
+        subprocess.run(["git", "-C", r, "init", "-q"], check=True)
+        subprocess.run(["git", "-C", r, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", r, "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "base"], check=True)
+
+        # A TRACKED founder file, edited and staged.
+        open(os.path.join(r, "notes", "founder.md"), "w").write("staged edit\n")
+        subprocess.run(["git", "-C", r, "add", "--", "notes/founder.md"], check=True)
+        # A BRAND NEW founder file, staged but never committed. The two are
+        # different git paths: one is a modification in HEAD, one is an addition.
+        open(os.path.join(r, "notes", "new-wip.md"), "w").write("brand new\n")
+        subprocess.run(["git", "-C", r, "add", "--", "notes/new-wip.md"], check=True)
+
+        out = mig.apply(r, commit=True)
+        self.assertTrue(out["committed"], out["errors"])
+
+        landed = subprocess.run(
+            ["git", "-C", r, "show", "--name-only", "--pretty=format:", "HEAD"],
+            capture_output=True, text=True).stdout.split()
+        self.assertNotIn("notes/founder.md", landed,
+                         "migration commit absorbed a founder's staged edit")
+        self.assertNotIn("notes/new-wip.md", landed,
+                         "migration commit absorbed a founder's new staged file")
+
+        still = subprocess.run(["git", "-C", r, "diff", "--cached", "--name-only"],
+                               capture_output=True, text=True).stdout.split()
+        self.assertIn("notes/founder.md", still,
+                      "founder's staged edit was swept out of the index")
+        self.assertIn("notes/new-wip.md", still,
+                      "founder's new staged file was swept out of the index")
+
+        # Negative half: scoping the commit must not stop the migration landing.
+        self.assertIn("pipeline/voice.py", landed,
+                      "the rewrite this migration exists to make never committed")
+        head_voice = subprocess.run(
+            ["git", "-C", r, "show", "HEAD:pipeline/voice.py"],
+            capture_output=True, text=True).stdout
+        self.assertIn(NEW, head_voice)
+        self.assertNotIn(OLD, head_voice)
+
     def test_a_finished_instance_is_still_finished(self):
         """Negative control for the test above: the new signal must not make
         every already-migrated instance look like it needs work."""

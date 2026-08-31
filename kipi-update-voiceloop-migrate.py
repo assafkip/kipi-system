@@ -221,6 +221,40 @@ def plan(repo: str) -> dict:
     staged_migration = sorted(l for l in staged.stdout.splitlines() if l.strip()) \
         if staged.returncode == 0 else []
 
+    # ...and the same unfinished state OUTSIDE PLUGIN_PARENT, which the scan
+    # above structurally cannot see. The rewrites that matter most are exactly
+    # there (consulting's q-consult/pipeline/voice.py). The signature is exact
+    # and needs no path heuristic: the HEAD blob asks for the old name and the
+    # STAGED blob does not. A founder's own staged edit does not delete this
+    # token from a file that carried it.
+    #
+    # This list is what makes the commit's pathspec (see apply) able to finish
+    # an interrupted run without falling back to committing the whole index.
+    #
+    # --no-renames is load-bearing and was a live defect for one round: with
+    # rename detection ON (git's default) `--name-only` prints ONLY the
+    # DESTINATION of a rename. The source half of the package move was therefore
+    # absent from this list, the commit's pathspec never named it, and a recovery
+    # run committed the ADD while leaving the matching DELETE staged -- an
+    # instance left dirty by the very run that was recovering it.
+    staged_rewrites = []
+    staged_all = _git(repo, "diff", "--cached", "--name-only", "--no-renames")
+    if staged_all.returncode == 0:
+        for rel in (l.strip() for l in staged_all.stdout.splitlines()):
+            if not rel:
+                continue
+            head_blob = _git(repo, "show", f"HEAD:{rel}")
+            if head_blob.returncode != 0 or not has_token(head_blob.stdout):
+                continue
+            idx_blob = _git(repo, "show", f":{rel}")
+            if idx_blob.returncode != 0:
+                # A staged DELETION of a file that carried the token: the source
+                # half of a rename this migration made.
+                staged_rewrites.append(rel)
+            elif not has_token(idx_blob.stdout):
+                staged_rewrites.append(rel)
+    staged_rewrites = sorted(staged_rewrites)
+
     return {
         "repo": repo,
         "package_action": package_action,
@@ -228,10 +262,12 @@ def plan(repo: str) -> dict:
         "renames": sorted(renames),
         "history_left": sorted(history),
         "staged_migration": staged_migration,
+        "staged_rewrites": staged_rewrites,
         # The one line a caller can branch on. `already`/`absent` with nothing to
         # rewrite AND nothing staged is a finished instance.
         "needs_work": (package_action in ("move", "both_present")
-                       or bool(rewrite) or bool(renames) or bool(staged_migration)),
+                       or bool(rewrite) or bool(renames)
+                       or bool(staged_migration) or bool(staged_rewrites)),
     }
 
 
@@ -334,7 +370,7 @@ def apply(repo: str, commit: bool = True) -> dict:
     # run may have touched nothing because a PREVIOUS run already did the writes
     # and only its commit failed.
     touched = bool(result["moved"] or result["rewritten"] or result["renamed"]
-                   or p["staged_migration"])
+                   or p["staged_migration"] or p["staged_rewrites"])
     if commit and touched and not result["errors"]:
         add = _git(repo, "add", "-A", "--", PLUGIN_PARENT)
         if add.returncode != 0:
@@ -355,8 +391,38 @@ def apply(repo: str, commit: bool = True) -> dict:
         for pair in result["renamed"]:
             src, dst = pair.split(" -> ")
             _git(repo, "add", "--", src, dst)
-        staged = _git(repo, "diff", "--cached", "--name-only")
-        if staged.stdout.strip():
+        # THE COMMIT IS PATHSPEC-LIMITED, and this is the second half of a fix
+        # whose first half was not enough. Codex MAJOR on PR #292 (sp-27bbf105):
+        # the `git add` calls above were carefully scoped and `git commit -m`
+        # was not, so it wrote the WHOLE index. The updater's dirty guard
+        # deliberately PERMITS staged work outside q-system/, .claude/ and
+        # plugins/, and every such founder file was landing inside a migration
+        # commit. The earlier fix for this exact class scoped the add and left
+        # the commit alone: the hole moved instead of closing
+        # (feedback_defect_class_relocates), and the suite could not see it
+        # because the only commit test staged everything with `git add -A` and
+        # asserted the index came back empty -- true only while the commit is
+        # unscoped.
+        #
+        # PLUGIN_PARENT is in the scope because the updater's dirty guard already
+        # refuses an instance with dirt under plugins/, so nothing of the
+        # founder's can be staged there. `staged_rewrites` carries a rewrite an
+        # interrupted earlier run left staged OUTSIDE it, which is the only other
+        # way a migration path is staged without THIS run having touched it;
+        # without it a recovery run would commit the package and abandon the
+        # imports, still staged, still dirty.
+        scope = [PLUGIN_PARENT]
+        scope += [rel for rel in result["rewritten"] if rel in tracked_before]
+        for pair in result["renamed"]:
+            scope += pair.split(" -> ")
+        scope += p["staged_rewrites"]
+        # --no-renames for the same reason plan() needs it: with rename
+        # detection on, this returns only a rename's destination, and the
+        # unnamed source stays staged after the commit.
+        staged = _git(repo, "diff", "--cached", "--name-only", "--no-renames",
+                      "--", *sorted(set(scope)))
+        commit_paths = [l.strip() for l in staged.stdout.splitlines() if l.strip()]
+        if commit_paths:
             # The `[no-issue:]` hatch, with a reason, is required and not
             # optional decoration. Measured 2026-08-30: one client engagement's
             # own commit-msg hook rejected the first fleet run, because a
@@ -373,7 +439,11 @@ def apply(repo: str, commit: bool = True) -> dict:
                 "instance-owned imports that still ask for the old name. The "
                 "package move and the import rewrite are one operation.\n"
             )
-            c = _git(repo, "commit", "-m", msg)
+            # Every path here came back from `diff --cached`, so each is already
+            # known to the index and git will not reject the pathspec. Partial
+            # commit mode takes the working-tree content for these paths and
+            # leaves every other staged path staged, which is the whole point.
+            c = _git(repo, "commit", "-m", msg, "--", *commit_paths)
             if c.returncode != 0:
                 result["errors"].append("commit failed: "
                                         + (c.stderr.strip() or c.stdout.strip()))
