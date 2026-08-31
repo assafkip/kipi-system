@@ -145,11 +145,17 @@ def run(now: dt.datetime, receipt_path=None, state_path=None, sender=None) -> in
     if already:
         return 1
 
-    sender(f":rotating_light: Nothing is checking the research browser "
+    verdict = sender(f":rotating_light: Nothing is checking the research browser "
            f"sessions. {reason}\n"
            f"Checked {stamp} by com.kipi.browser-session-deadman.\n"
            f"You get this once. Nothing further until it recovers.")
-    _write_state(state_path, {"alarmed": True, "at": stamp, "reason": reason})
+    # Same rule as the health job: only a DELIVERED alarm is recorded as sent.
+    # alarmed=True after a refused delivery means the founder is never told AND
+    # no later run retries, which is precisely the silence this job exists to
+    # break. The non-zero exit still reaches launchd-health, but that is a
+    # different signal to a different audience.
+    if verdict and verdict.get("delivered"):
+        _write_state(state_path, {"alarmed": True, "at": stamp, "reason": reason})
     return 1
 
 

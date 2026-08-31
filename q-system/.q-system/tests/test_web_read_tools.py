@@ -331,3 +331,33 @@ def test_the_capability_fragment_declares_this_suite():
             / "q-system__.q-system__tests__test_web_read_tools.py.json")
     assert frag.exists(), f"no capability fragment at {frag}"
     assert json.loads(frag.read_text())["path"].endswith("tests/test_web_read_tools.py")
+
+
+# ---------------------------------------------------------------------------
+# Codex review of PR #293 (MINOR): the tool promised a state and returned none.
+# ---------------------------------------------------------------------------
+
+def test_browser_probe_reports_a_state_per_surface(wr, monkeypatch):
+    """The tool description tells the caller it reports `unverified` for a
+    marker never seen true. The response carried no `state` key at all, so the
+    promise was prose. It now classifies through the health module rather than
+    re-implementing, so it cannot drift from the scheduled job."""
+    row = {"name": "p", "identity": "i", "unmonitored_surfaces": [],
+           "liveness_probes": [{"name": "s", "url": "https://x", "logged_in_marker": "m"}]}
+    monkeypatch.setattr(wr, "_profile_or_refuse", lambda name: row)
+    out = wr.browser_probe("p", prober=lambda p, s: {"reachable": True,
+                                                     "logged_in": False, "held": False})
+    surface = out["surfaces"][0]
+    assert surface["state"] is not None, "the promised state is missing"
+    assert surface["state"] == "unverified", \
+        "a marker never seen true must not read as a dead session"
+    assert surface["marker_ever_seen"] is False
+
+
+def test_browser_probe_reports_held_rather_than_a_dead_session(wr, monkeypatch):
+    row = {"name": "p", "identity": "i", "unmonitored_surfaces": [],
+           "liveness_probes": [{"name": "s", "url": "https://x", "logged_in_marker": "m"}]}
+    monkeypatch.setattr(wr, "_profile_or_refuse", lambda name: row)
+    out = wr.browser_probe("p", prober=lambda p, s: {"reachable": False,
+                                                     "logged_in": None, "held": True})
+    assert out["surfaces"][0]["state"] == "held"

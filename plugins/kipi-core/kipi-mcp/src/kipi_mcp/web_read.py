@@ -165,9 +165,33 @@ def browser_probe(profile: str, prober=None) -> dict:
                              surface=surface["name"]).as_dict()
 
     prober = prober or live
+
+    # THE TOOL PROMISED A STATE AND RETURNED RAW OBSERVATIONS. Its description
+    # tells the caller it reports `unverified` for a marker never seen true, and
+    # the response carried no `state` key at all, so the promise was prose. The
+    # classification lives in the health module and the marker history lives in
+    # its receipt; both are read here rather than re-implemented, so this cannot
+    # drift from what the scheduled job reports.
+    health = load_script("browser_session_health.py")
+    try:
+        prior = health.read_receipt().get("profiles", {}).get(
+            profile, {}).get("surfaces", {})
+    except Exception:  # noqa: BLE001
+        prior = {}
+
+    surfaces = []
+    for spec in profile_row["liveness_probes"]:
+        observed = dict(prober(profile_row, spec))
+        state = health.classify(observed)
+        seen = bool(prior.get(spec["name"], {}).get("marker_ever_seen"))
+        if state == "dead" and not seen:
+            state = "unverified"
+        observed["state"] = state
+        observed["marker_ever_seen"] = seen
+        surfaces.append(observed)
+
     return {"profile": profile, "identity": profile_row["identity"],
-            "surfaces": [prober(profile_row, s)
-                         for s in profile_row["liveness_probes"]],
+            "surfaces": surfaces,
             "unmonitored_surfaces": profile_row.get("unmonitored_surfaces", [])}
 
 

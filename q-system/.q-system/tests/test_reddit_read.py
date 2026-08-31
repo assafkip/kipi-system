@@ -553,3 +553,46 @@ def test_the_null_pacer_must_be_asked_for_explicitly(rr):
     """NullPacer still exists for tests; it is just no longer what you get by
     forgetting."""
     assert rr.NullPacer().wait() is None
+
+
+# ---------------------------------------------------------------------------
+# Codex review of PR #293: the submission row shifted every attribution.
+# ---------------------------------------------------------------------------
+
+SUBMISSION_ROW = ('<div data-fullname="t3_post" data-author="OP_ACCOUNT">'
+                  '<div class="md"><p>SUBMISSION BODY</p></div></div>')
+
+
+def test_the_submission_row_does_not_shift_comment_attribution(rr, real_html):
+    """The reviewer's reproducer. Real pages open with a `t3` submission
+    carrying its own data-author and .md body; the old parser collected ids,
+    authors and bodies as three independent lists and joined them by index, so
+    that one extra pair pushed every comment onto the previous one's author and
+    text. It returned the OP's name and words under the first comment's id.
+
+    The committed fixture trims the submission region, which is exactly why the
+    suite stayed green. The attribute names here are copied from the fixture's
+    own markup rather than invented."""
+    page = SUBMISSION_ROW + real_html
+    comments = rr.parse_comments(page)
+    assert comments, "no comments parsed"
+    assert all(c["id"].startswith("t1_") for c in comments), "the submission was parsed as a comment"
+    assert all(c["author"] != "OP_ACCOUNT" for c in comments), "OP was attributed a comment"
+    assert all(c["body"] != "SUBMISSION BODY" for c in comments), "OP's text leaked into a comment"
+
+
+def test_a_comment_missing_an_author_yields_none_not_its_neighbours(rr):
+    """The failure mode index-joining hides: a gap silently borrows from the
+    next comment instead of admitting it is missing."""
+    page = ('<div data-fullname="t1_a"><div class="md"><p>first</p></div></div>'
+            '<div data-fullname="t1_b" data-author="second_person">'
+            '<div class="md"><p>second</p></div></div>')
+    a, b = rr.parse_comments(page)
+    assert a["id"] == "t1_a" and a["author"] is None and a["body"] == "first"
+    assert b["id"] == "t1_b" and b["author"] == "second_person" and b["body"] == "second"
+
+
+def test_comment_count_is_unchanged_by_a_submission_row(rr, real_html):
+    """Coverage is computed off this list, so a parser that swallowed or
+    invented a row would quietly move the coverage number too."""
+    assert len(rr.parse_comments(SUBMISSION_ROW + real_html)) == len(rr.parse_comments(real_html))

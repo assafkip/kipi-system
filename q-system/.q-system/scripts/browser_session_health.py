@@ -407,17 +407,31 @@ def _surface_pass(profile, surface, prior, prober, sender, ops_sender, stamp, ou
         # records the alerted state, so the first death after it is.
         if not (state == "alive" and alerted is None):
             message = _message(profile, surface, entry, state)
+            verdict = sender(message)
             out["sends"].append({"profile": profile["name"], "surface": surface["name"],
                                  "state": state, "message": message,
-                                 "result": sender(message)})
-            entry["last_alert_at"] = stamp
-        alerted = state
+                                 "result": verdict})
+            # ONLY A DELIVERED ALERT COUNTS AS TOLD. Advancing alerted_state on a
+            # send Slack refused suppresses every later run for the same outage,
+            # so one transient failure at 3am silences the alarm permanently and
+            # a human has to find the outage some other way. This is
+            # slack_founder.py's own rule, which this code read and then broke:
+            # delivery is what Slack SAID, never what the process did.
+            if verdict and verdict.get("delivered"):
+                entry["last_alert_at"] = stamp
+                alerted = state
+        else:
+            alerted = state
 
     if state == "unknown" and unknown_run >= UNKNOWN_ESCALATION_AFTER and not escalated:
         message = _ops_message(profile, surface, entry, unknown_run)
+        ops_verdict = ops_sender(message)
         out["ops_sends"].append({"profile": profile["name"], "surface": surface["name"],
-                                 "message": message, "result": ops_sender(message)})
-        escalated = True
+                                 "message": message, "result": ops_verdict})
+        # Same rule as the founder alert above. Hardened at the same time on
+        # purpose: an asymmetry where one path checks delivery and its sibling
+        # does not is invisible because both look careful.
+        escalated = bool(ops_verdict and ops_verdict.get("delivered"))
 
     entry["alerted_state"] = alerted
     entry["unknown_escalated"] = escalated

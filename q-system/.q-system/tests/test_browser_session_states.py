@@ -39,6 +39,11 @@ def health():
 
 
 @pytest.fixture(scope="module")
+def deadman():
+    return _load(SCRIPTS / "browser_session_deadman.py", "browser_session_deadman")
+
+
+@pytest.fixture(scope="module")
 def session():
     return _load(SCRIPTS / "browser_session.py", "browser_session")
 
@@ -669,3 +674,92 @@ def test_an_ordinary_launch_failure_is_not_held(session):
 
     result = session.probe("p", "unused", "u", "logout", fetcher=broken_fetch)
     assert result.held is False
+
+
+# ---------------------------------------------------------------------------
+# Codex review of PR #293, 2026-08-31: a REFUSED send was recorded as told.
+# ---------------------------------------------------------------------------
+
+def test_a_refused_alert_is_retried_on_the_next_run(tmp_path, health):
+    """The reviewer's reproducer: with Slack down, run_once recorded
+    alerted_state=dead anyway, so the second run sent nothing and the founder
+    was never told about an outage that was still happening.
+
+    slack_founder.py's own rule is that delivery is what Slack SAID. This read
+    that file and then advanced state on a send it refused."""
+    receipt = tmp_path / "r.json"
+    profiles = [_profile()]
+    health.run_once(profiles=profiles, prober=_prober({"hn": _result("hn")}),
+                    sender=_recorder(), receipt_path=receipt,
+                    now=dt.datetime(2026, 8, 31, 8, 0))
+
+    refused = []
+
+    def broken(message):
+        refused.append(message)
+        return {"delivered": False, "reason": "Slack down"}
+
+    dead = {"hn": _result("hn", logged_in=False, reason="gone")}
+    out = health.run_once(profiles=profiles, prober=_prober(dead), sender=broken,
+                          receipt_path=receipt, now=dt.datetime(2026, 8, 31, 9, 0))
+    assert len(refused) == 1
+    assert out["profiles"]["research-hn"]["surfaces"]["hn"]["alerted_state"] != "dead", \
+        "a refused send was recorded as told"
+
+    retry = _recorder()
+    health.run_once(profiles=profiles, prober=_prober(dead), sender=retry,
+                    receipt_path=receipt, now=dt.datetime(2026, 8, 31, 9, 30))
+    assert len(retry.sends) == 1, "the outage was never re-attempted"
+
+
+def test_a_delivered_alert_still_suppresses_the_next_run(tmp_path, health):
+    """The other arm. Without it, 'retry on failure' becomes 'alert every run',
+    which is the founder's original complaint."""
+    receipt = tmp_path / "r.json"
+    profiles = [_profile()]
+    health.run_once(profiles=profiles, prober=_prober({"hn": _result("hn")}),
+                    sender=_recorder(), receipt_path=receipt,
+                    now=dt.datetime(2026, 8, 31, 8, 0))
+    dead = {"hn": _result("hn", logged_in=False, reason="gone")}
+    first = _recorder()
+    health.run_once(profiles=profiles, prober=_prober(dead), sender=first,
+                    receipt_path=receipt, now=dt.datetime(2026, 8, 31, 9, 0))
+    assert len(first.sends) == 1
+    second = _recorder()
+    health.run_once(profiles=profiles, prober=_prober(dead), sender=second,
+                    receipt_path=receipt, now=dt.datetime(2026, 8, 31, 9, 30))
+    assert second.sends == [], "a delivered alert was repeated"
+
+
+def test_a_refused_ops_escalation_is_retried(tmp_path, health):
+    """The sibling the reviewer did not flag. An asymmetry where one path checks
+    delivery and its twin does not is invisible, because both look careful."""
+    receipt = tmp_path / "r.json"
+    profiles = [_profile()]
+    broken_probe = _prober({"hn": _result("hn", reachable=False, logged_in=None,
+                                          error="boom")})
+    def refuse(message):
+        return {"delivered": False, "reason": "Linear down"}
+    for i in range(health.UNKNOWN_ESCALATION_AFTER):
+        health.run_once(profiles=profiles, prober=broken_probe, sender=_recorder(),
+                        ops_sender=refuse, receipt_path=receipt,
+                        now=dt.datetime(2026, 8, 31, 9, 0) + dt.timedelta(minutes=30 * i))
+    retry = _recorder()
+    out = health.run_once(profiles=profiles, prober=broken_probe, sender=_recorder(),
+                          ops_sender=retry, receipt_path=receipt,
+                          now=dt.datetime(2026, 8, 31, 14, 0))
+    assert len(retry.sends) == 1, "a refused escalation was recorded as sent"
+
+
+def test_the_deadman_retries_a_refused_alarm(tmp_path, deadman):
+    now = dt.datetime(2026, 8, 31, 12, 0)
+    receipt = tmp_path / "r.json"; state = tmp_path / "s.json"
+    receipt.write_text(json.dumps({"at": (now - dt.timedelta(hours=6)).isoformat()}))
+    calls = []
+    def refuse(message):
+        calls.append(message)
+        return {"delivered": False, "reason": "Slack down"}
+    deadman.run(now, receipt_path=receipt, state_path=state, sender=refuse)
+    deadman.run(now + dt.timedelta(minutes=30), receipt_path=receipt,
+                state_path=state, sender=refuse)
+    assert len(calls) == 2, "a refused alarm was recorded as sent and never retried"

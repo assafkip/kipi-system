@@ -201,6 +201,7 @@ _COMMENT_RE = re.compile(r'data-fullname="(t1_[a-z0-9]+)"')
 _AUTHOR_RE = re.compile(r'data-author="([^"]*)"')
 _MD_RE = re.compile(r'<div class="md">(.*?)</div>', re.S)
 _TAG_RE = re.compile(r"<[^>]+>")
+_THING_RE = re.compile(r'data-fullname="(t[13]_[a-z0-9]+)"')
 
 
 class CoverageNotRecorded(Exception):
@@ -279,16 +280,39 @@ def parse_comments(html: str) -> list:
 
     Deliberately shallow. Threading, scores and semantic scoring are not this
     module's job; it is a fetcher and an artifact.
+
+    PARSED PER BLOCK, NEVER BY ZIPPING PARALLEL LISTS. The first version
+    collected ids, authors and bodies as three independent findall() results and
+    joined them by index. A real thread page opens with the SUBMISSION row, a
+    `t3` thing carrying its own data-author and its own .md body, before any
+    comment. That one extra author and body shifted every comment onto the
+    previous one's attribution: the reviewer's reproducer returned the OP's name
+    and the OP's text under the first comment's id.
+
+    The committed fixture trims the submission region, so the suite could not
+    see it. That is the fixture-from-a-producer lesson landing on me: a trimmed
+    slice is not the production shape, and the part trimmed away was the part
+    that broke it.
+
+    Each thing owns the region from its own data-fullname to the next one, so
+    the submission's author and body stay with the submission, and a comment
+    missing either field yields None instead of stealing its neighbour's.
     """
-    ids = comment_ids(html)
-    authors = _AUTHOR_RE.findall(html or "")
-    bodies = [_text(b) for b in _MD_RE.findall(html or "")]
+    text = html or ""
+    marks = list(_THING_RE.finditer(text))
     out = []
-    for i, cid in enumerate(ids):
+    for i, mark in enumerate(marks):
+        cid = mark.group(1)
+        if not cid.startswith("t1_"):
+            continue  # the submission row, or anything else that is not a comment
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        block = text[mark.end():end]
+        author = _AUTHOR_RE.search(block)
+        body = _MD_RE.search(block)
         out.append({
             "id": cid,
-            "author": authors[i] if i < len(authors) else None,
-            "body": bodies[i] if i < len(bodies) else None,
+            "author": author.group(1) if author else None,
+            "body": _text(body.group(1)) if body else None,
         })
     return out
 
