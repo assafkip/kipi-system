@@ -158,9 +158,15 @@ def load(registry_path):
     if not isinstance(data, dict):
         raise ChannelRegistryError(
             f"voice-channels registry at {registry_path} must be an object")
-    vocab = data.get("channel_vocabulary")
-    if vocab is None:
+    # PRESENCE, not falsiness. `.get()` returns None for an ABSENT key and for an
+    # explicit `"channel_vocabulary": null` alike, so the null quietly loaded the
+    # built-in default instead of failing closed. That is the same hole the Stop
+    # gate had one layer up, and the same answer: a registry declaring the field
+    # and getting it wrong is malformed, while a registry that simply does not
+    # declare it is a registry with no vocabulary opinion.
+    if "channel_vocabulary" not in data:
         return DEFAULT
+    vocab = data["channel_vocabulary"]
     if not isinstance(vocab, dict):
         raise ChannelRegistryError(
             f"voice-channels registry at {registry_path}: channel_vocabulary must "

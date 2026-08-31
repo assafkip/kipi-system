@@ -494,6 +494,18 @@ def resolve_channel_registry(instance_root):
     return named_path.resolve()
 
 
+def _sentence_at(text, pos):
+    """The sentence (or line) of `text` containing offset `pos`."""
+    start, end = 0, len(text)
+    for bound in _SENTENCE_RE.finditer(text):
+        if bound.end() <= pos:
+            start = bound.end()
+        elif bound.start() >= pos:
+            end = bound.start()
+            break
+    return text[start:end]
+
+
 def detect_channel(text):
     """The channel the draft is FRAMED for, or ''. Read out of the publish marker.
 
@@ -517,27 +529,40 @@ def detect_channel(text):
     prose is the direction that misroutes, so framing that names no platform yields no
     channel even when one is named elsewhere in the message.
     """
-    for chunk in _SENTENCE_RE.split(text or ""):
-        markers = list(_PUBLISH_MARKER_RE.finditer(chunk))
-        if not markers:
-            continue
-        # A platform INSIDE the framing wins, and it has to be checked first.
-        # "I rewrote this from LinkedIn for Reddit." names both in one sentence
-        # and only the framing ("for Reddit") says which one it is FOR.
-        for marker in markers:
-            found = _CHANNEL_RE.search(marker.group(0))
-            if found:
-                name = found.group(1).lower()
-                return _CHANNEL_ALIASES.get(name, name)
-        # Then the rest of the framing's own sentence. Codex MINOR round 3:
-        # "Reddit version, ready to paste" is unmistakable publish framing whose
-        # marker ("ready to paste") carries no platform, and marker-only scoping
-        # sent it to the default lints. The sentence is the window because it is
-        # the smallest one that still holds the framing and its subject together.
-        found = _CHANNEL_RE.search(chunk)
+    text = text or ""
+    markers = list(_PUBLISH_MARKER_RE.finditer(text))
+    if not markers:
+        return ""
+    # NEAREST THE DRAFT WINS, and this is the rule rather than the fourth patch.
+    #
+    # Codex found a counterexample in this function four rounds running, and each
+    # round the previous shape had one: FIRST-anywhere let context outrank the
+    # draft; first-in-the-marker missed framing that names no platform;
+    # first-in-the-sentence let "For LinkedIn context, here's the Reddit post"
+    # route a reddit draft to LinkedIn. Four counterexamples to three heuristics
+    # is a statement about the heuristics, not about the examples.
+    #
+    # What is actually true of this text: publish framing INTRODUCES the draft
+    # that follows it, so of all the framing in a message the piece nearest the
+    # draft is the piece describing it, and everything earlier is context. That
+    # is one rule, it is a property of how the sentences are written rather than
+    # of any example, and every counterexample from all four rounds is in the
+    # parametrized corpus in the test file so a fifth change cannot quietly undo
+    # an earlier one.
+    for marker in reversed(markers):
+        found = _CHANNEL_RE.search(marker.group(0))
         if found:
             name = found.group(1).lower()
             return _CHANNEL_ALIASES.get(name, name)
+    # No framing named a platform at all. Widen to the sentence holding the LAST
+    # piece of framing, which is where "Reddit version, ready to paste" says it.
+    # The sentence, not the message: a platform named two sentences earlier as
+    # context still cannot claim the draft.
+    chunk = _sentence_at(text, markers[-1].start())
+    found = _CHANNEL_RE.search(chunk)
+    if found:
+        name = found.group(1).lower()
+        return _CHANNEL_ALIASES.get(name, name)
     return ""
 
 

@@ -310,3 +310,26 @@ def test_check_all_without_a_registry_still_uses_the_built_in_vocabulary(tmp_pat
     """
     problems = validate.check_all(_instance(tmp_path, with_registry=False))
     assert [p for p in problems if UNKNOWN_REDDIT in p], problems
+
+
+def test_an_explicit_null_channel_vocabulary_is_malformed(tmp_path):
+    """Codex MINOR on PR #291 round 4, the same hole one layer down.
+
+    `.get()` returns None for an ABSENT key and for an explicit
+    `"channel_vocabulary": null` alike, so the null quietly loaded the built-in
+    default rather than failing closed. A registry that declares the field and
+    gets it wrong is malformed; one that never declares it has no opinion.
+    """
+    path = os.path.join(str(tmp_path), cr.REGISTRY_REL)
+    _write(path, {"channel_vocabulary": None})
+    with pytest.raises(cr.ChannelRegistryError) as exc:
+        cr.load(path)
+    assert "channel_vocabulary must" in str(exc.value), str(exc.value)
+
+
+def test_a_registry_with_no_vocabulary_key_still_gets_the_default(tmp_path):
+    """The control. Without it the test above passes on a load() that rejects
+    every registry, and the 26 instances that declare no vocabulary would break."""
+    path = os.path.join(str(tmp_path), cr.REGISTRY_REL)
+    _write(path, {"channels": {}})
+    assert cr.load(path) is cr.DEFAULT

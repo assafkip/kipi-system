@@ -189,10 +189,16 @@ def test_an_unknown_lint_input_holds(tmp_path):
     # wrong rulebook again, just quieter.
     ("Reddit version, ready to paste:\n\n> draft body", "reddit"),
     ("Medium piece, ready to publish:\n\n> draft body", "medium"),
-    # And the round-1 case still resolves the same way, because a platform named
-    # INSIDE the framing outranks one merely sharing its sentence.
+    # And the round-1 case still resolves the same way, because the framing
+    # NEAREST the draft is the framing that describes it.
     ("I rewrote this from LinkedIn for Reddit. Here is the reddit post, "
      "ready to paste:\n\n> draft body", "reddit"),
+    # Codex MAJOR round 4: context and draft framing in ONE sentence, context
+    # first. Sentence-scoped first-match sent this to the LinkedIn rulebook.
+    ("For LinkedIn context, here's the Reddit post, ready to paste:"
+     "\n\n> body", "reddit"),
+    ("Compared with LinkedIn, here's the Reddit post, ready to paste:"
+     "\n\n> body", "reddit"),
 ])
 def test_detect_channel(text, expected):
     assert gate.detect_channel(text) == expected
