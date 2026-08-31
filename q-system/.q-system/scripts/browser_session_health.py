@@ -1,63 +1,67 @@
 #!/usr/bin/env python3
-"""Probes every declared research profile and tells the founder ONCE when one dies.
+"""Probes every declared SURFACE of every research profile, and tells the right
+person once when one changes state.
 
-This is the piece that makes the browsing capability "persistent" rather than
-"a browser you have to babysit". `browser_session.py` can open a page; this job
-is what notices, without anyone watching, that a session stopped being a
-session.
+## What the first live morning taught, 2026-08-31
 
-## The alerting rule, founder-directed 2026-08-30
+The v1 of this file shipped on 2026-08-30 and its first real run in production
+printed:
 
-Restated by him verbatim: "Every thirty minutes is fine, but it has to only
-give me one alert per instance, not continuously alerting forever if an
-instance is down."
+    1 profiles, 0 dead, 0 sent      rc 0
 
-Two separate requirements live in that sentence and only one of them is
-obvious:
+Nothing was wrong with that line except that it was produced by a run which had
+learned NOTHING. The founder's own sign-in window was open, a Chrome persistent
+context is single-holder, so Playwright could not launch at all. The probe came
+back `unknown`, and `unknown` rendered exactly like healthy.
 
-  ONE PER DEATH    a profile down for three days produces one message on day
-                   one and nothing after, until it recovers.
-  PER INSTANCE     the suppression is keyed to the PROFILE. If a second profile
-                   dies while the first is still down and still silent, the
-                   second death is still delivered.
+That is the defect this file is now built around: **a state the instrument could
+not determine must never render as a clean bill of health.** Every count on the
+summary line, every state name, and the exit code follow from that.
 
-A module holding a single global "already alerted" flag satisfies the first and
-silently fails the second, and it looks identical from the outside until the
-day it matters. So the alerted state is stored per profile in the receipt, and
-`test_c6_arm4_*` is the test that can tell the two designs apart.
+## Six states, because four situations were being collapsed into two
 
-## Why the state lives in the receipt and not in memory
+    alive       loaded, and the signed-in marker was there
+    dead        loaded, marker absent, and this marker HAS been seen true before
+    unverified  loaded, marker absent, and the marker has NEVER been seen true.
+                Indistinguishable from a wrong guess, so it must not alert.
+    held        another Chrome holds the profile directory. Benign, expected,
+                transient. Not healthy, not a fault.
+    unknown     the probe could not look at all. Escalates if it persists.
+    disabled    kill switch present.
 
-The transition is derived from durable state, so a launchd restart, a reboot or
-a crash cannot resurrect an alert the founder has already had. A process-local
-flag resets to "never alerted" every time launchd reloads the job, which on a
-30-minute StartInterval is a very effective way to send the same alarm forever.
+`held` earns its own state rather than folding into `unknown` because the two
+have opposite dispositions. A held profile is the NORMAL consequence of the
+founder repairing a session by hand: the window he signs in with is the very
+thing that blocks the next probe. Alerting on it would page him about the fix
+he is performing. Escalating it would file a ticket about a healthy system.
 
-## Three states, not two
+## Alerting, founder-directed 2026-08-30 and unchanged
 
-`alive` / `dead` / `unknown`. `unknown` is a probe that could not look at all
-(launch failure, navigation timeout). It NEVER alerts and it NEVER clears the
-alerted state, it carries it forward. Folding `unknown` into `dead` would page
-the founder about a session that is fine because his wifi dropped; folding it
-into `alive` would clear the suppression and re-alert the next probe, turning
-one outage into a message every hour.
+"Only give me one alert per instance, not continuously alerting forever if an
+instance is down." The suppression is keyed per (profile, surface) and lives in
+the receipt, so a launchd restart cannot resurrect an alert he has already had.
 
-## A dead session is reported, never repaired
+Two audiences, and the split is the point:
 
-Nothing here re-authenticates. Re-authenticating a profile the far side has
-already flagged is the documented 2026-07-20 failure, and it converts a
-recoverable session into a burned identity. Repair is a human opening a window
-and typing a password; the alert says so and stops there. The check that holds
-this asserts this file never even names the manual-login entry point.
+  FOUNDER, via slack_founder.deliver   a session died. Only a human with a
+                                       password can repair it.
+  SANA'S QUEUE, via slack-notify.sh    the probe itself is broken (N consecutive
+                                       unknowns). He cannot fix a browser that
+                                       will not launch, and paging him about it
+                                       is how the channel gets muted.
 
-## Why this alert goes to the founder and not to Sana's Linear queue
+## Why `unverified` exists at all
 
-`.claude/rules/founder-notifications.md` routes engineering signals to
-`slack-notify.sh`, which files a ticket for Sana. This is one of the few
-genuine exceptions: a dead browser session can only be repaired by a human at
-a keyboard with a password, so it goes to him via `slack_founder.deliver()`.
-Filing it as a ticket would put a task in the queue of the one person who
-cannot do it.
+Declaring a surface means naming a string that appears only when signed in. Until
+that string has been observed true ONCE, a wrong guess and a genuinely signed-out
+session are the same observation. Without this state, adding a surface means
+either a false death on day one or a silent blind spot. With it, an unproven
+marker is visibly unproven and stays quiet.
+
+The dangerous direction is the opposite one: a marker that is present while
+signed OUT reports `alive` forever, and alive is silent. So a declared marker is
+required to have been measured ABSENT on a signed-out load before it ships, and
+that measurement belongs in the config's own notes.
 
     browser_session_health.py            # probe, alert on transition, write receipt
     browser_session_health.py --dry-run  # probe and print; send nothing
@@ -70,7 +74,9 @@ import datetime as dt
 import importlib.util
 import json
 import os
+import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 HERE = Path(__file__).resolve().parent
 STATE_DIR = Path(os.environ.get("KIPI_STATE_DIR", os.path.expanduser("~/.config/kipi")))
@@ -79,18 +85,63 @@ PROFILES_PATH = HERE / "browser_profiles.json"
 
 REQUIRED_KEYS = ("name", "dir", "identity", "purpose", "kill_switch")
 
+# Four consecutive unknowns is two hours of a probe that cannot look. One is a
+# blip; two hours is a broken checker and somebody has to be told.
+UNKNOWN_ESCALATION_AFTER = int(os.environ.get("KIPI_BROWSER_UNKNOWN_ESCALATION", "4"))
+
+# DECISION 2026-08-31, recorded here because an unrecorded exception to canon is
+# how canon dies.
+#
+# reddit_driver.py carries canon 2026-07-17: "Do NOT create a Playwright profile
+# login for reddit: it is WAF-blocked and forbidden." browser_profiles.json's own
+# notes said declaring-rather-than-scanning existed to keep Reddit out. On
+# 2026-08-31 Reddit cookies were measured INSIDE the one declared profile, so
+# the comment had stopped being true and nothing noticed.
+#
+# The canon stands. It was written against a headless driver and this capability
+# is headful and read-only, which is a real difference, but it is an UNMEASURED
+# one: nobody has established that headful changes the WAF outcome, and the cost
+# of being wrong is the founder's Reddit account, which is not recoverable by
+# retrying. An unmeasured difference is not a licence.
+#
+# So the refusal moves out of a JSON comment and into a load error. Reversing it
+# is then a deliberate edit here with a measurement attached, in the open,
+# instead of a surface quietly appearing in a config.
+FORBIDDEN_PROBE_HOSTS = ("reddit.com",)
+
+# Ad, analytics and CDN hosts. They are cookie noise, not identities, and left in
+# they would drown the one signal undeclared_hosts exists to produce.
+AD_HOSTS = {
+    "doubleclick.net", "rubiconproject.com", "adnxs.com", "demdex.net",
+    "dpm.demdex.net", "rlcdn.com", "33across.com", "3lift.com", "casalemedia.com",
+    "pubmatic.com", "criteo.com", "protechts.net", "adsrvr.org", "bidswitch.net",
+    "openx.net", "sharethrough.com", "taboola.com", "outbrain.com", "crwdcntrl.net",
+    "scorecardresearch.com", "quantserve.com", "everesttech.net", "yahoo.com",
+    "agkn.com", "tapad.com", "id5-sync.com", "smartadserver.com", "adform.net",
+    # bing.com is here as an AD host, not a search engine: the cookies measured
+    # in the jar on 2026-08-31 came from ad-sync redirects, not a sign-in.
+    "bing.com", "teads.tv",
+}
+
 
 class ProfileConfigError(Exception):
     """A declared profile that cannot be probed. Refused at load, not at 3am."""
 
 
-def load_profiles(path=None) -> list:
-    """Every profile, validated. A profile with no liveness probe is REFUSED.
+def _host(url: str) -> str:
+    return (urlparse(url).hostname or "").lower()
 
-    Declaring the probe is the whole reason continuity is checkable. A profile
-    without one is a browser nobody can tell is dead, which is the exact defect
-    this service exists to remove, so it is a load error rather than a profile
-    that gets quietly skipped at runtime.
+
+def _is_forbidden(url: str) -> bool:
+    host = _host(url)
+    return any(host == bad or host.endswith("." + bad) for bad in FORBIDDEN_PROBE_HOSTS)
+
+
+def load_profiles(path=None) -> list:
+    """Every profile, validated. Refused loudly rather than skipped at runtime.
+
+    A profile with no surface to probe is a browser nobody can tell is dead,
+    which is the exact defect this service exists to remove.
     """
     path = Path(path) if path else PROFILES_PATH
     try:
@@ -106,12 +157,36 @@ def load_profiles(path=None) -> list:
         if missing:
             raise ProfileConfigError(
                 f"profile {raw.get('name') or raw} is missing {missing}")
-        probe_spec = raw.get("liveness_probe") or {}
-        if not probe_spec.get("url") or not probe_spec.get("logged_in_marker"):
+
+        probes = raw.get("liveness_probes") or []
+        if not probes:
             raise ProfileConfigError(
-                f"profile {raw['name']!r} declares no usable liveness_probe "
-                "(needs url + logged_in_marker). A profile whose liveness "
-                "cannot be checked is not a persistent session, it is a guess.")
+                f"profile {raw['name']!r} declares no liveness_probes. A profile "
+                "whose liveness cannot be checked is not a persistent session, "
+                "it is a guess.")
+        for probe_spec in probes:
+            if not probe_spec.get("name") or not probe_spec.get("url") \
+                    or not probe_spec.get("logged_in_marker"):
+                raise ProfileConfigError(
+                    f"profile {raw['name']!r} has a surface missing "
+                    "name/url/logged_in_marker")
+            if _is_forbidden(probe_spec["url"]):
+                raise ProfileConfigError(
+                    f"profile {raw['name']!r} declares a probe against "
+                    f"{_host(probe_spec['url'])}, which is forbidden. A "
+                    "Playwright-driven Reddit session is WAF-blocked (canon "
+                    "2026-07-17, reddit_driver.py). Headful may or may not change "
+                    "that; nobody has measured it, and the cost of being wrong is "
+                    "an account that cannot be un-banned. Reverse this in "
+                    "FORBIDDEN_PROBE_HOSTS with a measurement attached.")
+
+        if not isinstance(raw.get("expected_cookie_hosts"), list) \
+                or not raw["expected_cookie_hosts"]:
+            raise ProfileConfigError(
+                f"profile {raw['name']!r} declares no expected_cookie_hosts. "
+                "One jar held four identities on 2026-08-31 and nothing noticed, "
+                "because no profile ever had to say which identity it was.")
+
         entry = dict(raw)
         entry["dir"] = os.path.expanduser(entry["dir"])
         entry["kill_switch"] = os.path.expanduser(entry["kill_switch"])
@@ -120,10 +195,77 @@ def load_profiles(path=None) -> list:
 
 
 def classify(result) -> str:
-    """alive / dead / unknown from one probe result."""
+    """alive / dead / held / unknown from ONE probe result.
+
+    Deliberately pure and history-free. The promotion of `dead` to `unverified`
+    needs the marker's history and belongs in run_once, so that this function
+    stays a straight reading of what the probe saw.
+    """
+    if result.get("held"):
+        return "held"
     if not result.get("reachable"):
         return "unknown"
     return "alive" if result.get("logged_in") else "dead"
+
+
+def cookie_hosts(profile) -> list:
+    """Every host in the profile's cookie jar, or [] if it cannot be read.
+
+    Read-only, and against a COPY: the live jar is an sqlite file Chrome may
+    hold open, and this must never be the thing that corrupts a session it
+    exists to protect.
+    """
+    src = Path(profile["dir"]) / "Default" / "Cookies"
+    if not src.exists():
+        return []
+    import shutil
+    import sqlite3
+    import tempfile
+    tmp = Path(tempfile.mkdtemp()) / "cookies.db"
+    try:
+        shutil.copy2(src, tmp)
+        conn = sqlite3.connect(str(tmp))
+        try:
+            return [r[0] for r in conn.execute("select distinct host_key from cookies")]
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return []
+    finally:
+        try:
+            tmp.unlink()
+            tmp.parent.rmdir()
+        except OSError:
+            pass
+
+
+def undeclared_hosts(profile, hosts=None) -> list:
+    """Cookie hosts this profile never said it would hold.
+
+    DECISION 2026-08-31: the profile is the IDENTITY boundary and the surface is
+    the probe boundary. One jar holding LinkedIn, Reddit, Google and YouTube is
+    the shared-computer shape the Grok Bot research rejected, arriving from the
+    other direction, and the plan's isolation constraint never covered it: it
+    separated research from his real Chrome, never research profiles from each
+    other.
+
+    Splitting the existing jar needs his sign-ins and is captured, not done here.
+    What IS done here is making the drift observable, so the next identity to
+    appear in a jar is on the receipt the day it arrives rather than found by
+    hand a month later.
+    """
+    hosts = cookie_hosts(profile) if hosts is None else hosts
+    expected = [h.lower().lstrip(".") for h in profile.get("expected_cookie_hosts", [])]
+    out = []
+    for raw in hosts:
+        bare = raw.lower().lstrip(".")
+        if any(bare == ad or bare.endswith("." + ad) for ad in AD_HOSTS):
+            continue
+        if any(bare == e or bare.endswith("." + e) or e.endswith("." + bare)
+               for e in expected):
+            continue
+        out.append(raw)
+    return sorted(out)
 
 
 def read_receipt(path=None) -> dict:
@@ -146,8 +288,6 @@ def write_receipt(payload: dict, path=None) -> Path:
 
 
 def _disabled(profile) -> bool:
-    """The declared kill switch. A profile can be taken out of the rotation by
-    touching one file, with no edit to committed config and no deploy."""
     return Path(profile["kill_switch"]).exists()
 
 
@@ -155,11 +295,11 @@ def _module(filename: str):
     """Load a sibling script by path.
 
     THE sys.modules REGISTRATION IS NOT OPTIONAL. Measured 2026-08-30: without
-    it, Python 3.14's @dataclass decorator raises AttributeError while building
+    it, Python 3.14's @dataclass raises AttributeError while building
     ProbeResult, because dataclasses resolves the owning module out of
-    sys.modules to check its annotations. The whole suite was green at the time
-    -- every test injects its own prober, so nothing exercised this loader, and
-    the live job died on import on every single run.
+    sys.modules. The suite was green at the time; every test injects its own
+    prober, so nothing exercised this loader and the live job died on import on
+    every run.
     """
     import sys
     name = filename[:-3]
@@ -170,105 +310,180 @@ def _module(filename: str):
     return mod
 
 
-def _live_prober(profile) -> dict:
+def _live_prober(profile, surface) -> dict:
     """The only path from here to a browser."""
     session = _module("browser_session.py")
-    spec = profile["liveness_probe"]
-    return session.probe(profile["name"], profile["dir"], spec["url"],
-                         spec["logged_in_marker"]).as_dict()
+    return session.probe(profile["name"], profile["dir"], surface["url"],
+                         surface["logged_in_marker"],
+                         surface=surface["name"]).as_dict()
 
 
 def _founder_sender(message: str) -> dict:
     return _module("slack_founder.py").deliver(message)
 
 
-def _message(profile, entry, state: str) -> str:
-    """One line about ONE profile. Never a digest.
+def _ops_sender(message: str) -> dict:
+    """Sana's Linear triage, via the fleet alert path.
 
-    It names only this profile on purpose: a combined message about several
-    profiles makes "one alert per instance" undeliverable, and re-states an
-    outage the founder was already told about every time a new one starts.
+    `.claude/rules/founder-notifications.md`: slack-notify.sh files a ticket for
+    Sana and pages nobody. A probe that cannot launch a browser is hers.
     """
-    name = profile["name"]
+    script = HERE / "slack-notify.sh"
+    try:
+        done = subprocess.run(["bash", str(script), message],
+                              capture_output=True, text=True, timeout=60)
+        return {"delivered": done.returncode == 0, "transport": "slack-notify.sh",
+                "rc": done.returncode, "out": (done.stdout or "")[:200]}
+    except Exception as exc:  # noqa: BLE001
+        return {"delivered": False, "transport": "slack-notify.sh",
+                "reason": f"{type(exc).__name__}: {str(exc)[:160]}"}
+
+
+def _message(profile, surface, entry, state: str) -> str:
+    """One line about ONE surface of ONE profile. Never a digest."""
+    label = f"{profile['name']}/{surface['name']}"
     if state == "alive":
-        return (f":white_check_mark: Browser session back: {name} "
+        return (f":white_check_mark: Browser session back: {label} "
                 f"({profile['identity']}). Verified {entry.get('at')}.")
     why = entry.get("reason") or entry.get("error") or "no reason recorded"
-    return (f":rotating_light: Browser session DEAD: {name} "
-            f"({profile['identity']}) -- {why}\n"
-            f"Purpose: {profile['purpose']}\n"
+    return (f":rotating_light: Browser session DEAD: {label} "
+            f"({profile['identity']}) at {surface['url']} -- {why}\n"
             f"Repair is a human step, nothing here will retry the sign-in: "
-            f"python3 {HERE / 'browser_session.py'} login {name}\n"
+            f"python3 {HERE / 'browser_session.py'} login {profile['name']}\n"
             f"You get this once. Nothing further until it recovers.")
 
 
-def run_once(profiles=None, prober=None, sender=None, receipt_path=None,
-             now=None) -> dict:
-    """Probe every profile, alert on per-profile transitions, write the receipt.
+def _ops_message(profile, surface, entry, count: int) -> str:
+    return (f"browser-session probe cannot look: {profile['name']}/{surface['name']} "
+            f"returned unknown {count} times in a row "
+            f"({entry.get('error') or 'no error recorded'}). "
+            f"The session may be fine; the CHECKER is not. "
+            f"Nothing is watching {surface['url']} until this is fixed.")
 
-    Everything the transition arithmetic needs is injected, so the whole rule is
-    testable without opening a browser or sending a message. The live wiring is
-    the two defaults, and nothing else in this function knows the difference.
-    """
+
+def _surface_pass(profile, surface, prior, prober, sender, ops_sender, stamp, out):
+    """One surface, one probe, one transition decision. Returns the new entry."""
+    result = dict(prober(profile, surface))
+    state = classify(result)
+    marker_seen = bool(prior.get("marker_ever_seen"))
+    alerted = prior.get("alerted_state")
+    unknown_run = int(prior.get("consecutive_unknown") or 0)
+    escalated = bool(prior.get("unknown_escalated"))
+    first_verified = prior.get("first_verified_at")
+
+    if state == "alive":
+        marker_seen = True
+        unknown_run = 0
+        escalated = False
+        # 72 hours of continuity means 72 UNBROKEN hours, so the clock is
+        # stamped by the first true probe and never restamped while it holds.
+        first_verified = first_verified or stamp
+    elif state == "dead":
+        unknown_run = 0
+        escalated = False
+        first_verified = None
+        if not marker_seen:
+            # A marker never once observed true is indistinguishable from a
+            # wrong guess. Report it, never page on it.
+            state = "unverified"
+    elif state == "unknown":
+        unknown_run += 1
+    # `held` deliberately changes nothing: not the counter, not the alerted
+    # state, not the clock. The window that blocks the probe is usually the
+    # founder repairing the very session this would otherwise re-alert about.
+
+    entry = dict(result)
+    entry.update({
+        "surface": surface["name"], "url": surface["url"], "state": state,
+        "previous_state": prior.get("state"), "marker_ever_seen": marker_seen,
+        "consecutive_unknown": unknown_run,
+        "first_verified_at": first_verified,
+        "last_verified": stamp if state == "alive" else prior.get("last_verified"),
+        "last_alert_at": prior.get("last_alert_at"),
+    })
+
+    if state in ("alive", "dead") and state != alerted:
+        # A first-ever observation of a HEALTHY surface is not news. It still
+        # records the alerted state, so the first death after it is.
+        if not (state == "alive" and alerted is None):
+            message = _message(profile, surface, entry, state)
+            out["sends"].append({"profile": profile["name"], "surface": surface["name"],
+                                 "state": state, "message": message,
+                                 "result": sender(message)})
+            entry["last_alert_at"] = stamp
+        alerted = state
+
+    if state == "unknown" and unknown_run >= UNKNOWN_ESCALATION_AFTER and not escalated:
+        message = _ops_message(profile, surface, entry, unknown_run)
+        out["ops_sends"].append({"profile": profile["name"], "surface": surface["name"],
+                                 "message": message, "result": ops_sender(message)})
+        escalated = True
+
+    entry["alerted_state"] = alerted
+    entry["unknown_escalated"] = escalated
+    return entry
+
+
+def run_once(profiles=None, prober=None, sender=None, ops_sender=None,
+             receipt_path=None, now=None) -> dict:
+    """Probe every surface, alert on per-surface transitions, write the receipt."""
     now = now or dt.datetime.now().astimezone()
     profiles = load_profiles() if profiles is None else profiles
     prober = prober or _live_prober
     sender = sender or _founder_sender
+    ops_sender = ops_sender or _ops_sender
     prior_profiles = read_receipt(receipt_path).get("profiles", {})
 
     stamp = now.isoformat(timespec="seconds")
-    out = {"at": stamp, "profiles": {}, "sends": []}
+    out = {"at": stamp, "profiles": {}, "sends": [], "ops_sends": []}
 
     for profile in profiles:
         name = profile["name"]
         prior = prior_profiles.get(name, {})
-        # The alerted state is what the FOUNDER was last told, which is not the
-        # same thing as the last observed state: two dead probes in a row have
-        # the same state and only one of them is news.
-        alerted = prior.get("alerted_state")
+        prior_surfaces = prior.get("surfaces", {})
 
         if _disabled(profile):
             out["profiles"][name] = {
-                "profile": name, "state": "disabled",
-                "previous_state": prior.get("state"),
-                "alerted_state": alerted,
-                "last_verified": prior.get("last_verified"),
+                "identity": profile["identity"], "state": "disabled",
                 "reason": f"kill switch present: {profile['kill_switch']}",
-                "at": stamp,
-            }
+                "surfaces": prior_surfaces, "at": stamp}
             continue
 
-        result = dict(prober(profile))
-        state = classify(result)
-        entry = dict(result)
-        entry["state"] = state
-        entry["previous_state"] = prior.get("state")
-        entry["last_verified"] = (
-            stamp if state == "alive" else prior.get("last_verified"))
-        entry["last_alert_at"] = prior.get("last_alert_at")
+        surfaces = {}
+        for surface in profile["liveness_probes"]:
+            surfaces[surface["name"]] = _surface_pass(
+                profile, surface, prior_surfaces.get(surface["name"], {}),
+                prober, sender, ops_sender, stamp, out)
 
-        if state in ("alive", "dead") and state != alerted:
-            # A first-ever observation of a HEALTHY profile is not news. It
-            # still records the alerted state, so the first death after it is.
-            if not (state == "alive" and alerted is None):
-                message = _message(profile, entry, state)
-                verdict = sender(message)
-                out["sends"].append({"profile": name, "state": state,
-                                     "message": message, "result": verdict})
-                entry["last_alert_at"] = stamp
-            alerted = state
-
-        entry["alerted_state"] = alerted
-        out["profiles"][name] = entry
+        out["profiles"][name] = {
+            "identity": profile["identity"],
+            "surfaces": surfaces,
+            # Declared-but-unwatched surfaces stay ON the receipt. The blind
+            # spot that started all of this was invisible, not accepted.
+            "unmonitored_surfaces": profile.get("unmonitored_surfaces", []),
+            "undeclared_cookie_hosts": undeclared_hosts(profile),
+            "at": stamp,
+        }
 
     write_receipt(out, receipt_path)
     return out
 
 
+def _tally(result) -> dict:
+    counts = {}
+    for prof in result["profiles"].values():
+        if prof.get("state") == "disabled":
+            counts["disabled"] = counts.get("disabled", 0) + 1
+        for surface in prof.get("surfaces", {}).values():
+            state = surface.get("state", "?")
+            counts[state] = counts.get(state, 0) + 1
+    return counts
+
+
 def main(argv=None, runner=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true",
-                    help="probe and print; send nothing, write no receipt")
+                    help="probe and print; send nothing, write no live receipt")
     ap.add_argument("--status", action="store_true",
                     help="print the last receipt and exit; probe nothing")
     args = ap.parse_args(argv)
@@ -280,37 +495,45 @@ def main(argv=None, runner=None) -> int:
     if args.dry_run:
         import tempfile
         captured = []
-        # The receipt goes to a scratch path, never the live one: a dry run that
-        # overwrote the real receipt would reset the per-profile alerted_state
-        # and make the next real run re-announce an outage he already has.
+        # Scratch receipt: a dry run that overwrote the live one would reset the
+        # per-surface alerted_state and re-announce an outage he already has.
         scratch = Path(tempfile.gettempdir()) / "browser-session-health.dryrun.json"
-        result = run_once(sender=captured.append, receipt_path=scratch)
+        result = run_once(sender=captured.append, ops_sender=captured.append,
+                          receipt_path=scratch)
         print(json.dumps(result, indent=2))
         for message in captured:
             print(f"[dry-run] would send:\n{message}")
         return 0
 
     result = (runner or run_once)()
-    for send in result["sends"]:
-        print(f"[send] {send['profile']} -> {json.dumps(send['result'])}")
-    dead = [n for n, e in result["profiles"].items() if e["state"] == "dead"]
-    print(f"[health] {result['at']} "
-          f"{len(result['profiles'])} profiles, {len(dead)} dead, "
-          f"{len(result['sends'])} sent")
-    # EXIT 0 FOR A COMPLETED CYCLE, EVEN WITH A DEAD PROFILE.
+    for send in result.get("sends", []):
+        print(f"[send] {send['profile']}/{send['surface']} -> {json.dumps(send['result'])}")
+    for send in result.get("ops_sends", []):
+        print(f"[ops] {send['profile']}/{send['surface']} -> {json.dumps(send['result'])}")
+
+    # EVERY state on one line, and never a bare "0 dead".
     #
-    # Measured under launchd 2026-08-30: the first real run exited 1 because one
-    # profile was signed out, and launchd records that as the job's status.
-    # launchd-health-check.py auto-discovers every com.kipi.* label and reports a
-    # failing one, so a profile that stays signed out for a week would have made
-    # this job look broken every 30 minutes forever -- reintroducing the exact
-    # "continuously alerting" the per-profile suppression exists to prevent, just
-    # through a second channel the founder never agreed to.
-    #
-    # A dead session is a REPORTED state, not a job failure (constraint 4). The
-    # report is the alert and the receipt. The exit code answers a different
-    # question: did this checker run. Non-zero is reserved for the checker
-    # itself failing, which argparse and an unhandled exception already cover.
+    # `1 profiles, 0 dead, 0 sent` rc 0 is what a run that could not open Chrome
+    # printed in production on day one. A summary that reports only the failures
+    # it managed to observe is indistinguishable from one that observed nothing,
+    # and that is the whole class of defect this file now exists to prevent.
+    counts = _tally(result)
+    summary = ", ".join(f"{n} {state}" for state, n in sorted(counts.items())) or "no surfaces"
+    print(f"[health] {result['at']} {len(result['profiles'])} profiles: {summary}, "
+          f"{len(result.get('sends', []))} sent, "
+          f"{len(result.get('ops_sends', []))} escalated")
+
+    for name, prof in result["profiles"].items():
+        undeclared = prof.get("undeclared_cookie_hosts") or []
+        if undeclared:
+            print(f"[identity] {name} holds cookies it never declared: "
+                  f"{', '.join(undeclared[:8])}")
+        for un in prof.get("unmonitored_surfaces", []):
+            print(f"[blind] {name}/{un.get('host')}: {un.get('reason')}")
+
+    # A dead session is a REPORTED state, not a job failure. launchd-health-check
+    # reports a non-zero label as failing, so exiting 1 on a signed-out profile
+    # would reintroduce "continuously alerting" through a second channel.
     return 0
 
 

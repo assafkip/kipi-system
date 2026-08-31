@@ -227,34 +227,8 @@ def test_c5_health_classifies_the_two_into_different_states(health):
 # CONSTRAINT 4 -- a dead session is REPORTED, never re-authenticated
 # ---------------------------------------------------------------------------
 
-def _profile(name="research-hn", root=None):
-    root = root or Path("/tmp/does-not-matter")
-    return {"name": name, "dir": str(root / name),
-            "identity": "test", "purpose": "test",
-            "kill_switch": str(root / f"{name}.disabled"),
-            "liveness_probe": {"url": "https://example.invalid/",
-                               "logged_in_marker": "logout"}}
 
 
-def _prober(states):
-    """A prober fed a list of states, one per call. Records its calls."""
-    calls = []
-
-    def prober(profile):
-        state = states[min(len(calls), len(states) - 1)]
-        calls.append(profile["name"])
-        if state == "broken":
-            return {"profile": profile["name"], "url": "u", "reachable": False,
-                    "logged_in": None, "error": "boom", "reason": None,
-                    "content_len": 0, "at": "t"}
-        logged_in = state == "alive"
-        return {"profile": profile["name"], "url": "u", "reachable": True,
-                "logged_in": logged_in, "error": None,
-                "reason": None if logged_in else "marker 'logout' absent",
-                "content_len": 100, "at": "t"}
-
-    prober.calls = calls
-    return prober
 
 
 def _recorder():
@@ -268,25 +242,8 @@ def _recorder():
     return sender
 
 
-def test_c4_a_logged_out_profile_is_reported_with_a_reason(tmp_path, health):
-    receipt = tmp_path / "receipt.json"
-    prober = _prober(["dead"])
-    out = health.run_once(profiles=[_profile()], prober=prober,
-                          sender=_recorder(), receipt_path=receipt,
-                          now=dt.datetime(2026, 8, 30, 12, 0))
-    entry = out["profiles"]["research-hn"]
-    assert entry["logged_in"] is False
-    assert entry["reason"], "a dead session must say why"
-    assert entry["state"] == "dead"
-    assert json.loads(receipt.read_text())["profiles"]["research-hn"]["state"] == "dead"
 
 
-def test_c4_a_dead_profile_is_probed_once_and_not_retried(tmp_path, health):
-    prober = _prober(["dead"])
-    health.run_once(profiles=[_profile()], prober=prober, sender=_recorder(),
-                    receipt_path=tmp_path / "r.json",
-                    now=dt.datetime(2026, 8, 30, 12, 0))
-    assert prober.calls == ["research-hn"], "a dead session was probed more than once"
 
 
 def test_c4_health_never_calls_a_re_authentication_path():
@@ -321,144 +278,22 @@ def test_c4_health_uses_exactly_one_thing_from_the_browser_module():
 
 
 # ---------------------------------------------------------------------------
-# CONSTRAINT 6 -- one alert per transition, PER PROFILE
-# Founder-directed 2026-08-30, restated: "it has to only give me one alert per
-# instance, not continuously alerting forever if an instance is down."
+# CONSTRAINT 6 and the run_once behaviour tests live in
+# test_browser_session_states.py, which owns the per-surface shape.
 # ---------------------------------------------------------------------------
 
-def test_c6_arm1_first_death_sends_exactly_one_alert_naming_the_profile(tmp_path, health):
-    sender = _recorder()
-    health.run_once(profiles=[_profile()], prober=_prober(["dead"]), sender=sender,
-                    receipt_path=tmp_path / "r.json",
-                    now=dt.datetime(2026, 8, 30, 12, 0))
-    assert len(sender.sends) == 1, sender.sends
-    assert "research-hn" in sender.sends[0]
 
 
-def test_c6_arm2_two_further_probes_while_still_dead_are_silent(tmp_path, health):
-    """THE ARM THAT MATTERS. A module alerting every single run passes arm 1."""
-    receipt = tmp_path / "r.json"
-    profiles = [_profile()]
-    first = _recorder()
-    health.run_once(profiles=profiles, prober=_prober(["dead"]), sender=first,
-                    receipt_path=receipt, now=dt.datetime(2026, 8, 30, 12, 0))
-    assert len(first.sends) == 1
-
-    for minute in (30, 60):
-        later = _recorder()
-        health.run_once(profiles=profiles, prober=_prober(["dead"]), sender=later,
-                        receipt_path=receipt,
-                        now=dt.datetime(2026, 8, 30, 12 + minute // 60, minute % 60))
-        assert later.sends == [], f"alerted again at +{minute}m while still dead"
 
 
-def test_c6_arm3_recovery_sends_exactly_one_line(tmp_path, health):
-    receipt = tmp_path / "r.json"
-    profiles = [_profile()]
-    health.run_once(profiles=profiles, prober=_prober(["dead"]), sender=_recorder(),
-                    receipt_path=receipt, now=dt.datetime(2026, 8, 30, 12, 0))
-    health.run_once(profiles=profiles, prober=_prober(["dead"]), sender=_recorder(),
-                    receipt_path=receipt, now=dt.datetime(2026, 8, 30, 12, 30))
-
-    back = _recorder()
-    health.run_once(profiles=profiles, prober=_prober(["alive"]), sender=back,
-                    receipt_path=receipt, now=dt.datetime(2026, 8, 30, 13, 0))
-    assert len(back.sends) == 1, back.sends
-    assert "research-hn" in back.sends[0]
-
-    still = _recorder()
-    health.run_once(profiles=profiles, prober=_prober(["alive"]), sender=still,
-                    receipt_path=receipt, now=dt.datetime(2026, 8, 30, 13, 30))
-    assert still.sends == [], "recovery was announced twice"
 
 
-def test_c6_arm4_a_second_profile_dying_alerts_while_the_first_stays_silent(tmp_path, health):
-    """Founder-directed addition. A module holding ONE global already-alerted
-    flag passes arms 1-3 and fails here: profile A is down and already
-    reported, and B's death must still reach him."""
-    receipt = tmp_path / "r.json"
-    a, b = _profile("prof-a"), _profile("prof-b")
-
-    def prober_factory(states_by_name):
-        calls = []
-
-        def prober(profile):
-            calls.append(profile["name"])
-            state = states_by_name[profile["name"]]
-            if state == "alive":
-                return {"profile": profile["name"], "url": "u", "reachable": True,
-                        "logged_in": True, "error": None, "reason": None,
-                        "content_len": 10, "at": "t"}
-            return {"profile": profile["name"], "url": "u", "reachable": True,
-                    "logged_in": False, "error": None, "reason": "marker absent",
-                    "content_len": 10, "at": "t"}
-        prober.calls = calls
-        return prober
-
-    # A dies, B healthy -> exactly one alert, about A.
-    first = _recorder()
-    health.run_once(profiles=[a, b], prober=prober_factory({"prof-a": "dead", "prof-b": "alive"}),
-                    sender=first, receipt_path=receipt,
-                    now=dt.datetime(2026, 8, 30, 12, 0))
-    assert len(first.sends) == 1 and "prof-a" in first.sends[0], first.sends
-
-    # A still dead (silent), B still healthy -> nothing.
-    quiet = _recorder()
-    health.run_once(profiles=[a, b], prober=prober_factory({"prof-a": "dead", "prof-b": "alive"}),
-                    sender=quiet, receipt_path=receipt,
-                    now=dt.datetime(2026, 8, 30, 12, 30))
-    assert quiet.sends == [], quiet.sends
-
-    # Now B dies while A is still down and still suppressed.
-    second = _recorder()
-    health.run_once(profiles=[a, b], prober=prober_factory({"prof-a": "dead", "prof-b": "dead"}),
-                    sender=second, receipt_path=receipt,
-                    now=dt.datetime(2026, 8, 30, 13, 0))
-    assert len(second.sends) == 1, f"expected exactly one send about prof-b: {second.sends}"
-    assert "prof-b" in second.sends[0]
-    assert "prof-a" not in second.sends[0], "prof-a was re-announced"
 
 
-def test_c6_a_healthy_first_run_says_nothing(tmp_path, health):
-    sender = _recorder()
-    health.run_once(profiles=[_profile()], prober=_prober(["alive"]), sender=sender,
-                    receipt_path=tmp_path / "r.json",
-                    now=dt.datetime(2026, 8, 30, 12, 0))
-    assert sender.sends == [], "a healthy profile paged the founder on startup"
 
 
-def test_c6_an_unreachable_probe_does_not_page_and_does_not_clear_the_state(tmp_path, health):
-    """A network blip is not a dead session. `unknown` carries the previous
-    alert state forward rather than resetting it, so a blip between two dead
-    probes cannot manufacture a second alert."""
-    receipt = tmp_path / "r.json"
-    profiles = [_profile()]
-    health.run_once(profiles=profiles, prober=_prober(["dead"]), sender=_recorder(),
-                    receipt_path=receipt, now=dt.datetime(2026, 8, 30, 12, 0))
-
-    blip = _recorder()
-    health.run_once(profiles=profiles, prober=_prober(["broken"]), sender=blip,
-                    receipt_path=receipt, now=dt.datetime(2026, 8, 30, 12, 30))
-    assert blip.sends == []
-
-    again = _recorder()
-    health.run_once(profiles=profiles, prober=_prober(["dead"]), sender=again,
-                    receipt_path=receipt, now=dt.datetime(2026, 8, 30, 13, 0))
-    assert again.sends == [], "a blip reset the suppression and re-alerted"
 
 
-def test_c6_a_kill_switched_profile_is_never_probed(tmp_path, health):
-    prof = _profile(root=tmp_path)
-    Path(prof["kill_switch"]).parent.mkdir(parents=True, exist_ok=True)
-    Path(prof["kill_switch"]).write_text("off")
-    prober = _prober(["dead"])
-    sender = _recorder()
-    out = health.run_once(profiles=[prof], prober=prober, sender=sender,
-                          receipt_path=tmp_path / "r.json",
-                          now=dt.datetime(2026, 8, 30, 12, 0))
-    assert prober.calls == [], "a disabled profile still opened a browser"
-    assert sender.sends == []
-    assert out["profiles"]["research-hn"]["state"] == "disabled"
 
 
 def test_health_can_actually_load_the_browser_module(health):
@@ -501,23 +336,8 @@ def test_health_can_actually_load_the_founder_sender(health):
 # The declared profile set
 # ---------------------------------------------------------------------------
 
-def test_a_profile_without_a_liveness_probe_is_refused_at_load(tmp_path, health):
-    bad = tmp_path / "profiles.json"
-    bad.write_text(json.dumps({"research_root": "~/.config/kipi/browser-profiles",
-                               "profiles": [{"name": "x", "dir": "~/.config/kipi/browser-profiles/x",
-                                             "identity": "i", "purpose": "p",
-                                             "kill_switch": "~/x.disabled"}]}))
-    with pytest.raises(health.ProfileConfigError):
-        health.load_profiles(bad)
 
 
-def test_shipped_profiles_load_and_every_one_declares_a_probe(health):
-    profiles = health.load_profiles(PROFILES_JSON)
-    assert profiles, "no profiles declared"
-    for p in profiles:
-        assert p["liveness_probe"]["url"].startswith("https://")
-        assert p["liveness_probe"]["logged_in_marker"]
-        assert p["kill_switch"] and p["identity"] and p["purpose"]
 
 
 def test_shipped_profile_dirs_all_resolve_under_the_research_root(health, session):
@@ -527,18 +347,6 @@ def test_shipped_profile_dirs_all_resolve_under_the_research_root(health, sessio
         session.resolve_profile_dir(d)  # raises ProfileRefused if outside
 
 
-def test_a_dead_profile_is_not_a_failed_job(health):
-    """Exit 0 for a completed cycle, even with a dead profile.
-
-    Measured under launchd 2026-08-30: the first live run exited 1 on a
-    signed-out profile. launchd-health-check auto-discovers every com.kipi.*
-    label and reports a failing one, so a profile signed out for a week would
-    have made this job look broken every 30 minutes -- the founder's
-    "continuously alerting" failure, reintroduced through a second channel.
-    """
-    dead_cycle = {"at": "t", "sends": [],
-                  "profiles": {"research-hn": {"state": "dead"}}}
-    assert health.main([], runner=lambda: dead_cycle) == 0
 
 
 # ---------------------------------------------------------------------------

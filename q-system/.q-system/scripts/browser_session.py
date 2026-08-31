@@ -76,6 +76,29 @@ REAL_CHROME = Path(os.path.expanduser("~/Library/Application Support/Google/Chro
 
 DEFAULT_TIMEOUT_MS = 45000
 
+# A Chrome persistent context is SINGLE-HOLDER. When the founder has his own
+# window open on a research profile, Playwright cannot launch against it at all.
+# Measured live 2026-08-31 08:13, verbatim from the receipt:
+#   "Opening in existing browser session. This usually means that the profile is
+#    already in use by another instance of Chromium."
+# That is benign, expected and transient: the window that blocks the probe is
+# usually him repairing the very session being watched. It is NOT the same
+# condition as a browser that will not start, and collapsing the two is how a
+# run that learned nothing printed "0 dead" in production on day one.
+#
+# Keyed on the message rather than on SingletonLock: measured the same morning,
+# that profile directory held no Singleton* file at all while a live Chrome
+# process was holding it, so the lock file is not a reliable signal here.
+PROFILE_HELD_MARKERS = (
+    "already in use by another instance",
+    "opening in existing browser session",
+)
+
+
+def _looks_held(text: str) -> bool:
+    low = (text or "").lower()
+    return any(marker in low for marker in PROFILE_HELD_MARKERS)
+
 # Far enough off any plausible desktop that the window never appears, near
 # enough that Chrome still lays out and renders normally.
 OFFSCREEN_ARGS = ("--window-position=-32000,-32000", "--window-size=1280,900")
@@ -107,6 +130,10 @@ class ProbeResult:
     reason: str | None
     content_len: int
     at: str
+    # Defaulted so the four positional-free constructions in the older tests
+    # keep working; `held` is the fourth state the first live morning forced.
+    surface: str = ""
+    held: bool = False
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -187,7 +214,8 @@ def fetch_html(profile_dir, url: str, timeout_ms: int = DEFAULT_TIMEOUT_MS):
 
 
 def probe(name: str, profile_dir, url: str, logged_in_marker: str,
-          timeout_ms: int = DEFAULT_TIMEOUT_MS, fetcher=None) -> ProbeResult:
+          timeout_ms: int = DEFAULT_TIMEOUT_MS, fetcher=None,
+          surface: str = "") -> ProbeResult:
     """One liveness observation for one profile. Read-only by construction.
 
     `fetcher` exists so the empty-versus-broken rule can be tested against THIS
@@ -202,19 +230,21 @@ def probe(name: str, profile_dir, url: str, logged_in_marker: str,
     try:
         html, error = fetcher(profile_dir, url, timeout_ms=timeout_ms)
     except (ProfileRefused, BrowserEnvError) as exc:
+        text = f"{type(exc).__name__}: {exc}"
         return ProbeResult(profile=name, url=url, reachable=False, logged_in=None,
-                           error=f"{type(exc).__name__}: {exc}", reason=None,
-                           content_len=0, at=at)
+                           error=text, reason=None, content_len=0, at=at,
+                           surface=surface, held=_looks_held(text))
     if error is not None:
         return ProbeResult(profile=name, url=url, reachable=False, logged_in=None,
-                           error=error, reason=None, content_len=0, at=at)
+                           error=error, reason=None, content_len=0, at=at,
+                           surface=surface, held=_looks_held(error))
 
     found = logged_in_marker.lower() in html.lower()
     return ProbeResult(
         profile=name, url=url, reachable=True, logged_in=found, error=None,
         reason=None if found else
         f"marker {logged_in_marker!r} absent in {len(html)} bytes of loaded page",
-        content_len=len(html), at=at)
+        content_len=len(html), at=at, surface=surface)
 
 
 def screenshot(profile_dir, url: str, out_path,
@@ -290,12 +320,13 @@ def main(argv=None) -> int:
                   f"declared: {sorted(declared)}", file=sys.stderr)
             return 2
     if cmd == "login":
-        return open_for_manual_login(prof["dir"], prof["liveness_probe"]["url"])
+        return open_for_manual_login(prof["dir"], prof["liveness_probes"][0]["url"])
     if cmd == "probe":
-        result = probe(prof["name"], prof["dir"], prof["liveness_probe"]["url"],
-                       prof["liveness_probe"]["logged_in_marker"])
-        print(json.dumps(result.as_dict(), indent=2))
-        return 0 if result.logged_in else 1
+        results = [probe(prof["name"], prof["dir"], s["url"], s["logged_in_marker"],
+                         surface=s["name"]).as_dict()
+                   for s in prof["liveness_probes"]]
+        print(json.dumps(results, indent=2))
+        return 0
     if cmd == "fetch":
         if len(rest) < 2:
             print("fetch needs a url", file=sys.stderr)
