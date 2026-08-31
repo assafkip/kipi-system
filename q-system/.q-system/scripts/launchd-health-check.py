@@ -199,6 +199,211 @@ def discover_problems():
     return problems
 
 
+# --- the roster: plists ON DISK against the labels launchd actually holds ------
+# ASK-717. `discover_problems` above asks `launchctl list <label>` once PER PLIST,
+# so it can only ever answer questions about labels it already found on disk, and
+# it answers them one verdict at a time. Two things fall through that shape:
+#
+#   1. A deliberate pause has no expiry and no total. `com.cole.delivery-watch` --
+#      the class fix for rca-silent-delivery-class-2026-07-21 -- was swept into a
+#      bulk cole.OFF pause on 2026-07-26, classified `paused`, printed once per
+#      run and never pinged. Measured 2026-08-13: 22 of 26 com.cole plists were
+#      dark and every one of them printed "paused on purpose". 19 days, no page.
+#      22 lines a reader scrolls past is not the same instrument as one line that
+#      says `4 loaded of 26 on disk`.
+#   2. The inverse direction is invisible entirely: a label launchd holds with no
+#      plist behind it survives no reboot and nothing here looks for it.
+#
+# The roster is an INVENTORY, not a verdict, so unlike discover_problems it counts
+# SELF_LABEL too -- omitting the running job makes both totals wrong by one and
+# buys nothing, because an inventory makes no claim a job could be embarrassed by.
+ROSTER_STATE_KEY = "__roster__"
+
+
+def loaded_labels(run=None):
+    """Every label launchd currently holds, from ONE `launchctl list`.
+
+    Returns a set, or None when launchctl could not be read at all. None is NOT
+    an empty set on purpose: an empty set would read as "every job on disk is
+    dark" and page about the entire fleet the first time launchctl is slow.
+    """
+    runner = run or (lambda: subprocess.run(
+        ["launchctl", "list"], capture_output=True, text=True, timeout=15))
+    try:
+        result = runner()
+    except Exception:  # noqa: BLE001
+        return None
+    if result.returncode != 0:
+        return None
+    labels = set()
+    for line in result.stdout.splitlines()[1:]:  # row 0 is the PID/Status/Label header
+        parts = line.split("\t")
+        if len(parts) >= 3 and parts[2].strip():
+            labels.add(parts[2].strip())
+    return labels
+
+
+def roster(prefixes, on_disk, loaded, paused):
+    """Compare plists ON DISK against LOADED labels. Pure; no launchctl, no I/O.
+
+    `dark` and `paused_dark` partition the same set -- on disk, not loaded -- so
+    the report can PAGE on one and only PRINT the other without either becoming
+    invisible. Both stay inside `on_disk`: the count of plists on the filesystem
+    is a fact about the filesystem, and letting the pause ledger shrink it would
+    print "4 on disk, 4 loaded" for the exact machine that had 22 dark jobs.
+    """
+    prefixes = tuple(prefixes)
+    disk = sorted({label for label in on_disk if label.startswith(prefixes)})
+    disk_set = set(disk)
+    live, dark, paused_dark = [], [], []
+    for label in disk:
+        if label in loaded:
+            live.append(label)
+        elif label in paused:
+            paused_dark.append(label)
+        else:
+            dark.append(label)
+    ghost = sorted(label for label in loaded
+                   if label.startswith(prefixes) and label not in disk_set)
+    return {"on_disk": disk, "loaded": live, "dark": dark,
+            "paused_dark": paused_dark, "ghost": ghost}
+
+
+def roster_line(r):
+    """The inventory as one line that names the count BOTH ways.
+
+    A silent shrink is only visible against a denominator: "4 loaded" alone is
+    the same sentence on a healthy fleet and on one that lost 22 jobs. The paused
+    share is named inside the dark total rather than subtracted from it, so a
+    pause can never be mistaken for a job that is running.
+    """
+    return (f"launchd roster: {len(r['on_disk'])} plist(s) on disk, "
+            f"{len(r['loaded'])} loaded, "
+            f"{len(r['dark']) + len(r['paused_dark'])} dark "
+            f"({len(r['paused_dark'])} paused on purpose), "
+            f"{len(r['ghost'])} loaded with no plist")
+
+
+def roster_notify(r, state, now, send=None):
+    """Page on a CHANGE in the roster. Returns (attempted, delivered).
+
+    Both booleans describe THIS run, so a run with nothing to say is
+    (False, False) and the caller's stranded test is `attempted and not
+    delivered`. A sentinel True on the quiet path would have written "delivered"
+    into the state file for a run that sent nothing, which is the phantom receipt
+    this whole file already carries four scars for.
+
+    Recorded SEPARATELY because slack-notify.sh is a silent no-op that STILL
+    EXITS 0 when no webhook resolves. One boolean cannot answer both "did we try"
+    and "did it leave", and a crash between the two writes has to leave the pair
+    reading as stranded, never as delivered -- so `notify_attempted` is written
+    BEFORE the send and `notify_delivered` only after it comes back true.
+
+    Pages on the DELTA, never on the standing set. The 2026-07-26 scar in this
+    file is one manual run firing 26 false pings at a founder who had paused
+    those jobs on purpose; a channel that cries every 12h about 22 deliberate
+    pauses is one the founder learns to ignore, and an ignored channel is the
+    silent-delivery defect wearing a different coat. A newly dark label and a
+    shrinking loaded count are changes. 22 jobs still paused is not.
+    """
+    if send is None:
+        send = send_ping
+    entry = dict(state.get(ROSTER_STATE_KEY, {}))
+    banked_loaded = entry.get("banked_loaded")
+    banked_dark = set(entry.get("banked_dark", []))
+    dark_now = sorted(r["dark"] + r["paused_dark"])
+
+    newly_dark = [label for label in dark_now if label not in banked_dark]
+    # Keyed on the LOADED count, not the dark count. A run where one job goes
+    # dark while another is deliberately paused leaves the dark total flat and
+    # the loaded total down by two, and the loaded total is the one that matters.
+    shrank = banked_loaded is not None and len(r["loaded"]) < banked_loaded
+    never_banked = banked_loaded is None and bool(dark_now)
+    # A ghost is BANKED like the dark set, not treated as standing cause to page.
+    # Caught by the reproducer before this shipped: reading `r["ghost"]` raw made
+    # every run after the first re-page for as long as the ghost existed, which is
+    # the 26-false-pings shape this function's docstring is about.
+    banked_ghost = set(entry.get("banked_ghost", []))
+    new_ghost = [label for label in r["ghost"] if label not in banked_ghost]
+
+    if not (newly_dark or shrank or never_banked or new_ghost):
+        entry["notify_attempted"] = False
+        entry["notify_delivered"] = False
+        entry["checked_at"] = now
+        state[ROSTER_STATE_KEY] = entry
+        return (False, False)
+
+    parts = [roster_line(r)]
+    if shrank:
+        parts.append(f"loaded count FELL from {banked_loaded} to {len(r['loaded'])}")
+    if newly_dark:
+        parts.append("newly dark: " + ", ".join(newly_dark))
+    if new_ghost:
+        parts.append("loaded with no plist on disk: " + ", ".join(new_ghost))
+    message = " -- ".join(parts)
+
+    entry["notify_attempted"] = True
+    entry["notify_delivered"] = False
+    entry["notified_at"] = now
+    state[ROSTER_STATE_KEY] = entry
+
+    try:
+        delivered = bool(send(message))
+    except Exception:  # noqa: BLE001
+        # A raising channel is NOT delivered, and the pair has to survive to say
+        # so. Letting it propagate skipped the caller's write_state entirely, so
+        # the pre-send `notify_attempted` write above was never persisted and the
+        # ordering it exists for bought nothing. Caught by mutant M2, which the
+        # suite could not see until a raising `send` was in the fixtures.
+        delivered = False
+    entry["notify_delivered"] = delivered
+    if delivered:
+        # Banked ONLY on a delivered page. Banking an undelivered one makes the
+        # next run read "unchanged" and the alert is lost for good -- the
+        # record_pings scar (PR #134 round 6) one detector over.
+        entry["banked_loaded"] = len(r["loaded"])
+        entry["banked_dark"] = dark_now
+        entry["banked_ghost"] = list(r["ghost"])
+    state[ROSTER_STATE_KEY] = entry
+    return (True, delivered)
+
+
+def run_roster_check(dry_run):
+    """Print the roster every run; page only on a change. Never raises.
+
+    Printed unconditionally and BEFORE the per-label verdicts, because the number
+    this exists to surface is the one that was missing for 19 days, and a line
+    that only appears on a bad run is a line nobody has a baseline for.
+    """
+    try:
+        loaded = loaded_labels()
+        if loaded is None:
+            print("launchd roster: launchctl unreadable -- roster NOT computed",
+                  file=sys.stderr)
+            return
+        prefixes = load_watched_prefixes()
+        on_disk = [p.stem for prefix in prefixes
+                   for p in LAUNCH_AGENTS.glob(f"{prefix}*.plist")]
+        r = roster(prefixes, on_disk, loaded, load_paused_labels())
+        print(roster_line(r))
+        if dry_run:
+            print(f"[dry] roster would evaluate {len(r['dark']) + len(r['paused_dark'])} "
+                  f"dark job(s) for a page")
+            return
+        state = load_state()
+        attempted, delivered = roster_notify(r, state, int(time.time()))
+        write_state(state)
+        if attempted and not delivered:
+            # Said out loud, because a roster line followed by silence reads
+            # identically whether the founder's phone rang or the webhook is dead.
+            print("launchd roster: a change was due and no channel took it -- "
+                  "NOT banked, the next run re-alerts", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001
+        # A watchdog that dies computing its inventory stops watching launchd,
+        # which is the silent death it exists to catch.
+        print(f"launchd roster COULD NOT RUN: {exc}", file=sys.stderr)
+
+
 def load_state():
     try:
         return json.loads(STATE_FILE.read_text())
@@ -753,6 +958,13 @@ def record_pings(state, due, now, delivered):
 
 
 def run(dry_run):
+    # FIRST, and outside the `if not problems` early return below, because the
+    # roster is the one line that is worth reading on a run where nothing is
+    # wrong. It is the denominator every other line in this output is implicitly
+    # a fraction of, and it was the number missing for the 19 days the delivery
+    # watchdog was dark (ASK-717).
+    run_roster_check(dry_run)
+
     # BEFORE the early return below, not after. `problems` is empty exactly when
     # every watched job is loaded and healthy -- which is the state a job running
     # against an explicit pause decision produces. Wiring the intent check after
@@ -766,7 +978,15 @@ def run(dry_run):
         if dry_run:
             print("all watched launchd jobs healthy (loaded, exit 0)")
         elif STATE_FILE.exists():
-            write_state({})  # everything recovered; clear ping history
+            # PRESERVE THE ROSTER'S BANKED STATE. This cleared the WHOLE dict, and
+            # run_roster_check() writes ROSTER_STATE_KEY earlier in this same run.
+            # discover_problems() does not judge the roster, so a run with a ghost
+            # label but no per-job problem wiped the record that the ghost had
+            # already been paged -- and it paged again on the next cycle, every
+            # cycle, for ever. "Everything recovered" was true of the jobs and false
+            # of the roster.
+            kept = load_state().get(ROSTER_STATE_KEY)
+            write_state({ROSTER_STATE_KEY: kept} if kept else {})
         return
 
     for label, kind, detail in problems:
