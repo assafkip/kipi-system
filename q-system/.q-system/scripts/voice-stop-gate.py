@@ -490,17 +490,34 @@ def resolve_channel_registry(instance_root):
 
 
 def detect_channel(text):
-    """The channel this draft is framed for, or ''. First platform named wins.
+    """The channel the draft is FRAMED for, or ''. Read out of the publish marker.
 
     `_PLAT` already sits inside `_PUBLISH_MARKER_RE`, which matched to get here and then
     throws the platform away. This reads the same vocabulary rather than a second one:
     two lists of channel names is the drift this whole change is about.
+
+    IT MUST NOT BE A FREE SCAN OF THE WHOLE RESPONSE, and it was one until Codex found
+    it on PR #291 (sp-9fd6dafd). `_CHANNEL_RE.search(text)` returned the first platform
+    named ANYWHERE, so a response that mentions LinkedIn as comparison or rewrite
+    context and then ships a Reddit draft was graded against the LinkedIn rulebook --
+    the exact "wrong rulebook, shipped AI-sounding" scar (2026-07-22) this registry
+    exists to close, re-entering through the channel picker.
+
+    So the platform is taken from inside a PUBLISH MARKER match. Markers that name no
+    platform ("here's the draft", "ready to paste") are skipped rather than ending the
+    search, which is what keeps "here's the draft for Twitter" resolving to x.
+
+    Returning '' is the SAFE outcome, not a gap: it routes to the assaf lints, which is
+    what all 26 registry-less instances already do. Guessing a channel off unrelated
+    prose is the direction that misroutes, so framing that names no platform yields no
+    channel even when one is named elsewhere in the message.
     """
-    match = _CHANNEL_RE.search(text or "")
-    if not match:
-        return ""
-    name = match.group(1).lower()
-    return _CHANNEL_ALIASES.get(name, name)
+    for marker in _PUBLISH_MARKER_RE.finditer(text or ""):
+        found = _CHANNEL_RE.search(marker.group(0))
+        if found:
+            name = found.group(1).lower()
+            return _CHANNEL_ALIASES.get(name, name)
+    return ""
 
 
 def channel_surface_lint(registry_path, channel, instance_root):
@@ -662,16 +679,42 @@ def main():
     try:
         violations_output = []
         not_checked = []
+        lint_failures = []
         checks = ([(surface[0], surface[1])] if surface
                   else [(VOICE_LINT, DEFAULT_LINT_INPUT),
                         (SUBSTANCE_LINT, DEFAULT_LINT_INPUT)])
+        # EVERY OUTCOME IS CLASSIFIED, and the else-branch is the fix. Codex MAJOR on
+        # PR #291 (sp-5b4b3c35): this handled 2 and NOT_CHECKED and let every other
+        # exit fall through to the clean path. `run_check` returns 1 for a timeout AND
+        # for an ordinary crash, so a lint that graded nothing reported the draft clean
+        # and it shipped. A gate whose checker crashed has not cleared anything.
+        #
+        # The contract is 0 = pass, 2 = block (skill-hook-pairing.md). Anything else is
+        # the gate NOT KNOWING, and not knowing holds the turn. `code == 2` no longer
+        # requires output either: a lint that blocked without printing was read as
+        # clean, which is the same fail-open wearing a different exit code.
         for script, mode in checks:
             code, out = run_check(script, tmp_path, mode, tmp_json_path)
-            if code == 2 and out:
-                violations_output.append(out)
-            elif code == NOT_CHECKED:
+            if code == NOT_CHECKED:
                 not_checked.append(out)
+            elif code == 0:
+                continue
+            elif code == 2:
+                violations_output.append(out or (
+                    "%s exited 2 (block) without saying why." % script.name))
+            else:
+                lint_failures.append(
+                    "%s exited %s instead of grading this draft.\n%s"
+                    % (script.name, code, out.strip() or "(no output)"))
         report_not_checked(not_checked)
+        if lint_failures:
+            sys.stderr.write(
+                "voice-stop-gate: a voice check FAILED TO RUN, so this draft was "
+                "NOT graded. Holding the turn (fail-closed).\n"
+                "Fix the lint, then complete the turn.\n\n"
+            )
+            for output in lint_failures:
+                sys.stderr.write(output + "\n")
         if violations_output:
             sys.stderr.write(
                 "voice-stop-gate: assistant final message has voice violations.\n"
@@ -685,6 +728,10 @@ def main():
             # file is left alone so the next completed turn surfaces it. Spooling
             # here would spend 3s of torch on a draft the voice gates just
             # refused, which Claude is about to replace.
+            sys.exit(2)
+        if lint_failures:
+            # Same reasoning as the violations path above: no drain, no spool. A
+            # draft nothing graded is not a draft to score.
             sys.exit(2)
     finally:
         for path in (tmp_path, tmp_json_path):

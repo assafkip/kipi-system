@@ -168,6 +168,22 @@ def test_an_unknown_lint_input_holds(tmp_path):
     ("here's the LinkedIn post", "linkedin"),
     ("here's the draft for Twitter", "x"),
     ("here's the fix for the parser", ""),
+    # Codex MAJOR on PR #291 (sp-9fd6dafd): the platform must come from the
+    # PUBLISH framing, not from the first platform named anywhere in the
+    # response. Both of these ship a reddit draft while naming LinkedIn first
+    # as comparison or rewrite context, and both used to route to the LinkedIn
+    # rulebook -- the exact "graded on the wrong rulebook and shipped" scar
+    # (2026-07-22) that this registry exists to close.
+    ("Here is the LinkedIn version context. Here is the reddit post, "
+     "ready to paste:\n\n> draft body", "reddit"),
+    ("I rewrote this from LinkedIn for Reddit. Here is the reddit post, "
+     "ready to paste:\n\n> draft body", "reddit"),
+    # Narrowing control: publish framing that names NO platform yields no
+    # channel even though a platform is named in ordinary prose. "" routes to
+    # the assaf lints, which is what all 26 registry-less instances already do
+    # -- the conservative direction. Guessing a channel off unrelated prose is
+    # the direction that misroutes.
+    ("We talked about LinkedIn earlier. Here's the draft:\n\n> body", ""),
 ])
 def test_detect_channel(text, expected):
     assert gate.detect_channel(text) == expected
@@ -266,3 +282,62 @@ def test_a_broken_registry_holds_the_turn_rather_than_grading_on_assaf(tmp_path)
     assert "channel registry error" in result.stderr
     assert ASSAF_SPOKE not in result.stderr
     assert PERSONA_SPOKE not in result.stderr
+
+
+# --------------------------------------------- claim: a check that cannot run holds ----
+
+NOT_GRADED = "voice-stop-gate: a voice check FAILED TO RUN"
+
+
+def test_a_surface_lint_that_crashes_holds_the_turn(tmp_path):
+    """Codex MAJOR on PR #291 (sp-5b4b3c35): the gate was fail-OPEN on a broken lint.
+
+    `run_check` returns exit code 1 for a timeout and for an ordinary crash, and
+    `main` classified only 2 and NOT_CHECKED. Every other exit fell through to the
+    clean path, so a draft that was never graded reported success and shipped.
+
+    A gate whose checker crashed has not cleared anything. The exit-code contract
+    is 0 = pass and 2 = block; ANY other result is the gate not knowing, and not
+    knowing holds.
+    """
+    _stub_lints(tmp_path)
+    (tmp_path / "persona_lint.py").write_text(
+        "import sys\nsys.stderr.write('BOOM: the lint crashed' + chr(10))\n"
+        "sys.exit(1)\n", encoding="utf-8")
+    _registry(tmp_path, {"voice_ref": "voice", "surface_ref": "persona.md",
+                         "lint": "reddit_persona_lint",
+                         "lint_script": "persona_lint.py", "lint_input": "json_body"})
+    result = _run_gate(tmp_path, DRAFT)
+    assert result.returncode == 2, (
+        "a crashed lint reported the draft clean: " + result.stdout + result.stderr)
+    assert NOT_GRADED in result.stderr, result.stderr
+    assert "BOOM: the lint crashed" in result.stderr, (
+        "the lint's own error was swallowed, so nobody can diagnose it")
+    assert ASSAF_SPOKE not in result.stderr, (
+        "a crashed surface lint silently fell back to the assaf rulebook")
+
+
+def test_a_surface_lint_that_exits_2_with_no_output_still_holds(tmp_path):
+    """Same fail-open class, second shape: `code == 2 and out` required OUTPUT,
+    so a lint that blocked without printing was read as clean."""
+    _stub_lints(tmp_path)
+    (tmp_path / "persona_lint.py").write_text(
+        "import sys\nsys.exit(2)\n", encoding="utf-8")
+    _registry(tmp_path, {"voice_ref": "voice", "surface_ref": "persona.md",
+                         "lint": "reddit_persona_lint",
+                         "lint_script": "persona_lint.py", "lint_input": "json_body"})
+    result = _run_gate(tmp_path, DRAFT)
+    assert result.returncode == 2, result.stdout + result.stderr
+
+
+def test_a_violating_lint_is_not_reported_as_a_crash(tmp_path):
+    """The negative control for both tests above, and the one that keeps the fix
+    from degenerating into "always hold". A lint that RAN and found violations
+    must not be described as one that failed to run, and a lint that exits 0
+    (voice-substance-lint here) must not be counted as a failure at all."""
+    _stub_lints(tmp_path)
+    result = _run_gate(tmp_path, DRAFT)
+    assert result.returncode == 2
+    assert ASSAF_SPOKE in result.stderr
+    assert NOT_GRADED not in result.stderr, (
+        "a clean exit 0 or an honest exit 2 was misreported as a crash")
