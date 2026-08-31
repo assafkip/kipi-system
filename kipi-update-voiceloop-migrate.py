@@ -58,10 +58,15 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
 PLUGIN_PARENT = os.path.join("plugins", "kipi-core")
+# Not in REWRITE_EXTS, deliberately: a backup this script wrote must never become
+# a file a later run rewrites. .bak lands in `history_left`, counted and left
+# alone, which is exactly where a record belongs.
+BACKUP_SUFFIX = ".pre-voiceloop.bak"
 OLD = "voicekit"
 NEW = "voiceloop"
 
@@ -272,8 +277,16 @@ def plan(repo: str) -> dict:
 
 
 def _git(repo: str, *args: str) -> subprocess.CompletedProcess:
+    # errors="replace", and it is load-bearing rather than defensive dressing.
+    # `staged_rewrites` asks for the HEAD and index blobs of every staged path,
+    # and under the default strict decoding a staged BINARY file made subprocess
+    # raise UnicodeDecodeError while merely PLANNING. The updater's dirty guard
+    # permits staged work outside its managed paths, so a staged png is ordinary
+    # and took the whole migration down before it read one source file.
+    # Replacement characters cannot spell the token, so the membership test stays
+    # exact for the text this actually cares about.
     return subprocess.run(["git", "-C", repo, *args],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, errors="replace")
 
 
 def _tracked(repo: str, rel: str) -> bool:
@@ -308,7 +321,7 @@ def apply(repo: str, commit: bool = True) -> dict:
     repo = os.path.abspath(repo)
     p = plan(repo)
     result = {**p, "moved": False, "rewritten": [], "renamed": [], "committed": False,
-              "errors": [], "left_untracked": []}
+              "errors": [], "left_untracked": [], "backed_up": []}
     # Snapshot tracked-ness BEFORE any write, because `git mv` and the rewrites
     # change it. Empty set when this is not a git repo, which makes every path
     # "untracked" and the commit step a no-op -- correct for a scratch copy.
@@ -370,11 +383,35 @@ def apply(repo: str, commit: bool = True) -> dict:
         new_text = swap_tokens(text)
         if new_text == text:
             continue
+        # NOTHING RESTORES WHAT WAS NEVER TRACKED. Codex BLOCKER on PR #292:
+        # rewriting an untracked file in place destroys the only copy of somebody
+        # else's work in progress. Rewriting it is still right, because leaving it
+        # importing a package that no longer exists is the breakage this file
+        # exists to prevent, but making that irreversible is not this script's
+        # call. Tracked files get no backup on purpose: version control already IS
+        # the backup, and a .bak beside all 36 rewritten modules would be litter
+        # in the one instance this runs on.
+        if rel not in tracked_before:
+            keep = path + BACKUP_SUFFIX
+            if not os.path.exists(keep):
+                shutil.copy2(path, keep)
+                result["backed_up"].append(rel + BACKUP_SUFFIX)
         # Atomic per file: a run killed mid-sweep leaves whole files, never a
         # half-written module, and the next run finishes the remainder.
         tmp = path + ".voiceloop-migrate.tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             fh.write(new_text)
+        # CARRY THE MODE ACROSS. Codex MAJOR on PR #292: the temp file is created
+        # at the default 0644 and os.replace puts it over the original, so every
+        # executable this touched came back non-executable. A hook or scheduled
+        # job invoked as a bare path stops running at 0644 and says nothing -- the
+        # failure is silence, not an error -- and .sh is in REWRITE_EXTS by design.
+        try:
+            os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+        except OSError as exc:
+            result["errors"].append(f"chmod {rel}: {exc}")
+            os.unlink(tmp)
+            continue
         os.replace(tmp, path)
         result["rewritten"].append(rel)
 

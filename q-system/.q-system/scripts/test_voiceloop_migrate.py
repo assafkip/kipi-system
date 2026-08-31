@@ -288,6 +288,96 @@ class EngineTest(unittest.TestCase):
         self.assertIn("scratch/wip.py", out["rewritten"])
         self.assertIn("scratch/wip.py", out["left_untracked"])
 
+    def test_an_untracked_file_is_backed_up_before_it_is_rewritten(self):
+        """Codex BLOCKER on PR #292: git cannot restore what it never tracked.
+
+        This module deliberately rewrites untracked files rather than leave them
+        importing a package that no longer exists, and deliberately leaves them
+        untracked. Both halves are right. What was missing is that an untracked
+        file's ORIGINAL bytes exist in exactly one place, so an in-place rewrite
+        of somebody's work in progress is unrecoverable -- `git checkout` restores
+        a tracked file and has nothing to offer here.
+
+        A tracked file gets no backup, on purpose: git already is the backup, and
+        a `.bak` beside every rewritten module would be 36 pieces of litter in the
+        one instance this runs on.
+        """
+        original = "from " + OLD + " import thing\n# my work in progress\n"
+        r = build_instance(os.path.join(self.tmp, "i"), extra=[
+            ("scratch/wip.py", original)])
+        subprocess.run(["git", "-C", r, "init", "-q"], check=True)
+        subprocess.run(["git", "-C", r, "add", "--", "pipeline", "plugins"], check=True)
+        subprocess.run(["git", "-C", r, "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "base"], check=True)
+
+        out = mig.apply(r, commit=True)
+        self.assertTrue(out["verified"], out["errors"])
+        wip = os.path.join(r, "scratch", "wip.py")
+        self.assertIn(NEW, open(wip).read())        # still rewritten
+        self.assertIn("scratch/wip.py", out["left_untracked"])
+
+        backups = out["backed_up"]
+        self.assertTrue(backups, "an untracked file was rewritten with no backup")
+        self.assertEqual(len(backups), 1, backups)
+        kept = os.path.join(r, backups[0])
+        self.assertTrue(os.path.isfile(kept), kept)
+        self.assertEqual(open(kept).read(), original,
+                         "the backup does not hold the original bytes")
+
+        # A TRACKED file gets none, because git already holds its original.
+        self.assertNotIn("pipeline/voice.py", " ".join(backups))
+
+    def test_the_rewrite_preserves_the_executable_bit(self):
+        """Codex MAJOR on PR #292: correct content, inert artifact.
+
+        The rewrite writes a fresh temp file at the default 0644 and os.replace()s
+        it over the original, so every executable it touched came back
+        non-executable. A hook or launchd job invoked as a bare path stops running
+        at 0644 and says nothing -- the failure is silence, not an error. This
+        module rewrites .sh files by design, so it was arming exactly that.
+        """
+        r = build_instance(os.path.join(self.tmp, "i"), extra=[
+            ("bin/run.sh", "#!/bin/bash\nexec python3 -m " + OLD + "\n")])
+        script = os.path.join(r, "bin", "run.sh")
+        os.chmod(script, 0o755)
+        before = os.stat(script).st_mode & 0o777
+        self.assertEqual(before, 0o755)
+
+        out = mig.apply(r, commit=False)
+        self.assertIn("bin/run.sh", out["rewritten"])
+        self.assertIn(NEW, open(script).read())
+        self.assertEqual(os.stat(script).st_mode & 0o777, 0o755,
+                         "the rewrite stripped the executable bit")
+
+    def test_a_staged_binary_file_does_not_crash_planning(self):
+        """Codex MAJOR on PR #292, and this one was introduced by the previous
+        round's fix rather than found in the original.
+
+        `staged_rewrites` asks git for the HEAD and index blobs of every staged
+        path so it can spot a rewrite an interrupted run left behind. It asked
+        through `_git`, which runs with text=True, so a staged BINARY file made
+        subprocess raise UnicodeDecodeError while merely PLANNING. The updater's
+        dirty guard permits staged work outside its managed paths, so a staged
+        png is ordinary and would have taken the whole migration down before it
+        read a single source file.
+        """
+        r = build_instance(os.path.join(self.tmp, "i"))
+        blob = os.path.join(r, "asset.bin")
+        with open(blob, "wb") as fh:
+            fh.write(bytes(range(256)) * 8)         # invalid utf-8 by construction
+        subprocess.run(["git", "-C", r, "init", "-q"], check=True)
+        subprocess.run(["git", "-C", r, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", r, "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "base"], check=True)
+        with open(blob, "wb") as fh:
+            fh.write(bytes(range(255, -1, -1)) * 8)
+        subprocess.run(["git", "-C", r, "add", "--", "asset.bin"], check=True)
+
+        p = mig.plan(r)                              # must not raise
+        self.assertNotIn("asset.bin", p["staged_rewrites"])
+        out = mig.apply(r, commit=True)              # nor must this
+        self.assertTrue(out["verified"], out["errors"])
+
     def test_a_finished_instance_is_still_finished(self):
         """Negative control for the test above: the new signal must not make
         every already-migrated instance look like it needs work."""
