@@ -31,8 +31,8 @@ does not trip `reddit_extension_only_guard.py` either: that hook blocks
 
 ## We identify ourselves truthfully
 
-Since any UA works, there is no reason to wear a costume. `USER_AGENT` names the
-client and gives a contact URL. Impersonating Chrome would be a choice to look
+Since any UA works, there is no reason to wear a costume. `user_agent()` names the
+client, and adds an instance-supplied contact URL when one is configured. Impersonating Chrome would be a choice to look
 like something we are not, made for no benefit, and the tests forbid it.
 
 ## READ ONLY, and structurally so
@@ -74,16 +74,51 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import sys
 import time
+from pathlib import Path
 import urllib.error
 import urllib.request
 
 # Honest identification. Any UA that is not empty and is not curl's default gets
 # a 200, so there is nothing to gain by impersonating a browser and the tests
 # forbid the strings that would.
-USER_AGENT = "kipi-research/1.0 (+https://ktlyst.com; research)"
+#
+# NO COMPANY DOMAIN IN THE SKELETON. This file ships to every instance in the
+# fleet, so a hardcoded contact URL would put ONE founder's domain into the
+# Reddit header of all of them. The skeleton default is the bare form, and that
+# is measured working: `kipi-research/1.0` returned 200 on 2026-08-31.
+#
+# An instance supplies its own contact URL, env first then a file, never
+# raising, which is the resolution order slack_founder.py already uses for
+# credentials. The fallback is the bare identifier and NEVER an empty string:
+# empty and curl-shaped are precisely the two forms measured returning 403, so
+# degrading to either would turn this lane into a 403 generator.
+UA_BASE = "kipi-research/1.0"
+STATE_DIR = Path(os.environ.get("KIPI_STATE_DIR", os.path.expanduser("~/.config/kipi")))
+CONTACT_FILE = Path(os.environ.get("KIPI_RESEARCH_CONTACT_FILE",
+                                   STATE_DIR / "reddit-contact-url"))
+
+
+def _read_contact(path=None) -> str:
+    """An instance's contact URL, or "". Never raises: a missing optional file
+    is a normal state, not a crash inside a scheduled job."""
+    env = os.environ.get("KIPI_RESEARCH_CONTACT_URL", "").strip()
+    if env:
+        return env
+    try:
+        return (path or CONTACT_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def user_agent(contact=None) -> str:
+    """The UA this lane sends. Never empty, never curl-shaped."""
+    contact = _read_contact() if contact is None else contact
+    contact = (contact or "").strip()
+    return f"{UA_BASE} (+{contact}; research)" if contact else UA_BASE
 
 BASE = "https://old.reddit.com"
 
@@ -266,7 +301,7 @@ def build_artifact(read: dict, now: dt.datetime) -> dict:
         "fetched_at": now.isoformat(timespec="seconds"),
         "strategy": strategy,
         "expected_incomplete": strategy in ("large_partial", "unmeasured_band"),
-        "user_agent": USER_AGENT,
+        "user_agent": user_agent(),
         "refused": False,
         "http_status": 200,
     })
@@ -351,7 +386,7 @@ def _refusal(url: str, status, now: dt.datetime) -> dict:
         "declared": None, "fetched": None, "coverage_pct": None, "stubs": None,
         "complete": False, "truncated": None, "anomaly": None,
         "comments": None, "strategy": None, "expected_incomplete": None,
-        "user_agent": USER_AGENT,
+        "user_agent": user_agent(),
     }
 
 
@@ -363,7 +398,7 @@ def read_thread(permalink: str, transport=None, pacer=None, now=None,
     now = now or dt.datetime.now().astimezone()
     url = thread_url(permalink)
     pacer.wait()
-    status, body = transport(url, {"User-Agent": USER_AGENT}, timeout)
+    status, body = transport(url, {"User-Agent": user_agent()}, timeout)
     if status != 200:
         return _refusal(url, status, now)
     artifact = build_artifact(parse_thread(body, url=url), now)
@@ -380,7 +415,7 @@ def read_listing(subreddit: str, period: str = "month", transport=None,
     now = now or dt.datetime.now().astimezone()
     url = listing_url(subreddit, period)
     pacer.wait()
-    status, body = transport(url, {"User-Agent": USER_AGENT}, timeout)
+    status, body = transport(url, {"User-Agent": user_agent()}, timeout)
     if status != 200:
         out = _refusal(url, status, now)
         out["threads"] = None
@@ -400,7 +435,7 @@ def read_listing(subreddit: str, period: str = "month", transport=None,
         "fetched_at": now.isoformat(timespec="seconds"),
         "subreddit": subreddit, "period": period,
         "threads": threads, "thread_count": len(threads),
-        "user_agent": USER_AGENT, "comments": None,
+        "user_agent": user_agent(), "comments": None,
     }
 
 

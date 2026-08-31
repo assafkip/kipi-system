@@ -309,10 +309,53 @@ def test_thread_url_asks_for_limit_500(rr):
 # ---------------------------------------------------------------------------
 
 def test_the_user_agent_identifies_us_and_does_not_impersonate_a_browser(rr):
-    ua = rr.USER_AGENT
+    ua = rr.user_agent()
     assert "kipi-research" in ua
     for spoof in ("Mozilla", "Chrome", "Safari", "AppleWebKit", "Gecko"):
         assert spoof not in ua, f"UA impersonates a browser via {spoof!r}"
+
+
+def test_the_skeleton_default_carries_no_company_domain(rr):
+    """This file ships to every instance in the fleet. A hardcoded contact URL
+    would put ONE founder's domain in all of their Reddit headers. Caught by
+    the skeleton sweep in CI (validate, 2026-08-31); pinned here so it fails in
+    the suite first."""
+    default = rr.user_agent(contact="")
+    assert default == "kipi-research/1.0"
+    # The property is that the DEFAULT embeds no URL. A source-wide domain grep
+    # was the first version of this and it was wrong: the module legitimately
+    # contains old.reddit.com, which is the surface being read, not a contact.
+    assert "://" not in default and "+" not in default
+    assert "://" not in rr.UA_BASE and "." not in rr.UA_BASE.split("/")[0]
+
+
+def test_the_ua_is_never_empty_and_never_curl_shaped(rr):
+    """The two forms measured returning 403 are the empty UA and curl's own.
+    Degrading to either turns this lane into a 403 generator, so the fallback
+    is the bare identifier."""
+    for contact in ("", None, "   "):
+        ua = rr.user_agent(contact=contact) if contact is not None else rr.user_agent(contact="")
+        assert ua.strip(), "empty UA is a measured 403"
+        assert "curl" not in ua.lower(), "curl-shaped UA is a measured 403"
+
+
+def test_an_instance_contact_url_is_picked_up(rr, monkeypatch):
+    monkeypatch.setenv("KIPI_RESEARCH_CONTACT_URL", "https://example.com")
+    assert rr.user_agent() == "kipi-research/1.0 (+https://example.com; research)"
+
+
+def test_env_beats_the_file_and_a_missing_file_never_raises(rr, tmp_path, monkeypatch):
+    """slack_founder.py's resolution order: env first, then a file, never
+    raising, because a missing optional file is a normal state and not a crash
+    inside a scheduled job."""
+    monkeypatch.delenv("KIPI_RESEARCH_CONTACT_URL", raising=False)
+    missing = tmp_path / "nope"
+    assert rr._read_contact(missing) == ""
+    present = tmp_path / "contact"
+    present.write_text("https://file.example\n")
+    assert rr._read_contact(present) == "https://file.example"
+    monkeypatch.setenv("KIPI_RESEARCH_CONTACT_URL", "https://env.example")
+    assert rr._read_contact(present) == "https://env.example"
 
 
 # Leading tokens only. A write function is named for its ACTION and the action
@@ -382,7 +425,7 @@ def test_read_thread_returns_a_full_artifact_from_a_200(rr, real_html):
     assert art["strategy"] == "single"
     assert art["fetched_at"] == "2026-08-31T12:00:00"
     assert "limit=500" in calls[0][0]
-    assert calls[0][1]["User-Agent"] == rr.USER_AGENT
+    assert calls[0][1]["User-Agent"] == rr.user_agent()
     rr.assert_coverage_recorded(art)
 
 

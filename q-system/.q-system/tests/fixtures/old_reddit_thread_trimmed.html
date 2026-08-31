@@ -1,6 +1,23 @@
 <!-- FIXTURE PROVENANCE: real bytes from
      https://old.reddit.com/r/programming/comments/1w3blbq/...?limit=500
-     captured 2026-08-31 with UA 'kipi-research/1.0 (+https://ktlyst.com; research)'.
+     captured 2026-08-31 with UA 'kipi-research/1.0 (+<contact-url>; research)'.
+
+     THE CONTACT URL IS REDACTED, NOT REWRITTEN. It was a company domain.
+     This fixture ships to every instance in the fleet, so the skeleton must
+     not carry one founder's domain -- which is the same finding that moved
+     reddit_read.py's default to the bare `kipi-research/1.0`. Redacting and
+     saying so keeps the record true; substituting a different UA string
+     would have made this header a false statement about what was sent.
+
+     THE BYTES BELOW ARE UNAFFECTED BY THAT REDACTION. The UA does not change
+     the HTML Reddit returns: measured the same day, desktop Chrome got
+     746658 bytes and Python-urllib got 746652 for this same page.
+
+     RECAPTURE WAS ATTEMPTED AND REFUSED. Later on 2026-08-31 every UA tried
+     (bare, with-contact, Chrome, Python-urllib) got HTTP 200 and a 321KB
+     "Welcome to Reddit" interstitial with zero comments -- an IP-level soft
+     block, not a UA one. So this capture could not be retaken, and that is
+     recorded here rather than hidden.
      Live page: 827279 bytes, declared=224, 222 comment ids, 0 stub occurrences.
      THIS FIXTURE IS TRIMMED: three verbatim slices (declared-count region,
      head of the comment area, one morecomments stub). It therefore shows
