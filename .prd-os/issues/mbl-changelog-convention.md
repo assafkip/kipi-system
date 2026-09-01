@@ -1,11 +1,12 @@
 ---
 id: mbl-changelog-convention
 title: Changelog header convention documented once and asserted on the skill this PRD creates
-status: open
+status: in-progress
 priority: p2
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
   - plugins/kipi-core/skills/README.md
+  - plugins/kipi-core/.claude-plugin/plugin.json
   - q-system/.q-system/tests/test_skill_changelog.py
   - q-system/.q-system/capability/expected_tests/q-system__.q-system__tests__test_skill_changelog.py.json
 disallowed_files:
