@@ -578,6 +578,12 @@ def collect_all(now: dt.datetime, log_path=None, budget_s: float = COLLECT_BUDGE
         if result is absent:
             _log_line(log_path, f"optional section {key}: module {stem} absent, not rendered")
             continue
+        if result is None:
+            # The OFF signal (amendment on mbl-board-section-bounded): a present
+            # module that returns None has decided it is switched off, e.g. the
+            # board with no page-id file. Not an error, not "nothing": no section.
+            _log_line(log_path, f"optional section {key}: module {stem} reports off, not rendered")
+            continue
         sources[key] = result
     return sources
 

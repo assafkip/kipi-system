@@ -785,6 +785,28 @@ def test_an_absent_optional_module_renders_no_section_and_logs_once(brief, tmp_p
     assert log.read_text().count("not_built_yet") == 1, "absent module must log exactly once"
 
 
+def test_an_optional_module_returning_none_is_off_not_a_section(brief, tmp_path, monkeypatch):
+    """The registry's OFF signal (amendment on mbl-board-section-bounded): a
+    present module whose collect() returns None has decided it is switched off
+    (the board with no page-id file). No section, no COULD NOT READ, not
+    'nothing'; one log line so the absence is visible."""
+    _all_ok(brief, monkeypatch)
+
+    class Off:
+        @staticmethod
+        def collect(now, sources):
+            return None
+
+    monkeypatch.setattr(brief, "OPTIONAL_SECTIONS", (("notion_board", "board", "Notion board"),))
+    monkeypatch.setattr(brief, "_optional_module", lambda stem: Off)
+    log = tmp_path / "e.log"
+    sources = brief.collect_all(NOW, log_path=log)
+    assert "board" not in sources
+    message, degraded = brief.build(NOW, sources)
+    assert not degraded and "Notion board" not in message
+    assert "board" in log.read_text() and "off" in log.read_text()
+
+
 def test_a_present_optional_module_renders_after_the_fixed_four(brief, tmp_path, monkeypatch):
     _all_ok(brief, monkeypatch)
 

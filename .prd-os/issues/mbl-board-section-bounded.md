@@ -1,19 +1,20 @@
 ---
 id: mbl-board-section-bounded
 title: Notion board as a bounded pre-send section whose status is a line in the brief
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
   - q-system/.q-system/scripts/notion_board.py
   - q-system/.q-system/tests/test_notion_board.py
   - q-system/.q-system/capability/expected_tests/q-system__.q-system__tests__test_notion_board.py.json
+  - q-system/.q-system/scripts/morning-brief.py
+  - q-system/.q-system/tests/test_morning_brief.py
 disallowed_files:
   - .claude/**
   - plugins/prd-os/**
   - .prd-os/**
   - q-consult/**
-  - q-system/.q-system/scripts/morning-brief.py
 required_checks:
   - python3 -m pytest -q q-system/.q-system/tests/test_notion_board.py
 required_reviews: []
