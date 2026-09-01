@@ -1,7 +1,7 @@
 ---
 id: mbl-unknown-term-detector
 title: Unknown-term section with normalization, allowlists and a precision fixture
-status: open
+status: closed
 priority: p1
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
@@ -38,4 +38,4 @@ A registered optional section (module stem unknown_terms, added to OPTIONAL_SECT
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Unknown-term section with normalization, allowlists and a precision fixture
+- [x] Unknown-term section with normalization, allowlists and a precision fixture (unknown_terms.py; 12 tests red-first, precision on the fixture at least 4 of 5 with 0 decoys; mutation proof recorded in the closing commit; 4 Codex findings accepted and patched: per-sentence initial detection, rglob over canonical; plus colon-not-a-boundary, greeting lines and short acronyms dropped, found while fixing them. LIVE EVIDENCE 2026-09-01 22:50 PT dry-run: the section rendered and reported "nothing" against today's calendar (empty) and mail rows; no real unknown surfaced on this day's inbox, recorded as-is, not faked)

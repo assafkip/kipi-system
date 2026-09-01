@@ -61,7 +61,9 @@ def _canonical_vocab(canonical_dir=None) -> set:
     vocab: set = set()
     if not root.is_dir():
         return vocab
-    for path in sorted(root.glob("*.md")):
+    # rglob, not glob: "present anywhere under canonical/" includes nested
+    # directories (both Codex reviewers on this issue, 2026-09-01).
+    for path in sorted(root.rglob("*.md")):
         try:
             vocab.update(w.lower() for w in _WORD.findall(path.read_text(encoding="utf-8")))
         except OSError:
@@ -74,6 +76,8 @@ def _strip_signature(text: str) -> str:
     for line in text.splitlines():
         if _SIGNATURE.match(line.strip()):
             break
+        if _GREETING.match(line):
+            continue  # "Hi Assaf," names a person, never a term
         kept.append(line)
     return "\n".join(kept)
 
@@ -92,26 +96,41 @@ def _mail_fragment(row: str) -> str:
     return _PAREN.sub(" ", body)
 
 
+# Sentence boundaries: terminal punctuation or a line break. NOT a colon: in
+# "Introduction: Quillfeather pilot" the word after the colon is a
+# continuation, and splitting there dropped a planted unknown (measured).
+_SENTENCE_SPLIT = re.compile(r"(?:[.!?]+\s+|\n+)")
+_GREETING = re.compile(r"^\s*(hi|hey|hello|dear|good (morning|afternoon|evening))\b", re.IGNORECASE)
+
+
 def candidate_terms(fragments: list) -> list:
-    """Capitalized tokens, minus sentence-initial ones that never recur."""
+    """Capitalized tokens, minus sentence-initial ones that never recur.
+
+    "Sentence-initial" is judged per SENTENCE, not per fragment (both Codex
+    reviewers on this issue): a fragment is split on sentence punctuation and
+    line breaks first, so "We discussed it. Question remains" drops both
+    "We" and "Question" unless one of them recurs mid-sentence elsewhere."""
     initial, elsewhere = set(), set()
     order: list = []
     for frag in fragments:
         frag = _EMAIL.sub(" ", frag)
-        words = _CAPITALIZED.findall(frag)
-        if not words:
-            continue
-        first_token = _WORD.match(frag.strip())
-        first = first_token.group(0) if first_token else ""
-        for w in words:
-            if w == first and frag.strip().startswith(w):
-                initial.add(w)
-            else:
-                elsewhere.add(w)
-            if w not in order:
-                order.append(w)
-    keep = {w for w in order if w in elsewhere or (w in initial and w in elsewhere)}
-    return [w for w in order if w in keep]
+        for sentence in _SENTENCE_SPLIT.split(frag):
+            sentence = sentence.strip()
+            words = _CAPITALIZED.findall(sentence)
+            if not words:
+                continue
+            first_token = _WORD.match(sentence)
+            first = first_token.group(0) if first_token else ""
+            for w in words:
+                if w.isupper() and len(w) <= 4:
+                    continue  # SOW, CRM, API: an acronym is jargon, not a context gap
+                if w == first and sentence.startswith(w):
+                    initial.add(w)
+                else:
+                    elsewhere.add(w)
+                if w not in order:
+                    order.append(w)
+    return [w for w in order if w in elsewhere]
 
 
 def unknown_terms(fragments: list, canonical_dir=None, cap: int = CAP) -> list:

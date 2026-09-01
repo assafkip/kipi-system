@@ -71,7 +71,10 @@ def test_cap_is_five(mod, tmp_path):
 
 def test_a_term_present_in_canonical_is_not_unknown(mod, tmp_path):
     canon = _canonical(tmp_path, "We work with Brightspeed weekly.\n")
-    src = {"calendar": (["09:00  Brightspeed pilot with Zephyrine (Assaf)"], None), "mail": ([], None)}
+    # Both terms MID-sentence: a sentence-initial term is dropped by a different
+    # rule, and a test that put Brightspeed first passed with the vocabulary
+    # check deleted (mutation survivor, 2026-09-01).
+    src = {"calendar": (["09:00  Pilot kickoff with Brightspeed and Zephyrine (Assaf)"], None), "mail": ([], None)}
     out, _ = mod.collect(NOW, src, canonical_dir=canon)
     assert "Brightspeed" not in out and "Zephyrine" in out
 
@@ -83,6 +86,35 @@ def test_sentence_initial_word_is_dropped_unless_it_recurs(mod, tmp_path):
                                               "Someone  Hyperion again (1h)"], None)}
     out, _ = mod.collect(NOW, src, canonical_dir=canon)
     assert "Question" not in out and "Hyperion" in out
+
+
+def test_sentence_initial_is_judged_per_sentence_not_per_fragment(mod, tmp_path):
+    """Both Codex reviewers on this issue: only the fragment's first token was
+    treated as sentence-initial."""
+    canon = _canonical(tmp_path, "nothing\n")
+    text = "We discussed it. Question remains open.\nNext steps tomorrow. The Zephyrine board is ready."
+    out, _ = mod.collect(NOW, {"calendar": ([], None), "mail": ([], None)}, canonical_dir=canon, texts=[text])
+    assert "Question" not in out and "Next" not in out and "We" not in out
+    assert "Zephyrine" in out
+
+
+def test_colon_is_not_a_sentence_boundary_and_greetings_and_acronyms_are_dropped(mod, tmp_path):
+    canon = _canonical(tmp_path, "nothing\n")
+    src = {"calendar": ([], None), "mail": (["Someone  Introduction: Quillfeather pilot (1h)",
+                                              "Someone  Re: the SOW for Hyperion, again Hyperion (1h)"], None)}
+    out, _ = mod.collect(NOW, src, canonical_dir=canon, texts=["Hi Assaf,\nThe Zephyrine board is ready."])
+    assert "Quillfeather" in out, "a colon must not start a new sentence"
+    assert "Assaf" not in out, "a greeting line names a person"
+    assert "SOW" not in out and "Hyperion" in out and "Zephyrine" in out
+
+
+def test_canonical_vocabulary_includes_nested_directories(mod, tmp_path):
+    canon = _canonical(tmp_path, "nothing\n")
+    (canon / "clients").mkdir()
+    (canon / "clients" / "brightspeed.md").write_text("Brightspeed is a client.\n", encoding="utf-8")
+    src = {"calendar": (["09:00  Pilot kickoff with Brightspeed and Zephyrine (Assaf)"], None), "mail": ([], None)}
+    out, _ = mod.collect(NOW, src, canonical_dir=canon)
+    assert "Brightspeed" not in out and "Zephyrine" in out
 
 
 def test_attendees_and_senders_are_not_terms(mod, tmp_path):
