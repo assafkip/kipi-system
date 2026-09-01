@@ -70,6 +70,13 @@ def test_missing_target_is_unknown(scope):
     assert scope.classify("the brief lists Sana's tickets as mine", "")["verdict"] == "unknown"
 
 
+def test_missing_target_with_roadmap_text_is_roadmap_not_unknown(scope):
+    """The text is evidence on its own; a missing target must not hide it.
+    Both verdicts are refusals for consumers, but the ledger keeps the reason."""
+    out = scope.classify("sell the brief as a product", None)
+    assert out["verdict"] == "roadmap" and out["matched"]
+
+
 # --- system proposals pass ---------------------------------------------------
 
 @pytest.mark.parametrize("text,target", [

@@ -92,17 +92,18 @@ def classify(text: str, declared_target) -> dict:
     """{"verdict": system|roadmap|unknown, "matched": [...], "target": ...}.
 
     Order matters and is the whole point:
-    1. empty text or no target -> unknown (fail closed)
+    1. empty text -> unknown (fail closed; nothing to classify)
     2. a roadmap target -> roadmap, whatever the text says
     3. a roadmap pattern in the text -> roadmap, whatever the target says
+       (including a MISSING target: the text is evidence on its own)
     4. a known system target -> system
-    5. anything else -> unknown
+    5. anything else, including a missing target -> unknown
     """
     target = (declared_target or "").strip().lower() or None
     body = (text or "").strip()
-    if not body or target is None:
+    if not body:
         return {"verdict": "unknown", "matched": [], "target": target,
-                "reason": "empty text or missing target"}
+                "reason": "empty text"}
     if target in ROADMAP_TARGETS:
         return {"verdict": "roadmap", "matched": [f"target:{target}"], "target": target}
     matched = [f"{name}:{rx.pattern}" for name, rxs in _COMPILED.items()
@@ -112,7 +113,7 @@ def classify(text: str, declared_target) -> dict:
     if target in SYSTEM_TARGETS:
         return {"verdict": "system", "matched": [], "target": target}
     return {"verdict": "unknown", "matched": [], "target": target,
-            "reason": f"unrecognised target {target!r}"}
+            "reason": "missing target" if target is None else f"unrecognised target {target!r}"}
 
 
 EXIT = {"system": 0, "roadmap": 2, "unknown": 3}
