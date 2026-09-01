@@ -251,6 +251,63 @@ def test_the_page_is_read_once_before_writing(board, tmp_path):
     assert len(gets) == 2, f"one read to reconcile, one to read back; got {len(gets)}"
 
 
+# --- issue mbl-board-live-readback (Codex finding-6): the live proof, fail-closed
+
+def _page():
+    return [_h("Top of mind", "h1"), _b("real item [ASK-830]", "r1"), _h("This week", "h2"), _h("Inbox", "h3")]
+
+
+def test_live_check_round_trips_a_sentinel_and_removes_it(board, tmp_path, capsys):
+    fake = FakeNotion(_page())
+    rc = board.live_check(opener=fake, **_creds(tmp_path))
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    report = json.loads(out.strip().splitlines()[-1])
+    assert report["ok"] is True and report["page_id"] == "page-1" and report["round_trip_s"] >= 0
+    assert fake.text_under("Top of mind") == ["real item [ASK-830]"], "the sentinel must be removed"
+    methods = [m for m, _, _ in fake.calls]
+    assert "PATCH" in methods and "DELETE" in methods and methods.count("GET") >= 2
+
+
+def test_live_check_missing_credentials_exit_3_with_no_network(board, tmp_path, capsys):
+    fake = FakeNotion(_page())
+    (tmp_path / "notion-token").write_text("t")
+    assert board.live_check(opener=fake, token_file=tmp_path / "notion-token", page_file=tmp_path / "absent") == 3
+    (tmp_path / "notion-board-page").write_text("page-1")
+    assert board.live_check(opener=fake, token_file=tmp_path / "absent", page_file=tmp_path / "notion-board-page") == 3
+    assert fake.calls == []
+    assert "missing" in capsys.readouterr().out
+
+
+def test_live_check_mismatch_exits_2(board, tmp_path, capsys):
+    class Lossy(FakeNotion):
+        def __call__(self, req, timeout):
+            if req.get_method() == "PATCH":
+                self.calls.append(("PATCH-dropped", req.full_url, None))
+                return self._resp({"results": []})
+            return super().__call__(req, timeout)
+    assert board.live_check(opener=Lossy(_page()), **_creds(tmp_path)) == 2
+    assert "sentinel" in capsys.readouterr().out
+
+
+def test_live_check_permission_error_exits_2(board, tmp_path, capsys):
+    import urllib.error
+
+    def forbidden(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 403, "forbidden", {}, None)
+    assert board.live_check(opener=forbidden, **_creds(tmp_path)) == 2
+    assert "403" in capsys.readouterr().out
+
+
+def test_cli_live_check_refuses_under_pytest_and_touches_no_network(tmp_path):
+    import os
+    creds = _creds(tmp_path)
+    env = dict(os.environ, KIPI_STATE_DIR=str(tmp_path))
+    r = subprocess.run([sys.executable, str(MODULE), "--live-check"], capture_output=True, text=True, env=env)
+    assert r.returncode == 3 and "refused" in r.stdout, r.stdout + r.stderr
+    assert creds  # the credential files existed; refusal came from the pytest chokepoint, not from absence
+
+
 def test_never_ask_token_never_ask_page_never_home_literal(board):
     src = MODULE.read_text(encoding="utf-8")
     assert "NOTION_TOKEN_ASK" not in src

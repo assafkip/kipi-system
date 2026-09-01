@@ -302,3 +302,72 @@ def collect(now, sources: dict, opener=None, budget_s: float = BUDGET_S,
     if seen != lines:
         return [], f"read-back mismatch: wrote {len(lines)} line(s), page shows {len(seen)}"
     return ["board: written, read-back ok"], None
+
+
+# ---------------------------------------------------------------------------
+# The live proof (issue mbl-board-live-readback, Codex finding-6)
+# ---------------------------------------------------------------------------
+
+EXIT_OK, EXIT_MISMATCH, EXIT_NO_CREDENTIAL = 0, 2, 3
+
+
+def live_check(opener=None, token_file=None, page_file=None, out=print) -> int:
+    """Write ONE sentinel bullet under Top of mind, read it back, delete it,
+    read back again. Prints a JSON report and returns 0 ok, 2 mismatch or
+    Notion error, 3 missing credential. This is the issue's bypass_check: it
+    fails closed without the founder's token, so the issue cannot close on a
+    fake opener (a-write-only-integration-cannot-report-state)."""
+    try:
+        token, page_id = _credentials(token_file, page_file)
+    except NotionError as exc:
+        out(json.dumps({"ok": False, "reason": str(exc)}))
+        return EXIT_NO_CREDENTIAL
+    if page_id is None:
+        out(json.dumps({"ok": False, "reason": "notion-board-page missing"}))
+        return EXIT_NO_CREDENTIAL
+    if opener is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        out(json.dumps({"ok": False, "reason": "refused: running under pytest; the live board is never written by a test"}))
+        return EXIT_NO_CREDENTIAL
+    sentinel = f"kipi live-check {time.strftime('%Y-%m-%dT%H:%M:%S')}"
+    started = time.monotonic()
+    try:
+        buckets = parse_buckets(read_page(token, page_id, opener))
+        if any(buckets[b]["heading_id"] is None for b in BUCKETS):
+            _request(token, "PATCH", f"/blocks/{page_id}/children",
+                     {"children": [_heading(b) for b in BUCKETS if buckets[b]["heading_id"] is None]}, opener)
+            buckets = parse_buckets(read_page(token, page_id, opener))
+        _request(token, "PATCH", f"/blocks/{page_id}/children",
+                 {"children": [_bullet(sentinel)], "after": buckets[TOP]["heading_id"]}, opener)
+        after_write = parse_buckets(read_page(token, page_id, opener))[TOP]["items"]
+        hits = [bid for bid, text in after_write if text == sentinel]
+        if not hits:
+            out(json.dumps({"ok": False, "page_id": page_id, "reason": "sentinel not found on read-back"}))
+            return EXIT_MISMATCH
+        for bid in hits:
+            _request(token, "DELETE", f"/blocks/{bid}", opener=opener)
+        after_delete = parse_buckets(read_page(token, page_id, opener))[TOP]["items"]
+        if any(text == sentinel for _, text in after_delete):
+            out(json.dumps({"ok": False, "page_id": page_id, "reason": "sentinel still present after delete"}))
+            return EXIT_MISMATCH
+    except NotionError as exc:
+        out(json.dumps({"ok": False, "page_id": page_id, "reason": str(exc)}))
+        return EXIT_MISMATCH
+    out(json.dumps({"ok": True, "page_id": page_id,
+                    "round_trip_s": round(time.monotonic() - started, 3)}))
+    return EXIT_OK
+
+
+def main(argv=None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description="Notion morning board (registered section of the morning brief)")
+    ap.add_argument("--live-check", action="store_true",
+                    help="write a sentinel to the live board, read it back, delete it; exit 0/2/3")
+    args = ap.parse_args(argv)
+    if args.live_check:
+        return live_check()
+    ap.print_help()
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
