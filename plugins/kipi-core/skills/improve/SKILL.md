@@ -52,6 +52,4 @@ that is a conversation, not this skill.
 
 ## Changelog
 
-- 2026-09-01: created (prd-morning-brief-learns, issue mbl-improve-skill).
-  Verdicts cite a lessons path or a named file; corpora contract via
-  KIPI_LESSONS_CORPORA; roadmap ideas skip by classifier, never by judgment.
+- 2026-09-01: created (prd-morning-brief-learns, issue mbl-improve-skill). Verdicts cite a lessons path or a named file; corpora contract via KIPI_LESSONS_CORPORA; roadmap ideas skip by classifier, never by judgment; one line per entry because test_skill_changelog.py reads each line.
