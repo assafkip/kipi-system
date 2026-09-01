@@ -51,7 +51,12 @@ ROADMAP_PATTERNS = {
     "PRODUCT": [
         r"\bsell(ing)?\b",
         r"\bmoneti[sz]e\b",
-        r"\b(launch|ship|build|offer)\b[^.]{0,40}\b(product|feature|tier|plan|app|saas|template|package|service)\b",
+        # Nouns here are things one SELLS. "plan", "feature" and "service" were
+        # in this list and made "build a test plan for the owner rule" roadmap
+        # (Codex adversarial finding on this issue, 2026-09-01); they are
+        # ordinary engineering words and are out.
+        r"\b(launch|ship|build|offer)\b[^.]{0,40}\b(product|app|saas|template|package|offering|paid tier)\b",
+        r"\b(feature|service)\s+for\s+(customers|clients|users|buyers)\b",
         r"\b(paid|premium|pro)\s+(tier|plan|version)\b",
         r"\bcustomers?\s+(want|need|would pay)\b",
         r"\b(market|position)\s+(it|this|the)\b",

@@ -1,7 +1,7 @@
 ---
 id: mbl-roadmap-scope-classifier
 title: One deterministic roadmap-scope classifier, fail-closed, shared by every consumer
-status: open
+status: closed
 priority: p0
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
@@ -35,4 +35,4 @@ RED first: classify(text, declared_target) returns roadmap for a product proposa
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] One deterministic roadmap-scope classifier, fail-closed, shared by every consumer
+- [x] One deterministic roadmap-scope classifier, fail-closed, shared by every consumer (roadmap_scope.py; 22 tests red-first; 4 mutants killed; 3 Codex findings accepted and patched; fleet class sp-fe30f231 captured)
