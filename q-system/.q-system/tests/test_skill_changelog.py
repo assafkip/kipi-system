@@ -76,6 +76,25 @@ def test_no_wildcard_in_this_issues_scope():
     assert not any(a.endswith("SKILL.md") for a in allowed), "this issue edits no skill file"
 
 
+def _git(*args):
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+
+
+def test_no_existing_skill_file_was_modified_by_this_issue():
+    """Read git, not the spec (both Codex reviewers on this issue: a declared
+    scope proves nothing about the diff). Two checks: no commit that names this
+    issue touches a pre-existing SKILL.md, and while the issue is active the
+    working tree carries no SKILL.md change."""
+    status, _ = _spec(THIS_ISSUE)
+    for path in _tracked_skill_files():
+        rel = str(path.relative_to(ROOT))
+        touching = _git("log", "--format=%s", "--", rel)
+        assert THIS_ISSUE.stem not in touching, f"{rel} was modified by a commit of {THIS_ISSUE.stem}"
+    if status == "in-progress":
+        dirty = _git("diff", "HEAD", "--name-only").split() + _git("diff", "--cached", "--name-only").split()
+        assert not [p for p in dirty if p.endswith("/SKILL.md")], dirty
+
+
 def test_every_changelog_section_that_exists_is_well_formed():
     """Applies to any skill that adopted the section; a malformed one fails."""
     for path in _tracked_skill_files():
@@ -103,8 +122,21 @@ def test_improve_skill_carries_the_header_once_its_owner_closes():
 
 
 def test_this_file_runs_its_own_tests_under_python3():
-    r = subprocess.run([sys.executable, __file__, "-k", "no_such_test_zzz"], capture_output=True, text=True)
-    assert r.returncode != 0
+    """runner=python3 means `python3 <this file>` IS the run. Two halves, both
+    needed (Codex minor on this issue: a nonexistent -k returns nonzero even
+    when the real tests are broken): the plain run exits 0 only because tests
+    were collected AND passed (pytest exits 5 on zero collected), and a
+    selection that matches nothing exits nonzero. The inner run skips this
+    test via an env var so it does not recurse."""
+    import os
+    if os.environ.get("KIPI_SELFTEST_INNER"):
+        pytest.skip("inner run")
+    env = dict(os.environ, KIPI_SELFTEST_INNER="1")
+    ok = subprocess.run([sys.executable, __file__], capture_output=True, text=True, env=env)
+    assert ok.returncode == 0, ok.stdout[-600:]
+    assert "passed" in ok.stdout, "no test ran under python3 <file>"
+    none = subprocess.run([sys.executable, __file__, "-k", "no_such_test_zzz"], capture_output=True, text=True, env=env)
+    assert none.returncode != 0
 
 
 if __name__ == "__main__":

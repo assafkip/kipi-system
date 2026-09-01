@@ -1,7 +1,7 @@
 ---
 id: mbl-changelog-convention
 title: Changelog header convention documented once and asserted on the skill this PRD creates
-status: in-progress
+status: closed
 priority: p2
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
@@ -36,4 +36,19 @@ README.md states the convention (a '## Changelog' section with dated lines, newe
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Changelog header convention documented once and asserted on the skill this PRD creates
+- [x] Changelog header convention documented once and asserted on the skill this PRD creates (README + test_skill_changelog.py; test_no_existing_skill_file_was_modified_by_this_issue reads git log and the working tree; kipi-core 1.9.1 via a recorded scope amendment; 3 Codex findings accepted and patched)
+
+## Amendments
+
+### 2026-09-01T22:40:06Z
+Reason: pre-commit gate plugin-version-bump refuses any change under plugins/kipi-core without a plugin.json version bump; the PRD manifest omitted plugins/kipi-core/.claude-plugin/plugin.json for both plugin-touching issues (this one and mbl-improve-skill). Release state is Sana's call per the founder's routing note (plan Phase 3), so the amendment is recorded here rather than routed to the founder.
+
+Before:
+- allowed_files: ['plugins/kipi-core/skills/README.md', 'q-system/.q-system/tests/test_skill_changelog.py', 'q-system/.q-system/capability/expected_tests/q-system__.q-system__tests__test_skill_changelog.py.json']
+- required_checks: ['python3 -m pytest -q q-system/.q-system/tests/test_skill_changelog.py']
+- disallowed_files: ['.claude/**', 'plugins/prd-os/**', '.prd-os/**', 'plugins/kipi-core/skills/*/SKILL.md']
+
+After:
+- allowed_files: ['plugins/kipi-core/skills/README.md', 'plugins/kipi-core/.claude-plugin/plugin.json', 'q-system/.q-system/tests/test_skill_changelog.py', 'q-system/.q-system/capability/expected_tests/q-system__.q-system__tests__test_skill_changelog.py.json']
+- required_checks: ['python3 -m pytest -q q-system/.q-system/tests/test_skill_changelog.py']
+- disallowed_files: ['.claude/**', 'plugins/prd-os/**', '.prd-os/**', 'plugins/kipi-core/skills/*/SKILL.md']
