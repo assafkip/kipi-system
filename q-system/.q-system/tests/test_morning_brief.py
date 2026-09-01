@@ -568,3 +568,195 @@ def test_owed_still_separates_broken_from_empty_after_the_reshape(brief, tmp_pat
     assert empty_error is None
     assert brief._section("Owed today", rows, error) != brief._section(
         "Owed today", empty_rows, empty_error)
+
+
+# --------------------------------------------------------------------------
+# Phase 2, issue mbl-brief-core (prd-morning-brief-learns-2026-09-01, finding-2).
+# Three groups, all seen RED before the code existed:
+#   WITHHELD  -- the lead tier stops at three and SAYS how many it withheld,
+#                split by source from provenance tags (finding-15).
+#   ISOLATION -- a collector that raises costs its own section only, and the
+#                exception MESSAGE never reaches the founder-facing brief
+#                (finding-14: a mail/HTTP error can carry a token or a URL).
+#   REGISTRY  -- optional sections register once and ride the same guard, so
+#                no later issue edits this file (the single-owner rule).
+# --------------------------------------------------------------------------
+
+LEAD_FIXTURE = [
+    ("ASK-1", "sign the SOW", ["owner:assaf"], None),
+    ("ASK-2", "overdue thing", [], "2026-08-10"),
+    ("ASK-6", "answer the auditor", ["owner:assaf"], None),
+    ("ASK-7", "due yesterday", [], "2026-08-29"),
+]
+
+
+def _five_leads(brief, tmp_path):
+    _loops_at(tmp_path, [
+        {"id": "L1", "title": "reply to Ally", "status": "open", "needs_founder": True},
+    ])
+    nodes = [_issue(i, t, labels=l, due=d) for i, t, l, d in LEAD_FIXTURE]
+    nodes.append(_issue("ASK-9", "sana eng", labels=["owner:sana"]))
+    return brief.collect_owed(
+        NOW, qroot=tmp_path,
+        graphql=lambda q, v: {"viewer": {"assignedIssues": {"nodes": nodes}}})
+
+
+def test_owed_withheld_count_is_stated_and_split_by_source(brief, tmp_path):
+    rows, error = _five_leads(brief, tmp_path)
+    assert error is None
+    leads = [r for r in rows if r.startswith(("DUE", "ASK-", "loop "))]
+    assert len(leads) == 3, f"lead tier must stop at three, got {leads}"
+    withheld = [r for r in rows if r.startswith("withheld")]
+    assert withheld == ["withheld 2 more: 1 in Linear, 1 in open-loops"], rows
+    # The counted tail (Sana's queue) survives the reshape and stays after the
+    # withheld line: a count, never a task.
+    assert any("owner:sana" in r for r in rows)
+    assert rows.index(withheld[0]) < rows.index(
+        [r for r in rows if "owner:sana" in r][0])
+
+
+def test_owed_three_or_fewer_leads_has_no_withheld_line(brief, tmp_path):
+    _loops_at(tmp_path, [])
+    nodes = [_issue("ASK-1", "sign the SOW", labels=["owner:assaf"])]
+    rows, error = brief.collect_owed(
+        NOW, qroot=tmp_path,
+        graphql=lambda q, v: {"viewer": {"assignedIssues": {"nodes": nodes}}})
+    assert error is None
+    assert not any(r.startswith("withheld") for r in rows)
+
+
+def test_owed_items_carry_provenance_tags(brief, tmp_path):
+    """The split is DERIVED from tags on structured items, never guessed from
+    the rendered strings (finding-15)."""
+    _loops_at(tmp_path, [
+        {"id": "L1", "title": "reply to Ally", "status": "open", "needs_founder": True},
+    ])
+    nodes = [_issue("ASK-1", "sign the SOW", labels=["owner:assaf"])]
+    items, tail, errors = brief.owed_items(
+        NOW, qroot=tmp_path,
+        graphql=lambda q, v: {"viewer": {"assignedIssues": {"nodes": nodes}}})
+    assert errors == []
+    assert sorted(i["source"] for i in items) == ["linear", "loops"]
+    assert all(set(i) >= {"source", "text"} for i in items)
+
+
+def _all_ok(brief, monkeypatch):
+    ok = lambda *a, **k: (["fine"], None)  # noqa: E731
+    for name in ("collect_calendar", "collect_mail", "collect_owed", "collect_overnight"):
+        monkeypatch.setattr(brief, name, ok)
+
+
+def test_a_raising_collector_costs_its_own_section_only(brief, tmp_path, monkeypatch):
+    log = tmp_path / "morning-brief-errors.log"
+
+    def boom(*a, **k):
+        raise RuntimeError("token=abc123 leaked")
+
+    _all_ok(brief, monkeypatch)
+    monkeypatch.setattr(brief, "collect_mail", boom)
+    monkeypatch.setattr(brief, "OPTIONAL_SECTIONS", ())
+    sources = brief.collect_all(NOW, log_path=log)
+    message, degraded = brief.build(NOW, sources)
+    assert degraded
+    assert message.count("fine") == 3, "the healthy sections did not render"
+    assert "COULD NOT READ: mail failed (RuntimeError)" in message
+    assert "abc123" not in message, "an exception message reached the brief"
+    assert "abc123" in log.read_text(), "the message was not kept in the local log"
+
+
+def test_a_collector_past_its_budget_is_a_timeout_not_a_hang(brief, tmp_path, monkeypatch):
+    import time
+
+    def slow(*a, **k):
+        time.sleep(0.5)
+        return (["late"], None)
+
+    _all_ok(brief, monkeypatch)
+    monkeypatch.setattr(brief, "collect_owed", slow)
+    monkeypatch.setattr(brief, "OPTIONAL_SECTIONS", ())
+    sources = brief.collect_all(NOW, log_path=tmp_path / "e.log", fixed_budget_s=0.05)
+    rows, error = sources["owed"]
+    assert rows == [] and "timed out" in error and "0.05" in error
+
+
+def test_fixed_collectors_are_unbounded_by_default_and_optional_ones_are_not(brief, tmp_path, monkeypatch):
+    """First live dry-run 2026-09-01: mail shells claude -p and needs more than
+    20s. The 20s bound is for optional sections (the board), never the four."""
+    import time
+    _all_ok(brief, monkeypatch)
+
+    def slow_mail(*a, **k):
+        time.sleep(0.2)
+        return (["slow but fine"], None)
+
+    class SlowMod:
+        @staticmethod
+        def collect(now, sources):
+            time.sleep(0.2)
+            return (["late"], None)
+
+    monkeypatch.setattr(brief, "collect_mail", slow_mail)
+    monkeypatch.setattr(brief, "OPTIONAL_SECTIONS", (("slow_mod", "slow", "Slow"),))
+    monkeypatch.setattr(brief, "_optional_module", lambda stem: SlowMod)
+    sources = brief.collect_all(NOW, log_path=tmp_path / "e.log", budget_s=0.05)
+    assert sources["mail"] == (["slow but fine"], None), "a fixed collector was cut off by the optional budget"
+    assert "timed out" in sources["slow"][1]
+
+
+def test_every_registered_section_is_guarded(brief, tmp_path, monkeypatch):
+    """Enumerate SECTIONS + OPTIONAL_SECTIONS from the module (never a copy in
+    the test) and prove each one is behind the guard."""
+
+    class FakeMod:
+        @staticmethod
+        def collect(now, sources):
+            raise RuntimeError("secret=xyz")
+
+    monkeypatch.setattr(brief, "OPTIONAL_SECTIONS",
+                        (("fake_section", "fake", "Fake section"),))
+    monkeypatch.setattr(brief, "_optional_module", lambda stem: FakeMod)
+    keys = [k for k, _ in brief.SECTIONS] + [k for _, k, _ in brief.OPTIONAL_SECTIONS]
+    assert len(keys) >= 5 and "fake" in keys
+    for victim in keys:
+        _all_ok(brief, monkeypatch)
+        if victim != "fake":
+            def boom(*a, **k):
+                raise RuntimeError("secret=xyz")
+            monkeypatch.setattr(brief, f"collect_{victim}", boom)
+        sources = brief.collect_all(NOW, log_path=tmp_path / "e.log")
+        message, degraded = brief.build(NOW, sources)
+        assert degraded, victim
+        assert f"COULD NOT READ: {victim} failed (RuntimeError)" in message, victim
+        assert "xyz" not in message, victim
+
+
+def test_an_absent_optional_module_renders_no_section_and_logs_once(brief, tmp_path, monkeypatch):
+    _all_ok(brief, monkeypatch)
+    monkeypatch.setattr(brief, "OPTIONAL_SECTIONS",
+                        (("not_built_yet", "ghost", "Ghost section"),))
+    monkeypatch.setattr(brief, "_optional_module", lambda stem: None)
+    log = tmp_path / "e.log"
+    sources = brief.collect_all(NOW, log_path=log)
+    assert "ghost" not in sources, "an absent module must not produce a section"
+    message, degraded = brief.build(NOW, sources)
+    assert not degraded
+    assert "Ghost section" not in message
+    assert log.read_text().count("not_built_yet") == 1, "absent module must log exactly once"
+
+
+def test_a_present_optional_module_renders_after_the_fixed_four(brief, tmp_path, monkeypatch):
+    _all_ok(brief, monkeypatch)
+
+    class Mod:
+        @staticmethod
+        def collect(now, sources):
+            assert sources["owed"] == (["fine"], None), "optional sections see the fixed four"
+            return (["Widgetcorp"], None)
+
+    monkeypatch.setattr(brief, "OPTIONAL_SECTIONS",
+                        (("unknown_terms", "unknown_terms", "Terms I do not know"),))
+    monkeypatch.setattr(brief, "_optional_module", lambda stem: Mod)
+    sources = brief.collect_all(NOW, log_path=tmp_path / "e.log")
+    message, degraded = brief.build(NOW, sources)
+    assert not degraded
+    assert message.index("Overnight") < message.index("Terms I do not know") < message.index("Widgetcorp")

@@ -56,6 +56,7 @@ so each section gets its own call.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import datetime as dt
 import importlib.util
 import json
@@ -264,6 +265,38 @@ def collect_owed(now: dt.datetime, qroot=None, graphql=None):
     silently dropped. Counted, never hidden -- dropping them would make this
     function lie by omission, which is the same defect as a silent zero.
     """
+    items, tail, errors = owed_items(now, qroot=qroot, graphql=graphql)
+    # LEAD_CAP is the Phase 2 narrowing (plan item 2e, decided by convergence:
+    # Bloom reads one board of three, Carson's watchdog collapses to three).
+    # The withheld line is NOT optional: a truncation that hides its own
+    # truncation is the defect (finding-15 asked that the split be DERIVED from
+    # the item tags rather than guessed from rendered strings).
+    rows = [i["text"] for i in items[:LEAD_CAP]]
+    withheld = items[LEAD_CAP:]
+    if withheld:
+        n_linear = sum(1 for i in withheld if i["source"] == "linear")
+        n_loops = sum(1 for i in withheld if i["source"] == "loops")
+        rows.append(f"withheld {len(withheld)} more: {n_linear} in Linear, "
+                    f"{n_loops} in open-loops")
+    # The tail goes LAST and reads as a count, never as a task. It stays because
+    # 50 issues labelled owner:sana sitting on the founder's assignee is itself
+    # the finding; deleting the line would hide it the morning after it is fixed
+    # and every morning it is not.
+    if tail["sana"]:
+        rows.append(f"({tail['sana']} more assigned to you but labelled {SANA_LABEL} "
+                    f"-- Sana's queue, not yours)")
+    if tail["other"]:
+        rows.append(f"({tail['other']} more assigned to you with no owner label)")
+    return rows, ("; ".join(errors) if errors else None)
+
+
+LEAD_CAP = 3
+
+
+def owed_items(now: dt.datetime, qroot=None, graphql=None):
+    """(items, tail, errors). Structured, provenance-tagged; rendering is
+    collect_owed's job. Each item is {"source": "linear"|"loops", "text": str};
+    tail counts the groups that are counted-not-listed."""
     qroot = Path(qroot) if qroot else QROOT
     lead, errors = [], []
     sana_count = other_count = 0
@@ -285,9 +318,9 @@ def collect_owed(now: dt.datetime, qroot=None, graphql=None):
                 ident = n.get("identifier")
                 title = str(n.get("title", ""))[:80]
                 if due and due <= today:
-                    lead.append(f"DUE {due}  {ident}  {title}")
+                    lead.append({"source": "linear", "text": f"DUE {due}  {ident}  {title}"})
                 elif FOUNDER_LABEL in labels:
-                    lead.append(f"{ident}  {title}")
+                    lead.append({"source": "linear", "text": f"{ident}  {title}"})
                 elif SANA_LABEL in labels:
                     sana_count += 1
                 else:
@@ -307,21 +340,12 @@ def collect_owed(now: dt.datetime, qroot=None, graphql=None):
         else:
             for loop in loops:
                 if loop.get("status") == "open" and loop.get("needs_founder"):
-                    lead.append(f"loop {loop.get('id')}  {str(loop.get('title', ''))[:80]}")
+                    lead.append({"source": "loops",
+                                 "text": f"loop {loop.get('id')}  {str(loop.get('title', ''))[:80]}"})
     except Exception as exc:  # noqa: BLE001
         errors.append(f"loops: {type(exc).__name__}: {str(exc)[:120]}")
 
-    # The tail goes LAST and reads as a count, never as a task. It stays because
-    # 50 issues labelled owner:sana sitting on the founder's assignee is itself
-    # the finding; deleting the line would hide it the morning after it is fixed
-    # and every morning it is not.
-    rows = list(lead)
-    if sana_count:
-        rows.append(f"({sana_count} more assigned to you but labelled {SANA_LABEL} "
-                    f"-- Sana's queue, not yours)")
-    if other_count:
-        rows.append(f"({other_count} more assigned to you with no owner label)")
-    return rows, ("; ".join(errors) if errors else None)
+    return lead, {"sana": sana_count, "other": other_count}, errors
 
 
 # ---------------------------------------------------------------------------
@@ -424,8 +448,71 @@ SECTIONS = (
 )
 
 
+# Optional sections live in their OWN sibling modules and register here, once.
+# Each module exposes `collect(now, sources) -> (rows, error)` and receives the
+# fixed four sections already collected. Why a registry and not more code in
+# collect_all(): Codex finding-2 on prd-morning-brief-learns (2026-09-01) --
+# four issues were about to edit this file, which is the serialization hazard
+# the single-owner rule exists to remove. A module that is absent renders no
+# section and logs ONE line; absent is not "nothing", and it is not an error.
+OPTIONAL_SECTIONS = (
+    ("unknown_terms", "unknown_terms", "Terms I do not know"),
+    ("notion_board", "board", "Notion board"),
+)
+
+ERROR_LOG = STATE_DIR / "logs" / "morning-brief-errors.log"
+COLLECT_BUDGET_S = 20.0
+
+
+def _optional_module(stem: str):
+    """The module for an optional section, or None when its file is absent.
+    Separate from _load_sibling so a test can swap it without touching disk."""
+    path = HERE / f"{stem}.py"
+    if not path.is_file():
+        return None
+    return _load_sibling(stem, f"{stem}.py")
+
+
+def _log_line(log_path, text: str) -> None:
+    try:
+        path = Path(log_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(f"{dt.datetime.now().isoformat(timespec='seconds')} {text}\n")
+    except OSError:
+        pass  # the log is diagnostic; losing it must not cost the brief
+
+
+def _guarded(key: str, fn, budget_s: float, log_path) -> tuple:
+    """Run one collector behind the boundary every section shares.
+
+    Two rules, both from Codex findings on prd-morning-brief-learns:
+    - finding-14: the exception MESSAGE never reaches the founder-facing brief.
+      A mail/HTTP/parser error can carry a token, a URL or a payload fragment.
+      The brief gets `<key> failed (<Type>)`; the message goes to the local log.
+    - finding-4: a collector is bounded. The board writer runs here, before the
+      Slack send, so a hung Notion call must cost at most `budget_s`, never the
+      morning. The worker thread is abandoned on timeout; the brief moves on.
+    """
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        future = pool.submit(fn)
+        try:
+            return future.result(timeout=budget_s)
+        except concurrent.futures.TimeoutError:
+            _log_line(log_path, f"{key}: timed out after {budget_s}s")
+            return [], f"{key} timed out ({budget_s}s)"
+        except Exception as exc:  # noqa: BLE001
+            _log_line(log_path, f"{key}: {type(exc).__name__}: {exc}")
+            return [], f"{key} failed ({type(exc).__name__})"
+    finally:
+        pool.shutdown(wait=False)
+
+
 def build(now: dt.datetime, sources: dict):
-    """(message, degraded). `sources` maps section key -> (rows, error)."""
+    """(message, degraded). `sources` maps section key -> (rows, error).
+    The fixed four always render; an optional section renders only when it
+    was collected (an absent module produces no key, and no section)."""
     lines = [f"*Morning brief* {now.strftime('%A %Y-%m-%d')} "
              f"(built {now.strftime('%H:%M %Z')})", ""]
     degraded = False
@@ -435,16 +522,41 @@ def build(now: dt.datetime, sources: dict):
             degraded = True
         lines += _section(title, rows, error)
         lines.append("")
+    for _stem, key, title in OPTIONAL_SECTIONS:
+        if key not in sources:
+            continue
+        rows, error = sources[key]
+        if error:
+            degraded = True
+        lines += _section(title, rows, error)
+        lines.append("")
     return "\n".join(lines).rstrip(), degraded
 
 
-def collect_all(now: dt.datetime) -> dict:
-    return {
-        "calendar": collect_calendar(now),
-        "mail": collect_mail(now),
-        "owed": collect_owed(now),
-        "overnight": collect_overnight(now),
-    }
+def collect_all(now: dt.datetime, log_path=None, budget_s: float = COLLECT_BUDGET_S,
+                fixed_budget_s=None) -> dict:
+    """`budget_s` bounds the OPTIONAL sections (the board's Notion round trip,
+    finding-4). The fixed four bound themselves: calendar and mail shell
+    `claude -p` under CLAUDE_TIMEOUT, and the first live dry-run of this code
+    (2026-09-01) showed mail alone needs more than 20s, so a shared 20s bound
+    would have cost the founder his mail every morning. `fixed_budget_s` exists
+    so a test can prove the timeout path without waiting on a real collector."""
+    log_path = log_path or ERROR_LOG
+    fixed = (
+        ("calendar", lambda: collect_calendar(now)),
+        ("mail", lambda: collect_mail(now)),
+        ("owed", lambda: collect_owed(now)),
+        ("overnight", lambda: collect_overnight(now)),
+    )
+    sources = {key: _guarded(key, fn, fixed_budget_s, log_path) for key, fn in fixed}
+    for stem, key, _title in OPTIONAL_SECTIONS:
+        mod = _optional_module(stem)
+        if mod is None:
+            _log_line(log_path, f"optional section {key}: module {stem} absent, not rendered")
+            continue
+        sources[key] = _guarded(key, lambda m=mod: m.collect(now, dict(sources)),
+                                budget_s, log_path)
+    return sources
 
 
 # ---------------------------------------------------------------------------
