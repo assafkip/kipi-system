@@ -1,7 +1,7 @@
 ---
 id: mbl-brief-core
 title: One owner of morning-brief.py: three-item lead tier, guarded collectors, optional-section registry
-status: open
+status: in-progress
 priority: p0
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:

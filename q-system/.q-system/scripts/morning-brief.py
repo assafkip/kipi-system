@@ -56,7 +56,6 @@ so each section gets its own call.
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
 import datetime as dt
 import importlib.util
 import json
@@ -64,6 +63,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -494,19 +494,31 @@ def _guarded(key: str, fn, budget_s: float, log_path) -> tuple:
       Slack send, so a hung Notion call must cost at most `budget_s`, never the
       morning. The worker thread is abandoned on timeout; the brief moves on.
     """
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    try:
-        future = pool.submit(fn)
+    # A DAEMON thread, not a ThreadPoolExecutor. Codex review of this issue
+    # (findings 1 and 2, 2026-09-01): pool workers are non-daemon and the
+    # interpreter joins them at exit, so a collector that never returns would
+    # keep the 07:00 process alive forever after the brief had "moved on". A
+    # daemon thread is abandoned at exit; the brief, the send and the receipt
+    # all complete on schedule.
+    box: dict = {}
+
+    def run():
         try:
-            return future.result(timeout=budget_s)
-        except concurrent.futures.TimeoutError:
-            _log_line(log_path, f"{key}: timed out after {budget_s}s")
-            return [], f"{key} timed out ({budget_s}s)"
-        except Exception as exc:  # noqa: BLE001
-            _log_line(log_path, f"{key}: {type(exc).__name__}: {exc}")
-            return [], f"{key} failed ({type(exc).__name__})"
-    finally:
-        pool.shutdown(wait=False)
+            box["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001
+            box["exc"] = exc
+
+    worker = threading.Thread(target=run, name=f"brief-{key}", daemon=True)
+    worker.start()
+    worker.join(timeout=budget_s)
+    if worker.is_alive():
+        _log_line(log_path, f"{key}: timed out after {budget_s}s")
+        return [], f"{key} timed out ({budget_s}s)"
+    if "exc" in box:
+        exc = box["exc"]
+        _log_line(log_path, f"{key}: {type(exc).__name__}: {exc}")
+        return [], f"{key} failed ({type(exc).__name__})"
+    return box["value"]
 
 
 def build(now: dt.datetime, sources: dict):
@@ -550,12 +562,23 @@ def collect_all(now: dt.datetime, log_path=None, budget_s: float = COLLECT_BUDGE
     )
     sources = {key: _guarded(key, fn, fixed_budget_s, log_path) for key, fn in fixed}
     for stem, key, _title in OPTIONAL_SECTIONS:
-        mod = _optional_module(stem)
-        if mod is None:
+        # The import runs INSIDE the guard (Codex finding-3 on this issue): a
+        # module that exists but raises or hangs at import time is a failing
+        # section, never a failing brief. ABSENT is the one signal that escapes
+        # the guard, because it is not an error.
+        absent = object()
+
+        def load_and_collect(stem=stem):
+            mod = _optional_module(stem)
+            if mod is None:
+                return absent
+            return mod.collect(now, dict(sources))
+
+        result = _guarded(key, load_and_collect, budget_s, log_path)
+        if result is absent:
             _log_line(log_path, f"optional section {key}: module {stem} absent, not rendered")
             continue
-        sources[key] = _guarded(key, lambda m=mod: m.collect(now, dict(sources)),
-                                budget_s, log_path)
+        sources[key] = result
     return sources
 
 

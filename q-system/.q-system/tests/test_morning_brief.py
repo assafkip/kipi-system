@@ -679,6 +679,47 @@ def test_a_collector_past_its_budget_is_a_timeout_not_a_hang(brief, tmp_path, mo
     assert rows == [] and "timed out" in error and "0.05" in error
 
 
+def test_a_hung_collector_runs_on_a_daemon_thread_so_exit_is_not_blocked(brief, tmp_path, monkeypatch):
+    """Codex findings 1+2 on mbl-brief-core: a pool worker is non-daemon and is
+    joined at interpreter exit, so a collector that never returns would keep the
+    07:00 process alive forever. The guard must abandon it on a daemon thread."""
+    import threading
+    gate = threading.Event()
+
+    def hangs(*a, **k):
+        gate.wait()  # released in teardown; a real hang has no release
+        return ([], None)
+
+    _all_ok(brief, monkeypatch)
+    monkeypatch.setattr(brief, "collect_mail", hangs)
+    monkeypatch.setattr(brief, "OPTIONAL_SECTIONS", ())
+    try:
+        sources = brief.collect_all(NOW, log_path=tmp_path / "e.log", fixed_budget_s=0.05)
+        assert "timed out" in sources["mail"][1]
+        stuck = [t for t in threading.enumerate() if t.name == "brief-mail"]
+        assert stuck, "the abandoned worker was not found"
+        assert all(t.daemon for t in stuck), "a non-daemon worker would block interpreter exit"
+    finally:
+        gate.set()
+
+
+def test_an_optional_module_that_raises_at_import_costs_its_own_section_only(brief, tmp_path, monkeypatch):
+    """Codex finding-3 on mbl-brief-core: the import ran outside the guard."""
+    _all_ok(brief, monkeypatch)
+
+    def bad_import(stem):
+        raise ImportError("secret=import-time-token")
+
+    monkeypatch.setattr(brief, "OPTIONAL_SECTIONS", (("broken_mod", "broken", "Broken"),))
+    monkeypatch.setattr(brief, "_optional_module", bad_import)
+    sources = brief.collect_all(NOW, log_path=tmp_path / "e.log")
+    message, degraded = brief.build(NOW, sources)
+    assert degraded
+    assert message.count("fine") == 4, "the healthy sections did not render"
+    assert "COULD NOT READ: broken failed (ImportError)" in message
+    assert "import-time-token" not in message
+
+
 def test_fixed_collectors_are_unbounded_by_default_and_optional_ones_are_not(brief, tmp_path, monkeypatch):
     """First live dry-run 2026-09-01: mail shells claude -p and needs more than
     20s. The 20s bound is for optional sections (the board), never the four."""
