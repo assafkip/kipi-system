@@ -1,7 +1,7 @@
 ---
 id: mbl-draft-sent-projection
 title: Only a diff projection is stored: no raw bodies, hashed recipients, 90-day purge
-status: open
+status: closed
 priority: p1
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
@@ -35,4 +35,4 @@ The stored copy_edits row holds a unified diff of draft vs sent, recipient addre
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Only a diff projection is stored: no raw bodies, hashed recipients, 90-day purge
+- [x] Only a diff projection is stored: no raw bodies, hashed recipients, 90-day purge (project(): line diff then word-level delta with 2 words of context, header lines stripped, each side capped at 600 chars, addresses and contact_name salted-hashed; --purge; 7 tests red-first; mutation proof in the closing commit; 4 Codex findings accepted and patched)

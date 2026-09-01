@@ -60,7 +60,10 @@ def test_two_drafts_same_subject_pair_only_by_id(dvs, tmp_path):
     assert result["paired"] == 1 and result["unmatched"] == 1 and result["unmatched_ids"] == ["m-111"]
     rows = sqlite3.connect(str(db)).execute("SELECT action_type, original, edited FROM copy_edits").fetchall()
     assert len(rows) == 1 and rows[0][0].endswith("m-222")
-    assert "draft two" in rows[0][1] and "now with the dates" in rows[0][2]
+    # Word-level delta (issue mbl-draft-sent-projection): the stored halves
+    # carry the differing span with two words of context, never the whole line.
+    assert "now with the dates" in rows[0][2] and "pilot" in rows[0][1]
+    assert "Hi Marta" not in rows[0][1] and "Hi Marta" not in rows[0][2]
 
 
 def test_identical_draft_and_sent_is_skipped_not_stored(dvs, tmp_path):
@@ -203,6 +206,35 @@ def test_a_test_never_creates_the_machine_salt_file(dvs, tmp_path, monkeypatch):
     dvs.record_draft("m-1", "x", "a", "brief", ledger)
     dvs.pair(ledger, tmp_path / "metrics.db", runner=lambda p, t: (json.dumps({"m-1": {"body": "b", "to": []}}), None))
     assert not (tmp_path / "draft-salt").exists(), "pair() under pytest wrote a salt file"
+
+
+def test_headers_never_enter_the_projection(dvs):
+    draft = "Subject: Confidential pilot\nTo: marta@example.com\n\nwe could start next week"
+    sent = "Subject: Confidential pilot, revised\nTo: marta@example.com\n\nwe start Monday"
+    original, edited = dvs.project(draft, sent, "s")
+    blob = original + edited
+    assert "Confidential" not in blob and "Subject" not in blob and "To:" not in blob
+    assert "next week" in original and "Monday" in edited
+
+
+def test_a_single_line_body_is_not_stored_whole(dvs):
+    """Codex adversarial finding: one changed line stored the whole body."""
+    shared = "Thanks for the call today, here is the summary of everything we covered about the pilot and the board"
+    original, edited = dvs.project(f"{shared} next week.", f"{shared} on Monday the 8th.", "s")
+    assert "Thanks for the call today" not in original and "Thanks for the call today" not in edited
+    assert "next week" in original and "Monday" in edited
+    assert len(original) <= dvs.MAX_SIDE_CHARS and len(edited) <= dvs.MAX_SIDE_CHARS
+
+
+def test_contact_that_is_an_address_is_stored_hashed(dvs, tmp_path):
+    ledger = tmp_path / "l.jsonl"
+    dvs.record_draft("m-1", "marta@example.com", "a\nb", "brief", ledger)
+    db = tmp_path / "metrics.db"
+    dvs.pair(ledger, db, runner=lambda p, t: (json.dumps({"m-1": {"body": "a\nc", "to": ["marta@example.com"]}}), None),
+             salt="unit-salt")
+    contact, summary = sqlite3.connect(str(db)).execute("SELECT contact_name, edit_summary FROM copy_edits").fetchone()
+    assert "@" not in contact and contact.startswith("rcpt:")
+    assert dvs.hash_recipient("marta@example.com", "unit-salt") in summary and "@" not in summary
 
 
 def test_recipients_are_hashed_with_a_salt(dvs):

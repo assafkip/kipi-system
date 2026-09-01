@@ -141,23 +141,58 @@ def mask_recipients(text: str, salt: str) -> str:
     return _EMAIL.sub(lambda m: "rcpt:" + hash_recipient(m.group(0), salt), text)
 
 
-def project(draft_body: str, sent_body: str, salt: str) -> tuple:
-    """(original, edited): the REMOVED and ADDED lines of a unified diff, with
-    every address replaced by a salted hash. Never the bodies, never a subject,
-    never a header (Codex finding-8 on the PRD: raw request-derived content
-    was about to become durable and exportable through proposal files). An
-    unchanged line appears on neither side."""
-    a = mask_recipients(draft_body, salt).splitlines()
-    b = mask_recipients(sent_body, salt).splitlines()
-    removed, added = [], []
-    for line in difflib.unified_diff(a, b, lineterm="", n=0):
-        if line.startswith(("---", "+++", "@@")):
+_HEADER_LINE = re.compile(r"^\s*(subject|to|from|cc|bcc|date|reply-to|message-id|in-reply-to|references)\s*:", re.IGNORECASE)
+MAX_SIDE_CHARS = 600
+CONTEXT_WORDS = 2
+
+
+def _strip_headers(text: str) -> list:
+    """Header-shaped lines never enter the projection (Codex standard finding
+    on this issue: a changed 'Subject:' or 'To:' line was being stored)."""
+    return [l for l in text.splitlines() if not _HEADER_LINE.match(l)]
+
+
+def _word_delta(a_line: str, b_line: str) -> tuple:
+    """Only the differing words of a changed line pair, with two words of
+    context each side (Codex adversarial finding: a single-line body was being
+    stored whole as 'the changed line'). Returns (removed_words, added_words)."""
+    a, b = a_line.split(), b_line.split()
+    sm = difflib.SequenceMatcher(a=a, b=b, autojunk=False)
+    rem, add = [], []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
             continue
-        if line.startswith("-"):
-            removed.append(line[1:])
-        elif line.startswith("+"):
-            added.append(line[1:])
-    return "\n".join(removed), "\n".join(added)
+        rem.append(" ".join(a[max(0, i1 - CONTEXT_WORDS):i2 + CONTEXT_WORDS]))
+        add.append(" ".join(b[max(0, j1 - CONTEXT_WORDS):j2 + CONTEXT_WORDS]))
+    return " ... ".join(x for x in rem if x), " ... ".join(x for x in add if x)
+
+
+def project(draft_body: str, sent_body: str, salt: str) -> tuple:
+    """(original, edited): the delta between draft and sent, never the bodies,
+    never a subject, never a header (Codex finding-8 on the PRD). Line diff
+    first; a replaced line pair is reduced to its differing words; each side is
+    capped at MAX_SIDE_CHARS. Addresses are salted hashes everywhere."""
+    a = _strip_headers(mask_recipients(draft_body, salt))
+    b = _strip_headers(mask_recipients(sent_body, salt))
+    removed, added = [], []
+    sm = difflib.SequenceMatcher(a=a, b=b, autojunk=False)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            continue
+        if tag == "replace":
+            for x, y in zip(a[i1:i2], b[j1:j2]):
+                r, ad = _word_delta(x, y)
+                removed.append(r)
+                added.append(ad)
+            removed += a[i1 + (j2 - j1):i2]
+            added += b[j1 + (i2 - i1):j2]
+        elif tag == "delete":
+            removed += a[i1:i2]
+        elif tag == "insert":
+            added += b[j1:j2]
+    orig = "\n".join(x for x in removed if x)[:MAX_SIDE_CHARS]
+    edit = "\n".join(x for x in added if x)[:MAX_SIDE_CHARS]
+    return orig, edit
 
 
 def purge(db_path=None, now=None, days: int = RETENTION_DAYS) -> int:
@@ -223,14 +258,20 @@ def pair(ledger=None, db_path=None, runner=None, now=None, days: int = WINDOW_DA
         if hit["body"].strip() == str(d.get("body", "")).strip():
             identical += 1
             continue
-        original, edited = project(str(d.get("body", "")), hit["body"], _salt(salt))
+        the_salt = _salt(salt)
+        original, edited = project(str(d.get("body", "")), hit["body"], the_salt)
+        # contact_name is part of the persistence boundary too (both Codex
+        # reviewers on this issue): a ledger contact that is an address is
+        # stored as its salted hash, never raw.
+        contact = mask_recipients(str(d.get("contact", "")), the_salt)
+        recipients = [hash_recipient(t, the_salt) for t in (hit.get("to") or []) if isinstance(t, str)]
         cur = con.execute(
             "INSERT OR IGNORE INTO copy_edits (date, contact_name, action_type, original, edited, edit_summary) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (now.strftime("%Y-%m-%d"), d.get("contact", ""), f"{ACTION}:{d['draft_id']}",
+            (now.strftime("%Y-%m-%d"), contact, f"{ACTION}:{d['draft_id']}",
              original, edited,
              f"diff projection, paired by id from {d.get('source', '?')}, "
-             f"{len(hit.get('to') or [])} recipient(s) hashed"))
+             f"recipients {','.join(recipients) or 'none'}"))
         inserted += cur.rowcount
     con.commit()
     con.close()
