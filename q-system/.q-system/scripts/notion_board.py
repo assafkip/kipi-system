@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -59,7 +60,38 @@ def _default_opener(req, timeout):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
-def _request(token: str, method: str, path: str, body=None, opener=None, timeout=HTTP_TIMEOUT) -> dict:
+class Cancelled(RuntimeError):
+    """Raised inside the worker once the budget is spent, so no further Notion
+    call is made after the brief has reported the board as timed out."""
+
+
+class _Budget:
+    """A deadline shared by the caller and the worker thread (Codex standard
+    finding on this issue: abandoning the thread bounded the WAIT, not the
+    WRITES; a delete or append could land after the brief said 'timed out').
+    Every request checks it first and caps its own HTTP timeout to what is
+    left, so nothing starts, and nothing in flight outlives, the budget."""
+
+    def __init__(self, seconds: float):
+        self.seconds = seconds
+        self.started = time.monotonic()
+        self.cancelled = threading.Event()
+
+    def remaining(self) -> float:
+        return self.seconds - (time.monotonic() - self.started)
+
+    def check(self) -> float:
+        left = self.remaining()
+        if self.cancelled.is_set() or left <= 0:
+            self.cancelled.set()
+            raise Cancelled(f"board budget spent ({self.seconds}s)")
+        return left
+
+
+def _request(token: str, method: str, path: str, body=None, opener=None,
+             timeout=HTTP_TIMEOUT, budget=None) -> dict:
+    if budget is not None:
+        timeout = min(timeout, max(0.001, budget.check()))
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(NOTION_API + path, data=data, method=method, headers={
         "Authorization": f"Bearer {token}",
@@ -87,12 +119,12 @@ def _text(block: dict) -> str:
     return "".join(r.get("plain_text") or (r.get("text") or {}).get("content", "") for r in rich).strip()
 
 
-def read_page(token: str, page_id: str, opener=None, timeout=HTTP_TIMEOUT) -> list:
+def read_page(token: str, page_id: str, opener=None, timeout=HTTP_TIMEOUT, budget=None) -> list:
     """Every child block of the page, paginated."""
     blocks, cursor = [], None
     while True:
         path = f"/blocks/{page_id}/children?page_size=100" + (f"&start_cursor={cursor}" if cursor else "")
-        answer = _request(token, "GET", path, opener=opener, timeout=timeout)
+        answer = _request(token, "GET", path, opener=opener, timeout=timeout, budget=budget)
         blocks += answer.get("results") or []
         if not answer.get("has_more"):
             return blocks
@@ -125,24 +157,25 @@ def _heading(text: str) -> dict:
             "heading_2": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
 
 
-def write_top_of_mind(token: str, page_id: str, lines: list, opener=None, timeout=HTTP_TIMEOUT) -> None:
+def write_top_of_mind(token: str, page_id: str, lines: list, opener=None, timeout=HTTP_TIMEOUT,
+                      budget=None) -> None:
     """Rewrite ONLY the bullets under "Top of mind". Missing headings are
     created (all three, in order) so a fresh page becomes the board."""
-    buckets = parse_buckets(read_page(token, page_id, opener, timeout))
+    buckets = parse_buckets(read_page(token, page_id, opener, timeout, budget))
     if any(buckets[b]["heading_id"] is None for b in BUCKETS):
         missing = [_heading(b) for b in BUCKETS if buckets[b]["heading_id"] is None]
-        _request(token, "PATCH", f"/blocks/{page_id}/children", {"children": missing}, opener, timeout)
-        buckets = parse_buckets(read_page(token, page_id, opener, timeout))
+        _request(token, "PATCH", f"/blocks/{page_id}/children", {"children": missing}, opener, timeout, budget)
+        buckets = parse_buckets(read_page(token, page_id, opener, timeout, budget))
     for block_id, _ in buckets[TOP]["items"]:
-        _request(token, "DELETE", f"/blocks/{block_id}", opener=opener, timeout=timeout)
+        _request(token, "DELETE", f"/blocks/{block_id}", opener=opener, timeout=timeout, budget=budget)
     if lines:
         _request(token, "PATCH", f"/blocks/{page_id}/children",
                  {"children": [_bullet(l) for l in lines], "after": buckets[TOP]["heading_id"]},
-                 opener, timeout)
+                 opener, timeout, budget)
 
 
-def read_back(token: str, page_id: str, opener=None, timeout=HTTP_TIMEOUT) -> list:
-    return [t for _, t in parse_buckets(read_page(token, page_id, opener, timeout))[TOP]["items"]]
+def read_back(token: str, page_id: str, opener=None, timeout=HTTP_TIMEOUT, budget=None) -> list:
+    return [t for _, t in parse_buckets(read_page(token, page_id, opener, timeout, budget))[TOP]["items"]]
 
 
 def top_of_mind_lines(owed_rows: list) -> list:
@@ -165,11 +198,15 @@ def _credentials(token_file=None, page_file=None):
 
 
 def _bounded(fn, budget_s: float):
+    """Run fn(budget) on a daemon thread. On timeout the shared budget is
+    CANCELLED before raising, so the worker refuses its next request and no
+    write lands after the brief reported the board as timed out."""
     box: dict = {}
+    budget = _Budget(budget_s)
 
     def run():
         try:
-            box["value"] = fn()
+            box["value"] = fn(budget)
         except BaseException as exc:  # noqa: BLE001
             box["exc"] = exc
 
@@ -177,6 +214,7 @@ def _bounded(fn, budget_s: float):
     worker.start()
     worker.join(timeout=budget_s)
     if worker.is_alive():
+        budget.cancelled.set()
         raise TimeoutError(f"board timed out ({budget_s}s)")
     if "exc" in box:
         raise box["exc"]
@@ -199,11 +237,11 @@ def collect(now, sources: dict, opener=None, budget_s: float = BUDGET_S,
         return [], f"owed section unreadable, board not rewritten ({owed_err})"
     lines = top_of_mind_lines(owed_rows)
 
-    def work():
-        write_top_of_mind(token, page_id, lines, opener)
-        return read_back(token, page_id, opener)
+    def work(budget):
+        write_top_of_mind(token, page_id, lines, opener, budget=budget)
+        return read_back(token, page_id, opener, budget=budget)
 
     seen = _bounded(work, budget_s)
     if seen != lines:
         return [], f"read-back mismatch: wrote {len(lines)} line(s), page shows {len(seen)}"
-    return [f"board: written, read-back ok ({len(lines)} line(s))"], None
+    return ["board: written, read-back ok"], None

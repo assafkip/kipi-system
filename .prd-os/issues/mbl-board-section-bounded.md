@@ -1,7 +1,7 @@
 ---
 id: mbl-board-section-bounded
 title: Notion board as a bounded pre-send section whose status is a line in the brief
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
@@ -37,4 +37,19 @@ A registered optional section (module stem notion_board). collect(now, owed_rows
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Notion board as a bounded pre-send section whose status is a line in the brief
+- [x] Notion board as a bounded pre-send section whose status is a line in the brief (notion_board.py + the registry's None-means-off signal, recorded amendment; 11 tests red-first; mutation proof in the closing commit; 4 Codex findings accepted and patched: a shared cancellable budget so no write lands after a reported timeout, and the exact status row)
+
+## Amendments
+
+### 2026-09-01T22:55:45Z
+Reason: The optional-section registry (issue mbl-brief-core) has no OFF signal: a present module always renders a section. The board's off-switch is 'no page-id file -> no section' (this issue's acceptance and mbl-off-switches), which needs the registry to treat a collector returning None as absent. Two lines in morning-brief.py collect_all() plus one test in test_morning_brief.py; the single-owner rule (finding-2) is honoured by keeping this the only registry change and by recording it here.
+
+Before:
+- allowed_files: ['q-system/.q-system/scripts/notion_board.py', 'q-system/.q-system/tests/test_notion_board.py', 'q-system/.q-system/capability/expected_tests/q-system__.q-system__tests__test_notion_board.py.json']
+- required_checks: ['python3 -m pytest -q q-system/.q-system/tests/test_notion_board.py']
+- disallowed_files: ['.claude/**', 'plugins/prd-os/**', '.prd-os/**', 'q-consult/**', 'q-system/.q-system/scripts/morning-brief.py']
+
+After:
+- allowed_files: ['q-system/.q-system/scripts/notion_board.py', 'q-system/.q-system/tests/test_notion_board.py', 'q-system/.q-system/capability/expected_tests/q-system__.q-system__tests__test_notion_board.py.json', 'q-system/.q-system/scripts/morning-brief.py', 'q-system/.q-system/tests/test_morning_brief.py']
+- required_checks: ['python3 -m pytest -q q-system/.q-system/tests/test_notion_board.py']
+- disallowed_files: ['.claude/**', 'plugins/prd-os/**', '.prd-os/**', 'q-consult/**']

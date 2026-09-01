@@ -103,7 +103,7 @@ def _creds(tmp_path, page="page-1"):
 def test_write_then_read_back_agree_on_three_items_and_the_count(board, tmp_path):
     fake = FakeNotion([_h("Top of mind", "h1"), _b("stale one", "s1"), _h("This week", "h2"), _b("keep me", "k1"), _h("Inbox", "h3")])
     rows, error = board.collect(NOW, {"owed": (OWED, None)}, opener=fake, **_creds(tmp_path))
-    assert error is None and rows == ["board: written, read-back ok (4 line(s))"]
+    assert error is None and rows == ["board: written, read-back ok"], "the exact row the acceptance names"
     assert fake.text_under("Top of mind") == OWED[:4]
     assert fake.text_under("This week") == ["keep me"], "another bucket was touched"
     assert "stale one" not in fake.text_under("Top of mind")
@@ -123,6 +123,26 @@ def test_an_opener_past_the_budget_is_a_timeout(board, tmp_path):
         return io.BytesIO(b'{"results": [], "has_more": false}')
     with pytest.raises(TimeoutError, match=r"board timed out \(0.05s\)"):
         board.collect(NOW, {"owed": (OWED, None)}, opener=slow, budget_s=0.05, **_creds(tmp_path))
+
+
+def test_no_write_lands_after_the_timeout_was_reported(board, tmp_path):
+    """Codex standard finding on this issue: abandoning the thread bounded the
+    wait, not the writes. After the timeout, the worker must refuse its next
+    request, so no DELETE or PATCH can land behind the brief's back."""
+    class SlowFirstRead(FakeNotion):
+        def __call__(self, req, timeout):
+            if req.get_method() == "GET" and len(self.calls) == 0:
+                self.calls.append(("GET-slow", req.full_url, None))
+                time.sleep(0.15)  # past the budget
+                return self._resp({"results": self.blocks, "has_more": False})
+            return super().__call__(req, timeout)
+    fake = SlowFirstRead([_h("Top of mind", "h1"), _b("stale one", "s1"), _h("This week", "h2"), _h("Inbox", "h3")])
+    with pytest.raises(TimeoutError):
+        board.collect(NOW, {"owed": (OWED, None)}, opener=fake, budget_s=0.05, **_creds(tmp_path))
+    time.sleep(0.4)  # let the abandoned worker run on and try to write
+    writes = [c for c in fake.calls if c[0] in ("DELETE", "PATCH")]
+    assert writes == [], f"writes landed after the timeout: {writes}"
+    assert fake.text_under("Top of mind") == ["stale one"], "the page changed after the brief said timed out"
 
 
 def test_pytest_refuses_the_live_path_without_an_injected_opener(board, tmp_path):
