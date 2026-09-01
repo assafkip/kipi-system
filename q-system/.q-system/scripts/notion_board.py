@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -158,10 +159,13 @@ def _heading(text: str) -> dict:
 
 
 def write_top_of_mind(token: str, page_id: str, lines: list, opener=None, timeout=HTTP_TIMEOUT,
-                      budget=None) -> None:
+                      budget=None, buckets=None) -> None:
     """Rewrite ONLY the bullets under "Top of mind". Missing headings are
-    created (all three, in order) so a fresh page becomes the board."""
-    buckets = parse_buckets(read_page(token, page_id, opener, timeout, budget))
+    created (all three, in order) so a fresh page becomes the board. `buckets`
+    is the page as already read by the caller (one read to reconcile, one to
+    read back; never a third)."""
+    if buckets is None:
+        buckets = parse_buckets(read_page(token, page_id, opener, timeout, budget))
     if any(buckets[b]["heading_id"] is None for b in BUCKETS):
         missing = [_heading(b) for b in BUCKETS if buckets[b]["heading_id"] is None]
         _request(token, "PATCH", f"/blocks/{page_id}/children", {"children": missing}, opener, timeout, budget)
@@ -178,12 +182,37 @@ def read_back(token: str, page_id: str, opener=None, timeout=HTTP_TIMEOUT, budge
     return [t for _, t in parse_buckets(read_page(token, page_id, opener, timeout, budget))[TOP]["items"]]
 
 
-def top_of_mind_lines(owed_rows: list) -> list:
+_ITEM_ID = re.compile(r"\b(ASK-\d+|loop [A-Za-z0-9_.\-]+)")
+
+
+def item_id(text: str):
+    """The stable identity of an owed row: a Linear identifier or a loop id.
+    A withheld or tail line has none."""
+    if text.startswith("(") or text.startswith("withheld"):
+        return None
+    m = _ITEM_ID.search(text)
+    return m.group(1) if m else None
+
+
+def top_of_mind_lines(owed_rows: list, ids_elsewhere=frozenset()) -> list:
     """The SAME three items and withheld count the Slack brief shows: lead rows
-    (never the counted tail in parentheses), then the withheld line."""
+    (never the counted tail in parentheses), then the withheld line. Each lead
+    line ends with its id in brackets (issue mbl-board-item-identity, Codex
+    finding-5): the id is what lets tomorrow's rewrite see that the founder
+    moved an item to another bucket, and leave it there."""
     leads = [r for r in owed_rows if not r.startswith("(") and not r.startswith("withheld")]
+    kept = []
+    for row in leads:
+        ident = item_id(row)
+        if ident and ident in ids_elsewhere:
+            continue  # the founder moved it; it stays where he put it
+        kept.append(f"{row} [{ident}]" if ident else row)
     withheld = [r for r in owed_rows if r.startswith("withheld")]
-    return leads[:3] + withheld[:1]
+    return kept[:3] + withheld[:1]
+
+
+def ids_outside_top(buckets: dict) -> frozenset:
+    return frozenset(i for b in BUCKETS[1:] for _, t in buckets[b]["items"] if (i := item_id(t)))
 
 
 def _credentials(token_file=None, page_file=None):
@@ -235,13 +264,14 @@ def collect(now, sources: dict, opener=None, budget_s: float = BUDGET_S,
     owed_rows, owed_err = sources.get("owed", ([], "owed not collected"))
     if owed_err:
         return [], f"owed section unreadable, board not rewritten ({owed_err})"
-    lines = top_of_mind_lines(owed_rows)
 
     def work(budget):
-        write_top_of_mind(token, page_id, lines, opener, budget=budget)
-        return read_back(token, page_id, opener, budget=budget)
+        buckets = parse_buckets(read_page(token, page_id, opener, budget=budget))
+        lines = top_of_mind_lines(owed_rows, ids_outside_top(buckets))
+        write_top_of_mind(token, page_id, lines, opener, budget=budget, buckets=buckets)
+        return lines, read_back(token, page_id, opener, budget=budget)
 
-    seen = _bounded(work, budget_s)
+    lines, seen = _bounded(work, budget_s)
     if seen != lines:
         return [], f"read-back mismatch: wrote {len(lines)} line(s), page shows {len(seen)}"
     return ["board: written, read-back ok"], None
