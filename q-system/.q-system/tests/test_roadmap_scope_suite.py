@@ -28,11 +28,28 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent.parent  # q-system/.q-system/tests -> repo root
 SCRIPTS = HERE.parent / "scripts"
 FIXTURE = HERE / "fixtures" / "roadmap_scope_cases.json"
-CONSUMERS = {
-    "weekly-improve": SCRIPTS / "weekly-improve.py",
-    "improve_ground": ROOT / "plugins" / "kipi-core" / "skills" / "improve" / "scripts" / "improve_ground.py",
-}
 MIN_ROADMAP, MIN_SYSTEM = 12, 6
+
+# Consumers are DERIVED from the PRD's own issue specs, never restated here, so
+# a consumer that is renamed or never built cannot skip forever (both Codex
+# reviewers on this issue: a skip that both consumers hit is a green that
+# proves nothing). The rule: a consumer may be absent only while the issue that
+# owns it is still open. Once that issue is `closed`, an absent consumer FAILS.
+ISSUES = ROOT / ".prd-os" / "issues"
+CONSUMER_ISSUES = {
+    "weekly-improve": ("mbl-friction-artifact", "weekly-improve.py"),
+    "improve_ground": ("mbl-improve-skill", "improve_ground.py"),
+}
+
+
+def _consumer(name):
+    """(path, owning_issue_status) read from the owning issue's spec."""
+    issue_id, basename = CONSUMER_ISSUES[name]
+    spec = (ISSUES / f"{issue_id}.md").read_text(encoding="utf-8")
+    status = next(l.split(":", 1)[1].strip() for l in spec.splitlines() if l.startswith("status:"))
+    allowed = [l.strip("- ").strip() for l in spec.splitlines() if l.strip().startswith("- ") and l.strip().endswith(basename)]
+    assert allowed, f"{issue_id} does not list {basename} in allowed_files; the consumer contract has no owner"
+    return ROOT / allowed[0], status
 
 
 def _load(stem: str, path: Path):
@@ -91,12 +108,15 @@ def test_system_proposals_pass_the_classifier(scope, case):
     assert out["verdict"] == "system", (case, out)
 
 
-@pytest.mark.parametrize("name", sorted(CONSUMERS))
+@pytest.mark.parametrize("name", sorted(CONSUMER_ISSUES))
 def test_every_consumer_refuses_every_paraphrase_and_passes_every_system_case(name):
-    path = CONSUMERS[name]
+    path, owner_status = _consumer(name)
     if not path.is_file():
-        pytest.skip(f"consumer {name} not built yet ({path.relative_to(ROOT)}); "
-                    f"its issue lands later in prd-morning-brief-learns")
+        assert owner_status != "closed", (
+            f"consumer {name} is absent at {path.relative_to(ROOT)} but its owning issue "
+            f"{CONSUMER_ISSUES[name][0]} is closed: the contract was never met")
+        pytest.skip(f"consumer {name} not built yet ({path.relative_to(ROOT)}); owning issue "
+                    f"{CONSUMER_ISSUES[name][0]} is {owner_status}; this test fails the day it closes without the file")
     mod = _load(name.replace("-", "_"), path)
     assert callable(getattr(mod, "is_refused", None)), f"{name} must expose is_refused(text, target)"
     for case in ROADMAP_CASES:

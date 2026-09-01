@@ -27,6 +27,8 @@
     {"text": "build a test plan for the collector guard", "target": "test"},
     {"text": "the deadman should log every attempt, not only the last", "target": "job"},
     {"text": "wrap the mail collector in the same guard as the board", "target": "script"},
-    {"text": "ship the friction lint feature this week", "target": "lint"}
+    {"text": "ship the friction lint feature this week", "target": "lint"},
+    {"text": "add SaaS to the canonical glossary", "target": "context"},
+    {"text": "the SaaS vendor's API changed, update the collector", "target": "script"}
   ]
 }

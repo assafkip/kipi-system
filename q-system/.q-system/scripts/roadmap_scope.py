@@ -64,7 +64,12 @@ ROADMAP_PATTERNS = {
         r"\bwhat (we|to) (should )?build next\b",
         # Added by the paraphrase suite (issue mbl-roadmap-scope-paraphrase-suite):
         r"\bwhat should we build\b",
-        r"\bsaas\b",
+        # The bare noun "saas" was here and made "add SaaS to the canonical
+        # glossary" roadmap (both Codex reviewers on the suite issue). The
+        # commercial construction is the signal, never the technology word.
+        r"\b(as|into) an? saas\b",
+        r"\bsaas (for|to) (solo|small|founders|clients|customers|firms)\b",
+        r"\bpackage (it|this|that|the \w+) as\b",
         r"\bpitch (it|this|the)\b",
     ],
     "PRICING": [

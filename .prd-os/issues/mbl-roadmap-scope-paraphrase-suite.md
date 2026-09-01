@@ -1,7 +1,7 @@
 ---
 id: mbl-roadmap-scope-paraphrase-suite
 title: The roadmap boundary holds against a paraphrase suite run through every consumer
-status: open
+status: closed
 priority: p1
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
@@ -36,4 +36,4 @@ A fixture file with at least 12 roadmap paraphrases covering product, pricing, p
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] The roadmap boundary holds against a paraphrase suite run through every consumer
+- [x] The roadmap boundary holds against a paraphrase suite run through every consumer (16 roadmap + 11 system cases from a fixture; consumers derived from their owning issue specs, absent allowed only while the owner is open; 4 Codex findings accepted and patched)
