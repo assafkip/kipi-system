@@ -1,7 +1,7 @@
 ---
 id: mbl-brief-core
 title: One owner of morning-brief.py: three-item lead tier, guarded collectors, optional-section registry
-status: in-progress
+status: closed
 priority: p0
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
@@ -36,4 +36,4 @@ The ONLY entry that edits morning-brief.py or test_morning_brief.py. RED first, 
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] One owner of morning-brief.py: three-item lead tier, guarded collectors, optional-section registry
+- [x] One owner of morning-brief.py: three-item lead tier, guarded collectors, optional-section registry (commits 4f54acb7, 72ada085; 50 tests green, 5 mutations killed, live dry-run rendered the new shape)
