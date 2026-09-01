@@ -25,9 +25,12 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import difflib
+import hashlib
 import importlib.util
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 
@@ -109,6 +112,64 @@ def _connect(db_path):
 
 WINDOW_DAYS = 30
 MAX_IDS_PER_RUN = 50
+RETENTION_DAYS = 90
+SALT_FILE = Path(os.environ.get("KIPI_STATE_DIR", str(Path.home() / ".config" / "kipi"))) / "draft-salt"
+_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def _salt(salt=None) -> str:
+    """A per-machine salt, created once. Tests pass one explicitly."""
+    if salt:
+        return salt
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        # A test never creates the machine's salt file (test isolation, the
+        # fable-discipline rule); a fixed salt keeps hashing deterministic.
+        return "pytest-salt"
+    if SALT_FILE.is_file():
+        return SALT_FILE.read_text(encoding="utf-8").strip()
+    SALT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    value = os.urandom(16).hex()
+    SALT_FILE.write_text(value, encoding="utf-8")
+    return value
+
+
+def hash_recipient(address: str, salt: str) -> str:
+    return hashlib.sha256((salt + address.strip().lower()).encode("utf-8")).hexdigest()[:12]
+
+
+def mask_recipients(text: str, salt: str) -> str:
+    return _EMAIL.sub(lambda m: "rcpt:" + hash_recipient(m.group(0), salt), text)
+
+
+def project(draft_body: str, sent_body: str, salt: str) -> tuple:
+    """(original, edited): the REMOVED and ADDED lines of a unified diff, with
+    every address replaced by a salted hash. Never the bodies, never a subject,
+    never a header (Codex finding-8 on the PRD: raw request-derived content
+    was about to become durable and exportable through proposal files). An
+    unchanged line appears on neither side."""
+    a = mask_recipients(draft_body, salt).splitlines()
+    b = mask_recipients(sent_body, salt).splitlines()
+    removed, added = [], []
+    for line in difflib.unified_diff(a, b, lineterm="", n=0):
+        if line.startswith(("---", "+++", "@@")):
+            continue
+        if line.startswith("-"):
+            removed.append(line[1:])
+        elif line.startswith("+"):
+            added.append(line[1:])
+    return "\n".join(removed), "\n".join(added)
+
+
+def purge(db_path=None, now=None, days: int = RETENTION_DAYS) -> int:
+    """Delete draft-vs-sent rows older than `days`. Touches no other
+    action_type. Returns the count removed."""
+    now = now or dt.datetime.now().astimezone()
+    cutoff = (now - dt.timedelta(days=days)).strftime("%Y-%m-%d")
+    con = _connect(Path(db_path) if db_path else DB_PATH)
+    cur = con.execute("DELETE FROM copy_edits WHERE action_type LIKE ? AND date < ?", (f"{ACTION}:%", cutoff))
+    con.commit()
+    con.close()
+    return cur.rowcount
 
 
 def _in_window(row: dict, now: dt.datetime, days: int) -> bool:
@@ -122,7 +183,7 @@ def _in_window(row: dict, now: dt.datetime, days: int) -> bool:
 
 
 def pair(ledger=None, db_path=None, runner=None, now=None, days: int = WINDOW_DAYS,
-         max_ids: int = MAX_IDS_PER_RUN) -> dict:
+         max_ids: int = MAX_IDS_PER_RUN, salt=None) -> dict:
     """Pair every ledger draft with its sent message by id and insert one
     copy_edits row per pair. Returns counts; never guesses a pair.
 
@@ -162,11 +223,14 @@ def pair(ledger=None, db_path=None, runner=None, now=None, days: int = WINDOW_DA
         if hit["body"].strip() == str(d.get("body", "")).strip():
             identical += 1
             continue
+        original, edited = project(str(d.get("body", "")), hit["body"], _salt(salt))
         cur = con.execute(
             "INSERT OR IGNORE INTO copy_edits (date, contact_name, action_type, original, edited, edit_summary) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (now.strftime("%Y-%m-%d"), d.get("contact", ""), f"{ACTION}:{d['draft_id']}",
-             d.get("body", ""), hit.get("body", ""), f"paired by id from {d.get('source', '?')}"))
+             original, edited,
+             f"diff projection, paired by id from {d.get('source', '?')}, "
+             f"{len(hit.get('to') or [])} recipient(s) hashed"))
         inserted += cur.rowcount
     con.commit()
     con.close()
@@ -179,7 +243,11 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="pair recorded drafts with sent mail by Gmail id")
     ap.add_argument("--ledger", default=None)
     ap.add_argument("--db", default=None)
+    ap.add_argument("--purge", action="store_true", help=f"delete rows older than {RETENTION_DAYS} days and exit")
     args = ap.parse_args(argv)
+    if args.purge:
+        print(json.dumps({"purged": purge(args.db)}))
+        return 0
     result = pair(args.ledger, args.db)
     print(json.dumps(result))
     return 0

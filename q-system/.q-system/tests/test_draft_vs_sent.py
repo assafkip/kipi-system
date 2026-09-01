@@ -174,6 +174,61 @@ def test_never_writes_exemplars(dvs):
     assert "open(" not in src.replace("path.open(", "").replace(".open(\"a\"", ""), "the only file this writes is the ledger"
 
 
+# --- issue mbl-draft-sent-projection (Codex finding-8): a projection, never the bodies
+
+DRAFT = ("Hi Marta,\nThe unchanged sentence about the Zephyrine board stays.\n"
+         "Draft wording: we could start next week.\nBest, A\ncc: ops@example.com")
+SENT = ("Hi Marta,\nThe unchanged sentence about the Zephyrine board stays.\n"
+        "Final wording: we start Monday the 8th.\nBest, A\ncc: ops@example.com")
+
+
+def test_stored_row_holds_a_diff_not_the_bodies(dvs, tmp_path):
+    ledger = tmp_path / "l.jsonl"
+    dvs.record_draft("m-1", "Marta Kowalski", DRAFT, "brief", ledger, subject="Pilot")
+    db = tmp_path / "metrics.db"
+    dvs.pair(ledger, db, runner=lambda p, t: (json.dumps({"m-1": {"body": SENT, "to": ["marta@example.com"]}}), None),
+             salt="unit-salt")
+    original, edited, summary = sqlite3.connect(str(db)).execute(
+        "SELECT original, edited, edit_summary FROM copy_edits").fetchone()
+    blob = original + edited + (summary or "")
+    assert "unchanged sentence" not in blob, "an unchanged line is not part of the delta"
+    assert "Draft wording" in original and "Final wording" in edited
+    assert "@" not in blob, "a recipient address reached the stored row"
+    assert "Hi Marta" not in blob and "Best, A" not in blob
+
+
+def test_a_test_never_creates_the_machine_salt_file(dvs, tmp_path, monkeypatch):
+    monkeypatch.setattr(dvs, "SALT_FILE", tmp_path / "draft-salt")
+    ledger = tmp_path / "l.jsonl"
+    dvs.record_draft("m-1", "x", "a", "brief", ledger)
+    dvs.pair(ledger, tmp_path / "metrics.db", runner=lambda p, t: (json.dumps({"m-1": {"body": "b", "to": []}}), None))
+    assert not (tmp_path / "draft-salt").exists(), "pair() under pytest wrote a salt file"
+
+
+def test_recipients_are_hashed_with_a_salt(dvs):
+    a = dvs.hash_recipient("ops@example.com", "salt-a")
+    b = dvs.hash_recipient("ops@example.com", "salt-b")
+    assert a != b and len(a) == 12 and "@" not in a
+    assert dvs.mask_recipients("mail ops@example.com and Marta.K@Example.com now", "salt-a").count("@") == 0
+
+
+def test_purge_deletes_91_day_old_rows_and_keeps_89(dvs, tmp_path):
+    import datetime as dt
+    db = tmp_path / "metrics.db"
+    now = dt.datetime(2026, 9, 8, 6, 30, tzinfo=dt.timezone.utc)
+    con = dvs._connect(db)
+    for days, ident in ((91, "old"), (89, "fresh")):
+        con.execute("INSERT INTO copy_edits (date, contact_name, action_type, original, edited) VALUES (?,?,?,?,?)",
+                    ((now - dt.timedelta(days=days)).strftime("%Y-%m-%d"), "x", f"draft-vs-sent:{ident}", "-a", "+b"))
+    con.execute("INSERT INTO copy_edits (date, contact_name, action_type, original, edited) VALUES (?,?,?,?,?)",
+                ((now - dt.timedelta(days=400)).strftime("%Y-%m-%d"), "x", "linkedin-comment", "-a", "+b"))
+    con.commit()
+    con.close()
+    assert dvs.purge(db, now=now) == 1
+    left = sqlite3.connect(str(db)).execute("SELECT action_type FROM copy_edits ORDER BY action_type").fetchall()
+    assert left == [("draft-vs-sent:fresh",), ("linkedin-comment",)], "purge touched the wrong rows"
+
+
 def test_this_file_runs_its_own_tests_under_python3():
     if os.environ.get("KIPI_SELFTEST_INNER"):
         pytest.skip("inner run")
