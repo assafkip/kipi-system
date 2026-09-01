@@ -25,7 +25,7 @@
 - `/q-plan` - Review and prioritize actions
 - `/q-engage` - Social engagement mode
 - `/q-market-*` - Marketing system commands
-- `/q-draft` - Ad-hoc output generation
+- `/q-draft` - Ad-hoc output generation. `/improve` - the inverse: critique an outside idea against what this system already has; runs `plugins/kipi-core/skills/improve/scripts/improve_ground.py` first (`already-built` names the file or lesson, `adopt`, or `skip` when the roadmap classifier says what-to-build), corpora via `KIPI_LESSONS_CORPORA` each reported read / missing / unreadable; on demand only
 - `/q-wrap` - Evening health check
 - `/q-handoff` - Session continuity
 - `/q-research` - Anti-hallucination research mode

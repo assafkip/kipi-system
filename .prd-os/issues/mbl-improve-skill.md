@@ -1,7 +1,7 @@
 ---
 id: mbl-improve-skill
 title: The improve skill with an explicit corpora contract and the shared roadmap classifier
-status: open
+status: in-progress
 priority: p2
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
@@ -10,6 +10,7 @@ allowed_files:
   - plugins/kipi-core/skills/improve/scripts/test_improve_ground.py
   - q-system/.q-system/capability/expected_tests/plugins__kipi-core__skills__improve__scripts__test_improve_ground.py.json
   - CLAUDE.md
+  - plugins/kipi-core/.claude-plugin/plugin.json
 disallowed_files:
   - .claude/**
   - plugins/prd-os/**
