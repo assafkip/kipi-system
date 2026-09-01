@@ -1,7 +1,7 @@
 ---
 id: mbl-friction-artifact
 title: Friction artifact with ids and redaction, weekly pass via slack_founder, empty distinct from broken
-status: open
+status: closed
 priority: p1
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
@@ -38,4 +38,4 @@ RED first: (1) friction-note.sh assigns an id fr-<date>-<n>, refuses a line cont
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Friction artifact with ids and redaction, weekly pass via slack_founder, empty distinct from broken
+- [x] Friction artifact with ids and redaction, weekly pass via slack_founder, empty distinct from broken (friction-note.sh + weekly-improve.py; 13 tests red-first; 6 mutants killed; 4 Codex findings accepted and patched: locked max+1 ids, 7-day window, masking test that can fail)

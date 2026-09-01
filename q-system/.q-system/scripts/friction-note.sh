@@ -50,19 +50,30 @@ if [ "$RC" -ne 0 ]; then
 fi
 
 mkdir -p "$(dirname "$FILE")"
-touch "$FILE"
-TODAY="$(date +%Y-%m-%d)"
-N=$(( $(grep -c "\"id\": \"fr-$TODAY-" "$FILE" || true) + 1 ))
-ID="$(printf 'fr-%s-%02d' "$TODAY" "$N")"
-KIPI_FRICTION_ID="$ID" KIPI_FRICTION_TARGET="$TARGET" KIPI_FRICTION_TEXT="$TEXT" \
+# The id is allocated and the row appended inside ONE exclusive lock, and the
+# suffix is max(existing)+1, never a line count (both Codex reviewers of this
+# issue, 2026-09-01: a count re-issues an id after a gap, and two writers that
+# both count before either appends mint the same id; the id is the citation
+# key the weekly proposal uses, so a duplicate breaks traceability).
+KIPI_FRICTION_TARGET="$TARGET" KIPI_FRICTION_TEXT="$TEXT" \
 python3 - "$FILE" <<'PY'
-import datetime as dt, json, os, sys
-row = {"id": os.environ["KIPI_FRICTION_ID"],
-       "at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
-       "target": os.environ["KIPI_FRICTION_TARGET"],
-       "text": os.environ["KIPI_FRICTION_TEXT"],
-       "verdict": "system"}
-with open(sys.argv[1], "a", encoding="utf-8") as fh:
+import datetime as dt, fcntl, json, os, re, sys
+path = sys.argv[1]
+today = dt.date.today().isoformat()
+pat = re.compile(r'"id": "fr-' + re.escape(today) + r'-(\d+)"')
+with open(path, "a+", encoding="utf-8") as fh:
+    fcntl.flock(fh, fcntl.LOCK_EX)
+    fh.seek(0)
+    used = [int(m.group(1)) for m in pat.finditer(fh.read())]
+    ident = f"fr-{today}-{(max(used) + 1) if used else 1:02d}"
+    row = {"id": ident,
+           "at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+           "target": os.environ["KIPI_FRICTION_TARGET"],
+           "text": os.environ["KIPI_FRICTION_TEXT"],
+           "verdict": "system"}
+    fh.seek(0, 2)
     fh.write(json.dumps(row) + "\n")
+    fh.flush()
+    fcntl.flock(fh, fcntl.LOCK_UN)
+print(f"wrote friction line {ident} to {path}")
 PY
-echo "wrote friction line $ID to $FILE"

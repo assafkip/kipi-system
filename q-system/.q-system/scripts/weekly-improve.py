@@ -31,6 +31,7 @@ amendment, wired into the done gate rather than stated as intent.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import importlib.util
 import json
 import os
@@ -43,7 +44,26 @@ QROOT = HERE.parent.parent  # scripts -> .q-system -> q-system
 FRICTION_FILE = Path(os.environ.get("KIPI_FRICTION_FILE", QROOT / "memory" / "friction.jsonl"))
 INBOX_DIR = Path(os.environ.get("KIPI_PROPOSALS_INBOX", QROOT / "output" / "skill-proposals" / "_inbox"))
 EXCERPT_CHARS = 60
+WINDOW_DAYS = 7
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def in_window(row: dict, now: dt.datetime, days: int = WINDOW_DAYS) -> bool:
+    """A row is proposed once, in the week it was written (Codex adversarial
+    finding on this issue: an append-only ledger read whole re-delivers every
+    old line every week, and can never render "nothing this week"). The writer
+    always stamps `at`; a row with no parseable `at` is treated as in-window so
+    a hand-edited line surfaces rather than vanishing."""
+    raw = row.get("at")
+    if not raw:
+        return True
+    try:
+        when = dt.datetime.fromisoformat(str(raw))
+    except ValueError:
+        return True
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=now.tzinfo)
+    return (now - when) <= dt.timedelta(days=days)
 
 
 def _load_sibling(stem: str, filename: str):
@@ -115,15 +135,18 @@ def read_inbox(inbox=None):
     return files, None
 
 
-def build(friction_path=None, inbox=None) -> tuple:
+def build(friction_path=None, inbox=None, now=None, days: int = WINDOW_DAYS) -> tuple:
     """(message, degraded)."""
-    rows, error = read_friction(friction_path)
+    now = now or dt.datetime.now().astimezone()
+    all_rows, error = read_friction(friction_path)
     lines = ["*Weekly improve*", ""]
     degraded = False
     if error:
         lines += ["*Friction*", f"  COULD NOT READ: {error}"]
         degraded = True
     else:
+        rows = [r for r in all_rows if in_window(r, now, days)]
+        older = len(all_rows) - len(rows)
         proposals, refused = propose(rows)
         lines.append("*Friction*")
         if not rows:
@@ -132,6 +155,8 @@ def build(friction_path=None, inbox=None) -> tuple:
             lines += [f"  {p}" for p in proposals] or ["  nothing proposable this week"]
             if refused:
                 lines.append(f"  refused {len(refused)} line(s) outside system scope: {', '.join(refused)}")
+        if older:
+            lines.append(f"  ({older} older line(s) not re-sent)")
     files, ierr = read_inbox(inbox)
     lines += ["", "*Skill proposals inbox*"]
     if ierr:
