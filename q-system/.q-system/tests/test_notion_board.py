@@ -299,6 +299,36 @@ def test_live_check_permission_error_exits_2(board, tmp_path, capsys):
     assert "403" in capsys.readouterr().out
 
 
+def test_live_check_deletes_only_its_own_sentinel(board, tmp_path):
+    """Both Codex reviewers on this issue: a second-resolution timestamp let
+    overlapping checks delete each other's sentinel. A foreign sentinel planted
+    on the page must survive this invocation."""
+    fake = FakeNotion(_page() + [])
+    fake.blocks.insert(2, _b("kipi live-check deadbeefdeadbeefdeadbeefdeadbeef", "foreign"))
+    assert board.live_check(opener=fake, **_creds(tmp_path)) == 0
+    deleted = [url.rsplit("/", 1)[1] for m, url, _ in fake.calls if m == "DELETE"]
+    assert "foreign" not in deleted and len(deleted) == 1
+    assert any("deadbeef" in t for t in fake.text_under("Top of mind"))
+
+
+def test_live_check_cleans_up_when_read_back_fails_after_the_write(board, tmp_path, capsys):
+    """Both Codex reviewers: a failure after a successful write left the
+    sentinel on the board. Cleanup runs in finally."""
+    import urllib.error
+
+    class FailsAfterWrite(FakeNotion):
+        def __call__(self, req, timeout):
+            if req.get_method() == "GET" and any(m == "PATCH" for m, _, _ in self.calls):
+                self.calls.append(("GET-500", req.full_url, None))
+                raise urllib.error.HTTPError(req.full_url, 500, "boom", {}, None)
+            return super().__call__(req, timeout)
+    fake = FailsAfterWrite(_page())
+    assert board.live_check(opener=fake, **_creds(tmp_path)) == 2
+    report = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert report["cleanup"] == "sentinel deleted"
+    assert not any("live-check" in t for t in fake.text_under("Top of mind")), "sentinel left on the board"
+
+
 def test_cli_live_check_refuses_under_pytest_and_touches_no_network(tmp_path):
     import os
     creds = _creds(tmp_path)

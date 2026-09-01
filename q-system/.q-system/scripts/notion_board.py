@@ -41,6 +41,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 STATE_DIR = Path(os.environ.get("KIPI_STATE_DIR", str(Path.home() / ".config" / "kipi")))
@@ -328,33 +329,53 @@ def live_check(opener=None, token_file=None, page_file=None, out=print) -> int:
     if opener is None and os.environ.get("PYTEST_CURRENT_TEST"):
         out(json.dumps({"ok": False, "reason": "refused: running under pytest; the live board is never written by a test"}))
         return EXIT_NO_CREDENTIAL
-    sentinel = f"kipi live-check {time.strftime('%Y-%m-%dT%H:%M:%S')}"
+    # Per-invocation unique sentinel, and ONLY the block this invocation created
+    # is ever deleted (both Codex reviewers on this issue: a second-resolution
+    # timestamp let two overlapping checks delete each other's sentinel).
+    sentinel = f"kipi live-check {uuid.uuid4().hex}"
     started = time.monotonic()
+    created_id = None
+    cleaned = None
+    report = {"ok": False, "page_id": page_id}
     try:
         buckets = parse_buckets(read_page(token, page_id, opener))
         if any(buckets[b]["heading_id"] is None for b in BUCKETS):
             _request(token, "PATCH", f"/blocks/{page_id}/children",
                      {"children": [_heading(b) for b in BUCKETS if buckets[b]["heading_id"] is None]}, opener)
             buckets = parse_buckets(read_page(token, page_id, opener))
-        _request(token, "PATCH", f"/blocks/{page_id}/children",
-                 {"children": [_bullet(sentinel)], "after": buckets[TOP]["heading_id"]}, opener)
+        answer = _request(token, "PATCH", f"/blocks/{page_id}/children",
+                          {"children": [_bullet(sentinel)], "after": buckets[TOP]["heading_id"]}, opener)
+        created = [b.get("id") for b in (answer.get("results") or []) if _text(b) == sentinel]
+        created_id = created[0] if created else None
         after_write = parse_buckets(read_page(token, page_id, opener))[TOP]["items"]
         hits = [bid for bid, text in after_write if text == sentinel]
+        if created_id is None and hits:
+            created_id = hits[0]  # an API that omits results still shows the block on read-back
         if not hits:
-            out(json.dumps({"ok": False, "page_id": page_id, "reason": "sentinel not found on read-back"}))
+            report["reason"] = "sentinel not found on read-back"
             return EXIT_MISMATCH
-        for bid in hits:
-            _request(token, "DELETE", f"/blocks/{bid}", opener=opener)
+        _request(token, "DELETE", f"/blocks/{created_id}", opener=opener)
+        cleaned = True
         after_delete = parse_buckets(read_page(token, page_id, opener))[TOP]["items"]
         if any(text == sentinel for _, text in after_delete):
-            out(json.dumps({"ok": False, "page_id": page_id, "reason": "sentinel still present after delete"}))
+            report["reason"] = "sentinel still present after delete"
             return EXIT_MISMATCH
+        report.update({"ok": True, "round_trip_s": round(time.monotonic() - started, 3)})
+        return EXIT_OK
     except NotionError as exc:
-        out(json.dumps({"ok": False, "page_id": page_id, "reason": str(exc)}))
+        report["reason"] = str(exc)
         return EXIT_MISMATCH
-    out(json.dumps({"ok": True, "page_id": page_id,
-                    "round_trip_s": round(time.monotonic() - started, 3)}))
-    return EXIT_OK
+    finally:
+        # Cleanup runs whenever a block was created and not yet deleted, so a
+        # failed read-back, a 403 mid-way or a transient error never leaves
+        # live-check data on the founder's board (both Codex reviewers).
+        if created_id is not None and not cleaned:
+            try:
+                _request(token, "DELETE", f"/blocks/{created_id}", opener=opener)
+                report["cleanup"] = "sentinel deleted"
+            except NotionError as exc:
+                report["cleanup"] = f"sentinel NOT deleted ({exc}); block {created_id} remains"
+        out(json.dumps(report))
 
 
 def main(argv=None) -> int:

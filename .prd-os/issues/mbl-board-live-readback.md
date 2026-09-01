@@ -1,7 +1,7 @@
 ---
 id: mbl-board-live-readback
 title: A live read-back check that fails closed without the token, required to close
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
@@ -35,4 +35,4 @@ notion_board.py --live-check writes a sentinel line to top-of-mind, reads it bac
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] A live read-back check that fails closed without the token, required to close
+- [x] A live read-back check that fails closed without the token, required to close (notion_board.py --live-check: per-invocation uuid sentinel, deletes only its own block, cleanup in finally; 7 tests red-first; 4 Codex findings accepted and patched. CLOSE IS BLOCKED BY DESIGN until the founder places ~/.config/kipi/notion-token and notion-board-page: the bypass_check ran 2026-09-01 and exited 3 'notion-board-page missing'. The issue is cleared, not closed; re-load, verify and close once the credential exists)
