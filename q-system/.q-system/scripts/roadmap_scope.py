@@ -62,6 +62,10 @@ ROADMAP_PATTERNS = {
         r"\b(market|position)\s+(it|this|the)\b",
         r"\bgo[- ]to[- ]market\b",
         r"\bwhat (we|to) (should )?build next\b",
+        # Added by the paraphrase suite (issue mbl-roadmap-scope-paraphrase-suite):
+        r"\bwhat should we build\b",
+        r"\bsaas\b",
+        r"\bpitch (it|this|the)\b",
     ],
     "PRICING": [
         r"\bpric(e|ing|es)\b",
@@ -72,6 +76,7 @@ ROADMAP_PATTERNS = {
         r"\bretainer\b",
         r"\brate card\b",
         r"\binvoice (them|the client)\b",
+        r"\bpaywall\b",
     ],
     "PUBLISH": [
         r"\bpublish\b",
