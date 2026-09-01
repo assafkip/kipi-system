@@ -1,7 +1,7 @@
 ---
 id: mbl-board-item-identity
 title: Board items carry a stable id and a hand-moved item is never re-added
-status: open
+status: closed
 priority: p1
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
@@ -35,4 +35,4 @@ Every item line ends with its stable id (Linear identifier or open-loop id). Bef
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Board items carry a stable id and a hand-moved item is never re-added
+- [x] Board items carry a stable id and a hand-moved item is never re-added (every lead line gets a Linear id, loop id, or content hash; ids anywhere outside Top of mind are honoured; 6 tests red-first; mutation proof in the closing commit; 2 Codex standard findings accepted and patched, adversarial pass clean)

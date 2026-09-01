@@ -33,6 +33,7 @@ injected, the same chokepoint slack_founder.deliver has.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -135,16 +136,21 @@ def read_page(token: str, page_id: str, opener=None, timeout=HTTP_TIMEOUT, budge
 def parse_buckets(blocks: list) -> dict:
     """{bucket: {"heading_id": id|None, "items": [(block_id, text), ...]}}"""
     out = {b: {"heading_id": None, "items": []} for b in BUCKETS}
+    out["_outside"] = []  # text of every non-heading block NOT under Top of mind
     current = None
     for blk in blocks:
         kind = blk.get("type")
         if kind in ("heading_1", "heading_2", "heading_3"):
             title = _text(blk)
-            current = title if title in out else None
+            current = title if title in BUCKETS else None
             if current:
                 out[current]["heading_id"] = blk.get("id")
-        elif kind == "bulleted_list_item" and current:
-            out[current]["items"].append((blk.get("id"), _text(blk)))
+            continue
+        text = _text(blk)
+        if kind == "bulleted_list_item" and current:
+            out[current]["items"].append((blk.get("id"), text))
+        if current != TOP and text:
+            out["_outside"].append(text)
     return out
 
 
@@ -186,12 +192,22 @@ _ITEM_ID = re.compile(r"\b(ASK-\d+|loop [A-Za-z0-9_.\-]+)")
 
 
 def item_id(text: str):
-    """The stable identity of an owed row: a Linear identifier or a loop id.
-    A withheld or tail line has none."""
+    """The stable identity of an owed row: a Linear identifier or a loop id,
+    else a content hash (`row-<8 hex>`), so EVERY lead line carries an id
+    (Codex standard finding on this issue: a row with no recognisable id was
+    written bare and could never be reconciled). A withheld or tail line has
+    none. The bracketed suffix of an already-written line is stripped before
+    hashing so the id is stable across rewrites."""
     if text.startswith("(") or text.startswith("withheld"):
         return None
     m = _ITEM_ID.search(text)
-    return m.group(1) if m else None
+    if m:
+        return m.group(1)
+    bare = _SUFFIX.sub("", text).strip()
+    return "row-" + hashlib.sha1(bare.encode("utf-8")).hexdigest()[:8]
+
+
+_SUFFIX = re.compile(r"\s*\[[^\]]+\]\s*$")
 
 
 def top_of_mind_lines(owed_rows: list, ids_elsewhere=frozenset()) -> list:
@@ -212,7 +228,18 @@ def top_of_mind_lines(owed_rows: list, ids_elsewhere=frozenset()) -> list:
 
 
 def ids_outside_top(buckets: dict) -> frozenset:
-    return frozenset(i for b in BUCKETS[1:] for _, t in buckets[b]["items"] if (i := item_id(t)))
+    """Every id found ANYWHERE outside the Top of mind block: the other two
+    buckets, text before the first heading, and anything under a heading this
+    module does not know (Codex standard finding on this issue). A bracketed
+    `[id]` suffix counts as well as a bare identifier."""
+    ids = set()
+    for text in buckets["_outside"]:
+        ident = item_id(text)
+        if ident:
+            ids.add(ident)
+        for m in re.finditer(r"\[([^\]]+)\]", text):
+            ids.add(m.group(1))
+    return frozenset(ids)
 
 
 def _credentials(token_file=None, page_file=None):

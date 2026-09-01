@@ -209,6 +209,30 @@ def test_moved_stays_moved(board, tmp_path):
     assert fake.text_under("This week") == ["re-review [ASK-445]"]
 
 
+def test_every_lead_line_carries_an_id_even_without_a_recognisable_one(board):
+    """Codex standard finding on this issue: a row with no ASK/loop id was
+    written bare. Now it gets a stable content hash, stable across rewrites."""
+    rows = ["DUE 2026-08-10  sign the lease renewal", "withheld 1 more: 1 in Linear, 0 in open-loops"]
+    lines = board.top_of_mind_lines(rows)
+    assert re.search(r"\[row-[0-9a-f]{8}\]$", lines[0]), lines
+    assert board.item_id(lines[0]) == board.item_id(rows[0]), "the suffix must not change the id"
+    assert "[" not in lines[1]
+
+
+def test_an_id_anywhere_outside_top_of_mind_is_honoured(board, tmp_path):
+    """Before the first heading, under a heading this module does not know, or
+    as a bare identifier without brackets: all count as moved."""
+    fake = FakeNotion([_b("parked: ASK-830 waits on legal", "p0"),
+                       _h("Top of mind", "h1"),
+                       _h("Someday", "hx"), _b("re-review [ASK-445]", "x1"),
+                       _h("This week", "h2"), _h("Inbox", "h3")])
+    rows, error = board.collect(NOW, {"owed": (OWED, None)}, opener=fake, **_creds(tmp_path))
+    assert error is None
+    top = fake.text_under("Top of mind")
+    assert not any("ASK-830" in t or "ASK-445" in t for t in top), top
+    assert any("captoken-pr" in t for t in top)
+
+
 def test_only_top_of_mind_blocks_are_ever_deleted_or_appended(board, tmp_path):
     fake = FakeNotion([_h("Top of mind", "h1"), _b("old [ASK-830]", "o1"),
                        _h("This week", "h2"), _b("keep [ASK-445]", "w1"),
