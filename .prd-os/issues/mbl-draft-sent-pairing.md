@@ -1,7 +1,7 @@
 ---
 id: mbl-draft-sent-pairing
 title: Draft-vs-sent pairing by Gmail identity, unmatched drafts counted not guessed
-status: open
+status: closed
 priority: p1
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
@@ -36,4 +36,4 @@ Pairing is by Gmail message id only: drafts are read from q-system/output/drafts
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Draft-vs-sent pairing by Gmail identity, unmatched drafts counted not guessed
+- [x] Draft-vs-sent pairing by Gmail identity, unmatched drafts counted not guessed (draft-vs-sent.py + record_draft; 11 tests red-first; mutation proof in the closing commit; 4 Codex findings accepted and patched: same-subject fixture with a subject field, idempotent across days by id, 30-day window and 50-id cap per run, runner entries validated at the boundary)

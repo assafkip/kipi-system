@@ -39,19 +39,23 @@ ACTION = "draft-vs-sent"
 
 SENT_PROMPT = (
     "Using the Gmail tools, for each of these Gmail message ids return the SENT "
-    "message's plain-text body and recipient addresses. Answer with ONE JSON object "
-    "mapping id -> {\"body\": str, \"to\": [str]} and omit ids that are not in sent "
+    "message's plain-text body, subject and recipient addresses. Answer with ONE JSON object "
+    "mapping id -> {\"body\": str, \"subject\": str, \"to\": [str]} and omit ids that are not in sent "
     "mail. No prose. Ids: {ids}"
 )
 
 
-def record_draft(draft_id: str, contact: str, body: str, source: str, ledger=None) -> dict:
+def record_draft(draft_id: str, contact: str, body: str, source: str, ledger=None,
+                 subject: str = "") -> dict:
     """The append helper every draft writer calls. One line per draft; the id
-    is the Gmail draft message id and is the ONLY pairing key."""
+    is the Gmail draft message id and is the ONLY pairing key. The subject is
+    recorded for the founder's eyes and is never read by the pairer (Codex
+    standard finding on this issue: with no subject in the ledger, a test could
+    not prove that subject-based pairing is absent)."""
     if not draft_id:
         raise ValueError("a draft without a Gmail message id cannot be paired later")
-    row = {"draft_id": draft_id, "contact": contact, "body": body, "source": source,
-           "at": dt.datetime.now().astimezone().isoformat(timespec="seconds")}
+    row = {"draft_id": draft_id, "contact": contact, "subject": subject, "body": body,
+           "source": source, "at": dt.datetime.now().astimezone().isoformat(timespec="seconds")}
     path = Path(ledger) if ledger else LEDGER
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
@@ -83,7 +87,15 @@ def fetch_sent(ids: list, runner) -> dict:
     if start < 0:
         raise RuntimeError("runner returned no JSON object")
     data = json.loads(text[start:end + 1])
-    return {k: v for k, v in data.items() if k in ids and isinstance(v, dict)}
+    # Validate at the runner boundary (Codex adversarial finding on this
+    # issue): an entry without a string body is NOT an empty sent message, it
+    # is an invalid answer, and it is dropped and counted rather than stored
+    # or crashed on.
+    valid = {}
+    for k, v in data.items():
+        if k in ids and isinstance(v, dict) and isinstance(v.get("body"), str):
+            valid[k] = v
+    return valid
 
 
 def _connect(db_path):
@@ -95,9 +107,30 @@ def _connect(db_path):
     return con
 
 
-def pair(ledger=None, db_path=None, runner=None, now=None) -> dict:
+WINDOW_DAYS = 30
+MAX_IDS_PER_RUN = 50
+
+
+def _in_window(row: dict, now: dt.datetime, days: int) -> bool:
+    try:
+        when = dt.datetime.fromisoformat(str(row.get("at", "")))
+    except ValueError:
+        return True
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=now.tzinfo)
+    return (now - when) <= dt.timedelta(days=days)
+
+
+def pair(ledger=None, db_path=None, runner=None, now=None, days: int = WINDOW_DAYS,
+         max_ids: int = MAX_IDS_PER_RUN) -> dict:
     """Pair every ledger draft with its sent message by id and insert one
-    copy_edits row per pair. Returns counts; never guesses a pair."""
+    copy_edits row per pair. Returns counts; never guesses a pair.
+
+    Bounded and idempotent across days (Codex adversarial findings on this
+    issue): a draft already paired (its id is in copy_edits, any date) is
+    skipped before any lookup; only drafts written in the last `days` are
+    looked up, at most `max_ids` per run, oldest first, and the counts of
+    what was skipped for each reason are reported."""
     now = now or dt.datetime.now().astimezone()
     if runner is None:
         if os.environ.get("PYTEST_CURRENT_TEST"):
@@ -109,9 +142,16 @@ def pair(ledger=None, db_path=None, runner=None, now=None) -> dict:
         mod = importlib.util.module_from_spec(brief)
         brief.loader.exec_module(mod)
         runner = mod.run_claude
-    drafts = read_ledger(ledger)
-    sent = fetch_sent([d["draft_id"] for d in drafts], runner)
+    all_drafts = read_ledger(ledger)
     con = _connect(Path(db_path) if db_path else DB_PATH)
+    already = {row[0].split(":", 1)[1] for row in con.execute(
+        "SELECT action_type FROM copy_edits WHERE action_type LIKE ?", (f"{ACTION}:%",))}
+    already_paired = [d for d in all_drafts if d["draft_id"] in already]
+    fresh = [d for d in all_drafts if d["draft_id"] not in already and _in_window(d, now, days)]
+    too_old = len(all_drafts) - len(already_paired) - len(fresh)
+    deferred = max(0, len(fresh) - max_ids)
+    drafts = fresh[:max_ids]
+    sent = fetch_sent([d["draft_id"] for d in drafts], runner)
     inserted = identical = 0
     unmatched = []
     for d in drafts:
@@ -119,7 +159,7 @@ def pair(ledger=None, db_path=None, runner=None, now=None) -> dict:
         if hit is None:
             unmatched.append(d["draft_id"])
             continue
-        if hit.get("body", "").strip() == d.get("body", "").strip():
+        if hit["body"].strip() == str(d.get("body", "")).strip():
             identical += 1
             continue
         cur = con.execute(
@@ -130,8 +170,9 @@ def pair(ledger=None, db_path=None, runner=None, now=None) -> dict:
         inserted += cur.rowcount
     con.commit()
     con.close()
-    return {"drafts": len(drafts), "paired": inserted, "identical": identical,
-            "unmatched": len(unmatched), "unmatched_ids": unmatched}
+    return {"drafts": len(all_drafts), "looked_up": len(drafts), "paired": inserted,
+            "identical": identical, "unmatched": len(unmatched), "unmatched_ids": unmatched,
+            "already_paired": len(already_paired), "too_old": too_old, "deferred": deferred}
 
 
 def main(argv=None) -> int:
