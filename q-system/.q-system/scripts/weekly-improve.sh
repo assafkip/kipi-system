@@ -41,17 +41,29 @@ mkdir -p "$(dirname "$LOG")"
 overall=0
 for s in "${STEPS[@]}"; do
   echo "$(TS) START $s" >> "$LOG"
+  # The learner's output is found by MTIME (newer than this marker), never by
+  # a date in its name: the learner stamps UTC and this shell stamps local
+  # time, and at 06:30 Monday the two dates can differ (Codex standard
+  # finding on this issue).
+  marker="$(mktemp "${TMPDIR:-/tmp}/weekly-improve-start.XXXXXX")"
   python3 "$SCRIPTS/$s" >> "$LOG" 2>&1
   rc=$?
   echo "$(TS) END $s rc=$rc" >> "$LOG"
   if [ "$s" = "route-overrides-to-learn.py" ]; then
-    today="$INBOX/engagement-$(date +%Y-%m-%d).md"
-    if [ -f "$today" ] && grep -qF "$EMPTY_MARKER" "$today"; then
-      echo "$(TS) EMPTY $today (learner wrote its empty marker; not a proposal)" >> "$LOG"
-    elif [ -f "$today" ]; then
-      echo "$(TS) PROPOSAL $today" >> "$LOG"
-    fi
+    # An EMPTY file is moved OUT of the inbox (to _inbox/.empty/) so the pass,
+    # which lists every top-level .md, cannot present it as a proposal (both
+    # Codex reviewers on this issue). It is kept as evidence, not deleted.
+    mkdir -p "$INBOX/.empty"
+    while IFS= read -r f; do
+      if grep -qF "$EMPTY_MARKER" "$f"; then
+        mv "$f" "$INBOX/.empty/$(basename "$f")"
+        echo "$(TS) EMPTY $f (learner wrote its empty marker; moved to .empty/, not a proposal)" >> "$LOG"
+      else
+        echo "$(TS) PROPOSAL $f" >> "$LOG"
+      fi
+    done < <(find "$INBOX" -maxdepth 1 -name 'engagement-*.md' -newer "$marker" 2>/dev/null)
   fi
+  rm -f "$marker"
   # A producer or learner failure is logged and does NOT skip the pass; the
   # pass's own exit decides the run's exit because it is the deliverable.
   if [ "$s" = "weekly-improve.py" ]; then overall=$rc; fi

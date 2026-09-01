@@ -1,7 +1,7 @@
 ---
 id: mbl-weekly-improve-runner
 title: Weekly runner triggers producer, learner and pass in order; plist template; empty is not a proposal
-status: open
+status: closed
 priority: p1
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
@@ -39,4 +39,4 @@ weekly-improve.sh runs draft-vs-sent.py, then route-overrides-to-learn.py, then 
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Weekly runner triggers producer, learner and pass in order; plist template; empty is not a proposal
+- [x] Weekly runner triggers producer, learner and pass in order; plist template; empty is not a proposal (weekly-improve.sh finds the learner's output by mtime, moves an empty file to _inbox/.empty/ so the pass cannot list it; com.kipi.weekly-improve.plist Monday 06:30; learner gains tmp-path env overrides and its first test; 9 tests red-first incl. a bare-environment run (PATH=/usr/bin:/bin, temp HOME); mutation proof in the closing commit; 3 Codex findings accepted and patched. LIVE launchd install DEFERRED to landing: this branch lives in a worktree, and install-plist.sh renders __KIPI_REPO__ to the worktree path, so a job installed today would point at a checkout that disappears after merge, the exact silent-death class this PRD hunts. `install-plist.sh weekly-improve` + `launchctl kickstart gui/$UID/com.kipi.weekly-improve` run from the main checkout once Sana lands the branch)
