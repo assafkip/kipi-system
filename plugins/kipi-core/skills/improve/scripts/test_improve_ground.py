@@ -47,6 +47,34 @@ def test_missing_corpus_is_named_and_the_verdict_still_prints(ig, tmp_path):
     assert out["verdict"] in ("already-built", "adopt") and out["cites"]
 
 
+def test_a_corpus_with_an_unopenable_file_is_unreadable_not_read(ig, tmp_path):
+    """Both Codex reviewers: `read` was claimed after listing filenames while
+    the recall exception was swallowed."""
+    c = _corpus(tmp_path, "c", {"a": ("A", "gate run pass"), "b": ("B", "gate fail closed")})
+    (c / "a.md").chmod(0)
+    try:
+        out = ig.ground("add a gate that fails closed", "gate", env={"KIPI_LESSONS_CORPORA": str(c)})
+    finally:
+        (c / "a.md").chmod(0o644)
+    status = {x["path"]: x for x in out["corpora"]}[str(c)]
+    assert status["status"] == "unreadable" and "error" in status
+    assert out["verdict"] == "skip" and out["cites"] == [], "nothing was consumed, so nothing may be cited"
+
+
+def test_adopt_cites_the_corpus_that_was_read_never_a_readme_nobody_searched(ig, tmp_path):
+    c = _corpus(tmp_path, "c", {"x": ("X", "something unrelated about calendars"),
+                               "y": ("Y", "something unrelated about calendars too")})
+    out = ig.ground("add a lint for the rule-of-three in comments", "lint", env={"KIPI_LESSONS_CORPORA": str(c)})
+    assert out["verdict"] == "adopt"
+    assert out["cites"] and all(str(c) in p for p in out["cites"]), out["cites"]
+    assert not any("README" in p for p in out["cites"])
+
+
+def test_no_readable_corpus_is_skip_not_adopt(ig, tmp_path):
+    out = ig.ground("add a lint for the rule-of-three", "lint", env={"KIPI_LESSONS_CORPORA": str(tmp_path / "absent")})
+    assert out["verdict"] == "skip" and out["cites"] == [] and "cannot be grounded" in out["reason"]
+
+
 def test_risk_scored_auto_merge_is_already_built_naming_review_tier(ig, tmp_path):
     env = {"KIPI_LESSONS_CORPORA": str(_corpus(tmp_path, "c", {}))}
     out = ig.ground("risk-scored auto-merge for low-risk PRs", "script", env=env)

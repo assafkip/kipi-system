@@ -74,33 +74,40 @@ def corpora(env=None) -> list:
     return dirs
 
 
-def corpus_report(dirs: list) -> list:
-    """[{path, status: read|missing|unreadable, count}]"""
-    out = []
+def ground_corpora(idea: str, dirs: list, k: int = 3) -> tuple:
+    """(report, hits). ONE pass per corpus: a corpus is `read` only when the
+    recall engine actually consumed it (both Codex reviewers on this issue:
+    reporting `read` after listing filenames, while a separate recall
+    swallowed the exception, let a verdict claim grounding in a corpus that
+    was never consumed). An exception while reading or searching marks it
+    `unreadable` with the error; a missing directory is `missing`."""
+    engine = _load("lessons_recall", SCRIPTS / "lessons_recall.py")
+    report, hits = [], []
     for d in dirs:
         if not d.exists():
-            out.append({"path": str(d), "status": "missing", "count": 0})
+            report.append({"path": str(d), "status": "missing", "count": 0})
             continue
         try:
-            n = len([p for p in d.glob("*.md") if p.name != "README.md"])
-            out.append({"path": str(d), "status": "read", "count": n})
-        except OSError as exc:
-            out.append({"path": str(d), "status": "unreadable", "count": 0, "error": str(exc)})
-    return out
+            paths = [p for p in engine.corpus(str(d))]
+            # engine.search opens every lesson body itself; a file it cannot
+            # open raises here and the corpus is reported unreadable.
+            found = [(float(s), p) for s, p in engine.search(idea, k=k, lessons_dir=str(d))]
+        except Exception as exc:  # noqa: BLE001 - reported, never fatal, never `read`
+            report.append({"path": str(d), "status": "unreadable", "count": 0,
+                           "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        report.append({"path": str(d), "status": "read", "count": len(paths)})
+        hits += found
+    return report, sorted(hits, key=lambda x: -x[0])[:k]
+
+
+def corpus_report(dirs: list) -> list:
+    """The report half of ground_corpora, for callers that need no recall."""
+    return ground_corpora("", dirs)[0]
 
 
 def recall(idea: str, dirs: list, k: int = 3) -> list:
-    """[(score, path)] across every readable corpus, best first."""
-    engine = _load("lessons_recall", SCRIPTS / "lessons_recall.py")
-    hits = []
-    for d in dirs:
-        if not d.exists():
-            continue
-        try:
-            hits += [(float(s), p) for s, p in engine.search(idea, k=k, lessons_dir=str(d))]
-        except Exception:  # noqa: BLE001 - an unreadable corpus is reported, never fatal
-            continue
-    return sorted(hits, key=lambda x: -x[0])[:k]
+    return ground_corpora(idea, dirs, k)[1]
 
 
 def is_refused(text: str, declared_target) -> bool:
@@ -111,8 +118,8 @@ def is_refused(text: str, declared_target) -> bool:
 
 def ground(idea: str, target: str = "skill", env=None) -> dict:
     dirs = corpora(env)
-    report = corpus_report(dirs)
     scope = _load("roadmap_scope", SCRIPTS / "roadmap_scope.py").classify(idea, target)
+    report, hits = ground_corpora(idea, dirs)
     if scope["verdict"] != "system":
         return {"verdict": "skip", "reason": f"roadmap scope ({scope['verdict']}): this loop never decides what to build, sell or publish",
                 "cites": ["q-system/.q-system/scripts/roadmap_scope.py"], "corpora": report}
@@ -121,13 +128,19 @@ def ground(idea: str, target: str = "skill", env=None) -> dict:
         if key in low:
             return {"verdict": "already-built", "reason": f"{path} already does this", "cites": [path],
                     "corpora": report}
-    hits = recall(idea, dirs)
     strong = [(s, p) for s, p in hits if s >= MATCH_FLOOR]
     if strong:
         return {"verdict": "already-built", "reason": "a lesson already covers it",
                 "cites": [p for _, p in strong], "corpora": report}
+    read = [c["path"] for c in report if c["status"] == "read"]
+    if not read:
+        # Nothing was consumed, so nothing can be cited. A verdict with no cite
+        # is not a verdict (Codex standard finding: README.md was cited
+        # unconditionally, a file that was never searched and may not exist).
+        return {"verdict": "skip", "reason": "no readable corpus; the idea cannot be grounded",
+                "cites": [], "corpora": report}
     return {"verdict": "adopt", "reason": "no lesson or named file covers it; a system change is proposable",
-            "cites": [p for _, p in hits] or ["q-system/lessons/README.md"], "corpora": report}
+            "cites": [p for _, p in hits] or read, "corpora": report}
 
 
 def main(argv=None) -> int:

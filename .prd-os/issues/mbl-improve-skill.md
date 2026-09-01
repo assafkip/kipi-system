@@ -1,7 +1,7 @@
 ---
 id: mbl-improve-skill
 title: The improve skill with an explicit corpora contract and the shared roadmap classifier
-status: in-progress
+status: closed
 priority: p2
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
@@ -38,4 +38,19 @@ improve_ground.py reads KIPI_LESSONS_CORPORA (colon-separated directories; defau
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] The improve skill with an explicit corpora contract and the shared roadmap classifier
+- [x] The improve skill with an explicit corpora contract and the shared roadmap classifier (SKILL.md + improve_ground.py; a corpus is `read` only when the engine consumed it, an unopenable file marks it unreadable, adopt cites only what was read, no readable corpus is skip; /improve registered on the /q-draft line of CLAUDE.md; kipi-core 1.9.2 via a recorded amendment; 15 tests red-first; mutation proof in the closing commit; 3 Codex findings accepted and patched)
+
+## Amendments
+
+### 2026-09-01T23:41:21Z
+Reason: Same gate as mbl-changelog-convention: the plugin-version-bump pre-commit check refuses any change under plugins/kipi-core without a plugin.json bump, and the PRD manifest omitted plugins/kipi-core/.claude-plugin/plugin.json. Release state is Sana's call per the founder's routing note; recorded here, kipi-core 1.9.1 -> 1.9.2.
+
+Before:
+- allowed_files: ['plugins/kipi-core/skills/improve/SKILL.md', 'plugins/kipi-core/skills/improve/scripts/improve_ground.py', 'plugins/kipi-core/skills/improve/scripts/test_improve_ground.py', 'q-system/.q-system/capability/expected_tests/plugins__kipi-core__skills__improve__scripts__test_improve_ground.py.json', 'CLAUDE.md']
+- required_checks: ['python3 -m pytest -q plugins/kipi-core/skills/improve/scripts/test_improve_ground.py']
+- disallowed_files: ['.claude/**', 'plugins/prd-os/**', '.prd-os/**', 'q-consult/**']
+
+After:
+- allowed_files: ['plugins/kipi-core/skills/improve/SKILL.md', 'plugins/kipi-core/skills/improve/scripts/improve_ground.py', 'plugins/kipi-core/skills/improve/scripts/test_improve_ground.py', 'q-system/.q-system/capability/expected_tests/plugins__kipi-core__skills__improve__scripts__test_improve_ground.py.json', 'CLAUDE.md', 'plugins/kipi-core/.claude-plugin/plugin.json']
+- required_checks: ['python3 -m pytest -q plugins/kipi-core/skills/improve/scripts/test_improve_ground.py']
+- disallowed_files: ['.claude/**', 'plugins/prd-os/**', '.prd-os/**', 'q-consult/**']
