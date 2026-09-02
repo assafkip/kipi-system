@@ -1,0 +1,4 @@
+{
+  "_doc": "Scripts that have no trigger BY DESIGN: libraries imported by other scripts, or manual tools. trigger-inventory.py exits 2 on an entry whose file no longer exists, so a stale exemption is red, not silent. Every entry needs a reason. This is NOT a stage registry (Codex finding-6 on prd-lessons-rail-and-up-rail): candidates come from the tree, so a new script is visible the moment it lands.",
+  "exempt": []
+}

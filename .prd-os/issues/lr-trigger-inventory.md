@@ -1,7 +1,7 @@
 ---
 id: lr-trigger-inventory
 title: trigger-inventory.py derives stages from the tree, diffs them against registered triggers, and prints its excluded scope
-status: in-progress
+status: closed
 priority: p0
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:
@@ -36,4 +36,4 @@ RED first against a tmp repo fixture: candidates are every *.py and *.sh under q
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] trigger-inventory.py derives stages from the tree, diffs them against registered triggers, and prints its excluded scope
+- [x] trigger-inventory.py derives stages from the tree, diffs them against registered triggers, and prints its excluded scope
