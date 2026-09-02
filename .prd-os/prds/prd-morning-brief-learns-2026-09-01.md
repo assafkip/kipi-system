@@ -1,9 +1,9 @@
 ---
 id: prd-morning-brief-learns-2026-09-01
 title: Morning brief learns (Phase 2 of the morning-brief overhaul)
-status: approved
+status: archived
 created_at: 2026-09-01T21:37:44Z
-updated_at: 2026-09-01T22:00:46Z
+updated_at: 2026-09-02T04:11:09Z
 owner: assaf
 reviewers: []
 findings_path: .prd-os/findings/prd-morning-brief-learns-2026-09-01-findings.jsonl
