@@ -1,7 +1,7 @@
 ---
 id: lr-promote-path-containment
 title: kipi promote exists, is registered in the CLI, and refuses any path that is not a regular file on a symlink-free real path inside q-system/
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:

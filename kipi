@@ -51,6 +51,7 @@ usage() {
   echo "  kipi health          Fleet health check: dark/failing jobs, double schedules, open spillover"
   echo "  kipi health --apply  ...and file each finding as a deduped Linear issue"
   echo "  kipi lessons-run     Run the daily auto-learn heartbeat once (distill->publish->propagate->slack)"
+  echo "  kipi promote <path>  Promote ONE general capability from this instance up to the skeleton (contained, scrubbed, receipted)"
   echo "  kipi home            Print the skeleton path"
   echo ""
 }
@@ -84,6 +85,12 @@ case "${1:-help}" in
     ;;
   push)
     bash "$KIPI_HOME/kipi-push-upstream.sh"
+    ;;
+  promote)
+    # The up-rail (prd-lessons-rail-and-up-rail). Runs from an INSTANCE checkout;
+    # KIPI_HOME is exported so the script can read the skeleton's registry.
+    shift
+    KIPI_HOME="$KIPI_HOME" bash "$KIPI_HOME/kipi-promote.sh" "$@"
     ;;
   review)
     # THE review agent for every PR: Netflix senior-staff persona, fresh eyes,
