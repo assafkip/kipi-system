@@ -40,10 +40,16 @@ COULD_NOT_READ = "COULD NOT READ"
 def _load(name, filename):
     # no bytecode: a __pycache__/lessons_streak.*.pyc beside the helper would
     # match the single-writer grep in test_lessons_daily_streak.py
+    # (restored afterwards: the flag is process-global and an embedding caller,
+    # pytest included, keeps its own setting; Codex adversarial, issue 13)
+    previous = sys.dont_write_bytecode
     sys.dont_write_bytecode = True
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    try:
+        spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = previous
     return mod
 
 
@@ -74,8 +80,10 @@ def resolve(root):
         registry = json.loads(open(registry_path, encoding="utf-8").read())
     except (OSError, ValueError):
         return False, []
-    skel = os.path.realpath(str((registry.get("skeleton") or {}).get("path", "")))
-    skeleton_ok = bool(skel) and skel == root
+    raw = (registry.get("skeleton") or {}).get("path")
+    # the RAW value is checked before realpath: realpath("") is the cwd, which
+    # would pass whenever the reporter runs from its own root (Codex, issue 13)
+    skeleton_ok = isinstance(raw, str) and bool(raw.strip()) and os.path.realpath(raw) == root
     try:
         names = json.loads(open(os.path.join(root, HUBS_REL), encoding="utf-8").read()).get("hubs", [])
     except (OSError, ValueError):

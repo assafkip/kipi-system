@@ -93,6 +93,18 @@ def test_a_worktree_never_reports_as_the_skeleton(tmp_path):
     assert "lacks" not in r.stdout
 
 
+def test_an_empty_skeleton_path_never_passes_even_from_the_root(tmp_path):
+    """Codex (issue 13): realpath('') is the cwd, so an empty registry entry
+    passed whenever the reporter ran from its own root."""
+    root, hub = _fixture(tmp_path)
+    reg = json.loads((root / "instance-registry.json").read_text())
+    for bad in ("", "   ", None):
+        reg["skeleton"]["path"] = bad
+        (root / "instance-registry.json").write_text(json.dumps(reg))
+        r = subprocess.run([sys.executable, str(REPORT), "--root", str(root), "--dry-run"], capture_output=True, text=True, cwd=root, timeout=60)
+        assert r.returncode == 0 and "skeleton: COULD NOT READ" in r.stdout, (bad, r.stdout)
+
+
 def test_unreadable_hub_tree_renders_could_not_read(tmp_path):
     root, hub = _fixture(tmp_path)
     import shutil
@@ -128,6 +140,22 @@ def test_dry_run_writes_nothing_and_sends_nothing(tmp_path):
     calls = []
     m.run(root=root, deliver=lambda msg: calls.append(msg), dry_run=True, trigger="launchd")
     assert calls == [] and sorted(str(p) for p in root.rglob("*")) == before
+
+
+def test_loading_helpers_leaves_the_bytecode_flag_as_it_found_it(tmp_path):
+    """Codex adversarial (issue 13): _load set sys.dont_write_bytecode for the
+    whole process and never restored it."""
+    root, hub = _fixture(tmp_path)
+    m = _mod()
+    saved = sys.dont_write_bytecode
+    try:
+        for start in (False, True):  # whatever the caller had, it keeps
+            sys.dont_write_bytecode = start
+            m.run(root=root, deliver=lambda msg: {}, dry_run=True, trigger=None)
+            assert sys.dont_write_bytecode is start
+    finally:
+        sys.dont_write_bytecode = saved
+    assert not list((SCRIPTS / "__pycache__").glob("lessons_streak*")) if (SCRIPTS / "__pycache__").exists() else True
 
 
 def test_never_references_the_fleet_alert_path():

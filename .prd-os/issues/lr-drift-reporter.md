@@ -1,7 +1,7 @@
 ---
 id: lr-drift-reporter
 title: A scheduled drift reporter resolves skeleton and hubs from the registry, says what a hub has that the skeleton lacks, and appends the streak summary
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:
@@ -38,4 +38,4 @@ RED first against two tmp trees and a fixture registry: the skeleton path is the
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] A scheduled drift reporter resolves skeleton and hubs from the registry, says what a hub has that the skeleton lacks, and appends the streak summary
+- [x] A scheduled drift reporter resolves skeleton and hubs from the registry, says what a hub has that the skeleton lacks, and appends the streak summary
