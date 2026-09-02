@@ -81,6 +81,14 @@ else
     && git commit --no-verify --no-gpg-sign -m "chore(lessons): auto-learn $(date +%Y-%m-%d) — ${PUB} published, ${HELD} held" >/dev/null 2>&1 || true )
 fi
 
+# Mirror the corpus to the founder's Notion lessons database (founder 2026-09-02:
+# "the process needs to constantly write to Notion"). Off without credentials;
+# a Notion outage is logged and never fails the lessons job.
+if [ -n "${KIPI_NOTION_SYNC_CMD:-}" ]; then NOTION_SYNC="bash -c \"$KIPI_NOTION_SYNC_CMD\""; else NOTION_SYNC="python3 \"$SKEL/q-system/.q-system/scripts/lessons_notion_sync.py\""; fi
+if eval "$NOTION_SYNC" >> "$LOG" 2>&1; then :; else
+  echo "$(TS) notion sync failed (non-fatal, see above)" >> "$LOG"
+fi
+
 # --- streak bookkeeping: lessons_streak.py is the ONLY writer of the streak file
 # and the escalations ledger (atomic replace under one lock; Codex finding-9).
 # Rule (finding-10): only a real propagation attempt bumps the streak. A run
