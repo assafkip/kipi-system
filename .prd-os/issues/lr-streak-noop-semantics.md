@@ -1,7 +1,7 @@
 ---
 id: lr-streak-noop-semantics
 title: A run that publishes nothing leaves the streak untouched; only a real propagation attempt bumps it
-status: open
+status: closed
 priority: p0
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:
@@ -36,4 +36,4 @@ RED first: the sequence fail, fail, nothing-new, nothing-new, held-only, fail le
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] A run that publishes nothing leaves the streak untouched; only a real propagation attempt bumps it
+- [x] A run that publishes nothing leaves the streak untouched; only a real propagation attempt bumps it

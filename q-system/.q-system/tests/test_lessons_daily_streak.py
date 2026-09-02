@@ -148,5 +148,65 @@ def test_this_file_runs_its_own_tests_under_python3():
     assert none.returncode != 0
 
 
+# ---- issue lr-streak-noop-semantics (Codex finding-10) ----------------------
+
+def _run_summary(tmp_path, summary_json: str):
+    """Run the job with a distiller stub emitting `summary_json`. The propagate
+    stub exits 99 so a run that wrongly reaches propagation is loud."""
+    notify_log = tmp_path / "notify.log"
+    env = dict(os.environ,
+               KIPI_CLAUDE_BIN="/usr/bin/true",
+               KIPI_DISTILL_CMD=f"printf '%s' '{summary_json}'",
+               KIPI_PERSIST_CMD="true",
+               KIPI_PROPAGATE_CMD="exit 99",
+               KIPI_NOTIFY_CMD=f"echo \"$1\" >> '{notify_log}'",
+               KIPI_LESSONS_LOG=str(tmp_path / "lessons-daily.log"),
+               KIPI_STREAK_FILE=str(tmp_path / "streak.json"),
+               KIPI_ESCALATIONS_FILE=str(tmp_path / "escalations.jsonl"),
+               KIPI_STREAK_ESCALATE="3")
+    return subprocess.run(["/bin/bash", str(JOB)], capture_output=True, text=True, env=env)
+
+
+NOTHING = json.dumps({"published": [], "held": []})
+HELD_ONLY = json.dumps({"published": [], "held": ["something-held"]})
+
+
+def test_noop_runs_neither_reset_nor_increment_the_streak(tmp_path):
+    """fail, fail, nothing-new, nothing-new, held-only, fail leaves the streak at 3."""
+    _run(tmp_path, propagate_ok=False)
+    _run(tmp_path, propagate_ok=False)
+    assert _streak(tmp_path) == 2
+    ledger = tmp_path / "escalations.jsonl"
+    ledger.write_text('{"at": "2026-01-01T00:00:00+0000", "streak": 7, "threshold": 3, "action": "planted"}\n')
+    before = (tmp_path / "streak.json").stat().st_mtime_ns
+    ledger_before = (ledger.stat().st_mtime_ns, ledger.read_text())
+    for summary in (NOTHING, NOTHING, HELD_ONLY):
+        r = _run_summary(tmp_path, summary)
+        assert r.returncode == 0, r.stderr[-300:]
+    assert _streak(tmp_path) == 2, "a quiet run must not reset the streak"
+    assert (tmp_path / "streak.json").stat().st_mtime_ns == before, "a quiet run must not rewrite the streak file"
+    assert (ledger.stat().st_mtime_ns, ledger.read_text()) == ledger_before, "a quiet run must not rewrite or truncate an existing ledger"
+    r, _ = _run(tmp_path, propagate_ok=False)
+    assert r.returncode == 1 and _streak(tmp_path) == 3
+
+
+def test_noop_runs_with_no_prior_streak_write_no_streak_file(tmp_path):
+    for summary in (NOTHING, HELD_ONLY):
+        r = _run_summary(tmp_path, summary)
+        assert r.returncode == 0
+    assert not (tmp_path / "streak.json").exists()
+    assert not (tmp_path / "streak.json.lock").exists()
+
+
+def test_the_rule_is_stated_next_to_the_branch():
+    src = JOB.read_text(encoding="utf-8")
+    rule = "only a real propagation attempt bumps the streak"
+    lines = [l.lower() for l in src.splitlines()]
+    rule_at = next((i for i, l in enumerate(lines) if rule in l), None)
+    assert rule_at is not None, "the one-sentence rule must sit in the script"
+    branch_at = next(i for i, l in enumerate(lines) if 'prop="no propagation (nothing published)"' in l)
+    assert 0 < branch_at - rule_at <= 15, f"rule at line {rule_at + 1} is not next to the branch at line {branch_at + 1}"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", *sys.argv[1:]]))
