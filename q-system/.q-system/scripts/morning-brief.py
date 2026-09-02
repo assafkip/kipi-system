@@ -455,18 +455,32 @@ SECTIONS = (
 # four issues were about to edit this file, which is the serialization hazard
 # the single-owner rule exists to remove. A module that is absent renders no
 # section and logs ONE line; absent is not "nothing", and it is not an error.
+# Entries name the FILE, not the stem. The capability gate finds a wired engine
+# by its filename on a wiring surface (this file is one); a bare stem here left
+# notion_board.py reported inert on CI while this registry was its real caller
+# (PR #294, 2026-09-02). _optional_module accepts either spelling.
 OPTIONAL_SECTIONS = (
-    ("unknown_terms", "unknown_terms", "Terms I do not know"),
-    ("notion_board", "board", "Notion board"),
+    ("unknown_terms.py", "unknown_terms", "Terms I do not know"),
+    ("notion_board.py", "board", "Notion board"),
 )
 
 ERROR_LOG = STATE_DIR / "logs" / "morning-brief-errors.log"
 COLLECT_BUDGET_S = 20.0
+# The fixed four are bounded too (PR #294 review, major: `fixed_budget_s=None`
+# meant one hung calendar or mail call held the 07:00 brief, its Slack send and
+# its receipt forever, and the 09:00 deadman was the first thing to notice).
+# Calendar and mail shell `claude -p` under CLAUDE_TIMEOUT, so the thread bound
+# sits one minute above it: the subprocess timeout fires first in the normal
+# case and this is the backstop for a collector that hangs before or after it.
+FIXED_BUDGET_S = float(CLAUDE_TIMEOUT + 60)
 
 
 def _optional_module(stem: str):
     """The module for an optional section, or None when its file is absent.
-    Separate from _load_sibling so a test can swap it without touching disk."""
+    Separate from _load_sibling so a test can swap it without touching disk.
+    `stem` may carry its .py suffix (the registry does, see OPTIONAL_SECTIONS)."""
+    if stem.endswith(".py"):
+        stem = stem[:-3]
     path = HERE / f"{stem}.py"
     if not path.is_file():
         return None
@@ -546,7 +560,7 @@ def build(now: dt.datetime, sources: dict):
 
 
 def collect_all(now: dt.datetime, log_path=None, budget_s: float = COLLECT_BUDGET_S,
-                fixed_budget_s=None) -> dict:
+                fixed_budget_s: float = None) -> dict:
     """`budget_s` bounds the OPTIONAL sections (the board's Notion round trip,
     finding-4). The fixed four bound themselves: calendar and mail shell
     `claude -p` under CLAUDE_TIMEOUT, and the first live dry-run of this code
@@ -554,6 +568,8 @@ def collect_all(now: dt.datetime, log_path=None, budget_s: float = COLLECT_BUDGE
     would have cost the founder his mail every morning. `fixed_budget_s` exists
     so a test can prove the timeout path without waiting on a real collector."""
     log_path = log_path or ERROR_LOG
+    if fixed_budget_s is None:
+        fixed_budget_s = FIXED_BUDGET_S  # read at call time so a test can lower it
     fixed = (
         ("calendar", lambda: collect_calendar(now)),
         ("mail", lambda: collect_mail(now)),

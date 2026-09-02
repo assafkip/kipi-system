@@ -71,6 +71,31 @@ def test_reports_lessons_and_scripts_the_hub_has_and_the_skeleton_lacks(tmp_path
     assert "no drift" not in out
 
 
+def test_a_hub_that_is_merely_behind_the_skeleton_is_not_reported_as_drift(tmp_path):
+    """PR #294 review round 6, major: the digest comparison was symmetric, so
+    every file the skeleton edited since the hub's last sync read as hub drift
+    (53 lines on the one declared hub, 12 of them that PR's own edits). A hub
+    file whose content is a version the skeleton's git history holds is
+    BEHIND; only content the skeleton never had is drift."""
+    import subprocess
+    root, hub = _fixture(tmp_path)
+    old = "---\ntitle: c\n---\nold skeleton version\n"
+    (root / "q-system" / "lessons" / "changed.md").write_text(old)
+    git = ["git", "-C", str(root), "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run(git + ["init", "-q"], check=True)
+    subprocess.run(git + ["add", "-A"], check=True)
+    subprocess.run(git + ["commit", "-q", "-m", "old"], check=True)
+    (root / "q-system" / "lessons" / "changed.md").write_text("---\ntitle: c\n---\nnew skeleton version\n")
+    (hub / "q-system" / "lessons" / "changed.md").write_text(old)          # hub is behind
+    (hub / "q-system" / "lessons" / "forked.md").write_text("---\ntitle: f\n---\nhub-only content\n")
+    (root / "q-system" / "lessons" / "forked.md").write_text("---\ntitle: f\n---\nskeleton content\n")
+    m = _mod()
+    absent, changed, behind = m.drift(str(hub), str(root))
+    assert behind == ["q-system/lessons/changed.md"] and changed == ["q-system/lessons/forked.md"] and absent == [], (absent, changed, behind)
+    out = m.build(str(root))
+    assert "differs  q-system/lessons/forked.md" in out and "changed.md" not in out and "1 more are just behind" in out, out
+
+
 def test_no_drift_when_equal(tmp_path):
     root, hub = _fixture(tmp_path)
     r = _run(root, "--dry-run")
@@ -207,6 +232,25 @@ def test_cli_without_the_marker_prints_and_says_it_did_not_send(tmp_path):
     assert r.returncode == 0 and "only-here.md" in r.stdout and "delivery: not launched by the plist" in r.stdout, r.stdout
     r = _run(root, env_extra={"KIPI_TRIGGER": "launchd"})
     assert "delivery: refused" in r.stdout, "under pytest the real sender refuses, and the CLI says so"
+    assert r.returncode == 2, "a launchd run whose only alert was refused must not exit 0 (PR #294 review)"
+
+
+def test_a_launchd_run_whose_delivery_fails_exits_nonzero_and_a_delivered_one_exits_zero(tmp_path, monkeypatch, capsys):
+    """PR #294 review, major: main() returned 0 after Slack refused, so the
+    scheduled reporter's only alert vanished with a success exit that launchd,
+    the deadman and run-step-audit all read as fine. Three shapes, one rule:
+    launched by the plist and not delivered is a failure; printed-not-sent
+    (no plist marker) and dry-run stay 0 because nothing was owed."""
+    root, hub = _fixture(tmp_path)
+    m = _mod()
+    monkeypatch.setenv("KIPI_TRIGGER", "launchd")
+    assert m.main(["--root", str(root)], deliver=lambda msg: {"delivered": False, "refused": True}) == 2
+    assert m.main(["--root", str(root)], deliver=lambda msg: {}) == 2, "an empty answer is not a delivery"
+    assert m.main(["--root", str(root)], deliver=lambda msg: {"delivered": True, "refused": False}) == 0
+    assert m.main(["--root", str(root), "--dry-run"], deliver=lambda msg: {"refused": True}) == 0
+    monkeypatch.delenv("KIPI_TRIGGER")
+    assert m.main(["--root", str(root)], deliver=lambda msg: {"refused": True}) == 0
+    assert "delivery: refused" in capsys.readouterr().out
 
 
 def test_single_caller_the_plist_template_is_the_only_one_in_the_tree():

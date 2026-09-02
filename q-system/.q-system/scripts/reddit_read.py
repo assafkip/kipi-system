@@ -83,9 +83,10 @@ import urllib.request
 # Honest identification. Any UA that is not empty and is not curl's default gets
 # a 200, so there is nothing to gain by impersonating a browser and the tests
 # forbid the strings that would.
-USER_AGENT = "kipi-research/1.0 (+https://ktlyst.com; research)"
+USER_AGENT = "kipi-research/1.0 (+https://github.com/assafkip/kipi-system; research)"
 
 BASE = "https://old.reddit.com"
+REDDIT_HOSTS = frozenset({"old.reddit.com", "www.reddit.com", "reddit.com", "new.reddit.com"})
 
 # 3s pacing 429'd 11 of 12 RSS requests. 10s pacing ran 13 of 13 clean across
 # listing pages and thread fetches. This is the measured floor, not a guess.
@@ -111,6 +112,12 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 class CoverageNotRecorded(Exception):
     """An artifact carrying comments without saying what fraction they are."""
+
+
+class PermalinkRefused(Exception):
+    """A permalink that is not a reddit thread. `reddit_thread` is an MCP tool, so
+    an absolute URL here is attacker-shaped input: without this check the tool
+    fetched any http(s) target and returned its body (PR #294 review, major)."""
 
 
 class DiscoveryRefused(Exception):
@@ -186,15 +193,30 @@ def parse_comments(html: str) -> list:
     Deliberately shallow. Threading, scores and semantic scoring are not this
     module's job; it is a fetcher and an artifact.
     """
-    ids = comment_ids(html)
-    authors = _AUTHOR_RE.findall(html or "")
-    bodies = [_text(b) for b in _MD_RE.findall(html or "")]
+    # Bind author and body INSIDE each comment's own chunk, never by array
+    # position (PR #294 review, major): a real page opens with the post's own
+    # data-author and its selftext <div class="md">, and a deleted comment has
+    # no body, so positional joins attributed every comment to its neighbour.
+    text = html or ""
+    starts = []
+    seen = set()
+    for m in _COMMENT_RE.finditer(text):
+        cid = m.group(1)
+        if cid in seen:
+            continue
+        seen.add(cid)
+        tag_start = text.rfind("<", 0, m.start())
+        starts.append((cid, tag_start if tag_start >= 0 else m.start()))
     out = []
-    for i, cid in enumerate(ids):
+    for i, (cid, start) in enumerate(starts):
+        end = starts[i + 1][1] if i + 1 < len(starts) else len(text)
+        chunk = text[start:end]
+        a = _AUTHOR_RE.search(chunk)
+        b = _MD_RE.search(chunk)
         out.append({
             "id": cid,
-            "author": authors[i] if i < len(authors) else None,
-            "body": bodies[i] if i < len(bodies) else None,
+            "author": a.group(1) if a else None,
+            "body": _text(b.group(1)) if b else None,
         })
     return out
 
@@ -299,7 +321,18 @@ def assert_coverage_recorded(artifact: dict) -> None:
 def thread_url(permalink: str) -> str:
     """?limit=500 moved one thread from 201 to 215 of 214 declared. It is one
     query param and it is worth taking; it does not rescue large threads."""
-    path = permalink if permalink.startswith("http") else BASE + permalink
+    if permalink.startswith("http"):
+        from urllib.parse import urlsplit
+        parts = urlsplit(permalink)
+        if parts.scheme != "https" or parts.netloc.lower() not in REDDIT_HOSTS:
+            raise PermalinkRefused(
+                f"refusing {permalink}: a thread permalink is a reddit path or an "
+                f"https URL on {sorted(REDDIT_HOSTS)}; this tool reads reddit, not the web")
+        path = f"{BASE}{parts.path}" + (f"?{parts.query}" if parts.query else "")
+    else:
+        if not permalink.startswith("/"):
+            raise PermalinkRefused(f"refusing {permalink}: a relative permalink starts with /")
+        path = BASE + permalink
     joiner = "&" if "?" in path else "?"
     return f"{path}{joiner}limit=500"
 

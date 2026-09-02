@@ -109,16 +109,34 @@ fi
 
 # bump prints "<new>\t<previous>" from ONE locked operation; a separate read
 # before the reset would let a concurrent failure land in between (Codex).
+# A bump that FAILS is not "below the threshold" (PR #294 review round 7): an
+# empty STREAK used to fall through the -ge test and skip the escalation with
+# no line anywhere. Unknown escalates, with streak -1 in the ledger row so the
+# count is never invented, and the founder's line says the bump broke.
 if [ "$PROP" = "propagate FAILED" ]; then
-  IFS=$'\t' read -r STREAK _PREV <<< "$(streak bump --outcome fail)"
-  if [ "$STREAK" -ge "$STREAK_ESCALATE" ]; then
-    streak append-escalation --streak "$STREAK" --threshold "$STREAK_ESCALATE" >/dev/null
-    PROP="propagate FAILED ($(streak summary))"
-    echo "$(TS) ESCALATION streak=$STREAK (threshold $STREAK_ESCALATE): recorded in $ESCALATIONS" >> "$LOG"
-  fi
+  BUMP_OUT="$(streak bump --outcome fail 2>>"$LOG")"; BUMP_RC=$?
+  IFS=$'\t' read -r STREAK _PREV <<< "$BUMP_OUT"
+  case "$STREAK" in
+    ''|*[!0-9]*)
+      echo "$(TS) STREAK BUMP FAILED rc=$BUMP_RC (output: '${BUMP_OUT}'); escalating with the count unknown" >> "$LOG"
+      streak append-escalation --streak -1 --threshold "$STREAK_ESCALATE" >/dev/null 2>>"$LOG" \
+        || echo "$(TS) ESCALATION ROW FAILED too: $ESCALATIONS" >> "$LOG"
+      PROP="propagate FAILED (streak UNKNOWN: bump failed rc=$BUMP_RC; escalated)"
+      ;;
+    *)
+      if [ "$STREAK" -ge "$STREAK_ESCALATE" ]; then
+        streak append-escalation --streak "$STREAK" --threshold "$STREAK_ESCALATE" >/dev/null
+        PROP="propagate FAILED ($(streak summary))"
+        echo "$(TS) ESCALATION streak=$STREAK (threshold $STREAK_ESCALATE): recorded in $ESCALATIONS" >> "$LOG"
+      fi
+      ;;
+  esac
 elif [ "$PROP" = "propagated to fleet" ]; then
-  IFS=$'\t' read -r _NEW PREV_STREAK <<< "$(streak bump --outcome ok)"
-  [ "$PREV_STREAK" -gt 0 ] && echo "$(TS) streak reset after $PREV_STREAK failure(s)" >> "$LOG"
+  IFS=$'\t' read -r _NEW PREV_STREAK <<< "$(streak bump --outcome ok 2>>"$LOG")"
+  case "$PREV_STREAK" in
+    ''|*[!0-9]*) echo "$(TS) STREAK BUMP FAILED on the ok path (output: '${_NEW:-}'); the streak file needs a look" >> "$LOG" ;;
+    *) [ "$PREV_STREAK" -gt 0 ] && echo "$(TS) streak reset after $PREV_STREAK failure(s)" >> "$LOG" ;;
+  esac
 fi
 
 MSG="Fleet learning ($(date +%Y-%m-%d)): ${PUB} new lesson(s), ${PROP}"

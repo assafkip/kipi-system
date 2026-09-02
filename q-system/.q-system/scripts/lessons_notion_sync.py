@@ -19,6 +19,7 @@ Contract:
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -34,6 +35,12 @@ LESSONS = HERE.parent.parent / "lessons"
 STATE_DIR = Path(os.environ.get("KIPI_STATE_DIR") or (Path.home() / ".config" / "kipi"))
 TOKEN_FILE = STATE_DIR / "notion-token"
 DB_FILE = STATE_DIR / "notion-lessons-db"
+# One sync at a time (PR #294 review round 3, major): sync() snapshots the
+# database and then creates what is missing, so two runs (the nightly job and
+# a by-hand run) that both snapshot before either writes would each create the
+# same corpus id. flock is per open file description, so this serialises two
+# processes AND two threads; the second run snapshots after the first wrote.
+LOCK_FILE = STATE_DIR / "notion-lessons-sync.lock"
 API = "https://api.notion.com/v1"
 VERSION = "2022-06-28"
 TIMEOUT = 20
@@ -45,18 +52,83 @@ class NotionError(Exception):
     pass
 
 
-def _request(token, method, path, body=None, opener=None):
+# Notion allows about three requests a second and answers 429 past it. The
+# nightly run issues one request per lesson (175 today), so it PACES live
+# requests and RETRIES a 429 or a 5xx with backoff instead of aborting the
+# whole loop on the first refusal (PR #294 review round 6). An injected opener
+# (tests) is never paced; `_sleep` is the seam a test replaces.
+PACE_S = float(os.environ.get("KIPI_NOTION_PACE_S", "0.35"))
+RETRIES = 3
+_sleep = time.sleep
+
+
+def _request(token, method, path, body=None, opener=None, retry=True):
     req = urllib.request.Request(API + path, method=method, data=json.dumps(body).encode() if body is not None else None)
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Notion-Version", VERSION)
     req.add_header("Content-Type", "application/json")
-    try:
-        with (opener or urllib.request.urlopen)(req, timeout=TIMEOUT) as resp:
-            return json.loads(resp.read().decode() or "{}")
-    except urllib.error.HTTPError as exc:
-        raise NotionError(f"{method} {path} -> {exc.code}: {exc.read().decode(errors='replace')[:200]}") from None
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise NotionError(f"{method} {path} -> {exc}") from None
+    if opener is None and PACE_S > 0:
+        _sleep(PACE_S)
+    last = None
+    for attempt in range(1, RETRIES + 1):
+        try:
+            with (opener or urllib.request.urlopen)(req, timeout=TIMEOUT) as resp:
+                return json.loads(resp.read().decode() or "{}")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")[:200] if exc.fp else ""
+            last = NotionError(f"{method} {path} -> {exc.code}: {detail}")
+            if exc.code != 429 and exc.code < 500:
+                raise last from None
+            retry_after = (exc.headers or {}).get("Retry-After") if hasattr(exc, "headers") else None
+            try:
+                wait = min(float(retry_after), 10.0) if retry_after else float(attempt)
+            except ValueError:
+                wait = float(attempt)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last = NotionError(f"{method} {path} -> {exc}")
+            wait = float(attempt)
+        last.retryable, last.wait = True, wait
+        if not retry:
+            raise last from None  # the caller decides how to retry (a create is not idempotent)
+        if attempt < RETRIES:
+            _sleep(wait)
+    raise last from None
+
+
+def _row_for(token, db_id, cid, opener=None):
+    """The page id holding corpus id `cid`, or None. Asked with a filter, and
+    filtered again client-side because the answer is what matters."""
+    page = _request(token, "POST", f"/databases/{db_id}/query",
+                    {"page_size": 5, "filter": {"property": "Id", "rich_text": {"equals": cid}}}, opener)
+    for row in page.get("results") or []:
+        spans = ((row.get("properties") or {}).get("Id") or {}).get("rich_text") or []
+        if "".join(s.get("plain_text") or (s.get("text") or {}).get("content", "") for s in spans).strip() == cid:
+            return row["id"]
+    return None
+
+
+def _create(token, db_id, lesson, opener=None):
+    """Create is NOT idempotent (PR #294 review round 7, major): a 5xx or a
+    dropped connection can answer a POST /pages that Notion already applied,
+    and a blind retry made a second row that no later sync reconciles. So a
+    failed create is never re-sent blind: the database is asked whether the
+    row landed, and only a confirmed absence is retried."""
+    body = {"parent": {"database_id": db_id}, "properties": _properties(lesson, created=True),
+            "children": _children(lesson["body"])}
+    last = None
+    for attempt in range(1, RETRIES + 1):
+        try:
+            _request(token, "POST", "/pages", body, opener, retry=False)
+            return
+        except NotionError as exc:
+            if not getattr(exc, "retryable", False):
+                raise
+            last = exc
+            if _row_for(token, db_id, lesson["id"], opener):
+                return  # it landed; the answer was lost, not the write
+            if attempt < RETRIES:
+                _sleep(exc.wait)
+    raise last
 
 
 def parse_lesson(path: Path) -> dict:
@@ -139,19 +211,31 @@ def existing_rows(token, db_id, opener=None) -> dict:
         cursor = page.get("next_cursor")
 
 
-def sync(token, db_id, lessons, opener=None, out=print) -> dict:
-    have = existing_rows(token, db_id, opener)
-    created = updated = 0
-    for lesson in lessons:
-        if lesson["id"] in have:
-            _request(token, "PATCH", f"/pages/{have[lesson['id']]}", {"properties": _properties(lesson, created=False)}, opener)
-            updated += 1
-        else:
-            _request(token, "POST", "/pages", {"parent": {"database_id": db_id},
-                                                "properties": _properties(lesson, created=True),
-                                                "children": _children(lesson["body"])}, opener)
-            created += 1
-    report = {"ok": True, "created": created, "updated": updated, "total": len(lessons)}
+def sync(token, db_id, lessons, opener=None, out=print, lock_file=None) -> dict:
+    lock_path = Path(lock_file or LOCK_FILE)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)  # held across the snapshot AND the writes
+        try:
+            have = existing_rows(token, db_id, opener)
+            created = updated = 0
+            errors = []
+            for lesson in lessons:
+                try:
+                    if lesson["id"] in have:
+                        _request(token, "PATCH", f"/pages/{have[lesson['id']]}", {"properties": _properties(lesson, created=False)}, opener)
+                        updated += 1
+                    else:
+                        _create(token, db_id, lesson, opener)
+                        created += 1
+                except NotionError as exc:
+                    # One lesson's refusal never leaves the rest unwritten; it
+                    # is counted, named, and the run reports ok=False.
+                    errors.append({"id": lesson["id"], "error": str(exc)})
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    report = {"ok": not errors, "created": created, "updated": updated, "total": len(lessons),
+              "failed": len(errors), "errors": errors[:10]}
     out(json.dumps(report))
     return report
 
@@ -181,7 +265,9 @@ def main(argv=None) -> int:
         print(json.dumps({"ok": False, "reason": "refused: running under pytest; the live database is never written by a test"}))
         return EXIT_ERROR
     try:
-        sync(token, db_id, lessons)
+        report = sync(token, db_id, lessons)
+        if not report["ok"]:
+            return EXIT_ERROR  # the report already names the failures; the daily job logs it
     except NotionError as exc:
         print(json.dumps({"ok": False, "reason": str(exc)}))
         return EXIT_ERROR

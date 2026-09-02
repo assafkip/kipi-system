@@ -120,9 +120,13 @@ def _already_alarmed(now: dt.datetime, state_path=None) -> bool:
     channel, and a muted alarm is the same as no alarm."""
     path = Path(state_path) if state_path else ALARM_STATE
     try:
-        return json.loads(path.read_text(encoding="utf-8")).get("date") == now.strftime("%Y-%m-%d")
+        state = json.loads(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return False
+    # A recorded-but-undelivered alarm does not count (PR #294 review, major):
+    # it used to, so one refused Slack send at 09:00 silenced every later
+    # retry that day. The record keeps `delivered` for exactly this reason.
+    return state.get("date") == now.strftime("%Y-%m-%d") and bool(state.get("delivered"))
 
 
 def _record_alarm(now: dt.datetime, result: dict, state_path=None) -> None:

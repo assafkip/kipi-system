@@ -159,7 +159,10 @@ def _registered_scripts() -> set:
     found = set()
     brief = (SCRIPTS / "morning-brief.py").read_text(encoding="utf-8")
     block = brief.split("OPTIONAL_SECTIONS = (", 1)[1].split(")\n", 1)[0]
-    found |= {f"{m}.py" for m in re.findall(r'\("([a-z_]+)",', block)}
+    # Registry entries name the file since PR #294 (the capability gate matches
+    # engines by filename); accept either spelling so this derivation cannot
+    # silently shrink to zero if the registry flips back.
+    found |= {f"{m}.py" for m in re.findall(r'\("([a-z_]+)(?:\.py)?",', block)}
     runner = (SCRIPTS / "weekly-improve.sh").read_text(encoding="utf-8")
     steps = runner.split("STEPS=(", 1)[1].split(")", 1)[0]
     found |= set(re.findall(r'"([^"]+)"', steps))

@@ -92,8 +92,31 @@ def resolve(root):
     return skeleton_ok, [(n, by_name.get(n)) for n in names]
 
 
+def _skeleton_ever_had(skel_root, rel, hub_file):
+    """True when the hub file's content is a version the skeleton's git history
+    holds for that path: the hub is BEHIND, not drifted. False when git cannot
+    answer (not a repo, no history), which keeps the conservative reading."""
+    import subprocess
+    try:
+        blob = subprocess.run(["git", "-C", skel_root, "hash-object", hub_file],
+                              capture_output=True, text=True, timeout=20)
+        if blob.returncode != 0:
+            return False
+        hits = subprocess.run(["git", "-C", skel_root, "log", "--all", "--format=%H",
+                               "--find-object=" + blob.stdout.strip(), "--", rel],
+                              capture_output=True, text=True, timeout=60)
+        return hits.returncode == 0 and bool(hits.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def drift(hub_root, skel_root):
-    """Paths present in the hub and absent from or different in the skeleton."""
+    """(absent, changed, behind): paths the hub has that the skeleton lacks,
+    paths whose hub content the skeleton NEVER had (real drift), and paths
+    whose hub content is an older skeleton version (the hub is behind; the
+    next fleet sync fixes it, and it is not the founder's Monday reading).
+    Round 6 of PR #294 measured 53 "differs" lines against the one declared
+    hub, 12 of them files that PR itself edited in the skeleton."""
     hub = {}
     hub.update(_files(hub_root, LESSONS_REL, "*.md"))
     hub.update(_files(hub_root, SCRIPTS_REL, "*"))
@@ -101,8 +124,10 @@ def drift(hub_root, skel_root):
     skel.update(_files(skel_root, LESSONS_REL, "*.md"))
     skel.update(_files(skel_root, SCRIPTS_REL, "*"))
     absent = sorted(p for p in hub if p not in skel)
-    changed = sorted(p for p in hub if p in skel and hub[p] != skel[p])
-    return absent, changed
+    changed, behind = [], []
+    for p in sorted(p for p in hub if p in skel and hub[p] != skel[p]):
+        (behind if _skeleton_ever_had(skel_root, p, os.path.join(hub_root, p)) else changed).append(p)
+    return absent, changed, behind
 
 
 def build(root, now=None):
@@ -119,14 +144,15 @@ def build(root, now=None):
             lines.append(f"{name}: {COULD_NOT_READ} (not in the registry or its path is missing)")
             continue
         try:
-            absent, changed = drift(path, root)
+            absent, changed, behind = drift(path, root)
         except OSError as exc:
             lines.append(f"{name}: {COULD_NOT_READ} ({exc})")
             continue
         if not absent and not changed:
-            lines.append(f"{name}: no drift")
+            lines.append(f"{name}: no drift" + (f" ({len(behind)} behind the skeleton, the next sync fixes them)" if behind else ""))
             continue
-        lines.append(f"{name} has {len(absent)} the skeleton lacks and {len(changed)} that differ:")
+        lines.append(f"{name} has {len(absent)} the skeleton lacks and {len(changed)} that differ"
+                     + (f" ({len(behind)} more are just behind)" if behind else "") + ":")
         lines += [f"  absent   {p}" for p in absent]
         lines += [f"  differs  {p}" for p in changed]
     if skeleton_ok and not hubs:
@@ -162,16 +188,26 @@ def run(root, deliver=None, dry_run=False, trigger=None, now=None):
     return result
 
 
-def main(argv=None):
+def main(argv=None, deliver=None):
+    """Exit 0 when nothing was owed or the owed message landed; exit 2 when the
+    plist launched this and delivery did not happen (PR #294 review, major: a
+    refused Slack send returned 0, so the reporter's ONLY alert vanished behind
+    a success exit that launchd, the deadman and run-step-audit all read as
+    fine). Printed-not-sent (no plist marker) and --dry-run owe nothing."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", default=DEFAULT_ROOT)
     ap.add_argument("--dry-run", action="store_true", help="print, send nothing")
     a = ap.parse_args(argv)
-    result = run(a.root, dry_run=a.dry_run, trigger=os.environ.get("KIPI_TRIGGER"))
+    trigger = os.environ.get("KIPI_TRIGGER")
+    result = run(a.root, deliver=deliver, dry_run=a.dry_run, trigger=trigger)
     print(result["message"])
     d = result["delivery"]
-    if not a.dry_run:
-        print("delivery: " + ("sent" if d["delivered"] else "refused" if d["refused"] else d.get("reason", "not sent")))
+    if a.dry_run:
+        return 0
+    print("delivery: " + ("sent" if d["delivered"] else "refused" if d["refused"] else d.get("reason", "not sent")))
+    if trigger == "launchd" and not d["delivered"]:
+        print("delivery: FAILED, the plist launched this and nothing landed", file=sys.stderr)
+        return 2
     return 0
 
 

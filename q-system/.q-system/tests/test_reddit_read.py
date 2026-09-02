@@ -299,6 +299,39 @@ def test_discovery_builds_an_old_reddit_listing_url(rr):
     assert ".rss" not in url
 
 
+def test_comments_bind_author_and_body_per_comment_not_by_position(rr):
+    """PR #294 review, major: a real page opens with the post's own data-author
+    and selftext <div class="md">, and a deleted comment carries no body, so a
+    positional join shifted every attribution by one. Control: the second
+    comment has no body and must read as None, not steal the third's."""
+    html = (
+        '<div class=" thing id-t3_post link " data-fullname="t3_post" data-author="op_poster">'
+        '<div class="md"><p>the post text</p></div></div>'
+        '<div class=" thing id-t1_aaa comment " data-fullname="t1_aaa" data-author="alice">'
+        '<div class="md"><p>first</p></div></div>'
+        '<div class=" thing id-t1_bbb comment " data-fullname="t1_bbb" data-author="[deleted]"></div>'
+        '<div class=" thing id-t1_ccc comment " data-fullname="t1_ccc" data-author="carol">'
+        '<div class="md"><p>third</p></div></div>'
+    )
+    got = rr.parse_comments(html)
+    assert [c["id"] for c in got] == ["t1_aaa", "t1_bbb", "t1_ccc"]
+    assert [c["author"] for c in got] == ["alice", "[deleted]", "carol"], got
+    assert [c["body"] for c in got] == ["first", None, "third"], got
+
+
+def test_thread_url_refuses_anything_that_is_not_a_reddit_thread(rr):
+    """PR #294 review, major: the MCP tool passed an absolute permalink straight
+    to the transport, so any http(s) target could be fetched and its body
+    returned through the tool. Only reddit hosts over https, or a reddit path."""
+    import pytest
+    assert rr.thread_url("https://old.reddit.com/r/x/comments/abc/t/").startswith("https://old.reddit.com/r/x/comments/abc/t/")
+    assert rr.thread_url("https://www.reddit.com/r/x/comments/abc/t/?sort=top").startswith("https://old.reddit.com/r/x/comments/abc/t/?sort=top")
+    for bad in ("https://evil.example/r/x/comments/abc/", "http://old.reddit.com/r/x/comments/abc/",
+                "https://old.reddit.com.evil.example/r/x/", "file:///etc/passwd", "r/x/comments/abc/"):
+        with pytest.raises(rr.PermalinkRefused):
+            rr.thread_url(bad)
+
+
 def test_thread_url_asks_for_limit_500(rr):
     """201 -> 215 of 214 declared. One query param, not an expansion API."""
     assert "limit=500" in rr.thread_url("/r/x/comments/abc/t/")

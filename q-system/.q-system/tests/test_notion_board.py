@@ -244,6 +244,25 @@ def test_only_top_of_mind_blocks_are_ever_deleted_or_appended(board, tmp_path):
     assert all(body.get("after") == "h1" for body in appends), appends
 
 
+def test_a_failed_append_never_leaves_top_of_mind_empty(board, tmp_path):
+    """PR #294 review, minor: delete-then-append erased the board whenever the
+    append failed, until a later run succeeded. Append first, delete after: a
+    failed append issues no DELETE, and yesterday's bullet is still there."""
+    class Refusing(FakeNotion):
+        def __call__(self, req, timeout):
+            if req.get_method() == "PATCH" and req.data and "after" in json.loads(req.data):
+                self.calls.append(("PATCH-refused", req.full_url, None))
+                raise board.NotionError("HTTP 502 on PATCH /blocks/page-1/children")
+            return super().__call__(req, timeout)
+    fake = Refusing([_h("Top of mind", "h1"), _b("yesterday [ASK-1]", "y1"),
+                     _h("This week", "h2"), _h("Inbox", "h3")])
+    import pytest
+    with pytest.raises(board.NotionError):  # the brief's guard turns this into "board failed (NotionError)"
+        board.collect(NOW, {"owed": (OWED, None)}, opener=fake, **_creds(tmp_path))
+    assert not any(m == "DELETE" for m, _, _ in fake.calls), fake.calls
+    assert fake.text_under("Top of mind") == ["yesterday [ASK-1]"]
+
+
 def test_the_page_is_read_once_before_writing(board, tmp_path):
     fake = FakeNotion([_h("Top of mind", "h1"), _h("This week", "h2"), _h("Inbox", "h3")])
     board.collect(NOW, {"owed": (OWED, None)}, opener=fake, **_creds(tmp_path))

@@ -170,7 +170,7 @@ for p in sorted(glob.glob(os.path.join(inst, "q-system", "lessons", "*.md"))):
     elif status == "pending":
         nxt = "re-run: kipi promote " + rel + " (a pending row stands)"
     elif status == "voided":
-        nxt = "move it to " + qdir + "/lessons/ (voided; the guard still refuses it under q-system/)"
+        nxt = "keep it OUT of every lessons/ directory, e.g. " + qdir + "/notes/ (voided; kipi push refuses any lessons/*.md change repo-wide, voided or not)"
     else:
         nxt = "kipi promote " + rel + "   or   kipi promote --void " + rel + " --reason \"...\"" + note
     out.append((status, rel, nxt))
@@ -229,7 +229,7 @@ if [ "$MODE" = "void" ]; then
   SCRUB="void"; BASE=""
   take_lock
   receipt_row "voided" || refuse "void refused for $REL: a field carries a tripwire term (this file fans out to every instance), or it could not be written"
-  echo "voided $REL (blob $BLOB): stays in this instance; move it out of q-system/lessons/ so the push guard passes"
+  echo "voided $REL (blob $BLOB): stays in this instance; move it out of EVERY lessons/ directory (kipi push refuses any lessons/*.md change repo-wide, voided or not)"
   exit 0
 fi
 
@@ -288,7 +288,11 @@ esac
 [ -n "$INSTANCE_NAME" ] || refuse "the registry entry for $INSTANCE_REAL has no name"
 [ -n "$DECIDED_BY" ] || DECIDED_BY="instance:$INSTANCE_NAME"
 
-# --- the receipt slice lands in the next issue; until then this never promotes for real ---
+# --- real promotion is NOT ARMED (sp-742ef598); the copy below runs only under the test seam ---
+# The scrub and the two-phase receipt slices are built (they follow this gate),
+# but a real promotion writes an instance's file into the skeleton, and arming
+# that is a founder decision, not a side effect of a landing PR (PR #294 review,
+# major). Until it is decided, a production call gets exit 3 and a truthful line.
 # The seam needs THREE things: pytest's marker, the explicit opt-in, and an
 # instance root under a temp directory. PYTEST_CURRENT_TEST alone is anyone's
 # to set (Codex adversarial, issue lr-promote-path-containment); a real
@@ -301,7 +305,7 @@ case "$INSTANCE_REAL" in
   /tmp/*|/private/tmp/*|/private/var/folders/*|/var/folders/*) _tmp_rooted=1 ;;
 esac
 if [ -z "${PYTEST_CURRENT_TEST:-}" ] || [ "${KIPI_PROMOTE_UNSCRUBBED:-}" != "1" ] || [ "$_tmp_rooted" != "1" ]; then
-  echo "kipi promote: containment passed for $REL, but the scrub and receipt slices are not built yet; nothing copied" >&2
+  echo "kipi promote: containment passed for $REL, but real promotion is not armed (sp-742ef598: arming is a founder decision); nothing copied" >&2
   exit 3
 fi
 

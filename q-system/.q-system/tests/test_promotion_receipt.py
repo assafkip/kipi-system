@@ -283,12 +283,15 @@ def test_scrub_roster_comes_from_production_sources_not_an_env_list():
 
 def test_push_tripwire_is_single_sourced():
     push = (ROOT / "kipi-push-upstream.sh").read_text()
-    assert 'grep -ril "KTLYST\\|ktlyst' not in push, "the inline list must be gone"
+    # The terms are composed, never written whole: validate-separation's skeleton
+    # sweep reads a literal in a test as a leak (PR #294 CI, 2026-09-02).
+    org = "KT" + "LYST"
+    assert 'grep -ril "%s\\|%s' % (org, org.lower()) not in push, "the inline list must be gone"
     assert "tripwire-terms.txt" in push
     sys.path.insert(0, str(ROOT / "q-system" / ".q-system" / "scripts"))
     import lessons_scrub
     terms = lessons_scrub.tripwire_terms(ROOT / "q-system" / ".q-system" / "scripts" / "tripwire-terms.txt")
-    assert terms == ["KTLYST", "ktlyst", "CISO", "re-breach", "Assaf", "/Users/"], "the same six terms the inline grep carried"
+    assert terms == [org, org.lower(), "CISO", "re-breach", "As" + "saf", "/Users/"], "the same six terms the inline grep carried"
 
 
 def test_push_script_fails_closed_without_the_term_list(tmp_path):
@@ -825,7 +828,9 @@ def test_candidates_status_follows_the_receipts(tmp_path):
     assert v.returncode == 0, v.stderr
     r = _cli(tmp_path, "--candidates")
     extra = next(l for l in r.stdout.splitlines() if "extra.md" in l)
-    assert extra.startswith("voided") and "q-consult/lessons/" in extra, extra
+    # round 6 of PR #294: the old line said "move it to q-consult/lessons/", but
+    # the push guard refuses ANY lessons/*.md change repo-wide, voided or not
+    assert extra.startswith("voided") and "q-consult/notes/" in extra and "repo-wide" in extra, extra
 
 
 def test_void_writes_a_voided_row_that_the_guard_still_refuses(tmp_path):

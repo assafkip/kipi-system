@@ -369,6 +369,16 @@ def test_overnight_with_no_jobs_at_all_is_an_error(brief):
 # Constraint 6: the deadman
 # --------------------------------------------------------------------------
 
+def test_deadman_does_not_count_an_undelivered_alarm_as_already_alarmed(deadman, tmp_path):
+    """PR #294 review, major: _already_alarmed matched on the date alone, so a
+    refused 09:00 send suppressed every retry for the rest of the day."""
+    state = tmp_path / "alarm.json"
+    deadman._record_alarm(NOW, {"delivered": False, "reason": "HTTP 502"}, state_path=state)
+    assert deadman._already_alarmed(NOW, state_path=state) is False
+    deadman._record_alarm(NOW, {"delivered": True}, state_path=state)
+    assert deadman._already_alarmed(NOW, state_path=state) is True
+
+
 def test_deadman_alarms_when_no_receipt_exists(deadman, tmp_path):
     ok, reason = deadman.check(NOW, receipt_path=tmp_path / "nope.json")
     assert ok is False
@@ -677,6 +687,31 @@ def test_a_collector_past_its_budget_is_a_timeout_not_a_hang(brief, tmp_path, mo
     sources = brief.collect_all(NOW, log_path=tmp_path / "e.log", fixed_budget_s=0.05)
     rows, error = sources["owed"]
     assert rows == [] and "timed out" in error and "0.05" in error
+
+
+def test_the_fixed_four_are_bounded_by_default_not_only_when_a_test_asks(brief, tmp_path, monkeypatch):
+    """PR #294 review, major: collect_all passed None as every fixed collector's
+    budget, so a hung calendar or mail call blocked delivery and the receipt
+    indefinitely. The default must be finite, sit above the claude -p timeout
+    (so the subprocess bound fires first), and actually cut a hung collector."""
+    import inspect, threading
+    assert brief.FIXED_BUDGET_S > brief.CLAUDE_TIMEOUT
+    assert inspect.signature(brief.collect_all).parameters["fixed_budget_s"].default is None
+    gate = threading.Event()
+
+    def hangs(*a, **k):
+        gate.wait()
+
+    _all_ok(brief, monkeypatch)
+    monkeypatch.setattr(brief, "collect_mail", hangs)
+    monkeypatch.setattr(brief, "OPTIONAL_SECTIONS", ())
+    monkeypatch.setattr(brief, "FIXED_BUDGET_S", 0.05)
+    try:
+        sources = brief.collect_all(NOW, log_path=tmp_path / "e.log")  # no fixed_budget_s: the default path
+    finally:
+        gate.set()
+    rows, error = sources["mail"]
+    assert rows == [] and "timed out" in error, (rows, error)
 
 
 def test_a_hung_collector_runs_on_a_daemon_thread_so_exit_is_not_blocked(brief, tmp_path, monkeypatch):

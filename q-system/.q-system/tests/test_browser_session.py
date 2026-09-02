@@ -367,6 +367,28 @@ def test_deadman_alarms_on_a_missing_receipt(tmp_path, deadman):
     assert not ok and "receipt" in reason
 
 
+def test_deadman_retries_an_undelivered_alarm_and_stops_after_it_lands(tmp_path, deadman):
+    """PR #294 review, major: alarmed=True was written without checking the send,
+    so one refused Slack call silenced the deadman for the whole outage."""
+    now = dt.datetime(2026, 8, 30, 12, 0)
+    receipt, state = tmp_path / "r.json", tmp_path / "state.json"
+    receipt.write_text(json.dumps({"at": (now - dt.timedelta(hours=6)).isoformat()}))
+    refused = []
+
+    def refuser(message):
+        refused.append(message)
+        return {"delivered": False, "transport": "webhook", "reason": "HTTP 502"}
+
+    assert deadman.run(now, receipt_path=receipt, state_path=state, sender=refuser) == 1
+    assert len(refused) == 1 and not (state.exists() and json.loads(state.read_text()).get("alarmed"))
+    retry = _recorder()
+    deadman.run(now + dt.timedelta(minutes=30), receipt_path=receipt, state_path=state, sender=retry)
+    assert len(retry.sends) == 1, "an undelivered alarm must be retried"
+    quiet = _recorder()
+    deadman.run(now + dt.timedelta(hours=1), receipt_path=receipt, state_path=state, sender=quiet)
+    assert quiet.sends == [], "a delivered alarm is not repeated"
+
+
 def test_deadman_alarms_once_on_a_stale_receipt_then_stays_quiet(tmp_path, deadman):
     now = dt.datetime(2026, 8, 30, 12, 0)
     receipt = tmp_path / "r.json"
@@ -419,6 +441,12 @@ def test_health_plist_uses_an_interpreter_that_actually_has_playwright():
     data = plistlib.loads(HEALTH_PLIST.read_bytes())
     interp = data["ProgramArguments"][0]
     assert interp != "/usr/bin/python3", "this job needs playwright; /usr/bin/python3 has none"
+    if sys.platform != "darwin":
+        # launchd only exists on macOS, so the interpreter check below only
+        # means something on a Mac. On the Linux CI runner /opt/homebrew is
+        # absent and the assertion failed for the wrong reason (PR #294,
+        # 2026-09-02). The plist-shape assertion above still runs everywhere.
+        pytest.skip(f"{interp} is a macOS path; this runner is {sys.platform}")
     assert Path(interp).exists(), f"{interp} does not exist on this machine"
     rc = subprocess.run([interp, "-c", "import playwright"],
                         capture_output=True).returncode
@@ -453,4 +481,4 @@ def test_capability_fragment_declares_this_test_file():
     assert frag.exists(), f"no capability fragment at {frag}"
     data = json.loads(frag.read_text())
     assert data["path"] == "q-system/.q-system/tests/test_browser_session.py"
-    assert data["runner"] == "python3"
+    assert data["runner"] == "pytest", "no __main__ block here, so the python3 runner binds the tests and runs none (ASK-1145)"

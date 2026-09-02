@@ -23,7 +23,7 @@ STREAK_PY = SCRIPTS / "lessons_streak.py"
 SUMMARY = json.dumps({"published": ["a-lesson"], "held": []})
 
 
-def _run(tmp_path, propagate_ok: bool, threshold=3):
+def _run(tmp_path, propagate_ok: bool, threshold=3, streak_file=None):
     notify_log = tmp_path / "notify.log"
     env = dict(os.environ,
                KIPI_CLAUDE_BIN="/usr/bin/true",
@@ -32,7 +32,7 @@ def _run(tmp_path, propagate_ok: bool, threshold=3):
                KIPI_PROPAGATE_CMD="true" if propagate_ok else "false",
                KIPI_NOTIFY_CMD=f"echo \"$1\" >> '{notify_log}'",
                KIPI_LESSONS_LOG=str(tmp_path / "lessons-daily.log"),
-               KIPI_STREAK_FILE=str(tmp_path / "streak.json"),
+               KIPI_STREAK_FILE=str(streak_file or tmp_path / "streak.json"),
                KIPI_ESCALATIONS_FILE=str(tmp_path / "escalations.jsonl"),
                KIPI_STREAK_ESCALATE=str(threshold))
     r = subprocess.run(["/bin/bash", str(JOB)], capture_output=True, text=True, env=env)
@@ -57,6 +57,20 @@ def test_the_nth_failure_reads_differently_and_records_one_escalation_row(tmp_pa
     rows = [json.loads(l) for l in (tmp_path / "escalations.jsonl").read_text().splitlines()]
     assert [row["streak"] for row in rows] == [3, 4], "one row per escalating run, none below the threshold"
     assert "ESCALATION streak=3" in (tmp_path / "lessons-daily.log").read_text()
+
+
+def test_a_failed_bump_escalates_loudly_instead_of_skipping(tmp_path):
+    """PR #294 review round 7, minor: a non-zero bump left STREAK empty, the
+    -ge test fell through, and the Nth-failure escalation was skipped with no
+    line anywhere. A streak file that is a DIRECTORY makes bump fail."""
+    (tmp_path / "streak-is-a-dir").mkdir()
+    r, notify_log = _run(tmp_path, propagate_ok=False, streak_file=tmp_path / "streak-is-a-dir")
+    log = (tmp_path / "lessons-daily.log").read_text()
+    assert "STREAK BUMP FAILED" in log, log
+    rows = [json.loads(l) for l in (tmp_path / "escalations.jsonl").read_text().splitlines() if l.strip()]
+    assert rows and rows[-1]["streak"] == -1, rows
+    line = notify_log.read_text()
+    assert "streak UNKNOWN" in line and "escalated" in line, line
 
 
 def test_success_resets_the_streak(tmp_path):

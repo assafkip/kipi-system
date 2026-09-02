@@ -146,7 +146,7 @@ def test_module_is_pure_and_registered(mod):
     for banned in ("urllib", "requests", "http.client", "socket", "subprocess", "run_claude"):
         assert banned not in src, banned
     brief = (SCRIPTS / "morning-brief.py").read_text(encoding="utf-8")
-    assert '("unknown_terms", "unknown_terms", "Terms I do not know")' in brief
+    assert '("unknown_terms.py", "unknown_terms", "Terms I do not know")' in brief
 
 
 def test_this_file_runs_its_own_tests_under_python3():
