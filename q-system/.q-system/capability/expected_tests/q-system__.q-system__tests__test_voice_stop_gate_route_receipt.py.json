@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/tests/test_voice_stop_gate_route_receipt.py",
+ "runner": "pytest"
+}

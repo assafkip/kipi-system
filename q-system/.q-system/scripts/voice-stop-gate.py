@@ -321,7 +321,31 @@ def finish_ok():
     sys.exit(0)
 
 
-def _walk_transcript(transcript_path):
+# A record the HARNESS injected, not something a person typed. These are
+# top-level fields on the transcript record, and `_walk_transcript` used to
+# throw them away by yielding only `record["message"]` -- which is precisely why
+# the text filters below kept having to guess from prose.
+_META_FLAGS = ("isMeta", "turnCompanion")
+
+
+def _walk_transcript(transcript_path, want_record=False):
+    """Yield each message, or `(record, message)` when the caller needs the flags.
+
+    THE SCAR (2026-09-01, third occurrence of this deadlock). A skill loaded and
+    the harness wrote that skill's 16,584-character body as its OWN `user`
+    record, carrying `isMeta: true` and `turnCompanion: true` and NO command tags
+    at all. This walker dropped those flags, so `find_final_user_text` read the
+    skill's documentation as the founder's request. Two of that document's own
+    sentences classify UNSUPPORTED, and the gate then refused every completion in
+    the session -- including the turn reporting the block -- while his actual
+    message, "Explain this simply no tables", is correctly not-routed.
+
+    The two earlier rounds were fixed by enumerating carriers in a regex
+    (`_INJECTED_BLOCK`, then `cross-session-message`). That is the shape that
+    keeps failing: each round adds the carrier that just bit, and the next one is
+    invisible until it bites. The harness already labels these records. Read the
+    label.
+    """
     if not transcript_path or not Path(transcript_path).exists():
         return
     for line in Path(transcript_path).read_text(encoding="utf-8").splitlines():
@@ -331,7 +355,7 @@ def _walk_transcript(transcript_path):
             continue
         message = record.get("message", {})
         if isinstance(message, dict):
-            yield message
+            yield (record, message) if want_record else message
 
 
 def _message_text(message):
@@ -357,6 +381,83 @@ def find_final_assistant_text(transcript_path):
     return "\n\n".join(p for p in text_parts if p)
 
 
+# A `user` turn the FOUNDER did not type. The harness injects background-task
+# results, hook output and context reminders on the user role, so the newest
+# `user` message is often a machine's prose. 2026-08-31: a subagent's completion
+# report contained the token `reply-lane`, `_UNSUPPORTED_COMPOUND` matched it,
+# and `enforce_route_receipt` refused the turn with "surface format has no
+# registered generation route" -- a writing request nobody made, from a report
+# about the work being finished. Stripping the blocks is not enough: a
+# notification whose text sits OUTSIDE any tag would still read as his words,
+# so a turn that is entirely machine-injected is skipped whole.
+_INJECTED_BLOCK = re.compile(
+    # `cross-session-message` added 2026-08-31 (sp-23053db5): a peer Claude
+    # session's message arrives in a `user` turn, so without it this enumeration
+    # answered "the founder typed this" about another agent's words. Its prose
+    # classified AMBIGUOUS and deadlocked every turn in the session, including the
+    # one reporting the block. Adding it removes no coverage of his own text.
+    r"<(system-reminder|task-notification|command-name|command-message|"
+    r"command-args|local-command-stdout|function_results|user-prompt-submit-hook|"
+    r"cross-session-message)"
+    r"\b.*?</\1>",
+    re.I | re.S,
+)
+_INJECTED_OPENER = re.compile(
+    r"^\s*(?:<(?:system-reminder|task-notification|command-name|"
+    r"local-command-stdout|user-prompt-submit-hook|cross-session-message)\b"
+    r"|\[SYSTEM NOTIFICATION"
+    r"|(?:PreToolUse|PostToolUse|Stop|SessionStart|UserPromptSubmit)"
+    r"(?::\w+)?\s+hook\b)",
+    re.I,
+)
+# A SKILL or SLASH-COMMAND invocation injects its whole BODY as bare markdown
+# after these tags. The body is not wrapped in anything, so `_INJECTED_BLOCK`
+# removed the little tags and left thousands of words of documentation standing
+# as "what the founder typed".
+#
+# THE SCAR, and this is its THIRD occurrence (2026-09-01). The comment on
+# `_INJECTED_BLOCK` above records the second: a peer session's prose classified
+# AMBIGUOUS and "deadlocked every turn in the session, including the one
+# reporting the block." This is the same failure with a skill body as the
+# source. `/workflow-authoring` loaded, and two of its own sentences --
+# "compose novel harnesses when the task calls for it" and "Write/Edit and
+# re-invoke Workflow with scriptPath" -- classify UNSUPPORTED, so the gate
+# refused every completion while the founder's actual message,
+# "Explain this simply no tables", is correctly not-routed.
+#
+# His typed words come FIRST and the injection follows, so the fix is a
+# truncation, not another tag to enumerate. Enumerating tags is what failed
+# twice: each round adds the one carrier that just bit, and the next carrier is
+# invisible until it does.
+#
+# Held by the test script `q-system/.q-system/tests/test_voice_stop_gate_route_receipt.py`
+# (TestFounderTypedText), not by this comment: a skill body truncated in prose and
+# not in a test is the same hole wearing a paragraph.
+_COMMAND_INJECTION_MARK = re.compile(
+    r"<(?:command-name|command-message|command-args|skill-format|"
+    r"local-command-stdout)\b",
+    re.I,
+)
+
+
+def founder_typed_text(candidate):
+    """Strip machine-injected prose from one `user` turn, or reject it entirely.
+
+    A command or skill invocation is a TRUNCATION, not a tag removal: his typed
+    words come first and the injected body follows unwrapped, so everything from
+    the first command marker onward is the machine's text. See the scar note on
+    `_COMMAND_INJECTION_MARK`.
+    """
+    if not candidate:
+        return ""
+    if _INJECTED_OPENER.search(candidate):
+        return ""
+    mark = _COMMAND_INJECTION_MARK.search(candidate)
+    if mark:
+        candidate = candidate[:mark.start()]
+    return _INJECTED_BLOCK.sub(" ", candidate).strip()
+
+
 def find_final_user_text(transcript_path):
     """His last message. The trigger signal the model cannot get wrong.
 
@@ -364,12 +465,18 @@ def find_final_user_text(transcript_path):
     what the assistant hands over, and reading his request into that decision
     would gate his own words. It is used only to decide whether the draft is
     worth measuring.
+
+    Only text the FOUNDER typed counts. See `_INJECTED_BLOCK` for the scar.
     """
     text = ""
-    for message in _walk_transcript(transcript_path):
+    for record, message in _walk_transcript(transcript_path, want_record=True):
         if message.get("role") != "user":
             continue
-        candidate = _message_text(message)
+        # The harness labels its own injections. Trust the label over any
+        # attempt to recognise the prose; see `_walk_transcript`'s scar note.
+        if any(record.get(flag) is True for flag in _META_FLAGS):
+            continue
+        candidate = founder_typed_text(_message_text(message))
         if candidate:
             text = candidate
     return text
@@ -404,6 +511,160 @@ def report_not_checked(lines, out=None, err=None):
     for line in lines:
         (out or sys.stdout).write(line + "\n")
         (err or sys.stderr).write(line + "\n")
+
+
+# --- route-receipt enforcement (OPTIONAL, same posture as the registry below) ---
+#
+# Ported into the skeleton on 2026-09-02 (ASK-1197). It shipped into ONE instance
+# and no skeleton, and `q-system/` is an rsync --delete fanout target, so the next
+# skeleton fanout would have deleted a working gate -- the voicekit class (19
+# instances, 2026-08-07). Measured across the 25 registered instances that day:
+# 1 carried these five functions, 0 skeletons did.
+#
+# THE HARD CONSTRAINT, and it outranks the feature, exactly as it does for the
+# channel registry below: 24 of the 24 instances carrying this file have no
+# `q-consult/pipeline`. They must behave as they did before this block existed --
+# no import error, no traceback, and no per-turn line. A gate that prints on every
+# turn of 24 instances gets switched off, and a gate that is off protects nothing.
+#
+# BUT NOT SILENT WHEN A RECEIPT IS CLAIMED. A turn carrying a `=== ROUTE RECEIPT ===`
+# block is a turn whose producer believes a verifier ran. Passing that quietly
+# because the verifier is not installed is the `run_check` scar twenty lines up
+# (PR #290): the value a missing check returns must differ from the value a clean
+# check returns. So an uninstalled lane is silent on an ordinary turn and reports
+# NOT CHECKED on a turn that claims a receipt.
+#
+# AND INSTALLED-BUT-BROKEN HOLDS. `_route_context` raising rather than returning
+# None is the difference, and it is the difference Codex found twice in
+# `channel_surface_lint`: an exception escaping this file makes Python exit 1, and
+# a Stop hook exiting 1 does NOT hold the turn, so a half-installed lane would
+# fail OPEN. The three outcomes are separated on purpose.
+ROUTE_PIPELINE_REL = Path("q-consult") / "pipeline"
+ROUTE_RECEIPT_MARKER = "=== ROUTE RECEIPT ==="
+ROUTE_DRAFT_MARKER = "=== DRAFT ==="
+
+
+class RouteBoundaryError(ValueError):
+    """A routed completion lacks a current shared route receipt."""
+
+
+def _route_context():
+    """The q-consult route modules, or None when this instance has no route lane.
+
+    None is the 24-instance case and it is SILENT by design (see the block comment).
+    Raises RouteBoundaryError when the lane directory IS present and does not
+    import, because that is a broken verifier rather than an absent one.
+    """
+    pipeline_dir = INSTANCE_ROOT / ROUTE_PIPELINE_REL
+    if not pipeline_dir.is_dir():
+        return None
+    sys.path.insert(0, str(INSTANCE_ROOT / "q-consult"))
+    try:
+        from pipeline import (audit_only_routes, route_classifier, route_contract,
+                              route_registry)
+    except Exception as exc:
+        raise RouteBoundaryError(
+            f"route lane is installed at {pipeline_dir} but did not import: {exc}"
+        ) from exc
+    return route_classifier, route_contract, audit_only_routes, route_registry
+
+
+def _route_draft(text):
+    marker = ROUTE_DRAFT_MARKER
+    if marker not in text:
+        return extract_publishable(text)
+    return text.split(marker, 1)[1].strip()
+
+
+def _receipt_block(text):
+    marker = ROUTE_RECEIPT_MARKER
+    if marker not in text:
+        return None
+    payload = text.split(marker, 1)[1].lstrip()
+    try:
+        value, _end = json.JSONDecoder().raw_decode(payload)
+    except json.JSONDecodeError as exc:
+        raise RouteBoundaryError("route receipt block is not valid JSON") from exc
+    return value
+
+
+def enforce_route_receipt(request, assistant_text):
+    """Consume the producer receipt for a routed completion, or refuse it.
+
+    Returns the NOT CHECKED lines to report (usually empty). Raises
+    RouteBoundaryError to hold the turn. The consumed row is deliberately NOT
+    returned: no caller has ever read it, and a value nobody reads is how a
+    docstring starts making promises the code does not keep.
+    """
+    context = _route_context()
+    if context is None:
+        # The lane is not installed here. Silent UNLESS something claims a receipt.
+        # Marker presence only -- the JSON is deliberately not parsed, because on an
+        # instance with no producer a stray marker in prose must not hard-block a turn.
+        if ROUTE_RECEIPT_MARKER not in (assistant_text or ""):
+            return []
+        return ["voice-stop-gate: this turn carries a %s block, but no route "
+                "verifier is installed at %s, so the receipt was NOT CHECKED. "
+                "That is not a pass."
+                % (ROUTE_RECEIPT_MARKER, INSTANCE_ROOT / ROUTE_PIPELINE_REL)]
+    classifier, contract, audit_only, registry = context
+    result = classifier.classify(request)
+    if result.status == classifier.NOT_ROUTED:
+        return []
+    if result.status != classifier.ROUTE:
+        raise RouteBoundaryError(
+            f"route request is {result.status}: {result.reason}")
+    try:
+        registry.resolve(result.surface, result.channel)
+    except registry.RouteRegistryError:
+        audit_routes = [candidate for candidate in audit_only.routes()
+                        if candidate.surface == result.surface
+                        and candidate.channel == result.channel]
+        if len(audit_routes) == 1:
+            try:
+                audit_only.deny(audit_routes[0])
+            except audit_only.AuditOnlyRouteError as exc:
+                raise RouteBoundaryError(str(exc)) from exc
+        raise RouteBoundaryError("route has no single registered active owner")
+    receipt = _receipt_block(assistant_text)
+    if not isinstance(receipt, dict):
+        raise RouteBoundaryError("routed completion has no route receipt")
+    # The identity is whatever the store matches on, read from the store, so
+    # a field added there (R9: loop_sha) is demanded here without a second
+    # hand-kept list.
+    required = set(contract.route_receipts.MATCH_FIELDS)
+    if not required <= receipt.keys():
+        raise RouteBoundaryError("route receipt identity is incomplete")
+    if (receipt["surface"], receipt["channel"]) != (result.surface, result.channel):
+        raise RouteBoundaryError("route receipt does not match the requested surface")
+    if contract.request_hash(request, result.surface, result.channel) != receipt["request_hash"]:
+        raise RouteBoundaryError("route receipt does not match the user request")
+    draft = _route_draft(assistant_text)
+    if contract.output_hash(draft, result.surface, result.channel) != receipt["output_hash"]:
+        raise RouteBoundaryError("route receipt does not match the assistant output")
+    identity = {key: receipt[key] for key in required}
+    try:
+        # R9: the contract recomputes the receipt's loop evidence against THIS
+        # draft and the corpus on disk before the row is consumed.
+        contract.verify_and_consume(identity, draft=draft)
+    except RouteBoundaryError:
+        # Not re-wrapped. A boundary error raised inside the store already says
+        # what failed; wrapping it would bury that under this frame's wording.
+        raise
+    except Exception as exc:
+        raise RouteBoundaryError(f"route receipt was not accepted: {exc}") from exc
+    return []
+
+
+def _enforce_route_or_exit(request, text):
+    """One call-site shape for the two places main() enforces, so the two cannot
+    drift apart. Per-site copies of a guard are how one branch ends up hardened
+    and its sibling does not."""
+    try:
+        return enforce_route_receipt(request, text)
+    except RouteBoundaryError as exc:
+        sys.stderr.write(f"voice-stop-gate: {exc}\n")
+        sys.exit(2)
 
 
 # --- the OPTIONAL instance channel registry ----------------------------------
@@ -711,6 +972,7 @@ def main():
         # returned here -- so the ONE turn shape he uses most was the one shape
         # that never reached the scorer. The lint's scope is unchanged; the
         # measurement no longer rides on it.
+        report_not_checked(_enforce_route_or_exit(request, text))
         authorship_spool(extract_setoff_draft(text), text, request)
         finish_ok()
     # WHICH RULEBOOK. An instance with no registry resolves to None here and the two
@@ -813,6 +1075,8 @@ def main():
                 os.unlink(path)
             except OSError:
                 pass
+
+    report_not_checked(_enforce_route_or_exit(request, text))
 
     # THE CLEAN PATH. Score this draft (backgrounded, arrives next turn) and
     # surface whatever a previous turn's worker finished.
