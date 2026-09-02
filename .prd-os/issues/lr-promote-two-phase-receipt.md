@@ -1,7 +1,7 @@
 ---
 id: lr-promote-two-phase-receipt
 title: The receipt is written in two phases around the copy, under one lock, so a crash leaves a pending row and never a silent copy
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:

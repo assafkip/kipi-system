@@ -174,6 +174,43 @@ if [ -e "$DEST" ]; then
   [ -n "$BASE" ] || refuse "could not hash the skeleton's current $REL"
 fi
 
+# --- receipt, phase 1 (issues lr-promote-receipt-hash-binding and lr-promote-two-phase-receipt) ---
+# The receipt binds the CONTENT, not the path: `blob` is git hash-object of the
+# SOURCE, hashed with the instance's attributes (-C, --path) so it is the value
+# its ls-tree reports; `|| true` so a missing git reaches refuse instead of an
+# exit under set -e. It is written in TWO phases around the copy (Codex
+# finding-11 on the PRD): a `pending` row before the copy, a `done` row after
+# the copied file re-hashes equal. A crash between them leaves a pending row
+# that blesses nothing (the guard honours done only) and never a silent copy.
+# Both appends take one flock on a sibling .lock of the receipt file, so
+# concurrent promotions interleave whole rows. from_instance is the registry
+# NAME, never a path: a path carries /Users/ and the owner's name, and this
+# file fans out to every instance where the push tripwire greps it.
+RECEIPTS="$SKELETON/q-system/.q-system/promotions.jsonl"
+BLOB="$(git -C "$INSTANCE_REAL" hash-object --path "$REL" "$INSTANCE_REAL/$REL" 2>/dev/null || true)"
+[ -n "$BLOB" ] || refuse "could not hash the source $REL"
+mkdir -p "$(dirname "$RECEIPTS")"
+receipt_row() {  # receipt_row <pending|done>: the ONLY writer of promotions.jsonl
+  python3 - "$RECEIPTS" "$REL" "$BLOB" "$INSTANCE_NAME" "$DECIDED_BY" "$SCRUB" "$PROMOTE_HOME/q-system/.q-system/scripts/tripwire-terms.txt" "$BASE" "$1" <<'PYRECEIPT'
+import datetime, fcntl, json, os, sys
+path, rel, blob, inst, who, scrub, tripwire, base, status = sys.argv[1:10]
+row = {"path": rel, "blob": blob, "base": base, "from_instance": inst, "decided_by": who, "scrub": scrub, "status": status,
+       "at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%z")}
+# the row itself is scrubbed: it lands in every instance's q-system/ where the push tripwire greps
+terms = [l.strip() for l in open(tripwire, encoding="utf-8") if l.strip() and not l.startswith("#")]
+line = json.dumps(row)
+if any(t.lower() in line.lower() for t in terms):
+    sys.exit(1)
+with open(path + ".lock", "a+") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+PYRECEIPT
+}
+receipt_row "pending" || refuse "receipt refused for $REL: a field carries a tripwire term (this file fans out to every instance), or it could not be written; nothing copied"
+
 # The copy IS the containment. The bash checks above give early, readable
 # refusals; this walk is what holds: every component on both sides is opened
 # with O_NOFOLLOW relative to the previous directory fd, so a symlink swapped
@@ -231,34 +268,8 @@ finally:
         os.close(sfd)
 PYCOPY
 
-# --- receipt (issue lr-promote-receipt-hash-binding, Codex finding-1 on the PRD) ---
-# The receipt binds the CONTENT, not the path: `blob` is git hash-object of what
-# was copied, the same value the lessons guard reads from ls-tree, so a receipt
-# written for one version never blesses a later edit at the same path. Lives in
-# the skeleton at q-system/.q-system/promotions.jsonl (the guard reads it from
-# FETCH_HEAD, issue 11). Two-phase writing under a lock is issue 10.
-RECEIPTS="$SKELETON/q-system/.q-system/promotions.jsonl"
-# Hashed with the INSTANCE's attributes (-C, --path) so the blob is the one its
-# ls-tree reports, whatever the caller's cwd repo filters; `|| true` so a
-# missing git reaches refuse instead of exiting under set -e (Claude review).
-BLOB="$(git -C "$INSTANCE_REAL" hash-object --path "$REL" "$DEST" 2>/dev/null || true)"
-[ -n "$BLOB" ] || refuse "could not hash the promoted file $DEST"
-[ "$BLOB" = "$(git -C "$INSTANCE_REAL" hash-object --path "$REL" "$INSTANCE_REAL/$REL" 2>/dev/null || true)" ] || refuse "copy does not match the source after promotion ($REL)"
-mkdir -p "$(dirname "$RECEIPTS")"
-# from_instance is the registry NAME, never the absolute path: a path carries
-# /Users/ and the owner's name, and this file fans out to every instance where
-# the push tripwire would then refuse every push (Claude review, blocker).
-python3 - "$RECEIPTS" "$REL" "$BLOB" "$INSTANCE_NAME" "$DECIDED_BY" "$SCRUB" "$PROMOTE_HOME/q-system/.q-system/scripts/tripwire-terms.txt" "$BASE" <<'PYRECEIPT' || refuse "receipt refused for $REL: a field carries a tripwire term (this file fans out to every instance), or it could not be written"
-import datetime, json, sys
-path, rel, blob, inst, who, scrub, tripwire, base = sys.argv[1:9]
-row = {"path": rel, "blob": blob, "base": base, "from_instance": inst, "decided_by": who, "scrub": scrub, "status": "done",
-       "at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%z")}
-# the row itself is scrubbed: it lands in every instance's q-system/ where the push tripwire greps
-terms = [l.strip() for l in open(tripwire, encoding="utf-8") if l.strip() and not l.startswith("#")]
-line = json.dumps(row)
-if any(t.lower() in line.lower() for t in terms):
-    sys.exit(1)
-with open(path, "a", encoding="utf-8") as fh:
-    fh.write(json.dumps(row) + "\n")
-PYRECEIPT
+# --- phase 2: the copied file re-hashes equal to the source, then the done row ---
+COPIED="$(git -C "$INSTANCE_REAL" hash-object --path "$REL" "$DEST" 2>/dev/null || true)"
+[ "$COPIED" = "$BLOB" ] || refuse "copy does not match the source after promotion ($REL); the pending row stands, no done row"
+receipt_row "done" || refuse "could not write the done receipt for $REL; the pending row stands"
 echo "promoted $REL -> $DEST (blob $BLOB, receipt appended to $RECEIPTS)"

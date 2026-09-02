@@ -514,8 +514,9 @@ def test_promote_writes_a_receipt_bound_to_the_blob(tmp_path):
     r = _promote(tmp_path, "q-system/lessons/general.md")
     assert r.returncode == 0, r.stderr
     rows = [json.loads(l) for l in (skel / RECEIPTS_REL).read_text().splitlines()]
-    assert len(rows) == 1
-    row = rows[0]
+    done = [r for r in rows if r["status"] == "done"]
+    assert len(done) == 1, rows  # (issue 10 adds a pending row before it)
+    row = done[0]
     assert row["path"] == "q-system/lessons/general.md" and row["blob"] == _blob(inst / "q-system" / "lessons" / "general.md")
     assert row["base"] == "", "a new file in the skeleton has no base"
     assert row["status"] == "done" and row["scrub"].startswith("clean")
@@ -582,6 +583,65 @@ def test_promote_decided_by_flag(tmp_path):
     r = subprocess.run(["/bin/bash", str(PROMOTE), "--decided-by", "sana", "q-system/lessons/general.md"], capture_output=True, text=True, env=env, cwd=inst, timeout=20)
     assert r.returncode == 0, r.stderr
     assert json.loads((skel / RECEIPTS_REL).read_text().splitlines()[-1])["decided_by"] == "sana"
+
+
+# ---- slice 4, issue lr-promote-two-phase-receipt (Codex finding-11 on the PRD) ----
+# A crash between the copy and the receipt leaves a silent copy; a receipt before a
+# failed copy blesses nothing that exists. Two rows around the copy, under one lock.
+
+def _rows(skel):
+    p = skel / RECEIPTS_REL
+    return [json.loads(l) for l in p.read_text().splitlines()] if p.exists() else []
+
+
+def test_pending_row_before_the_copy_and_done_row_after(tmp_path):
+    inst, skel = _trees(tmp_path)
+    r = _promote(tmp_path, "q-system/lessons/general.md")
+    assert r.returncode == 0, r.stderr
+    rows = _rows(skel)
+    assert [row["status"] for row in rows] == ["pending", "done"], rows
+    assert rows[0]["blob"] == rows[1]["blob"] == _blob(inst / "q-system" / "lessons" / "general.md")
+    assert rows[0]["path"] == rows[1]["path"] == "q-system/lessons/general.md"
+    assert (skel / RECEIPTS_REL).with_name("promotions.jsonl.lock").exists(), "one flock on a sibling .lock"
+
+
+def test_a_failed_copy_leaves_one_pending_row_and_no_done_row(tmp_path):
+    """The destination directory is made unwritable so the copy fails after the
+    pending row landed."""
+    inst, skel = _trees(tmp_path)
+    (skel / "q-system" / "lessons").chmod(0o555)
+    try:
+        r = _promote(tmp_path, "q-system/lessons/general.md")
+    finally:
+        (skel / "q-system" / "lessons").chmod(0o755)
+    assert r.returncode == 2 and "contained copy failed" in r.stderr, (r.returncode, r.stderr)
+    rows = _rows(skel)
+    assert [row["status"] for row in rows] == ["pending"], rows
+    assert not (skel / "q-system" / "lessons" / "general.md").exists()
+
+
+def test_ten_concurrent_promotions_leave_twenty_well_formed_rows(tmp_path):
+    import concurrent.futures
+    inst, skel = _trees(tmp_path)
+    names = []
+    for i in range(10):
+        n = f"lesson-{i}.md"
+        (inst / "q-system" / "lessons" / n).write_text(f"---\ntitle: L{i}\n---\nbody {i}\n")
+        names.append(n)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+        results = list(ex.map(lambda n: _promote(tmp_path, f"q-system/lessons/{n}"), names))
+    assert all(r.returncode == 0 for r in results), [r.stderr[-200:] for r in results if r.returncode]
+    rows = _rows(skel)
+    assert len(rows) == 20 and all(set(r) >= {"path", "blob", "status", "at"} for r in rows)
+    done = [r for r in rows if r["status"] == "done"]
+    assert sorted(r["path"] for r in done) == sorted(f"q-system/lessons/{n}" for n in names)
+    assert all((skel / "q-system" / "lessons" / n).exists() for n in names)
+
+
+def test_receipt_writer_is_the_single_chokepoint():
+    src = PROMOTE.read_text()
+    assert src.count("promotions.jsonl") >= 1
+    assert "flock" in src and 'receipt_row "pending"' in src and 'receipt_row "done"' in src
 
 
 def test_this_file_runs_its_own_tests_under_python3():
