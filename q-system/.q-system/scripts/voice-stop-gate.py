@@ -566,6 +566,20 @@ def _route_context():
         raise RouteBoundaryError(
             f"route lane is installed at {pipeline_dir} but did not import: {exc}"
         ) from exc
+    # WHICH `pipeline` DID WE GET (Codex minor, ASK-1197 round 1). `sys.path.insert`
+    # loses to `sys.modules`: if anything in the process already imported a package
+    # named `pipeline` -- a sitecustomize, an instrumentation shim, another tool on
+    # PYTHONPATH -- Python hands back the cached one and never looks at the path we
+    # just prepended. A compatible impostor would then supply the verifier, and the
+    # gate would consume receipts against the wrong store while reporting success.
+    # Identity is cheap to check and the failure is silent, so it is checked.
+    for module in (route_classifier, route_contract, audit_only_routes, route_registry):
+        origin = getattr(module, "__file__", None)
+        if origin is None or pipeline_dir not in Path(origin).resolve().parents:
+            raise RouteBoundaryError(
+                f"route lane resolved {module.__name__} to {origin}, which is not "
+                f"under {pipeline_dir}. Refusing rather than verifying receipts "
+                f"against a package that merely shares the name.")
     return route_classifier, route_contract, audit_only_routes, route_registry
 
 
@@ -659,11 +673,32 @@ def enforce_route_receipt(request, assistant_text):
 def _enforce_route_or_exit(request, text):
     """One call-site shape for the two places main() enforces, so the two cannot
     drift apart. Per-site copies of a guard are how one branch ends up hardened
-    and its sibling does not."""
+    and its sibling does not.
+
+    CATCHES `Exception`, NOT just RouteBoundaryError, and that width is the point
+    (Codex major, ASK-1197 round 1). `enforce_route_receipt` calls six things
+    across the lane boundary -- classify, resolve, routes, request_hash,
+    output_hash, MATCH_FIELDS -- and any of them can raise an ordinary exception.
+    Catching only the tidy error let a `RuntimeError` from the classifier escape,
+    and an escaped exception makes Python exit 1, which a Stop hook treats as
+    "hook errored, carry on". The turn then completes with a routed draft nothing
+    verified: the gate fails OPEN in exactly the case it exists for. Same shape
+    Codex found twice in `channel_surface_lint`.
+
+    A bug in THIS file lands here too and also holds the turn. That is the
+    correct direction for a gate: a verifier that cannot run has not cleared
+    anything.
+    """
     try:
         return enforce_route_receipt(request, text)
     except RouteBoundaryError as exc:
         sys.stderr.write(f"voice-stop-gate: {exc}\n")
+        sys.exit(2)
+    except Exception as exc:
+        sys.stderr.write(
+            "voice-stop-gate: the route verifier itself failed with "
+            "%s: %s\nHolding the turn (fail-closed): a check that crashed has "
+            "not cleared this draft.\n" % (type(exc).__name__, exc))
         sys.exit(2)
 
 

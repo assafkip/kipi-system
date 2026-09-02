@@ -223,9 +223,11 @@ def _transcript(tmp_path, user_text, assistant_text, name="t.jsonl"):
     return str(path)
 
 
-def _run(root, transcript, log_path, *, classify=None):
+def _run(root, transcript, log_path, *, classify=None, env_extra=None):
     env = dict(os.environ)
     env["ROUTE_STUB_LOG"] = str(log_path)
+    if env_extra:
+        env.update(env_extra)
     if classify:
         env["ROUTE_STUB_CLASSIFY"] = classify
     else:
@@ -291,6 +293,69 @@ class TestTheLaneIsInstalled:
             f"a routed completion with no receipt must HOLD the turn. "
             f"rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
         assert "route receipt" in proc.stderr.lower(), proc.stderr
+
+    def test_a_classifier_that_raises_at_runtime_holds_the_turn(self, tmp_path):
+        """Codex major, round 1. The lane IMPORTS fine and then throws while being
+        used. `_enforce_route_or_exit` caught only RouteBoundaryError, so the
+        RuntimeError escaped, Python exited 1, and a Stop hook exiting 1 does NOT
+        hold the turn -- the routed draft completed with nothing verified."""
+        root = _instance(tmp_path, with_route_lane=True)
+        classifier = root / "q-consult" / "pipeline" / "route_classifier.py"
+        classifier.write_text(
+            "NOT_ROUTED = 'not_routed'\nROUTE = 'route'\n"
+            "def classify(request):\n"
+            "    raise RuntimeError('the classifier blew up mid-turn')\n",
+            encoding="utf-8")
+        log = tmp_path / "calls.json"
+        assistant = "Here's the post for LinkedIn.\n\n" + DRAFT_MARKER + "\nbody\n"
+        proc = _run(root, _transcript(tmp_path, "write it", assistant), log)
+        assert proc.returncode == 2, (
+            "a verifier that crashed has not cleared this draft, so the turn must "
+            f"be held. rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
+        assert "RuntimeError" in proc.stderr, (
+            "the turn was held but the reason was swallowed; a fail-closed with no "
+            "diagnosis is unfixable.\n" + proc.stderr)
+
+    def test_a_pipeline_package_from_elsewhere_is_refused(self, tmp_path):
+        """Codex minor, round 1. `sys.path.insert` loses to `sys.modules`: a
+        package named `pipeline` already imported in the process is handed back
+        regardless of the path we prepend. An impostor supplying the verifier would
+        consume receipts against the wrong store and report success."""
+        root = _instance(tmp_path, with_route_lane=True)
+        impostor = tmp_path / "impostor"
+        (impostor / "pipeline").mkdir(parents=True)
+        for mod in ("__init__", "route_classifier", "route_contract",
+                    "route_registry", "audit_only_routes"):
+            (impostor / "pipeline" / (mod + ".py")).write_text(
+                "NOT_ROUTED = 'not_routed'\nROUTE = 'route'\n", encoding="utf-8")
+        # PYTHONPATH ALONE DOES NOT REPRODUCE THIS, and the first version of this
+        # test proved it by passing against unfixed code: `sys.path.insert(0, ...)`
+        # puts the instance FIRST, so the real lane still wins a fresh import. The
+        # hazard needs `pipeline` to be in `sys.modules` BEFORE the gate imports it,
+        # which is what a sitecustomize does. Getting the precondition wrong is how
+        # a security test becomes decoration.
+        (impostor / "sitecustomize.py").write_text("import pipeline\n", encoding="utf-8")
+        env_extra = {"PYTHONPATH": str(impostor)}
+        log = tmp_path / "calls.json"
+        assistant = "Here's the post for LinkedIn.\n\n" + DRAFT_MARKER + "\nbody\n"
+        proc = _run(root, _transcript(tmp_path, "write it", assistant), log,
+                    env_extra=env_extra)
+        assert proc.returncode == 2, (
+            "a `pipeline` package resolved outside this instance must be refused, "
+            f"not trusted. rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
+        assert "not under" in proc.stderr or "which is not" in proc.stderr, (
+            "the turn was held, but not for the reason under test. A refusal that "
+            "happens to be right is not this assertion.\n" + proc.stderr)
+
+        # THE CONTROL. Same tree, same PYTHONPATH, no pre-import: the real lane must
+        # still win and the turn must complete. Without this, a bug that refused
+        # EVERY installed lane would pass the assertion above.
+        (impostor / "sitecustomize.py").unlink()
+        ok = _run(root, _transcript(tmp_path, "hey", assistant), tmp_path / "c.json",
+                  env_extra=env_extra)
+        assert ok.returncode == 0, (
+            "the control failed: the gate refused a lane that resolves correctly, so "
+            f"the case above proves nothing. rc={ok.returncode} stderr={ok.stderr}")
 
     def test_a_lane_that_is_installed_and_broken_holds_the_turn(self, tmp_path):
         """Exit 2, not exit 1. A Stop hook exiting 1 does NOT hold the turn, so an

@@ -50,6 +50,7 @@ import ast
 import json
 import os
 import pathlib
+import re
 
 import pytest
 
@@ -66,6 +67,11 @@ REGISTRY = REPO / "instance-registry.json"
 #: drift to be resolved by porting, so recording any of it here would have turned a
 #: live hazard into a permanent excuse.
 EXEMPT: "dict[str, str]" = {}
+
+
+#: The crude fallback for a file `ast` refuses. Column 0 only, so a nested `def`
+#: is not counted -- matching what `_top_level_functions` means by top level.
+_DEF_RE = re.compile(r"(?m)^(?:async\s+)?def\s+(\w+)\s*\(")
 
 
 def _top_level_functions(source, filename):
@@ -112,11 +118,24 @@ def test_no_instance_defines_a_function_the_skeleton_lacks(capsys):
         try:
             found = _functions_at(path)
         except (SyntaxError, OSError) as exc:
-            # Reported, never asserted on. A checkout mid-edit is not this gate's
-            # finding, and a red blamed on another repo's dirty tree is how a gate
-            # gets switched off.
+            # A FALLBACK, not a skip (Codex minor, ASK-1197 round 1). Skipping here
+            # meant an instance that adds a unique function and then acquires a
+            # syntax error drops out of `loss` entirely and the gate goes green over
+            # a live hazard -- the exact silent-absence shape this file exists to
+            # catch, reproduced inside it.
+            #
+            # So a file `ast` cannot parse is scanned with the crude regex instead.
+            # The regex OVER-reports (it counts `def` inside a docstring or a
+            # commented-out block, which is why `ast` is used everywhere else), and
+            # over-reporting is the safe direction for a hazard check: the cost is a
+            # false name in the failure message on a file that is already broken.
             unparseable.append(f"{name}: {exc}")
-            continue
+            try:
+                found = set(_DEF_RE.findall(path.read_text(encoding="utf-8", errors="replace")))
+            except OSError:
+                # Cannot even read it. Nothing to assert on either way; the line
+                # above is the whole report.
+                continue
         extra = sorted((found - skeleton) - set(EXEMPT))
         if extra:
             loss[name] = extra
@@ -144,6 +163,31 @@ def test_no_instance_defines_a_function_the_skeleton_lacks(capsys):
         + "Port these upstream into the skeleton copy. Do NOT add an EXEMPT entry "
           "unless losing the function on the next fanout is genuinely fine."
     )
+
+
+def test_the_regex_fallback_sees_a_file_ast_refuses():
+    """The instrument behind the unparseable branch (Codex minor, round 1).
+
+    A skipped instance drops out of `loss` entirely, so an instance that adds a
+    unique function and then acquires a syntax error goes green over a live
+    hazard. The fallback must still find the name in a file `ast` will not parse.
+    """
+    broken = (
+        "def a_real_top_level_def():\n"
+        "    return 1\n"
+        "def another_one(x):\n"
+        "    if x = 1:\n"          # the syntax error
+        "        pass\n"
+        "    def a_nested_one():\n"
+        "        pass\n"
+    )
+    with pytest.raises(SyntaxError):
+        _top_level_functions(broken, "<broken>")
+    found = set(_DEF_RE.findall(broken))
+    assert "a_real_top_level_def" in found and "another_one" in found, found
+    assert "a_nested_one" not in found, (
+        "the fallback counted an INDENTED def. It must mean the same thing by "
+        f"'top level' as the ast walk does, or the two disagree. {found}")
 
 
 def test_every_exemption_carries_a_reason():
