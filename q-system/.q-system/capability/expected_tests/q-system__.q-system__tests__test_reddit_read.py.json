@@ -1,5 +1,5 @@
 {
  "path": "q-system/.q-system/tests/test_reddit_read.py",
- "runner": "python3",
+ "runner": "pytest",
  "timeout_s": 120
 }

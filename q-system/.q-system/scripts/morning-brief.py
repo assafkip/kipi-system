@@ -455,9 +455,13 @@ SECTIONS = (
 # four issues were about to edit this file, which is the serialization hazard
 # the single-owner rule exists to remove. A module that is absent renders no
 # section and logs ONE line; absent is not "nothing", and it is not an error.
+# Entries name the FILE, not the stem. The capability gate finds a wired engine
+# by its filename on a wiring surface (this file is one); a bare stem here left
+# notion_board.py reported inert on CI while this registry was its real caller
+# (PR #294, 2026-09-02). _optional_module accepts either spelling.
 OPTIONAL_SECTIONS = (
-    ("unknown_terms", "unknown_terms", "Terms I do not know"),
-    ("notion_board", "board", "Notion board"),
+    ("unknown_terms.py", "unknown_terms", "Terms I do not know"),
+    ("notion_board.py", "board", "Notion board"),
 )
 
 ERROR_LOG = STATE_DIR / "logs" / "morning-brief-errors.log"
@@ -466,7 +470,10 @@ COLLECT_BUDGET_S = 20.0
 
 def _optional_module(stem: str):
     """The module for an optional section, or None when its file is absent.
-    Separate from _load_sibling so a test can swap it without touching disk."""
+    Separate from _load_sibling so a test can swap it without touching disk.
+    `stem` may carry its .py suffix (the registry does, see OPTIONAL_SECTIONS)."""
+    if stem.endswith(".py"):
+        stem = stem[:-3]
     path = HERE / f"{stem}.py"
     if not path.is_file():
         return None
