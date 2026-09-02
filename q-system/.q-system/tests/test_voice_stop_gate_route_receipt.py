@@ -503,18 +503,20 @@ class TestFounderTypedText:
         assert gate.founder_typed_text("write me a linkedin post about the gate") == (
             "write me a linkedin post about the gate")
 
-    def test_a_meta_flagged_record_ends_the_founder_turn(self, tmp_path):
+    def test_a_meta_flagged_skill_body_is_skipped_not_read_and_not_an_ending(self, tmp_path):
         """The label, not the prose. Enumerating carriers in a regex is the shape
         that failed twice; `isMeta` is what the harness already tells us.
 
-        THIS ASSERTION FLIPPED IN ROUND 6, deliberately. It used to require the
-        EARLIER founder message, on the reasoning that the meta record must not be
-        read as his words. That half is still true and still held -- the skill body
-        is not returned. But keeping the earlier message closes a loop that cannot
-        break out of itself: the gate refuses, the refusal arrives as a meta `user`
-        record, the stale request survives the skip, and the assistant's error
-        report is judged against it and refused again. So a meta record with text
-        ENDS his turn: not his words, and not an older message either."""
+        THIS ASSERTION HAS MOVED TWICE AND THIS IS WHY IT LANDED HERE. Round 6
+        made it "" on the reasoning that a meta record ends his turn. That was a
+        real bypass: a lessons-inject additionalContext or a system reminder
+        landing between his routed request and the draft blanked the request and
+        the draft shipped with no receipt check. Round 7 splits the two meanings
+        an injected record can have -- this gate's OWN refusal fed back (ends the
+        turn) versus every other injection (skipped) -- and a skill body is the
+        second. So the earlier request stands, and the skill body is still not
+        read as his words, which was this test's original point.
+        """
         path = tmp_path / "t.jsonl"
         path.write_text("\n".join([
             json.dumps({"message": {"role": "user", "content": [
@@ -523,10 +525,10 @@ class TestFounderTypedText:
                         "message": {"role": "user", "content": [
                             {"type": "text", "text": "a skill body with no tags at all"}]}}),
         ]) + "\n", encoding="utf-8")
-        assert gate.find_final_user_text(str(path)) == "", (
-            "a harness-flagged record must neither BE the request (the "
-            "third-occurrence deadlock) nor leave an older one standing as this "
-            "turn's (the re-arming refusal loop, round 6).")
+        assert gate.find_final_user_text(str(path)) == "the real request", (
+            "a harness-flagged record must not BE the request (the "
+            "third-occurrence deadlock) and must not END the turn either (the "
+            "round 6 bypass). It is skipped.")
 
 
 def _records_transcript(tmp_path, records, name="records.jsonl"):
@@ -1017,15 +1019,69 @@ class TestTheIdeaLaneAdvisoryBlocks:
         assert gate._route_draft(message) == draft
 
 
-class TestAMetaRecordEndsTheTurn:
-    """Codex major, ASK-1197 round 6. The deadlock reached from the other side.
+#: THE MEASURED HARNESS SHAPE of a Stop hook's exit-2 stderr coming back into the
+#: transcript. Not assumed: measured 2026-09-02 across 11,156 transcript files
+#: under the Claude Code projects tree, 621 records carrying this exact envelope.
+#:
+#:   {"type": "user", "isMeta": true,
+#:    "message": {"role": "user",
+#:                "content": "Stop hook feedback:\n[<hook command>]: <stderr>"}}
+#:
+#: Three details that a guessed fixture gets wrong. `message.content` is a plain
+#: STRING, not a list of blocks. `turnCompanion` is ABSENT -- it appears on no
+#: record of this kind anywhere in the corpus, so a detector keyed on it would
+#: never fire. And the hook's stderr is carried VERBATIM inside, which is what
+#: makes a marker this gate writes visible to the gate on the way back.
+def _stop_hook_feedback(stderr_text):
+    return {
+        "type": "user",
+        "isMeta": True,
+        "message": {
+            "role": "user",
+            "content": ("Stop hook feedback:\n"
+                        '[python3 "$CLAUDE_PROJECT_DIR/q-system/.q-system/'
+                        'scripts/voice-stop-gate.py"]: ' + stderr_text),
+        },
+    }
 
-    `find_final_user_text` SKIPPED a meta record, so after this gate refused a
-    turn, its own feedback came back as an isMeta `user` record, the founder's
-    original routed request was still "this turn's request", and the assistant's
-    reply to the feedback -- an error report, a question, a NOT CHECKED
-    explanation -- was judged against it and refused again. Every refusal
-    re-armed itself.
+
+#: The gate's OWN refusal, built from the gate's constant rather than
+#: transcribed, and wrapped in the measured envelope. If the marker changes these
+#: fixtures follow it instead of quietly testing a string nothing emits any more.
+FED_BACK_REFUSAL_TEXT = (
+    "voice-stop-gate: routed completion has no route receipt\n"
+    + gate._REFUSAL_MARK)
+
+#: What a UserPromptSubmit additionalContext injection looks like: harness
+#: flagged, carries real text, and has nothing to do with this gate. Round 6
+#: ended the founder's turn on this, which is the bypass.
+LESSONS_INJECT_TEXT = (
+    "CONTEXT FROM lessons-inject: prior lesson - a gate that cannot see its "
+    "population must not report a verdict. Recall 3 of 12 lessons matched this "
+    "request.")
+
+class TestWhichInjectedRecordsEndTheTurn:
+    """ASK-1197 rounds 5, 6 and 7, which are one argument with three answers.
+
+    Round 5: skipping an injected record left a stale routed request standing, so
+    this gate's own refusal, fed back, was judged against the request from before
+    the refusal and refused again. Every refusal re-armed itself.
+
+    Round 6 fixed that by ending the turn on ANY text-bearing meta record, and
+    that was a real bypass: a lessons-inject additionalContext or a system
+    reminder between his routed request and the draft blanked the request and the
+    draft shipped with no receipt check.
+
+    Round 7 is the split those two rounds were circling. An injected record means
+    one of two opposite things, and record ORDER cannot tell them apart:
+
+      (a) this gate's OWN refusal -- the assistant is answering the gate, his
+          request is no longer the subject, the turn is over;
+      (b) anything else injected -- his request is still live and still owes a
+          receipt.
+
+    (a) is recognised by `_REFUSAL_MARK`, which this gate writes itself, so the
+    recogniser cannot drift from the thing it recognises.
     """
 
     def _routed_turn(self, tmp_path, records):
@@ -1037,20 +1093,52 @@ class TestAMetaRecordEndsTheTurn:
         "Here's what happened: the route verifier refused the draft because the "
         "receipt did not match. I have not re-drafted anything yet.\n")
 
+
     def test_a_reply_to_refusal_feedback_is_not_refused_again(self, tmp_path):
         """Case 1. The loop. His routed request, this gate's refusal arriving as a
         meta record, then the assistant explaining the failure. That explanation is
         not a routed completion and must complete."""
         proc = self._routed_turn(tmp_path, [
             _user("write me a linkedin post about the propagation gate"),
-            _user("voice-stop-gate: routed completion has no route receipt",
-                  isMeta=True, turnCompanion=True),
+            _stop_hook_feedback(FED_BACK_REFUSAL_TEXT),
             _assistant(self.ASSISTANT_REPLY),
         ])
         assert proc.returncode == 0, (
             "the gate judged an error report against a request from before its own "
             "refusal, and refused it again. Every refusal re-arms itself.\n"
             f"rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
+
+    def test_an_injected_context_record_does_not_disarm_the_gate(self, tmp_path):
+        """Case 2, the round 6 bypass, and the reason (a) and (b) had to split.
+
+        A UserPromptSubmit additionalContext (lessons-inject, voice-dna-loader) or
+        a system reminder lands between his routed request and the draft. It is
+        harness-flagged and carries real text, exactly like fed-back refusal
+        feedback does -- and it means the opposite. His request is still live, so
+        a draft with no receipt must still be refused.
+        """
+        assistant = ("Here's the post for LinkedIn.\n\n" + DRAFT_MARKER
+                     + "\nthe body of the draft, long enough to be measured.\n")
+        proc = self._routed_turn(tmp_path, [
+            _user("write me a linkedin post about the propagation gate"),
+            _user(LESSONS_INJECT_TEXT, isMeta=True),
+            _assistant(assistant),
+        ])
+        assert proc.returncode == 2, (
+            "an injected context record blanked the founder's routed request, so "
+            "the draft shipped with no receipt check. Injection is not the end of "
+            f"his turn.\nrc={proc.returncode} stdout={proc.stdout}")
+        assert "receipt" in proc.stderr, proc.stderr
+
+    def test_the_injected_context_is_not_read_as_his_request(self, tmp_path):
+        """The other half of (b): skipped means skipped. The injected text must
+        not become the request either, which is the third-occurrence deadlock."""
+        path = _records_transcript(tmp_path, [
+            _user("write me a linkedin post about the propagation gate"),
+            _user(LESSONS_INJECT_TEXT, isMeta=True),
+        ])
+        assert gate.find_final_user_text(path) == (
+            "write me a linkedin post about the propagation gate")
 
     def test_a_new_request_after_the_feedback_re_arms_the_gate(self, tmp_path):
         """Case 2, THE CONTROL that matters most. The reset must not disarm the
@@ -1060,8 +1148,7 @@ class TestAMetaRecordEndsTheTurn:
                      + "\nthe body of the draft, long enough to be measured.\n")
         proc = self._routed_turn(tmp_path, [
             _user("write me a linkedin post about the propagation gate"),
-            _user("voice-stop-gate: routed completion has no route receipt",
-                  isMeta=True, turnCompanion=True),
+            _stop_hook_feedback(FED_BACK_REFUSAL_TEXT),
             _user("ok now write me a linkedin post about the reddit lane instead"),
             _assistant(assistant),
         ])

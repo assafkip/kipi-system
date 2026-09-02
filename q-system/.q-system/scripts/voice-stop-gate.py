@@ -19,9 +19,17 @@ It DOES read the founder's request. That line used to say a Stop hook cannot,
 which stopped being true when route enforcement landed and was left standing
 (Codex minor, ASK-1197). `find_final_user_text` reads THIS turn's founder text
 from the transcript: it skips records the harness flags as its own injections,
-strips or truncates injected envelopes inside a message, and never falls back to
-an earlier message — a turn whose final message is entirely machine prose yields
-"" rather than a stale request. Three outcomes, and they are deliberately
+strips or truncates injected envelopes inside a message, and yields "" rather
+than a stale request when his own final message is entirely machine prose.
+
+An injected record does NOT end his turn — with one exception, and the exception
+is the whole of `_REFUSAL_MARK`. When this gate's own refusal is fed back (the
+harness delivers it as an isMeta `user` record whose content is the string
+"Stop hook feedback:\n[<command>]: <stderr>", measured, not assumed), the
+assistant is answering the gate rather than the founder, so his turn is over.
+Every other injection — a UserPromptSubmit additionalContext, a system reminder,
+a tool_result — is skipped: it is neither his words nor an ending, and treating
+it as an ending blanks a live routed request and ships the draft unverified. Three outcomes, and they are deliberately
 different values: text he typed (the route lane classifies it and a routed
 completion must carry a receipt), "" (no request this turn, so the lane treats it
 as not a request), and no transcript at all (the same as ""). The lint half still
@@ -527,28 +535,25 @@ def find_final_user_text(transcript_path):
             # ends the turn nor erases anything (round 2 -- otherwise his request
             # is blanked on every tool-using turn).
             continue
-        # The harness labels its own injections. Trust the label over any attempt
-        # to recognise the prose; see `_walk_transcript`'s scar note.
-        if any(record.get(flag) is True for flag in _META_FLAGS):
-            # A META RECORD WITH TEXT ENDS HIS TURN (Codex major, ASK-1197 round
-            # 6). This used to `continue`, which SKIPPED the record and left an
-            # earlier message standing as "this turn's request" -- and that closes
-            # a loop that cannot break out of itself:
+        if _REFUSAL_MARK in raw:
+            # (a) MY OWN REFUSAL, FED BACK. See `_REFUSAL_MARK`. The assistant is
+            # now answering this gate, so the founder's request is no longer the
+            # subject and his turn is over. Reset rather than break, because a
+            # message he types AFTER this is a genuinely new turn that must
+            # re-arm the gate.
             #
-            #   he types a routed request -> the assistant answers -> this gate
-            #   refuses (exit 2) -> the refusal comes back as an isMeta `user`
-            #   record -> the skip means his ORIGINAL routed request is still the
-            #   request -> the assistant's error report is judged against it and
-            #   refused again -> forever.
-            #
-            # Every refusal re-armed itself. That is the three-occurrence deadlock
-            # the scar above describes, reached from the other side: round 2 fixed
-            # reading machine prose AS his words, this fixes reading his OLD words
-            # as still current after the machine spoke last.
-            #
-            # Reset rather than break, because a founder message AFTER the meta
-            # record is a genuinely new turn and must re-arm the gate.
+            # Matched on ANY user-side record, meta or not, deliberately: it is
+            # keyed on text this gate WROTE, not on the envelope the harness
+            # happens to wrap it in. Three rounds were spent guessing envelopes.
             text = ""
+            continue
+        if any(record.get(flag) is True for flag in _META_FLAGS):
+            # (b) EVERY OTHER INJECTED RECORD: a UserPromptSubmit
+            # additionalContext, a system reminder, a peer session's message.
+            # Skipped -- never his words, and never an ending either. Round 6
+            # ended the turn here and that was a real bypass: an injected context
+            # record between his routed request and the draft blanked the request
+            # and the draft shipped with no receipt check.
             continue
         text = founder_typed_text(raw)
     return text
@@ -564,6 +569,49 @@ def find_final_user_text(transcript_path):
 # against this same defect: return the NAMED thing even when it is missing and
 # let the caller decide, so a reader can say "the check named X, which does not
 # exist" instead of seeing silence.
+#: THE ONE TOKEN THIS GATE PUTS IN ITS OWN REFUSALS (Codex major, ASK-1197
+#: round 7). Rounds 2, 5 and 6 each patched `find_final_user_text`'s ordering
+#: rule, and round 6 shipped a real bypass because of it: it ended the founder's
+#: turn on ANY text-bearing meta record, so a UserPromptSubmit additionalContext
+#: (lessons-inject, voice-dna-loader) or a system reminder landing between his
+#: routed request and the draft blanked the request and the draft shipped
+#: unverified.
+#:
+#: The wrong assumption was that "this turn's request" is derivable from record
+#: ORDER plus the meta flag. It is not: two kinds of injected record mean
+#: opposite things.
+#:
+#:   (a) THIS GATE'S OWN REFUSAL fed back by the harness. The assistant is now
+#:       answering the gate; the founder's request is no longer the subject; his
+#:       turn is over. Skipping it re-arms the refusal forever (round 5).
+#:   (b) EVERYTHING ELSE injected -- hook context, reminders, tool_result
+#:       transport. His request is still live and the draft still owes a receipt.
+#:
+#: The gate can tell (a) from (b) with certainty because it WRITES (a). So the
+#: recogniser is one constant, emitted by `refuse` and matched by the walker, and
+#: the two cannot drift apart because there is nowhere else to change it. It is
+#: deliberately NOT the `voice-stop-gate:` prefix: the NOT CHECKED advisory
+#: carries that too, and that advisory does not end anything.
+_REFUSAL_MARK = "[voice-stop-gate:held-this-turn]"
+
+
+def refuse(message):
+    """Write one refusal to stderr, marked, and hold the turn. Never returns.
+
+    THE ONLY WRITER of an exit-2 refusal in this file, so `_REFUSAL_MARK` is on
+    every one of them by construction. Five call-sites used to each format their
+    own line; a marker maintained across five copies is a marker that is missing
+    from the sixth.
+    """
+    # The human sentence is unchanged and the mark is its OWN line. The first
+    # attempt folded the mark into the prefix and broke
+    # `test_a_surface_lint_that_crashes_holds_the_turn`, which pins the wording a
+    # reader actually sees. A machine token has no business rewriting the text a
+    # person reads; it sits beside it.
+    sys.stderr.write(f"voice-stop-gate: {message}\n{_REFUSAL_MARK}\n")
+    sys.exit(2)
+
+
 NOT_CHECKED = "NOT_CHECKED"
 
 #: Notices queued for the single `systemMessage` emitted by `finish_ok`. Module
@@ -916,14 +964,11 @@ def _enforce_route_or_exit(request, text):
     try:
         return enforce_route_receipt(request, text)
     except RouteBoundaryError as exc:
-        sys.stderr.write(f"voice-stop-gate: {exc}\n")
-        sys.exit(2)
+        refuse(str(exc))
     except Exception as exc:
-        sys.stderr.write(
-            "voice-stop-gate: the route verifier itself failed with "
-            "%s: %s\nHolding the turn (fail-closed): a check that crashed has "
-            "not cleared this draft.\n" % (type(exc).__name__, exc))
-        sys.exit(2)
+        refuse("the route verifier itself failed with %s: %s\n"
+               "Holding the turn (fail-closed): a check that crashed has not "
+               "cleared this draft." % (type(exc).__name__, exc))
 
 
 # --- the OPTIONAL instance channel registry ----------------------------------
@@ -1246,10 +1291,7 @@ def main():
         surface = channel_surface_lint(
             resolve_channel_registry(INSTANCE_ROOT), detect_channel(text), INSTANCE_ROOT)
     except ChannelRegistryError as exc:
-        sys.stderr.write(
-            "voice-stop-gate: channel registry error, holding the turn (fail-closed).\n"
-            f"{exc}\n")
-        sys.exit(2)
+        refuse("channel registry error, holding the turn (fail-closed).\n%s" % exc)
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".md", delete=False, encoding="utf-8"
@@ -1321,10 +1363,16 @@ def main():
             # file is left alone so the next completed turn surfaces it. Spooling
             # here would spend 3s of torch on a draft the voice gates just
             # refused, which Claude is about to replace.
+            #
+            # MARKED, like every other refusal in this file. When the harness
+            # feeds this stderr back as a `Stop hook feedback:` record, the walker
+            # has to recognise it as THIS gate's own voice; see `_REFUSAL_MARK`.
+            sys.stderr.write(_REFUSAL_MARK + "\n")
             sys.exit(2)
         if lint_failures:
             # Same reasoning as the violations path above: no drain, no spool. A
-            # draft nothing graded is not a draft to score.
+            # draft nothing graded is not a draft to score. Marked, same as above.
+            sys.stderr.write(_REFUSAL_MARK + "\n")
             sys.exit(2)
     finally:
         for path in (tmp_path, tmp_json_path):
