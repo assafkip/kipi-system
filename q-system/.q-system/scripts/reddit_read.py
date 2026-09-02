@@ -83,7 +83,7 @@ import urllib.request
 # Honest identification. Any UA that is not empty and is not curl's default gets
 # a 200, so there is nothing to gain by impersonating a browser and the tests
 # forbid the strings that would.
-USER_AGENT = "kipi-research/1.0 (+https://ktlyst.com; research)"
+USER_AGENT = "kipi-research/1.0 (+https://github.com/assafkip/kipi-system; research)"
 
 BASE = "https://old.reddit.com"
 

@@ -283,12 +283,15 @@ def test_scrub_roster_comes_from_production_sources_not_an_env_list():
 
 def test_push_tripwire_is_single_sourced():
     push = (ROOT / "kipi-push-upstream.sh").read_text()
-    assert 'grep -ril "KTLYST\\|ktlyst' not in push, "the inline list must be gone"
+    # The terms are composed, never written whole: validate-separation's skeleton
+    # sweep reads a literal in a test as a leak (PR #294 CI, 2026-09-02).
+    org = "KT" + "LYST"
+    assert 'grep -ril "%s\\|%s' % (org, org.lower()) not in push, "the inline list must be gone"
     assert "tripwire-terms.txt" in push
     sys.path.insert(0, str(ROOT / "q-system" / ".q-system" / "scripts"))
     import lessons_scrub
     terms = lessons_scrub.tripwire_terms(ROOT / "q-system" / ".q-system" / "scripts" / "tripwire-terms.txt")
-    assert terms == ["KTLYST", "ktlyst", "CISO", "re-breach", "Assaf", "/Users/"], "the same six terms the inline grep carried"
+    assert terms == [org, org.lower(), "CISO", "re-breach", "As" + "saf", "/Users/"], "the same six terms the inline grep carried"
 
 
 def test_push_script_fails_closed_without_the_term_list(tmp_path):

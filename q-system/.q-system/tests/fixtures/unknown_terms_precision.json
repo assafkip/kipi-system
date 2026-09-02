@@ -1,6 +1,6 @@
 {
   "_about": "Precision fixture for unknown_terms.py (issue mbl-unknown-term-detector, Codex finding-13). Five planted unknowns must surface (at least 4), ten planted decoys must not (0). Rows are in the exact shape morning-brief.py renders: calendar '<start>  <title> (<attendees>)', mail '<from>  <subject> (<age>)'.",
-  "canonical_text": "# decisions\n\nRULE-2026-08-30-A: the brief is one Slack message. Linear and open-loops are the ledgers. Notion is a view. KTLYST Labs sells nothing here. Codex reviews every PRD. Sana owns git.\n",
+  "canonical_text": "# decisions\n\nRULE-2026-08-30-A: the brief is one Slack message. Linear and open-loops are the ledgers. Notion is a view. Northgate Labs sells nothing here. Codex reviews every PRD. Sana owns git.\n",
   "calendar_rows": [
     "09:00  Onboarding call with Brightspeed (Assaf, Marta Kowalski)",
     "11:30  Weekly sync (Assaf, Sana)",
@@ -10,7 +10,7 @@
   "mail_rows": [
     "Marta Kowalski  Question about the Brightspeed export (3h)",
     "Dominic Reyes  Re: Hyperion SOW, Netherwick clause (5h)",
-    "Linear  Weekly digest for KTLYST (1d)",
+    "Linear  Weekly digest for Northgate (1d)",
     "Priya Natarajan  Introduction: Quillfeather pilot (9h)",
     "Notion  Your workspace update (2d)",
     "Sent from my iPhone  Re: Tuesday agenda (1d)"

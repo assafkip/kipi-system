@@ -993,7 +993,8 @@ def phase_1():
     # never ship to another instance (same rationale as lessons-validator/
     # instance-registry): ai-index-2026-comparison (fleet analysis), fleet-map
     # (fleet inventory), decisions (decision log).
-    exclude_files = {"PHASE-0-AUDIT", "EXECUTION-PLAN", "validate-separation", "instance-registry", "lessons-validator", "lessons_scrub", "lessons-scrub", "ai-index-2026-comparison", "fleet-map", "decisions"}
+    exclude_files = {"PHASE-0-AUDIT", "EXECUTION-PLAN", "validate-separation", "instance-registry", "lessons-validator", "lessons_scrub", "lessons-scrub", "ai-index-2026-comparison", "fleet-map", "decisions",
+                     "tripwire-terms"}  # the push tripwire's roster holds the terms it blocks, by design (kipi-push-upstream.sh, PRD B)
     exclude_dirs = {"output", ".obsidian", "memory"}
     for root, dirs, files in os.walk(q_system_dir):
         dirs[:] = [d for d in dirs if d not in exclude_dirs]

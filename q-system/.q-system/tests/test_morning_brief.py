@@ -679,6 +679,31 @@ def test_a_collector_past_its_budget_is_a_timeout_not_a_hang(brief, tmp_path, mo
     assert rows == [] and "timed out" in error and "0.05" in error
 
 
+def test_the_fixed_four_are_bounded_by_default_not_only_when_a_test_asks(brief, tmp_path, monkeypatch):
+    """PR #294 review, major: collect_all passed None as every fixed collector's
+    budget, so a hung calendar or mail call blocked delivery and the receipt
+    indefinitely. The default must be finite, sit above the claude -p timeout
+    (so the subprocess bound fires first), and actually cut a hung collector."""
+    import inspect, threading
+    assert brief.FIXED_BUDGET_S > brief.CLAUDE_TIMEOUT
+    assert inspect.signature(brief.collect_all).parameters["fixed_budget_s"].default is None
+    gate = threading.Event()
+
+    def hangs(*a, **k):
+        gate.wait()
+
+    _all_ok(brief, monkeypatch)
+    monkeypatch.setattr(brief, "collect_mail", hangs)
+    monkeypatch.setattr(brief, "OPTIONAL_SECTIONS", ())
+    monkeypatch.setattr(brief, "FIXED_BUDGET_S", 0.05)
+    try:
+        sources = brief.collect_all(NOW, log_path=tmp_path / "e.log")  # no fixed_budget_s: the default path
+    finally:
+        gate.set()
+    rows, error = sources["mail"]
+    assert rows == [] and "timed out" in error, (rows, error)
+
+
 def test_a_hung_collector_runs_on_a_daemon_thread_so_exit_is_not_blocked(brief, tmp_path, monkeypatch):
     """Codex findings 1+2 on mbl-brief-core: a pool worker is non-daemon and is
     joined at interpreter exit, so a collector that never returns would keep the
