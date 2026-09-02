@@ -1,7 +1,7 @@
 ---
 id: mbl-board-live-readback
 title: A live read-back check that fails closed without the token, required to close
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:

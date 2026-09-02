@@ -329,6 +329,25 @@ def test_live_check_cleans_up_when_read_back_fails_after_the_write(board, tmp_pa
     assert not any("live-check" in t for t in fake.text_under("Top of mind")), "sentinel left on the board"
 
 
+def test_live_check_retries_the_delete_when_the_sentinel_survives_it(board, tmp_path, capsys):
+    """Codex standard review (issue mbl-board-live-readback): `cleaned` was set
+    right after the DELETE, before the read-back proved removal, so an accepted
+    but ineffective delete skipped the finally cleanup and left the sentinel."""
+
+    class AcceptsButKeeps(FakeNotion):
+        def __call__(self, req, timeout):
+            if req.get_method() == "DELETE" and sum(1 for m, _, _ in self.calls if m == "DELETE") == 0:
+                self.calls.append(("DELETE", req.full_url, None))  # accepted, block stays
+                return self._resp({"object": "block", "id": req.full_url.rsplit("/", 1)[1], "archived": True})
+            return super().__call__(req, timeout)
+    fake = AcceptsButKeeps(_page())
+    assert board.live_check(opener=fake, **_creds(tmp_path)) == 2
+    report = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert report["reason"] == "sentinel still present after delete" and report["cleanup"] == "sentinel deleted"
+    assert sum(1 for m, _, _ in fake.calls if m == "DELETE") == 2, "the finally block tried once more"
+    assert not any("live-check" in t for t in fake.text_under("Top of mind")), "sentinel left on the board"
+
+
 def test_cli_live_check_refuses_under_pytest_and_touches_no_network(tmp_path):
     import os
     creds = _creds(tmp_path)

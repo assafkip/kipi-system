@@ -355,11 +355,14 @@ def live_check(opener=None, token_file=None, page_file=None, out=print) -> int:
             report["reason"] = "sentinel not found on read-back"
             return EXIT_MISMATCH
         _request(token, "DELETE", f"/blocks/{created_id}", opener=opener)
-        cleaned = True
         after_delete = parse_buckets(read_page(token, page_id, opener))[TOP]["items"]
         if any(text == sentinel for _, text in after_delete):
+            # `cleaned` stays unset on purpose: the DELETE was accepted but the
+            # read-back still shows the sentinel, so the finally block tries
+            # once more instead of leaving live-check data on the board (Codex).
             report["reason"] = "sentinel still present after delete"
             return EXIT_MISMATCH
+        cleaned = True  # only once the read-back proves the sentinel is gone
         report.update({"ok": True, "round_trip_s": round(time.monotonic() - started, 3)})
         return EXIT_OK
     except NotionError as exc:
