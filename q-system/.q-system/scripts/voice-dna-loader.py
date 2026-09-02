@@ -114,14 +114,11 @@ def resolve_path(relative_path):
 
 def build_context(voice_dna_path, samples_path):
     parts = [
-        "[voice-dna-loader] Writing request detected. You MUST apply the founder's "
-        "voice DNA below before drafting any text another person will read. Do not "
-        "paraphrase the rules. Match the specific patterns documented: witness lines, "
-        "namer pattern, tester pattern, the 4-beat declarative WITH specifics (not "
-        "the cadence alone), show-don't-explain. If the draft has the shape of the "
-        "voice without the substance (scar, named thing, test, evidence), it reads "
-        "as AI cadence. The voice-lint PostToolUse hook will catch some violations "
-        "but not all. Subjective checks (specificity, scar, personality) are on you."
+        "[voice-dna-loader] Writing request detected. Apply the founder's voice DNA "
+        "below before drafting text another person will read: witness lines, namer "
+        "pattern, tester pattern, the 4-beat declarative with specifics. Shape "
+        "without substance (no scar, named thing, test or evidence) reads as AI "
+        "cadence; voice-lint catches part of that, the rest is judgment."
     ]
     if voice_dna_path:
         voice_dna_content = voice_dna_path.read_text(encoding="utf-8")
@@ -136,6 +133,25 @@ def build_context(voice_dna_path, samples_path):
         samples_content = samples_path.read_text(encoding="utf-8")
         parts.append(f"\n\n=== WRITING SAMPLES (from {samples_path}) ===\n\n{samples_content}")
     return "".join(parts)
+
+
+# The corpus may carry SUBSTANCE files beside the style rows: what the writer saw
+# (scars) and what they built. They are POINTED AT, never inlined -- the 2026-08-13
+# measurement that killed the 40KB dump applies to any large prose payload, and
+# these two are larger than the dump that was removed. Naming them costs one line
+# and lets the session read the one it needs.
+SUBSTANCE_FILES = ("scars.md", "built.md")
+
+
+def substance_pointer(voice_dir):
+    """One line naming the substance files that actually exist. Never their text."""
+    present = [n for n in SUBSTANCE_FILES if Path(voice_dir, n).is_file()]
+    if not present:
+        return ""
+    return ("\nSUBSTANCE, read before any first-person claim about his own "
+            "experience or his own work (a clean gate run is not evidence a draft "
+            "used his material): "
+            + ", ".join(f"{voice_dir}/{n}" for n in present) + "\n")
 
 
 def build_context_from_corpus():
@@ -181,8 +197,7 @@ def build_context_from_corpus():
     picked = selector.select(rows, "x", 0, k=3)
     parts = [
         "[voice-dna-loader] Writing request detected. The voice corpus is "
-        f"{voice_dir}. This hook reads that corpus only; the "
-        "founder-voice/references copies are retired and are no longer loaded.\n\n"
+        f"{voice_dir}; this hook reads only that corpus.\n\n"
         "Before drafting anything another person reads, run the selector so the "
         "exemplars match the CHANNEL and the LENGTH of the piece:\n\n"
         f"    KIPI_VOICE_DIR={voice_dir} python3 "
@@ -190,7 +205,8 @@ def build_context_from_corpus():
         "Length is a real axis: the x corpus runs 5 to 55 words with one 479-word "
         "row, so a long piece written against short rows comes out formal. "
         "Substance over cadence: with no scar, named thing, test or evidence, the "
-        "shape of the voice still reads as AI. voice-lint catches part of it.\n",
+        "shape of the voice still reads as AI. voice-lint catches part of it.\n"
+        + substance_pointer(voice_dir),
         f"\n=== WHO IS WRITING ===\n\n{voice.identity.strip()}\n",
     ]
     corrections = voice.active_corrections()
