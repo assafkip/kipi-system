@@ -91,43 +91,183 @@ _PUBLISH_MARKER_RE = re.compile(
 # code fence (```python / ```bash) is not a draft and must not be voice-linted.
 _FENCE_RE = re.compile(r"```([^\n]*)\n(.*?)```", re.DOTALL)
 _PROSE_FENCE_LANGS = {"", "text", "txt", "md", "markdown", "quote", "draft"}
+
+# --- R8: one draft definition, cherry-picked from f918134c -----------------------
+#
+# Taken VERBATIM from that commit rather than re-implemented (ASK-1197 round 8).
+# It is the output-side net the round-8 redesign needs: "does this turn carry a
+# draft at all", answered without requiring a marker or a fence, so a corrected
+# draft sent after a refusal cannot slip past classification by dropping its
+# wrapper. The cherry-pick conflicted because f918134c predates rounds 3-7 of this
+# file; the conflict was resolved by keeping this file and taking only the three
+# symbols it adds (`_blocks`, `_disqualified`, `candidate_draft`). Its fourth
+# added symbol, `report_not_checked`, already exists here in a later form.
+
+# `candidate_draft` is the single definition. It does not require an announcing
+# sentence and it does not require a fence. The marker regex survives as a
+# SIGNAL (it still tells us a turn is framed as a delivery) and is no longer a
+# PRECONDITION for looking.
+#
+# The negative control is the load-bearing half: returning the whole message
+# would gate every engineering answer, and a gate that fires on everything gets
+# switched off. Disqualifiers below are what keep ordinary chat out.
+
+_HR_RE = re.compile(r"(?m)^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$")
+_CODE_FENCE_RE = re.compile(r"```([^\n]*)\n.*?```", re.DOTALL)
+# A block that carries any of these is the assistant talking about code, not a
+# draft. Kept deliberately boring: each one is a shape seen in real turns.
+_NOT_PROSE = (
+    re.compile(r"(?m)^\s*(?:Traceback \(most recent call last\)|File \"|\s{2,}File )"),
+    re.compile(r"[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-/]+\.(?:py|sh|json|md|jsonl|ts|plist)\b"),
+    re.compile(r"(?m)^\s*(?:def |class |import |from \w+ import |\$ |>>> )"),
+    re.compile(r"(?m)^\s*[-*+]\s+\S"),          # a bullet list is an answer, not a post
+    re.compile(r"(?m)^\s*\d+\.\s+\S"),          # ditto, numbered
+    re.compile(r"(?m)^\s*\|.*\|\s*$"),          # a table is an answer
+    re.compile(r"(?m)^#{1,6}\s+\S"),            # markdown headings
+)
+# Two or more inline-code spans reads as engineering prose. One can appear in a
+# post (a tool name), so the floor is two.
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+# Bold-headed framing the assistant writes around a draft ("**What I changed:**")
+_FRAMING_RE = re.compile(r"(?m)^\s*\*\*[^*\n]+:\*\*\s*$")
+
+# A draft has to be big enough to be worth gating, and small enough that the
+# floor cannot swallow a real short post. 40 bytes admits the 21-word X posts in
+# the corpus; the old 80-byte floor is deleted (F9), it is what let the shipped
+# turn through.
+MIN_DRAFT_BYTES = 40
+
+
+def _disqualified(block):
+    if any(pattern.search(block) for pattern in _NOT_PROSE):
+        return True
+    if len(_INLINE_CODE_RE.findall(block)) >= 2:
+        return True
+    return False
+
+
+def _blocks(text):
+    """Every contiguous prose run, however it was set off.
+
+    Order matters only for readability; the caller picks by size, not position.
+    """
+    found = []
+
+    # 1. PROSE fences yield their body. A LANGUAGE fence is code and is dropped
+    #    from the remaining text so it can never join a neighbouring block.
+    for info, body in _FENCE_RE.findall(text):
+        if info.strip().lower() in _PROSE_FENCE_LANGS:
+            found.append(body)
+    remainder = _CODE_FENCE_RE.sub("\n\n", text)
+    remainder = _FENCE_RE.sub("\n\n", remainder)
+
+    # 2. Blockquotes yield their body, unwrapped, and are removed from the
+    #    remainder for the same reason.
+    quoted, plain = [], []
+    for line in remainder.split("\n"):
+        if line.lstrip().startswith(">"):
+            quoted.append(re.sub(r"^\s*>\s?", "", line))
+            plain.append("")
+        else:
+            quoted.append(None)
+            plain.append(line)
+    run = []
+    for line in quoted:
+        if line is None:
+            if run:
+                found.append("\n".join(run))
+                run = []
+        else:
+            run.append(line)
+    if run:
+        found.append("\n".join(run))
+
+    # 3. What is left splits on horizontal rules, then groups consecutive
+    #    paragraphs. Grouping is the part the old code never did: a post is many
+    #    paragraphs separated by single blank lines, so splitting on blank lines
+    #    alone leaves nothing above any floor.
+    for section in _HR_RE.split("\n".join(plain)):
+        paras = [q.strip("\n") for q in re.split(r"\n\s*\n", section)]
+        paras = [q for q in paras if q.strip()]
+        # CONTAMINATION, not per-paragraph skipping. If any paragraph in this
+        # section is engineering (a traceback, a path, a bullet list), the whole
+        # section is the assistant explaining and none of it is a draft. Skipping
+        # only the offending paragraph let its plain-prose neighbours group into
+        # a false candidate.
+        if any(_disqualified(q) for q in paras):
+            continue
+        group = []
+        for para in paras:
+            if _FRAMING_RE.match(para.strip()):
+                if group:
+                    found.append("\n\n".join(group))
+                    group = []
+                continue
+            group.append(para)
+        if group:
+            found.append("\n\n".join(group))
+
+    return found
+
+
+def candidate_draft(text):
+    """The one answer both the lint and the authorship scorer read.
+
+    Returns the largest surviving prose block, or '' when the turn carries no
+    draft. Never returns the whole message as a fallback: that fallback is what
+    the old `extract_publishable` did, and it is how a gate starts firing on
+    ordinary answers and gets turned off.
+    """
+    if not text or not text.strip():
+        return ""
+    survivors = []
+    for block in _blocks(text):
+        block = block.strip()
+        if not block or _disqualified(block):
+            continue
+        if len(block.encode("utf-8")) < MIN_DRAFT_BYTES:
+            continue
+        survivors.append(block)
+    if not survivors:
+        return ""
+    return max(survivors, key=lambda b: len(b.encode("utf-8")))
+
 _QUOTE_RE = re.compile(r"(?m)^>\s?(.*)$")
 
 
 def extract_publishable(text):
-    """The draft content to lint, or '' when the message is conversational.
+    """COMPATIBILITY SHIM. The one answer is `candidate_draft`.
 
-    '' (skip) unless the message carries explicit publish framing. When it does, return
-    the set-off draft — prose fences + blockquotes — so surrounding chat and code fences
-    aren't linted; if framing is present but nothing is set off (draft written inline),
-    fall back to the whole message."""
-    if not _PUBLISH_MARKER_RE.search(text):
-        return ""
-    segments = [body for info, body in _FENCE_RE.findall(text)
-                if info.strip().lower() in _PROSE_FENCE_LANGS]
-    segments += _QUOTE_RE.findall(text)
-    draft = "\n\n".join(s.strip() for s in segments if s.strip())
-    return draft if draft else text
+    It used to require `_PUBLISH_MARKER_RE` to match before it looked at
+    anything, and to fall back to the WHOLE message when framing was present but
+    nothing was set off. Both are gone (f918134c, R8 finding-11): the marker is a
+    signal, not a precondition, and the whole-message fallback is what made a
+    gate fire on ordinary engineering answers.
+
+    Kept as a name because call-sites and other instances still use it. Its
+    docstring is rewritten rather than carried forward, because a shim describing
+    behaviour it no longer has is the stale-docstring defect (ASK-1197 round 5).
+
+    Excludes this gate's own refusal quoted back: that is a conversational reply
+    to the founder, which voice-enforcement.md scopes out of the lint. See
+    `_is_own_refusal_echo`.
+    """
+    draft = candidate_draft(text)
+    return "" if _is_own_refusal_echo(draft) else draft
 
 
 def extract_setoff_draft(text):
-    """The set-off draft ONLY -- prose fences and blockquotes, never the
-    whole-message fallback.
+    """COMPATIBILITY SHIM. The one answer is `candidate_draft`.
 
-    Separate from `extract_publishable` on purpose (authorship reporting,
-    2026-08-17). That function falls back to the ENTIRE message when framing is
-    present but nothing is set off, which is right for the lint: a draft written
-    inline still has to pass the voice bar. It is wrong for the authorship
-    scorer, because the fallback sweeps the surrounding engineering chat into the
-    thing being measured, and the scorer then reports a number about a mixture.
-    The lint's false positive costs one stdlib subprocess; this one costs a 319MB
-    torch load, so this path takes the strict reading and accepts missing the
-    inline case.
+    This fed the authorship scorer while `extract_publishable` fed the lint, and
+    on 2026-09-01 the two disagreed on four of five real deliveries -- two
+    writers to one question, which is the defect f918134c exists to close. The
+    reason they were ever separate (the scorer must not sweep surrounding
+    engineering chat into a 319MB torch measurement) is now handled inside
+    `candidate_draft` by its disqualifiers, so both consumers can read one
+    definition.
     """
-    segments = [body for info, body in _FENCE_RE.findall(text)
-                if info.strip().lower() in _PROSE_FENCE_LANGS]
-    segments += _QUOTE_RE.findall(text)
-    return "\n\n".join(s.strip() for s in segments if s.strip())
+    return candidate_draft(text)
 
 
 # --- the optional authorship reporter ----------------------------------------
@@ -535,18 +675,23 @@ def find_final_user_text(transcript_path):
             # ends the turn nor erases anything (round 2 -- otherwise his request
             # is blanked on every tool-using turn).
             continue
-        if _REFUSAL_MARK in raw:
-            # (a) MY OWN REFUSAL, FED BACK. See `_REFUSAL_MARK`. The assistant is
-            # now answering this gate, so the founder's request is no longer the
-            # subject and his turn is over. Reset rather than break, because a
-            # message he types AFTER this is a genuinely new turn that must
-            # re-arm the gate.
-            #
-            # Matched on ANY user-side record, meta or not, deliberately: it is
-            # keyed on text this gate WROTE, not on the envelope the harness
-            # happens to wrap it in. Three rounds were spent guessing envelopes.
-            text = ""
-            continue
+        # THE GATE'S OWN FEEDBACK IS SKIPPED, NOT AN ENDING (ASK-1197 round 8,
+        # reverting rounds 5-7). Three rounds tried to answer "is his request
+        # still live" from transcript ORDER, and it cannot be answered there: after
+        # a refusal the assistant may send a CORRECTED DRAFT (which must be
+        # verified) or an error report (which must not deadlock), and those two are
+        # in the identical position. Clearing the request made the corrected draft
+        # bypass verification entirely -- a worse defect than the deadlock it was
+        # fixing.
+        #
+        # The two cases are distinguishable by the OUTPUT, not the input, so the
+        # decision moved to `enforce_route_receipt`: no draft in the completion
+        # means nothing to verify (notice, exit 0); a draft with no valid receipt
+        # is refused. His request stays live until he types something new.
+        #
+        # `_REFUSAL_MARK` and `refuse()` are kept: the mark is what makes this
+        # gate's own feedback identifiable at all, and a single refusal writer is
+        # worth having regardless of who reads the mark.
         if any(record.get(flag) is True for flag in _META_FLAGS):
             # (b) EVERY OTHER INJECTED RECORD: a UserPromptSubmit
             # additionalContext, a system reminder, a peer session's message.
@@ -593,6 +738,34 @@ def find_final_user_text(transcript_path):
 #: deliberately NOT the `voice-stop-gate:` prefix: the NOT CHECKED advisory
 #: carries that too, and that advisory does not end anything.
 _REFUSAL_MARK = "[voice-stop-gate:held-this-turn]"
+
+
+def _is_own_refusal_echo(draft):
+    """Is this draft-shaped block just this gate's own refusal, quoted back?
+
+    `candidate_draft` is deliberately wide -- draft-shaped prose with no marker
+    counts, so dropping the wrapper is not a way out of verification -- and an
+    assistant explaining why the gate refused is prose of exactly that shape.
+
+    TWO CONSUMERS, ONE DEFINITION, and the second one is why this is a function
+    rather than an inline check. The route lane needs it or the reply to a refusal
+    is judged as a delivery and refused again (the deadlock, rebuilt on the output
+    side). The VOICE LINT needs it too, and that only became true here: once
+    `extract_publishable` delegates to `candidate_draft` (f918134c), an error
+    report is publishable content, so the lint refuses it for sentence
+    capitalisation and the turn deadlocks through a second door. Caught by
+    `test_a_reply_to_refusal_feedback_is_not_refused_again` while integrating R8,
+    not in production. voice-enforcement.md already says conversational replies to
+    the founder are out of scope; this is that rule, executable.
+
+    NARROW ON PURPOSE, and not gameable by pasting the mark. The test is not "the
+    message mentions the refusal" but "the largest surviving prose block IS the
+    refusal". A turn that quotes the refusal AND carries a real draft has a larger
+    block without the mark, so `candidate_draft` returns the draft and this is
+    False. Same principle as `_REFUSAL_MARK` itself: the gate recognises its own
+    words because it wrote them.
+    """
+    return bool(draft) and _REFUSAL_MARK in draft
 
 
 def refuse(message):
@@ -863,6 +1036,47 @@ def _receipt_block(text):
     return value
 
 
+def _output_carries_draft(assistant_text):
+    """Does this completion hand over something a receipt could cover?
+
+    THE WHOLE ROUND-8 REDESIGN TURNS ON THIS (Codex major, ASK-1197). Rounds 5, 6
+    and 7 each tried to decide from the transcript whether the founder's request
+    was still live, and could not: after a refusal, a corrected draft and an error
+    report sit in exactly the same position. They differ in what the assistant
+    SENT, so that is where the question is asked.
+
+    Three sources, widest last, because each earlier one is a stronger signal:
+
+      1. a receipt block -- the producer says outright that it drafted something;
+      2. a lane wrapper this file already extracts (the reddit wrapper, the
+         `=== DRAFT ===` marker), which is what a direct CLI handoff carries;
+      3. `candidate_draft` -- the R8 net (f918134c) for draft-shaped prose with no
+         marker at all, so dropping the wrapper is not a way out of verification.
+
+    Deliberately NOT `extract_publishable`: that returns the whole message as a
+    fallback, which would make every error report look like a draft and rebuild
+    the deadlock this function exists to remove.
+    """
+    text = assistant_text or ""
+    if _RECEIPT_CLAIM_RE.search(text) is not None:
+        return True
+    if _REDDIT_DRAFT_RE.search(text) is not None:
+        return True
+    if _DRAFT_MARKER_RE.search(text) is not None:
+        return True
+    draft = candidate_draft(text)
+    if not draft:
+        return False
+    # A REPORT ABOUT THE REFUSAL IS NOT A DRAFT. `candidate_draft` is deliberately
+    # wide -- draft-shaped prose with no marker counts, so dropping the wrapper is
+    # not a way out of verification -- and an assistant explaining why the gate
+    # refused is prose of exactly that shape. Without this, the reply to a refusal
+    # is judged as a delivery and refused again: the deadlock, rebuilt on the
+    # output side.
+    #
+    return not _is_own_refusal_echo(draft)
+
+
 def enforce_route_receipt(request, assistant_text):
     """Consume the producer receipt for a routed completion, or refuse it.
 
@@ -897,6 +1111,23 @@ def enforce_route_receipt(request, assistant_text):
     result = classifier.classify(request)
     if result.status == classifier.NOT_ROUTED:
         return []
+    # NOTHING TO VERIFY IS NOT A VIOLATION. The request is routed and still live,
+    # but this completion hands over no draft -- it is an error report, a
+    # question, or an explanation of the previous refusal. Refusing here is what
+    # made every refusal re-arm itself: the reply to a refusal was judged against
+    # the request and refused again, forever.
+    #
+    # NOT silent either. The request IS routed, so the next completion that
+    # carries a draft owes a receipt, and a reader should know the gate looked and
+    # found nothing rather than that it approved something. Same posture as the
+    # uninstalled-lane branch above, and it goes out through the same single
+    # systemMessage envelope.
+    if not _output_carries_draft(assistant_text):
+        return ["voice-stop-gate: this turn's request is routed (%s/%s) but the "
+                "completion carries no draft, so there was nothing to verify. NOT "
+                "CHECKED, not approved: the next completion that does carry a "
+                "draft must carry a receipt."
+                % (result.surface, result.channel)]
     if result.status != classifier.ROUTE:
         raise RouteBoundaryError(
             f"route request is {result.status}: {result.reason}")

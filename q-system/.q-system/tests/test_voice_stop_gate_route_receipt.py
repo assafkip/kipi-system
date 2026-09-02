@@ -1089,9 +1089,15 @@ class TestWhichInjectedRecordsEndTheTurn:
         return _run(root, _records_transcript(tmp_path, records),
                     tmp_path / "c.json", classify="route")
 
+    #: What an error report actually looks like: it QUOTES the refusal, because
+    #: that is the information the founder needs. Written this way rather than as
+    #: clean prose because clean prose is a draft by `candidate_draft`'s
+    #: definition and a fixture that dodges that is testing a turn nobody sends.
     ASSISTANT_REPLY = (
-        "Here's what happened: the route verifier refused the draft because the "
-        "receipt did not match. I have not re-drafted anything yet.\n")
+        "The gate held the turn. It reported:\n\n"
+        "voice-stop-gate: routed completion has no route receipt\n"
+        + gate._REFUSAL_MARK + "\n\n"
+        "I have not re-drafted anything yet.\n")
 
 
     def test_a_reply_to_refusal_feedback_is_not_refused_again(self, tmp_path):
@@ -1107,6 +1113,56 @@ class TestWhichInjectedRecordsEndTheTurn:
             "the gate judged an error report against a request from before its own "
             "refusal, and refused it again. Every refusal re-arms itself.\n"
             f"rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
+        # NOT SILENT. The request is still routed, so a reader must be able to see
+        # that the gate looked and found nothing to verify -- not that it approved
+        # something. Same envelope as every other notice (round 4).
+        message = _system_message(proc)
+        assert "NOT CHECKED" in message and "no draft" in message, message
+
+    ROUTED_REQUEST = "write me a linkedin post about the propagation gate"
+
+    CORRECTED_DRAFT = ("the corrected body of the draft, long enough to be "
+                       "measured and to survive the floor.")
+
+    def test_a_corrected_draft_after_a_refusal_is_still_verified(self, tmp_path):
+        """Case 2, THE BYPASS, and the reason rounds 5-7 were wrong.
+
+        After a refusal the assistant sends a CORRECTED draft. It sits in exactly
+        the same transcript position as an error report, so no ordering rule can
+        tell them apart -- which is why rounds 5, 6 and 7 all cleared the request
+        here and let this draft ship with no receipt check at all. The output
+        tells them apart: this one carries a draft, so it still owes a receipt.
+        """
+        assistant = ("Here's the corrected post for LinkedIn.\n\n" + DRAFT_MARKER
+                     + "\n" + self.CORRECTED_DRAFT + "\n")
+        proc = self._routed_turn(tmp_path, [
+            _user(self.ROUTED_REQUEST),
+            _stop_hook_feedback(FED_BACK_REFUSAL_TEXT),
+            _assistant(assistant),
+        ])
+        assert proc.returncode == 2, (
+            "a corrected draft sent after a refusal shipped with no receipt "
+            "check. Clearing the request on the gate's own feedback is a bypass, "
+            f"not a fix.\nrc={proc.returncode} stdout={proc.stdout}")
+        assert "receipt" in proc.stderr, proc.stderr
+
+    def test_a_corrected_draft_with_a_valid_receipt_completes(self, tmp_path):
+        """Case 3. The other side of case 2: verification that PASSES must let the
+        turn finish, or the loop closes again with the gate refusing correct work.
+        """
+        receipt = {name: "x" for name in STUB_MATCH_FIELDS}
+        receipt.update(surface="linkedin", channel="assaf",
+                       request_hash=_stub_hash("rh:", self.ROUTED_REQUEST),
+                       output_hash=_stub_hash("oh:", self.CORRECTED_DRAFT))
+        proc = self._routed_turn(tmp_path, [
+            _user(self.ROUTED_REQUEST),
+            _stop_hook_feedback(FED_BACK_REFUSAL_TEXT),
+            _assistant(_producer_message(receipt, self.CORRECTED_DRAFT)),
+        ])
+        assert proc.returncode == 0, (
+            "a corrected draft carrying a VALID receipt was refused, so the "
+            f"assistant can never satisfy the gate.\nrc={proc.returncode} "
+            f"stdout={proc.stdout} stderr={proc.stderr}")
 
     def test_an_injected_context_record_does_not_disarm_the_gate(self, tmp_path):
         """Case 2, the round 6 bypass, and the reason (a) and (b) had to split.
