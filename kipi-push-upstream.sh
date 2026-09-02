@@ -78,9 +78,20 @@ def receipts():
     issue 11). Only rows with status done count, keyed by the guard's own
     lessons/<name> form and holding the set of blessed blobs. A receipt that
     cannot be read means no receipt: fail-closed."""
+    import os
+    override = os.environ.get("KIPI_PROMOTIONS_FILE")
+    if override and not os.environ.get("PYTEST_CURRENT_TEST"):
+        # the seam exists so a test can hand the guard a receipts file without a
+        # bare skeleton; outside pytest it is a way to bless your own lesson
+        sys.stdout.write("KIPI_PROMOTIONS_FILE is honoured only under pytest; reading receipts from FETCH_HEAD\n")
+        override = None
     try:
-        raw = subprocess.run(["git", "show", "FETCH_HEAD:q-system/.q-system/promotions.jsonl"],
-                             capture_output=True, text=True, check=True).stdout
+        if override:
+            with open(override, encoding="utf-8") as fh:
+                raw = fh.read()
+        else:
+            raw = subprocess.run(["git", "show", "FETCH_HEAD:q-system/.q-system/promotions.receipts"],
+                                 capture_output=True, text=True, check=True).stdout
     except Exception:
         return {}
     out = {}
@@ -111,9 +122,9 @@ def blob_at(ref, path):
 # The receipts file itself ships inside the pushed subtree, so an instance could
 # append its own row and push it (Claude adversarial review, issue 9). Receipts
 # are skeleton-authored: any instance-side difference in that file refuses.
-RECEIPTS_PATH = prefix.rstrip("/") + "/.q-system/promotions.jsonl"
+RECEIPTS_PATH = prefix.rstrip("/") + "/.q-system/promotions.receipts"
 if blob_at("HEAD", RECEIPTS_PATH) != blob_at("FETCH_HEAD", RECEIPTS_PATH):
-    sys.stderr.write("promotions.jsonl differs from skeleton: receipts are skeleton-authored, run kipi update\n")
+    sys.stderr.write("promotions.receipts differs from skeleton: receipts are skeleton-authored, run kipi update\n")
     sys.exit(1)
 inst = lessons("HEAD") or {}
 if inst:

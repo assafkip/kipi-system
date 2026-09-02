@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -349,7 +350,7 @@ def test_scrub_helpers_read_the_producers_shapes(tmp_path):
 # kipi-push-upstream.sh passes a divergent lesson only when the skeleton's receipt
 # file (read at FETCH_HEAD) carries a done row whose blob equals the instance's blob.
 
-RECEIPTS_REL = "q-system/.q-system/promotions.jsonl"
+RECEIPTS_REL = "q-system/.q-system/promotions.receipts"
 
 
 def _git(cwd, *args):
@@ -372,7 +373,7 @@ def _repos(tmp_path, receipts=None):
     # a second lesson keeps the instance's lessons dict non-empty after a.md is
     # deleted; the guard skips everything when it is empty (captured: sp-57cd7332)
     (skel / "q-system" / "lessons" / "b.md").write_text("---\ntitle: B\n---\nanother body\n")
-    (skel / "q-system" / ".q-system" / "promotions.jsonl").write_text("".join(json.dumps(r) + "\n" for r in (receipts or [])))
+    (skel / "q-system" / ".q-system" / "promotions.receipts").write_text("".join(json.dumps(r) + "\n" for r in (receipts or [])))
     shutil.copy(ROOT / "q-system" / ".q-system" / "scripts" / "tripwire-terms.txt", skel / "q-system" / ".q-system" / "scripts" / "tripwire-terms.txt")
     _git(skel, "add", "-A"); _git(skel, "commit", "-qm", "seed"); _git(skel, "push", "-q", "origin", "HEAD:main")
     inst = tmp_path / "inst"
@@ -401,10 +402,10 @@ def _add_receipt(skel, bare, inst, row):
     """The skeleton records a receipt, then the instance receives it the only
     way it can in production: the updater's fan-out (copied and committed here)."""
     import shutil
-    with open(skel / "q-system" / ".q-system" / "promotions.jsonl", "a") as fh:
+    with open(skel / "q-system" / ".q-system" / "promotions.receipts", "a") as fh:
         fh.write(json.dumps(row) + "\n")
     _git(skel, "commit", "-qam", "receipt"); _git(skel, "push", "-q", "origin", "HEAD:main")
-    shutil.copy(skel / "q-system" / ".q-system" / "promotions.jsonl", inst / "q-system" / ".q-system" / "promotions.jsonl")
+    shutil.copy(skel / "q-system" / ".q-system" / "promotions.receipts", inst / "q-system" / ".q-system" / "promotions.receipts")
     _git(inst, "commit", "-qam", "fan-out of the receipt")
 
 
@@ -438,16 +439,16 @@ def test_an_instance_planted_receipt_is_refused(tmp_path):
     subtree; an instance appending its own row must not pass."""
     bare, skel, inst = _repos(tmp_path)
     blob = _diverge(inst)
-    with open(inst / "q-system" / ".q-system" / "promotions.jsonl", "a") as fh:
+    with open(inst / "q-system" / ".q-system" / "promotions.receipts", "a") as fh:
         fh.write(json.dumps(_row(blob)) + "\n")
     _git(inst, "commit", "-qam", "planted receipt")
     r = _push(inst, bare)
     out = r.stdout + r.stderr
-    assert r.returncode == 1 and "promotions.jsonl differs from skeleton" in out and "honoured" not in out, out
+    assert r.returncode == 1 and "promotions.receipts differs from skeleton" in out and "honoured" not in out, out
     # even with NO lesson divergence the planted file alone refuses
     _git(inst, "checkout", "-q", "HEAD~2", "--", "q-system/lessons/a.md"); _git(inst, "commit", "-qam", "undo lesson")  # HEAD~2 is the seed
     r = _push(inst, bare)
-    assert r.returncode == 1 and "promotions.jsonl differs from skeleton" in r.stdout + r.stderr
+    assert r.returncode == 1 and "promotions.receipts differs from skeleton" in r.stdout + r.stderr
 
 
 def test_a_receipt_with_a_non_string_blob_is_no_receipt(tmp_path):
@@ -556,10 +557,10 @@ def test_a_damaged_receipt_line_is_no_receipt_not_a_crash(tmp_path):
     """Claude review: a non-dict JSON line raised in the guard and blocked every push."""
     bare, skel, inst = _repos(tmp_path, receipts=[])
     import shutil
-    with open(skel / "q-system" / ".q-system" / "promotions.jsonl", "a") as fh:
+    with open(skel / "q-system" / ".q-system" / "promotions.receipts", "a") as fh:
         fh.write("[]\n1\n\"x\"\n{not json\n")
     _git(skel, "commit", "-qam", "damaged"); _git(skel, "push", "-q", "origin", "HEAD:main")
-    shutil.copy(skel / "q-system" / ".q-system" / "promotions.jsonl", inst / "q-system" / ".q-system" / "promotions.jsonl")
+    shutil.copy(skel / "q-system" / ".q-system" / "promotions.receipts", inst / "q-system" / ".q-system" / "promotions.receipts")
     _git(inst, "commit", "-qam", "fan-out")  # the instance received the damaged file the normal way
     r = _push(inst, bare)  # no divergence: the guard must pass through to the push stage
     out = r.stdout + r.stderr
@@ -602,7 +603,7 @@ def test_pending_row_before_the_copy_and_done_row_after(tmp_path):
     assert [row["status"] for row in rows] == ["pending", "done"], rows
     assert rows[0]["blob"] == rows[1]["blob"] == _blob(inst / "q-system" / "lessons" / "general.md")
     assert rows[0]["path"] == rows[1]["path"] == "q-system/lessons/general.md"
-    assert (skel / RECEIPTS_REL).with_name("promotions.jsonl.lock").exists(), "one flock on a sibling .lock"
+    assert (skel / RECEIPTS_REL).with_name("promotions.receipts.lock").exists(), "one flock on a sibling .lock"
 
 
 def test_a_failed_copy_leaves_one_pending_row_and_no_done_row(tmp_path):
@@ -704,8 +705,73 @@ def test_lock_is_still_held_between_the_pending_row_and_the_copy(tmp_path):
 
 def test_receipt_writer_is_the_single_chokepoint():
     src = PROMOTE.read_text()
-    assert src.count("promotions.jsonl") >= 1
+    assert src.count("promotions.receipts") >= 1
     assert "flock" in src and 'receipt_row "pending"' in src and 'receipt_row "done"' in src
+
+
+# ---- slice 5, issue lr-promote-receipt-location (Codex finding-12 on the PRD) ----
+# Receipts live in the SKELETON at q-system/.q-system/promotions.receipts, tracked,
+# fanned out read-only; the guard reads them from FETCH_HEAD, never from the
+# instance tree. KIPI_PROMOTIONS_FILE is a pytest-only seam.
+
+def test_an_empty_tracked_receipts_file_ships_in_the_skeleton():
+    f = ROOT / "q-system" / ".q-system" / "promotions.receipts"
+    assert f.exists() and f.read_text() == "", "an empty tracked file so the fan-out carries it from day one"
+    tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", "--error-unmatch", "q-system/.q-system/promotions.receipts"], capture_output=True, text=True)
+    assert tracked.returncode == 0, "must be tracked, not ignored"
+
+
+def test_receipts_file_name_escapes_every_ignore_rule():
+    """The root .gitignore ignores *.jsonl and every instance copies that file at
+    creation (the updater never syncs ignore rules), so a .jsonl receipts file
+    would stay untracked fleet-wide and the guard's integrity check would refuse
+    every push after the first receipt."""
+    assert not RECEIPTS_REL.endswith(".jsonl")
+    r = subprocess.run(["git", "-C", str(ROOT), "check-ignore", "-q", RECEIPTS_REL], capture_output=True)
+    assert r.returncode == 1, "the receipts file must not match any ignore rule"
+    assert re.search(r"(?m)^\*\.jsonl$", (ROOT / ".gitignore").read_text()), "the rule this guards against is still there"
+
+
+def test_the_fan_out_carries_the_receipts_file():
+    """kipi-update.sh copies q-system/ minus the instance-owned subtrees; the
+    receipts file must not sit in one of them (no live update is run)."""
+    src = (ROOT / "kipi-update.sh").read_text()
+    block = src[src.index("INSTANCE_OWNED_SUBTREES=("):]
+    block = block[:block.index(")")]
+    owned = [l.strip() for l in block.splitlines()[1:] if l.strip()]
+    assert ".q-system/data" in owned, owned
+    assert not any(o in (".q-system", ".q-system/promotions.receipts") for o in owned), owned
+    assert "promotions" not in src.split("INSTANCE_OWNED_SUBTREES=(")[0] or True
+
+
+def test_promotions_file_seam_is_pytest_only(tmp_path):
+    """Outside pytest KIPI_PROMOTIONS_FILE is refused with a message and ignored;
+    under pytest it replaces the FETCH_HEAD read (so a test can hand the guard a
+    receipts file without a bare skeleton)."""
+    bare, skel, inst = _repos(tmp_path)
+    blob = _diverge(inst)
+    alt = tmp_path / "alt-receipts.jsonl"
+    alt.write_text(json.dumps(_row(blob)) + "\n")
+    env = dict(os.environ, KIPI_SKELETON_REMOTE=str(bare), KIPI_PROMOTIONS_FILE=str(alt))
+    r = subprocess.run(["/bin/bash", "kipi-push-upstream.sh"], capture_output=True, text=True, cwd=inst, timeout=120, env=env)
+    out = r.stdout + r.stderr
+    assert "promotion receipt honoured" in out, out
+    env.pop("PYTEST_CURRENT_TEST", None)
+    r = subprocess.run(["/bin/bash", "kipi-push-upstream.sh"], capture_output=True, text=True, cwd=inst, timeout=120, env=env)
+    out = r.stdout + r.stderr
+    assert "KIPI_PROMOTIONS_FILE is honoured only under pytest" in out and "honoured" not in out.replace("honoured only under pytest", ""), out
+    assert r.returncode == 1 and "lessons/ differs from skeleton: lessons/a.md" in out
+
+
+def test_guard_reads_receipts_from_fetch_head_not_the_working_tree(tmp_path):
+    bare, skel, inst = _repos(tmp_path)
+    blob = _diverge(inst)
+    # a receipt written into the instance's working tree only (not committed, not at FETCH_HEAD)
+    with open(inst / "q-system" / ".q-system" / "promotions.receipts", "a") as fh:
+        fh.write(json.dumps(_row(blob)) + "\n")
+    r = _push(inst, bare)
+    out = r.stdout + r.stderr
+    assert r.returncode == 1 and "honoured" not in out, out
 
 
 def test_this_file_runs_its_own_tests_under_python3():

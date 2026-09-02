@@ -186,11 +186,11 @@ fi
 # concurrent promotions interleave whole rows. from_instance is the registry
 # NAME, never a path: a path carries /Users/ and the owner's name, and this
 # file fans out to every instance where the push tripwire greps it.
-RECEIPTS="$SKELETON/q-system/.q-system/promotions.jsonl"
+RECEIPTS="$SKELETON/q-system/.q-system/promotions.receipts"
 BLOB="$(git -C "$INSTANCE_REAL" hash-object --path "$REL" "$INSTANCE_REAL/$REL" 2>/dev/null || true)"
 [ -n "$BLOB" ] || refuse "could not hash the source $REL"
 mkdir -p "$(dirname "$RECEIPTS")"
-receipt_row() {  # receipt_row <pending|done>: the ONLY writer of promotions.jsonl
+receipt_row() {  # receipt_row <pending|done>: the ONLY writer of promotions.receipts
   python3 - "$RECEIPTS" "$REL" "$BLOB" "$INSTANCE_NAME" "$DECIDED_BY" "$SCRUB" "$PROMOTE_HOME/q-system/.q-system/scripts/tripwire-terms.txt" "$BASE" "$1" <<'PYRECEIPT'
 import datetime, json, os, sys
 path, rel, blob, inst, who, scrub, tripwire, base, status = sys.argv[1:10]
