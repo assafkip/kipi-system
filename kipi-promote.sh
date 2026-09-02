@@ -124,10 +124,14 @@ instance_name() { python3 -c 'import importlib.util,sys; s=importlib.util.spec_f
 if [ "$MODE" = "candidates" ]; then
   INSTANCE_REAL="$(cd "$INSTANCE" && pwd -P)"
   NAME="$(instance_name "$INSTANCE_REAL")"
-  QDIR="$(python3 -c 'import json,sys,os; d=json.load(open(sys.argv[1])); m=[e for e in d.get("instances",[]) if os.path.realpath(e.get("path",""))==sys.argv[2]]; print((m[0].get("instance_q_dir") or "<instance q dir>") if m else "<instance q dir>")' "$REGISTRY" "$INSTANCE_REAL" 2>/dev/null || echo "<instance q dir>")"
-  python3 - "$INSTANCE_REAL" "$SKELETON" "$RECEIPTS" "$QDIR" <<'PYCAND'
+  # the instance must be the registry's (Codex, issue 12): receipts are matched
+  # by from_instance, and the void action names the instance's own lessons dir
+  [ -n "$NAME" ] || refuse "no registry entry for $INSTANCE_REAL; candidates are listed for registered instances only"
+  QDIR="$(python3 -c 'import json,sys,os; d=json.load(open(sys.argv[1])); m=[e for e in d.get("instances",[]) if os.path.realpath(e.get("path",""))==sys.argv[2]]; print((m[0].get("instance_q_dir") or "") if m else "")' "$REGISTRY" "$INSTANCE_REAL" 2>/dev/null || true)"
+  [ -n "$QDIR" ] || refuse "the registry entry for $NAME has no instance_q_dir; cannot name where a voided lesson goes"
+  python3 - "$INSTANCE_REAL" "$SKELETON" "$RECEIPTS" "$QDIR" "$NAME" <<'PYCAND'
 import glob, json, os, subprocess, sys
-inst, skel, receipts, qdir = sys.argv[1:5]
+inst, skel, receipts, qdir, name = sys.argv[1:6]
 def blob(root, rel):
     p = os.path.join(root, rel)
     if not os.path.isfile(p):
@@ -150,14 +154,17 @@ for p in sorted(glob.glob(os.path.join(inst, "q-system", "lessons", "*.md"))):
     b = blob(inst, rel)
     if b and b == blob(skel, rel):
         continue  # identical: not a candidate
-    mine = [r for r in rows if r.get("path") == rel]
+    # only THIS instance's receipts count (from_instance), and only for the
+    # blob the file has now; the status is one of exactly none, pending, done,
+    # voided (the contract), with an earlier receipt mentioned in the note
+    mine = [r for r in rows if r.get("path") == rel and r.get("from_instance") == name]
     exact = [r for r in mine if r.get("blob") == b]
-    if exact:
-        status = str(exact[-1].get("status"))
-    elif mine:
-        status = "stale(" + str(mine[-1].get("status")) + ")"
-    else:
+    status = str(exact[-1].get("status")) if exact else "none"
+    if status not in ("pending", "done", "voided"):
         status = "none"
+    note = ""
+    if not exact and mine:
+        note = " (an earlier version had a " + str(mine[-1].get("status")) + " receipt; this content has none)"
     if status == "done":
         nxt = "commit the skeleton, then the updater fans the receipt out"
     elif status == "pending":
@@ -165,7 +172,7 @@ for p in sorted(glob.glob(os.path.join(inst, "q-system", "lessons", "*.md"))):
     elif status == "voided":
         nxt = "move it to " + qdir + "/lessons/ (voided; the guard still refuses it under q-system/)"
     else:
-        nxt = "kipi promote " + rel + "   or   kipi promote --void " + rel + " --reason \"...\""
+        nxt = "kipi promote " + rel + "   or   kipi promote --void " + rel + " --reason \"...\"" + note
     out.append((status, rel, nxt))
 for status, rel, nxt in out:
     print(f"{status:14} {rel}   next: {nxt}")

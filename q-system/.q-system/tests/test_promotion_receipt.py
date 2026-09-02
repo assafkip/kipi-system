@@ -820,7 +820,7 @@ def test_candidates_status_follows_the_receipts(tmp_path):
     (inst / "q-system" / "lessons" / "general.md").write_text("---\ntitle: A general lesson\n---\nedited after promotion\n")
     r = _cli(tmp_path, "--candidates")
     general = next(l for l in r.stdout.splitlines() if "general.md" in l)
-    assert general.startswith("stale(done)"), general
+    assert general.startswith("none") and "earlier version had a done receipt" in general, general  # the contract: none/pending/done/voided
     v = _cli(tmp_path, "--void", "q-system/lessons/extra.md", "--reason", "consulting-specific, stays local")
     assert v.returncode == 0, v.stderr
     r = _cli(tmp_path, "--candidates")
@@ -849,6 +849,42 @@ def test_void_requires_a_reason_and_an_existing_file(tmp_path):
     assert _cli(tmp_path, "--void", "q-system/lessons/general.md").returncode == 2
     r = _cli(tmp_path, "--void", "q-system/lessons/missing.md", "--reason", "x")
     assert r.returncode == 2 and "no such file" in r.stderr
+
+
+def test_candidates_count_only_this_instances_receipts(tmp_path):
+    """Codex (issue 12, both passes): a receipt written by another instance for
+    the same path and blob is not this instance's decision."""
+    inst, skel = _trees(tmp_path)
+    (inst / "q-system" / "lessons" / "extra.md").write_text("---\ntitle: Extra\n---\nonly here\n")
+    blob = _blob(inst / "q-system" / "lessons" / "extra.md")
+    (skel / "q-system" / ".q-system").mkdir(parents=True, exist_ok=True)
+    (skel / RECEIPTS_REL).write_text(json.dumps({**_row(blob, path="q-system/lessons/extra.md"), "from_instance": "Example_Corp9"}) + "\n")
+    r = _cli(tmp_path, "--candidates")
+    extra = next(l for l in r.stdout.splitlines() if "extra.md" in l)
+    assert extra.startswith("none"), extra
+    (skel / RECEIPTS_REL).write_text(json.dumps({**_row(blob, path="q-system/lessons/extra.md"), "from_instance": "consulting"}) + "\n")
+    r = _cli(tmp_path, "--candidates")
+    extra = next(l for l in r.stdout.splitlines() if "extra.md" in l)
+    assert extra.startswith("done"), extra
+
+
+def test_candidates_status_is_always_one_of_the_four(tmp_path):
+    """A damaged row with a status outside the contract reads as none."""
+    inst, skel = _trees(tmp_path)
+    (inst / "q-system" / "lessons" / "extra.md").write_text("---\ntitle: Extra\n---\nonly here\n")
+    blob = _blob(inst / "q-system" / "lessons" / "extra.md")
+    (skel / "q-system" / ".q-system").mkdir(parents=True, exist_ok=True)
+    (skel / RECEIPTS_REL).write_text(json.dumps({**_row(blob, path="q-system/lessons/extra.md"), "from_instance": "consulting", "status": "bogus"}) + "\n")
+    r = _cli(tmp_path, "--candidates")
+    extra = next(l for l in r.stdout.splitlines() if "extra.md" in l)
+    assert extra.split()[0] in ("none", "pending", "done", "voided") and extra.startswith("none"), extra
+
+
+def test_candidates_refuses_an_unregistered_directory(tmp_path):
+    inst, skel = _trees(tmp_path)
+    (tmp_path / "instance-registry.json").write_text(json.dumps({"skeleton": {"path": str(skel)}, "instances": []}))
+    r = _cli(tmp_path, "--candidates")
+    assert r.returncode == 2 and "registered instances only" in r.stderr, r.stderr
 
 
 def test_candidates_resolves_an_instance_by_registry_name(tmp_path):
