@@ -31,7 +31,22 @@ import subprocess
 import sys
 import os
 
-MODEL = os.environ.get("VOICE_SYNTH_MODEL", "")  # empty = CLI default; set to pin
+# Scar 2026-08-01: headless `claude -p` jobs that named no model inherited the
+# interactive default, rode Fable, and burned 3% of the weekly budget in an hour.
+# This default used to be "", and the paired `if MODEL:` branch dropped --model
+# entirely whenever VOICE_SYNTH_MODEL was unset -- which is every hand run of
+# this script. A launchd plist or a shell wrapper cannot cover that case: the
+# hand run never loads the wrapper, so the pin belongs in this argv.
+# The executable that holds it: q-system/.q-system/tests/test_headless_model_pin.py
+# (pytest, asserts the built argv). Resolved per call rather than at import so
+# that test does not depend on module load order.
+DEFAULT_MODEL = "claude-opus-5"
+
+
+def synth_model() -> str:
+    """The model this script sends to. VOICE_SYNTH_MODEL overrides; empty falls
+    back to the pin rather than to the CLI default."""
+    return os.environ.get("VOICE_SYNTH_MODEL") or DEFAULT_MODEL
 
 
 def run_claude(full_prompt):
@@ -39,8 +54,8 @@ def run_claude(full_prompt):
     cmd = ["claude", "-p",
            "Follow the instructions in the piped input exactly. "
            "Output ONLY a raw JSON array. No markdown fences, no prose."]
-    if MODEL:
-        cmd += ["--model", MODEL]
+    # Unconditional: there is no argv shape this script emits without a --model.
+    cmd += ["--model", synth_model()]
     r = subprocess.run(cmd, input=full_prompt, capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit(f"claude -p failed (exit {r.returncode}):\n{r.stderr[:2000]}")

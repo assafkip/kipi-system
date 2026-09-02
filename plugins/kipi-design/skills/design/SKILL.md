@@ -25,17 +25,25 @@ Unified design skill: brand, tokens, UI, logo, CIP, slides, banners, social phot
 
 ## Sub-skill Routing
 
-| Task | Sub-skill | Details |
-|------|-----------|---------|
-| Brand identity, voice, assets | `brand` | External skill |
-| Tokens, specs, CSS vars | `design-system` | External skill |
-| shadcn/ui, Tailwind, code | `ui-styling` | External skill |
-| Logo creation, AI generation | Logo (built-in) | `references/logo-design.md` |
-| CIP mockups, deliverables | CIP (built-in) | `references/cip-design.md` |
-| Presentations, pitch decks | Slides (built-in) | `references/slides.md` |
-| Banners, covers, headers | Banner (built-in) | `references/banner-sizes-and-styles.md` |
+This is the only routing catalog. A second copy lived in a separate routing
+reference, drifted, and was deleted rather than re-synced (prompt audit
+2026-09-02, S-2).
+
+| Task | Route to | Details |
+|------|----------|---------|
+| Brand identity, voice, assets. "Is this on-brand?" "What color should this be?" | `brand` skill | `../brand/SKILL.md` |
+| Design tokens, CSS vars, shadcn/ui, Tailwind, dark mode, component implementation | `ui-ux-pro-max` skill | `../ui-ux-pro-max/SKILL.md` |
+| Logo creation, AI generation. "What logo style fits my industry?" | Logo (built-in) | `references/logo-design.md` |
+| CIP mockups, deliverables. "Generate business card mockups" | CIP (built-in) | `references/cip-design.md` |
+| Presentations, pitch decks. "Create a pitch deck" | Slides (built-in) | `references/slides.md` |
+| Banners, covers, headers. "Design a Facebook cover" | Banner (built-in) | `references/banner-sizes-and-styles.md` |
 | Social media images/photos | Social Photos (built-in) | `references/social-photos-design.md` |
-| SVG icons, icon sets | Icon (built-in) | `references/icon-design.md` |
+| SVG icons, icon sets. "Design an icon set" | Icon (built-in) | `references/icon-design.md` |
+
+The old table also routed to `design-system` and `ui-styling`. Neither is
+installed anywhere in this fleet; `ui-ux-pro-max` absorbed the `ui-styling`
+material (see its "Also available (from ui-styling merge)" reference block) and
+carries the token / shadcn / Tailwind guidance.
 
 ## Logo Design (Built-in)
 
@@ -66,7 +74,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/logo/generate.py --prompt "coffee shop vinta
 
 **IMPORTANT:** When scripts fail, try to fix them directly.
 
-After generation, **ALWAYS** ask user about HTML preview via `AskUserQuestion`. If yes, invoke `/ui-ux-pro-max` for gallery.
+After generation, **ALWAYS** ask user about HTML preview via `AskUserQuestion`. If yes, use the `ui-ux-pro-max` skill for the gallery.
 
 ## CIP Design (Built-in)
 
@@ -131,15 +139,15 @@ Load `references/slides-create.md` for the creation workflow.
 
 ## Banner Design (Built-in)
 
-22 art direction styles across social, ads, web, print. Uses `frontend-design`, `ai-artist`, `ai-multimodal`, `chrome-devtools` skills.
+22 art direction styles across social, ads, web, print. Uses the `frontend-design` and `chrome-devtools` skills.
 
 Load `references/banner-sizes-and-styles.md` for complete sizes and styles reference.
 
 ### Banner: Workflow
 
 1. **Gather requirements** via `AskUserQuestion` — purpose, platform, content, brand, style, quantity
-2. **Research** — Activate `ui-ux-pro-max`, browse Pinterest for references
-3. **Design** — Create HTML/CSS banner with `frontend-design`, generate visuals with `ai-artist`/`ai-multimodal`
+2. **Research** — Activate the `ui-ux-pro-max` skill, browse Pinterest for references
+3. **Design** — Create the HTML/CSS banner with `frontend-design`; generate imagery with `scripts/logo/generate.py` if the banner needs a generated visual
 4. **Export** — Screenshot to PNG at exact dimensions via `chrome-devtools`
 5. **Present** — Show all options side-by-side, iterate on feedback
 
@@ -216,20 +224,18 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/icon/generate.py --prompt "user profile" --s
 
 ## Social Photos (Built-in)
 
-Multi-platform social image design: HTML/CSS → screenshot export. Uses `ui-ux-pro-max`, `brand`, `design-system`, `chrome-devtools` skills.
+Multi-platform social image design: HTML/CSS → screenshot export. Uses the `ui-ux-pro-max`, `brand` and `chrome-devtools` skills.
 
 Load `references/social-photos-design.md` for sizes, templates, best practices.
 
 ### Social Photos: Workflow
 
-1. **Orchestrate** — `project-management` skill for TODO tasks; parallel subagents for independent work (if Agent tool available; otherwise generate sizes sequentially)
-2. **Analyze** — Parse prompt: subject, platforms, style, brand context, content elements
-3. **Ideate** — 3-5 concepts, present via `AskUserQuestion`
-4. **Design** — `/ckm:brand` → `/ckm:design-system` → randomly invoke `/ck:ui-ux-pro-max` OR `/ck:frontend-design`; HTML per idea × size
-5. **Export** — `chrome-devtools` or Playwright screenshot at exact px (2x deviceScaleFactor)
-6. **Verify** — Use Chrome MCP or `chrome-devtools` skill to visually inspect exported designs; fix layout/styling issues and re-export
-7. **Report** — Summary to `plans/reports/` with design decisions
-8. **Organize** — Invoke `assets-organizing` skill to sort output files and reports
+1. **Analyze** — Parse prompt: subject, platforms, style, brand context, content elements. Use the TodoWrite tool to track the sizes; parallel subagents for independent work (if the Agent tool is available, otherwise generate sizes sequentially)
+2. **Ideate** — 2-4 concepts, present them with the pick marked
+3. **Design** — `brand` skill for colors/type/voice, then `ui-ux-pro-max` for layout, hierarchy and visual balance; one HTML file per concept × size
+4. **Export** — `chrome-devtools` or Playwright screenshot at exact px (2x deviceScaleFactor)
+5. **Verify** — Use Chrome MCP or the `chrome-devtools` skill to visually inspect exported designs; fix layout/styling issues and re-export
+6. **Report** — Write the design decisions to `q-system/output/` in the calling instance
 
 ### Social Photos: Key Sizes
 
@@ -250,15 +256,13 @@ Load `references/social-photos-design.md` for sizes, templates, best practices.
 
 ### New Design System
 
-1. **Brand** (brand skill) → Define colors, typography, voice
-2. **Tokens** (design-system skill) → Create semantic token layers
-3. **Implement** (ui-styling skill) → Configure Tailwind, shadcn/ui
+1. **Brand** (`brand` skill) → Define colors, typography, voice
+2. **Tokens + implementation** (`ui-ux-pro-max` skill) → Semantic token layers, then Tailwind / shadcn/ui config
 
 ## References
 
 | Topic | File |
 |-------|------|
-| Design Routing | `references/design-routing.md` |
 | Logo Design Guide | `references/logo-design.md` |
 | Logo Styles | `references/logo-style-guide.md` |
 | Logo Colors | `references/logo-color-psychology.md` |
@@ -298,5 +302,5 @@ pip install google-genai pillow
 
 ## Integration
 
-**External sub-skills:** brand, design-system, ui-styling
-**Related Skills:** frontend-design, ui-ux-pro-max, ai-multimodal, chrome-devtools
+**Sibling skills in this plugin:** `brand`, `ui-ux-pro-max`
+**Related skills:** `frontend-design`, `chrome-devtools`

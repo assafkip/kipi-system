@@ -1,6 +1,6 @@
 # Social Photos Design Guide
 
-Design social media images via HTML/CSS rendering + screenshot export. Orchestrates `ui-ux-pro-max`, `brand`, `design-system`, and `chrome-devtools` skills.
+Design social media images via HTML/CSS rendering + screenshot export. Orchestrates the `ui-ux-pro-max`, `brand` and `chrome-devtools` skills.
 
 ## Platform Sizes
 
@@ -22,9 +22,9 @@ Design social media images via HTML/CSS rendering + screenshot export. Orchestra
 
 ## Workflow
 
-### Step 1: Activate Project Management
+### Step 1: Plan the run
 
-Invoke `project-management` skill to create persistent TODO tasks via Claude's native task orchestration. Break down into:
+Use the TodoWrite tool to create persistent TODO tasks. Break down into:
 - Requirement analysis task
 - Idea generation task(s)
 - HTML design task(s) — can parallelize per size/variant
@@ -57,9 +57,9 @@ Present ideas to user via `AskUserQuestion` for approval before designing.
 
 Activate these skills in sequence:
 
-1. **`/ckm:brand`** — Extract brand colors, fonts, voice from user's project
-2. **`/ckm:design-system`** — Get design tokens (spacing, typography scale, color palette)
-3. **Randomly invoke ONE of:** `/ck:ui-ux-pro-max` OR `/ck:frontend-design` — for layout, hierarchy, visual balance. Pick one at random each run for design variety.
+1. **`brand` skill** — Extract brand colors, fonts, voice from the user's project
+2. **`ui-ux-pro-max` skill** — Design tokens (spacing, typography scale, color palette), then layout, hierarchy and visual balance
+3. **`frontend-design` skill** — Use when the brief wants a look that is deliberately off the house system
 
 For each approved idea + each target size, create an HTML file:
 
@@ -227,7 +227,7 @@ Use Chrome MCP or `chrome-devtools` skill to visually inspect each exported PNG:
 
 ### Step 7: Generate Summary Report
 
-Save report to `plans/reports/` with naming pattern from session hooks.
+Save the report to `q-system/output/` in the calling instance.
 
 Report structure:
 
@@ -269,11 +269,11 @@ Report structure:
 
 ### Step 8: Organize Output
 
-Invoke `assets-organizing` skill to organize all output files and reports:
+Organize the output files and reports yourself with Bash and Write:
 - Move/copy exported PNGs to proper asset directories
-- Ensure reports are in `plans/reports/` with correct naming
+- Write the report to `q-system/output/` in the calling instance
 - Clean up intermediate HTML files if requested
-- Tag outputs with metadata (platform, size, concept name)
+- Record platform, size and concept name alongside each output
 
 ## Design Best Practices
 
@@ -326,4 +326,4 @@ This sub-skill handles social media image design only. Does NOT handle:
 - Animation/motion graphics
 - Print production files (CMYK, bleed)
 - Direct social media posting/scheduling
-- AI image generation (use `ai-artist` skill for that)
+- AI image generation (use the `design` skill's `scripts/logo/generate.py` for that)

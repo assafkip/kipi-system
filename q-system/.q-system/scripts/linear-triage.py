@@ -131,6 +131,16 @@ def claude_binary() -> str | None:
         return shutil.which("claude")
 
 
+TRIAGE_MODEL = "claude-opus-5"
+
+
+def triage_model() -> str:
+    """The model this pass sends to. KIPI_TRIAGE_MODEL overrides; an empty or
+    unset value falls back to the pin, never to the CLI's interactive default.
+    Read per call, not at import, so a test can set the env var after import."""
+    return os.environ.get("KIPI_TRIAGE_MODEL") or TRIAGE_MODEL
+
+
 # --- disk evidence ---------------------------------------------------------
 # What the model gets INSTEAD of being trusted to imagine the repo. An issue that
 # names a file which no longer exists is the single strongest not-planned signal
@@ -384,8 +394,17 @@ def judge_batch(batch: list, timeout: int) -> tuple:
         buckets="\n".join(f"  {k:17s} {v}" for k, v in CATEGORIES.items()),
         issues="\n".join(blocks),
     )
+    # Scar 2026-08-01: a headless `claude -p` that names no model inherits the
+    # interactive default, which rode Fable and burned 3% of the weekly budget in
+    # an hour. This call had no --model, no ANTHROPIC_MODEL, and no wrapper in
+    # `kipi` or any plist setting one, so a 116-issue batch ran on whatever the
+    # CLI picked. The pin lives in this argv rather than in a launchd plist
+    # because triage is normally started by hand and a hand run loads no wrapper.
+    # Flags go AFTER the prompt: that is the argv shape already proven by
+    # granola-voice-synthesize.py and pr-review-agent.sh.
+    # The executable that holds it: q-system/.q-system/tests/test_headless_model_pin.py
     try:
-        res = subprocess.run([binary, "-p", prompt],
+        res = subprocess.run([binary, "-p", prompt, "--model", triage_model()],
                              capture_output=True, text=True, timeout=timeout,
                              stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired) as exc:

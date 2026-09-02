@@ -1460,7 +1460,7 @@ def kipi_approve_apify_budget(month: str, extra: float) -> str:
 def kipi_harvest_health(run_id: str = "") -> str:
     """Check harvest completeness. Shows sources complete/failed/pending.
 
-    Call after Phase 1 harvest to verify data quality before processing.
+    Call after a harvest run and before anything consumes its rows.
 
     Args:
         run_id: Harvest run ID. If empty, uses latest run.
@@ -1481,7 +1481,8 @@ def kipi_harvest_health(run_id: str = "") -> str:
 def kipi_queue_notion_write(action_json: str, source_agent: str) -> str:
     """Queue a Notion write that failed for retry on next morning.
 
-    Called by 09-notion-push when a Notion API write fails.
+    Call when a Notion API write fails and the action must outlive the failure.
+    Nothing drains this queue on a schedule; kipi_get_notion_queue reads it back.
 
     Args:
         action_json: JSON of the action that failed to write.
@@ -1585,8 +1586,9 @@ def kipi_session_handoff(run_id: str, phases_completed: str, notes: str = "") ->
 def kipi_preflight() -> str:
     """Check system readiness: required files exist, system is configured.
 
-    Replaces the 00-preflight agent with deterministic Python checks.
-    Returns file existence status and overall ready flag.
+    Use at session start, or before any job that reads canonical files.
+    Returns per-file existence and an overall ready flag. It reports; it
+    repairs nothing.
     """
     try:
         from kipi_mcp.morning_init import preflight
@@ -1600,7 +1602,8 @@ def kipi_preflight() -> str:
 def kipi_session_bootstrap() -> str:
     """Recover state from previous session.
 
-    Replaces the 00-session-bootstrap agent. Recovers unconfirmed action
+    Use when resuming work and you need prior-session state. Recovers
+    unconfirmed action
     cards, computes loop stats, detects stalls (>14 days no contact),
     and checksums canonical files.
     """
@@ -1616,10 +1619,10 @@ def kipi_session_bootstrap() -> str:
 def kipi_canonical_digest() -> str:
     """Parse canonical markdown files into structured JSON digest.
 
-    Replaces the 00c-canonical-digest agent. Reads talk-tracks, objections,
-    current-state, discovery, and decisions files. Extracts key fields and
-    runs a 7-point validation gate. Saves ~40-60K tokens vs agents reading
-    full canonical files.
+    Use when you need canonical facts as structured data rather than reading
+    five markdown files. Reads talk-tracks, objections, current-state,
+    discovery, and decisions. Extracts key fields and runs a 7-point
+    validation gate, for far fewer tokens than reading those files whole.
     """
     try:
         from kipi_mcp.morning_init import canonical_digest
@@ -1631,11 +1634,13 @@ def kipi_canonical_digest() -> str:
 
 @mcp.tool()
 def kipi_morning_init(energy_level: int = 3) -> str:
-    """Combined morning initialization: preflight + bootstrap + digest + bus setup.
+    """RETIRED, do not call. Combined morning init for the 9-phase pipeline.
 
-    THE one call that replaces phases 0-0.7 of the old orchestrator.
-    Creates today's bus directory, cleans old ones, runs all init checks,
-    and returns the complete init bundle.
+    RULE-2026-08-30-A retired that pipeline; the live morning job is
+    com.kipi.morning-brief (morning-brief.py), which calls none of this. This
+    still creates a bus directory under agent-pipeline/bus/, and nothing has
+    written or read that bus since 2026-07-29. Call kipi_preflight and
+    kipi_canonical_digest directly instead.
 
     Args:
         energy_level: Founder's energy level (1-5). Governs downstream compression.
@@ -1650,10 +1655,11 @@ def kipi_morning_init(energy_level: int = 3) -> str:
 
 @mcp.tool()
 def kipi_gate_check(phase: int, date: str = "") -> str:
-    """Check if all prior phases are logged before a gate phase.
+    """RETIRED, do not call. Phase gate for the 9-phase morning pipeline.
 
-    Call this before Phases 6, 7, or 8. Reads the morning log and
-    verifies every prior phase is logged as done or skipped.
+    RULE-2026-08-30-A retired that pipeline, so the numbered phases this
+    takes as an argument no longer exist and the morning log it reads is no
+    longer written. There is no current trigger to redescribe it to.
 
     Args:
         phase: The gate phase number (6, 7, or 8).
@@ -1671,8 +1677,9 @@ def kipi_gate_check(phase: int, date: str = "") -> str:
 def kipi_deliverables_check(date: str = "") -> str:
     """Check that required deliverables exist for today.
 
-    Verifies bus files contain expected outputs based on day of week.
-    Call this before synthesis (Phase 6) to catch missing work.
+    RETIRED, do not call. Reads agent-pipeline/bus/, which RULE-2026-08-30-A
+    retired along with the 9-phase pipeline; nothing has written that bus
+    since 2026-07-29, so this reports missing work on every date.
 
     Args:
         date: Date in YYYY-MM-DD format. Defaults to today.

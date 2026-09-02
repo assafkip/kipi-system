@@ -6,12 +6,12 @@
 - Product type: Tool (AI search engine)
 - Target audience: C-end users looking for fast, intelligent search
 - Style keywords: modern, minimal, content-first, dark mode
-- Stack: React Native
+- Stack: Next.js (a real key in `scripts/core.py`; pick the project's own)
 
 ## Step 2: Generate Design System (REQUIRED)
 
 ```bash
-python3 skills/ui-ux-pro-max/scripts/search.py "AI search tool modern minimal" --design-system -p "AI Search"
+python3 ${CLAUDE_SKILL_DIR}/scripts/search.py "AI search tool modern minimal" --design-system -p "AI Search"
 ```
 
 **Output:** Complete design system with pattern, style, colors, typography, effects, and anti-patterns.
@@ -20,16 +20,16 @@ python3 skills/ui-ux-pro-max/scripts/search.py "AI search tool modern minimal" -
 
 ```bash
 # Get style options for a modern tool product
-python3 skills/ui-ux-pro-max/scripts/search.py "minimalism dark mode" --domain style
+python3 ${CLAUDE_SKILL_DIR}/scripts/search.py "minimalism dark mode" --domain style
 
 # Get UX best practices for search interaction and loading
-python3 skills/ui-ux-pro-max/scripts/search.py "search loading animation" --domain ux
+python3 ${CLAUDE_SKILL_DIR}/scripts/search.py "search loading animation" --domain ux
 ```
 
 ## Step 4: Stack Guidelines
 
 ```bash
-python3 skills/ui-ux-pro-max/scripts/search.py "list performance navigation" --stack react-native
+python3 ${CLAUDE_SKILL_DIR}/scripts/search.py "routing data-fetching rendering" --stack nextjs
 ```
 
 **Then:** Synthesize design system + detailed searches and implement the design.

@@ -1,7 +1,8 @@
 # Layout Catalog
 
-Layouts available to the `deck-ai` skill. The generator picks one per slide.
-To force a layout, add `<!-- layout: <name> -->` at the top of the source slide.
+Layouts available to the `deck-ai` skill. Claude picks one per slide and
+records it in `decisions.json`. To force a layout, add
+`<!-- layout: <name> -->` at the top of the source slide.
 
 ## Layouts
 
@@ -17,26 +18,13 @@ To force a layout, add `<!-- layout: <name> -->` at the top of the source slide.
 | `end` | Last slide. Thanks / homework / CTA. | No |
 | `default` | Anything else. Title + body. | No |
 
-## Image placeholders
+## Image slots
 
-Layouts with an image slot accept `{{IMG:keyword}}` in the slide body. The
-`fetch_images.py` script replaces each placeholder with an Unsplash URL
-found via keyword search. Keywords should be 1-3 words, concrete nouns.
+A layout with an image slot takes its picture from the `image_keyword` field
+for that slide in `decisions.json`. There are no in-body placeholders.
+`scripts/render_pptx.py` resolves the keyword through `scripts/fetch_images.py`
+and embeds the result. Keywords should be 1-3 words, concrete nouns.
 
-Good: `{{IMG:mountain sunrise}}`, `{{IMG:koi fish}}`, `{{IMG:student writing}}`
-Bad: `{{IMG:feeling of loneliness}}`, `{{IMG:theme of redemption}}`
+Good: `mountain sunrise`, `koi fish`, `student writing`
+Bad: `feeling of loneliness`, `theme of redemption`
 
-## Layout pick rules (v1 deterministic)
-
-Applied in order. First match wins.
-
-1. Explicit hint (`<!-- layout: X -->`) → X
-2. Slide index 0 → `cover`
-3. Last slide with "homework" / "thanks" / "end" in title → `end`
-4. Body contains "Anime anchor" or "Example:" callout → `image-right`
-5. Body word count < 25 → `center`
-6. Otherwise → `default`
-
-To upgrade to LLM-driven layout choice: replace `pick_layout` in `generate.py`
-with a prompt that enumerates the layouts and asks the model to choose per slide.
-Keep the rule-based version as a fallback.

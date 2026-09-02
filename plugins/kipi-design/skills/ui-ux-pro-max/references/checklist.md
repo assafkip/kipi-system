@@ -6,10 +6,10 @@ The `--design-system` flag supports two output formats:
 
 ```bash
 # ASCII box (default) - best for terminal display
-python3 skills/ui-ux-pro-max/scripts/search.py "fintech crypto" --design-system
+python3 ${CLAUDE_SKILL_DIR}/scripts/search.py "fintech crypto" --design-system
 
 # Markdown - best for documentation
-python3 skills/ui-ux-pro-max/scripts/search.py "fintech crypto" --design-system -f markdown
+python3 ${CLAUDE_SKILL_DIR}/scripts/search.py "fintech crypto" --design-system -f markdown
 ```
 
 ---
@@ -21,7 +21,7 @@ python3 skills/ui-ux-pro-max/scripts/search.py "fintech crypto" --design-system 
 - Use **multi-dimensional keywords** -- combine product + industry + tone + density: `"entertainment social vibrant content-dense"` not just `"app"`
 - Try different keywords for the same need: `"playful neon"` -> `"vibrant dark"` -> `"content-first minimal"`
 - Use `--design-system` first for full recommendations, then `--domain` to deep-dive any dimension you're unsure about
-- Always add `--stack react-native` for implementation-specific guidance
+- Always add `--stack <stack>` for the project's own stack (Available Stacks in `workflow.md`) to get implementation-specific guidance
 
 ### Common Sticking Points
 
