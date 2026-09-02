@@ -74,10 +74,13 @@ def parse_lesson(path: Path) -> dict:
     if r:
         rule = r.group(1).strip()
     came = ""
-    c = re.search(r"prd-[a-z0-9-]+-20\d\d-\d\d-\d\d|rca-[a-z0-9-]+|ASK-\d+", body)
+    # A lesson names its PRD with or without the date suffix (the 13 build
+    # lessons of 2026-09-02 wrote "prd-lessons-rail-and-up-rail" bare, and the
+    # first sync filed them as "distiller"). Either form is a build review.
+    c = re.search(r"\bprd-[a-z][a-z0-9-]*|\brca-[a-z0-9-]+|\bASK-\d+", body)
     if c:
-        came = c.group(0)
-    origin = "build review" if re.search(r"\bprd-[a-z-]+-20\d\d", body) else ("rca" if "rca-" in body else "distiller")
+        came = c.group(0).rstrip("-")
+    origin = "build review" if came.startswith("prd-") else ("rca" if came.startswith("rca-") else "distiller")
     return {"id": fm.get("id") or path.stem, "kind": fm.get("kind", "pattern"), "title": fm.get("title") or path.stem,
             "date": fm.get("date", ""), "body": body, "rule": rule[:MAX_TEXT], "came_from": came, "origin": origin}
 
@@ -99,12 +102,14 @@ def _properties(lesson, created: bool):
         "Rule": {"rich_text": _rt(lesson["rule"])},
         "Came from": {"rich_text": _rt(lesson["came_from"])},
         "Synced": {"date": {"start": date.today().isoformat()}},
+        # Origin is derived from the lesson text, so it is refreshed like Kind;
+        # only Status and Notes belong to the founder and are create-only.
+        "Origin": {"select": {"name": lesson["origin"]}},
     }
     if re.match(r"\d{4}-\d{2}-\d{2}", lesson["date"]):
         props["Learned"] = {"date": {"start": lesson["date"][:10]}}
     if created:
         props["Status"] = {"select": {"name": "in corpus"}}
-        props["Origin"] = {"select": {"name": lesson["origin"]}}
     return props
 
 

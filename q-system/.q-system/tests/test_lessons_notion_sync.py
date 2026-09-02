@@ -63,24 +63,27 @@ def _corpus(tmp_path):
     (d / "README.md").write_text("# not a lesson\n")
     (d / "a-first-lesson.md").write_text("---\nid: a-first-lesson\nkind: pattern\ntitle: A first lesson\ndate: 2026-09-02\n---\n\nWhat happened in prd-lessons-rail-and-up-rail-2026-09-02.\n\nHow to apply:\n\n1. Do the thing this way.\n2. Then that.\n")
     (d / "b-second.md").write_text("---\nid: b-second\nkind: scar\ntitle: B second\ndate: 2026-08-01\n---\n\nAn older one from an rca-something-2026-08-01.\n")
+    (d / "c-bare-prd.md").write_text("---\nid: c-bare-prd\nkind: pattern\ntitle: C bare prd\ndate: 2026-09-02\n---\n\nCodex adversarial on issue 7 of prd-lessons-rail-and-up-rail.\n\nHow to apply:\n\n1. Name the PRD without its date and still be a build review.\n")
     return d
 
 
 def test_parse_reads_frontmatter_rule_and_provenance(tmp_path):
     m = _mod()
     lessons = m.corpus(_corpus(tmp_path))
-    assert [l["id"] for l in lessons] == ["a-first-lesson", "b-second"], "README is not a lesson"
+    assert [l["id"] for l in lessons] == ["a-first-lesson", "b-second", "c-bare-prd"], "README is not a lesson"
     a = lessons[0]
     assert a["title"] == "A first lesson" and a["kind"] == "pattern" and a["date"] == "2026-09-02"
     assert a["rule"] == "Do the thing this way." and a["came_from"] == "prd-lessons-rail-and-up-rail-2026-09-02" and a["origin"] == "build review"
     assert lessons[1]["origin"] == "rca" and lessons[1]["rule"] == ""
+    c = lessons[2]
+    assert c["came_from"] == "prd-lessons-rail-and-up-rail" and c["origin"] == "build review", "a PRD named without its date is still a build review"
 
 
 def test_first_sync_creates_a_row_per_lesson_with_status_in_corpus(tmp_path):
     m = _mod()
     fake = FakeNotion()
     report = m.sync("tok", "db1", m.corpus(_corpus(tmp_path)), opener=fake, out=lambda s: None)
-    assert report == {"ok": True, "created": 2, "updated": 0, "total": 2}
+    assert report == {"ok": True, "created": 3, "updated": 0, "total": 3}
     creates = [b for meth, url, b in fake.calls if meth == "POST" and url.endswith("/pages")]
     assert all(b["parent"] == {"database_id": "db1"} for b in creates)
     first = next(b for b in creates if b["properties"]["Id"]["rich_text"][0]["text"]["content"] == "a-first-lesson")
@@ -95,10 +98,11 @@ def test_second_sync_updates_and_never_touches_founder_columns(tmp_path):
     m = _mod()
     fake = FakeNotion({"a-first-lesson": "page-a"})
     report = m.sync("tok", "db1", m.corpus(_corpus(tmp_path)), opener=fake, out=lambda s: None)
-    assert report["created"] == 1 and report["updated"] == 1
+    assert report["created"] == 2 and report["updated"] == 1
     patch = next(b for meth, url, b in fake.calls if meth == "PATCH" and url.endswith("/page-a"))
-    assert "Status" not in patch["properties"] and "Notes" not in patch["properties"] and "Origin" not in patch["properties"]
+    assert "Status" not in patch["properties"] and "Notes" not in patch["properties"]
     assert "Synced" in patch["properties"] and "Rule" in patch["properties"]
+    assert patch["properties"]["Origin"]["select"]["name"] == "build review", "Origin is derived, so a reparse reaches existing rows"
     assert "children" not in patch, "content is written at creation, not rewritten over the founder's edits"
 
 
@@ -121,7 +125,7 @@ def test_refuses_the_live_database_under_pytest(tmp_path):
 def test_dry_run_counts_and_touches_nothing(tmp_path):
     env = dict(os.environ, KIPI_STATE_DIR=str(tmp_path / "no-creds"))
     r = subprocess.run([sys.executable, str(SCRIPT), "--dry-run", "--lessons-dir", str(_corpus(tmp_path))], capture_output=True, text=True, env=env)
-    assert r.returncode == 0 and json.loads(r.stdout.strip())["would_sync"] == 2
+    assert r.returncode == 0 and json.loads(r.stdout.strip())["would_sync"] == 3
 
 
 def test_the_nightly_job_runs_the_sync_after_publish_and_it_is_non_fatal():
