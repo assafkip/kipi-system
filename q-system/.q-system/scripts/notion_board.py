@@ -177,12 +177,17 @@ def write_top_of_mind(token: str, page_id: str, lines: list, opener=None, timeou
         missing = [_heading(b) for b in BUCKETS if buckets[b]["heading_id"] is None]
         _request(token, "PATCH", f"/blocks/{page_id}/children", {"children": missing}, opener, timeout, budget)
         buckets = parse_buckets(read_page(token, page_id, opener, timeout, budget))
-    for block_id, _ in buckets[TOP]["items"]:
-        _request(token, "DELETE", f"/blocks/{block_id}", opener=opener, timeout=timeout, budget=budget)
+    # Append the new bullets FIRST, right under the heading, then delete the
+    # old ones (PR #294 review, minor): delete-then-append left Top of mind
+    # empty until the next successful run whenever the append failed. Now a
+    # failure mid-way leaves old and new side by side, which the next run's
+    # id reconciliation collapses; nothing is ever erased without a replacement.
     if lines:
         _request(token, "PATCH", f"/blocks/{page_id}/children",
                  {"children": [_bullet(l) for l in lines], "after": buckets[TOP]["heading_id"]},
                  opener, timeout, budget)
+    for block_id, _ in buckets[TOP]["items"]:
+        _request(token, "DELETE", f"/blocks/{block_id}", opener=opener, timeout=timeout, budget=budget)
 
 
 def read_back(token: str, page_id: str, opener=None, timeout=HTTP_TIMEOUT, budget=None) -> list:
