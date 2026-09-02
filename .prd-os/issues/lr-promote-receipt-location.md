@@ -1,7 +1,7 @@
 ---
 id: lr-promote-receipt-location
 title: Receipts live in the skeleton at q-system/.q-system/promotions.receipts and the guard reads them from FETCH_HEAD, never from the instance working tree
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:
@@ -37,4 +37,19 @@ RED first: kipi-promote.sh appends to <skeleton>/q-system/.q-system/promotions.r
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Receipts live in the skeleton at q-system/.q-system/promotions.receipts and the guard reads them from FETCH_HEAD, never from the instance working tree
+- [x] Receipts live in the skeleton at q-system/.q-system/promotions.receipts and the guard reads them from FETCH_HEAD, never from the instance working tree
+
+## Amendments
+
+### 2026-09-02T02:50:19Z
+Reason: The root .gitignore ignores *.jsonl and instances copy that file at creation (consulting ignores it too; the updater never syncs ignore rules), so q-system/.q-system/promotions.jsonl would stay untracked in every instance and the guard's receipts integrity check would refuse every push after the first receipt. Renamed to q-system/.q-system/promotions.receipts, a name no ignore rule matches; allowed_files updated.
+
+Before:
+- allowed_files: ['kipi-promote.sh', 'kipi-push-upstream.sh', 'q-system/.q-system/promotions.jsonl', 'q-system/.q-system/tests/test_promotion_receipt.py']
+- required_checks: ['python3 -m pytest -q q-system/.q-system/tests/test_promotion_receipt.py']
+- disallowed_files: ['.claude/**', 'plugins/prd-os/**', '.prd-os/**', 'q-consult/**', 'kipi-update.sh']
+
+After:
+- allowed_files: ['kipi-promote.sh', 'kipi-push-upstream.sh', 'q-system/.q-system/promotions.receipts', 'q-system/.q-system/tests/test_promotion_receipt.py']
+- required_checks: ['python3 -m pytest -q q-system/.q-system/tests/test_promotion_receipt.py']
+- disallowed_files: ['.claude/**', 'plugins/prd-os/**', '.prd-os/**', 'q-consult/**', 'kipi-update.sh']

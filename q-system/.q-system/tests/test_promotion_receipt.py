@@ -741,26 +741,31 @@ def test_the_fan_out_carries_the_receipts_file():
     owned = [l.strip() for l in block.splitlines()[1:] if l.strip()]
     assert ".q-system/data" in owned, owned
     assert not any(o in (".q-system", ".q-system/promotions.receipts") for o in owned), owned
-    assert "promotions" not in src.split("INSTANCE_OWNED_SUBTREES=(")[0] or True
+    # no rule anywhere in the updater special-cases the receipts file, and no
+    # exclude pattern drops the whole .q-system tree (Codex: the first version of
+    # this check was `... or True`, a decoration)
+    assert "promotions" not in src, "the updater must not special-case the receipts file"
+    assert not re.search(r"--exclude=/?\.q-system/?['\"\s]", src), "the .q-system tree must fan out"
+    assert "*.receipts" not in src
 
 
-def test_promotions_file_seam_is_pytest_only(tmp_path):
-    """Outside pytest KIPI_PROMOTIONS_FILE is refused with a message and ignored;
-    under pytest it replaces the FETCH_HEAD read (so a test can hand the guard a
-    receipts file without a bare skeleton)."""
+def test_promotions_file_override_is_never_honoured(tmp_path):
+    """Codex adversarial (issue 11): a 'pytest-only' override gated on an env var
+    is the caller's to set, so it was a way to bless your own lesson. The guard
+    names the variable, ignores it, and reads FETCH_HEAD, pytest or not."""
     bare, skel, inst = _repos(tmp_path)
     blob = _diverge(inst)
     alt = tmp_path / "alt-receipts.jsonl"
     alt.write_text(json.dumps(_row(blob)) + "\n")
-    env = dict(os.environ, KIPI_SKELETON_REMOTE=str(bare), KIPI_PROMOTIONS_FILE=str(alt))
-    r = subprocess.run(["/bin/bash", "kipi-push-upstream.sh"], capture_output=True, text=True, cwd=inst, timeout=120, env=env)
-    out = r.stdout + r.stderr
-    assert "promotion receipt honoured" in out, out
-    env.pop("PYTEST_CURRENT_TEST", None)
-    r = subprocess.run(["/bin/bash", "kipi-push-upstream.sh"], capture_output=True, text=True, cwd=inst, timeout=120, env=env)
-    out = r.stdout + r.stderr
-    assert "KIPI_PROMOTIONS_FILE is honoured only under pytest" in out and "honoured" not in out.replace("honoured only under pytest", ""), out
-    assert r.returncode == 1 and "lessons/ differs from skeleton: lessons/a.md" in out
+    for spoof in ({"PYTEST_CURRENT_TEST": "x"}, {}):
+        env = dict(os.environ, KIPI_SKELETON_REMOTE=str(bare), KIPI_PROMOTIONS_FILE=str(alt), **spoof)
+        if not spoof:
+            env.pop("PYTEST_CURRENT_TEST", None)
+        r = subprocess.run(["/bin/bash", "kipi-push-upstream.sh"], capture_output=True, text=True, cwd=inst, timeout=120, env=env)
+        out = r.stdout + r.stderr
+        assert "KIPI_PROMOTIONS_FILE is never honoured" in out, out
+        assert "promotion receipt honoured" not in out, out
+        assert r.returncode == 1 and "lessons/ differs from skeleton: lessons/a.md" in out, out
 
 
 def test_guard_reads_receipts_from_fetch_head_not_the_working_tree(tmp_path):

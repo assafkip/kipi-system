@@ -79,19 +79,15 @@ def receipts():
     lessons/<name> form and holding the set of blessed blobs. A receipt that
     cannot be read means no receipt: fail-closed."""
     import os
-    override = os.environ.get("KIPI_PROMOTIONS_FILE")
-    if override and not os.environ.get("PYTEST_CURRENT_TEST"):
-        # the seam exists so a test can hand the guard a receipts file without a
-        # bare skeleton; outside pytest it is a way to bless your own lesson
-        sys.stdout.write("KIPI_PROMOTIONS_FILE is honoured only under pytest; reading receipts from FETCH_HEAD\n")
-        override = None
+    if os.environ.get("KIPI_PROMOTIONS_FILE"):
+        # No override, under pytest or anywhere else: an environment variable is
+        # the caller's to set, so a "pytest-only" receipts file would be a way to
+        # bless your own lesson (Codex adversarial, issue 11). Tests use real
+        # repos and FETCH_HEAD. The variable is named and ignored.
+        sys.stdout.write("KIPI_PROMOTIONS_FILE is never honoured; receipts are read from the skeleton at FETCH_HEAD\n")
     try:
-        if override:
-            with open(override, encoding="utf-8") as fh:
-                raw = fh.read()
-        else:
-            raw = subprocess.run(["git", "show", "FETCH_HEAD:q-system/.q-system/promotions.receipts"],
-                                 capture_output=True, text=True, check=True).stdout
+        raw = subprocess.run(["git", "show", "FETCH_HEAD:q-system/.q-system/promotions.receipts"],
+                             capture_output=True, text=True, check=True).stdout
     except Exception:
         return {}
     out = {}
