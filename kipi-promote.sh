@@ -170,7 +170,7 @@ for p in sorted(glob.glob(os.path.join(inst, "q-system", "lessons", "*.md"))):
     elif status == "pending":
         nxt = "re-run: kipi promote " + rel + " (a pending row stands)"
     elif status == "voided":
-        nxt = "move it to " + qdir + "/lessons/ (voided; the guard still refuses it under q-system/)"
+        nxt = "keep it OUT of every lessons/ directory, e.g. " + qdir + "/notes/ (voided; kipi push refuses any lessons/*.md change repo-wide, voided or not)"
     else:
         nxt = "kipi promote " + rel + "   or   kipi promote --void " + rel + " --reason \"...\"" + note
     out.append((status, rel, nxt))
@@ -229,7 +229,7 @@ if [ "$MODE" = "void" ]; then
   SCRUB="void"; BASE=""
   take_lock
   receipt_row "voided" || refuse "void refused for $REL: a field carries a tripwire term (this file fans out to every instance), or it could not be written"
-  echo "voided $REL (blob $BLOB): stays in this instance; move it out of q-system/lessons/ so the push guard passes"
+  echo "voided $REL (blob $BLOB): stays in this instance; move it out of EVERY lessons/ directory (kipi push refuses any lessons/*.md change repo-wide, voided or not)"
   exit 0
 fi
 

@@ -828,7 +828,9 @@ def test_candidates_status_follows_the_receipts(tmp_path):
     assert v.returncode == 0, v.stderr
     r = _cli(tmp_path, "--candidates")
     extra = next(l for l in r.stdout.splitlines() if "extra.md" in l)
-    assert extra.startswith("voided") and "q-consult/lessons/" in extra, extra
+    # round 6 of PR #294: the old line said "move it to q-consult/lessons/", but
+    # the push guard refuses ANY lessons/*.md change repo-wide, voided or not
+    assert extra.startswith("voided") and "q-consult/notes/" in extra and "repo-wide" in extra, extra
 
 
 def test_void_writes_a_voided_row_that_the_guard_still_refuses(tmp_path):

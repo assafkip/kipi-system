@@ -52,18 +52,44 @@ class NotionError(Exception):
     pass
 
 
+# Notion allows about three requests a second and answers 429 past it. The
+# nightly run issues one request per lesson (175 today), so it PACES live
+# requests and RETRIES a 429 or a 5xx with backoff instead of aborting the
+# whole loop on the first refusal (PR #294 review round 6). An injected opener
+# (tests) is never paced; `_sleep` is the seam a test replaces.
+PACE_S = float(os.environ.get("KIPI_NOTION_PACE_S", "0.35"))
+RETRIES = 3
+_sleep = time.sleep
+
+
 def _request(token, method, path, body=None, opener=None):
     req = urllib.request.Request(API + path, method=method, data=json.dumps(body).encode() if body is not None else None)
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Notion-Version", VERSION)
     req.add_header("Content-Type", "application/json")
-    try:
-        with (opener or urllib.request.urlopen)(req, timeout=TIMEOUT) as resp:
-            return json.loads(resp.read().decode() or "{}")
-    except urllib.error.HTTPError as exc:
-        raise NotionError(f"{method} {path} -> {exc.code}: {exc.read().decode(errors='replace')[:200]}") from None
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise NotionError(f"{method} {path} -> {exc}") from None
+    if opener is None and PACE_S > 0:
+        _sleep(PACE_S)
+    last = None
+    for attempt in range(1, RETRIES + 1):
+        try:
+            with (opener or urllib.request.urlopen)(req, timeout=TIMEOUT) as resp:
+                return json.loads(resp.read().decode() or "{}")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")[:200] if exc.fp else ""
+            last = NotionError(f"{method} {path} -> {exc.code}: {detail}")
+            if exc.code != 429 and exc.code < 500:
+                raise last from None
+            retry_after = (exc.headers or {}).get("Retry-After") if hasattr(exc, "headers") else None
+            try:
+                wait = min(float(retry_after), 10.0) if retry_after else float(attempt)
+            except ValueError:
+                wait = float(attempt)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last = NotionError(f"{method} {path} -> {exc}")
+            wait = float(attempt)
+        if attempt < RETRIES:
+            _sleep(wait)
+    raise last from None
 
 
 def parse_lesson(path: Path) -> dict:
@@ -154,18 +180,25 @@ def sync(token, db_id, lessons, opener=None, out=print, lock_file=None) -> dict:
         try:
             have = existing_rows(token, db_id, opener)
             created = updated = 0
+            errors = []
             for lesson in lessons:
-                if lesson["id"] in have:
-                    _request(token, "PATCH", f"/pages/{have[lesson['id']]}", {"properties": _properties(lesson, created=False)}, opener)
-                    updated += 1
-                else:
-                    _request(token, "POST", "/pages", {"parent": {"database_id": db_id},
-                                                        "properties": _properties(lesson, created=True),
-                                                        "children": _children(lesson["body"])}, opener)
-                    created += 1
+                try:
+                    if lesson["id"] in have:
+                        _request(token, "PATCH", f"/pages/{have[lesson['id']]}", {"properties": _properties(lesson, created=False)}, opener)
+                        updated += 1
+                    else:
+                        _request(token, "POST", "/pages", {"parent": {"database_id": db_id},
+                                                            "properties": _properties(lesson, created=True),
+                                                            "children": _children(lesson["body"])}, opener)
+                        created += 1
+                except NotionError as exc:
+                    # One lesson's refusal never leaves the rest unwritten; it
+                    # is counted, named, and the run reports ok=False.
+                    errors.append({"id": lesson["id"], "error": str(exc)})
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
-    report = {"ok": True, "created": created, "updated": updated, "total": len(lessons)}
+    report = {"ok": not errors, "created": created, "updated": updated, "total": len(lessons),
+              "failed": len(errors), "errors": errors[:10]}
     out(json.dumps(report))
     return report
 
@@ -195,7 +228,9 @@ def main(argv=None) -> int:
         print(json.dumps({"ok": False, "reason": "refused: running under pytest; the live database is never written by a test"}))
         return EXIT_ERROR
     try:
-        sync(token, db_id, lessons)
+        report = sync(token, db_id, lessons)
+        if not report["ok"]:
+            return EXIT_ERROR  # the report already names the failures; the daily job logs it
     except NotionError as exc:
         print(json.dumps({"ok": False, "reason": str(exc)}))
         return EXIT_ERROR

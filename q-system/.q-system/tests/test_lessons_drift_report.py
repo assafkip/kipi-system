@@ -71,6 +71,31 @@ def test_reports_lessons_and_scripts_the_hub_has_and_the_skeleton_lacks(tmp_path
     assert "no drift" not in out
 
 
+def test_a_hub_that_is_merely_behind_the_skeleton_is_not_reported_as_drift(tmp_path):
+    """PR #294 review round 6, major: the digest comparison was symmetric, so
+    every file the skeleton edited since the hub's last sync read as hub drift
+    (53 lines on the one declared hub, 12 of them that PR's own edits). A hub
+    file whose content is a version the skeleton's git history holds is
+    BEHIND; only content the skeleton never had is drift."""
+    import subprocess
+    root, hub = _fixture(tmp_path)
+    old = "---\ntitle: c\n---\nold skeleton version\n"
+    (root / "q-system" / "lessons" / "changed.md").write_text(old)
+    git = ["git", "-C", str(root), "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run(git + ["init", "-q"], check=True)
+    subprocess.run(git + ["add", "-A"], check=True)
+    subprocess.run(git + ["commit", "-q", "-m", "old"], check=True)
+    (root / "q-system" / "lessons" / "changed.md").write_text("---\ntitle: c\n---\nnew skeleton version\n")
+    (hub / "q-system" / "lessons" / "changed.md").write_text(old)          # hub is behind
+    (hub / "q-system" / "lessons" / "forked.md").write_text("---\ntitle: f\n---\nhub-only content\n")
+    (root / "q-system" / "lessons" / "forked.md").write_text("---\ntitle: f\n---\nskeleton content\n")
+    m = _mod()
+    absent, changed, behind = m.drift(str(hub), str(root))
+    assert behind == ["q-system/lessons/changed.md"] and changed == ["q-system/lessons/forked.md"] and absent == [], (absent, changed, behind)
+    out = m.build(str(root))
+    assert "differs  q-system/lessons/forked.md" in out and "changed.md" not in out and "1 more are just behind" in out, out
+
+
 def test_no_drift_when_equal(tmp_path):
     root, hub = _fixture(tmp_path)
     r = _run(root, "--dry-run")

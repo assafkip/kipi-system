@@ -83,7 +83,7 @@ def test_first_sync_creates_a_row_per_lesson_with_status_in_corpus(tmp_path):
     m = _mod()
     fake = FakeNotion()
     report = m.sync("tok", "db1", m.corpus(_corpus(tmp_path)), opener=fake, out=lambda s: None)
-    assert report == {"ok": True, "created": 3, "updated": 0, "total": 3}
+    assert report == {"ok": True, "created": 3, "updated": 0, "total": 3, "failed": 0, "errors": []}
     creates = [b for meth, url, b in fake.calls if meth == "POST" and url.endswith("/pages")]
     assert all(b["parent"] == {"database_id": "db1"} for b in creates)
     first = next(b for b in creates if b["properties"]["Id"]["rich_text"][0]["text"]["content"] == "a-first-lesson")
@@ -142,6 +142,50 @@ def test_two_syncs_at_once_create_one_row_not_two(tmp_path, monkeypatch):
     creates = [1 for _, meth, tail in log if meth == "POST" and tail == "pages"]
     assert len(creates) == 1 and len(fake.rows) == 1, (log, fake.rows)
     assert any(n == "B" and meth == "PATCH" for n, meth, _ in log), "B must update the row A created"
+
+
+def test_a_429_is_retried_with_backoff_and_the_row_still_lands(tmp_path, monkeypatch):
+    """PR #294 review round 6, minor: one 429 aborted the whole loop. The
+    request retries a 429 (Retry-After honoured, capped) and a 5xx; a 4xx
+    other than 429 is not retried."""
+    import urllib.error
+    m = _mod()
+    waits = []
+    monkeypatch.setattr(m, "_sleep", lambda s: waits.append(s))
+    fake = FakeNotion()
+    state = {"refused": 0}
+
+    def opener(req, timeout):
+        if req.get_method() == "POST" and req.full_url.endswith("/pages") and state["refused"] < 1:
+            state["refused"] += 1
+            raise urllib.error.HTTPError(req.full_url, 429, "rate limited", {"Retry-After": "2"}, io.BytesIO(b""))
+        return fake(req, timeout)
+
+    report = m.sync("tok", "db1", m.corpus(_corpus(tmp_path))[:1], opener=opener, out=lambda s: None)
+    assert report["ok"] and report["created"] == 1 and report["failed"] == 0, report
+    assert waits == [2.0], waits
+    with pytest.raises(m.NotionError):
+        m._request("tok", "POST", "/pages", {}, opener=lambda req, timeout: (_ for _ in ()).throw(
+            urllib.error.HTTPError(req.full_url, 400, "bad", {}, io.BytesIO(b""))))
+    assert waits == [2.0], "a 400 is not retried"
+
+
+def test_one_lesson_that_keeps_failing_does_not_leave_the_rest_unwritten(tmp_path, monkeypatch):
+    import urllib.error
+    m = _mod()
+    monkeypatch.setattr(m, "_sleep", lambda s: None)
+    fake = FakeNotion()
+
+    def opener(req, timeout):
+        body = json.loads(req.data) if req.data else None
+        if body and body.get("properties", {}).get("Id", {}).get("rich_text", [{}])[0].get("text", {}).get("content") == "a-first-lesson":
+            raise urllib.error.HTTPError(req.full_url, 503, "down", {}, io.BytesIO(b""))
+        return fake(req, timeout)
+
+    report = m.sync("tok", "db1", m.corpus(_corpus(tmp_path)), opener=opener, out=lambda s: None)
+    assert report["ok"] is False and report["failed"] == 1 and report["created"] == 2, report
+    assert report["errors"][0]["id"] == "a-first-lesson" and "503" in report["errors"][0]["error"]
+    assert len(fake.rows) == 2
 
 
 def test_off_without_credentials_touches_nothing(tmp_path):
