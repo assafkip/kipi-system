@@ -41,8 +41,12 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 QROOT = HERE.parent.parent
-DB_PATH = QROOT / ".q-system" / "data" / "metrics.db"
+DB_PATH = Path(os.environ.get("KIPI_METRICS_DB") or (QROOT / ".q-system" / "data" / "metrics.db"))
 INBOX_DIR_RELPATH = "output/skill-proposals/_inbox"
+# Env overrides (issue mbl-weekly-improve-runner): the learner had no test
+# because its only paths were live ones. A test points both at tmp_path.
+INBOX_DIR_OVERRIDE = os.environ.get("KIPI_PROPOSALS_INBOX")
+DB_PATH_OVERRIDE = os.environ.get("KIPI_METRICS_DB")
 DEFAULT_LIMIT = 5
 
 
@@ -156,7 +160,7 @@ def _render_footer() -> str:
 
 def write_inbox(qroot: Path, content: str, generated_at: str) -> Path:
     """Write the inbox markdown to output/skill-proposals/_inbox/."""
-    out_dir = qroot / INBOX_DIR_RELPATH
+    out_dir = Path(INBOX_DIR_OVERRIDE) if INBOX_DIR_OVERRIDE else qroot / INBOX_DIR_RELPATH
     out_dir.mkdir(parents=True, exist_ok=True)
     iso_date = generated_at.split("T", 1)[0]
     out_path = out_dir / f"engagement-{iso_date}.md"

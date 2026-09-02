@@ -1,0 +1,5 @@
+{
+  "path": "q-system/.q-system/tests/test_promotion_receipt.py",
+  "runner": "python3",
+  "timeout_s": 180
+}

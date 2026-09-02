@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- One Slack message each morning: what the founder has going on today.
+     Founder-directed 2026-08-30. Replaces the 37-agent /q-morning pipeline,
+     which produced its last artifact on 2026-04-04 and was never automated.
+
+     TEMPLATE, not a loadable plist. __KIPI_REPO__ and __HOME__ are materialized
+     by install-plist.sh; a plist written straight into ~/Library/LaunchAgents
+     with a hardcoded home is unusable on any other machine and invisible to
+     validate-separation (the b2df00e / ASK-113 scar).
+
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.morning-brief
+
+     WHY EnvironmentVariables AND NOT a login shell. Measured 2026-08-30 on this
+     Mac: `env -i HOME=... PATH=/usr/bin:/bin /bin/bash -lc 'which claude'` finds
+     NOTHING. The claude CLI lives at ~/.local/bin, which is put on PATH by the
+     INTERACTIVE dotfile, and a login shell under launchd never reads it. A brief
+     scheduled through `bash -lc` alone would fail every morning with "claude:
+     command not found" and its two connector-backed sections would print COULD
+     NOT READ forever. Same class as the launchd job that brake-refused for 24h
+     because .zshrc is interactive-only.
+
+     USER and LOGNAME are set for the same reason: with them absent the CLI
+     answers "Not logged in - please run /login" because the keychain lookup
+     needs them. Measured the same day: identical command, USER set, returned a
+     real calendar answer.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.morning-brief</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>__HOME__</string>
+    <key>USER</key><string>__USER__</string>
+    <key>LOGNAME</key><string>__USER__</string>
+    <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <!-- Pinned. An unpinned headless claude -p job rides the default model; a
+         previous fleet-wide instance of that burned 3% of a weekly budget in
+         one hour. -->
+    <key>ANTHROPIC_MODEL</key><string>claude-opus-5</string>
+  </dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>__KIPI_REPO__/q-system/.q-system/scripts/morning-brief.py</string>
+  </array>
+  <!-- Local 07:00. launchd calendar intervals are LOCAL time, so this tracks
+       PST/PDT without a DST table. -->
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/morning-brief.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/morning-brief.err.log</string>
+</dict>
+</plist>

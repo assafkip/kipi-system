@@ -68,12 +68,25 @@ WIRING_SURFACE_GLOBS = (
     "kipi*",
     "*.sh",
     "q-system/.q-system/scripts/*.sh",
+    # A launchd plist template IS wiring, and for a SCHEDULED job it is the only
+    # wiring there is. Measured 2026-08-30 (ASK-1178): morning-brief.py and
+    # morning-brief-deadman.py were reported inert while both had a committed
+    # plist naming them and both were loaded and firing on this Mac. The gate was
+    # telling a scheduled job to justify itself as dead code. install-plist.sh
+    # renders these into ~/Library/LaunchAgents, so a name appearing here is a
+    # job that actually runs.
+    "q-system/.q-system/scripts/*.plist",
     "q-system/hooks/*",
     ".claude/**/*.md",
     "plugins/**/*.md",
     "q-system/.q-system/**/*.md",
     "q-system/.q-system/**/*.py",
     "q-system/.q-system/*.py",
+    # The MCP server's source tree is where an agent-facing tool gets wired
+    # (wiring-check.md: "any new MCP tool is registered in the server"). Without
+    # it reddit_read.py, called only from kipi-mcp's web_read.py, was reported
+    # inert on CI (PR #294, 2026-09-02).
+    "plugins/*/kipi-mcp/src/**/*.py",
 )
 
 
@@ -856,7 +869,24 @@ def check_inert_engines(root, manifest, errors, notes):
         # One authority for that question -- see is_runnable_engine.
         if is_runnable_engine(p, p.read_text(errors="ignore")):
             candidates.add(p)
+    # Plugin closure FIRST: a plugin engine that proves wired (a skill script its
+    # SKILL.md names, a hook its hooks.json names) is real wiring for the skeleton
+    # engines it calls, so its text joins the skeleton surface. An UNWIRED plugin
+    # engine still wires nothing (the closure principle is unchanged). Before this
+    # ordering lessons_recall.py, imported only by the improve skill's
+    # improve_ground.py, was reported inert on CI (PR #294, 2026-09-02).
+    plugin_surface = gather_wiring_text(root, {p.name for p in plugin_candidates})
+    p_wired, changed = set(), True
+    while changed:
+        changed = False
+        for p in sorted(plugin_candidates - p_wired):
+            if references_engine(p.name, plugin_surface):
+                p_wired.add(p)
+                plugin_surface += "\n" + p.read_text(errors="ignore")
+                changed = True
     surface = gather_wiring_text(root, {p.name for p in candidates})
+    for p in sorted(p_wired):
+        surface += "\n" + p.read_text(errors="ignore")
     wired = set()
     changed = True
     while changed:
@@ -876,15 +906,6 @@ def check_inert_engines(root, manifest, errors, notes):
                       "and no declared_inert entry")
 
     # Same walk over plugins/, reported not enforced (see the note above).
-    plugin_surface = gather_wiring_text(root, {p.name for p in plugin_candidates})
-    p_wired, changed = set(), True
-    while changed:
-        changed = False
-        for p in sorted(plugin_candidates - p_wired):
-            if references_engine(p.name, plugin_surface):
-                p_wired.add(p)
-                plugin_surface += "\n" + p.read_text(errors="ignore")
-                changed = True
     for p in sorted(plugin_candidates - p_wired):
         rel = str(p.relative_to(root))
         if rel in declared:

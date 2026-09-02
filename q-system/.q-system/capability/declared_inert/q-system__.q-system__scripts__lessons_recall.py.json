@@ -1,5 +1,0 @@
-{
- "path": "q-system/.q-system/scripts/lessons_recall.py",
- "reason": "retrieval + de-duplication over the lessons corpus: exec bit, real __main__, four subcommands, and ZERO references anywhere in the repo outside its own usage docstring. A genuine true positive, not a gate defect. Built to fix a measured decay in q-system/hooks/lessons-index.py (122 lessons, only the 20 most recent ever surfaced, title-only, evicting), which is also the obvious wiring destination -- but arming a retrieval engine at SessionStart changes behaviour on every governed instance, so it is a deliberate decision and not a side effect of a CI-green fix. Declared inert rather than given fake wiring. Wire it or retire it.",
- "spillover_id": "sp-067205d3"
-}

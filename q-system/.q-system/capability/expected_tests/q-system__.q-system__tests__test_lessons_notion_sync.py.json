@@ -1,0 +1,5 @@
+{
+  "path": "q-system/.q-system/tests/test_lessons_notion_sync.py",
+  "runner": "python3",
+  "timeout_s": 120
+}

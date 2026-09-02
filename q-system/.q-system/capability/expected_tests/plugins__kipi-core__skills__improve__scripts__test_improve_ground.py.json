@@ -1,0 +1,5 @@
+{
+ "path": "plugins/kipi-core/skills/improve/scripts/test_improve_ground.py",
+ "runner": "python3",
+ "timeout_s": 120
+}

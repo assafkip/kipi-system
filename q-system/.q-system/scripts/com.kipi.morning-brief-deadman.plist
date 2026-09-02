@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Freshness deadman for com.kipi.morning-brief. See morning-brief-deadman.py.
+
+     WHY A SEPARATE AGENT: the thing being watched is a job that did not run. A
+     check inside morning-brief.py is silent in exactly that case. The entire
+     defect being repaired is a pipeline that died on 2026-04-04 with nothing
+     watching it, so rebuilding it without an off-job alarm just resets the clock.
+
+     WHY StartInterval AND NOT StartCalendarInterval: the job it watches is a
+     StartCalendarInterval job, and a calendar job is SKIPPED outright when the
+     Mac is off at fire time (launchd does not catch up on wake). A watcher on
+     the same trigger class shares the suspect's failure mode, which is how you
+     get a deadman that is dead. Same lesson com.cole.daily-social-deadman
+     records after the job it watches went silent for sixteen days.
+
+     Every 30 minutes is cheap: it reads one JSON receipt and exits. It alarms
+     only once, and only after 09:00 with no delivered brief for today, so a
+     healthy day fires it ~48 times in silence.
+
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.morning-brief-deadman
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.morning-brief-deadman</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>__HOME__</string>
+    <key>USER</key><string>__USER__</string>
+    <key>LOGNAME</key><string>__USER__</string>
+    <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>__KIPI_REPO__/q-system/.q-system/scripts/morning-brief-deadman.py</string>
+  </array>
+  <key>StartInterval</key><integer>1800</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/morning-brief-deadman.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/morning-brief-deadman.err.log</string>
+</dict>
+</plist>

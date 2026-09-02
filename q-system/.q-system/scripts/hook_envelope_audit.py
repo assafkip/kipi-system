@@ -1,0 +1,519 @@
+#!/usr/bin/env python3
+"""Audit every hook that injects additionalContext for the envelope that DELIVERS.
+
+Scar (measured 2026-08-30, probe_hook_envelope.py, three headless `claude -p`
+runs with a positive control): Claude Code silently DISCARDS a hook's
+additionalContext unless it is nested as
+
+    {"hookSpecificOutput": {"hookEventName": "<Event>", "additionalContext": "..."}}
+
+Both other shapes were measured ABSENT:
+  - nested WITHOUT hookEventName   -> discarded
+  - top-level additionalContext    -> discarded (the scar already in token-guard.py)
+
+The published docs say hookEventName is optional. The docs are wrong. Nothing
+downstream can see the failure: every gate measures the OUTPUT, none check that
+the INPUT arrived. So the only defence is a static audit of the emitters, and
+this is it.
+
+Classification per emission site:
+  OK             hookSpecificOutput dict carrying BOTH hookEventName and
+                 additionalContext as literal keys.
+  NO_EVENT_NAME  hookSpecificOutput.additionalContext with no hookEventName. The
+                 payload never reaches the model.
+  TOP_LEVEL      additionalContext at the top level of the emitted object.
+                 Same outcome.
+  UNKNOWN        the envelope is not a literal dict at the emission site, so
+                 this tool cannot tell. Reported, never passed: a check that
+                 cannot see must not report green.
+
+Exit 0 when every site is OK, 1 when any site is NO_EVENT_NAME/TOP_LEVEL/UNKNOWN,
+2 when the self-test fails (the tool is not measuring what it claims).
+
+Usage:
+    hook_envelope_audit.py --self-test
+    hook_envelope_audit.py <path-or-dir> [<path-or-dir> ...]
+    hook_envelope_audit.py --json <path-or-dir> ...
+"""
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import os
+import re
+import sys
+import tempfile
+
+KEY_CONTEXT = "additionalContext"
+KEY_ENVELOPE = "hookSpecificOutput"
+KEY_EVENT = "hookEventName"
+
+OK = "OK"
+NO_EVENT_NAME = "NO_EVENT_NAME"
+TOP_LEVEL = "TOP_LEVEL"
+UNKNOWN = "UNKNOWN"
+
+SKIP_DIR_PARTS = {".git", "node_modules", "__pycache__", ".venv", "venv",
+                  "review-trees", ".mypy_cache", ".pytest_cache"}
+
+
+class Site:
+    __slots__ = ("path", "line", "verdict", "event", "detail")
+
+    def __init__(self, path, line, verdict, event=None, detail=""):
+        self.path = path
+        self.line = line
+        self.verdict = verdict
+        self.event = event
+        self.detail = detail
+
+    def as_dict(self):
+        return {"path": self.path, "line": self.line, "verdict": self.verdict,
+                "event": self.event, "detail": self.detail}
+
+    def __repr__(self):  # pragma: no cover - debugging aid
+        return "Site(%s:%s %s)" % (self.path, self.line, self.verdict)
+
+
+def _literal_keys(node):
+    """String keys of an ast.Dict, or None if any key is not a literal string."""
+    keys = []
+    for k in node.keys:
+        if k is None:  # {**other}
+            return None
+        if isinstance(k, ast.Constant) and isinstance(k.value, str):
+            keys.append(k.value)
+        else:
+            return None
+    return keys
+
+
+def _value_for(node, key):
+    for k, v in zip(node.keys, node.values):
+        if isinstance(k, ast.Constant) and k.value == key:
+            return v
+    return None
+
+
+def _event_name(envelope):
+    v = _value_for(envelope, KEY_EVENT)
+    if isinstance(v, ast.Constant) and isinstance(v.value, str):
+        return v.value
+    return "<non-literal>" if v is not None else None
+
+
+def audit_python(path, source=None):
+    """Every additionalContext emission site in a Python file, classified."""
+    if source is None:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            source = fh.read()
+    if KEY_CONTEXT not in source:
+        return []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        return [Site(path, getattr(exc, "lineno", 0) or 0, UNKNOWN,
+                     detail="unparseable: %s" % exc)]
+
+    sites = []
+    # Dicts that ARE the envelope: {"hookEventName": ..., "additionalContext": ...}
+    envelopes = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        keys = _literal_keys(node)
+        if keys is None:
+            # A dict with a computed/starred key that mentions the context key
+            # anywhere cannot be judged statically.
+            if any(isinstance(k, ast.Constant) and k.value == KEY_CONTEXT
+                   for k in node.keys if k is not None):
+                sites.append(Site(path, node.lineno, UNKNOWN,
+                                  detail="dict has non-literal or **-unpacked keys"))
+                envelopes.add(id(node))
+            continue
+        if KEY_CONTEXT not in keys:
+            continue
+        envelopes.add(id(node))
+        if KEY_EVENT in keys:
+            sites.append(Site(path, node.lineno, OK, event=_event_name(node)))
+        else:
+            sites.append(Site(path, node.lineno, NO_EVENT_NAME))
+
+    # An envelope nested under "hookSpecificOutput" is the delivering shape; one
+    # that is NOT nested there is top-level and is discarded too. Re-classify.
+    nested = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            v = _value_for(node, KEY_ENVELOPE)
+            if isinstance(v, ast.Dict) and id(v) in envelopes:
+                nested.add(id(v))
+        # out["hookSpecificOutput"] = {...}
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if (isinstance(tgt, ast.Subscript)
+                        and isinstance(tgt.slice, ast.Constant)
+                        and tgt.slice.value == KEY_ENVELOPE
+                        and isinstance(node.value, ast.Dict)
+                        and id(node.value) in envelopes):
+                    nested.add(id(node.value))
+
+    by_line = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict) and id(node) in envelopes:
+            by_line.setdefault(node.lineno, []).append(node)
+
+    out = []
+    for site in sites:
+        node = None
+        for cand in by_line.get(site.line, []):
+            node = cand
+            break
+        if site.verdict == UNKNOWN:
+            out.append(site)
+            continue
+        if node is not None and id(node) not in nested:
+            out.append(Site(path, site.line, TOP_LEVEL, event=site.event,
+                            detail="additionalContext is not inside a literal "
+                                   "hookSpecificOutput dict"))
+        else:
+            out.append(site)
+    return out
+
+
+TEXT_ENVELOPE_RE = re.compile(r'["\']?%s["\']?\s*[:=]' % KEY_ENVELOPE)
+
+# In shell/JS the same token appears three ways and only one of them is an
+# emission. Distinguishing them is the whole job: an audit that shouts on the
+# ~700 correct assertion lines in this repo's own hook tests is an audit the
+# fleet switches off, and then it protects nothing.
+#   emission :  {"additionalContext": "..."}        <- key of an object literal
+#   read     :  out["hookSpecificOutput"]["additionalContext"]
+#   assertion:  assert "additionalContext" not in out
+# So: the key must be FOLLOWED by a colon (it is a key, not an index or an
+# operand) and must NOT be immediately PRECEDED by '[' (that is a subscript).
+EMIT_KEY_RE = re.compile(r'(?<!\[)["\']%s["\']\s*:' % KEY_CONTEXT)
+COMMENT_LINE_RE = re.compile(r'^\s*#')
+
+
+def _strip_comment_lines(source):
+    """Blank out whole-line # comments, preserving line numbers.
+
+    The token-guard hook test opens with a six-line scar comment that quotes the
+    BROKEN envelope verbatim. Auditing prose as if it were code reported a defect
+    in the file whose entire purpose is asserting that defect is gone.
+    """
+    return "\n".join("" if COMMENT_LINE_RE.match(l) else l
+                      for l in source.split("\n"))
+
+
+def audit_text(path, source=None):
+    """Shell/JS fallback: brace-balanced read around each emitted context key."""
+    if source is None:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            source = fh.read()
+    scan = _strip_comment_lines(source)
+    sites = []
+    for m in EMIT_KEY_RE.finditer(scan):
+        line = scan.count("\n", 0, m.start()) + 1
+        start = scan.rfind("{", 0, m.start())
+        if start < 0:
+            sites.append(Site(path, line, TOP_LEVEL, detail="no enclosing object"))
+            continue
+        depth, end = 0, len(scan)
+        for i in range(start, len(scan)):
+            if scan[i] == "{":
+                depth += 1
+            elif scan[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        blob = scan[start:end]
+        before = scan[max(0, start - 120):start]
+        if KEY_EVENT not in blob:
+            sites.append(Site(path, line, NO_EVENT_NAME))
+        elif not TEXT_ENVELOPE_RE.search(before) and KEY_ENVELOPE not in blob:
+            sites.append(Site(path, line, TOP_LEVEL))
+        else:
+            ev = re.search(r'["\']%s["\']\s*:\s*["\']([A-Za-z]+)["\']' % KEY_EVENT, blob)
+            sites.append(Site(path, line, OK, event=ev.group(1) if ev else "<non-literal>"))
+    return sites
+
+
+def audit_file(path):
+    if path.endswith(".py"):
+        return audit_python(path)
+    return audit_text(path)
+
+
+def walk(roots):
+    for root in roots:
+        if os.path.isfile(root):
+            yield root
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_PARTS]
+            for name in filenames:
+                if name.endswith((".py", ".sh", ".js", ".ts")):
+                    yield os.path.join(dirpath, name)
+
+
+# --------------------------------------------------------------------------
+# Self-test. The three arms are the three shapes probe_hook_envelope.py measured
+# against a live model; this asserts the AUDIT agrees with the MEASUREMENT.
+# Without the two negative arms the audit could return OK unconditionally and
+# still look green, which is the exact failure this repo keeps hitting.
+# --------------------------------------------------------------------------
+SELF_TEST_CASES = [
+    ("good_nested", OK,
+     'import json,sys\n'
+     'sys.stdout.write(json.dumps({"hookSpecificOutput": '
+     '{"hookEventName": "UserPromptSubmit", "additionalContext": "x"}}))\n'),
+    ("nested_no_event_name", NO_EVENT_NAME,
+     'import json,sys\n'
+     'sys.stdout.write(json.dumps({"hookSpecificOutput": '
+     '{"additionalContext": "x"}}))\n'),
+    ("top_level", TOP_LEVEL,
+     'import json,sys\n'
+     'sys.stdout.write(json.dumps({"additionalContext": "x"}))\n'),
+    ("assigned_envelope", OK,
+     'import json,sys\n'
+     'out = {}\n'
+     'out["hookSpecificOutput"] = {"hookEventName": "SessionStart", '
+     '"additionalContext": "x"}\n'
+     'sys.stdout.write(json.dumps(out))\n'),
+    ("docstring_mention_only", None,
+     '"""Injects hookSpecificOutput.additionalContext somewhere else."""\n'
+     '# additionalContext is discussed here, never emitted\n'
+     'x = 1\n'),
+    ("computed_envelope", UNKNOWN,
+     'import json,sys\n'
+     'k = "additional" + "Context"\n'
+     'sys.stdout.write(json.dumps({"hookSpecificOutput": {k: "x"}, '
+     '"additionalContext": "y", **{}}))\n'),
+]
+
+SELF_TEST_SHELL = [
+    ("shell_good", OK,
+     'echo \'{"hookSpecificOutput": {"hookEventName": "SessionStart", '
+     '"additionalContext": "x"}}\'\n'),
+    ("shell_no_event_name", NO_EVENT_NAME,
+     'echo \'{"hookSpecificOutput": {"additionalContext": "x"}}\'\n'),
+    # The three shapes that are NOT emissions. Each of these was a live false
+    # positive against this repo's own hook tests before the text scanner learned
+    # to tell them apart; without these cases the scanner can regress to shouting
+    # on ~700 correct lines and nothing goes red.
+    ("shell_subscript_read", None,
+     'python3 -c "import sys,json; a=json.load(sys.stdin)'
+     "['hookSpecificOutput']['additionalContext']\"\n"),
+    ("shell_negative_assertion", None,
+     'python3 - <<EOF\n'
+     'assert "additionalContext" not in out, "must not be top-level"\n'
+     'EOF\n'),
+    ("shell_scar_comment", None,
+     '#!/usr/bin/env bash\n'
+     '# Scar: warn() printed top-level {"additionalContext": ...}, which is\n'
+     '#   ignored. Contract: nested hookSpecificOutput with hookEventName.\n'
+     'echo ok\n'),
+]
+
+
+def self_test(verbose=True):
+    failures = []
+    for name, expected, src in SELF_TEST_CASES:
+        got = audit_python("<%s>" % name, source=src)
+        verdicts = [s.verdict for s in got]
+        if expected is None:
+            ok = verdicts == []
+        else:
+            ok = verdicts == [expected]
+        if verbose:
+            print("  %-24s expected=%-14s got=%s" % (name, expected, verdicts))
+        if not ok:
+            failures.append((name, expected, verdicts))
+    for name, expected, src in SELF_TEST_SHELL:
+        verdicts = [s.verdict for s in audit_text("<%s>" % name, source=src)]
+        if verbose:
+            print("  %-24s expected=%-14s got=%s" % (name, expected, verdicts))
+        if verdicts != ([] if expected is None else [expected]):
+            failures.append((name, expected, verdicts))
+    return failures
+
+
+# --------------------------------------------------------------------------
+# Repair. Deliberately narrow: it only ever ADDS the missing hookEventName to a
+# hookSpecificOutput dict that already carries additionalContext, and it refuses
+# every other verdict. TOP_LEVEL needs a human to decide which event the payload
+# belongs to and where the envelope should live; UNKNOWN is by definition
+# unreadable. A repair that guessed at those would be the same class of defect
+# as the bug: a tool reporting success on work it could not see.
+# --------------------------------------------------------------------------
+def fix_no_event_name(path, event, source=None, dry_run=False):
+    """Insert hookEventName into every NO_EVENT_NAME site. Returns (n, text)."""
+    if source is None:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            source = fh.read()
+    sites = [s for s in (audit_python(path, source=source) if path.endswith(".py")
+                         else audit_text(path, source=source))
+             if s.verdict == NO_EVENT_NAME]
+    if not sites:
+        return 0, source
+    out = source
+    n = 0
+    # Rewrite right-to-left so earlier offsets stay valid.
+    for m in sorted(re.finditer(r'(["\'])%s\1(\s*):' % KEY_CONTEXT, out),
+                    key=lambda m: -m.start()):
+        line = out.count("\n", 0, m.start()) + 1
+        # Only touch a line the audit actually flagged.
+        if not any(abs(s.line - line) <= 6 for s in sites):
+            continue
+        head = out.rfind("{", 0, m.start())
+        if head < 0:
+            continue
+        seg = out[head:m.start()]
+        if KEY_EVENT in seg or KEY_EVENT in out[m.start():m.start() + 400]:
+            continue
+        q = m.group(1)
+        indent = ""
+        ls = out.rfind("\n", 0, m.start()) + 1
+        if out[ls:m.start()].strip() == "":
+            indent = out[ls:m.start()]
+            insert = "%s%s%s%s: %s%s%s,\n" % (q, KEY_EVENT, q, "", q, event, q)
+            insert = "%s%s%s: %s%s%s,\n%s" % (q + KEY_EVENT + q, "", "",
+                                               q, event, q, indent)
+        else:
+            insert = "%s%s%s: %s%s%s, " % (q, KEY_EVENT, q, q, event, q)
+        out = out[:m.start()] + insert + out[m.start():]
+        n += 1
+    if n and not dry_run:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(out)
+    return n, out
+
+
+def hook_mode():
+    """PostToolUse gate: block an edit that ships a discarded envelope.
+
+    Self-scoped by tool_input.file_path (token discipline: this must not walk a
+    tree on every Edit). Exit 2 = block with stderr fed back to Claude, exit 0 =
+    pass. Anything unreadable or unparseable passes -- a gate that cannot run
+    must not block the session, and the pytest layer catches what this misses.
+    """
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        return 0
+    path = (payload.get("tool_input") or {}).get("file_path") or ""
+    if not path.endswith((".py", ".sh", ".js", ".ts")):
+        return 0
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            source = fh.read()
+    except OSError:
+        return 0
+    if KEY_CONTEXT not in source:
+        return 0                      # the fast exit for every other edit
+    if self_test(verbose=False):
+        return 0                      # broken audit blocks nothing
+    sites = (audit_python(path, source=source) if path.endswith(".py")
+             else audit_text(path, source=source))
+    bad = [s for s in sites if s.verdict != OK]
+    if not bad:
+        return 0
+    lines = ["BLOCKED by hook_envelope_audit: this hook emits an envelope that "
+             "Claude Code DISCARDS.",
+             "",
+             "Measured 2026-08-30 (probe_hook_envelope.py, three headless runs "
+             "with a positive control): additionalContext reaches the model ONLY as",
+             '    {"hookSpecificOutput": {"hookEventName": "<Event>", '
+             '"additionalContext": "..."}}',
+             "Both a missing hookEventName and a top-level additionalContext were "
+             "measured ABSENT. The published docs call the key optional; they are wrong.",
+             ""]
+    for s in bad:
+        lines.append("  %s:%d  %s%s" % (s.path, s.line, s.verdict,
+                                        "  (%s)" % s.detail if s.detail else ""))
+    lines.append("")
+    lines.append("Set hookEventName to the event this hook is wired to. "
+                 "UNKNOWN means the envelope is not a literal dict here, so the "
+                 "audit cannot verify it -- make it literal, or move the emission "
+                 "to one chokepoint that is.")
+    sys.stderr.write("\n".join(lines) + "\n")
+    return 2
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("roots", nargs="*", help="files or directories to audit")
+    ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--fix", metavar="EVENT",
+                    help="add the missing hookEventName=EVENT to every "
+                         "NO_EVENT_NAME site (never TOP_LEVEL/UNKNOWN)")
+    ap.add_argument("--hook", action="store_true",
+                    help="PostToolUse mode: hook JSON on stdin, exit 2 to block")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--all", action="store_true",
+                    help="print OK sites too (default: only the broken ones)")
+    args = ap.parse_args(argv)
+
+    if args.hook:
+        return hook_mode()
+
+    if args.self_test:
+        print("self-test:")
+        failures = self_test()
+        if failures:
+            print("SELF-TEST FAILED: %r" % (failures,))
+            return 2
+        print("self-test OK (%d cases, incl. 3 negative arms)"
+              % (len(SELF_TEST_CASES) + len(SELF_TEST_SHELL)))
+        return 0
+
+    if not args.roots:
+        ap.error("give at least one path, or --self-test")
+
+    # The audit refuses to report on the fleet unless it can still tell the
+    # three shapes apart on this machine, today.
+    failures = self_test(verbose=False)
+    if failures:
+        print("SELF-TEST FAILED, refusing to audit: %r" % (failures,), file=sys.stderr)
+        return 2
+
+    if args.fix:
+        total, files = 0, 0
+        for path in walk(args.roots):
+            try:
+                n, _ = fix_no_event_name(path, args.fix)
+            except OSError:
+                continue
+            if n:
+                total += n
+                files += 1
+                print("fixed %d site(s) in %s" % (n, path))
+        print("\n%d site(s) across %d file(s)" % (total, files))
+
+    sites = []
+    for path in walk(args.roots):
+        try:
+            sites.extend(audit_file(path))
+        except OSError:
+            continue
+
+    bad = [s for s in sites if s.verdict != OK]
+    if args.json:
+        print(json.dumps([s.as_dict() for s in (sites if args.all else bad)], indent=2))
+    else:
+        shown = sites if args.all else bad
+        for s in sorted(shown, key=lambda s: (s.verdict, s.path, s.line)):
+            print("%-14s %s:%d%s%s" % (s.verdict, s.path, s.line,
+                                       "  event=%s" % s.event if s.event else "",
+                                       "  %s" % s.detail if s.detail else ""))
+        print("\n%d emission site(s), %d OK, %d broken"
+              % (len(sites), len(sites) - len(bad), len(bad)))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

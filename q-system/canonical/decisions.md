@@ -245,3 +245,92 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Revisit:** If alert tickets start needing to be worked automatically, the
   right move is a converter that turns one into a scoped issue, not re-admitting
   raw alert bodies to the queue.
+
+## Retire the 9-phase /q-morning pipeline (2026-08-30)
+
+### RULE-2026-08-30-A: The morning routine is one Slack message, not a 37-agent pipeline
+- **Origin:** [USER-DIRECTED]
+- **Decision:** The 9-phase `/q-morning` agent pipeline is RETIRED. It is replaced
+  by `q-system/.q-system/scripts/morning-brief.py`, a scheduled job
+  (`com.kipi.morning-brief`, 07:00 local) that posts one Slack message with four
+  sections: today's calendar, mail needing an answer, owed today, overnight jobs.
+  No HTML, no action cards, no scores. Its freshness is watched by a SEPARATE
+  launchd job, `com.kipi.morning-brief-deadman`, on a different trigger class.
+- **Reason:** Founder-directed 2026-08-30: fully automated, no HTML page, one
+  Slack message each morning. Measured the same day: the pipeline's last artifact
+  is `schedule-data-2026-04-04.json`, 148 days old, and `find . -name
+  'morning-log*'` returns zero files. It died silently and no decision record
+  retired it, so it was neither running nor formally dead.
+
+  Three causes, all measured, none of them fixable by trying again:
+  1. `preflight.md` probed `Google_Calendar__gcal_list_events` and
+     `Gmail__gmail_search_messages`. Both tools were renamed (`list_events`,
+     `search_threads`) and the fallback for both rows was "None. Halt."
+  2. The same table listed Chrome MCP as CRITICAL with fallback "None. Halt.",
+     so a headless run was impossible by construction. A 7am job has no browser.
+  3. It was never automated at all: it needed the founder to open a session and
+     type a command, and it returned an HTML page. An output nobody opens is the
+     same as no output.
+
+  Not revived rather than rebuilt because most of what the nine phases did
+  (LinkedIn posts, engagement hitlist, lead sourcing, prospect pipeline, content
+  intel) is covered TODAY by live `com.cole.*` launchd jobs. Reviving the
+  orchestrator would build a second copy of running work. What was genuinely
+  missing is only the briefing.
+- **Date:** 2026-08-30
+- **Revisit:** The 37 agent prompt files under
+  `q-system/.q-system/agent-pipeline/agents/` STAY ON DISK until the brief has
+  run green for a week (earliest removal 2026-09-06), and removing them is a
+  separate deliberate act, not a cleanup. `morning-pipeline.md` and
+  `preflight.md` still describe the retired pipeline; they are the follow-up.
+
+### RULE-2026-08-30-B: The morning brief lands in #general, not a DM or a new webhook
+- **Origin:** [SYSTEM-INFERRED]
+- **Decision:** The brief and the 4pm Linear digest both deliver to #general in
+  assafspace (C04Q71LA283) via the `colenotify` bot token, through
+  `q-system/.q-system/scripts/slack_founder.py`. That module tries an incoming
+  webhook FIRST and falls back to the bot token, so nothing changes the day a
+  webhook exists again.
+- **Reason:** `~/.config/kipi/slack-webhook` was retired 2026-08-19 and the two
+  alternatives both fail on the same rule. A founder-private DM is unreachable:
+  the bot token lacks `users:read` and `users:read.email` (both return
+  `missing_scope`), so the founder's user id cannot even be resolved, and
+  granting scopes is a Slack app-config change only he can make. Wiring a new
+  incoming webhook is likewise his action. Either would leave the brief
+  undelivered until he did something, and a design whose terminal state waits on
+  the founder is the design failing.
+
+  #general is the least-bad reachable channel and it is not a compromise on
+  privacy: it has three members, the bot plus two people. It is already where
+  `cole-gtm/gtm/scripts/lib/founder_notify.sh` sends founder-directed alerts
+  (founder-directed 2026-08-28) and where `slack_listener/poll.py` reads his
+  replies FROM, so it is proven two-way.
+
+  This does not reopen the 2026-08-10 decision that moved ALERTS off Slack. That
+  was about a flood: 100 messages in four and a half hours, 86 from two emitters.
+  This is one curated message a morning. Alerts still go to Linear.
+- **Date:** 2026-08-30
+- **Revisit:** When the bot gains `users:read` + `im:write`, or a founder webhook
+  exists, move to a private destination. Captured so it is not lost.
+
+### RULE-2026-08-30-C: "Owed today" leads with what is the founder's and counts the rest
+- **Origin:** [SYSTEM-INFERRED]
+- **Decision:** The brief's third section lists only issues carrying `owner:assaf`,
+  issues due today or overdue, and open loops flagged `needs_founder`. Everything
+  else assigned to him becomes one counted line per group, split by owner label.
+- **Reason:** Measured on the live board 2026-08-30 before choosing: 72 open
+  issues are assigned to the founder, 50 carry `owner:sana`, 1 carries
+  `owner:assaf`, 21 carry no owner label, and exactly 1 has a due date. The
+  literal spec rendered 15 engineering rows and "...and 57 more" -- his
+  engineer's queue presented as his day.
+
+  A due-date filter was the obvious alternative and would have been a guard that
+  cannot fire, since one issue in seventy-two carries a due date. Hence three
+  lead signals rather than one.
+
+  The tail is counted rather than dropped on purpose. 50 issues labelled
+  `owner:sana` sitting on the founder's assignee is itself a finding about the
+  board, and deleting the line would hide it every morning it goes unfixed.
+- **Date:** 2026-08-30
+- **Revisit:** When the `owner:` labels are complete (21 issues carry none) this
+  gets sharper. Re-measure then, do not assume.
