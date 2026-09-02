@@ -62,7 +62,7 @@ RETRIES = 3
 _sleep = time.sleep
 
 
-def _request(token, method, path, body=None, opener=None):
+def _request(token, method, path, body=None, opener=None, retry=True):
     req = urllib.request.Request(API + path, method=method, data=json.dumps(body).encode() if body is not None else None)
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Notion-Version", VERSION)
@@ -87,9 +87,48 @@ def _request(token, method, path, body=None, opener=None):
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             last = NotionError(f"{method} {path} -> {exc}")
             wait = float(attempt)
+        last.retryable, last.wait = True, wait
+        if not retry:
+            raise last from None  # the caller decides how to retry (a create is not idempotent)
         if attempt < RETRIES:
             _sleep(wait)
     raise last from None
+
+
+def _row_for(token, db_id, cid, opener=None):
+    """The page id holding corpus id `cid`, or None. Asked with a filter, and
+    filtered again client-side because the answer is what matters."""
+    page = _request(token, "POST", f"/databases/{db_id}/query",
+                    {"page_size": 5, "filter": {"property": "Id", "rich_text": {"equals": cid}}}, opener)
+    for row in page.get("results") or []:
+        spans = ((row.get("properties") or {}).get("Id") or {}).get("rich_text") or []
+        if "".join(s.get("plain_text") or (s.get("text") or {}).get("content", "") for s in spans).strip() == cid:
+            return row["id"]
+    return None
+
+
+def _create(token, db_id, lesson, opener=None):
+    """Create is NOT idempotent (PR #294 review round 7, major): a 5xx or a
+    dropped connection can answer a POST /pages that Notion already applied,
+    and a blind retry made a second row that no later sync reconciles. So a
+    failed create is never re-sent blind: the database is asked whether the
+    row landed, and only a confirmed absence is retried."""
+    body = {"parent": {"database_id": db_id}, "properties": _properties(lesson, created=True),
+            "children": _children(lesson["body"])}
+    last = None
+    for attempt in range(1, RETRIES + 1):
+        try:
+            _request(token, "POST", "/pages", body, opener, retry=False)
+            return
+        except NotionError as exc:
+            if not getattr(exc, "retryable", False):
+                raise
+            last = exc
+            if _row_for(token, db_id, lesson["id"], opener):
+                return  # it landed; the answer was lost, not the write
+            if attempt < RETRIES:
+                _sleep(exc.wait)
+    raise last
 
 
 def parse_lesson(path: Path) -> dict:
@@ -187,9 +226,7 @@ def sync(token, db_id, lessons, opener=None, out=print, lock_file=None) -> dict:
                         _request(token, "PATCH", f"/pages/{have[lesson['id']]}", {"properties": _properties(lesson, created=False)}, opener)
                         updated += 1
                     else:
-                        _request(token, "POST", "/pages", {"parent": {"database_id": db_id},
-                                                            "properties": _properties(lesson, created=True),
-                                                            "children": _children(lesson["body"])}, opener)
+                        _create(token, db_id, lesson, opener)
                         created += 1
                 except NotionError as exc:
                     # One lesson's refusal never leaves the rest unwritten; it

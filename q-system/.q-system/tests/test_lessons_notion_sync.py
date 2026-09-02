@@ -170,6 +170,31 @@ def test_a_429_is_retried_with_backoff_and_the_row_still_lands(tmp_path, monkeyp
     assert waits == [2.0], "a 400 is not retried"
 
 
+def test_a_create_whose_answer_was_lost_is_not_created_twice(tmp_path, monkeypatch):
+    """PR #294 review round 7, major: a 5xx or dropped connection can answer a
+    POST /pages that Notion already applied. Server applies the create, the
+    client sees 503: a blind retry made a duplicate row. Now the sync asks the
+    database whether the row landed before it retries."""
+    import urllib.error
+    m = _mod()
+    monkeypatch.setattr(m, "_sleep", lambda s: None)
+    fake = FakeNotion()
+    state = {"dropped": 0}
+
+    def opener(req, timeout):
+        resp = fake(req, timeout)  # the server APPLIES the request
+        if req.get_method() == "POST" and req.full_url.endswith("/pages") and state["dropped"] < 1:
+            state["dropped"] += 1
+            raise urllib.error.HTTPError(req.full_url, 503, "gateway timeout", {}, io.BytesIO(b""))
+        return resp
+
+    report = m.sync("tok", "db1", m.corpus(_corpus(tmp_path))[:1], opener=opener, out=lambda s: None)
+    assert report["ok"] and report["created"] == 1 and report["failed"] == 0, report
+    assert len(fake.rows) == 1, fake.rows
+    posts = [1 for meth, url, _ in fake.calls if meth == "POST" and url.endswith("/pages")]
+    assert len(posts) == 1, "the create was re-sent blind"
+
+
 def test_one_lesson_that_keeps_failing_does_not_leave_the_rest_unwritten(tmp_path, monkeypatch):
     import urllib.error
     m = _mod()
