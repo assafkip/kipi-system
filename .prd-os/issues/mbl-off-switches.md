@@ -1,7 +1,7 @@
 ---
 id: mbl-off-switches
 title: Every new job and writer has an off-switch, proven a no-op in the off state
-status: open
+status: closed
 priority: p1
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
@@ -35,4 +35,4 @@ Runs LAST. RED first against each module by import with tmp_path homes: (1) noti
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Every new job and writer has an off-switch, proven a no-op in the off state
+- [x] Every new job and writer has an off-switch, proven a no-op in the off state (test_off_switches.py: 8 cases asserting the absence of the on-state artifact; imports and the dry-run now run in subprocesses whose HOME and cwd are temp and the repo's output tree is snapshotted; the script set is derived from the brief's OPTIONAL_SECTIONS, the runner's STEPS and the weekly plist; docstrings parsed, not whole files; 7 mutants, one broken off-state each, killed; 7 Codex findings accepted and patched)
