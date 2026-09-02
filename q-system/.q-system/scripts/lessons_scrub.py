@@ -137,3 +137,18 @@ def tripwire_terms(path):
         if line and not line.startswith("#"):
             out.append(line)
     return out
+
+
+def instance_name_for(registry_path, instance_root):
+    """The registry NAME of the instance at instance_root, or None. Receipts
+    record this, never the absolute path (a path carries /Users/ and the
+    owner's name, and the receipts file fans out to every instance)."""
+    try:
+        data = json.loads(Path(registry_path).read_text())
+    except Exception:
+        return None
+    want = os.path.realpath(instance_root)
+    for entry in data.get("instances", []):
+        if os.path.realpath(entry.get("path", "")) == want:
+            return entry.get("name") or None
+    return None

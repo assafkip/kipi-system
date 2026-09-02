@@ -23,11 +23,12 @@ set -euo pipefail
 
 usage() { echo "usage: kipi promote [--decided-by NAME] <relative path under q-system/>" >&2; }
 
-DECIDED_BY="${USER:-unknown}"
+DECIDED_BY=""   # default is instance:<registry name>, set once the scrub resolves the name;
+                # the OS username is NOT a default: on the founder's machine it carries a tripwire term
 while [ $# -gt 0 ]; do
   case "$1" in
     --decided-by) [ -n "${2:-}" ] || { usage; exit 2; }; DECIDED_BY="$2"; shift 2 ;;
-    --decided-by=*) DECIDED_BY="${1#--decided-by=}"; shift ;;
+    --decided-by=*) DECIDED_BY="${1#--decided-by=}"; [ -n "$DECIDED_BY" ] || { usage; exit 2; }; shift ;;
     --) shift; break ;;
     -*) usage; exit 2 ;;
     *) break ;;
@@ -116,6 +117,7 @@ if clients is None:
     print("REFUSE no registry entry with an instance_q_dir for " + instance + "; cannot locate my-project/clients.json"); sys.exit(0)
 if not os.path.exists(clients):
     print("REFUSE clients file missing: " + clients); sys.exit(0)
+name = mod.instance_name_for(registry, instance) or ""
 terms = list(mod.codenames_from_registry(registry)) + mod.client_terms(clients)
 trip = mod.tripwire_terms(tripwire)
 with open(src, encoding="utf-8", errors="replace") as fh:
@@ -134,13 +136,15 @@ hits = [h for h in hits if h[0] not in ("path", "url")]
 if hits:
     print("REFUSE client data: " + "; ".join(f"{k}={v}" for k, v in hits[:5]))
 else:
-    print("CLEAN " + str(len(terms)) + " terms")
+    print("CLEAN " + name + " " + str(len(terms)) + " terms")
 PYSCRUB
 )" || refuse "scrub apparatus failed for $REL"
 case "$SCRUB_OUT" in
-  CLEAN*) SCRUB="clean (${SCRUB_OUT#CLEAN })" ;;
+  CLEAN*) INSTANCE_NAME="$(printf '%s' "$SCRUB_OUT" | awk '{print $2}')"; SCRUB="clean ($(printf '%s' "$SCRUB_OUT" | cut -d' ' -f3-))" ;;
   *) refuse "${SCRUB_OUT#REFUSE }" ;;
 esac
+[ -n "$INSTANCE_NAME" ] || refuse "the registry entry for $INSTANCE_REAL has no name"
+[ -n "$DECIDED_BY" ] || DECIDED_BY="instance:$INSTANCE_NAME"
 
 # --- the receipt slice lands in the next issue; until then this never promotes for real ---
 # The seam needs THREE things: pytest's marker, the explicit opt-in, and an
@@ -157,6 +161,17 @@ esac
 if [ -z "${PYTEST_CURRENT_TEST:-}" ] || [ "${KIPI_PROMOTE_UNSCRUBBED:-}" != "1" ] || [ "$_tmp_rooted" != "1" ]; then
   echo "kipi promote: containment passed for $REL, but the scrub and receipt slices are not built yet; nothing copied" >&2
   exit 3
+fi
+
+# BASE: the skeleton's blob at this path BEFORE the copy ("" when new). The
+# receipt records it and the lessons guard honours the receipt only while the
+# skeleton still holds that base; once the skeleton moves past the promotion
+# (an edit, a lint pass) a stale instance can no longer push the receipted
+# version back over it (Claude adversarial review, issue 9).
+BASE=""
+if [ -e "$DEST" ]; then
+  BASE="$(git -C "$INSTANCE_REAL" hash-object --path "$REL" "$DEST" 2>/dev/null || true)"
+  [ -n "$BASE" ] || refuse "could not hash the skeleton's current $REL"
 fi
 
 # The copy IS the containment. The bash checks above give early, readable
@@ -223,15 +238,26 @@ PYCOPY
 # the skeleton at q-system/.q-system/promotions.jsonl (the guard reads it from
 # FETCH_HEAD, issue 11). Two-phase writing under a lock is issue 10.
 RECEIPTS="$SKELETON/q-system/.q-system/promotions.jsonl"
-BLOB="$(git hash-object "$DEST")"
+# Hashed with the INSTANCE's attributes (-C, --path) so the blob is the one its
+# ls-tree reports, whatever the caller's cwd repo filters; `|| true` so a
+# missing git reaches refuse instead of exiting under set -e (Claude review).
+BLOB="$(git -C "$INSTANCE_REAL" hash-object --path "$REL" "$DEST" 2>/dev/null || true)"
 [ -n "$BLOB" ] || refuse "could not hash the promoted file $DEST"
-[ "$BLOB" = "$(git hash-object "$INSTANCE_REAL/$REL")" ] || refuse "copy does not match the source after promotion ($REL)"
+[ "$BLOB" = "$(git -C "$INSTANCE_REAL" hash-object --path "$REL" "$INSTANCE_REAL/$REL" 2>/dev/null || true)" ] || refuse "copy does not match the source after promotion ($REL)"
 mkdir -p "$(dirname "$RECEIPTS")"
-python3 - "$RECEIPTS" "$REL" "$BLOB" "$INSTANCE_REAL" "$DECIDED_BY" "$SCRUB" <<'PYRECEIPT' || refuse "could not write the receipt for $REL"
+# from_instance is the registry NAME, never the absolute path: a path carries
+# /Users/ and the owner's name, and this file fans out to every instance where
+# the push tripwire would then refuse every push (Claude review, blocker).
+python3 - "$RECEIPTS" "$REL" "$BLOB" "$INSTANCE_NAME" "$DECIDED_BY" "$SCRUB" "$PROMOTE_HOME/q-system/.q-system/scripts/tripwire-terms.txt" "$BASE" <<'PYRECEIPT' || refuse "receipt refused for $REL: a field carries a tripwire term (this file fans out to every instance), or it could not be written"
 import datetime, json, sys
-path, rel, blob, inst, who, scrub = sys.argv[1:7]
-row = {"path": rel, "blob": blob, "from_instance": inst, "decided_by": who, "scrub": scrub, "status": "done",
+path, rel, blob, inst, who, scrub, tripwire, base = sys.argv[1:9]
+row = {"path": rel, "blob": blob, "base": base, "from_instance": inst, "decided_by": who, "scrub": scrub, "status": "done",
        "at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%z")}
+# the row itself is scrubbed: it lands in every instance's q-system/ where the push tripwire greps
+terms = [l.strip() for l in open(tripwire, encoding="utf-8") if l.strip() and not l.startswith("#")]
+line = json.dumps(row)
+if any(t.lower() in line.lower() for t in terms):
+    sys.exit(1)
 with open(path, "a", encoding="utf-8") as fh:
     fh.write(json.dumps(row) + "\n")
 PYRECEIPT

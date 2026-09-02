@@ -370,7 +370,7 @@ def _repos(tmp_path, receipts=None):
     (skel / "q-system" / ".q-system" / "scripts").mkdir(parents=True)
     (skel / "q-system" / "lessons" / "a.md").write_text("---\ntitle: A\n---\noriginal body\n")
     # a second lesson keeps the instance's lessons dict non-empty after a.md is
-    # deleted; the guard skips everything when it is empty (captured, sp below)
+    # deleted; the guard skips everything when it is empty (captured: sp-57cd7332)
     (skel / "q-system" / "lessons" / "b.md").write_text("---\ntitle: B\n---\nanother body\n")
     (skel / "q-system" / ".q-system" / "promotions.jsonl").write_text("".join(json.dumps(r) + "\n" for r in (receipts or [])))
     shutil.copy(ROOT / "q-system" / ".q-system" / "scripts" / "tripwire-terms.txt", skel / "q-system" / ".q-system" / "scripts" / "tripwire-terms.txt")
@@ -397,14 +397,66 @@ def _diverge(inst, body="a promoted change\n"):
     return _blob(inst / "q-system" / "lessons" / "a.md")
 
 
-def _add_receipt(skel, bare, row):
+def _add_receipt(skel, bare, inst, row):
+    """The skeleton records a receipt, then the instance receives it the only
+    way it can in production: the updater's fan-out (copied and committed here)."""
+    import shutil
     with open(skel / "q-system" / ".q-system" / "promotions.jsonl", "a") as fh:
         fh.write(json.dumps(row) + "\n")
     _git(skel, "commit", "-qam", "receipt"); _git(skel, "push", "-q", "origin", "HEAD:main")
+    shutil.copy(skel / "q-system" / ".q-system" / "promotions.jsonl", inst / "q-system" / ".q-system" / "promotions.jsonl")
+    _git(inst, "commit", "-qam", "fan-out of the receipt")
 
 
-def _row(blob, status="done", path="q-system/lessons/a.md"):
-    return {"path": path, "blob": blob, "from_instance": "inst", "decided_by": "sana", "scrub": "clean", "status": status, "at": "2026-09-02T00:00:00+0000"}
+ORIGINAL_A = "---\ntitle: A\n---\noriginal body\n"
+
+
+def _row(blob, status="done", path="q-system/lessons/a.md", base=None):
+    """base defaults to the blob of the seeded a.md, the skeleton's content at
+    promotion time; the guard honours the receipt only while the skeleton
+    still holds it."""
+    if base is None:
+        base = subprocess.run(["git", "hash-object", "--stdin"], input=ORIGINAL_A, capture_output=True, text=True, check=True).stdout.strip()
+    return {"path": path, "blob": blob, "base": base, "from_instance": "inst", "decided_by": "sana", "scrub": "clean", "status": status, "at": "2026-09-02T00:00:00+0000"}
+
+
+def test_a_receipt_is_spent_once_the_skeleton_moves_past_it(tmp_path):
+    """Claude adversarial (issue 9): a done receipt was valid forever, so a stale
+    instance could push the receipted version back over the skeleton's newer one."""
+    bare, skel, inst = _repos(tmp_path)
+    blob = _diverge(inst)
+    _add_receipt(skel, bare, inst,_row(blob))
+    assert "promotion receipt honoured" in (lambda r: r.stdout + r.stderr)(_push(inst, bare))
+    (skel / "q-system" / "lessons" / "a.md").write_text("---\ntitle: A\n---\nthe skeleton moved on\n")
+    _git(skel, "commit", "-qam", "skeleton edit"); _git(skel, "push", "-q", "origin", "HEAD:main")
+    r = _push(inst, bare)
+    assert r.returncode == 1 and "lessons/ differs from skeleton: lessons/a.md" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_an_instance_planted_receipt_is_refused(tmp_path):
+    """Claude adversarial (issue 9): the receipts file ships inside the pushed
+    subtree; an instance appending its own row must not pass."""
+    bare, skel, inst = _repos(tmp_path)
+    blob = _diverge(inst)
+    with open(inst / "q-system" / ".q-system" / "promotions.jsonl", "a") as fh:
+        fh.write(json.dumps(_row(blob)) + "\n")
+    _git(inst, "commit", "-qam", "planted receipt")
+    r = _push(inst, bare)
+    out = r.stdout + r.stderr
+    assert r.returncode == 1 and "promotions.jsonl differs from skeleton" in out and "honoured" not in out, out
+    # even with NO lesson divergence the planted file alone refuses
+    _git(inst, "checkout", "-q", "HEAD~2", "--", "q-system/lessons/a.md"); _git(inst, "commit", "-qam", "undo lesson")  # HEAD~2 is the seed
+    r = _push(inst, bare)
+    assert r.returncode == 1 and "promotions.jsonl differs from skeleton" in r.stdout + r.stderr
+
+
+def test_a_receipt_with_a_non_string_blob_is_no_receipt(tmp_path):
+    bare, skel, inst = _repos(tmp_path)
+    blob = _diverge(inst)
+    row = _row(blob); row["blob"] = ["x"]
+    _add_receipt(skel, bare, inst,row)
+    r = _push(inst, bare)
+    assert r.returncode == 1 and "Traceback" not in r.stdout + r.stderr and "lessons/ differs" in r.stdout + r.stderr
 
 
 def test_no_receipt_refused(tmp_path):
@@ -418,7 +470,7 @@ def test_stale_receipt_refused(tmp_path):
     """The receipt was for an earlier content; the file changed after it."""
     bare, skel, inst = _repos(tmp_path)
     old = _diverge(inst, "the promoted body\n")
-    _add_receipt(skel, bare, _row(old))
+    _add_receipt(skel, bare, inst,_row(old))
     _diverge(inst, "edited again after the receipt\n")
     r = _push(inst, bare)
     assert r.returncode == 1 and "lessons/ differs from skeleton: lessons/a.md" in r.stdout + r.stderr, r.stdout + r.stderr
@@ -427,7 +479,7 @@ def test_stale_receipt_refused(tmp_path):
 def test_matching_done_receipt_passes_the_lessons_guard(tmp_path):
     bare, skel, inst = _repos(tmp_path)
     blob = _diverge(inst)
-    _add_receipt(skel, bare, _row(blob))
+    _add_receipt(skel, bare, inst,_row(blob))
     r = _push(inst, bare)
     out = r.stdout + r.stderr
     assert "lessons/ differs" not in out and "skeleton-authored" not in out, out
@@ -439,7 +491,7 @@ def test_a_pending_receipt_does_not_pass(tmp_path):
     copy) must never bless a divergent lesson."""
     bare, skel, inst = _repos(tmp_path)
     blob = _diverge(inst)
-    _add_receipt(skel, bare, _row(blob, status="pending"))
+    _add_receipt(skel, bare, inst,_row(blob, status="pending"))
     r = _push(inst, bare)
     assert r.returncode == 1 and "lessons/ differs from skeleton: lessons/a.md" in r.stdout + r.stderr, r.stdout + r.stderr
 
@@ -447,7 +499,7 @@ def test_a_pending_receipt_does_not_pass(tmp_path):
 def test_deletion_and_uncommitted_edits_stay_refused_even_with_a_receipt(tmp_path):
     bare, skel, inst = _repos(tmp_path)
     blob = _diverge(inst)
-    _add_receipt(skel, bare, _row(blob))
+    _add_receipt(skel, bare, inst,_row(blob))
     (inst / "q-system" / "lessons" / "a.md").write_text("uncommitted\n")
     r = _push(inst, bare)
     assert r.returncode == 1 and "uncommitted change under lessons/" in r.stdout + r.stderr
@@ -465,8 +517,62 @@ def test_promote_writes_a_receipt_bound_to_the_blob(tmp_path):
     assert len(rows) == 1
     row = rows[0]
     assert row["path"] == "q-system/lessons/general.md" and row["blob"] == _blob(inst / "q-system" / "lessons" / "general.md")
-    assert row["status"] == "done" and row["scrub"].startswith("clean") and row["from_instance"] == str(inst.resolve())
-    assert row["decided_by"] == os.environ.get("USER") and row["at"]
+    assert row["base"] == "", "a new file in the skeleton has no base"
+    assert row["status"] == "done" and row["scrub"].startswith("clean")
+    (inst / "q-system" / "lessons" / "general.md").write_text("---\ntitle: A general lesson\n---\nsecond version\n")
+    assert _promote(tmp_path, "q-system/lessons/general.md").returncode == 0
+    rows = [json.loads(l) for l in (skel / RECEIPTS_REL).read_text().splitlines()]
+    assert rows[-1]["base"] == row["blob"], "the second promotion records the first as its base"
+    # the registry NAME, never the absolute path: a path carries /Users/ and the
+    # owner's name into a file that fans out to every instance (Claude review, blocker)
+    assert row["from_instance"] == "consulting", row
+    assert "/Users/" not in (skel / RECEIPTS_REL).read_text() and str(inst) not in (skel / RECEIPTS_REL).read_text()
+    assert row["decided_by"] == "instance:consulting" and row["at"], "the OS username is not a default: it can carry a tripwire term"
+
+
+def test_a_decider_carrying_a_tripwire_term_is_refused(tmp_path):
+    inst, skel = _trees(tmp_path)
+    env = dict(os.environ, KIPI_PROMOTE_INSTANCE=str(inst), KIPI_PROMOTE_SKELETON=str(skel), KIPI_PROMOTE_UNSCRUBBED="1",
+               KIPI_PROMOTE_REGISTRY=str(tmp_path / "instance-registry.json"))
+    r = subprocess.run(["/bin/bash", str(PROMOTE), "--decided-by", "assafk", "q-system/lessons/general.md"], capture_output=True, text=True, env=env, cwd=inst, timeout=20)
+    assert r.returncode == 2 and "tripwire" in r.stderr, r.stderr
+    assert "assafk" not in (skel / RECEIPTS_REL).read_text() if (skel / RECEIPTS_REL).exists() else True
+
+
+def test_receipt_rows_never_trip_the_push_tripwire(tmp_path):
+    """The receipts file fans out; a row that contained a tripwire term would
+    refuse every push from every instance at the pre-push grep."""
+    inst, skel = _trees(tmp_path)
+    assert _promote(tmp_path, "q-system/lessons/general.md").returncode == 0
+    sys.path.insert(0, str(ROOT / "q-system" / ".q-system" / "scripts"))
+    import lessons_scrub
+    text = (skel / RECEIPTS_REL).read_text().lower()
+    for term in lessons_scrub.tripwire_terms(ROOT / "q-system" / ".q-system" / "scripts" / "tripwire-terms.txt"):
+        assert term.lower() not in text, term
+
+
+def test_a_damaged_receipt_line_is_no_receipt_not_a_crash(tmp_path):
+    """Claude review: a non-dict JSON line raised in the guard and blocked every push."""
+    bare, skel, inst = _repos(tmp_path, receipts=[])
+    import shutil
+    with open(skel / "q-system" / ".q-system" / "promotions.jsonl", "a") as fh:
+        fh.write("[]\n1\n\"x\"\n{not json\n")
+    _git(skel, "commit", "-qam", "damaged"); _git(skel, "push", "-q", "origin", "HEAD:main")
+    shutil.copy(skel / "q-system" / ".q-system" / "promotions.jsonl", inst / "q-system" / ".q-system" / "promotions.jsonl")
+    _git(inst, "commit", "-qam", "fan-out")  # the instance received the damaged file the normal way
+    r = _push(inst, bare)  # no divergence: the guard must pass through to the push stage
+    out = r.stdout + r.stderr
+    assert "Traceback" not in out and "skeleton-authored" not in out, out
+    assert "Pushing to skeleton" in out, out
+
+
+def test_empty_decided_by_is_refused_in_both_spellings(tmp_path):
+    inst, skel = _trees(tmp_path)
+    env = dict(os.environ, KIPI_PROMOTE_INSTANCE=str(inst), KIPI_PROMOTE_SKELETON=str(skel), KIPI_PROMOTE_UNSCRUBBED="1",
+               KIPI_PROMOTE_REGISTRY=str(tmp_path / "instance-registry.json"))
+    for args in (["--decided-by", "", "q-system/lessons/general.md"], ["--decided-by=", "q-system/lessons/general.md"]):
+        r = subprocess.run(["/bin/bash", str(PROMOTE), *args], capture_output=True, text=True, env=env, cwd=inst, timeout=20)
+        assert r.returncode == 2 and "usage" in r.stderr, args
 
 
 def test_promote_decided_by_flag(tmp_path):

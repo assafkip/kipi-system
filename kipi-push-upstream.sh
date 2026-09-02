@@ -89,13 +89,32 @@ def receipts():
             row = json.loads(line)
         except ValueError:
             continue
-        if row.get("status") != "done" or not row.get("blob"):
+        if not isinstance(row, dict):
+            continue  # a damaged line is no receipt, never a traceback that blocks every push
+        if row.get("status") != "done" or not isinstance(row.get("blob"), str) or not row["blob"]:
+            continue
+        base = row.get("base", "")
+        if not isinstance(base, str):
             continue
         p = "/" + str(row.get("path", ""))
         if "/lessons/" not in p:
             continue
-        out.setdefault("lessons/" + p.split("/lessons/", 1)[1], set()).add(row["blob"])
+        out.setdefault("lessons/" + p.split("/lessons/", 1)[1], set()).add((row["blob"], base))
     return out
+def blob_at(ref, path):
+    """The blob of one path at a ref, "" when absent."""
+    try:
+        out = subprocess.run(["git", "ls-tree", ref, "--", path], capture_output=True, text=True, check=True).stdout.split()
+        return out[2] if len(out) >= 3 else ""
+    except Exception:
+        return ""
+# The receipts file itself ships inside the pushed subtree, so an instance could
+# append its own row and push it (Claude adversarial review, issue 9). Receipts
+# are skeleton-authored: any instance-side difference in that file refuses.
+RECEIPTS_PATH = prefix.rstrip("/") + "/.q-system/promotions.jsonl"
+if blob_at("HEAD", RECEIPTS_PATH) != blob_at("FETCH_HEAD", RECEIPTS_PATH):
+    sys.stderr.write("promotions.jsonl differs from skeleton: receipts are skeleton-authored, run kipi update\n")
+    sys.exit(1)
 inst = lessons("HEAD") or {}
 if inst:
     skel = lessons("FETCH_HEAD")
@@ -106,7 +125,10 @@ if inst:
     for rel, blob in inst.items():
         if skel.get(rel) != blob:
             # a divergent lesson passes ONLY on a done receipt for exactly this blob
-            if blob in blessed.get(rel, ()):
+            # whose recorded base is what the skeleton holds NOW: once the skeleton
+            # moved past the promotion the receipt is spent, and a stale instance
+            # cannot push the receipted version back over the newer one
+            if (blob, skel.get(rel, "")) in blessed.get(rel, ()):
                 sys.stdout.write("promotion receipt honoured: " + rel + " (blob " + blob[:12] + ")\n")
                 continue
             sys.stderr.write("lessons/ differs from skeleton: " + rel + "\n")

@@ -7,6 +7,7 @@ parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:
   - kipi-promote.sh
   - kipi-push-upstream.sh
+  - q-system/.q-system/scripts/lessons_scrub.py
   - q-system/.q-system/tests/test_promotion_receipt.py
 disallowed_files:
   - .claude/**
