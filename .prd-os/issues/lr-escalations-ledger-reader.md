@@ -1,7 +1,7 @@
 ---
 id: lr-escalations-ledger-reader
 title: The escalations ledger gets a reader (summary) and a bound (last 200 rows)
-status: open
+status: closed
 priority: p1
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:
@@ -36,4 +36,4 @@ RED first: lessons_streak.py summary prints the current streak and the escalatio
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] The escalations ledger gets a reader (summary) and a bound (last 200 rows)
+- [x] The escalations ledger gets a reader (summary) and a bound (last 200 rows)

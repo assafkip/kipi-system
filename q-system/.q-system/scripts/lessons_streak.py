@@ -124,10 +124,17 @@ def append_escalation(ledger: Path, streak: int, threshold: int) -> dict:
     row = {"at": _now(), "streak": int(streak), "threshold": int(threshold),
            "action": "escalated: streak line alerted and this row recorded"}
     with _Locked(ledger):
-        good, _bad = _rows(ledger)
-        good.append(row)
-        keep = good[-LEDGER_KEEP:]
-        _replace(ledger, "".join(json.dumps(r) + "\n" for r in keep))
+        # Retention works on RAW lines, never on the parsed rows: rewriting only
+        # the parseable rows silently deleted every malformed line, so `summary`
+        # could never report the count it claims to (Codex standard review,
+        # issue lr-escalations-ledger-reader). A bad line stays visible until it
+        # ages out of the last LEDGER_KEEP lines.
+        try:
+            lines = [l for l in ledger.read_text().splitlines() if l.strip()]
+        except OSError:
+            lines = []
+        lines.append(json.dumps(row))
+        _replace(ledger, "".join(l + "\n" for l in lines[-LEDGER_KEEP:]))
     return row
 
 

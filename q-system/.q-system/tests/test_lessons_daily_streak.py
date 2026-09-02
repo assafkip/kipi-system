@@ -208,5 +208,70 @@ def test_the_rule_is_stated_next_to_the_branch():
     assert 0 < branch_at - rule_at <= 15, f"rule at line {rule_at + 1} is not next to the branch at line {branch_at + 1}"
 
 
+# ---- issue lr-escalations-ledger-reader (Codex finding-8) --------------------
+
+def _streak_py(tmp_path, *args):
+    return subprocess.run([sys.executable, str(STREAK_PY), "--file", str(tmp_path / "streak.json"),
+                           "--ledger", str(tmp_path / "escalations.jsonl"), *args],
+                          capture_output=True, text=True)
+
+
+def test_ledger_is_bounded_to_the_last_200_rows(tmp_path):
+    for n in range(1, 251):
+        assert _streak_py(tmp_path, "append-escalation", "--streak", str(n), "--threshold", "3").returncode == 0
+    rows = [json.loads(l) for l in (tmp_path / "escalations.jsonl").read_text().splitlines()]
+    assert len(rows) == 200 and rows[0]["streak"] == 51 and rows[-1]["streak"] == 250
+
+
+def test_summary_reports_streak_and_recent_escalations(tmp_path):
+    for _ in range(4):
+        _streak_py(tmp_path, "bump", "--outcome", "fail")
+    _streak_py(tmp_path, "append-escalation", "--streak", "3", "--threshold", "3")
+    _streak_py(tmp_path, "append-escalation", "--streak", "4", "--threshold", "3")
+    old = json.dumps({"at": "2020-01-01T00:00:00+0000", "streak": 9, "threshold": 3, "action": "old"})
+    with open(tmp_path / "escalations.jsonl", "a") as fh:
+        fh.write(old + "\n" + "{not json\n")
+    r = _streak_py(tmp_path, "summary")
+    assert r.returncode == 0 and r.stdout.strip() == "streak 4, 2 escalations in 30d (1 malformed ledger rows skipped)", r.stdout
+    j = json.loads(_streak_py(tmp_path, "summary", "--json").stdout)
+    assert j["streak"] == 4 and j["escalations_30d"] == 2 and j["malformed_rows"] == 1
+    assert [row["streak"] for row in j["recent"]] == [3, 4]
+
+
+def test_summary_with_nothing_on_disk_is_zero_not_an_error(tmp_path):
+    r = _streak_py(tmp_path, "summary")
+    assert r.returncode == 0 and r.stdout.strip() == "streak 0, 0 escalations in 30d"
+
+
+def test_a_malformed_row_survives_the_next_append_and_stays_counted(tmp_path):
+    """Codex (issue 3 standard review): an append that rewrites only the
+    parseable rows silently deletes a bad line, so summary can never report it."""
+    (tmp_path / "escalations.jsonl").write_text("{not json\n")
+    assert _streak_py(tmp_path, "append-escalation", "--streak", "3", "--threshold", "3").returncode == 0
+    rows = (tmp_path / "escalations.jsonl").read_text().splitlines()
+    assert rows[0] == "{not json" and json.loads(rows[1])["streak"] == 3 and len(rows) == 2
+    assert json.loads(_streak_py(tmp_path, "summary", "--json").stdout)["malformed_rows"] == 1
+
+
+def test_retention_counts_raw_lines_so_a_bad_line_ages_out_not_vanishes(tmp_path):
+    (tmp_path / "escalations.jsonl").write_text("{not json\n")
+    for n in range(1, 200):
+        _streak_py(tmp_path, "append-escalation", "--streak", str(n), "--threshold", "3")
+    rows = (tmp_path / "escalations.jsonl").read_text().splitlines()
+    assert len(rows) == 200 and rows[0] == "{not json", "199 appends keep the bad line as line 1 of 200"
+    _streak_py(tmp_path, "append-escalation", "--streak", "200", "--threshold", "3")
+    rows = (tmp_path / "escalations.jsonl").read_text().splitlines()
+    assert len(rows) == 200 and json.loads(rows[0])["streak"] == 1, "the 200th append ages the bad line out"
+
+
+def test_escalated_notify_line_carries_the_summary(tmp_path):
+    lines = []
+    for _ in range(4):
+        _, notify_log = _run(tmp_path, propagate_ok=False)
+        lines.append(notify_log.read_text().strip().splitlines()[-1])
+    assert "streak 3, 1 escalations in 30d" in lines[2], lines[2]
+    assert "streak 4, 2 escalations in 30d" in lines[3], lines[3]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", *sys.argv[1:]]))
