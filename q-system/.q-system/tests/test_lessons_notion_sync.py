@@ -106,6 +106,44 @@ def test_second_sync_updates_and_never_touches_founder_columns(tmp_path):
     assert "children" not in patch, "content is written at creation, not rewritten over the founder's edits"
 
 
+def test_two_syncs_at_once_create_one_row_not_two(tmp_path, monkeypatch):
+    """PR #294 review round 3, major: sync() snapshots the database, then creates
+    the missing pages. Two syncs (the nightly job and a by-hand run) that both
+    snapshot before either creates would each create the same corpus id. The
+    sync holds an exclusive file lock for its whole read-then-write, so the
+    second one snapshots AFTER the first has written and updates instead."""
+    import threading, time
+    m = _mod()
+    monkeypatch.setenv("KIPI_STATE_DIR", str(tmp_path / "state"))
+    m = _mod()  # STATE_DIR is read at import; re-load under the tmp state dir
+    lessons = m.corpus(_corpus(tmp_path))[:1]
+    fake = FakeNotion()
+    gate, first_query_seen = threading.Event(), threading.Event()
+    log = []
+
+    def opener(req, timeout):
+        name = threading.current_thread().name
+        log.append((name, req.get_method(), req.full_url.rsplit("/", 1)[1]))
+        if req.get_method() == "POST" and req.full_url.endswith("/query") and not first_query_seen.is_set():
+            first_query_seen.set()
+            gate.wait(5)  # A has its snapshot; hold it here while B tries to start
+        return fake(req, timeout)
+
+    a = threading.Thread(target=m.sync, args=("tok", "db1", lessons), kwargs={"opener": opener, "out": lambda s: None}, name="A")
+    b = threading.Thread(target=m.sync, args=("tok", "db1", lessons), kwargs={"opener": opener, "out": lambda s: None}, name="B")
+    a.start()
+    assert first_query_seen.wait(5)
+    b.start()
+    time.sleep(0.3)
+    assert not any(n == "B" for n, _, _ in log), "B reached Notion while A held the sync lock"
+    gate.set()
+    a.join(5); b.join(5)
+    assert not a.is_alive() and not b.is_alive()
+    creates = [1 for _, meth, tail in log if meth == "POST" and tail == "pages"]
+    assert len(creates) == 1 and len(fake.rows) == 1, (log, fake.rows)
+    assert any(n == "B" and meth == "PATCH" for n, meth, _ in log), "B must update the row A created"
+
+
 def test_off_without_credentials_touches_nothing(tmp_path):
     env = dict(os.environ, KIPI_STATE_DIR=str(tmp_path / "no-creds"))
     r = subprocess.run([sys.executable, str(SCRIPT), "--lessons-dir", str(_corpus(tmp_path))], capture_output=True, text=True, env=env)

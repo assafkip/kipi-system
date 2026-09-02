@@ -19,6 +19,7 @@ Contract:
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -34,6 +35,12 @@ LESSONS = HERE.parent.parent / "lessons"
 STATE_DIR = Path(os.environ.get("KIPI_STATE_DIR") or (Path.home() / ".config" / "kipi"))
 TOKEN_FILE = STATE_DIR / "notion-token"
 DB_FILE = STATE_DIR / "notion-lessons-db"
+# One sync at a time (PR #294 review round 3, major): sync() snapshots the
+# database and then creates what is missing, so two runs (the nightly job and
+# a by-hand run) that both snapshot before either writes would each create the
+# same corpus id. flock is per open file description, so this serialises two
+# processes AND two threads; the second run snapshots after the first wrote.
+LOCK_FILE = STATE_DIR / "notion-lessons-sync.lock"
 API = "https://api.notion.com/v1"
 VERSION = "2022-06-28"
 TIMEOUT = 20
@@ -139,18 +146,25 @@ def existing_rows(token, db_id, opener=None) -> dict:
         cursor = page.get("next_cursor")
 
 
-def sync(token, db_id, lessons, opener=None, out=print) -> dict:
-    have = existing_rows(token, db_id, opener)
-    created = updated = 0
-    for lesson in lessons:
-        if lesson["id"] in have:
-            _request(token, "PATCH", f"/pages/{have[lesson['id']]}", {"properties": _properties(lesson, created=False)}, opener)
-            updated += 1
-        else:
-            _request(token, "POST", "/pages", {"parent": {"database_id": db_id},
-                                                "properties": _properties(lesson, created=True),
-                                                "children": _children(lesson["body"])}, opener)
-            created += 1
+def sync(token, db_id, lessons, opener=None, out=print, lock_file=None) -> dict:
+    lock_path = Path(lock_file or LOCK_FILE)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)  # held across the snapshot AND the writes
+        try:
+            have = existing_rows(token, db_id, opener)
+            created = updated = 0
+            for lesson in lessons:
+                if lesson["id"] in have:
+                    _request(token, "PATCH", f"/pages/{have[lesson['id']]}", {"properties": _properties(lesson, created=False)}, opener)
+                    updated += 1
+                else:
+                    _request(token, "POST", "/pages", {"parent": {"database_id": db_id},
+                                                        "properties": _properties(lesson, created=True),
+                                                        "children": _children(lesson["body"])}, opener)
+                    created += 1
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
     report = {"ok": True, "created": created, "updated": updated, "total": len(lessons)}
     out(json.dumps(report))
     return report
