@@ -163,6 +163,32 @@ def deny(route):
 '''
 
 
+def _system_message(proc):
+    """The text a real Stop-hook consumer sees, or a failure saying why not.
+
+    THE CHANNEL IS THE ASSERTION (Codex major, ASK-1197 round 4). A Stop hook's
+    plain stdout at exit 0 is dropped by the client; the one field that reaches the
+    USER is a `systemMessage` key in a JSON document on stdout, which is what
+    `finish_ok` has always emitted for the authorship score and what
+    `test_voice_stop_gate_drain_only.py` asserts against a real run. Asserting the
+    substring "NOT CHECKED" in raw stdout passes on bare text nobody is shown,
+    which is how an unchecked receipt read as a verified one.
+    """
+    raw = proc.stdout.strip()
+    assert raw, ("nothing on stdout, so nothing reached the user.\n"
+                 f"stderr={proc.stderr!r}")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(
+            "stdout is not one JSON document, so a consumer that parses it sees "
+            f"nothing or breaks: {exc}\nstdout={proc.stdout!r}")
+    assert isinstance(payload, dict) and "systemMessage" in payload, (
+        "exit-0 output carries no `systemMessage`, the only hook field that puts "
+        f"text in front of the user. {payload!r}")
+    return payload["systemMessage"]
+
+
 def _producer_message(receipt, draft):
     """The wire format the REAL producer emits, not one invented here.
 
@@ -406,11 +432,11 @@ class TestTheLaneIsNotInstalled:
         assert proc.returncode == 0, (
             "an instance with no route lane must not block on a receipt it cannot "
             f"verify. rc={proc.returncode} stderr={proc.stderr}")
-        assert "NOT CHECKED" in proc.stdout, (
+        assert "NOT CHECKED" in _system_message(proc), (
             "a turn carrying a route receipt on an instance with no verifier "
-            "passed with no NOT CHECKED line. That is indistinguishable from a "
-            "verified receipt, which is the whole defect.\n"
-            f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}")
+            "passed with no NOT CHECKED line reaching the user. That is "
+            "indistinguishable from a verified receipt, which is the whole "
+            f"defect.\nstdout={proc.stdout!r}\nstderr={proc.stderr!r}")
 
 
 class TestTheseAssertionsCanFail:
@@ -692,7 +718,7 @@ class TestAClaimedReceiptIsStructural:
                                       _producer_message(receipt, "the body")),
                     tmp_path / "c.json")
         assert proc.returncode == 0, proc.stderr
-        assert "NOT CHECKED" in proc.stdout, (
+        assert "NOT CHECKED" in _system_message(proc), (
             f"stdout={proc.stdout!r} stderr={proc.stderr!r}")
 
 
@@ -784,3 +810,108 @@ class TestTheRedditProducerHandoff:
         draft = "the body of an x draft, long enough to be measured."
         message = _producer_message({name: "x" for name in STUB_MATCH_FIELDS}, draft)
         assert gate._route_draft(message) == draft, gate._route_draft(message)
+
+
+class TestTheNoticeReachesTheUser:
+    """Codex major, ASK-1197 round 4, and the contradiction sp-f5144496 recorded.
+
+    `report_not_checked` wrote plain text to stdout and called that delivery,
+    while `finish_ok` in the same file emits `{"systemMessage": ...}` and says in
+    its own comment that plain stdout from a Stop hook is dropped. Both could not
+    be right. The queue-then-one-envelope shape resolves it and also removes the
+    second hazard: two `print(json.dumps(...))` calls on one stream is one JSON
+    document to every consumer that parses it.
+    """
+
+    def test_the_notice_is_delivered_as_one_parseable_envelope(self, tmp_path):
+        root = _instance(tmp_path, with_route_lane=False)
+        receipt = {name: "x" for name in STUB_MATCH_FIELDS}
+        proc = _run(root, _transcript(tmp_path, "write it",
+                                      _producer_message(receipt, "the body")),
+                    tmp_path / "c.json")
+        assert proc.returncode == 0, proc.stderr
+        message = _system_message(proc)
+        assert "NOT CHECKED" in message, message
+        assert proc.stdout.count("\n") <= 1, (
+            "more than one line on stdout means more than one document, and a "
+            f"consumer parses the first one only.\nstdout={proc.stdout!r}")
+
+    def test_the_notice_is_not_bare_text_on_stdout(self, tmp_path):
+        """The finding stated as its own assertion. Bare text on this stream is
+        invisible to the user AND corrupts the envelope if anything is appended."""
+        root = _instance(tmp_path, with_route_lane=False)
+        receipt = {name: "x" for name in STUB_MATCH_FIELDS}
+        proc = _run(root, _transcript(tmp_path, "write it",
+                                      _producer_message(receipt, "the body")),
+                    tmp_path / "c.json")
+        stripped = proc.stdout.strip()
+        assert stripped.startswith("{") and stripped.endswith("}"), (
+            "stdout is not a JSON envelope, so the notice was never shown to "
+            f"anyone.\nstdout={proc.stdout!r}")
+
+    def test_a_refusal_beats_a_pending_notice(self, tmp_path):
+        """Pinning the precedence the reviewer asked for. A held turn must not
+        also emit an exit-0 envelope: the block is the louder and truer message,
+        and a queued notice is dropped rather than printed alongside it."""
+        root = _instance(tmp_path, with_route_lane=True)
+        assistant = ("Here's the post for LinkedIn.\n\n" + DRAFT_MARKER
+                     + "\nthe body of the draft, long enough to be measured.\n")
+        proc = _run(root, _transcript(tmp_path, "write it", assistant),
+                    tmp_path / "c.json", classify="route")
+        assert proc.returncode == 2, (
+            f"rc={proc.returncode} stderr={proc.stderr}")
+        assert proc.stdout.strip() == "" or "systemMessage" not in proc.stdout, (
+            "a held turn also emitted an exit-0 user envelope. The refusal on "
+            f"stderr is the message.\nstdout={proc.stdout!r}")
+        assert "receipt" in proc.stderr, proc.stderr
+
+
+class TestAHookNameIsNotAnEnvelope:
+    """Codex minor, ASK-1197 round 4. `_INJECTED_OPENER` matched a bare hook NAME
+    at the start of the text, so the founder's own sentence about a hook was
+    erased as machine prose. Combined with round 2's "no founder text is not a
+    request", that turned one sentence into a route-enforcement bypass."""
+
+    def test_his_sentence_about_a_hook_survives(self):
+        text = ("Stop hook keeps eating my linkedin drafts, write me a post "
+                "about what that taught me")
+        assert gate.founder_typed_text(text) == text, (
+            "his request was erased because it opens with a hook's name. A gate "
+            "a sentence can switch off is not a gate.")
+
+    def test_a_colonless_hook_mention_survives(self):
+        assert gate.founder_typed_text("Stop hook: fix it") == "Stop hook: fix it"
+
+    def test_a_labelled_injection_still_drops(self):
+        """THE CONTROL, and it is the half that matters more. A narrowing that
+        stopped dropping real injections would reopen the three-occurrence
+        deadlock this opener exists to close."""
+        for injected in (
+            "PostToolUse:Bash hook additional context: 55 minutes since your "
+            "last write. You may be stuck.",
+            "Stop hook feedback: the draft was refused",
+            "UserPromptSubmit hook output: injected lessons",
+            "<system-reminder>do the thing</system-reminder>",
+            "[SYSTEM NOTIFICATION] a subagent finished the reply-lane work",
+        ):
+            assert gate.founder_typed_text(injected) == "", injected
+
+    def test_a_hook_named_request_still_reaches_the_classifier(self, tmp_path):
+        """End to end: the bypass, not a proxy for it. With the lane installed and
+        the request routed, a receipt is required -- so the turn must be HELD.
+        Before the fix his text was erased, the request was empty, and
+        enforcement returned early with rc 0."""
+        root = _instance(tmp_path, with_route_lane=True)
+        assistant = ("Here's the post for LinkedIn.\n\n" + DRAFT_MARKER
+                     + "\nthe body of the draft, long enough to be measured.\n")
+        transcript = _records_transcript(tmp_path, [
+            _user("Stop hook keeps eating my linkedin drafts, write me a post "
+                  "about what that taught me"),
+            _assistant(assistant),
+        ])
+        proc = _run(root, transcript, tmp_path / "c.json", classify="route")
+        assert proc.returncode == 2, (
+            "a routed request that merely begins with a hook's name was waved "
+            f"through with no receipt. rc={proc.returncode} stdout={proc.stdout} "
+            f"stderr={proc.stderr}")
+        assert "receipt" in proc.stderr, proc.stderr

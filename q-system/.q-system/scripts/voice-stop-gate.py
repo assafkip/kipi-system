@@ -313,11 +313,18 @@ def finish_ok():
     # Before the drain, and detached, so a Slack curl never delays his text.
     authorship_page()
     line = authorship_drain()
+    # ONE ENVELOPE, ONE WRITER. `systemMessage` on exit 0 is the ONLY hook field
+    # that puts text in front of the USER rather than the model. Plain stdout from
+    # a Stop hook is dropped, and `additionalContext` reaches Claude, not him.
+    # The NOT CHECKED notices are joined into this same document rather than
+    # printed separately, because two JSON objects on one stream is one object to
+    # every consumer that parses it. Notices first: they describe THIS turn, while
+    # a drained score is a previous turn's number arriving late.
+    parts = list(_PENDING_NOTICES)
     if line:
-        # `systemMessage` on exit 0 is the ONLY hook field that puts text in
-        # front of the USER rather than the model. Plain stdout from a Stop hook
-        # is dropped, and `additionalContext` reaches Claude, not him.
-        print(json.dumps({"systemMessage": line}))
+        parts.append(line)
+    if parts:
+        print(json.dumps({"systemMessage": "\n".join(parts)}))
     sys.exit(0)
 
 
@@ -406,8 +413,21 @@ _INJECTED_OPENER = re.compile(
     r"^\s*(?:<(?:system-reminder|task-notification|command-name|"
     r"local-command-stdout|user-prompt-submit-hook|cross-session-message)\b"
     r"|\[SYSTEM NOTIFICATION"
+    # THE ENVELOPE, NOT THE NAME (Codex minor, ASK-1197 round 4). This arm
+    # was `<event>(:matcher)? hook\b`, which matches the founder's OWN first
+    # words: "Stop hook keeps eating my linkedin drafts, write me a post about
+    # it" opens with a hook name, so his whole request was erased as machine
+    # prose, `find_final_user_text` returned "", and route enforcement was
+    # skipped on a turn the real classifier routes. A gate that a sentence can
+    # switch off is not a gate.
+    #
+    # A real injection is LABELLED: `PostToolUse:Bash hook additional context:`,
+    # `Stop hook feedback:` -- the name, the word hook, then a short label and a
+    # colon. That colon is the machine's punctuation and is what is matched now.
+    # Prose about a hook does not carry it. This deliberately does NOT enumerate
+    # label words: enumerating carriers is the shape that failed twice above.
     r"|(?:PreToolUse|PostToolUse|Stop|SessionStart|UserPromptSubmit)"
-    r"(?::\w+)?\s+hook\b)",
+    r"(?::[\w.*-]+)?\s+hook\s+[\w-]+(?:\s+[\w-]+){0,3}:)",
     re.I,
 )
 # A SKILL or SLASH-COMMAND invocation injects its whole BODY as bare markdown
@@ -512,6 +532,11 @@ def find_final_user_text(transcript_path):
 # exist" instead of seeing silence.
 NOT_CHECKED = "NOT_CHECKED"
 
+#: Notices queued for the single `systemMessage` emitted by `finish_ok`. Module
+#: level because the two enforcement call-sites in `main` are far apart and a
+#: threaded return value would have to survive every branch between them.
+_PENDING_NOTICES = []
+
 
 def report_not_checked(lines, out=None, err=None):
     """Surface NOT CHECKED on the channel a SUCCESSFUL hook is actually read on.
@@ -522,13 +547,36 @@ def report_not_checked(lines, out=None, err=None):
     delivered -- the exact defect this whole change exists to close, reproduced
     inside the fix for it (Codex major, PR #290).
 
-    Both streams on purpose. stdout is what a successful hook is read on; stderr
-    keeps the line present if this is ever called from the blocking path, where
-    stdout is not surfaced. Writing to one and hoping is what got us here.
+    PLAIN STDOUT IS NOT THAT CHANNEL (Codex major, ASK-1197 round 4; the
+    contradiction captured as sp-f5144496). This file already knew the answer and
+    disagreed with itself: `finish_ok` twenty lines up says "plain stdout from a
+    Stop hook is dropped" and emits `{"systemMessage": ...}` instead, and
+    `test_voice_stop_gate_drain_only.py` asserts that JSON shape on a real run.
+    This function wrote bare text to the same stream and called it delivered. So
+    an UNCHECKED receipt rendered exactly like a verified one in the normal UI --
+    the `run_check` scar (PR #290) reproduced a second time inside its own fix.
+
+    QUEUED, NOT PRINTED, and the queue is the point. `finish_ok` already emits one
+    `systemMessage` for the drained authorship score; a second `print(json.dumps(...))`
+    here would put TWO JSON documents on stdout and a consumer reading one would
+    see the notice or the score, never both. One writer to that stream, so the
+    two cannot race or truncate each other.
+
+    A REFUSAL STILL WINS. Every exit-2 path leaves via `sys.exit(2)` without
+    reaching `finish_ok`, so a queued notice is discarded when the turn is held --
+    which is correct: the block is the louder and more accurate message, and the
+    stderr copy below keeps the notice in the record either way.
     """
     for line in lines:
-        (out or sys.stdout).write(line + "\n")
+        if line not in _PENDING_NOTICES:
+            _PENDING_NOTICES.append(line)
+        # stderr keeps the line in the run record, and surfaces it if this is ever
+        # called from a blocking path. It is NOT the delivery channel at exit 0.
         (err or sys.stderr).write(line + "\n")
+    if out is not None:
+        # Test seam only: a caller that hands its own stream is inspecting what
+        # would be queued. The real path has exactly one stdout writer.
+        out.write("\n".join(lines) + ("\n" if lines else ""))
 
 
 # --- route-receipt enforcement (OPTIONAL, same posture as the registry below) ---
