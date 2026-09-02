@@ -77,7 +77,7 @@ def _strip_signature(text: str) -> str:
         if _SIGNATURE.match(line.strip()):
             break
         if _GREETING.match(line):
-            continue  # "Hi Assaf," names a person, never a term
+            continue  # a greeting line names a person, never a term
         kept.append(line)
     return "\n".join(kept)
 
