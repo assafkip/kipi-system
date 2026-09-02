@@ -49,7 +49,7 @@ echo ""
 # === Lessons read-only guard (lessons are skeleton-authored; instances are consumers) ===
 git fetch -q "$SKELETON_REMOTE" "$SKELETON_BRANCH" 2>/dev/null || true
 if ! python3 - "$PREFIX" <<'PYGUARD'
-import subprocess, sys
+import json, subprocess, sys
 prefix = sys.argv[1]
 def lessons(ref):
     try:
@@ -72,14 +72,43 @@ for line in st.splitlines():
     if "/lessons/" in ("/" + p) and p.endswith(".md") and not p.endswith("/README.md"):
         sys.stderr.write("uncommitted change under lessons/: " + p + "\n")
         sys.exit(1)
+def receipts():
+    """Promotion receipts, read from the SKELETON at FETCH_HEAD, never from this
+    instance's tree (issue lr-promote-receipt-hash-binding; the location rule is
+    issue 11). Only rows with status done count, keyed by the guard's own
+    lessons/<name> form and holding the set of blessed blobs. A receipt that
+    cannot be read means no receipt: fail-closed."""
+    try:
+        raw = subprocess.run(["git", "show", "FETCH_HEAD:q-system/.q-system/promotions.jsonl"],
+                             capture_output=True, text=True, check=True).stdout
+    except Exception:
+        return {}
+    out = {}
+    for line in raw.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("status") != "done" or not row.get("blob"):
+            continue
+        p = "/" + str(row.get("path", ""))
+        if "/lessons/" not in p:
+            continue
+        out.setdefault("lessons/" + p.split("/lessons/", 1)[1], set()).add(row["blob"])
+    return out
 inst = lessons("HEAD") or {}
 if inst:
     skel = lessons("FETCH_HEAD")
     if skel is None:
         sys.stderr.write("cannot verify lessons/ against the skeleton (fetch failed); refusing push to prevent a lessons leak (fail-closed)\n")
         sys.exit(1)
+    blessed = receipts()
     for rel, blob in inst.items():
         if skel.get(rel) != blob:
+            # a divergent lesson passes ONLY on a done receipt for exactly this blob
+            if blob in blessed.get(rel, ()):
+                sys.stdout.write("promotion receipt honoured: " + rel + " (blob " + blob[:12] + ")\n")
+                continue
             sys.stderr.write("lessons/ differs from skeleton: " + rel + "\n")
             sys.exit(1)
     for rel in skel:

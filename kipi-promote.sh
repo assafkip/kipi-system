@@ -21,8 +21,18 @@
 #                           read from the skeleton clone named by KIPI_HOME, the kipi CLI's home)
 set -euo pipefail
 
-usage() { echo "usage: kipi promote <relative path under q-system/>" >&2; }
+usage() { echo "usage: kipi promote [--decided-by NAME] <relative path under q-system/>" >&2; }
 
+DECIDED_BY="${USER:-unknown}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --decided-by) [ -n "${2:-}" ] || { usage; exit 2; }; DECIDED_BY="$2"; shift 2 ;;
+    --decided-by=*) DECIDED_BY="${1#--decided-by=}"; shift ;;
+    --) shift; break ;;
+    -*) usage; exit 2 ;;
+    *) break ;;
+  esac
+done
 if [ $# -ne 1 ] || [ -z "${1:-}" ]; then usage; exit 2; fi   # ONE capability per call; extra args fail, never half-succeed
 REL="$1"
 case "$REL" in
@@ -205,4 +215,24 @@ finally:
     if sfd is not None:
         os.close(sfd)
 PYCOPY
-echo "promoted $REL -> $DEST"
+
+# --- receipt (issue lr-promote-receipt-hash-binding, Codex finding-1 on the PRD) ---
+# The receipt binds the CONTENT, not the path: `blob` is git hash-object of what
+# was copied, the same value the lessons guard reads from ls-tree, so a receipt
+# written for one version never blesses a later edit at the same path. Lives in
+# the skeleton at q-system/.q-system/promotions.jsonl (the guard reads it from
+# FETCH_HEAD, issue 11). Two-phase writing under a lock is issue 10.
+RECEIPTS="$SKELETON/q-system/.q-system/promotions.jsonl"
+BLOB="$(git hash-object "$DEST")"
+[ -n "$BLOB" ] || refuse "could not hash the promoted file $DEST"
+[ "$BLOB" = "$(git hash-object "$INSTANCE_REAL/$REL")" ] || refuse "copy does not match the source after promotion ($REL)"
+mkdir -p "$(dirname "$RECEIPTS")"
+python3 - "$RECEIPTS" "$REL" "$BLOB" "$INSTANCE_REAL" "$DECIDED_BY" "$SCRUB" <<'PYRECEIPT' || refuse "could not write the receipt for $REL"
+import datetime, json, sys
+path, rel, blob, inst, who, scrub = sys.argv[1:7]
+row = {"path": rel, "blob": blob, "from_instance": inst, "decided_by": who, "scrub": scrub, "status": "done",
+       "at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%z")}
+with open(path, "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(row) + "\n")
+PYRECEIPT
+echo "promoted $REL -> $DEST (blob $BLOB, receipt appended to $RECEIPTS)"

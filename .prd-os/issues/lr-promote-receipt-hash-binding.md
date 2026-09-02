@@ -1,7 +1,7 @@
 ---
 id: lr-promote-receipt-hash-binding
 title: A promotion receipt binds path, git blob hash, source instance and decider; the lessons guard passes a divergent lesson only on a matching done receipt
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:
