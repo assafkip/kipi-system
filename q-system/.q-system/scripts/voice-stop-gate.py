@@ -561,6 +561,39 @@ ROUTE_PIPELINE_REL = Path("q-consult") / "pipeline"
 ROUTE_RECEIPT_MARKER = "=== ROUTE RECEIPT ==="
 ROUTE_DRAFT_MARKER = "=== DRAFT ==="
 
+# THE REDDIT LANE EMITS A DIFFERENT WRAPPER AND NO `=== DRAFT ===` AT ALL (Codex
+# major, ASK-1197 round 3). Captured from the producer of record on 2026-09-02 --
+# consulting bc4fba6c, `pipeline.cycle.draft_reddit_original` printed by
+# `pipeline.social` -- by running that lane, not from memory:
+#
+#     === REDDIT DRAFT (ATTENDED, PUBLISHES NOTHING) ===
+#     TITLE: <title>
+#
+#     <body>
+#
+#     FOUNDER REVIEW REQUIRED: subreddit rules, and the six checks above are flags...
+#
+# and the receipt hashes `draft.body` ALONE (cycle.py:1387 passes `draft.body` to
+# `create_receipt`; `output_hash` normalizes only NFC and line endings, so the bytes
+# are exact). `_route_draft` had no reddit branch, so it fell through to
+# `extract_publishable`, which returns the title line and the review footer as well.
+# Every receipt-bearing Reddit draft therefore failed the output-hash comparison and
+# was refused as a mismatch on every direct handoff.
+#
+# EXTRACTED BY MARKER, NEVER BY POSITION. The title line and the footer are both
+# named shapes, so a lane that adds a subreddit header or reorders these blocks
+# breaks loudly instead of silently hashing the wrong slab.
+ROUTE_REDDIT_DRAFT_MARKER = "=== REDDIT DRAFT (ATTENDED, PUBLISHES NOTHING) ==="
+# The parenthetical is not pinned: it is a caption on the same marker, and pinning
+# prose is how a consumer breaks on a producer's wording change.
+_REDDIT_DRAFT_RE = re.compile(r"(?m)^[ \t]*=== REDDIT DRAFT\b[^\n]*===[ \t]*$")
+_REDDIT_TITLE_RE = re.compile(r"\A[ \t]*TITLE:[^\n]*\n")
+_REDDIT_FOOTER_RE = re.compile(r"(?m)^[ \t]*FOUNDER REVIEW REQUIRED:")
+# Same anchoring as `_RECEIPT_CLAIM_RE`: a producer puts this marker on its own
+# line, a sentence about the gate does not.
+_DRAFT_MARKER_RE = re.compile(
+    r"(?m)^[ \t]*" + re.escape("=== DRAFT ===") + r"[ \t]*$")
+
 # WHAT COUNTS AS A CLAIMED RECEIPT (Codex minor, ASK-1197 round 2). The
 # uninstalled-lane branch decided this by substring, so an assistant that merely
 # NAMES the marker in a sentence -- explaining the gate, quoting a review comment,
@@ -629,10 +662,25 @@ def _route_context():
 
 
 def _route_draft(text):
-    marker = ROUTE_DRAFT_MARKER
-    if marker not in text:
+    """The bytes the producer hashed, for whichever lane emitted this handoff.
+
+    Reddit first: its wrapper carries no `=== DRAFT ===`, so without this branch it
+    fell through to `extract_publishable` and the hash was computed over the title
+    line and the review footer too. See `ROUTE_REDDIT_DRAFT_MARKER`.
+    """
+    text = text or ""
+    reddit = _REDDIT_DRAFT_RE.search(text)
+    if reddit is not None:
+        slab = text[reddit.end():].lstrip("\n")
+        slab = _REDDIT_TITLE_RE.sub("", slab, count=1)
+        footer = _REDDIT_FOOTER_RE.search(slab)
+        if footer is not None:
+            slab = slab[:footer.start()]
+        return slab.strip()
+    draft = _DRAFT_MARKER_RE.search(text)
+    if draft is None:
         return extract_publishable(text)
-    return text.split(marker, 1)[1].strip()
+    return text[draft.end():].strip()
 
 
 def _receipt_block(text):

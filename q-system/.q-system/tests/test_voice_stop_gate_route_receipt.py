@@ -32,6 +32,7 @@ rather than a list of its own, and that it hands the extracted draft to
 containing a name this gate's source never mentions (`loop_sha`), so a gate that
 went back to a hand-kept list fails here instead of passing.
 """
+import hashlib
 import importlib.util
 import json
 import os
@@ -39,6 +40,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 
 import pytest
 
@@ -692,3 +694,93 @@ class TestAClaimedReceiptIsStructural:
         assert proc.returncode == 0, proc.stderr
         assert "NOT CHECKED" in proc.stdout, (
             f"stdout={proc.stdout!r} stderr={proc.stderr!r}")
+
+
+
+# --- captured from the producer of record, 2026-09-02 ---------------------------
+#
+# consulting @ bc4fba6c, branch feat/gtm-visibility-surfaces. Produced by RUNNING
+# `pipeline.cycle.draft_reddit_original` with a stubbed model runner and replaying
+# `pipeline.social`'s reddit print sequence -- not written from memory: the receipt
+# store refuses an out-of-lane mint (it checks `loop.generator` against the call
+# stack), so these bytes could not have been faked into existence.
+#
+# The two load-bearing facts this fixture pins, both read off the producer source:
+#   - the reddit lane emits NO `=== DRAFT ===` marker, only its own wrapper;
+#   - the receipt hashes `draft.body` ALONE (cycle.py:1387), so the title line and
+#     the FOUNDER REVIEW footer must NOT reach the hash.
+REDDIT_HANDOFF = '{\n "channel": "reddit",\n "at": "2026-09-02T00:00:00Z",\n "stages": [\n  {\n   "stage": "generate",\n   "status": "ok"\n  },\n  {\n   "stage": "reddit-format",\n   "status": "ok"\n  },\n  {\n   "stage": "gates",\n   "status": "clean",\n   "reasons": []\n  },\n  {\n   "stage": "reddit-format-final",\n   "status": "ok"\n  }\n ],\n "voice_source": "q-consult/voice (reddit pool, founder-supplied 2026-09-02)",\n "publishes": false,\n "human_boundary": "founder must review subreddit rules",\n "archetype": {\n  "id": "thread",\n  "name": "The Thread",\n  "why": "nothing more specific matched, so this is the default, which also carries the strongest evidence in the corpus",\n  "from_corpus": true\n },\n "experience": {\n  "matched": [],\n  "offered_to_writer": false\n },\n "style": {\n  "before_level": "ok",\n  "before_distance": 4.87,\n  "flags": [],\n  "after_level": "ok",\n  "after_distance": 4.87,\n  "revisions": 0,\n  "status": "reviewed",\n  "fingerprint": {\n   "authorship": 0.5025581904034683,\n   "authorship_band": "mid",\n   "authorship_reference": null,\n   "authorship_tokenization": "single-document-512",\n   "authorship_model": "rrivera1849/LUAR-MUD",\n   "authorship_words": 95,\n   "authorship_region_n": 30,\n   "authorship_held_out": 0,\n   "authorship_reference_n": 0\n  }\n },\n "human_review": {\n  "status": "human-review-required",\n  "checks": {\n   "factuality": "human-review",\n   "clickbait": "human-review",\n   "substance": "human-review",\n   "conclusion": "human-review",\n   "self_promotion": "human-review",\n   "subreddit_fit": "human-review"\n  }\n },\n "route_receipt": {\n  "attempt_id": "fcde4845-fb2f-4056-8e4b-d2251eac116a",\n  "session_id": "2026-09-02T00:00:00Z",\n  "origin_message_id": "claude-request:2026-09-02T00:00:00Z",\n  "completion_message_id": "claude-reddit-draft:2026-09-02T00:00:00Z",\n  "request_hash": "5b8e36f443fffe9d05bc6d8a731a73ea065d4e806cd460d1e6aa3ccfaa24ef53",\n  "unchecked": [],\n  "surface": "reddit-post",\n  "channel": "reddit",\n  "issued_at": "2026-09-02T22:45:06Z",\n  "expires_at": 1788390006.166553,\n  "output_hash": "7501b5b3b81e103421dd253f4b6057d0e90a35bbb179012e8bfbfd8aad23d689",\n  "gates": {\n   "deterministic_gates": true,\n   "human_boundary": true\n  },\n  "loop": {\n   "generator": "pipeline.cycle.draft_reddit_original",\n   "corpus_sha": "c771b52dedb4ff7387303a06aea529e358f1afd0e50c40f41cd7451712c7824e",\n   "exemplar_ids": [\n    "post-agent-says-done-receipts",\n    "post-act-as-expert-useless",\n    "post-ai-cyber-turd-polishing",\n    "post-analysts-technical-ceiling"\n   ],\n   "score": {\n    "findings": 0,\n    "exemplars": 131,\n    "unchecked": [],\n    "exit": 0,\n    "text_sha": "ad5f429ea403fb59315350e7f3b386ebc80018b8d9816d31da03574e0f88050a"\n   }\n  },\n  "loop_sha": "1352df52bf30c45e8ae7805685558facd12fdb4e91b055d1e173738881dc0537",\n  "status": "complete"\n }\n}\n\n=== ROUTE RECEIPT ===\n{"attempt_id": "fcde4845-fb2f-4056-8e4b-d2251eac116a", "channel": "reddit", "completion_message_id": "claude-reddit-draft:2026-09-02T00:00:00Z", "expires_at": 1788390006.166553, "gates": {"deterministic_gates": true, "human_boundary": true}, "issued_at": "2026-09-02T22:45:06Z", "loop": {"corpus_sha": "c771b52dedb4ff7387303a06aea529e358f1afd0e50c40f41cd7451712c7824e", "exemplar_ids": ["post-agent-says-done-receipts", "post-act-as-expert-useless", "post-ai-cyber-turd-polishing", "post-analysts-technical-ceiling"], "generator": "pipeline.cycle.draft_reddit_original", "score": {"exemplars": 131, "exit": 0, "findings": 0, "text_sha": "ad5f429ea403fb59315350e7f3b386ebc80018b8d9816d31da03574e0f88050a", "unchecked": []}}, "loop_sha": "1352df52bf30c45e8ae7805685558facd12fdb4e91b055d1e173738881dc0537", "origin_message_id": "claude-request:2026-09-02T00:00:00Z", "output_hash": "7501b5b3b81e103421dd253f4b6057d0e90a35bbb179012e8bfbfd8aad23d689", "request_hash": "5b8e36f443fffe9d05bc6d8a731a73ea065d4e806cd460d1e6aa3ccfaa24ef53", "session_id": "2026-09-02T00:00:00Z", "status": "complete", "surface": "reddit-post", "unchecked": []}\n\n=== REDDIT DRAFT (ATTENDED, PUBLISHES NOTHING) ===\nTITLE: The gate that passed because it had nothing to look at\n\nWe shipped a propagation check that compared every instance copy of a hook against the skeleton copy. It went green and stayed green. Then I read the loop and found it had inspected nothing, because the sibling checkouts it walks only exist on the laptop that owns them. Green meant the population was missing, and that renders the same as a clean fleet.\n\nThe fix wasn\'t a better assertion. It was making the check say how many things it actually looked at, and refuse to report a verdict when it looked at none of them.\n\nFOUNDER REVIEW REQUIRED: subreddit rules, and the six checks above are flags, not passes.\n'
+
+#: The exact bytes the producer passed to `output_hash`. Same run.
+REDDIT_BODY = "We shipped a propagation check that compared every instance copy of a hook against the skeleton copy. It went green and stayed green. Then I read the loop and found it had inspected nothing, because the sibling checkouts it walks only exist on the laptop that owns them. Green meant the population was missing, and that renders the same as a clean fleet.\n\nThe fix wasn't a better assertion. It was making the check say how many things it actually looked at, and refuse to report a verdict when it looked at none of them."
+
+
+def _producer_output_hash(text, surface, channel):
+    """The producer's own envelope, transcribed from consulting route_contract.py.
+
+    A SECOND COPY of another repo's algorithm, and that is deliberate: the contract
+    between these two repos shares no code and therefore has no test, so the only
+    way this side can assert "the draft I extract hashes to the receipt's own
+    output_hash" is to recompute it. If consulting changes the envelope this goes
+    red, which is the right direction for a cross-repo contract -- a silent
+    mismatch is exactly what shipped.
+    """
+    envelope = {
+        "channel": channel,
+        "kind": "output",
+        "surface": surface,
+        "text": unicodedata.normalize("NFC", str(text)).replace(
+            "\r\n", "\n").replace("\r", "\n"),
+    }
+    encoded = json.dumps(envelope, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+class TestTheRedditProducerHandoff:
+    """Codex major, ASK-1197 round 3. `_route_draft` knew one wrapper. The reddit
+    lane emits another, so every receipt-bearing Reddit draft was refused as an
+    output mismatch on every direct handoff -- a valid receipt, rejected."""
+
+    def test_the_extractor_returns_exactly_the_bytes_the_receipt_hashed(self):
+        got = gate._route_draft(REDDIT_HANDOFF)
+        assert got == REDDIT_BODY, (
+            "the extracted draft is not the slab the producer hashed, so the "
+            "output-hash comparison can never match.\n"
+            "got:  %r\nwant: %r" % (got, REDDIT_BODY))
+
+    def test_the_extracted_draft_hashes_to_the_receipts_own_output_hash(self):
+        """The defect itself, not a proxy for it. This is the comparison
+        `enforce_route_receipt` makes, run against real producer bytes."""
+        receipt = gate._receipt_block(REDDIT_HANDOFF)
+        assert isinstance(receipt, dict), receipt
+        recomputed = _producer_output_hash(
+            gate._route_draft(REDDIT_HANDOFF), receipt["surface"], receipt["channel"])
+        assert recomputed == receipt["output_hash"], (
+            "a genuine Reddit receipt does not match its own draft, which the gate "
+            "reports as `route receipt does not match the assistant output`.\n"
+            "  recomputed: %s\n  receipt:    %s"
+            % (recomputed, receipt["output_hash"]))
+
+    def test_the_title_line_and_the_review_footer_are_not_in_the_draft(self):
+        """Names the two blocks the old extractor swept in. Separate from the hash
+        assertion on purpose: this one says WHY it mismatched, so a future failure
+        is readable without recomputing anything."""
+        extracted = gate._route_draft(REDDIT_HANDOFF)
+        assert "TITLE:" not in extracted, extracted[:200]
+        assert "FOUNDER REVIEW REQUIRED" not in extracted, extracted[-200:]
+        assert "ROUTE RECEIPT" not in extracted, extracted[:200]
+
+    def test_the_receipt_still_parses_out_of_the_reddit_wrapper(self):
+        receipt = gate._receipt_block(REDDIT_HANDOFF)
+        assert receipt["surface"] == "reddit-post" and receipt["channel"] == "reddit"
+        assert "loop_sha" in receipt, sorted(receipt)
+
+    def test_the_x_lane_wrapper_still_extracts(self):
+        """THE CONTROL. The idea-lane shape is RECEIPT-then-DRAFT with no reddit
+        wrapper, pinned producer-side at test_route_boundary.py:54. A reddit branch
+        that stole this path would pass every assertion above while breaking the
+        lane that already worked."""
+        draft = "the body of an x draft, long enough to be measured."
+        message = _producer_message({name: "x" for name in STUB_MATCH_FIELDS}, draft)
+        assert gate._route_draft(message) == draft, gate._route_draft(message)
