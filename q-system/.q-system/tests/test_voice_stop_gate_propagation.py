@@ -47,6 +47,7 @@ instance. The two are deliberately not the same check: that one guards a single
 repo against its own skeleton, this one guards the skeleton against all 25.
 """
 import ast
+import collections
 import json
 import os
 import pathlib
@@ -104,12 +105,74 @@ def test_no_instance_defines_a_function_the_skeleton_lacks(capsys):
     skeleton = _functions_at(REPO / GATE_REL)
     assert skeleton, "parsed no functions from the skeleton gate; the parser is broken"
 
+    entries = _registered_instances()
+    scan = _scan_instances(entries, skeleton)
+
+    # Printed on every run, asserted on never. See the module docstring.
+    print(f"voice-stop-gate propagation: {scan.inspected} instance copy/copies "
+          f"inspected of {len(entries)} registered; {len(scan.loss)} carry code the "
+          f"fanout would DELETE; {len(scan.lag)} lag the skeleton (an update ADDS "
+          f"those); {len(scan.absent)} do not carry the file.")
+    if scan.lag:
+        worst = max(len(v) for v in scan.lag.values())
+        first = sorted(scan.lag.items())[0]
+        print(f"  lag: up to {worst} function(s) behind, e.g. {first[0]}: {first[1]}")
+    if scan.unparseable:
+        print("  could not parse: " + "; ".join(scan.unparseable))
+
+    # A GATE THAT CANNOT SEE ITS POPULATION DOES NOT PASS (Codex major, ASK-1197
+    # round 2). This asserted `not loss` over a loop that had inspected NOTHING
+    # wherever the 25 instance checkouts are absent -- which is CI, the only place
+    # it runs automatically. Green there meant "no sibling checkouts on this
+    # machine", rendered identically to "the fleet is clean".
+    #
+    # SKIP IS THE HONEST OPTION HERE, and the alternative was weighed: a committed
+    # fixture copy would be a copy of the SKELETON, and a skeleton-vs-copy-of-
+    # skeleton comparison can only ever report zero loss, so it would be a green
+    # that measures nothing -- the same defect wearing a fixture. The population is
+    # 25 real sibling checkouts; where they are absent, the honest report is that
+    # the check did not run and how many copies it found. What DOES run in CI is
+    # the scanner itself, against synthetic trees below that can fail.
+    if scan.inspected == 0:
+        pytest.skip(
+            f"no instance copy of {GATE_REL} was readable on this machine, so the "
+            f"fanout-loss direction was NOT checked: {len(entries)} instance(s) "
+            f"registered, {len(scan.absent)} with no copy at the registered path, "
+            f"{scan.inspected} inspected. Run this where the sibling checkouts "
+            f"live (the founder's machine); in CI it is the synthetic-tree tests "
+            f"in this file that hold the scanner.")
+
+    assert not scan.loss, (
+        "voice-stop-gate.py defines functions in an instance that the SKELETON does "
+        "not have. The next `kipi update` rsync --delete overwrites the instance "
+        "copy with the skeleton one, so this code is deleted on the next update.\n"
+        f"  skeleton: {REPO / GATE_REL}\n"
+        + "".join(f"  {n}: {v}\n" for n, v in sorted(scan.loss.items()))
+        + "Port these upstream into the skeleton copy. Do NOT add an EXEMPT entry "
+          "unless losing the function on the next fanout is genuinely fine."
+    )
+
+
+#: What one scan of the registered instances saw. `inspected` is the load-bearing
+#: field: it is the count of instance copies whose function set was actually read,
+#: and a `loss` of zero means nothing without it.
+Scan = collections.namedtuple("Scan", "loss lag absent unparseable inspected")
+
+
+def _scan_instances(entries, skeleton):
+    """Compare each registered instance's gate against the skeleton's function set.
+
+    Split out of the test so CI can exercise it against synthetic trees. The test
+    above cannot: its population is 25 sibling checkouts that exist only on the
+    founder's machine, so in CI it skips and this function is what still runs.
+    """
     loss = {}       # instance name -> names the fanout would delete
-    lag = {}        # instance name -> count of skeleton names it has not received
+    lag = {}        # instance name -> skeleton names it has not received
     absent = []     # instances that do not carry this file at all
     unparseable = []
+    inspected = 0
 
-    for entry in _registered_instances():
+    for entry in entries:
         name = entry.get("name", "?")
         path = pathlib.Path(entry.get("path", "")) / GATE_REL
         if not path.is_file():
@@ -133,9 +196,11 @@ def test_no_instance_defines_a_function_the_skeleton_lacks(capsys):
             try:
                 found = set(_DEF_RE.findall(path.read_text(encoding="utf-8", errors="replace")))
             except OSError:
-                # Cannot even read it. Nothing to assert on either way; the line
-                # above is the whole report.
+                # Cannot even read it. Nothing to assert on either way, and it is
+                # NOT counted as inspected: a copy nobody could read is a copy this
+                # scan did not see.
                 continue
+        inspected += 1
         extra = sorted((found - skeleton) - set(EXEMPT))
         if extra:
             loss[name] = extra
@@ -143,26 +208,61 @@ def test_no_instance_defines_a_function_the_skeleton_lacks(capsys):
         if behind:
             lag[name] = behind
 
-    # Printed on every run, asserted on never. See the module docstring.
-    print(f"voice-stop-gate propagation: {len(loss)} instance(s) carry code the "
-          f"fanout would DELETE; {len(lag)} lag the skeleton (an update ADDS those); "
-          f"{len(absent)} do not carry the file.")
-    if lag:
-        worst = max(len(v) for v in lag.values())
-        print(f"  lag: up to {worst} function(s) behind, e.g. "
-              f"{sorted(lag.items())[0][0]}: {sorted(lag.items())[0][1]}")
-    if unparseable:
-        print("  could not parse: " + "; ".join(unparseable))
+    return Scan(loss=loss, lag=lag, absent=absent, unparseable=unparseable,
+                inspected=inspected)
 
-    assert not loss, (
-        "voice-stop-gate.py defines functions in an instance that the SKELETON does "
-        "not have. The next `kipi update` rsync --delete overwrites the instance "
-        "copy with the skeleton one, so this code is deleted on the next update.\n"
-        f"  skeleton: {REPO / GATE_REL}\n"
-        + "".join(f"  {n}: {v}\n" for n, v in sorted(loss.items()))
-        + "Port these upstream into the skeleton copy. Do NOT add an EXEMPT entry "
-          "unless losing the function on the next fanout is genuinely fine."
-    )
+
+def _synthetic_instance(tmp_path, name, extra_source=""):
+    """A throwaway instance tree holding a COPY of the skeleton gate.
+
+    A copy, never the live checkouts: the scanner is being tested, and pointing a
+    test at a real sibling instance would make its result depend on whichever
+    machine ran it.
+    """
+    root = tmp_path / name
+    target = root / GATE_REL
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        (REPO / GATE_REL).read_text(encoding="utf-8") + extra_source,
+        encoding="utf-8")
+    return {"name": name, "path": str(root)}
+
+
+def test_the_scan_reports_zero_inspected_when_no_checkout_is_present():
+    """The condition the skip is keyed on. This is CI's situation, and before the
+    fix it rendered as a pass: `loss` was empty because the loop had run zero
+    times, which is byte-identical to a clean fleet."""
+    skeleton = _functions_at(REPO / GATE_REL)
+    scan = _scan_instances(
+        [{"name": "gone-a", "path": "/nonexistent/instance-a"},
+         {"name": "gone-b", "path": "/nonexistent/instance-b"}], skeleton)
+    assert scan.inspected == 0 and scan.absent == ["gone-a", "gone-b"], scan
+    assert not scan.loss, (
+        "an absent checkout must not be reported as a loss; it must be reported "
+        f"as not inspected. {scan}")
+
+
+def test_the_scan_catches_a_loss_in_a_checkout_it_can_see(tmp_path):
+    """The negative self-test for the skip: prove the scan still FAILS on a real
+    hazard when a copy IS present, so the skip is narrow and not a way out."""
+    skeleton = _functions_at(REPO / GATE_REL)
+    entry = _synthetic_instance(
+        tmp_path, "has-extra",
+        "\n\ndef a_function_no_skeleton_has():\n    return 1\n")
+    scan = _scan_instances([entry], skeleton)
+    assert scan.inspected == 1, scan
+    assert scan.loss == {"has-extra": ["a_function_no_skeleton_has"]}, (
+        "a function present in an instance and absent from the skeleton is the "
+        f"one hazard this file exists to catch, and the scan missed it. {scan}")
+
+
+def test_the_scan_calls_a_matching_checkout_clean(tmp_path):
+    """The control. Without it, a scan that reported EVERY instance as a loss
+    would pass the test above and tell us nothing."""
+    skeleton = _functions_at(REPO / GATE_REL)
+    scan = _scan_instances([_synthetic_instance(tmp_path, "identical")], skeleton)
+    assert scan.inspected == 1 and not scan.loss and not scan.lag, (
+        f"an identical copy was reported as drifted. {scan}")
 
 
 def test_the_regex_fallback_sees_a_file_ast_refuses():
@@ -232,3 +332,23 @@ def test_the_comparison_can_actually_fail():
     assert _top_level_functions(decoy, "<decoy>") == {"real_one"}, (
         "the parser counted a `def` that is not a definition; it is a text scan, "
         "not an ast walk.")
+
+
+def test_the_gate_skips_rather_than_passing_when_it_sees_nothing(monkeypatch):
+    """The finding itself (Codex major, ASK-1197 round 2), asserted on the SHIPPED
+    control flow rather than on a restatement of it.
+
+    Calls the real test function with a population whose checkouts are all absent
+    -- CI's situation -- and requires a skip carrying the count. Before the fix
+    this returned normally and pytest recorded a pass over zero inspected copies.
+    """
+    monkeypatch.setitem(
+        globals(), "_registered_instances",
+        lambda: [{"name": "gone-a", "path": "/nonexistent/instance-a"},
+                 {"name": "gone-b", "path": "/nonexistent/instance-b"}])
+    with pytest.raises(pytest.skip.Exception) as exc:
+        test_no_instance_defines_a_function_the_skeleton_lacks(None)
+    message = str(exc.value)
+    assert "0 inspected" in message and "2 instance(s) registered" in message, (
+        "the skip must name the count it saw, or a reader cannot tell an "
+        f"unavailable population from a clean one. {message!r}")

@@ -467,6 +467,23 @@ def find_final_user_text(transcript_path):
     worth measuring.
 
     Only text the FOUNDER typed counts. See `_INJECTED_BLOCK` for the scar.
+
+    THIS TURN'S MESSAGE OR NOTHING (ASK-1197 round 2). This kept the last
+    NON-EMPTY candidate, so a turn whose own final message is entirely machine
+    prose -- a slash command, a hook body, a system-reminder -- silently reverted
+    to an OLDER message, and `enforce_route_receipt` then verified THIS draft's
+    request hash against words the founder typed some turns ago. Dropping the
+    injected prose was right; substituting a different turn is a second defect
+    wearing the first one's fix. A turn with no founder text must say so.
+
+    THE SEAM IS TEXT vs NO TEXT, not empty vs non-empty, and getting that wrong
+    is how the obvious fix breaks everything. Every agentic turn ends
+    user -> assistant(tool_use) -> user(tool_result) -> assistant(text): that
+    trailing record is `role: user`, carries no text block, and is NOT flagged
+    isMeta. Assigning unconditionally would blank his request on nearly every
+    real turn. So a record with no text at all is transport and is skipped; a
+    record that HAS text which `founder_typed_text` empties is this turn, and
+    yields "". Held by `TestThisTurnsRequestOrNothing`.
     """
     text = ""
     for record, message in _walk_transcript(transcript_path, want_record=True):
@@ -476,9 +493,10 @@ def find_final_user_text(transcript_path):
         # attempt to recognise the prose; see `_walk_transcript`'s scar note.
         if any(record.get(flag) is True for flag in _META_FLAGS):
             continue
-        candidate = founder_typed_text(_message_text(message))
-        if candidate:
-            text = candidate
+        raw = _message_text(message)
+        if not raw.strip():
+            continue
+        text = founder_typed_text(raw)
     return text
 
 
@@ -543,6 +561,24 @@ ROUTE_PIPELINE_REL = Path("q-consult") / "pipeline"
 ROUTE_RECEIPT_MARKER = "=== ROUTE RECEIPT ==="
 ROUTE_DRAFT_MARKER = "=== DRAFT ==="
 
+# WHAT COUNTS AS A CLAIMED RECEIPT (Codex minor, ASK-1197 round 2). The
+# uninstalled-lane branch decided this by substring, so an assistant that merely
+# NAMES the marker in a sentence -- explaining the gate, quoting a review comment,
+# writing this very file -- printed NOT CHECKED on 24 instances that were never
+# asked to check anything. A false line on ordinary turns is exactly how a gate
+# gets switched off, which is the hard constraint the whole block is written under.
+#
+# A producer emits the marker on a line of its own, with the JSON on the next
+# line; a sentence does not. So the shape is the check, and it is defined ONCE and
+# used by both the claim test and the extractor, because two spellings of "a
+# receipt is present" is how one of them ends up hardened and the other does not.
+#
+# WHAT IT STILL CANNOT TELL APART: a fenced code block illustrating the format.
+# That is a documented turn, not a producer turn, and the residual cost is one
+# advisory line rather than a per-turn line on every instance.
+_RECEIPT_CLAIM_RE = re.compile(
+    r"(?m)^[ \t]*" + re.escape(ROUTE_RECEIPT_MARKER) + r"[ \t]*$")
+
 
 class RouteBoundaryError(ValueError):
     """A routed completion lacks a current shared route receipt."""
@@ -558,6 +594,15 @@ def _route_context():
     pipeline_dir = INSTANCE_ROOT / ROUTE_PIPELINE_REL
     if not pipeline_dir.is_dir():
         return None
+    # RESOLVED, and both sides of the comparison below are (Codex minor, ASK-1197
+    # round 2). The identity check reads `Path(module.__file__).resolve().parents`,
+    # which is always the real path; comparing that against an unresolved
+    # `pipeline_dir` means an instance whose `q-consult` is a SYMLINK -- which is
+    # how the consulting checkout is actually reached -- never matches its OWN
+    # modules, so the correct lane is refused and the gate hard-blocks every turn
+    # over a path spelling. The message printed the unresolved path too, naming
+    # something the code never compared against.
+    pipeline_dir = pipeline_dir.resolve()
     sys.path.insert(0, str(INSTANCE_ROOT / "q-consult"))
     try:
         from pipeline import (audit_only_routes, route_classifier, route_contract,
@@ -591,10 +636,11 @@ def _route_draft(text):
 
 
 def _receipt_block(text):
-    marker = ROUTE_RECEIPT_MARKER
-    if marker not in text:
+    # Same shape test as the claim check above, from the same compiled pattern.
+    claim = _RECEIPT_CLAIM_RE.search(text or "")
+    if claim is None:
         return None
-    payload = text.split(marker, 1)[1].lstrip()
+    payload = text[claim.end():].lstrip()
     try:
         value, _end = json.JSONDecoder().raw_decode(payload)
     except json.JSONDecodeError as exc:
@@ -613,15 +659,26 @@ def enforce_route_receipt(request, assistant_text):
     context = _route_context()
     if context is None:
         # The lane is not installed here. Silent UNLESS something claims a receipt.
-        # Marker presence only -- the JSON is deliberately not parsed, because on an
-        # instance with no producer a stray marker in prose must not hard-block a turn.
-        if ROUTE_RECEIPT_MARKER not in (assistant_text or ""):
+        # SHAPE, not substring -- see `_RECEIPT_CLAIM_RE`. The JSON is still
+        # deliberately not parsed, because on an instance with no producer a
+        # malformed block must not hard-block a turn.
+        if _RECEIPT_CLAIM_RE.search(assistant_text or "") is None:
             return []
         return ["voice-stop-gate: this turn carries a %s block, but no route "
                 "verifier is installed at %s, so the receipt was NOT CHECKED. "
                 "That is not a pass."
                 % (ROUTE_RECEIPT_MARKER, INSTANCE_ROOT / ROUTE_PIPELINE_REL)]
     classifier, contract, audit_only, registry = context
+    # NO FOUNDER TEXT THIS TURN IS NOT A REQUEST (Codex major, ASK-1197 round 2).
+    # `find_final_user_text` now returns "" for a turn whose own final message is
+    # entirely injected rather than reaching back for an older one, and "" has no
+    # surface, no channel and no request hash to verify against. Classifying it
+    # anyway is the defect this pairs with: it would build a receipt identity out
+    # of whatever the classifier makes of an empty string, or out of the stale
+    # message that used to stand in for it. Placed AFTER the uninstalled-lane
+    # branch on purpose, so a claimed receipt still reports NOT CHECKED.
+    if not request:
+        return []
     result = classifier.classify(request)
     if result.status == classifier.NOT_ROUTED:
         return []

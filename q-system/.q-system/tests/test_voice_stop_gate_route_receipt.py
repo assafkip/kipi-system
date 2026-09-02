@@ -489,3 +489,206 @@ class TestFounderTypedText:
         assert gate.find_final_user_text(str(path)) == "the real request", (
             "the newest `user` record won even though the harness flagged it as its "
             "own injection. That is the third-occurrence deadlock.")
+
+
+def _records_transcript(tmp_path, records, name="records.jsonl"):
+    """A transcript written record-by-record, so a test can set the top-level
+    harness flags and the content-block types `_transcript` hard-codes."""
+    path = tmp_path / name
+    path.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+    return str(path)
+
+
+def _user(text, **top_level):
+    return dict(top_level,
+                message={"role": "user", "content": [{"type": "text", "text": text}]})
+
+
+def _assistant(text):
+    return {"message": {"role": "assistant",
+                        "content": [{"type": "text", "text": text}]}}
+
+
+class TestThisTurnsRequestOrNothing:
+    """Finding 1, ASK-1197 round 2. `find_final_user_text` kept the last NON-EMPTY
+    candidate, so a turn whose own final message is entirely machine prose -- a
+    slash command, a hook body, a system-reminder -- silently reverted to an OLDER
+    message and the route lane then verified this turn's draft against a request
+    the founder made some turns ago. Dropping the injected prose was right; falling
+    back to a different turn is a second defect wearing the first one's fix.
+
+    The seam is TEXT vs NO TEXT, not empty vs non-empty. A `user` record carrying
+    only a `tool_result` block is transport, not a turn, and must not erase the
+    request; a `user` record that carries text which `founder_typed_text` empties
+    IS this turn, and must yield nothing.
+    """
+
+    def test_a_wholly_injected_final_message_yields_nothing(self, tmp_path):
+        path = _records_transcript(tmp_path, [
+            _user("write me a linkedin post about the gate"),
+            _user("<system-reminder>a background task finished</system-reminder>"),
+        ])
+        assert gate.find_final_user_text(path) == "", (
+            "the final message was entirely injected, so this turn has no founder "
+            "text. Returning an earlier message verifies THIS draft against a "
+            "request from a different turn.")
+
+    def test_a_slash_command_final_message_yields_nothing(self, tmp_path):
+        path = _records_transcript(tmp_path, [
+            _user("write me a linkedin post about the gate"),
+            _user("<command-name>/q-wrap</command-name>\nrun the evening health check"),
+        ])
+        assert gate.find_final_user_text(path) == "", (
+            "a slash-command turn carries no typed words before the marker, so it "
+            "has no founder text. The older post request must not stand in for it.")
+
+    def test_a_tool_result_record_does_not_erase_the_request(self, tmp_path):
+        """The direction that matters more, and the one that makes the naive fix
+        wrong. Every agentic turn ends user -> assistant(tool_use) -> user(
+        tool_result) -> assistant(text): that trailing `user` record is role=user,
+        carries NO text block and is NOT flagged isMeta. Assigning unconditionally
+        would blank the founder's request on essentially every real turn."""
+        path = _records_transcript(tmp_path, [
+            _user("write me a linkedin post about the gate"),
+            {"message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}},
+        ])
+        assert gate.find_final_user_text(path) == (
+            "write me a linkedin post about the gate"), (
+            "a tool_result record is transport, not a turn. Treating it as an empty "
+            "founder message blanks the request on every tool-using turn.")
+
+    def test_a_no_text_turn_is_not_a_route_request(self, tmp_path):
+        """End to end, lane installed. With no founder text this turn there is
+        nothing to classify, so the lane must not demand a receipt -- and above all
+        must not build one against an earlier turn's words."""
+        root = _instance(tmp_path, with_route_lane=True)
+        log = tmp_path / "calls.json"
+        assistant = ("Here's the post for LinkedIn.\n\n" + DRAFT_MARKER
+                     + "\nthe body of the draft, long enough to be measured.\n")
+        transcript = _records_transcript(tmp_path, [
+            _user("write me a linkedin post about the gate"),
+            _user("<system-reminder>a background task finished</system-reminder>"),
+            _assistant(assistant),
+        ])
+        proc = _run(root, transcript, log, classify="route")
+        assert proc.returncode == 0, (
+            "the gate refused a turn the founder did not ask for, by classifying an "
+            f"older message as this turn's request. rc={proc.returncode} "
+            f"stdout={proc.stdout} stderr={proc.stderr}")
+        assert _calls(log) == [], (
+            "the store was touched for a turn with no founder request: "
+            f"{_calls(log)}")
+
+    def test_the_route_lane_still_fires_when_he_did_type(self, tmp_path):
+        """The control. Without it, a fix that returned "" for EVERY turn would
+        pass the four assertions above and disable the gate outright."""
+        root = _instance(tmp_path, with_route_lane=True)
+        log = tmp_path / "calls.json"
+        assistant = ("Here's the post for LinkedIn.\n\n" + DRAFT_MARKER
+                     + "\nthe body of the draft, long enough to be measured.\n")
+        transcript = _records_transcript(tmp_path, [
+            _user("write me a linkedin post about the gate"),
+            _assistant(assistant),
+        ])
+        proc = _run(root, transcript, log, classify="route")
+        assert proc.returncode == 2 and "receipt" in proc.stderr, (
+            "a routed turn the founder DID type, with no receipt, must still be "
+            f"refused. rc={proc.returncode} stderr={proc.stderr}")
+
+
+def _symlinked_lane_instance(tmp_path, *, with_route_lane=True):
+    """An instance whose `q-consult` is a SYMLINK to a lane living elsewhere.
+
+    Not exotic: the consulting checkout is reached through a symlink on the
+    founder's machine, and every module then resolves to the link TARGET.
+    """
+    root = _instance(tmp_path, with_route_lane=with_route_lane)
+    if not with_route_lane:
+        return root
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (root / "q-consult").rename(elsewhere / "q-consult")
+    (root / "q-consult").symlink_to(elsewhere / "q-consult", target_is_directory=True)
+    return root
+
+
+class TestTheLaneReachedThroughASymlink:
+    """Finding 3, ASK-1197 round 2. The identity check compared an UNRESOLVED
+    `pipeline_dir` against `Path(module.__file__).resolve().parents`, so a lane
+    reached through a symlink never matched its own modules and the gate refused
+    every turn -- a hard block, on the correct lane, for a path spelling."""
+
+    def test_a_symlinked_lane_verifies_instead_of_hard_blocking(self, tmp_path):
+        root = _symlinked_lane_instance(tmp_path)
+        log = tmp_path / "calls.json"
+        draft = "the body of the draft, long enough to be measured."
+        receipt = {name: "x" for name in STUB_MATCH_FIELDS}
+        receipt.update(surface="linkedin", channel="assaf",
+                       request_hash=_stub_hash("rh:", "write it"),
+                       output_hash=_stub_hash("oh:", draft))
+        proc = _run(root, _transcript(tmp_path, "write it",
+                                      _producer_message(receipt, draft)),
+                    log, classify="route")
+        assert proc.returncode == 0, (
+            "a lane reached through a symlink resolves to its target, so an "
+            "unresolved comparison rejects the instance's own modules and blocks "
+            f"every turn. rc={proc.returncode} stderr={proc.stderr}")
+
+    def test_an_impostor_behind_a_symlink_is_still_refused_by_resolved_path(self, tmp_path):
+        """The control for the fix above AND the message half of the finding: the
+        refusal must name the path it actually compared, not the one it did not."""
+        root = _symlinked_lane_instance(tmp_path)
+        impostor = tmp_path / "impostor"
+        (impostor / "pipeline").mkdir(parents=True)
+        for mod in ("__init__", "route_classifier", "route_contract",
+                    "route_registry", "audit_only_routes"):
+            (impostor / "pipeline" / (mod + ".py")).write_text(
+                "NOT_ROUTED = 'not_routed'\nROUTE = 'route'\n", encoding="utf-8")
+        # See the sibling test: PYTHONPATH alone does not reproduce it, the
+        # impostor has to be in `sys.modules` before the gate imports.
+        (impostor / "sitecustomize.py").write_text("import pipeline\n", encoding="utf-8")
+        assistant = "Here's the post for LinkedIn.\n\n" + DRAFT_MARKER + "\nbody\n"
+        proc = _run(root, _transcript(tmp_path, "write it", assistant),
+                    tmp_path / "c.json", env_extra={"PYTHONPATH": str(impostor)})
+        assert proc.returncode == 2, (
+            f"the impostor was trusted. rc={proc.returncode} stderr={proc.stderr}")
+        resolved = str((tmp_path / "elsewhere" / "q-consult" / "pipeline").resolve())
+        assert resolved in proc.stderr, (
+            "the refusal printed a path it never compared against, so a reader "
+            f"cannot act on it. wanted {resolved!r} in:\n{proc.stderr}")
+
+
+class TestAClaimedReceiptIsStructural:
+    """Finding 4, ASK-1197 round 2. The uninstalled-lane branch decided a receipt
+    was claimed by substring, so an assistant that merely NAMES the marker in
+    prose -- this file's own docstrings do it, and so does any turn explaining the
+    gate -- printed NOT CHECKED on 24 instances that were never asked to check
+    anything. A producer emits the marker on its own line; a sentence does not."""
+
+    def test_a_prose_mention_of_the_marker_claims_nothing(self, tmp_path):
+        root = _instance(tmp_path, with_route_lane=False)
+        assistant = ("Here's the post for LinkedIn.\n\n"
+                     "The producer writes a `" + RECEIPT_MARKER + "` block ahead of "
+                     "the draft, and the gate consumes it once.\n")
+        proc = _run(root, _transcript(tmp_path, "explain the gate", assistant),
+                    tmp_path / "c.json")
+        assert proc.returncode == 0, (
+            f"rc={proc.returncode} stderr={proc.stderr}")
+        assert "NOT CHECKED" not in proc.stdout + proc.stderr, (
+            "quoting the marker inside a sentence is not a claimed receipt. A "
+            "false NOT CHECKED line on ordinary turns is how a gate gets switched "
+            f"off.\nstdout={proc.stdout!r}\nstderr={proc.stderr!r}")
+
+    def test_a_real_receipt_block_still_reports_not_checked(self, tmp_path):
+        """The control. A shape check tight enough to reject prose must still
+        accept what the producer actually emits, or the fix silences the warning
+        this whole block exists to print."""
+        root = _instance(tmp_path, with_route_lane=False)
+        receipt = {name: "x" for name in STUB_MATCH_FIELDS}
+        proc = _run(root, _transcript(tmp_path, "write it",
+                                      _producer_message(receipt, "the body")),
+                    tmp_path / "c.json")
+        assert proc.returncode == 0, proc.stderr
+        assert "NOT CHECKED" in proc.stdout, (
+            f"stdout={proc.stdout!r} stderr={proc.stderr!r}")
