@@ -521,12 +521,34 @@ def find_final_user_text(transcript_path):
     for record, message in _walk_transcript(transcript_path, want_record=True):
         if message.get("role") != "user":
             continue
-        # The harness labels its own injections. Trust the label over any
-        # attempt to recognise the prose; see `_walk_transcript`'s scar note.
-        if any(record.get(flag) is True for flag in _META_FLAGS):
-            continue
         raw = _message_text(message)
         if not raw.strip():
+            # No text at all: a tool_result or other transport record. It neither
+            # ends the turn nor erases anything (round 2 -- otherwise his request
+            # is blanked on every tool-using turn).
+            continue
+        # The harness labels its own injections. Trust the label over any attempt
+        # to recognise the prose; see `_walk_transcript`'s scar note.
+        if any(record.get(flag) is True for flag in _META_FLAGS):
+            # A META RECORD WITH TEXT ENDS HIS TURN (Codex major, ASK-1197 round
+            # 6). This used to `continue`, which SKIPPED the record and left an
+            # earlier message standing as "this turn's request" -- and that closes
+            # a loop that cannot break out of itself:
+            #
+            #   he types a routed request -> the assistant answers -> this gate
+            #   refuses (exit 2) -> the refusal comes back as an isMeta `user`
+            #   record -> the skip means his ORIGINAL routed request is still the
+            #   request -> the assistant's error report is judged against it and
+            #   refused again -> forever.
+            #
+            # Every refusal re-armed itself. That is the three-occurrence deadlock
+            # the scar above describes, reached from the other side: round 2 fixed
+            # reading machine prose AS his words, this fixes reading his OLD words
+            # as still current after the machine spoke last.
+            #
+            # Reset rather than break, because a founder message AFTER the meta
+            # record is a genuinely new turn and must re-arm the gate.
+            text = ""
             continue
         text = founder_typed_text(raw)
     return text

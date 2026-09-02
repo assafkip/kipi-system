@@ -503,9 +503,18 @@ class TestFounderTypedText:
         assert gate.founder_typed_text("write me a linkedin post about the gate") == (
             "write me a linkedin post about the gate")
 
-    def test_a_meta_flagged_record_is_skipped_by_the_walker(self, tmp_path):
+    def test_a_meta_flagged_record_ends_the_founder_turn(self, tmp_path):
         """The label, not the prose. Enumerating carriers in a regex is the shape
-        that failed twice; `isMeta` is what the harness already tells us."""
+        that failed twice; `isMeta` is what the harness already tells us.
+
+        THIS ASSERTION FLIPPED IN ROUND 6, deliberately. It used to require the
+        EARLIER founder message, on the reasoning that the meta record must not be
+        read as his words. That half is still true and still held -- the skill body
+        is not returned. But keeping the earlier message closes a loop that cannot
+        break out of itself: the gate refuses, the refusal arrives as a meta `user`
+        record, the stale request survives the skip, and the assistant's error
+        report is judged against it and refused again. So a meta record with text
+        ENDS his turn: not his words, and not an older message either."""
         path = tmp_path / "t.jsonl"
         path.write_text("\n".join([
             json.dumps({"message": {"role": "user", "content": [
@@ -514,9 +523,10 @@ class TestFounderTypedText:
                         "message": {"role": "user", "content": [
                             {"type": "text", "text": "a skill body with no tags at all"}]}}),
         ]) + "\n", encoding="utf-8")
-        assert gate.find_final_user_text(str(path)) == "the real request", (
-            "the newest `user` record won even though the harness flagged it as its "
-            "own injection. That is the third-occurrence deadlock.")
+        assert gate.find_final_user_text(str(path)) == "", (
+            "a harness-flagged record must neither BE the request (the "
+            "third-occurrence deadlock) nor leave an older one standing as this "
+            "turn's (the re-arming refusal loop, round 6).")
 
 
 def _records_transcript(tmp_path, records, name="records.jsonl"):
@@ -1005,3 +1015,85 @@ class TestTheIdeaLaneAdvisoryBlocks:
         draft = "the body of an x draft, long enough to be measured."
         message = _producer_message({name: "x" for name in STUB_MATCH_FIELDS}, draft)
         assert gate._route_draft(message) == draft
+
+
+class TestAMetaRecordEndsTheTurn:
+    """Codex major, ASK-1197 round 6. The deadlock reached from the other side.
+
+    `find_final_user_text` SKIPPED a meta record, so after this gate refused a
+    turn, its own feedback came back as an isMeta `user` record, the founder's
+    original routed request was still "this turn's request", and the assistant's
+    reply to the feedback -- an error report, a question, a NOT CHECKED
+    explanation -- was judged against it and refused again. Every refusal
+    re-armed itself.
+    """
+
+    def _routed_turn(self, tmp_path, records):
+        root = _instance(tmp_path, with_route_lane=True)
+        return _run(root, _records_transcript(tmp_path, records),
+                    tmp_path / "c.json", classify="route")
+
+    ASSISTANT_REPLY = (
+        "Here's what happened: the route verifier refused the draft because the "
+        "receipt did not match. I have not re-drafted anything yet.\n")
+
+    def test_a_reply_to_refusal_feedback_is_not_refused_again(self, tmp_path):
+        """Case 1. The loop. His routed request, this gate's refusal arriving as a
+        meta record, then the assistant explaining the failure. That explanation is
+        not a routed completion and must complete."""
+        proc = self._routed_turn(tmp_path, [
+            _user("write me a linkedin post about the propagation gate"),
+            _user("voice-stop-gate: routed completion has no route receipt",
+                  isMeta=True, turnCompanion=True),
+            _assistant(self.ASSISTANT_REPLY),
+        ])
+        assert proc.returncode == 0, (
+            "the gate judged an error report against a request from before its own "
+            "refusal, and refused it again. Every refusal re-arms itself.\n"
+            f"rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
+
+    def test_a_new_request_after_the_feedback_re_arms_the_gate(self, tmp_path):
+        """Case 2, THE CONTROL that matters most. The reset must not disarm the
+        gate: a founder message AFTER the meta record is a genuinely new turn, and
+        a routed completion in it still owes a receipt."""
+        assistant = ("Here's the post for LinkedIn.\n\n" + DRAFT_MARKER
+                     + "\nthe body of the draft, long enough to be measured.\n")
+        proc = self._routed_turn(tmp_path, [
+            _user("write me a linkedin post about the propagation gate"),
+            _user("voice-stop-gate: routed completion has no route receipt",
+                  isMeta=True, turnCompanion=True),
+            _user("ok now write me a linkedin post about the reddit lane instead"),
+            _assistant(assistant),
+        ])
+        assert proc.returncode == 2, (
+            "a NEW founder request after the feedback was not enforced. The reset "
+            f"disarmed the gate.\nrc={proc.returncode} stdout={proc.stdout}")
+        assert "receipt" in proc.stderr, proc.stderr
+
+    def test_a_tool_result_after_a_request_still_enforces(self, tmp_path):
+        """Case 3, unchanged from round 2. A `user` record with no text block is
+        transport: it neither ends the turn nor erases the request, or his request
+        is blanked on every tool-using turn."""
+        assistant = ("Here's the post for LinkedIn.\n\n" + DRAFT_MARKER
+                     + "\nthe body of the draft, long enough to be measured.\n")
+        proc = self._routed_turn(tmp_path, [
+            _user("write me a linkedin post about the propagation gate"),
+            {"message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}},
+            _assistant(assistant),
+        ])
+        assert proc.returncode == 2, (
+            "a tool_result ended the founder's turn, so every tool-using turn now "
+            f"bypasses route enforcement.\nrc={proc.returncode} stdout={proc.stdout}")
+
+    def test_a_meta_record_with_no_text_does_not_end_the_turn(self, tmp_path):
+        """The seam, stated directly. Only a meta record carrying TEXT is feedback;
+        a flagged record with no text block is transport like any other, and
+        treating it as an ending would disarm the gate on turns that carry one."""
+        path = _records_transcript(tmp_path, [
+            _user("write me a linkedin post about the propagation gate"),
+            {"isMeta": True, "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}},
+        ])
+        assert gate.find_final_user_text(path) == (
+            "write me a linkedin post about the propagation gate")
