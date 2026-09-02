@@ -207,6 +207,25 @@ def test_cli_without_the_marker_prints_and_says_it_did_not_send(tmp_path):
     assert r.returncode == 0 and "only-here.md" in r.stdout and "delivery: not launched by the plist" in r.stdout, r.stdout
     r = _run(root, env_extra={"KIPI_TRIGGER": "launchd"})
     assert "delivery: refused" in r.stdout, "under pytest the real sender refuses, and the CLI says so"
+    assert r.returncode == 2, "a launchd run whose only alert was refused must not exit 0 (PR #294 review)"
+
+
+def test_a_launchd_run_whose_delivery_fails_exits_nonzero_and_a_delivered_one_exits_zero(tmp_path, monkeypatch, capsys):
+    """PR #294 review, major: main() returned 0 after Slack refused, so the
+    scheduled reporter's only alert vanished with a success exit that launchd,
+    the deadman and run-step-audit all read as fine. Three shapes, one rule:
+    launched by the plist and not delivered is a failure; printed-not-sent
+    (no plist marker) and dry-run stay 0 because nothing was owed."""
+    root, hub = _fixture(tmp_path)
+    m = _mod()
+    monkeypatch.setenv("KIPI_TRIGGER", "launchd")
+    assert m.main(["--root", str(root)], deliver=lambda msg: {"delivered": False, "refused": True}) == 2
+    assert m.main(["--root", str(root)], deliver=lambda msg: {}) == 2, "an empty answer is not a delivery"
+    assert m.main(["--root", str(root)], deliver=lambda msg: {"delivered": True, "refused": False}) == 0
+    assert m.main(["--root", str(root), "--dry-run"], deliver=lambda msg: {"refused": True}) == 0
+    monkeypatch.delenv("KIPI_TRIGGER")
+    assert m.main(["--root", str(root)], deliver=lambda msg: {"refused": True}) == 0
+    assert "delivery: refused" in capsys.readouterr().out
 
 
 def test_single_caller_the_plist_template_is_the_only_one_in_the_tree():

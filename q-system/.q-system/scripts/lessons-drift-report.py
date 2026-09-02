@@ -162,16 +162,26 @@ def run(root, deliver=None, dry_run=False, trigger=None, now=None):
     return result
 
 
-def main(argv=None):
+def main(argv=None, deliver=None):
+    """Exit 0 when nothing was owed or the owed message landed; exit 2 when the
+    plist launched this and delivery did not happen (PR #294 review, major: a
+    refused Slack send returned 0, so the reporter's ONLY alert vanished behind
+    a success exit that launchd, the deadman and run-step-audit all read as
+    fine). Printed-not-sent (no plist marker) and --dry-run owe nothing."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", default=DEFAULT_ROOT)
     ap.add_argument("--dry-run", action="store_true", help="print, send nothing")
     a = ap.parse_args(argv)
-    result = run(a.root, dry_run=a.dry_run, trigger=os.environ.get("KIPI_TRIGGER"))
+    trigger = os.environ.get("KIPI_TRIGGER")
+    result = run(a.root, deliver=deliver, dry_run=a.dry_run, trigger=trigger)
     print(result["message"])
     d = result["delivery"]
-    if not a.dry_run:
-        print("delivery: " + ("sent" if d["delivered"] else "refused" if d["refused"] else d.get("reason", "not sent")))
+    if a.dry_run:
+        return 0
+    print("delivery: " + ("sent" if d["delivered"] else "refused" if d["refused"] else d.get("reason", "not sent")))
+    if trigger == "launchd" and not d["delivered"]:
+        print("delivery: FAILED, the plist launched this and nothing landed", file=sys.stderr)
+        return 2
     return 0
 
 
