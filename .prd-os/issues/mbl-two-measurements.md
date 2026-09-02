@@ -1,7 +1,7 @@
 ---
 id: mbl-two-measurements
 title: Permission-ask counter with a ledger, and decision-corpus cost with a stated formula
-status: open
+status: closed
 priority: p2
 parent_prd: prd-morning-brief-learns-2026-09-01
 allowed_files:
@@ -40,4 +40,4 @@ RED first: (1) the counter over a fixture transcript with two pick-then-menu tur
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Permission-ask counter with a ledger, and decision-corpus cost with a stated formula
+- [x] Permission-ask counter with a ledger, and decision-corpus cost with a stated formula (permission-ask-counter.py + decision-corpus-cost.py; 13 tests red-first; mutation proof in the closing commit; 4 Codex findings: 3 accepted and patched (one turn per assistant record, unreadable transcripts fail closed), the plan-file write deferred with rationale (worktree isolation, section saved for landing). LIVE 2026-09-01: decision corpus = 16,125 bytes, ~4,032 tokens per turn by tokens=ceil(bytes/4); counter over this machine's 200 newest transcripts = 1 pick-then-ask turn in 654 assistant turns, rate 0.0015, first ledger row in q-system/output/permission-ask-ledger.jsonl. The measured numbers are written into the plan file's 2h/2i sections; voice-dna-loader.py untouched, route_classifier.py never imported)

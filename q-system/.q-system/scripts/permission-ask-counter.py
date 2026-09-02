@@ -44,17 +44,20 @@ ASK = re.compile(r"\b(want me to|should i|shall i|which (one|do you)|say go|appr
 EXIT_OK, EXIT_BROKEN = 0, 3
 
 
-def _assistant_texts(record: dict):
+def assistant_turn_text(record: dict):
+    """ONE string per assistant record, or None: every text block of the record
+    joined in order (both Codex reviewers on this issue: counting each block as
+    a turn inflated the denominator and split a pick in one block from the ask
+    in the next, so the shape the counter exists to see was invisible)."""
     if record.get("type") != "assistant":
-        return
+        return None
     msg = record.get("message") or {}
     content = msg.get("content")
     if isinstance(content, str):
-        yield content
-        return
-    for block in content or []:
-        if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
-            yield block["text"]
+        return content
+    parts = [b["text"] for b in content or []
+             if isinstance(b, dict) and b.get("type") == "text" and b.get("text")]
+    return "\n".join(parts) if parts else None
 
 
 def is_pick_then_ask(text: str) -> bool:
@@ -71,6 +74,7 @@ def scan(sample: Path, limit_files: int = 200) -> dict:
     if not files:
         raise FileNotFoundError(f"no .jsonl transcripts under {sample}")
     turns = count = 0
+    unreadable = []
     for path in files:
         try:
             with path.open(encoding="utf-8") as fh:
@@ -79,12 +83,18 @@ def scan(sample: Path, limit_files: int = 200) -> dict:
                         rec = json.loads(line)
                     except ValueError:
                         continue
-                    for text in _assistant_texts(rec):
-                        turns += 1
-                        if is_pick_then_ask(text):
-                            count += 1
-        except OSError:
-            continue
+                    text = assistant_turn_text(rec)
+                    if text is None:
+                        continue
+                    turns += 1
+                    if is_pick_then_ask(text):
+                        count += 1
+        except OSError as exc:
+            unreadable.append(f"{path.name}: {type(exc).__name__}")
+    if unreadable:
+        # Fail closed (Codex adversarial minor): a partial sample is not a
+        # measurement of the sample, and a skipped file is not a smaller sample.
+        raise PermissionError(f"{len(unreadable)} transcript(s) unreadable: {', '.join(unreadable[:5])}")
     return {"files": len(files), "turns": turns, "count": count,
             "rate": round(count / turns, 4) if turns else None}
 
