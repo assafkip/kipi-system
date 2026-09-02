@@ -38,6 +38,7 @@ def _trees(tmp_path):
 def _promote(tmp_path, rel, unscrubbed=True, cwd=None):
     inst, skel = tmp_path / "instance", tmp_path / "skeleton"
     env = dict(os.environ, KIPI_PROMOTE_INSTANCE=str(inst), KIPI_PROMOTE_SKELETON=str(skel))
+    env.pop("KIPI_PROMOTE_UNSCRUBBED", None)  # never inherit the seam from the caller's shell
     if unscrubbed:
         env["KIPI_PROMOTE_UNSCRUBBED"] = "1"
     # timeout: a promoter that reads a fifo blocks forever; a hang is a failure, not a wait
@@ -71,11 +72,71 @@ def test_containment_refuses_a_symlinked_file_and_a_symlinked_parent(tmp_path):
     inst, skel = _trees(tmp_path)
     (inst / "q-system" / "lessons" / "link.md").symlink_to(tmp_path / "outside.md")
     r = _promote(tmp_path, "q-system/lessons/link.md")
-    assert r.returncode == 2 and "symlink" in r.stderr, r.stderr
+    assert r.returncode == 2 and "refused: symlink on the path: q-system/lessons/link.md" in r.stderr, r.stderr
     (inst / "q-system" / "linked-dir").symlink_to(tmp_path)
     r = _promote(tmp_path, "q-system/linked-dir/outside.md")
-    assert r.returncode == 2 and "symlink" in r.stderr, r.stderr
+    assert r.returncode == 2 and "refused: symlink on the path: q-system/linked-dir" in r.stderr, r.stderr
     _nothing_copied(tmp_path)
+
+
+@pytest.mark.parametrize("rel,why", [
+    ("q-system//lessons/general.md", "empty segment"),
+    ("q-system/lessons/gen\neral.md", "newline"),
+])
+def test_empty_segments_and_newlines_are_refused_at_the_input(tmp_path, rel, why):
+    _trees(tmp_path)
+    r = _promote(tmp_path, rel)
+    assert r.returncode == 2 and "refused" in r.stderr and "Traceback" not in r.stderr, (why, r.stderr)
+    _nothing_copied(tmp_path)
+
+
+def test_extra_arguments_fail_instead_of_half_succeeding(tmp_path):
+    inst, skel = _trees(tmp_path)
+    env = dict(os.environ, KIPI_PROMOTE_INSTANCE=str(inst), KIPI_PROMOTE_SKELETON=str(skel), KIPI_PROMOTE_UNSCRUBBED="1")
+    r = subprocess.run(["/bin/bash", str(PROMOTE), "q-system/lessons/general.md", "/etc/passwd"], capture_output=True, text=True, env=env, cwd=inst, timeout=20)
+    assert r.returncode == 2 and "usage" in r.stderr
+    _nothing_copied(tmp_path)
+
+
+def test_mode_bits_survive_the_copy(tmp_path):
+    """Claude standard review: the fd copy wrote 644; a promoted hook script
+    arrived non-executable and fanned out broken."""
+    inst, skel = _trees(tmp_path)
+    tool = inst / "q-system" / ".q-system" / "scripts" / "tool.sh"
+    tool.write_text("#!/bin/bash\necho hi\n")
+    tool.chmod(0o755)
+    r = _promote(tmp_path, "q-system/.q-system/scripts/tool.sh")
+    assert r.returncode == 0, r.stderr
+    assert (skel / "q-system" / ".q-system" / "scripts" / "tool.sh").stat().st_mode & 0o777 == 0o755
+
+
+def test_destination_uses_the_on_disk_casing(tmp_path):
+    inst, skel = _trees(tmp_path)
+    r = _promote(tmp_path, "q-system/Lessons/General.md")
+    if r.returncode == 2:
+        assert "no such file" in r.stderr, r.stderr  # case-sensitive filesystem: nothing to resolve
+        return
+    assert r.returncode == 0, r.stderr
+    # exists() is case-insensitive here too, so compare the on-disk NAMES
+    assert sorted(p.name for p in (skel / "q-system").iterdir()) == ["lessons"], "no second, differently-cased tree"
+    assert [p.name for p in (skel / "q-system" / "lessons").iterdir()] == ["general.md"], "the on-disk casing, not the caller's"
+
+
+def test_production_resolution_reads_the_registry_through_kipi_home(tmp_path):
+    """Claude standard review: every test set KIPI_PROMOTE_SKELETON, so the
+    registry read and the cwd default never ran."""
+    inst, skel = _trees(tmp_path)
+    home = tmp_path / "kipi-home"
+    home.mkdir()
+    (home / "instance-registry.json").write_text('{"skeleton": {"path": "%s"}, "instances": []}' % skel)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("KIPI_PROMOTE")}
+    env.update(KIPI_HOME=str(home), KIPI_PROMOTE_UNSCRUBBED="1")
+    r = subprocess.run(["/bin/bash", str(PROMOTE), "q-system/lessons/general.md"], capture_output=True, text=True, env=env, cwd=inst, timeout=20)
+    assert r.returncode == 0, r.stderr
+    assert (skel / "q-system" / "lessons" / "general.md").exists()
+    (home / "instance-registry.json").write_text("{not json")
+    r = subprocess.run(["/bin/bash", str(PROMOTE), "q-system/lessons/general.md"], capture_output=True, text=True, env=env, cwd=inst, timeout=20)
+    assert r.returncode == 2 and "skeleton" in r.stderr, "an unreadable registry refuses, never guesses"
 
 
 def test_containment_refuses_a_fifo(tmp_path):
@@ -130,7 +191,8 @@ def test_the_copy_is_the_containment_not_a_precheck_plus_cp():
     with O_NOFOLLOW relative to directory fds, so a swapped component fails."""
     src = PROMOTE.read_text()
     assert "O_NOFOLLOW" in src and "dir_fd=" in src
-    assert "\ncp " not in src and " cp " not in src.replace("contained copy", ""), "no plain cp anywhere"
+    import re
+    assert not re.search(r"(?m)^\s*cp\s", src), "no plain cp invocation anywhere"
 
 
 def test_the_seam_also_requires_a_temp_rooted_instance():

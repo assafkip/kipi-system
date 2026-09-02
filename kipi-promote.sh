@@ -23,8 +23,12 @@ set -euo pipefail
 
 usage() { echo "usage: kipi promote <relative path under q-system/>" >&2; }
 
-if [ $# -lt 1 ] || [ -z "${1:-}" ]; then usage; exit 2; fi
+if [ $# -ne 1 ] || [ -z "${1:-}" ]; then usage; exit 2; fi   # ONE capability per call; extra args fail, never half-succeed
 REL="$1"
+case "$REL" in
+  *$'\n'*) echo "kipi promote: refused: a newline in the path ($REL)" >&2; exit 2 ;;
+  *//*) echo "kipi promote: refused: empty segment in the path ($REL)" >&2; exit 2 ;;
+esac
 
 INSTANCE="${KIPI_PROMOTE_INSTANCE:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 if [ -z "${KIPI_PROMOTE_SKELETON:-}" ]; then
@@ -63,11 +67,17 @@ done
 [ -d "$SRC" ] && refuse "directories are not promotable; promote one file at a time ($REL)"
 [ -f "$SRC" ] || refuse "not a regular file (device, fifo or socket): $REL"
 REAL="$(cd "$(dirname "$SRC")" && pwd -P)/$(basename "$SRC")"
+INSTANCE_REAL="$(cd "$INSTANCE" && pwd -P)"
 case "$REAL" in
-  "$(cd "$INSTANCE/q-system" && pwd -P)"/*) : ;;
+  "$INSTANCE_REAL/q-system"/*) : ;;
   *) refuse "real path escapes q-system/: $REAL" ;;
 esac
-
+# The destination is the ON-DISK relative path, not the caller's spelling: on
+# case-insensitive APFS `q-system/Lessons/General.md` opens the real file, and
+# `$SKELETON/$REL` would create a second, differently-cased copy on a
+# case-sensitive checkout (Claude standard review, issue 7).
+REL="$(python3 -c 'import os,sys; r,i=sys.argv[1:3]; print(os.path.relpath(os.path.join(os.path.dirname(r), os.path.basename(r)), i))' "$(python3 -c 'import os,sys; d,b=sys.argv[1:3]; n=next((e for e in os.listdir(d) if e.lower()==b.lower() and os.path.lexists(os.path.join(d,e))), b); print(os.path.join(d,n))' "$(dirname "$REAL")" "$(basename "$SRC")")" "$INSTANCE_REAL")"
+[ -f "$INSTANCE_REAL/$REL" ] || refuse "on-disk path could not be resolved for $1"
 DEST="$SKELETON/$REL"
 
 # --- scrub and receipt slices land in the next issues; until then this never promotes for real ---
@@ -76,8 +86,10 @@ DEST="$SKELETON/$REL"
 # to set (Codex adversarial, issue lr-promote-path-containment); a real
 # instance never lives under /tmp or /private/var/folders, so this cannot be
 # turned into a working unscrubbed promoter for a real tree.
+# (Tests under a TMPDIR outside these four prefixes get rc 3 from every copy
+# test; run pytest with the default basetemp.)
 _tmp_rooted=0
-case "$(cd "$INSTANCE" && pwd -P)" in
+case "$INSTANCE_REAL" in
   /tmp/*|/private/tmp/*|/private/var/folders/*|/var/folders/*) _tmp_rooted=1 ;;
 esac
 if [ -z "${PYTEST_CURRENT_TEST:-}" ] || [ "${KIPI_PROMOTE_UNSCRUBBED:-}" != "1" ] || [ "$_tmp_rooted" != "1" ]; then
@@ -112,17 +124,24 @@ def walk_dirs(root, names, create=False):
         raise
 sdir = walk_dirs(instance, parts[:-1])
 try:
-    sfd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=sdir)
+    # O_NONBLOCK: a fifo swapped in after the bash -f check must FAIL the
+    # S_ISREG test below, not block this open forever (Claude standard review).
+    sfd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=sdir)
 finally:
     os.close(sdir)
 try:
-    if not stat.S_ISREG(os.fstat(sfd).st_mode):
+    st = os.fstat(sfd)
+    if not stat.S_ISREG(st.st_mode):
         sys.exit(1)
+    os.set_blocking(sfd, True)
     ddir = walk_dirs(skeleton, parts[:-1], create=True)
     try:
         dfd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, dir_fd=ddir, mode=0o644)
     finally:
         os.close(ddir)
+    # keep the mode bits: a promoted hook or test script arrives executable,
+    # as cp preserved it (Claude standard review: 755 -> 644 fanned out broken)
+    os.fchmod(dfd, stat.S_IMODE(st.st_mode))
     with os.fdopen(sfd, "rb") as src, os.fdopen(dfd, "wb") as dst:
         sfd = None
         while True:

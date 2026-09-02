@@ -51,7 +51,7 @@ usage() {
   echo "  kipi health          Fleet health check: dark/failing jobs, double schedules, open spillover"
   echo "  kipi health --apply  ...and file each finding as a deduped Linear issue"
   echo "  kipi lessons-run     Run the daily auto-learn heartbeat once (distill->publish->propagate->slack)"
-  echo "  kipi promote <path>  Promote ONE general capability from this instance up to the skeleton (contained, scrubbed, receipted)"
+  echo "  kipi promote <path>  Promote ONE general capability from this instance up to the skeleton (contained; scrub + receipt slices follow)"
   echo "  kipi home            Print the skeleton path"
   echo ""
 }

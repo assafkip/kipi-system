@@ -1,7 +1,7 @@
 ---
 id: lr-promote-path-containment
 title: kipi promote exists, is registered in the CLI, and refuses any path that is not a regular file on a symlink-free real path inside q-system/
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:
@@ -37,4 +37,4 @@ RED first against tmp copies of an instance and a skeleton (never the live trees
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] kipi promote exists, is registered in the CLI, and refuses any path that is not a regular file on a symlink-free real path inside q-system/
+- [x] kipi promote exists, is registered in the CLI, and refuses any path that is not a regular file on a symlink-free real path inside q-system/
