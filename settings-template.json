@@ -264,7 +264,17 @@
           },
           {
             "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voiceloop-band-lint.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voiceloop-band-lint.py\"; fi",
+            "timeout": 35
+          },
+          {
+            "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-confidence-validator.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-confidence-validator.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\"",
+            "timeout": 10
           },
           {
             "type": "command",

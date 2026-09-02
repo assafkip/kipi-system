@@ -285,6 +285,44 @@ def sec_replay():
         check("replay: main's version survives the refusal",
               json.loads(frag.read_text()).get("runner") == "sh")
 
+    # The edit whose fragment is GONE. Main removed that declaration on purpose;
+    # replaying the branch's edit would write it back and resurrect a gate main
+    # retired. Codex major, PR #285 round 1: _read_fragment returns None for both
+    # "missing" and "unreadable", and the old check only refused a non-None value
+    # that differed, so a deletion read as a safe edit and the tool reported
+    # success. Same loss class as a silent removal, pointing the other way.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        rel = add_test(root, "q-system/.q-system/scripts/test_new.py")
+        old = entry(rel)
+        base = base_manifest(expected_tests=[old])
+        head = base_manifest(expected_tests=[dict(old, runner="bash")])
+        sdir = root / capability_manifest.FRAGMENT_DIR / "expected_tests"
+        rc, out = add_from(root, base, head)
+        check("replay: an edit whose fragment main REMOVED is refused",
+              rc == 1 and "EDITED" in out and "removed" in out)
+        check("replay: the removed declaration is not resurrected",
+              not (sdir / capability_manifest.fragment_name(
+                  "expected_tests", old)).exists())
+
+    # The edit whose fragment is unreadable. This cannot tell a concurrent edit
+    # from a removal, so it must refuse rather than pick one.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        rel = add_test(root, "q-system/.q-system/scripts/test_new.py")
+        old = entry(rel)
+        base = base_manifest(expected_tests=[old])
+        head = base_manifest(expected_tests=[dict(old, runner="bash")])
+        sdir = root / capability_manifest.FRAGMENT_DIR / "expected_tests"
+        sdir.mkdir(parents=True, exist_ok=True)
+        frag = sdir / capability_manifest.fragment_name("expected_tests", old)
+        frag.write_text("{ this is not json")
+        rc, out = add_from(root, base, head)
+        check("replay: an unreadable fragment is refused, never overwritten",
+              rc == 1 and "unreadable" in out)
+        check("replay: the unreadable fragment is left alone",
+              frag.read_text() == "{ this is not json")
+
 
 def sec_overlay():
     with tempfile.TemporaryDirectory() as tmp:

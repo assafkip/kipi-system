@@ -37,9 +37,10 @@ without blocking a commit. This file is in the directory the commit gate reads.
 
 ## No live data path
 
-Every case passes a `cwd` of tmp_path. `_receipt_missing` shells out to `gh`
-only when a receipt file already exists; under an empty tmp_path it returns
-"no green receipt" and the gate never touches the network.
+Every case passes a `cwd` of tmp_path. `_protection_exists` shells out to `gh`,
+but tmp_path is not a repository, so gh cannot resolve `{owner}/{repo}` and
+fails locally without a request. The unreadable answer is the one this file
+wants anyway: unknown protection counts as protected.
 """
 from __future__ import annotations
 
@@ -121,10 +122,24 @@ def test_plain_no_auto_merge_is_denied_through_the_hook_interface(tmp_path):
 
 
 def test_the_no_auto_refusal_names_what_is_missing(tmp_path):
-    """A deny that explains nothing teaches the operator nothing."""
+    """A deny that explains nothing teaches the operator nothing.
+
+    RE-PINNED at the origin/main merge, for the second time this string has
+    moved. ASK-1179 wrote "no green receipt" because the deferral target then
+    was a local receipt. PR #269 round 6 moved it again: a receipt is a LOCAL
+    file written by the same actor this gate constrains, so it is offered only
+    where there is nothing better, and unknown protection counts as protected.
+    tmp_path is not a repo, so the protection state cannot be read and this is
+    the branch that answers.
+
+    The VERDICT is untouched -- this shape is still denied, which is the fact
+    ASK-1179 exists to hold. Only the explanation moved, and it is re-pinned to
+    a SPECIFIC string rather than relaxed to "any deny", because a gate that
+    refuses everything generically would pass that weaker assertion.
+    """
     proc = _run(GATE, NO_AUTO_MERGE, tmp_path)
     reason = json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
-    assert "no green receipt" in reason
+    assert "may not outrank a required check" in reason
 
 
 def test_the_safe_shape_is_still_allowed(tmp_path):
@@ -216,4 +231,4 @@ def test_merge_verdict_takes_the_cwd_it_uses(tmp_path):
     assert "cwd" in params, f"_merge_verdict still cannot see a cwd: {params}"
     # And it runs rather than raising, on the input that used to raise.
     reason = mod._merge_verdict(["gh", "pr", "merge", "155", "--squash"], str(tmp_path))
-    assert reason and "no green receipt" in reason
+    assert reason and "may not outrank a required check" in reason

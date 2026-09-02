@@ -50,24 +50,43 @@ HOOK = pathlib.Path(os.environ.get("HOME", "")) / ".claude/hooks/destructive-op-
 # that skips reads exactly like a suite that passes.
 _OVERRIDE = os.environ.get("KIPI_DESTRUCTIVE_HOOK")
 
-# A VENDORED reference copy, so this suite can run somewhere other than one
-# laptop (Codex major, PR #274). The hook is machine-local with no repo copy, so
-# every case here skipped on every runner and verify.sh reported
-# `pytest:test_destructive_op_deny_anchor.py ok` having executed NOTHING: 89
+# THE REPO COPY, so this suite can run somewhere other than one laptop (Codex
+# major, PR #274). The hook is machine-local, so with no copy in the repo every
+# case here skipped on every runner and verify.sh reported
+# `pytest:test_destructive_op_deny_anchor.py ok` having executed NOTHING: 95
 # assertions about the fleet's most destructive guard, gated by a false green.
 #
+# WHERE THE COPY LIVES IS THE WHOLE ARGUMENT (PR #269, rounds 4 and 5).
+#
+# Round 4: an earlier revision put a byte-identical copy at
+# q-system/.q-system/hooks/destructive-op-deny.sh. Codex reviewed it as
+# ENFORCEMENT and flagged its MCP wildcards. It was right to -- a shell script
+# under `hooks/` reads as live, the capability gate treats it as a wiring
+# surface, and ASK-1144 / PR #279 was already landing that exact path. Two
+# branches adding one file is a guaranteed conflict and a second owner for a gate
+# that must have exactly one.
+#
+# Round 5: referencing that path WITHOUT shipping a file left all 95 cases
+# skipping and the suite exiting 0, which is the false green this whole thing was
+# reported for. Deferring to #279 made the report true for longer.
+#
+# So: a FIXTURE, under tests/fixtures/, non-executable, with `.reference.` in its
+# name. It cannot be mistaken for the gate by a reader, by the capability gate,
+# or by a reviewer, and it collides with nothing. The deny SEMANTICS stay with
+# ASK-1144; this file only has to be the same bytes, and the drift check below
+# fails the moment it is not.
+#
 # The live hook is still the one that runs, and it is still what these cases
-# prefer. The vendored copy is the CI fallback, and test_the_vendored_copy_has_
-# not_drifted below pins the two byte-identical whenever both exist, so the copy
-# cannot quietly become a different program that passes its own tests.
-VENDORED = pathlib.Path(__file__).parent / "q-system/.q-system/hooks/destructive-op-deny.sh"
+# prefer. sp-66e74091 carries the coupling.
+REPO_COPY = (pathlib.Path(__file__).parent
+             / "q-system/.q-system/tests/fixtures/destructive-op-deny.reference.sh")
 
 if _OVERRIDE:
     _UNDER_TEST = pathlib.Path(_OVERRIDE)
 elif HOOK.is_file():
     _UNDER_TEST = HOOK
 else:
-    _UNDER_TEST = VENDORED
+    _UNDER_TEST = REPO_COPY
 
 CURRENT = "'kipi[[:space:]]+update'"
 # Command position, allowing an env-var assignment prefix and command
@@ -447,10 +466,17 @@ class TestFlagPositionDoesNotMoveTheTarget:
         """The vendored copy is what CI actually executes. If it drifts from the
         hook that really runs, CI is green about a different program -- which is
         the same false green vendoring was added to remove, one layer over."""
-        assert VENDORED.is_file(), "the vendored reference copy is missing: %s" % VENDORED
-        assert VENDORED.read_bytes() == HOOK.read_bytes(), (
-            "the vendored copy and the live hook have diverged. Re-vendor with:\n"
-            "  cat %s > %s" % (HOOK, VENDORED))
+        assert REPO_COPY.is_file(), (
+            "the reference fixture is missing: %s. Without it this whole module "
+            "skips on any machine but one laptop, and a suite that skips reads "
+            "exactly like a suite that passes." % REPO_COPY)
+        if not HOOK.is_file():
+            pytest.skip("no live hook on this machine, so there is nothing to "
+                        "compare the fixture against. The other %d cases still "
+                        "ran, against the fixture." % 94)
+        assert REPO_COPY.read_bytes() == HOOK.read_bytes(), (
+            "the reference fixture and the live hook have diverged. Re-sync:\n"
+            "  cat %s > %s" % (HOOK, REPO_COPY))
 
     def test_git_clean_dry_run_is_a_known_false_positive(self, tmp_path):
         """`git clean -n -d` is a PREVIEW and is refused anyway.

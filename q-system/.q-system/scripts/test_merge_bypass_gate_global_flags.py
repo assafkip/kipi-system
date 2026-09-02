@@ -112,20 +112,18 @@ REASON_CASES: list[tuple[str, str, str]] = [
     ("an unknown flag is named in the refusal",
      "gh pr merge 155 --auto --squash --admin",
      "unrecognised argument"),
-    # UPDATED 2026-08-30 (ASK-1179), and it was red for TWO reasons stacked.
-    # The outer one was a NameError that crashed the classifier on this exact
-    # command. Fixing that exposed this one, which had never actually run: the
-    # case pinned the pre-d666594d refusal wording ("does not defer to the
-    # required checks"), while d666594d deliberately moved the deferral target
-    # from a required check that may not exist to a local green receipt.
-    #
-    # The VERDICT never changed -- this form is still denied -- so only the
-    # explanation is re-pinned, and it is re-pinned to a specific string rather
-    # than relaxed to "any deny", because the explanation is what tells the
-    # operator which shape to use.
-    ("a merge without --auto is refused and names the receipt it wants",
+    # The DEFERRAL TARGET moved TWICE, and this case followed it both times.
+    # 2026-08-25: from "--auto, so GitHub holds it" to "a green receipt naming
+    # this head", because on an UNPROTECTED repo --auto is refused outright and
+    # the required contexts are never posted. Then PR #269 round 6: the receipt
+    # is a LOCAL file written by the same actor the gate constrains, so it is
+    # offered only where there is nothing better -- and THIS repo is protected.
+    # So the answer here is the protection refusal, not the receipt one, and
+    # that is the honest expectation for a case running against this repo.
+    # Still a SPECIFIC string: a gate refusing everything generically fails it.
+    ("a missing --auto says so",
      "gh pr merge 155 --squash",
-     "no green receipt"),
+     "may not outrank a required check"),
     ("an env prefix is explained as a retarget",
      "GH_REPO=other/repo gh pr merge 155 --auto --squash",
      "an environment prefix"),

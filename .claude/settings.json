@@ -282,6 +282,11 @@
           },
           {
             "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voiceloop-band-lint.py\"",
+            "timeout": 35
+          },
+          {
+            "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/lessons-validator.py\"",
             "timeout": 5
           },
@@ -302,6 +307,11 @@
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/hook_envelope_audit.py\" --hook",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\"",
             "timeout": 10
           }
         ]
@@ -327,6 +337,16 @@
           {
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/portability-lint-hook.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/portability-lint-hook.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\"",
+            "timeout": 10
           }
         ]
       }

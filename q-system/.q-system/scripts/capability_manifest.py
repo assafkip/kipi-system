@@ -239,6 +239,44 @@ def _canon(entry):
     return json.dumps(entry, sort_keys=True)
 
 
+import contextlib
+import fcntl
+
+
+@contextlib.contextmanager
+def _fragment_lock(root):
+    """Serialise the read-decide-write across processes AND threads.
+
+    add_delta reads a fragment, decides whether it still holds the base version,
+    and writes. Nothing held the file between those three steps, so two replays
+    that passed the check at the same moment both wrote and both returned clean,
+    losing one declaration silently. Reproduced 5 of 5 with real threads and real
+    files (Codex major, PR #288).
+
+    Narrowing the window is not a fix, it is a rarer bug. The lock is what makes
+    the check mean anything, and it has to cover the READ as well as the write:
+    a lock taken just before writing still lets both readers see the base
+    version first.
+
+    OUTSIDE the fragment directory. The first version put the lock file inside
+    it, and the assembler reads that tree, so the lock itself became a stray
+    entry and turned the replayed repo RED. Caught immediately by the existing
+    `replay: the replayed repo is GREEN` case.
+
+    One lock for the whole fragment directory rather than per file. Two replays
+    of the SAME declaration are the race; this is a manual rebase tool run
+    occasionally, so the simpler thing that cannot be subtly wrong wins.
+    """
+    d = fragment_dir(root)
+    d.parent.mkdir(parents=True, exist_ok=True)
+    with open(d.parent / ".add-delta.lock", "w") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _read_fragment(path):
     """The declaration currently on disk at `path`, or None if there is none."""
     try:
@@ -263,14 +301,28 @@ def add_delta(root, base, head, errors=None):
     someone's declaration. PR #207 is exactly that case (sp-6b25c567).
 
     Three outcomes, and the two refusals are the point:
-      ADD       key only in head            -> fragment written.
+      ADD       key only in head            -> fragment written, but ONLY if
+                nothing is already on disk under that name. If main added the
+                same declaration independently, overwriting it replaces main's
+                version with the branch's and reports success (Opus fallback
+                major, PR #285 round 6). Same loss the EDIT branch already
+                refuses, one branch over.
       EDIT      key in both, content differs -> written ONLY if the fragment on
-                disk still holds the base version. If main edited the same
-                declaration, taking the branch's version would silently drop
-                main's, which is the same loss class as a deletion, so it is
-                reported instead.
+                disk EXISTS, is readable, and still holds the base version.
+                Anything else is reported. If main edited the same declaration,
+                taking the branch's version silently drops main's. If the
+                fragment is GONE, main deliberately removed that declaration and
+                writing it back resurrects a gate main chose to retire -- the
+                same loss class as a deletion, pointing the other way (Codex
+                major, PR #285 round 1). If it is unreadable, this cannot tell
+                which case it is, and a check that cannot read must not pass.
       REMOVAL   key only in base            -> reported, never acted on.
     """
+    with _fragment_lock(root):
+        return _add_delta_locked(root, base, head, errors)
+
+
+def _add_delta_locked(root, base, head, errors=None):
     written, removed, conflicted = [], [], []
     for section in LIST_SECTIONS:
         base_by, head_by = {}, {}
@@ -287,10 +339,28 @@ def add_delta(root, base, head, errors=None):
             sdir = fragment_dir(root) / section
             name = fragment_name(section, new_entry)
             target = sdir / name
+            if old_entry is None and target.exists():
+                current = _read_fragment(target)
+                if current is None or _canon(current) != _canon(new_entry):
+                    conflicted.append(
+                        "%s: %s (a different declaration is already on disk "
+                        "under this name; main added it independently)"
+                        % (section, key))
+                    continue
+                continue                  # identical: nothing to write
             if old_entry is not None:
                 current = _read_fragment(target)
-                if current is not None and _canon(current) != _canon(old_entry):
-                    conflicted.append("%s: %s" % (section, key))
+                if current is not None and _canon(current) == _canon(new_entry):
+                    continue          # this replay already ran; re-running it is
+                                      # not a conflict with main (round 7 minor)
+                if current is None or _canon(current) != _canon(old_entry):
+                    if not target.exists():
+                        why = "no fragment on disk; main removed this declaration"
+                    elif current is None:
+                        why = "fragment on disk is unreadable"
+                    else:
+                        why = "main changed it too"
+                    conflicted.append("%s: %s (%s)" % (section, key, why))
                     continue
             sdir.mkdir(parents=True, exist_ok=True)
             target.write_text(json.dumps(new_entry, indent=1,
@@ -305,9 +375,10 @@ def add_delta(root, base, head, errors=None):
                      "by hand rather than silently: %s"
                      % (len(removed), " | ".join(removed)))
     if conflicted:
-        _err(errors, "this branch EDITED %d declaration(s) that main has also "
-                     "changed since the merge base; replay those by hand rather "
-                     "than dropping main's version: %s"
+        _err(errors, "this branch EDITED %d declaration(s) whose fragment on "
+                     "disk is not the base version (main changed it, removed it, "
+                     "or it is unreadable); replay those by hand rather than "
+                     "guessing: %s"
                      % (len(conflicted), " | ".join(conflicted)))
     return written
 
