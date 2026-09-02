@@ -1,0 +1,4 @@
+{
+  "_doc": "Registry NAMES of the hub instances lessons-drift-report.py compares against the skeleton every Monday 06:45. A name absent from instance-registry.json renders COULD NOT READ for that hub; test_lessons_drift_report.py pins that every name here is registered. Issue lr-drift-reporter (prd-lessons-rail-and-up-rail).",
+  "hubs": ["ASK_AI_consultant"]
+}

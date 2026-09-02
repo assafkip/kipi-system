@@ -1,7 +1,7 @@
 ---
 id: lr-drift-reporter
 title: A scheduled drift reporter resolves skeleton and hubs from the registry, says what a hub has that the skeleton lacks, and appends the streak summary
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:
