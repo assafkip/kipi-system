@@ -1,7 +1,7 @@
 ---
 id: lr-promote-two-phase-receipt
 title: The receipt is written in two phases around the copy, under one lock, so a crash leaves a pending row and never a silent copy
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:
@@ -36,4 +36,4 @@ RED first: a pending row is appended before the copy and a done row after the co
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] The receipt is written in two phases around the copy, under one lock, so a crash leaves a pending row and never a silent copy
+- [x] The receipt is written in two phases around the copy, under one lock, so a crash leaves a pending row and never a silent copy

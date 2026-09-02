@@ -192,7 +192,7 @@ BLOB="$(git -C "$INSTANCE_REAL" hash-object --path "$REL" "$INSTANCE_REAL/$REL" 
 mkdir -p "$(dirname "$RECEIPTS")"
 receipt_row() {  # receipt_row <pending|done>: the ONLY writer of promotions.jsonl
   python3 - "$RECEIPTS" "$REL" "$BLOB" "$INSTANCE_NAME" "$DECIDED_BY" "$SCRUB" "$PROMOTE_HOME/q-system/.q-system/scripts/tripwire-terms.txt" "$BASE" "$1" <<'PYRECEIPT'
-import datetime, fcntl, json, os, sys
+import datetime, json, os, sys
 path, rel, blob, inst, who, scrub, tripwire, base, status = sys.argv[1:10]
 row = {"path": rel, "blob": blob, "base": base, "from_instance": inst, "decided_by": who, "scrub": scrub, "status": status,
        "at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%z")}
@@ -201,15 +201,28 @@ terms = [l.strip() for l in open(tripwire, encoding="utf-8") if l.strip() and no
 line = json.dumps(row)
 if any(t.lower() in line.lower() for t in terms):
     sys.exit(1)
-with open(path + ".lock", "a+") as lock:
-    fcntl.flock(lock, fcntl.LOCK_EX)
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(line + "\n")
-        fh.flush()
-        os.fsync(fh.fileno())
+with open(path, "a", encoding="utf-8") as fh:  # the caller holds the lock (fd 9) across both phases
+    fh.write(line + "\n")
+    fh.flush()
+    os.fsync(fh.fileno())
 PYRECEIPT
 }
+# ONE lock for the whole promotion: taken here on fd 9 (an flock lives on the
+# open file description, so a child process locking the inherited fd leaves it
+# held by this shell until exit) and released only when the script ends. It
+# covers the pending row, the copy, the re-hash and the done row as one critical
+# section, so two promotions of the same destination cannot interleave (Codex,
+# both passes on issue 10). macOS ships no flock(1); python does the locking.
+exec 9>>"$RECEIPTS.lock"
+python3 -c 'import fcntl, sys; fcntl.flock(int(sys.argv[1]), fcntl.LOCK_EX)' 9 || refuse "could not take the promotion lock $RECEIPTS.lock"
 receipt_row "pending" || refuse "receipt refused for $REL: a field carries a tripwire term (this file fans out to every instance), or it could not be written; nothing copied"
+
+# Test seam (pytest + tmp-rooted only, like KIPI_PROMOTE_UNSCRUBBED): a pause
+# between the pending row and the copy, so a test can probe that the lock is
+# still held through the copy. Production never sets it.
+if [ -n "${KIPI_PROMOTE_TEST_SLOW_COPY:-}" ] && [ "$_tmp_rooted" = "1" ] && [ -n "${PYTEST_CURRENT_TEST:-}" ]; then
+  sleep "$KIPI_PROMOTE_TEST_SLOW_COPY"
+fi
 
 # The copy IS the containment. The bash checks above give early, readable
 # refusals; this walk is what holds: every component on both sides is opened

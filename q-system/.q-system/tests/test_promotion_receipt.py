@@ -638,6 +638,70 @@ def test_ten_concurrent_promotions_leave_twenty_well_formed_rows(tmp_path):
     assert all((skel / "q-system" / "lessons" / n).exists() for n in names)
 
 
+def test_one_lock_spans_pending_copy_and_done(tmp_path):
+    """Codex (issue 10, both passes): a lock taken per append let two promotions
+    interleave between the pending row and the copy. While an outside holder has
+    the lock, a promotion writes NOTHING and copies nothing; it completes only
+    after release."""
+    import fcntl, threading, time
+    inst, skel = _trees(tmp_path)
+    (skel / "q-system" / ".q-system").mkdir(parents=True, exist_ok=True)
+    lock_path = skel / RECEIPTS_REL
+    lock_path = lock_path.with_name(lock_path.name + ".lock")
+    holder = open(lock_path, "a+")
+    fcntl.flock(holder, fcntl.LOCK_EX)
+    result = {}
+
+    def run():
+        result["r"] = _promote(tmp_path, "q-system/lessons/general.md")
+    t = threading.Thread(target=run)
+    t.start()
+    time.sleep(2.5)
+    assert t.is_alive(), "the promotion must block while the lock is held elsewhere"
+    assert not (skel / RECEIPTS_REL).exists() or (skel / RECEIPTS_REL).read_text() == "", "no row before the lock"
+    assert not (skel / "q-system" / "lessons" / "general.md").exists(), "no copy before the lock"
+    fcntl.flock(holder, fcntl.LOCK_UN)
+    holder.close()
+    t.join(timeout=15)
+    assert not t.is_alive() and result["r"].returncode == 0, result.get("r") and result["r"].stderr
+    assert [json.loads(l)["status"] for l in (skel / RECEIPTS_REL).read_text().splitlines()] == ["pending", "done"]
+
+
+def test_lock_is_still_held_between_the_pending_row_and_the_copy(tmp_path):
+    """A lock released after the pending row would let a second promotion start
+    inside the first one's copy. With the slow-copy seam holding the promotion
+    between phases, a non-blocking probe must find the lock taken."""
+    import fcntl, threading, time
+    inst, skel = _trees(tmp_path)
+    receipts = skel / RECEIPTS_REL
+    lock_path = receipts.with_name(receipts.name + ".lock")
+    result = {}
+
+    def run():
+        env_extra = {"KIPI_PROMOTE_TEST_SLOW_COPY": "3"}
+        env = dict(os.environ, KIPI_PROMOTE_INSTANCE=str(inst), KIPI_PROMOTE_SKELETON=str(skel), KIPI_PROMOTE_UNSCRUBBED="1",
+                   KIPI_PROMOTE_REGISTRY=str(tmp_path / "instance-registry.json"), **env_extra)
+        result["r"] = subprocess.run(["/bin/bash", str(PROMOTE), "q-system/lessons/general.md"], capture_output=True, text=True, env=env, cwd=inst, timeout=30)
+    t = threading.Thread(target=run)
+    t.start()
+    deadline = time.time() + 10
+    while time.time() < deadline and not (receipts.exists() and "pending" in receipts.read_text()):
+        time.sleep(0.05)
+    assert receipts.exists() and "pending" in receipts.read_text(), "the pending row never appeared"
+    probe = open(lock_path, "a+")
+    try:
+        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        held = False
+        fcntl.flock(probe, fcntl.LOCK_UN)
+    except BlockingIOError:
+        held = True
+    assert held, "the lock must still be held between the pending row and the copy"
+    t.join(timeout=30)
+    assert result["r"].returncode == 0, result["r"].stderr
+    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)  # released at exit
+    probe.close()
+
+
 def test_receipt_writer_is_the_single_chokepoint():
     src = PROMOTE.read_text()
     assert src.count("promotions.jsonl") >= 1
