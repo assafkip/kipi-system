@@ -1,7 +1,7 @@
 ---
 id: lr-trigger-inventory
 title: trigger-inventory.py derives stages from the tree, diffs them against registered triggers, and prints its excluded scope
-status: open
+status: in-progress
 priority: p0
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:

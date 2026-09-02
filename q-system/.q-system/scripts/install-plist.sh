@@ -56,10 +56,26 @@ if [ "$1" = "--all" ]; then
     echo "  install a single label instead: install-plist.sh <label>" >&2
     exit 2
   fi
+  # SKELETON-ONLY templates are skipped outside the skeleton. A template that
+  # carries the marker `kipi-scope: skeleton-only` (com.kipi.lessons-daily: its
+  # job shells kipi-update.sh, which only works in the skeleton) must never be
+  # armed by --all from an instance checkout; that would rebind the label to the
+  # instance and recreate the collision the marker exists to prevent (Codex
+  # adversarial review, issue lr-lessons-label-collision). Skeleton-ness is the
+  # registry's word, not the directory's: instance-registry.json at this root
+  # naming this root as the skeleton.
+  _skeleton=""
+  if [ -f "$KIPI_REPO/instance-registry.json" ]; then
+    _skeleton="$(python3 -c 'import json,sys,os; print(os.path.realpath(json.load(open(sys.argv[1]))["skeleton"]["path"]))' "$KIPI_REPO/instance-registry.json" 2>/dev/null || true)"
+  fi
   rc=0
   for _p in "$SCRIPT_DIR"/com.kipi.*.plist; do
     [ -e "$_p" ] || continue
     _label="$(basename "$_p" .plist)"
+    if grep -q "kipi-scope: skeleton-only" "$_p" && [ "$(cd "$KIPI_REPO" && pwd -P)" != "$_skeleton" ]; then
+      echo "  skipped (skeleton-only): $_label"
+      continue
+    fi
     if bash "$0" "$_label"; then :; else rc=1; echo "  FAILED: $_label" >&2; fi
   done
   exit "$rc"
@@ -134,7 +150,10 @@ if command -v plutil >/dev/null 2>&1; then
 fi
 
 UID_="$(id -u)"
-launchctl bootout "gui/$UID_/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$UID_" "$PLIST"
+# KIPI_LAUNCHCTL is a test seam only (test_lessons_daily_label.py runs --all in a
+# tmp tree with a tmp HOME and must never bootstrap a real job); production
+# never sets it.
+"${KIPI_LAUNCHCTL:-launchctl}" bootout "gui/$UID_/$LABEL" 2>/dev/null || true
+"${KIPI_LAUNCHCTL:-launchctl}" bootstrap "gui/$UID_" "$PLIST"
 echo "installed $LABEL -> $PLIST (KIPI_REPO=$KIPI_REPO)"
-launchctl list | grep "$LABEL" || echo "  WARN: not loaded"
+"${KIPI_LAUNCHCTL:-launchctl}" list | grep "$LABEL" || echo "  WARN: not loaded"

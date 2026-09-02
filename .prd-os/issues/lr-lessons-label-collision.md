@@ -1,11 +1,12 @@
 ---
 id: lr-lessons-label-collision
 title: The fanned-out lessons-daily installer refuses outside the skeleton; the skeleton gets its plist template and a label-uniqueness test
-status: open
+status: closed
 priority: p1
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:
   - q-system/.q-system/scripts/install-lessons-daily.sh
+  - q-system/.q-system/scripts/install-plist.sh
   - q-system/.q-system/scripts/com.kipi.lessons-daily.plist
   - q-system/.q-system/tests/test_lessons_daily_label.py
   - q-system/.q-system/capability/expected_tests/q-system__.q-system__tests__test_lessons_daily_label.py.json
@@ -36,4 +37,19 @@ RED first: install-lessons-daily.sh resolves its repo root, reads instance-regis
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] The fanned-out lessons-daily installer refuses outside the skeleton; the skeleton gets its plist template and a label-uniqueness test
+- [x] The fanned-out lessons-daily installer refuses outside the skeleton; the skeleton gets its plist template and a label-uniqueness test
+
+## Amendments
+
+### 2026-09-02T00:57:07Z
+Reason: Codex adversarial finding-1: install-plist.sh --all globs every template and would install the skeleton-only lessons-daily job from an instance, bypassing the installer refusal. Fix needs a skeleton-only marker the --all loop honours, which lives in install-plist.sh; adding it to allowed_files.
+
+Before:
+- allowed_files: ['q-system/.q-system/scripts/install-lessons-daily.sh', 'q-system/.q-system/scripts/com.kipi.lessons-daily.plist', 'q-system/.q-system/tests/test_lessons_daily_label.py', 'q-system/.q-system/capability/expected_tests/q-system__.q-system__tests__test_lessons_daily_label.py.json']
+- required_checks: ['python3 -m pytest -q q-system/.q-system/tests/test_lessons_daily_label.py']
+- disallowed_files: ['.claude/**', 'plugins/prd-os/**', '.prd-os/**', 'q-consult/**']
+
+After:
+- allowed_files: ['q-system/.q-system/scripts/install-lessons-daily.sh', 'q-system/.q-system/scripts/com.kipi.lessons-daily.plist', 'q-system/.q-system/tests/test_lessons_daily_label.py', 'q-system/.q-system/capability/expected_tests/q-system__.q-system__tests__test_lessons_daily_label.py.json']
+- required_checks: ['python3 -m pytest -q q-system/.q-system/tests/test_lessons_daily_label.py']
+- disallowed_files: ['.claude/**', 'plugins/prd-os/**', '.prd-os/**', 'q-consult/**']
