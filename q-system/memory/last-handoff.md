@@ -1,4 +1,28 @@
-# Session handoff, Aug 30 overnight [verified: date]. READ THIS FIRST.
+# Session handoff, Sep 1-2 (morning-brief Phases 2-4 as two prd-os PRDs) [verified: git log]. READ THIS FIRST.
+
+Branch `prd/morning-brief-learns` in worktree `~/projects/kipi-wt-prd-mbl`, base `ddad93b1`, 61 commits [verified: git log --oneline ddad93b1..HEAD | wc -l]. Nothing pushed, nothing merged: git is Sana's.
+
+## What shipped
+
+- PRD A `prd-morning-brief-learns-2026-09-01`: 14 of 15 issues CLOSED, issue `mbl-board-live-readback` cleared not closed (needs `~/.config/kipi/notion-token` + `notion-board-page`, founder action). Archive refuses until that close receipt exists [verified: prd_runner.py archive].
+- PRD B `prd-lessons-rail-and-up-rail-2026-09-02`: 14 of 14 issues CLOSED, every one RED-first, mutation-proven, reviewed twice (Codex; Claude subagents stamped `claude-review`/`claude-adversarial` when Codex was at capacity on issues 7 and 9) [verified: .prd-os/receipts.jsonl]. Archive refused by `gates run`: 52 blocking spillover items, 50 inherited, 2 this PRD's by design (sp-f09ac9e1 Sana dispatch, sp-193c5e93 plan-file paste) [verified: prd_runner.py gates run].
+- New: `lessons_streak.py` (atomic streak + escalation ledger), `lessons-daily.sh` seams and Nth-failure escalation, `lessons_recall.py --corpus/--both`, `install-lessons-daily.sh` skeleton-only + `com.kipi.lessons-daily.plist` template, `install-plist.sh --all` honours `kipi-scope: skeleton-only`, `trigger-inventory.py` + `stages-exempt.json`, `kipi promote` (`kipi-promote.sh`: containment, scrub from registry + clients.json + `tripwire-terms.txt`, two-phase receipts bound to blob AND base under one lock, `--candidates`, `--void`), `kipi-push-upstream.sh` guard honours matching done receipts read at FETCH_HEAD only and refuses instance-side receipt edits, `q-system/.q-system/promotions.receipts` (NOT .jsonl: gitignored fleet-wide), `lessons-drift-report.py` + `com.kipi.lessons-drift.plist` + `drift-hubs.json`.
+
+## Landing steps (Sana, in this order)
+
+1. Merge `prd/morning-brief-learns` (61 commits [verified: git log --oneline ddad93b1..HEAD | wc -l]; pre-commit gates green on every one [provenance: observed]).
+2. In the main checkout: `bash q-system/.q-system/scripts/install-plist.sh com.kipi.weekly-improve`, `... com.kipi.lessons-drift`, `bash q-system/.q-system/scripts/install-lessons-daily.sh` (refuses from a worktree by design), then `launchctl kickstart` each and record the launchd fact for sp-f09ac9e1's sibling note.
+3. Paste scratchpad `plan-2h-2i-section.md` (also in commit `02847a32`'s message [provenance: observed]) into `q-system/output/plans/morning-brief-overhaul-2026-08-30.md` above "Promotion rule for this register"; resolve sp-e7a50229 and sp-193c5e93.
+4. Fix the PRD B body wording captured as sp-5c3e4776 (receipts file name) and sp-b9a4625d (the override is never honoured), then archive PRD B; archive PRD A after the founder's Notion credential lands and `mbl-board-live-readback` closes.
+5. Decide the 9 consulting candidates: `KIPI_PROMOTE_SKELETON=<skeleton> bash kipi-promote.sh --candidates --instance ASK_AI_consultant` (live output saved as `.prd-os/issues/lr-promotion-candidates-status.live-run.txt`).
+
+## Open captures from this session (all in `.prd-os/spillover.jsonl`)
+
+sp-f09ac9e1 (3a Sana dispatch: fan-out aborts on a non-main skeleton HEAD), sp-636e91cf (--both lists a shared lesson twice), sp-44930c1d + sp-bc5a7fc1 (stale doc lines), sp-7c45ccee (inventory cannot see glob-invoked tests), sp-24aa7ebe (the inventory has no trigger of its own), sp-57cd7332 (push guard skips its deletion check when the instance has no lessons), sp-5c3e4776 + sp-b9a4625d (PRD B doc drift).
+
+---
+
+# Session handoff, Aug 30 overnight [verified: date]. (previous)
 
 ## What shipped
 
