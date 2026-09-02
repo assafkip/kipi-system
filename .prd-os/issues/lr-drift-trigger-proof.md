@@ -1,12 +1,13 @@
 ---
 id: lr-drift-trigger-proof
 title: Removing the trigger provably stops delivery: the reporter sends only under the plist's environment marker and has exactly one caller in the tree
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:
   - q-system/.q-system/scripts/lessons-drift-report.py
   - q-system/.q-system/scripts/com.kipi.lessons-drift.plist
+  - q-system/.q-system/drift-hubs.json
   - q-system/.q-system/tests/test_lessons_drift_report.py
 disallowed_files:
   - .claude/**
@@ -36,4 +37,19 @@ RED first: without KIPI_TRIGGER=launchd the reporter prints the report and calls
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Removing the trigger provably stops delivery: the reporter sends only under the plist's environment marker and has exactly one caller in the tree
+- [x] Removing the trigger provably stops delivery: the reporter sends only under the plist's environment marker and has exactly one caller in the tree
+
+## Amendments
+
+### 2026-09-02T03:38:06Z
+Reason: Codex (issue 14): the single-caller contract is EXACTLY the plist template and the test; drift-hubs.json's doc line names the reporter's file and must stop doing so. Adding that config file to allowed_files for the one-line doc change.
+
+Before:
+- allowed_files: ['q-system/.q-system/scripts/lessons-drift-report.py', 'q-system/.q-system/scripts/com.kipi.lessons-drift.plist', 'q-system/.q-system/tests/test_lessons_drift_report.py']
+- required_checks: ['python3 -m pytest -q q-system/.q-system/tests/test_lessons_drift_report.py']
+- disallowed_files: ['.claude/**', 'plugins/prd-os/**', '.prd-os/**', 'q-consult/**', 'q-system/.q-system/scripts/slack-notify.sh']
+
+After:
+- allowed_files: ['q-system/.q-system/scripts/lessons-drift-report.py', 'q-system/.q-system/scripts/com.kipi.lessons-drift.plist', 'q-system/.q-system/tests/test_lessons_drift_report.py']
+- required_checks: ['python3 -m pytest -q q-system/.q-system/tests/test_lessons_drift_report.py']
+- disallowed_files: ['.claude/**', 'plugins/prd-os/**', '.prd-os/**', 'q-consult/**', 'q-system/.q-system/scripts/slack-notify.sh']
