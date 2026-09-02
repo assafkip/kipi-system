@@ -21,8 +21,10 @@ enforcement wiring:
 - **Monthly:** the `sycophancy-monthly-check.py` SessionStart hook script runs
   the standalone check on the first session of each month and surfaces the
   verdict. This is the deterministic form of core's "review it monthly" line.
-- **Morning pipeline:** the Phase-6 audit agent and its verification rules live
-  in `morning-pipeline.md`.
+- **Retired:** the Phase-6 morning-pipeline audit agent is gone with the 9-phase
+  pipeline (decisions.md RULE-2026-08-30-A). The write-time hook and the
+  standalone and monthly checks above are the whole wiring now; none of the
+  sycophancy enforcement depends on `/q-morning` any more.
 
 ## Scar
 

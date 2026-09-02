@@ -10,7 +10,7 @@ Before declaring done, confirm (evidence required, not assumed):
 - Any new slash command is registered (listed in CLAUDE.md commands and/or `plugin.json`)
 - Any new hook script is referenced from `settings.json`, is executable, and uses the correct exit-code contract
 - Any new MCP tool is registered in the server and appears in the plugin description
-- Any new agent has a current (non-deprecated) model ID, explicit tool allowlist, and is invoked by the orchestrator
+- Any new agent has a current model ID (`model-allocation.md`) and an explicit tool allowlist, and something invokes it: a command, a hook, or a launchd job. The morning orchestrator is retired (decisions.md RULE-2026-08-30-A), so "the orchestrator invokes it" is no longer an answer
 - Any new bus file has both a producer and a consumer, and a schema in `agent-pipeline/schemas/`
 - Any new canonical file is in `ripple-graph.json` and the digest is regenerated
 - Any new rule is auto-loaded or imported via `@` in CLAUDE.md

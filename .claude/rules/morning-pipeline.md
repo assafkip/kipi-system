@@ -7,7 +7,27 @@ paths:
 
 # Preflight, Fail-Fast, and Audit Harness (ENFORCED)
 
-**Before every `/q-morning` run, read `.q-system/preflight.md` FIRST.** Contains tool manifest, known issues, session budget, step completion log format.
+**RETIRED 2026-08-30 (decisions.md RULE-2026-08-30-A). Nothing below is a live
+instruction.** The 9-phase `/q-morning` agent pipeline this file describes does
+not run. `/q-morning` is now `q-system/.q-system/scripts/morning-brief.py`, a
+scheduled job (`com.kipi.morning-brief`, 07:00 local) that posts one Slack
+message with four sections: today's calendar, mail needing an answer, owed
+today, overnight jobs. A section it could not read says COULD NOT READ, never
+"nothing". Its freshness is watched by a separate launchd job,
+`com.kipi.morning-brief-deadman`. Do not run the preflight, the phase retry loop
+or the phase plan below by hand.
+
+The text is kept rather than deleted on purpose: decisions.md RULE-2026-08-30-A
+holds the 37 agent prompt files under `q-system/.q-system/agent-pipeline/agents/`
+on disk until the brief has run green for a week (earliest removal 2026-09-06),
+and removing them is a separate deliberate act, not a cleanup. Read the rest of
+this file as a record of what was retired.
+
+Historical, for the retired pipeline only: every `/q-morning` run began by
+reading `.q-system/preflight.md` for the tool manifest, known issues, session
+budget and step completion log format. That preflight is what killed the
+pipeline: it probed two MCP tool names that had been renamed, with fallback
+"None. Halt."
 
 **Every step must write its completion status to `output/morning-log-YYYY-MM-DD.json`.** If a step isn't logged, it didn't happen.
 
@@ -50,7 +70,13 @@ Every retry attempt logs to `output/morning-log-YYYY-MM-DD.json` with `phase`, `
 
 # Agent Pipeline
 
-Read `.q-system/agent-pipeline/agents/step-orchestrator.md` for the full phase plan. Agents communicate through JSON files in `bus/{date}/`, not context. Model allocation: see `.claude/rules/model-allocation.md` (single source; validated by `kipi check`).
+The full phase plan lived in `.q-system/agent-pipeline/agents/step-orchestrator.md`
+and is retired with the pipeline (decisions.md RULE-2026-08-30-A). That file
+stays on disk because `validate-separation.py` and the kipi-mcp validator both
+still assert it exists, so deleting it turns `kipi check` red; that is the
+separate deliberate act, not this edit. Model allocation for the agents that ARE
+live is `.claude/rules/model-allocation.md` (single source; validated by
+`kipi check`).
 
 **Full post text rule (ENFORCED):** Agents reading social posts MUST save actual post text, not summaries.
 

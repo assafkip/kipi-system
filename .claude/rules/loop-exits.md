@@ -123,5 +123,5 @@ gets audited instead of re-derived.
 
 `self-healing-retry.md` (exits 5, 7 for phased jobs) · `token-discipline.md`
 (exits 2, 3, 5 enforcer) · `wiring-check.md` (the sibling audit pattern) ·
-`founder-notifications.md` (how exit 8 pings reach the founder) ·
-`morning-pipeline.md` (the reference multi-phase loop binding these).
+`founder-notifications.md` (where exit 8 alerts land: Sana's Linear triage) ·
+`open-loops-heartbeat.sh` (the reference autonomous loop binding these).

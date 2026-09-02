@@ -231,7 +231,7 @@ kipi-system/                          # Project root (skeleton/template repo + m
 
 **New rules file?** -> `.claude/rules/<name>.md` with frontmatter
 **New skill?** -> `plugins/<group>/skills/<name>/SKILL.md` (groups: kipi-core, kipi-ops, kipi-design)
-**New agent?** -> `q-system/.q-system/agent-pipeline/agents/<phase>-<name>.md`
+**New agent?** -> `.claude/agents/<name>.md`, with the tier and current model ID from `model-allocation.md`, an explicit tool allowlist, and a live caller. The `agent-pipeline/agents/` tree belongs to the retired 9-phase pipeline (decisions.md RULE-2026-08-30-A); do not add to it.
 **New Python harness?** -> `q-system/.q-system/scripts/<name>.py` (if in scripts/) or `q-system/.q-system/<name>.py` (if top-level harness)
 **New canonical file?** -> `q-system/canonical/<name>.md`
 **New cross-instance lesson?** -> `q-system/lessons/<id>.md`

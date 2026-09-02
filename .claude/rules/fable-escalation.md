@@ -8,7 +8,7 @@ paths:
   - "**/*.sh"
 ---
 
-# Fable Escalation: when Opus is stuck, a different model triages (ASK-311)
+# Cross-model escalation: when the session model is stuck, a triage runs in a fresh session (ASK-311)
 
 PATHS-SCOPED ON PURPOSE. Tier A needs no prompt budget at all: the PreToolUse
 hook `token-guard.py` staples the triage to its own refusal, so that half of
@@ -18,8 +18,18 @@ those fire while you are in code. The always-on instruction budget is already
 601 lines against a target of 300 (`instruction-budget-audit.py`, the
 pre-commit ratchet), and a rule that does not have to be always-on must not be.
 
-Opus keeps the work. Fable is the triage lens, in a fresh session, and it never
-implements. The executable is
+The session model keeps the work. The triage is a lens, in a fresh session, and
+it never implements.
+
+**What the escalation actually buys is a FRESH CONTEXT, not a model-family gap.**
+The child runs outside the project directory with no repo rules, no CLAUDE.md and
+no hooks loaded, and sees only a bounded transcript tail. The cross-model half
+has eroded: the triage target is pinned to `claude-fable-5`, and the interactive
+session now runs Fable 5.1, so today the escalation hands a Fable session to the
+same family one release back. Re-pointing that pin to a family chosen from the
+running session's model is an open follow-up on the script; until it lands, do
+not read the section below as describing two complementary distributions. The
+executable is
 `q-system/.q-system/scripts/fable-escalate.py` — the only caller of
 `claude -p --model claude-fable-5` in this fleet and the only writer of the
 escalation ledger. Its paired test is
@@ -117,17 +127,21 @@ python3 q-system/.q-system/scripts/fable-escalate.py --report
 
 | Limit | Where |
 |---|---|
-| 2 escalations per actor per session, then `slack-notify.sh` is asked to page once | `FABLE_CAP`, `notify_cap()` |
+| 2 escalations per actor per session, then `slack-notify.sh` files one Linear ticket in Sana's triage | `FABLE_CAP`, `notify_cap()` |
 | 45s cap on the call, in the detached child only — the hook never waits | `FABLE_TIMEOUT`, `request_escalation` |
 | Any failure degrades to the plain refusal, byte for byte | `test_broken_fable_degrades_to_plain_block` |
 | A suite can never spend a real call | `PYTEST_CURRENT_TEST` chokepoint in `call_fable` |
 | Off switch | `KIPI_FABLE_ESCALATION=0` |
 
-Cross-model is a step before the human, never instead of one. At the cap the
-script hands off: no further calls, and one attempt to page the founder. The
-test `test_escalations_stop_at_the_cap_and_page_once` pins both halves.
+Cross-model is a step before a human, never instead of one. At the cap the
+script hands off: no further calls, and one attempt to file a ticket. That
+ticket lands in Sana's Linear triage, never on the founder's desk. See
+`founder-notifications.md`: founder-directed 2026-08-10, `slack-notify.sh` is
+the fleet alert path and it pages nobody. The test
+`test_escalations_stop_at_the_cap_and_page_once` pins both halves; its name
+predates the routing change and does not describe the destination.
 
-**A page is attempted, not guaranteed, and the row says which.** `slack-notify.sh`
+**A ticket is attempted, not guaranteed, and the row says which.** `slack-notify.sh`
 is a silent no-op that still exits 0 when no webhook resolves, so the cap row
 records `notify_attempted`, `notify_exit`, `notify_channel_configured`,
 `notify_delivered` and `notify_note` separately rather than one `notified` flag.
@@ -149,4 +163,4 @@ rather than treating the reply as authoritative.
 `self-healing-retry.md` (the cause taxonomy that excludes MCP rate limits) ·
 `evidence-ledger.md` (why a triage is stored labelled) ·
 `skill-hook-pairing.md` (why Tier C gets fixtures and not a lint) ·
-`founder-notifications.md` (the one ping channel).
+`founder-notifications.md` (the fleet alert sink: a Linear ticket for Sana, never a founder page).
