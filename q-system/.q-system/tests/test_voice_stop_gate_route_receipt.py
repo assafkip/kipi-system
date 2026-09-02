@@ -915,3 +915,93 @@ class TestAHookNameIsNotAnEnvelope:
             f"through with no receipt. rc={proc.returncode} stdout={proc.stdout} "
             f"stderr={proc.stderr}")
         assert "receipt" in proc.stderr, proc.stderr
+
+
+# --- captured from the idea lane, 2026-09-02 ------------------------------------
+#
+# consulting @ bc4fba6c. Produced by RUNNING `pipeline.cycle.draft_from_idea`
+# with a stubbed writer and replaying `pipeline.social`'s `idea` print sequence.
+# The receipt hashes `final_text` alone (cycle.py:1210), and at capture time
+# `receipt["output_hash"] == output_hash(text, "social-post", "x")` was verified
+# True before these bytes were written down.
+#
+# X AND LINKEDIN SHARE THIS SHAPE. `social.py`'s `idea` branch has no channel fork
+# between the draft marker and the card; only the card's CONTENT differs. A
+# linkedin capture run refused on a content contract, which is a producer-side
+# content verdict and not a different wrapper, so one fixture covers both and this
+# comment says so rather than a second fixture implying a second measurement.
+#
+# THE DRAFT DELIBERATELY SAYS "My VOICE in the review was wrong" mid-body. That is
+# the control the truncation must not trip on: the marker is a line start, not the
+# word.
+X_HANDOFF = '{\n "channel": "x",\n "at": "2026-09-02T00:00:00Z",\n "stages": [\n  {\n   "stage": "generate",\n   "status": "ok"\n  },\n  {\n   "stage": "gates",\n   "status": "clean",\n   "reasons": []\n  }\n ],\n "archetype": {\n  "id": "thread",\n  "name": "The Thread",\n  "why": "nothing more specific matched, so this is the default, which also carries the strongest evidence in the corpus",\n  "from_corpus": true\n },\n "experience": {\n  "matched": [],\n  "offered_to_writer": false\n },\n "style": {\n  "before_level": "ok",\n  "before_distance": 1.52,\n  "flags": [],\n  "after_level": "ok",\n  "after_distance": 1.52,\n  "revisions": 0,\n  "status": "reviewed",\n  "fingerprint": {\n   "authorship": 0.6214958642981991,\n   "authorship_band": "mid",\n   "authorship_reference": null,\n   "authorship_tokenization": "single-document-512",\n   "authorship_model": "rrivera1849/LUAR-MUD",\n   "authorship_words": 89,\n   "authorship_region_n": 30,\n   "authorship_held_out": 0,\n   "authorship_reference_n": 0\n  }\n },\n "route_receipt": {\n  "attempt_id": "ab2355e0-ed5a-4403-a4c5-95f48a38f9d6",\n  "session_id": "2026-09-02T00:00:00Z",\n  "origin_message_id": "claude-request:2026-09-02T00:00:00Z",\n  "completion_message_id": "claude-draft:2026-09-02T00:00:00Z",\n  "request_hash": "f06c13370af8fcae0632bfb6e957221524b4f53cccbf2abe15842cfa07ad9fd7",\n  "unchecked": [],\n  "surface": "social-post",\n  "channel": "x",\n  "issued_at": "2026-09-02T23:21:39Z",\n  "expires_at": 1788392199.699193,\n  "output_hash": "6c5328f0c938c972974d3e0f0d86029c6e6c4e2c9422d14ec29a57832b5f399e",\n  "gates": {\n   "deterministic_gates": true,\n   "human_boundary": true\n  },\n  "loop": {\n   "generator": "pipeline.cycle.draft_from_idea",\n   "corpus_sha": "c771b52dedb4ff7387303a06aea529e358f1afd0e50c40f41cd7451712c7824e",\n   "exemplar_ids": [\n    "x-29",\n    "x-28",\n    "x-30",\n    "x-31",\n    "post-finish-the-day-founder-revision",\n    "post-obsidian-graph-founder-revision"\n   ],\n   "score": {\n    "findings": 0,\n    "exemplars": 131,\n    "unchecked": [],\n    "exit": 0,\n    "text_sha": "cfba65e2580b34060d322010fb61190c5e572bb9795876392d5821bc11fc9fb4"\n   }\n  },\n  "loop_sha": "0a48a2d9fa472ff97a9fffb21a1ef4b48048ea37629b3f504f170113a0b2310c",\n  "status": "complete"\n }\n}\n\n=== ROUTE RECEIPT ===\n{"attempt_id": "ab2355e0-ed5a-4403-a4c5-95f48a38f9d6", "channel": "x", "completion_message_id": "claude-draft:2026-09-02T00:00:00Z", "expires_at": 1788392199.699193, "gates": {"deterministic_gates": true, "human_boundary": true}, "issued_at": "2026-09-02T23:21:39Z", "loop": {"corpus_sha": "c771b52dedb4ff7387303a06aea529e358f1afd0e50c40f41cd7451712c7824e", "exemplar_ids": ["x-29", "x-28", "x-30", "x-31", "post-finish-the-day-founder-revision", "post-obsidian-graph-founder-revision"], "generator": "pipeline.cycle.draft_from_idea", "score": {"exemplars": 131, "exit": 0, "findings": 0, "text_sha": "cfba65e2580b34060d322010fb61190c5e572bb9795876392d5821bc11fc9fb4", "unchecked": []}}, "loop_sha": "0a48a2d9fa472ff97a9fffb21a1ef4b48048ea37629b3f504f170113a0b2310c", "origin_message_id": "claude-request:2026-09-02T00:00:00Z", "output_hash": "6c5328f0c938c972974d3e0f0d86029c6e6c4e2c9422d14ec29a57832b5f399e", "request_hash": "f06c13370af8fcae0632bfb6e957221524b4f53cccbf2abe15842cfa07ad9fd7", "session_id": "2026-09-02T00:00:00Z", "status": "complete", "surface": "social-post", "unchecked": []}\n\n=== DRAFT ===\nA propagation check compared every instance copy of a hook against the skeleton copy. It went green and stayed green.\n\nThen I read the loop. It had inspected nothing, because the checkouts it walks live on the laptop that owns them. Green meant the population was missing, and that renders the same as a clean fleet.\n\nMy VOICE in the review was wrong for weeks. The fix was making the check say how many things it looked at, and refuse a verdict when it looked at none of them.\n\n=== HOW TO POST THIS ===\nArchetype: The Thread\nWhy: nothing more specific matched, so this is the default, which also carries the strongest evidence in the corpus\nEvidence: thread starter plus a colon-ending setup line, 1.67x on n=226\nThread: YES. Post this, then reply to it with the detail. The reply chain is where the numbers and the mechanism go.\nImage: Optional. Add one only if it carries evidence the text is claiming. A photo on its own measures 1.04x, which is nothing.\nImage must show one of:\n  - a benchmark or comparison table, plain background, real numbers, no styling\n  - the actual first page of a paper or document, at a resolution where the title reads\n  - a chart carrying real counts, plain colors, no 3D and no gradient\n  - a screenshot cropped to the part that matters, with one hand-drawn circle or highlight on it and no caption explaining what is already marked\n  - an unstaged photo of the real thing, phone-camera quality, no product gloss\n  - a terminal or tool session captured mid-task, not a mockup\nNever:\n  - stock photography\n  - an AI-generated illustration\n  - a quote rendered as text on a colored background\n  - a screenshot so wide the text is unreadable on a phone\n'
+
+#: The exact bytes the producer passed to `output_hash`. Same run.
+X_DRAFT = 'A propagation check compared every instance copy of a hook against the skeleton copy. It went green and stayed green.\n\nThen I read the loop. It had inspected nothing, because the checkouts it walks live on the laptop that owns them. Green meant the population was missing, and that renders the same as a clean fleet.\n\nMy VOICE in the review was wrong for weeks. The fix was making the check say how many things it looked at, and refuse a verdict when it looked at none of them.'
+
+#: The same captured handoff with the VOICE note in the position `social.py`
+#: prints it. The note's text is transcribed from social.py's own literal; its
+#: CONDITION (`voice_judged` in the receipt's `unchecked`) did not fire in the
+#: capture run, because the style judge ran and the trail recorded
+#: `status: "reviewed"`. Said plainly rather than implied: the surrounding bytes
+#: are captured, this one block is transcribed from the producer's source.
+X_HANDOFF_WITH_VOICE_NOTE = '{\n "channel": "x",\n "at": "2026-09-02T00:00:00Z",\n "stages": [\n  {\n   "stage": "generate",\n   "status": "ok"\n  },\n  {\n   "stage": "gates",\n   "status": "clean",\n   "reasons": []\n  }\n ],\n "archetype": {\n  "id": "thread",\n  "name": "The Thread",\n  "why": "nothing more specific matched, so this is the default, which also carries the strongest evidence in the corpus",\n  "from_corpus": true\n },\n "experience": {\n  "matched": [],\n  "offered_to_writer": false\n },\n "style": {\n  "before_level": "ok",\n  "before_distance": 1.52,\n  "flags": [],\n  "after_level": "ok",\n  "after_distance": 1.52,\n  "revisions": 0,\n  "status": "reviewed",\n  "fingerprint": {\n   "authorship": 0.6214958642981991,\n   "authorship_band": "mid",\n   "authorship_reference": null,\n   "authorship_tokenization": "single-document-512",\n   "authorship_model": "rrivera1849/LUAR-MUD",\n   "authorship_words": 89,\n   "authorship_region_n": 30,\n   "authorship_held_out": 0,\n   "authorship_reference_n": 0\n  }\n },\n "route_receipt": {\n  "attempt_id": "ab2355e0-ed5a-4403-a4c5-95f48a38f9d6",\n  "session_id": "2026-09-02T00:00:00Z",\n  "origin_message_id": "claude-request:2026-09-02T00:00:00Z",\n  "completion_message_id": "claude-draft:2026-09-02T00:00:00Z",\n  "request_hash": "f06c13370af8fcae0632bfb6e957221524b4f53cccbf2abe15842cfa07ad9fd7",\n  "unchecked": [],\n  "surface": "social-post",\n  "channel": "x",\n  "issued_at": "2026-09-02T23:21:39Z",\n  "expires_at": 1788392199.699193,\n  "output_hash": "6c5328f0c938c972974d3e0f0d86029c6e6c4e2c9422d14ec29a57832b5f399e",\n  "gates": {\n   "deterministic_gates": true,\n   "human_boundary": true\n  },\n  "loop": {\n   "generator": "pipeline.cycle.draft_from_idea",\n   "corpus_sha": "c771b52dedb4ff7387303a06aea529e358f1afd0e50c40f41cd7451712c7824e",\n   "exemplar_ids": [\n    "x-29",\n    "x-28",\n    "x-30",\n    "x-31",\n    "post-finish-the-day-founder-revision",\n    "post-obsidian-graph-founder-revision"\n   ],\n   "score": {\n    "findings": 0,\n    "exemplars": 131,\n    "unchecked": [],\n    "exit": 0,\n    "text_sha": "cfba65e2580b34060d322010fb61190c5e572bb9795876392d5821bc11fc9fb4"\n   }\n  },\n  "loop_sha": "0a48a2d9fa472ff97a9fffb21a1ef4b48048ea37629b3f504f170113a0b2310c",\n  "status": "complete"\n }\n}\n\n=== ROUTE RECEIPT ===\n{"attempt_id": "ab2355e0-ed5a-4403-a4c5-95f48a38f9d6", "channel": "x", "completion_message_id": "claude-draft:2026-09-02T00:00:00Z", "expires_at": 1788392199.699193, "gates": {"deterministic_gates": true, "human_boundary": true}, "issued_at": "2026-09-02T23:21:39Z", "loop": {"corpus_sha": "c771b52dedb4ff7387303a06aea529e358f1afd0e50c40f41cd7451712c7824e", "exemplar_ids": ["x-29", "x-28", "x-30", "x-31", "post-finish-the-day-founder-revision", "post-obsidian-graph-founder-revision"], "generator": "pipeline.cycle.draft_from_idea", "score": {"exemplars": 131, "exit": 0, "findings": 0, "text_sha": "cfba65e2580b34060d322010fb61190c5e572bb9795876392d5821bc11fc9fb4", "unchecked": []}}, "loop_sha": "0a48a2d9fa472ff97a9fffb21a1ef4b48048ea37629b3f504f170113a0b2310c", "origin_message_id": "claude-request:2026-09-02T00:00:00Z", "output_hash": "6c5328f0c938c972974d3e0f0d86029c6e6c4e2c9422d14ec29a57832b5f399e", "request_hash": "f06c13370af8fcae0632bfb6e957221524b4f53cccbf2abe15842cfa07ad9fd7", "session_id": "2026-09-02T00:00:00Z", "status": "complete", "surface": "social-post", "unchecked": []}\n\n=== DRAFT ===\nA propagation check compared every instance copy of a hook against the skeleton copy. It went green and stayed green.\n\nThen I read the loop. It had inspected nothing, because the checkouts it walks live on the laptop that owns them. Green meant the population was missing, and that renders the same as a clean fleet.\n\nMy VOICE in the review was wrong for weeks. The fix was making the check say how many things it looked at, and refuse a verdict when it looked at none of them.\n\nVOICE: NOT CHECKED. The gates above are NEGATIVE checks (no emdash, no banned phrase, format, bio). Nothing here asserted this sounds like you. Green means nothing banned was found. You are the voice check.\n\n=== HOW TO POST THIS ===\nArchetype: The Thread\nWhy: nothing more specific matched, so this is the default, which also carries the strongest evidence in the corpus\nEvidence: thread starter plus a colon-ending setup line, 1.67x on n=226\nThread: YES. Post this, then reply to it with the detail. The reply chain is where the numbers and the mechanism go.\nImage: Optional. Add one only if it carries evidence the text is claiming. A photo on its own measures 1.04x, which is nothing.\nImage must show one of:\n  - a benchmark or comparison table, plain background, real numbers, no styling\n  - the actual first page of a paper or document, at a resolution where the title reads\n  - a chart carrying real counts, plain colors, no 3D and no gradient\n  - a screenshot cropped to the part that matters, with one hand-drawn circle or highlight on it and no caption explaining what is already marked\n  - an unstaged photo of the real thing, phone-camera quality, no product gloss\n  - a terminal or tool session captured mid-task, not a mockup\nNever:\n  - stock photography\n  - an AI-generated illustration\n  - a quote rendered as text on a colored background\n  - a screenshot so wide the text is unreadable on a phone\n'
+
+
+class TestTheIdeaLaneAdvisoryBlocks:
+    """Codex major, ASK-1197 round 5 -- and my own capture, sp-20bdfcd9.
+
+    The reddit branch was fixed one round earlier and its sibling was not. The X
+    and LinkedIn lane prints the how-to-post card (and sometimes a VOICE note)
+    after the draft, so the extractor hashed twenty-odd lines of posting advice
+    into the draft and rejected every genuine receipt as an output mismatch.
+    """
+
+    def test_the_extractor_returns_exactly_the_bytes_the_receipt_hashed(self):
+        got = gate._route_draft(X_HANDOFF)
+        assert got == X_DRAFT, (
+            "the extracted draft is not the slab the producer hashed.\n"
+            "got:  %r\nwant: %r" % (got, X_DRAFT))
+
+    def test_the_extracted_draft_hashes_to_the_receipts_own_output_hash(self):
+        """The defect itself: the comparison `enforce_route_receipt` makes, run
+        against real producer bytes."""
+        receipt = gate._receipt_block(X_HANDOFF)
+        recomputed = _producer_output_hash(
+            gate._route_draft(X_HANDOFF), receipt["surface"], receipt["channel"])
+        assert recomputed == receipt["output_hash"], (
+            "a genuine X receipt does not match its own draft, which the gate "
+            "reports as `route receipt does not match the assistant output`.\n"
+            "  recomputed: %s\n  receipt:    %s"
+            % (recomputed, receipt["output_hash"]))
+
+    def test_the_posting_card_is_not_in_the_draft(self):
+        extracted = gate._route_draft(X_HANDOFF)
+        assert "HOW TO POST THIS" not in extracted, extracted[-300:]
+        assert "Archetype:" not in extracted, extracted[-300:]
+
+    def test_the_voice_note_is_truncated_when_it_fires(self):
+        extracted = gate._route_draft(X_HANDOFF_WITH_VOICE_NOTE)
+        assert extracted == X_DRAFT, (
+            "the VOICE note is the FIRST trailing block when it fires, so it is "
+            "the one the truncation has to catch.\ngot: %r" % (extracted,))
+
+    def test_a_body_that_says_voice_mid_sentence_survives_whole(self):
+        """THE CONTROL the marker shape exists for. Truncating on the word rather
+        than the line start would cut this draft in half, and the hash assertion
+        above would not notice because it hashes whatever came out."""
+        extracted = gate._route_draft(X_HANDOFF)
+        assert "My VOICE in the review was wrong for weeks." in extracted, extracted
+        assert extracted.endswith("none of them."), extracted[-120:]
+
+    def test_the_reddit_shape_still_extracts_whole(self):
+        """The other control. A truncation added to the idea branch must not reach
+        into the reddit branch, whose body legitimately has no such markers."""
+        assert gate._route_draft(REDDIT_HANDOFF) == REDDIT_BODY
+
+    def test_a_bare_receipt_then_draft_message_still_extracts(self):
+        """And the pinned producer-side shape from test_route_boundary.py:54,
+        which carries no advisory blocks at all."""
+        draft = "the body of an x draft, long enough to be measured."
+        message = _producer_message({name: "x" for name in STUB_MATCH_FIELDS}, draft)
+        assert gate._route_draft(message) == draft

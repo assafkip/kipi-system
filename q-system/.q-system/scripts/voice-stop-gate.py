@@ -10,11 +10,23 @@ copy-paste into X, LinkedIn, email, DMs. None of those reach a file.
 
 This hook closes that gap WITHOUT gating ordinary conversation. Per
 .claude/rules/voice-enforcement.md, voice rules apply to content sent to
-another person, NOT to "conversational responses to the founder." A Stop
-hook can't see the founder's request, so it keys on explicit publish-intent
-framing in the assistant's own message ("here's the post/reply/DM/email…",
-"draft for LinkedIn", "ready to send"). No such framing means conversational,
-which is skipped. When framing IS present, it lints the set-off draft (fenced
+another person, NOT to "conversational responses to the founder." For the LINT
+half it keys on explicit publish-intent framing in the assistant's own message
+("here's the post/reply/DM/email…", "draft for LinkedIn", "ready to send"). No
+such framing means conversational, which is skipped.
+
+It DOES read the founder's request. That line used to say a Stop hook cannot,
+which stopped being true when route enforcement landed and was left standing
+(Codex minor, ASK-1197). `find_final_user_text` reads THIS turn's founder text
+from the transcript: it skips records the harness flags as its own injections,
+strips or truncates injected envelopes inside a message, and never falls back to
+an earlier message — a turn whose final message is entirely machine prose yields
+"" rather than a stale request. Three outcomes, and they are deliberately
+different values: text he typed (the route lane classifies it and a routed
+completion must carry a receipt), "" (no request this turn, so the lane treats it
+as not a request), and no transcript at all (the same as ""). The lint half still
+does not read it — gating his own words with the voice lint is exactly what
+voice-enforcement.md scopes out. When framing IS present, it lints the set-off draft (fenced
 prose blocks + blockquotes) rather than the whole message, so surrounding chat
 and any code fences are not themselves linted. Exits 2 only on a real draft
 violation; Claude must then re-draft before the turn can complete.
@@ -642,6 +654,39 @@ _REDDIT_FOOTER_RE = re.compile(r"(?m)^[ \t]*FOUNDER REVIEW REQUIRED:")
 _DRAFT_MARKER_RE = re.compile(
     r"(?m)^[ \t]*" + re.escape("=== DRAFT ===") + r"[ \t]*$")
 
+# THE IDEA LANE PRINTS ADVISORY BLOCKS AFTER THE DRAFT (Codex major, ASK-1197
+# round 5; my own capture sp-20bdfcd9). `social.py` prints `=== DRAFT ===` + text
+# and then, still inside the same branch, the VOICE note and the how-to-post card.
+# The receipt hashes `final_text` ALONE (cycle.py:1210), so an extractor that
+# returned everything after the draft marker hashed roughly twenty lines of
+# posting advice into the draft and rejected every genuine X / LinkedIn receipt
+# as an output mismatch -- the same defect the reddit branch above fixed, one lane
+# over. Fixing one and not its sibling is the asymmetry that keeps recurring here.
+#
+# Captured from the producer on 2026-09-02 by running
+# `pipeline.cycle.draft_from_idea` (consulting bc4fba6c) with a stubbed writer:
+#
+#     === DRAFT ===
+#     <text>
+#
+#     === HOW TO POST THIS ===
+#     Archetype: The Thread
+#     ...
+#
+# ONE SHAPE COVERS X AND LINKEDIN. `social.py`'s `idea` branch has no channel
+# fork between the draft marker and the card; the card's CONTENT varies by
+# channel, its header does not. Read off the source, not assumed.
+#
+# TRUNCATED ON THE MARKER, NEVER ON THE WORD. `VOICE: NOT CHECKED` is matched at
+# line start only, because a draft may legitimately say "my voice" mid-sentence --
+# the captured fixture does exactly that, on purpose.
+_ADVISORY_AFTER_DRAFT_RE = re.compile(
+    r"(?m)^[ \t]*(?:"
+    r"=== HOW TO POST THIS ===[ \t]*$"
+    r"|VOICE: NOT CHECKED\b"
+    r"|REPLY: \d+ words,"
+    r")")
+
 # WHAT COUNTS AS A CLAIMED RECEIPT (Codex minor, ASK-1197 round 2). The
 # uninstalled-lane branch decided this by substring, so an assistant that merely
 # NAMES the marker in a sentence -- explaining the gate, quoting a review comment,
@@ -728,7 +773,11 @@ def _route_draft(text):
     draft = _DRAFT_MARKER_RE.search(text)
     if draft is None:
         return extract_publishable(text)
-    return text[draft.end():].strip()
+    slab = text[draft.end():]
+    advisory = _ADVISORY_AFTER_DRAFT_RE.search(slab)
+    if advisory is not None:
+        slab = slab[:advisory.start()]
+    return slab.strip()
 
 
 def _receipt_block(text):
