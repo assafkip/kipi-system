@@ -1,7 +1,7 @@
 ---
 id: lr-promote-scrub-source
 title: The promotion scrub reads production term sources: registry codenames, the instance's clients.json names and slugs, and the single-sourced tripwire terms
-status: open
+status: closed
 priority: p1
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:
@@ -9,6 +9,9 @@ allowed_files:
   - kipi-push-upstream.sh
   - q-system/.q-system/scripts/tripwire-terms.txt
   - q-system/.q-system/scripts/lessons_scrub.py
+  - q-system/.q-system/scripts/test/test-lessons-push-guard.sh
+  - q-system/.q-system/scripts/trigger-inventory.py
+  - q-system/.q-system/tests/test_trigger_inventory.py
   - q-system/.q-system/tests/test_promotion_receipt.py
 disallowed_files:
   - .claude/**
@@ -38,4 +41,32 @@ RED first: the scrub roster is lessons_scrub.codenames_from_registry(instance-re
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] The promotion scrub reads production term sources: registry codenames, the instance's clients.json names and slugs, and the single-sourced tripwire terms
+- [x] The promotion scrub reads production term sources: registry codenames, the instance's clients.json names and slugs, and the single-sourced tripwire terms
+
+## Amendments
+
+### 2026-09-02T01:46:34Z
+Reason: kipi-push-upstream.sh now reads its tripwire terms from q-system/.q-system/scripts/tripwire-terms.txt and fails closed without it; the pre-existing shell test test-lessons-push-guard.sh seeds an instance with no .q-system tree, so its clean case is refused. The fixture must carry the file production carries; adding that test to allowed_files.
+
+Before:
+- allowed_files: ['kipi-promote.sh', 'kipi-push-upstream.sh', 'q-system/.q-system/scripts/tripwire-terms.txt', 'q-system/.q-system/scripts/lessons_scrub.py', 'q-system/.q-system/tests/test_promotion_receipt.py']
+- required_checks: ['python3 -m pytest -q q-system/.q-system/tests/test_promotion_receipt.py']
+- disallowed_files: ['.claude/**', 'plugins/prd-os/**', '.prd-os/**', 'q-consult/**', 'kipi-update.sh']
+
+After:
+- allowed_files: ['kipi-promote.sh', 'kipi-push-upstream.sh', 'q-system/.q-system/scripts/tripwire-terms.txt', 'q-system/.q-system/scripts/lessons_scrub.py', 'q-system/.q-system/tests/test_promotion_receipt.py']
+- required_checks: ['python3 -m pytest -q q-system/.q-system/tests/test_promotion_receipt.py']
+- disallowed_files: ['.claude/**', 'plugins/prd-os/**', '.prd-os/**', 'q-consult/**', 'kipi-update.sh']
+
+### 2026-09-02T01:53:45Z
+Reason: pre-commit verify.sh: issue 6's test_trigger_inventory now reads kipi-push-upstream.sh as triggered because issue 8's test_promotion_receipt.py names it and the manifest-triggered test propagates through the transitive closure. A test exercising a script is not a production trigger; the closure must not propagate through test files. Adding trigger-inventory.py and its test to allowed_files.
+
+Before:
+- allowed_files: ['kipi-promote.sh', 'kipi-push-upstream.sh', 'q-system/.q-system/scripts/tripwire-terms.txt', 'q-system/.q-system/scripts/lessons_scrub.py', 'q-system/.q-system/tests/test_promotion_receipt.py']
+- required_checks: ['python3 -m pytest -q q-system/.q-system/tests/test_promotion_receipt.py']
+- disallowed_files: ['.claude/**', 'plugins/prd-os/**', '.prd-os/**', 'q-consult/**', 'kipi-update.sh']
+
+After:
+- allowed_files: ['kipi-promote.sh', 'kipi-push-upstream.sh', 'q-system/.q-system/scripts/tripwire-terms.txt', 'q-system/.q-system/scripts/lessons_scrub.py', 'q-system/.q-system/scripts/test/test-lessons-push-guard.sh', 'q-system/.q-system/tests/test_promotion_receipt.py']
+- required_checks: ['python3 -m pytest -q q-system/.q-system/tests/test_promotion_receipt.py']
+- disallowed_files: ['.claude/**', 'plugins/prd-os/**', '.prd-os/**', 'q-consult/**', 'kipi-update.sh']

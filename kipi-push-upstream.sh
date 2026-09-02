@@ -23,7 +23,18 @@ fi
 
 # Safety check: warn if instance-specific content might be in the subtree
 echo "=== Pre-push safety check ==="
-INSTANCE_CONTENT=$(grep -ril "KTLYST\|ktlyst\|CISO\|re-breach\|Assaf\|/Users/" "$PREFIX/" 2>/dev/null | grep -v ".git/" | head -5 || true)
+# The term list lives in q-system/.q-system/scripts/tripwire-terms.txt, shared with
+# kipi-promote.sh's scrub (issue lr-promote-scrub-source); it used to be inline here.
+# The tripwire file itself carries the terms, so it is excluded from its own scan.
+TRIPWIRE_FILE="$PREFIX/.q-system/scripts/tripwire-terms.txt"
+# one python read, not a grep pipeline: under set -e + pipefail a missing file
+# aborted the pipeline before the fail-closed message below could print
+TRIPWIRE="$(python3 -c 'import sys; print("|".join(l.strip() for l in open(sys.argv[1]) if l.strip() and not l.startswith("#")))' "$TRIPWIRE_FILE" 2>/dev/null || true)"
+[ -n "$TRIPWIRE" ] || { echo "ERROR: tripwire term list missing or empty at $TRIPWIRE_FILE (fail-closed)"; exit 1; }
+# -E: the terms are joined with '|', which basic grep reads as a literal pipe.
+# Codex (issue lr-promote-scrub-source) caught the first version matching
+# nothing at all; test_push_script_blocks_a_planted_term pins this.
+INSTANCE_CONTENT=$(grep -rilE "$TRIPWIRE" "$PREFIX/" 2>/dev/null | grep -v ".git/" | grep -v "tripwire-terms.txt" | head -5 || true)
 if [ -n "$INSTANCE_CONTENT" ]; then
   echo "WARNING: Instance-specific content found in $PREFIX/:"
   echo "$INSTANCE_CONTENT"

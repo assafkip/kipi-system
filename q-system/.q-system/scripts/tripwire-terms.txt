@@ -1,0 +1,11 @@
+# Instance-content tripwire: a file under q-system/ carrying any of these never
+# leaves an instance (kipi-push-upstream.sh pre-push grep, case-insensitive) and
+# never gets promoted (kipi-promote.sh scrub). ONE source for both, issue
+# lr-promote-scrub-source; before it the push script carried this list inline.
+# One term per line. Blank lines and # comments are ignored.
+KTLYST
+ktlyst
+CISO
+re-breach
+Assaf
+/Users/

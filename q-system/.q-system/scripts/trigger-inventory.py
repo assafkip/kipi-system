@@ -25,8 +25,8 @@ Scope: .claude/worktrees/ and .wt-* are never scanned as stages; the report
 prints how many trees and scripts that excluded (an audit that only works on
 a tidy repo is not an audit).
 
-Known limit: a script named inside another script's docstring counts as named;
-comment lines (leading #) are stripped, docstrings are not.
+Comment lines (leading #) and Python triple-quoted strings are stripped before
+a script's text is read for names; tests are triggered but never trigger.
 """
 from __future__ import annotations
 
@@ -182,8 +182,24 @@ def _named(text, cands):
     return hits
 
 
+def _is_test(rel):
+    """Tests are triggered (the capability manifest runs them) but they never
+    trigger anything: a script a test invokes is still dead in production.
+    Measured 2026-09-01: test_promotion_receipt.py named kipi-push-upstream.sh
+    and the push read as triggered."""
+    base = os.path.basename(rel)
+    parts = rel.split(os.sep)
+    return base.startswith(("test_", "test-")) or "tests" in parts or "test" in parts
+
+
 def _code_text(path):
-    return "\n".join(l for l in _read(path).splitlines() if not l.lstrip().startswith("#"))
+    """Code only: comment lines and, for Python, triple-quoted strings are
+    dropped. Measured 2026-09-01: lessons_scrub.py's docstring mentioned
+    kipi-push-upstream.sh and the push read as triggered by a library."""
+    text = _read(path)
+    if path.endswith(".py"):
+        text = re.sub(r"(\"\"\"|''')[\s\S]*?\1", "", text)
+    return "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
 
 
 def load_exemptions(root):
@@ -225,6 +241,8 @@ def inventory(root, installed_dir):
         if rel in seen:
             continue
         seen.add(rel)
+        if _is_test(rel):
+            continue  # a test exercising a script is not a production trigger for it
         for other in _named(_code_text(os.path.join(root, rel)), cands):
             if other == rel:
                 continue

@@ -14,6 +14,7 @@ Importable: `find_client_data(text, extra_terms)`, `scrub(text, extra_terms)`, `
 `codenames_from_registry(path)` builds the extra_terms roster (distinctive instance names only).
 """
 import json
+import os
 import re
 from pathlib import Path
 
@@ -87,3 +88,52 @@ if __name__ == "__main__":
     sample = sys.stdin.read()
     hits = find_client_data(sample)
     print("clean" if not hits else "HELD: " + ", ".join(f"{c}:{v}" for c, v in hits))
+
+
+# --- promotion scrub sources (issue lr-promote-scrub-source) ---------------------
+# The promotion path (kipi-promote.sh) builds its roster from production data,
+# never from a test-only term list. Three sources, each a function here so the
+# push tripwire, the distiller and the promoter read the same words.
+
+def clients_file_for_instance(registry_path, instance_root):
+    """<instance>/<instance_q_dir>/my-project/clients.json for the registry entry
+    whose path IS instance_root (realpath compared). None when the instance has
+    no entry or no instance_q_dir: the caller refuses, it does not guess."""
+    try:
+        data = json.loads(Path(registry_path).read_text())
+    except Exception:
+        return None
+    want = os.path.realpath(instance_root)
+    for entry in data.get("instances", []):
+        if os.path.realpath(entry.get("path", "")) != want:
+            continue
+        qdir = entry.get("instance_q_dir")
+        if not qdir:
+            return None
+        return os.path.join(want, qdir, "my-project", "clients.json")
+    return None
+
+
+def client_terms(clients_path):
+    """Every client name and slug in a clients.json ({"clients": [{name, slug, ...}]}).
+    Keys are the producer's (consulting's clients.json), not invented here."""
+    data = json.loads(Path(clients_path).read_text())
+    rows = data.get("clients", []) if isinstance(data, dict) else data
+    terms = []
+    for row in rows:
+        for key in ("name", "slug"):
+            value = str(row.get(key, "")).strip()
+            if value:  # EVERY record, a two-letter slug included (Codex, issue 8)
+                terms.append(value)
+    return terms
+
+
+def tripwire_terms(path):
+    """One term per line, blank lines and # comments ignored. Single source for
+    kipi-push-upstream.sh's pre-push grep and the promotion scrub."""
+    out = []
+    for line in Path(path).read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            out.append(line)
+    return out

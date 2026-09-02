@@ -80,7 +80,59 @@ REL="$(python3 -c 'import os,sys; r,i=sys.argv[1:3]; print(os.path.relpath(os.pa
 [ -f "$INSTANCE_REAL/$REL" ] || refuse "on-disk path could not be resolved for $1"
 DEST="$SKELETON/$REL"
 
-# --- scrub and receipt slices land in the next issues; until then this never promotes for real ---
+# --- scrub (issue lr-promote-scrub-source, Codex finding-3 on the PRD) ---
+# Production term sources, no test-only list:
+#   1. instance codenames from instance-registry.json (lessons_scrub.codenames_from_registry)
+#   2. every client name and slug in THIS instance's my-project/clients.json, located through
+#      the registry entry whose path is this instance (instance_q_dir/my-project/clients.json)
+#   3. the tripwire terms in q-system/.q-system/scripts/tripwire-terms.txt, the same file
+#      kipi-push-upstream.sh reads for its pre-push grep
+# The scrub module and the tripwire file are read from THIS script's own checkout (the kipi
+# home), the code that is actually running. A missing clients file REFUSES (fail-closed): an
+# instance that cannot name its clients cannot prove a file carries none of them.
+# KIPI_PROMOTE_REGISTRY is a test seam for the registry path only; production reads the
+# registry beside this script.
+PROMOTE_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KIPI_HOME_DIR="${KIPI_HOME:-$PROMOTE_HOME}"   # the same registry skeleton resolution used
+REGISTRY="${KIPI_PROMOTE_REGISTRY:-$KIPI_HOME_DIR/instance-registry.json}"
+[ -f "$REGISTRY" ] || refuse "no instance registry at $REGISTRY; cannot build the scrub roster"
+SCRUB_OUT="$(python3 - "$INSTANCE_REAL/$REL" "$REGISTRY" "$INSTANCE_REAL" "$PROMOTE_HOME/q-system/.q-system/scripts/lessons_scrub.py" "$PROMOTE_HOME/q-system/.q-system/scripts/tripwire-terms.txt" <<'PYSCRUB'
+import importlib.util, os, sys
+src, registry, instance, scrub_py, tripwire = sys.argv[1:6]
+spec = importlib.util.spec_from_file_location("lessons_scrub", scrub_py)
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+clients = mod.clients_file_for_instance(registry, instance)
+if clients is None:
+    print("REFUSE no registry entry with an instance_q_dir for " + instance + "; cannot locate my-project/clients.json"); sys.exit(0)
+if not os.path.exists(clients):
+    print("REFUSE clients file missing: " + clients); sys.exit(0)
+terms = list(mod.codenames_from_registry(registry)) + mod.client_terms(clients)
+trip = mod.tripwire_terms(tripwire)
+with open(src, encoding="utf-8", errors="replace") as fh:
+    text = fh.read()
+hits = mod.find_client_data(text, extra_terms=terms)
+# tripwire terms match as case-insensitive SUBSTRINGS, exactly like the push
+# script's `grep -ril`; find_client_data's word boundaries cannot see "/Users/"
+low = text.lower()
+hits += [("tripwire", t) for t in trip if t.lower() in low]
+terms += trip
+# Scripts are promotable and carry shebangs and repo URLs by nature, so the
+# lessons scrub's generic "any unix path" and "any URL" categories do not apply
+# here; the tripwire's /Users/ term still refuses a home path, and static
+# tokens, emails, codenames and client terms all still refuse.
+hits = [h for h in hits if h[0] not in ("path", "url")]
+if hits:
+    print("REFUSE client data: " + "; ".join(f"{k}={v}" for k, v in hits[:5]))
+else:
+    print("CLEAN " + str(len(terms)) + " terms")
+PYSCRUB
+)" || refuse "scrub apparatus failed for $REL"
+case "$SCRUB_OUT" in
+  CLEAN*) SCRUB="clean (${SCRUB_OUT#CLEAN })" ;;
+  *) refuse "${SCRUB_OUT#REFUSE }" ;;
+esac
+
+# --- the receipt slice lands in the next issue; until then this never promotes for real ---
 # The seam needs THREE things: pytest's marker, the explicit opt-in, and an
 # instance root under a temp directory. PYTEST_CURRENT_TEST alone is anyone's
 # to set (Codex adversarial, issue lr-promote-path-containment); a real

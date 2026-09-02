@@ -9,6 +9,7 @@ instance and into the skeleton, which fans out to 25 instances.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -22,22 +23,38 @@ PROMOTE = ROOT / "kipi-promote.sh"
 CLI = ROOT / "kipi"
 
 
+CLIENTS = {"version": 1, "last_write": "2026-09-01", "clients": [
+    # the producer's keys (consulting's clients.json), values invented
+    {"name": "Northwind Traders", "slug": "northwind", "stage": "active", "tier": "b", "vertical": "x",
+     "contact": "", "folder": "", "notes": "", "opened": "2026-01-01", "rate": 0, "rate_unit": "hr"},
+    {"name": "Contoso Holdings", "slug": "contoso", "stage": "won", "tier": "a", "vertical": "y"},
+]}
+
+
 def _trees(tmp_path):
     inst = tmp_path / "instance"
     skel = tmp_path / "skeleton"
     (inst / "q-system" / "lessons").mkdir(parents=True)
     (inst / "q-system" / ".q-system" / "scripts").mkdir(parents=True)
     (inst / "q-consult" / "pipeline").mkdir(parents=True)
+    (inst / "q-consult" / "my-project").mkdir(parents=True)
     (skel / "q-system" / "lessons").mkdir(parents=True)
     (inst / "q-system" / "lessons" / "general.md").write_text("---\ntitle: A general lesson\n---\nhow to do a thing\n")
     (inst / "q-consult" / "pipeline" / "voice.py").write_text("print('instance-owned')\n")
+    (inst / "q-consult" / "my-project" / "clients.json").write_text(json.dumps(CLIENTS))
     (tmp_path / "outside.md").write_text("outside the instance\n")
+    # the registry the scrub locates clients.json through: this instance's entry + a codename instance
+    (tmp_path / "instance-registry.json").write_text(json.dumps({
+        "skeleton": {"path": str(skel)},
+        "instances": [{"name": "consulting", "path": str(inst), "instance_q_dir": "q-consult", "type": "subtree"},
+                      {"name": "Example_Corp9", "path": str(tmp_path / "elsewhere"), "instance_q_dir": "q-gold", "type": "subtree"}]}))
     return inst, skel
 
 
 def _promote(tmp_path, rel, unscrubbed=True, cwd=None):
     inst, skel = tmp_path / "instance", tmp_path / "skeleton"
-    env = dict(os.environ, KIPI_PROMOTE_INSTANCE=str(inst), KIPI_PROMOTE_SKELETON=str(skel))
+    env = dict(os.environ, KIPI_PROMOTE_INSTANCE=str(inst), KIPI_PROMOTE_SKELETON=str(skel),
+               KIPI_PROMOTE_REGISTRY=str(tmp_path / "instance-registry.json"))
     env.pop("KIPI_PROMOTE_UNSCRUBBED", None)  # never inherit the seam from the caller's shell
     if unscrubbed:
         env["KIPI_PROMOTE_UNSCRUBBED"] = "1"
@@ -128,7 +145,8 @@ def test_production_resolution_reads_the_registry_through_kipi_home(tmp_path):
     inst, skel = _trees(tmp_path)
     home = tmp_path / "kipi-home"
     home.mkdir()
-    (home / "instance-registry.json").write_text('{"skeleton": {"path": "%s"}, "instances": []}' % skel)
+    # ONE registry serves both skeleton resolution and the scrub roster: the fixture's
+    (home / "instance-registry.json").write_text((tmp_path / "instance-registry.json").read_text())
     env = {k: v for k, v in os.environ.items() if not k.startswith("KIPI_PROMOTE")}
     env.update(KIPI_HOME=str(home), KIPI_PROMOTE_UNSCRUBBED="1")
     r = subprocess.run(["/bin/bash", str(PROMOTE), "q-system/lessons/general.md"], capture_output=True, text=True, env=env, cwd=inst, timeout=20)
@@ -167,7 +185,8 @@ def test_without_the_unscrubbed_seam_containment_passes_but_nothing_is_copied(tm
 
 def test_unscrubbed_seam_is_ignored_outside_pytest(tmp_path):
     inst, skel = _trees(tmp_path)
-    env = dict(os.environ, KIPI_PROMOTE_INSTANCE=str(inst), KIPI_PROMOTE_SKELETON=str(skel), KIPI_PROMOTE_UNSCRUBBED="1")
+    env = dict(os.environ, KIPI_PROMOTE_INSTANCE=str(inst), KIPI_PROMOTE_SKELETON=str(skel), KIPI_PROMOTE_UNSCRUBBED="1",
+               KIPI_PROMOTE_REGISTRY=str(tmp_path / "instance-registry.json"))
     env.pop("PYTEST_CURRENT_TEST", None)
     r = subprocess.run(["/bin/bash", str(PROMOTE), "q-system/lessons/general.md"], capture_output=True, text=True, env=env, cwd=inst)
     assert r.returncode == 3, "the seam only opens under pytest"
@@ -218,6 +237,109 @@ def test_cli_registers_promote(tmp_path):
     env = dict(os.environ, KIPI_PROMOTE_INSTANCE=str(inst), KIPI_PROMOTE_SKELETON=str(skel))
     r = subprocess.run(["/bin/bash", str(CLI), "promote", "q-system/lessons/missing.md"], capture_output=True, text=True, env=env, cwd=inst, timeout=20)
     assert r.returncode == 2 and "kipi promote: refused: no such file" in r.stderr, (r.returncode, r.stderr[-300:], r.stdout[-300:])
+
+
+# ---- slice 2, issue lr-promote-scrub-source (Codex finding-3 on the PRD) -------
+
+@pytest.mark.parametrize("planted,why", [
+    ("Northwind Traders", "client name"),
+    ("contoso", "client slug"),
+    ("Assaf", "tripwire term"),
+    ("/Users/someone/x", "tripwire path"),
+    ("Example_Corp9", "instance codename from the registry"),
+])
+def test_client_name_refused(tmp_path, planted, why):
+    inst, _ = _trees(tmp_path)
+    (inst / "q-system" / "lessons" / "general.md").write_text(f"---\ntitle: t\n---\nlearned this with {planted} last week\n")
+    r = _promote(tmp_path, "q-system/lessons/general.md")
+    assert r.returncode == 2 and "refused" in r.stderr and "client data" in r.stderr, (why, r.stderr)
+    _nothing_copied(tmp_path)
+
+
+def test_clients_file_missing_refuses_and_names_the_path(tmp_path):
+    inst, _ = _trees(tmp_path)
+    (inst / "q-consult" / "my-project" / "clients.json").unlink()
+    r = _promote(tmp_path, "q-system/lessons/general.md")
+    assert r.returncode == 2 and "clients file missing" in r.stderr and "q-consult/my-project/clients.json" in r.stderr, r.stderr
+    _nothing_copied(tmp_path)
+
+
+def test_instance_without_a_registry_entry_refuses(tmp_path):
+    inst, _ = _trees(tmp_path)
+    (tmp_path / "instance-registry.json").write_text(json.dumps({"skeleton": {"path": str(tmp_path / "skeleton")}, "instances": []}))
+    r = _promote(tmp_path, "q-system/lessons/general.md")
+    assert r.returncode == 2 and "no registry entry" in r.stderr, r.stderr
+    _nothing_copied(tmp_path)
+
+
+def test_scrub_roster_comes_from_production_sources_not_an_env_list():
+    src = PROMOTE.read_text()
+    assert "KIPI_SCRUB_TERMS" not in src
+    assert "codenames_from_registry" in src and "client_terms" in src and "tripwire_terms" in src
+    assert "tripwire-terms.txt" in src
+
+
+def test_push_tripwire_is_single_sourced():
+    push = (ROOT / "kipi-push-upstream.sh").read_text()
+    assert 'grep -ril "KTLYST\\|ktlyst' not in push, "the inline list must be gone"
+    assert "tripwire-terms.txt" in push
+    sys.path.insert(0, str(ROOT / "q-system" / ".q-system" / "scripts"))
+    import lessons_scrub
+    terms = lessons_scrub.tripwire_terms(ROOT / "q-system" / ".q-system" / "scripts" / "tripwire-terms.txt")
+    assert terms == ["KTLYST", "ktlyst", "CISO", "re-breach", "Assaf", "/Users/"], "the same six terms the inline grep carried"
+
+
+def test_push_script_fails_closed_without_the_term_list(tmp_path):
+    """An instance whose fan-out lost tripwire-terms.txt must not push unscanned."""
+    inst = tmp_path / "inst"
+    (inst / "q-system").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=inst, check=True)  # the script refuses outside a repo first
+    import shutil
+    shutil.copy(ROOT / "kipi-push-upstream.sh", inst / "kipi-push-upstream.sh")
+    r = subprocess.run(["/bin/bash", "kipi-push-upstream.sh"], capture_output=True, text=True, cwd=inst, timeout=60,
+                       env=dict(os.environ, KIPI_SKELETON_REMOTE=str(tmp_path / "no-remote")))
+    assert r.returncode == 1 and "tripwire term list missing" in r.stdout + r.stderr, (r.returncode, r.stdout[-300:], r.stderr[-300:])
+
+
+def test_push_script_blocks_a_planted_term(tmp_path):
+    """Codex (issue 8, blocker): the joined pattern ran under basic grep, where
+    '|' is literal, so the first version matched nothing at all."""
+    import shutil
+    inst = tmp_path / "inst"
+    (inst / "q-system" / ".q-system" / "scripts").mkdir(parents=True)
+    (inst / "q-system" / "lessons").mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=inst, check=True)
+    shutil.copy(ROOT / "kipi-push-upstream.sh", inst / "kipi-push-upstream.sh")
+    shutil.copy(ROOT / "q-system" / ".q-system" / "scripts" / "tripwire-terms.txt", inst / "q-system" / ".q-system" / "scripts" / "tripwire-terms.txt")
+    (inst / "q-system" / "lessons" / "leak.md").write_text("learned this with assaf last week\n")  # lower-case: the grep is -i
+    env = dict(os.environ, KIPI_SKELETON_REMOTE=str(tmp_path / "no-remote"))
+    r = subprocess.run(["/bin/bash", "kipi-push-upstream.sh"], capture_output=True, text=True, cwd=inst, timeout=60, env=env)
+    out = r.stdout + r.stderr
+    assert r.returncode == 1 and "Instance-specific content found" in out and "leak.md" in out, (r.returncode, out[-400:])
+    (inst / "q-system" / "lessons" / "leak.md").write_text("nothing instance-specific here\n")
+    r = subprocess.run(["/bin/bash", "kipi-push-upstream.sh"], capture_output=True, text=True, cwd=inst, timeout=60, env=env)
+    assert "No instance-specific content detected" in r.stdout + r.stderr, "the clean case passes the tripwire (and fails later, on the remote)"
+
+
+def test_a_two_letter_slug_is_still_scrubbed(tmp_path):
+    inst, _ = _trees(tmp_path)
+    data = json.loads((inst / "q-consult" / "my-project" / "clients.json").read_text())
+    data["clients"].append({"name": "AI Co", "slug": "ai"})
+    (inst / "q-consult" / "my-project" / "clients.json").write_text(json.dumps(data))
+    (inst / "q-system" / "lessons" / "general.md").write_text("---\ntitle: t\n---\nthe ai account taught us this\n")
+    r = _promote(tmp_path, "q-system/lessons/general.md")
+    assert r.returncode == 2 and "client data" in r.stderr, r.stderr
+
+
+def test_scrub_helpers_read_the_producers_shapes(tmp_path):
+    sys.path.insert(0, str(ROOT / "q-system" / ".q-system" / "scripts"))
+    import lessons_scrub
+    inst, _ = _trees(tmp_path)
+    reg = tmp_path / "instance-registry.json"
+    assert lessons_scrub.clients_file_for_instance(reg, inst) == str(inst / "q-consult" / "my-project" / "clients.json")
+    assert lessons_scrub.clients_file_for_instance(reg, tmp_path / "unknown") is None
+    assert lessons_scrub.client_terms(inst / "q-consult" / "my-project" / "clients.json") == ["Northwind Traders", "northwind", "Contoso Holdings", "contoso"]
+    assert lessons_scrub.codenames_from_registry(reg) == ["Example_Corp9"], "generic lowercase names are not codenames"
 
 
 def test_this_file_runs_its_own_tests_under_python3():

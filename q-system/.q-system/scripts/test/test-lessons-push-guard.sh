@@ -13,6 +13,11 @@ G clone -q "$WORK/skel.git" "$WORK/seed"
 mkdir -p "$WORK/seed/q-system/lessons"
 printf -- '---\nid: a\nkind: pattern\ntitle: A clean lesson\ndate: 2026-06-01\n---\nbody\n' > "$WORK/seed/q-system/lessons/a.md"
 printf -- '---\nid: b\nkind: pattern\ntitle: B clean lesson\ndate: 2026-06-02\n---\nbody\n' > "$WORK/seed/q-system/lessons/b.md"
+# The push script reads its tripwire terms from the instance's q-system tree
+# (single-sourced with kipi-promote.sh, issue lr-promote-scrub-source) and fails
+# closed without them, so the seed carries the real file, as every instance does.
+mkdir -p "$WORK/seed/q-system/.q-system/scripts"
+cp "$(dirname "$SCRIPT")/q-system/.q-system/scripts/tripwire-terms.txt" "$WORK/seed/q-system/.q-system/scripts/"
 ( cd "$WORK/seed" && G add -A && G commit -qm seed && G push -q origin HEAD:main )
 G clone -q -b main "$WORK/skel.git" "$WORK/inst"
 cp "$SCRIPT" "$WORK/inst/kipi-push-upstream.sh"

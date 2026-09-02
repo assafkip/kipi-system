@@ -129,6 +129,24 @@ def test_a_shared_basename_does_not_let_one_trigger_cover_both(tmp_path):
     assert j["stages"]["q-system/.q-system/scripts/dup.sh"]["status"] == "triggered"
 
 
+def test_a_test_that_exercises_a_script_does_not_trigger_it(tmp_path):
+    """A manifest-run test naming d_dead.py leaves d_dead.py dead: tests are
+    triggered, they never trigger."""
+    r, installed = _repo(tmp_path)
+    tests = r / "q-system" / ".q-system" / "tests"
+    tests.mkdir()
+    (tests / "test_d.py").write_text("import subprocess\nsubprocess.run(['python3', 'q-system/.q-system/scripts/d_dead.py'])\n")
+    frag = r / "q-system" / ".q-system" / "capability" / "expected_tests"
+    frag.mkdir(parents=True)
+    (frag / "t.json").write_text(json.dumps({"path": "q-system/.q-system/tests/test_d.py", "runner": "python3", "timeout_s": 10}))
+    # also a test-named script inside scripts/ that is itself triggered
+    (r / "q-system" / ".q-system" / "scripts" / "test_runner.sh").write_text("bash q-system/.q-system/scripts/d_dead.py\n")
+    (r / "lefthook.yml").write_text("pre-commit:\n  commands:\n    t:\n      run: bash q-system/.q-system/scripts/test_runner.sh\n")
+    j = json.loads(_run(r, installed, "--json").stdout)
+    assert j["stages"]["q-system/.q-system/scripts/test_runner.sh"]["status"] == "triggered"
+    assert "q-system/.q-system/scripts/d_dead.py" in j["dead"], "a test invoking it is not a trigger"
+
+
 def test_a_planted_dead_stage_inside_a_worktree_copy_is_not_counted(tmp_path):
     r, installed = _repo(tmp_path)
     p = _run(r, installed)
