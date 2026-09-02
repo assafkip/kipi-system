@@ -137,19 +137,23 @@ def run(now: dt.datetime, receipt_path=None, state_path=None, sender=None) -> in
 
     if ok:
         if already:
-            sender(f":white_check_mark: The browser-session health check is "
-                   f"running again. Verified {stamp}.")
-            _write_state(state_path, {"alarmed": False, "at": stamp})
+            result = sender(f":white_check_mark: The browser-session health check is "
+                            f"running again. Verified {stamp}.") or {}
+            if result.get("delivered"):
+                _write_state(state_path, {"alarmed": False, "at": stamp})
         return 0
 
     if already:
         return 1
 
-    sender(f":rotating_light: Nothing is checking the research browser "
-           f"sessions. {reason}\n"
-           f"Checked {stamp} by com.kipi.browser-session-deadman.\n"
-           f"You get this once. Nothing further until it recovers.")
-    _write_state(state_path, {"alarmed": True, "at": stamp, "reason": reason})
+    result = sender(f":rotating_light: Nothing is checking the research browser "
+                    f"sessions. {reason}\n"
+                    f"Checked {stamp} by com.kipi.browser-session-deadman.\n"
+                    f"You get this once. Nothing further until it recovers.") or {}
+    # "Once" means once DELIVERED (PR #294 review, major): recording alarmed
+    # on a refused send silenced every later retry for the whole outage.
+    if result.get("delivered"):
+        _write_state(state_path, {"alarmed": True, "at": stamp, "reason": reason})
     return 1
 
 

@@ -407,17 +407,24 @@ def _surface_pass(profile, surface, prior, prober, sender, ops_sender, stamp, ou
         # records the alerted state, so the first death after it is.
         if not (state == "alive" and alerted is None):
             message = _message(profile, surface, entry, state)
+            result = sender(message) or {}
             out["sends"].append({"profile": profile["name"], "surface": surface["name"],
-                                 "state": state, "message": message,
-                                 "result": sender(message)})
+                                 "state": state, "message": message, "result": result})
             entry["last_alert_at"] = stamp
-        alerted = state
+            # Suppress ONLY after the alert landed (PR #294 review, major): a
+            # refused send left alerted_state stamped, so a Slack or Linear
+            # outage silenced the incident until the browser state changed.
+            if result.get("delivered"):
+                alerted = state
+        else:
+            alerted = state
 
     if state == "unknown" and unknown_run >= UNKNOWN_ESCALATION_AFTER and not escalated:
         message = _ops_message(profile, surface, entry, unknown_run)
+        result = ops_sender(message) or {}
         out["ops_sends"].append({"profile": profile["name"], "surface": surface["name"],
-                                 "message": message, "result": ops_sender(message)})
-        escalated = True
+                                 "message": message, "result": result})
+        escalated = bool(result.get("delivered"))  # same rule: an undelivered escalation retries
 
     entry["alerted_state"] = alerted
     entry["unknown_escalated"] = escalated

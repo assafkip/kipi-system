@@ -196,6 +196,35 @@ def test_repeated_unknown_escalates_to_the_engineering_queue_not_the_founder(tmp
     assert "research-hn" in ops.sends[0] and "hn" in ops.sends[0]
 
 
+def test_a_refused_alert_is_retried_next_run_and_a_delivered_one_is_not(tmp_path, health):
+    """PR #294 review, major: the alerted state was stamped whether or not the
+    send landed, so a Slack or Linear outage silenced a death until the browser
+    state changed. Suppression starts only after a DELIVERED send."""
+    receipt = tmp_path / "r.json"
+    profiles = [_profile()]
+    health.run_once(profiles=profiles, prober=_prober({"hn": _result("hn")}),
+                    sender=_recorder(), receipt_path=receipt,
+                    now=dt.datetime(2026, 8, 31, 8, 0))
+    dead = _prober({"hn": _result("hn", logged_in=False, reason="marker absent")})
+    refused = []
+
+    def refuser(message):
+        refused.append(message)
+        return {"delivered": False, "transport": "webhook", "reason": "HTTP 502"}
+
+    health.run_once(profiles=profiles, prober=dead, sender=refuser,
+                    receipt_path=receipt, now=dt.datetime(2026, 8, 31, 9, 0))
+    assert len(refused) == 1
+    retry = _recorder()
+    health.run_once(profiles=profiles, prober=dead, sender=retry,
+                    receipt_path=receipt, now=dt.datetime(2026, 8, 31, 9, 30))
+    assert len(retry.sends) == 1, "a refused alert must be retried on the next run"
+    quiet = _recorder()
+    health.run_once(profiles=profiles, prober=dead, sender=quiet,
+                    receipt_path=receipt, now=dt.datetime(2026, 8, 31, 10, 0))
+    assert quiet.sends == [], "once delivered, the same outage alerts no more"
+
+
 def test_the_unknown_escalation_fires_once_not_every_run(tmp_path, health):
     receipt = tmp_path / "r.json"
     profiles = [_profile()]

@@ -367,6 +367,28 @@ def test_deadman_alarms_on_a_missing_receipt(tmp_path, deadman):
     assert not ok and "receipt" in reason
 
 
+def test_deadman_retries_an_undelivered_alarm_and_stops_after_it_lands(tmp_path, deadman):
+    """PR #294 review, major: alarmed=True was written without checking the send,
+    so one refused Slack call silenced the deadman for the whole outage."""
+    now = dt.datetime(2026, 8, 30, 12, 0)
+    receipt, state = tmp_path / "r.json", tmp_path / "state.json"
+    receipt.write_text(json.dumps({"at": (now - dt.timedelta(hours=6)).isoformat()}))
+    refused = []
+
+    def refuser(message):
+        refused.append(message)
+        return {"delivered": False, "transport": "webhook", "reason": "HTTP 502"}
+
+    assert deadman.run(now, receipt_path=receipt, state_path=state, sender=refuser) == 1
+    assert len(refused) == 1 and not (state.exists() and json.loads(state.read_text()).get("alarmed"))
+    retry = _recorder()
+    deadman.run(now + dt.timedelta(minutes=30), receipt_path=receipt, state_path=state, sender=retry)
+    assert len(retry.sends) == 1, "an undelivered alarm must be retried"
+    quiet = _recorder()
+    deadman.run(now + dt.timedelta(hours=1), receipt_path=receipt, state_path=state, sender=quiet)
+    assert quiet.sends == [], "a delivered alarm is not repeated"
+
+
 def test_deadman_alarms_once_on_a_stale_receipt_then_stays_quiet(tmp_path, deadman):
     now = dt.datetime(2026, 8, 30, 12, 0)
     receipt = tmp_path / "r.json"

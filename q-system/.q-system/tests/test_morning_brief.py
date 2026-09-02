@@ -369,6 +369,16 @@ def test_overnight_with_no_jobs_at_all_is_an_error(brief):
 # Constraint 6: the deadman
 # --------------------------------------------------------------------------
 
+def test_deadman_does_not_count_an_undelivered_alarm_as_already_alarmed(deadman, tmp_path):
+    """PR #294 review, major: _already_alarmed matched on the date alone, so a
+    refused 09:00 send suppressed every retry for the rest of the day."""
+    state = tmp_path / "alarm.json"
+    deadman._record_alarm(NOW, {"delivered": False, "reason": "HTTP 502"}, state_path=state)
+    assert deadman._already_alarmed(NOW, state_path=state) is False
+    deadman._record_alarm(NOW, {"delivered": True}, state_path=state)
+    assert deadman._already_alarmed(NOW, state_path=state) is True
+
+
 def test_deadman_alarms_when_no_receipt_exists(deadman, tmp_path):
     ok, reason = deadman.check(NOW, receipt_path=tmp_path / "nope.json")
     assert ok is False
