@@ -21,21 +21,39 @@
 #                           read from the skeleton clone named by KIPI_HOME, the kipi CLI's home)
 set -euo pipefail
 
-usage() { echo "usage: kipi promote [--decided-by NAME] <relative path under q-system/>" >&2; }
+usage() {
+  cat >&2 <<'USAGE'
+usage: kipi promote [--decided-by NAME] <relative path under q-system/>
+       kipi promote --candidates [--instance NAME]     list divergent lessons with a receipt status each
+       kipi promote --void <path> --reason TEXT        record that a lesson stays local (no copy)
+USAGE
+}
 
 DECIDED_BY=""   # default is instance:<registry name>, set once the scrub resolves the name;
                 # the OS username is NOT a default: on the founder's machine it carries a tripwire term
+MODE="promote"; INSTANCE_ARG=""; REASON=""; POS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --decided-by) [ -n "${2:-}" ] || { usage; exit 2; }; DECIDED_BY="$2"; shift 2 ;;
     --decided-by=*) DECIDED_BY="${1#--decided-by=}"; [ -n "$DECIDED_BY" ] || { usage; exit 2; }; shift ;;
-    --) shift; break ;;
+    --candidates) MODE="candidates"; shift ;;
+    --instance) [ -n "${2:-}" ] || { usage; exit 2; }; INSTANCE_ARG="$2"; shift 2 ;;
+    --void) MODE="void"; shift ;;
+    --reason) [ -n "${2:-}" ] || { usage; exit 2; }; REASON="$2"; shift 2 ;;
+    --) shift; POS+=("$@"); break ;;
     -*) usage; exit 2 ;;
-    *) break ;;
+    *) POS+=("$1"); shift ;;   # options may follow the path (--void PATH --reason TEXT)
   esac
 done
-if [ $# -ne 1 ] || [ -z "${1:-}" ]; then usage; exit 2; fi   # ONE capability per call; extra args fail, never half-succeed
-REL="$1"
+set -- ${POS[@]+"${POS[@]}"}
+if [ "$MODE" = "candidates" ]; then
+  [ $# -eq 0 ] || { usage; exit 2; }
+  REL=""
+else
+  if [ $# -ne 1 ] || [ -z "${1:-}" ]; then usage; exit 2; fi   # ONE capability per call; extra args fail, never half-succeed
+  [ "$MODE" != "void" ] || [ -n "$REASON" ] || { usage; exit 2; }   # a void without a reason is a shrug, not a decision
+  REL="$1"
+fi
 case "$REL" in
   *$'\n'*) echo "kipi promote: refused: a newline in the path ($REL)" >&2; exit 2 ;;
   *//*) echo "kipi promote: refused: empty segment in the path ($REL)" >&2; exit 2 ;;
@@ -53,6 +71,108 @@ if [ -z "$SKELETON" ] || [ ! -d "$SKELETON/q-system" ]; then
 fi
 
 refuse() { echo "kipi promote: refused: $1" >&2; exit 2; }
+
+PROMOTE_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KIPI_HOME_DIR="${KIPI_HOME:-$PROMOTE_HOME}"   # the same registry skeleton resolution used
+REGISTRY="${KIPI_PROMOTE_REGISTRY:-$KIPI_HOME_DIR/instance-registry.json}"
+SCRUB_PY="$PROMOTE_HOME/q-system/.q-system/scripts/lessons_scrub.py"
+TRIPWIRE_FILE="$PROMOTE_HOME/q-system/.q-system/scripts/tripwire-terms.txt"
+RECEIPTS="$SKELETON/q-system/.q-system/promotions.receipts"
+
+# --instance NAME: the instance is the registry's, not the cwd's (issue 12,
+# candidates are listed for a hub instance from wherever the operator sits)
+if [ -n "$INSTANCE_ARG" ]; then
+  [ -f "$REGISTRY" ] || refuse "no instance registry at $REGISTRY; cannot resolve --instance $INSTANCE_ARG"
+  INSTANCE="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); m=[e for e in d.get("instances",[]) if e.get("name")==sys.argv[2]]; print(m[0]["path"] if m else "")' "$REGISTRY" "$INSTANCE_ARG" 2>/dev/null || true)"
+  [ -n "$INSTANCE" ] && [ -d "$INSTANCE" ] || refuse "no registered instance named $INSTANCE_ARG (or its path is missing)"
+fi
+
+# receipt_row <pending|done|voided>: the ONLY writer of promotions.receipts.
+# The caller holds the lock (fd 9) across every phase. from_instance is the
+# registry NAME, never a path: a path carries /Users/ and the owner's name, and
+# this file fans out to every instance where the push tripwire greps it. The
+# row itself is scrubbed against the tripwire for the same reason.
+receipt_row() {
+  python3 - "$RECEIPTS" "$REL" "$BLOB" "$INSTANCE_NAME" "$DECIDED_BY" "$SCRUB" "$TRIPWIRE_FILE" "$BASE" "$1" "$REASON" <<'PYRECEIPT'
+import datetime, json, os, sys
+path, rel, blob, inst, who, scrub, tripwire, base, status, reason = sys.argv[1:11]
+row = {"path": rel, "blob": blob, "base": base, "from_instance": inst, "decided_by": who, "scrub": scrub, "status": status,
+       "at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%z")}
+if status == "voided":
+    row["reason"] = reason
+terms = [l.strip() for l in open(tripwire, encoding="utf-8") if l.strip() and not l.startswith("#")]
+line = json.dumps(row)
+if any(t.lower() in line.lower() for t in terms):
+    sys.exit(1)
+with open(path, "a", encoding="utf-8") as fh:  # the caller holds the lock (fd 9) across both phases
+    fh.write(line + "\n")
+    fh.flush()
+    os.fsync(fh.fileno())
+PYRECEIPT
+}
+take_lock() {
+  # ONE lock for the whole operation: taken on fd 9 (an flock lives on the open
+  # file description, so a child process locking the inherited fd leaves it held
+  # by this shell until exit). macOS ships no flock(1); python does the locking.
+  mkdir -p "$(dirname "$RECEIPTS")"
+  exec 9>>"$RECEIPTS.lock"
+  python3 -c 'import fcntl, sys; fcntl.flock(int(sys.argv[1]), fcntl.LOCK_EX)' 9 || refuse "could not take the promotion lock $RECEIPTS.lock"
+}
+instance_name() { python3 -c 'import importlib.util,sys; s=importlib.util.spec_from_file_location("m",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.instance_name_for(sys.argv[2], sys.argv[3]) or "")' "$SCRUB_PY" "$REGISTRY" "$1" 2>/dev/null || true; }
+
+# --- candidates: every lesson in the instance that is absent from or divergent with the skeleton ---
+if [ "$MODE" = "candidates" ]; then
+  INSTANCE_REAL="$(cd "$INSTANCE" && pwd -P)"
+  NAME="$(instance_name "$INSTANCE_REAL")"
+  QDIR="$(python3 -c 'import json,sys,os; d=json.load(open(sys.argv[1])); m=[e for e in d.get("instances",[]) if os.path.realpath(e.get("path",""))==sys.argv[2]]; print((m[0].get("instance_q_dir") or "<instance q dir>") if m else "<instance q dir>")' "$REGISTRY" "$INSTANCE_REAL" 2>/dev/null || echo "<instance q dir>")"
+  python3 - "$INSTANCE_REAL" "$SKELETON" "$RECEIPTS" "$QDIR" <<'PYCAND'
+import glob, json, os, subprocess, sys
+inst, skel, receipts, qdir = sys.argv[1:5]
+def blob(root, rel):
+    p = os.path.join(root, rel)
+    if not os.path.isfile(p):
+        return ""
+    return subprocess.run(["git", "-C", inst, "hash-object", "--path", rel, p], capture_output=True, text=True).stdout.strip()
+rows = []
+if os.path.exists(receipts):
+    for line in open(receipts, encoding="utf-8"):
+        try:
+            r = json.loads(line)
+            if isinstance(r, dict):
+                rows.append(r)
+        except ValueError:
+            pass
+out = []
+for p in sorted(glob.glob(os.path.join(inst, "q-system", "lessons", "*.md"))):
+    rel = os.path.relpath(p, inst)
+    if os.path.basename(rel) == "README.md":
+        continue
+    b = blob(inst, rel)
+    if b and b == blob(skel, rel):
+        continue  # identical: not a candidate
+    mine = [r for r in rows if r.get("path") == rel]
+    exact = [r for r in mine if r.get("blob") == b]
+    if exact:
+        status = str(exact[-1].get("status"))
+    elif mine:
+        status = "stale(" + str(mine[-1].get("status")) + ")"
+    else:
+        status = "none"
+    if status == "done":
+        nxt = "commit the skeleton, then the updater fans the receipt out"
+    elif status == "pending":
+        nxt = "re-run: kipi promote " + rel + " (a pending row stands)"
+    elif status == "voided":
+        nxt = "move it to " + qdir + "/lessons/ (voided; the guard still refuses it under q-system/)"
+    else:
+        nxt = "kipi promote " + rel + "   or   kipi promote --void " + rel + " --reason \"...\""
+    out.append((status, rel, nxt))
+for status, rel, nxt in out:
+    print(f"{status:14} {rel}   next: {nxt}")
+print(f"{len(out)} candidate(s) in {inst}")
+PYCAND
+  exit $?
+fi
 
 # --- containment, checked on the INPUT before anything touches the disk ---
 case "$REL" in
@@ -90,6 +210,21 @@ esac
 REL="$(python3 -c 'import os,sys; r,i=sys.argv[1:3]; print(os.path.relpath(os.path.join(os.path.dirname(r), os.path.basename(r)), i))' "$(python3 -c 'import os,sys; d,b=sys.argv[1:3]; n=next((e for e in os.listdir(d) if e.lower()==b.lower() and os.path.lexists(os.path.join(d,e))), b); print(os.path.join(d,n))' "$(dirname "$REAL")" "$(basename "$SRC")")" "$INSTANCE_REAL")"
 [ -f "$INSTANCE_REAL/$REL" ] || refuse "on-disk path could not be resolved for $1"
 DEST="$SKELETON/$REL"
+
+# --- void: a decision that this lesson stays local. No copy, no content scrub
+# (client data is often WHY it stays local); the row itself is still scrubbed.
+if [ "$MODE" = "void" ]; then
+  INSTANCE_NAME="$(instance_name "$INSTANCE_REAL")"
+  [ -n "$INSTANCE_NAME" ] || refuse "no registry entry for $INSTANCE_REAL; cannot record who voided"
+  [ -n "$DECIDED_BY" ] || DECIDED_BY="instance:$INSTANCE_NAME"
+  BLOB="$(git -C "$INSTANCE_REAL" hash-object --path "$REL" "$INSTANCE_REAL/$REL" 2>/dev/null || true)"
+  [ -n "$BLOB" ] || refuse "could not hash $REL"
+  SCRUB="void"; BASE=""
+  take_lock
+  receipt_row "voided" || refuse "void refused for $REL: a field carries a tripwire term (this file fans out to every instance), or it could not be written"
+  echo "voided $REL (blob $BLOB): stays in this instance; move it out of q-system/lessons/ so the push guard passes"
+  exit 0
+fi
 
 # --- scrub (issue lr-promote-scrub-source, Codex finding-3 on the PRD) ---
 # Production term sources, no test-only list:
@@ -186,35 +321,13 @@ fi
 # concurrent promotions interleave whole rows. from_instance is the registry
 # NAME, never a path: a path carries /Users/ and the owner's name, and this
 # file fans out to every instance where the push tripwire greps it.
-RECEIPTS="$SKELETON/q-system/.q-system/promotions.receipts"
 BLOB="$(git -C "$INSTANCE_REAL" hash-object --path "$REL" "$INSTANCE_REAL/$REL" 2>/dev/null || true)"
 [ -n "$BLOB" ] || refuse "could not hash the source $REL"
-mkdir -p "$(dirname "$RECEIPTS")"
-receipt_row() {  # receipt_row <pending|done>: the ONLY writer of promotions.receipts
-  python3 - "$RECEIPTS" "$REL" "$BLOB" "$INSTANCE_NAME" "$DECIDED_BY" "$SCRUB" "$PROMOTE_HOME/q-system/.q-system/scripts/tripwire-terms.txt" "$BASE" "$1" <<'PYRECEIPT'
-import datetime, json, os, sys
-path, rel, blob, inst, who, scrub, tripwire, base, status = sys.argv[1:10]
-row = {"path": rel, "blob": blob, "base": base, "from_instance": inst, "decided_by": who, "scrub": scrub, "status": status,
-       "at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%z")}
-# the row itself is scrubbed: it lands in every instance's q-system/ where the push tripwire greps
-terms = [l.strip() for l in open(tripwire, encoding="utf-8") if l.strip() and not l.startswith("#")]
-line = json.dumps(row)
-if any(t.lower() in line.lower() for t in terms):
-    sys.exit(1)
-with open(path, "a", encoding="utf-8") as fh:  # the caller holds the lock (fd 9) across both phases
-    fh.write(line + "\n")
-    fh.flush()
-    os.fsync(fh.fileno())
-PYRECEIPT
-}
-# ONE lock for the whole promotion: taken here on fd 9 (an flock lives on the
-# open file description, so a child process locking the inherited fd leaves it
-# held by this shell until exit) and released only when the script ends. It
-# covers the pending row, the copy, the re-hash and the done row as one critical
-# section, so two promotions of the same destination cannot interleave (Codex,
-# both passes on issue 10). macOS ships no flock(1); python does the locking.
-exec 9>>"$RECEIPTS.lock"
-python3 -c 'import fcntl, sys; fcntl.flock(int(sys.argv[1]), fcntl.LOCK_EX)' 9 || refuse "could not take the promotion lock $RECEIPTS.lock"
+# ONE lock for the whole promotion (take_lock, fd 9), released only when the
+# script ends: it covers the pending row, the copy, the re-hash and the done
+# row as one critical section, so two promotions of the same destination
+# cannot interleave (Codex, both passes on issue 10).
+take_lock
 receipt_row "pending" || refuse "receipt refused for $REL: a field carries a tripwire term (this file fans out to every instance), or it could not be written; nothing copied"
 
 # Test seam (pytest + tmp-rooted only, like KIPI_PROMOTE_UNSCRUBBED): a pause

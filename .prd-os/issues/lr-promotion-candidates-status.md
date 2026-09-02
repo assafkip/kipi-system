@@ -1,7 +1,7 @@
 ---
 id: lr-promotion-candidates-status
 title: kipi promote --candidates lists every divergent lesson in a hub instance with its receipt status; --void records a voided row
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:

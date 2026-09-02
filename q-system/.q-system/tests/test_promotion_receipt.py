@@ -779,6 +779,87 @@ def test_guard_reads_receipts_from_fetch_head_not_the_working_tree(tmp_path):
     assert r.returncode == 1 and "honoured" not in out, out
 
 
+# ---- slice 6, issue lr-promotion-candidates-status (Codex finding-4 on the PRD) ----
+# The eight consulting-only lessons are LISTED with a status each; the decision
+# per file is Sana's. --void records a voided row; the guard still refuses it.
+
+def _cli(tmp_path, *args, instance=True, cwd=None):
+    inst, skel = tmp_path / "instance", tmp_path / "skeleton"
+    env = dict(os.environ, KIPI_PROMOTE_SKELETON=str(skel), KIPI_PROMOTE_REGISTRY=str(tmp_path / "instance-registry.json"),
+               KIPI_PROMOTE_UNSCRUBBED="1")
+    env.pop("KIPI_PROMOTE_INSTANCE", None)
+    if instance:
+        env["KIPI_PROMOTE_INSTANCE"] = str(inst)
+    return subprocess.run(["/bin/bash", str(PROMOTE), *args], capture_output=True, text=True, env=env, cwd=cwd or (inst if instance else tmp_path), timeout=30)
+
+
+def test_candidates_lists_divergent_lessons_with_a_status_and_a_next_command(tmp_path):
+    import shutil
+    inst, skel = _trees(tmp_path)
+    shutil.copy(inst / "q-system" / "lessons" / "general.md", skel / "q-system" / "lessons" / "general.md")  # identical: not a candidate
+    (inst / "q-system" / "lessons" / "extra.md").write_text("---\ntitle: Extra\n---\nonly here\n")
+    (skel / "q-system" / "lessons" / "changed.md").write_text("---\ntitle: C\n---\nskeleton version\n")
+    (inst / "q-system" / "lessons" / "changed.md").write_text("---\ntitle: C\n---\ninstance version\n")
+    r = _cli(tmp_path, "--candidates")
+    assert r.returncode == 0, r.stderr
+    lines = [l for l in r.stdout.splitlines() if l.strip()]
+    assert not any("general.md" in l for l in lines), r.stdout
+    extra = next(l for l in lines if "q-system/lessons/extra.md" in l)
+    assert extra.startswith("none") and "kipi promote q-system/lessons/extra.md" in extra and "--void" in extra, extra
+    changed = next(l for l in lines if "q-system/lessons/changed.md" in l)
+    assert changed.startswith("none"), changed
+    assert "2 candidate(s)" in r.stdout
+
+
+def test_candidates_status_follows_the_receipts(tmp_path):
+    inst, skel = _trees(tmp_path)
+    (inst / "q-system" / "lessons" / "extra.md").write_text("---\ntitle: Extra\n---\nonly here\n")
+    assert _cli(tmp_path, "q-system/lessons/general.md").returncode == 0
+    r = _cli(tmp_path, "--candidates")
+    assert not any("general.md" in l for l in r.stdout.splitlines()), "a promoted lesson is identical now, not a candidate"
+    (inst / "q-system" / "lessons" / "general.md").write_text("---\ntitle: A general lesson\n---\nedited after promotion\n")
+    r = _cli(tmp_path, "--candidates")
+    general = next(l for l in r.stdout.splitlines() if "general.md" in l)
+    assert general.startswith("stale(done)"), general
+    v = _cli(tmp_path, "--void", "q-system/lessons/extra.md", "--reason", "consulting-specific, stays local")
+    assert v.returncode == 0, v.stderr
+    r = _cli(tmp_path, "--candidates")
+    extra = next(l for l in r.stdout.splitlines() if "extra.md" in l)
+    assert extra.startswith("voided") and "q-consult/lessons/" in extra, extra
+
+
+def test_void_writes_a_voided_row_that_the_guard_still_refuses(tmp_path):
+    inst, skel = _trees(tmp_path)
+    v = _cli(tmp_path, "--void", "q-system/lessons/general.md", "--reason", "client-specific")
+    assert v.returncode == 0, v.stderr
+    rows = [json.loads(l) for l in (skel / RECEIPTS_REL).read_text().splitlines()]
+    assert rows[-1]["status"] == "voided" and rows[-1]["reason"] == "client-specific" and rows[-1]["path"] == "q-system/lessons/general.md"
+    assert rows[-1]["blob"] == _blob(inst / "q-system" / "lessons" / "general.md")
+    assert not (skel / "q-system" / "lessons" / "general.md").exists(), "void copies nothing"
+    # the guard: a voided row for a divergent lesson still refuses the push
+    bare, skel2, inst2 = _repos(tmp_path / "g")
+    blob = _diverge(inst2)
+    _add_receipt(skel2, bare, inst2, {**_row(blob), "status": "voided", "reason": "stays local"})
+    r = _push(inst2, bare)
+    assert r.returncode == 1 and "lessons/ differs from skeleton: lessons/a.md" in r.stdout + r.stderr
+
+
+def test_void_requires_a_reason_and_an_existing_file(tmp_path):
+    _trees(tmp_path)
+    assert _cli(tmp_path, "--void", "q-system/lessons/general.md").returncode == 2
+    r = _cli(tmp_path, "--void", "q-system/lessons/missing.md", "--reason", "x")
+    assert r.returncode == 2 and "no such file" in r.stderr
+
+
+def test_candidates_resolves_an_instance_by_registry_name(tmp_path):
+    inst, skel = _trees(tmp_path)
+    (inst / "q-system" / "lessons" / "extra.md").write_text("---\ntitle: Extra\n---\nonly here\n")
+    r = _cli(tmp_path, "--candidates", "--instance", "consulting", instance=False)
+    assert r.returncode == 0 and "extra.md" in r.stdout, r.stderr
+    r = _cli(tmp_path, "--candidates", "--instance", "nope", instance=False)
+    assert r.returncode == 2 and "nope" in r.stderr
+
+
 def test_this_file_runs_its_own_tests_under_python3():
     if os.environ.get("KIPI_SELFTEST_INNER"):
         pytest.skip("inner run")
