@@ -1,7 +1,7 @@
 ---
 id: lr-recall-names-its-corpus
 title: lessons_recall.py takes an explicit corpus with stated precedence, prints which it read, and --both dedups by real path
-status: open
+status: closed
 priority: p0
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:
@@ -35,4 +35,4 @@ RED first: precedence is --corpus, then KIPI_LESSONS_DIR, then the file-relative
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] lessons_recall.py takes an explicit corpus with stated precedence, prints which it read, and --both dedups by real path
+- [x] lessons_recall.py takes an explicit corpus with stated precedence, prints which it read, and --both dedups by real path
