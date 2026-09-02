@@ -74,6 +74,159 @@ _PROSE_FENCE_LANGS = {"", "text", "txt", "md", "markdown", "quote", "draft"}
 _QUOTE_RE = re.compile(r"(?m)^>\s?(.*)$")
 
 
+# --- ONE draft definition (2026-09-01, issue vg-one-draft-definition) --------
+#
+# THE SCAR. This file used to carry TWO extractors with two different answers.
+# `extract_publishable` gated the voice lint and required `_PUBLISH_MARKER_RE`
+# to match before it looked at anything. `extract_setoff_draft` fed the
+# authorship scorer and required a prose fence or a blockquote. Measured against
+# ONE 1465-byte LinkedIn post delivered five ways on 2026-09-01:
+#
+#   delivery                             lint saw   scorer saw
+#   hr-rules, no announcing sentence         0          0   <- what shipped
+#   hr-rules + "Here's the post"          1494          0
+#   prose fence, no sentence                 0       1465
+#   blockquote, no sentence                  0       1465
+#   bare text                                0          0
+#
+# The turn that actually reached the founder was invisible to both. It fell
+# under MIN_TEXT_BYTES, was never linted, and spooled an EMPTY string to the
+# scorer, which then reported a number about nothing.
+#
+# None of those five shapes was a decision. They are prose habits. So the
+# assistant was choosing its own enforcement without knowing it, which is the
+# whole defect: a gate whose scope is set by the writer is not a gate.
+#
+# `candidate_draft` is the single definition. It does not require an announcing
+# sentence and it does not require a fence. The marker regex survives as a
+# SIGNAL (it still tells us a turn is framed as a delivery) and is no longer a
+# PRECONDITION for looking.
+#
+# The negative control is the load-bearing half: returning the whole message
+# would gate every engineering answer, and a gate that fires on everything gets
+# switched off. Disqualifiers below are what keep ordinary chat out.
+
+_HR_RE = re.compile(r"(?m)^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$")
+_CODE_FENCE_RE = re.compile(r"```([^\n]*)\n.*?```", re.DOTALL)
+# A block that carries any of these is the assistant talking about code, not a
+# draft. Kept deliberately boring: each one is a shape seen in real turns.
+_NOT_PROSE = (
+    re.compile(r"(?m)^\s*(?:Traceback \(most recent call last\)|File \"|\s{2,}File )"),
+    re.compile(r"[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-/]+\.(?:py|sh|json|md|jsonl|ts|plist)\b"),
+    re.compile(r"(?m)^\s*(?:def |class |import |from \w+ import |\$ |>>> )"),
+    re.compile(r"(?m)^\s*[-*+]\s+\S"),          # a bullet list is an answer, not a post
+    re.compile(r"(?m)^\s*\d+\.\s+\S"),          # ditto, numbered
+    re.compile(r"(?m)^\s*\|.*\|\s*$"),          # a table is an answer
+    re.compile(r"(?m)^#{1,6}\s+\S"),            # markdown headings
+)
+# Two or more inline-code spans reads as engineering prose. One can appear in a
+# post (a tool name), so the floor is two.
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+# Bold-headed framing the assistant writes around a draft ("**What I changed:**")
+_FRAMING_RE = re.compile(r"(?m)^\s*\*\*[^*\n]+:\*\*\s*$")
+
+# A draft has to be big enough to be worth gating, and small enough that the
+# floor cannot swallow a real short post. 40 bytes admits the 21-word X posts in
+# the corpus; the old 80-byte floor is deleted (F9), it is what let the shipped
+# turn through.
+MIN_DRAFT_BYTES = 40
+
+
+def _disqualified(block):
+    if any(pattern.search(block) for pattern in _NOT_PROSE):
+        return True
+    if len(_INLINE_CODE_RE.findall(block)) >= 2:
+        return True
+    return False
+
+
+def _blocks(text):
+    """Every contiguous prose run, however it was set off.
+
+    Order matters only for readability; the caller picks by size, not position.
+    """
+    found = []
+
+    # 1. PROSE fences yield their body. A LANGUAGE fence is code and is dropped
+    #    from the remaining text so it can never join a neighbouring block.
+    for info, body in _FENCE_RE.findall(text):
+        if info.strip().lower() in _PROSE_FENCE_LANGS:
+            found.append(body)
+    remainder = _CODE_FENCE_RE.sub("\n\n", text)
+    remainder = _FENCE_RE.sub("\n\n", remainder)
+
+    # 2. Blockquotes yield their body, unwrapped, and are removed from the
+    #    remainder for the same reason.
+    quoted, plain = [], []
+    for line in remainder.split("\n"):
+        if line.lstrip().startswith(">"):
+            quoted.append(re.sub(r"^\s*>\s?", "", line))
+            plain.append("")
+        else:
+            quoted.append(None)
+            plain.append(line)
+    run = []
+    for line in quoted:
+        if line is None:
+            if run:
+                found.append("\n".join(run))
+                run = []
+        else:
+            run.append(line)
+    if run:
+        found.append("\n".join(run))
+
+    # 3. What is left splits on horizontal rules, then groups consecutive
+    #    paragraphs. Grouping is the part the old code never did: a post is many
+    #    paragraphs separated by single blank lines, so splitting on blank lines
+    #    alone leaves nothing above any floor.
+    for section in _HR_RE.split("\n".join(plain)):
+        paras = [q.strip("\n") for q in re.split(r"\n\s*\n", section)]
+        paras = [q for q in paras if q.strip()]
+        # CONTAMINATION, not per-paragraph skipping. If any paragraph in this
+        # section is engineering (a traceback, a path, a bullet list), the whole
+        # section is the assistant explaining and none of it is a draft. Skipping
+        # only the offending paragraph let its plain-prose neighbours group into
+        # a false candidate.
+        if any(_disqualified(q) for q in paras):
+            continue
+        group = []
+        for para in paras:
+            if _FRAMING_RE.match(para.strip()):
+                if group:
+                    found.append("\n\n".join(group))
+                    group = []
+                continue
+            group.append(para)
+        if group:
+            found.append("\n\n".join(group))
+
+    return found
+
+
+def candidate_draft(text):
+    """The one answer both the lint and the authorship scorer read.
+
+    Returns the largest surviving prose block, or '' when the turn carries no
+    draft. Never returns the whole message as a fallback: that fallback is what
+    the old `extract_publishable` did, and it is how a gate starts firing on
+    ordinary answers and gets turned off.
+    """
+    if not text or not text.strip():
+        return ""
+    survivors = []
+    for block in _blocks(text):
+        block = block.strip()
+        if not block or _disqualified(block):
+            continue
+        if len(block.encode("utf-8")) < MIN_DRAFT_BYTES:
+            continue
+        survivors.append(block)
+    if not survivors:
+        return ""
+    return max(survivors, key=lambda b: len(b.encode("utf-8")))
+
+
 def extract_publishable(text):
     """The draft content to lint, or '' when the message is conversational.
 
@@ -81,13 +234,7 @@ def extract_publishable(text):
     the set-off draft — prose fences + blockquotes — so surrounding chat and code fences
     aren't linted; if framing is present but nothing is set off (draft written inline),
     fall back to the whole message."""
-    if not _PUBLISH_MARKER_RE.search(text):
-        return ""
-    segments = [body for info, body in _FENCE_RE.findall(text)
-                if info.strip().lower() in _PROSE_FENCE_LANGS]
-    segments += _QUOTE_RE.findall(text)
-    draft = "\n\n".join(s.strip() for s in segments if s.strip())
-    return draft if draft else text
+    return candidate_draft(text)
 
 
 def extract_setoff_draft(text):
@@ -104,11 +251,7 @@ def extract_setoff_draft(text):
     torch load, so this path takes the strict reading and accepts missing the
     inline case.
     """
-    segments = [body for info, body in _FENCE_RE.findall(text)
-                if info.strip().lower() in _PROSE_FENCE_LANGS]
-    segments += _QUOTE_RE.findall(text)
-    return "\n\n".join(s.strip() for s in segments if s.strip())
-
+    return candidate_draft(text)
 
 # --- the optional authorship reporter ----------------------------------------
 #
@@ -375,9 +518,42 @@ def find_final_user_text(transcript_path):
     return text
 
 
+# A MISSING CHECK IS NOT A PASS. This returned (0, "") when its script was
+# absent, and 0 is the same value a clean draft produces, so a run on a machine
+# where voice-lint.py had moved was byte-for-byte indistinguishable from a run
+# that graded the draft and found nothing wrong. The turn completed, stderr was
+# empty, and the founder got a post no gate had read.
+#
+# The shape is copied from `resolve_reporter` twenty lines up, which was written
+# against this same defect: return the NAMED thing even when it is missing and
+# let the caller decide, so a reader can say "the check named X, which does not
+# exist" instead of seeing silence.
+NOT_CHECKED = "NOT_CHECKED"
+
+
+def report_not_checked(lines, out=None, err=None):
+    """Surface NOT CHECKED on the channel a SUCCESSFUL hook is actually read on.
+
+    The first version of this wrote to stderr only, on a path that then exits 0.
+    A Stop hook's stderr is fed back when it exits 2; on the success path it goes
+    nowhere. So the warning that a draft had not been graded was itself never
+    delivered -- the exact defect this whole change exists to close, reproduced
+    inside the fix for it (Codex major, PR #290).
+
+    Both streams on purpose. stdout is what a successful hook is read on; stderr
+    keeps the line present if this is ever called from the blocking path, where
+    stdout is not surfaced. Writing to one and hoping is what got us here.
+    """
+    for line in lines:
+        (out or sys.stdout).write(line + "\n")
+        (err or sys.stderr).write(line + "\n")
+
+
 def run_check(script, file_path):
     if not script.exists():
-        return (0, "")
+        return (NOT_CHECKED,
+                "voice-stop-gate: %s is MISSING at %s, so this draft was NOT "
+                "CHECKED by it. That is not a pass." % (script.name, script))
     try:
         result = subprocess.run(
             ["python3", str(script), file_path],
@@ -444,12 +620,18 @@ def main():
         tmp_path = tmp.name
     try:
         violations_output = []
+        not_checked = []
         code1, out1 = run_check(VOICE_LINT, tmp_path)
         if code1 == 2 and out1:
             violations_output.append(out1)
+        elif code1 == NOT_CHECKED:
+            not_checked.append(out1)
         code2, out2 = run_check(SUBSTANCE_LINT, tmp_path)
         if code2 == 2 and out2:
             violations_output.append(out2)
+        elif code2 == NOT_CHECKED:
+            not_checked.append(out2)
+        report_not_checked(not_checked)
         if violations_output:
             sys.stderr.write(
                 "voice-stop-gate: assistant final message has voice violations.\n"
