@@ -1,7 +1,7 @@
 ---
 id: lr-drift-trigger-proof
 title: Removing the trigger provably stops delivery: the reporter sends only under the plist's environment marker and has exactly one caller in the tree
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-lessons-rail-and-up-rail-2026-09-02
 allowed_files:

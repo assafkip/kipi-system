@@ -182,6 +182,50 @@ def test_hubs_file_names_registered_instances_only():
     assert hubs and all(h in names for h in hubs), (hubs, sorted(names)[:5])
 
 
+# ---- issue lr-drift-trigger-proof (Codex finding-7 on the PRD) -----------------
+# Removing the trigger provably stops delivery: the reporter sends only under the
+# plist's environment marker and has exactly one caller in the tree.
+
+def test_without_the_trigger_deliver_is_called_zero_times(tmp_path):
+    root, hub = _fixture(tmp_path)
+    (hub / "q-system" / "lessons" / "only-here.md").write_text("---\ntitle: only here\n---\nx\n")
+    m = _mod()
+    calls = []
+    fake = lambda msg: calls.append(msg) or {"delivered": True, "refused": False}
+    out = m.run(root=root, deliver=fake, dry_run=False, trigger=None)
+    assert calls == [] and out["delivery"]["skipped"] is True and "not launched by the plist" in out["delivery"]["reason"]
+    out = m.run(root=root, deliver=fake, dry_run=False, trigger="cron")
+    assert calls == []
+    out = m.run(root=root, deliver=fake, dry_run=False, trigger="launchd")
+    assert len(calls) == 1 and out["delivery"]["delivered"] is True
+
+
+def test_cli_without_the_marker_prints_and_says_it_did_not_send(tmp_path):
+    root, hub = _fixture(tmp_path)
+    (hub / "q-system" / "lessons" / "only-here.md").write_text("---\ntitle: only here\n---\nx\n")
+    r = _run(root)  # KIPI_TRIGGER stripped by _run
+    assert r.returncode == 0 and "only-here.md" in r.stdout and "delivery: not launched by the plist" in r.stdout, r.stdout
+    r = _run(root, env_extra={"KIPI_TRIGGER": "launchd"})
+    assert "delivery: refused" in r.stdout, "under pytest the real sender refuses, and the CLI says so"
+
+
+def test_the_plist_template_is_the_only_caller_in_the_tree():
+    """A second caller or a removed template is RED. Worktree copies are excluded."""
+    root = HERE.parent.parent.parent
+    hits = subprocess.run(["grep", "-rl", "--exclude-dir=.git", "--exclude-dir=.claude", "--exclude-dir=.wt-*",
+                           "--exclude-dir=__pycache__", "lessons-drift-report.py", str(root)],
+                          capture_output=True, text=True).stdout.split()
+    rel = sorted(os.path.relpath(h, root) for h in hits if "/.wt-" not in h and "/.claude/worktrees/" not in h)
+    allowed = {"q-system/.q-system/scripts/com.kipi.lessons-drift.plist",
+               "q-system/.q-system/tests/test_lessons_drift_report.py",
+               "q-system/.q-system/scripts/lessons-drift-report.py",
+               "q-system/.q-system/drift-hubs.json",  # its own config names it in a doc line; not a caller
+               "q-system/.q-system/capability/expected_tests/q-system__.q-system__tests__test_lessons_drift_report.py.json"}
+    unexpected = [r for r in rel if r not in allowed and not r.startswith(".prd-os/")]
+    assert not unexpected, f"another caller names the reporter: {unexpected}"
+    assert "q-system/.q-system/scripts/com.kipi.lessons-drift.plist" in rel, "the template is the trigger; without it nothing runs the reporter"
+
+
 def test_this_file_runs_its_own_tests_under_python3():
     if os.environ.get("KIPI_SELFTEST_INNER"):
         pytest.skip("inner run")
