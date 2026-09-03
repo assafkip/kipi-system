@@ -36,6 +36,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
@@ -1117,7 +1118,7 @@ class TestWhichInjectedRecordsEndTheTurn:
         # that the gate looked and found nothing to verify -- not that it approved
         # something. Same envelope as every other notice (round 4).
         message = _system_message(proc)
-        assert "NOT CHECKED" in message and "no draft" in message, message
+        assert "NOT VERIFIED" in message and "sp-6ce17a23" in message, message
 
     ROUTED_REQUEST = "write me a linkedin post about the propagation gate"
 
@@ -1313,23 +1314,42 @@ class TestTheLintAndRouteScopesAreDifferent:
         "- name the input that makes it red, or do not ship it\n\n"
         "That rule has caught more of my bugs than any review.\n")
 
-    def test_an_unframed_bulleted_draft_is_still_route_enforced(self, tmp_path):
-        """Finding 3, the bypass. `_output_carries_draft` reused the lint's
-        disqualifiers, so adding a bullet to a routed draft skipped receipt
-        enforcement and reported NOT CHECKED. Under a live routed request a bullet
-        is not a way out."""
+    def test_an_unframed_bulleted_draft_gets_the_notice_not_a_refusal(self, tmp_path):
+        """ASK-1197 round 10 replaces what this used to pin.
+
+        Rounds 8 and 9 treated any unframed prose over 40 bytes as a draft under a
+        live routed request, so this case was refused. That rule also refused
+        ordinary replies and clarifying questions, and the only escape was the
+        assistant reproducing the literal refusal token -- a deadlock with a
+        password. Framing is the contract now: the producers of record always emit
+        RECEIPT then DRAFT, and unframed prose is not classifiable from its shape.
+
+        So this is neither verified nor refused. It is reported, with the id of
+        the decision, so the silence is findable.
+        """
         root = _instance(tmp_path, with_route_lane=True)
         proc = _run(root, _transcript(tmp_path, "write me a linkedin post",
                                       self.UNFRAMED_BULLETED_DRAFT),
                     tmp_path / "c.json", classify="route")
-        assert proc.returncode == 2, (
-            "a bulleted draft under a routed request skipped verification. "
+        assert proc.returncode == 0, (
             f"rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
-        assert "receipt" in proc.stderr, proc.stderr
+        message = _system_message(proc)
+        assert "NOT VERIFIED" in message, message
+        assert "sp-6ce17a23" in message, (
+            "the notice must name the spillover id, or a reader cannot tell a "
+            f"recorded boundary from a bug. {message}")
 
-    def test_the_route_predicate_sees_the_bulleted_draft(self):
-        """The same finding at the unit, so a failure names the predicate."""
-        assert gate._output_carries_draft(self.UNFRAMED_BULLETED_DRAFT)
+    def test_the_route_predicate_requires_framing(self):
+        """The same decision at the unit. Unframed prose, however long or however
+        bulleted, is not a draft to this gate."""
+        assert not gate._output_carries_draft(self.UNFRAMED_BULLETED_DRAFT)
+
+    def test_a_framed_draft_under_the_same_request_is_still_enforced(self):
+        """THE CONTROL. Without it, "framing required" would read as "nothing is
+        ever enforced", which is the bypass rounds 6-8 shipped."""
+        framed = ("Here's the post for LinkedIn.\n\n" + DRAFT_MARKER + "\n"
+                  + self.UNFRAMED_BULLETED_DRAFT)
+        assert gate._output_carries_draft(framed)
 
 
 class TestTheDraftFloor:
@@ -1371,3 +1391,126 @@ class TestTheDraftFloor:
                     tmp_path / "c.json")
         assert proc.returncode == 0, (
             f"rc={proc.returncode} stderr={proc.stderr}")
+
+
+class TestTheExtractionPipelineHasNoCycles:
+    """Codex major, ASK-1197 round 10. `framed_draft` called `_route_draft`, which
+    fell through to `extract_publishable`, which called `framed_draft`. Any
+    assistant message carrying `=== ROUTE RECEIPT ===` with no `=== DRAFT ===`
+    marker recursed until RecursionError -- and a Stop hook that raises exits 1,
+    which the client treats as "hook errored, carry on". The gate failed OPEN in
+    exactly the case it exists for.
+    """
+
+    RECEIPT_NO_DRAFT_MARKER = (
+        "Here's the post for LinkedIn.\n\n"
+        "=== ROUTE RECEIPT ===\n"
+        '{"surface": "linkedin", "channel": "assaf", "attempt_id": "a1"}\n\n'
+        "The body of the draft that follows the receipt with no draft marker.\n")
+
+    def test_a_receipt_with_no_draft_marker_extracts(self):
+        """RED on f07959d1 with RecursionError, not an assertion failure."""
+        got = gate._route_draft(self.RECEIPT_NO_DRAFT_MARKER)
+        assert got == (
+            "The body of the draft that follows the receipt with no draft "
+            "marker."), repr(got)
+
+    def test_the_whole_turn_completes_for_that_shape(self, tmp_path):
+        """End to end: the shape that used to exit 1 must not."""
+        root = _instance(tmp_path, with_route_lane=False)
+        proc = _run(root, _transcript(tmp_path, "write it",
+                                      self.RECEIPT_NO_DRAFT_MARKER),
+                    tmp_path / "c.json")
+        assert proc.returncode != 1, (
+            "exit 1 means the hook crashed, and the client carries on -- the turn "
+            f"completes ungated.\nrc={proc.returncode} stderr={proc.stderr}")
+        assert "RecursionError" not in proc.stderr, proc.stderr
+
+    def test_the_extractors_form_a_directed_acyclic_graph(self):
+        """The STRUCTURAL pin, not another example.
+
+        A test per known-bad input only catches the cycles someone thought of.
+        This reads the call graph out of the source: if any extractor ever calls
+        another that reaches back, this fails and names the loop.
+        """
+        import ast
+        source = pathlib.Path(gate.__file__).read_text(encoding="utf-8")
+        names = {"framed_draft", "_route_draft", "extract_publishable",
+                 "_publish_framed", "_setoff_segments", "_strip_lane_trailers",
+                 "_after_receipt_block", "extract_setoff_draft"}
+        edges = {}
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.FunctionDef) and node.name in names:
+                edges[node.name] = {
+                    call.func.id for call in ast.walk(node)
+                    if isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Name) and call.func.id in names}
+        assert edges, "parsed no extractors; the test, not the gate, is broken"
+
+        def walk(name, stack):
+            assert name not in stack, (
+                "the extraction pipeline has a cycle, which is a RecursionError "
+                "on some input and exit 1 on the hook: "
+                + " -> ".join(stack + [name]))
+            for target in sorted(edges.get(name, ())):
+                walk(target, stack + [name])
+
+        for start in sorted(edges):
+            walk(start, [])
+
+
+class TestAnInternalFaultHoldsTheTurn:
+    """The round 1 chokepoint rule, pinned for the WHOLE file.
+
+    `_enforce_route_or_exit` already turned any exception into exit 2 for the
+    route lane. Everything main() does before that -- reading the transcript,
+    extracting the draft -- had no such guard, and round 9's recursion lived
+    exactly there. Exit 1 does not hold the turn.
+    """
+
+    def test_a_crash_anywhere_in_main_exits_2_with_the_refusal_envelope(self, tmp_path):
+        root = _instance(tmp_path, with_route_lane=False)
+        gate_path = root / "q-system" / ".q-system" / "scripts" / "voice-stop-gate.py"
+        # Break a function main() calls BEFORE any enforcement, so the fault is
+        # outside every existing try block.
+        #
+        # INSERTED, not appended. Appending put the override AFTER the
+        # `if __name__ == "__main__"` block at the end of the file, so main() had
+        # already run and exited on the real function and the test read exit 0 as
+        # a failure of the guard. The harness was broken, not the gate.
+        source = gate_path.read_text(encoding="utf-8")
+        entry = 'if __name__ == "__main__":'
+        assert entry in source, "gate has no main entry point to inject before"
+        gate_path.write_text(
+            source.replace(
+                entry,
+                "def find_final_assistant_text(_path):\n"
+                "    raise RuntimeError('BOOM: injected fault')\n\n\n" + entry,
+                1),
+            encoding="utf-8")
+        proc = _run(root, _transcript(tmp_path, "write it", "Here's the post.\n"),
+                    tmp_path / "c.json")
+        assert proc.returncode == 2, (
+            "an internal fault exited %s. Exit 1 reads as 'hook errored, carry "
+            "on' and the turn completes ungated.\nstderr=%s"
+            % (proc.returncode, proc.stderr))
+        assert gate._REFUSAL_MARK in proc.stderr, (
+            "the fault did not go through refuse(), so the harness cannot tell "
+            f"this refusal from ours on the way back.\n{proc.stderr}")
+        assert "BOOM: injected fault" in proc.stderr, proc.stderr
+
+
+class TestARoutedClarifyingQuestion:
+    """Round 10 case 2. The deadlock rounds 5 and 9 kept rebuilding."""
+
+    def test_a_clarifying_question_under_a_routed_request_completes(self, tmp_path):
+        root = _instance(tmp_path, with_route_lane=True)
+        question = ("Which subreddit is this for? The body band and the rules "
+                    "differ enough that I would write it differently.\n")
+        proc = _run(root, _transcript(tmp_path, "write me a reddit post", question),
+                    tmp_path / "c.json", classify="route")
+        assert proc.returncode == 0, (
+            "the assistant cannot ask a question under a routed request without "
+            f"being refused.\nrc={proc.returncode} stderr={proc.stderr}")
+        message = _system_message(proc)
+        assert "NOT VERIFIED" in message and "sp-6ce17a23" in message, message
