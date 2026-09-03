@@ -178,15 +178,66 @@ def test_an_empty_or_whitespace_message_is_not_a_draft():
     assert vsg.candidate_draft("\n\n   \n") == ""
 
 
-def test_both_consumers_now_read_the_same_function():
-    """The two-writers defect, inside the enforcer itself.
+def test_the_route_path_reads_candidate_draft_for_every_delivery_shape():
+    """F13's property, kept where it has teeth (ASK-1197 round 9).
 
-    `extract_publishable` fed the lint and `extract_setoff_draft` fed the
-    authorship scorer, and on 2026-09-01 they disagreed on four of five real
-    deliveries. Whatever compatibility shims remain, both must now resolve to
-    `candidate_draft`'s answer.
+    This test used to assert that `extract_publishable` and
+    `extract_setoff_draft` BOTH equal `candidate_draft`. Round 9 split them, and
+    the reason is a defect that split caused: `candidate_draft` does not require
+    framing, so routing the LINT through it voice-linted ordinary conversational
+    replies to the founder and exited 2 on them. voice-enforcement.md scopes the
+    lint to content sent to another person and excludes replies to the founder,
+    so the lint is framing-required again.
+
+    F13's actual concern -- the assistant selecting its own enforcement by how it
+    happens to format the turn -- is preserved on the ROUTE path, which is the
+    enforcement with teeth. Under a live routed request, every one of the five
+    delivery shapes is seen, framed or not. Formatting cannot buy a bypass.
+
+    The residual is real and is recorded, not waved away: with framing required,
+    an UNFRAMED post is not voice-linted, which is the hr_rules_bare_SHIPPED
+    shape from this file's own header. That is captured as spillover, not left in
+    a comment.
     """
-    for build in DELIVERIES.values():
+    for name, build in DELIVERIES.items():
         text = build()
-        assert vsg.extract_publishable(text) == vsg.candidate_draft(text)
-        assert vsg.extract_setoff_draft(text) == vsg.candidate_draft(text)
+        assert vsg._output_carries_draft(text), (
+            f"{name}: the route path did not see a draft, so an assistant could "
+            "skip route enforcement by choosing a delivery shape")
+
+
+def test_the_two_lint_entry_points_agree_when_the_draft_is_announced_and_set_off():
+    """The two-writers defect, stated as the property that is actually true.
+
+    They do NOT agree in general, by design and by their own docstrings:
+    `extract_publishable` falls back to the whole message when framing is present
+    but nothing is set off, and `extract_setoff_draft` never does, because the
+    scorer must not sweep engineering chat into a 319MB torch measurement. My
+    first version of this test asserted agreement on a bare prose fence and went
+    red against correct code -- the pre-R8 table in this file's header shows that
+    disagreement as expected behaviour.
+
+    Where a delivery is BOTH announced and set off, there is nothing to fall back
+    to and nothing to be strict about, so both must return the same post. That is
+    the overlap the 2026-09-01 measurement showed them disagreeing on.
+    """
+    announced_and_fenced = "Here's the post.\n\n```\n" + POST + "\n```\n"
+    assert vsg.extract_publishable(announced_and_fenced) == POST
+    assert vsg.extract_setoff_draft(announced_and_fenced) == POST
+
+
+def test_an_unframed_delivery_is_not_linted_but_is_still_routed():
+    """The round 9 trade, pinned so it is a decision and not an accident.
+
+    An unframed post (the hr_rules_bare shape that actually SHIPPED) is not
+    voice-linted, because voice-enforcement.md scopes the lint out of
+    conversational replies and framing is the only signal available. It IS seen
+    by the route path, so it cannot dodge receipt enforcement. Captured as
+    spillover rather than left as a comment.
+    """
+    bare = _bare()
+    assert vsg.extract_publishable(bare) == "", (
+        "an unframed message is conversational for the lint; linting it exits 2 "
+        "on ordinary replies to the founder")
+    assert vsg._output_carries_draft(bare), (
+        "but the route path must still see it, or formatting buys a bypass")

@@ -22,14 +22,17 @@ from the transcript: it skips records the harness flags as its own injections,
 strips or truncates injected envelopes inside a message, and yields "" rather
 than a stale request when his own final message is entirely machine prose.
 
-An injected record does NOT end his turn — with one exception, and the exception
-is the whole of `_REFUSAL_MARK`. When this gate's own refusal is fed back (the
-harness delivers it as an isMeta `user` record whose content is the string
-"Stop hook feedback:\n[<command>]: <stderr>", measured, not assumed), the
-assistant is answering the gate rather than the founder, so his turn is over.
-Every other injection — a UserPromptSubmit additionalContext, a system reminder,
-a tool_result — is skipped: it is neither his words nor an ending, and treating
-it as an ending blanks a live routed request and ships the draft unverified. Three outcomes, and they are deliberately
+An injected record does NOT end his turn — not a system reminder, not a hook
+context injection, and not this gate's own refusal fed back. His request stays
+live until he types something new. Rounds 5-7 tried the opposite and it was a
+bypass: after a refusal the assistant may send a CORRECTED DRAFT, which sits in
+the same transcript position as an error report, so clearing the request let the
+corrected draft ship unverified.
+
+The deadlock that motivated those rounds is resolved on the OUTPUT side instead.
+When the request is routed and the completion carries no draft, the gate reports
+NOT CHECKED and exits 0; when it carries a draft with no valid receipt, it
+refuses. See `_output_carries_draft`. Three outcomes, and they are deliberately
 different values: text he typed (the route lane classifies it and a routed
 completion must carry a receipt), "" (no request this turn, so the lane treats it
 as not a request), and no transcript at all (the same as ""). The lint half still
@@ -63,7 +66,6 @@ SUBSTANCE_LINT = SCRIPTS_DIR / "voice-substance-lint.py"
 # .../<repo>/q-system/.q-system/scripts -> <repo>
 INSTANCE_ROOT = SCRIPTS_DIR.parents[2]
 
-MIN_TEXT_BYTES = 80
 
 # Explicit publish-intent framing — the only signal that a final chat message hands the
 # founder content meant for someone ELSE. Engineering/debug chat carries none of these,
@@ -146,7 +148,7 @@ def _disqualified(block):
     return False
 
 
-def _blocks(text):
+def _blocks(text, disqualify=True):
     """Every contiguous prose run, however it was set off.
 
     Order matters only for readability; the caller picks by size, not position.
@@ -194,7 +196,7 @@ def _blocks(text):
         # section is the assistant explaining and none of it is a draft. Skipping
         # only the offending paragraph let its plain-prose neighbours group into
         # a false candidate.
-        if any(_disqualified(q) for q in paras):
+        if disqualify and any(_disqualified(q) for q in paras):
             continue
         group = []
         for para in paras:
@@ -236,38 +238,42 @@ _QUOTE_RE = re.compile(r"(?m)^>\s?(.*)$")
 
 
 def extract_publishable(text):
-    """COMPATIBILITY SHIM. The one answer is `candidate_draft`.
+    """The draft content to LINT, or "" when the message is conversational.
 
-    It used to require `_PUBLISH_MARKER_RE` to match before it looked at
-    anything, and to fall back to the WHOLE message when framing was present but
-    nothing was set off. Both are gone (f918134c, R8 finding-11): the marker is a
-    signal, not a precondition, and the whole-message fallback is what made a
-    gate fire on ordinary engineering answers.
+    FRAMING REQUIRED (ASK-1197 round 9, restoring the pre-R8 scope). Round 8
+    pointed this at `candidate_draft`, which does not require framing, so
+    ordinary conversational replies to the founder were voice-linted and the turn
+    exited 2. voice-enforcement.md scopes the lint to content sent to another
+    person and explicitly excludes "conversational responses to the founder";
+    this is that scope, executable.
 
-    Kept as a name because call-sites and other instances still use it. Its
-    docstring is rewritten rather than carried forward, because a shim describing
-    behaviour it no longer has is the stale-docstring defect (ASK-1197 round 5).
+    `candidate_draft` is kept and still used -- by the ROUTE path, which asks a
+    different question (see `_output_carries_draft`). The two questions are not
+    the same and no longer share a predicate.
 
-    Excludes this gate's own refusal quoted back: that is a conversational reply
-    to the founder, which voice-enforcement.md scopes out of the lint. See
-    `_is_own_refusal_echo`.
+    Excludes this gate's own refusal quoted back: a reply about a refusal is
+    conversational. See `_is_own_refusal_echo`.
     """
-    draft = candidate_draft(text)
+    draft = framed_draft(text)
     return "" if _is_own_refusal_echo(draft) else draft
 
 
 def extract_setoff_draft(text):
-    """COMPATIBILITY SHIM. The one answer is `candidate_draft`.
+    """The set-off draft ONLY -- prose fences and blockquotes, never the
+    whole-message fallback.
 
-    This fed the authorship scorer while `extract_publishable` fed the lint, and
-    on 2026-09-01 the two disagreed on four of five real deliveries -- two
-    writers to one question, which is the defect f918134c exists to close. The
-    reason they were ever separate (the scorer must not sweep surrounding
-    engineering chat into a 319MB torch measurement) is now handled inside
-    `candidate_draft` by its disqualifiers, so both consumers can read one
-    definition.
+    Separate from `extract_publishable` on purpose (authorship reporting,
+    2026-08-17). That function falls back to the ENTIRE message when framing is
+    present but nothing is set off, which is right for the lint: a draft written
+    inline still has to pass the voice bar. It is wrong for the authorship
+    scorer, because the fallback sweeps the surrounding engineering chat into the
+    thing being measured, and the scorer then reports a number about a mixture.
+    The lint's false positive costs one stdlib subprocess; this one costs a 319MB
+    torch load, so this path takes the strict reading and accepts missing the
+    inline case.
     """
-    return candidate_draft(text)
+    draft = _setoff_segments(text)
+    return "" if _is_own_refusal_echo(draft) else draft
 
 
 # --- the optional authorship reporter ----------------------------------------
@@ -740,6 +746,45 @@ def find_final_user_text(transcript_path):
 _REFUSAL_MARK = "[voice-stop-gate:held-this-turn]"
 
 
+def framed_draft(text):
+    """The draft this turn EXPLICITLY hands over, or "" when nothing is framed.
+
+    ONE FRAMING TEST, TWO CONSUMERS (ASK-1197 round 9). The lint path and the
+    route path both need "did the assistant explicitly deliver something", and
+    they had drifted into two different answers. They share this one.
+
+    Framing is any of: a route receipt block, a lane wrapper this file already
+    extracts (the reddit wrapper, `=== DRAFT ===`), or the publish framing the
+    lint has always keyed on (`_PUBLISH_MARKER_RE` plus prose fences and
+    blockquotes, falling back to the whole message when framing is present but
+    nothing is set off).
+
+    NO CONTAMINATION DISQUALIFIER RUNS HERE, and that is the round 9 fix. Wiring
+    the R8 net into the lint made a publish-framed post containing a bullet list
+    stop being a draft, so it was not voice-checked at all. A bulleted post is
+    still a post. `candidate_draft`'s disqualifiers exist to keep UNFRAMED
+    engineering chat out; once the assistant has framed a delivery there is
+    nothing left to guess about and nothing to disqualify.
+    """
+    text = text or ""
+    if (_RECEIPT_CLAIM_RE.search(text) is not None
+            or _REDDIT_DRAFT_RE.search(text) is not None
+            or _DRAFT_MARKER_RE.search(text) is not None):
+        return _route_draft(text)
+    if not _PUBLISH_MARKER_RE.search(text):
+        return ""
+    setoff = _setoff_segments(text)
+    return setoff if setoff else text.strip()
+
+
+def _setoff_segments(text):
+    """Prose fences and blockquotes, joined. The pre-R8 set-off reading."""
+    segments = [body for info, body in _FENCE_RE.findall(text or "")
+                if info.strip().lower() in _PROSE_FENCE_LANGS]
+    segments += _QUOTE_RE.findall(text or "")
+    return "\n\n".join(seg.strip() for seg in segments if seg.strip())
+
+
 def _is_own_refusal_echo(draft):
     """Is this draft-shaped block just this gate's own refusal, quoted back?
 
@@ -1036,6 +1081,37 @@ def _receipt_block(text):
     return value
 
 
+def _unframed_route_draft(text):
+    """The largest prose block, WITHOUT the contamination disqualifiers.
+
+    THE ROUTE PATH ASKS A DIFFERENT QUESTION THAN THE LINT (ASK-1197 round 9).
+    `candidate_draft` drops any section containing a bullet, a heading, a table
+    or a path, because unframed engineering chat must not be mistaken for a post.
+    That is right when nothing is framed and no request is routed.
+
+    It is wrong here. Under a LIVE ROUTED REQUEST the founder has asked for a
+    post, so bullets do not make text stop being one -- and using the same
+    predicate meant adding a single bullet to a routed draft skipped
+    receipt enforcement entirely and reported NOT CHECKED. "Add a bullet" must
+    not be a bypass.
+
+    So only two things exclude text here: the size floor, and this gate's own
+    refusal quoted back (an error report is short prose and falls under the floor
+    on its own).
+    """
+    survivors = []
+    for block in _blocks(text or "", disqualify=False):
+        block = block.strip()
+        if not block:
+            continue
+        if len(block.encode("utf-8")) < MIN_DRAFT_BYTES:
+            continue
+        survivors.append(block)
+    if not survivors:
+        return ""
+    return max(survivors, key=lambda b: len(b.encode("utf-8")))
+
+
 def _output_carries_draft(assistant_text):
     """Does this completion hand over something a receipt could cover?
 
@@ -1058,23 +1134,14 @@ def _output_carries_draft(assistant_text):
     the deadlock this function exists to remove.
     """
     text = assistant_text or ""
-    if _RECEIPT_CLAIM_RE.search(text) is not None:
-        return True
-    if _REDDIT_DRAFT_RE.search(text) is not None:
-        return True
-    if _DRAFT_MARKER_RE.search(text) is not None:
-        return True
-    draft = candidate_draft(text)
-    if not draft:
-        return False
-    # A REPORT ABOUT THE REFUSAL IS NOT A DRAFT. `candidate_draft` is deliberately
-    # wide -- draft-shaped prose with no marker counts, so dropping the wrapper is
-    # not a way out of verification -- and an assistant explaining why the gate
-    # refused is prose of exactly that shape. Without this, the reply to a refusal
-    # is judged as a delivery and refused again: the deadlock, rebuilt on the
-    # output side.
-    #
-    return not _is_own_refusal_echo(draft)
+    # ONE echo check, covering BOTH branches. The first version returned True as
+    # soon as `framed_draft` found anything, so an error report that happened to
+    # trip the publish-framing regex ("... It reported:") was treated as a
+    # delivery and the deadlock came back. Whether the assistant framed its
+    # explanation or not, an explanation of this gate's own refusal is not a
+    # draft.
+    draft = framed_draft(text) or _unframed_route_draft(text)
+    return bool(draft) and not _is_own_refusal_echo(draft)
 
 
 def enforce_route_receipt(request, assistant_text):
@@ -1499,7 +1566,7 @@ def main():
     request = find_final_user_text(transcript_path)
     # Gate only real drafts; a conversational reply to the founder is not voice-checked.
     draft = extract_publishable(text)
-    if len(draft.encode("utf-8")) < MIN_TEXT_BYTES:
+    if len(draft.encode("utf-8")) < MIN_DRAFT_BYTES:
         # NOT a bare `finish_ok()`, and the difference is the founder's actual
         # workflow. He types "write me a post"; the assistant answers with the
         # post in a fence and no "here's the post" sentence. `_PUBLISH_MARKER_RE`

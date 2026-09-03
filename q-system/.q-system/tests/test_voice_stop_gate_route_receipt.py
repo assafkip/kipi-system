@@ -289,8 +289,8 @@ class TestTheLaneIsInstalled:
         receipt = {name: "x" for name in STUB_MATCH_FIELDS}
         receipt.update({"surface": "linkedin", "channel": "assaf",
                         "request_hash": _stub_hash("rh:", "write it"),
-                        "output_hash": _stub_hash("oh:", "the body of the draft")})
-        assistant = _producer_message(receipt, "the body of the draft")
+                        "output_hash": _stub_hash("oh:", "The body of the draft")})
+        assistant = _producer_message(receipt, "The body of the draft")
         proc = _run(root, _transcript(tmp_path, "write it", assistant), log,
                     classify="route")
         calls = [c for c in _calls(log) if c["event"] == "verify_and_consume"]
@@ -303,7 +303,7 @@ class TestTheLaneIsInstalled:
         assert calls[0]["draft"] is not None, (
             "verify_and_consume was called without draft=, so R9 loop evidence "
             "is recomputed against nothing.")
-        assert calls[0]["draft"] == "the body of the draft", (
+        assert calls[0]["draft"] == "The body of the draft", (
             f"the draft passed to the store was {calls[0]['draft']!r}. It must be "
             f"EXACTLY the text after {DRAFT_MARKER}. `in` is not enough here: a "
             f"draft that also carried the receipt JSON or the framing sentence "
@@ -409,7 +409,7 @@ class TestTheLaneIsNotInstalled:
         before the port: exit 0, nothing about routes on either stream."""
         root = _instance(tmp_path, with_route_lane=False)
         log = tmp_path / "calls.json"
-        assistant = "Here's the post for LinkedIn.\n\nfine ordinary prose.\n"
+        assistant = "Here's the post for LinkedIn.\n\nFine ordinary prose.\n"
         proc = _run(root, _transcript(tmp_path, "hey", assistant), log)
         assert proc.returncode == 0, (
             f"rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
@@ -427,7 +427,7 @@ class TestTheLaneIsNotInstalled:
         root = _instance(tmp_path, with_route_lane=False)
         log = tmp_path / "calls.json"
         receipt = {name: "x" for name in STUB_MATCH_FIELDS}
-        assistant = _producer_message(receipt, "the body of the draft")
+        assistant = _producer_message(receipt, "The body of the draft")
         proc = _run(root, _transcript(tmp_path, "write it", assistant), log)
         assert proc.returncode == 0, (
             "an instance with no route lane must not block on a receipt it cannot "
@@ -605,7 +605,7 @@ class TestThisTurnsRequestOrNothing:
         root = _instance(tmp_path, with_route_lane=True)
         log = tmp_path / "calls.json"
         assistant = ("Here's the post for LinkedIn.\n\n" + DRAFT_MARKER
-                     + "\nthe body of the draft, long enough to be measured.\n")
+                     + "\nThe body of the draft, long enough to be measured.\n")
         transcript = _records_transcript(tmp_path, [
             _user("write me a linkedin post about the gate"),
             _user("<system-reminder>a background task finished</system-reminder>"),
@@ -626,7 +626,7 @@ class TestThisTurnsRequestOrNothing:
         root = _instance(tmp_path, with_route_lane=True)
         log = tmp_path / "calls.json"
         assistant = ("Here's the post for LinkedIn.\n\n" + DRAFT_MARKER
-                     + "\nthe body of the draft, long enough to be measured.\n")
+                     + "\nThe body of the draft, long enough to be measured.\n")
         transcript = _records_transcript(tmp_path, [
             _user("write me a linkedin post about the gate"),
             _assistant(assistant),
@@ -662,7 +662,7 @@ class TestTheLaneReachedThroughASymlink:
     def test_a_symlinked_lane_verifies_instead_of_hard_blocking(self, tmp_path):
         root = _symlinked_lane_instance(tmp_path)
         log = tmp_path / "calls.json"
-        draft = "the body of the draft, long enough to be measured."
+        draft = "The body of the draft, long enough to be measured."
         receipt = {name: "x" for name in STUB_MATCH_FIELDS}
         receipt.update(surface="linkedin", channel="assaf",
                        request_hash=_stub_hash("rh:", "write it"),
@@ -727,7 +727,7 @@ class TestAClaimedReceiptIsStructural:
         root = _instance(tmp_path, with_route_lane=False)
         receipt = {name: "x" for name in STUB_MATCH_FIELDS}
         proc = _run(root, _transcript(tmp_path, "write it",
-                                      _producer_message(receipt, "the body")),
+                                      _producer_message(receipt, "The body")),
                     tmp_path / "c.json")
         assert proc.returncode == 0, proc.stderr
         assert "NOT CHECKED" in _system_message(proc), (
@@ -819,7 +819,7 @@ class TestTheRedditProducerHandoff:
         wrapper, pinned producer-side at test_route_boundary.py:54. A reddit branch
         that stole this path would pass every assertion above while breaking the
         lane that already worked."""
-        draft = "the body of an x draft, long enough to be measured."
+        draft = "The body of an x draft, long enough to be measured."
         message = _producer_message({name: "x" for name in STUB_MATCH_FIELDS}, draft)
         assert gate._route_draft(message) == draft, gate._route_draft(message)
 
@@ -839,7 +839,7 @@ class TestTheNoticeReachesTheUser:
         root = _instance(tmp_path, with_route_lane=False)
         receipt = {name: "x" for name in STUB_MATCH_FIELDS}
         proc = _run(root, _transcript(tmp_path, "write it",
-                                      _producer_message(receipt, "the body")),
+                                      _producer_message(receipt, "The body")),
                     tmp_path / "c.json")
         assert proc.returncode == 0, proc.stderr
         message = _system_message(proc)
@@ -854,7 +854,7 @@ class TestTheNoticeReachesTheUser:
         root = _instance(tmp_path, with_route_lane=False)
         receipt = {name: "x" for name in STUB_MATCH_FIELDS}
         proc = _run(root, _transcript(tmp_path, "write it",
-                                      _producer_message(receipt, "the body")),
+                                      _producer_message(receipt, "The body")),
                     tmp_path / "c.json")
         stripped = proc.stdout.strip()
         assert stripped.startswith("{") and stripped.endswith("}"), (
@@ -867,7 +867,7 @@ class TestTheNoticeReachesTheUser:
         and a queued notice is dropped rather than printed alongside it."""
         root = _instance(tmp_path, with_route_lane=True)
         assistant = ("Here's the post for LinkedIn.\n\n" + DRAFT_MARKER
-                     + "\nthe body of the draft, long enough to be measured.\n")
+                     + "\nThe body of the draft, long enough to be measured.\n")
         proc = _run(root, _transcript(tmp_path, "write it", assistant),
                     tmp_path / "c.json", classify="route")
         assert proc.returncode == 2, (
@@ -915,7 +915,7 @@ class TestAHookNameIsNotAnEnvelope:
         enforcement returned early with rc 0."""
         root = _instance(tmp_path, with_route_lane=True)
         assistant = ("Here's the post for LinkedIn.\n\n" + DRAFT_MARKER
-                     + "\nthe body of the draft, long enough to be measured.\n")
+                     + "\nThe body of the draft, long enough to be measured.\n")
         transcript = _records_transcript(tmp_path, [
             _user("Stop hook keeps eating my linkedin drafts, write me a post "
                   "about what that taught me"),
@@ -1014,7 +1014,7 @@ class TestTheIdeaLaneAdvisoryBlocks:
     def test_a_bare_receipt_then_draft_message_still_extracts(self):
         """And the pinned producer-side shape from test_route_boundary.py:54,
         which carries no advisory blocks at all."""
-        draft = "the body of an x draft, long enough to be measured."
+        draft = "The body of an x draft, long enough to be measured."
         message = _producer_message({name: "x" for name in STUB_MATCH_FIELDS}, draft)
         assert gate._route_draft(message) == draft
 
@@ -1121,7 +1121,7 @@ class TestWhichInjectedRecordsEndTheTurn:
 
     ROUTED_REQUEST = "write me a linkedin post about the propagation gate"
 
-    CORRECTED_DRAFT = ("the corrected body of the draft, long enough to be "
+    CORRECTED_DRAFT = ("The corrected body of the draft, long enough to be "
                        "measured and to survive the floor.")
 
     def test_a_corrected_draft_after_a_refusal_is_still_verified(self, tmp_path):
@@ -1174,7 +1174,7 @@ class TestWhichInjectedRecordsEndTheTurn:
         a draft with no receipt must still be refused.
         """
         assistant = ("Here's the post for LinkedIn.\n\n" + DRAFT_MARKER
-                     + "\nthe body of the draft, long enough to be measured.\n")
+                     + "\nThe body of the draft, long enough to be measured.\n")
         proc = self._routed_turn(tmp_path, [
             _user("write me a linkedin post about the propagation gate"),
             _user(LESSONS_INJECT_TEXT, isMeta=True),
@@ -1201,7 +1201,7 @@ class TestWhichInjectedRecordsEndTheTurn:
         gate: a founder message AFTER the meta record is a genuinely new turn, and
         a routed completion in it still owes a receipt."""
         assistant = ("Here's the post for LinkedIn.\n\n" + DRAFT_MARKER
-                     + "\nthe body of the draft, long enough to be measured.\n")
+                     + "\nThe body of the draft, long enough to be measured.\n")
         proc = self._routed_turn(tmp_path, [
             _user("write me a linkedin post about the propagation gate"),
             _stop_hook_feedback(FED_BACK_REFUSAL_TEXT),
@@ -1218,7 +1218,7 @@ class TestWhichInjectedRecordsEndTheTurn:
         transport: it neither ends the turn nor erases the request, or his request
         is blanked on every tool-using turn."""
         assistant = ("Here's the post for LinkedIn.\n\n" + DRAFT_MARKER
-                     + "\nthe body of the draft, long enough to be measured.\n")
+                     + "\nThe body of the draft, long enough to be measured.\n")
         proc = self._routed_turn(tmp_path, [
             _user("write me a linkedin post about the propagation gate"),
             {"message": {"role": "user", "content": [
@@ -1240,3 +1240,134 @@ class TestWhichInjectedRecordsEndTheTurn:
         ])
         assert gate.find_final_user_text(path) == (
             "write me a linkedin post about the propagation gate")
+
+
+class TestTheLintAndRouteScopesAreDifferent:
+    """ASK-1197 round 9. One cause behind five findings: the R8 net, with its
+    contamination disqualifiers, was wired into BOTH paths. They ask different
+    questions and need different predicates.
+
+    LINT: framing REQUIRED (voice-enforcement.md scopes it to content sent to
+    another person), and no disqualifier applies once framing is present -- a
+    bulleted post is still a post.
+
+    ROUTE, under a live routed request: framed is a draft always; unframed goes
+    through the block splitter with the disqualifiers OFF, because the founder
+    already asked for a post and adding a bullet must not buy a bypass.
+    """
+
+    CONVERSATIONAL = (
+        "i ran the suite and got three failures. the walker was resetting the "
+        "request, so the corrected draft never reached verification. fixed it.\n")
+
+    def test_a_conversational_reply_is_not_linted(self, tmp_path):
+        """Finding 1. Round 8 pointed the lint at `candidate_draft`, which needs no
+        framing, so ordinary replies to the founder were voice-linted and exited 2.
+        This text is full of lowercase sentence starts: if it is linted at all, the
+        lint refuses it, so rc 0 proves the lint declined to look."""
+        root = _instance(tmp_path, with_route_lane=False)
+        proc = _run(root, _transcript(tmp_path, "what happened?", self.CONVERSATIONAL),
+                    tmp_path / "c.json")
+        assert proc.returncode == 0, (
+            "an ordinary reply to the founder was voice-linted. "
+            f"rc={proc.returncode} stderr={proc.stderr}")
+
+    def test_a_conversational_reply_yields_no_publishable_draft(self):
+        """The same finding at the unit, naming the function."""
+        assert gate.extract_publishable(self.CONVERSATIONAL) == ""
+
+    FRAMED_BULLETED = (
+        "Here's the post for LinkedIn.\n\n"
+        "```\n"
+        "The gate held the turn and I could not tell why.\n\n"
+        "- it printed nothing on stdout\n"
+        "- the stderr went nowhere\n\n"
+        "That is the whole bug.\n"
+        "```\n")
+
+    def test_a_framed_post_containing_a_list_is_still_linted(self):
+        """Finding 2. The contamination disqualifier ran on the draft body, so a
+        publish-framed post containing a bullet list stopped being a draft and was
+        not voice-checked AT ALL. A bulleted post is still a post."""
+        draft = gate.extract_publishable(self.FRAMED_BULLETED)
+        assert draft, (
+            "a framed post with a bullet list yielded no draft, so nothing was "
+            "voice-checked")
+        assert "- it printed nothing on stdout" in draft, draft
+
+    def test_a_framed_post_containing_a_list_reaches_the_lint(self, tmp_path):
+        """The same finding end to end. The draft carries a lowercase sentence
+        start, so a lint that actually ran refuses it."""
+        root = _instance(tmp_path, with_route_lane=False)
+        proc = _run(root, _transcript(tmp_path, "write it", self.FRAMED_BULLETED),
+                    tmp_path / "c.json")
+        assert proc.returncode == 2, (
+            "the voice lint never graded a framed post because it contained a "
+            f"list. rc={proc.returncode} stdout={proc.stdout}")
+        assert "voice" in proc.stderr.lower(), proc.stderr
+
+    UNFRAMED_BULLETED_DRAFT = (
+        "The gate held the turn and nothing said why. Here is what I learned "
+        "about building checks that can actually fail.\n\n"
+        "- a check that cannot go red is decoration\n"
+        "- name the input that makes it red, or do not ship it\n\n"
+        "That rule has caught more of my bugs than any review.\n")
+
+    def test_an_unframed_bulleted_draft_is_still_route_enforced(self, tmp_path):
+        """Finding 3, the bypass. `_output_carries_draft` reused the lint's
+        disqualifiers, so adding a bullet to a routed draft skipped receipt
+        enforcement and reported NOT CHECKED. Under a live routed request a bullet
+        is not a way out."""
+        root = _instance(tmp_path, with_route_lane=True)
+        proc = _run(root, _transcript(tmp_path, "write me a linkedin post",
+                                      self.UNFRAMED_BULLETED_DRAFT),
+                    tmp_path / "c.json", classify="route")
+        assert proc.returncode == 2, (
+            "a bulleted draft under a routed request skipped verification. "
+            f"rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
+        assert "receipt" in proc.stderr, proc.stderr
+
+    def test_the_route_predicate_sees_the_bulleted_draft(self):
+        """The same finding at the unit, so a failure names the predicate."""
+        assert gate._output_carries_draft(self.UNFRAMED_BULLETED_DRAFT)
+
+
+class TestTheDraftFloor:
+    """Finding 5. The R8 comment said the 80-byte floor was deleted while
+    MIN_TEXT_BYTES=80 still gated the lint, and no test exercised the 40-79 band
+    the two disagreed about. There is now ONE floor, MIN_DRAFT_BYTES, and this
+    pins the band so the comment is checkable rather than merely true today."""
+
+    def test_there_is_exactly_one_floor(self):
+        assert gate.MIN_DRAFT_BYTES == 40
+        assert not hasattr(gate, "MIN_TEXT_BYTES"), (
+            "two floors disagreed about the 40-79 band, which is what the stale "
+            "comment was about. Delete one or make both true.")
+
+    def _framed(self, body):
+        return "Here's the post.\n\n```\n" + body + "\n```\n"
+
+    def test_a_draft_in_the_40_to_79_band_is_graded(self, tmp_path):
+        """The band the two floors disagreed about. Under the old 80-byte lint
+        floor this was skipped entirely; it must now be graded, and the lowercase
+        sentence start is how we can tell that it was."""
+        body = "the gate said nothing at all and the draft shipped anyway."
+        assert 40 <= len(body.encode("utf-8")) < 80, len(body.encode("utf-8"))
+        root = _instance(tmp_path, with_route_lane=False)
+        proc = _run(root, _transcript(tmp_path, "write it", self._framed(body)),
+                    tmp_path / "c.json")
+        assert proc.returncode == 2, (
+            "a 40-79 byte framed draft was not graded, so the floor still lets "
+            f"the shipped-turn class through. rc={proc.returncode} "
+            f"stdout={proc.stdout} stderr={proc.stderr}")
+
+    def test_a_draft_under_the_floor_is_not_graded(self, tmp_path):
+        """The control. Without it, a floor of zero would pass the test above and
+        the gate would fire on every one-line answer."""
+        body = "too short to gate."
+        assert len(body.encode("utf-8")) < 40, len(body.encode("utf-8"))
+        root = _instance(tmp_path, with_route_lane=False)
+        proc = _run(root, _transcript(tmp_path, "write it", self._framed(body)),
+                    tmp_path / "c.json")
+        assert proc.returncode == 0, (
+            f"rc={proc.returncode} stderr={proc.stderr}")
