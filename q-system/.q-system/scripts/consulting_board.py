@@ -77,6 +77,8 @@ def _paths(root: Path | None = None) -> dict:
         "card": q / "output" / "today-card.md",
         "heartbeat": q / "output" / "ask-crm-state-card-heartbeat.json",
         "gtm": q / "my-project" / "gtm-queue.json",
+        "commitments": q / "my-project" / "commitments.jsonl",
+        "clients": q / "my-project" / "clients.json",
     }
 
 
@@ -150,6 +152,105 @@ def read_card(paths=None) -> tuple[list[dict], str | None]:
         return [], (f"{path.name} parsed to zero client lines; the card format changed "
                     "and this reader did not")
     return rows, None
+
+
+def _days(then: str, now: dt.datetime):
+    """Whole days from an ISO date/timestamp to `now`, or None if unparseable.
+    A bad date returns None and the caller omits the phrase; it never renders 0,
+    which would read as "today" and be a lie about how long he has been waiting."""
+    try:
+        d = dt.date.fromisoformat(str(then)[:10])
+    except (TypeError, ValueError):
+        return None
+    return (now.date() - d).days
+
+
+def read_my_side(now: dt.datetime, paths=None) -> tuple[dict, str | None]:
+    """Per slug: WHEN he said the thing, what was due, and when he last touched them.
+
+    ## Why this reader exists (founder, 2026-09-03)
+
+    *"This is a learning from the [a retainer client] fiasco -- they said I wasn't doing
+    things and I've actually been waiting on deliverables for weeks. So it needs to
+    say when was the last thing delivered and what am I still waiting for and how
+    long."* Scoped by him one message later to HIS side only.
+
+    The card renders a promise but no DATE, so a row said "you said X -- not sent"
+    with no way to tell a promise made yesterday from one made in July. A board that
+    cannot say WHEN cannot settle an argument about whether he was slow.
+
+    ## Facts, not a second verdict
+
+    This reads two files the card also reads, and that is deliberate and is NOT the
+    dual-derivation this module's docstring forbids. The forbidden thing is a second
+    opinion about SEVERITY -- red/yellow/reach stays the card's call, and nothing here
+    touches it. A date is a fact with one value; reading it twice cannot disagree.
+
+    `clients.json` is read as a LOOKUP keyed by the names the card already chose,
+    never enumerated: it is 162 rows of which ~150 are cold prospects, and walking it
+    would put them all on the board.
+    """
+    paths = paths or _paths()
+    out, errors = {}, []
+
+    by_name = {}
+    try:
+        reg = json.loads(paths["clients"].read_text(encoding="utf-8"))
+        for c in reg.get("clients") or []:
+            slug = c.get("slug")
+            if not slug:
+                continue
+            entry = {"last_touch": c.get("last_touch"), "slug": slug}
+            by_name[str(c.get("name") or "").strip().lower()] = entry
+            out[slug] = dict(entry)
+    except (OSError, ValueError) as exc:
+        errors.append(f"registry unreadable ({type(exc).__name__})")
+
+    try:
+        for line in paths["commitments"].read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue          # one bad line never voids the book
+            # OPEN only. A resolved promise is not something he still owes, and
+            # showing it would recreate the "you did not do this" claim he is
+            # defending against.
+            if row.get("state") != "open" or not row.get("slug"):
+                continue
+            rec = out.setdefault(row["slug"], {"slug": row["slug"], "last_touch": None})
+            said = row.get("extracted_at")
+            prior = rec.get("said_on")
+            if not prior or str(said)[:10] < str(prior)[:10]:
+                rec["said_on"] = said        # the OLDEST open promise is the exposure
+                rec["due"] = row.get("due")
+    except OSError as exc:
+        errors.append(f"commitment book unreadable ({type(exc).__name__})")
+
+    out["_by_name"] = by_name
+    return out, ("; ".join(errors) if errors else None)
+
+
+def my_side_phrase(rec: dict, now: dt.datetime) -> str:
+    """"said 2026-08-18 (16d ago) - due 2026-08-31 - last touch 2026-08-22".
+
+    Every part is omitted when its date is missing rather than rendered as unknown:
+    a board line is read in two seconds and "due: none" costs a second for nothing.
+    """
+    bits = []
+    said = rec.get("said_on")
+    if said:
+        n = _days(said, now)
+        bits.append(f"said {str(said)[:10]}" + (f" ({n}d ago)" if n is not None else ""))
+    if rec.get("due"):
+        bits.append(f"due {str(rec['due'])[:10]}")
+    touch = rec.get("last_touch")
+    if touch:
+        n = _days(touch, now)
+        bits.append(f"last touch {str(touch)[:10]}" + (f" ({n}d)" if n is not None else ""))
+    return " · ".join(bits)
 
 
 def read_heartbeat(now: dt.datetime, paths=None) -> tuple[dict, str | None]:
@@ -324,6 +425,9 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
     # every producer, because each one adds itself only after it answered cleanly.
     # "card" is unconditional: a card failure returns early, above this line.
     healthy = {"card"}
+    my_side, my_side_err = read_my_side(now, paths)
+    by_name = my_side.pop("_by_name", {})
+
     top, week = [], []
 
     for row in card_rows:
@@ -345,9 +449,29 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
                 "domain": "Consulting",
                 "done": DONE_BY_KIND.get(row["kind"], DONE_DEFAULT),
                 "bucket_reason": row["health"]}
+        # The dates his side of the story needs. Appended to the detail, never
+        # replacing the promise: the promise in his own words is the evidence and
+        # the dates are what make it an alibi.
+        reg = by_name.get(row["name"].strip().lower())
+        rec = dict(my_side.get(reg["slug"], {})) if reg else {}
+        if reg:
+            rec.setdefault("last_touch", reg.get("last_touch"))
+        phrase = my_side_phrase(rec, now) if rec else ""
+        if phrase:
+            item["detail"] = f"{item['detail']}\n{phrase}" if item["detail"] else phrase
         # 🔴 and 📞 are today. Everything else is this week. The split is the card's
         # own health verdict, not a rule invented here.
         (top if row["health"] in ("🔴", "📞") else week).append(item)
+
+    # The dates failing is reported ONCE, as its own row, never as a line stapled to
+    # every client. A test proves this module still delivers with no registry in the
+    # tree at all, and per-row noise would make that delivery look broken.
+    if my_side_err:
+        top.append({"title": "Promise dates: COULD NOT READ", "key": "myside:error",
+                    "detail": my_side_err, "source": "State card", "scope": "myside",
+                    "priority": "P1", "domain": "Fleet",
+                    "done": "the commitment book and registry read again",
+                    "bucket_reason": "error"})
 
     move, gtm_err = read_gtm(paths)
     if not gtm_err:

@@ -38,7 +38,8 @@ CARD = """# TODAY CARD
 """
 
 
-def _tree(tmp_path, card=CARD, date=TODAY, crash=None, gtm=None):
+def _tree(tmp_path, card=CARD, date=TODAY, crash=None, gtm=None,
+          commitments=None, clients=None):
     q = tmp_path / "q-consult"
     # exist_ok: a test may build the tree twice in one tmp_path to compare two runs.
     (q / "output").mkdir(parents=True, exist_ok=True)
@@ -54,6 +55,13 @@ def _tree(tmp_path, card=CARD, date=TODAY, crash=None, gtm=None):
                              "1.2": {"id": "1.2", "action": "machine thing",
                                      "performer": "mechanism", "state": "ready", "rank": 0}}}),
         encoding="utf-8")
+    # Written ONLY when a test asks for them. The default tree deliberately has
+    # neither, because test_the_registry_is_never_opened proves this module delivers
+    # without the registry and that must keep being true.
+    if commitments is not None:
+        (q / "my-project" / "commitments.jsonl").write_text(commitments, encoding="utf-8")
+    if clients is not None:
+        (q / "my-project" / "clients.json").write_text(json.dumps(clients), encoding="utf-8")
     return cb._paths(tmp_path)
 
 
@@ -638,3 +646,88 @@ class TestTwoThreadsAreNeverOneRow:
         rows, _ = brief.collect_mail(None, runner)
         inbox = cb.buckets(NOW, {"mail": (rows, None)}, _tree(tmp_path))["inbox"]
         assert len({i["key"] for i in inbox}) == 2, "one task never reached the board"
+
+
+class TestHisSideCarriesItsDates:
+    """Founder, 2026-09-03: *"a learning from the [a retainer client] fiasco -- they said I
+    wasn't doing things and I've actually been waiting on deliverables for weeks."*
+    A row that renders a promise with no date cannot tell a promise made yesterday
+    from one made in July, so it cannot settle that argument. Scoped by him to HIS
+    side only one message later; there is deliberately no reader for their promises."""
+
+    def test_the_phrase_carries_when_he_said_it_and_how_long_ago(self):
+        now = dt.datetime(2026, 9, 3, tzinfo=dt.timezone.utc)
+        phrase = cb.my_side_phrase(
+            {"said_on": "2026-08-18T21:47:47+00:00", "due": "2026-08-31",
+             "last_touch": "2026-09-02"}, now)
+        assert "said 2026-08-18" in phrase
+        assert "(16d ago)" in phrase
+        assert "due 2026-08-31" in phrase
+        assert "last touch 2026-09-02" in phrase
+
+    def test_a_missing_date_is_omitted_never_rendered_as_unknown(self):
+        now = dt.datetime(2026, 9, 3, tzinfo=dt.timezone.utc)
+        phrase = cb.my_side_phrase({"said_on": "2026-08-18", "due": None,
+                                    "last_touch": None}, now)
+        assert "due" not in phrase and "last touch" not in phrase
+        assert "said 2026-08-18" in phrase
+
+    def test_an_unparseable_date_never_renders_as_zero_days(self):
+        """0d would read as "today" and be a lie about how long he has waited."""
+        assert cb._days("not-a-date", dt.datetime.now(dt.timezone.utc)) is None
+        phrase = cb.my_side_phrase({"said_on": "not-a-date"},
+                                   dt.datetime.now(dt.timezone.utc))
+        assert "0d" not in phrase
+
+    def test_only_OPEN_promises_count(self, tmp_path):
+        """A resolved promise is not something he still owes. Surfacing one would
+        recreate the "you did not do this" claim the dates exist to defend against."""
+        paths = _tree(tmp_path, commitments="\n".join([
+            json.dumps({"slug": "acme", "state": "resolved",
+                        "extracted_at": "2026-01-01T00:00:00+00:00"}),
+            json.dumps({"slug": "acme", "state": "open",
+                        "extracted_at": "2026-08-20T00:00:00+00:00", "due": None}),
+        ]), clients={"clients": []})
+        got, err = cb.read_my_side(dt.datetime(2026, 9, 3, tzinfo=dt.timezone.utc), paths)
+        assert err is None
+        assert got["acme"]["said_on"].startswith("2026-08-20")
+
+    def test_the_oldest_open_promise_is_the_one_shown(self, tmp_path):
+        """Two open promises to one client: the OLDEST is the exposure, because that
+        is the number a client would quote back at him."""
+        paths = _tree(tmp_path, commitments="\n".join([
+            json.dumps({"slug": "acme", "state": "open",
+                        "extracted_at": "2026-08-29T00:00:00+00:00"}),
+            json.dumps({"slug": "acme", "state": "open",
+                        "extracted_at": "2026-07-04T00:00:00+00:00"}),
+        ]), clients={"clients": []})
+        got, _ = cb.read_my_side(dt.datetime(2026, 9, 3, tzinfo=dt.timezone.utc), paths)
+        assert got["acme"]["said_on"].startswith("2026-07-04")
+
+    def test_one_corrupt_line_never_voids_the_book(self, tmp_path):
+        paths = _tree(tmp_path, commitments="\n".join([
+            "{ not json",
+            json.dumps({"slug": "acme", "state": "open",
+                        "extracted_at": "2026-08-20T00:00:00+00:00"}),
+        ]), clients={"clients": []})
+        got, err = cb.read_my_side(dt.datetime(2026, 9, 3, tzinfo=dt.timezone.utc), paths)
+        assert err is None and "acme" in got
+
+    def test_the_registry_is_a_lookup_and_is_never_enumerated_onto_the_board(self, tmp_path):
+        """clients.json is 162 rows, ~150 of them cold prospects with no rate and no
+        next_touch. Walking it would put every one of them on his morning board."""
+        paths = _tree(tmp_path, clients={"clients": [
+            {"slug": "ghost-%d" % i, "name": "Ghost Prospect %d" % i,
+             "last_touch": None} for i in range(150)]})
+        b = cb.buckets(NOW, {}, paths)
+        card = paths["card"].read_text(encoding="utf-8")
+        # Only rows sourced from the CARD are client rows; gtm/error rows are not.
+        client_rows = [r for r in b["top_of_mind"] + b["this_week"]
+                       if r["key"].startswith(("client:", "reach:"))]
+        assert client_rows, "fixture produced no client rows"
+        for r in client_rows:
+            bare = r["title"].split(" ", 1)[-1] if r["title"][:1] in "🔴🟡🟢⚪📞🟠" else r["title"]
+            assert bare in card, f"{bare!r} reached the board without being on the card"
+        assert not any("Ghost Prospect" in r["title"]
+                       for r in b["top_of_mind"] + b["this_week"] + b["inbox"]), (
+            "the registry was enumerated onto the board")
