@@ -133,19 +133,29 @@ def extract_publishable(text):
     """The draft content to LINT, or "" when the message is conversational.
 
     FRAMING REQUIRED. voice-enforcement.md scopes the lint to content sent to
-    another person and excludes conversational replies to the founder; framing is
-    the signal that separates them. Round 8 pointed this at a predicate that
-    needed no framing and the gate started refusing ordinary replies.
+    another person and excludes conversational replies to the founder.
 
-    Framing here means what `framed_draft` means -- a lane wrapper OR the publish
-    sentence the lint has always keyed on. That is wider than the pre-R8 body,
-    which knew only the publish sentence: a reddit or `=== DRAFT ===` handoff is
-    explicitly a delivery and there is no reason for the lint to be blind to it.
+    TWO SEPARATE QUESTIONS, and conflating them is what round 11 got wrong first
+    (the mutant survived and said so):
 
-    Excludes this gate's own refusal quoted back, which is conversational. See
-    `_is_own_refusal_echo`.
+      WHICH SLAB -- publish framing first. An announced delivery owns the slab it
+      announced, and a trailing bare `=== DRAFT ===` must not shrink it. Round 10
+      preferred the lane wrapper, so a trailing marker with any tail after it
+      truncated the announced slab and content the base version blocked passed.
+
+      WHETHER THE ECHO TEST APPLIES -- lane framing, presence only. A receipt
+      block, `=== DRAFT ===` or the reddit wrapper means the assistant handed over
+      a delivery, so it is linted whatever else the message pastes, including the
+      refusal token that used to switch the lint off. The echo test is consulted
+      only under the weaker publish-sentence framing, where an explanation of a
+      refusal really can read as an announcement.
     """
-    draft = framed_draft(text)
+    lane = _route_draft(text)
+    draft = _publish_framed(text) or lane
+    if not draft:
+        return ""
+    if lane:
+        return draft
     return "" if _is_own_refusal_echo(draft) else draft
 
 
@@ -633,6 +643,32 @@ def find_final_user_text(transcript_path):
 _REFUSAL_MARK = "[voice-stop-gate:held-this-turn]"
 
 
+def _mask_fences(text):
+    """A SAME-LENGTH copy of `text` with fenced blocks blanked out.
+
+    A MARKER INSIDE A FENCE IS A QUOTE, NOT FRAMING (Codex major, ASK-1197 round
+    11). Round 10 let the lint key on a bare `=== DRAFT ===`, so an engineering
+    message showing that marker inside a code fence -- this file's own tests and
+    docs do it constantly -- was treated as a delivery and voice-linted, and the
+    Stop hook exited 2 where the base version exited 0.
+
+    Same length, not stripped, because every caller searches this copy and then
+    slices the ORIGINAL. Offsets have to line up or the slab is cut in the wrong
+    place. Newlines are preserved so line-anchored patterns still see real lines.
+
+    Prose fences are NOT masked away for `_setoff_segments`: that extractor reads
+    fence BODIES on purpose. Masking is for marker detection only.
+    """
+    if not text:
+        return ""
+    out = list(text)
+    for match in _FENCE_RE.finditer(text):
+        for index in range(match.start(), match.end()):
+            if out[index] != "\n":
+                out[index] = " "
+    return "".join(out)
+
+
 def _strip_lane_trailers(slab):
     """Drop the producer's posting advice from a draft slab.
 
@@ -653,9 +689,11 @@ def _after_receipt_block(text):
     """Everything after the receipt JSON, or None when there is no receipt block.
 
     None and "" are different answers on purpose: None means no receipt was
-    claimed, "" means one was claimed and nothing followed it.
+    claimed, "" means one was claimed and nothing followed it. The claim is looked
+    for in a fence-masked copy, so a quoted receipt marker claims nothing.
     """
-    claim = _RECEIPT_CLAIM_RE.search(text or "")
+    text = text or ""
+    claim = _RECEIPT_CLAIM_RE.search(_mask_fences(text))
     if claim is None:
         return None
     payload = text[claim.end():]
@@ -663,16 +701,20 @@ def _after_receipt_block(text):
     try:
         _value, end = json.JSONDecoder().raw_decode(stripped)
     except json.JSONDecodeError:
-        # A claimed receipt whose JSON will not parse. `_receipt_block` raises on
-        # this for the caller that cares; here it simply frames nothing.
         return ""
     return stripped[end:]
 
 
 def _publish_framed(text):
-    """The publish-sentence reading. A LEAF: the pre-R8 body, unchanged."""
+    """The publish-sentence reading: the pre-R8 body, with fences masked.
+
+    The sentence is looked for in a fence-masked copy so an assistant QUOTING
+    "here's the post" inside a fence does not frame a delivery. The set-off
+    segments are read from the ORIGINAL, because fence bodies are exactly what
+    that reading wants.
+    """
     text = text or ""
-    if not _PUBLISH_MARKER_RE.search(text):
+    if not _PUBLISH_MARKER_RE.search(_mask_fences(text)):
         return ""
     setoff = _setoff_segments(text)
     return setoff if setoff else text.strip()
@@ -681,23 +723,22 @@ def _publish_framed(text):
 def framed_draft(text):
     """The draft this turn EXPLICITLY hands over, or "" when nothing is framed.
 
-    ONE FRAMING TEST, TWO CONSUMERS: the lint asks it to decide what to grade,
-    the route path asks it to decide what to verify. They had drifted into two
-    answers.
+    ONE FRAMING TEST, TWO CONSUMERS: the lint asks it what to grade, the route
+    path asks it what to verify.
 
-    A STRAIGHT PIPELINE, AND THAT IS THE ROUND 10 FIX. This called `_route_draft`,
-    which fell through to `extract_publishable`, which called back here -- so a
-    message carrying `=== ROUTE RECEIPT ===` with no `=== DRAFT ===` marker
-    recursed until RecursionError. A Stop hook that raises exits 1, and exit 1
-    does NOT hold the turn, so the gate failed OPEN in exactly the case it exists
-    for. Now: `_route_draft` and `_publish_framed` are leaves, this calls them,
-    neither calls anything back.
+    PUBLISH FRAMING FIRST, LANE WRAPPER SECOND (Codex minor, round 11). Round 10
+    had this backwards, so a trailing bare `=== DRAFT ===` line truncated a slab
+    that the publish sentence had already claimed and content the base version
+    blocked started passing. When the assistant has announced a delivery, the slab
+    it announced is the draft; a lane marker inside it does not shrink it.
 
-    No contamination disqualifier runs here. Once the assistant has framed a
-    delivery there is nothing left to guess about, and a bulleted post is still a
-    post (ASK-1197 round 9, finding 2).
+    `enforce_route_receipt` still hashes `_route_draft` directly, because the
+    receipt covers the producer's draft bytes and not the announcing sentence.
+
+    A STRAIGHT PIPELINE: `_publish_framed` and `_route_draft` are leaves over
+    their own helpers, and neither reaches back here. See the DAG test.
     """
-    return _route_draft(text) or _publish_framed(text)
+    return _publish_framed(text) or _route_draft(text)
 
 
 def _setoff_segments(text):
@@ -711,29 +752,34 @@ def _setoff_segments(text):
 def _is_own_refusal_echo(draft):
     """Is this draft-shaped block just this gate's own refusal, quoted back?
 
-    `candidate_draft` is deliberately wide -- draft-shaped prose with no marker
-    counts, so dropping the wrapper is not a way out of verification -- and an
-    assistant explaining why the gate refused is prose of exactly that shape.
+    STRUCTURAL, NOT A SUBSTRING (Codex major, ASK-1197 round 11). This used to be
+    `_REFUSAL_MARK in draft`, which meant an assistant could paste the token
+    beside a real framed draft and skip BOTH the voice lint and receipt
+    verification, exiting 0 with a notice that falsely said no draft was present.
+    A token anyone can copy must never be the thing that disables a gate.
 
-    TWO CONSUMERS, ONE DEFINITION, and the second one is why this is a function
-    rather than an inline check. The route lane needs it or the reply to a refusal
-    is judged as a delivery and refused again (the deadlock, rebuilt on the output
-    side). The VOICE LINT needs it too, and that only became true here: once
-    `extract_publishable` delegates to `candidate_draft` (f918134c), an error
-    report is publishable content, so the lint refuses it for sentence
-    capitalisation and the turn deadlocks through a second door. Caught by
-    `test_a_reply_to_refusal_feedback_is_not_refused_again` while integrating R8,
-    not in production. voice-enforcement.md already says conversational replies to
-    the founder are out of scope; this is that rule, executable.
-
-    NARROW ON PURPOSE, and not gameable by pasting the mark. The test is not "the
-    message mentions the refusal" but "the largest surviving prose block IS the
-    refusal". A turn that quotes the refusal AND carries a real draft has a larger
-    block without the mark, so `candidate_draft` returns the draft and this is
-    False. Same principle as `_REFUSAL_MARK` itself: the gate recognises its own
-    words because it wrote them.
+    Two changes. Callers with LANE framing do not consult this at all -- a framed
+    draft is a draft regardless of what else the message pastes. And the test here
+    is whether the refusal envelope IS the message: strip the envelope lines, and
+    if what remains is not itself substantial, the message is the echo.
     """
-    return bool(draft) and _REFUSAL_MARK in draft
+    if not draft or _REFUSAL_MARK not in draft:
+        return False
+    kept, envelope = [], []
+    for line in draft.splitlines():
+        target = (envelope if (_REFUSAL_MARK in line
+                               or line.startswith("voice-stop-gate:")) else kept)
+        target.append(line)
+    if not envelope:
+        return False
+    remainder = "\n".join(kept).strip().encode("utf-8")
+    quoted = "\n".join(envelope).strip().encode("utf-8")
+    # DOMINANCE, not presence. An error report is mostly the refusal it is
+    # reporting, plus a sentence of context; a real draft that happens to paste
+    # the token dwarfs it. Comparing the two sizes distinguishes them without
+    # letting a pasted token switch the gate off, which is what the old substring
+    # test allowed. The floor keeps a two-word remainder from counting as a draft.
+    return len(remainder) < max(MIN_DRAFT_BYTES, len(quoted))
 
 
 def refuse(message):
@@ -968,23 +1014,24 @@ def _route_context():
 def _route_draft(text):
     """The bytes the producer hashed, for whichever lane emitted this handoff.
 
-    A LEAF. It calls no other extractor and nothing it calls reaches back into
-    it; see `framed_draft` for the recursion this shape replaced.
+    A LEAF apart from its two helpers; see `framed_draft` for the recursion this
+    shape replaced.
+
+    Markers are looked for in a FENCE-MASKED copy and sliced out of the original,
+    so a message quoting `=== DRAFT ===` or the reddit wrapper inside a fence
+    frames nothing (round 11).
 
     Three branches, most specific first, "" when none match:
       (b) the reddit wrapper -- it carries no `=== DRAFT ===` at all;
       (c) the `=== DRAFT ===` marker;
-      (a) a receipt block with neither, which is the case that used to recurse:
-          the draft is whatever follows the receipt JSON.
-
-    Every branch strips the lane trailers, because the receipt hashes the draft
-    body ALONE and the producers print posting advice after it.
+      (a) a receipt block with neither, which is the case that used to recurse.
     """
     text = text or ""
-    reddit = _REDDIT_DRAFT_RE.search(text)
+    masked = _mask_fences(text)
+    reddit = _REDDIT_DRAFT_RE.search(masked)
     if reddit is not None:
         return _strip_lane_trailers(text[reddit.end():])
-    marker = _DRAFT_MARKER_RE.search(text)
+    marker = _DRAFT_MARKER_RE.search(masked)
     if marker is not None:
         return _strip_lane_trailers(text[marker.end():])
     after = _after_receipt_block(text)
@@ -1011,18 +1058,23 @@ def _receipt_block(text):
 def _output_carries_draft(assistant_text):
     """Does this completion hand over something a receipt could cover?
 
-    FRAMING IS THE CONTRACT (ASK-1197 round 10). The producers of record always
-    emit RECEIPT then DRAFT, so a framed handoff is a delivery and anything else
-    is not classifiable from prose. Two rounds of size-and-bullet heuristics
-    produced a deadlock (rounds 5 and 9 refused clarifying questions) or a bypass
-    (rounds 6-8 let drafts through unverified), so the heuristics are gone.
+    FRAMING IS THE CONTRACT. The producers of record always emit RECEIPT then
+    DRAFT, so a framed handoff is a delivery and anything else is not classifiable
+    from prose. Unframed output under a routed request is NOT treated as a draft,
+    and that is a recorded boundary rather than an oversight: sp-6ce17a23.
 
-    Unframed output under a routed request is NOT treated as a draft, and that is
-    a recorded boundary rather than an oversight: sp-6ce17a23. The caller emits a
-    notice naming it.
+    Same split as `extract_publishable`: lane framing present means yes
+    unconditionally, so pasting `[voice-stop-gate:held-this-turn]` beside a real
+    draft cannot buy a skip; the echo test applies only to publish framing.
     """
-    draft = framed_draft(assistant_text or "")
-    return bool(draft) and not _is_own_refusal_echo(draft)
+    text = assistant_text or ""
+    lane = _route_draft(text)
+    draft = _publish_framed(text) or lane
+    if not draft:
+        return False
+    if lane:
+        return True
+    return not _is_own_refusal_echo(draft)
 
 
 def enforce_route_receipt(request, assistant_text):

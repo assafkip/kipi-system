@@ -1514,3 +1514,128 @@ class TestARoutedClarifyingQuestion:
             f"being refused.\nrc={proc.returncode} stderr={proc.stderr}")
         message = _system_message(proc)
         assert "NOT VERIFIED" in message and "sp-6ce17a23" in message, message
+
+
+class TestAMarkerInsideAFenceIsAQuote:
+    """Codex major, ASK-1197 round 11. Round 10 let the lint key on a bare
+    `=== DRAFT ===`, so an engineering message SHOWING that marker inside a code
+    fence -- this file and its docs do it constantly -- was read as a delivery,
+    voice-linted, and the Stop hook exited 2 where base exited 0."""
+
+    QUOTED = (
+        "The route lane recognises three wrappers. The X lane prints this:\n\n"
+        "```\n"
+        "=== DRAFT ===\n"
+        "the post body goes here\n"
+        "```\n\n"
+        "and the reddit lane prints its own instead.\n")
+
+    def test_a_marker_inside_a_fence_frames_nothing(self):
+        assert gate.extract_publishable(self.QUOTED) == "", (
+            "a marker quoted inside a fence was treated as framing, so an "
+            "engineering answer got voice-linted")
+        assert gate._route_draft(self.QUOTED) == "", gate._route_draft(self.QUOTED)
+
+    def test_the_turn_completes(self, tmp_path):
+        """End to end, no routed request: base exited 0 here and so must this."""
+        root = _instance(tmp_path, with_route_lane=False)
+        proc = _run(root, _transcript(tmp_path, "how does the route lane work?",
+                                      self.QUOTED), tmp_path / "c.json")
+        assert proc.returncode == 0, (
+            f"rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
+
+    def test_the_same_marker_outside_a_fence_still_frames(self):
+        """THE CONTROL. Masking fences must not stop real handoffs from framing;
+        without this, masking everything would pass the test above."""
+        real = ("Here's the post for LinkedIn.\n\n=== DRAFT ===\n"
+                "The body of a real handoff, long enough to be measured.\n")
+        assert gate._route_draft(real) == (
+            "The body of a real handoff, long enough to be measured.")
+
+    def test_a_receipt_marker_inside_a_fence_claims_nothing(self):
+        quoted = ("The producer emits this shape:\n\n```\n"
+                  "=== ROUTE RECEIPT ===\n{\"surface\": \"linkedin\"}\n```\n")
+        assert gate._route_draft(quoted) == ""
+
+
+class TestAPastedTokenCannotDisableTheGate:
+    """Codex major, ASK-1197 round 11. `_is_own_refusal_echo` was a substring
+    test, so a framed routed draft that ALSO pasted
+    `[voice-stop-gate:held-this-turn]` skipped both the voice lint and receipt
+    verification and exited 0 with a notice that falsely said no draft was
+    present. A token anyone can copy must never switch a gate off."""
+
+    PASTED = ("Here's the post for LinkedIn.\n\n=== DRAFT ===\n"
+              "[voice-stop-gate:held-this-turn]\n"
+              "The body of the draft, long enough to be measured, pasted next to "
+              "the refusal token so the gate would look away.\n")
+
+    def test_a_framed_draft_with_the_token_is_still_a_draft(self):
+        assert gate._output_carries_draft(self.PASTED), (
+            "pasting the refusal token next to a framed draft disabled the route "
+            "predicate")
+        assert gate.extract_publishable(self.PASTED), (
+            "and it disabled the voice lint too")
+
+    def test_a_framed_draft_with_the_token_is_still_refused(self, tmp_path):
+        """End to end with the lane installed and the request routed: no receipt,
+        so the turn must be HELD. Round 10 exited 0 here."""
+        root = _instance(tmp_path, with_route_lane=True)
+        proc = _run(root, _transcript(tmp_path, "write me a linkedin post",
+                                      self.PASTED),
+                    tmp_path / "c.json", classify="route")
+        assert proc.returncode == 2, (
+            "a routed draft skipped verification because it pasted the refusal "
+            f"token.\nrc={proc.returncode} stdout={proc.stdout}")
+
+    def test_a_pure_refusal_echo_still_completes(self, tmp_path):
+        """THE CONTROL. The round 7 deadlock must stay fixed: an assistant
+        REPORTING a refusal, with no draft of its own, still completes."""
+        root = _instance(tmp_path, with_route_lane=True)
+        report = ("The gate held the turn. It reported:\n\n"
+                  "voice-stop-gate: routed completion has no route receipt\n"
+                  + gate._REFUSAL_MARK + "\n\n"
+                  "I have not re-drafted anything yet.\n")
+        proc = _run(root, _transcript(tmp_path, "write me a linkedin post", report),
+                    tmp_path / "c.json", classify="route")
+        assert proc.returncode == 0, (
+            "the reply to a refusal was refused again; the deadlock is back.\n"
+            f"rc={proc.returncode} stderr={proc.stderr}")
+
+
+class TestPublishFramingWinsOverATrailingMarker:
+    """Codex minor, ASK-1197 round 11. `framed_draft` preferred `_route_draft`,
+    so a trailing bare `=== DRAFT ===` line truncated a slab the publish sentence
+    had already claimed, and content the base version blocked started passing."""
+
+    #: THE TAIL AFTER THE MARKER IS LOAD-BEARING, and the first version of this
+    #: fixture omitted it and proved nothing: with nothing after the marker
+    #: `_route_draft` returns "" and the `or` falls through to publish framing on
+    #: BOTH versions, so the test passed against unfixed code. The M3 mutant
+    #: survived and said so. Measured against f7bb54d0: with the tail, base
+    #: returns "See above." and the announced slab is never graded.
+    TRAILING = ("Here's the post for LinkedIn.\n\n"
+                "```\n"
+                "the gate said nothing at all and the draft shipped anyway.\n"
+                "```\n\n"
+                "=== DRAFT ===\n"
+                "See above.\n")
+
+    def test_the_announced_slab_is_not_truncated(self):
+        draft = gate.extract_publishable(self.TRAILING)
+        assert draft != "See above.", (
+            "the trailing marker won and the announced slab was discarded; that "
+            "is the base behaviour this fixture must distinguish")
+        assert "the gate said nothing at all" in draft, (
+            "a trailing marker shrank the slab the publish sentence claimed, so "
+            f"the announced content was never graded. got {draft!r}")
+
+    def test_the_content_is_still_blocked(self, tmp_path):
+        """End to end: this body has a lowercase sentence start, which base
+        blocked. It must still be blocked."""
+        root = _instance(tmp_path, with_route_lane=False)
+        proc = _run(root, _transcript(tmp_path, "write it", self.TRAILING),
+                    tmp_path / "c.json")
+        assert proc.returncode == 2, (
+            "content the base version blocked now passes because a trailing "
+            f"marker truncated the slab.\nrc={proc.returncode} stdout={proc.stdout}")
