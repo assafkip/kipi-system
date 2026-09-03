@@ -65,3 +65,11 @@ Three traps hit repeatedly this session:
 ## Uncommitted, other sessions' work, left alone
 
 `browser_session.py`, `capability_manifest.py`, `test_browser_session.py`, `test_destructive_op_mcp_namespace.py` (7 failures, pre-existing), `fix-perm-wildcards.py`, `mcp-denylist-namespace-check.py`. `provenance: observed`
+
+## Branch state, deconflicted with kipi-system-0e
+
+`fix/candidate-draft-one-definition` is in **no PR**. `[verified: gh pr list --head fix/candidate-draft-one-definition --json number,title -> []]` Two sessions have commits on it: kipi-system-0e (f918134c, b077a276) and this one (the 2026-09-02 audit run). They need ONE pull request together, later. `provenance: explicit_statement` from that session.
+
+`CLAUDE.md` is dirty on purpose and belongs to kipi-system-0e: one merged line in the /q-research bullet, left uncommitted so the browser-record session lands it with its own browser_session.py work. Not mine, not to be swept. `[verified: no commit of mine today touches CLAUDE.md, checked across all 11]`
+
+Also not mine and left alone: `browser_session.py`, `capability_manifest.py`, `test_browser_session.py` (browser-record session), `test_destructive_op_mcp_namespace.py`, `mcp-denylist-namespace-check.py`, `test_voice_stop_gate_not_checked.py`, `fix-perm-wildcards.py`, `instance-registry.json`. `provenance: explicit_statement`
