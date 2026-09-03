@@ -30,44 +30,15 @@ Exceptions: if all three items are concrete nouns with real specificity (company
 OK: LinkedIn, Google, Meta (specific companies, not abstract qualities)
 ```
 
-## Banned phrases (AI filler)
+## Banned words and phrases (AI filler)
 
-Scrub every instance. If the sentence still makes sense without it, delete. If not, rewrite.
+Owned by `plugins/kipi-core/kipi-mcp/src/kipi_mcp/draft_scanner.py` and applied by
+`kipi_voice_lint`. This file does not duplicate them.
 
-- leverage
-- robust
-- seamless
-- seamlessly
-- ecosystem
-- landscape
-- paradigm
-- synergy
-- utilize (use "use")
-- facilitate
-- streamline
-- empower
-- holistic
-- scalable
-- next-gen
-- disruptive
-- cutting-edge
-- game-changing
-- innovative
-- thrilled
-- excited to share
-- in today's landscape
-- in today's world
-- in an increasingly
-- delve
-- at the intersection of
-- dive deep
-- deep dive
-- unlock
-- unleash
-- transform (unless literal)
-- revolutionize
-- harness
-- drive (as in "drive outcomes")
+The copy that used to sit here had drifted: `facilitate`, `harness`, `drive`,
+`unleash` and `I think` were listed as banned and are in no enforcer (measured
+2026-09-02, zero hits each). Scrubbing a word the linter does not ban is wasted
+work; trusting this file to be complete is worse. Run the linter.
 
 ## Banned phrases (LinkedIn-specific cringe)
 
@@ -81,11 +52,11 @@ Scrub every instance. If the sentence still makes sense without it, delete. If n
 - "Who else has..."
 - "Hot take:"
 
-## Banned phrases (founder-voice specific)
+## Hedged assertions (judgment, not linted)
 
-Per founder-voice skill:
+No enforcer bans these; the linter only reports hedging DENSITY as a metric.
 - "I think" / "I believe" / "it seems like" / "arguably" / "perhaps"
-- Replace with direct statement, or say "I don't know yet."
+- Replace with a direct statement, or say "I don't know yet."
 
 ## Hedging patterns to catch
 
@@ -101,18 +72,12 @@ Rewrite as direct claims.
 
 If any sentence exceeds 25 words, break it. If the paragraph exceeds 3 sentences, split it. White space is a feature.
 
-## Voice: first-person openers
+## What this file is for
 
-Per voice and AUDHD rules: DMs, emails, and comments start with "I," never the recipient's name.
+Judgment-only checks. The linter cannot see any of these:
 
-```
-BAD:  Hey Sarah, loved your post about...
-GOOD: I read your post on [topic] three times.
-```
+- Does the opener anchor in a real experience, or just sound like it does?
+- Does it read as one specific person, or as anyone in the category?
+- Is any triplet an abstract-quality list rather than concrete nouns?
 
-## Scoring
-
-When reviewing a draft, return one of:
-- **PASS** — no hits. Ready to publish.
-- **FIX** — one or more hits. List each with line reference and a proposed rewrite.
-- **REWRITE** — sounds like AI even without explicit banned terms. Start over with scar-anchored opener.
+A draft that passes `kipi_voice_lint` can still fail all three.

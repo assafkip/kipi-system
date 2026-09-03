@@ -191,6 +191,22 @@ ALL_OPS = ADDITIVE_OPS + REPLACE_OPS
 ANCHOR_OPS = ("insert_after", "insert_before", "replace")
 
 RULES_DIR = os.path.join(".claude", "rules")
+# `replace`'s second, NARROWER target class (X-1, 2026-09-02). Agent and
+# output-style files could be APPENDED to but never corrected, so a wrong VALUE
+# in frontmatter was unreachable: .claude/agents/preflight.md allowlisted
+# mcp__claude_ai_Google_Calendar__gcal_list_events and
+# mcp__claude_ai_Gmail__gmail_search_messages long after both were renamed, and
+# that exact rename is what killed the morning pipeline (canonical/decisions.md
+# RULE lines 266-267). An allowlist naming nonexistent tools is a defect no
+# prompt text can fix and no additive op can reach.
+#
+# The reach here is NOT the reach `replace` has on rule text. On a rule, replace
+# rewrites arbitrary body prose and the rule-content census watches it. Here the
+# body is NOT censused (census() still reads only _dir_names for these two
+# directories), so replace is pinned to the FRONTMATTER BLOCK and every value it
+# may move is validated by name. See _guard_agent_frontmatter.
+AGENT_DIRS = (os.path.join(".claude", "agents"),
+              os.path.join(".claude", "output-styles"))
 
 # A rule's pointer to the thing that actually enforces it. Census member, so a
 # replace cannot quietly cut a reader's route to the enforcer.
@@ -487,7 +503,23 @@ def is_rule_text(rel):
     return rel.startswith(RULES_DIR + os.sep) and rel.endswith(".md")
 
 
-def rule_text_only(root, rel, settings_key, template_key):
+def is_agent_text(rel):
+    """The SHAPE half of "is this an agent or output-style file".
+
+    Same one-place-only discipline as is_rule_text, and for the same reason:
+    two callers ask it (the `replace` scope pin and the frontmatter pin) and two
+    spellings of one question is the drift class rounds 2-4 kept re-finding.
+
+    Depth-permissive like is_rule_text, and safe for a DIFFERENT reason: replace
+    on these files may not touch the body at all (see _guard_agent_frontmatter),
+    so unlike rules there is no censused body content for a nested file to slip
+    out from under.
+    """
+    return (any(rel.startswith(d + os.sep) for d in AGENT_DIRS)
+            and rel.endswith(".md"))
+
+
+def replace_target_ok(root, rel, settings_key, template_key):
     """`replace` is the only non-additive op, so its reach is pinned to rule TEXT.
 
     Three checks, because each alone has a hole the other two cover:
@@ -498,24 +530,50 @@ def rule_text_only(root, rel, settings_key, template_key):
                  recognised here. It does NOT merge two keys into one -- that is
                  refuse_duplicate_spellings' job, upstream, and round 5 found the
                  hole left when this docstring claimed otherwise.
-      shape    : anything that is not .claude/rules/<name>.md is out. agents/ and
-                 output-styles/ keep the additive-only guarantee they had before
-                 this op existed; widening to them is a separate decision with a
-                 separate blast radius, not a side effect of ASK-289.
+      shape    : anything that is not .claude/rules/<name>.md, .claude/agents/
+                 <name>.md or .claude/output-styles/<name>.md is out.
       realpath : a symlink parked at .claude/rules/x.md pointing somewhere else.
                  scoped_path permits that today -- it only asks that the target
                  stay under .claude/ -- so a string-shape check alone waves it
                  through. Same class as settings.local.json (round 1) and the
                  "./" spelling (round 2): a second name only some guards see.
+
+    THE SECOND TARGET CLASS IS NOT THE FIRST ONE WIDENED (X-1, 2026-09-02).
+    agents/ and output-styles/ used to be flatly out, with the note "widening to
+    them is a separate decision with a separate blast radius". This IS that
+    separate decision, and it is deliberately not the same grant:
+
+      rules/  : replace rewrites arbitrary body text, watched by the rule-content
+                census (_rule_marks) which pins markers, exec routes and line
+                count. Frontmatter is frozen byte-for-byte.
+      agents/ : replace may touch the FRONTMATTER BLOCK ONLY and the body must
+                come out byte-identical. There is no content census for these
+                files (census() reads _dir_names, and sp-b8debc44 has said so
+                since ASK-288), so a body grant here would be an unwatched
+                rewrite of an agent's instructions -- exactly the demotion that
+                note predicts. Every frontmatter value that may move is instead
+                validated BY NAME by executable code in this script
+                (_guard_agent_frontmatter) plus the validator script
+                validate-separation.py, and pinned by the test
+                test-apply-claude-changes.sh.
     """
     if rel == settings_key or rel == template_key:
         raise Refusal("replace may not target %s (rule text only)" % rel)
-    if not is_rule_text(rel):
-        raise Refusal("replace is only permitted on %s%s*.md, got %s" % (RULES_DIR, os.sep, rel))
-    rules_dir = os.path.realpath(os.path.join(root, RULES_DIR))
+    if is_rule_text(rel):
+        bases = (RULES_DIR,)
+    elif is_agent_text(rel):
+        bases = AGENT_DIRS
+    else:
+        raise Refusal("replace is only permitted on %s%s*.md or %s*.md, got %s"
+                      % (RULES_DIR, os.sep,
+                         ("%s%s, " % (AGENT_DIRS[0], os.sep)) + AGENT_DIRS[1] + os.sep,
+                         rel))
     real = os.path.realpath(os.path.join(root, rel))
-    if not real.startswith(rules_dir + os.sep):
-        raise Refusal("replace target resolves outside %s%s: %s" % (RULES_DIR, os.sep, rel))
+    for base in bases:
+        base_real = os.path.realpath(os.path.join(root, base))
+        if real.startswith(base_real + os.sep):
+            return
+    raise Refusal("replace target resolves outside its declared directory: %s" % rel)
 
 
 def scoped_path(root, rel, paired_ok=False):
@@ -595,7 +653,184 @@ def _unique_anchor_hits(content, anchor, rel):
     return hits
 
 
-def _guard_frontmatter(rel, before, after):
+def _fm_body(text):
+    """Everything AFTER the frontmatter block. "" and no-frontmatter both work."""
+    return (text or "")[len(_frontmatter(text)):]
+
+
+def _fm_pairs(rel, block):
+    """Parse a frontmatter block into {key: value}, or refuse if it is not flat.
+
+    FAILS CLOSED ON ANYTHING IT CANNOT READ. A nested or multi-line YAML value
+    (a `paths:` list, a folded scalar) would parse here as a key with a junk
+    value and a following unparseable line; waving those through would let a
+    structure this function cannot model carry a widening past the by-name
+    checks in _guard_agent_frontmatter. Every agent and output-style file in the
+    fleet is flat `key: value` today, so refusing the rest costs nothing real and
+    keeps the unknown case on the refusing side.
+    """
+    pairs = {}
+    lines = block.splitlines()
+    for line in lines:
+        if line.strip() in ("", "---"):
+            continue
+        if ":" not in line or line[:1].isspace() or line.lstrip().startswith("- "):
+            raise Refusal(
+                "frontmatter of %s is not flat key: value (%r); this path only "
+                "edits flat frontmatter" % (rel, _snip(line)))
+        key, value = line.split(":", 1)
+        pairs[key.strip()] = value.strip()
+    return pairs
+
+
+def _tool_specs(value):
+    """Split an allowed-tools value into specs. Whitespace OR comma separated."""
+    return [s for s in re.split(r"[\s,]+", (value or "").strip().strip('"\'')) if s]
+
+
+def _spec_ns(spec):
+    """The capability NAMESPACE a tool spec draws from.
+
+    mcp__<server>__<tool> -> "mcp__<server>__". Everything else (a builtin, with
+    or without an argument pattern like Bash(python3:*)) -> the name before "(".
+
+    Namespace, not the whole spec, because the legitimate case this op exists for
+    is a RENAME INSIDE one server: gcal_list_events -> list_events is the same
+    Calendar grant under a new name, while adding Bash is a new grant. A check
+    that compared whole specs could not tell those apart and would refuse X-1,
+    which is the tension this design has to resolve rather than paper over.
+    """
+    if spec.startswith("mcp__"):
+        parts = spec.split("__")
+        if len(parts) >= 3 and parts[1]:
+            return "__".join(parts[:2]) + "__"
+    return spec.split("(", 1)[0]
+
+
+def _guard_agent_tools(rel, before_value, after_value):
+    """allowed-tools may be REPAIRED, never WIDENED. Three checks, no judgement.
+
+    The tension this resolves, stated plainly: X-1 itself REPLACES one tool name
+    with another, so "the tool list may not change" refuses the very case this
+    exists for. But "the count may not change" is worse than useless -- it waves
+    through Gmail__search_threads -> Gmail__* and Bash(python3:*) -> Bash(*:*),
+    both same-count and both total escalations. So neither the set nor the count
+    is the invariant. These three are:
+
+      R1 namespace : no namespace in `after` that was not in `before`. Adding
+                     Bash, Write, WebFetch or a new MCP server is a new grant and
+                     is refused however it is spelled.
+      R2 wildcard  : the wildcard specs in `after` must be a byte-exact SUBSET of
+                     those in `before`. Wildcards may be dropped or narrowed to
+                     exact names; none may be added or EDITED. This is what stops
+                     the two same-count escalations above -- a modified wildcard
+                     is not in the before-set, so it reads as an addition.
+      R3 count     : per namespace, the number of exact (non-wildcard) specs may
+                     not grow. A 1-for-1 rename passes; net-adding a second Gmail
+                     tool alongside the first does not.
+
+    HONEST RESIDUE, stated here rather than papered over (same posture as
+    APPEND-NEGATION in the module docstring). R1-R3 permit a same-count exact
+    rename INSIDE a namespace the agent already holds, and they cannot tell a
+    repair from an escalation there: preflight's Gmail read tool could be
+    rewritten to a Gmail write tool and all three checks pass. Closing that needs
+    a LIVENESS oracle -- proof the removed name is dead and the added one is real
+    -- and this repo has no authority for that which is neither agent-forgeable
+    (any roster file in the repo is writable by the proposer, and point 3 of the
+    module docstring says the proposer IS the threat model) nor founder-
+    maintained (a roster he must hand-update on every connector change routes an
+    engineering decision to his desk, which is the design failing). Captured, not
+    dropped: see the spillover item filed with this change.
+    """
+    before_specs = _tool_specs(before_value)
+    after_specs = _tool_specs(after_value)
+
+    before_ns = {_spec_ns(s) for s in before_specs}
+    for spec in after_specs:
+        ns = _spec_ns(spec)
+        if ns not in before_ns:
+            raise Refusal(
+                "allowed-tools of %s would gain namespace %r via %r; this path "
+                "may repair a tool name, never grant a new capability"
+                % (rel, ns, spec))
+
+    before_wild = {s for s in before_specs if "*" in s}
+    after_wild = {s for s in after_specs if "*" in s}
+    added_wild = after_wild - before_wild
+    if added_wild:
+        raise Refusal(
+            "allowed-tools of %s would add or alter the wildcard %r; a wildcard "
+            "grants a whole namespace and may only be dropped or narrowed here"
+            % (rel, _snip(sorted(added_wild)[0])))
+
+    def exact_counts(specs):
+        counts = {}
+        for s in specs:
+            if "*" in s:
+                continue
+            counts[_spec_ns(s)] = counts.get(_spec_ns(s), 0) + 1
+        return counts
+
+    before_counts = exact_counts(before_specs)
+    after_counts = exact_counts(after_specs)
+    for ns in sorted(after_counts):
+        if after_counts[ns] > before_counts.get(ns, 0):
+            raise Refusal(
+                "allowed-tools of %s would grow namespace %r from %d to %d tool(s); "
+                "a repair is 1-for-1, a net addition is a new grant"
+                % (rel, ns, before_counts.get(ns, 0), after_counts[ns]))
+
+
+# Frontmatter keys `replace` may move on an agent / output-style file. Anything
+# not listed is REFUSED, including `name` -- the key the validator script
+# validate-separation.py joins on (its AGENT_TIER table), so renaming an agent
+# silently re-tiers it and that script's Gate 1.1b stops covering it. An
+# allowlist, not a denylist, for the reason CENSUS_CLAUDE_INPUTS is one: a
+# denylist fails open on every key invented after this line was written.
+AGENT_FM_EDITABLE = {
+    # Checked per-edit by executable code above: _guard_agent_tools (R1/R2/R3).
+    "allowed-tools",
+    # Deliberately NOT re-checked here. The tier policy already has one
+    # authority -- .claude/rules/model-allocation.md plus the validator script
+    # validate-separation.py (Gate 1.1b) -- and a second copy of a tier table in
+    # this file is the two-readers drift class rounds 2-4 kept re-finding. The
+    # staged tree is run through that same script by model_allocation_check
+    # below, which beats a per-edit check: being a state check it also catches a
+    # bad tier arriving from create_file or an additive op, neither of which
+    # reaches this function. Pinned by the test test-apply-claude-changes.sh.
+    "model",
+}
+
+
+def _guard_agent_frontmatter(rel, before, after):
+    """The by-name half of the agent grant. Only reached for `replace`."""
+    before_fm, after_fm = _frontmatter(before), _frontmatter(after)
+    if before_fm == after_fm:
+        return
+    if not before_fm or not after_fm:
+        raise Refusal(
+            "edit may not add or remove the frontmatter block of %s" % rel)
+
+    before_pairs = _fm_pairs(rel, before_fm)
+    after_pairs = _fm_pairs(rel, after_fm)
+    if set(before_pairs) != set(after_pairs):
+        moved = sorted(set(before_pairs) ^ set(after_pairs))
+        raise Refusal(
+            "edit may not add or remove frontmatter keys of %s (%s); only the "
+            "VALUE of an existing key may be corrected here" % (rel, ", ".join(moved)))
+
+    for key in sorted(before_pairs):
+        if before_pairs[key] == after_pairs[key]:
+            continue
+        if key not in AGENT_FM_EDITABLE:
+            raise Refusal(
+                "frontmatter key %r of %s may not be changed through this path "
+                "(editable: %s)" % (key, rel, ", ".join(sorted(AGENT_FM_EDITABLE))))
+        if key == "allowed-tools":
+            _guard_agent_tools(rel, before_pairs[key], after_pairs[key])
+
+
+def _guard_frontmatter(rel, before, after, op):
     """A rule's frontmatter block may not move, whatever op moved it.
 
     Compared before/after rather than "is the anchor inside the block": that
@@ -607,13 +842,46 @@ def _guard_frontmatter(rel, before, after):
     lived inside the replace branch, which left insert_before free to wedge a
     never-matching paths: block above the H1 of a rule that had no frontmatter
     yet -- additive text, dead rule, rc=0 (PR #70 round 4, major).
+
+    THE `not is_rule_text -> return` EARLY EXIT WAS A LIVE HOLE, not merely an
+    unbuilt feature (found 2026-09-02 during X-1). It meant an AGENT's or
+    output-style's frontmatter -- the block carrying `model:` and `allowed-tools:`
+    -- was reachable by every additive op with no check of any kind: an
+    insert_after anchored on the `allowed-tools:` line could append a tool to it,
+    or a create_file/insert pair could restate `model:`, and nothing in L1, L2 or
+    L3 looked. census() reads only _dir_names for agents/ and output-styles/, so
+    the ratchet saw a filename that had not moved and reported clean. Closing it
+    is a TIGHTENING that ships in the same change as the narrow grant below, and
+    the two are not the same direction: additive ops lose a freedom they had, and
+    `replace` gains a validated one it did not.
     """
-    if not is_rule_text(rel):
+    if is_rule_text(rel):
+        if _frontmatter(after) != _frontmatter(before):
+            raise Refusal(
+                "edit may not change the frontmatter of %s; the scoping keys "
+                "decide whether the rule loads at all" % rel)
         return
+
+    if not is_agent_text(rel):
+        return
+
+    if op in REPLACE_OPS:
+        # Body-frozen, frontmatter-validated. The body of an agent file is its
+        # INSTRUCTIONS and nothing censuses it (sp-b8debc44), so letting replace
+        # rewrite it would be the one unwatched rewrite in this whole tool.
+        if _fm_body(after) != _fm_body(before):
+            raise Refusal(
+                "replace on %s may only change the frontmatter block; the body "
+                "is not covered by any census and stays additive-only" % rel)
+        _guard_agent_frontmatter(rel, before, after)
+        return
+
+    # Every additive op: frontmatter frozen, exactly as it is for a rule.
     if _frontmatter(after) != _frontmatter(before):
         raise Refusal(
-            "edit may not change the frontmatter of %s; the scoping keys "
-            "decide whether the rule loads at all" % rel)
+            "an additive edit may not change the frontmatter of %s; `model:` and "
+            "`allowed-tools:` decide what the agent may DO. Use replace, which "
+            "validates them by name" % rel)
 
 
 def apply_edit(content, edit, rel):
@@ -674,7 +942,7 @@ def apply_edit(content, edit, rel):
                 return content, True
             new = content[:pos] + ins + content[pos:]
 
-    _guard_frontmatter(rel, content, new)
+    _guard_frontmatter(rel, content, new, op)
     return new, False
 
 
@@ -899,6 +1167,78 @@ def ratchet_check(before, after):
                 "enforcement ratchet: %s count would drop %d -> %d"
                 % (key, len(before[key]), len(after.get(key, set())))
             )
+
+
+def _model_validator(root):
+    """Import model_allocation_violations from the validator script, or None.
+
+    THIS ENGINE's repo root FIRST, then --root. Engine-first is the security
+    order: in production the two are the same file, and preferring the engine's
+    copy means the tier table travels with the code being run rather than with
+    the tree being edited.
+
+    --root is a fallback rather than an error because the engine is legitimately
+    RUN FROM A COPY: this file's own suite mutation-tests it by copying it to a
+    tempdir, which is the same lesson _capability_manifest already carries one
+    function up. Without the fallback every mutation case that touched an agent
+    refused with "cannot verify model allocation" -- a FALSE KILL that reads as
+    a working guard while proving nothing (measured 2026-09-02: 5 of 6 new
+    mutation cases reported their guard load-bearing when the mutant had in fact
+    never run). The fallback is not a hole: a proposal cannot write
+    validate-separation.py, because scoped_path reaches nothing outside .claude/
+    except settings-template.json.
+
+    HARD, unlike _capability_manifest's soft import. A missing manifest degrades
+    to "no declared tests" and capability-gate.py still goes red elsewhere; a
+    missing tier table has no second reader, so degrading here would silently
+    drop Gate 1.1b's coverage exactly when an agent's model: is being rewritten.
+    The caller turns None into a refusal.
+    """
+    for base in (repo_root_from_script(), root):
+        path = os.path.join(base, "validate-separation.py")
+        if not os.path.isfile(path):
+            continue
+        spec = importlib.util.spec_from_file_location("validate_separation", path)
+        mod = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(mod)
+        except Exception:
+            continue
+        fn = getattr(mod, "model_allocation_violations", None)
+        if fn is not None:
+            return fn
+    return None
+
+
+def model_allocation_check(root, copy_root, touches_agents):
+    """No proposal may introduce a NEW model-allocation violation.
+
+    Reuses the existing enforcer named by .claude/rules/model-allocation.md --
+    the validator script validate-separation.py, Gate 1.1b -- rather than
+    inventing a second tier check here. That script and that rule already own
+    which id belongs to which agent, and the 2026-07-01 scar behind the rule is
+    precisely what happens when the policy exists in more than one place and the
+    copies drift.
+
+    BEFORE-vs-AFTER, not "must be clean". Same reason gate_regression is
+    pass->fail and not "gates must be green": a repo that already carries a
+    violation would otherwise be unable to use this tool to fix anything,
+    including the violation.
+    """
+    if not touches_agents:
+        return
+    violations = _model_validator(root)
+    if violations is None:
+        raise Refusal(
+            "cannot verify model allocation (validate-separation.py not "
+            "importable); refusing an edit to .claude/agents/ rather than "
+            "landing it unchecked")
+    agents = os.path.join(".claude", "agents")
+    before = set(violations(os.path.join(root, agents)))
+    after = set(violations(os.path.join(copy_root, agents)))
+    new = after - before
+    if new:
+        raise Refusal("model allocation would break: %s" % _snip(sorted(new)[0], 120))
 
 
 def permission_surface_check(root, staged_settings_text):
@@ -1139,7 +1479,7 @@ def main(argv):
         rel = edit["file"]
         full = scoped_path(root, rel, paired_ok=touches_settings)
         if edit["op"] in REPLACE_OPS:
-            rule_text_only(root, rel, settings_key, template_key)
+            replace_target_ok(root, rel, settings_key, template_key)
         if rel in staged:
             current = staged[rel]
         elif os.path.isfile(full):
@@ -1203,6 +1543,12 @@ def main(argv):
 
         after_census = census(copy_root)
         ratchet_check(before_census, after_census)
+        # A STATE check on the staged tree, so it covers every op that can land
+        # an agent file -- create_file and the additive ops included, not just
+        # the replace that motivated it.
+        model_allocation_check(
+            root, copy_root,
+            any(is_agent_text(e["file"]) for e in prop["edits"]))
         log.append("ratchet ok: hooks %d->%d, rules %d->%d, rule-marks %d->%d, deny %d->%d" % (
             len(before_census["hooks"]), len(after_census["hooks"]),
             len(before_census["rules"]), len(after_census["rules"]),

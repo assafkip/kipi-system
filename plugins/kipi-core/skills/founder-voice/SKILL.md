@@ -48,10 +48,9 @@ If these files are empty/template, the voice skill cannot run. Ask the founder t
   Founder-directed 2026-08-06: "essentially on any social posts I don't finish with
   a question." Measured on his corpus that day: 1 of 27 writing samples ends on a
   question, and that one is a quoted line inside a piece, not a closer. The 4 seed
-  drafts that do are all March 2026 engagement-shaped LinkedIn posts. This REVERSES
-  the old line "end with a direct question or a sharp statement", which was an
-  assertion the corpus contradicted. Enforced by `ending_gate._closing_question_signals`
-  in the content engine, not by this bullet.
+  drafts that do are all March 2026 engagement-shaped LinkedIn posts. The consulting instance's content
+  engine gates this in code (`q-consult/pipeline/ending_gate.py`); that file does not
+  ship with this skeleton, so everywhere else it is a judgment check, not a gate.
 - Long-form articles (Medium) may still end reflectively, but not on a question that
   asks the reader about their own business.
 - Emails/DMs: end with one clear ask or one specific question
@@ -63,7 +62,7 @@ Before returning any draft to the founder, call both MCP tools on the full text:
 1. `kipi_voice_lint(draft)` — blocks on `emdash`, `banned_word`, `banned_phrase`, `filler_opener`, `structural_opener`, `sentence_length` (avg >20 words), `paragraph_uniformity`. Warns on `rule_of_three`. If `pass: false`, fix every `violations[]` entry and re-run until `pass: true`.
 2. `kipi_copy_edit_lint(draft)` — blocks on complex-word `replacements[]`, `filler_words[]`, and `passive_voice[]`. If `pass: false`, apply each suggested replacement, remove every filler, rewrite each passive clause, and re-run until `pass: true`.
 
-Banned words and phrases enforced by `kipi_voice_lint` include: delve, comprehensive, crucial, pivotal, robust, innovative, transformative, cutting-edge, groundbreaking, unprecedented, tapestry, synergy, realm, catalyst, testament, leverage, utilize, optimize, foster, bolster, enhance, empower, revolutionize, streamline, spearhead, seamlessly, meticulously, effectively, strategically, furthermore, moreover, additionally, indeed, ecosystem, landscape, holistic, scalable, disruptive, next-gen, seamless, and more. Full list in `plugins/kipi-core/kipi-mcp/src/kipi_mcp/draft_scanner.py`. If a pattern keeps slipping past, extend the linter — do not add rules here.
+The banned word and phrase lists live in `plugins/kipi-core/kipi-mcp/src/kipi_mcp/draft_scanner.py` (`TIER1_WORDS / TIER1_VERBS / TIER1_ADVERBS`, `BANNED_PHRASES`) and are applied by `kipi_voice_lint`. They are not restated here: a second copy drifts, and this one had already drifted by five words when it was measured 2026-09-02. Call the linter and read `violations[]`. If a pattern keeps slipping past, extend the linter.
 
 Never return a draft with `pass: false` on either linter. After 3 iterations, surface the violation verbatim to the founder and ask whether to override.
 

@@ -50,8 +50,7 @@ All patterns below are enforced deterministically by `kipi_voice_lint` and `kipi
 
 **Enforced by `kipi_voice_lint` / `kipi_copy_edit_lint`:**
 - Em-dashes (any `\u2014` character)
-- 55+ banned words: leverage, utilize, robust, paradigm, synergy, streamline, empower, delve, comprehensive, crucial, pivotal, innovative, transformative, cutting-edge, groundbreaking, unprecedented, tapestry, realm, catalyst, testament, optimize, foster, underscore, bolster, enhance, revolutionize, spearhead, seamlessly, meticulously, effectively, strategically, furthermore, moreover, additionally, indeed, ecosystem, landscape, holistic, scalable, disruptive, next-gen, seamless, and more. Full list: `plugins/kipi-core/kipi-mcp/src/kipi_mcp/draft_scanner.py` → `TIER1_WORDS / TIER1_VERBS / TIER1_ADVERBS`.
-- Banned phrases: any `"in today's X"` variant (regex), "let's dive in," "let's explore," "it's important to note," "it's worth noting," "in conclusion," "game-changer," "unlock the potential," "revolutionize the way," "circling back," "just checking in," "i'm excited to," "thrilled to share," "humbled by," and more. Full list: `draft_scanner.py` → `BANNED_PHRASES`.
+- Banned words and phrases: owned by `plugins/kipi-core/kipi-mcp/src/kipi_mcp/draft_scanner.py` (`TIER1_WORDS / TIER1_VERBS / TIER1_ADVERBS`, `BANNED_PHRASES`). Not restated here; call the linter and read `violations[]`.
 - Filler words: basically, actually, very, really, extremely, incredibly, just, quite, obviously, of course
 - Passive voice patterns
 - Sentence length: avg >20 words blocks
