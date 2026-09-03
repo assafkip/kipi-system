@@ -36,7 +36,11 @@ _strip_quoted_material() {
     /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
     fence { next }
     /^[[:space:]]*[+>-]/     { next }
-    /^    /                  { next }
+    # An indented code block is four spaces OR ONE TAB. The first cut of this
+    # filter matched only the spaces, and codex round 3 on PR #297 showed a
+    # tab-indented quoted `VERDICT: BLOCK` sailing through to fabricate a BLOCK --
+    # the same defect this filter exists to stop, one indent character over.
+    /^(    |\t)/             { next }
     { print }
   ' 2>/dev/null
 }

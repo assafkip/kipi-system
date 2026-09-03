@@ -4138,4 +4138,14 @@ ok "case D: the resolved verdict the gate posts is APPROVE WITH NITS"
 [ "$(extract_verdict "$WORK/quoted-then-real.md")" = "REQUEST CHANGES" ]   || fail "an unquoted VERDICT statement next to a diff line was dropped, got '$(extract_verdict "$WORK/quoted-then-real.md")'"
 ok "case D control: an unquoted VERDICT statement beside quoted material still counts"
 
+# A TAB is an indented code block too (codex round 3 on PR #297). The filter's
+# first cut matched four spaces only, so tab-indented quoted source fabricated a
+# BLOCK -- the worst direction, since a false BLOCK wedges an unattended gate.
+printf 'I read this file:\n\tVERDICT: BLOCK\nReviewer conclusion: **APPROVE WITH NITS**\n' > "$WORK/tabquote.md"
+[ "$(extract_verdict "$WORK/tabquote.md")" = "APPROVE WITH NITS" ]   || fail "a TAB-indented quoted VERDICT fabricated a verdict: got '$(extract_verdict "$WORK/tabquote.md")' (expected APPROVE WITH NITS)"
+ok "case D: tab-indented quoted material is excluded like space-indented"
+
+[ "$(awk '/^\tVERDICT: BLOCK/ { n++ } END { print n+0 }' "$WORK/tabquote.md")" = "1" ]   || fail "the tab fixture is not actually tab-indented, so the case above proves nothing"
+ok "case D control: the fixture really is TAB-indented"
+
 echo "PASS: $PASS/$PASS severity-floor checks"
