@@ -79,14 +79,22 @@ NOW = dt.datetime(2026, 8, 30, 7, 0, 0, tzinfo=dt.timezone.utc).astimezone()
 # --------------------------------------------------------------------------
 
 def _sources(**overrides):
-    """Four sections, all empty-and-healthy, with per-section overrides."""
+    """Every COLLECTED section, empty-and-healthy, with per-section overrides.
+
+    `owed` and `overnight` stayed here after 2026-09-03. They stopped being FOUNDER
+    sections and route to Sana instead; they did not stop being collected.
+    """
     base = {k: ([], None) for k in ("calendar", "mail", "owed", "overnight")}
     base.update(overrides)
     return base
 
 
 def test_every_section_can_say_failed_distinctly_from_zero(brief):
-    for name in ("calendar", "mail", "owed", "overnight"):
+    # Read from the registry, not typed. `owed` and `overnight` left this list on
+    # 2026-09-03: they no longer RENDER, so a broken one cannot look different from an
+    # empty one in a message that shows neither. The property they keep is asserted
+    # separately below, and it is the one that still matters for them.
+    for name, _title in brief.SECTIONS:
         empty, _ = brief.build(NOW, _sources())
         broken, degraded = brief.build(NOW, _sources(**{name: ([], "boom")}))
         assert empty != broken, f"{name}: a broken section renders like an empty one"
@@ -95,17 +103,43 @@ def test_every_section_can_say_failed_distinctly_from_zero(brief):
         assert degraded, f"{name}: a broken section did not mark the run degraded"
 
 
+def test_a_broken_ENGINEERING_section_still_degrades_the_run_without_rendering(brief):
+    """The half of the property above that survives for a routed section.
+
+    He never sees `Owed today` again, but a Linear outage must still mark the run
+    degraded, because the deadman and the receipt read that flag. A section that stops
+    being visible must not quietly stop being MONITORED, which is exactly what deleting
+    the collectors would have done."""
+    for name, _title in brief.ENGINEERING_SECTIONS:
+        message, degraded = brief.build(NOW, _sources(**{name: ([], "boom")}))
+        assert degraded, f"{name}: a broken engineering section did not degrade the run"
+        assert "boom" not in message, f"{name}: engineering detail reached his brief"
+
+
 def test_all_empty_is_not_degraded_and_says_nothing(brief):
     message, degraded = brief.build(NOW, _sources())
     assert not degraded
     assert "COULD NOT READ" not in message
-    assert message.count("nothing") == 4
+    # Counted from the module's own SECTIONS, never typed. It was 4 until 2026-09-03,
+    # when `owed` and `overnight` left the founder's brief for Sana's queue; taking the
+    # number from the registry means the next section change moves it by itself.
+    assert message.count("nothing") == len(brief.SECTIONS)
 
 
-def test_all_four_sections_are_present_by_name(brief):
+def test_all_founder_sections_are_present_by_name(brief):
     message, _ = brief.build(NOW, _sources())
-    for title in ("Today", "Mail", "Owed", "Overnight"):
+    for _key, title in brief.SECTIONS:
         assert title in message, f"section {title} missing from the brief"
+
+
+def test_the_engineering_sections_are_ABSENT_from_his_brief(brief):
+    """Founder 2026-09-03: "I'm not looking for this to be a build dashboard, but a
+    consulting dashboard." He found his board reporting Sana's Linear queue and the
+    overnight launchd run. This is the assertion that keeps them out, and it is the
+    inverse of the one above rather than a deletion of it."""
+    message, _ = brief.build(NOW, _sources())
+    for _key, title in brief.ENGINEERING_SECTIONS:
+        assert title not in message, f"{title} is engineering and is not his to read"
 
 
 def test_no_html_no_cards_no_scores(brief):
@@ -668,7 +702,11 @@ def test_a_raising_collector_costs_its_own_section_only(brief, tmp_path, monkeyp
     sources = brief.collect_all(NOW, log_path=log)
     message, degraded = brief.build(NOW, sources)
     assert degraded
-    assert message.count("fine") == 3, "the healthy sections did not render"
+    # One less than the founder's section count: mail is the victim here. Derived, so
+    # the 2026-09-03 drop from four sections to two did not need this line rewritten by
+    # hand -- and neither will the next change.
+    assert message.count("fine") == len(brief.SECTIONS) - 1, (
+        "the healthy sections did not render")
     assert "COULD NOT READ: mail failed (RuntimeError)" in message
     assert "abc123" not in message, "an exception message reached the brief"
     assert "abc123" in log.read_text(), "the message was not kept in the local log"
@@ -750,7 +788,10 @@ def test_an_optional_module_that_raises_at_import_costs_its_own_section_only(bri
     sources = brief.collect_all(NOW, log_path=tmp_path / "e.log")
     message, degraded = brief.build(NOW, sources)
     assert degraded
-    assert message.count("fine") == 4, "the healthy sections did not render"
+    # Every founder section is healthy here; only the optional module broke. Derived
+    # from the registry so the section set can change without this line being rewritten.
+    assert message.count("fine") == len(brief.SECTIONS), (
+        "the healthy sections did not render")
     assert "COULD NOT READ: broken failed (ImportError)" in message
     assert "import-time-token" not in message
 
@@ -791,8 +832,21 @@ def test_every_registered_section_is_guarded(brief, tmp_path, monkeypatch):
     monkeypatch.setattr(brief, "OPTIONAL_SECTIONS",
                         (("fake_section", "fake", "Fake section"),))
     monkeypatch.setattr(brief, "_optional_module", lambda stem: FakeMod)
+    # RENDERED keys only. The guard still wraps `owed` and `overnight` (they are in
+    # collect_all's fixed tuple and asserted below), but since 2026-09-03 they do not
+    # reach his message, so "COULD NOT READ: owed failed" cannot be looked for there.
     keys = [k for k, _ in brief.SECTIONS] + [k for _, k, _ in brief.OPTIONAL_SECTIONS]
-    assert len(keys) >= 5 and "fake" in keys
+    engineering = {k for k, _ in brief.ENGINEERING_SECTIONS}
+    for victim in engineering:
+        _all_ok(brief, monkeypatch)
+        def boom(*a, **k):
+            raise RuntimeError("secret=xyz")
+        monkeypatch.setattr(brief, f"collect_{victim}", boom)
+        sources = brief.collect_all(NOW, log_path=tmp_path / "e.log")
+        assert sources[victim][1] and "xyz" not in sources[victim][1], victim
+        assert brief.build(NOW, sources)[1], f"{victim} broke and the run was not degraded"
+    keys = [k for k in keys if k not in engineering]
+    assert "fake" in keys
     for victim in keys:
         _all_ok(brief, monkeypatch)
         if victim != "fake":
@@ -842,13 +896,16 @@ def test_an_optional_module_returning_none_is_off_not_a_section(brief, tmp_path,
     assert "board" in log.read_text() and "off" in log.read_text()
 
 
-def test_a_present_optional_module_renders_after_the_fixed_four(brief, tmp_path, monkeypatch):
+def test_a_present_optional_module_renders_after_the_fixed_sections(brief, tmp_path, monkeypatch):
     _all_ok(brief, monkeypatch)
 
     class Mod:
         @staticmethod
         def collect(now, sources):
-            assert sources["owed"] == (["fine"], None), "optional sections see the fixed four"
+            # `owed` is still COLLECTED after 2026-09-03, it just stopped being
+            # rendered, so an optional module still sees it. That is the whole reason
+            # the collectors were routed rather than deleted.
+            assert sources["owed"] == (["fine"], None), "optional sections see every collected section"
             return (["Widgetcorp"], None)
 
     monkeypatch.setattr(brief, "OPTIONAL_SECTIONS",
@@ -857,4 +914,5 @@ def test_a_present_optional_module_renders_after_the_fixed_four(brief, tmp_path,
     sources = brief.collect_all(NOW, log_path=tmp_path / "e.log")
     message, degraded = brief.build(NOW, sources)
     assert not degraded
-    assert message.index("Overnight") < message.index("Terms I do not know") < message.index("Widgetcorp")
+    last_fixed = brief.SECTIONS[-1][1]
+    assert message.index(last_fixed) < message.index("Terms I do not know") < message.index("Widgetcorp")

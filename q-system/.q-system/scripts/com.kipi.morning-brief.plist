@@ -46,7 +46,12 @@
   </array>
   <!-- Local 07:00. launchd calendar intervals are LOCAL time, so this tracks
        PST/PDT without a DST table. -->
-  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+  <!-- 07:40, not 07:00 (2026-09-03). The consulting state card is written at 07:30 by
+       io.askconsulting.ask-crm-state-card, and this brief MIRRORS that card rather than
+       recomputing it. At 07:00 it mirrored yesterday. A second job at 07:40 was the
+       alternative and was rejected: two jobs racing one board is how two writers start.
+       Moving this one keeps a single schedule and a single writer. -->
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>40</integer></dict>
   <key>RunAtLoad</key><false/>
   <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/morning-brief.out.log</string>
   <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/morning-brief.err.log</string>

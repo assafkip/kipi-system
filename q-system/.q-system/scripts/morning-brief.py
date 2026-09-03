@@ -440,9 +440,25 @@ def _section(title, rows, error, cap=MAX_ROWS):
     return out
 
 
+# THE FOUNDER'S SECTIONS. Consulting only, 2026-09-03, founder-directed:
+# "I'm not looking for this to be a build dashboard, but a consulting dashboard."
+#
+# `owed` (Linear) and `overnight` (launchd) LEFT this tuple and did NOT stop being
+# collected. They are engineering signal, and `founder-notifications.md` has said since
+# 2026-08-10 that engineering signal goes to Sana's Linear triage and never to him:
+# "I dont want to see any of these." They now render through ENGINEERING_SECTIONS into
+# slack-notify.sh. Deleting the collectors instead would have been the wrong fix twice
+# over -- it would drop the deadman's view of overnight jobs, and it would silently
+# retire `notion_board`'s only input.
 SECTIONS = (
     ("calendar", "Today"),
     ("mail", "Mail needing an answer (48h)"),
+)
+
+#: Collected, never rendered to him. One line each into Sana's queue, and only when the
+#: section is degraded: a healthy overnight run is not news and a ticket per morning is
+#: how an alert channel gets muted.
+ENGINEERING_SECTIONS = (
     ("owed", "Owed today"),
     ("overnight", "Overnight jobs"),
 )
@@ -460,8 +476,21 @@ SECTIONS = (
 # notion_board.py reported inert on CI while this registry was its real caller
 # (PR #294, 2026-09-02). _optional_module accepts either spelling.
 OPTIONAL_SECTIONS = (
+    # consulting_board runs FIRST: board_rows reads its buckets, and the registry is
+    # ordered, so a later entry sees the earlier one's result in `sources`.
+    ("consulting_board.py", "consulting", "Your book"),
+    ("groupme_inbox.py", "groupme", "GroupMe waiting on you"),
     ("unknown_terms.py", "unknown_terms", "Terms I do not know"),
-    ("notion_board.py", "board", "Notion board"),
+    ("board_rows.py", "board_rows", "Notion board"),
+    # notion_board.py is UNREGISTERED here, and the comment this replaces was wrong.
+    # It claimed the module would fall quiet because `owed` had left the founder's
+    # sections. It did not: `owed` is still COLLECTED in collect_all's fixed tuple, so
+    # notion_board's guard never fired and the first live dry-run rendered its bullets
+    # right underneath board_rows' rows. Two writers on one board, which is the exact
+    # thing this work exists to stop. Its bullets were never visible in the board's own
+    # views anyway: the three sections are FILTERED VIEWS of the Kipi backlog database
+    # split by the Bucket select, measured 2026-09-03. The file and its tests stay on
+    # disk; only its registration is removed, so the revert is one line.
 )
 
 ERROR_LOG = STATE_DIR / "logs" / "morning-brief-errors.log"
@@ -556,7 +585,28 @@ def build(now: dt.datetime, sources: dict):
             degraded = True
         lines += _section(title, rows, error)
         lines.append("")
+    for key, _title in ENGINEERING_SECTIONS:
+        # DEGRADED WITHOUT RENDERING. Found by its own test: moving these two out of
+        # SECTIONS also moved them out of this flag, and the flag is what the deadman
+        # and the receipt read. A section that stops being VISIBLE to him must not
+        # quietly stop being MONITORED -- that is the failure deleting the collectors
+        # would have caused, arriving by another door.
+        _rows, error = sources.get(key, ([], None))
+        if error:
+            degraded = True
     return "\n".join(lines).rstrip(), degraded
+
+
+def route_engineering(sources: dict, notify=None) -> list:
+    """Engineering sections leave his brief for Sana. Delegates to engineering_route.
+
+    The routing lives in a SIBLING module, not here, because
+    `test_no_source_file_calls_slack_notify` greps this file for "slack-notify" and is
+    right to: the founder's brief must never go out through the fleet alert path. That
+    guard caught the first version of this function, which is the guard working.
+    """
+    mod = _load_sibling("engineering_route", "engineering_route.py")
+    return mod.route(sources, ENGINEERING_SECTIONS, notify=notify)
 
 
 def collect_all(now: dt.datetime, log_path=None, budget_s: float = COLLECT_BUDGET_S,
@@ -639,7 +689,17 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     now = dt.datetime.now().astimezone()
-    message, degraded = build(now, collect_all(now))
+    if args.dry_run:
+        # Reaches the optional sections, which can write to places the send flag never
+        # covered. Set before collect_all, because collection IS when they write.
+        os.environ["KIPI_BRIEF_DRY_RUN"] = "1"
+    sources = collect_all(now)
+    # Engineering leaves BEFORE the founder's message is built, so a routing failure
+    # cannot silently become a section he reads.
+    routed = route_engineering(sources, notify=(lambda _m: None) if args.dry_run else None)
+    for line in routed:
+        print(f"[to sana] {line}")
+    message, degraded = build(now, sources)
     print(message)
     if args.dry_run:
         print("\n[dry-run] nothing sent, no receipt written")
