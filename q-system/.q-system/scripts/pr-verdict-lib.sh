@@ -12,6 +12,35 @@
 # The worker only falls back to re-extracting from the review .md for PRs
 # reviewed before the record existed.
 
+# _strip_quoted_material
+# stdin -> stdout, dropping every line that is material the reviewer READ rather
+# than prose the reviewer WROTE: fenced blocks, diff +/- lines, blockquotes, and
+# 4-space-indented code.
+#
+# ONE FILTER, TWO CALLERS (ASK-1227 round 2). A `codex exec` stream is not a
+# review, it is the whole agent session, so it replays the PR diff and every file
+# the agent opened. A verdict token inside that material was written by the author
+# under review, never by the reviewer. This shipped on the tail fallback alone and
+# left the primary reader matching inside quoted diff lines; see extract_verdict's
+# header for the reproducer that found it.
+#
+# THE `-` RULE COSTS A MARKDOWN BULLET, AND THAT IS THE CHEAPER SIDE. `- ` opens a
+# list item as well as a diff removal, and this cannot tell them apart. So a
+# reviewer writing its verdict as `- **VERDICT:** APPROVE` reads unstated, which
+# posts failure and HOLDS the PR -- the same safe direction the rest of this file
+# takes, and reversible by a human. Measured before shipping across all 81 recorded
+# transcripts in ~/.config/kipi/pr-reviews: filtering changes the extracted verdict
+# on exactly the reproducer's shape and on no real review.
+_strip_quoted_material() {
+  awk '
+    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+    fence { next }
+    /^[[:space:]]*[+>-]/     { next }
+    /^    /                  { next }
+    { print }
+  ' 2>/dev/null
+}
+
 # extract_verdict <review-file>
 # Prints APPROVE | APPROVE WITH NITS | REQUEST CHANGES | BLOCK, or nothing if
 # the file states no verdict (empty file, killed run, freeform prose).
@@ -80,10 +109,22 @@
 # BLOCKER/BLOCKERS is still stripped before token matching: "Fix first: **BLOCKER
 # 1**" after a verdict line made a bare BLOCK match report verdict BLOCK on the
 # real PR #11 round 2 payload.
+#
+# THE QUOTED-MATERIAL FILTER IS SHARED WITH THE FALLBACK, AND HAS TO BE (ASK-1227
+# round 2). Round one put the exclusion on `_bold_verdict_in_tail` only. Codex
+# proved the hole with a reproducer: a statement-shaped `VERDICT: REQUEST CHANGES`
+# sitting inside a QUOTED diff line is matched HERE and returned at the `[ -n
+# "$found" ]` guard below, so the fallback never runs and the reviewer's real
+# closing `**APPROVE WITH NITS**` is discarded -- a false RED on a review that
+# approved. The order rule above ("among candidates that pass the shape test the
+# last one wins") cannot reach that case: it only ranks candidates this reader
+# accepted, and a review that states its verdict in prose contributes no candidate
+# at all. Which of the two readers sees a quoted token first must not change the
+# answer, so both read the same filtered text.
 extract_verdict() {
   local f="$1" found
   [ -s "$f" ] || return 0
-  found="$(awk '
+  found="$(_strip_quoted_material <"$f" 2>/dev/null | awk '
     function leading_token(s,   t) {
       sub(/^[[:space:]*_]+/, "", s)
       if (s ~ /^APPROVE WITH NITS/) return "APPROVE WITH NITS"
@@ -115,7 +156,7 @@ extract_verdict() {
       if (rest ~ /^[[:space:]*_:#-]*$/) awaiting = 1
     }
     END { if (found != "") printf "%s", found }
-  ' "$f" 2>/dev/null)"
+  ' 2>/dev/null)"
   # A stated verdict on a VERDICT-marked line always wins. The tail fallback is
   # strictly a second chance for a review that stated its call and never used the
   # word, never an override of one that did.
@@ -151,13 +192,11 @@ extract_verdict() {
 _bold_verdict_in_tail() {
   local f="${1:-}"
   [ -s "$f" ] || return 0
-  tail -n "${KIPI_VERDICT_TAIL_LINES:-250}" "$f" 2>/dev/null | awk '
-    # Fenced code is material the reviewer read, not its own statement.
-    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
-    fence { next }
-    # Diff markers, blockquotes, and indented code blocks: all quoted material.
-    /^[[:space:]]*[+>-]/ { next }
-    /^    / { next }
+  # TAIL FIRST, THEN FILTER. The 250-line window is measured on the RAW stream
+  # (review_comment_body: "the reviewer's actual message is the last ~250 lines"),
+  # so filtering before slicing would widen the window by however much quoted
+  # material the stream happened to carry.
+  tail -n "${KIPI_VERDICT_TAIL_LINES:-250}" "$f" 2>/dev/null | _strip_quoted_material | awk '
     {
       line = $0
       gsub(/BLOCKERS?/, "", line)

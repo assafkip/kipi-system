@@ -4102,4 +4102,40 @@ ok "case C control: an explicit VERDICT line still wins over the fallback"
 [ -z "$(extract_verdict "$WORK/decoy-noverdict.md")" ]   || fail "a transcript that stated NO verdict got one manufactured from quoted material: got '$(extract_verdict "$WORK/decoy-noverdict.md")'"
 ok "case C sharp: quoted tokens with no stated conclusion yield NO verdict"
 
+# --- case D: the PRIMARY reader must exclude quoted material too (ASK-1227 rd 2) -
+# Case C above proved the TAIL FALLBACK ignores quoted tokens. It could not see
+# this: a quoted line that is STATEMENT-shaped (`VERDICT: <token>` with the token
+# leading) is matched by extract_verdict's own reader, which returns before the
+# fallback ever runs. Codex's round-2 reproducer on PR #297, verbatim in shape --
+# a diff line adding a printf of a verdict, then the reviewer's real prose call.
+# Ran against 850a56d3 it returned REQUEST CHANGES on a review that approved: a
+# false RED, which on a required context wedges the PR with nobody watching.
+{
+  printf -- '+printf %sVERDICT: REQUEST CHANGES\n' "'"
+  printf 'Reviewer conclusion: **APPROVE WITH NITS**\n'
+} > "$WORK/quoted-statement.md"
+
+[ "$(extract_verdict "$WORK/quoted-statement.md")" = "APPROVE WITH NITS" ]   || fail "a statement-shaped VERDICT inside a quoted diff line beat the reviewer's own conclusion: got '$(extract_verdict "$WORK/quoted-statement.md")' (expected APPROVE WITH NITS)"
+ok "case D: a quoted statement-shaped VERDICT line cannot outrank the real conclusion"
+
+# The trap is REALLY IN the fixture. Without this the case above passes on a
+# fixture that never carried a quoted verdict statement -- a check that cannot fail.
+grep -q '^+printf .VERDICT: REQUEST CHANGES' "$WORK/quoted-statement.md"   || fail "case D fixture carries no quoted VERDICT statement, so it proves nothing"
+ok "case D control: the fixture really does carry a quoted VERDICT statement"
+
+# End to end, the way the gate consumes it: the resolved verdict is what gets
+# posted. resolve_verdict takes the HARSHER of stated and derived, so a false
+# REQUEST CHANGES here survives all the way to the status.
+[ "$(resolve_verdict "$(extract_verdict "$WORK/quoted-statement.md")" "APPROVE WITH NITS")" = "APPROVE WITH NITS" ]   || fail "resolved verdict for the quoted-statement transcript should be APPROVE WITH NITS, got '$(resolve_verdict "$(extract_verdict "$WORK/quoted-statement.md")" "APPROVE WITH NITS")'"
+ok "case D: the resolved verdict the gate posts is APPROVE WITH NITS"
+
+# The same exclusion must not swallow a REAL verdict statement that merely sits
+# near quoted material. Pairs with the case C control above, one layer down.
+{
+  printf -- '+ added_line = "**BLOCK**"\n'
+  printf 'VERDICT: REQUEST CHANGES\n'
+} > "$WORK/quoted-then-real.md"
+[ "$(extract_verdict "$WORK/quoted-then-real.md")" = "REQUEST CHANGES" ]   || fail "an unquoted VERDICT statement next to a diff line was dropped, got '$(extract_verdict "$WORK/quoted-then-real.md")'"
+ok "case D control: an unquoted VERDICT statement beside quoted material still counts"
+
 echo "PASS: $PASS/$PASS severity-floor checks"
