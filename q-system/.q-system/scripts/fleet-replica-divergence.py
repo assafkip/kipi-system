@@ -45,11 +45,34 @@ from pathlib import Path
 # instance root. Kept explicit rather than walked: a walk would sweep in
 # instance-OWNED files (.q-system/data/, output/) whose divergence is CORRECT and
 # expected, and burying real findings in expected ones is how a signal dies.
+#
+# EVERY ENTRY MUST RESOLVE SOMEWHERE. `plugins/kipi-core/scripts/rca-lint.py`
+# sat here from the first commit and resolved to 0 of 29 roots -- the real path
+# is skills/rca/scripts/. `scan()` dropped it with `if not groups: continue`, so
+# the run printed "replicated paths checked: 3" and listed two. A third of the
+# declared coverage was decoration, in the tool written to catch decoration.
+# That is why a zero-copy path is now exit 3 and not a skipped line.
 DEFAULT_REPLICATED = (
     "plugins/prd-os/scripts/prd_runner.py",
-    "plugins/kipi-core/scripts/rca-lint.py",
+    "plugins/kipi-core/skills/rca/scripts/rca-lint.py",
     "kipi-update.sh",
 )
+
+# Distinct on purpose, so a control cannot pass for the wrong reason and the
+# kipi-update preflight can tell "found drift" from "could not run".
+EXIT_OK = 0
+EXIT_DIVERGED = 1
+EXIT_EMPTY_POPULATION = 2
+EXIT_MISCONFIGURED = 3
+
+# The one line the kipi-update preflight greps for. Proof of EXECUTION: a
+# truncated or comment-only copy of this file is a valid program that exits 0
+# with no output, and existence checks cannot tell it from a working gate.
+VERDICT_PREFIX = "fleet replica divergence: "
+
+
+def verdict(text: str) -> None:
+    print(f"{VERDICT_PREFIX}{text}")
 
 
 def _sha(path: Path) -> str:
@@ -91,8 +114,15 @@ def registry_roots(registry: Path) -> list[str]:
     return sorted({os.path.expanduser(p) for p in found})
 
 
-def scan(roots: list[str], rel_paths: tuple[str, ...]) -> list[dict]:
+def scan(roots: list[str], rel_paths: tuple[str, ...]) -> tuple[list[dict], list[str]]:
+    """Returns (report, unresolvable) -- a path present in NO root is the second.
+
+    Absence in SOME roots is legitimate (see the module docstring); absence in
+    EVERY root is a typo in the path itself, and silently skipping it is how a
+    gate reports green over coverage it never had.
+    """
     report = []
+    unresolvable: list[str] = []
     for rel in rel_paths:
         groups: dict[str, list[str]] = {}
         for root in roots:
@@ -105,6 +135,7 @@ def scan(roots: list[str], rel_paths: tuple[str, ...]) -> list[dict]:
                 continue
             groups.setdefault(digest, []).append(root)
         if not groups:
+            unresolvable.append(rel)
             continue
         report.append({
             "path": rel,
@@ -117,10 +148,10 @@ def scan(roots: list[str], rel_paths: tuple[str, ...]) -> list[dict]:
                 key=lambda g: -g["n"],
             ),
         })
-    return report
+    return report, unresolvable
 
 
-def scan_claims(roots: list[str], claims: list[str]) -> list[dict]:
+def scan_claims(roots: list[str], claims: list[str]) -> tuple[list[dict], list[str]]:
     """Does the ENFORCER travel as far as the CLAIM it enforces?
 
     THE DEFECT THIS EXISTS FOR (P-4, measured across the registry 2026-09-02).
@@ -146,14 +177,30 @@ def scan_claims(roots: list[str], claims: list[str]) -> list[dict]:
     strictly more roots than the needle does -- an enforcer ahead of its claim is
     fine (code can ship before the doc), a claim ahead of its enforcer is the
     prompt-only-enforcement that core rule 3 forbids.
+
+    FAIL CLOSED ON A SPEC IT CANNOT EVALUATE (2026-09-02, found while arming
+    this as a kipi-update preflight). The first draft printed the usage line to
+    stderr, `continue`d, reported "claims checked: 0" and RETURNED 0. A typo in
+    the wiring -- one `:` instead of `::` -- would have made this gate green
+    forever while announcing it had checked something. That is
+    a-gate-that-cannot-run-must-not-pass occurring inside the tool built to
+    detect it, which is the whole reason it is not a skipped line any more.
+
+    Returns (report, errors). A claim path present in ZERO roots is an error for
+    the same reason: it cannot be ahead of its enforcer if it does not exist, so
+    it would score a permanent, meaningless green.
     """
     report = []
+    errors: list[str] = []
     for spec in claims:
         parts = spec.split("::")
         if len(parts) != 3:
-            sys.stderr.write(f"--claim must be 'claim::enforcer::needle'; got {spec!r}\n")
+            errors.append(f"--claim must be 'claim::enforcer::needle'; got {spec!r}")
             continue
         claim_rel, enforcer_rel, needle = parts
+        if not all(p.strip() for p in parts):
+            errors.append(f"--claim has an empty field: {spec!r}")
+            continue
         claim_roots, enforcer_roots = [], []
         for root in roots:
             if (Path(root) / claim_rel).is_file():
@@ -165,12 +212,19 @@ def scan_claims(roots: list[str], claims: list[str]) -> list[dict]:
                         enforcer_roots.append(root)
                 except OSError:
                     pass
+        if not claim_roots:
+            errors.append(
+                f"--claim names {claim_rel!r}, which exists in 0 of {len(roots)} "
+                "roots; a claim that is nowhere can never be ahead of its "
+                "enforcer and would score a permanent green"
+            )
+            continue
         report.append({
             "claim": claim_rel, "enforcer": f"{enforcer_rel}:{needle}",
             "claim_roots": len(claim_roots), "enforcer_roots": len(enforcer_roots),
             "unenforced": sorted(set(claim_roots) - set(enforcer_roots)),
         })
-    return report
+    return report, errors
 
 
 def main() -> int:
@@ -198,13 +252,25 @@ def main() -> int:
             f"no instance roots resolved from {registry}; refusing to report green "
             "on an empty population\n"
         )
-        return 2
+        # The verdict prints even on refusal. The preflight distinguishes "the
+        # gate ran and refused" from "the gate did not run" by this line, and a
+        # refusal that printed nothing would be read as the latter.
+        verdict(f"REFUSED (no instance roots resolved from {registry})")
+        return EXIT_EMPTY_POPULATION
 
     # An explicit --claim run checks ONLY claims. Mixing the two silently would
     # make `--claim X` also red on unrelated replica drift, and a check whose
     # failure does not name the thing you asked about gets read as noise.
     if args.claims:
-        claims = scan_claims(roots, args.claims)
+        claims, claim_errors = scan_claims(roots, args.claims)
+        if claim_errors or len(claims) != len(args.claims):
+            for err in claim_errors:
+                sys.stderr.write(err + "\n")
+            verdict(
+                f"REFUSED ({len(args.claims)} claim(s) requested, "
+                f"{len(claims)} evaluable)"
+            )
+            return EXIT_MISCONFIGURED
         unenforced = [c for c in claims if c["enforcer_roots"] < c["claim_roots"]]
         if args.json:
             print(json.dumps({"roots": len(roots), "claims": claims,
@@ -229,9 +295,46 @@ def main() -> int:
                     "enforcement (q-system/CLAUDE.md core rule 3). Either ship the "
                     "enforcer to the same roots or stop shipping the claim."
                 )
-        return 1 if unenforced else 0
+        verdict(
+            f"UNENFORCED {len(unenforced)}/{len(claims)} claim(s)"
+            if unenforced else f"OK ({len(claims)} claim(s), {len(roots)} roots)"
+        )
+        return EXIT_DIVERGED if unenforced else EXIT_OK
 
-    report = scan(roots, rel_paths)
+    report, unresolvable = scan(roots, rel_paths)
+    # ALL of them missing is a different fact from SOME of them missing, and the
+    # two need opposite answers.
+    #
+    # Some-missing is the live defect: 2 of 3 declared paths resolved across 29
+    # real roots and the third resolved nowhere, so the run reported partial
+    # coverage as full. That is an error.
+    #
+    # None-missing-because-none-exist is a population with no replicated content
+    # at all -- every kipi-update fixture in scripts/test/ builds exactly that:
+    # a synthetic instance with no plugins/ tree. Refusing there would red this
+    # gate on 11 existing tests for a reason that has nothing to do with
+    # divergence, and a gate unsatisfiable for its own population gets switched
+    # off. So it DISARMS, and says so out loud -- the same posture the skeleton
+    # branch check above takes, because a silent guard is indistinguishable from
+    # one that passed. The real fleet cannot reach this state unnoticed:
+    # test_default_replicated_paths_all_resolve_in_the_real_fleet is the second
+    # account, and it asserts against the actual registry.
+    if unresolvable and len(unresolvable) == len(rel_paths):
+        print(
+            f"no declared replicated path exists in any of {len(roots)} root(s); "
+            "this population carries no replicated content to compare"
+        )
+        verdict(f"DISARMED (nothing replicated across {len(roots)} roots)")
+        return EXIT_OK
+    if unresolvable:
+        for rel in unresolvable:
+            sys.stderr.write(
+                f"replicated path {rel!r} exists in 0 of {len(roots)} roots; "
+                "it cannot report divergence and its green means nothing\n"
+            )
+        verdict(f"REFUSED ({len(unresolvable)} declared path(s) resolve nowhere)")
+        return EXIT_MISCONFIGURED
+
     diverged = [r for r in report if r["distinct"] > 1]
 
     if args.json:
@@ -254,7 +357,11 @@ def main() -> int:
                 "updating; do not resolve this by running an update."
             )
 
-    return 1 if diverged else 0
+    verdict(
+        f"DIVERGED {len(diverged)}/{len(report)} path(s)"
+        if diverged else f"OK ({len(report)} path(s), {len(roots)} roots)"
+    )
+    return EXIT_DIVERGED if diverged else EXIT_OK
 
 
 if __name__ == "__main__":
