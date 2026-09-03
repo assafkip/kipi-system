@@ -92,6 +92,8 @@ _CLIENT_LINE = re.compile(
     r"^\s*(?:\*THE MOVE\*\s*)?(?P<health>🔴|🟡|🟢|⚪|🟠)\s*\*(?P<name>[^*]+)\*"
     r"\s*·\s*(?P<rest>.+)$")
 _REACH_LINE = re.compile(r"^\s*📞\s*\*(?P<what>[^*]+)\*\s*(?P<rest>.*)$")
+#: "     then: 🔥 nicest.ai (fire)" -- the second reach-out, on its own indented line.
+_THEN_LINE = re.compile(r"^\s+then:\s*(?:[^\w\s]\s*)*(?P<who>[^(]+?)\s*(?:\(|$)")
 
 
 def read_card(paths=None) -> tuple[list[dict], str | None]:
@@ -116,6 +118,16 @@ def read_card(paths=None) -> tuple[list[dict], str | None]:
         if m:
             rows.append({"kind": "reach", "health": "📞",
                          "name": m.group("what").strip(), "detail": m.group("rest").strip()})
+            continue
+        m = _THEN_LINE.match(line)
+        if m:
+            # The card puts the SECOND person to reach out on an indented "then:"
+            # continuation line. Codex finding, 2026-09-03: this reader matched only
+            # the header line, so the board claimed to be the full surface while the
+            # second prospect never reached it. A dropped row is worse than a missing
+            # section, because nothing says it is missing.
+            rows.append({"kind": "reach", "health": "📞",
+                         "name": m.group("who").strip(), "detail": "then, after the first"})
     if not rows:
         # A card that exists and parses to nothing is a FORMAT change, not a quiet
         # morning. state_card.py always emits at least the book line, so zero parsed
@@ -236,8 +248,15 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
 
     top, week = [], []
     for row in card_rows:
-        item = {"title": f"{row['health']} {row['name']}", "detail": row["detail"],
-                "source": "State card", "bucket_reason": row["health"]}
+        # `key` is what the row id is hashed from and it carries NO health dot.
+        # Codex finding (major), 2026-09-03: the id was hashed from `title`, which
+        # embeds the emoji, so a client going red -> green minted a new id. The next
+        # unattended paint then archived the row he had dragged and created a
+        # replacement in a computed bucket, silently undoing his move. The whole
+        # "his drag always wins" promise depended on an id that does not move.
+        item = {"title": f"{row['health']} {row['name']}", "key": row["name"],
+                "detail": row["detail"], "source": "State card",
+                "bucket_reason": row["health"]}
         # 🔴 and 📞 are today. Everything else is this week. The split is the card's
         # own health verdict, not a rule invented here.
         (top if row["health"] in ("🔴", "📞") else week).append(item)
@@ -245,24 +264,31 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
     move, gtm_err = read_gtm(paths)
     if move:
         top.append({"title": move.get("action") or move.get("id"),
+                    "key": f"gtm:{move.get('id')}",   # the step id, stable across rewordings
                     "detail": move.get("done_looks_like") or "", "source": "GTM queue",
                     "bucket_reason": "gtm"})
     elif gtm_err:
-        top.append({"title": "GTM: COULD NOT READ", "detail": gtm_err,
-                    "source": "GTM queue", "bucket_reason": "error"})
+        top.append({"title": "GTM: COULD NOT READ", "key": "gtm:error",
+                    "detail": gtm_err, "source": "GTM queue", "bucket_reason": "error"})
 
     inbox = []
-    for key, label in (("mail", "Gmail"), ("groupme", "GroupMe"), ("slack", "Slack")):
+    # Gmail and GroupMe only. Codex finding (major), 2026-09-03: this asked for a
+    # "slack" source too, and `collect_all` registers no Slack producer, so that
+    # channel was silently absent forever while the docs claimed three. An unwired
+    # channel named in code reads as coverage. Wiring a Slack collector is real work
+    # and is not smuggled in here; when it exists it is one tuple entry.
+    for key, label in (("mail", "Gmail"), ("groupme", "GroupMe")):
         got = sources.get(key)
         if not got:
             continue
         rows, err = got
         if err:
-            inbox.append({"title": f"{label}: COULD NOT READ", "detail": err,
-                          "source": label, "bucket_reason": "error"})
+            inbox.append({"title": f"{label}: COULD NOT READ", "key": f"{label}:error",
+                          "detail": err, "source": label, "bucket_reason": "error"})
             continue
         for row in rows:
-            inbox.append({"title": str(row)[:180], "detail": "", "source": label,
-                          "bucket_reason": "inbox"})
+            text = str(row)[:180]
+            inbox.append({"title": text, "key": f"{label}:{text}", "detail": "",
+                          "source": label, "bucket_reason": "inbox"})
 
     return {"error": None, "top_of_mind": top, "this_week": week, "inbox": inbox}

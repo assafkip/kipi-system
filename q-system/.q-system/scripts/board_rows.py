@@ -98,18 +98,38 @@ def _request(token, method, path, body=None, opener=None):
 def item_id(bucket_key: str, item: dict) -> str:
     """Stable across mornings for the same underlying thing.
 
-    Hashed from the TITLE only, never the detail: the commitment text he owes a given
-    client is stable, while its "(due ...)" suffix and reply counts change daily.
-    Hashing the detail too would make every morning a new row and the board would grow
-    by seven rows a day.
+    Hashed from `item["key"]`, which carries the client name or the GTM step id and
+    NOTHING that changes day to day. Not the detail (its "(due ...)" suffix and reply
+    counts move every morning) and, since a Codex finding on 2026-09-03, NOT the title
+    either: the title embeds the health dot, so a client going red to green minted a new
+    id, and the next unattended paint archived the row he had DRAGGED and created a
+    replacement in a computed bucket. That silently reversed his move, which is the one
+    thing this module promises never to do.
+
+    Also NOT the bucket_key, for the same reason: a row moving from Top of Mind to This
+    Week as its health improves is the same row.
+
+    An item with no `key` is REFUSED rather than falling back to the title. A fallback
+    here is how the defect comes back: it would work, quietly, with an unstable id.
     """
-    key = f"{bucket_key}|{item.get('title', '')}".encode("utf-8")
-    return OWNED_PREFIX + hashlib.sha1(key).hexdigest()[:16]
+    key = item.get("key")
+    if not key:
+        raise ValueError(
+            f"item {item.get('title')!r} carries no stable `key`. Every producer must "
+            "supply one; falling back to the title is what made ids move with the "
+            "health dot (Codex finding 2026-09-03)."
+        )
+    return OWNED_PREFIX + hashlib.sha1(str(key).encode("utf-8")).hexdigest()[:16]
 
 
-def existing_rows(token, db, opener=None) -> dict:
-    """{item_id: page} for the rows this module owns. One query, paged."""
+def existing_rows(token, db, opener=None, dupes_out=None) -> dict:
+    """{item_id: page} for the rows this module owns. One query, paged.
+
+    Pass `dupes_out` to learn about ids that appear more than once; see the comment
+    at the collision branch for why they are not silently collapsed.
+    """
     out, cursor = {}, None
+    dupes = {} if dupes_out is None else dupes_out
     while True:
         body = {"page_size": 100, "filter": {"property": "Item id", "rich_text":
                                              {"starts_with": OWNED_PREFIX}}}
@@ -119,8 +139,19 @@ def existing_rows(token, db, opener=None) -> dict:
         for page in data.get("results", []):
             prop = (page.get("properties") or {}).get("Item id") or {}
             text = "".join(t.get("plain_text", "") for t in prop.get("rich_text", []))
-            if text:
-                out[text] = page
+            if not text:
+                continue
+            if text in out:
+                # DUPLICATES ARE COUNTED, NOT COLLAPSED. Codex finding (major),
+                # 2026-09-03: this dict silently kept the last page for an id, so two
+                # painters racing could create two rows for one item and the read-back
+                # count still matched `wanted`, reporting "ok" over a board with
+                # doubles on it. A proof that cannot see the defect it exists to catch
+                # is not a proof.
+                dupes.setdefault(text, 1)
+                dupes[text] += 1
+                continue
+            out[text] = page
         if not data.get("has_more"):
             return out
         cursor = data.get("next_cursor")
@@ -206,10 +237,15 @@ def collect(now, sources: dict, opener=None, token_file=None, db_file=None):
         return [], f"board not written: {buckets['error']}"
     try:
         counts = paint(buckets, token, db, opener)
-        seen = read_back(token, db, opener)
+        dupes = {}
+        seen = len(existing_rows(token, db, opener, dupes_out=dupes))
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError) as exc:
         return [], f"board write failed: {type(exc).__name__}: {exc}"
 
+    if dupes:
+        return [], (f"duplicate board rows for {len(dupes)} item(s): "
+                    f"{', '.join(sorted(dupes))}. Two painters have run; the board "
+                    "holds doubles and this run's counts cannot be trusted")
     if seen != counts["wanted"]:
         # The write-only-integration scar: a PATCH that returns 200 is not proof the
         # board holds what we think. The read-back is the proof.

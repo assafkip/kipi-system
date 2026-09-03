@@ -45,19 +45,40 @@ def messages(sources: dict, sections) -> list:
 
 
 def send(message: str) -> None:
+    """Raise when the notifier did not file. The caller records the failure.
+
+    Codex finding (major), 2026-09-03: this swallowed the exit status and returned
+    None, so `route` reported the line as ROUTED whether or not a Linear issue was
+    ever created. That is the write-only-integration defect this repo has a lesson
+    file about, written into the one module whose whole job is delivery. An absent
+    script is still a legitimate no-op (an unconfigured machine); a script that RAN
+    and failed is not.
+    """
     if not NOTIFY.exists():
         return
-    subprocess.run(["bash", str(NOTIFY), message], check=False,
-                   capture_output=True, timeout=TIMEOUT_S)
+    done = subprocess.run(["bash", str(NOTIFY), message], check=False,
+                          capture_output=True, timeout=TIMEOUT_S)
+    if done.returncode != 0:
+        raise RuntimeError(
+            f"slack-notify.sh exited {done.returncode}: "
+            f"{(done.stderr or b'').decode('utf-8', 'replace').strip()[:200]}")
 
 
-def route(sources: dict, sections, notify=None) -> list:
-    """File the degraded ones. Never raises: a broken notifier must not cost his brief."""
+def route(sources: dict, sections, notify=None) -> tuple:
+    """(filed, failed). Never raises: a broken notifier must not cost him his brief.
+
+    Returns what was ACTUALLY filed and what was attempted and failed, rather than the
+    old single list that reported every attempt as a success. A caller that prints
+    `filed` is now telling the truth, and `failed` is the thing worth shouting about:
+    it means an engineering problem was detected and then lost.
+    """
     lines = messages(sources, sections)
     notify = notify or send
+    filed, failed = [], []
     for line in lines:
         try:
             notify(line)
-        except Exception:                                   # noqa: BLE001
-            pass
-    return lines
+            filed.append(line)
+        except Exception as exc:                            # noqa: BLE001
+            failed.append((line, f"{type(exc).__name__}: {exc}"))
+    return filed, failed

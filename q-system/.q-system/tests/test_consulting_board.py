@@ -164,11 +164,40 @@ class TestHisDragAlwaysWins:
         assert props["Bucket"]["select"]["name"] == "Inbox"
 
     def test_the_id_is_stable_across_mornings(self):
-        """Hashed from the title only. Hashing the detail too would mint a new row every
-        morning as due-dates and reply counts move, and the board would only grow."""
-        a = board_rows.item_id("top_of_mind", {"title": "Northwind", "detail": "due Mon"})
-        b = board_rows.item_id("top_of_mind", {"title": "Northwind", "detail": "due Tue"})
+        """Hashed from `key` alone. The detail moves daily (due dates, reply counts)."""
+        a = board_rows.item_id("top_of_mind", {"key": "Northwind", "title": "🔴 Northwind",
+                                               "detail": "due Mon"})
+        b = board_rows.item_id("top_of_mind", {"key": "Northwind", "title": "🔴 Northwind",
+                                               "detail": "due Tue"})
         assert a == b and a.startswith(board_rows.OWNED_PREFIX)
+
+    def test_the_id_SURVIVES_a_health_change(self):
+        """The Codex finding, pinned. The id used to be hashed from the title, which
+        embeds the health dot, so red -> green minted a new id: the next paint archived
+        the row he had DRAGGED and created a replacement in a computed bucket. The
+        promise this class is named for depended on an id that does not move."""
+        red = board_rows.item_id("top_of_mind", {"key": "Northwind", "title": "🔴 Northwind"})
+        green = board_rows.item_id("this_week", {"key": "Northwind", "title": "🟢 Northwind"})
+        assert red == green, "a health change minted a new id and would orphan his row"
+
+    def test_an_item_with_no_key_is_REFUSED_never_fallen_back(self):
+        """A title fallback would work quietly, with the unstable id, which is exactly
+        how the defect returns."""
+        with pytest.raises(ValueError):
+            board_rows.item_id("top_of_mind", {"title": "🔴 Northwind"})
+
+    def test_every_producer_supplies_a_key(self, tmp_path):
+        """Drives the real buckets() rather than asserting the contract in prose."""
+        b = cb.buckets(NOW, {}, _tree(tmp_path))
+        items = b["top_of_mind"] + b["this_week"] + b["inbox"]
+        assert items
+        for item in items:
+            assert item.get("key"), item
+
+    def test_a_health_dot_never_reaches_a_key(self, tmp_path):
+        b = cb.buckets(NOW, {}, _tree(tmp_path))
+        for item in b["top_of_mind"] + b["this_week"]:
+            assert not any(d in item["key"] for d in "🔴🟡🟢⚪🟠📞"), item["key"]
 
     def test_a_hand_made_row_is_not_owned(self):
         assert not "some-hand-id".startswith(board_rows.OWNED_PREFIX)
@@ -212,17 +241,35 @@ class TestEngineeringLeavesHisBrief:
         mb = self._brief()
         assert {k for k, _ in mb.ENGINEERING_SECTIONS} == {"owed", "overnight"}
         sent = []
-        mb.route_engineering({"owed": ([], "linear down"),
-                              "overnight": (["fine"], None)}, notify=sent.append)
+        filed, failed = mb.route_engineering(
+            {"owed": ([], "linear down"), "overnight": (["fine"], None)},
+            notify=sent.append)
         assert len(sent) == 1 and "linear down" in sent[0]
+        assert filed == sent and failed == []
+
+    def test_a_notifier_that_FAILS_is_reported_not_counted_as_filed(self):
+        """Codex finding (major), 2026-09-03: route returned every attempted line as
+        routed, whether or not slack-notify.sh actually filed. A detected engineering
+        problem that is then lost on the way to the queue looks handled, which is worse
+        than one never detected."""
+        mb = self._brief()
+
+        def broken(_message):
+            raise RuntimeError("notifier down")
+
+        filed, failed = mb.route_engineering(
+            {"owed": ([], "linear down"), "overnight": ([], "launchd down")},
+            notify=broken)
+        assert filed == []
+        assert len(failed) == 2 and all("notifier down" in why for _l, why in failed)
 
     def test_a_healthy_section_pages_nobody(self):
         """A ticket every morning is how an alert channel gets muted."""
         mb = self._brief()
         sent = []
-        mb.route_engineering({"owed": (["x"], None), "overnight": ([], None)},
-                             notify=sent.append)
-        assert sent == []
+        filed, failed = mb.route_engineering(
+            {"owed": (["x"], None), "overnight": ([], None)}, notify=sent.append)
+        assert sent == [] and filed == [] and failed == []
 
     def test_only_one_module_writes_the_board(self):
         mb = self._brief()

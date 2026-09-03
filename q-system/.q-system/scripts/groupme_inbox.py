@@ -100,20 +100,26 @@ def waiting(now: dt.datetime, token: str, opener=None) -> list[dict]:
         # groups were live. A nickname is not an id (it varies per group), so the author
         # is fetched from the message itself, and only for groups already inside the
         # window, which keeps this at a handful of calls rather than one per group.
-        sender = ""
+        sender, unreadable = "", False
         try:
             msgs = (_get(f"/groups/{g.get('id')}/messages", token, opener, limit=1)
                     or {}).get("messages") or []
             if msgs:
                 sender = str(msgs[0].get("user_id") or msgs[0].get("sender_id") or "")
+            unreadable = False
         except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
             # One unreadable group must not void the others, and it must not be
-            # mistaken for "he sent the last message". Unknown author is surfaced.
-            sender = ""
+            # mistaken for "he sent the last message" EITHER WAY. Codex finding
+            # (minor), 2026-09-03: this set sender="" and fell through, so a group
+            # whose author could not be read was rendered as a confirmed "waiting on
+            # you". Unknown is now carried as unknown and says so in the row.
+            sender, unreadable = "", True
         if sender == me:
             continue
         out.append({"channel": "group", "name": g.get("name") or "(unnamed group)",
-                    "who": preview.get("nickname") or "someone",
+                    "who": ("author unreadable" if unreadable
+                            else preview.get("nickname") or "someone"),
+                    "unreadable": unreadable,
                     "text": (preview.get("text") or "")[:160], "at": created})
 
     # /chats is the DM list. Its shape differs from /groups: the peer is `other_user`
@@ -144,5 +150,12 @@ def collect(now: dt.datetime, sources: dict, opener=None):
         return [], f"GroupMe unreachable: {type(exc).__name__}: {exc}"
     if not rows:
         return [], None
-    return [f"{r['name']}: {r['who']} said "
-            f"{' '.join((r['text'] or '').split())[:140]!r}" for r in rows], None
+    out = []
+    for r in rows:
+        text = " ".join((r["text"] or "").split())[:140]
+        if r.get("unreadable"):
+            out.append(f"{r['name']}: COULD NOT READ who sent the last message "
+                       f"({text!r})")
+        else:
+            out.append(f"{r['name']}: {r['who']} said {text!r}")
+    return out, None

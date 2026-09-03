@@ -606,7 +606,7 @@ def route_engineering(sources: dict, notify=None) -> list:
     guard caught the first version of this function, which is the guard working.
     """
     mod = _load_sibling("engineering_route", "engineering_route.py")
-    return mod.route(sources, ENGINEERING_SECTIONS, notify=notify)
+    return mod.route(sources, ENGINEERING_SECTIONS, notify=notify)   # (filed, failed)
 
 
 def collect_all(now: dt.datetime, log_path=None, budget_s: float = COLLECT_BUDGET_S,
@@ -696,9 +696,14 @@ def main(argv=None) -> int:
     sources = collect_all(now)
     # Engineering leaves BEFORE the founder's message is built, so a routing failure
     # cannot silently become a section he reads.
-    routed = route_engineering(sources, notify=(lambda _m: None) if args.dry_run else None)
-    for line in routed:
+    filed, failed = route_engineering(
+        sources, notify=(lambda _m: None) if args.dry_run else None)
+    for line in filed:
         print(f"[to sana] {line}")
+    for line, why in failed:
+        # Printed as NOT filed. An engineering problem that was detected and then lost
+        # on the way to the queue is worse than one never detected: it looks handled.
+        print(f"[to sana FAILED, not filed] {line} :: {why}")
     message, degraded = build(now, sources)
     print(message)
     if args.dry_run:
