@@ -153,7 +153,8 @@ def waiting(now: dt.datetime, token: str, opener=None) -> list[dict]:
             sender, unreadable = "", True
         if sender == me:
             continue
-        out.append({"channel": "group", "name": g.get("name") or "(unnamed group)",
+        out.append({"id": str(g.get("id") or ""),
+                    "channel": "group", "name": g.get("name") or "(unnamed group)",
                     "who": ("author unreadable" if unreadable
                             else preview.get("nickname") or "someone"),
                     "unreadable": unreadable,
@@ -173,11 +174,27 @@ def waiting(now: dt.datetime, token: str, opener=None) -> list[dict]:
         sender = str(last.get("user_id") or last.get("sender_id") or "")
         if created >= cutoff and sender and sender != me:
             who = (c.get("other_user") or {}).get("name") or "someone"
-            out.append({"channel": "dm", "name": who, "who": who,
+            out.append({"id": str(c.get("other_user", {}).get("id") or ""),
+                        "channel": "dm", "name": who, "who": who,
                         "text": (last.get("text") or "")[:160], "at": created})
 
     out.sort(key=lambda r: r["at"], reverse=True)
     return out
+
+
+def _load_brief():
+    """morning-brief.py, for its `Row` type. Imported lazily and defensively: this
+    module is also run standalone, and a missing brief must degrade to plain strings
+    rather than take the GroupMe section down."""
+    try:
+        import importlib.util
+        path = Path(__file__).resolve().parent / "morning-brief.py"
+        spec = importlib.util.spec_from_file_location("morning_brief_row", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:                    # noqa: BLE001
+        return None
 
 
 def collect(now: dt.datetime, sources: dict, opener=None):
@@ -192,12 +209,19 @@ def collect(now: dt.datetime, sources: dict, opener=None):
         return [], f"GroupMe unreachable: {type(exc).__name__}: {exc}"
     if not rows:
         return [], None
+    # Rows carry the CONVERSATION id, not their rendered text. See morning-brief.Row:
+    # the board keys on this, and a key derived from rendering is what PR #296 spent
+    # four review rounds patching. The id is stable while the message quoted in the
+    # line changes every time somebody speaks.
+    brief = _load_brief()
     out = []
     for r in rows:
         text = " ".join((r["text"] or "").split())[:140]
         if r.get("unreadable"):
-            out.append(f"{r['name']}: COULD NOT READ who sent the last message "
-                       f"({text!r})")
+            line = (f"{r['name']}: COULD NOT READ who sent the last message "
+                    f"({text!r})")
         else:
-            out.append(f"{r['name']}: {r['who']} said {text!r}")
+            line = f"{r['name']}: {r['who']} said {text!r}"
+        key = f"groupme:{r.get('id') or r['name']}"
+        out.append(brief.Row(line, key) if brief else line)
     return out, None

@@ -186,12 +186,43 @@ def collect_calendar(now: dt.datetime, runner=None):
 # Section 2: mail that needs an answer
 # ---------------------------------------------------------------------------
 
+class Row(str):
+    """A rendered brief line that also carries the STABLE IDENTITY of the thing it
+    describes.
+
+    ## Why this exists, and it is the end of a four-round loop
+
+    PR #296 rounds 1-4 are all one defect. The Notion board keys each row so a row he
+    has dragged is never archived and re-created underneath him. Four of the five
+    producers pass a real id (client `kind:name`, `gtm:<step id>`, literal error keys).
+    The inbox rows had nothing but their own RENDERED TEXT, so the key was that text
+    with volatile bits scrubbed by a regex -- and every round patched the regex for one
+    more surface form: the health dot, then "2h ago", then a bare digit run that
+    collapsed two different invoice numbers, then the `[2h]` the real producer emits.
+    A fifth form was guaranteed, because rendering keeps changing and the regex can
+    only ever chase it.
+
+    A row is a `str`, so every existing renderer (`_section`, the f-strings, the
+    slicing) is untouched and this needed no caller changes. What it adds is `.key`:
+    the Gmail thread id, the GroupMe conversation id -- an identity the producer KNOWS
+    and was throwing away at the moment it rendered.
+    """
+    __slots__ = ("key",)
+
+    def __new__(cls, text: str, key: str):
+        row = super().__new__(cls, text)
+        row.key = key
+        return row
+
+
 MAIL_PROMPT = """Call {tool} to find email threads from the last 48 hours where a
 REAL PERSON wrote to the founder and the founder has not replied yet. Exclude
 newsletters, notifications, receipts, calendar invites, automated senders and
 no-reply addresses.
 Reply with ONE JSON object and nothing else, no prose, no code fence:
-{{"threads": [{{"from": "email or name", "subject": "...", "age_hours": <int>}}]}}
+{{"threads": [{{"id": "<the thread id the tool returned>", "from": "email or name", "subject": "...", "age_hours": <int>}}]}}
+`id` is the thread's own id from the tool result, copied verbatim. It is what keeps a
+board row stable while its age changes, so never invent or shorten it.
 If the tool call fails, reply with exactly: {{"error": "<what failed>"}}"""
 
 
@@ -209,7 +240,13 @@ def collect_mail(now: dt.datetime, runner=None):
             continue
         age = th.get("age_hours")
         age_text = f"  [{age}h]" if isinstance(age, int) else ""
-        rows.append(f"{str(th.get('from', 'unknown'))[:40]}  {str(th.get('subject', ''))[:70]}{age_text}")
+        sender = str(th.get("from", "unknown"))[:40]
+        subject = str(th.get("subject", ""))[:70]
+        # The thread id when the model returned one, else sender+subject -- both are
+        # stable while the AGE changes, which is the only thing that was minting new
+        # ids. Never the rendered line: that is the defect rounds 1-4 kept patching.
+        key = str(th.get("id") or "").strip() or f"{sender}|{subject}"
+        rows.append(Row(f"{sender}  {subject}{age_text}", f"mail:{key}"))
     return rows, None
 
 

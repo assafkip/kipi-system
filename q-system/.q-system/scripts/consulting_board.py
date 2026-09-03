@@ -245,30 +245,20 @@ def collect(now: dt.datetime, sources: dict, paths=None):
     return rows, None
 
 
-#: Tokens that change while the THING does not: ages, counts, times, dates. Stripped
-#: before an inbox row's identity is hashed. Codex round 2 (major): the id was the
-#: rendered row, so "2h ago" -> "3h ago" minted a new id, archived the row he had
-#: positioned and created a replacement in the default bucket. Same defect class as the
-#: health dot in round 1, at a call site the round-1 fix did not reach.
-#: Round 3 (minor): the trailing `|\d+` stripped EVERY digit run, so "invoice 4021"
-#: and "invoice 4022" collapsed to one board row. Only digits bound to a time unit, a
-#: clock time or a date are volatile; a bare number is usually the identifying part.
-#: Round 4 (major, the first real Codex read after two rounds on the Opus fallback):
-#: the REAL mail producer, morning-brief.collect_mail, renders an age as `[2h]`, a
-#: bracketed unit with no "ago". None of the forms below matched it, so the round-2
-#: fix held for the fixture and not for the producer. The test now drives the producer.
-_VOLATILE = re.compile(r"\b\d+\s*(?:secs?|mins?|hours?|days?|weeks?)\b"
-                       r"|\b\d+\s*[smhdw]\s+ago\b"
-                       r"|\[\s*\d+\s*[smhdw]\s*\]"
-                       r"|\b\d{1,2}:\d{2}\b"
-                       r"|\b\d{4}-\d{2}-\d{2}\b"
-                       r"|\bago\b", re.I)
-
-
-def _stable(text: str) -> str:
-    """`text` with every volatile token removed, for use as an identity."""
-    return " ".join(_VOLATILE.sub("", text or "").split()).lower()[:160]
-
+# `_VOLATILE` / `_stable` LIVED HERE AND ARE DELETED (PR #296, 2026-09-03).
+#
+# They scrubbed volatile tokens out of a rendered line so the line could be hashed
+# into a board-row identity. Four Codex rounds each added one more pattern -- the
+# health dot, "2h ago", a bare digit run that collapsed "invoice 4021" and
+# "invoice 4022" into one row, and finally the `[2h]` the real mail producer emits,
+# which the round-2 fix had never seen because the test drove a fixture instead.
+#
+# Every one of those is the same defect: an identity derived from PRESENTATION.
+# Rendering changes, so the regex could only ever chase it, and each fix bought one
+# round. Producers now emit `morning-brief.Row(line, key)` carrying the id they
+# already had -- a Gmail thread id, a GroupMe conversation id -- and `buckets` refuses
+# a row without one. `test_no_identity_is_derived_from_rendered_text` fails if this
+# file ever grows a text-scrubbing identity again.
 
 def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
     """The board's three buckets, for notion_board.py's row writer.
@@ -349,7 +339,25 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
         healthy.add(f"inbox:{label}")
         for row in rows:
             text = str(row)[:180]
-            inbox.append({"title": text, "key": f"{label}:{_stable(text)}", "detail": "",
+            # THE END OF THE FOUR-ROUND LOOP. The key is the producer's own id
+            # (morning-brief.Row.key: a Gmail thread id, a GroupMe conversation id),
+            # never the rendered line. Rounds 1-4 of PR #296 were four patches to a
+            # regex that scrubbed volatile tokens out of that line -- the health dot,
+            # "2h ago", a digit run that collapsed two invoice numbers, the `[2h]` the
+            # real producer emits -- and a fifth form was guaranteed because rendering
+            # keeps changing and a regex can only chase it.
+            #
+            # An UNKEYED row is refused, loudly, rather than falling back to the text.
+            # A fallback would be indistinguishable from the old behaviour on the day a
+            # new producer forgets, which is exactly how this defect survived three
+            # fixes: each one held for the fixture and not for the producer.
+            key = getattr(row, "key", None)
+            if not key:
+                raise TypeError(
+                    f"{label} produced an inbox row with no stable key: {text!r}. "
+                    "Every inbox producer must emit morning-brief.Row(line, key); "
+                    "keying on the rendered line is the PR #296 rounds 1-4 defect.")
+            inbox.append({"title": text, "key": key, "detail": "",
                           "source": label, "scope": f"inbox:{label}",
                           "bucket_reason": "inbox"})
 

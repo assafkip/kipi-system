@@ -6,6 +6,7 @@ Both pin defects this work actually hit, not defects imagined for it.
 import datetime as dt
 import io
 import json
+import pathlib
 import os
 import sys
 import time
@@ -98,18 +99,39 @@ class TestIdentityIsTheTHING_NotItsRendering:
             "and the bucket he dragged it to")
 
     def test_an_inbox_id_survives_the_age_changing(self, tmp_path):
-        a = cb.buckets(NOW, {"mail": (["Portant: 2h ago about the docs"], None)},
+        """Same intent as the round-2 test this replaces, on the real seam. The id is
+        the thread's, so ANY rendering change is now irrelevant by construction rather
+        than by a regex that has to have anticipated it."""
+        brief = _brief()
+        a = cb.buckets(NOW, {"mail": ([brief.Row("Portant: 2h ago", "mail:t1")], None)},
                        _tree(tmp_path))["inbox"][0]["key"]
-        b = cb.buckets(NOW, {"mail": (["Portant: 5h ago about the docs"], None)},
+        b = cb.buckets(NOW, {"mail": ([brief.Row("Portant: 5h ago", "mail:t1")], None)},
                        _tree(tmp_path))["inbox"][0]["key"]
         assert a == b, "an age change minted a new id and would orphan his row"
 
     def test_but_a_different_thread_is_a_different_row(self, tmp_path):
-        a = cb.buckets(NOW, {"mail": (["Portant: about the docs"], None)},
+        brief = _brief()
+        a = cb.buckets(NOW, {"mail": ([brief.Row("Portant: docs", "mail:t1")], None)},
                        _tree(tmp_path))["inbox"][0]["key"]
-        b = cb.buckets(NOW, {"mail": (["Harbor: about the invoice"], None)},
+        b = cb.buckets(NOW, {"mail": ([brief.Row("Harbor: invoice", "mail:t2")], None)},
                        _tree(tmp_path))["inbox"][0]["key"]
-        assert a != b, "stripping volatile tokens must not collapse distinct rows"
+        assert a != b, "two threads must never share one row"
+
+    def test_an_inbox_row_with_NO_key_is_REFUSED(self, tmp_path):
+        """The fallback is the defect. A producer that forgets must fail loudly, not
+        quietly regress to keying on its own rendered text -- which is precisely how
+        this survived three fixes."""
+        with pytest.raises(TypeError, match="no stable key"):
+            cb.buckets(NOW, {"mail": (["a bare string"], None)}, _tree(tmp_path))
+
+    def test_no_identity_is_derived_from_rendered_text(self):
+        """The regex is deleted and must stay deleted. Rounds 1-4 were four patches to
+        it; a fifth surface form was guaranteed while it existed."""
+        src = pathlib.Path(cb.__file__).read_text(encoding="utf-8")
+        code = "\n".join(l for l in src.splitlines()
+                          if not l.lstrip().startswith("#"))
+        assert "_VOLATILE" not in code and "_stable" not in code, (
+            "consulting_board grew a text-scrubbing identity again")
 
 
 class TestRound3:
@@ -137,18 +159,24 @@ class TestRound3:
         assert "gtm" in cb.buckets(NOW, {}, _tree(tmp_path))["healthy_scopes"]
 
     def test_two_threads_differing_only_by_a_number_stay_two_rows(self, tmp_path):
-        """The volatile-token strip removed EVERY digit run, so "invoice 4021" and
+        """Round 3's finding is now unreachable: nothing reads the digits at all.
+        Kept, driving the real key, because the BEHAVIOUR it protects is the point.
+        The volatile-token strip removed EVERY digit run, so "invoice 4021" and
         "invoice 4022" became one board row."""
-        a = cb.buckets(NOW, {"mail": (["invoice 4021 from them"], None)},
+        brief = _brief()
+        a = cb.buckets(NOW, {"mail": ([brief.Row("invoice 4021 from them", "mail:t1")], None)},
                        _tree(tmp_path))["inbox"][0]["key"]
-        b = cb.buckets(NOW, {"mail": (["invoice 4022 from them"], None)},
+        b = cb.buckets(NOW, {"mail": ([brief.Row("invoice 4022 from them", "mail:t2")], None)},
                        _tree(tmp_path))["inbox"][0]["key"]
         assert a != b
 
     def test_but_an_age_is_still_volatile(self, tmp_path):
-        a = cb.buckets(NOW, {"mail": (["invoice 4021, 2 hours ago"], None)},
+        """One thread, two renderings, one row. Under the regex this held only for the
+        age forms somebody had thought of; under a thread id it holds for all of them."""
+        brief = _brief()
+        a = cb.buckets(NOW, {"mail": ([brief.Row("invoice 4021, 2 hours ago", "mail:t1")], None)},
                        _tree(tmp_path))["inbox"][0]["key"]
-        b = cb.buckets(NOW, {"mail": (["invoice 4021, 5 hours ago"], None)},
+        b = cb.buckets(NOW, {"mail": ([brief.Row("invoice 4021, 5 hours ago", "mail:t1")], None)},
                        _tree(tmp_path))["inbox"][0]["key"]
         assert a == b
 
@@ -173,7 +201,8 @@ class TestAQuietSourceNeverArchivesHisRows:
         assert any("COULD NOT READ" in i["title"] for i in b["inbox"])
 
     def test_a_healthy_source_IS_one(self, tmp_path):
-        b = cb.buckets(NOW, {"mail": (["a thread"], None)}, _tree(tmp_path))
+        b = cb.buckets(NOW, {"mail": ([_brief().Row("a thread", "mail:t1")], None)},
+                       _tree(tmp_path))
         assert "inbox:Gmail" in b["healthy_scopes"]
 
     def test_the_painter_REFUSES_buckets_with_no_scope_information(self):
@@ -441,9 +470,10 @@ class TestRound4:
         assert a == b, f"an age change minted a new id: {a!r} != {b!r}"
 
     def test_but_a_bracketed_number_that_is_not_an_age_stays(self, tmp_path):
-        a = cb.buckets(NOW, {"mail": (["Alice  ticket [4021]"], None)},
+        brief = _brief()
+        a = cb.buckets(NOW, {"mail": ([brief.Row("Alice ticket [4021]", "mail:t1")], None)},
                        _tree(tmp_path))["inbox"][0]["key"]
-        b = cb.buckets(NOW, {"mail": (["Alice  ticket [4022]"], None)},
+        b = cb.buckets(NOW, {"mail": ([brief.Row("Alice ticket [4022]", "mail:t2")], None)},
                        _tree(tmp_path))["inbox"][0]["key"]
         assert a != b
 
