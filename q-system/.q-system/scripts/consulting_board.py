@@ -94,6 +94,15 @@ _CLIENT_LINE = re.compile(
 _REACH_LINE = re.compile(r"^\s*📞\s*\*(?P<what>[^*]+)\*\s*(?P<rest>.*)$")
 #: "     then: 🔥 nicest.ai (fire)" -- the second reach-out, on its own indented line.
 _THEN_LINE = re.compile(r"^\s+then:\s*(?:[^\w\s]\s*)*(?P<who>[^(]+?)\s*(?:\(|$)")
+#: "— 🔥 Portant (fire, v1 CRM: ...)" -- the person, out of the reach-out header's tail.
+_REACH_WHO = re.compile(r"^[^A-Za-z0-9]*(?P<who>[A-Za-z0-9][^(:]*?)\s*(?:\(|:|$)")
+
+
+def _person_from_reach(rest: str):
+    """The NAME out of a reach-out line's tail, or None when there is none."""
+    m = _REACH_WHO.match((rest or "").lstrip("—- ").strip())
+    who = (m.group("who").strip() if m else "")
+    return who or None
 
 
 def read_card(paths=None) -> tuple[list[dict], str | None]:
@@ -116,8 +125,14 @@ def read_card(paths=None) -> tuple[list[dict], str | None]:
             continue
         m = _REACH_LINE.match(line)
         if m:
-            rows.append({"kind": "reach", "health": "📞",
-                         "name": m.group("what").strip(), "detail": m.group("rest").strip()})
+            # The BOLD part is a count ("2 to reach out"); the PERSON is in the rest,
+            # after the dash. Codex round 2 (major): keying on the count meant every
+            # different person inherited one Notion row, its status and the bucket he
+            # had dragged it to. A row's identity has to be the thing, not the tally.
+            who = _person_from_reach(m.group("rest"))
+            if who:
+                rows.append({"kind": "reach", "health": "📞", "name": who,
+                             "detail": m.group("rest").strip()})
             continue
         m = _THEN_LINE.match(line)
         if m:
@@ -230,6 +245,20 @@ def collect(now: dt.datetime, sources: dict, paths=None):
     return rows, None
 
 
+#: Tokens that change while the THING does not: ages, counts, times, dates. Stripped
+#: before an inbox row's identity is hashed. Codex round 2 (major): the id was the
+#: rendered row, so "2h ago" -> "3h ago" minted a new id, archived the row he had
+#: positioned and created a replacement in the default bucket. Same defect class as the
+#: health dot in round 1, at a call site the round-1 fix did not reach.
+_VOLATILE = re.compile(r"\b\d+\s*(?:[smhd]|min|mins|hour|hours|day|days|ago)\b"
+                       r"|\b\d{1,2}:\d{2}\b|\b\d{4}-\d{2}-\d{2}\b|\d+", re.I)
+
+
+def _stable(text: str) -> str:
+    """`text` with every volatile token removed, for use as an identity."""
+    return " ".join(_VOLATILE.sub("", text or "").split()).lower()[:160]
+
+
 def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
     """The board's three buckets, for notion_board.py's row writer.
 
@@ -240,11 +269,13 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
     paths = paths or _paths()
     beat, beat_err = read_heartbeat(now, paths)
     if beat_err:
-        return {"error": beat_err, "top_of_mind": [], "this_week": [], "inbox": []}
+        return {"error": beat_err, "top_of_mind": [], "this_week": [], "inbox": [],
+                "healthy_scopes": set()}
 
     card_rows, card_err = read_card(paths)
     if card_err:
-        return {"error": card_err, "top_of_mind": [], "this_week": [], "inbox": []}
+        return {"error": card_err, "top_of_mind": [], "this_week": [], "inbox": [],
+                "healthy_scopes": set()}
 
     top, week = [], []
     for row in card_rows:
@@ -255,7 +286,7 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
         # replacement in a computed bucket, silently undoing his move. The whole
         # "his drag always wins" promise depended on an id that does not move.
         item = {"title": f"{row['health']} {row['name']}", "key": row["name"],
-                "detail": row["detail"], "source": "State card",
+                "detail": row["detail"], "source": "State card", "scope": "card",
                 "bucket_reason": row["health"]}
         # 🔴 and 📞 are today. Everything else is this week. The split is the card's
         # own health verdict, not a rule invented here.
@@ -266,12 +297,17 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
         top.append({"title": move.get("action") or move.get("id"),
                     "key": f"gtm:{move.get('id')}",   # the step id, stable across rewordings
                     "detail": move.get("done_looks_like") or "", "source": "GTM queue",
+                    "scope": "gtm",
                     "bucket_reason": "gtm"})
     elif gtm_err:
-        top.append({"title": "GTM: COULD NOT READ", "key": "gtm:error",
+        top.append({"title": "GTM: COULD NOT READ", "key": "gtm:error", "scope": "gtm",
                     "detail": gtm_err, "source": "GTM queue", "bucket_reason": "error"})
 
     inbox = []
+    #: Scopes that produced a set worth ARCHIVING AGAINST this run. "card" and "gtm"
+    #: are here because a failure in either returns early above; an inbox source only
+    #: joins after it answered without an error.
+    healthy = {"card", "gtm"}
     # Gmail and GroupMe only. Codex finding (major), 2026-09-03: this asked for a
     # "slack" source too, and `collect_all` registers no Slack producer, so that
     # channel was silently absent forever while the docs claimed three. An unwired
@@ -284,11 +320,19 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
         rows, err = got
         if err:
             inbox.append({"title": f"{label}: COULD NOT READ", "key": f"{label}:error",
-                          "detail": err, "source": label, "bucket_reason": "error"})
-            continue
+                          "detail": err, "source": label, "scope": f"inbox:{label}",
+                          "bucket_reason": "error"})
+            continue                      # scope deliberately NOT marked healthy
+        healthy.add(f"inbox:{label}")
         for row in rows:
             text = str(row)[:180]
-            inbox.append({"title": text, "key": f"{label}:{text}", "detail": "",
-                          "source": label, "bucket_reason": "inbox"})
+            inbox.append({"title": text, "key": f"{label}:{_stable(text)}", "detail": "",
+                          "source": label, "scope": f"inbox:{label}",
+                          "bucket_reason": "inbox"})
 
-    return {"error": None, "top_of_mind": top, "this_week": week, "inbox": inbox}
+    return {"error": None, "top_of_mind": top, "this_week": week, "inbox": inbox,
+            # Which scopes produced a TRUSTWORTHY set this run. The painter archives
+            # only inside these; see board_rows.paint. Codex round 2 (major): a
+            # transient Gmail error replaced its rows with a single error row, and the
+            # painter then archived every inbox row he had positioned.
+            "healthy_scopes": healthy}

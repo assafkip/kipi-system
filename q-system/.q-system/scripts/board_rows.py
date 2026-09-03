@@ -50,6 +50,8 @@ wrong number.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -157,11 +159,32 @@ def existing_rows(token, db, opener=None, dupes_out=None) -> dict:
         cursor = data.get("next_cursor")
 
 
+SCOPE_PREFIX = "scope="
+
+
+def _scope_of(page) -> str:
+    """The scope a row was written under, read back off the row itself.
+
+    Stored in Notes rather than a new Notion property so the board's schema does not
+    change: a select option added by a writer is a schema edit the founder did not ask
+    for. Unknown scope is treated as UNHEALTHY by the caller, which fails safe: an
+    unrecognised row is kept, never archived.
+    """
+    prop = (page.get("properties") or {}).get("Notes") or {}
+    text = "".join(t.get("plain_text", "") for t in prop.get("rich_text", []))
+    for part in text.split("\n"):
+        if part.startswith(SCOPE_PREFIX):
+            return part[len(SCOPE_PREFIX):].strip()
+    return ""
+
+
 def _properties(item, bucket, iid, include_bucket: bool):
     props = {
         "Task": {"title": [{"text": {"content": (item.get("title") or "(untitled)")[:200]}}]},
         "Item id": {"rich_text": [{"text": {"content": iid}}]},
-        "Notes": {"rich_text": [{"text": {"content": (item.get("detail") or "")[:1800]}}]},
+        "Notes": {"rich_text": [{"text": {"content":
+            f"{SCOPE_PREFIX}{item.get('scope') or 'card'}\n"
+            f"{(item.get('detail') or '')[:1700]}"}}]},
         "Domain": {"multi_select": [{"name": "Consulting"}]},
     }
     source = item.get("source")
@@ -176,15 +199,62 @@ def _properties(item, bucket, iid, include_bucket: bool):
     return props
 
 
+LOCK_FILE = STATE_DIR / "board-rows.lock"
+
+
+@contextlib.contextmanager
+def exclusive(lock_path=None):
+    """One painter at a time. Codex round 2 (major): paint() queries then creates, so
+    two simultaneous runs both see "absent" and both create, leaving permanent
+    duplicates. The round-1 fix only DETECTED duplicates after the fact, which reports
+    a mess rather than preventing one.
+
+    flock on a local file, non-blocking: a second painter refuses immediately rather
+    than queueing behind a 07:40 job. The board is machine-local state and both writers
+    would be on this machine, which is exactly what flock covers.
+    """
+    path = Path(lock_path) if lock_path else LOCK_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "w", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise BoardBusy("another painter holds the board lock") from exc
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
+
+
+class BoardBusy(RuntimeError):
+    """A second painter tried to run. Not a failure of this one."""
+
+
 def paint(buckets: dict, token, db, opener=None) -> dict:
     """Create, refresh and archive. Returns a counts dict. Never moves a row."""
     if buckets.get("error"):
         raise ValueError(buckets["error"])
 
-    wanted = {}
+    wanted, scopes = {}, {}
     for key, bucket in BUCKET_OF.items():
         for item in (buckets.get(key) or [])[:BUDGET_ROWS]:
-            wanted[item_id(key, item)] = (item, bucket)
+            iid = item_id(key, item)
+            wanted[iid] = (item, bucket)
+            scopes[iid] = item.get("scope") or "card"
+
+    # ARCHIVE ONLY INSIDE A HEALTHY SCOPE. Codex round 2 (major): a transient Gmail
+    # error replaced that source's rows with one error row, so every previously
+    # positioned inbox row fell out of `wanted` and the painter archived the lot. A
+    # source that could not answer this morning has said NOTHING about its rows, and
+    # nothing is not "they are gone".
+    healthy = buckets.get("healthy_scopes")
+    if healthy is None:
+        raise ValueError(
+            "buckets carries no `healthy_scopes`. Archiving without it would delete "
+            "rows on any transient source failure (Codex round 2)."
+        )
 
     have = existing_rows(token, db, opener)
     created = updated = archived = 0
@@ -203,13 +273,18 @@ def paint(buckets: dict, token, db, opener=None) -> dict:
                      opener)
             updated += 1
 
+    kept = 0
     for iid, page in have.items():
-        if iid not in wanted:
-            _request(token, "PATCH", f"/pages/{page['id']}", {"archived": True}, opener)
-            archived += 1
+        if iid in wanted:
+            continue
+        if _scope_of(page) not in healthy:
+            kept += 1                      # its source could not answer; leave it alone
+            continue
+        _request(token, "PATCH", f"/pages/{page['id']}", {"archived": True}, opener)
+        archived += 1
 
     return {"created": created, "updated": updated, "archived": archived,
-            "wanted": len(wanted)}
+            "kept": kept, "wanted": len(wanted)}
 
 
 def read_back(token, db, opener=None) -> int:
@@ -236,9 +311,12 @@ def collect(now, sources: dict, opener=None, token_file=None, db_file=None):
     if buckets.get("error"):
         return [], f"board not written: {buckets['error']}"
     try:
-        counts = paint(buckets, token, db, opener)
+        with exclusive():
+            counts = paint(buckets, token, db, opener)
         dupes = {}
         seen = len(existing_rows(token, db, opener, dupes_out=dupes))
+    except BoardBusy as exc:
+        return [], f"board not written: {exc}"
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError) as exc:
         return [], f"board write failed: {type(exc).__name__}: {exc}"
 
@@ -252,4 +330,5 @@ def collect(now, sources: dict, opener=None, token_file=None, db_file=None):
         return [], (f"read-back mismatch: wrote {counts['wanted']} row(s), "
                     f"board shows {seen}")
     return [f"board: {counts['created']} new, {counts['updated']} refreshed, "
-            f"{counts['archived']} cleared, read-back ok"], None
+            f"{counts['archived']} cleared, {counts['kept']} kept (source quiet), "
+            "read-back ok"], None

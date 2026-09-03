@@ -37,8 +37,9 @@ CARD = """# TODAY CARD
 
 def _tree(tmp_path, card=CARD, date=TODAY, crash=None, gtm=None):
     q = tmp_path / "q-consult"
-    (q / "output").mkdir(parents=True)
-    (q / "my-project").mkdir(parents=True)
+    # exist_ok: a test may build the tree twice in one tmp_path to compare two runs.
+    (q / "output").mkdir(parents=True, exist_ok=True)
+    (q / "my-project").mkdir(parents=True, exist_ok=True)
     (q / "output" / "today-card.md").write_text(card, encoding="utf-8")
     (q / "output" / "ask-crm-state-card-heartbeat.json").write_text(
         json.dumps({"at": "x", "card": {"date": date, "counts": {"red": 2, "reach": 1}},
@@ -75,7 +76,85 @@ class TestItMirrorsTheCardAndNeverRederivesIt:
 
     def test_the_health_verdict_is_the_cards_not_recomputed(self, tmp_path):
         rows, _ = cb.read_card(_tree(tmp_path))
-        assert {r["name"]: r["health"] for r in rows}["Kestrel Group"] == "⚪"
+        # Scoped to CLIENT rows: since Codex round 2 a reach-out row is named for the
+        # PERSON too, so the same name legitimately appears twice with two verdicts.
+        clients = {r["name"]: r["health"] for r in rows if r["kind"] == "client"}
+        assert clients["Kestrel Group"] == "⚪"
+
+
+class TestIdentityIsTheTHING_NotItsRendering:
+    """Codex round 2. Round 1 fixed the health dot in ONE producer; the same defect
+    class sat untouched at two other call sites. A fix whose blast radius is one call
+    site cannot fix a defect whose blast radius is a category."""
+
+    def test_a_reach_out_row_is_named_for_the_PERSON_not_the_count(self, tmp_path):
+        rows, _ = cb.read_card(_tree(tmp_path))
+        reach = [r["name"] for r in rows if r["kind"] == "reach"]
+        assert "Kestrel Group" in reach
+        assert not any("to reach out" in n for n in reach), (
+            "keying on the tally makes different people share one row, its status "
+            "and the bucket he dragged it to")
+
+    def test_an_inbox_id_survives_the_age_changing(self, tmp_path):
+        a = cb.buckets(NOW, {"mail": (["Portant: 2h ago about the docs"], None)},
+                       _tree(tmp_path))["inbox"][0]["key"]
+        b = cb.buckets(NOW, {"mail": (["Portant: 5h ago about the docs"], None)},
+                       _tree(tmp_path))["inbox"][0]["key"]
+        assert a == b, "an age change minted a new id and would orphan his row"
+
+    def test_but_a_different_thread_is_a_different_row(self, tmp_path):
+        a = cb.buckets(NOW, {"mail": (["Portant: about the docs"], None)},
+                       _tree(tmp_path))["inbox"][0]["key"]
+        b = cb.buckets(NOW, {"mail": (["Harbor: about the invoice"], None)},
+                       _tree(tmp_path))["inbox"][0]["key"]
+        assert a != b, "stripping volatile tokens must not collapse distinct rows"
+
+
+class TestAQuietSourceNeverArchivesHisRows:
+    """Codex round 2 (major): a transient Gmail error replaced that source's rows with
+    a single error row, so every inbox row he had positioned fell out of `wanted` and
+    the painter archived the lot. A source that could not answer has said nothing, and
+    nothing is not "they are gone"."""
+
+    def test_a_failed_source_is_not_a_healthy_scope(self, tmp_path):
+        b = cb.buckets(NOW, {"mail": ([], "gmail down")}, _tree(tmp_path))
+        assert "inbox:Gmail" not in b["healthy_scopes"]
+        assert any("COULD NOT READ" in i["title"] for i in b["inbox"])
+
+    def test_a_healthy_source_IS_one(self, tmp_path):
+        b = cb.buckets(NOW, {"mail": (["a thread"], None)}, _tree(tmp_path))
+        assert "inbox:Gmail" in b["healthy_scopes"]
+
+    def test_the_painter_REFUSES_buckets_with_no_scope_information(self):
+        """Archiving without it would delete rows on any transient failure, so an
+        absent field is a refusal rather than a permissive default."""
+        with pytest.raises(ValueError):
+            board_rows.paint({"top_of_mind": [], "this_week": [], "inbox": []},
+                             "t", "db", opener=lambda *a, **k: None)
+
+    def test_an_unknown_scope_on_an_existing_row_is_KEPT(self):
+        """Fails safe: a row this module cannot classify is never archived."""
+        assert board_rows._scope_of({"properties": {}}) == ""
+
+
+class TestOnlyOnePainterAtATime:
+    """Codex round 2 (major): paint() queries then creates, so two simultaneous runs
+    both saw "absent" and both created. Round 1 only DETECTED the duplicates after the
+    fact, which reports a mess instead of preventing one."""
+
+    def test_a_second_painter_is_refused_immediately(self, tmp_path):
+        lock = tmp_path / "board.lock"
+        with board_rows.exclusive(lock):
+            with pytest.raises(board_rows.BoardBusy):
+                with board_rows.exclusive(lock):
+                    pass
+
+    def test_and_the_lock_is_released_afterwards(self, tmp_path):
+        lock = tmp_path / "board.lock"
+        with board_rows.exclusive(lock):
+            pass
+        with board_rows.exclusive(lock):
+            pass                                   # no raise means it was released
 
 
 class TestAStaleCardIsAnError:
