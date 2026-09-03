@@ -770,12 +770,45 @@ def _publish_framed(text):
     what that reading wants.
     """
     text = text or ""
-    masked = _mask_fences(text)
-    masked = _mask_lane_markers(masked)
+    # TWO MASKS, KEPT APART. `fence_masked` still carries the lane markers; the
+    # publish-sentence test needs them blanked, and the producer test below needs
+    # them intact. Collapsing these into one name is a bug I shipped and the
+    # round 15 tests caught: searching the lane-masked copy for a receipt marker
+    # never matches, because that mask is what removed it.
+    fence_masked = _mask_fences(text)
+    masked = _mask_lane_markers(fence_masked)
     if not _PUBLISH_MARKER_RE.search(masked):
         return ""
     setoff = _setoff_segments(text)
-    return setoff if setoff else text.strip()
+    if setoff:
+        return setoff
+    # A PRODUCER RECEIPT BEATS THE WHOLE-MESSAGE FALLBACK (Codex major, PR #295
+    # round 15, finding 1). The fallback below returns `text.strip()`, so an
+    # assistant that ANNOUNCES a producer handoff ("Here is the post for X.")
+    # and pastes it underneath got the entire 5023-byte envelope voice-linted:
+    # receipt JSON, how-to-post card and all. Measured -- 10 capitalization
+    # violations, every one of them on the producer's own "Image must show one
+    # of:" bullets, exit 2, a valid handoff blocked. A gate that false-blocks
+    # correct work is a gate that gets switched off.
+    #
+    # When a receipt (or the reddit wrapper) is present the LANE decided where
+    # the draft starts, so read its answer instead of guessing from the message.
+    #
+    # DELIBERATELY NARROWER THAN "any marker" (which is what the finding
+    # proposed). Keyed on a PRODUCER artifact, never on a bare `=== DRAFT ===`,
+    # because the assistant can write that line itself: letting it win here
+    # would truncate a slab the publish sentence already claimed, which is
+    # exactly the round 10 bypass round 11 closed.
+    # `test_a_bare_draft_marker_still_does_not_truncate_the_slab` is that control.
+    #
+    # This can only ever lint LESS than the fallback did, never more, so it
+    # cannot newly block a turn on the 24 lane-less instances (round 13).
+    if (_RECEIPT_CLAIM_RE.search(fence_masked)
+            or _REDDIT_DRAFT_RE.search(fence_masked)):
+        produced = _route_draft(text)
+        if produced:
+            return produced
+    return text.strip()
 
 
 def framed_draft(text):

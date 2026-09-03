@@ -978,6 +978,75 @@ X_DRAFT = 'A propagation check compared every instance copy of a hook against th
 X_HANDOFF_WITH_VOICE_NOTE = '{\n "channel": "x",\n "at": "2026-09-02T00:00:00Z",\n "stages": [\n  {\n   "stage": "generate",\n   "status": "ok"\n  },\n  {\n   "stage": "gates",\n   "status": "clean",\n   "reasons": []\n  }\n ],\n "archetype": {\n  "id": "thread",\n  "name": "The Thread",\n  "why": "nothing more specific matched, so this is the default, which also carries the strongest evidence in the corpus",\n  "from_corpus": true\n },\n "experience": {\n  "matched": [],\n  "offered_to_writer": false\n },\n "style": {\n  "before_level": "ok",\n  "before_distance": 1.52,\n  "flags": [],\n  "after_level": "ok",\n  "after_distance": 1.52,\n  "revisions": 0,\n  "status": "reviewed",\n  "fingerprint": {\n   "authorship": 0.6214958642981991,\n   "authorship_band": "mid",\n   "authorship_reference": null,\n   "authorship_tokenization": "single-document-512",\n   "authorship_model": "rrivera1849/LUAR-MUD",\n   "authorship_words": 89,\n   "authorship_region_n": 30,\n   "authorship_held_out": 0,\n   "authorship_reference_n": 0\n  }\n },\n "route_receipt": {\n  "attempt_id": "ab2355e0-ed5a-4403-a4c5-95f48a38f9d6",\n  "session_id": "2026-09-02T00:00:00Z",\n  "origin_message_id": "claude-request:2026-09-02T00:00:00Z",\n  "completion_message_id": "claude-draft:2026-09-02T00:00:00Z",\n  "request_hash": "f06c13370af8fcae0632bfb6e957221524b4f53cccbf2abe15842cfa07ad9fd7",\n  "unchecked": [],\n  "surface": "social-post",\n  "channel": "x",\n  "issued_at": "2026-09-02T23:21:39Z",\n  "expires_at": 1788392199.699193,\n  "output_hash": "6c5328f0c938c972974d3e0f0d86029c6e6c4e2c9422d14ec29a57832b5f399e",\n  "gates": {\n   "deterministic_gates": true,\n   "human_boundary": true\n  },\n  "loop": {\n   "generator": "pipeline.cycle.draft_from_idea",\n   "corpus_sha": "c771b52dedb4ff7387303a06aea529e358f1afd0e50c40f41cd7451712c7824e",\n   "exemplar_ids": [\n    "x-29",\n    "x-28",\n    "x-30",\n    "x-31",\n    "post-finish-the-day-founder-revision",\n    "post-obsidian-graph-founder-revision"\n   ],\n   "score": {\n    "findings": 0,\n    "exemplars": 131,\n    "unchecked": [],\n    "exit": 0,\n    "text_sha": "cfba65e2580b34060d322010fb61190c5e572bb9795876392d5821bc11fc9fb4"\n   }\n  },\n  "loop_sha": "0a48a2d9fa472ff97a9fffb21a1ef4b48048ea37629b3f504f170113a0b2310c",\n  "status": "complete"\n }\n}\n\n=== ROUTE RECEIPT ===\n{"attempt_id": "ab2355e0-ed5a-4403-a4c5-95f48a38f9d6", "channel": "x", "completion_message_id": "claude-draft:2026-09-02T00:00:00Z", "expires_at": 1788392199.699193, "gates": {"deterministic_gates": true, "human_boundary": true}, "issued_at": "2026-09-02T23:21:39Z", "loop": {"corpus_sha": "c771b52dedb4ff7387303a06aea529e358f1afd0e50c40f41cd7451712c7824e", "exemplar_ids": ["x-29", "x-28", "x-30", "x-31", "post-finish-the-day-founder-revision", "post-obsidian-graph-founder-revision"], "generator": "pipeline.cycle.draft_from_idea", "score": {"exemplars": 131, "exit": 0, "findings": 0, "text_sha": "cfba65e2580b34060d322010fb61190c5e572bb9795876392d5821bc11fc9fb4", "unchecked": []}}, "loop_sha": "0a48a2d9fa472ff97a9fffb21a1ef4b48048ea37629b3f504f170113a0b2310c", "origin_message_id": "claude-request:2026-09-02T00:00:00Z", "output_hash": "6c5328f0c938c972974d3e0f0d86029c6e6c4e2c9422d14ec29a57832b5f399e", "request_hash": "f06c13370af8fcae0632bfb6e957221524b4f53cccbf2abe15842cfa07ad9fd7", "session_id": "2026-09-02T00:00:00Z", "status": "complete", "surface": "social-post", "unchecked": []}\n\n=== DRAFT ===\nA propagation check compared every instance copy of a hook against the skeleton copy. It went green and stayed green.\n\nThen I read the loop. It had inspected nothing, because the checkouts it walks live on the laptop that owns them. Green meant the population was missing, and that renders the same as a clean fleet.\n\nMy VOICE in the review was wrong for weeks. The fix was making the check say how many things it looked at, and refuse a verdict when it looked at none of them.\n\nVOICE: NOT CHECKED. The gates above are NEGATIVE checks (no emdash, no banned phrase, format, bio). Nothing here asserted this sounds like you. Green means nothing banned was found. You are the voice check.\n\n=== HOW TO POST THIS ===\nArchetype: The Thread\nWhy: nothing more specific matched, so this is the default, which also carries the strongest evidence in the corpus\nEvidence: thread starter plus a colon-ending setup line, 1.67x on n=226\nThread: YES. Post this, then reply to it with the detail. The reply chain is where the numbers and the mechanism go.\nImage: Optional. Add one only if it carries evidence the text is claiming. A photo on its own measures 1.04x, which is nothing.\nImage must show one of:\n  - a benchmark or comparison table, plain background, real numbers, no styling\n  - the actual first page of a paper or document, at a resolution where the title reads\n  - a chart carrying real counts, plain colors, no 3D and no gradient\n  - a screenshot cropped to the part that matters, with one hand-drawn circle or highlight on it and no caption explaining what is already marked\n  - an unstaged photo of the real thing, phone-camera quality, no product gloss\n  - a terminal or tool session captured mid-task, not a mockup\nNever:\n  - stock photography\n  - an AI-generated illustration\n  - a quote rendered as text on a colored background\n  - a screenshot so wide the text is unreadable on a phone\n'
 
 
+class TestAPublishSentenceDoesNotWidenTheLintToTheEnvelope:
+    """Codex finding 1 on PR #295 round 15, MAJOR and confirmed. A regression
+    this branch introduces against main.
+
+    THE SHAPE. The assistant announces a delivery ("Here is the post for X.")
+    and pastes the producer's handoff under it. `_publish_framed` sees the
+    publish sentence, finds no prose fence or blockquote to set the draft off,
+    and falls back to `text.strip()` -- the ENTIRE 5023-byte envelope, receipt
+    JSON, how-to-post card and all. voice-lint then grades the producer's own
+    posting instructions and reports 10 capitalization violations on the
+    "Image must show one of:" bullets, exiting 2 and blocking a valid handoff.
+
+    WHY IT IS A REGRESSION, not an inherited defect. `_publish_framed`,
+    `_draft_marker_slab` and `_route_draft` do not exist on origin/main; main
+    has `extract_publishable` alone. The whole precedence chain arrives with
+    this PR, so the false block does too.
+
+    THE FIX IS ORDERING, not classification. When a PRODUCER RECEIPT is present,
+    the lane and not the assistant decided where the draft starts, so the lint
+    grades `_route_draft(text)`. Narrow on purpose:
+
+      - the publish sentence is still the PRECONDITION, so round 13 holds. An
+        instance with no lane that pastes producer output WITHOUT announcing it
+        is still not linted at all.
+      - a bare `=== DRAFT ===` with no receipt still does NOT win over the
+        publish sentence, so round 11 holds (see the control below).
+
+    It can only ever lint LESS than before, never more, so it cannot newly block
+    a turn on the 24 lane-less instances.
+    """
+
+    FRAMED = "Here is the post for X.\n\n" + X_HANDOFF
+
+    def test_the_lint_grades_the_draft_body_not_the_envelope(self):
+        """ASSERT ON THE BODY, not on a violation count. A count can fall to
+        zero for reasons that have nothing to do with precedence; the extracted
+        bytes are where the decision is actually made."""
+        got = gate.extract_publishable(self.FRAMED)
+        assert got == X_DRAFT, (
+            "the publish sentence widened the lint to the whole producer "
+            "envelope instead of the draft the receipt hashed.\n"
+            "got %d bytes, want %d bytes\ngot: %r"
+            % (len(got.encode()), len(X_DRAFT.encode()), got[:200]))
+
+    def test_the_producer_trailer_is_not_in_what_gets_linted(self):
+        """The violations Codex measured came from the how-to-post card. Naming
+        the actual offending text, so a future regression says why it matters."""
+        got = gate.extract_publishable(self.FRAMED)
+        assert "HOW TO POST THIS" not in got, got[-300:]
+        assert "stock photography" not in got, (
+            "the producer's posting advice is being voice-linted as founder "
+            "content; those bullets are the 10 lowercase-start violations")
+
+    def test_a_bare_draft_marker_still_does_not_truncate_the_slab(self):
+        """THE ROUND 11 CONTROL. Without a producer receipt, a trailing bare
+        `=== DRAFT ===` must NOT win over the publish sentence -- that was the
+        round 10 bypass, where content the base version blocked started passing.
+        This is the case the fix deliberately leaves alone."""
+        bare = ("Here's the post for LinkedIn.\n\n"
+                "the body the founder actually announced, long enough to be "
+                "measured against the floor.\n\n"
+                "=== DRAFT ===\n"
+                "a trailing slab appended after the fact\n")
+        got = gate.extract_publishable(bare)
+        assert "the body the founder actually announced" in got, (
+            "a bare draft marker truncated a slab the publish sentence had "
+            f"already claimed. round 11 bypass is back. got: {got!r}")
+
+
 class TestTheIdeaLaneAdvisoryBlocks:
     """Codex major, ASK-1197 round 5 -- and my own capture, sp-20bdfcd9.
 
