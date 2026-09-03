@@ -324,11 +324,17 @@ def collect(now, sources: dict, opener=None, token_file=None, db_file=None):
         return [], (f"duplicate board rows for {len(dupes)} item(s): "
                     f"{', '.join(sorted(dupes))}. Two painters have run; the board "
                     "holds doubles and this run's counts cannot be trusted")
-    if seen != counts["wanted"]:
+    # `kept` rows belong to a source that could not answer this run: they are on the
+    # board and deliberately not in `wanted`. Round 3 (major): comparing `seen` to
+    # `wanted` alone made every quiet source report a false read-back mismatch and mark
+    # the whole brief degraded, which would have trained him to ignore the word.
+    expected = counts["wanted"] + counts["kept"]
+    if seen != expected:
         # The write-only-integration scar: a PATCH that returns 200 is not proof the
         # board holds what we think. The read-back is the proof.
-        return [], (f"read-back mismatch: wrote {counts['wanted']} row(s), "
-                    f"board shows {seen}")
+        return [], (f"read-back mismatch: expected {expected} row(s) "
+                    f"({counts['wanted']} written + {counts['kept']} kept from a quiet "
+                    f"source), board shows {seen}")
     return [f"board: {counts['created']} new, {counts['updated']} refreshed, "
             f"{counts['archived']} cleared, {counts['kept']} kept (source quiet), "
             "read-back ok"], None

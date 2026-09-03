@@ -250,8 +250,14 @@ def collect(now: dt.datetime, sources: dict, paths=None):
 #: rendered row, so "2h ago" -> "3h ago" minted a new id, archived the row he had
 #: positioned and created a replacement in the default bucket. Same defect class as the
 #: health dot in round 1, at a call site the round-1 fix did not reach.
-_VOLATILE = re.compile(r"\b\d+\s*(?:[smhd]|min|mins|hour|hours|day|days|ago)\b"
-                       r"|\b\d{1,2}:\d{2}\b|\b\d{4}-\d{2}-\d{2}\b|\d+", re.I)
+#: Round 3 (minor): the trailing `|\d+` stripped EVERY digit run, so "invoice 4021"
+#: and "invoice 4022" collapsed to one board row. Only digits bound to a time unit, a
+#: clock time or a date are volatile; a bare number is usually the identifying part.
+_VOLATILE = re.compile(r"\b\d+\s*(?:secs?|mins?|hours?|days?|weeks?)\b"
+                       r"|\b\d+\s*[smhdw]\s+ago\b"
+                       r"|\b\d{1,2}:\d{2}\b"
+                       r"|\b\d{4}-\d{2}-\d{2}\b"
+                       r"|\bago\b", re.I)
 
 
 def _stable(text: str) -> str:
@@ -277,6 +283,10 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
         return {"error": card_err, "top_of_mind": [], "this_week": [], "inbox": [],
                 "healthy_scopes": set()}
 
+    # Scopes that produced a set worth ARCHIVING AGAINST this run. Declared HERE, above
+    # every producer, because each one adds itself only after it answered cleanly.
+    # "card" is unconditional: a card failure returns early, above this line.
+    healthy = {"card"}
     top, week = [], []
     for row in card_rows:
         # `key` is what the row id is hashed from and it carries NO health dot.
@@ -285,7 +295,13 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
         # unattended paint then archived the row he had dragged and created a
         # replacement in a computed bucket, silently undoing his move. The whole
         # "his drag always wins" promise depended on an id that does not move.
-        item = {"title": f"{row['health']} {row['name']}", "key": row["name"],
+        # KIND-NAMESPACED. Round 3 (major): both a client row and a reach-out row are
+        # named for the person, so keying on the name alone made them one row -- the
+        # reach-out action was silently dropped and read-back still said ok, because
+        # `wanted` had already collapsed them before the count was taken. Two different
+        # things about one person are two rows.
+        item = {"title": f"{row['health']} {row['name']}",
+                "key": f"{row['kind']}:{row['name']}",
                 "detail": row["detail"], "source": "State card", "scope": "card",
                 "bucket_reason": row["health"]}
         # 🔴 and 📞 are today. Everything else is this week. The split is the card's
@@ -293,6 +309,12 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
         (top if row["health"] in ("🔴", "📞") else week).append(item)
 
     move, gtm_err = read_gtm(paths)
+    if not gtm_err:
+        # Round 3 (major): "gtm" was unconditionally healthy, so an unreadable
+        # gtm-queue.json still authorised archiving inside that scope -- the painter
+        # deleted the GTM row he had positioned and recreated it in a computed bucket.
+        # The same reasoning the inbox scopes already had; it just was not applied here.
+        healthy.add("gtm")
     if move:
         top.append({"title": move.get("action") or move.get("id"),
                     "key": f"gtm:{move.get('id')}",   # the step id, stable across rewordings
@@ -304,10 +326,6 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
                     "detail": gtm_err, "source": "GTM queue", "bucket_reason": "error"})
 
     inbox = []
-    #: Scopes that produced a set worth ARCHIVING AGAINST this run. "card" and "gtm"
-    #: are here because a failure in either returns early above; an inbox source only
-    #: joins after it answered without an error.
-    healthy = {"card", "gtm"}
     # Gmail and GroupMe only. Codex finding (major), 2026-09-03: this asked for a
     # "slack" source too, and `collect_all` registers no Slack producer, so that
     # channel was silently absent forever while the docs claimed three. An unwired

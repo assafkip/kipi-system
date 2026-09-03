@@ -110,6 +110,55 @@ class TestIdentityIsTheTHING_NotItsRendering:
         assert a != b, "stripping volatile tokens must not collapse distinct rows"
 
 
+class TestRound3:
+    """Every finding here was CAUSED by a round-2 fix. Pinned so the repair does not
+    have to be rediscovered by a fourth review."""
+
+    def test_a_client_row_and_a_reach_out_row_for_one_person_are_two_rows(self, tmp_path):
+        """Both are named for the person, so keying on the name alone collapsed them:
+        the reach-out action was dropped and read-back still said ok, because `wanted`
+        had already merged them before the count was taken."""
+        b = cb.buckets(NOW, {}, _tree(tmp_path))
+        keys = [i["key"] for i in b["top_of_mind"] + b["this_week"]]
+        assert len(keys) == len(set(keys)), f"two rows collapsed onto one key: {keys}"
+        assert any(k.startswith("reach:") for k in keys)
+        assert any(k.startswith("client:") for k in keys)
+
+    def test_an_unreadable_gtm_queue_does_NOT_authorise_archiving_its_scope(self, tmp_path):
+        """It was unconditionally healthy, so a broken queue let the painter delete the
+        GTM row he had positioned and recreate it in a computed bucket."""
+        paths = _tree(tmp_path)
+        paths["gtm"].write_text("{ not json", encoding="utf-8")
+        assert "gtm" not in cb.buckets(NOW, {}, paths)["healthy_scopes"]
+
+    def test_a_readable_gtm_queue_DOES(self, tmp_path):
+        assert "gtm" in cb.buckets(NOW, {}, _tree(tmp_path))["healthy_scopes"]
+
+    def test_two_threads_differing_only_by_a_number_stay_two_rows(self, tmp_path):
+        """The volatile-token strip removed EVERY digit run, so "invoice 4021" and
+        "invoice 4022" became one board row."""
+        a = cb.buckets(NOW, {"mail": (["invoice 4021 from them"], None)},
+                       _tree(tmp_path))["inbox"][0]["key"]
+        b = cb.buckets(NOW, {"mail": (["invoice 4022 from them"], None)},
+                       _tree(tmp_path))["inbox"][0]["key"]
+        assert a != b
+
+    def test_but_an_age_is_still_volatile(self, tmp_path):
+        a = cb.buckets(NOW, {"mail": (["invoice 4021, 2 hours ago"], None)},
+                       _tree(tmp_path))["inbox"][0]["key"]
+        b = cb.buckets(NOW, {"mail": (["invoice 4021, 5 hours ago"], None)},
+                       _tree(tmp_path))["inbox"][0]["key"]
+        assert a == b
+
+    def test_kept_rows_do_not_fake_a_read_back_mismatch(self):
+        """`kept` rows are on the board and deliberately not in `wanted`. Comparing
+        `seen` to `wanted` alone made every quiet source report a mismatch and mark the
+        brief degraded, which trains him to ignore the word."""
+        src = (SCRIPTS / "board_rows.py").read_text(encoding="utf-8")
+        assert 'expected = counts["wanted"] + counts["kept"]' in src
+        assert "if seen != expected:" in src
+
+
 class TestAQuietSourceNeverArchivesHisRows:
     """Codex round 2 (major): a transient Gmail error replaced that source's rows with
     a single error row, so every inbox row he had positioned fell out of `wanted` and
