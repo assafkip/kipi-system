@@ -630,7 +630,6 @@ def project_candidates(message: str) -> list[str]:
                 offer(_linear_project_of(row))
         offer(label)
 
-    offer(os.environ.get("KIPI_ALERT_FALLBACK_PROJECT") or "")
     offer(_own_checkout_project(rows))
     return out
 
@@ -680,9 +679,16 @@ def _own_checkout_project(rows: list) -> str:
     that checkout is the one honest thing left to say about its origin.
 
     It is also the ONLY rung covering the 22 `[/]` tickets, since no path is
-    exported and no label resolves for them. KIPI_ALERT_FALLBACK_PROJECT is not
-    that cover: nothing in this repo sets it (one reader, no writer), so a case
-    that supplies it by hand is testing an invention.
+    exported and no label resolves for them.
+
+    There used to be an env rung above this one (`KIPI_ALERT_FALLBACK_PROJECT`),
+    deleted in ASK-880 rather than given a writer. It had one reader here and no
+    writer anywhere in the repo, so the only thing that could ever set it was a
+    test -- and one did, which is how the `[/]` case passed green while this
+    rung, the one it claimed to exercise, returned "". Rung 1
+    (`KIPI_ALERT_PROJECT`) already carries "the caller states the project", so a
+    second env var was not a missing capability, only an unreachable branch.
+    `test_no_env_nothing_writes_can_steer_the_ladder` holds the line.
     """
     try:
         root = os.path.realpath(_common_repo_root(_own_checkout_root()))
