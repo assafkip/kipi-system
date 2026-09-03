@@ -121,16 +121,35 @@ class TestTheDryRunWritesNothing:
     had already created 12 rows on the live board. The send flag only ever covered the
     Slack send, because until board_rows no section could write."""
 
+    def _token(self, tmp_path):
+        """A credential the guard can get PAST.
+
+        Both tests below passed on the author's machine and failed in CI with
+        `cannot unpack non-iterable NoneType`, because CI has no
+        ~/.config/kipi/notion-token: the OFF switch fired first and returned None, so
+        the guard under test was never reached. The ordering is correct behaviour and
+        the tests were wrong to depend on the developer's own credentials. Supplying a
+        fake token is what makes these assert the guard rather than the environment.
+        """
+        tf = tmp_path / "notion-token"
+        tf.write_text("t", encoding="utf-8")
+        return str(tf)
+
     def test_the_flag_stops_the_board_write(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KIPI_BRIEF_DRY_RUN", "1")
         monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
-        rows, err = board_rows.collect(NOW, {})
+        rows, err = board_rows.collect(NOW, {}, token_file=self._token(tmp_path))
         assert rows == [] and "dry-run" in err
 
-    def test_pytest_alone_also_stops_it(self, monkeypatch):
+    def test_pytest_alone_also_stops_it(self, tmp_path, monkeypatch):
         monkeypatch.delenv("KIPI_BRIEF_DRY_RUN", raising=False)
-        rows, err = board_rows.collect(NOW, {})
+        rows, err = board_rows.collect(NOW, {}, token_file=self._token(tmp_path))
         assert rows == [] and "pytest" in err
+
+    def test_and_with_NO_credential_it_is_OFF_before_either_guard(self, tmp_path):
+        """The negative control the two above were accidentally exercising in CI.
+        Pinned deliberately so the ordering is a decision, not a coincidence."""
+        assert board_rows.collect(NOW, {}, token_file=str(tmp_path / "absent")) is None
 
 
 class TestHisDragAlwaysWins:
