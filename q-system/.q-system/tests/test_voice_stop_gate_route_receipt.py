@@ -1576,12 +1576,24 @@ class TestAPastedTokenCannotDisableTheGate:
               "The body of the draft, long enough to be measured, pasted next to "
               "the refusal token so the gate would look away.\n")
 
-    def test_a_framed_draft_with_the_token_is_still_a_draft(self):
+    def test_a_framed_draft_with_the_token_is_still_a_draft_to_the_ROUTE(self):
+        """ASK-1197 round 13 splits what this used to assert as one thing.
+
+        The route path must still see a draft: that is the round 10 bypass and it
+        stays closed at any length (ECHO_NEVER_EXEMPTS_ROUTE).
+
+        The LINT half is now deliberately the opposite. The voice lint never
+        grades this gate's own refusal, framed or not (ECHO_LINT_EXEMPT), because
+        round 12 made the echo test unreachable under framing and the gate started
+        voice-linting its own quoted refusal and holding the turn. Here the mark
+        sits INSIDE the slab, so the slab is exempt; the residual is sp-98247c8e
+        and the route still verifies this turn.
+        """
         assert gate._output_carries_draft(self.PASTED), (
             "pasting the refusal token next to a framed draft disabled the route "
             "predicate")
-        assert gate.extract_publishable(self.PASTED), (
-            "and it disabled the voice lint too")
+        assert gate.extract_publishable(self.PASTED) == "", (
+            "the lint graded a slab that carries this gate's own refusal")
 
     def test_a_framed_draft_with_the_token_is_still_refused(self, tmp_path):
         """End to end with the lane installed and the request routed: no receipt,
@@ -1796,3 +1808,208 @@ class TestThePublishMarkerWordBoundary:
                     if bool(old.search(t))
                     != bool(gate._PUBLISH_MARKER_RE.search(t))]
         assert diverged == ["I have not re-drafted anything yet."], diverged
+
+
+class TestLaneMarkersAreRouteFramingNotPublishFraming:
+    """Codex major, ASK-1197 round 13. Round 12 let `extract_publishable` read
+    LANE markers, so on the 24 registered instances with no `q-consult` pipeline,
+    pasting a producer's output got voice-linted and BLOCKED the turn where main
+    exits 0. Lane markers mean "a producer emitted this", which is the route
+    path's question."""
+
+    #: A producer handoff: receipt block plus the reddit wrapper, no publish
+    #: sentence and no `=== DRAFT ===`. Shaped like the captured fixture above.
+    PASTED_PRODUCER = (
+        "=== ROUTE RECEIPT ===\n"
+        '{"surface": "reddit-post", "channel": "reddit", "attempt_id": "a1"}\n\n'
+        "=== REDDIT DRAFT (ATTENDED, PUBLISHES NOTHING) ===\n"
+        "TITLE: the gate that passed because it had nothing to look at\n\n"
+        "we shipped a check that inspected zero files and went green anyway.\n\n"
+        "FOUNDER REVIEW REQUIRED: subreddit rules, and the six checks above are "
+        "flags, not passes.\n")
+
+    def test_a_pasted_producer_output_is_not_publishable(self):
+        assert gate.extract_publishable(self.PASTED_PRODUCER) == "", (
+            "a lane marker was read as publish framing, so pasting producer "
+            "output gets voice-linted on instances that have no route lane")
+
+    def test_a_lane_less_instance_does_not_block_on_it(self, tmp_path):
+        """The 24-instance regression, end to end. The body is deliberately
+        lowercase, so a lint that ran at all would refuse it."""
+        root = _instance(tmp_path, with_route_lane=False)
+        proc = _run(root, _transcript(tmp_path, "what does the producer emit?",
+                                      self.PASTED_PRODUCER), tmp_path / "c.json")
+        assert proc.returncode == 0, (
+            "a lane-less instance blocked the turn on pasted producer output; "
+            f"main exits 0 here.\nrc={proc.returncode} stderr={proc.stderr}")
+
+    def test_the_route_path_still_reads_lane_markers(self):
+        """THE CONTROL. Narrowing the LINT must not narrow the ROUTE; without
+        this, dropping lane markers everywhere would pass the tests above and
+        silently stop verifying every producer handoff."""
+        assert gate.classify_output(self.PASTED_PRODUCER) == gate.OUTPUT_DRAFT
+        assert gate._route_draft(self.PASTED_PRODUCER), "the lane slab vanished"
+
+    def test_a_draft_marker_is_still_publish_framing(self):
+        """`=== DRAFT ===` is the separator the ASSISTANT writes, not a producer
+        artifact, so the lint still reads it."""
+        assert gate.extract_publishable(
+            "=== DRAFT ===\nThe body of a draft, long enough to be measured.\n")
+
+
+class TestTheLintNeverGradesItsOwnRefusal:
+    """Codex minor, ASK-1197 round 13. Round 12 made the echo test unreachable
+    whenever framing was present, so an assistant quoting the gate's refusal
+    inside a framed message got that refusal VOICE-LINTED and the turn was held
+    again -- the deadlock, arriving through the lint instead of the route lane."""
+
+    FRAMED_ECHO = (
+        "Here's the post for LinkedIn, or rather here is why there isn't one.\n\n"
+        "voice-stop-gate: routed completion has no route receipt\n"
+        + "[voice-stop-gate:held-this-turn]" + "\n")
+
+    def test_a_framed_quoted_refusal_is_not_linted(self):
+        assert gate.extract_publishable(self.FRAMED_ECHO) == "", (
+            "the lint graded this gate's own refusal because the message "
+            "happened to carry publish framing")
+
+    def test_the_turn_completes(self, tmp_path):
+        root = _instance(tmp_path, with_route_lane=False)
+        proc = _run(root, _transcript(tmp_path, "what happened?", self.FRAMED_ECHO),
+                    tmp_path / "c.json")
+        assert proc.returncode == 0, (
+            f"rc={proc.returncode} stderr={proc.stderr}")
+
+    def test_a_token_in_surrounding_chat_does_not_exempt_a_fenced_draft(self):
+        """The narrowing, asserted. Evaluating the echo on the SLAB rather than
+        the whole message means a real fenced draft is still graded even when the
+        token appears in the chat around it."""
+        message = ("Here's the post for LinkedIn. The gate said "
+                   "[voice-stop-gate:held-this-turn] last time.\n\n"
+                   "```\nthe body of a real draft that must still be graded.\n```\n")
+        draft = gate.extract_publishable(message)
+        assert draft and "voice-stop-gate" not in draft, draft
+
+
+class TestAFencedFormatExampleIsNotAClaimedReceipt:
+    """Codex minor, ASK-1197 round 13. The uninstalled-lane receipt-claim check
+    was the one marker read still scanning raw text, so an assistant SHOWING what
+    a receipt block looks like emitted a false NOT CHECKED on the 24 lane-less
+    instances -- a per-turn line on instances that were never asked to check
+    anything, which is how a gate gets switched off."""
+
+    FENCED_EXAMPLE = (
+        "The producer emits this before the draft:\n\n"
+        "```\n"
+        "=== ROUTE RECEIPT ===\n"
+        '{"attempt_id": "...", "surface": "linkedin", "channel": "assaf"}\n'
+        "```\n\n"
+        "and the gate consumes it once.\n")
+
+    def test_no_false_not_checked_on_a_lane_less_instance(self, tmp_path):
+        root = _instance(tmp_path, with_route_lane=False)
+        proc = _run(root, _transcript(tmp_path, "explain the receipt block",
+                                      self.FENCED_EXAMPLE), tmp_path / "c.json")
+        assert proc.returncode == 0, proc.stderr
+        assert "NOT CHECKED" not in proc.stdout + proc.stderr, (
+            "a fenced format example was read as a claimed receipt.\n"
+            f"stdout={proc.stdout!r}")
+
+    def test_a_real_receipt_block_still_reports_not_checked(self, tmp_path):
+        """THE CONTROL. Masking must not silence the warning this branch exists
+        to print; without this, masking everything would pass the test above."""
+        root = _instance(tmp_path, with_route_lane=False)
+        receipt = {name: "x" for name in STUB_MATCH_FIELDS}
+        proc = _run(root, _transcript(tmp_path, "write it",
+                                      _producer_message(receipt, "The body")),
+                    tmp_path / "c.json")
+        assert proc.returncode == 0, proc.stderr
+        assert "NOT CHECKED" in _system_message(proc)
+
+
+def test_every_marker_read_is_fence_masked():
+    """One masking helper, every marker read, no exceptions (round 13, finding 2).
+
+    DERIVED, NOT TYPED. The framing regexes are found by asking each compiled
+    pattern in the module whether it matches a real marker or a real publish
+    sentence, and the call sites are found by walking the AST. A new marker regex
+    or a new call site is covered the day it is written, which a hand-kept list
+    would not be -- and a hand-kept list is how the receipt-claim check sat
+    unmasked through three rounds.
+    """
+    import ast
+    import re as _re
+
+    probes = [gate.ROUTE_RECEIPT_MARKER, gate.ROUTE_REDDIT_DRAFT_MARKER,
+              gate.ROUTE_DRAFT_MARKER, "Here's the post."]
+    framing = {name for name, value in vars(gate).items()
+               if isinstance(value, _re.Pattern)
+               and any(value.search(probe) for probe in probes)}
+    assert len(framing) >= 4, (
+        f"derived only {sorted(framing)}; the probe set no longer finds the "
+        "framing regexes, so this test is measuring nothing")
+
+    source = pathlib.Path(gate.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    offenders = []
+    for func in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+        params = {a.arg for a in func.args.args}
+        # A function handed an already-extracted slab has no full message to mask;
+        # fences upstream were resolved before it was called.
+        if "slab" in params:
+            continue
+        # TRANSITIVE, because masked text does not stay in the variable it was
+        # first bound to. `markers = _PUBLISH_MARKER_RE.finditer(masked)` then
+        # `marker.group(0)`, or `chunk = _sentence_at(masked, ...)`, are both
+        # reading masked bytes. The first version of this check accepted only a
+        # literal `_mask_fences(...)` argument and flagged those two as
+        # offenders -- a false positive against correct code, which is the kind
+        # of red that makes a gate get switched off.
+        masked_locals = set()
+        for _ in range(6):          # fixpoint; the chains here are 2-3 deep
+            before = len(masked_locals)
+            for stmt in ast.walk(func):
+                targets = []
+                if isinstance(stmt, ast.Assign):
+                    targets = [t for t in stmt.targets if isinstance(t, ast.Name)]
+                    value = stmt.value
+                elif isinstance(stmt, ast.For) and isinstance(stmt.target, ast.Name):
+                    targets, value = [stmt.target], stmt.iter
+                else:
+                    continue
+                if not targets:
+                    continue
+                derived = any(
+                    (isinstance(n, ast.Name)
+                     and (n.id in masked_locals or n.id == "_mask_fences"))
+                    or (isinstance(n, ast.Attribute) and n.attr == "_mask_fences")
+                    for n in ast.walk(value))
+                if derived:
+                    masked_locals.update(t.id for t in targets)
+            if len(masked_locals) == before:
+                break
+
+        for call in ast.walk(func):
+            if not (isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Attribute)
+                    and call.func.attr in {"search", "match", "finditer", "findall"}
+                    and isinstance(call.func.value, ast.Name)
+                    and call.func.value.id in framing
+                    and call.args):
+                continue
+            arg = call.args[0]
+            ok = ((isinstance(arg, ast.Call) and isinstance(arg.func, ast.Name)
+                   and arg.func.id == "_mask_fences")
+                  or (isinstance(arg, ast.Name) and arg.id in masked_locals)
+                  # `marker.group(0)` where `marker` came from a masked scan
+                  or (isinstance(arg, ast.Call)
+                      and isinstance(arg.func, ast.Attribute)
+                      and arg.func.attr in {"group", "groups"}
+                      and isinstance(arg.func.value, ast.Name)
+                      and arg.func.value.id in masked_locals))
+            if not ok:
+                offenders.append(f"{func.name}: {call.func.value.id}."
+                                 f"{call.func.attr}(...) reads unmasked text")
+    assert not offenders, (
+        "a marker regex read text that was not fence-masked, so a fenced example "
+        "of that marker frames a delivery:\n  " + "\n  ".join(offenders))

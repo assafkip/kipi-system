@@ -138,22 +138,32 @@ MIN_DRAFT_BYTES = 40
 def extract_publishable(text):
     """The draft content to LINT, or "" when the message is conversational.
 
-    FRAMING REQUIRED. voice-enforcement.md scopes the lint to content sent to
-    another person and excludes conversational replies to the founder.
+    PUBLISH FRAMING ONLY (Codex major, ASK-1197 round 13). Round 12 let this read
+    LANE markers too, so on the 24 registered instances with no `q-consult`
+    pipeline, pasting a producer's output -- which carries a receipt block and a
+    reddit wrapper -- got voice-linted and BLOCKED the turn where main exits 0.
+    Lane markers are route framing. They mean "a producer emitted this", which is
+    a question for the route path; they are not the founder announcing a delivery.
+    The `=== DRAFT ===` marker is read here because it is the delivery separator
+    the assistant itself writes, not a producer artifact.
 
-    WHICH SLAB: publish framing first, so a trailing bare `=== DRAFT ===` cannot
-    shrink a slab the publish sentence already claimed (round 11, finding 3).
+    ECHO_LINT_EXEMPT, evaluated FIRST and unconditionally. The voice lint never
+    grades this gate's own refusal, framed or not. Round 12 made the echo test
+    unreachable whenever framing was present, so an assistant quoting the refusal
+    inside a framed message got its own refusal voice-linted and the turn was held
+    again -- the deadlock, through the lint instead of the route lane.
 
-    THE ECHO TEST RUNS ONLY WHEN NOTHING IS FRAMED (round 12). Any framed draft,
-    of any length, is linted -- the previous rule compared the draft against the
-    quoted refusal envelope, so a draft SHORTER than the envelope beside a pasted
-    token switched the lint off. Length is not a licence. Once a draft exists the
-    echo question is not asked at all, so there is no size to game.
+    Evaluated on the SLAB rather than the whole message, which is narrower than
+    "framed or not" and deliberately so: a real fenced draft with the token pasted
+    in the surrounding chat still gets linted, because the slab does not carry the
+    mark. The residual (a token pasted INSIDE the draft itself) is recorded as
+    sp-98247c8e; the route path still verifies that turn either way, because
+    ECHO_NEVER_EXEMPTS_ROUTE.
     """
-    draft = _publish_framed(text) or _route_draft(text)
-    if draft:
-        return draft
-    return ""
+    draft = _publish_framed(text) or _draft_marker_slab(text)
+    if _is_own_refusal_echo(draft):
+        return ""
+    return draft
 
 
 def extract_setoff_draft(text):
@@ -666,6 +676,28 @@ def _mask_fences(text):
     return "".join(out)
 
 
+def _mask_lane_markers(masked):
+    """Blank the lane MARKER LINES in an already-fence-masked copy.
+
+    A LANE WRAPPER IS NOT AN ANNOUNCEMENT (ASK-1197 round 13). The reddit wrapper
+    line literally reads `=== REDDIT DRAFT (ATTENDED, PUBLISHES NOTHING) ===`, and
+    `_PUBLISH_MARKER_RE` matched "REDDIT DRAFT" inside it -- so a pasted producer
+    output framed itself as a publish delivery and got voice-linted on the 24
+    lane-less instances. The producer's own wrapper cannot be the founder
+    announcing a post.
+
+    Same same-length contract as `_mask_fences`, for the same reason: callers
+    slice the original.
+    """
+    out = list(masked or "")
+    for pattern in (_RECEIPT_CLAIM_RE, _REDDIT_DRAFT_RE, _DRAFT_MARKER_RE):
+        for match in pattern.finditer(masked or ""):
+            for index in range(match.start(), match.end()):
+                if out[index] != "\n":
+                    out[index] = " "
+    return "".join(out)
+
+
 def _strip_lane_trailers(slab):
     """Drop the producer's posting advice from a draft slab.
 
@@ -703,15 +735,18 @@ def _after_receipt_block(text):
 
 
 def _publish_framed(text):
-    """The publish-sentence reading: the pre-R8 body, with fences masked.
+    """The publish-sentence reading: the pre-R8 body, with framing noise masked.
 
-    The sentence is looked for in a fence-masked copy so an assistant QUOTING
-    "here's the post" inside a fence does not frame a delivery. The set-off
-    segments are read from the ORIGINAL, because fence bodies are exactly what
-    that reading wants.
+    The sentence is looked for in a copy with fences AND lane marker lines
+    blanked, so neither an assistant QUOTING "here's the post" inside a fence nor
+    a producer's own `=== REDDIT DRAFT ... ===` wrapper frames a delivery. The
+    set-off segments are read from the ORIGINAL, because fence bodies are exactly
+    what that reading wants.
     """
     text = text or ""
-    if not _PUBLISH_MARKER_RE.search(_mask_fences(text)):
+    masked = _mask_fences(text)
+    masked = _mask_lane_markers(masked)
+    if not _PUBLISH_MARKER_RE.search(masked):
         return ""
     setoff = _setoff_segments(text)
     return setoff if setoff else text.strip()
@@ -991,6 +1026,20 @@ def _route_context():
     return route_classifier, route_contract, audit_only_routes, route_registry
 
 
+def _draft_marker_slab(text):
+    """The slab after a `=== DRAFT ===` marker, or "".
+
+    Split out of `_route_draft` so the LINT can read this marker without also
+    reading the producer-only lane markers (round 13, finding 1). Fence-masked,
+    like every other marker read.
+    """
+    text = text or ""
+    marker = _DRAFT_MARKER_RE.search(_mask_fences(text))
+    if marker is None:
+        return ""
+    return _strip_lane_trailers(text[marker.end():])
+
+
 def _route_draft(text):
     """The bytes the producer hashed, for whichever lane emitted this handoff.
 
@@ -1021,8 +1070,11 @@ def _route_draft(text):
 
 
 def _receipt_block(text):
-    # Same shape test as the claim check above, from the same compiled pattern.
-    claim = _RECEIPT_CLAIM_RE.search(text or "")
+    # Same shape test as the claim check, from the same compiled pattern, on a
+    # fence-masked copy so a quoted example is not parsed as a receipt.
+    text = text or ""
+    masked = _mask_fences(text)
+    claim = _RECEIPT_CLAIM_RE.search(masked)
     if claim is None:
         return None
     payload = text[claim.end():].lstrip()
@@ -1047,17 +1099,16 @@ def classify_output(assistant_text):
     """What this completion hands over: a framed draft, this gate's own refusal
     echoed back, or nothing.
 
-    FRAMING IS THE CONTRACT. The producers of record always emit RECEIPT then
-    DRAFT, so a framed handoff is a delivery and unframed prose is not
-    classifiable from its shape (sp-6ce17a23).
+    ECHO_NEVER_EXEMPTS_ROUTE (ASK-1197 round 13). Framing is decided FIRST and the
+    echo test cannot turn a framed draft into a non-draft. It only chooses which
+    NOTICE an unframed turn gets. That keeps round 10's bypass closed -- a pasted
+    `[voice-stop-gate:held-this-turn]` beside a framed draft cannot skip receipt
+    verification at any length -- while the lint half stays exempt, which is the
+    other job the single predicate used to do badly.
 
-    ORDER IS THE WHOLE RULE (ASK-1197 round 12). Framing is decided FIRST and the
-    echo test only runs when nothing was framed. Every earlier version asked the
-    echo question beside a draft and every one of them was gameable: a pasted
-    `[voice-stop-gate:held-this-turn]` disabled the lint and receipt verification
-    whenever the draft happened to be shorter than the quoted envelope. A token
-    anyone can copy must never switch a gate off, and the fix is not a better
-    comparison -- it is not comparing.
+    Route framing is wider than lint framing on purpose: it includes the lane
+    markers a PRODUCER emits (receipt block, reddit wrapper), because those are
+    exactly what a receipt covers.
     """
     text = assistant_text or ""
     if _publish_framed(text) or _route_draft(text):
@@ -1086,7 +1137,13 @@ def enforce_route_receipt(request, assistant_text):
         # SHAPE, not substring -- see `_RECEIPT_CLAIM_RE`. The JSON is still
         # deliberately not parsed, because on an instance with no producer a
         # malformed block must not hard-block a turn.
-        if _RECEIPT_CLAIM_RE.search(assistant_text or "") is None:
+        # MASKED, like every other marker read (Codex minor, ASK-1197 round 13).
+        # This one call still searched raw text, so a fenced FORMAT EXAMPLE -- an
+        # assistant showing what a receipt block looks like -- emitted a false
+        # NOT CHECKED on the 24 lane-less instances. One masking helper, every
+        # marker read, no exceptions; `test_every_marker_read_is_fence_masked`
+        # derives the call sites from the source so a new one cannot skip it.
+        if _RECEIPT_CLAIM_RE.search(_mask_fences(assistant_text or "")) is None:
             return []
         return ["voice-stop-gate: this turn carries a %s block, but no route "
                 "verifier is installed at %s, so the receipt was NOT CHECKED. "
@@ -1335,8 +1392,16 @@ def detect_channel(text):
     prose is the direction that misroutes, so framing that names no platform yields no
     channel even when one is named elsewhere in the message.
     """
+    # MASKED, like every other framing read (ASK-1197 round 13). A fenced EXAMPLE
+    # naming a platform, or a producer's own `=== REDDIT DRAFT ... ===` wrapper,
+    # would otherwise pick the channel -- which is the "wrong rulebook, shipped
+    # AI-sounding" scar this function exists to close, re-entering through a
+    # quoted example. Offsets are preserved by the masks, so `_sentence_at` still
+    # indexes the same positions.
     text = text or ""
-    markers = list(_PUBLISH_MARKER_RE.finditer(text))
+    masked = _mask_fences(text)
+    masked = _mask_lane_markers(masked)
+    markers = list(_PUBLISH_MARKER_RE.finditer(masked))
     if not markers:
         return ""
     # NEAREST THE DRAFT WINS, and this is the rule rather than the fourth patch.
@@ -1364,7 +1429,7 @@ def detect_channel(text):
     # piece of framing, which is where "Reddit version, ready to paste" says it.
     # The sentence, not the message: a platform named two sentences earlier as
     # context still cannot claim the draft.
-    chunk = _sentence_at(text, markers[-1].start())
+    chunk = _sentence_at(masked, markers[-1].start())
     found = _CHANNEL_RE.search(chunk)
     if found:
         name = found.group(1).lower()
