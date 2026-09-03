@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/test_worker_skeleton_registry_row.py",
+ "runner": "python3",
+ "timeout_s": 180
+}
