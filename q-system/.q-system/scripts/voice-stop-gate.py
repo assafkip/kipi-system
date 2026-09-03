@@ -81,7 +81,13 @@ _PUBLISH_MARKER_RE = re.compile(
     r"(?im)("
     # "here's / here is / below is  the/a/your/my  [up to 2 words]  post/reply/…"
     r"\b(here'?s|here\s+is|below\s+is)\s+(the|a|your|my)\s+(\w+\s+){0,2}" + _NOUN + r"\b"
-    r"|\bdraft(ed|ing)?\s+(the|a|your|my|for|below|:)"
+    # `\b` AFTER the article, and it is load-bearing (ASK-1197 round 12). Without
+    # it this matched "drafted a" inside "I have not re-drafted ANYthing yet",
+    # so an assistant REPORTING a refusal read as announcing a delivery. That
+    # false positive is what made the refusal-echo test look necessary beside a
+    # draft, which is the hole round 12 closes. The colon stays outside the
+    # boundary group because "drafted:" has no word character after it.
+    r"|\bdraft(ed|ing)?\s+((the|a|your|my|for|below)\b|:)"
     r"|\b" + _NOUN + r"\s+draft\b"
     r"|\bready\s+to\s+(post|send|paste|publish)\b"
     r"|\bcopy[-\s]?paste\b"
@@ -135,28 +141,19 @@ def extract_publishable(text):
     FRAMING REQUIRED. voice-enforcement.md scopes the lint to content sent to
     another person and excludes conversational replies to the founder.
 
-    TWO SEPARATE QUESTIONS, and conflating them is what round 11 got wrong first
-    (the mutant survived and said so):
+    WHICH SLAB: publish framing first, so a trailing bare `=== DRAFT ===` cannot
+    shrink a slab the publish sentence already claimed (round 11, finding 3).
 
-      WHICH SLAB -- publish framing first. An announced delivery owns the slab it
-      announced, and a trailing bare `=== DRAFT ===` must not shrink it. Round 10
-      preferred the lane wrapper, so a trailing marker with any tail after it
-      truncated the announced slab and content the base version blocked passed.
-
-      WHETHER THE ECHO TEST APPLIES -- lane framing, presence only. A receipt
-      block, `=== DRAFT ===` or the reddit wrapper means the assistant handed over
-      a delivery, so it is linted whatever else the message pastes, including the
-      refusal token that used to switch the lint off. The echo test is consulted
-      only under the weaker publish-sentence framing, where an explanation of a
-      refusal really can read as an announcement.
+    THE ECHO TEST RUNS ONLY WHEN NOTHING IS FRAMED (round 12). Any framed draft,
+    of any length, is linted -- the previous rule compared the draft against the
+    quoted refusal envelope, so a draft SHORTER than the envelope beside a pasted
+    token switched the lint off. Length is not a licence. Once a draft exists the
+    echo question is not asked at all, so there is no size to game.
     """
-    lane = _route_draft(text)
-    draft = _publish_framed(text) or lane
-    if not draft:
-        return ""
-    if lane:
+    draft = _publish_framed(text) or _route_draft(text)
+    if draft:
         return draft
-    return "" if _is_own_refusal_echo(draft) else draft
+    return ""
 
 
 def extract_setoff_draft(text):
@@ -749,37 +746,20 @@ def _setoff_segments(text):
     return "\n\n".join(seg.strip() for seg in segments if seg.strip())
 
 
-def _is_own_refusal_echo(draft):
-    """Is this draft-shaped block just this gate's own refusal, quoted back?
+def _is_own_refusal_echo(text):
+    """Is this completion this gate's own refusal, quoted back?
 
-    STRUCTURAL, NOT A SUBSTRING (Codex major, ASK-1197 round 11). This used to be
-    `_REFUSAL_MARK in draft`, which meant an assistant could paste the token
-    beside a real framed draft and skip BOTH the voice lint and receipt
-    verification, exiting 0 with a notice that falsely said no draft was present.
-    A token anyone can copy must never be the thing that disables a gate.
+    PRESENCE IS ENOUGH NOW, and that is a consequence of WHERE this is called
+    from rather than a weakening. `classify_output` decides framing first and only
+    reaches here when nothing was framed, so there is no draft standing beside the
+    token for a presence test to hide. Every earlier version compared the mark
+    against the surrounding text -- substring, then dominance -- and both were
+    gameable exactly because they ran beside a draft.
 
-    Two changes. Callers with LANE framing do not consult this at all -- a framed
-    draft is a draft regardless of what else the message pastes. And the test here
-    is whether the refusal envelope IS the message: strip the envelope lines, and
-    if what remains is not itself substantial, the message is the echo.
+    The mark is text this gate WRITES (see `refuse`), so recognising it needs no
+    heuristic.
     """
-    if not draft or _REFUSAL_MARK not in draft:
-        return False
-    kept, envelope = [], []
-    for line in draft.splitlines():
-        target = (envelope if (_REFUSAL_MARK in line
-                               or line.startswith("voice-stop-gate:")) else kept)
-        target.append(line)
-    if not envelope:
-        return False
-    remainder = "\n".join(kept).strip().encode("utf-8")
-    quoted = "\n".join(envelope).strip().encode("utf-8")
-    # DOMINANCE, not presence. An error report is mostly the refusal it is
-    # reporting, plus a sentence of context; a real draft that happens to paste
-    # the token dwarfs it. Comparing the two sizes distinguishes them without
-    # letting a pasted token switch the gate off, which is what the old substring
-    # test allowed. The floor keeps a two-word remainder from counting as a draft.
-    return len(remainder) < max(MIN_DRAFT_BYTES, len(quoted))
+    return bool(text) and _REFUSAL_MARK in text
 
 
 def refuse(message):
@@ -1055,26 +1035,41 @@ def _receipt_block(text):
 
 
 
-def _output_carries_draft(assistant_text):
-    """Does this completion hand over something a receipt could cover?
+#: What `classify_output` saw. Three values because the gate emits three
+#: different notices, and a notice that names the wrong thing is worse than none:
+#: a reader who is told "no draft found" about an echo goes looking for a bug.
+OUTPUT_DRAFT = "draft"
+OUTPUT_REFUSAL_ECHO = "refusal_echo"
+OUTPUT_NO_DRAFT = "no_draft"
+
+
+def classify_output(assistant_text):
+    """What this completion hands over: a framed draft, this gate's own refusal
+    echoed back, or nothing.
 
     FRAMING IS THE CONTRACT. The producers of record always emit RECEIPT then
-    DRAFT, so a framed handoff is a delivery and anything else is not classifiable
-    from prose. Unframed output under a routed request is NOT treated as a draft,
-    and that is a recorded boundary rather than an oversight: sp-6ce17a23.
+    DRAFT, so a framed handoff is a delivery and unframed prose is not
+    classifiable from its shape (sp-6ce17a23).
 
-    Same split as `extract_publishable`: lane framing present means yes
-    unconditionally, so pasting `[voice-stop-gate:held-this-turn]` beside a real
-    draft cannot buy a skip; the echo test applies only to publish framing.
+    ORDER IS THE WHOLE RULE (ASK-1197 round 12). Framing is decided FIRST and the
+    echo test only runs when nothing was framed. Every earlier version asked the
+    echo question beside a draft and every one of them was gameable: a pasted
+    `[voice-stop-gate:held-this-turn]` disabled the lint and receipt verification
+    whenever the draft happened to be shorter than the quoted envelope. A token
+    anyone can copy must never switch a gate off, and the fix is not a better
+    comparison -- it is not comparing.
     """
     text = assistant_text or ""
-    lane = _route_draft(text)
-    draft = _publish_framed(text) or lane
-    if not draft:
-        return False
-    if lane:
-        return True
-    return not _is_own_refusal_echo(draft)
+    if _publish_framed(text) or _route_draft(text):
+        return OUTPUT_DRAFT
+    if _is_own_refusal_echo(text):
+        return OUTPUT_REFUSAL_ECHO
+    return OUTPUT_NO_DRAFT
+
+
+def _output_carries_draft(assistant_text):
+    """Back-compat boolean over `classify_output`. Prefer that; it says WHY."""
+    return classify_output(assistant_text) == OUTPUT_DRAFT
 
 
 def enforce_route_receipt(request, assistant_text):
@@ -1122,13 +1117,26 @@ def enforce_route_receipt(request, assistant_text):
     # found nothing rather than that it approved something. Same posture as the
     # uninstalled-lane branch above, and it goes out through the same single
     # systemMessage envelope.
-    if not _output_carries_draft(assistant_text):
-        return ["voice-stop-gate: routed request (%s/%s), UNFRAMED OUTPUT, NOT "
-                "VERIFIED. Nothing in this completion is framed as a delivery "
-                "(no route receipt, no === DRAFT === and no lane wrapper), so "
-                "there was nothing a receipt could cover. This is a known "
-                "boundary, not a pass: see spillover sp-6ce17a23. A framed draft "
-                "in this turn would have been verified or refused."
+    seen = classify_output(assistant_text)
+    if seen != OUTPUT_DRAFT:
+        # THREE OUTCOMES, THREE NOTICES, each naming exactly what was seen
+        # (Codex minor, ASK-1197 round 12). One shared "unframed output" line was
+        # emitted on the echo path too, so the gate told the reader it had found
+        # no draft when what it had actually found was its own refusal quoted
+        # back. A notice that misstates what the gate saw sends the next reader
+        # hunting a bug that is not there.
+        if seen == OUTPUT_REFUSAL_ECHO:
+            return ["voice-stop-gate: routed request (%s/%s), output is this "
+                    "gate's own refusal echo, NOT VERIFIED. The assistant is "
+                    "reporting a previous refusal rather than delivering a "
+                    "draft, so there was nothing a receipt could cover. The next "
+                    "completion carrying a framed draft must carry a receipt."
+                    % (result.surface, result.channel)]
+        return ["voice-stop-gate: routed request (%s/%s), no draft found in this "
+                "output, NOT VERIFIED. Nothing here is framed as a delivery (no "
+                "route receipt, no === DRAFT === and no lane wrapper), so there "
+                "was nothing a receipt could cover. This is a known boundary, "
+                "not a pass: see spillover sp-6ce17a23."
                 % (result.surface, result.channel)]
     if result.status != classifier.ROUTE:
         raise RouteBoundaryError(

@@ -1117,8 +1117,14 @@ class TestWhichInjectedRecordsEndTheTurn:
         # NOT SILENT. The request is still routed, so a reader must be able to see
         # that the gate looked and found nothing to verify -- not that it approved
         # something. Same envelope as every other notice (round 4).
+        # THE EXACT notice for THIS path, not just "some notice" (round 12). The
+        # echo path and the no-draft path used to share one line, so the gate
+        # said it had found no draft when it had found its own refusal.
         message = _system_message(proc)
-        assert "NOT VERIFIED" in message and "sp-6ce17a23" in message, message
+        assert "refusal echo" in message, message
+        assert "no draft found" not in message, (
+            "the echo path emitted the no-draft notice, which misstates what the "
+            f"gate saw. {message}")
 
     ROUTED_REQUEST = "write me a linkedin post about the propagation gate"
 
@@ -1639,3 +1645,154 @@ class TestPublishFramingWinsOverATrailingMarker:
         assert proc.returncode == 2, (
             "content the base version blocked now passes because a trailing "
             f"marker truncated the slab.\nrc={proc.returncode} stdout={proc.stdout}")
+
+
+class TestAShortDraftBesideAPastedToken:
+    """Codex major, ASK-1197 round 12. The echo test used to run BESIDE a draft
+    and compare sizes, so a framed draft SHORTER than the quoted refusal envelope
+    disabled both the voice lint and receipt verification. Length is not a
+    licence. Framing is decided first now and the echo question is only asked when
+    nothing was framed, so there is no size left to game."""
+
+    #: 30 bytes of real draft, deliberately far shorter than the envelope pasted
+    #: under it. Under the round 11 dominance rule this classified as an echo.
+    SHORT = 30
+
+    def _message(self, mark):
+        body = "The gate stayed silent again."
+        assert len(body.encode("utf-8")) < 40, len(body.encode("utf-8"))
+        return ("Here's the post for LinkedIn.\n\n"
+                "```\n" + body + "\n```\n\n"
+                "voice-stop-gate: routed completion has no route receipt\n"
+                + mark + "\n")
+
+    def test_a_short_framed_draft_is_still_a_draft(self):
+        assert gate.classify_output(self._message(gate._REFUSAL_MARK)) == (
+            gate.OUTPUT_DRAFT), (
+            "a framed draft shorter than the pasted envelope was classified as "
+            "an echo, which switches off the lint and receipt verification")
+
+    def test_it_is_still_refused_without_a_receipt(self, tmp_path):
+        """End to end, lane installed, request routed. rc 2 on f7bb54d0's
+        successor was rc 0."""
+        root = _instance(tmp_path, with_route_lane=True)
+        proc = _run(root, _transcript(tmp_path, "write me a linkedin post",
+                                      self._message(gate._REFUSAL_MARK)),
+                    tmp_path / "c.json", classify="route")
+        assert proc.returncode == 2, (
+            "a routed draft skipped verification because a refusal token was "
+            f"pasted under it.\nrc={proc.returncode} stdout={proc.stdout}")
+
+    def test_the_same_message_without_the_token_behaves_identically(self, tmp_path):
+        """THE CONTROL. The token must make NO difference at all now; if removing
+        it changed the outcome, the token would still be doing something."""
+        root = _instance(tmp_path, with_route_lane=True)
+        without = self._message("").replace(
+            "voice-stop-gate: routed completion has no route receipt\n", "")
+        proc = _run(root, _transcript(tmp_path, "write me a linkedin post", without),
+                    tmp_path / "c.json", classify="route")
+        assert proc.returncode == 2, (
+            f"rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
+
+
+class TestEachPathNamesWhatItSaw:
+    """Codex minor, ASK-1197 round 12. The echo path and the no-draft path shared
+    one notice, so the gate reported "unframed output" about a message that was
+    its own refusal quoted back. A reader told the wrong thing goes hunting a bug
+    that is not there. Each path is asserted exactly, so the wrong notice cannot
+    be emitted silently."""
+
+    def _notice(self, tmp_path, assistant, name):
+        root = _instance(tmp_path, with_route_lane=True)
+        proc = _run(root, _transcript(tmp_path, "write me a linkedin post",
+                                      assistant, name=name),
+                    tmp_path / (name + ".json"), classify="route")
+        assert proc.returncode == 0, (
+            f"rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
+        return _system_message(proc)
+
+    def test_the_no_draft_path_says_no_draft_found(self, tmp_path):
+        message = self._notice(
+            tmp_path,
+            "Which subreddit is this for? The rules differ enough that I would "
+            "write it differently.\n", "nodraft.jsonl")
+        assert "no draft found" in message, message
+        assert "sp-6ce17a23" in message, (
+            "the no-draft notice must name the boundary decision. " + message)
+        assert "refusal echo" not in message, message
+
+    def test_the_echo_path_says_refusal_echo(self, tmp_path):
+        message = self._notice(
+            tmp_path,
+            "The gate held the turn. It reported:\n\n"
+            "voice-stop-gate: routed completion has no route receipt\n"
+            + gate._REFUSAL_MARK + "\n\nI have not re-drafted anything yet.\n",
+            "echo.jsonl")
+        assert "refusal echo" in message, message
+        assert "no draft found" not in message, (
+            "the echo path emitted the no-draft notice. " + message)
+
+    def test_the_lane_absent_path_still_says_not_checked(self, tmp_path):
+        """The third notice, unchanged, asserted here so the split did not
+        quietly collapse it into one of the other two."""
+        root = _instance(tmp_path, with_route_lane=False)
+        receipt = {name: "x" for name in STUB_MATCH_FIELDS}
+        proc = _run(root, _transcript(tmp_path, "write it",
+                                      _producer_message(receipt, "The body")),
+                    tmp_path / "c.json")
+        assert proc.returncode == 0, proc.stderr
+        message = _system_message(proc)
+        assert "NOT CHECKED" in message, message
+        assert "refusal echo" not in message and "no draft found" not in message
+
+
+class TestThePublishMarkerWordBoundary:
+    """ASK-1197 round 12, a latent false positive older than this PR.
+
+    `\\bdraft(ed|ing)?\\s+(the|a|your|my|for|below|:)` had no boundary after the
+    article, so it matched "drafted a" inside "I have not re-drafted ANYthing
+    yet" -- an assistant REPORTING a refusal read as announcing a delivery. That
+    false framing is what made the echo test look like it had to run beside a
+    draft, which is the hole this round closes.
+    """
+
+    def test_re_drafted_anything_is_not_publish_framing(self):
+        assert not gate._PUBLISH_MARKER_RE.search(
+            "I have not re-drafted anything yet."), (
+            "the article alternation matched mid-word")
+
+    def test_a_real_announcement_still_matches(self):
+        """THE CONTROL. Adding the boundary must not stop real framing; without
+        this, deleting the whole alternative would pass the test above.
+
+        `"drafted: see below"` is deliberately NOT in this list: the pattern
+        requires whitespace before the colon, so neither the old nor the new
+        regex ever matched it. I had it here first and the control went red
+        against correct code, which is the useful kind of red. Captured as
+        sp-c439a470 rather than widened here.
+        """
+        for announced in ("I drafted a post for you.",
+                          "I drafted the reply below.",
+                          "I am drafting your LinkedIn post now."):
+            assert gate._PUBLISH_MARKER_RE.search(announced), announced
+
+    def test_the_boundary_changes_exactly_one_thing(self):
+        """MINIMALITY, asserted rather than asserted-to. A regex edit is easy to
+        over-shoot, so this pins the old pattern beside the new one and requires
+        the ONLY divergence to be the false positive under repair."""
+        import re
+        old = re.compile(r"(?im)\bdraft(ed|ing)?\s+(the|a|your|my|for|below|:)")
+        corpus = [
+            "I drafted a post for you.",
+            "I drafted the reply below.",
+            "drafting my LinkedIn post",
+            "drafted for reddit",
+            "drafted : see below",
+            "drafted: see below",
+            "nothing about drafts here",
+            "I have not re-drafted anything yet.",     # the false positive
+        ]
+        diverged = [t for t in corpus
+                    if bool(old.search(t))
+                    != bool(gate._PUBLISH_MARKER_RE.search(t))]
+        assert diverged == ["I have not re-drafted anything yet."], diverged
