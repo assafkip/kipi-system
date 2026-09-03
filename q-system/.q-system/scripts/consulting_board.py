@@ -260,6 +260,48 @@ def collect(now: dt.datetime, sources: dict, paths=None):
 # a row without one. `test_no_identity_is_derived_from_rendered_text` fails if this
 # file ever grows a text-scrubbing identity again.
 
+#: Priority from the STATE CARD'S OWN VERDICT, never a second judgement. The card
+#: already decides severity per client every morning (state_card.py: red = an open
+#: promise past due, yellow = due inside 48h, and so on) and `board_sync.HEALTH` turns
+#: each into a job: "do today", "do this week", "reach out". Re-deriving urgency here
+#: would be a second thing computing one truth, which is the defect the whole mirror
+#: design exists to avoid (DEC-8/DEC-13, and the v1 CRM that died of hand-feeding).
+#: So this is a TRANSLATION table, not a scoring rule: his card's dot, in Bloom's
+#: P0-P3 vocabulary.
+PRIORITY_BY_HEALTH = {
+    "🔴": "P0",    # do today: a promise he made, past due
+    "🟠": "P0",    # answer them: a person is waiting on a reply
+    "📞": "P1",    # reach out
+    "🟡": "P1",    # do this week
+    "🟢": "P3",    # nothing to do
+    "⚪": "P3",    # their move
+}
+
+#: What FINISHING one of these looks like, in his own terms. Bloom's board carries a
+#: "Done signal" on every inbox row and it is the half that makes a row actionable:
+#: a title says what the thing IS, a done signal says when to stop looking at it.
+#: AUDHD rule A2 (next physical action) is the same requirement from the other side.
+DONE_DEFAULT = "you have acted on it"
+DONE_BY_KIND = {
+    "client": "you sent the thing you promised",
+    "reach": "you sent the message",
+}
+#: A GTM step whose plan text carries no "done looks like". Deliberately vague,
+#: because inventing a specific completion test for a step nobody wrote one for would
+#: be this module making up the plan.
+DONE_GTM_FALLBACK = "the step is done or you wrote down why it did not happen"
+DONE_BY_SOURCE = {
+    "Gmail": "you replied in the thread",
+    "GroupMe": "you answered in the chat",
+}
+
+#: Size is DELIBERATELY not written. Bloom's board carries XS/S/M and nothing this
+#: board reads knows how big a piece of work is: the state card measures urgency, not
+#: effort, and the GTM queue carries no estimate. A size guessed by this module would
+#: look like a measurement and be a fabrication, so the column stays empty until
+#: something that actually knows fills it.
+
+
 def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
     """The board's three buckets, for notion_board.py's row writer.
 
@@ -283,6 +325,7 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
     # "card" is unconditional: a card failure returns early, above this line.
     healthy = {"card"}
     top, week = [], []
+
     for row in card_rows:
         # `key` is what the row id is hashed from and it carries NO health dot.
         # Codex finding (major), 2026-09-03: the id was hashed from `title`, which
@@ -298,6 +341,9 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
         item = {"title": f"{row['health']} {row['name']}",
                 "key": f"{row['kind']}:{row['name']}",
                 "detail": row["detail"], "source": "State card", "scope": "card",
+                "priority": PRIORITY_BY_HEALTH.get(row["health"], "P2"),
+                "domain": "Consulting",
+                "done": DONE_BY_KIND.get(row["kind"], DONE_DEFAULT),
                 "bucket_reason": row["health"]}
         # 🔴 and 📞 are today. Everything else is this week. The split is the card's
         # own health verdict, not a rule invented here.
@@ -314,11 +360,19 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
         top.append({"title": move.get("action") or move.get("id"),
                     "key": f"gtm:{move.get('id')}",   # the step id, stable across rewordings
                     "detail": move.get("done_looks_like") or "", "source": "GTM queue",
-                    "scope": "gtm",
+                    "scope": "gtm", "priority": "P1", "domain": "GTM",
+                    # The queue writes what done looks like for most steps, so this
+                    # row's signal is the plan's own words where they exist. A step
+                    # that carries none still gets one: an empty Done signal column is
+                    # the "field he forgot to fill" look this whole change removes,
+                    # and every other row on the board has one.
+                    "done": move.get("done_looks_like") or DONE_GTM_FALLBACK,
                     "bucket_reason": "gtm"})
     elif gtm_err:
         top.append({"title": "GTM: COULD NOT READ", "key": "gtm:error", "scope": "gtm",
-                    "detail": gtm_err, "source": "GTM queue", "bucket_reason": "error"})
+                    "detail": gtm_err, "source": "GTM queue", "priority": "P1",
+                    "domain": "Fleet", "done": "the GTM queue reads again",
+                    "bucket_reason": "error"})
 
     inbox = []
     # Gmail and GroupMe only. Codex finding (major), 2026-09-03: this asked for a
@@ -334,6 +388,8 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
         if err:
             inbox.append({"title": f"{label}: COULD NOT READ", "key": f"{label}:error",
                           "detail": err, "source": label, "scope": f"inbox:{label}",
+                          "priority": "P1", "domain": "Fleet",
+                          "done": f"{label} reads again",
                           "bucket_reason": "error"})
             continue                      # scope deliberately NOT marked healthy
         healthy.add(f"inbox:{label}")
@@ -359,6 +415,13 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
                     "keying on the rendered line is the PR #296 rounds 1-4 defect.")
             inbox.append({"title": text, "key": key, "detail": "",
                           "source": label, "scope": f"inbox:{label}",
+                          # Inbox rows are things a person is waiting on. P2: below a
+                          # client he owes something to and below a broken source, above
+                          # anything merely scheduled. Not P0 -- an unread message is not
+                          # by itself today's most important act, and a board where
+                          # everything is urgent has no priority at all.
+                          "priority": "P2", "domain": "Consulting",
+                          "done": DONE_BY_SOURCE.get(label, DONE_DEFAULT),
                           "bucket_reason": "inbox"})
 
     return {"error": None, "top_of_mind": top, "this_week": week, "inbox": inbox,

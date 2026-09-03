@@ -242,11 +242,29 @@ def collect_mail(now: dt.datetime, runner=None):
         age_text = f"  [{age}h]" if isinstance(age, int) else ""
         sender = str(th.get("from", "unknown"))[:40]
         subject = str(th.get("subject", ""))[:70]
-        # The thread id when the model returned one, else sender+subject -- both are
-        # stable while the AGE changes, which is the only thing that was minting new
-        # ids. Never the rendered line: that is the defect rounds 1-4 kept patching.
+        # The thread id when the model returned one, else sender+subject. Both are
+        # stable while the AGE changes, which is what was minting new ids. Never the
+        # rendered line: that is the defect rounds 1-4 kept patching.
         key = str(th.get("id") or "").strip() or f"{sender}|{subject}"
         rows.append(Row(f"{sender}  {subject}{age_text}", f"mail:{key}"))
+
+    # A COLLAPSE IS NOT A DEDUPE. Codex, 2026-09-03: when the model omits thread ids,
+    # two different threads from one person with one subject ("Re: invoice", twice)
+    # produce one key, the board writes ONE row, and the second task is gone -- while
+    # read-back still says ok, because it compares what was written to what was
+    # wanted and both had already lost it. That is worse than the bug it replaced:
+    # rounds 1-4 lost a DRAG, this loses WORK.
+    #
+    # Nothing stable distinguishes them, so the choice is between dropping a task and
+    # keeping it under an id that may move. Keeping it wins, and it is not close: a
+    # row he never sees cannot be acted on at all, while a row whose id shifts costs
+    # him a position on the board. The suffix is ordinal and deliberately provisional.
+    seen = {}
+    for i, row in enumerate(rows):
+        n = seen.get(row.key, 0) + 1
+        seen[row.key] = n
+        if n > 1:
+            rows[i] = Row(str(row), f"{row.key}#{n}")
     return rows, None
 
 

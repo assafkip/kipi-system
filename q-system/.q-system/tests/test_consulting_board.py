@@ -544,3 +544,97 @@ class TestRound4:
         time.sleep(0.3)
         with board_rows.exclusive(tmp_path / "board.lock"):
             pass                                        # no BoardBusy: it was released
+
+
+class TestTheBoardLooksLikeTheOneHeAsked_For:
+    """Founder, 2026-09-03, with two screenshots of Bloom's board: *"This is what I
+    wanted my board to look like."* The schema already matched. Three things his
+    screenshots carry that this writer did not fill."""
+
+    def test_every_row_carries_a_priority(self, tmp_path):
+        """Bloom's board is scanned by P0-P3. A board that writes no Priority renders
+        an empty column, which is worse than no column: it looks like a field he
+        forgot to fill."""
+        b = cb.buckets(NOW, {"mail": ([_brief().Row("Portant: docs", "mail:t1")], None)},
+                       _tree(tmp_path))
+        rows = b["top_of_mind"] + b["this_week"] + b["inbox"]
+        assert rows, "fixture produced no rows, so this proves nothing"
+        missing = [r["title"] for r in rows if not r.get("priority")]
+        assert not missing, f"rows with no priority: {missing}"
+        assert all(r["priority"] in ("P0", "P1", "P2", "P3") for r in rows)
+
+    def test_priority_is_the_cards_verdict_translated_not_a_second_judgement(self):
+        """The mirror rule: one thing computes urgency. This table only renames it."""
+        assert cb.PRIORITY_BY_HEALTH["🔴"] == "P0"
+        assert cb.PRIORITY_BY_HEALTH["⚪"] == "P3"
+        src = pathlib.Path(cb.__file__).read_text(encoding="utf-8")
+        code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+        for invented in ("days_overdue", "score", "urgency"):
+            assert invented not in code, (
+                f"{invented!r} suggests this module started computing urgency itself; "
+                "the state card owns that verdict")
+
+    def test_every_row_carries_a_done_signal(self, tmp_path):
+        b = cb.buckets(NOW, {"mail": ([_brief().Row("Portant: docs", "mail:t1")], None)},
+                       _tree(tmp_path))
+        rows = b["top_of_mind"] + b["this_week"] + b["inbox"]
+        missing = [r["title"] for r in rows if not (r.get("done") or "").strip()]
+        assert not missing, f"rows with no done signal: {missing}"
+
+    def test_the_done_signal_reaches_notion_and_leads_the_note(self):
+        props = board_rows._properties(
+            {"title": "t", "scope": "card", "detail": "d", "done": "you sent it"},
+            "Top of Mind", "kipi-abc", True)
+        note = props["Notes"]["rich_text"][0]["text"]["content"]
+        assert note.startswith("Done signal: you sent it"), note
+        assert "scope=card" in note, "the painter still has to read its scope back"
+
+    def test_domain_is_the_producers_not_a_hardcoded_Consulting(self):
+        gtm = board_rows._properties({"title": "t", "domain": "GTM"}, "Top of Mind", "i", True)
+        assert gtm["Domain"]["multi_select"][0]["name"] == "GTM"
+        bare = board_rows._properties({"title": "t"}, "Top of Mind", "i", True)
+        assert bare["Domain"]["multi_select"][0]["name"] == "Consulting", "safe default"
+
+    def test_size_is_never_invented(self):
+        """Bloom's board has XS/S/M. Nothing here knows effort, so the column stays
+        empty rather than carrying a number that looks measured and is not."""
+        props = board_rows._properties({"title": "t", "priority": "P0"}, "Inbox", "i", True)
+        assert "Size" not in props
+
+
+class TestTwoThreadsAreNeverOneRow:
+    """Codex, 2026-09-03, on the fix for rounds 1-4: the `sender|subject` fallback
+    (used when the model returns no thread id) collapsed two distinct threads into one
+    Notion row. Read-back still passed, because `wanted` had already lost the second
+    one -- the same shape as the round-3 defect, one layer up."""
+
+    def test_two_threads_from_one_person_with_one_subject_stay_two_rows(self):
+        brief = _brief()
+        runner = lambda p, t: (json.dumps({"threads": [
+            {"from": "Alice", "subject": "Re: invoice", "age_hours": 2},
+            {"from": "Alice", "subject": "Re: invoice", "age_hours": 9}]}), None)
+        rows, err = brief.collect_mail(None, runner)
+        assert err is None
+        assert len(rows) == 2, "the producer must emit both threads"
+        assert rows[0].key != rows[1].key, (
+            f"both threads share the key {rows[0].key!r}; the board writes one row and "
+            "the second task is silently gone")
+
+    def test_a_real_thread_id_still_wins_and_stays_stable(self):
+        """The suffix is only for the id-less case. A thread WITH an id must not pick
+        one up, or the age-stability the whole change exists for is undone."""
+        brief = _brief()
+        runner = lambda p, t: (json.dumps({"threads": [
+            {"id": "t1", "from": "Alice", "subject": "Re: invoice", "age_hours": 2},
+            {"id": "t2", "from": "Alice", "subject": "Re: invoice", "age_hours": 9}]}), None)
+        rows, _ = brief.collect_mail(None, runner)
+        assert [r.key for r in rows] == ["mail:t1", "mail:t2"]
+
+    def test_both_rows_reach_the_board(self, tmp_path):
+        brief = _brief()
+        runner = lambda p, t: (json.dumps({"threads": [
+            {"from": "Alice", "subject": "Re: invoice", "age_hours": 2},
+            {"from": "Alice", "subject": "Re: invoice", "age_hours": 9}]}), None)
+        rows, _ = brief.collect_mail(None, runner)
+        inbox = cb.buckets(NOW, {"mail": (rows, None)}, _tree(tmp_path))["inbox"]
+        assert len({i["key"] for i in inbox}) == 2, "one task never reached the board"

@@ -195,14 +195,26 @@ def _scope_of(page) -> str:
 
 
 def _properties(item, bucket, iid, include_bucket: bool):
+    # The done signal leads the note, because it is the line that makes the row
+    # actionable; `scope=` is machinery the painter reads back and belongs last.
+    done = (item.get("done") or "").strip()
+    note = ""
+    if done:
+        note += f"Done signal: {done}\n"
+    note += f"{(item.get('detail') or '')[:1500]}\n{SCOPE_PREFIX}{item.get('scope') or 'card'}"
+
     props = {
         "Task": {"title": [{"text": {"content": (item.get("title") or "(untitled)")[:200]}}]},
         "Item id": {"rich_text": [{"text": {"content": iid}}]},
-        "Notes": {"rich_text": [{"text": {"content":
-            f"{SCOPE_PREFIX}{item.get('scope') or 'card'}\n"
-            f"{(item.get('detail') or '')[:1700]}"}}]},
-        "Domain": {"multi_select": [{"name": "Consulting"}]},
+        "Notes": {"rich_text": [{"text": {"content": note[:1900]}}]},
+        # The producer's own domain. Hardcoding "Consulting" put a GTM step and a
+        # broken-source alarm under the client label, so the column could not be
+        # filtered on -- which is the only thing a domain column is for.
+        "Domain": {"multi_select": [{"name": item.get("domain") or "Consulting"}]},
     }
+    priority = item.get("priority")
+    if priority:
+        props["Priority"] = {"select": {"name": priority}}
     source = item.get("source")
     if source:
         # Notion creates a missing select option on write, so "State card" and
