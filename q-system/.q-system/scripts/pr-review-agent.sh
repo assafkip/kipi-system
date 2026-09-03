@@ -901,10 +901,22 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
 # IT NOW ASKS review_is_usable, WHICH IS A WIDER QUESTION (sp-df1a458f). Block
 # completeness alone said YES to a stream where the model answered "Reply `OK`
 # and I'll execute exactly that plan" and the only complete block was the
-# PROMPT'S OWN echoed template. Both dispatch sites below call this, and the
-# second one -- the Opus fallback -- is where this exact class hid last time.
-# No local wrapper: both sites call review_is_usable directly. The wrapper existed
-# only to forward to the lib, and a forwarder is one more place the two dispatch
+# PROMPT'S OWN echoed template.
+#
+# THERE ARE THREE DISPATCH SITES BELOW, AND ALL THREE CALL THIS (ASK-357). Named
+# individually because the earlier wording -- "both dispatch sites" -- counted
+# only the two codex-related ones (the codex primary, and the Opus fallback where
+# this class hid in ASK-221) while reading as if it covered the branch set. The
+# `ENGINE != codex` primary path was the third, it was ungated, and the comment
+# is why that stayed invisible: a comment that undercounts the branches it
+# describes is a claim the code does not make.
+#
+#   1. `ENGINE != codex` primary          -- the claude engine, ASK-357
+#   2. codex primary                      -- sp-df1a458f
+#   3. the Opus fallback under codex-DOWN -- ASK-221
+#
+# No local wrapper: all three call review_is_usable directly. The wrapper existed
+# only to forward to the lib, and a forwarder is one more place the dispatch
 # paths can be made to disagree about the same file.
 
 # PAGE ON THE TRANSITION ONLY. A ping every run while codex stays down is the
@@ -930,7 +942,25 @@ note_degraded_transition() {   # note_degraded_transition <0|1> [reason]
 echo "$(TS) running the $ENGINE reviewer (bounded at ${TIMEOUT_SECONDS}s)..."
 if [ "$ENGINE" != "codex" ]; then
   if run_engine claude "$REVIEW"; then
-    echo "$(TS) review written: $REVIEW"
+    # THE SAME PARSEABILITY BAR AS THE OTHER TWO DISPATCH SITES (ASK-357). This
+    # branch used to accept whatever the claude engine wrote, so a phantom --
+    # a plan that stopped to ask permission, closed with the prompt's own empty
+    # template block -- left REVIEW_UNUSABLE=0, derived APPROVE from the empty
+    # block, and posted state=success. Under KIPI_REVIEW_PRIMARY_ENGINE=claude
+    # that is the REQUIRED kipi/reviewer-approved context being set by a review
+    # nobody wrote. The record already told the truth (`usable` is asked once,
+    # below, for all three paths); nothing acted on it here.
+    #
+    # NO note_degraded_transition ON THIS PATH. That flag tracks whether CODEX is
+    # producing an independent review; a claude run that answers badly says
+    # nothing about codex, and pinging the codex-down channel for it is the
+    # cry-wolf failure the transition-only rule exists to avoid.
+    if review_is_usable "$REVIEW"; then
+      echo "$(TS) review written: $REVIEW"
+    else
+      REVIEW_UNUSABLE=1
+      echo "$(TS) the $ENGINE reviewer answered with no complete FINDINGS block, or declined to start; verdict stays UNSTATED. Output kept at: $REVIEW" >&2
+    fi
   else
     rc=$?
     echo "$(TS) reviewer failed or timed out (rc=$rc). Partial output: $REVIEW" >&2
