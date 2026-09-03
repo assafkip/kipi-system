@@ -3,13 +3,13 @@
   "report": "q-system/output/prompt-audit-2026-09-02.md",
   "generated": "2026-09-02",
   "target_model": "claude-fable-5-1 (interactive); claude-opus-5 (headless)",
-  "distinct_findings": 109,
+  "distinct_findings": 111,
   "raw_lane_findings": 83,
   "note": "83 was the raw lane total; 3 defects were found by two lanes each. 80 distinct at first pass. 5 added 2026-09-02 from Sana's implementation sweep (C-15, R-26, X-19, X-20, X-21).",
   "counts": {
     "high": 18,
-    "medium": 65,
-    "low": 13,
+    "medium": 66,
+    "low": 14,
     "flag": 13
   },
   "findings": [
@@ -21,7 +21,7 @@
       "action": "remove",
       "what": "Rule prescribes the retired 9-phase morning pipeline; 4 other rules cite it as live",
       "status": "done",
-      "owner": "sana",
+      "owner": "Sana (person)",
       "merged_with": null,
       "resolved_by": "apply-claude-changes.sh r1-morning-pipeline-retired; 6 edits, 5 files, gates held",
       "resolved_at": "2026-09-02"
@@ -34,7 +34,7 @@
       "action": "rewrite",
       "what": "Says the escalation cap pages the founder; slack-notify.sh files a Sana ticket and pages nobody",
       "status": "done",
-      "owner": "sana",
+      "owner": "Sana (person)",
       "merged_with": null,
       "resolved_by": "apply-claude-changes.sh r2-escalation-cap-files-a-sana-ticket; 5 edits, 2 files, gates held",
       "resolved_at": "2026-09-02"
@@ -47,7 +47,7 @@
       "action": "rewrite",
       "what": "Cross-model premise inverted: a Fable 5.1 session now escalates to older Fable 5",
       "status": "done",
-      "owner": "sana",
+      "owner": "Sana (person)",
       "merged_with": "C-15",
       "resolved_by": "apply-claude-changes.sh r3-escalation-premise-is-fresh-context; rule text only",
       "resolved_at": "2026-09-02"
@@ -73,7 +73,7 @@
       "action": "rewrite",
       "what": "Prescribes a Slidev pipeline whose 3 scripts were never committed; refuses the one output that works",
       "status": "done",
-      "owner": "sana",
+      "owner": "Sana (person)",
       "merged_with": null,
       "resolved_by": "SKILL.md rewritten to the real python-pptx contract, verified against the scripts not the report (check_env.sh takes no arg; the old text passed one). Also fixed two the audit missed: the frontmatter description still said PDF/Slidev (that is trigger text, loaded every session), and the {{IMG:keyword}} placeholder section described syntax neither script contains",
       "resolved_at": "2026-09-02"
@@ -86,7 +86,7 @@
       "action": "rewrite",
       "what": "Routes work to 7 skills installed nowhere (claudekit import)",
       "status": "done",
-      "owner": "sana",
+      "owner": "Sana (person)",
       "merged_with": null,
       "resolved_by": "9 hunks; routing folded into one catalog and references/design-routing.md deleted after grepping for consumers. Also fixed two the audit missed: social-photos-design.md carried the same dead routing, and slides-create.md invoked a 'slides' skill that does not exist",
       "resolved_at": "2026-09-02"
@@ -125,7 +125,7 @@
       "action": "remove",
       "what": "Re-injects retired-pipeline phase steering after every compaction",
       "status": "done",
-      "owner": "sana",
+      "owner": "Sana (person)",
       "merged_with": null,
       "resolved_by": "post-compact.sh lines 37-61 deleted + false header bullet corrected; negative control fires pre-fix, silent post-fix; sections 1,2,4,5 still print",
       "resolved_at": "2026-09-02"
@@ -138,7 +138,7 @@
       "action": "rewrite",
       "what": "Headless job unpinned at every layer; a 116-issue batch rides the interactive model",
       "status": "done",
-      "owner": "sana",
+      "owner": "Sana (person)",
       "merged_with": null,
       "resolved_by": "linear-triage.py pinned in argv via triage_model(); test_headless_model_pin.py 10 passed; mutation M1 (argv reverted) killed it, 4 failed",
       "resolved_at": "2026-09-02"
@@ -151,7 +151,7 @@
       "action": "rewrite",
       "what": "Headless job defaults to the CLI model; sends the largest prompt in the fleet",
       "status": "done",
-      "owner": "sana",
+      "owner": "Sana (person)",
       "merged_with": null,
       "resolved_by": "granola-voice-synthesize.py DEFAULT_MODEL=claude-opus-5 + per-call synth_model(); empty-env case now falls back to the pin; mutation M3 killed it, 3 failed",
       "resolved_at": "2026-09-02"
@@ -164,7 +164,7 @@
       "action": "triage",
       "what": "~20 tool descriptions define themselves by the retired pipeline; retire-or-rewrite is an engineering call",
       "status": "done",
-      "owner": "sana",
+      "owner": "Sana (person)",
       "merged_with": null,
       "resolved_by": "split not retired: 5 tools rewritten to their current trigger, 3 (gate_check/deliverables_check/morning_init) open with RETIRED do not call; residue grep NONE; suite byte-identical to baseline. Removal captured as sp-6501763e",
       "resolved_at": "2026-09-02"
@@ -1278,16 +1278,16 @@
     },
     {
       "id": "V-1",
-      "severity": "high",
+      "severity": "low",
       "lane": "voice",
       "files": ".claude/rules/voice-loop-anywhere.md; voiceloop-band-lint.py; both settings files",
       "action": "flag",
-      "what": "The STYLE half of the voice engine (bands, templated shapes, corpus echo) exists only on sana/voiceloop-draft-hook. On the working branch there is no rule, no script and no wiring in either settings file. A partial gate that reports clean is worse than an absent one, because absence is visible: voice-lint's vocabulary half passing reads exactly like the whole engine passing. consulting-4d independently reached the same shape from the consulting side, where every gate is a NEGATIVE check and a draft cleared all 14 while using none of the founder's material (their rule scars-before-first-person.md)",
-      "status": "open",
-      "owner": "sana",
+      "what": "Working branch is 22 commits behind origin/main, so the style half of the voice engine is absent from THIS BRANCH while present on main. Originally written as a fleet-wide gap; that framing was wrong.",
+      "status": "done",
+      "owner": null,
       "merged_with": null,
-      "resolved_by": "MERGE ORDER OWNER: Sana. [USER-DIRECTED] as reported by consulting-4d 2026-09-02 (founder verbatim: \"sanas\"), relayed not witnessed by this session; supersedes the earlier [SYSTEM-INFERRED] reading of founder-notifications.md routing. Tracked as ASK-1212 in Sana's queue with the branch state, the wiring warning on .claude/settings.json and settings-template.json, and a pointer to .wt-voiceloop/INCOMING-from-prompt-audit-2026-09-02.md. The FINDING itself is still open: the style half of the engine is still dark on the working branch until that merge happens.",
-      "resolved_at": null,
+      "resolved_by": "WRONG AS ORIGINALLY WRITTEN, corrected by a sana-type agent run, pending Sana. I claimed the style half of the voice engine existed only on sana/voiceloop-draft-hook. It was squash-merged to main as PR #278 on 2026-08-30. Verified byte-wise, not by the PR label: voiceloop-band-lint.py, .claude/rules/voice-loop-anywhere.md and the settings wiring are ALL present on origin/main. The '22 commits ahead' I measured were main's own commits my branch had not taken. Real scope: the working branch is 22 behind origin/main, so the style half is dark ON THIS BRANCH ONLY, not fleet-wide. My error was reading a merge-base diff and concluding 'only on that branch' without ever checking main: one account, no second.",
+      "resolved_at": "2026-09-02",
       "added_after_report": "2026-09-02 voice-loop project reconciliation"
     },
     {
@@ -1297,11 +1297,11 @@
       "files": ".claude/settings.json; settings-template.json",
       "action": "flag",
       "what": "Both the working branch and the voiceloop branch edit both settings files, and wiring the band-lint into them is that branch's whole purpose. Whoever merges second must re-verify the wiring survived",
-      "status": "open",
+      "status": "done",
       "owner": null,
       "merged_with": null,
-      "resolved_by": null,
-      "resolved_at": null,
+      "resolved_by": "moot: the wiring is already on origin/main, so there is no merge-order race to lose it. The real surface is this branch against origin/main: 26 conflicting files, 15 add/add from the squash",
+      "resolved_at": "2026-09-02",
       "added_after_report": "2026-09-02 voice-loop project reconciliation"
     },
     {
@@ -1311,11 +1311,11 @@
       "files": "q-system/.q-system/scripts/lessons-inject.py",
       "action": "flag",
       "what": "Real content conflict between branches: this branch removed the per-prompt scar narrative (X-14) while the voiceloop branch changes the same file",
-      "status": "open",
+      "status": "done",
       "owner": null,
       "merged_with": null,
-      "resolved_by": null,
-      "resolved_at": null,
+      "resolved_by": "moot for the same reason as V-2",
+      "resolved_at": "2026-09-02",
       "added_after_report": "2026-09-02 voice-loop project reconciliation"
     },
     {
@@ -1457,6 +1457,49 @@
       "resolved_by": null,
       "resolved_at": null,
       "added_after_report": "2026-09-02 cross-session exchange"
+    },
+    {
+      "id": "P-6",
+      "severity": "medium",
+      "lane": "process",
+      "files": "q-system/.q-system/scripts/browser_session.py",
+      "action": "flag",
+      "what": "Seventh divergence instance, found by MEASUREMENT rather than by two sessions colliding: browser_session.py sits uncommitted in two trees, 154 diff lines apart. Surfaced by fleet-replica-divergence.py, which is the point of building it",
+      "status": "open",
+      "owner": null,
+      "merged_with": null,
+      "resolved_by": null,
+      "resolved_at": null,
+      "added_after_report": "2026-09-02 Sana decision run"
+    },
+    {
+      "id": "P-7",
+      "severity": "high",
+      "lane": "gates",
+      "files": "q-system/.q-system/scripts/fleet-replica-divergence.py; kipi-update.sh",
+      "action": "add",
+      "what": "The divergence detector is committed (7c5df122) but NOT ARMED. Its home is the fleet-sync preflight beside the existing sync and leak gates, because that is where replica drift becomes data loss. Unwired it detects nothing, which is P-4's shape applied to the tool built to find P-4. Captured by Sana as sp-5e988721; first thing to pick up",
+      "status": "open",
+      "owner": "Sana (person)",
+      "merged_with": null,
+      "resolved_by": null,
+      "resolved_at": null,
+      "added_after_report": "2026-09-02 Sana decision run"
     }
-  ]
+  ],
+  "mandate": {
+    "owner": "Sana (person, senior staff engineer) -- NOT the `sana` subagent type",
+    "granted": "2026-09-02",
+    "origin": "[USER-DIRECTED] founder, verbatim: \"If anything else needs to be done, it should be done by Sana autonomously\"",
+    "scope": "Every open row in this ledger, plus anything the work surfaces. Sana decides priority, batching, and what NOT to do. 'Won't fix, here is why' is a valid resolution and should be recorded as one. No item routes back to the founder except publish, spend, delete, or a boundary widening.",
+    "rules": [
+      "Verification is the deliverable: name the input that makes the check RED for the reason you care about, and show it going red.",
+      "Do not run the fleet updater, even --dry, without founder approval. It is destructive-op gated.",
+      ".claude/ writes go through apply-claude-changes.sh only; a hand-edit is reverted after the writing script prints success.",
+      "State the absolute path whenever you state a file size or line count. Three sessions measured four different MEMORY.md files today.",
+      "Update this ledger as you go: status, resolved_by with the evidence, resolved_at. Re-render with prompt-audit-ledger.py --render."
+    ],
+    "correction": "Recorded 2026-09-02. This session dispatched a subagent of type `sana` repeatedly and described its output as Sana's decisions. That was a conflation. Those runs were AGENT WORK producing proposals and evidence; they were not decisions by the person who decides. Every 'Sana decided' claim in this session's transcript should be read as 'an agent run produced this, pending Sana'. The merge-order and coordination items the founder assigned to Sana are hers as a person, and are not discharged by any subagent output here.",
+    "routing": "Work reaches Sana through Linear, per .claude/rules/linear-first.md. slack-notify.sh -> alert-to-linear.py is the fleet path into her triage."
+  }
 }
