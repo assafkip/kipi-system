@@ -501,7 +501,13 @@ python3 - <<EOF
 import json
 context = json.loads(r'''$OUT''')["hookSpecificOutput"]["additionalContext"]
 volume, _, spiral = context.partition("\n\n")
-assert "before hard stop" in volume, \
+# Fingerprint the volume warning by the CONDITION it reports (calls since the
+# last user message, uncommitted), not by its exhortation. The old fingerprint
+# was "before hard stop", part of a remaining-call countdown that X-4 (prompt
+# audit 2026-09-02) removed because a rendered countdown triggers premature
+# wrap-up. A test that identifies a warning by its most rewritable clause goes
+# red on a copy edit and says nothing about the behaviour it guards.
+assert "since the last user message" in volume and "without a commit" in volume, \
     f"the held volume warning was dropped by a later warning: {context!r}"
 assert spiral.strip(), \
     f"the later read-spiral warning was dropped: {context!r}"

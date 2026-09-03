@@ -53,14 +53,41 @@ else TO=""; fi
 # no shell-special chars), so the unquoted heredoc only substitutes those two.
 build_prompt() {
   cat <<PROMPT_EOF
-Autonomous open-loops heartbeat for THIS instance. Be terse; act only on what is actionable.
+Autonomous open-loops heartbeat for THIS instance. Act only on what is actionable.
+
+## YOU ARE ALONE. THERE IS NOBODY TO ASK.
+
+This run is HEADLESS: no human is reading your output while it happens, and
+nothing you write can be answered. Do not state a plan and wait for approval, do
+not ask to begin, do not ask which loop to take first. Begin immediately and
+finish in one pass.
+
+This is not a style preference. Measured 2026-08-04 on PR #97 round 4, the same
+shape in the sibling review agent: that run replied "Ready for your OK to begin
+the read-only review", spent 15k tokens, and produced nothing. The repo-wide
+rules you inherit from THIS instance's CLAUDE.md carry an INTERACTIVE
+instruction -- state your approach in 1-2 bullets and wait for OK before
+multi-file work. That is correct when the founder is present and wrong here: you
+have no interlocutor, so waiting is identical to doing nothing, and the loop
+stays open another day. In this run that rule does not apply.
+
+Stopping to ask does not fail safe either. Nothing downstream reads a request for
+approval, so the sweep records the instance as worked and the loop as untouched.
+
 1. Run: python3 "$1" --report   then read the registry at $2/memory/open-loops.json
 2. For EACH loop tagged [needs you], do the next concrete action toward closure, then update that loop in $2/memory/open-loops.json (set status "closed" with a note/URL when done):
    - OSS PR waiting on a maintainer: check via gh (gh issue view <n> --repo <r> --json comments,state ; gh pr list). Push the PR ONLY if a maintainer has clearly approved/invited it (follow the loop's next_action). No clear approval -> do nothing, leave it open.
    - Internal work in this instance: drive it through prd-os in full (PRD -> review -> tests -> blast radius -> closeout), making all triage/approve/merge decisions yourself per the autonomy contract.
 3. Hard limits: no force-push, no git reset --hard, no branch deletion, no destructive ops, and NEVER publish to an external repo without clear maintainer approval. When unsure, do nothing.
 4. Slack the founder ONLY on a meaningful change (pushed a PR, closed a loop, maintainer replied): bash $2/.q-system/scripts/slack-notify.sh "<one line>". The project name is prefixed automatically -- do NOT add it yourself. Silent otherwise.
-5. Report what you did in 3-5 lines. Do not invent new work beyond the open loops.
+5. Report. This report is the ONLY record this run leaves: the operator reads it
+   instead of a transcript nobody kept. So report by OUTCOME, not to a length.
+   For every loop you touched: name the loop, the action you took, and the state
+   it is in now. For every loop you deliberately left alone: name it and why, one
+   line. If you took no action at all, say that and say what blocked it. There is
+   no line target in either direction -- an action nobody can read is an action
+   nobody can audit, and padding a thin run does not make it thicker.
+   Do not invent new work beyond the open loops.
 PROMPT_EOF
 }
 

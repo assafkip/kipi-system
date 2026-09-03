@@ -438,9 +438,15 @@ def check_volume(cache):
             return ("block", f"{gate} refused the checkpoint and the {GATE_GRACE}-call grace budget is spent. Stop. Report what {gate} is asking for, what you tried, and that the work is staged and uncommitted.")
         return ("block", f"{VOLUME_CEILING} tool calls without user input or a commit. Commit finished work now (git commit is exempt from this ceiling and resets it), or stop and summarize what you've accomplished and what's remaining.")
     if calls >= VOLUME_WARNING and cache.get("warnings_issued", 0) == 0:
-        remaining = VOLUME_CEILING - calls
         cache["warnings_issued"] = 1
-        return ("warn", f"You've made {calls} tool calls since the last user message. You have {remaining} remaining before hard stop. Committing finished work resets the counter; otherwise focus on producing output.")
+        # X-4 (prompt audit 2026-09-02): this used to render "you have N
+        # remaining before hard stop" plus "focus on producing output". A
+        # surfaced remaining-token countdown is a documented trigger for
+        # premature wrap-up: the model starts spending the number instead of
+        # doing the work, and truncates while it still has budget. The CEILING
+        # is unchanged and still blocks at VOLUME_CEILING -- what changed is
+        # that the warn no longer hands the model a countdown to react to.
+        return ("warn", f"{calls} tool calls since the last user message without a commit. If a unit of work is finished, commit it: git commit is exempt from this ceiling and resets it. If it is not finished, carry on -- this is a checkpoint, not a deadline.")
     return None
 
 
@@ -534,7 +540,15 @@ def check_time_stall(cache):
             return None
         cache["last_stall_warn_time"] = time.time()
         minutes = int(elapsed // 60)
-        return f"{minutes} minutes and {calls} tool calls since your last write. You may be stuck. Summarize what you've tried and what's blocking you."
+        # X-4 (prompt audit 2026-09-02): this used to assert "You may be stuck"
+        # and demand a summary. The detector cannot tell a stall from a
+        # legitimate read-only stretch -- fable-escalation.md:65-67 already
+        # records that, and it fired twice during the audit that produced this
+        # finding, both times on deliberate recon. Asserting a stall the
+        # detector cannot see makes the model wrap up work that was going fine.
+        # It stays a WARN on the same thresholds; only the claim is now hedged
+        # to what the signal actually supports.
+        return f"{minutes} minutes and {calls} tool calls since your last write. If this is a deliberate read-only stretch (an audit, a recon pass, a review), nothing is wrong and no action is needed. If you are re-asking one question different ways, change the approach instead of the phrasing."
     return None
 
 

@@ -80,7 +80,7 @@ def main():
     print("MEMORY FRESHNESS WARNING (auto-injected by hook)")
     print("=" * 50)
     print("The following memories are marked decay: fast.")
-    print("MUST verify before acting on their content.")
+    print("Verify before acting on their content.")
     print("Either tool-verify (Notion/PostHog/Calendar/file) OR ask founder.")
     print()
     for name, filename in fast_memories:

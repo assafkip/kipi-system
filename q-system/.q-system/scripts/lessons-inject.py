@@ -204,10 +204,9 @@ def main():
         "[lessons-inject] Relevant entries from the lessons corpus, selected against "
         "this prompt and included IN FULL below. These are not titles to look up; the "
         "text is here.\n"
-        "Scar 2026-08-29: a session was given 155 lesson titles, treated the injection "
-        "as delivery, opened none, and repeated a documented failure. Selection is term "
-        "overlap and is crude: it can MISS the relevant lesson silently, so the full "
-        "title index from SessionStart remains the authority on what exists.\n"
+        "Selection is term overlap and is crude: it can MISS a relevant lesson "
+        "silently, so the full title index from SessionStart remains the authority "
+        "on what exists.\n"
     )
     parts, used = [header], len(header)
     for score, lid, title, body in picked:

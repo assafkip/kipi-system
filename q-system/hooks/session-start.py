@@ -157,7 +157,7 @@ def format_output(handoff, cards, yesterday, morning_status, loops_result=None):
         lines.append(f"OPEN LOOPS: {summary}")
         if force_close:
             lines.append(f"FORCE CLOSE NEEDED: {', '.join(force_close)}")
-            lines.append("These loops are 14+ days old. Must act, park, or kill today.")
+            lines.append("These loops are 14+ days old: act, park, or kill each one.")
 
     if handoff:
         lines.append("")
