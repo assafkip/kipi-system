@@ -805,6 +805,11 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   # unwritable ledger is caught there with exit 8 rather than twice.
   python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" refused_no_pr >>"$LOG" 2>&1 \
     || say "note: could not clear the stale refusal marker for $ISSUE; see $LOG"
+  # SAME CLEAR FOR THE ENVIRONMENTAL HALT (ASK-873), and for the same reason: a
+  # marker left by an earlier round would suppress a REAL failure's attempt
+  # forever, which is the retry-forever bug this file closes, inverted.
+  python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" env_halt >>"$LOG" 2>&1 \
+    || say "note: could not clear the stale env-halt marker for $ISSUE; see $LOG"
   $WORKER_CMD --apply --limit 1 --issue "$ISSUE" >>"$LOG" 2>&1
   WRC=$?
 
@@ -826,7 +831,16 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # routing ASK-275 removed, re-entering from the driver instead of the worker.
     # The worker now records the refusal in the shared ledger; this reads it.
     REFUSED_MARK="$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" refused_no_pr "" 2>/dev/null || echo "")"
-    if [ -n "$REFUSED_MARK" ] && [ "$REFUSED_MARK" != "None" ]; then
+    # AN UNATTEMPTED ISSUE IS NOT A FAILED ONE (ASK-873). The worker halts and
+    # charges nothing when the RUNNER is unavailable -- an exhausted account is
+    # a property of the machine, identical for every issue. Without this read,
+    # the driver charges the attempt the worker deliberately withheld, and the
+    # fix that stopped 11 healthy issues going TERMINAL holds in the worker
+    # while leaking straight back in from here.
+    ENV_HALT_MARK="$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" env_halt "" 2>/dev/null || echo "")"
+    if [ -n "$ENV_HALT_MARK" ] && [ "$ENV_HALT_MARK" != "None" ]; then
+      say "$ISSUE was NOT ATTEMPTED: the runner itself was unavailable, which is a condition of the machine and not of this issue. No attempt is charged; it stays retryable and will be picked up once the runner is back."
+    elif [ -n "$REFUSED_MARK" ] && [ "$REFUSED_MARK" != "None" ]; then
       say "$ISSUE was REFUSED by the worker and left no PR. A refusal is a correct terminal outcome, so it costs no attempt; the issue is held at its refusal label, not marked stuck."
     elif [ "$ATT_AFTER" = "$ATT_BEFORE" ]; then
       # A FAILED BUMP IS NOT A DETAIL TO SWALLOW (PR #192 review, major).
