@@ -29,11 +29,14 @@ bypass: after a refusal the assistant may send a CORRECTED DRAFT, which sits in
 the same transcript position as an error report, so clearing the request let the
 corrected draft ship unverified.
 
-The deadlock that motivated those rounds is resolved on the OUTPUT side instead.
-When the request is routed and the completion carries no draft, the gate reports
-NOT CHECKED and exits 0; when it carries a draft with no valid receipt, it
-refuses. See `_output_carries_draft`. Three outcomes, and they are deliberately
-different values: text he typed (the route lane classifies it and a routed
+The deadlock those rounds chased is NOT resolved here, and round 15 stopped
+pretending it was. Rounds 10-14 relaxed the OUTPUT side -- an unframed completion
+got a NOT CHECKED notice and exit 0 -- which measured strictly weaker than the
+gate consulting actually runs, on the one instance that has the route lane. This
+file syncs over that instance, so the relaxation was a regression. The route path
+now enforces unconditionally: a routed request whose completion carries no valid
+receipt is refused, whatever the prose looks like. See `enforce_route_receipt`.
+The request side still yields three deliberately different values: text he typed (the route lane classifies it and a routed
 completion must carry a receipt), "" (no request this turn, so the lane treats it
 as not a request), and no transcript at all (the same as ""). The lint half still
 does not read it — gating his own words with the voice lint is exactly what
@@ -1122,6 +1125,15 @@ def classify_output(assistant_text):
     """What this completion hands over: a framed draft, this gate's own refusal
     echoed back, or nothing.
 
+    NOT AN ENFORCEMENT PREDICATE ANY MORE (round 15). `enforce_route_receipt`
+    used to branch on this to exempt unframed output; that exemption measured
+    weaker than the installed gate and was removed. Nothing in this file calls
+    this now -- it and `_output_carries_draft` are kept only because the round
+    10/11/13 bypass tests read them (a pasted refusal token beside a framed
+    draft, a pasted producer block), and those are the regression guards for
+    `_publish_framed` / `_route_draft`. Deleting the predicates deletes the
+    guards. Do not wire either one back into the route path.
+
     ECHO_NEVER_EXEMPTS_ROUTE (ASK-1197 round 13). Framing is decided FIRST and the
     echo test cannot turn a framed draft into a non-draft. It only chooses which
     NOTICE an unframed turn gets. That keeps round 10's bypass closed -- a pasted
@@ -1186,38 +1198,36 @@ def enforce_route_receipt(request, assistant_text):
     result = classifier.classify(request)
     if result.status == classifier.NOT_ROUTED:
         return []
-    # NOTHING TO VERIFY IS NOT A VIOLATION. The request is routed and still live,
-    # but this completion hands over no draft -- it is an error report, a
-    # question, or an explanation of the previous refusal. Refusing here is what
-    # made every refusal re-arm itself: the reply to a refusal was judged against
-    # the request and refused again, forever.
+    # NO OUTPUT-SIDE RELAXATION ON THE ROUTE PATH (ASK-1197 round 15).
+    # Rounds 10-14 exempted an unframed completion here: a refusal echo, a
+    # question or any prose without framing got a NOT VERIFIED notice and exit 0.
+    # MEASURED 2026-09-02 against consulting, the one instance with the lane
+    # installed, by loading its running gate and this file side by side:
+    #   request "write a linkedin post about detection engineering"
+    #   output  three lines of unframed publishable prose, no receipt, no marker
+    #   installed -> RouteBoundaryError("routed completion has no route receipt")
+    #   relaxed   -> NOT VERIFIED notice, exit 0
+    # `voice-stop-gate.py` is not in kipi-update.sh's INSTANCE_OWNED_SUBTREES, so
+    # landing this branch REPLACES consulting's running gate. The relaxation was
+    # therefore a live enforcement regression, not a port: unframed publishable
+    # prose could dodge receipt enforcement on the founder's publishing instance.
     #
-    # NOT silent either. The request IS routed, so the next completion that
-    # carries a draft owes a receipt, and a reader should know the gate looked and
-    # found nothing rather than that it approved something. Same posture as the
-    # uninstalled-lane branch above, and it goes out through the same single
-    # systemMessage envelope.
-    seen = classify_output(assistant_text)
-    if seen != OUTPUT_DRAFT:
-        # THREE OUTCOMES, THREE NOTICES, each naming exactly what was seen
-        # (Codex minor, ASK-1197 round 12). One shared "unframed output" line was
-        # emitted on the echo path too, so the gate told the reader it had found
-        # no draft when what it had actually found was its own refusal quoted
-        # back. A notice that misstates what the gate saw sends the next reader
-        # hunting a bug that is not there.
-        if seen == OUTPUT_REFUSAL_ECHO:
-            return ["voice-stop-gate: routed request (%s/%s), output is this "
-                    "gate's own refusal echo, NOT VERIFIED. The assistant is "
-                    "reporting a previous refusal rather than delivering a "
-                    "draft, so there was nothing a receipt could cover. The next "
-                    "completion carrying a framed draft must carry a receipt."
-                    % (result.surface, result.channel)]
-        return ["voice-stop-gate: routed request (%s/%s), no draft found in this "
-                "output, NOT VERIFIED. Nothing here is framed as a delivery (no "
-                "route receipt, no === DRAFT === and no lane wrapper), so there "
-                "was nothing a receipt could cover. This is a known boundary, "
-                "not a pass: see spillover sp-6ce17a23."
-                % (result.surface, result.channel)]
+    # Separating a draft from a clarifying question needs a semantic signal this
+    # gate does not have. `extract_publishable` returns "" for BOTH (it is
+    # framing-gated), and `candidate_draft` (f918134c) returns content for BOTH.
+    # Rounds 5-9 burned two rounds on size and bullet heuristics without
+    # converging. A sixth heuristic is not the fix; it is the same bet again.
+    #
+    # So this path enforces UNCONDITIONALLY, exactly as the installed gate does.
+    # The known cost is the deadlock: a reply to a refusal is refused again, and
+    # consulting lives with that today. This PR's value is CONVERGENCE -- one
+    # gate in the skeleton and the instance -- and that is not worth buying with
+    # a regression on the only instance that enforces anything.
+    #
+    # THE ACCEPTED PATH FORWARD IS THE PRODUCER MARKER, not classification: the
+    # gate should enforce only on output the route PRODUCER marked as a delivery,
+    # a structural signal instead of a guess about prose. Recorded on spillover
+    # sp-6ce17a23. Do not attempt heuristic number six.
     if result.status != classifier.ROUTE:
         raise RouteBoundaryError(
             f"route request is {result.status}: {result.reason}")

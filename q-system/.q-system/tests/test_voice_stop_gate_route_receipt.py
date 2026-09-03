@@ -1118,30 +1118,36 @@ class TestWhichInjectedRecordsEndTheTurn:
         "I have not re-drafted anything yet.\n")
 
 
-    def test_a_reply_to_refusal_feedback_is_not_refused_again(self, tmp_path):
-        """Case 1. The loop. His routed request, this gate's refusal arriving as a
-        meta record, then the assistant explaining the failure. That explanation is
-        not a routed completion and must complete."""
+    def test_a_reply_to_refusal_feedback_is_refused_again(self, tmp_path):
+        """INVERTED in round 15, and this is THE DEADLOCK, stated honestly.
+
+        This asserted rc==0: his routed request, this gate's refusal arriving as a
+        meta record, then the assistant explaining the failure, and the
+        explanation completing. That exemption was measured strictly weaker than
+        the gate consulting actually runs (2026-09-02, installed refuses this
+        exact shape with RouteBoundaryError), and this file syncs over that gate.
+
+        So the re-arm is real and it is BACK, because the alternative was shipping
+        an enforcement regression to the founder's publishing instance to buy a
+        deadlock fix that does not work. Consulting has lived with this loop and
+        does not get worse by waiting.
+
+        NOT a decision to keep the deadlock forever. The accepted fix is the
+        producer marker (sp-6ce17a23): enforce only on output the route PRODUCER
+        marked as a delivery, which ends the loop with a structural signal instead
+        of trying to tell an error report from a draft by looking at the prose.
+        Rounds 5-9 plus round 14's echo exemption are what trying that costs.
+        """
         proc = self._routed_turn(tmp_path, [
             _user("write me a linkedin post about the propagation gate"),
             _stop_hook_feedback(FED_BACK_REFUSAL_TEXT),
             _assistant(self.ASSISTANT_REPLY),
         ])
-        assert proc.returncode == 0, (
-            "the gate judged an error report against a request from before its own "
-            "refusal, and refused it again. Every refusal re-arms itself.\n"
+        assert proc.returncode == 2, (
+            "the reply to a refusal completed, so the route path is relaxed "
+            "again relative to the installed gate. "
             f"rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
-        # NOT SILENT. The request is still routed, so a reader must be able to see
-        # that the gate looked and found nothing to verify -- not that it approved
-        # something. Same envelope as every other notice (round 4).
-        # THE EXACT notice for THIS path, not just "some notice" (round 12). The
-        # echo path and the no-draft path used to share one line, so the gate
-        # said it had found no draft when it had found its own refusal.
-        message = _system_message(proc)
-        assert "refusal echo" in message, message
-        assert "no draft found" not in message, (
-            "the echo path emitted the no-draft notice, which misstates what the "
-            f"gate saw. {message}")
+        assert "receipt" in proc.stderr.lower(), proc.stderr
 
     ROUTED_REQUEST = "write me a linkedin post about the propagation gate"
 
@@ -1337,35 +1343,32 @@ class TestTheLintAndRouteScopesAreDifferent:
         "- name the input that makes it red, or do not ship it\n\n"
         "That rule has caught more of my bugs than any review.\n")
 
-    def test_an_unframed_bulleted_draft_gets_the_notice_not_a_refusal(self, tmp_path):
-        """ASK-1197 round 10 replaces what this used to pin.
+    def test_an_unframed_bulleted_draft_is_refused(self, tmp_path):
+        """INVERTED in round 15. This test asserted the defect.
 
-        Rounds 8 and 9 treated any unframed prose over 40 bytes as a draft under a
-        live routed request, so this case was refused. That rule also refused
-        ordinary replies and clarifying questions, and the only escape was the
-        assistant reproducing the literal refusal token -- a deadlock with a
-        password. Framing is the contract now: the producers of record always emit
-        RECEIPT then DRAFT, and unframed prose is not classifiable from its shape.
+        Rounds 10-14 let an unframed completion under a live routed request pass
+        with a NOT VERIFIED notice and exit 0, and this test pinned that. Measured
+        2026-09-02 against consulting -- the one instance with the route lane
+        installed -- its RUNNING gate refuses this exact input with
+        RouteBoundaryError("routed completion has no route receipt").
+        `voice-stop-gate.py` is not in kipi-update.sh's INSTANCE_OWNED_SUBTREES,
+        so this file syncs over that gate: shipping the notice was a live
+        enforcement regression on the founder's publishing instance.
 
-        So this is neither verified nor refused. It is reported, with the id of
-        the decision, so the silence is findable.
+        The route path now enforces unconditionally, matching installed. The
+        deadlock this relaxation was reaching for is real and is NOT fixed here;
+        the accepted fix is the producer marker (sp-6ce17a23), not a sixth
+        prose heuristic.
         """
         root = _instance(tmp_path, with_route_lane=True)
         proc = _run(root, _transcript(tmp_path, "write me a linkedin post",
                                       self.UNFRAMED_BULLETED_DRAFT),
                     tmp_path / "c.json", classify="route")
-        assert proc.returncode == 0, (
+        assert proc.returncode == 2, (
+            "unframed publishable prose under a routed request passed without a "
+            "receipt, which is weaker than the gate consulting runs today. "
             f"rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
-        message = _system_message(proc)
-        assert "NOT VERIFIED" in message, message
-        assert "sp-6ce17a23" in message, (
-            "the notice must name the spillover id, or a reader cannot tell a "
-            f"recorded boundary from a bug. {message}")
-
-    def test_the_route_predicate_requires_framing(self):
-        """The same decision at the unit. Unframed prose, however long or however
-        bulleted, is not a draft to this gate."""
-        assert not gate._output_carries_draft(self.UNFRAMED_BULLETED_DRAFT)
+        assert "receipt" in proc.stderr.lower(), proc.stderr
 
     def test_a_framed_draft_under_the_same_request_is_still_enforced(self):
         """THE CONTROL. Without it, "framing required" would read as "nothing is
@@ -1373,6 +1376,100 @@ class TestTheLintAndRouteScopesAreDifferent:
         framed = ("Here's the post for LinkedIn.\n\n" + DRAFT_MARKER + "\n"
                   + self.UNFRAMED_BULLETED_DRAFT)
         assert gate._output_carries_draft(framed)
+
+
+class TestTheRoutePathMatchesTheInstalledGate:
+    """ASK-1197 round 15. The parity pin: on a lane-installed instance the route
+    path refuses ALL THREE unframed shapes, exactly as consulting's running gate
+    does today.
+
+    HOW THIS WAS DERIVED, and why it is three cases rather than one. On
+    2026-09-02 consulting's INSTALLED gate and this branch's port were loaded
+    side by side (importlib, both against consulting's real lane) and called on
+    the same inputs:
+
+        case                 INSTALLED                     PORT (pre-fix)
+        1 refusal echo       REFUSE RouteBoundaryError     PASS
+        2 clarifying question REFUSE RouteBoundaryError    PASS
+        3 unframed prose     REFUSE RouteBoundaryError     PASS
+
+    All three diverged. `voice-stop-gate.py` is not in kipi-update.sh's
+    INSTANCE_OWNED_SUBTREES, so landing the port replaces that gate; every PASS
+    above was a live enforcement regression on the founder's publishing instance.
+
+    Case 3 is the one that matters most -- it ships publishable content with no
+    receipt -- but 1 and 2 are pinned too, because a fix that only closed case 3
+    would need to tell a draft from a question, and it cannot: `extract_publishable`
+    returns "" for both, `candidate_draft` returns content for both, and rounds
+    5-9 failed to find a separator. Refusing all three IS the installed contract.
+
+    The cost is the known deadlock, and this class does not pretend otherwise. The
+    accepted fix is the producer marker (sp-6ce17a23), which replaces the guess
+    with a structural signal. It is deliberately not attempted here.
+    """
+
+    REQUEST = "write a linkedin post about detection engineering"
+
+    UNFRAMED_PROSE = (
+        "Detection engineering is not about writing more rules.\n"
+        "It is about deleting the ones that never fired.\n"
+        "Every rule you keep is a promise you have to maintain.\n")
+
+    QUESTION = (
+        "Before I draft that, which angle do you want: the alert-fatigue one, "
+        "or the rule-lifecycle one? Either works, they land differently.")
+
+    def _refused(self, tmp_path, assistant_text, name):
+        root = _instance(tmp_path, with_route_lane=True)
+        proc = _run(root, _transcript(tmp_path, self.REQUEST, assistant_text,
+                                      name=name),
+                    tmp_path / (name + ".json"), classify="route")
+        return proc
+
+    def test_case_3_unframed_publishable_prose_is_refused(self, tmp_path):
+        """THE REGRESSION THIS PR SHIPPED. Publishable content, no receipt, no
+        framing. Pre-fix this exited 0 with a NOT VERIFIED notice."""
+        proc = self._refused(tmp_path, self.UNFRAMED_PROSE, "case3")
+        assert proc.returncode == 2, (
+            "unframed publishable prose shipped without a receipt. This is the "
+            "case consulting's installed gate refuses and the port did not. "
+            f"rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
+        assert "receipt" in proc.stderr.lower(), proc.stderr
+
+    def test_case_2_a_clarifying_question_is_refused(self, tmp_path):
+        """Installed parity, and the honest cost. This is the deadlock: a
+        question under a live routed request is refused. Pinned so that a future
+        change which relaxes it has to argue with a test rather than slip in as
+        a port."""
+        proc = self._refused(tmp_path, self.QUESTION, "case2")
+        assert proc.returncode == 2, (
+            "case 2 passed, so the route path is relaxed again relative to the "
+            f"installed gate. rc={proc.returncode} stderr={proc.stderr}")
+
+    def test_case_1_a_refusal_echo_is_refused(self, tmp_path):
+        """Installed parity. The gate's own refusal quoted back is still a routed
+        completion with no receipt. Round 14 exempted it; installed never did."""
+        echoed = ("The previous turn was held: " + gate._REFUSAL_MARK
+                  + " I could not deliver without a receipt.")
+        proc = self._refused(tmp_path, echoed, "case1")
+        assert proc.returncode == 2, (
+            "case 1 passed, so the echo exemption is back. "
+            f"rc={proc.returncode} stderr={proc.stderr}")
+
+    def test_a_lane_less_instance_is_untouched_by_all_three(self, tmp_path):
+        """THE CONTROL, and the reason this revert is safe for the other 24
+        instances. The route path is inert without the lane, so none of the three
+        shapes above reaches receipt enforcement there. Without this, "refuse
+        everything" would read as a fleet-wide behaviour change."""
+        for name, text in (("l1", self.UNFRAMED_PROSE), ("l2", self.QUESTION)):
+            root = _instance(tmp_path / name, with_route_lane=False)
+            proc = _run(root, _transcript(tmp_path, self.REQUEST, text,
+                                          name=name + ".jsonl"),
+                        tmp_path / (name + ".json"), classify="route")
+            assert proc.returncode == 0, (
+                "a lane-less instance refused on the route path, so this revert "
+                f"changed behaviour on 24 instances. {name} "
+                f"rc={proc.returncode} stderr={proc.stderr}")
 
 
 class TestTheDraftFloor:
@@ -1541,21 +1638,29 @@ class TestAnInternalFaultHoldsTheTurn:
 
 
 class TestARoutedClarifyingQuestion:
-    """Round 10 case 2. The deadlock rounds 5 and 9 kept rebuilding."""
+    """Round 10 case 2, INVERTED in round 15. The deadlock is real and is not
+    fixed here; it is matched to the installed gate rather than papered over."""
 
-    def test_a_clarifying_question_under_a_routed_request_completes(self, tmp_path):
+    def test_a_clarifying_question_under_a_routed_request_is_refused(self, tmp_path):
+        """INVERTED in round 15. This asserted rc==0 and pinned the relaxation.
+
+        Round 10 called this "the deadlock rounds 5 and 9 kept rebuilding" and
+        exempted it. Measured 2026-09-02, consulting's INSTALLED gate refuses this
+        shape, and this file syncs over that gate: the exemption was a regression,
+        not a port. Separating a question from a draft needs a signal this gate
+        does not have (extract_publishable returns "" for both; candidate_draft
+        returns content for both), so the route path refuses both, as installed
+        does. The producer marker is the accepted fix, sp-6ce17a23.
+        """
         root = _instance(tmp_path, with_route_lane=True)
         question = ("Which subreddit is this for? The body band and the rules "
                     "differ enough that I would write it differently.\n")
         proc = _run(root, _transcript(tmp_path, "write me a reddit post", question),
                     tmp_path / "c.json", classify="route")
-        assert proc.returncode == 0, (
-            "the assistant cannot ask a question under a routed request without "
-            f"being refused.\nrc={proc.returncode} stderr={proc.stderr}")
-        message = _system_message(proc)
-        assert "NOT VERIFIED" in message and "sp-6ce17a23" in message, message
-
-
+        assert proc.returncode == 2, (
+            "a clarifying question completed under a routed request, so the route "
+            f"path is relaxed relative to installed.\nrc={proc.returncode} "
+            f"stderr={proc.stderr}")
 class TestAMarkerInsideAFenceIsAQuote:
     """Codex major, ASK-1197 round 11. Round 10 let the lint key on a bare
     `=== DRAFT ===`, so an engineering message SHOWING that marker inside a code
@@ -1640,21 +1745,25 @@ class TestAPastedTokenCannotDisableTheGate:
             "a routed draft skipped verification because it pasted the refusal "
             f"token.\nrc={proc.returncode} stdout={proc.stdout}")
 
-    def test_a_pure_refusal_echo_still_completes(self, tmp_path):
-        """THE CONTROL. The round 7 deadlock must stay fixed: an assistant
-        REPORTING a refusal, with no draft of its own, still completes."""
+    def test_a_pure_refusal_echo_is_also_refused(self, tmp_path):
+        """INVERTED in round 15. This was the control for the round 7 deadlock:
+        an assistant REPORTING a refusal, with no draft, completing.
+
+        It no longer holds, and that is deliberate. Installed refuses a pure echo
+        too (measured 2026-09-02), so the exemption made this file weaker than the
+        gate it replaces. The round 10/11 bypass this class exists for -- a pasted
+        token beside a framed draft -- stays closed either way, and the two tests
+        above are the ones that prove it.
+        """
         root = _instance(tmp_path, with_route_lane=True)
         report = ("The gate held the turn. It reported:\n\n"
                   "voice-stop-gate: routed completion has no route receipt\n"
-                  + gate._REFUSAL_MARK + "\n\n"
-                  "I have not re-drafted anything yet.\n")
+                  + gate._REFUSAL_MARK + "\n\nI have not re-drafted anything.\n")
         proc = _run(root, _transcript(tmp_path, "write me a linkedin post", report),
                     tmp_path / "c.json", classify="route")
-        assert proc.returncode == 0, (
-            "the reply to a refusal was refused again; the deadlock is back.\n"
+        assert proc.returncode == 2, (
+            "a pure refusal echo completed, so the echo exemption is back. "
             f"rc={proc.returncode} stderr={proc.stderr}")
-
-
 class TestPublishFramingWinsOverATrailingMarker:
     """Codex minor, ASK-1197 round 11. `framed_draft` preferred `_route_draft`,
     so a trailing bare `=== DRAFT ===` line truncated a slab the publish sentence
@@ -1743,41 +1852,14 @@ class TestAShortDraftBesideAPastedToken:
 
 
 class TestEachPathNamesWhatItSaw:
-    """Codex minor, ASK-1197 round 12. The echo path and the no-draft path shared
-    one notice, so the gate reported "unframed output" about a message that was
-    its own refusal quoted back. A reader told the wrong thing goes hunting a bug
-    that is not there. Each path is asserted exactly, so the wrong notice cannot
-    be emitted silently."""
+    """Round 12 split the echo notice from the no-draft notice so neither could
+    misstate what the gate saw. Round 15 removed BOTH: the route path no longer
+    emits a notice for an unframed completion, it refuses. Those two tests went
+    with the notices they asserted.
 
-    def _notice(self, tmp_path, assistant, name):
-        root = _instance(tmp_path, with_route_lane=True)
-        proc = _run(root, _transcript(tmp_path, "write me a linkedin post",
-                                      assistant, name=name),
-                    tmp_path / (name + ".json"), classify="route")
-        assert proc.returncode == 0, (
-            f"rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
-        return _system_message(proc)
-
-    def test_the_no_draft_path_says_no_draft_found(self, tmp_path):
-        message = self._notice(
-            tmp_path,
-            "Which subreddit is this for? The rules differ enough that I would "
-            "write it differently.\n", "nodraft.jsonl")
-        assert "no draft found" in message, message
-        assert "sp-6ce17a23" in message, (
-            "the no-draft notice must name the boundary decision. " + message)
-        assert "refusal echo" not in message, message
-
-    def test_the_echo_path_says_refusal_echo(self, tmp_path):
-        message = self._notice(
-            tmp_path,
-            "The gate held the turn. It reported:\n\n"
-            "voice-stop-gate: routed completion has no route receipt\n"
-            + gate._REFUSAL_MARK + "\n\nI have not re-drafted anything yet.\n",
-            "echo.jsonl")
-        assert "refusal echo" in message, message
-        assert "no draft found" not in message, (
-            "the echo path emitted the no-draft notice. " + message)
+    The lane-absent NOT CHECKED notice is untouched and is the only one left, so
+    it keeps its test -- and that test now also proves the removal did not take
+    the surviving notice with it."""
 
     def test_the_lane_absent_path_still_says_not_checked(self, tmp_path):
         """The third notice, unchanged, asserted here so the split did not
