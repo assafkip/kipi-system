@@ -4,9 +4,11 @@ The load-bearing classes are TestAStaleCardIsAnError and TestTheDryRunWritesNoth
 Both pin defects this work actually hit, not defects imagined for it.
 """
 import datetime as dt
+import io
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -406,3 +408,109 @@ class TestEngineeringLeavesHisBrief:
         assert "notion_board.py" not in stems, (
             "notion_board.py writes bullets to the same page board_rows writes rows to; "
             "the first live dry-run rendered both")
+
+
+def _brief():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("morning_brief", SCRIPTS / "morning-brief.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestRound4:
+    """The first real Codex read after rounds 2 and 3 ran on the Opus fallback. Both
+    findings are the same shape: a fix that held for the fixture and not for the
+    producer. So these tests drive the PRODUCER (collect_mail, collect) and not a
+    hand-typed row."""
+
+    def test_the_real_mail_producers_age_form_is_volatile(self, tmp_path):
+        """collect_mail renders `[2h]`, not "2h ago". Round 2's regex never matched it,
+        so every age change replaced the Notion row and lost his drag."""
+        brief = _brief()
+
+        def runner(age):
+            return lambda p, t: (json.dumps({"threads": [
+                {"from": "Alice", "subject": "Docs", "age_hours": age}]}), None)
+
+        a_rows, _ = brief.collect_mail(None, runner(2))
+        b_rows, _ = brief.collect_mail(None, runner(3))
+        assert a_rows != b_rows, "the producer must actually render the age, or this proves nothing"
+        a = cb.buckets(NOW, {"mail": (a_rows, None)}, _tree(tmp_path))["inbox"][0]["key"]
+        b = cb.buckets(NOW, {"mail": (b_rows, None)}, _tree(tmp_path))["inbox"][0]["key"]
+        assert a == b, f"an age change minted a new id: {a!r} != {b!r}"
+
+    def test_but_a_bracketed_number_that_is_not_an_age_stays(self, tmp_path):
+        a = cb.buckets(NOW, {"mail": (["Alice  ticket [4021]"], None)},
+                       _tree(tmp_path))["inbox"][0]["key"]
+        b = cb.buckets(NOW, {"mail": (["Alice  ticket [4022]"], None)},
+                       _tree(tmp_path))["inbox"][0]["key"]
+        assert a != b
+
+    @staticmethod
+    def _fake_db(slow_first_query_s: float):
+        """The database API, just enough of it. Records every call; the first query
+        sleeps past the budget so the worker is abandoned mid-paint."""
+        class Fake:
+            def __init__(self):
+                self.calls = []
+
+            def __call__(self, req, timeout):
+                method, url = req.get_method(), req.full_url
+                if "/databases/" in url and not self.calls:
+                    self.calls.append(("query-slow", timeout))
+                    time.sleep(slow_first_query_s)
+                    return io.BytesIO(b'{"results": [], "has_more": false}')
+                self.calls.append((method, url))
+                if "/databases/" in url:
+                    return io.BytesIO(b'{"results": [], "has_more": false}')
+                return io.BytesIO(b'{"id": "p1"}')
+        return Fake()
+
+    def test_no_write_lands_after_the_timeout_was_reported(self, tmp_path, monkeypatch):
+        """Codex round 4 (major): the guard abandoned the worker and it kept writing.
+        Now the budget is cancelled before the timeout is reported, so the worker's
+        next request refuses and the paint stops where it stood."""
+        (tmp_path / "tok").write_text("t")
+        (tmp_path / "db").write_text("db1")
+        monkeypatch.setattr(board_rows, "LOCK_FILE", tmp_path / "board.lock")
+        buckets = {"top_of_mind": [{"key": "k1", "title": "t", "detail": "d", "scope": "card"}],
+                   "this_week": [], "inbox": [], "healthy_scopes": {"card"}}
+        monkeypatch.setattr(board_rows.consulting_board, "buckets", lambda *a, **k: buckets)
+        fake = self._fake_db(slow_first_query_s=0.15)
+        rows, error = board_rows.collect(NOW, {}, opener=fake, token_file=tmp_path / "tok",
+                                         db_file=tmp_path / "db", budget_s=0.05)
+        assert rows == [] and "timed out" in error and "no further write" in error
+        time.sleep(0.4)                      # let the abandoned worker run on and try
+        writes = [c for c in fake.calls if c[0] in ("POST", "PATCH") and "/pages" in c[1]]
+        assert writes == [], f"writes landed after the timeout: {writes}"
+
+    def test_and_the_in_flight_call_is_capped_to_what_is_left(self, tmp_path, monkeypatch):
+        """A 10s HTTP timeout on a request that starts with 0.02s left would outlive
+        the budget. The request's own timeout is clipped to the remainder."""
+        seen = []
+
+        def opener(req, timeout):
+            seen.append(timeout)
+            return io.BytesIO(b'{"results": [], "has_more": false}')
+        budget = board_rows._Budget(0.05)
+        board_rows.existing_rows("t", "db", opener, budget=budget)
+        assert seen and seen[0] <= 0.05 < board_rows.TIMEOUT_S
+
+    def test_the_boards_own_budget_fires_before_the_briefs_guard(self):
+        """Two bounds, one ordering. If the brief's guard fired first the worker would
+        be abandoned with a live budget, which is exactly the round-4 defect."""
+        assert board_rows.BUDGET_S < _brief().COLLECT_BUDGET_S
+
+    def test_a_worker_that_ran_out_of_time_also_let_go_of_the_lock(self, tmp_path, monkeypatch):
+        (tmp_path / "tok").write_text("t")
+        (tmp_path / "db").write_text("db1")
+        monkeypatch.setattr(board_rows, "LOCK_FILE", tmp_path / "board.lock")
+        buckets = {"top_of_mind": [], "this_week": [], "inbox": [], "healthy_scopes": {"card"}}
+        monkeypatch.setattr(board_rows.consulting_board, "buckets", lambda *a, **k: buckets)
+        fake = self._fake_db(slow_first_query_s=0.15)
+        board_rows.collect(NOW, {}, opener=fake, token_file=tmp_path / "tok",
+                           db_file=tmp_path / "db", budget_s=0.05)
+        time.sleep(0.3)
+        with board_rows.exclusive(tmp_path / "board.lock"):
+            pass                                        # no BoardBusy: it was released

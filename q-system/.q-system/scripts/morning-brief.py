@@ -536,6 +536,15 @@ def _guarded(key: str, fn, budget_s: float, log_path) -> tuple:
     - finding-4: a collector is bounded. The board writer runs here, before the
       Slack send, so a hung Notion call must cost at most `budget_s`, never the
       morning. The worker thread is abandoned on timeout; the brief moves on.
+
+    THIS GUARD BOUNDS THE WAIT, NOT THE WORK. Codex round 4 on the consulting board
+    (major): an abandoned worker that MUTATES (board_rows, the only one) kept writing
+    Notion rows after this returned "timed out". A guard that cannot cancel what it
+    abandons is the wrong place to fix that, so the rule is on the collector: a
+    mutating collector owns a budget BELOW `budget_s`, checks it before every call
+    and caps the call in flight to what is left (notion_board._Budget, shared). Then
+    its own cancel fires first and this guard is only the backstop.
+    test_consulting_board pins board_rows.BUDGET_S < COLLECT_BUDGET_S.
     """
     # A DAEMON thread, not a ThreadPoolExecutor. Codex review of this issue
     # (findings 1 and 2, 2026-09-01): pool workers are non-daemon and the

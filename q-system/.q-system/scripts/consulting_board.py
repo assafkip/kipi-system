@@ -253,8 +253,13 @@ def collect(now: dt.datetime, sources: dict, paths=None):
 #: Round 3 (minor): the trailing `|\d+` stripped EVERY digit run, so "invoice 4021"
 #: and "invoice 4022" collapsed to one board row. Only digits bound to a time unit, a
 #: clock time or a date are volatile; a bare number is usually the identifying part.
+#: Round 4 (major, the first real Codex read after two rounds on the Opus fallback):
+#: the REAL mail producer, morning-brief.collect_mail, renders an age as `[2h]`, a
+#: bracketed unit with no "ago". None of the forms below matched it, so the round-2
+#: fix held for the fixture and not for the producer. The test now drives the producer.
 _VOLATILE = re.compile(r"\b\d+\s*(?:secs?|mins?|hours?|days?|weeks?)\b"
                        r"|\b\d+\s*[smhdw]\s+ago\b"
+                       r"|\[\s*\d+\s*[smhdw]\s*\]"
                        r"|\b\d{1,2}:\d{2}\b"
                        r"|\b\d{4}-\d{2}-\d{2}\b"
                        r"|\bago\b", re.I)

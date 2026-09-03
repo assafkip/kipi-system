@@ -56,6 +56,39 @@ WINDOW_HOURS = 48
 MAX_CONVERSATIONS = 25
 TIMEOUT_S = 6.0
 
+#: The allowlist of GroupMe conversations worth reading. Founder-directed 2026-09-03,
+#: verbatim: *"you're looking in too many channels. I only want you to look in the AI
+#: chat channel, the other ones have nothing for me."*
+#:
+#: Machine-local and NOT in this repo, which is public: the ids name client
+#: conversations, the same reason the sibling `groupme_pull.py` path is described here
+#: and never written out. One id per line, `#` comments and blank lines ignored.
+#:
+#: THE FILE BEING ABSENT IS NOT AN EMPTY ALLOWLIST. A missing file means nobody has
+#: chosen yet, so every conversation is read, which is the behaviour that shipped. An
+#: EMPTY file is a choice and reads nothing. Collapsing the two would turn a lost
+#: config file into a silently quiet section, which is the failure this brief exists to
+#: not have.
+CHANNELS_FILE = Path.home() / ".config" / "kipi" / "groupme-channels"
+
+
+def load_allowlist(path=None) -> set | None:
+    """The set of allowed conversation ids, or None when no choice is recorded.
+
+    None and set() mean different things on purpose; see CHANNELS_FILE.
+    """
+    path = Path(path) if path else CHANNELS_FILE
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    ids = set()
+    for line in raw.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            ids.add(line)
+    return ids
+
 
 def load_token() -> str | None:
     tok = (os.environ.get("GROUPME_TOKEN") or "").strip()
@@ -86,8 +119,12 @@ def waiting(now: dt.datetime, token: str, opener=None) -> list[dict]:
     me = _me(token, opener)
     out = []
 
+    allow = load_allowlist()
+
     groups = _get("/groups", token, opener, per_page=MAX_CONVERSATIONS) or []
     for g in groups:
+        if allow is not None and str(g.get("id")) not in allow:
+            continue
         meta = g.get("messages") or {}
         created = meta.get("last_message_created_at") or 0
         if created < cutoff:
@@ -124,7 +161,12 @@ def waiting(now: dt.datetime, token: str, opener=None) -> list[dict]:
 
     # /chats is the DM list. Its shape differs from /groups: the peer is `other_user`
     # and the newest message is `last_message`, not `messages.preview`.
-    chats = _get("/chats", token, opener, per_page=MAX_CONVERSATIONS) or []
+    # DMs are skipped entirely once an allowlist exists. The docstring above records
+    # the scar that reading only /groups once hid three live client DMs; that scar is
+    # about a channel nobody CHOSE to exclude. An allowlist is the founder choosing,
+    # and a chosen exclusion is not a silent one.
+    chats = [] if allow is not None else (
+        _get("/chats", token, opener, per_page=MAX_CONVERSATIONS) or [])
     for c in chats:
         last = c.get("last_message") or {}
         created = last.get("created_at") or c.get("updated_at") or 0

@@ -60,6 +60,10 @@ import urllib.request
 from pathlib import Path
 
 import consulting_board
+# ONE budget class, shared with the old bullet writer rather than copied from it.
+# notion_board is unregistered as a section (see morning-brief.OPTIONAL_SECTIONS) and
+# stays on disk as a library; its `_Budget` is the interlock both painters need.
+from notion_board import Cancelled, _Budget, _bounded
 
 API = "https://api.notion.com/v1"
 VERSION = "2022-06-28"
@@ -75,6 +79,15 @@ DEFAULT_DB = "0a09bd16-b12e-49bf-a792-fad15e008ed0"
 OWNED_PREFIX = "cb:"
 BUDGET_ROWS = 40
 TIMEOUT_S = 10.0
+#: The board's OWN deadline, held by the worker and checked before every Notion call.
+#: Codex round 4 (major): morning-brief's `_guarded` abandons a collector on timeout,
+#: which bounds the WAIT and not the WRITES. This painter kept creating, refreshing and
+#: archiving rows after the brief had already reported it timed out, with no read-back
+#: behind those writes. Now a spent or cancelled budget refuses the next request and
+#: caps the one in flight, so nothing outlives it. Deliberately BELOW the brief's
+#: COLLECT_BUDGET_S so this cancel fires first and the guard is the backstop;
+#: test_consulting_board pins the ordering.
+BUDGET_S = 15.0
 
 BUCKET_OF = {"top_of_mind": "Top of Mind", "this_week": "This Week", "inbox": "Inbox"}
 
@@ -87,13 +100,16 @@ def _credentials(token_file=None, db_file=None):
     return token, db
 
 
-def _request(token, method, path, body=None, opener=None):
+def _request(token, method, path, body=None, opener=None, budget=None):
+    timeout = TIMEOUT_S
+    if budget is not None:
+        timeout = min(TIMEOUT_S, max(0.001, budget.check()))   # raises Cancelled when spent
     req = urllib.request.Request(f"{API}{path}", method=method,
                                  data=json.dumps(body).encode() if body is not None else None)
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Notion-Version", VERSION)
     req.add_header("Content-Type", "application/json")
-    with (opener or urllib.request.urlopen)(req, timeout=TIMEOUT_S) as fh:
+    with (opener or urllib.request.urlopen)(req, timeout=timeout) as fh:
         return json.load(fh)
 
 
@@ -124,7 +140,7 @@ def item_id(bucket_key: str, item: dict) -> str:
     return OWNED_PREFIX + hashlib.sha1(str(key).encode("utf-8")).hexdigest()[:16]
 
 
-def existing_rows(token, db, opener=None, dupes_out=None) -> dict:
+def existing_rows(token, db, opener=None, dupes_out=None, budget=None) -> dict:
     """{item_id: page} for the rows this module owns. One query, paged.
 
     Pass `dupes_out` to learn about ids that appear more than once; see the comment
@@ -137,7 +153,7 @@ def existing_rows(token, db, opener=None, dupes_out=None) -> dict:
                                              {"starts_with": OWNED_PREFIX}}}
         if cursor:
             body["start_cursor"] = cursor
-        data = _request(token, "POST", f"/databases/{db}/query", body, opener)
+        data = _request(token, "POST", f"/databases/{db}/query", body, opener, budget)
         for page in data.get("results", []):
             prop = (page.get("properties") or {}).get("Item id") or {}
             text = "".join(t.get("plain_text", "") for t in prop.get("rich_text", []))
@@ -232,7 +248,7 @@ class BoardBusy(RuntimeError):
     """A second painter tried to run. Not a failure of this one."""
 
 
-def paint(buckets: dict, token, db, opener=None) -> dict:
+def paint(buckets: dict, token, db, opener=None, budget=None) -> dict:
     """Create, refresh and archive. Returns a counts dict. Never moves a row."""
     if buckets.get("error"):
         raise ValueError(buckets["error"])
@@ -256,7 +272,7 @@ def paint(buckets: dict, token, db, opener=None) -> dict:
             "rows on any transient source failure (Codex round 2)."
         )
 
-    have = existing_rows(token, db, opener)
+    have = existing_rows(token, db, opener, budget=budget)
     created = updated = archived = 0
 
     for iid, (item, bucket) in wanted.items():
@@ -265,12 +281,12 @@ def paint(buckets: dict, token, db, opener=None) -> dict:
             _request(token, "POST", "/pages",
                      {"parent": {"database_id": db},
                       "properties": _properties(item, bucket, iid, include_bucket=True)},
-                     opener)
+                     opener, budget)
             created += 1
         else:
             _request(token, "PATCH", f"/pages/{page['id']}",
                      {"properties": _properties(item, bucket, iid, include_bucket=False)},
-                     opener)
+                     opener, budget)
             updated += 1
 
     kept = 0
@@ -280,18 +296,19 @@ def paint(buckets: dict, token, db, opener=None) -> dict:
         if _scope_of(page) not in healthy:
             kept += 1                      # its source could not answer; leave it alone
             continue
-        _request(token, "PATCH", f"/pages/{page['id']}", {"archived": True}, opener)
+        _request(token, "PATCH", f"/pages/{page['id']}", {"archived": True}, opener, budget)
         archived += 1
 
     return {"created": created, "updated": updated, "archived": archived,
             "kept": kept, "wanted": len(wanted)}
 
 
-def read_back(token, db, opener=None) -> int:
-    return len(existing_rows(token, db, opener))
+def read_back(token, db, opener=None, budget=None) -> int:
+    return len(existing_rows(token, db, opener, budget=budget))
 
 
-def collect(now, sources: dict, opener=None, token_file=None, db_file=None):
+def collect(now, sources: dict, opener=None, token_file=None, db_file=None,
+            budget_s: float = BUDGET_S):
     """Registry contract: (rows, error), or None when the board is OFF."""
     token, db = _credentials(token_file, db_file)
     if not token:
@@ -310,13 +327,24 @@ def collect(now, sources: dict, opener=None, token_file=None, db_file=None):
     buckets = consulting_board.buckets(now, sources)
     if buckets.get("error"):
         return [], f"board not written: {buckets['error']}"
-    try:
+    def work(budget):
+        # The lock is held INSIDE the budget: a painter that runs out of time also
+        # lets go, so the 07:40 job is not refused by a worker the brief abandoned.
         with exclusive():
-            counts = paint(buckets, token, db, opener)
+            counts = paint(buckets, token, db, opener, budget)
         dupes = {}
-        seen = len(existing_rows(token, db, opener, dupes_out=dupes))
+        seen = len(existing_rows(token, db, opener, dupes_out=dupes, budget=budget))
+        return counts, dupes, seen
+
+    try:
+        counts, dupes, seen = _bounded(work, budget_s)
     except BoardBusy as exc:
         return [], f"board not written: {exc}"
+    except (TimeoutError, Cancelled) as exc:
+        # The budget is cancelled before this line runs, so the worker's next Notion
+        # call refuses. Partial writes up to that point are ordinary rows the next
+        # paint reconciles; what cannot happen is a write after the brief moved on.
+        return [], f"board write timed out: {exc}; no further write lands"
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError) as exc:
         return [], f"board write failed: {type(exc).__name__}: {exc}"
 
