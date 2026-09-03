@@ -215,10 +215,35 @@ class Row(str):
         return row
 
 
-MAIL_PROMPT = """Call {tool} to find email threads from the last 48 hours where a
+#: How far back the mail sweep looks, and it is a CONSTANT because it was a hardcoded
+#: "48 hours" inside the prompt for weeks and nobody could see it.
+#:
+#: THE BUG THIS FIXES, measured 2026-09-03. The brief printed "Mail needing an answer:
+#: nothing" on 09-01, 09-02 and 09-03 while two client threads sat unanswered since
+#: 2026-08-11 and 2026-08-13. Both are real, both are named by
+#: `email-watch/ledger.py needs-reply`, and both are 3 weeks old, so a 48-hour window
+#: could not see either one. The section was not empty; it was blind, and it reported
+#: blindness as calm.
+#:
+#: 30 days because the oldest of the two is 23 days old and a window that only just
+#: covers today's example is a window that will fail next month. The prompt still
+#: excludes automated senders and still requires that HE has not replied, so widening
+#: the window does not widen the noise; it only stops hiding the old ones.
+#:
+#: The deterministic answer is `ledger.py needs-reply`, which has no window at all and
+#: knows which threads are clients. It is not wired here yet: it reads the Notion
+#: ledger live, so it is a cross-repo runtime dependency and its own piece of work.
+MAIL_WINDOW_DAYS = 30
+#: The most inbox rows one sweep may put on the board. A 30-day window over a real
+#: inbox can return a lot; this is a phone-screen limit, not a judgement about which
+#: mail matters.
+MAIL_ROW_CAP = 15
+
+MAIL_PROMPT = """Call {tool} to find email threads from the last {days} days where a
 REAL PERSON wrote to the founder and the founder has not replied yet. Exclude
 newsletters, notifications, receipts, calendar invites, automated senders and
-no-reply addresses.
+no-reply addresses. Oldest first: a thread waiting three weeks matters more than
+one waiting an hour.
 Reply with ONE JSON object and nothing else, no prose, no code fence:
 {{"threads": [{{"id": "<the thread id the tool returned>", "from": "email or name", "subject": "...", "age_hours": <int>}}]}}
 `id` is the thread's own id from the tool result, copied verbatim. It is what keeps a
@@ -228,7 +253,8 @@ If the tool call fails, reply with exactly: {{"error": "<what failed>"}}"""
 
 def collect_mail(now: dt.datetime, runner=None):
     runner = runner or (lambda p, t: run_claude(p, t))
-    text, error = runner(MAIL_PROMPT.format(tool=MAIL_TOOL), [MAIL_TOOL])
+    text, error = runner(MAIL_PROMPT.format(tool=MAIL_TOOL, days=MAIL_WINDOW_DAYS),
+                         [MAIL_TOOL])
     if error:
         return [], error
     threads, parse_error = _parse_json_block(text, "threads")
@@ -265,6 +291,13 @@ def collect_mail(now: dt.datetime, runner=None):
         seen[row.key] = n
         if n > 1:
             rows[i] = Row(str(row), f"{row.key}#{n}")
+    if len(rows) > MAIL_ROW_CAP:
+        # Never a silent trim: the last row says how many are not shown, the same
+        # rule the client section already follows.
+        hidden = len(rows) - MAIL_ROW_CAP
+        rows = rows[:MAIL_ROW_CAP] + [
+            Row(f"...and {hidden} more unanswered in the last {MAIL_WINDOW_DAYS} days",
+                "mail:overflow")]
     return rows, None
 
 
@@ -507,7 +540,10 @@ def _section(title, rows, error, cap=MAX_ROWS):
 # retire `notion_board`'s only input.
 SECTIONS = (
     ("calendar", "Today"),
-    ("mail", "Mail needing an answer (48h)"),
+    # The window is INTERPOLATED, never typed. It read "(48h)" while the prompt also
+    # said 48 hours, so when the window was wrong the label agreed with it and the
+    # section looked correct. A number written twice is a number that will disagree.
+    ("mail", f"Mail needing an answer ({MAIL_WINDOW_DAYS}d)"),
 )
 
 #: Collected, never rendered to him. One line each into Sana's queue, and only when the
@@ -673,6 +709,46 @@ def route_engineering(sources: dict, notify=None) -> list:
     return mod.route(sources, ENGINEERING_SECTIONS, notify=notify)   # (filed, failed)
 
 
+#: What the hourly run collects. Mail and GroupMe are the inbox; board_rows paints it.
+#: consulting_board is here for the healthy-scope reason in main(), not for its rows.
+#: Calendar, Linear and the launchd sweep are DELIBERATELY absent: none of them change
+#: within an hour in a way he would act on, and each costs a model call or a sweep.
+HOURLY_SECTIONS = ("consulting_board.py", "groupme_inbox.py", "board_rows.py")
+
+
+def collect_hourly(now: dt.datetime, log_path=None, budget_s: float = COLLECT_BUDGET_S,
+                   fixed_budget_s: float = None) -> dict:
+    """Mail + GroupMe + the board paint. Same guards, same (rows, error) contract,
+    same budgets as collect_all -- this is a narrower SELECTION, never a second
+    implementation, because two collectors drift and one of them is the one nobody
+    watches."""
+    log_path = log_path or ERROR_LOG
+    if fixed_budget_s is None:
+        fixed_budget_s = FIXED_BUDGET_S
+    sources = {"mail": _guarded("mail", lambda: collect_mail(now),
+                                fixed_budget_s, log_path)}
+    for stem, key, _title in OPTIONAL_SECTIONS:
+        if stem not in HOURLY_SECTIONS:
+            continue
+        absent = object()
+
+        def load_and_collect(stem=stem):
+            mod = _optional_module(stem)
+            if mod is None:
+                return absent
+            return mod.collect(now, dict(sources))
+
+        result = _guarded(key, load_and_collect, budget_s, log_path)
+        if result is absent:
+            _log_line(log_path, f"hourly section {key}: module {stem} absent")
+            continue
+        if result is None:
+            _log_line(log_path, f"hourly section {key}: module {stem} reports off")
+            continue
+        sources[key] = result
+    return sources
+
+
 def collect_all(now: dt.datetime, log_path=None, budget_s: float = COLLECT_BUDGET_S,
                 fixed_budget_s: float = None) -> dict:
     """`budget_s` bounds the OPTIONAL sections (the board's Notion round trip,
@@ -750,9 +826,42 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true",
                     help="build and print; send nothing, write no receipt")
+    ap.add_argument("--inbox-only", action="store_true",
+                    help="mail + GroupMe + the Notion board, nothing else. The hourly "
+                         "runner: no Slack message, no receipt, no calendar, no Linear, "
+                         "no launchd sweep.")
     args = ap.parse_args(argv)
 
     now = dt.datetime.now().astimezone()
+
+    if args.inbox_only:
+        # Founder-directed 2026-09-03: *"the email and groupme should be once an
+        # hour."* The board is where he looks; a once-a-day inbox means a client who
+        # writes at 08:00 is invisible until tomorrow.
+        #
+        # NO SLACK SEND, on purpose. Twelve messages a day is how a channel gets
+        # muted, and the 07:00 brief already carries the daily read. This run only
+        # repaints the board.
+        #
+        # consulting_board IS collected even though nothing here changes its rows,
+        # because board_rows archives only inside the scopes reported healthy. Skip it
+        # and the client scope is absent, not healthy, so those rows are KEPT -- but
+        # relying on that is relying on a safety net rather than on the design. Cheap
+        # anyway: it is three file reads.
+        if args.dry_run:
+            os.environ["KIPI_BRIEF_DRY_RUN"] = "1"
+        sources = collect_hourly(now)
+        for key in ("mail", "groupme", "board_rows"):
+            rows, error = sources.get(key, ([], "never collected"))
+            if error:
+                print(f"[{key}] COULD NOT READ: {error}")
+            else:
+                print(f"[{key}] {len(rows)} row(s)")
+        # Exit 1 on a degraded run so launchd column 2 shows it and the fleet
+        # watchdog can see a broken hour without a human reading a log.
+        return 1 if any(sources.get(k, ([], None))[1]
+                        for k in ("mail", "groupme", "board_rows")) else 0
+
     if args.dry_run:
         # Reaches the optional sections, which can write to places the send flag never
         # covered. Set before collect_all, because collection IS when they write.

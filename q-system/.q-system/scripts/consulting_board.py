@@ -203,6 +203,8 @@ def read_my_side(now: dt.datetime, paths=None) -> tuple[dict, str | None]:
             entry = {"last_touch": c.get("last_touch"), "slug": slug}
             by_name[str(c.get("name") or "").strip().lower()] = entry
             out[slug] = dict(entry)
+    except FileNotFoundError:
+        pass                     # no registry on this machine; see the note below
     except (OSError, ValueError) as exc:
         errors.append(f"registry unreadable ({type(exc).__name__})")
 
@@ -226,6 +228,13 @@ def read_my_side(now: dt.datetime, paths=None) -> tuple[dict, str | None]:
             if not prior or str(said)[:10] < str(prior)[:10]:
                 rec["said_on"] = said        # the OLDEST open promise is the exposure
                 rec["due"] = row.get("due")
+    # A file that is ABSENT is not a file that is BROKEN. A machine with no commitment
+    # book has no promises to report, which is a fact; a book that exists and cannot be
+    # parsed or read is a failure that must be said out loud. Collapsing the two either
+    # makes a bare checkout look broken every morning or hides a real read failure.
+    # Same posture as groupme_inbox returning None with no token: OFF, not broken.
+    except FileNotFoundError:
+        pass
     except OSError as exc:
         errors.append(f"commitment book unreadable ({type(exc).__name__})")
 
@@ -309,6 +318,104 @@ def read_gtm(paths=None) -> tuple[dict | None, str | None]:
     return live[0], None
 
 
+#: How far ahead "coming up" reaches. A week, because the section is called This Week
+#: and a due date further out is not this week's problem. Not a tuning knob: widening
+#: it turns the section into a second Top of Mind.
+WEEK_DAYS = 7
+
+
+def read_week(now: dt.datetime, paths=None) -> tuple[list[dict], str | None]:
+    """This Week: the GTM moves waiting on him, and deliverables coming due.
+
+    Founder, 2026-09-03: *"This week should be this week's GTM moves and deliverables
+    that are coming up."* Before this the section had NO source at all. It carried a
+    description copied off a reference board describing a Sunday planning ritual he
+    does not have, so it would have stayed empty forever while claiming to be "the
+    plan".
+
+    Two sources, both already on disk:
+
+    - The GTM queue's founder-performer steps that are ready. `read_gtm` takes the
+      top-ranked one for Top of Mind; this takes THE REST, so a step is never on the
+      board twice. Measured 2026-09-03: 5 of 57 rows qualify, so this is a short list
+      and not the whole plan dumped onto a second surface.
+    - Open commitments whose due date lands inside the next `WEEK_DAYS`. An OVERDUE
+      one is deliberately excluded: it is already red in Top of Mind, and showing it
+      in both places teaches him the two sections mean the same thing.
+    """
+    paths = paths or _paths()
+    out, errors = [], []
+
+    lead, gtm_err = read_gtm(paths)
+    if gtm_err:
+        errors.append(gtm_err)
+    else:
+        try:
+            data = json.loads(paths["gtm"].read_text(encoding="utf-8"))
+            rows = data.get("rows") if isinstance(data, dict) else data
+            rows = list(rows.values()) if isinstance(rows, dict) else (rows or [])
+            lead_id = (lead or {}).get("id")
+            rest = [r for r in rows
+                    if isinstance(r, dict)
+                    and r.get("performer") == "founder"
+                    and r.get("state") in ("ready", "surfaced", "blocked")
+                    and r.get("id") != lead_id]
+            rest.sort(key=lambda r: (r.get("rank") if isinstance(r.get("rank"), (int, float))
+                                     else 10**6))
+            for r in rest:
+                out.append({
+                    "title": r.get("action") or r.get("id"),
+                    "key": f"gtm:{r.get('id')}",
+                    "detail": r.get("done_looks_like") or "",
+                    "source": "GTM queue", "scope": "week:gtm",
+                    "priority": "P1" if r.get("state") == "ready" else "P2",
+                    "domain": "GTM",
+                    "done": r.get("done_looks_like") or DONE_GTM_FALLBACK,
+                    "bucket_reason": "gtm-week"})
+        except (OSError, ValueError) as exc:
+            errors.append(f"GTM queue unreadable ({type(exc).__name__})")
+
+    horizon = now.date() + dt.timedelta(days=WEEK_DAYS)
+    try:
+        for line in paths["commitments"].read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("state") != "open" or not row.get("due"):
+                continue
+            try:
+                due = dt.date.fromisoformat(str(row["due"])[:10])
+            except ValueError:
+                continue          # a junk due date is not a deliverable this week
+            if not (now.date() <= due <= horizon):
+                continue          # overdue is Top of Mind's; further out is not this week
+            left = (due - now.date()).days
+            out.append({
+                "title": f"{row.get('slug')}: {str(row.get('promise'))[:120]}",
+                "key": f"due:{row.get('id') or row.get('slug')}",
+                "detail": f"due {due.isoformat()} ({left}d)",
+                "source": "State card", "scope": "week:due",
+                "priority": "P0" if left <= 2 else "P1",
+                "domain": "Consulting",
+                "done": "you delivered it, or you moved the date with them",
+                "bucket_reason": "due-this-week"})
+    # A file that is ABSENT is not a file that is BROKEN. A machine with no commitment
+    # book has no promises to report, which is a fact; a book that exists and cannot be
+    # parsed or read is a failure that must be said out loud. Collapsing the two either
+    # makes a bare checkout look broken every morning or hides a real read failure.
+    # Same posture as groupme_inbox returning None with no token: OFF, not broken.
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        errors.append(f"commitment book unreadable ({type(exc).__name__})")
+
+    return out, ("; ".join(errors) if errors else None)
+
+
 def collect(now: dt.datetime, sources: dict, paths=None):
     """(rows, error) for the brief's consulting section. The registered entry point."""
     paths = paths or _paths()
@@ -334,7 +441,6 @@ def collect(now: dt.datetime, sources: dict, paths=None):
     if withheld:
         # Never a silent trim. The count is the founder's cue that the board has more.
         rows.append(f"...and {withheld} more on the board")
-
     move, gtm_err = read_gtm(paths)
     if gtm_err:
         # A missing GTM move does not void the clients. It is named and the section
@@ -472,6 +578,15 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
                     "priority": "P1", "domain": "Fleet",
                     "done": "the commitment book and registry read again",
                     "bucket_reason": "error"})
+
+    week_rows, week_err = read_week(now, paths)
+    week.extend(week_rows)
+    if week_err:
+        week.append({"title": "This Week: COULD NOT READ", "key": "week:error",
+                     "detail": week_err, "source": "GTM queue", "scope": "week",
+                     "priority": "P1", "domain": "Fleet",
+                     "done": "the GTM queue and commitment book read again",
+                     "bucket_reason": "error"})
 
     move, gtm_err = read_gtm(paths)
     if not gtm_err:

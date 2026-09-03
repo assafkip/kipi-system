@@ -731,3 +731,74 @@ class TestHisSideCarriesItsDates:
         assert not any("Ghost Prospect" in r["title"]
                        for r in b["top_of_mind"] + b["this_week"] + b["inbox"]), (
             "the registry was enumerated onto the board")
+
+
+class TestThisWeekHasASourceAtLast:
+    """Founder, 2026-09-03: *"This week should be this week's GTM moves and
+    deliverables that are coming up."* Before this the section had NO source and
+    carried a description copied off a reference board describing a Sunday planning
+    ritual he does not have, so it would have stayed empty while calling itself
+    "the plan"."""
+
+    def test_the_top_of_mind_gtm_step_is_never_also_in_this_week(self, tmp_path):
+        """Top of Mind takes the top-ranked founder step; This Week takes the rest.
+        One step on two surfaces teaches him the sections mean the same thing."""
+        paths = _tree(tmp_path, gtm={"rows": {
+            "1.1": {"id": "1.1", "action": "the lead", "performer": "founder",
+                    "state": "ready", "rank": 1},
+            "1.2": {"id": "1.2", "action": "the second", "performer": "founder",
+                    "state": "ready", "rank": 2},
+        }})
+        b = cb.buckets(NOW, {}, paths)
+        top = {r["key"] for r in b["top_of_mind"]}
+        week = {r["key"] for r in b["this_week"]}
+        assert "gtm:1.1" in top and "gtm:1.2" in week
+        assert not (top & week), f"a row is on both surfaces: {top & week}"
+
+    def test_mechanism_steps_never_reach_this_week(self, tmp_path):
+        """The machine's own steps belong in the engineer's queue. 51 of 57 rows are
+        `mechanism`; letting them through would put the build plan back on his board,
+        which is the complaint this whole board exists to answer."""
+        paths = _tree(tmp_path, gtm={"rows": {
+            "9.9": {"id": "9.9", "action": "a machine job", "performer": "mechanism",
+                    "state": "ready", "rank": 1},
+        }})
+        rows, err = cb.read_week(NOW, paths)
+        assert err is None
+        assert not any(r["key"] == "gtm:9.9" for r in rows)
+
+    def test_a_deliverable_due_inside_the_week_is_carried(self, tmp_path):
+        due = (NOW.date() + dt.timedelta(days=3)).isoformat()
+        paths = _tree(tmp_path, commitments=json.dumps(
+            {"id": "c1", "slug": "acme", "state": "open", "due": due,
+             "promise": "send the audit"}), clients={"clients": []})
+        rows, _ = cb.read_week(NOW, paths)
+        hit = [r for r in rows if r["key"] == "due:c1"]
+        assert hit, "a deliverable due in 3 days never reached This Week"
+        assert "(3d)" in hit[0]["detail"]
+
+    def test_an_OVERDUE_deliverable_is_NOT_repeated_here(self, tmp_path):
+        """It is already red in Top of Mind. Two surfaces for one fact is how a
+        section stops meaning anything."""
+        past = (NOW.date() - dt.timedelta(days=4)).isoformat()
+        paths = _tree(tmp_path, commitments=json.dumps(
+            {"id": "c1", "slug": "acme", "state": "open", "due": past,
+             "promise": "send the audit"}), clients={"clients": []})
+        rows, _ = cb.read_week(NOW, paths)
+        assert not any(r["key"] == "due:c1" for r in rows)
+
+    def test_a_deliverable_beyond_the_week_is_not_this_weeks_problem(self, tmp_path):
+        far = (NOW.date() + dt.timedelta(days=cb.WEEK_DAYS + 1)).isoformat()
+        paths = _tree(tmp_path, commitments=json.dumps(
+            {"id": "c1", "slug": "acme", "state": "open", "due": far,
+             "promise": "send the audit"}), clients={"clients": []})
+        rows, _ = cb.read_week(NOW, paths)
+        assert not any(r["key"] == "due:c1" for r in rows)
+
+    def test_a_junk_due_date_is_skipped_not_crashed_on(self, tmp_path):
+        paths = _tree(tmp_path, commitments=json.dumps(
+            {"id": "c1", "slug": "acme", "state": "open", "due": "soon-ish",
+             "promise": "send the audit"}), clients={"clients": []})
+        rows, err = cb.read_week(NOW, paths)
+        assert err is None
+        assert not any(r["key"] == "due:c1" for r in rows)
