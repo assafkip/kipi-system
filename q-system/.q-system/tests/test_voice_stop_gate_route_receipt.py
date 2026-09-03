@@ -2048,3 +2048,59 @@ def test_every_marker_read_is_fence_masked():
     assert not offenders, (
         "a marker regex read text that was not fence-masked, so a fenced example "
         "of that marker frames a delivery:\n  " + "\n  ".join(offenders))
+
+
+class TestASystemExitInsideTheVerifierCannotClearTheTurn:
+    """Codex minor, ASK-1197 round 3.
+
+    `_enforce_route_or_exit` caught `Exception`. `SystemExit` inherits
+    `BaseException`, so that arm could not see it. A SystemExit raised inside
+    `enforce_route_receipt` went straight through the fail-closed handler to
+    the top-level `except SystemExit: raise` and exited carrying its own code.
+    A SystemExit(0) there exits the hook 0 with a routed draft nothing verified.
+
+    Both directions are pinned here because only one of them can regress
+    silently: the code-2 case looks identical whether or not the arm exists, so
+    the test that catches a bad fix is the code-0 one, and the test that catches
+    an OVER-broad fix (swallowing a real refusal) is the code-2 one.
+    """
+
+    def _classifier_raising(self, root, code):
+        classifier = root / "q-consult" / "pipeline" / "route_classifier.py"
+        classifier.write_text(
+            "NOT_ROUTED = 'not_routed'\nROUTE = 'route'\n"
+            "def classify(request):\n"
+            "    raise SystemExit(%s)\n" % (code,),
+            encoding="utf-8")
+
+    def test_a_systemexit_0_inside_the_verifier_becomes_a_refusal(self, tmp_path):
+        """The fail-OPEN this arm exists to close. Without it the gate exits 0
+        and the routed draft ships unverified."""
+        root = _instance(tmp_path, with_route_lane=True)
+        self._classifier_raising(root, 0)
+        log = tmp_path / "calls.json"
+        assistant = "Here's the post for LinkedIn.\n\n" + DRAFT_MARKER + "\nbody\n"
+        proc = _run(root, _transcript(tmp_path, "write it", assistant), log)
+        assert proc.returncode == 2, (
+            "a verifier that exited 0 without rendering a verdict has not cleared "
+            "this draft, so the turn must be HELD. Exit 0 here is the gate failing "
+            f"open. rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
+        assert "exited unexpectedly with code 0" in proc.stderr, (
+            "the turn was held but the reason was swallowed; a fail-closed with no "
+            "diagnosis is unfixable.\n" + proc.stderr)
+
+    def test_a_systemexit_2_inside_the_verifier_propagates_unchanged(self, tmp_path):
+        """Code 2 is `refuse()` doing its job. Re-wrapping it would replace a real
+        refusal's message with the generic one, so the operator reads the wrong
+        reason for the hold."""
+        root = _instance(tmp_path, with_route_lane=True)
+        self._classifier_raising(root, 2)
+        log = tmp_path / "calls.json"
+        assistant = "Here's the post for LinkedIn.\n\n" + DRAFT_MARKER + "\nbody\n"
+        proc = _run(root, _transcript(tmp_path, "write it", assistant), log)
+        assert proc.returncode == 2, (
+            f"a refusal must stay a refusal. rc={proc.returncode} "
+            f"stdout={proc.stdout} stderr={proc.stderr}")
+        assert "exited unexpectedly" not in proc.stderr, (
+            "an exit-2 refusal was re-wrapped by the SystemExit arm, so the real "
+            "refusal message was replaced by the generic one.\n" + proc.stderr)

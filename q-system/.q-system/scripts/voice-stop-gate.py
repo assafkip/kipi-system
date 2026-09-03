@@ -1286,6 +1286,27 @@ def _enforce_route_or_exit(request, text):
         return enforce_route_receipt(request, text)
     except RouteBoundaryError as exc:
         refuse(str(exc))
+    except SystemExit as exc:
+        # SystemExit inherits BaseException, NOT Exception, so the arm below
+        # cannot see it (Codex minor, ASK-1197 round 3). Without this arm a
+        # SystemExit raised anywhere inside `enforce_route_receipt` sails past
+        # the fail-closed handler, reaches the top-level `except SystemExit:
+        # raise`, and exits carrying its own code. A SystemExit(0) there exits
+        # the hook 0 with a routed draft nothing verified: the same fail-OPEN
+        # the Exception arm exists to prevent, through the one door it does not
+        # cover.
+        #
+        # Code 2 is `refuse()` doing its job -- it is THE only exit-2 writer in
+        # this file -- so it propagates untouched. Swallowing it would convert a
+        # real refusal into a second refusal with the wrong message.
+        #
+        # No live path raises a non-2 SystemExit inside the verifier today. This
+        # is hardening against the class, not a fix for a reproduced escape.
+        if exc.code == 2:
+            raise
+        refuse("the route verifier exited unexpectedly with code %r\n"
+               "Holding the turn (fail-closed): a check that exited without a "
+               "verdict has not cleared this draft." % (exc.code,))
     except Exception as exc:
         refuse("the route verifier itself failed with %s: %s\n"
                "Holding the turn (fail-closed): a check that crashed has not "
