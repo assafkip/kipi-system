@@ -1018,6 +1018,396 @@ else
 fi
 echo "  verdict: ${VERDICT:-unstated}$DRY_NOTE"
 
+# --- the analysed tree must be the tree the status names (ASK-830) ------------
+# THIS IS NOT THE HEAD-MOVED RACE. That one (the HEAD_SHA_CONFIRM refusal ~500
+# lines up, ASK-221) compares two READS of the PR head and fires when something
+# pushes mid-review. It is a good guard and it stays. It structurally cannot see
+# this defect: here NOTHING moves. The wrapper checks out the correct tree, hands
+# it to the model, and the model reads a DIFFERENT one anyway. Two reads of the
+# head agree perfectly while the review is of another commit.
+#
+# MEASURED, PR #165 round 2, 2026-08-14 PT. The wrapper detached a review tree at
+# c87245b0 and logged `commit status posted: kipi/reviewer-approved=failure on
+# c87245b0`. The review body says in its own words "GitHub was also unreachable,
+# so the review used the locally available PR tip `0880859e`", and every one of
+# its reproducers runs `git show 0880859e:fleet-unblock.py`. 0880859e is the
+# merge-base from BEFORE the fixes under review. It re-emitted round 1's two
+# findings verbatim, at round 1's pre-fix line numbers (138, 287), against code
+# where both were already fixed. Attempt 2 of the same command, same head, read
+# the right tree and returned two entirely different findings.
+#
+# WHY THE REVIEW'S OWN COMMANDS AND NOT ITS PROSE. "the body mentions the head
+# sha" would have PASSED round 2 -- its body carries c87245b0 as well. The
+# discriminator has to be a statement about what was READ, so this reads the
+# reviewer's own `git show <sha>:<path>` invocations and its tip declaration.
+# Those are the reviewer telling you which tree it opened.
+#
+# WHY IT GROUPS BY PATH AND NOT BY SHA (ASK-830 round 2 review, PR #197).
+# The first version refused on the FIRST declared sha that was not the head, and
+# that is too strong in a way that costs more than the defect: a correct review
+# doing before/after verification runs BOTH `git show <head>:f` and
+# `git show <base>:f` to show the fix landed, and it was refused with no status
+# and no comment -- wedging the PR behind this required check.
+#
+# The naive repair ("pass if the head appears in ANY show position") is wrong on
+# the measured payload, which is why it is not what this does. Round 2's body
+# carries `git show c87245b0:test_fleet_unblock.py` -- it read the TEST from the
+# right tree while reading fleet-unblock.py and fleet-reach-audit.py, the files
+# its findings are about, from 0880859e. Under the any-match rule the live defect
+# passes. Measured, not reasoned: round2 declares c87245b0 once and 0880859e nine
+# times, split by path.
+#
+# So the unit is the PATH. A path the review opened at the head is fine no matter
+# what else it opened alongside (that is a comparison). A path it opened ONLY
+# from another tree is the contradiction: its findings about that file describe a
+# commit nobody is merging. A bare sha with no path (`git checkout <sha>`, the
+# prose tip declaration) is a whole-tree claim and gets its own bucket.
+#
+# WHAT THIS DOES AND DOES NOT PROVE, stated plainly because a REQUIRED check with
+# enforce_admins on main earns the honesty: it detects a CONTRADICTION, not a
+# match. A review that declares no tree at all is not refused -- there is nothing
+# to contradict, and refusing silence would wedge every review that does not
+# happen to print a git command. Under-refusal here costs a wrong review; a
+# false refusal costs every correct PR in the fleet at once, escapable only via
+# break-glass-main-protection.sh, which disables protection fleet-wide.
+#
+# KNOWN RESIDUAL, not a surprise: a text scan cannot tell "I ran this" from "I am
+# quoting this". Round 4 measured that cutting both ways -- the guard refused the
+# review of its own PR for quoting the lines this change adds. The quote rule
+# below moves the error to the cheap side (a citation in prose is a quote), which
+# leaves the mirror residual: a command genuinely run and written inline in prose
+# is no longer counted. Spillover sp-926c177b, ASK-830, carries both directions.
+#
+# ALSO GIVEN UP HERE, deliberately: a review that reads a WRONG local tip using
+# only worktree reads and never runs a git command declares nothing and is not
+# refused. Bounded, not open: this script detaches the review worktree at the
+# head sha before dispatch (the `git -C "$wt" checkout --detach` above), so a
+# worktree read IS a head read unless something moved that tree -- which is
+# either `git checkout <sha>` (still a declaration, case 8) or the ASK-221
+# head-moved guard's territory.
+#
+# analysed_tree_conflict <review-file> <head-sha>
+# Prints the first off-head sha for a path the review never opened at the head,
+# or nothing. A short sha is matched by PREFIX on purpose: the reviewer writes 8
+# characters, gh reports 40, and treating that as drift would refuse every review.
+analysed_tree_conflict() {
+  # $3 is a file listing the paths this PR changed, one per line. Optional: an
+  # absent or empty list means the question cannot be answered, and an unanswered
+  # question does NOT become an exemption (see outside_the_diff below).
+  local f="${1:-}" head="${2:-}" changed="${3:-}"
+  [ -s "$f" ] || return 0
+  [ -n "$head" ] || return 0
+  python3 - "$f" "$head" "$changed" <<'ANALYSED_TREE_PY'
+import re
+import subprocess
+import sys
+
+review_path, head = sys.argv[1], sys.argv[2].strip().lower()
+try:
+    with open(review_path, encoding="utf-8", errors="replace") as fh:
+        body = fh.read()
+except OSError:
+    sys.exit(0)
+
+# Shapes taken from the real payload:
+#   shell        git show 0880859e:fleet-unblock.py
+#   flagged      git show --stat 0880859e     (the 6-char window missed this; the
+#                                              flag run below is why it no longer does)
+#   python-quoted "git","show","0880859e:fleet-unblock.py"
+#   the SAME, re-escaped   \"git\",\"show\",\"0880859e:fleet-unblock.py\"
+# `git` is required in front of show/checkout so ordinary prose ("the diff shows
+# 1234567 rows") cannot manufacture a declaration and refuse a correct review.
+#
+# WHY THE WINDOW IS 8 AND NOT 4 (PR #197 round 4, major 2). The payload writes
+# its python-quoted show BOTH ways, in the same file: `"git","show"` (3 chars
+# between the tokens) and `\",\"` (5). A 4-char window spans the first and not
+# the second, so the shape that carries the defect's finding-bearing path was
+# invisible and the guard found ZERO declarations when fed that form alone.
+# The window admits only NON-WORD characters, so widening it cannot let prose
+# join two words; measured across 81 real reviews (3.4 MB) the 8-window finds
+# exactly 2 declarations the 4-window missed, and both are genuine python-quoted
+# `git show` commands. Cost of the widening, on the real corpus: zero false
+# declarations.
+#
+# THE PROSE TIP IS NOT A DECLARATION (PR #197 round 4, minor). `\btip\b` plus a
+# nearby sha turned ordinary review prose -- "baseline is main's tip (`85f556dc`)"
+# -- into a whole-tree claim and refused a review that ran no git command at all,
+# with no escape, because the whole-tree bucket is deliberately unclearable. What
+# it bought back is small and measurable: on the one payload we have, every tip
+# line is accompanied by eleven command-position `git show <sha>:<path>` reads,
+# so dropping it changes nothing about that detection (case 1 still refuses).
+# What it costs is the residual noted at the foot of this comment.
+DECLARATION = re.compile(
+    r"git"
+    r"(?:[^\w]{1,8}-C[^\w]{1,8}[^\s\"'`,;)]+)?"        # optional `-C <dir>` (minor 2)
+    r"[^\w]{1,8}(?:show|checkout)"                     # what opened a tree
+    # ANY RUN OF FLAGS -- WRITTEN UNAMBIGUOUSLY ON PURPOSE (PR #197 round 5,
+    # minor 1). This was `(?:[^\w]{0,3}--?[A-Za-z][\w-]*(?:=[^\s]*)?)*`, where a
+    # `-b` segment could be consumed EITHER by the inner `[\w-]*` or by another
+    # turn of the outer loop through a zero-width separator. That ambiguity
+    # backtracks exponentially: `git show --a=` + `-b`*22 took 1.9s and doubled
+    # per added segment. Two changes remove it, and neither narrows what matches:
+    # the separator is now at least one character and never a `-`, so a flag body
+    # cannot be re-entered as a new flag; and the body splits into alnum runs
+    # joined by single dashes, which is disjoint from the separator on its first
+    # character. `","` still separates (the python-quoted form), ` --stat` and
+    # `--format=%h` still match.
+    r"(?:[^\w\-]{1,3}--?[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*(?:=[^\s]*)?)*"
+    r"[^\w]{1,8}"
+    r"(HEAD|[0-9a-fA-F]{7,40})(?![0-9a-fA-F~^])"       # the sha it names
+    r"(?::([^\s\"'`,;)]+))?",                          # the path, when it names one
+    re.IGNORECASE,
+)
+
+WHOLE_TREE = ""  # the bucket for a declaration that names no path
+
+# THE REVIEWER READS THE HEAD SIDE WITHOUT NAMING IT (PR #197 round 3, major).
+# This script dispatches the model inside a detached worktree ALREADY at the head
+# sha, so head-side files ARE the working tree: the model opens them with
+# sed/cat/rg and has no reason to write `git show <head>:path` at all. One
+# `git show <base>:path` to quote the pre-fix line then made that path
+# off-head-only and the run refused, wedging the required check on a correct
+# before/after review. So a plain read of a path is a head read.
+#
+# WHY THE DECLARATIONS ARE SCRUBBED FIRST, and not a matter of taste: round 2's
+# off-head reads are written `python3 -c '...subprocess.run(["git","show",
+# "0880859e:fleet-unblock.py"...'`. Measured, not reasoned -- that is the only
+# shape in which the DEFECT fixture mentions its finding path near a read verb.
+# A bare "a read command mentions this path" rule therefore reads the live defect
+# as a head read and passes it. Blanking every declaration BEFORE looking for
+# reads removes the sha-qualified occurrences and leaves only genuine worktree
+# reads (round 3 opens `pathlib.Path("fleet-unblock.py")`, which survives).
+#
+# THE START CLASS AND THE WINDOW BOTH MISSED THE REAL REVIEWER (PR #197 round 5,
+# major 1). Measured on 111 real posted review bodies (PRs 150-197), refusals and
+# not declarations this time: the shipped form refused `pr188-c1` against every
+# candidate head of its own PR. That body reads the head side as
+# `/bin/zsh -lc "sed -n '560,625p' kipi-dispatch.sh"` -- codex wraps EVERY command
+# that way, so the read verb is preceded by `"`, which was not in the start class,
+# and the head-side read was invisible while one `git show <base>:...` made the
+# path off-head-only. A correct before/after review, refused, required check never
+# posted. `"` and `'` are therefore command starts too.
+#
+# The window used to stop at `|`, which truncates `rg -n 'A|B' <path>` before the
+# path. That shape did NOT reproduce as a false refusal on the corpus (`pr191-c0`
+# clears against its own base sha), so it is fixed as a real shape rather than
+# claimed as a measured defect -- an alternation in an rg pattern is ordinary and
+# the truncation is arbitrary. Dropping `|` from the window can only ADD reads,
+# and every read is a head read, so the direction of the change is under-refusal.
+READ_CMD = re.compile(
+    r"(?:^|[$>|;`&\"'])\s*"
+    r"(?:sudo\s+)?(?:sed|cat|rg|grep|egrep|awk|head|tail|nl|less|wc|diff|python3?|node|Read)\b"
+    r"([^\n;`]{0,200})",
+    re.MULTILINE,
+)
+scrubbed = DECLARATION.sub(" ", body)
+
+
+# A QUOTE IS NOT A RUN (PR #197 round 4, major 3). The guard refused the round-4
+# review OF THIS VERY PR, measured: that review cites `git show 0880859e:...` in
+# a sentence about what this diff adds, so the guard read it as having opened
+# that tree and posted nothing at all -- wedging the required check on every
+# review of the files this change ships.
+#
+# The discriminator is MEASURED, not assumed, and the reviewer's own suggestion
+# (exempt blockquotes and fenced diff hunks) does not hold: none of the four
+# declarations in that review is in either. What separates them is markdown
+# INLINE CODE inside prose. The defect payload is a tool transcript -- its reads
+# sit at command position on their own lines (`git show ...`, `/bin/zsh -lc "..."`)
+# or inside fenced blocks, never in backticks mid-sentence. A review that CITES a
+# command writes it the way this comment's neighbours do: `like this`, inside a
+# paragraph. Fenced blocks are NOT exempt: that is where a review shows what it
+# ran.
+#
+# Direction of the error, stated because it is a required check: this is an
+# UNDER-refusal. A review that genuinely ran a command and wrote it inline in
+# prose is no longer caught. That is the cheap direction -- it costs one wrong
+# review, where the false refusal it replaces costs every correct PR in the fleet.
+INLINE_CODE = re.compile(r"`+[^`\n]*`+")
+FENCE = re.compile(r"^\s*```")
+
+
+def quoted_ranges():
+    ranges, offset, in_fence = [], 0, False
+    for line in body.splitlines(keepends=True):
+        if FENCE.match(line):
+            in_fence = not in_fence
+        elif not in_fence:
+            for m in INLINE_CODE.finditer(line):
+                ranges.append((offset + m.start(), offset + m.end()))
+        offset += len(line)
+    return ranges
+
+
+QUOTED = quoted_ranges()
+
+
+def is_quoted(pos):
+    return any(start <= pos < end for start, end in QUOTED)
+
+
+def is_head(sha):
+    # `git show HEAD:path` is the same claim as naming the sha (round 3, major).
+    if sha == "head":
+        return True
+    return head.startswith(sha) or sha.startswith(head)
+
+
+def norm(path):
+    # `<head>:./f.py` and `<base>:f.py` are one path, not two (round 3, minor 3).
+    p = path.strip().strip("`\"'")
+    while p.startswith("./"):
+        p = p[2:]
+    # `\"0880859e:fleet-unblock.py\"` leaves a trailing escape on the path. Same
+    # bucket as the unescaped form, or the re-escaped shape admitted above would
+    # split into a second bucket and be excused on its own (round 4, major 2).
+    return p.rstrip("\\")
+
+
+DOT_SLASH = re.compile(r"(?<![\w])\./")
+
+
+def read_from_worktree(path):
+    # THE EXTRACTION TRAP (PR #197 round 4, major 1). This used to be `path in
+    # window`, a SUBSTRING test -- and the canonical off-head idiom is
+    # `git show <base>:f.py > "$tmp/f.py"` followed by a read of "$tmp/f.py".
+    # That read mentions f.py, so a substring test cleared the very bucket the
+    # extraction had just created: one `sed` line turned a refusal into
+    # kipi/reviewer-approved=success on a tree the review never opened. The read
+    # has to open THAT path, not a copy of it parked somewhere else, so the match
+    # is anchored on a path boundary -- `/` before it means another directory.
+    # `./f.py` is stripped on both sides (declaration in norm(), read here) so
+    # the same path written two ways stays one bucket.
+    pattern = re.compile(r"(?<![\w./-])" + re.escape(path) + r"(?!\w)")
+    return any(
+        pattern.search(DOT_SLASH.sub("", m.group(1)))
+        for m in READ_CMD.finditer(scrubbed)
+    )
+
+
+shas_by_path = {}
+for match in DECLARATION.finditer(body):
+    if is_quoted(match.start()):
+        continue  # cited in a sentence, not run
+    sha = match.group(1).lower()
+    path = norm(match.group(2)) if match.group(2) else WHOLE_TREE
+    shas_by_path.setdefault(path, []).append(sha)
+
+# A PATH THAT IS NOT IN THE TREE UNDER REVIEW CANNOT CARRY A FINDING ABOUT IT
+# (PR #197 round 5, major 2). Round 4 separated a quote from a run by markdown
+# position -- inline code is a citation, a fenced block is a transcript. That
+# held for the round-4 review and broke on the round-5 one, which quotes the
+# same commands inside a fence. Measured, not argued: on the 111-body corpus the
+# shipped guard refuses `pr197-c1` and `pr197-c5` -- its own PR's reviews --
+# against every candidate head, and the wedge gets permanent at merge, because
+# the fixture files this change ships CONTAIN `git show 0880859e:fleet-unblock.py`.
+# Any future review that cats or quotes them refuses.
+#
+# Markdown position was the wrong axis. THE FIRST REPLACEMENT I TRIED WAS ALSO
+# WRONG, and it is recorded here because the measurement that killed it is the
+# reason the real rule is trusted: "is the path in the tree at head" looks right
+# and fails, because `fleet-unblock.py` is a real kipi-system file that exists at
+# BOTH c87245b0 (the defect head) and at this branch's head. Existence cannot
+# separate them.
+#
+#   $ git cat-file -e c87245b0:fleet-unblock.py -> EXISTS
+#   $ git cat-file -e 78d19edc:fleet-unblock.py -> EXISTS
+#
+# What separates them is the PR's own CHANGED-FILE SET. A finding is about code
+# this PR changed; a path outside the diff cannot be the subject of one. PR #165
+# changed fleet-unblock.py -- that review's findings really were about it, so the
+# refusal stands. PR #197 changes the reviewer, the fixtures, the test and the
+# manifest, and merely QUOTES fixture text that names fleet-unblock.py, so the
+# refusal is pure cost. Matching is by BASENAME on purpose: generous matching
+# means fewer exemptions, and every exemption here is a refusal given up.
+#
+# Direction, stated because it gates a required check: UNDER-refusal. A review
+# that genuinely read an off-head copy of a file OUTSIDE the diff is no longer
+# caught -- its findings cannot be actioned against this PR anyway. Unknown is
+# NOT treated as absent: an unreadable or empty list means no exemption and the
+# old behaviour stands, so the guard cannot go inert by losing an argument.
+# THE LIST IS VALIDATED HERE, WHERE EVERY SOURCE PASSES THROUGH. It was first
+# validated in the shell, around the `gh` call only -- and case 21 immediately
+# caught that the KIPI_PR_CHANGED_FILES override went straight past it. A list
+# that is not a path list is worse than no list: it contains none of the review's
+# paths, so it reads as "every path is outside the diff" and exempts EVERYTHING.
+# One malformed line therefore voids the whole list back to unknown, and unknown
+# means no exemption. The guard may under-refuse; it may never go silently off.
+BAD_LINE = re.compile(r"[\s{}\"']|^/")
+CHANGED = set()
+if len(sys.argv) > 3 and sys.argv[3]:
+    try:
+        with open(sys.argv[3], encoding="utf-8", errors="replace") as fh:
+            lines = [line.strip() for line in fh if line.strip()]
+        if lines and not any(BAD_LINE.search(line) for line in lines):
+            CHANGED = {line.rsplit("/", 1)[-1] for line in lines}
+    except OSError:
+        CHANGED = set()
+
+
+def outside_the_diff(path):
+    if not CHANGED or not path:
+        return False  # unknown -> not an exemption
+    return path.rsplit("/", 1)[-1] not in CHANGED
+
+
+for path, shas in shas_by_path.items():
+    if any(is_head(sha) for sha in shas):
+        continue  # opened at the head; a second sha alongside it is a comparison
+    # A whole-tree declaration is NOT excused by a worktree read: `git checkout
+    # <sha>` moves the very worktree the read would be trusting.
+    if path != WHOLE_TREE and read_from_worktree(path):
+        continue
+    if path != WHOLE_TREE and outside_the_diff(path):
+        continue  # not a file this PR changed; no finding can be about it
+    sys.stdout.write(shas[0])
+    break
+ANALYSED_TREE_PY
+}
+
+# The changed-file set the guard uses to tell a finding from a citation. Best
+# effort by design: every failure path leaves the file empty, which the guard
+# reads as "unknown" and therefore as NO exemption -- the pre-round-5 behaviour.
+# An override exists so the test suite can supply a list without a network call.
+CHANGED_FILES="${KIPI_PR_CHANGED_FILES:-}"
+if [ -z "$CHANGED_FILES" ]; then
+  CHANGED_FILES="$(mktemp "${TMPDIR:-/tmp}/kipi-changed.XXXXXX")"
+  RAW_CHANGED="$(mktemp "${TMPDIR:-/tmp}/kipi-changed-raw.XXXXXX")"
+  # THE LIST IS VALIDATED, NOT JUST CAPTURED. Caught by this PR's own case 1: a
+  # `gh` that answers something other than a path list (a stub, an auth prompt, an
+  # error object) yielded a non-empty set that contained none of the review's
+  # paths -- which reads as "every path is outside the diff" and exempts
+  # EVERYTHING, turning the guard off while looking healthy. Silent-off is the one
+  # failure this guard must not have, so a line that is not shaped like a repo
+  # path voids the whole list back to unknown, and unknown means no exemption.
+  if gh pr view "$PR" --repo "$REVIEW_SLUG" --json files \
+       --jq '.files[].path' >"$RAW_CHANGED" 2>/dev/null \
+     && [ -s "$RAW_CHANGED" ] \
+     && ! grep -qE '^\s*$|[[:space:]{}"]|^/' "$RAW_CHANGED"; then
+    cp "$RAW_CHANGED" "$CHANGED_FILES"
+  else
+    : >"$CHANGED_FILES"
+  fi
+  rm -f "$RAW_CHANGED"
+fi
+FOREIGN_TREE="$(analysed_tree_conflict "$REVIEW" "$HEAD_SHA" "$CHANGED_FILES")"
+if [ -n "$FOREIGN_TREE" ]; then
+  # NOTHING IS POSTED -- not the status, not the comment. The findings are of
+  # another commit, so putting them on the PR would spend the author's next round
+  # on line numbers that do not exist in their diff, which is what round 2 did.
+  # The refusal is LOUD and names both shas: the operator has to be able to tell
+  # "not reviewed yet" from "reviewed the wrong thing", and an absent status alone
+  # cannot say which. Non-zero exit, so a caller cannot read this as a pass.
+  echo "REFUSING: the review of PR #$PR read tree ${FOREIGN_TREE} but the status would name ${HEAD_SHA:0:8}." >&2
+  # Says what was SEEN, not what it means. The earlier wording asserted "its
+  # findings are about a different commit" as fact; a text scan cannot know that,
+  # and on a false positive it sends the operator hunting the wrong thing
+  # (PR #197 round 4, major 3).
+  echo "  A command at ${FOREIGN_TREE} opened a path this review never opened at ${HEAD_SHA:0:8}, so its findings may describe another commit." >&2
+  echo "  No commit status and no PR comment posted. Re-run the review; the output is kept at: $REVIEW" >&2
+  exit 1
+fi
+
 # Single writer for verdict state. The worker's rework gate reads THIS record,
 # never the review prose. Keyed by PR number, latest round wins; history stays
 # in the timestamped .md files.
