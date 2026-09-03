@@ -49,7 +49,6 @@ repo against its own skeleton, this one guards the skeleton against all 25.
 import ast
 import collections
 import json
-import os
 import pathlib
 import re
 

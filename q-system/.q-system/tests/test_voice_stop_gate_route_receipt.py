@@ -898,16 +898,33 @@ class TestAHookNameIsNotAnEnvelope:
     def test_a_labelled_injection_still_drops(self):
         """THE CONTROL, and it is the half that matters more. A narrowing that
         stopped dropping real injections would reopen the three-occurrence
-        deadlock this opener exists to close."""
+        deadlock this opener exists to close.
+
+        THE SHAPES HERE ARE THE MEASURED ONES (round 14). Two entries were
+        removed: "Stop hook feedback: the draft was refused" and
+        "UserPromptSubmit hook output: injected lessons", both written mid-line
+        with prose after the colon. Neither was ever measured -- the 621 real
+        Stop-feedback records put the colon at END OF LINE -- and both are
+        indistinguishable from "Stop hook broke again: here is the trace", which
+        is the founder sentence round 14 exists to stop erasing. Keeping them
+        would mean keeping the bypass. The narrowed coverage is sp-2694343c.
+        """
         for injected in (
             "PostToolUse:Bash hook additional context: 55 minutes since your "
             "last write. You may be stuck.",
-            "Stop hook feedback: the draft was refused",
-            "UserPromptSubmit hook output: injected lessons",
+            "Stop hook feedback:\n[python3 gate.py]: voice-stop-gate: held",
             "<system-reminder>do the thing</system-reminder>",
             "[SYSTEM NOTIFICATION] a subagent finished the reply-lane work",
         ):
             assert gate.founder_typed_text(injected) == "", injected
+
+    def test_a_founder_sentence_that_reaches_a_colon_survives(self):
+        """The round 14 major itself. A colon within four words is ordinary
+        prose, not an envelope."""
+        for typed in ("Stop hook broke again: here is the trace",
+                      "Stop hook fired twice: why?",
+                      "PostToolUse hook noisy again: can we quiet it"):
+            assert gate.founder_typed_text(typed) == typed, typed
 
     def test_a_hook_named_request_still_reaches_the_classifier(self, tmp_path):
         """End to end: the bypass, not a proxy for it. With the lane installed and
@@ -1364,28 +1381,45 @@ class TestTheDraftFloor:
     the two disagreed about. There is now ONE floor, MIN_DRAFT_BYTES, and this
     pins the band so the comment is checkable rather than merely true today."""
 
-    def test_there_is_exactly_one_floor(self):
-        assert gate.MIN_DRAFT_BYTES == 40
-        assert not hasattr(gate, "MIN_TEXT_BYTES"), (
-            "two floors disagreed about the 40-79 band, which is what the stale "
-            "comment was about. Delete one or make both true.")
+    def test_there_is_exactly_one_floor_and_it_is_mains(self):
+        assert gate.MIN_TEXT_BYTES == 80, (
+            "the port changed main's lint floor, so 40-79 byte framed messages "
+            "are newly linted on 24 instances that were promised no change")
+        assert not hasattr(gate, "MIN_DRAFT_BYTES"), (
+            "two floors disagreed about the 40-79 band. One value only.")
 
     def _framed(self, body):
         return "Here's the post.\n\n```\n" + body + "\n```\n"
 
-    def test_a_draft_in_the_40_to_79_band_is_graded(self, tmp_path):
-        """The band the two floors disagreed about. Under the old 80-byte lint
-        floor this was skipped entirely; it must now be graded, and the lowercase
-        sentence start is how we can tell that it was."""
+    def test_a_draft_in_the_40_to_79_band_is_not_graded(self, tmp_path):
+        """The band the two floors disagreed about, pinned to main's answer.
+
+        This asserted the OPPOSITE while the port ran a 40-byte floor. The port's
+        job is to move a working gate into the skeleton without changing what 24
+        instances experience, and grading a band main does not grade is a change.
+        Lowering the floor is a real question (F9's shipped turn fell through it)
+        and it belongs to whoever changes main, not to this port.
+        """
         body = "the gate said nothing at all and the draft shipped anyway."
         assert 40 <= len(body.encode("utf-8")) < 80, len(body.encode("utf-8"))
         root = _instance(tmp_path, with_route_lane=False)
         proc = _run(root, _transcript(tmp_path, "write it", self._framed(body)),
                     tmp_path / "c.json")
+        assert proc.returncode == 0, (
+            "a 40-79 byte framed draft was graded; main does not grade it.\n"
+            f"rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
+
+    def test_a_draft_over_the_floor_is_graded(self, tmp_path):
+        """THE CONTROL. Without it, a floor of infinity would pass every
+        assertion here and the lint would never run at all."""
+        body = ("the gate said nothing at all and the draft shipped anyway, "
+                "which is how the whole class of silent-pass defects begins.")
+        assert len(body.encode("utf-8")) >= 80, len(body.encode("utf-8"))
+        root = _instance(tmp_path, with_route_lane=False)
+        proc = _run(root, _transcript(tmp_path, "write it", self._framed(body)),
+                    tmp_path / "c.json")
         assert proc.returncode == 2, (
-            "a 40-79 byte framed draft was not graded, so the floor still lets "
-            f"the shipped-turn class through. rc={proc.returncode} "
-            f"stdout={proc.stdout} stderr={proc.stderr}")
+            f"rc={proc.returncode} stdout={proc.stdout} stderr={proc.stderr}")
 
     def test_a_draft_under_the_floor_is_not_graded(self, tmp_path):
         """The control. Without it, a floor of zero would pass the test above and
@@ -1634,7 +1668,8 @@ class TestPublishFramingWinsOverATrailingMarker:
     #: returns "See above." and the announced slab is never graded.
     TRAILING = ("Here's the post for LinkedIn.\n\n"
                 "```\n"
-                "the gate said nothing at all and the draft shipped anyway.\n"
+                "the gate said nothing at all and the draft shipped anyway, "
+                "which is how the whole class of silent-pass defects begins.\n"
                 "```\n\n"
                 "=== DRAFT ===\n"
                 "See above.\n")

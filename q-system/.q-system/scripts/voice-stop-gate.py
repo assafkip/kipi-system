@@ -126,13 +126,16 @@ _PROSE_FENCE_LANGS = {"", "text", "txt", "md", "markdown", "quote", "draft"}
 
 _QUOTE_RE = re.compile(r"(?m)^>\s?(.*)$")
 
-# A draft has to be big enough to be worth gating, and small enough that the
-# floor cannot swallow a real short post. 40 bytes admits the 21-word X posts in
-# the corpus. This is the ONLY floor in this file: an 80-byte second floor used
-# to disagree with it about the 40-79 band, which is the band the turn that
-# actually shipped fell through (F9). Pinned in both directions by
-# `TestTheDraftFloor`, which also asserts the second floor has not come back.
-MIN_DRAFT_BYTES = 40
+# THE LINT FLOOR, and it is the one main uses (ASK-1197 round 14). The port
+# briefly dropped it to 40, which newly voice-linted 40-79 byte framed messages
+# and could exit 2 on the 24 lane-less instances -- contradicting this PR's own
+# "identical to before the port" claim. A port that changes behaviour on 24
+# instances is not a port. One value, main's value; `TestTheDraftFloor` pins the
+# 40-79 band in both directions so the number cannot drift again.
+#
+# Raising it back is a KNOWN trade: F9's shipped turn fell through this floor,
+# and that stays true on main too. It is not this PR's to change.
+MIN_TEXT_BYTES = 80
 
 
 def extract_publishable(text):
@@ -496,8 +499,28 @@ _INJECTED_OPENER = re.compile(
     # colon. That colon is the machine's punctuation and is what is matched now.
     # Prose about a hook does not carry it. This deliberately does NOT enumerate
     # label words: enumerating carriers is the shape that failed twice above.
+    # STILL TOO WIDE AFTER ROUND 3 (Codex major, ASK-1197 round 14). Requiring a
+    # colon was not enough, because a founder sentence reaches one within four
+    # words: "Stop hook broke again: here is the trace" was erased, so
+    # `find_final_user_text` returned "" and route enforcement was skipped for
+    # that turn. That is the same enforcement bypass round 3 was fixing, one
+    # sentence shape over.
+    #
+    # The machine shape is required in FULL now, in one of the two forms actually
+    # measured (11,156 transcript files, 621 records):
+    #
+    #   (a) the header owns its line -- `Stop hook feedback:` then a newline,
+    #       which is the Stop envelope's shape;
+    #   (b) the event carries a MATCHER -- `PostToolUse:Bash hook additional
+    #       context:` -- which is machine syntax the founder does not type.
+    #
+    # A sentence that merely opens with a hook name and hits a colon mid-line
+    # matches neither. `(?=\n|\Z)` rather than `$` on purpose: this pattern is
+    # not compiled with re.M, and adding it would let `^` match at every line
+    # start, turning an OPENER test into a scan of the whole record.
     r"|(?:PreToolUse|PostToolUse|Stop|SessionStart|UserPromptSubmit)"
-    r"(?::[\w.*-]+)?\s+hook\s+[\w-]+(?:\s+[\w-]+){0,3}:)",
+    r"(?::[\w.*-]+\s+hook\s+[\w-]+(?:\s+[\w-]+){0,3}:"
+    r"|\s+hook\s+[\w-]+(?:\s+[\w-]+){0,3}:[ \t]*(?=\n|\Z)))",
     re.I,
 )
 # A SKILL or SLASH-COMMAND invocation injects its whole BODY as bare markdown
@@ -1574,7 +1597,7 @@ def main():
     request = find_final_user_text(transcript_path)
     # Gate only real drafts; a conversational reply to the founder is not voice-checked.
     draft = extract_publishable(text)
-    if len(draft.encode("utf-8")) < MIN_DRAFT_BYTES:
+    if len(draft.encode("utf-8")) < MIN_TEXT_BYTES:
         # NOT a bare `finish_ok()`, and the difference is the founder's actual
         # workflow. He types "write me a post"; the assistant answers with the
         # post in a fence and no "here's the post" sentence. `_PUBLISH_MARKER_RE`
