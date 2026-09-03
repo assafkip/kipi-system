@@ -3909,4 +3909,108 @@ ok "the reviewer parses (bash -n)"
 bash -n "$LIB" || fail "pr-verdict-lib.sh does not parse"
 ok "the lib parses (bash -n)"
 
+
+# --- ASK-1227 case A: the network-blocked codex run that posted SUCCESS -------
+#
+# VERBATIM tail of the real producer: codex v0.147.0 on PR #78 2026-09-03
+# 12:31 (~/.config/kipi/pr-reviews/codex/assafkip_ASK_AI_consultant__pr-78-20260903-123139.md).
+# `gh` could not reach api.github.com, so codex read NOTHING and said so, then
+# closed a STRUCTURALLY COMPLETE but EMPTY findings block.
+#
+# What the old code did with it, step by step:
+#   extract_verdict      -> ""         ("NOT ISSUED" is not one of the four tokens)
+#   verdict_from_findings -> "APPROVE" (zero severity rows == nothing was wrong)
+#   resolve_verdict "" APPROVE -> "APPROVE"   <-- the empty derivation stood alone
+# and kipi/reviewer-approved went green on a review that had read no diff at all.
+# A worker then merged on it. This is the worst outcome available in this script:
+# absent evidence read as consent.
+cat > "$WORK/notissued.md" <<'EOF'
+Review blocked by the repository fail-stop rule.
+
+- Broken step: `gh -R assafkip/ASK_AI_consultant pr view 78`
+- Output:
+
+```text
+error connecting to api.github.com
+check your internet connection or https://githubstatus.com
+```
+
+- Impact: I could not read the PR diff or earlier review rounds.
+- Required: restore GitHub API access, then rerun this review.
+- VERDICT: NOT ISSUED. No evidence-based verdict is possible.
+
+FINDINGS:
+END FINDINGS
+EOF
+
+[ -z "$(extract_verdict "$WORK/notissued.md")" ] \
+  || fail "'VERDICT: NOT ISSUED' must not parse as a verdict, got '$(extract_verdict "$WORK/notissued.md")'"
+ok "case A: an explicit NOT ISSUED yields no stated verdict"
+
+# The derivation itself is UNCHANGED on purpose. Empty-block-derives-APPROVE is a
+# deliberate contract (a round 2 that refutes every round-1 finding closes with an
+# empty block and must be able to land). Moving the fix into this function would
+# collide with that contract and with test-findings-block-reader.sh case 2.
+[ "$(verdict_from_findings "$WORK/notissued.md")" = "APPROVE" ] \
+  || fail "verdict_from_findings must still derive APPROVE from an empty block (pinned contract)"
+ok "case A: the empty-block derivation is left alone"
+
+# THE FIX, at the composition. "Reviewed and found nothing" and "never started"
+# are byte-identical INSIDE the block, so the empty derivation needs corroboration
+# from OUTSIDE it -- the reviewer's own stated verdict. With none, this is unstated.
+[ -z "$(resolve_verdict "" "APPROVE")" ] \
+  || fail "an empty-block APPROVE with NO stated verdict must resolve to UNSTATED, got '$(resolve_verdict "" "APPROVE")'"
+ok "case A: empty-block APPROVE + no stated verdict => UNSTATED (the false green is closed)"
+
+# NEGATIVE CONTROL for case A. The corroborated shape must still land, or a
+# clean round 2 wedges forever and the fix is worse than the defect.
+[ "$(resolve_verdict "APPROVE" "APPROVE")" = "APPROVE" ] \
+  || fail "a reviewer that STATED approve over an empty block must still land APPROVE"
+ok "case A control: stated APPROVE over an empty block still lands"
+[ "$(resolve_verdict "APPROVE WITH NITS" "APPROVE")" = "APPROVE WITH NITS" ] \
+  || fail "stated APPROVE WITH NITS over an empty block must survive"
+ok "case A control: a corroborated empty block keeps the stated verdict"
+
+# --- ASK-1227 case B: the real 6-minute review scored UNSTATED ----------------
+#
+# VERBATIM slice of the real producer: the --engine claude run on PR #79
+# 2026-09-03 12:49 (~/.config/kipi/pr-reviews/assafkip_ASK_AI_consultant__pr-79-20260903-124901.md),
+# recorded verdict "" / stated "" / source prose / usable false, and posted a
+# FAILURE. It is a substantive review that states its verdict in bold prose and
+# never writes the literal word VERDICT, which is the only thing the old
+# extractor could see. A reviewer that did the work got the same status as one
+# that never ran.
+cat > "$WORK/proseverdict.md" <<'EOF'
+Last gap closed: `test_granola_candidates.py` has zero `SlackTransport` hits (grep exit 1). The background search agrees with what I found directly, `GRANOLA_GENERAL_OVERRIDE` has no consumer anywhere, `REFUSED_CHANNELS` and `SlackTransport` are referenced only in their own module, the tests, and `GRANOLA-APPROVALS.md`, and the only live path is `granola_candidates.py` to `TerminalTransport`. No launchd plist and no `.claude/commands/` entry touches this lane, so the "not headless" claim holds.
+
+That confirms the reachability premise all three findings were already scored against. The review stands as posted: three minor findings, **APPROVE WITH NITS**, fix finding 1 first (`offer_all` should check `cand.lane == transport.lane`).
+EOF
+
+[ "$(extract_verdict "$WORK/proseverdict.md")" = "APPROVE WITH NITS" ] \
+  || fail "a stated bold prose verdict must be read when the review carries no findings block, got '$(extract_verdict "$WORK/proseverdict.md")'"
+ok "case B: a bold prose verdict is read (the false red is closed)"
+
+# NEGATIVE CONTROL for case B, and the reason the fallback demands EMPHASIS.
+# The reviewer PROMPT is echoed into every codex transcript and contains the
+# grading ladder as plain text. Measured across 80 recorded reviews on
+# 2026-09-03: zero carry a BOLD verdict token in their prompt region. A fallback
+# that matched bare tokens would read a verdict out of the prompt's own rules.
+cat > "$WORK/promptecho.md" <<'EOF'
+- **VERDICT:** decided by THIS RULE, not by feel:
+    - any blocker finding             => BLOCK
+    - any major finding               => REQUEST CHANGES
+    - only minor/nit findings         => APPROVE WITH NITS
+    - nothing above nit               => APPROVE
+EOF
+[ -z "$(extract_verdict "$WORK/promptecho.md")" ] \
+  || fail "the prompt's own grading ladder must not be read as a stated verdict, got '$(extract_verdict "$WORK/promptecho.md")'"
+ok "case B control: the echoed prompt ladder yields no verdict"
+
+# A truncated stream is NOT case B and must stay unstated: it ATTEMPTED a block
+# and died inside it. The discriminator is the orphan FINDINGS: marker.
+printf 'Some partial analysis.\n\nFINDINGS:\nmajor|foo.py|1|it broke\n' > "$WORK/truncated.md"
+[ -z "$(verdict_from_findings "$WORK/truncated.md")" ] \
+  || fail "an unclosed findings block must derive nothing, got '$(verdict_from_findings "$WORK/truncated.md")'"
+ok "case B control: a truncated block still derives nothing"
+
 echo "PASS: $PASS/$PASS severity-floor checks"

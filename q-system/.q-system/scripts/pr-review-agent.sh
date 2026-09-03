@@ -1096,11 +1096,18 @@ REVIEWED_BY="$CODEX_MODEL"
 # The record path comes from the ONE resolver (repo-slug-lib.sh), passed in as
 # argv 16 rather than rebuilt in python -- a second place that knows the naming
 # rule is a second writer, which is the defect class this repo keeps finding.
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" "$REVIEWED_BY" "$DEGRADED" "$(verdict_record_write_path "$VERDICT_DIR" "$REVIEW_SLUG" "$PR")" <<'PY'
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" "$REVIEWED_BY" "$DEGRADED" "$(verdict_record_write_path "$VERDICT_DIR" "$REVIEW_SLUG" "$PR")" "${STATUS_CONTEXT:-}" "${PRIMARY_ENGINE:-}" <<'PY'
 import json, sys
 (pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir,
  engine, invoker, usable, reviewed_by, degraded) = sys.argv[1:16]
 out = sys.argv[16]
+# WHICH SLOT THIS RECORD ANSWERED FOR (ASK-1227). Both are `${VAR:-}` at the call
+# site on purpose: test-review-degraded-provenance.sh extracts this writer by awk
+# range and runs it in a BARE SUBSHELL, where an unguarded new variable would trip
+# `set -u`, kill the writer, and make the suite report a broken test instead of
+# the defect it exists to catch.
+status_context = sys.argv[17] if len(sys.argv) > 17 else ""
+primary_engine = sys.argv[18] if len(sys.argv) > 18 else ""
 json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "stated": stated, "derived": derived,
            "source": "findings" if derived else "prose",
@@ -1116,6 +1123,17 @@ json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            # would call every phantom review usable -- the exact inversion this
            # key exists to prevent.
            "usable": usable == "1",
+           # THE SLOT IS NOW PART OF THE RECORD (ASK-1227). Slot placement is a
+           # function of KIPI_REVIEW_PRIMARY_ENGINE, an environment variable, so
+           # two runs of the SAME command line could write two different slots
+           # and nothing in the record said which or why. Measured on PR #79
+           # 2026-09-03: the 12:49 run landed in the primary slot and the 13:15
+           # run in the advisory one, and the records were indistinguishable.
+           # Recording the context the run answered for, and the primary engine
+           # in effect, makes that auditable from the artifact instead of from a
+           # shell history nobody kept.
+           "status_context": status_context,
+           "primary_engine": primary_engine,
            "round": int(rnd), "review": review, "head_sha": head_sha,
            "ts": ts}, open(out, "w"), indent=2)
 PY

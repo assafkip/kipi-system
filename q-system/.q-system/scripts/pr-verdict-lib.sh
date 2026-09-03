@@ -96,6 +96,31 @@ extract_verdict() {
       line = $0
       gsub(/BLOCKERS?/, "", line)
     }
+    # FALLBACK, USED ONLY WHEN NO `VERDICT`-MARKED LINE STATED ONE (ASK-1227).
+    # A reviewer that did the whole job and stated its call in bold prose --
+    # never writing the literal word VERDICT -- used to score identical to one
+    # that never ran. Measured on PR #79 2026-09-03 12:49: a 6-minute review
+    # closing "three minor findings, **APPROVE WITH NITS**" recorded stated ""
+    # and posted a FAILURE.
+    #
+    # EMPHASIS IS THE WHOLE DISCRIMINATOR, and it is not a style preference. The
+    # reviewer prompt is echoed verbatim into every codex transcript and carries
+    # the grading ladder as plain text ("only minor/nit findings => APPROVE WITH
+    # NITS"), so a fallback matching BARE tokens would read a verdict straight
+    # out of that ladder in the prompt. Measured across the 80 recorded reviews on
+    # this machine 2026-09-03: zero carry a BOLD verdict token in their prompt
+    # region, and the one bold hit was the real review above. Widening this to
+    # bare tokens needs a measured review that motivates it.
+    #
+    # LAST ONE WINS, matching findings_block taking the LAST complete block: a
+    # review that weighs "**REQUEST CHANGES**" and settles on "**APPROVE WITH
+    # NITS**" means the one it settled on.
+    {
+      if (line ~ /\*\*APPROVE WITH NITS\*\*/)    bold = "APPROVE WITH NITS"
+      else if (line ~ /\*\*REQUEST CHANGES\*\*/) bold = "REQUEST CHANGES"
+      else if (line ~ /\*\*APPROVE\*\*/)         bold = "APPROVE"
+      else if (line ~ /\*\*BLOCK\*\*/)           bold = "BLOCK"
+    }
     # Under a bare heading the FIRST non-blank line decides, and it decides either
     # way: prose there is not a verdict, it is a heading with no statement under
     # it. Continuing to scan would walk into the next paragraph.
@@ -114,7 +139,10 @@ extract_verdict() {
       # Bare marker: nothing but punctuation/emphasis left on the line.
       if (rest ~ /^[[:space:]*_:#-]*$/) awaiting = 1
     }
-    END { if (found != "") printf "%s", found }
+    END {
+      if (found != "")     printf "%s", found
+      else if (bold != "") printf "%s", bold
+    }
   ' "$f" 2>/dev/null
 }
 
@@ -351,6 +379,30 @@ verdict_rank() {   # verdict_rank <verdict>
 
 resolve_verdict() {   # resolve_verdict <stated> <derived>
   local stated="${1:-}" derived="${2:-}" sr dr
+  # AN EMPTY-BLOCK APPROVE MAY NOT STAND ALONE (ASK-1227). APPROVE is the ONLY
+  # verdict the ladder can derive from a block with zero severity rows, so
+  # derived == APPROVE is exactly the statement "this block was empty" -- and
+  # "reviewed, found nothing" is byte-identical to "never started" INSIDE the
+  # block. has_complete_findings_block says so in its own header and points here
+  # for the fix; this is that fix, and until now it was a comment with no code.
+  #
+  # THE SCAR, 2026-09-03, PR #78. codex could not reach api.github.com, read no
+  # diff at all, and said so in full: "VERDICT: NOT ISSUED. No evidence-based
+  # verdict is possible.", then closed a structurally perfect EMPTY block.
+  # "NOT ISSUED" is not one of the four tokens, so extract_verdict returned
+  # empty, the empty derivation stood alone, kipi/reviewer-approved went green,
+  # and a worker merged on a review that had read nothing.
+  #
+  # So the empty derivation now needs corroboration from OUTSIDE the block: the
+  # reviewer's own stated verdict. An unrecognised stated verdict (rank 9) counts
+  # as none, which is what makes an explicit refusal fail closed rather than read
+  # as silence. Corroborated empty blocks are untouched -- a round 2 that refutes
+  # every round-1 finding states APPROVE and still lands, which the controls in
+  # test-severity-floor.sh pin by name.
+  if [ "$derived" = "APPROVE" ] && [ "$(verdict_rank "$stated")" = "9" ]; then
+    printf ''
+    return 0
+  fi
   [ -n "$derived" ] || { printf '%s' "$stated"; return 0; }
   [ -n "$stated" ]  || { printf '%s' "$derived"; return 0; }
   sr="$(verdict_rank "$stated")"
