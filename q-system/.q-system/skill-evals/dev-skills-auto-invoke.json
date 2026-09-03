@@ -1,0 +1,10 @@
+{"skill":"dev-skills-auto-invoke","fired_marker":["skill-creator","mcp-builder","hook-development","developing-claude-code-plugins","working-with-claude-code","claude-api"],"cases":[
+ {"prompt":"add a new SKILL.md for a changelog-writing skill","should_trigger":true,"fired_marker":"skill-creator"},
+ {"prompt":"write an MCP server that exposes our lead scorer as a tool","should_trigger":true,"fired_marker":"mcp-builder"},
+ {"prompt":"add a PostToolUse hook to settings.json that blocks empty commits","should_trigger":true,"fired_marker":["hook-development","working-with-claude-code"]},
+ {"prompt":"bump the version in plugin.json and publish the marketplace entry","should_trigger":true,"fired_marker":"developing-claude-code-plugins"},
+ {"prompt":"write a python script that calls the anthropic SDK to summarize a file","should_trigger":true,"fired_marker":"claude-api"},
+ {"prompt":"fix the typo in the README headline","should_trigger":false},
+ {"prompt":"draft a LinkedIn post about last week's launch","should_trigger":false},
+ {"prompt":"what did we decide about pricing on the Chris deal","should_trigger":false}
+]}
