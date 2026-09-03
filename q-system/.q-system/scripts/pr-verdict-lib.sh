@@ -81,9 +81,9 @@
 # 1**" after a verdict line made a bare BLOCK match report verdict BLOCK on the
 # real PR #11 round 2 payload.
 extract_verdict() {
-  local f="$1"
+  local f="$1" found
   [ -s "$f" ] || return 0
-  awk '
+  found="$(awk '
     function leading_token(s,   t) {
       sub(/^[[:space:]*_]+/, "", s)
       if (s ~ /^APPROVE WITH NITS/) return "APPROVE WITH NITS"
@@ -95,31 +95,6 @@ extract_verdict() {
     {
       line = $0
       gsub(/BLOCKERS?/, "", line)
-    }
-    # FALLBACK, USED ONLY WHEN NO `VERDICT`-MARKED LINE STATED ONE (ASK-1227).
-    # A reviewer that did the whole job and stated its call in bold prose --
-    # never writing the literal word VERDICT -- used to score identical to one
-    # that never ran. Measured on PR #79 2026-09-03 12:49: a 6-minute review
-    # closing "three minor findings, **APPROVE WITH NITS**" recorded stated ""
-    # and posted a FAILURE.
-    #
-    # EMPHASIS IS THE WHOLE DISCRIMINATOR, and it is not a style preference. The
-    # reviewer prompt is echoed verbatim into every codex transcript and carries
-    # the grading ladder as plain text ("only minor/nit findings => APPROVE WITH
-    # NITS"), so a fallback matching BARE tokens would read a verdict straight
-    # out of that ladder in the prompt. Measured across the 80 recorded reviews on
-    # this machine 2026-09-03: zero carry a BOLD verdict token in their prompt
-    # region, and the one bold hit was the real review above. Widening this to
-    # bare tokens needs a measured review that motivates it.
-    #
-    # LAST ONE WINS, matching findings_block taking the LAST complete block: a
-    # review that weighs "**REQUEST CHANGES**" and settles on "**APPROVE WITH
-    # NITS**" means the one it settled on.
-    {
-      if (line ~ /\*\*APPROVE WITH NITS\*\*/)    bold = "APPROVE WITH NITS"
-      else if (line ~ /\*\*REQUEST CHANGES\*\*/) bold = "REQUEST CHANGES"
-      else if (line ~ /\*\*APPROVE\*\*/)         bold = "APPROVE"
-      else if (line ~ /\*\*BLOCK\*\*/)           bold = "BLOCK"
     }
     # Under a bare heading the FIRST non-blank line decides, and it decides either
     # way: prose there is not a verdict, it is a heading with no statement under
@@ -139,11 +114,63 @@ extract_verdict() {
       # Bare marker: nothing but punctuation/emphasis left on the line.
       if (rest ~ /^[[:space:]*_:#-]*$/) awaiting = 1
     }
-    END {
-      if (found != "")     printf "%s", found
-      else if (bold != "") printf "%s", bold
+    END { if (found != "") printf "%s", found }
+  ' "$f" 2>/dev/null)"
+  # A stated verdict on a VERDICT-marked line always wins. The tail fallback is
+  # strictly a second chance for a review that stated its call and never used the
+  # word, never an override of one that did.
+  if [ -n "$found" ]; then printf '%s' "$found"; return 0; fi
+  _bold_verdict_in_tail "$f"
+}
+
+# _bold_verdict_in_tail <review-file>
+# The FALLBACK reader, used ONLY when no `VERDICT`-marked line stated a verdict.
+#
+# WHY IT EXISTS (ASK-1227). A real six-minute review on PR #79 2026-09-03 12:49
+# closed with "three minor findings, **APPROVE WITH NITS**" and never wrote the
+# literal word VERDICT, the only thing extract_verdict could see. It recorded
+# stated "" and posted a FAILURE: a reviewer that did the whole job scored
+# identically to one that never ran.
+#
+# TAIL-SCOPED, AND THAT SCOPE IS THE FINDING THAT PUT IT HERE. The first cut of
+# this fallback scanned the WHOLE file, and codex called it a major on PR #297:
+# a codex transcript is not a review, it is the agent session INCLUDING every
+# diff and file it read, so an emphasized token in quoted source could fabricate
+# a verdict the reviewer never gave -- and a fabricated BLOCK wedges an
+# unattended gate. review_comment_body already records the measurement this
+# relies on: "the reviewer's actual message is the last ~250 lines."
+#
+# QUOTED LINES ARE EXCLUDED for the same reason: diff markers, blockquotes and
+# fenced or indented code are material the reviewer READ, never its conclusion.
+#
+# EMPHASIS IS THE OTHER HALF. The reviewer prompt is echoed verbatim into every
+# codex transcript carrying the grading ladder as plain text ("only minor/nit
+# findings => APPROVE WITH NITS"), so a bare-token fallback would read a verdict
+# straight out of the prompt. Measured across 80 recorded transcripts: zero carry
+# a BOLD verdict token in their prompt region.
+_bold_verdict_in_tail() {
+  local f="${1:-}"
+  [ -s "$f" ] || return 0
+  tail -n "${KIPI_VERDICT_TAIL_LINES:-250}" "$f" 2>/dev/null | awk '
+    # Fenced code is material the reviewer read, not its own statement.
+    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+    fence { next }
+    # Diff markers, blockquotes, and indented code blocks: all quoted material.
+    /^[[:space:]]*[+>-]/ { next }
+    /^    / { next }
+    {
+      line = $0
+      gsub(/BLOCKERS?/, "", line)
+      # LAST ONE WINS, matching findings_block taking the LAST complete block: a
+      # review that weighs one call and settles on another means the one it
+      # settled on.
+      if (line ~ /\*\*APPROVE WITH NITS\*\*/)    bold = "APPROVE WITH NITS"
+      else if (line ~ /\*\*REQUEST CHANGES\*\*/) bold = "REQUEST CHANGES"
+      else if (line ~ /\*\*APPROVE\*\*/)         bold = "APPROVE"
+      else if (line ~ /\*\*BLOCK\*\*/)           bold = "BLOCK"
     }
-  ' "$f" 2>/dev/null
+    END { if (bold != "") printf "%s", bold }
+  ' 2>/dev/null
 }
 
 # findings_block <review-file>

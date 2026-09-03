@@ -4013,4 +4013,93 @@ printf 'Some partial analysis.\n\nFINDINGS:\nmajor|foo.py|1|it broke\n' > "$WORK
   || fail "an unclosed findings block must derive nothing, got '$(verdict_from_findings "$WORK/truncated.md")'"
 ok "case B control: a truncated block still derives nothing"
 
+# --- ASK-1227 case C: codex major on PR #297 round 1 --------------------------
+#
+# THE FINDING, verbatim: "The bold fallback treats any emphasized verdict token
+# anywhere in the transcript as the reviewer conclusion, so unrelated source text
+# can fabricate a BLOCK and wedge the unattended review gate"
+# (pr-verdict-lib.sh:119). It was right, and the first cut of case B scanned the
+# whole file.
+#
+# WHY IT MATTERS MORE THAN A FALSE APPROVE. A codex review file is not a review,
+# it is the whole agent session INCLUDING every diff and file it read. This very
+# repo is full of emphasized verdict tokens: the reviewer prompt, this test, and
+# the lib comments all contain them. A fabricated BLOCK on an unattended gate
+# wedges the PR with a verdict no reviewer gave.
+#
+# The fixture puts the decoy in the transcript body -- quoted diff, blockquote,
+# and fenced code, which is how read material actually appears -- and the real
+# conclusion in the tail, exactly the layout of a codex transcript.
+{
+  printf 'Reading the diff for PR 900.
+
+'
+  printf '```
+**BLOCK**
+```
+
+'
+  printf '> a quoted earlier round said **REQUEST CHANGES**
+
+'
+  printf -- '+ some_added_line = "**BLOCK**"
+'
+  printf -- '-  removed_line = "**REQUEST CHANGES**"
+
+'
+  printf '    indented_code = "**BLOCK**"
+
+'
+  for i in $(seq 1 400); do printf 'transcript filler line %s
+' "$i"; done
+  printf '
+That is the whole read. **APPROVE WITH NITS**, fix the naming first.
+'
+} > "$WORK/decoy.md"
+
+[ "$(extract_verdict "$WORK/decoy.md")" = "APPROVE WITH NITS" ]   || fail "quoted source in the transcript body fabricated a verdict: got '$(extract_verdict "$WORK/decoy.md")' (expected the tail conclusion APPROVE WITH NITS)"
+ok "case C: quoted diff/fence/blockquote tokens cannot fabricate a verdict"
+
+# The decoys are REALLY THERE. Without this the case above could pass because the
+# fixture never contained them, which is a test that cannot fail.
+grep -q '\*\*BLOCK\*\*' "$WORK/decoy.md"   || fail "the decoy fixture carries no **BLOCK** token, so case C proves nothing"
+ok "case C control: the fixture really does carry decoy verdict tokens"
+
+# And a VERDICT-marked line still outranks the tail fallback.
+printf 'VERDICT: REQUEST CHANGES
+
+closing thought **APPROVE**
+' > "$WORK/marked.md"
+[ "$(extract_verdict "$WORK/marked.md")" = "REQUEST CHANGES" ]   || fail "the tail fallback overrode an explicit VERDICT line, got '$(extract_verdict "$WORK/marked.md")'"
+ok "case C control: an explicit VERDICT line still wins over the fallback"
+
+# THE SHARP HALF of the codex finding: a transcript that states NO verdict of its
+# own, carrying emphasized tokens only in material it READ. Last-one-wins already
+# stops a decoy from beating a real later conclusion, so this is the shape where
+# the exclusion rules are the only thing standing between quoted source and a
+# fabricated verdict on an unattended gate.
+{
+  printf 'I read the following files.
+
+'
+  printf '```
+**BLOCK**
+```
+
+'
+  printf '> earlier round: **REQUEST CHANGES**
+
+'
+  printf -- '+ added = "**APPROVE**"
+'
+  printf '    indented = "**BLOCK**"
+
+'
+  printf 'I ran out of budget before forming a conclusion.
+'
+} > "$WORK/decoy-noverdict.md"
+
+[ -z "$(extract_verdict "$WORK/decoy-noverdict.md")" ]   || fail "a transcript that stated NO verdict got one manufactured from quoted material: got '$(extract_verdict "$WORK/decoy-noverdict.md")'"
+ok "case C sharp: quoted tokens with no stated conclusion yield NO verdict"
+
 echo "PASS: $PASS/$PASS severity-floor checks"
