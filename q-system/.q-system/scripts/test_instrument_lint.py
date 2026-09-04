@@ -86,11 +86,38 @@ PHRASES = [
     "the query returned nothing",
     "zero matches across the tree",
     "no instances found in the second pass",
-    # The next three are verbatim shapes from the case-004 file that held the
+    # The next two are verbatim shapes from the case-004 file that held the
     # misclassification. The first cut of the regex passed that file clean.
     "Zero of 134 ordinary commerce operators run their own redirect",
     "brand queries returned zero QR carriers",
-    "| Obfuscated URL (\"dot com\") | 0 | yes |",
+]
+
+# Values, not claims. Every one of these fired in the first cut and asked a
+# profile-stats table for a negative control (Codex, PR #298).
+NOT_CLAIMS = [
+    "| Following | 0 |",
+    "| Posts | 199 | **0** |",
+    "| errors | 0 |",
+    "Step 0 of 5: seed collection",
+    "attempt 0 of 3",
+    "This should have been Step Zero of the investigation.",
+    "18 of 40 matched.",
+    "A nonexistent path was used.",
+]
+
+# Labels that contain the word but are not a control (Codex, PR #298).
+NOT_CONTROL_LABELS = [
+    "## Access control",
+    "## Command and control (C2)",
+    "- **Quality control:** fine",
+    "# Reachability, controls, and what the seven returned",
+]
+CONTROL_LABELS = [
+    "## Control",
+    "## Negative control",
+    "### Positive control: the row that MUST hit",
+    "**Known-answer case:** EV-0095 returned zero, as it must.",
+    "- **Calibration:** 12 hand-checked rows.",
 ]
 
 
@@ -127,19 +154,42 @@ def main() -> int:
     for phrase in PHRASES:
         check(f"phrase fires: {phrase!r}",
               len(IL.null_claims(f"# F\n\nResult: {phrase}.\n")), 1)
-    check("a plain count is not a null claim",
-          IL.null_claims("# F\n\n18 of 40 matched.\n"), [])
-    check("'nonexistent' does not fire the none-found alternative",
-          IL.null_claims("# F\n\nA nonexistent path was used.\n"), [])
+    for line in NOT_CLAIMS:
+        check(f"value, not claim: {line!r}", IL.null_claims(f"# F\n\n{line}\n"), [])
+    for line in NOT_CONTROL_LABELS:
+        check(f"not a control label: {line!r}",
+              IL.has_control_label(f"# F\n\n{line}\n"), False)
+    for line in CONTROL_LABELS:
+        check(f"control label: {line!r}",
+              IL.has_control_label(f"# F\n\n{line}\n"), True)
+    check("null claim + C2 heading is STILL a violation",
+          bool(IL.violations("f-2026-09-04.md",
+                             NULL_NO_CONTROL + "\n## Command and control (C2)\n")), True)
 
     # --- grandfathering: the corpus that predates the gate --------------------
-    # 16 of 61 in-scope files fleet-wide carry an uncontrolled null-shaped line (2026-09-03).
-    check("pre-cutoff file is grandfathered",
+    # 36 of 246 in-scope files fleet-wide (instance-registry.json) carry an
+    # uncontrolled null-shaped line; 0 remain red after the exemption (2026-09-03).
+    check("pre-cutoff filename is grandfathered",
           IL.is_grandfathered("FINDING-commerce-corpus-2026-09-03.md"), True)
+    check("pre-cutoff DIRECTORY date is grandfathered (premortem layout)",
+          IL.is_grandfathered("/x/output/analyses/premortem-2026-08-13/premortem.md"), True)
     check("on-cutoff file is in scope",
           IL.is_grandfathered(f"x-{IL.CUTOFF}.md"), False)
-    check("undated file is NOT grandfathered (templates are in scope)",
+    check("undated, untracked file is NOT grandfathered (templates are in scope)",
           IL.is_grandfathered("_TEMPLATE.md"), False)
+    with tempfile.TemporaryDirectory() as td:
+        # undated F-NNN name, exempt only through git history
+        repo = Path(td); f = repo / "F-006-phone-lookups.md"; f.write_text("x")
+        env = {"GIT_AUTHOR_DATE": "2026-06-01T00:00:00", "GIT_COMMITTER_DATE": "2026-06-01T00:00:00",
+               "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@t", "PATH": __import__("os").environ["PATH"], "HOME": td}
+        for cmd in (["git", "init", "-q"], ["git", "add", "."], ["git", "commit", "-q", "-m", "old"]):
+            subprocess.run(cmd, cwd=td, env=env, check=True, capture_output=True)
+        check("undated file first seen by git before cutoff is grandfathered",
+              IL.is_grandfathered(str(f), f), True)
+        g = repo / "F-009-new.md"; g.write_text("y")
+        check("undated file git has never seen is NOT grandfathered",
+              IL.is_grandfathered(str(g), g), False)
 
     # --- scope: the first and widest refusal ----------------------------------
     check("findings path in scope",

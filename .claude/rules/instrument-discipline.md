@@ -55,15 +55,19 @@ ships the switch and not only the script. Scope: `**/investigation/findings/*.md
 and `**/output/analyses/**/*.md`; every other path exits 0 on the first check.
 
 It blocks a file that reports a NULL-SHAPED claim (`0 of`, `Zero of`, `none
-found`, `no evidence of`, `returned nothing`, `zero matches`, a bare `0` in a
-table cell) and carries no CONTROL LABEL: a heading or bold label reading
-`Control`, `Negative control`, `Known-answer case` or `Calibration`. A label,
-never bare prose, so the word "control" inside a sentence cannot satisfy it.
+found`, `no evidence of`, `returned nothing`, `zero matches`) and carries no
+CONTROL LABEL: a heading or bold label that STARTS with `Control`, `Negative
+control`, `Known-answer case` or `Calibration`. A label, never bare prose, and
+anchored, so `## Command and control (C2)` does not satisfy it. A zero in a
+table cell is a value, not a claim, and is not matched.
 
-Files whose filename date is before 2026-09-04 are exempt. Measured before it
-shipped: 16 of 61 in-scope files fleet-wide carried an uncontrolled null claim,
-and a gate red on its own population gets switched off. Bypass per file:
-`instrument-lint-skip`. Engine test: `test_instrument_lint.py`.
+A file is exempt when a date anywhere in its path is before 2026-09-04, else
+when git first saw it before that date. Measured over every path in
+`instance-registry.json` before it shipped: 246 in-scope files, 36 with an
+uncontrolled null claim, 0 red after the exemption. The first measurement ran
+over a directory that does not exist and reported zero in-scope files, which
+was read as clean: scar shape 5, committed while building this. Bypass per
+file: `instrument-lint-skip`. Engine test: `test_instrument_lint.py`.
 
 ## What is NOT enforced (say it, do not hide it)
 
@@ -71,9 +75,12 @@ and a gate red on its own population gets switched off. Bypass per file:
   would have caught anything. `**Control:** n/a` passes.
 - Shapes 1, 3 and 4 above are not null-shaped sentences. An unchecked control
   group, an unexercised membership test and a seed-shaped corpus pass this gate
-  untouched. They are judgment, and they get the advisory lane:
-  `q-system/.q-system/skill-evals/instrument-discipline.json`, run on demand by
-  `skill-trigger-eval.py`. A signal, never a pass/fail check.
+  untouched. They are judgment, and today NOTHING measures them: a trigger-eval
+  fixture shipped in the first cut and was removed, because
+  `skill-trigger-eval.py` runs a bare prompt from the repo root and a
+  paths-scoped rule never loads there, so the fixture measured the un-ruled
+  model. Captured as spillover; until the harness can seed a matching path, the
+  judgment half is stated, not measured.
 - A null result reported in chat and never written to a file is invisible to a
   PostToolUse hook, the same blindness `plan-lint.py` states for a plan that was
   skipped.
@@ -100,7 +107,7 @@ believing the aggregate.
     "exec": "q-system/.q-system/scripts/instrument-lint.py",
     "config": ".claude/settings.json",
     "test": "q-system/.q-system/scripts/test_instrument_lint.py",
-    "note": "ENFORCED covers the null-claim label check only (shapes 2 and 5). Shapes 1, 3, 4 are judgment, measured by skill-evals/instrument-discipline.json through skill-trigger-eval.py, advisory and on demand.",
+    "note": "ENFORCED covers the null-claim label check only (shapes 2 and 5). Shapes 1, 3, 4 are judgment with no measurement today: skill-trigger-eval.py cannot load a paths-scoped rule (spillover captured).",
     "directives": 9
   }
 ]

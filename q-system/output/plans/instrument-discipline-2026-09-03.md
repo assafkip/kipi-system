@@ -1,6 +1,6 @@
 # Instrument discipline: evaluation before build
 
-Status: EVALUATION. No code written. Founder redirect point.
+Status: SHIPPED on PR #298 (branch sana/instrument-discipline), 2026-09-03. Round-1 Codex findings applied.
 
 ## What/why
 
@@ -65,10 +65,11 @@ filename grandfathering with precedent.
   label-not-prose rule as plan-lint): `## Control`, `**Control:**`,
   `**Negative control:**`, `**Known-answer case:**`. Label, never bare prose, so
   the word "control" in a sentence cannot satisfy it.
-- Grandfather: filename date before 2026-09-04 is exempt. Measured population:
-  10 of 55 findings/analysis files in Alice carry a null-shaped line; 5 files
-  already carry a control-ish label. Without the cutoff the gate is red on its
-  own population and gets switched off.
+- Grandfather: a date anywhere in the PATH before 2026-09-04, else git first-seen
+  date. Measured over instance-registry.json: 246 in-scope, 36 uncontrolled,
+  0 still red. CORRECTION: the first measurement here ("10 of 55 in Alice") ran
+  the other instances over a path that does not exist and read the zero as
+  clean. Scar shape 5, by me, while building the gate for it.
 - Bypass: `instrument-lint-skip` in the file.
 - HONEST BOUNDARY (in the docstring): checks a control label EXISTS, never that
   the control is real, ran, or would have caught anything. Cannot see a null
@@ -86,9 +87,11 @@ skeleton does not); editing it reaches one instance. So: new
 the principle once, listing the five case-004 shapes and the pdftotext ASK-270
 case beneath it as incidents, naming `instrument-lint.py` as its executable so
 ENFORCED is honest, and stating plainly that shapes 1, 3, 4 are judgment with no
-hook. Fixture `q-system/.q-system/skill-evals/instrument-discipline.json` for the
-judgment half: prompts where the model SHOULD name a control before reporting a
-count. Advisory, on-demand, same posture as the other five fixtures.
+hook. A trigger-eval fixture for the judgment half was built and then REMOVED
+in review round 1: `skill-trigger-eval.py` runs a bare prompt from the repo
+root, a paths-scoped rule never loads there, so the fixture measured the
+un-ruled model. Captured as sp-c4817fa9. The judgment half is stated, not
+measured, and the rule says so.
 
 ## Files to touch
 
@@ -97,30 +100,28 @@ count. Advisory, on-demand, same posture as the other five fixtures.
   trigger phrase, a label-vs-prose case, a grandfather case, an out-of-scope case)
 - `.claude/settings.json` and `settings-template.json` (one PostToolUse entry each)
 - `.claude/rules/instrument-discipline.md` (new)
-- `q-system/.q-system/skill-evals/instrument-discipline.json` (new)
+- `q-system/.q-system/skill-evals/instrument-discipline.json` (built, then removed in round 1; see C)
 - `.prd-os/spillover.jsonl` via `prd_runner.py spillover add` for: (1) Alice missing
   lessons-inject, (2) investigation flow writes no ledger rows, (3) Alice's
   findings-verify-hook.py wired nowhere
 
 ## Acceptance criteria
 
-- [ ] `python3 test_instrument_lint.py` green, and one mutation (delete the
-      null-claim regex) makes it red
-- [ ] Hook fed the real `FINDING-commerce-corpus-2026-09-03.md` under a
+- [x] `python3 test_instrument_lint.py` green (49 checks); 3 mutations on a copy go red
+- [x] Hook fed the real `FINDING-commerce-corpus-2026-09-03.md` under a
       post-cutoff filename exits 2; under its real filename exits 0 (grandfather)
-- [ ] `grep -c instrument-lint .claude/settings.json settings-template.json` = 1 each
-- [ ] settings-template-sync-check passes
+- [x] `grep -c instrument-lint .claude/settings.json settings-template.json` = 1 each
+- [x] settings-template-sync-check passes; enforced-claim-lint PASS
 - [ ] the skeleton dry-run from main shows the script + rule reaching Alice.
       Today it ABORTS: skeleton HEAD is on fix/candidate-draft-one-definition,
       so nothing propagates until this lands on main. PR to main first, then
       dry, then apply.
-- [ ] Three spillover items captured
+- [x] Four spillover items captured (three from the evaluation, one from review: skill-trigger-eval cannot load a paths-scoped rule)
 
 ## Patterns to follow
 
 - `plan-lint.py`: scope-first, label-not-prose, CUTOFF by filename date, three
   stated boundaries, `-skip` marker, stdin JSON, exit 0/2.
-- `skill-trigger-eval.py` fixture shape for the judgment half.
 - `evidence-ledger.md` honest-boundary table convention for the rule text.
 
 ## What NOT to build
@@ -128,5 +129,5 @@ count. Advisory, on-demand, same posture as the other five fixtures.
 - No Stop hook scanning chat for null claims: same cheapest-compliance failure
   lessons-inject's docstring measured (the model stops writing the sentence).
 - No ledger field. No edit to Alice-local rules from the skeleton.
-- Shapes 1, 3, 4 get no hook. They are measured by the on-demand fixture run
-  through `skill-trigger-eval.py`, a signal, never a pass/fail check.
+- Shapes 1, 3, 4 get no hook and, after round 1, no fixture either. Nothing
+  measures them until sp-c4817fa9 gives the harness a way to load a paths-scoped rule.
