@@ -59,24 +59,27 @@
        DST table. The two comments that stood here described the BRIEF's single daily
        slot and were copy-pasted onto an hourly array, which is how the first slot
        below kept the brief's old 07:00 reasoning while the brief itself had moved. -->
-  <!-- Hourly at :05 through the waking day, and the FIRST slot is 07:45 rather than
-       07:05. Codex round 7 (major): the board MIRRORS the consulting state card, which
-       io.askconsulting.ask-crm-state-card writes at 07:30, and `read_heartbeat`
-       withholds a card stamped yesterday. A 07:05 run could therefore only ever see
-       yesterday's: it spent a headless Opus mail call, discarded it, refused the board
-       write and exited 1, which the launchd watchdog reads as a broken hour. Not
-       broken, early, every morning.
+  <!-- Hourly at :05 through the waking day, starting at 08:05. There is NO morning
+       slot before that, and the absence is the decision.
 
-       07:45 and not 07:40: the brief paints the same board at 07:40 and the painter
-       takes an exclusive flock, so sharing the minute would make one of the two refuse
-       with BoardBusy. Five minutes is the gap, not a race.
+       Round 7 (major): the first slot was 07:05, which is before the 07:30 state card
+       this board mirrors. `read_heartbeat` withholds a card stamped yesterday, so the
+       07:05 run could only ever see yesterday's: it spent a headless Opus mail call,
+       discarded it, refused the board write and exited 1, which the launchd watchdog
+       reads as a broken hour. Not broken. Early, every morning.
+
+       That was first fixed by moving the slot to 07:45, and round 9 (minor) charged
+       for the fix: the brief itself paints this same board at 07:40, so 07:45 repeated
+       the whole inbox collection five minutes later and 08:05 did it again twenty
+       minutes after that. The brief covers its own hour. Deleting the slot is what
+       makes the morning read once, and it is cheaper than a plist that has to know
+       what another plist is doing.
 
        WAKING HOURS ONLY: an inbox repainted at 03:00 is a model call and a Notion
        write nobody looks at before morning, and the brief covers the overnight gap.
        `test_no_hourly_slot_fires_before_the_card_it_mirrors` holds the ordering. -->
   <key>StartCalendarInterval</key>
   <array>
-    <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>45</integer></dict>
     <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>5</integer></dict>
     <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
     <dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>5</integer></dict>

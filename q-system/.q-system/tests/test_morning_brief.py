@@ -971,3 +971,35 @@ def test_no_hourly_slot_fires_before_the_card_it_mirrors():
         f"slots {early} fire before the state card exists (the brief waits until "
         f"{after_the_card // 60:02d}:{after_the_card % 60:02d}); each one is a wasted "
         "model call and an exit 1 the watchdog reads as a broken hour")
+
+
+def test_the_deadman_alarm_names_no_clock_time():
+    """Codex round 9 (minor): the alarm said "the 07:00 job did not run" while launchd
+    ran it at 07:40. That was the THIRD copy of the schedule, after CLAUDE.md and a
+    comment in the plist, and it is the copy that reaches the founder.
+
+    The fix is to carry no hour rather than to sync a third one. A number that only
+    has to agree with two other places is a number that eventually will not.
+    """
+    import datetime as dt
+    import importlib.util
+    import json
+    import pathlib
+    import re
+    import tempfile
+    path = (pathlib.Path(__file__).resolve().parents[1] / "scripts"
+            / "morning-brief-deadman.py")
+    spec = importlib.util.spec_from_file_location("deadman", path)
+    deadman = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(deadman)
+
+    # DRIVE the alarm rather than grep its source: the first cut of this test scanned
+    # every double-quoted string and caught the module docstring's narrative, which
+    # says nothing to the founder.
+    with tempfile.TemporaryDirectory() as tmp:
+        receipt = pathlib.Path(tmp) / "receipt.json"
+        receipt.write_text(json.dumps({"date": "2026-09-02", "delivered": True}))
+        ok, reason = deadman.check(dt.datetime(2026, 9, 3, 9, 30), receipt_path=receipt)
+    assert ok is False
+    assert not re.search(r"\b\d{1,2}:\d{2}\b", reason), (
+        f"the alarm names a wall-clock time again: {reason!r}")
