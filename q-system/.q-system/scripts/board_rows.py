@@ -281,6 +281,53 @@ def _live_bucket_of(page) -> str:
     return ((prop.get("select") or {}).get("name") or "").strip()
 
 
+#: Seconds of the budget held back so the read-back that PROVES the paint can run. A
+#: painter that spends its last millisecond on one more write has no way to say whether
+#: the board holds what it thinks, which is the write-only-integration scar.
+WRITE_RESERVE_S = 2.0
+
+
+def _prop_value(prop):
+    """One Notion property flattened to something comparable. Unknown shapes -> None,
+    which never compares equal, so an unrecognised property means "write it" rather
+    than "assume it matches"."""
+    if not isinstance(prop, dict):
+        return None
+    if "title" in prop or "rich_text" in prop:
+        parts = prop.get("title") or prop.get("rich_text") or []
+        out = []
+        for part in parts:
+            if "plain_text" in part:
+                out.append(part["plain_text"])
+            elif isinstance(part.get("text"), dict):
+                out.append(part["text"].get("content", ""))
+        return "".join(out)
+    if "select" in prop:
+        return ((prop.get("select") or {}).get("name") or "") or None
+    if "multi_select" in prop:
+        return tuple(sorted((o.get("name") or "") for o in prop.get("multi_select") or []))
+    return None
+
+
+def _already_holds(page, props) -> bool:
+    """True when the row already carries every value this run would write.
+
+    Round 9 (major): the painter PATCHed every wanted row every run, so a steady
+    morning cost one mutation per row against an API documented at roughly three
+    requests a second. Almost none of those writes changed anything: the detail and the
+    `bucket=`/`pinned=` machinery are the only volatile parts, and on most mornings
+    they are identical to what is already there. Comparing against the page we have
+    ALREADY read costs nothing and removes the mutation entirely.
+
+    Fails toward writing: any property this cannot read back compares unequal.
+    """
+    have = page.get("properties") or {}
+    for name, want in props.items():
+        if _prop_value(have.get(name)) != _prop_value(want):
+            return False
+    return True
+
+
 def _bucket_decision(page, computed: str):
     """(write_bucket, bucket_to_record, pinned) for an EXISTING row.
 
@@ -431,11 +478,28 @@ def paint(buckets: dict, token, db, opener=None, budget=None) -> dict:
         )
 
     have = existing_rows(token, db, opener, budget=budget)
-    created = updated = archived = moved = pinned = 0
+    created = updated = archived = moved = pinned = unchanged = deferred = 0
+    deferred_new = 0
+
+    def out_of_write_budget() -> bool:
+        """Stop issuing NEW mutations while there is still time to prove the paint.
+
+        Round 9 (major): BUDGET_ROWS is per BUCKET, so a full paint could ask for 120
+        sequential mutations inside a 15-second budget it cannot finish. The cap is not
+        raised or replaced by a second invented number -- the real constraint is the
+        clock, so the clock is what stops it. With `_already_holds` above, a steady
+        morning issues a handful of writes, which is what keeps the deferred tail from
+        starving: the next run has almost nothing else to do.
+        """
+        return budget is not None and budget.check() <= WRITE_RESERVE_S
 
     for iid, (item, bucket) in wanted.items():
         page = have.get(iid)
         if page is None:
+            if out_of_write_budget():
+                deferred += 1
+                deferred_new += 1
+                continue
             _request(token, "POST", "/pages",
                      {"parent": {"database_id": db},
                       "properties": _properties(item, bucket, iid, include_bucket=True,
@@ -448,13 +512,19 @@ def paint(buckets: dict, token, db, opener=None, budget=None) -> dict:
             # `_bucket_decision` and the module docstring for how his drag is told from
             # our own stale paint.
             write, record, pin = _bucket_decision(page, bucket)
-            _request(token, "PATCH", f"/pages/{page['id']}",
-                     {"properties": _properties(item, record, iid, include_bucket=write,
-                                                record_bucket=record, pinned=pin)},
+            props = _properties(item, record, iid, include_bucket=write,
+                                record_bucket=record, pinned=pin)
+            pinned += 1 if pin else 0
+            if _already_holds(page, props):
+                unchanged += 1
+                continue
+            if out_of_write_budget():
+                deferred += 1
+                continue
+            _request(token, "PATCH", f"/pages/{page['id']}", {"properties": props},
                      opener, budget)
             updated += 1
             moved += 1 if write else 0
-            pinned += 1 if pin else 0
 
     kept = 0
     for iid, page in have.items():
@@ -463,16 +533,21 @@ def paint(buckets: dict, token, db, opener=None, budget=None) -> dict:
         if _scope_of(page) not in healthy:
             kept += 1                      # its source could not answer; leave it alone
             continue
+        if out_of_write_budget():
+            # An unarchived row is on the board, so it counts as kept for the read-back
+            # or the proof would report a mismatch about a row we deliberately left.
+            kept += 1
+            deferred += 1
+            continue
         _request(token, "PATCH", f"/pages/{page['id']}", {"archived": True}, opener, budget)
         archived += 1
 
     return {"created": created, "updated": updated, "archived": archived,
             "kept": kept, "wanted": len(wanted), "moved": moved, "pinned": pinned,
-            "over_cap": over_cap}
-
-
-def read_back(token, db, opener=None, budget=None) -> int:
-    return len(existing_rows(token, db, opener, budget=budget))
+            "over_cap": over_cap, "unchanged": unchanged, "deferred": deferred,
+            # Rows we WANTED but never created: they are not on the board, so the
+            # read-back must not expect them or a deferred write reads as a mismatch.
+            "deferred_new": deferred_new}
 
 
 def collect(now, sources: dict, opener=None, token_file=None, db_file=None,
@@ -495,6 +570,13 @@ def collect(now, sources: dict, opener=None, token_file=None, db_file=None,
     buckets = consulting_board.buckets(now, sources)
     if buckets.get("error"):
         return [], f"board not written: {buckets['error']}"
+    # A CARD PROBLEM IS NOT A REASON TO WRITE NOTHING (round 9, major). This used to
+    # refuse the whole paint, so a late 07:30 state card also kept Gmail and GroupMe
+    # rows off the board -- sources that answered. The stale scope writes nothing, the
+    # board carries an alarm row saying the book could not be read, and the line below
+    # says it too. Not an `error` return: the job did its work, and an exit code that
+    # calls this hour broken is the wolf-cry that costs the real alert later.
+    card_error = buckets.get("card_error")
     def work(budget):
         # The lock is held INSIDE the budget: a painter that runs out of time also
         # lets go, so the 07:40 job is not refused by a worker the brief abandoned.
@@ -524,7 +606,7 @@ def collect(now, sources: dict, opener=None, token_file=None, db_file=None,
     # board and deliberately not in `wanted`. Round 3 (major): comparing `seen` to
     # `wanted` alone made every quiet source report a false read-back mismatch and mark
     # the whole brief degraded, which would have trained him to ignore the word.
-    expected = counts["wanted"] + counts["kept"]
+    expected = counts["wanted"] + counts["kept"] - counts["deferred_new"]
     if seen != expected:
         # The write-only-integration scar: a PATCH that returns 200 is not proof the
         # board holds what we think. The read-back is the proof.
@@ -532,9 +614,15 @@ def collect(now, sources: dict, opener=None, token_file=None, db_file=None,
                     f"({counts['wanted']} written + {counts['kept']} kept from a quiet "
                     f"source), board shows {seen}")
     line = (f"board: {counts['created']} new, {counts['updated']} refreshed, "
+            f"{counts['unchanged']} unchanged, "
             f"{counts['moved']} rebucketed, {counts['archived']} cleared, "
             f"{counts['kept']} kept (source quiet), {counts['pinned']} yours (untouched), "
             "read-back ok")
     if counts["over_cap"]:
         line += f"; {counts['over_cap']} row(s) over the {BUDGET_ROWS}-row cap, not written"
+    if counts["deferred"]:
+        line += (f"; {counts['deferred']} row(s) deferred to the next run "
+                 "(write budget spent)")
+    if card_error:
+        line = f"board: your book could not be read ({card_error}); " + line[len("board: "):]
     return [line], None

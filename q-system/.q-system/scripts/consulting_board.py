@@ -507,6 +507,10 @@ def collect(now: dt.datetime, sources: dict, paths=None):
 #: design exists to avoid (DEC-8/DEC-13, and the v1 CRM that died of hand-feeding).
 #: So this is a TRANSLATION table, not a scoring rule: his card's dot, in Bloom's
 #: P0-P3 vocabulary.
+#: The scope carrying the "your book could not be read" row. Always healthy, because
+#: this module always knows whether the alarm belongs; see `buckets`.
+CARD_ALARM = "card:alarm"
+
 PRIORITY_BY_HEALTH = {
     "🔴": "P0",    # do today: a promise he made, past due
     "🟠": "P0",    # answer them: a person is waiting on a reply
@@ -549,24 +553,40 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
     and neither one recomputes the other's verdict.
     """
     paths = paths or _paths()
-    beat, beat_err = read_heartbeat(now, paths)
-    if beat_err:
-        return {"error": beat_err, "top_of_mind": [], "this_week": [], "inbox": [],
-                "healthy_scopes": set()}
-
-    card_rows, card_err = read_card(paths)
-    if card_err:
-        return {"error": card_err, "top_of_mind": [], "this_week": [], "inbox": [],
-                "healthy_scopes": set()}
-
-    # Scopes that produced a set worth ARCHIVING AGAINST this run. Declared HERE, above
-    # every producer, because each one adds itself only after it answered cleanly.
-    # "card" is unconditional: a card failure returns early, above this line.
-    healthy = {"card"}
-    my_side, my_side_err = read_my_side(now, paths)
-    by_name = my_side.pop("_by_name", {})
-
+    # Scopes that produced a set worth ARCHIVING AGAINST this run. Each adds itself only
+    # after it answered cleanly. CARD_ALARM is the exception and is always healthy: this
+    # function always reaches a verdict about the card, so it can always decide whether
+    # the alarm row belongs, and a stuck alarm nobody can clear is its own defect.
+    healthy = {CARD_ALARM}
     top, week = [], []
+
+    beat, beat_err = read_heartbeat(now, paths)
+    card_rows, card_err = ([], None) if beat_err else read_card(paths)
+    card_problem = beat_err or card_err
+
+    # A STALE CARD NO LONGER SILENCES THE SOURCES THAT DID ANSWER (round 9, major).
+    #
+    # The rule this is often mistaken for is round 2's, and that one stands: a source
+    # that could not answer writes NOTHING, and its rows are neither refreshed nor
+    # archived. What was wrong was the RADIUS. `collect` refused the whole paint on a
+    # card problem, so a late 07:30 job also stopped Gmail and GroupMe rows -- sources
+    # that answered perfectly well -- from reaching the board.
+    #
+    # And the abort was not even protecting him from stale client rows. Nothing
+    # archives or overwrites them either way, so the board showed yesterday's clients
+    # WITH no fresh mail. Per-scope gives him yesterday's clients, an alarm row saying
+    # so, and today's mail.
+    if card_problem:
+        top.append({"title": "Your book: COULD NOT READ", "key": "card:error",
+                    "detail": card_problem, "source": "State card", "scope": CARD_ALARM,
+                    "priority": "P0", "domain": "Fleet",
+                    "done": "the 07:30 state card writes a fresh one",
+                    "bucket_reason": "error"})
+
+    my_side, my_side_err = ({}, None) if card_problem else read_my_side(now, paths)
+    by_name = my_side.pop("_by_name", {})
+    if not card_problem:
+        healthy.add("card")
 
     for row in card_rows:
         # `key` is what the row id is hashed from and it carries NO health dot.
@@ -611,7 +631,7 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
     # The dates failing is reported ONCE, as its own row, never as a line stapled to
     # every client. A test proves this module still delivers with no registry in the
     # tree at all, and per-row noise would make that delivery look broken.
-    if not my_side_err:
+    if not my_side_err and not card_problem:
         # The apology row below is scoped `myside`, and until round 6 that scope was
         # never healthy, so the row outlived the outage it reported and nothing could
         # clear it. A source that recovered is what authorises clearing its own alarm.
@@ -713,7 +733,12 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
                           "done": DONE_BY_SOURCE.get(label, DONE_DEFAULT),
                           "bucket_reason": "inbox"})
 
-    return {"error": None, "top_of_mind": top, "this_week": week, "inbox": inbox,
+    return {"error": None,
+            # NOT `error`. `error` means the painter must not write at all; a card
+            # problem means one SCOPE has nothing to say. Callers report this, the
+            # board carries the alarm row, and every other scope paints.
+            "card_error": card_problem,
+            "top_of_mind": top, "this_week": week, "inbox": inbox,
             # Which scopes produced a TRUSTWORTHY set this run. The painter archives
             # only inside these; see board_rows.paint. Codex round 2 (major): a
             # transient Gmail error replaced its rows with a single error row, and the

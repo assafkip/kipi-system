@@ -852,15 +852,26 @@ def main(argv=None) -> int:
             os.environ["KIPI_BRIEF_DRY_RUN"] = "1"
         sources = collect_hourly(now)
         for key in ("mail", "groupme", "board_rows"):
-            rows, error = sources.get(key, ([], "never collected"))
+            if key not in sources:
+                # OFF IS NOT BROKEN, and this line said it was (Codex round 7, minor).
+                # `collect_hourly` omits a module that reported itself off -- no
+                # GroupMe token, no Notion token -- which is the default on any fleet
+                # machine, so a healthy run printed two COULD NOT READ lines twelve
+                # times a day. It inverted the empty-versus-broken rule the whole file
+                # is built on, in the one surface an operator actually reads.
+                print(f"[{key}] off (not configured on this machine)")
+                continue
+            rows, error = sources[key]
             if error:
                 print(f"[{key}] COULD NOT READ: {error}")
             else:
                 print(f"[{key}] {len(rows)} row(s)")
         # Exit 1 on a degraded run so launchd column 2 shows it and the fleet
-        # watchdog can see a broken hour without a human reading a log.
-        return 1 if any(sources.get(k, ([], None))[1]
-                        for k in ("mail", "groupme", "board_rows")) else 0
+        # watchdog can see a broken hour without a human reading a log. An OFF
+        # section is not degraded: it is absent from `sources` and contributes
+        # nothing here, which is why this reads the dict rather than a default.
+        return 1 if any(sources[k][1] for k in ("mail", "groupme", "board_rows")
+                        if k in sources) else 0
 
     if args.dry_run:
         # Reaches the optional sections, which can write to places the send flag never

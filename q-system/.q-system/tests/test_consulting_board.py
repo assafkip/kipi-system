@@ -262,9 +262,49 @@ class TestAStaleCardIsAnError:
         _, err = cb.collect(NOW, {}, _tree(tmp_path, card="# TODAY CARD\nno rows here\n"))
         assert "format changed" in err
 
-    def test_and_a_stale_card_writes_no_rows_at_all(self, tmp_path):
+    def test_a_stale_card_writes_no_CLIENT_rows(self, tmp_path):
+        """The round-2 rule, unchanged: a source that could not answer writes nothing,
+        and its rows are neither refreshed nor archived. What changed in round 9 is the
+        RADIUS, not this."""
         b = cb.buckets(NOW, {}, _tree(tmp_path, date="2026-09-02"))
-        assert b["error"] and b["top_of_mind"] == [] and b["this_week"] == []
+        assert not any(r["scope"] == "card" for r in b["top_of_mind"] + b["this_week"])
+        assert not any(r["scope"] == "myside" for r in b["top_of_mind"])
+        assert "card" not in b["healthy_scopes"], "a stale card must not authorise archiving"
+        # The GTM queue is its OWN file and answered. Silencing it because a different
+        # producer is late is the radius mistake this change exists to remove, so this
+        # asserts it keeps working rather than leaving it to chance.
+        assert any(r["scope"] == "gtm" for r in b["top_of_mind"])
+
+    def test_but_it_no_longer_silences_the_inbox(self, tmp_path):
+        """Founder-facing reason this changed: a late 07:30 job used to mean no mail on
+        the board either, from a source that answered perfectly well. The abort was not
+        even protecting him from stale client rows, since nothing archives or
+        overwrites them either way. It cost him today's mail to keep yesterday's
+        clients he was going to see regardless."""
+        b = cb.buckets(NOW, {"mail": ([_brief().Row("a thread", "mail:t1")], None)},
+                       _tree(tmp_path, date="2026-09-02"))
+        assert [r["key"] for r in b["inbox"]] == ["mail:t1"]
+        assert "inbox:Gmail" in b["healthy_scopes"]
+
+    def test_and_the_board_carries_an_alarm_row_that_can_be_cleared(self, tmp_path):
+        """A partial board must never be a silent one. The alarm sits in its own scope
+        which is ALWAYS healthy, so the morning the card comes back the row is archived
+        rather than becoming permanent furniture."""
+        stale = cb.buckets(NOW, {}, _tree(tmp_path, date="2026-09-02"))
+        alarm = [r for r in stale["top_of_mind"] if r["scope"] == cb.CARD_ALARM]
+        assert len(alarm) == 1 and "2026-09-02" in alarm[0]["detail"]
+        assert cb.CARD_ALARM in stale["healthy_scopes"]
+
+        fresh = cb.buckets(NOW, {}, _tree(tmp_path))
+        assert not any(r["scope"] == cb.CARD_ALARM for r in fresh["top_of_mind"])
+        assert cb.CARD_ALARM in fresh["healthy_scopes"]
+
+    def test_the_painter_still_writes_nothing_on_a_real_error(self):
+        """`error` keeps its old meaning and its old teeth. A card problem is not one."""
+        with pytest.raises(ValueError):
+            board_rows.paint({"error": "everything is broken", "top_of_mind": [],
+                              "this_week": [], "inbox": [], "healthy_scopes": set()},
+                             "t", "db", opener=lambda *a, **k: None)
 
 
 class TestTheGtmMoveIsOnlyWhatNeedsHim:
@@ -1146,11 +1186,12 @@ class TestRateLimitedNotionIsRetriedNotAbandoned:
         the brief has moved on. A Retry-After longer than what is left is refused
         rather than slept through."""
         opener = self._opener(fail_on=2, retry_after="60")
-        # 2.0 rather than a fraction of a second: a budget that can expire before the
-        # first request turns this into a load-sensitive coin flip, and a flaky
-        # negative control is worse than none. The clamped wait (5s) is longer than
-        # this budget either way, which is the condition under test.
-        budget = board_rows._Budget(2.0)
+        # Above WRITE_RESERVE_S so a write is actually attempted, and below the
+        # clamped Retry-After (5s) so the wait cannot fit, which is the condition under
+        # test. Not a fraction of a second: a budget that can expire before the first
+        # request turns this into a load-sensitive coin flip, and a flaky negative
+        # control is worse than none.
+        budget = board_rows._Budget(board_rows.WRITE_RESERVE_S + 2.0)
         started = time.monotonic()
         # EITHER refusal is correct: the retry declines because the wait does not fit,
         # or the budget was already spent and the next request refuses. The exception
@@ -1179,3 +1220,143 @@ class TestRateLimitedNotionIsRetriedNotAbandoned:
                 {"top_of_mind": [], "this_week": [], "inbox": self._rows(1),
                  "healthy_scopes": {"inbox:Gmail"}}, "t", "db", opener=opener)
         assert len(calls) <= 1 + board_rows.RATE_LIMIT_RETRIES + 1, calls
+
+
+class TestTheBoardDoesNotRewriteWhatItAlreadyHolds:
+    """Round 9 (major): BUDGET_ROWS is per BUCKET, so a full paint could ask for 120
+    sequential mutations inside a 15-second budget, against an API documented at
+    roughly three requests a second.
+
+    The answer is not a second invented cap. Almost every one of those writes changed
+    nothing, and the page needed to prove that has ALREADY been read.
+    """
+
+    ITEM = {"key": "k1", "title": "t", "detail": "d", "scope": "card",
+            "domain": "Consulting"}
+
+    def _painted_page(self, bucket="Top of Mind"):
+        """A row exactly as this painter would have left it last run."""
+        props = board_rows._properties(self.ITEM, bucket,
+                                       board_rows.item_id("top_of_mind", self.ITEM),
+                                       include_bucket=True, status="Not started")
+        page = {"id": "p1", "properties": dict(props)}
+        page["properties"]["Bucket"] = {"select": {"name": bucket}}
+        return page
+
+    def _paint(self, page, monkeypatch, budget=None):
+        have = {board_rows.item_id("top_of_mind", self.ITEM): page}
+        monkeypatch.setattr(board_rows, "existing_rows", lambda *a, **k: have)
+        calls = []
+        monkeypatch.setattr(
+            board_rows, "_request",
+            lambda token, method, path, body=None, opener=None, budget=None:
+            calls.append(method) or {})
+        counts = board_rows.paint(
+            {"top_of_mind": [dict(self.ITEM)], "this_week": [], "inbox": [],
+             "healthy_scopes": {"card"}}, "t", "db", budget=budget)
+        return counts, calls
+
+    def test_an_unchanged_row_costs_no_request_at_all(self, monkeypatch):
+        counts, calls = self._paint(self._painted_page(), monkeypatch)
+        assert calls == [], f"a row that already holds its values was rewritten: {calls}"
+        assert counts["unchanged"] == 1 and counts["updated"] == 0
+
+    def test_but_a_changed_detail_is_still_written(self, monkeypatch):
+        """The negative control. A skip that never writes is not an optimisation, it is
+        an outage, so the same fixture with one moved value must produce a PATCH."""
+        page = self._painted_page()
+        page["properties"]["Notes"] = {"rich_text": [{"plain_text": "something else"}]}
+        counts, calls = self._paint(page, monkeypatch)
+        assert calls == ["PATCH"] and counts["updated"] == 1
+
+    def test_an_unreadable_property_is_written_not_assumed_to_match(self, monkeypatch):
+        page = self._painted_page()
+        page["properties"]["Domain"] = {"some_new_notion_shape": True}
+        _counts, calls = self._paint(page, monkeypatch)
+        assert calls == ["PATCH"], "an unrecognised property shape was assumed equal"
+
+    def test_a_spent_write_budget_defers_rather_than_running_past_it(self, monkeypatch):
+        page = self._painted_page()
+        page["properties"]["Notes"] = {"rich_text": [{"plain_text": "changed"}]}
+        budget = board_rows._Budget(board_rows.WRITE_RESERVE_S / 2)
+        counts, calls = self._paint(page, monkeypatch, budget=budget)
+        assert calls == [], "it wrote with no time left to prove the write"
+        assert counts["deferred"] == 1
+
+    def test_a_deferred_CREATE_is_not_expected_by_the_read_back(self, tmp_path, monkeypatch):
+        """A row we never created is not on the board. Counting it as expected would
+        report a read-back mismatch about a row we deliberately did not write, which is
+        the false-alarm class round 3 already charged for once."""
+        (tmp_path / "tok").write_text("t")
+        (tmp_path / "db").write_text("db1")
+        monkeypatch.setattr(board_rows, "LOCK_FILE", tmp_path / "board.lock")
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        monkeypatch.delenv("KIPI_BRIEF_DRY_RUN", raising=False)
+        monkeypatch.setattr(board_rows.consulting_board, "buckets", lambda *a, **k: {
+            "error": None, "card_error": None, "top_of_mind": [dict(self.ITEM)],
+            "this_week": [], "inbox": [], "healthy_scopes": {"card"}})
+        monkeypatch.setattr(board_rows, "WRITE_RESERVE_S", 999.0)   # nothing may write
+        rows, err = board_rows.collect(
+            NOW, {}, opener=lambda *a, **k: io.BytesIO(
+                b'{"results": [], "has_more": false}'),
+            token_file=tmp_path / "tok", db_file=tmp_path / "db")
+        assert err is None, err
+        assert "1 row(s) deferred" in rows[0], rows
+
+
+class TestTheAllowlistIsHisChoiceAndFailsCLOSED:
+    """Codex round 7 (minor), twice over. The founder's narrowing -- "I only want you
+    to look in the AI chat channel" -- could be widened by an IO error, and could not
+    name a DM at all."""
+
+    def _tree(self, tmp_path, groups=(), chats=()):
+        import json as _json
+
+        def opener(req, timeout):
+            url = req.full_url.split("?")[0]
+            if url.endswith("/users/me"):
+                return io.BytesIO(_json.dumps({"response": {"user_id": "me"}}).encode())
+            if "/groups/" in url and url.endswith("/messages"):
+                return io.BytesIO(_json.dumps(
+                    {"response": {"messages": [{"user_id": "them"}]}}).encode())
+            body = list(groups) if url.endswith("/groups") else list(chats)
+            return io.BytesIO(_json.dumps({"response": body}).encode())
+        return opener
+
+    def test_an_unreadable_allowlist_refuses_rather_than_widening(self, tmp_path, monkeypatch):
+        path = tmp_path / "groupme-channels"
+        path.write_text("g1\n", encoding="utf-8")
+        path.chmod(0o000)
+        try:
+            monkeypatch.setattr(gm, "CHANNELS_FILE", path)
+            monkeypatch.setattr(gm, "load_token", lambda: "t")
+            monkeypatch.setattr(gm, "waiting",
+                                lambda *a, **k: gm.load_allowlist() and [])
+            rows, err = gm.collect(NOW, {})
+        finally:
+            path.chmod(0o600)
+        assert rows == [] and err, "an unreadable allowlist read as no allowlist"
+        assert "allowlist" in err
+
+    def test_an_ABSENT_allowlist_still_means_no_choice_recorded(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gm, "CHANNELS_FILE", tmp_path / "not-there")
+        assert gm.load_allowlist() is None
+
+    def test_a_DM_he_NAMED_is_carried(self, tmp_path, monkeypatch):
+        """It used to skip /chats entirely whenever an allowlist existed, so a DM peer
+        id in the file matched nothing and the file said nothing about ignoring it."""
+        monkeypatch.setattr(gm, "CHANNELS_FILE", tmp_path / "ch")
+        (tmp_path / "ch").write_text("u77\n", encoding="utf-8")
+        chats = [{"other_user": {"id": "u77", "name": "Dana"},
+                  "last_message": {"user_id": "u77", "created_at": 10 ** 12,
+                                   "text": "hi"}}]
+        rows = gm.waiting(NOW, "t", self._tree(tmp_path, chats=chats))
+        assert [r["id"] for r in rows] == ["u77"], rows
+
+    def test_and_a_DM_he_did_not_name_is_not(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gm, "CHANNELS_FILE", tmp_path / "ch")
+        (tmp_path / "ch").write_text("u77\n", encoding="utf-8")
+        chats = [{"other_user": {"id": "u99", "name": "Someone"},
+                  "last_message": {"user_id": "u99", "created_at": 10 ** 12,
+                                   "text": "hi"}}]
+        assert gm.waiting(NOW, "t", self._tree(tmp_path, chats=chats)) == []

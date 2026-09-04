@@ -531,6 +531,42 @@ _LESSONS = Path(__file__).resolve().parents[3] / "lessons"
 check("cron-shells-claude's lesson slug is a real file",
       (_LESSONS / f"{_by_id['cron-shells-claude']['lesson']}.md").is_file(), True)
 
+# ---------------------------------------------------------------------------
+# launchd-never-installed (PR #296 round 9): a committed template nobody installed
+# is invisible to BOTH the drift detector (it skips a template with no live copy)
+# and the dark-job detector (it walks live copies). The job just never runs.
+# ---------------------------------------------------------------------------
+import tempfile as _tempfile
+
+with _tempfile.TemporaryDirectory() as _tmp:
+    _templates = Path(_tmp) / "scripts"
+    _agents = Path(_tmp) / "LaunchAgents"
+    _templates.mkdir()
+    _agents.mkdir()
+    (_templates / "com.kipi.installed-one.plist").write_text("<plist/>")
+    (_templates / "com.kipi.never-installed.plist").write_text("<plist/>")
+    (_agents / "com.kipi.installed-one.plist").write_text("<plist/>")
+    _found = fh.never_installed_findings(template_dir=_templates, launch_agents=_agents)
+    check("an uninstalled template is reported",
+          [f["subject"] for f in _found], ["com.kipi.never-installed"])
+    check("an installed one is not",
+          any("installed-one" in f["subject"] for f in _found), False)
+    check("the finding names the command that fixes it",
+          "install-plist.sh com.kipi.never-installed" in _found[0]["body"], True)
+    check("and warns against installing from a worktree",
+          "worktree" in _found[0]["body"], True)
+    # The negative control: install it and the finding must disappear, or the
+    # detector is one that can never go green and will nag forever.
+    (_agents / "com.kipi.never-installed.plist").write_text("<plist/>")
+    check("installing it clears the finding",
+          fh.never_installed_findings(template_dir=_templates, launch_agents=_agents), [])
+
+check("launchd-never-installed is registered", "launchd-never-installed" in _by_id, True)
+check("it declares an action",
+      _by_id.get("launchd-never-installed", {}).get("action"), "file_issue")
+check("its lesson slug is a real file",
+      (_LESSONS / f"{_by_id['launchd-never-installed']['lesson']}.md").is_file(), True)
+
 if failures:
     print("FAIL:")
     for line in failures:

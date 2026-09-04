@@ -80,8 +80,18 @@ def load_allowlist(path=None) -> set | None:
     path = Path(path) if path else CHANNELS_FILE
     try:
         raw = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
+    except FileNotFoundError:
+        return None                      # no choice recorded; read everything
+    except OSError as exc:
+        # ABSENT AND UNREADABLE ARE DIFFERENT FACTS, and collapsing them here failed
+        # OPEN (Codex round 7, minor): a permission error on the founder's own
+        # narrowing -- "I only want you to look in the AI chat channel" -- silently
+        # went back to reading every channel and every DM, with no line anywhere. The
+        # same file this module lives beside states the rule twice and implements it:
+        # `except FileNotFoundError: pass` separate from `except OSError`.
+        raise OSError(
+            f"the GroupMe allowlist at {path} exists and cannot be read ({exc}); "
+            "refusing to widen back to every conversation") from exc
     ids = set()
     for line in raw.splitlines():
         line = line.split("#", 1)[0].strip()
@@ -166,12 +176,21 @@ def waiting(now: dt.datetime, token: str, opener=None) -> list[dict]:
     # the scar that reading only /groups once hid three live client DMs; that scar is
     # about a channel nobody CHOSE to exclude. An allowlist is the founder choosing,
     # and a chosen exclusion is not a silent one.
-    chats = [] if allow is not None else (
-        _get("/chats", token, opener, per_page=MAX_CONVERSATIONS) or [])
+    chats = _get("/chats", token, opener, per_page=MAX_CONVERSATIONS) or []
     for c in chats:
         last = c.get("last_message") or {}
         created = last.get("created_at") or c.get("updated_at") or 0
         sender = str(last.get("user_id") or last.get("sender_id") or "")
+        # THE ALLOWLIST SELECTS DMs TOO. It used to skip /chats entirely whenever an
+        # allowlist existed, which made a DM peer id written into the file match
+        # nothing and say nothing (Codex round 7, minor) -- the file gave no signal it
+        # had been ignored. The comment above justified that as "a chosen exclusion is
+        # not a silent one", which was true of the groups he did not list and false of
+        # the DM he DID list. Now the same rule governs both: named is included,
+        # unnamed is excluded, and an empty file still means nothing.
+        peer = str((c.get("other_user") or {}).get("id") or "")
+        if allow is not None and peer not in allow:
+            continue
         if created >= cutoff and sender and sender != me:
             who = (c.get("other_user") or {}).get("name") or "someone"
             out.append({"id": str(c.get("other_user", {}).get("id") or ""),
@@ -205,6 +224,8 @@ def collect(now: dt.datetime, sources: dict, opener=None):
     try:
         rows = waiting(now, token, opener)
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError) as exc:
+        # OSError now also carries an unreadable allowlist, which belongs here: an
+        # error line the founder sees, never a silent widening.
         # Never a silent zero. A GroupMe outage must not read as "nobody messaged you".
         return [], f"GroupMe unreachable: {type(exc).__name__}: {exc}"
     if not rows:

@@ -1003,3 +1003,33 @@ def test_the_deadman_alarm_names_no_clock_time():
     assert ok is False
     assert not re.search(r"\b\d{1,2}:\d{2}\b", reason), (
         f"the alarm names a wall-clock time again: {reason!r}")
+
+
+def test_inbox_only_says_OFF_rather_than_COULD_NOT_READ(brief, capsys, monkeypatch):
+    """Codex round 7 (minor): a module that reported itself OFF is absent from
+    `collect_hourly`, and this loop's default turned that absence into
+    "COULD NOT READ: never collected".
+
+    That is the empty-versus-broken rule inverted, in the one surface an operator
+    reads, on any machine with no GroupMe token and no Notion token -- which is the
+    default -- twelve times a day. A log that cries wolf twelve times a day is a log
+    nobody reads on the morning it is right.
+    """
+    mb = brief
+    monkeypatch.setattr(mb, "collect_hourly", lambda *a, **k: {"mail": ([], None)})
+    rc = mb.main(["--inbox-only"])
+    out = capsys.readouterr().out
+    assert "COULD NOT READ" not in out, out
+    assert "[groupme] off" in out and "[board_rows] off" in out, out
+    assert rc == 0, "an OFF section made a healthy hour report itself broken"
+
+
+def test_but_a_real_failure_still_exits_1(brief, capsys, monkeypatch):
+    """The negative control. If OFF and BROKEN both print quietly, the fix has
+    replaced a false alarm with a missing one."""
+    mb = brief
+    monkeypatch.setattr(mb, "collect_hourly",
+                        lambda *a, **k: {"mail": ([], "gmail down")})
+    rc = mb.main(["--inbox-only"])
+    out = capsys.readouterr().out
+    assert "COULD NOT READ: gmail down" in out and rc == 1
