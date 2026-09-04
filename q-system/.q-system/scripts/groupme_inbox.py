@@ -104,8 +104,16 @@ def load_allowlist(path=None) -> set | None:
     ids = set()
     for line in raw.splitlines():
         line = line.split("#", 1)[0].strip()
-        if line:
-            ids.add(line)
+        if not line:
+            continue
+        # FIRST TOKEN ONLY. The file grew a second column (the client slug) when the
+        # commitment miner needed to know whose chat a promise belonged to, and this
+        # parser kept adding the WHOLE LINE, so the allowlist held
+        # "116326607 acme-corp" and matched no group id. Every group was skipped
+        # and the section rendered "nothing" -- a true-looking zero, live, for hours,
+        # with nothing saying the reader had gone blind. Two readers of one file and
+        # only one of them was taught the new shape.
+        ids.add(line.split()[0])
     return ids
 
 

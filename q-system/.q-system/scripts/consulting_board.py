@@ -480,7 +480,7 @@ def read_week(now: dt.datetime, paths=None) -> tuple[list[dict], str | None, set
                 "source": "State card", "scope": "week:due",
                 "priority": "P0" if left <= 2 else "P1",
                 "domain": "Consulting",
-                "done": "you delivered it, or you moved the date with them",
+                "done": "you deliver it, or you move the date with them",
                 "bucket_reason": "due-this-week"})
         if unreadable_lines:
             errors.append(f"{unreadable_lines} unreadable line(s) in the commitment "
@@ -573,21 +573,21 @@ PRIORITY_BY_HEALTH = {
 }
 
 #: What FINISHING one of these looks like, in his own terms. Bloom's board carries a
-#: "Done signal" on every inbox row and it is the half that makes a row actionable:
+#: a "Done when" line on every row and it is the half that makes one actionable:
 #: a title says what the thing IS, a done signal says when to stop looking at it.
 #: AUDHD rule A2 (next physical action) is the same requirement from the other side.
-DONE_DEFAULT = "you have acted on it"
+DONE_DEFAULT = "you act on it"
 DONE_BY_KIND = {
-    "client": "you sent the thing you promised",
-    "reach": "you sent the message",
+    "client": "you send the thing you promised",
+    "reach": "you send the message",
 }
 #: A GTM step whose plan text carries no "done looks like". Deliberately vague,
 #: because inventing a specific completion test for a step nobody wrote one for would
 #: be this module making up the plan.
-DONE_GTM_FALLBACK = "the step is done or you wrote down why it did not happen"
+DONE_GTM_FALLBACK = "the step is done, or you write down why it did not happen"
 DONE_BY_SOURCE = {
-    "Gmail": "you replied in the thread",
-    "GroupMe": "you answered in the chat",
+    "Gmail": "you reply in the thread",
+    "GroupMe": "you answer in the chat",
 }
 
 #: Size is DELIBERATELY not written. Bloom's board carries XS/S/M and nothing this

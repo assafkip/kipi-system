@@ -255,10 +255,36 @@ newsletters, notifications, receipts, calendar invites, automated senders and
 no-reply addresses. Oldest first: a thread waiting three weeks matters more than
 one waiting an hour.
 Reply with ONE JSON object and nothing else, no prose, no code fence:
-{{"threads": [{{"id": "<the thread id the tool returned>", "from": "email or name", "subject": "...", "age_hours": <int>}}]}}
+{{"threads": [{{"id": "<the thread id the tool returned>", "from": "their email ADDRESS, not their display name", "subject": "...", "age_hours": <int>}}]}}
 `id` is the thread's own id from the tool result, copied verbatim. It is what keeps a
 board row stable while its age changes, so never invent or shorten it.
 If the tool call fails, reply with exactly: {{"error": "<what failed>"}}"""
+
+
+def _chat_days():
+    """{slug: [dates he spoke in that client's chat]}. Empty on any failure, which
+    keeps every thread rather than dropping one on incomplete evidence.
+
+    DAYS, not a last-seen stamp: one message does not show he dealt with what they
+    mailed, and the filter needs to count distinct days to tell the two apart."""
+    out = {}
+    try:
+        answered = _load_sibling("answered_elsewhere", "answered_elsewhere.py")
+        gm = _load_sibling("groupme_inbox", "groupme_inbox.py")
+        token = gm.load_token()
+        if not token:
+            return out
+        for group_id, slug in answered.channel_slugs().items():
+            page = gm._get(f"/groups/{group_id}/messages", token, limit=100) or {}
+            me = str((gm._get("/users/me", token) or {}).get("user_id") or "")
+            days = {dt.datetime.fromtimestamp(m["created_at"], dt.timezone.utc).date()
+                    for m in (page.get("messages") or [])
+                    if str(m.get("user_id")) == me and m.get("created_at")}
+            if days:
+                out[slug] = sorted(days)
+    except Exception:  # noqa: BLE001
+        return {}
+    return out
 
 
 def collect_mail(now: dt.datetime, runner=None):
@@ -270,6 +296,30 @@ def collect_mail(now: dt.datetime, runner=None):
     threads, parse_error = _parse_json_block(text, "threads")
     if parse_error:
         return [], parse_error
+    # ANSWERED SOMEWHERE ELSE. A model reading one thread can only tell you whether
+    # he replied IN it, and he does not always. He answers by starting a new mail, and
+    # for a client whose day happens in a group chat he answers there. Measured
+    # 2026-09-04: one client emailed on 08-05 and he sent 36 chat messages to them
+    # between 08-18 and 09-02; the board called it 717 hours owed. No prompt fixes
+    # that -- the model cannot see the other threads or the chat -- so the decision is
+    # a timestamp comparison over sources already on disk, which is code.
+    try:
+        answered = _load_sibling("answered_elsewhere", "answered_elsewhere.py")
+        before = len(threads)
+        threads, notes = answered.filter_answered(threads, chat_days=_chat_days())
+        # The prefix is NOT "dropped": these notes also carry the keeps and the
+        # "check was inert" lines, and at 3am the only record of this running is this
+        # log. A line saying the check found nothing must not read as a removal.
+        for note in notes:
+            print(f"[mail] {note}")
+        print(f"[mail] answered-elsewhere: {before} candidate(s), "
+              f"{len(threads)} still owed")
+    except Exception as exc:  # noqa: BLE001
+        # Never fatal, and never a silent drop: failing here KEEPS every thread,
+        # because a wrong removal hides work he owes and a wrong keep costs a glance.
+        print(f"[mail] answered-elsewhere check skipped ({type(exc).__name__}); "
+              "every thread kept")
+
     rows = []
     for th in threads:
         if not isinstance(th, dict):

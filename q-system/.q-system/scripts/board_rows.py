@@ -383,7 +383,13 @@ def _properties(item, bucket, iid, include_bucket: bool, *, status=None,
     done = (item.get("done") or "").strip()
     note = ""
     if done:
-        note += f"Done signal: {done}\n"
+        # "Done WHEN", not "Done signal". Founder, 2026-09-04, reading his own board:
+        # *"if it says I'm done why is it showing me the thread?"* Every Gmail row read
+        # "Done signal: you replied in the thread", which is a past-tense sentence about
+        # him, so the row asserted the very thing it was asking for while Status said
+        # Not started. The phrasing came off the reference board and I never read it
+        # back as a sentence. A criterion has to be written as a condition.
+        note += f"Done when: {done}\n"
     note += (item.get("detail") or "")[:1500]
     tail = f"{SCOPE_PREFIX}{item.get('scope') or 'card'}"
     tail += f"\n{BUCKET_PREFIX}{record_bucket if record_bucket is not None else bucket}"
