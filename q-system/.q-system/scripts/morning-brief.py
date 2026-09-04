@@ -234,10 +234,20 @@ class Row(str):
 #: knows which threads are clients. It is not wired here yet: it reads the Notion
 #: ledger live, so it is a cross-repo runtime dependency and its own piece of work.
 MAIL_WINDOW_DAYS = 30
-#: The most inbox rows one sweep may put on the board. A 30-day window over a real
-#: inbox can return a lot; this is a phone-screen limit, not a judgement about which
-#: mail matters.
-MAIL_ROW_CAP = 15
+#: MAIL_ROW_CAP LIVED HERE AND IS DELETED (claude review, 2026-09-04, major).
+#: It trimmed the PRODUCER's rows to 15. Trimmed threads never entered
+#: `buckets["inbox"]`, yet `inbox:Gmail` still reported healthy (every remaining key
+#: was a real thread id), so the painter archived their board rows -- pins included --
+#: inside a healthy scope. An unanswered client thread disappeared off his board, which
+#: is the exact failure this board exists to prevent.
+#:
+#: The cap was also redundant. `_section` already trims DISPLAY to MAX_ROWS and prints
+#: "...and N more", so the Slack message was never going to be 50 lines. One cap for
+#: display, none for data: the brief stays short and the board sees every thread.
+#:
+#: Round 11 fixed this same class inside the painter with its `capped` set, on the
+#: rule that a cap is a write budget and not a statement that the work is finished.
+#: The rule is right; a second cap upstream of the producer routed around it.
 
 MAIL_PROMPT = """Call {tool} to find email threads from the last {days} days where a
 REAL PERSON wrote to the founder and the founder has not replied yet. Exclude
@@ -305,13 +315,6 @@ def collect_mail(now: dt.datetime, runner=None):
             continue
         rows.append(Row(f"{members[0]} ({len(members)} threads, same sender and "
                         "subject)", key))
-    if len(rows) > MAIL_ROW_CAP:
-        # Never a silent trim: the last row says how many are not shown, the same
-        # rule the client section already follows.
-        hidden = len(rows) - MAIL_ROW_CAP
-        rows = rows[:MAIL_ROW_CAP] + [
-            Row(f"...and {hidden} more unanswered in the last {MAIL_WINDOW_DAYS} days",
-                "mail:overflow")]
     return rows, None
 
 

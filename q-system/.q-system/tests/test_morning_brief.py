@@ -1033,3 +1033,43 @@ def test_but_a_real_failure_still_exits_1(brief, capsys, monkeypatch):
     rc = mb.main(["--inbox-only"])
     out = capsys.readouterr().out
     assert "COULD NOT READ: gmail down" in out and rc == 1
+
+
+class TestNoCapUpstreamOfTheBoard:
+    """claude review 2026-09-04, major. A producer-side cap on mail trimmed threads
+    before `buckets()` saw them, so their board rows were archived inside a scope
+    that reported healthy -- an unanswered client thread vanished off his board,
+    pin and all.
+
+    Round 11 fixed this class inside the painter (`capped`: a cap is a write budget,
+    not a statement that the work is finished). A second cap upstream of the producer
+    routed around that rule. Display is capped by `_section`; data is not capped."""
+
+    def test_every_thread_the_model_returns_reaches_the_caller(self, brief):
+        n = 40
+        payload = json.dumps({"threads": [
+            {"id": f"t{i}", "from": f"p{i}@x.com", "subject": f"s{i}", "age_hours": i}
+            for i in range(n)]})
+        rows, error = brief.collect_mail(None, lambda p, t: (payload, None))
+        assert error is None
+        assert len(rows) == n, (
+            f"the producer dropped {n - len(rows)} threads; their board rows would be "
+            "archived inside a healthy scope")
+        assert len({r.key for r in rows}) == n
+
+    def test_no_synthetic_overflow_row_is_minted(self, brief):
+        """An overflow row needs a stable id and a scope. Inventing one puts a row on
+        the board that no thread corresponds to."""
+        payload = json.dumps({"threads": [
+            {"id": f"t{i}", "from": "p@x.com", "subject": "s", "age_hours": 1}
+            for i in range(30)]})
+        rows, _ = brief.collect_mail(None, lambda p, t: (payload, None))
+        assert not any("more unanswered" in str(r) for r in rows)
+        assert all(getattr(r, "key", "").startswith("mail:t") for r in rows)
+
+    def test_the_SECTION_still_caps_what_he_reads(self, brief):
+        """The Slack message stays short. That was the cap's only legitimate job."""
+        rows = [brief.Row(f"line {i}", f"mail:t{i}") for i in range(40)]
+        out = brief._section("Mail", rows, None)
+        assert len(out) == brief.MAX_ROWS + 2, out[:3]
+        assert "and 25 more" in out[-1]
