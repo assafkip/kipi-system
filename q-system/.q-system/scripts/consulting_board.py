@@ -363,6 +363,13 @@ def read_gtm(paths=None) -> tuple[dict | None, str | None]:
 WEEK_DAYS = 7
 
 
+def _norm_key(text) -> str:
+    """A promise reduced to a stable identity fragment: whitespace collapsed, cased
+    down, bounded. Not a hash, so a key stays readable in the Notion row and a human
+    can see which promise it belongs to."""
+    return " ".join(str(text or "").split()).lower()[:80]
+
+
 def read_week(now: dt.datetime, paths=None) -> tuple[list[dict], str | None, set]:
     """This Week: the GTM moves waiting on him, and deliverables coming due.
 
@@ -455,7 +462,20 @@ def read_week(now: dt.datetime, paths=None) -> tuple[list[dict], str | None, set
             left = (due - now.date()).days
             out.append({
                 "title": f"{row.get('slug')}: {str(row.get('promise'))[:120]}",
-                "key": f"due:{row.get('id') or row.get('slug')}",
+                # The commitment's own id when it has one; otherwise the slug AND
+                # the promise, because the slug alone is not an identity. Two open
+                # deliverables for one client with no id both keyed `due:<slug>`,
+                # so the second overwrote the first in `wanted` and the read-back
+                # still reported ok -- it counts what it wrote, and the row was
+                # already gone before the count. Same class as the inbox rows: an
+                # id derived from too little is a collision, and a collision is a
+                # silent deletion.
+                #
+                # `_norm_key` is NOT the rendered line. The detail carries a
+                # countdown in days that changes every morning, and keying on it
+                # would mint a new row daily. The promise text is what is stable.
+                "key": (f"due:{row['id']}" if row.get("id")
+                        else f"due:{row.get('slug')}:{_norm_key(row.get('promise'))}"),
                 "detail": f"due {due.isoformat()} ({left}d)",
                 "source": "State card", "scope": "week:due",
                 "priority": "P0" if left <= 2 else "P1",

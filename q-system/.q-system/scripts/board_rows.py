@@ -453,6 +453,49 @@ class BoardBusy(RuntimeError):
     """A second painter tried to run. Not a failure of this one."""
 
 
+def _fair_share(rows, budget):
+    """`rows` reordered so the write budget is shared across SCOPES, round robin.
+
+    ## Why this exists: the two findings that produced it are opposites
+
+    A producer-side cap on mail was removed because trimming DATA meant a still
+    unanswered thread never entered `wanted`, and the archive loop then deleted its
+    live page inside a healthy scope -- a dragged, pinned row gone because a
+    sixteenth thread arrived.
+
+    Uncapped mail then took the whole 40-row budget in source order, so every
+    GroupMe row fell past it. Those rows are protected from archiving by `capped`,
+    which is round 11's rule working, but protected is not updated: they sit on his
+    board unchanged forever while the source that starved them refreshes daily. A
+    channel he asked for, permanently frozen, with nothing saying so.
+
+    Capping the producer brings back defect one. Not capping it is defect two. So
+    neither is the answer: what was wrong is that a single source could spend the
+    whole budget. Each scope now takes one row in turn, so a busy inbox delays the
+    tail of its OWN source rather than deleting another source's channel.
+
+    Order within a scope is preserved (the mail prompt sorts oldest first, and that
+    ordering is a judgement this function must not re-make). Rows past the budget
+    still land in `capped` at the call site and are kept, never archived.
+    """
+    by_scope, order = {}, []
+    for item in rows:
+        scope = item.get("scope") or "card"
+        if scope not in by_scope:
+            by_scope[scope] = []
+            order.append(scope)
+        by_scope[scope].append(item)
+    if len(order) < 2:
+        return list(rows)          # one source cannot starve anybody
+    out = []
+    while len(out) < len(rows):
+        for scope in order:
+            queue = by_scope[scope]
+            if queue:
+                out.append(queue.pop(0))
+    return out
+
+
 def paint(buckets: dict, token, db, opener=None, budget=None) -> dict:
     """Create, refresh and archive. Returns a counts dict. Never moves a row."""
     if buckets.get("error"):
@@ -468,7 +511,7 @@ def paint(buckets: dict, token, db, opener=None, budget=None) -> dict:
         # beside the other counts. Not an overflow ROW: a synthetic row needs a stable
         # id and a scope, and inventing a scope the painter itself declares healthy
         # would make it a writer of the archive authority it consumes.
-        rows_here = buckets.get(key) or []
+        rows_here = _fair_share(buckets.get(key) or [], BUDGET_ROWS)
         over_cap += max(0, len(rows_here) - BUDGET_ROWS)
         for item in rows_here[BUDGET_ROWS:]:
             # A CAPPED ROW IS NOT AN ABSENT ROW (round 11, major). Trimmed rows never

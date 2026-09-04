@@ -1573,3 +1573,101 @@ class TestRound13:
     def test_but_a_card_with_rows_still_authorises_it(self, tmp_path):
         b = cb.buckets(NOW, {}, _tree(tmp_path))
         assert "card" in b["healthy_scopes"]
+
+
+class TestNoSourceStarvesAnother:
+    """claude review 2026-09-04, major, and it is the OPPOSITE of the finding before
+    it. Capping mail at the producer deleted rows; not capping it let mail take the
+    whole 40-row write budget in source order, so every GroupMe row fell past it and
+    sat frozen on his board forever. `capped` protects them from archiving, which is
+    round 11 working, but protected is not updated."""
+
+    def test_a_busy_source_cannot_push_another_source_off_the_budget(self):
+        rows = ([{"scope": "inbox:Gmail", "key": f"mail:{i}"} for i in range(60)]
+                + [{"scope": "inbox:GroupMe", "key": f"gm:{i}"} for i in range(3)])
+        head = board_rows._fair_share(rows, 40)[:40]
+        assert any(r["scope"] == "inbox:GroupMe" for r in head), (
+            "every GroupMe row fell past the write budget and freezes on the board")
+
+    def test_order_WITHIN_a_source_is_never_re_made(self):
+        """The mail prompt sorts oldest first. That ordering is a judgement this
+        function must not second-guess."""
+        rows = [{"scope": "inbox:Gmail", "key": f"mail:{i}"} for i in range(5)]
+        rows += [{"scope": "inbox:GroupMe", "key": f"gm:{i}"} for i in range(5)]
+        out = board_rows._fair_share(rows, 40)
+        mail = [r["key"] for r in out if r["scope"] == "inbox:Gmail"]
+        assert mail == [f"mail:{i}" for i in range(5)]
+
+    def test_one_source_alone_is_left_exactly_as_it_came(self):
+        rows = [{"scope": "card", "key": f"c:{i}"} for i in range(5)]
+        assert board_rows._fair_share(rows, 40) == rows
+
+    def test_PAINT_ITSELF_shares_the_budget(self, monkeypatch):
+        """Drives paint(), not the helper. The first version of these tests called
+        `_fair_share` directly, so BYPASSING IT AT THE CALL SITE broke nothing and
+        the mutant survived: a helper with no wiring test is an undefended helper.
+        This one fails if paint stops calling it."""
+        created = []
+        monkeypatch.setattr(board_rows, "existing_rows", lambda *a, **k: {})
+        monkeypatch.setattr(
+            board_rows, "_request",
+            lambda token, method, path, body=None, opener=None, budget=None:
+            created.append(((body or {}).get("properties") or {})) or {"id": "x"})
+        buckets = {"top_of_mind": [], "this_week": [],
+                   "inbox": ([{"title": f"m{i}", "key": f"mail:{i}", "detail": "",
+                               "scope": "inbox:Gmail"} for i in range(60)]
+                             + [{"title": f"g{i}", "key": f"gm:{i}", "detail": "",
+                                 "scope": "inbox:GroupMe"} for i in range(3)]),
+                   "healthy_scopes": {"inbox:Gmail", "inbox:GroupMe"}}
+        board_rows.paint(buckets, "t", "db")
+        titles = ["".join(t["text"]["content"] for t in (props.get("Task") or {}).get("title", []))
+                  for props in created]
+        assert any(t.startswith("g") for t in titles), (
+            "paint wrote 40 mail rows and no GroupMe row; the channel freezes")
+
+    def test_nothing_is_lost_or_duplicated_by_the_reordering(self):
+        rows = ([{"scope": "a", "key": f"a{i}"} for i in range(7)]
+                + [{"scope": "b", "key": f"b{i}"} for i in range(2)]
+                + [{"scope": "c", "key": f"c{i}"} for i in range(11)])
+        out = board_rows._fair_share(rows, 40)
+        assert sorted(r["key"] for r in out) == sorted(r["key"] for r in rows)
+
+
+class TestTwoDeliverablesAreTwoRows:
+    """claude review 2026-09-04, minor. Two open commitments for one client with no
+    id both keyed `due:<slug>`, so the second overwrote the first in `wanted` and the
+    read-back still said ok -- it counts what it wrote, and the row was gone before
+    the count. A key derived from too little is a collision, and a collision is a
+    silent deletion."""
+
+    def test_two_id_less_deliverables_for_one_client_stay_two_rows(self, tmp_path):
+        due = (NOW.date() + dt.timedelta(days=3)).isoformat()
+        paths = _tree(tmp_path, commitments="\n".join([
+            json.dumps({"slug": "acme", "state": "open", "due": due,
+                        "promise": "send the audit"}),
+            json.dumps({"slug": "acme", "state": "open", "due": due,
+                        "promise": "send the invoice"}),
+        ]), clients={"clients": []})
+        rows = cb.read_week(NOW, paths)[0]
+        keys = [r["key"] for r in rows if r["key"].startswith("due:")]
+        assert len(keys) == 2, "one deliverable was silently dropped"
+        assert len(set(keys)) == 2, f"both deliverables share one key: {keys}"
+
+    def test_the_key_does_not_move_when_the_countdown_does(self, tmp_path):
+        """The detail carries days-remaining, which changes every morning. Keying on
+        the rendered line would mint a new row daily."""
+        def key_on(days):
+            due = (NOW.date() + dt.timedelta(days=days)).isoformat()
+            paths = _tree(tmp_path, commitments=json.dumps(
+                {"slug": "acme", "state": "open", "due": due,
+                 "promise": "send the audit"}), clients={"clients": []})
+            return [r["key"] for r in cb.read_week(NOW, paths)[0]
+                    if r["key"].startswith("due:")][0]
+        assert key_on(2) == key_on(5)
+
+    def test_a_real_commitment_id_still_wins(self, tmp_path):
+        due = (NOW.date() + dt.timedelta(days=3)).isoformat()
+        paths = _tree(tmp_path, commitments=json.dumps(
+            {"id": "c1", "slug": "acme", "state": "open", "due": due,
+             "promise": "send the audit"}), clients={"clients": []})
+        assert any(r["key"] == "due:c1" for r in cb.read_week(NOW, paths)[0])
