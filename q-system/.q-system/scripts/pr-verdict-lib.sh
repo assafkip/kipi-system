@@ -98,59 +98,43 @@ _verdict_source() {
 # ~/.config/kipi/pr-reviews: this filter changes the extracted verdict on none of
 # them, while flipping every reproducer above.
 #
-# THE FENCE RULE APPLIES ONLY WHEN ITS STATE IS WELL-FORMED (ASK-1227 round 5,
-# first major). Fence parity is the ONLY rule here that carries state between
-# lines; every other rule decides a line on its own bytes. That makes it the only
-# one an upstream oddity can knock out of phase, and an out-of-phase parity does
-# not degrade, it INVERTS: every line after the stray fence is judged backwards.
+# FENCE PARITY STAYS ON, AND ITS COST IS STATED (ASK-1227 rounds 5 and 6). Parity
+# is the only rule here that carries state between lines, so a stray line that
+# merely LOOKS like a fence (a `~~~~~~~~^^^^^` compiler squiggle in tool output)
+# puts it out of phase, and an out-of-phase parity does not degrade, it INVERTS.
 #
-# It landed both ways on real records:
+# Round 6 measured what happens if the rule stands down on an unbalanced region.
+# The fenced content becomes visible, and a fenced `VERDICT: BLOCK` is
+# statement-shaped with a leading marker, so it reads as the reviewer's own
+# conclusion and outranks a later approval: a fabricated BLOCK wedging an
+# unattended gate, which is the expensive direction. The round-6 reviewer found it
+# with an executed reproducer, on this branch, an hour after the stand-down landed.
+# The stand-down was reverted rather than patched; this comment is what is left of
+# it, so the next person does not re-derive it.
 #
-#   pr-190  23 lines match this pattern, an ODD count, so parity leaves the
-#           closing `**VERDICT: APPROVE**` inside a phantom fence -> read as
-#           quoted, verdict lost, and a required status stuck red on an approval.
-#   pr-159  17 matches in the last 250 lines, so the SAME closing verdict is
-#           visible whole-file and hidden window-scoped.
+# So parity stays unconditional and the REGION is what got fixed instead. Both
+# prose readers now read the same bounded answer (see _reviewer_prose_of), and on
+# that region parity behaves: the real pr-190 record, which the whole-file reader
+# resolved to nothing, carries 4 fence lines in its answer window and reads its
+# stated APPROVE.
 #
-# Most of those lines are not fences at all. They are compiler and shellcheck
-# squiggles (`~~~~~~~~^^^^^^`) in tool output that merely START with three tildes,
-# and no tightening of the pattern fixes the class -- an agent session can quote
-# anything, including half of a fenced block.
-#
-# So the rule states its own precondition instead of assuming it. An EVEN number
-# of fence lines in the region means the fences close and parity is sound, so it
-# is tracked. An ODD number is proof the region is not fence-balanced, parity
-# would be a coin flip, and the rule stands down to the stateless filters, which
-# cannot be inverted by anything upstream.
-#
-# WHY STANDING DOWN IS THE SAFE SIDE. On an unbalanced region a fenced decoy token
-# does become visible. It cannot manufacture a verdict on its own: extract_verdict
-# needs a statement-shaped line whose marker LEADS, and the tail fallback takes the
-# LAST bold token, which is the reviewer's own conclusion because a review answers
-# after the material it read. Measured over all 991 recorded transcripts, no
-# resolved verdict moves toward approval. The inverted-parity bug, by contrast,
-# silently destroyed the verdict on 8 of them.
-#
-# TWO PASSES, because the count has to be known before the first line is judged.
-# The region is a bounded window or one final message, so buffering it is cheap.
+# THE HONEST COST, MEASURED, NOT ASSUMED. On 30 of the 991 recorded transcripts
+# the answer window is fence-UNbalanced, phase inverts, and the reviewer's stated
+# verdict is dropped. That is a real loss, and it is the safe direction twice
+# over: every one of those 30 carries a non-empty, non-APPROVE derived verdict, so
+# no resolved verdict moves, and an unstated verdict HOLDS a PR where a fabricated
+# one releases or wedges it. Do NOT read this filter as sound on a session file.
+# It is not. The sidecar is the fix; this is only the floor under legacy records.
 _reviewer_prose() {
   awk '
-    { buf[NR] = $0; if ($0 ~ /^[[:space:]]*(```|~~~)/) nfence++ }
-    END {
-      # Odd => the region is not fence-balanced => parity is meaningless here.
-      tracked = (nfence % 2 == 0)
-      for (i = 1; i <= NR; i++) {
-        line = buf[i]
-        if (tracked && line ~ /^[[:space:]]*(```|~~~)/) { fence = !fence; continue }
-        if (tracked && fence)             continue
-        if (line ~ /^[[:space:]]*[+>-]/)  continue
-        # Indented code is four spaces or one tab; a diff CONTEXT line is one space.
-        if (line ~ /^(    |\t| )/)        continue
-        # A pipe means a row or a table. Neither is a sentence.
-        if (line ~ /[|]/)                 continue
-        print line
-      }
-    }
+    /^[[:space:]]*(```|~~~)/   { fence = !fence; next }
+    fence                      { next }
+    /^[[:space:]]*[+>-]/       { next }
+    # Indented code is four spaces or one tab; a diff CONTEXT line is one space.
+    /^(    |\t| )/             { next }
+    # A pipe means a row or a table. Neither is a sentence.
+    /[|]/                      { next }
+    { print }
   ' 2>/dev/null
 }
 

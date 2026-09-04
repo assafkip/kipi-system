@@ -4234,11 +4234,16 @@ FENCEN="$(awk '/^[[:space:]]*(```|~~~)/ { n++ } END { print n+0 }' "$WORK/squigg
   || fail "case F fixture has $FENCEN fence-matching lines (even), so parity never flips and the case proves nothing"
 ok "case F control: the fixture really carries an odd number of fence-matching lines"
 
-[ "$(extract_verdict "$WORK/squiggle.md")" = "APPROVE" ] \
-  || fail "an unmatched fence hid the closing verdict: got '$(extract_verdict "$WORK/squiggle.md")' (expected APPROVE)"
-[ "$(resolve_verdict "$(extract_verdict "$WORK/squiggle.md")" "$(verdict_from_findings "$WORK/squiggle.md")")" = "APPROVE" ] \
-  || fail "case F: an approving review with an empty block must resolve APPROVE, got '$(resolve_verdict "$(extract_verdict "$WORK/squiggle.md")" "$(verdict_from_findings "$WORK/squiggle.md")")'"
-ok "case F: a squiggle line that merely starts with ~~~ cannot hide the verdict"
+# ON AN UNBALANCED WINDOW THE VERDICT IS LOST, AND THAT IS THE ACCEPTED COST.
+# Round 6 tried making the fence rule stand down when the count is odd, so this
+# fixture would read APPROVE. It did read APPROVE, and it also made a FENCED
+# `VERDICT: BLOCK` visible, which is statement-shaped and outranks a later
+# approval -- case I below is that reproducer. Losing a stated verdict holds a PR;
+# fabricating one wedges it. So the loss stands and the test says so out loud
+# rather than pinning a behaviour the lib does not have.
+[ -z "$(resolve_verdict "$(extract_verdict "$WORK/squiggle.md")" "$(verdict_from_findings "$WORK/squiggle.md")")" ] \
+  || fail "case F: an unbalanced window must resolve UNSTATED (hold), never a manufactured verdict, got '$(resolve_verdict "$(extract_verdict "$WORK/squiggle.md")" "$(verdict_from_findings "$WORK/squiggle.md")")'"
+ok "case F: an unbalanced answer window holds the PR instead of manufacturing a verdict"
 
 # THE REAL ARTIFACT, when this machine still has it. Operator-local, so its absence
 # is announced rather than silently skipped -- the synthetic fixture above is what
@@ -4327,5 +4332,39 @@ printf '**VERDICT:** BLOCK\n'            > "$WORK/lead4.md"
 [ "$(extract_verdict "$WORK/lead3.md")" = "APPROVE WITH NITS" ]    || fail "case H: bare marker shape lost, got '$(extract_verdict "$WORK/lead3.md")'"
 [ "$(extract_verdict "$WORK/lead4.md")" = "BLOCK" ]                || fail "case H: bold-colon marker shape lost, got '$(extract_verdict "$WORK/lead4.md")'"
 ok "case H control: every real marker shape in the corpus still reads"
+
+# --- case I: a fenced verdict must never outrank a later approval (round 6) -----
+#
+# THE ROUND-6 REVIEWER'S EXACT FIXTURE, and it demonstrated the defect on this
+# branch: a fenced `VERDICT: BLOCK` beside a `~~~~~~~~^^^^` compiler diagnostic,
+# which makes the fence count ODD, then a real closing `**APPROVE WITH NITS**`.
+# Under the fence stand-down the fenced token became visible, parsed as a stated
+# BLOCK, and outranked the approval -- a phantom rejection on an unattended gate.
+# Reproduced 2026-09-03, `stated=<BLOCK> ... resolved=<BLOCK>`; the stand-down was
+# reverted, and this pins that it stays reverted.
+{
+  printf 'Review evidence:\n\n'
+  printf '```text\n'
+  printf 'VERDICT: BLOCK\n'
+  printf '~~~~~~~~^^^^ compiler diagnostic\n'
+  printf '```\n\n'
+  printf 'Nothing gates. **APPROVE WITH NITS**\n\n'
+  printf 'FINDINGS:\nminor|bounded wording issue|demo.sh:1\nEND FINDINGS\n'
+} > "$WORK/fenced-block.md"
+
+# The trap is REALLY THERE: the fenced BLOCK and the odd fence count both.
+grep -q '^VERDICT: BLOCK' "$WORK/fenced-block.md" \
+  || fail "case I fixture carries no fenced VERDICT: BLOCK, so it proves nothing"
+FENCEI="$(awk '/^[[:space:]]*(```|~~~)/ { n++ } END { print n+0 }' "$WORK/fenced-block.md")"
+[ "$((FENCEI % 2))" = "1" ] \
+  || fail "case I fixture has $FENCEI fence-matching lines (even); the defect needed an ODD count, so it proves nothing"
+ok "case I control: the fixture really pairs a fenced BLOCK with an odd fence count"
+
+RESI="$(resolve_verdict "$(extract_verdict "$WORK/fenced-block.md")" "$(verdict_from_findings "$WORK/fenced-block.md")")"
+[ "$RESI" != "BLOCK" ] \
+  || fail "case I: a FENCED verdict token fabricated a BLOCK over the reviewer's approval (got '$RESI')"
+[ "$RESI" = "APPROVE WITH NITS" ] \
+  || fail "case I: expected the minor-derived APPROVE WITH NITS to stand, got '$RESI'"
+ok "case I: a fenced VERDICT: BLOCK cannot outrank a later approving conclusion"
 
 echo "PASS: $PASS/$PASS severity-floor checks"
