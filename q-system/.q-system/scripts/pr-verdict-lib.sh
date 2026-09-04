@@ -12,35 +12,62 @@
 # The worker only falls back to re-extracting from the review .md for PRs
 # reviewed before the record existed.
 
-# _strip_quoted_material
-# stdin -> stdout, dropping every line that is material the reviewer READ rather
-# than prose the reviewer WROTE: fenced blocks, diff +/- lines, blockquotes, and
-# 4-space-indented code.
+# _reviewer_prose
+# stdin -> stdout, emitting ONLY lines that can be the reviewer's own prose
+# conclusion. Everything else is dropped.
 #
-# ONE FILTER, TWO CALLERS (ASK-1227 round 2). A `codex exec` stream is not a
-# review, it is the whole agent session, so it replays the PR diff and every file
-# the agent opened. A verdict token inside that material was written by the author
-# under review, never by the reviewer. This shipped on the tail fallback alone and
-# left the primary reader matching inside quoted diff lines; see extract_verdict's
-# header for the reproducer that found it.
+# AN ALLOWLIST, BECAUSE THE DENYLIST LOST THREE ROUNDS RUNNING (ASK-1227). One
+# `codex exec` stream is the whole agent session, and a verdict token can appear in
+# it for many reasons that are not the reviewer concluding anything. Each round we
+# excluded the region that had just burned us and the next round found another:
+#
+#   round 1  the bold fallback scanned the ENTIRE transcript      -> tail-scoped it
+#   round 2  the primary reader matched inside quoted diff lines  -> excluded quotes
+#   round 3  a TAB-indented quoted line survived the space rule   -> added the tab
+#   round 4  a FINDINGS row's claim text set the verdict          -> you are here
+#
+# Round 4 demonstrated itself live: the reviewer wrote a minor whose claim text
+# contained the words `VERDICT: BLOCK`, our reader took it over the reviewer's own
+# stated `**REQUEST CHANGES**`, and the gate posted BLOCK on cbc4b751. Naming a
+# fifth region to exclude would buy round five, so the question is inverted here.
+# Instead of listing what a verdict is NOT written in, this emits only what a prose
+# conclusion CAN be written in, and the reader sees nothing else.
+#
+# THE THREE STRUCTURAL DISCRIMINATORS, none of them positional:
+#
+#   1. QUOTED MATERIAL is what the reviewer READ. Fenced blocks, blockquotes, diff
+#      +/- lines, diff CONTEXT lines (one leading space), and indented code (four
+#      spaces or one tab). A token there was written by the author under review.
+#   2. A ROW IS NEVER A SENTENCE. Findings rows are pipe-delimited by contract
+#      (`severity|claim|file:line`), so any surviving line containing `|` is a row
+#      or a table, never the sentence a reviewer states a verdict in.
+#
+# WHY THE ROW RULE AND NOT A FINDINGS-BLOCK REGION SKIP. Skipping `^FINDINGS:` ..
+# `^END FINDINGS` here was written first and reverted: it makes this a SECOND piece
+# of code that recognises the block delimiter, and `test-findings-block-reader.sh`
+# case 6 refuses exactly that ("expected exactly ONE findings-block extractor in
+# the lib, found 2"). That guard is correct and not an inconvenience -- two readers
+# of one delimiter drifting apart is the defect class this whole lib exists to
+# close. The row rule needs no delimiter at all, and it is strictly the stronger of
+# the two anyway: it also catches a row that leaked OUTSIDE its block, which is how
+# a truncated or echoed block arrives.
 #
 # THE `-` RULE COSTS A MARKDOWN BULLET, AND THAT IS THE CHEAPER SIDE. `- ` opens a
 # list item as well as a diff removal, and this cannot tell them apart. So a
 # reviewer writing its verdict as `- **VERDICT:** APPROVE` reads unstated, which
 # posts failure and HOLDS the PR -- the same safe direction the rest of this file
-# takes, and reversible by a human. Measured before shipping across all 81 recorded
-# transcripts in ~/.config/kipi/pr-reviews: filtering changes the extracted verdict
-# on exactly the reproducer's shape and on no real review.
-_strip_quoted_material() {
+# takes, and reversible by a human. Measured across all 81 recorded transcripts in
+# ~/.config/kipi/pr-reviews: this filter changes the extracted verdict on none of
+# them, while flipping every reproducer above.
+_reviewer_prose() {
   awk '
-    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
-    fence { next }
-    /^[[:space:]]*[+>-]/     { next }
-    # An indented code block is four spaces OR ONE TAB. The first cut of this
-    # filter matched only the spaces, and codex round 3 on PR #297 showed a
-    # tab-indented quoted `VERDICT: BLOCK` sailing through to fabricate a BLOCK --
-    # the same defect this filter exists to stop, one indent character over.
-    /^(    |\t)/             { next }
+    /^[[:space:]]*(```|~~~)/   { fence = !fence; next }
+    fence                      { next }
+    /^[[:space:]]*[+>-]/       { next }
+    # Indented code is four spaces or one tab; a diff CONTEXT line is one space.
+    /^(    |\t| )/             { next }
+    # A pipe means a row or a table. Neither is a sentence.
+    /[|]/                      { next }
     { print }
   ' 2>/dev/null
 }
@@ -128,7 +155,7 @@ _strip_quoted_material() {
 extract_verdict() {
   local f="$1" found
   [ -s "$f" ] || return 0
-  found="$(_strip_quoted_material <"$f" 2>/dev/null | awk '
+  found="$(_reviewer_prose <"$f" 2>/dev/null | awk '
     function leading_token(s,   t) {
       sub(/^[[:space:]*_]+/, "", s)
       if (s ~ /^APPROVE WITH NITS/) return "APPROVE WITH NITS"
@@ -200,7 +227,7 @@ _bold_verdict_in_tail() {
   # (review_comment_body: "the reviewer's actual message is the last ~250 lines"),
   # so filtering before slicing would widen the window by however much quoted
   # material the stream happened to carry.
-  tail -n "${KIPI_VERDICT_TAIL_LINES:-250}" "$f" 2>/dev/null | _strip_quoted_material | awk '
+  tail -n "${KIPI_VERDICT_TAIL_LINES:-250}" "$f" 2>/dev/null | _reviewer_prose | awk '
     {
       line = $0
       gsub(/BLOCKERS?/, "", line)

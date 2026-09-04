@@ -4148,4 +4148,51 @@ ok "case D: tab-indented quoted material is excluded like space-indented"
 [ "$(awk '/^\tVERDICT: BLOCK/ { n++ } END { print n+0 }' "$WORK/tabquote.md")" = "1" ]   || fail "the tab fixture is not actually tab-indented, so the case above proves nothing"
 ok "case D control: the fixture really is TAB-indented"
 
+# --- case E: a FINDINGS ROW is not verdict prose (ASK-1227 round 4) ------------
+# THE REVIEWER'S EXACT CASE, and it demonstrated itself live. Round 4 of codex on
+# PR #297 wrote a minor whose CLAIM TEXT contained the words `VERDICT: BLOCK`.
+# extract_verdict scanned the machine-readable block as prose, took that token
+# over the reviewer's own stated `**REQUEST CHANGES**`, and the gate posted
+# kipi/reviewer-approved=failure with verdict BLOCK on cbc4b751. A review reporting
+# this defect was mis-scored BY the defect.
+#
+# Rows are pipe-delimited by contract, so a line containing `|` is a row or a
+# table and never the sentence a verdict is stated in. That rule holds even when a
+# row leaks OUTSIDE its block, which is how a truncated or echoed block arrives.
+{
+  printf 'VERDICT: APPROVE WITH NITS\n\n'
+  printf 'FINDINGS:\n'
+  printf 'minor|The quote filter accepts VERDICT: BLOCK from a diff context line|q-system/.q-system/scripts/pr-verdict-lib.sh:38\n'
+  printf 'END FINDINGS\n'
+} > "$WORK/findings-row-verdict.md"
+
+[ "$(extract_verdict "$WORK/findings-row-verdict.md")" = "APPROVE WITH NITS" ]   || fail "a FINDINGS row's claim text overwrote the stated verdict: got '$(extract_verdict "$WORK/findings-row-verdict.md")' (expected APPROVE WITH NITS)"
+ok "case E: a VERDICT token inside a findings row cannot overwrite the stated verdict"
+
+# The trap is REALLY IN the fixture, and the stated verdict really is above it.
+grep -q '^minor|.*VERDICT: BLOCK' "$WORK/findings-row-verdict.md"   || fail "case E fixture carries no findings row naming a verdict, so it proves nothing"
+grep -q '^VERDICT: APPROVE WITH NITS' "$WORK/findings-row-verdict.md"   || fail "case E fixture states no verdict above the block, so it proves nothing"
+ok "case E control: the fixture really pairs a stated verdict with a verdict-naming row"
+
+# A row that leaked OUTSIDE its block is the truncated/echoed shape. The pipe rule
+# is what holds here; the block-region rule cannot see it.
+printf 'VERDICT: APPROVE WITH NITS\nminor|claim mentioning VERDICT: BLOCK|lib.sh:38\n' > "$WORK/orphan-row.md"
+[ "$(extract_verdict "$WORK/orphan-row.md")" = "APPROVE WITH NITS" ]   || fail "a findings row outside its block set the verdict: got '$(extract_verdict "$WORK/orphan-row.md")'"
+ok "case E: a findings row outside its block is still not verdict prose"
+
+# A diff CONTEXT line begins with ONE SPACE, so it survived a filter that only knew
+# +/- and four-space indents. Same round-4 review named this one.
+printf ' VERDICT: BLOCK\nReviewer conclusion: **APPROVE WITH NITS**\n' > "$WORK/diff-context.md"
+[ "$(extract_verdict "$WORK/diff-context.md")" = "APPROVE WITH NITS" ]   || fail "a one-space diff CONTEXT line fabricated a verdict: got '$(extract_verdict "$WORK/diff-context.md")'"
+ok "case E: a diff context line (one leading space) is quoted material"
+
+# AND THE ALLOWLIST MUST NOT EAT THE ANSWER. An explicit conclusion still wins,
+# stated above its own findings block exactly as the prompt orders them.
+{
+  printf 'Reviewed the whole diff.\n\n## VERDICT\n\n**REQUEST CHANGES**\n\n'
+  printf 'FINDINGS:\nmajor|a real problem|lib.sh:10\nEND FINDINGS\n'
+} > "$WORK/conclusion-wins.md"
+[ "$(extract_verdict "$WORK/conclusion-wins.md")" = "REQUEST CHANGES" ]   || fail "the allowlist swallowed a real stated conclusion: got '$(extract_verdict "$WORK/conclusion-wins.md")' (expected REQUEST CHANGES)"
+ok "case E control: an explicit conclusion above the findings block still wins"
+
 echo "PASS: $PASS/$PASS severity-floor checks"
