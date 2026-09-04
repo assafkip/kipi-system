@@ -158,6 +158,10 @@ def _parse_stream_json(stdout: str):
     a run whose answer never arrived must not read as an answer of nothing.
     """
     calls, answer, saw_result = [], None, False
+    # tool_use_id -> the raw text the TOOL returned. Kept separately because
+    # tool_result blocks arrive in `user` messages, one or more lines after the
+    # `assistant` line that asked for them.
+    results = {}
     for line in (stdout or "").splitlines():
         line = line.strip()
         if not line:
@@ -174,12 +178,31 @@ def _parse_stream_json(stdout: str):
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
                     calls.append({"name": block.get("name"),
-                                  "input": block.get("input") or {}})
+                                  "input": block.get("input") or {},
+                                  "id": block.get("id")})
+        elif kind == "user":
+            # THE RAW TOOL ANSWER, which is the only completeness boundary there
+            # is. PR #299 round 2 major: the enumeration parsed the model's
+            # REWRITTEN list, so a calendar the model omitted from its prose was
+            # never read and the day rendered clean. Reviewer's reproducer: raw
+            # result carried 2 calendars, the answer carried 1, list_events ran
+            # once, rows [] and error None. The model is a narrator here, not a
+            # source; what the tool returned is the source.
+            content = (obj.get("message") or {}).get("content") or []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    body = block.get("content")
+                    if isinstance(body, list):
+                        body = " ".join(str(b.get("text", "")) if isinstance(b, dict)
+                                        else str(b) for b in body)
+                    results[block.get("tool_use_id")] = str(body or "")
         elif kind == "result":
             saw_result = True
             if obj.get("is_error"):
                 return None, f"claude reported an error: {str(obj.get('result'))[:200]}", calls
             answer = obj.get("result")
+    for call in calls:
+        call["result"] = results.get(call.get("id"), "")
     if not saw_result:
         return None, "no result line in the stream-json transcript", calls
     return answer, None, calls
@@ -275,6 +298,14 @@ def _executed_calendar_ids(tool_calls) -> set:
     return found
 
 
+#: An email-shaped calendar id in the raw tool result. Deliberately a shape and not
+#: a JSON parse: the connector's result text is not a contract this file controls,
+#: and a parser tied to today's envelope would silently stop checking the day that
+#: envelope changes. A missed address here weakens the check; a wrong parse would
+#: disable it.
+_ADDRESS = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
 def collect_calendar(now: dt.datetime, runner=None, budget_s: float = None,
                      clock=None):
     """(rows, error). Reads EVERY calendar on the account, and PROVES it did.
@@ -325,12 +356,39 @@ def collect_calendar(now: dt.datetime, runner=None, budget_s: float = None,
 
     runner = runner or default_runner
 
-    text, error, _ = runner(CAL_LIST_PROMPT.format(tool=CAL_LIST_TOOL), [CAL_LIST_TOOL])
+    text, error, list_calls = runner(CAL_LIST_PROMPT.format(tool=CAL_LIST_TOOL),
+                                     [CAL_LIST_TOOL])
     if error:
         return [], f"calendar list: {error}"
     calendars, parse_error = _parse_json_block(text, "calendars")
     if parse_error:
         return [], f"calendar list: {parse_error}"
+
+    # THE RAW RESULT IS THE COMPLETENESS BOUNDARY, not the model's rewrite of it.
+    # PR #299 round 2 major, with a reproducer: the raw list_calendars result
+    # carried 2 calendars, the model's answer carried 1, list_events ran once, and
+    # the section rendered rows [] with error None -- a silently dropped account
+    # wearing a clean day's clothes.
+    #
+    # Every address the TOOL returned must appear in the answer. A subset is a
+    # refusal, never a short list, because the founder cannot see an account that
+    # was never read. Absent evidence is a refusal too: reading the answer alone
+    # is the defect, so a transcript that carries no raw result cannot be treated
+    # as agreement.
+    raw = " ".join(c.get("result") or "" for c in (list_calls or [])
+                   if c.get("name") == CAL_LIST_TOOL)
+    if not raw.strip():
+        return [], ("calendar list: the transcript carried no raw list_calendars "
+                    "result, so the answer's completeness cannot be checked")
+    answered = " ".join(str(c.get("id") if isinstance(c, dict) else c)
+                        for c in calendars).lower()
+    missing = sorted({addr for addr in _ADDRESS.findall(raw)
+                      if HOLIDAY_MARKER not in addr
+                      and addr.lower() not in answered})
+    if missing:
+        return [], ("calendar list: the tool returned %d calendar(s) the answer "
+                    "left out (%s); the read would be partial"
+                    % (len(missing), ", ".join(missing[:3])))
 
     ids, malformed = [], 0
     for cal in calendars:

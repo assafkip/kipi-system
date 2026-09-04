@@ -286,13 +286,20 @@ _UNSET = object()
 
 
 def _cal_runner(per_calendar=None, listing=CAL_LIST_JSON, listing_error=None,
-                seen=None, executed_id=_UNSET):
+                seen=None, executed_id=_UNSET, raw_listing=_UNSET):
     """Fake model seam shaped like the live `--output-format stream-json` run.
 
     Measured 2026-09-04 against the real connector, not invented: the transcript
     carries `assistant` messages whose `content[]` holds `tool_use` blocks with
     `name` and `input.calendarId`, then a `result` line with the prose answer.
     So this returns (answer, error, tool_calls).
+
+    `raw_listing` is what the list_calendars TOOL returned, which the collector
+    treats as the completeness boundary. It defaults to agreeing with `listing`
+    because that is the healthy case; pass it explicitly to simulate a model that
+    dropped a calendar from its prose while the tool had returned it. That split
+    is the round-2 major: the collector parsed the model's rewrite, so an omitted
+    account was never read and the day rendered clean.
 
     `executed_id` is what the TRANSCRIPT says list_events actually ran with,
     and it is deliberately independent of what the prompt asked for. That split
@@ -309,7 +316,9 @@ def _cal_runner(per_calendar=None, listing=CAL_LIST_JSON, listing_error=None,
         if "list_calendars" in prompt:
             if listing_error:
                 return None, listing_error, []
-            return listing, None, [{"name": LIST_CALENDARS, "input": {}}]
+            raw = listing if raw_listing is _UNSET else raw_listing
+            return listing, None, [{"name": LIST_CALENDARS, "input": {},
+                                    "id": "toolu_list", "result": raw}]
 
         asked = next((cid for cid in ALL_CAL_IDS if cid in prompt), None)
         answer, error = json.dumps({"events": []}), None
@@ -415,7 +424,12 @@ def test_calendar_ignores_tool_use_from_a_different_tool(brief):
     """
     def runner(prompt, tools):
         if "list_calendars" in prompt:
-            return CAL_LIST_JSON, None, [{"name": LIST_CALENDARS, "input": {}}]
+            # Carries the raw tool result, so this test reaches the tool-NAME
+            # filter it exists for instead of being refused one step earlier by
+            # the completeness check. Two guards, and each needs its own test.
+            return CAL_LIST_JSON, None, [{"name": LIST_CALENDARS, "input": {},
+                                          "id": "toolu_list",
+                                          "result": CAL_LIST_JSON}]
         asked = next((cid for cid in ALL_CAL_IDS if cid in prompt), None)
         return json.dumps({"events": []}), None, [
             {"name": "ToolSearch", "input": {"calendarId": asked}}]
@@ -1134,3 +1148,71 @@ def test_a_present_optional_module_renders_after_the_fixed_four(brief, tmp_path,
     message, degraded = brief.build(NOW, sources)
     assert not degraded
     assert message.index("Overnight") < message.index("Terms I do not know") < message.index("Widgetcorp")
+
+
+class TestTheToolsAnswerIsTheBoundaryNotTheModels:
+    """PR #299 round 2 major, with the reviewer's own reproducer: the raw
+    list_calendars result carried 2 calendars, the model's answer carried 1,
+    list_events ran once, and the section returned rows [] with error None. A
+    dropped account rendered as a clean day.
+
+    The model is a NARRATOR of the enumeration, not its source. Every guard
+    already in this file checks what the model DID against what it was asked;
+    this one checks what it REPORTED against what the tool returned, which is
+    the same class of defect one level up."""
+
+    def test_a_calendar_the_model_omits_is_REFUSED_not_silently_dropped(self, brief):
+        raw = json.dumps({"calendars": [
+            {"id": "assafkip@gmail.com"},
+            {"id": "assaf@askconsulting.io"}]})
+        rewritten = json.dumps({"calendars": [{"id": "assafkip@gmail.com"}]})
+        rows, error = brief.collect_calendar(
+            NOW, runner=_cal_runner(listing=rewritten, raw_listing=raw))
+        assert rows == []
+        assert error is not None, "a dropped account rendered as a clean day"
+        assert "assaf@askconsulting.io" in error, error
+        assert "partial" in error
+
+    def test_agreement_reads_normally(self, brief):
+        payload = json.dumps({"events": [
+            {"start": "19:00", "title": "Founder call", "who": []}]})
+        rows, error = brief.collect_calendar(
+            NOW, runner=_cal_runner(per_calendar={"assafkip@gmail.com": (payload, None)}))
+        assert error is None
+        assert any("Founder call" in r for r in rows)
+
+    def test_NO_raw_result_is_a_refusal_not_an_assumption_of_agreement(self, brief):
+        """Absent evidence cannot mean agreement. Reading the answer alone is the
+        defect, so a transcript with nothing to check against must fail closed."""
+        rows, error = brief.collect_calendar(
+            NOW, runner=_cal_runner(raw_listing=""))
+        assert rows == []
+        assert error is not None and "no raw list_calendars result" in error
+
+    def test_the_holiday_feed_being_absent_from_the_answer_is_fine(self, brief):
+        """It is filtered on purpose, so its absence is not a dropped account."""
+        raw = json.dumps({"calendars": [
+            {"id": "assafkip@gmail.com"},
+            {"id": "assaf@askconsulting.io"},
+            {"id": "en.usa#holiday@group.v.calendar.google.com"}]})
+        answered = json.dumps({"calendars": [
+            {"id": "assafkip@gmail.com"}, {"id": "assaf@askconsulting.io"}]})
+        _rows, error = brief.collect_calendar(
+            NOW, runner=_cal_runner(listing=answered, raw_listing=raw))
+        assert error is None, error
+
+    def test_the_parser_pairs_a_tool_result_to_its_call(self, brief):
+        """tool_result blocks arrive in `user` messages, one or more lines after
+        the assistant line that asked. Matched by tool_use_id, never by order."""
+        transcript = "\n".join([
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "toolu_A", "name": LIST_CALENDARS,
+                 "input": {}}]}}),
+            json.dumps({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "toolu_A",
+                 "content": [{"type": "text", "text": "RAW-A"}]}]}}),
+            json.dumps({"type": "result", "is_error": False, "result": "{}"}),
+        ])
+        _answer, error, calls = brief._parse_stream_json(transcript)
+        assert error is None
+        assert calls[0]["result"] == "RAW-A"
