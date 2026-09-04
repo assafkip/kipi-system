@@ -261,9 +261,12 @@ board row stable while its age changes, so never invent or shorten it.
 If the tool call fails, reply with exactly: {{"error": "<what failed>"}}"""
 
 
-def _chat_last():
-    """{slug: when he last spoke in that client's chat}. Empty on any failure, which
-    keeps every thread rather than dropping one on incomplete evidence."""
+def _chat_days():
+    """{slug: [dates he spoke in that client's chat]}. Empty on any failure, which
+    keeps every thread rather than dropping one on incomplete evidence.
+
+    DAYS, not a last-seen stamp: one message does not show he dealt with what they
+    mailed, and the filter needs to count distinct days to tell the two apart."""
     out = {}
     try:
         answered = _load_sibling("answered_elsewhere", "answered_elsewhere.py")
@@ -274,10 +277,11 @@ def _chat_last():
         for group_id, slug in answered.channel_slugs().items():
             page = gm._get(f"/groups/{group_id}/messages", token, limit=100) or {}
             me = str((gm._get("/users/me", token) or {}).get("user_id") or "")
-            stamps = [m.get("created_at") for m in (page.get("messages") or [])
-                      if str(m.get("user_id")) == me and m.get("created_at")]
-            if stamps:
-                out[slug] = dt.datetime.fromtimestamp(max(stamps), dt.timezone.utc)
+            days = {dt.datetime.fromtimestamp(m["created_at"], dt.timezone.utc).date()
+                    for m in (page.get("messages") or [])
+                    if str(m.get("user_id")) == me and m.get("created_at")}
+            if days:
+                out[slug] = sorted(days)
     except Exception:  # noqa: BLE001
         return {}
     return out
@@ -301,9 +305,15 @@ def collect_mail(now: dt.datetime, runner=None):
     # a timestamp comparison over sources already on disk, which is code.
     try:
         answered = _load_sibling("answered_elsewhere", "answered_elsewhere.py")
-        threads, notes = answered.filter_answered(threads, chat_last=_chat_last())
+        before = len(threads)
+        threads, notes = answered.filter_answered(threads, chat_days=_chat_days())
+        # The prefix is NOT "dropped": these notes also carry the keeps and the
+        # "check was inert" lines, and at 3am the only record of this running is this
+        # log. A line saying the check found nothing must not read as a removal.
         for note in notes:
-            print(f"[mail] dropped, {note}")
+            print(f"[mail] {note}")
+        print(f"[mail] answered-elsewhere: {before} candidate(s), "
+              f"{len(threads)} still owed")
     except Exception as exc:  # noqa: BLE001
         # Never fatal, and never a silent drop: failing here KEEPS every thread,
         # because a wrong removal hides work he owes and a wrong keep costs a glance.

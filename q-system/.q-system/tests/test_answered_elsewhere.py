@@ -66,30 +66,119 @@ class TestAReplyInAnotherThreadCounts:
         assert len(kept) == 1
 
 
+class TestPresenceIsNotAReply:
+    """Reviewer, PR #300: the first rule dropped a mail the moment his LAST chat
+    message postdated it. For a client he talks to daily that deleted every email
+    older than this morning -- a two-hour-old signature request and a twenty-day
+    overdue invoice both vanish because he said something in the chat at 10am."""
+
+    def test_one_chat_day_does_NOT_answer_a_recent_mail(self, ae):
+        """He mailed at 09:00, chatted at 10:00. That is not evidence."""
+        today = dt.datetime.now(dt.timezone.utc)
+        kept, notes = ae.filter_answered(
+            [{"id": "t1", "from": THEM, "age_hours": 2}],
+            cache=_cache([]), registry=REG,
+            chat_days={"acme": [today.date()]})
+        assert len(kept) == 1
+        assert any("presence is not a reply" in n for n in notes)
+
+    def test_two_chat_days_still_does_not(self, ae):
+        base = dt.datetime.now(dt.timezone.utc)
+        kept, _ = ae.filter_answered(
+            [{"id": "t1", "from": THEM, "age_hours": 100}],
+            cache=_cache([]), registry=REG,
+            chat_days={"acme": [(base - dt.timedelta(days=d)).date() for d in (0, 1)]})
+        assert len(kept) == 1
+
+    def test_sustained_engagement_DOES(self, ae):
+        """The case this rule was built from: they mailed, and he then wrote in their
+        chat on many separate days."""
+        base = dt.datetime.now(dt.timezone.utc)
+        kept, notes = ae.filter_answered(
+            [{"id": "t1", "from": THEM, "age_hours": 24 * 20}],
+            cache=_cache([]), registry=REG,
+            chat_days={"acme": [(base - dt.timedelta(days=d)).date()
+                                for d in range(0, 12)]})
+        assert kept == []
+        assert any("on 12 days" in n for n in notes)
+
+    def test_chat_days_BEFORE_their_mail_never_count(self, ae):
+        base = dt.datetime.now(dt.timezone.utc)
+        kept, _ = ae.filter_answered(
+            [{"id": "t1", "from": THEM, "age_hours": 1}],
+            cache=_cache([]), registry=REG,
+            chat_days={"acme": [(base - dt.timedelta(days=d)).date()
+                                for d in range(1, 30)]})
+        assert len(kept) == 1
+
+    def test_the_OLD_single_timestamp_caller_answers_nothing(self, ae):
+        """One timestamp cannot show sustained engagement, so a caller that was
+        never updated must KEEP rows, not silently drop them on weak evidence."""
+        kept, notes = ae.filter_answered(
+            [{"id": "t1", "from": THEM, "age_hours": 500}],
+            cache=_cache([]), registry=REG,
+            chat_last={"acme": dt.datetime.now(dt.timezone.utc)})
+        assert len(kept) == 1
+        assert any("single-timestamp" in n for n in notes)
+
+
+class TestItReallyNeverRaises:
+    def test_a_cache_that_is_not_a_map_keeps_everything(self, ae):
+        kept, notes = ae.filter_answered([{"id": "t1", "from": THEM, "age_hours": 5}],
+                                         cache=["not", "a", "map"], registry=REG)
+        assert len(kept) == 1 and any("not a map" in n for n in notes)
+
+    def test_a_registry_that_is_not_a_map_keeps_everything(self, ae):
+        kept, _ = ae.filter_answered([{"id": "t1", "from": THEM, "age_hours": 5}],
+                                     cache=_cache([]), registry="nonsense")
+        assert len(kept) == 1
+
+
+class TestTheAllowlistHasTwoReaders:
+    """The file grew a second column for the commitment miner and this reader was
+    never taught it, so the allowlist held "116326607 acme-corp", matched no group
+    id, and the section rendered "nothing" live for hours."""
+
+    def test_a_two_column_line_still_yields_the_bare_id(self, tmp_path):
+        gm = _load("groupme_inbox")
+        f = tmp_path / "groupme-channels"
+        f.write_text("# note\n116326607 acme-corp\n999 other\n", encoding="utf-8")
+        assert gm.load_allowlist(f) == {"116326607", "999"}
+
+    def test_both_readers_agree_on_the_same_file(self, tmp_path, ae):
+        gm = _load("groupme_inbox")
+        f = tmp_path / "groupme-channels"
+        f.write_text("116326607 acme-corp\n", encoding="utf-8")
+        assert set(ae.channel_slugs(f)) == gm.load_allowlist(f), (
+            "the two readers of this file disagree, which is how it broke")
+
+
 class TestAReplyInTheChatCounts:
     """Measured on live data: one client emailed 2026-08-05, and he sent 36 chat
     messages to them between 08-18 and 09-02. The board called it 717 hours owed."""
 
     def test_speaking_in_that_clients_chat_answers_their_mail(self, ae):
+        """Now requires SUSTAINED engagement, not one last-seen stamp: see
+        TestPresenceIsNotAReply for why a single message cannot answer a mail."""
+        days = [dt.date(2026, 8, 18) + dt.timedelta(days=d) for d in range(0, 15, 2)]
         kept, notes = ae.filter_answered(
             [{"id": "t1", "from": THEM, "inbound_at": "2026-08-05T20:11:00Z"}],
-            cache=_cache([]), registry=REG,
-            chat_last={"acme": dt.datetime(2026, 9, 2, tzinfo=dt.timezone.utc)})
+            cache=_cache([]), registry=REG, chat_days={"acme": days})
         assert kept == []
         assert "chat" in notes[0]
 
     def test_ANOTHER_clients_chat_does_not_answer_it(self, ae):
+        days = [dt.date(2026, 8, 18) + dt.timedelta(days=d) for d in range(0, 15, 2)]
         kept, _ = ae.filter_answered(
             [{"id": "t1", "from": THEM, "inbound_at": "2026-08-05T20:11:00Z"}],
-            cache=_cache([]), registry=REG,
-            chat_last={"other": dt.datetime(2026, 9, 2, tzinfo=dt.timezone.utc)})
+            cache=_cache([]), registry=REG, chat_days={"other": days})
         assert len(kept) == 1
 
     def test_chat_activity_BEFORE_their_mail_does_not_answer_it(self, ae):
+        days = [dt.date(2026, 7, 1) + dt.timedelta(days=d) for d in range(0, 20)]
         kept, _ = ae.filter_answered(
             [{"id": "t1", "from": THEM, "inbound_at": "2026-08-05T20:11:00Z"}],
-            cache=_cache([]), registry=REG,
-            chat_last={"acme": dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc)})
+            cache=_cache([]), registry=REG, chat_days={"acme": days})
         assert len(kept) == 1
 
 

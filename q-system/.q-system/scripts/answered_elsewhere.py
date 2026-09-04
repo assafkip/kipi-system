@@ -128,12 +128,31 @@ def channel_slugs(path=None) -> dict:
     return out
 
 
-def filter_answered(threads, cache=None, registry=None, chat_last=None):
+#: Distinct days he must have spoken in a client's chat AFTER their mail before that
+#: chat counts as having answered it.
+#:
+#: PRESENCE IS NOT A REPLY, and the first version of this got that wrong. It dropped a
+#: mail the moment his LAST chat message postdated it, so for a client he talks to
+#: daily every email older than this morning vanished -- including, in the reviewer's
+#: example, a two-hour-old signature request and a twenty-day-overdue invoice. Talking
+#: to someone at 10am is not evidence you dealt with what they sent at 9am.
+#:
+#: Three days is read off the case this rule was built from rather than picked: that
+#: client mailed on 08-05 and he wrote in their chat on 15 separate days between 08-18
+#: and 09-02. Sustained engagement across days is the thing that makes "I answered it
+#: in the messages" true; a single message is not, and neither is a single day.
+CHAT_DAYS_TO_ANSWER = 3
+
+
+def filter_answered(threads, cache=None, registry=None, chat_days=None,
+                    chat_last=None):
     """(kept, notes). `threads` are dicts with `id`, `from` and `age_hours`.
 
-    `chat_last` is {slug: when he last spoke in that client's chat}, injected so this
+    `chat_days` is {slug: [dates he spoke in that client's chat]}, injected so this
     stays a pure function and so a chat outage is the caller's fact, not a silent
-    pass here.
+    pass here. `chat_last` is the older single-timestamp form and is accepted only
+    so an old caller degrades to KEEPING rows rather than crashing; it never answers
+    anything, because one timestamp cannot show sustained engagement.
     """
     notes = []
     if cache is None:
@@ -149,8 +168,16 @@ def filter_answered(threads, cache=None, registry=None, chat_last=None):
             registry = {}
             notes.append("no registry: chat replies could not be matched to clients")
 
+    if not isinstance(cache, dict):
+        return list(threads), notes + ["kept every thread: mail history is not a map"]
+    if not isinstance(registry, dict):
+        registry = {}
+        notes.append("registry ignored: not a map")
     outbound = his_last_outbound(cache)
-    chat_last = chat_last or {}
+    chat_days = chat_days or {}
+    if chat_last and not chat_days:
+        notes.append("chat evidence ignored: caller passed the old single-timestamp "
+                     "form, which cannot show sustained engagement")
     kept = []
     for th in threads:
         addr = None
@@ -172,10 +199,21 @@ def filter_answered(threads, cache=None, registry=None, chat_last=None):
             continue
 
         slug = client_of(addr, registry)
-        spoke = chat_last.get(slug) if slug else None
-        if spoke and spoke > inbound:
-            notes.append(f"{addr}: answered in {slug}'s chat {spoke.date()}, after "
-                         f"their {inbound.date()}")
+        # `>=` so a chat message on the SAME DAY as their mail is counted as a chat
+        # day. It is still nowhere near CHAT_DAYS_TO_ANSWER, so it cannot answer
+        # anything; counting it is what makes the "presence is not a reply" note fire
+        # on exactly the case the reviewer named (mail 09:00, chat 10:00).
+        days = sorted({d for d in (chat_days.get(slug) or [])
+                       if d and d >= inbound.date()}) if slug else []
+        if len(days) >= CHAT_DAYS_TO_ANSWER:
+            notes.append(f"{addr}: answered in {slug}'s chat on {len(days)} days "
+                         f"since their {inbound.date()} (through {days[-1]})")
             continue
+        if days:
+            # Named rather than silent: he should be able to see that the chat was
+            # looked at and did not clear this one, instead of wondering why one
+            # mail from a client he talks to daily is still on the board.
+            notes.append(f"{addr}: KEPT, only {len(days)} chat day(s) since their "
+                         f"mail; presence is not a reply")
         kept.append(th)
     return kept, notes

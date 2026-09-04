@@ -6,6 +6,7 @@ Both pin defects this work actually hit, not defects imagined for it.
 import datetime as dt
 import io
 import json
+import re
 import pathlib
 import os
 import sys
@@ -1697,12 +1698,24 @@ class TestTheDoneLineIsACriterionNotAClaim:
                    + list(cb.DONE_BY_KIND.values())
                    + list(cb.DONE_BY_SOURCE.values()))
         assert strings
+        # A RULE, not a list of the seven phrases this PR happened to remove. The
+        # first version was that list, so a new source shipping "you responded to
+        # them" would have gone green. Any "you <verb>ed" is a claim about the past;
+        # a criterion is present tense.
+        # Only the LEADING "you <verb>" states the criterion. A later one can be a
+        # legitimate past fact: "you send the thing you promised" is correct, because
+        # the promise really did happen and sending it is the condition. Matching
+        # anywhere failed that string, which is a rule that would have been loosened
+        # back into a denylist the first time it fired.
+        lead = re.compile(r"\byou(?:'ve| have)?\s+(\w+)")
         for text in strings:
-            for past in ("you replied", "you answered", "you sent", "you delivered",
-                         "you have acted", "you moved", "you wrote"):
-                assert past not in text, (
-                    f"{text!r} reads as a claim that he already did it, not as the "
-                    "condition for being finished")
+            hit = lead.search(text)
+            if not hit:
+                continue
+            verb = hit.group(1)
+            assert not verb.endswith(("ed", "nt")), (
+                f"{text!r} opens with {hit.group(0)!r}: that reads as a claim he "
+                "already did it, not as the condition for being finished")
 
     def test_every_row_still_carries_one(self, tmp_path):
         b = cb.buckets(NOW, {"mail": ([_brief().Row("Portant: docs", "mail:t1")], None)},
