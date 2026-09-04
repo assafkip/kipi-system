@@ -1421,3 +1421,48 @@ class TestABookWeCouldNotFullyReadArchivesNothing:
         failure the whole brief exists to prevent."""
         monkeypatch.setattr(gm, "CHANNELS_FILE", tmp_path / "absent")
         assert gm.load_allowlist() is None
+
+
+class TestACappedRowIsNotAnAbsentRow:
+    """Round 11 (major): rows trimmed by BUDGET_ROWS never entered `wanted`, so the
+    archive loop saw their live pages inside a HEALTHY scope and archived them. A
+    producer emitting one row too many destroyed a row he had dragged and pinned."""
+
+    def test_a_row_over_the_cap_is_kept_not_archived(self, monkeypatch):
+        rows = [{"key": f"mail:{i}", "title": f"t{i}", "detail": "",
+                 "scope": "inbox:Gmail"} for i in range(board_rows.BUDGET_ROWS + 2)]
+        over = rows[board_rows.BUDGET_ROWS:]
+        have = {}
+        for item in over:
+            iid = board_rows.item_id("inbox", item)
+            have[iid] = {"id": f"p-{iid}", "properties": {
+                "Notes": {"rich_text": [{"plain_text": "scope=inbox:Gmail"}]}}}
+        monkeypatch.setattr(board_rows, "existing_rows", lambda *a, **k: have)
+        calls = []
+        monkeypatch.setattr(
+            board_rows, "_request",
+            lambda token, method, path, body=None, opener=None, budget=None:
+            calls.append((method, body)) or {})
+        counts = board_rows.paint(
+            {"top_of_mind": [], "this_week": [], "inbox": rows,
+             "healthy_scopes": {"inbox:Gmail"}}, "t", "db")
+        archived = [b for m, b in calls if b == {"archived": True}]
+        assert archived == [], f"a capped row's page was archived: {archived}"
+        assert counts["archived"] == 0 and counts["kept"] == 2
+
+    def test_but_a_row_whose_work_is_DONE_is_still_archived(self, monkeypatch):
+        """The negative control. If nothing is ever archived the board only grows,
+        which is the state this painter was built to end."""
+        gone = board_rows.item_id("inbox", {"key": "mail:old"})
+        have = {gone: {"id": "p1", "properties": {
+            "Notes": {"rich_text": [{"plain_text": "scope=inbox:Gmail"}]}}}}
+        monkeypatch.setattr(board_rows, "existing_rows", lambda *a, **k: have)
+        calls = []
+        monkeypatch.setattr(
+            board_rows, "_request",
+            lambda token, method, path, body=None, opener=None, budget=None:
+            calls.append(body) or {})
+        counts = board_rows.paint(
+            {"top_of_mind": [], "this_week": [], "inbox": [],
+             "healthy_scopes": {"inbox:Gmail"}}, "t", "db")
+        assert {"archived": True} in calls and counts["archived"] == 1

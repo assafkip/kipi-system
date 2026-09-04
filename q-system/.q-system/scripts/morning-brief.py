@@ -897,7 +897,11 @@ def main(argv=None) -> int:
     filed, failed = route_engineering(
         sources, notify=(lambda _m: None) if args.dry_run else None)
     for line in filed:
-        print(f"[to sana] {line}")
+        # DRY RUN SAYS SO (round 11, minor). The notifier injected above sends
+        # nothing, and this printed the same "[to sana]" either way, so a dry run
+        # reported an alert that no one received. Every other refusal in this file
+        # names itself; this one claimed a delivery.
+        print(f"[to sana{' (dry run, not sent)' if args.dry_run else ''}] {line}")
     for line, why in failed:
         # Printed as NOT filed. An engineering problem that was detected and then lost
         # on the way to the queue is worse than one never detected: it looks handled.

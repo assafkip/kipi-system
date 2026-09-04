@@ -449,7 +449,7 @@ def paint(buckets: dict, token, db, opener=None, budget=None) -> dict:
     if buckets.get("error"):
         raise ValueError(buckets["error"])
 
-    wanted, scopes, over_cap = {}, {}, 0
+    wanted, scopes, over_cap, capped = {}, {}, 0, set()
     for key, bucket in BUCKET_OF.items():
         # Round 7 (minor): this truncation was SILENT, and the read-back cannot see it
         # because `wanted` has already lost the row before the count is taken. The
@@ -459,8 +459,17 @@ def paint(buckets: dict, token, db, opener=None, budget=None) -> dict:
         # beside the other counts. Not an overflow ROW: a synthetic row needs a stable
         # id and a scope, and inventing a scope the painter itself declares healthy
         # would make it a writer of the archive authority it consumes.
-        over_cap += max(0, len(buckets.get(key) or []) - BUDGET_ROWS)
-        for item in (buckets.get(key) or [])[:BUDGET_ROWS]:
+        rows_here = buckets.get(key) or []
+        over_cap += max(0, len(rows_here) - BUDGET_ROWS)
+        for item in rows_here[BUDGET_ROWS:]:
+            # A CAPPED ROW IS NOT AN ABSENT ROW (round 11, major). Trimmed rows never
+            # entered `wanted`, so the archive loop below saw their live page inside a
+            # HEALTHY scope and archived it -- destroying a row he may have dragged and
+            # pinned, because the producer emitted one row too many. The cap is a write
+            # budget, not a statement that the work is finished.
+            with contextlib.suppress(ValueError):
+                capped.add(item_id(key, item))
+        for item in rows_here[:BUDGET_ROWS]:
             iid = item_id(key, item)
             wanted[iid] = (item, bucket)
             scopes[iid] = item.get("scope") or "card"
@@ -529,6 +538,9 @@ def paint(buckets: dict, token, db, opener=None, budget=None) -> dict:
     kept = 0
     for iid, page in have.items():
         if iid in wanted:
+            continue
+        if iid in capped:
+            kept += 1                      # over the write cap this run, not gone
             continue
         if _scope_of(page) not in healthy:
             kept += 1                      # its source could not answer; leave it alone
