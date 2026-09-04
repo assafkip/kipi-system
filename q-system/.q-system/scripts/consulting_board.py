@@ -617,7 +617,14 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
 
     my_side, my_side_err = ({}, None) if card_problem else read_my_side(now, paths)
     by_name = my_side.pop("_by_name", {})
-    if not card_problem:
+    if not card_problem and card_rows:
+        # ZERO ROWS NEVER AUTHORISES ARCHIVING (round 14, major, against round 12's
+        # own fix). Treating a quiet morning as healthy meant a format change that
+        # happened to keep the `*Your book today*` header parsed to nothing, declared
+        # the scope healthy, and archived EVERY client row on the board including the
+        # ones he had pinned. Quiet and drifted look identical from here, so the board
+        # keeps what it has and the reader says nothing either way: no alarm row on a
+        # genuinely quiet day, no destruction on a drifted one.
         healthy.add("card")
 
     for row in card_rows:

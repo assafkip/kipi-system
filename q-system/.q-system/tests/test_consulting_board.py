@@ -1496,7 +1496,8 @@ class TestRound12:
     def test_and_a_quiet_card_raises_no_alarm_row(self, tmp_path):
         b = cb.buckets(NOW, {}, _tree(tmp_path, card=self.QUIET))
         assert not any(r["scope"] == cb.CARD_ALARM for r in b["top_of_mind"])
-        assert "card" in b["healthy_scopes"]
+        # The scope is deliberately NOT healthy here; round 14 explains why, and
+        # test_a_card_that_parses_to_nothing_never_archives_his_rows pins it.
 
     def test_the_producers_plus_N_more_tail_is_not_a_person(self, tmp_path):
         """A count is not a contact. The split handed the producer's own summary to
@@ -1559,3 +1560,16 @@ class TestRound13:
         a = board_rows._prop_value({"some_new_notion_shape": True})
         b = board_rows._prop_value({"another_unknown": 1})
         assert a != b and a != None  # noqa: E711  -- the None case is the defect
+
+    def test_a_card_that_parses_to_nothing_never_archives_his_rows(self, tmp_path):
+        """Round 14 (major), against round 12's fix. A format change that keeps the
+        header parses to zero rows and looks exactly like a quiet morning, so calling
+        that scope healthy handed the painter authority to archive every client row
+        including the pinned ones. Quiet costs nothing; drifted costs everything."""
+        b = cb.buckets(NOW, {}, _tree(tmp_path, card=TestRound12.QUIET))
+        assert "card" not in b["healthy_scopes"]
+        assert not any(r["scope"] == cb.CARD_ALARM for r in b["top_of_mind"])
+
+    def test_but_a_card_with_rows_still_authorises_it(self, tmp_path):
+        b = cb.buckets(NOW, {}, _tree(tmp_path))
+        assert "card" in b["healthy_scopes"]
