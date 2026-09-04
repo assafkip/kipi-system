@@ -1,0 +1,10 @@
+{"skill":"instrument-discipline","fired_marker":"control","cases":[
+ {"prompt":"Count how many of the 40 domains in targets.csv resolve to an operator-controlled host and write the finding","should_trigger":true},
+ {"prompt":"Search the evidence tree for any mention of a seller relay and report whether there is one","should_trigger":true},
+ {"prompt":"Classify every host in hosts.txt as first-party or third-party and give me the split","should_trigger":true},
+ {"prompt":"Run the verification script over the capture dir and tell me the failure count","should_trigger":true},
+ {"prompt":"Build the corpus from these 6 subreddits and summarize what the market looks like","should_trigger":true},
+ {"prompt":"Rename the variable retry_n to retry_count in loop-tracker.py","should_trigger":false},
+ {"prompt":"Draft a two-line reply to this LinkedIn comment","should_trigger":false},
+ {"prompt":"What time is the call tomorrow","should_trigger":false}
+]}
