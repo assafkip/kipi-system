@@ -20,6 +20,15 @@ SCRIPTS = HERE.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import board_rows  # noqa: E402
+
+
+def _load_engineering_route():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "engineering_route", SCRIPTS / "engineering_route.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 import consulting_board as cb  # noqa: E402
 import groupme_inbox as gm  # noqa: E402
 
@@ -1466,3 +1475,58 @@ class TestACappedRowIsNotAnAbsentRow:
             {"top_of_mind": [], "this_week": [], "inbox": [],
              "healthy_scopes": {"inbox:Gmail"}}, "t", "db")
         assert {"archived": True} in calls and counts["archived"] == 1
+
+
+class TestRound12:
+    QUIET = "*Your book today* · 4 active · 0 in proposal · 0 to reach out · 2026-09-03\n"
+
+    def test_a_quiet_morning_is_not_a_format_change(self, tmp_path):
+        """Every client green or waiting on THEM emits a header and no client lines.
+        Calling that broken put a P0 alarm row on the board every quiet day, which is
+        the wolf-cry that costs the real alert later."""
+        rows, err = cb.read_card(_tree(tmp_path, card=self.QUIET))
+        assert rows == [] and err is None
+
+    def test_but_a_card_with_no_header_at_all_is_still_a_format_change(self, tmp_path):
+        """The negative control. If both cases return None the reader can no longer
+        tell it has drifted from its writer, which is what the original check was for."""
+        rows, err = cb.read_card(_tree(tmp_path, card="something else entirely\n"))
+        assert rows == [] and err and "format changed" in err
+
+    def test_and_a_quiet_card_raises_no_alarm_row(self, tmp_path):
+        b = cb.buckets(NOW, {}, _tree(tmp_path, card=self.QUIET))
+        assert not any(r["scope"] == cb.CARD_ALARM for r in b["top_of_mind"])
+        assert "card" in b["healthy_scopes"]
+
+    def test_the_producers_plus_N_more_tail_is_not_a_person(self, tmp_path):
+        """A count is not a contact. The split handed the producer's own summary to
+        the person extractor, so the board grew a row named after the sentence while
+        the people it stands for still never arrived."""
+        card = ("*Your book today* · 0 active · 0 in proposal · 4 to reach out · 2026-09-03\n"
+                "*THE MOVE* 📞 *4 to reach out* — 🔥 Alpha (fire): contact Alpha\n"
+                "     then: 🔥 Beta (fire) · +2 more, lowest-scoring, on the board\n")
+        rows, err = cb.read_card(_tree(tmp_path, card=card))
+        assert err is None
+        names = [r["name"] for r in rows]
+        assert names == ["Alpha", "Beta"], names
+        assert not any("more" in n for n in names)
+
+
+class TestAnAbsentNotifierIsNotAFiling:
+    def test_send_refuses_when_there_is_no_notifier(self, tmp_path, monkeypatch):
+        er = _load_engineering_route()
+        monkeypatch.setattr(er, "NOTIFY", tmp_path / "not-there.sh")
+        with pytest.raises(FileNotFoundError):
+            er.send("anything")
+
+    def test_and_route_counts_it_as_failed_not_filed(self, tmp_path, monkeypatch):
+        """It returned None, which `route` reads as a successful filing, so an
+        unconfigured machine reported every engineering line as routed to Sana while
+        no issue existed anywhere."""
+        er = _load_engineering_route()
+        monkeypatch.setattr(er, "NOTIFY", tmp_path / "not-there.sh")
+        # DEGRADED, because a healthy section is deliberately not news: 
+        # emits nothing for it, so a clean source proves nothing about filing.
+        filed, failed = er.route({"owed": ([], "linear down")}, (("owed", "Owed today"),))
+        assert filed == []
+        assert len(failed) == 1 and "no notifier" in failed[0][1]

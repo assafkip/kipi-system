@@ -55,7 +55,14 @@ def send(message: str) -> None:
     and failed is not.
     """
     if not NOTIFY.exists():
-        return
+        # ABSENT IS NOT FILED (round 12, major). This returned None, which `route`
+        # counts as a successful filing, so an unconfigured machine reported every
+        # engineering line as routed to Sana while no issue existed anywhere. The
+        # module's own docstring calls that the write-only-integration defect and
+        # this was the last place it still lived. A no-op is still legitimate; it
+        # just has to say so rather than claim a delivery.
+        raise FileNotFoundError(
+            f"no notifier at {NOTIFY}; nothing was filed and no issue exists")
     done = subprocess.run(["bash", str(NOTIFY), message], check=False,
                           capture_output=True, timeout=TIMEOUT_S)
     if done.returncode != 0:

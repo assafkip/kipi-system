@@ -108,7 +108,11 @@ _REACH_LINE = re.compile(
 _THEN_LINE = re.compile(r"^\s+then:\s*(?P<rest>.+)$")
 #: What the card puts between two people on a `then:` line.
 _THEN_SEP = "·"
+#: The producer's own tail on that line: "+3 more, lowest-scoring, on the board".
+_MORE_SUMMARY = re.compile(r"^\+\s*\d+\s+more\b")
 #: "— 🔥 Portant (fire, v1 CRM: ...)" -- the person, out of the reach-out header's tail.
+#: `build_card`'s first line, always present. See `read_card` for why it decides.
+_BOOK_HEADER = re.compile(r"\*Your book today\*")
 _REACH_WHO = re.compile(r"^[^A-Za-z0-9]*(?P<who>[A-Za-z0-9][^(:]*?)\s*(?:\(|:|$)")
 
 
@@ -158,16 +162,31 @@ def read_card(paths=None) -> tuple[list[dict], str | None]:
             # sentence still half true: the line was matched and then read as ONE
             # person, so three of four went missing just as quietly.
             for piece in m.group("rest").split(_THEN_SEP):
+                # The producer ends this line with its own "+N more, lowest-scoring,
+                # on the board" summary. Round 12 (major): the split handed that
+                # summary to the person extractor, which produced a row named after
+                # the sentence -- while the people it stands for still did not reach
+                # the board. A count is not a contact.
+                if _MORE_SUMMARY.match(piece.strip()):
+                    continue
                 who = _person_from_reach(piece)
                 if who:
                     rows.append({"kind": "reach", "health": "📞", "name": who,
                                  "detail": "then, after the first"})
     if not rows:
-        # A card that exists and parses to nothing is a FORMAT change, not a quiet
-        # morning. state_card.py always emits at least the book line, so zero parsed
-        # rows means this reader and that writer have drifted apart.
-        return [], (f"{path.name} parsed to zero client lines; the card format changed "
-                    "and this reader did not")
+        # ZERO ROWS IS TWO DIFFERENT FACTS and this used to call both a format change.
+        # Round 12 (major): a day where every client is green or waiting on THEM emits
+        # a card with a header and no client lines, which is correct output, and this
+        # reported it broken -- a P0 alarm row on the board every quiet day, which is
+        # exactly the wolf-cry that costs the real alert later.
+        #
+        # The discriminator is the producer's own header, which `build_card` always
+        # writes. Header present and no rows is a quiet morning. No header either
+        # means this reader and that writer really have drifted apart.
+        if _BOOK_HEADER.search(text):
+            return [], None
+        return [], (f"{path.name} parsed to zero client lines and carries no book "
+                    "header; the card format changed and this reader did not")
     return rows, None
 
 
