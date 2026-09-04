@@ -238,8 +238,8 @@ def _live_bucket_of(page) -> str:
 def _bucket_decision(page, computed: str):
     """(write_bucket, bucket_to_record, pinned) for an EXISTING row.
 
-    The whole of "his drag always wins" lives in these five branches, so each one says
-    what it is protecting.
+    The whole of "his drag always wins" lives in the branches below, so each one says
+    what it is protecting rather than what it does.
     """
     if PINNED_LINE in _note_of(page).split("\n"):
         return False, _live_bucket_of(page), True      # decided; never revisited
