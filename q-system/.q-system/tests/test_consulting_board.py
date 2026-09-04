@@ -646,12 +646,12 @@ class TestTheBoardLooksLikeTheOneHeAsked_For:
         missing = [r["title"] for r in rows if not (r.get("done") or "").strip()]
         assert not missing, f"rows with no done signal: {missing}"
 
-    def test_the_done_signal_reaches_notion_and_leads_the_note(self):
+    def test_the_done_line_reaches_notion_and_leads_the_note(self):
         props = board_rows._properties(
-            {"title": "t", "scope": "card", "detail": "d", "done": "you sent it"},
+            {"title": "t", "scope": "card", "detail": "d", "done": "you send it"},
             "Top of Mind", "kipi-abc", True)
         note = props["Notes"]["rich_text"][0]["text"]["content"]
-        assert note.startswith("Done signal: you sent it"), note
+        assert note.startswith("Done when: you send it"), note
         assert "scope=card" in note, "the painter still has to read its scope back"
 
     def test_domain_is_the_producers_not_a_hardcoded_Consulting(self):
@@ -1671,3 +1671,41 @@ class TestTwoDeliverablesAreTwoRows:
             {"id": "c1", "slug": "acme", "state": "open", "due": due,
              "promise": "send the audit"}), clients={"clients": []})
         assert any(r["key"] == "due:c1" for r in cb.read_week(NOW, paths)[0])
+
+
+class TestTheDoneLineIsACriterionNotAClaim:
+    """Founder, 2026-09-04, reading his own board: *"if it says I'm done why is it
+    showing me the thread?"* Every Gmail row's note read "Done signal: you replied in
+    the thread" -- a past-tense sentence about him. The row asserted the very thing it
+    was asking for, while Status said Not started two columns away.
+
+    The phrasing was copied off the reference board and never read back as a sentence.
+    A completion criterion has to be written as a condition."""
+
+    def test_the_note_says_when_not_that_it_happened(self):
+        props = board_rows._properties(
+            {"title": "t", "scope": "inbox:Gmail", "detail": "d",
+             "done": "you reply in the thread"}, "Inbox", "kipi-abc", True)
+        note = "".join(t["text"]["content"] for t in props["Notes"]["rich_text"])
+        assert note.startswith("Done when: "), note
+        assert "Done signal" not in note
+
+    def test_no_done_string_is_written_in_the_past_tense(self):
+        """A grep, deliberately: the defect was one word in one string, and the next
+        one added will be written by whoever adds a source."""
+        strings = ([cb.DONE_DEFAULT, cb.DONE_GTM_FALLBACK]
+                   + list(cb.DONE_BY_KIND.values())
+                   + list(cb.DONE_BY_SOURCE.values()))
+        assert strings
+        for text in strings:
+            for past in ("you replied", "you answered", "you sent", "you delivered",
+                         "you have acted", "you moved", "you wrote"):
+                assert past not in text, (
+                    f"{text!r} reads as a claim that he already did it, not as the "
+                    "condition for being finished")
+
+    def test_every_row_still_carries_one(self, tmp_path):
+        b = cb.buckets(NOW, {"mail": ([_brief().Row("Portant: docs", "mail:t1")], None)},
+                       _tree(tmp_path))
+        rows = b["top_of_mind"] + b["this_week"] + b["inbox"]
+        assert rows and all((r.get("done") or "").strip() for r in rows)
