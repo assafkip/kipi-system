@@ -37,4 +37,6 @@
 - The founder's routing rule held again: repo settings on his GitHub account and a peer session's git are Sana's, not his. Fifth recurrence recorded in `feedback_sana_owns_the_build`.
 
 ## Tomorrow
-Calendar: COULD NOT READ. `[verified: mcp list_events for 2026-09-04 -> "MCP server claude.ai Google Calendar session expired"]`. The morning brief job (`com.kipi.morning-brief`) covers it if the connector is back; otherwise its section says COULD NOT READ too. `provenance: observed`
+Calendar for 2026-09-04: one event, 19:00 "Guinea Pig Cleaning – Lavie" on assafkip@gmail.com. `[verified: morning-brief.py run_claude with list_events on calendarId assafkip@gmail.com, week 2026-09-01..08 -> 9 events incl. this one; default-calendar read -> 0]`. This session's own connector binding is expired (session-level; the fresh headless sessions the brief uses work fine). `provenance: observed`
+
+**Defect found doing that, captured as sp-57823aef, Sana dispatched 2026-09-04 with a reproducer-first brief:** `collect_calendar` reads only the default calendar, which is empty; every event lives on the two named calendars, so the brief's calendar section has been printing nothing on days with events. `[verified: list_calendars -> 3 calendars, none primary; default week read -> {"events": []}; named read -> 9 events]`
