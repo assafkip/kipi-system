@@ -79,6 +79,11 @@ BRIEF_MODEL = os.environ.get("KIPI_BRIEF_MODEL", "claude-opus-5")
 CLAUDE_TIMEOUT = int(os.environ.get("KIPI_BRIEF_CLAUDE_TIMEOUT", "180"))
 
 CAL_TOOL = "mcp__claude_ai_Google_Calendar__list_events"
+CAL_LIST_TOOL = "mcp__claude_ai_Google_Calendar__list_calendars"
+# Substring, not an exact id: Google names the holiday feed per locale
+# (en.usa#holiday@..., en.uk#holiday@...) and it carries nothing the founder
+# acts on. Everything else the account can read is his day.
+HOLIDAY_MARKER = "holiday@group.v.calendar.google.com"
 MAIL_TOOL = "mcp__claude_ai_Gmail__search_threads"
 
 MAX_ROWS = 15
@@ -156,30 +161,100 @@ def _parse_json_block(text: str, key: str):
 # Section 1: today's calendar
 # ---------------------------------------------------------------------------
 
-CAL_PROMPT = """Call {tool} for calendar "primary" restricted to {day} local time only.
+CAL_LIST_PROMPT = """Call {tool} and list every calendar this account can read.
+Reply with ONE JSON object and nothing else, no prose, no code fence:
+{{"calendars": [{{"id": "<the calendar id, an email address>", "summary": "..."}}]}}
+Include every calendar the tool returns. Do not filter, do not pick one.
+If the tool call fails, reply with exactly: {{"error": "<what failed>"}}"""
+
+CAL_PROMPT = """Call {tool} with calendarId "{calendar_id}" restricted to {day}
+local time only. Read that calendar and no other.
 Reply with ONE JSON object and nothing else, no prose, no code fence:
 {{"events": [{{"start": "HH:MM", "title": "...", "who": ["name", ...]}}]}}
 Use "all-day" as start for all-day events. "who" is the other attendees, may be [].
 If the tool call fails, reply with exactly: {{"error": "<what failed>"}}"""
 
 
+def _event_sort_key(start: str):
+    """All-day first, then HH:MM ascending.
+
+    Rows arrive grouped by calendar, which is an ordering the founder never
+    asked for. He reads the section top-to-bottom as a day, so the merge sorts
+    by start or the second account's 08:00 lands under the first account's 17:00.
+    """
+    return (0, "") if start == "all-day" else (1, start)
+
+
 def collect_calendar(now: dt.datetime, runner=None):
+    """(rows, error). Reads EVERY calendar on the account, not the default one.
+
+    ## Scar sp-57823aef, measured 2026-09-04
+
+    This used to call list_events with no calendarId, which reads the account
+    default. `list_calendars` on this account returns three calendars and NONE
+    of them is flagged primary: assafkip@gmail.com, assaf@askconsulting.io, and
+    the US holiday feed. The default read returned zero events for the whole
+    week 2026-09-01..08 while an explicit read of assafkip@gmail.com returned 9
+    (2026-09-02 09:00 "Weekly project planning", 2026-09-07 08:00 "Project plan
+    - Weekly"). So the brief printed "nothing" on days that had meetings, and
+    the zero read as a pass.
+
+    Naming "primary" in the prompt prose was not enough and was never the fix:
+    prose is not an argument, and on this account "primary" resolves to a
+    calendar with no events on it.
+
+    ## Why a failure anywhere returns an error and never a short list
+
+    An enumeration that fails, or one calendar that fails while the others
+    answer, returns ([], error) so the section renders COULD NOT READ. A partial
+    read rendered as a complete one is the same lie as printing "nothing": the
+    founder cannot see that an account was dropped. That distinction is the
+    property this whole file exists to hold.
+    """
     day = now.strftime("%Y-%m-%d")
     runner = runner or (lambda p, t: run_claude(p, t))
-    text, error = runner(CAL_PROMPT.format(tool=CAL_TOOL, day=day), [CAL_TOOL])
+
+    text, error = runner(CAL_LIST_PROMPT.format(tool=CAL_LIST_TOOL), [CAL_LIST_TOOL])
     if error:
-        return [], error
-    events, parse_error = _parse_json_block(text, "events")
+        return [], f"calendar list: {error}"
+    calendars, parse_error = _parse_json_block(text, "calendars")
     if parse_error:
-        return [], parse_error
-    rows = []
-    for ev in events:
-        if not isinstance(ev, dict):
+        return [], f"calendar list: {parse_error}"
+
+    ids = []
+    for cal in calendars:
+        cid = cal.get("id") if isinstance(cal, dict) else cal
+        if not isinstance(cid, str) or not cid.strip():
             continue
-        who = ev.get("who") or []
-        who_text = f"  ({', '.join(str(w) for w in who)})" if who else ""
-        rows.append(f"{ev.get('start', '??:??')}  {str(ev.get('title', 'untitled'))[:80]}{who_text}")
-    return rows, None
+        cid = cid.strip()
+        if HOLIDAY_MARKER in cid:
+            continue
+        if cid not in ids:
+            ids.append(cid)
+    if not ids:
+        return [], (f"calendar list returned {len(calendars)} calendar(s), none readable "
+                    "(every one was a holiday feed or carried no id)")
+
+    dated = []
+    for cid in ids:
+        text, error = runner(
+            CAL_PROMPT.format(tool=CAL_TOOL, day=day, calendar_id=cid), [CAL_TOOL])
+        if error:
+            return [], f"{cid}: {error}"
+        events, parse_error = _parse_json_block(text, "events")
+        if parse_error:
+            return [], f"{cid}: {parse_error}"
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            who = ev.get("who") or []
+            who_text = f"  ({', '.join(str(w) for w in who)})" if who else ""
+            start = str(ev.get("start", "??:??"))
+            title = str(ev.get("title", "untitled"))[:80]
+            dated.append((start, f"{start}  {title}{who_text}"))
+
+    dated.sort(key=lambda row: _event_sort_key(row[0]))
+    return [row[1] for row in dated], None
 
 
 # ---------------------------------------------------------------------------

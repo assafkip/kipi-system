@@ -252,6 +252,128 @@ def test_model_call_refuses_under_pytest(brief):
 # Collectors: each one turns a broken source into an error, not into []
 # --------------------------------------------------------------------------
 
+# --- sp-57823aef: the account has three calendars and none is flagged primary --
+# Measured 2026-09-04 with list_calendars on the live account. The collector
+# called list_events with NO calendarId, so it read the account default, which
+# returned zero events for the whole week 2026-09-01..08 while an explicit read
+# of assafkip@gmail.com returned 9. The brief printed "nothing" on days that had
+# meetings. These ids are the live ones; the events are two real rows off that
+# week (2026-09-02 09:00 and 2026-09-07 08:00).
+
+CAL_LIST_JSON = json.dumps({"calendars": [
+    {"id": "assafkip@gmail.com", "summary": "assafkip@gmail.com"},
+    {"id": "assaf@askconsulting.io", "summary": "assaf@askconsulting.io"},
+    {"id": "en.usa#holiday@group.v.calendar.google.com",
+     "summary": "Holidays in United States"},
+]})
+
+REAL_SHAPED_EVENTS = json.dumps({"events": [
+    {"start": "09:00", "title": "Weekly project planning", "who": []},
+    {"start": "08:00", "title": "Project plan - Weekly", "who": []},
+]})
+
+
+def _cal_runner(per_calendar=None, listing=CAL_LIST_JSON, listing_error=None,
+                seen=None):
+    """Fake model seam shaped like the live account.
+
+    Keys on the PROMPT TEXT, never on call order. The defect was that the
+    collector named no calendarId at all, and a call-order fake cannot tell
+    "named no calendar" apart from "named the right one" -- it would go green
+    against the unfixed code. Any prompt that names no known calendar id falls
+    through to the empty read, which is exactly what the account default did.
+    """
+    per_calendar = per_calendar or {}
+
+    def run(prompt, tools):
+        if seen is not None:
+            seen.append(prompt)
+        if "list_calendars" in prompt:
+            if listing_error:
+                return None, listing_error
+            return listing, None
+        for cid, payload in per_calendar.items():
+            if cid in prompt:
+                return payload
+        return json.dumps({"events": []}), None
+
+    return run
+
+
+def test_calendar_reads_every_calendar_not_the_account_default(brief):
+    """The reproducer for sp-57823aef. RED on the pre-fix collector: it names
+    no calendarId, falls through to the empty default read, and returns 0 rows.
+    """
+    seen = []
+    runner = _cal_runner(
+        per_calendar={"assafkip@gmail.com": (REAL_SHAPED_EVENTS, None)}, seen=seen)
+    rows, error = brief.collect_calendar(NOW, runner=runner)
+    assert error is None, error
+    assert len(rows) == 2, f"read the account default, not the calendars: {rows}"
+    # merged output is sorted by start, so the 08:00 row leads
+    assert "Project plan - Weekly" in rows[0], rows
+    assert "Weekly project planning" in rows[1], rows
+    assert any("assafkip@gmail.com" in p for p in seen), \
+        "no prompt ever named a calendarId"
+
+
+def test_calendar_reads_the_second_account_too(brief):
+    """Both non-holiday calendars are read, not just the first one."""
+    seen = []
+    brief.collect_calendar(NOW, runner=_cal_runner(seen=seen))
+    assert any("assaf@askconsulting.io" in p for p in seen), seen
+
+
+def test_calendar_skips_the_holiday_feed(brief):
+    seen = []
+    brief.collect_calendar(NOW, runner=_cal_runner(seen=seen))
+    assert not any("holiday@group.v.calendar.google.com" in p for p in seen), seen
+
+
+def test_calendar_enumeration_failure_is_could_not_read_not_nothing(brief):
+    """The control. A dead connector must render COULD NOT READ. Returning []
+    here would make a broken calendar indistinguishable from a free morning,
+    which is the defect that let the 9-phase pipeline die silently.
+    """
+    rows, error = brief.collect_calendar(
+        NOW, runner=_cal_runner(listing_error="claude exited 1"))
+    assert rows == []
+    assert error is not None
+    assert "claude exited 1" in error
+
+
+def test_calendar_unparseable_enumeration_is_an_error(brief):
+    rows, error = brief.collect_calendar(
+        NOW, runner=_cal_runner(listing="I could not list the calendars"))
+    assert rows == []
+    assert error is not None
+
+
+def test_calendar_one_broken_calendar_fails_the_section(brief):
+    """A partial read is not reported as a complete one. If any calendar could
+    not be read the section says COULD NOT READ, because silently dropping one
+    account is the same class of lie as printing "nothing".
+    """
+    rows, error = brief.collect_calendar(NOW, runner=_cal_runner(per_calendar={
+        "assafkip@gmail.com": (REAL_SHAPED_EVENTS, None),
+        "assaf@askconsulting.io": (None, "claude timed out after 180s"),
+    }))
+    assert rows == []
+    assert error is not None
+    assert "assaf@askconsulting.io" in error
+
+
+def test_calendar_all_calendars_filtered_out_is_an_error(brief):
+    """Degenerate case: an enumeration that yields nothing readable is a broken
+    read, not a quiet day."""
+    only_holidays = json.dumps({"calendars": [
+        {"id": "en.usa#holiday@group.v.calendar.google.com", "summary": "Holidays"}]})
+    rows, error = brief.collect_calendar(
+        NOW, runner=_cal_runner(listing=only_holidays))
+    assert rows == []
+    assert error is not None
+
+
 def test_calendar_collector_reports_a_model_failure(brief):
     rows, error = brief.collect_calendar(
         NOW, runner=lambda prompt, tools: (None, "claude exited 1"))
@@ -269,15 +391,20 @@ def test_calendar_collector_reports_unparseable_output(brief):
 def test_calendar_collector_parses_events(brief):
     payload = json.dumps({"events": [
         {"start": "09:00", "title": "Chris PI sync", "who": ["chris"]}]})
-    rows, error = brief.collect_calendar(NOW, runner=lambda p, t: (payload, None))
+    rows, error = brief.collect_calendar(
+        NOW, runner=_cal_runner(per_calendar={"assafkip@gmail.com": (payload, None)}))
     assert error is None
     assert len(rows) == 1
     assert "Chris PI sync" in rows[0]
+    assert "(chris)" in rows[0]
 
 
 def test_calendar_empty_is_empty_not_an_error(brief):
-    rows, error = brief.collect_calendar(
-        NOW, runner=lambda p, t: (json.dumps({"events": []}), None))
+    """Every calendar enumerated and every one genuinely empty. This is the ONE
+    shape allowed to render as a quiet day, and sp-57823aef is why it has to be
+    reached by reading them rather than by reading none of them.
+    """
+    rows, error = brief.collect_calendar(NOW, runner=_cal_runner())
     assert rows == []
     assert error is None
 
