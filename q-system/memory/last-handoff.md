@@ -45,3 +45,26 @@ Calendar for 2026-09-04: one event, 19:00 "Guinea Pig Cleaning – Lavie" on ass
 **Ownership (founder, 2026-09-04): the morning brief has ONE owner, the "gmail connection" session (PR #296).** My PR #299 (sana/morning-brief-all-calendars, ASK-1235) finishes its review round and is NOT merged by me; that session lands #296 then merges #299 behind it. `[verified: git merge-tree --write-tree origin/feat/consulting-morning-board origin/sana/morning-brief-all-calendars -> 0 conflicts at 02ae6db3]`. No further edits to morning-brief.py from this session. `provenance: explicit_statement` Final state handed over: head 63f6cc78, round-two verdict REQUEST CHANGES with one major (calendar list taken from the model's rewritten JSON instead of the raw list_calendars tool_result; the fix is reading tool_result blocks in `_parse_stream_json`), executed calendarId verification is in and sound, merged-tree suite against #296 green. `[verified: agent report; pr-reviews/codex/assafkip_kipi-system__pr-299-20260904-080927.md; merge-tree rc 0 at 63f6cc78, scratch merged tree 80 passed]` `provenance: imported`
 
 **Defect found doing that, captured as sp-57823aef, Sana dispatched 2026-09-04 with a reproducer-first brief:** `collect_calendar` reads only the default calendar, which is empty; every event lives on the two named calendars, so the brief's calendar section has been printing nothing on days with events. `[verified: list_calendars -> 3 calendars, none primary; default week read -> {"events": []}; named read -> 9 events]`
+
+---
+
+# Session 2026-09-03/04, kipi-system instrument-discipline (Sana). Closed clean. `provenance: observed`
+
+**Ask:** case-004 in Alice, five instrument defects in one day (a measurement never pointed at a known answer), lesson existed, did not arrive. Evaluate three candidates, build what survives.
+
+### Shipped
+- **PR #298 merged to main as 03127eab.** `instrument-lint.py` (PostToolUse on `investigation/findings/*.md` and `output/analyses/**`: a null-shaped claim needs a control LABEL; basename date or git add-date before 2026-09-04 exempt), 56-check reproducer, paths-scoped rule `instrument-discipline.md` with enforcement block, pairing-list entry, both settings files wired. Two Codex rounds applied, reviewer verdict APPROVE WITH NITS, auto-merged. `[verified: gh pr view 298 -> MERGED 2026-09-04T04:04:36Z; test_instrument_lint.py -> all green; fleet over instance-registry.json -> 246 in-scope, 0 red]`
+- **Fleet sync from main applied by the founder** from a clean clone (primary checkout is on a feature branch; its local `main` was moved to origin/main after proving all 12 extra commits live on origin/fix/candidate-draft-one-definition). 24 instances updated. Alice has lessons-inject.py, its wiring, instrument-lint, and the rule. `[verified: grep -c lessons-inject / instrument-lint in Alice .claude/settings.json -> 1 each; rule file present]`
+- Candidate A (ledger `control` field) REJECTED: case-004 wrote 0 ledger rows. The trigger-eval fixture was built then REMOVED: a paths-scoped rule never loads under skill-trigger-eval, so it measured the un-ruled model.
+- Public mirror github.com/assafkip/voice-loop restored at 5f67594 after I pushed it from skeleton main (13f4a2c) for about an hour with `zscores` missing. `[verified: git show 5f67594:voiceloop/fingerprint.py | grep -c 'def zscores' -> 1]`
+
+### consulting is HELD OUT of the fleet sync, on purpose
+Its voice engine is ahead of every kipi-system branch (`fingerprint.zscores`, 5 call sites in pipeline/voice.py; absent on main, sana/voiceloop-draft-hook, fix/candidate-draft-one-definition). The sync's rsync --delete overwrites it and its suite errors. `[verified: grep -c 'def zscores' on each branch -> 0,0,0; consulting HEAD -> 1]`. The voicekit -> voiceloop rename IS done there (86d102b5, all 5 pre-commit checks green), four defects deep: cache-only package shell, a Friday-only red test, the migration rewriting the mirror's own rename table, then the engine mismatch. Memory: `project_consulting_engine_ahead_of_skeleton`. Two unstaged edits in consulting (`pipeline/voice.py`, `voice/exemplars.jsonl`) are NOT mine; left alone.
+
+### Linear, all with DoR and owner:sana
+ASK-1238 port consulting's engine into the skeleton (p2, the real finding) · ASK-1239 migration script: cache-only dir is not a package, rename table must not rewrite itself · ASK-1240 investigation flow writes ledger rows · ASK-1241 wire Alice's dead findings-verify-hook · ASK-1242 trigger-eval seeds a path for paths-scoped rules · ASK-1243 capability-gate check-only vs full mode disagree in consulting-kipi. Spillover ledger for this work: empty (sp-3a2bbc88 voided with evidence; six promoted). `[verified: spillover-promote.py output for each id -> status promoted]`
+
+### The scar worth keeping
+My first blast-radius measurement ran 4_points over a path that does not exist, returned zero in-scope files, and I read the zero as clean. Scar shape 5 from the brief, reproduced while building the gate for it. Recorded in the lint docstring, the rule, and `feedback_fixtures_from_producers` (third instance).
+
+### Nothing pending. No background tasks. Scratch clone of main at the session scratchpad is disposable.
