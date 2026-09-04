@@ -64,6 +64,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -84,6 +85,13 @@ CAL_LIST_TOOL = "mcp__claude_ai_Google_Calendar__list_calendars"
 # (en.usa#holiday@..., en.uk#holiday@...) and it carries nothing the founder
 # acts on. Everything else the account can read is his day.
 HOLIDAY_MARKER = "holiday@group.v.calendar.google.com"
+
+# The calendar collector now makes 1 + N model calls where it used to make one.
+# PR #299 review, minor 3: N calls each inside CLAUDE_TIMEOUT can outrun the
+# section deadline in `_guarded` (FIXED_BUDGET_S), which abandons the thread and
+# reports a bare "calendar timed out". The collector owns a total budget of its
+# own so it fails FIRST and says which calendars it never reached.
+CAL_TOTAL_BUDGET_S = float(os.environ.get("KIPI_BRIEF_CAL_BUDGET", str(CLAUDE_TIMEOUT)))
 MAIL_TOOL = "mcp__claude_ai_Gmail__search_threads"
 
 MAX_ROWS = 15
@@ -100,8 +108,8 @@ def _load_sibling(stem: str, filename: str):
 # The model seam
 # ---------------------------------------------------------------------------
 
-def run_claude(prompt: str, tools: list, timeout: int = CLAUDE_TIMEOUT):
-    """(stdout, error). One bounded headless call.
+def _claude_exec(prompt: str, tools: list, timeout: int, extra_args=()):
+    """(stdout, error). One bounded headless call. The single subprocess site.
 
     REFUSES UNDER PYTEST. Same chokepoint posture as slack_founder.deliver: the
     refusal lives at the destination, not in per-test stubs, because per-test
@@ -117,7 +125,7 @@ def run_claude(prompt: str, tools: list, timeout: int = CLAUDE_TIMEOUT):
     env["ANTHROPIC_MODEL"] = BRIEF_MODEL
     try:
         proc = subprocess.run(
-            ["claude", "-p", prompt, "--allowedTools", *tools],
+            ["claude", "-p", prompt, "--allowedTools", *tools, *extra_args],
             capture_output=True, text=True, timeout=timeout,
             stdin=subprocess.DEVNULL, env=env)
     except FileNotFoundError:
@@ -130,6 +138,67 @@ def run_claude(prompt: str, tools: list, timeout: int = CLAUDE_TIMEOUT):
         detail = (proc.stderr or proc.stdout or "").strip()[:200]
         return None, f"claude exited {proc.returncode}: {detail}"
     return proc.stdout, None
+
+
+def run_claude(prompt: str, tools: list, timeout: int = CLAUDE_TIMEOUT):
+    """(stdout, error). The plain-text call. Mail still uses this."""
+    return _claude_exec(prompt, tools, timeout)
+
+
+def _parse_stream_json(stdout: str):
+    """(answer, error, tool_calls) out of `--output-format stream-json` output.
+
+    Shape measured 2026-09-04 against the live connector, not assumed: the
+    transcript is one JSON object per line; `assistant` lines carry
+    `message.content[]` blocks where a `tool_use` block has `name` and `input`;
+    the final `result` line carries `is_error` and the prose answer in `result`.
+
+    A line that does not parse is skipped rather than fatal (the CLI interleaves
+    diagnostics), but a transcript with NO result line is an error. Fail closed:
+    a run whose answer never arrived must not read as an answer of nothing.
+    """
+    calls, answer, saw_result = [], None, False
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        kind = obj.get("type")
+        if kind == "assistant":
+            content = (obj.get("message") or {}).get("content") or []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    calls.append({"name": block.get("name"),
+                                  "input": block.get("input") or {}})
+        elif kind == "result":
+            saw_result = True
+            if obj.get("is_error"):
+                return None, f"claude reported an error: {str(obj.get('result'))[:200]}", calls
+            answer = obj.get("result")
+    if not saw_result:
+        return None, "no result line in the stream-json transcript", calls
+    return answer, None, calls
+
+
+def run_claude_traced(prompt: str, tools: list, timeout: int = CLAUDE_TIMEOUT):
+    """(answer, error, tool_calls). The call whose TOOL ARGUMENTS are readable.
+
+    PR #299 major: `run_claude` returns only the model's prose. A model that was
+    asked for calendarId X and silently read the default calendar answers
+    `{"events": []}`, which is indistinguishable from a genuinely empty day. The
+    prompt is not evidence of what ran; the tool_use block is. So the calendar
+    path asks for the whole transcript and checks the argument that executed.
+    """
+    stdout, error = _claude_exec(prompt, tools, timeout,
+                                 ("--output-format", "stream-json", "--verbose"))
+    if error:
+        return None, error, []
+    return _parse_stream_json(stdout)
 
 
 def _parse_json_block(text: str, key: str):
@@ -185,8 +254,30 @@ def _event_sort_key(start: str):
     return (0, "") if start == "all-day" else (1, start)
 
 
-def collect_calendar(now: dt.datetime, runner=None):
-    """(rows, error). Reads EVERY calendar on the account, not the default one.
+def _executed_calendar_ids(tool_calls) -> set:
+    """The calendarIds `list_events` was ACTUALLY invoked with, off the transcript.
+
+    Filtered by tool name on purpose. The live transcript (measured 2026-09-04)
+    also carries a ToolSearch call, and a `calendarId` appearing in some other
+    tool's input is not evidence that the calendar was read.
+    """
+    found = set()
+    for call in tool_calls or []:
+        if not isinstance(call, dict) or call.get("name") != CAL_TOOL:
+            continue
+        payload = call.get("input")
+        if not isinstance(payload, dict):
+            continue
+        for key in ("calendarId", "calendar_id"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                found.add(value.strip())
+    return found
+
+
+def collect_calendar(now: dt.datetime, runner=None, budget_s: float = None,
+                     clock=None):
+    """(rows, error). Reads EVERY calendar on the account, and PROVES it did.
 
     ## Scar sp-57823aef, measured 2026-09-04
 
@@ -203,44 +294,79 @@ def collect_calendar(now: dt.datetime, runner=None):
     prose is not an argument, and on this account "primary" resolves to a
     calendar with no events on it.
 
+    ## Why the prompt naming a calendarId is ALSO not enough (PR #299 major)
+
+    Putting the id in the prompt only moves the same defect one step: a model
+    that ignores it and reads the default still answers `{"events": []}`, which
+    renders as a quiet morning. So the runner returns the TRANSCRIPT, and a
+    calendar's answer is refused unless a `list_events` tool_use actually
+    carried that id. The check is on the executed argument, never on the ask.
+
     ## Why a failure anywhere returns an error and never a short list
 
-    An enumeration that fails, or one calendar that fails while the others
-    answer, returns ([], error) so the section renders COULD NOT READ. A partial
+    An enumeration that fails, one calendar that fails while the others answer,
+    a calendar entry with no usable id, a refused answer, or a budget that ran
+    out all return ([], error) so the section renders COULD NOT READ. A partial
     read rendered as a complete one is the same lie as printing "nothing": the
     founder cannot see that an account was dropped. That distinction is the
     property this whole file exists to hold.
     """
     day = now.strftime("%Y-%m-%d")
-    runner = runner or (lambda p, t: run_claude(p, t))
+    clock = clock or time.monotonic
+    budget_s = CAL_TOTAL_BUDGET_S if budget_s is None else budget_s
+    started = clock()
 
-    text, error = runner(CAL_LIST_PROMPT.format(tool=CAL_LIST_TOOL), [CAL_LIST_TOOL])
+    def remaining():
+        return budget_s - (clock() - started)
+
+    def default_runner(prompt, tools):
+        return run_claude_traced(prompt, tools,
+                                 timeout=max(1, int(min(CLAUDE_TIMEOUT, remaining()))))
+
+    runner = runner or default_runner
+
+    text, error, _ = runner(CAL_LIST_PROMPT.format(tool=CAL_LIST_TOOL), [CAL_LIST_TOOL])
     if error:
         return [], f"calendar list: {error}"
     calendars, parse_error = _parse_json_block(text, "calendars")
     if parse_error:
         return [], f"calendar list: {parse_error}"
 
-    ids = []
+    ids, malformed = [], 0
     for cal in calendars:
         cid = cal.get("id") if isinstance(cal, dict) else cal
         if not isinstance(cid, str) or not cid.strip():
+            malformed += 1
             continue
         cid = cid.strip()
         if HOLIDAY_MARKER in cid:
             continue
         if cid not in ids:
             ids.append(cid)
+    if malformed:
+        # PR #299 minor 2. Dropping these quietly while the rest rendered made a
+        # partial read wear a complete read's clothes, which is the one thing
+        # this section is not allowed to do.
+        return [], (f"calendar list had {malformed} entry/entries with no usable id; "
+                    "the read is partial, not empty")
     if not ids:
         return [], (f"calendar list returned {len(calendars)} calendar(s), none readable "
-                    "(every one was a holiday feed or carried no id)")
+                    "(every one was a holiday feed)")
 
     dated = []
-    for cid in ids:
-        text, error = runner(
+    for index, cid in enumerate(ids):
+        if remaining() <= 0:
+            return [], (f"calendar budget of {budget_s}s exhausted with "
+                        f"{len(ids) - index} calendar(s) unread, starting at {cid}")
+        text, error, tool_calls = runner(
             CAL_PROMPT.format(tool=CAL_TOOL, day=day, calendar_id=cid), [CAL_TOOL])
         if error:
             return [], f"{cid}: {error}"
+        executed = _executed_calendar_ids(tool_calls)
+        if cid not in executed:
+            return [], (f"{cid}: refused, {CAL_TOOL} was executed with "
+                        f"{sorted(executed) or 'no calendarId'} — that answer is "
+                        "about some other calendar")
         events, parse_error = _parse_json_block(text, "events")
         if parse_error:
             return [], f"{cid}: {parse_error}"

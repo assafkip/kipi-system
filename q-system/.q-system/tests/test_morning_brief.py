@@ -273,15 +273,33 @@ REAL_SHAPED_EVENTS = json.dumps({"events": [
 ]})
 
 
-def _cal_runner(per_calendar=None, listing=CAL_LIST_JSON, listing_error=None,
-                seen=None):
-    """Fake model seam shaped like the live account.
+ALL_CAL_IDS = ("assafkip@gmail.com", "assaf@askconsulting.io",
+               "en.usa#holiday@group.v.calendar.google.com")
 
-    Keys on the PROMPT TEXT, never on call order. The defect was that the
-    collector named no calendarId at all, and a call-order fake cannot tell
-    "named no calendar" apart from "named the right one" -- it would go green
-    against the unfixed code. Any prompt that names no known calendar id falls
-    through to the empty read, which is exactly what the account default did.
+# The live tool names, spelled out rather than read off the module under test.
+# A rename in the script must turn these red, not silently keep passing against
+# a constant that moved with it.
+LIST_EVENTS = "mcp__claude_ai_Google_Calendar__list_events"
+LIST_CALENDARS = "mcp__claude_ai_Google_Calendar__list_calendars"
+
+_UNSET = object()
+
+
+def _cal_runner(per_calendar=None, listing=CAL_LIST_JSON, listing_error=None,
+                seen=None, executed_id=_UNSET):
+    """Fake model seam shaped like the live `--output-format stream-json` run.
+
+    Measured 2026-09-04 against the real connector, not invented: the transcript
+    carries `assistant` messages whose `content[]` holds `tool_use` blocks with
+    `name` and `input.calendarId`, then a `result` line with the prose answer.
+    So this returns (answer, error, tool_calls).
+
+    `executed_id` is what the TRANSCRIPT says list_events actually ran with,
+    and it is deliberately independent of what the prompt asked for. That split
+    is the whole point of the PR #299 major: the collector could only see its
+    own prompt, so a model that ignored calendarId and read the default handed
+    back a clean `{"events": []}` and the brief printed a quiet morning. Pass
+    None to simulate a call that carried no calendarId at all.
     """
     per_calendar = per_calendar or {}
 
@@ -290,14 +308,145 @@ def _cal_runner(per_calendar=None, listing=CAL_LIST_JSON, listing_error=None,
             seen.append(prompt)
         if "list_calendars" in prompt:
             if listing_error:
-                return None, listing_error
-            return listing, None
+                return None, listing_error, []
+            return listing, None, [{"name": LIST_CALENDARS, "input": {}}]
+
+        asked = next((cid for cid in ALL_CAL_IDS if cid in prompt), None)
+        answer, error = json.dumps({"events": []}), None
         for cid, payload in per_calendar.items():
             if cid in prompt:
-                return payload
-        return json.dumps({"events": []}), None
+                answer, error = payload
+        executed = asked if executed_id is _UNSET else executed_id
+        calls = [{"name": LIST_EVENTS,
+                  "input": {"calendarId": executed} if executed else {}}]
+        return answer, error, calls
 
     return run
+
+
+# Lifted verbatim off a real `claude -p --output-format stream-json --verbose`
+# run on 2026-09-04 (the Guinea Pig Cleaning event is genuinely on the calendar).
+# Producer-shaped, not invented: an invented transcript would only test what I
+# assumed the CLI emits.
+LIVE_TOOL_USE_LINE = json.dumps({"type": "assistant", "message": {"content": [
+    {"type": "tool_use", "id": "toolu_01UWnDhHdRGxWejrLbo71zir",
+     "name": "mcp__claude_ai_Google_Calendar__list_events",
+     "input": {"calendarId": "assafkip@gmail.com",
+               "startTime": "2026-09-04T00:00:00-07:00",
+               "endTime": "2026-09-05T00:00:00-07:00",
+               "orderBy": "startTime", "timeZone": "America/Los_Angeles"}}]}})
+LIVE_RESULT_LINE = json.dumps({
+    "type": "result", "subtype": "success", "is_error": False,
+    "result": '{"events": [{"start": "19:00", "title": "Guinea Pig Cleaning", "who": []}]}'})
+
+
+def test_stream_json_parser_reads_the_tool_use_and_the_answer(brief):
+    answer, error, calls = brief._parse_stream_json(
+        "\n".join([LIVE_TOOL_USE_LINE, LIVE_RESULT_LINE]))
+    assert error is None
+    assert "Guinea Pig Cleaning" in answer
+    assert calls[0]["name"] == LIST_EVENTS
+    assert calls[0]["input"]["calendarId"] == "assafkip@gmail.com"
+
+
+def test_stream_json_parser_without_a_result_line_is_an_error(brief):
+    """Fail closed. A transcript whose answer never arrived must not read as an
+    answer of nothing, which is this file's whole reason to exist."""
+    answer, error, calls = brief._parse_stream_json(LIVE_TOOL_USE_LINE)
+    assert answer is None
+    assert error is not None
+    assert calls, "the tool_use was still collected"
+
+
+def test_stream_json_parser_surfaces_an_error_result(brief):
+    line = json.dumps({"type": "result", "subtype": "error_during_execution",
+                       "is_error": True, "result": "connector unavailable"})
+    answer, error, _ = brief._parse_stream_json(line)
+    assert answer is None
+    assert "connector unavailable" in error
+
+
+def test_stream_json_parser_survives_non_json_noise(brief):
+    """The CLI interleaves diagnostics. A junk line is skipped, not fatal."""
+    answer, error, calls = brief._parse_stream_json(
+        "\n".join(["not json at all", LIVE_TOOL_USE_LINE, "", LIVE_RESULT_LINE]))
+    assert error is None
+    assert len(calls) == 1
+
+
+def test_calendar_refuses_an_answer_from_a_different_calendar(brief):
+    """The PR #299 major. The prompt names assafkip@gmail.com, the transcript
+    shows list_events was executed against the holiday feed, and the prose
+    answer is a clean empty list. Prompt presence is not proof. Only the
+    executed argument is, so this must be COULD NOT READ.
+    """
+    rows, error = brief.collect_calendar(NOW, runner=_cal_runner(
+        executed_id="en.usa#holiday@group.v.calendar.google.com"))
+    assert rows == []
+    assert error is not None
+    assert "assafkip@gmail.com" in error
+
+
+def test_calendar_refuses_an_answer_with_no_calendarid_at_all(brief):
+    """The original sp-57823aef shape, now caught at the transcript instead of
+    being invisible: list_events ran with no calendarId, so it read the account
+    default, and the default has no events on it."""
+    rows, error = brief.collect_calendar(NOW, runner=_cal_runner(executed_id=None))
+    assert rows == []
+    assert error is not None
+
+
+def test_calendar_accepts_an_answer_whose_tool_use_carries_the_id(brief):
+    """The positive half. A refusal that fires on everything is not a check."""
+    rows, error = brief.collect_calendar(NOW, runner=_cal_runner(
+        per_calendar={"assafkip@gmail.com": (REAL_SHAPED_EVENTS, None)}))
+    assert error is None, error
+    assert len(rows) == 2
+
+
+def test_calendar_ignores_tool_use_from_a_different_tool(brief):
+    """ToolSearch runs in the live transcript before list_events (measured
+    2026-09-04). A tool_use for some other tool must never satisfy the check.
+
+    The fake echoes the ASKED id back under the wrong tool name for EVERY
+    calendar. An earlier version only did it for the first one, so dropping the
+    tool-name filter still failed on the second calendar and this test passed
+    for a reason that had nothing to do with the filter. That mutant survived.
+    """
+    def runner(prompt, tools):
+        if "list_calendars" in prompt:
+            return CAL_LIST_JSON, None, [{"name": LIST_CALENDARS, "input": {}}]
+        asked = next((cid for cid in ALL_CAL_IDS if cid in prompt), None)
+        return json.dumps({"events": []}), None, [
+            {"name": "ToolSearch", "input": {"calendarId": asked}}]
+
+    rows, error = brief.collect_calendar(NOW, runner=runner)
+    assert rows == []
+    assert error is not None
+    assert "no calendarId" in error
+
+
+def test_calendar_malformed_entry_marks_the_read_partial(brief):
+    """PR #299 minor 2. One calendar entry with no id used to be dropped in
+    silence while the others rendered, which is a partial read wearing a
+    complete read's clothes."""
+    listing = json.dumps({"calendars": [
+        {"id": "assafkip@gmail.com"}, {"summary": "calendar whose id was omitted"}]})
+    rows, error = brief.collect_calendar(NOW, runner=_cal_runner(listing=listing))
+    assert rows == []
+    assert error is not None
+
+
+def test_calendar_stops_when_the_total_budget_is_gone(brief):
+    """PR #299 minor 3. N sequential model calls, each inside its own timeout,
+    could still outrun the section deadline in _guarded. The collector owns a
+    total budget of its own and says which calendars it never reached."""
+    ticks = iter([0.0] + [99.0] * 12)  # the clock jumps past the budget
+    rows, error = brief.collect_calendar(
+        NOW, runner=_cal_runner(), budget_s=10.0, clock=lambda: next(ticks))
+    assert rows == []
+    assert error is not None
+    assert "budget" in error
 
 
 def test_calendar_reads_every_calendar_not_the_account_default(brief):
@@ -376,14 +525,14 @@ def test_calendar_all_calendars_filtered_out_is_an_error(brief):
 
 def test_calendar_collector_reports_a_model_failure(brief):
     rows, error = brief.collect_calendar(
-        NOW, runner=lambda prompt, tools: (None, "claude exited 1"))
+        NOW, runner=lambda prompt, tools: (None, "claude exited 1", []))
     assert rows == []
     assert "claude exited 1" in error
 
 
 def test_calendar_collector_reports_unparseable_output(brief):
     rows, error = brief.collect_calendar(
-        NOW, runner=lambda prompt, tools: ("I could not reach the calendar", None))
+        NOW, runner=lambda prompt, tools: ("I could not reach the calendar", None, []))
     assert rows == []
     assert error
 
