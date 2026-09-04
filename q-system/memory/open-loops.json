@@ -13,11 +13,13 @@
     {
       "id": "captoken-pr",
       "title": "capability-token PR to dwarvesf/claude-guardrails (issue #14 filed)",
-      "next_action": "Issue FILED: github.com/dwarvesf/claude-guardrails/issues/14 (2026-06-20). Re-checked 2026-09-03 via gh (`gh issue view 14 --repo dwarvesf/claude-guardrails --json state,updatedAt,comments`): state OPEN, updatedAt still 2026-08-28, comment count now 0. NO maintainer reply, ever. The one comment that existed on 2026-09-02 (2026-08-28, benrrr56-wq, authorAssociation NONE, a third party promoting their own checkpoint layer) is GONE from the API response -- deleted or the account was removed. It was never an approval and its disappearance is not a signal either way; nothing about the maintainer's silence changed. When a MAINTAINER approves/invites the PR: re-clone if /tmp wiped, git apply q-system/output/captoken-claude-guardrails.patch, push branch chore/capability-approval, gh pr create with q-system/output/captoken-pr-body.md. Then close this loop.",
+      "next_action": "Issue FILED: github.com/dwarvesf/claude-guardrails/issues/14 (2026-06-20). Re-checked 2026-09-03 via gh (`gh issue view 14 --repo dwarvesf/claude-guardrails --json state,updatedAt,comments`): state OPEN, updatedAt still 2026-08-28, comment count now 0. NO maintainer reply, ever. The one comment that existed on 2026-09-02 (2026-08-28, benrrr56-wq, authorAssociation NONE, a third party promoting their own checkpoint layer) is GONE from the API response -- deleted or the account was removed. It was never an approval and its disappearance is not a signal either way; nothing about the maintainer's silence changed. When a MAINTAINER approves/invites the PR: re-clone if /tmp wiped, git apply q-system/output/captoken-claude-guardrails.patch, push branch chore/capability-approval, gh pr create with q-system/output/captoken-pr-body.md. Then close this loop. Re-checked 2026-09-04 (heartbeat): state OPEN, updatedAt STILL 2026-08-28T15:21:52Z, comments 0. Unchanged from the 2026-09-03 check. That is 76 days since the issue was filed (2026-06-20) with ZERO maintainer response of any kind. CADENCE (set 2026-09-04): STOP RE-CHECKING DAILY. A daily `gh issue view` cannot move a maintainer, and three consecutive identical reads is the same signal as one. Re-check WEEKLY: next check on or after 2026-09-11. Nothing else about this loop changes until a maintainer comments. An agent must NOT post a bump comment -- commenting is publishing to an external repo, which this instance's heartbeat contract forbids without maintainer approval. FOUNDER DECISION AVAILABLE (no agent may make it): after 76 days of silence, either (a) keep waiting on weekly polling, or (b) declare the upstream contribution dead and close this loop as no-response, keeping q-system/output/captoken-claude-guardrails.patch on disk for reuse.",
       "needs_founder": true,
       "status": "open",
       "added": "2026-06-20",
-      "github": "https://github.com/dwarvesf/claude-guardrails/issues/14"
+      "github": "https://github.com/dwarvesf/claude-guardrails/issues/14",
+      "last_checked": "2026-09-04",
+      "recheck_after": "2026-09-11"
     },
     {
       "id": "inv-h14h15-branch",
@@ -30,12 +32,14 @@
     {
       "id": "i-have-adhd-pr-124",
       "title": "i-have-adhd rule-8 RSD PR (upstream)",
-      "next_action": "PR github.com/ayghri/i-have-adhd/pull/124 is OPEN (rule 8 extended to feedback on the reader's own work, Author:AI disclosed). Re-checked 2026-09-03 via gh: state OPEN, not draft, mergeable MERGEABLE, 0 comments, 0 reviews, updatedAt still 2026-08-19 -- no maintainer activity in the 15 days since it was opened. The blocking step is the founder's, not the maintainer's, and an agent must not tick it: the final-accountability checkbox is a human attestation that a human reviewed the diff. Founder action: review the diff and tick the final-accountability checkbox in the PR body (2 min). Then wait on maintainer review; close this loop when merged or closed.",
+      "next_action": "PR github.com/ayghri/i-have-adhd/pull/124 is OPEN (rule 8 extended to feedback on the reader's own work, Author:AI disclosed). Re-checked 2026-09-03 via gh: state OPEN, not draft, mergeable MERGEABLE, 0 comments, 0 reviews, updatedAt still 2026-08-19 -- no maintainer activity in the 15 days since it was opened. The blocking step is the founder's, not the maintainer's, and an agent must not tick it: the final-accountability checkbox is a human attestation that a human reviewed the diff. Founder action: review the diff and tick the final-accountability checkbox in the PR body (2 min). Then wait on maintainer review; close this loop when merged or closed. Re-checked 2026-09-04 (heartbeat): state OPEN, isDraft false, mergeable MERGEABLE, 0 comments, 0 reviews, updatedAt STILL 2026-08-19T21:40:58Z. Unchanged from 2026-09-03; 16 days with no maintainer activity. VERIFIED IN THE PR BODY THIS RUN (not carried forward): the 'Final accountability' section still has the first box UNCHECKED -- 'I reviewed the complete diff, removed unrelated generated changes, and take responsibility for the submitted content.' The second box (failed/skipped/unrun checks disclosed) IS checked. So the blocker is confirmed still live and it is still the founder's, not the maintainer's. CADENCE (set 2026-09-04): re-check WEEKLY, next on or after 2026-09-11. A daily gh read cannot tick a human attestation checkbox. FOUNDER ACTION (2 min, Quick Win): open github.com/ayghri/i-have-adhd/pull/124, read the diff (two markdown files: the canonical skill and the Cursor mirror, additive prose inside rule 8), tick the first Final-accountability box, and post the confirming comment the body promises.",
       "needs_founder": true,
       "status": "open",
       "added": "2026-08-19",
       "github_url": "https://github.com/ayghri/i-have-adhd/pull/124",
-      "linear": "ASK-924"
+      "linear": "ASK-924",
+      "last_checked": "2026-09-04",
+      "recheck_after": "2026-09-11"
     },
     {
       "id": "browser-record-lane",
