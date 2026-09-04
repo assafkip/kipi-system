@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "slug": "instrument-discipline-enforcement-block",
+  "reason": "enforced-claim-lint C1: the rule's ENFORCED heading had no enforcement entry. Append the JSON block naming the wired executable, its config, its test and the honest note on what ENFORCED does not cover. Additive: one append.",
+  "requires": {
+    "files_present": [
+      ".claude/rules/instrument-discipline.md",
+      "q-system/.q-system/scripts/instrument-lint.py",
+      "q-system/.q-system/scripts/test_instrument_lint.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/rules/instrument-discipline.md",
+      "op": "append",
+      "insert": "\n```json\n[\n  {\n    \"clause\": \"Instrument discipline: point the instrument at a known answer first\",\n    \"status\": \"ENFORCED\",\n    \"exec\": \"q-system/.q-system/scripts/instrument-lint.py\",\n    \"config\": \".claude/settings.json\",\n    \"test\": \"q-system/.q-system/scripts/test_instrument_lint.py\",\n    \"note\": \"ENFORCED covers the null-claim label check only (shapes 2 and 5). Shapes 1, 3, 4 are judgment, measured by skill-evals/instrument-discipline.json through skill-trigger-eval.py, advisory and on demand.\",\n    \"directives\": 1\n  }\n]\n```\n",
+      "reason": "The lint reads this block to decide whether the ENFORCED marker is substantiated; without it the heading is a prompt-only claim."
+    }
+  ]
+}

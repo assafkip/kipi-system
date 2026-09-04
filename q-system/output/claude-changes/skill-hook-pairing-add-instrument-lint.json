@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "slug": "skill-hook-pairing-add-instrument-lint",
+  "reason": "Codex round 2 on PR #298: the instrument-discipline -> instrument-lint pairing was absent from the Wired pairings list that pairing audits read, so the next audit would count the hook as an orphan. One insert_after on the plan-lint sentence.",
+  "requires": {
+    "files_present": [
+      ".claude/rules/skill-hook-pairing.md",
+      "q-system/.q-system/scripts/instrument-lint.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/rules/skill-hook-pairing.md",
+      "op": "insert_after",
+      "anchor": "memory-freshness (rule) \u2192 memory-freshness-check (SessionStart: surfaces decay:fast memories for verification).",
+      "insert": " \u00b7 instrument-discipline (rule, paths-scoped) \u2192 instrument-lint (PostToolUse on investigation/findings and output/analyses: blocks a null-shaped claim with no control LABEL; basename date or git add-date before 2026-09-04 exempt; the judgment half has no fixture because a paths-scoped rule cannot load under skill-trigger-eval, sp-c4817fa9).",
+      "reason": "Keep the fleet's pairing list the source of truth."
+    }
+  ]
+}
