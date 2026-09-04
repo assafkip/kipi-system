@@ -1530,3 +1530,32 @@ class TestAnAbsentNotifierIsNotAFiling:
         filed, failed = er.route({"owed": ([], "linear down")}, (("owed", "Owed today"),))
         assert filed == []
         assert len(failed) == 1 and "no notifier" in failed[0][1]
+
+
+class TestRound13:
+    def test_an_idless_mail_answer_withholds_the_archive_authority(self, tmp_path):
+        """When the model returns ids the key is the id; when it does not, it is
+        sender+subject. Both are stable in themselves and they are DIFFERENT ids for
+        one thread, so the day the model stops returning ids the painter would archive
+        the row he pinned and recreate it at "Not started". The rows still paint."""
+        brief = _brief()
+        rows = [brief.Row("Alice  Re: invoice", "mail:Alice|Re: invoice")]
+        b = cb.buckets(NOW, {"mail": (rows, None)}, _tree(tmp_path))
+        assert [r["key"] for r in b["inbox"]] == ["mail:Alice|Re: invoice"]
+        assert "inbox:Gmail" not in b["healthy_scopes"]
+
+    def test_but_real_thread_ids_still_authorise_it(self, tmp_path):
+        """The negative control: withholding it always would mean answered mail never
+        leaves the board."""
+        brief = _brief()
+        rows = [brief.Row("Alice  Re: invoice", "mail:19ff4af34dbc0f56")]
+        b = cb.buckets(NOW, {"mail": (rows, None)}, _tree(tmp_path))
+        assert "inbox:Gmail" in b["healthy_scopes"]
+
+    def test_two_unreadable_properties_are_not_equal_to_each_other(self):
+        """`_already_holds` promised an unreadable property fails toward writing, while
+        None == None made two of them compare EQUAL and skip the write, so a row kept
+        stale text forever. The docstring was right and the code was not."""
+        a = board_rows._prop_value({"some_new_notion_shape": True})
+        b = board_rows._prop_value({"another_unknown": 1})
+        assert a != b and a != None  # noqa: E711  -- the None case is the defect

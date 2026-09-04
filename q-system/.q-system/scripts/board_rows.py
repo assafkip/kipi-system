@@ -287,12 +287,17 @@ def _live_bucket_of(page) -> str:
 WRITE_RESERVE_S = 2.0
 
 
+class _Unreadable:
+    """Sentinel for a property shape this module cannot flatten."""
+    __slots__ = ()
+
+
 def _prop_value(prop):
     """One Notion property flattened to something comparable. Unknown shapes -> None,
     which never compares equal, so an unrecognised property means "write it" rather
     than "assume it matches"."""
     if not isinstance(prop, dict):
-        return None
+        return _Unreadable()
     if "title" in prop or "rich_text" in prop:
         parts = prop.get("title") or prop.get("rich_text") or []
         out = []
@@ -306,7 +311,11 @@ def _prop_value(prop):
         return ((prop.get("select") or {}).get("name") or "") or None
     if "multi_select" in prop:
         return tuple(sorted((o.get("name") or "") for o in prop.get("multi_select") or []))
-    return None
+    # A DISTINCT OBJECT, never None (round 13, minor). The docstring below promised
+    # that an unreadable property compares unequal and fails toward writing, while
+    # None == None made two unreadable shapes compare EQUAL and skip the write, so a
+    # row kept stale text forever. A fresh object is equal to nothing but itself.
+    return _Unreadable()
 
 
 def _already_holds(page, props) -> bool:

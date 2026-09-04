@@ -111,6 +111,9 @@ _THEN_SEP = "·"
 #: The producer's own tail on that line: "+3 more, lowest-scoring, on the board".
 _MORE_SUMMARY = re.compile(r"^\+\s*\d+\s+more\b")
 #: "— 🔥 Portant (fire, v1 CRM: ...)" -- the person, out of the reach-out header's tail.
+#: A mail key built from sender+subject rather than a thread id. `collect_mail` uses
+#: "<sender>|<subject>" only when the model returned no id; a real id carries none.
+_FALLBACK_KEY = re.compile(r"^[^|]+\|")
 #: `build_card`'s first line, always present. See `read_card` for why it decides.
 _BOOK_HEADER = re.compile(r"\*Your book today\*")
 _REACH_WHO = re.compile(r"^[^A-Za-z0-9]*(?P<who>[A-Za-z0-9][^(:]*?)\s*(?:\(|:|$)")
@@ -730,7 +733,14 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
                           "done": f"{label} reads again",
                           "bucket_reason": "error"})
             continue                      # scope deliberately NOT marked healthy
-        healthy.add(f"inbox:{label}")
+        # AN ID-LESS ANSWER DOES NOT AUTHORISE ARCHIVING (round 13, major). When the
+        # model returns thread ids the key is the id; when it does not, the key falls
+        # back to sender+subject. Both are stable in themselves, but they are DIFFERENT
+        # ids for one thread, so a day where the model stops returning ids archives the
+        # row he pinned and recreates it at "Not started". The rows still paint; what
+        # is withheld is the authority to call the old ones gone.
+        if not any(_FALLBACK_KEY.match(getattr(r, "key", "") or "") for r in rows):
+            healthy.add(f"inbox:{label}")
         for row in rows:
             text = str(row)[:180]
             # THE END OF THE FOUR-ROUND LOOP. The key is the producer's own id

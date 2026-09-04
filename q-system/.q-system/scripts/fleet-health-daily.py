@@ -1500,7 +1500,8 @@ def plist_drift_findings(template_dir=None, launch_agents=None, render=None) -> 
     return out
 
 
-def never_installed_findings(template_dir=None, launch_agents=None) -> list:
+def never_installed_findings(template_dir=None, launch_agents=None,
+                            paused_labels=None) -> list:
     """A committed launchd template with no installed job at all.
 
     THE GAP THIS CLOSES. `plist_drift_findings` compares a template against the job
@@ -1520,9 +1521,16 @@ def never_installed_findings(template_dir=None, launch_agents=None) -> list:
     """
     templates = Path(template_dir) if template_dir else PLIST_TEMPLATE_DIR
     agents = Path(launch_agents) if launch_agents else LAUNCH_AGENTS
+    # THE OPT-OUT IS THE SAME ONE `detect_dark_jobs` USES (round 13, major, against
+    # this detector on the day it shipped). Without it a template deliberately not
+    # wanted on a machine files a permanent issue that the next daily run reopens
+    # forever, which trains the operator to ignore the whole channel.
+    paused = set(paused_labels or _paused_labels())
     out = []
     for template in sorted(templates.glob("com.kipi.*.plist")):
         label = template.stem
+        if label in paused:
+            continue
         if (agents / f"{label}.plist").is_file():
             continue
         out.append({
