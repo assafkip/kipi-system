@@ -1474,9 +1474,12 @@ def plist_drift_findings(template_dir=None, launch_agents=None, render=None) -> 
     for template in sorted(templates.glob("com.kipi.*.plist")):
         label = template.stem
         live_path = agents / f"{label}.plist"
-        # NOT INSTALLED IS NOT DRIFT. `detect_dark_jobs` already owns "a job that
-        # should be running is not"; filing it here too would put one condition
-        # on two permanent issues.
+        # NOT INSTALLED IS NOT DRIFT, and it is not dark either. This comment used
+        # to name `detect_dark_jobs` as the owner, which was wrong: that detector
+        # walks the plists ALREADY in ~/Library/LaunchAgents, so a template nobody
+        # ever installed is invisible to it too. PR #296 round 9 (major) found the
+        # gap with a plist that would have merged and simply never run. It is owned
+        # by `never_installed_findings` below.
         if not live_path.is_file():
             continue
         try:
@@ -1495,6 +1498,63 @@ def plist_drift_findings(template_dir=None, launch_agents=None, render=None) -> 
         if changed or only_committed or only_live:
             out.append(_drift_finding(label, changed, only_committed, only_live))
     return out
+
+
+def never_installed_findings(template_dir=None, launch_agents=None,
+                            paused_labels=None) -> list:
+    """A committed launchd template with no installed job at all.
+
+    THE GAP THIS CLOSES. `plist_drift_findings` compares a template against the job
+    installed from it and skips a template that has none. `detect_dark_jobs` walks the
+    plists already in `~/Library/LaunchAgents`. So a template that is committed,
+    reviewed, merged and never installed is invisible to both: the job simply does not
+    exist, nothing is red, and the feature it ships is dead on the founder's machine.
+    Measured 2026-09-04 on this Mac: 3 of 14 committed templates had never been
+    installed, one of them the hourly job PR #296 exists to ship.
+
+    WHY A FINDING AND NOT AN AUTO-INSTALL. Installing every committed template on
+    every machine that syncs the skeleton is a fleet-wide behaviour change with a
+    blast radius of every instance, and some templates are deliberately not wanted
+    everywhere. The repo's standing posture for launchd is REPORT, NEVER REPAIR (see
+    the header above `plist_drift_findings`), and this holds it: the finding names the
+    one command that installs the job, and a human decides.
+    """
+    templates = Path(template_dir) if template_dir else PLIST_TEMPLATE_DIR
+    agents = Path(launch_agents) if launch_agents else LAUNCH_AGENTS
+    # THE OPT-OUT IS THE SAME ONE `detect_dark_jobs` USES (round 13, major, against
+    # this detector on the day it shipped). Without it a template deliberately not
+    # wanted on a machine files a permanent issue that the next daily run reopens
+    # forever, which trains the operator to ignore the whole channel.
+    paused = set(paused_labels or _paused_labels())
+    out = []
+    for template in sorted(templates.glob("com.kipi.*.plist")):
+        label = template.stem
+        if label in paused:
+            continue
+        if (agents / f"{label}.plist").is_file():
+            continue
+        out.append({
+            "subject": label,
+            "title": f"committed launchd template was never installed: {label}",
+            "body": (
+                f"`{template.name}` is committed but there is no "
+                f"`~/Library/LaunchAgents/{label}.plist`, so the job has never run on "
+                "this machine and nothing else notices: the drift detector compares "
+                "against an installed copy and the dark-job detector walks installed "
+                "copies.\n\n"
+                f"Install it with:\n\n"
+                f"    bash q-system/.q-system/scripts/install-plist.sh {label}\n\n"
+                "Run it from a PRIMARY checkout, never a worktree: install-plist.sh "
+                "resolves `__KIPI_REPO__` from its own location, so a worktree install "
+                "points launchd at a path that disappears.\n\n"
+                "If the job is deliberately not wanted on this machine, that is a "
+                "decision worth recording rather than leaving as a silent absence."),
+        })
+    return out
+
+
+def detect_never_installed(_ctx) -> list:
+    return never_installed_findings()
 
 
 def detect_plist_drift(_ctx) -> list:
@@ -1599,6 +1659,13 @@ DETECTORS = [
         "detect": detect_untracked_unwired,
         "action": "file_issue",
         "lesson": "a-defect-absence-gate-is-a-floor-not-a-finish-line",
+    },
+    {
+        "id": "launchd-never-installed",
+        "description": "a committed launchd template that was never installed at all",
+        "detect": detect_never_installed,
+        "action": "file_issue",
+        "lesson": "a-freshness-deadman-must-live-off-the-machine-it-watches",
     },
     {
         "id": "launchd-dark",

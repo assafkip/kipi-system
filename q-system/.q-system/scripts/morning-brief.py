@@ -186,18 +186,85 @@ def collect_calendar(now: dt.datetime, runner=None):
 # Section 2: mail that needs an answer
 # ---------------------------------------------------------------------------
 
-MAIL_PROMPT = """Call {tool} to find email threads from the last 48 hours where a
+class Row(str):
+    """A rendered brief line that also carries the STABLE IDENTITY of the thing it
+    describes.
+
+    ## Why this exists, and it is the end of a four-round loop
+
+    PR #296 rounds 1-4 are all one defect. The Notion board keys each row so a row he
+    has dragged is never archived and re-created underneath him. Four of the five
+    producers pass a real id (client `kind:name`, `gtm:<step id>`, literal error keys).
+    The inbox rows had nothing but their own RENDERED TEXT, so the key was that text
+    with volatile bits scrubbed by a regex -- and every round patched the regex for one
+    more surface form: the health dot, then "2h ago", then a bare digit run that
+    collapsed two different invoice numbers, then the `[2h]` the real producer emits.
+    A fifth form was guaranteed, because rendering keeps changing and the regex can
+    only ever chase it.
+
+    A row is a `str`, so every existing renderer (`_section`, the f-strings, the
+    slicing) is untouched and this needed no caller changes. What it adds is `.key`:
+    the Gmail thread id, the GroupMe conversation id -- an identity the producer KNOWS
+    and was throwing away at the moment it rendered.
+    """
+    __slots__ = ("key",)
+
+    def __new__(cls, text: str, key: str):
+        row = super().__new__(cls, text)
+        row.key = key
+        return row
+
+
+#: How far back the mail sweep looks, and it is a CONSTANT because it was a hardcoded
+#: "48 hours" inside the prompt for weeks and nobody could see it.
+#:
+#: THE BUG THIS FIXES, measured 2026-09-03. The brief printed "Mail needing an answer:
+#: nothing" on 09-01, 09-02 and 09-03 while two client threads sat unanswered since
+#: 2026-08-11 and 2026-08-13. Both are real, both are named by
+#: `email-watch/ledger.py needs-reply`, and both are 3 weeks old, so a 48-hour window
+#: could not see either one. The section was not empty; it was blind, and it reported
+#: blindness as calm.
+#:
+#: 30 days because the oldest of the two is 23 days old and a window that only just
+#: covers today's example is a window that will fail next month. The prompt still
+#: excludes automated senders and still requires that HE has not replied, so widening
+#: the window does not widen the noise; it only stops hiding the old ones.
+#:
+#: The deterministic answer is `ledger.py needs-reply`, which has no window at all and
+#: knows which threads are clients. It is not wired here yet: it reads the Notion
+#: ledger live, so it is a cross-repo runtime dependency and its own piece of work.
+MAIL_WINDOW_DAYS = 30
+#: MAIL_ROW_CAP LIVED HERE AND IS DELETED (claude review, 2026-09-04, major).
+#: It trimmed the PRODUCER's rows to 15. Trimmed threads never entered
+#: `buckets["inbox"]`, yet `inbox:Gmail` still reported healthy (every remaining key
+#: was a real thread id), so the painter archived their board rows -- pins included --
+#: inside a healthy scope. An unanswered client thread disappeared off his board, which
+#: is the exact failure this board exists to prevent.
+#:
+#: The cap was also redundant. `_section` already trims DISPLAY to MAX_ROWS and prints
+#: "...and N more", so the Slack message was never going to be 50 lines. One cap for
+#: display, none for data: the brief stays short and the board sees every thread.
+#:
+#: Round 11 fixed this same class inside the painter with its `capped` set, on the
+#: rule that a cap is a write budget and not a statement that the work is finished.
+#: The rule is right; a second cap upstream of the producer routed around it.
+
+MAIL_PROMPT = """Call {tool} to find email threads from the last {days} days where a
 REAL PERSON wrote to the founder and the founder has not replied yet. Exclude
 newsletters, notifications, receipts, calendar invites, automated senders and
-no-reply addresses.
+no-reply addresses. Oldest first: a thread waiting three weeks matters more than
+one waiting an hour.
 Reply with ONE JSON object and nothing else, no prose, no code fence:
-{{"threads": [{{"from": "email or name", "subject": "...", "age_hours": <int>}}]}}
+{{"threads": [{{"id": "<the thread id the tool returned>", "from": "email or name", "subject": "...", "age_hours": <int>}}]}}
+`id` is the thread's own id from the tool result, copied verbatim. It is what keeps a
+board row stable while its age changes, so never invent or shorten it.
 If the tool call fails, reply with exactly: {{"error": "<what failed>"}}"""
 
 
 def collect_mail(now: dt.datetime, runner=None):
     runner = runner or (lambda p, t: run_claude(p, t))
-    text, error = runner(MAIL_PROMPT.format(tool=MAIL_TOOL), [MAIL_TOOL])
+    text, error = runner(MAIL_PROMPT.format(tool=MAIL_TOOL, days=MAIL_WINDOW_DAYS),
+                         [MAIL_TOOL])
     if error:
         return [], error
     threads, parse_error = _parse_json_block(text, "threads")
@@ -209,7 +276,45 @@ def collect_mail(now: dt.datetime, runner=None):
             continue
         age = th.get("age_hours")
         age_text = f"  [{age}h]" if isinstance(age, int) else ""
-        rows.append(f"{str(th.get('from', 'unknown'))[:40]}  {str(th.get('subject', ''))[:70]}{age_text}")
+        sender = str(th.get("from", "unknown"))[:40]
+        subject = str(th.get("subject", ""))[:70]
+        # The thread id when the model returned one, else sender+subject. Both are
+        # stable while the AGE changes, which is what was minting new ids. Never the
+        # rendered line: that is the defect rounds 1-4 kept patching.
+        key = str(th.get("id") or "").strip() or f"{sender}|{subject}"
+        rows.append(Row(f"{sender}  {subject}{age_text}", f"mail:{key}"))
+
+    # A COLLAPSE IS NOT A DEDUPE. Codex, 2026-09-03: when the model omits thread ids,
+    # two different threads from one person with one subject ("Re: invoice", twice)
+    # produce one key, the board writes ONE row, and the second task is gone -- while
+    # read-back still says ok, because it compares what was written to what was
+    # wanted and both had already lost it. That is worse than the bug it replaced:
+    # rounds 1-4 lost a DRAG, this loses WORK.
+    #
+    # Nothing stable distinguishes them, so the choice is between dropping a task and
+    # keeping it under an id that may move. Keeping it wins, and it is not close: a
+    # row he never sees cannot be acted on at all, while a row whose id shifts costs
+    # him a position on the board. The suffix is ordinal and deliberately provisional.
+    # THE ORDINAL SUFFIX WAS WITHDRAWN (round 10, major). It numbered duplicates by
+    # POSITION, so when the first of two "Re: invoice" threads was answered and left
+    # the list, the second was renumbered onto the first one's key -- and inherited its
+    # board row, its Status and the bucket he had dragged it to. A thread wearing
+    # another thread's identity is worse than either failure the note above weighed.
+    #
+    # With no thread id there is nothing that tells two identical rows apart, so this
+    # stops pretending there is. The group becomes ONE row that SAYS it is a group.
+    # No task is hidden (the count is on the row), no id is invented, and the key is
+    # stable because it is the thing they have in common.
+    groups = {}
+    for row in rows:
+        groups.setdefault(row.key, []).append(row)
+    rows = []
+    for key, members in groups.items():
+        if len(members) == 1:
+            rows.append(members[0])
+            continue
+        rows.append(Row(f"{members[0]} ({len(members)} threads, same sender and "
+                        "subject)", key))
     return rows, None
 
 
@@ -440,9 +545,28 @@ def _section(title, rows, error, cap=MAX_ROWS):
     return out
 
 
+# THE FOUNDER'S SECTIONS. Consulting only, 2026-09-03, founder-directed:
+# "I'm not looking for this to be a build dashboard, but a consulting dashboard."
+#
+# `owed` (Linear) and `overnight` (launchd) LEFT this tuple and did NOT stop being
+# collected. They are engineering signal, and `founder-notifications.md` has said since
+# 2026-08-10 that engineering signal goes to Sana's Linear triage and never to him:
+# "I dont want to see any of these." They now render through ENGINEERING_SECTIONS into
+# slack-notify.sh. Deleting the collectors instead would have been the wrong fix twice
+# over -- it would drop the deadman's view of overnight jobs, and it would silently
+# retire `notion_board`'s only input.
 SECTIONS = (
     ("calendar", "Today"),
-    ("mail", "Mail needing an answer (48h)"),
+    # The window is INTERPOLATED, never typed. It read "(48h)" while the prompt also
+    # said 48 hours, so when the window was wrong the label agreed with it and the
+    # section looked correct. A number written twice is a number that will disagree.
+    ("mail", f"Mail needing an answer ({MAIL_WINDOW_DAYS}d)"),
+)
+
+#: Collected, never rendered to him. One line each into Sana's queue, and only when the
+#: section is degraded: a healthy overnight run is not news and a ticket per morning is
+#: how an alert channel gets muted.
+ENGINEERING_SECTIONS = (
     ("owed", "Owed today"),
     ("overnight", "Overnight jobs"),
 )
@@ -460,8 +584,21 @@ SECTIONS = (
 # notion_board.py reported inert on CI while this registry was its real caller
 # (PR #294, 2026-09-02). _optional_module accepts either spelling.
 OPTIONAL_SECTIONS = (
+    # consulting_board runs FIRST: board_rows reads its buckets, and the registry is
+    # ordered, so a later entry sees the earlier one's result in `sources`.
+    ("consulting_board.py", "consulting", "Your book"),
+    ("groupme_inbox.py", "groupme", "GroupMe waiting on you"),
     ("unknown_terms.py", "unknown_terms", "Terms I do not know"),
-    ("notion_board.py", "board", "Notion board"),
+    ("board_rows.py", "board_rows", "Notion board"),
+    # notion_board.py is UNREGISTERED here, and the comment this replaces was wrong.
+    # It claimed the module would fall quiet because `owed` had left the founder's
+    # sections. It did not: `owed` is still COLLECTED in collect_all's fixed tuple, so
+    # notion_board's guard never fired and the first live dry-run rendered its bullets
+    # right underneath board_rows' rows. Two writers on one board, which is the exact
+    # thing this work exists to stop. Its bullets were never visible in the board's own
+    # views anyway: the three sections are FILTERED VIEWS of the Kipi backlog database
+    # split by the Bucket select, measured 2026-09-03. The file and its tests stay on
+    # disk; only its registration is removed, so the revert is one line.
 )
 
 ERROR_LOG = STATE_DIR / "logs" / "morning-brief-errors.log"
@@ -507,6 +644,15 @@ def _guarded(key: str, fn, budget_s: float, log_path) -> tuple:
     - finding-4: a collector is bounded. The board writer runs here, before the
       Slack send, so a hung Notion call must cost at most `budget_s`, never the
       morning. The worker thread is abandoned on timeout; the brief moves on.
+
+    THIS GUARD BOUNDS THE WAIT, NOT THE WORK. Codex round 4 on the consulting board
+    (major): an abandoned worker that MUTATES (board_rows, the only one) kept writing
+    Notion rows after this returned "timed out". A guard that cannot cancel what it
+    abandons is the wrong place to fix that, so the rule is on the collector: a
+    mutating collector owns a budget BELOW `budget_s`, checks it before every call
+    and caps the call in flight to what is left (notion_board._Budget, shared). Then
+    its own cancel fires first and this guard is only the backstop.
+    test_consulting_board pins board_rows.BUDGET_S < COLLECT_BUDGET_S.
     """
     # A DAEMON thread, not a ThreadPoolExecutor. Codex review of this issue
     # (findings 1 and 2, 2026-09-01): pool workers are non-daemon and the
@@ -556,7 +702,68 @@ def build(now: dt.datetime, sources: dict):
             degraded = True
         lines += _section(title, rows, error)
         lines.append("")
+    for key, _title in ENGINEERING_SECTIONS:
+        # DEGRADED WITHOUT RENDERING. Found by its own test: moving these two out of
+        # SECTIONS also moved them out of this flag, and the flag is what the deadman
+        # and the receipt read. A section that stops being VISIBLE to him must not
+        # quietly stop being MONITORED -- that is the failure deleting the collectors
+        # would have caused, arriving by another door.
+        _rows, error = sources.get(key, ([], None))
+        if error:
+            degraded = True
     return "\n".join(lines).rstrip(), degraded
+
+
+def route_engineering(sources: dict, notify=None) -> list:
+    """Engineering sections leave his brief for Sana. Delegates to engineering_route.
+
+    The routing lives in a SIBLING module, not here, because
+    `test_no_source_file_calls_slack_notify` greps this file for "slack-notify" and is
+    right to: the founder's brief must never go out through the fleet alert path. That
+    guard caught the first version of this function, which is the guard working.
+    """
+    mod = _load_sibling("engineering_route", "engineering_route.py")
+    return mod.route(sources, ENGINEERING_SECTIONS, notify=notify)   # (filed, failed)
+
+
+#: What the hourly run collects. Mail and GroupMe are the inbox; board_rows paints it.
+#: consulting_board is here for the healthy-scope reason in main(), not for its rows.
+#: Calendar, Linear and the launchd sweep are DELIBERATELY absent: none of them change
+#: within an hour in a way he would act on, and each costs a model call or a sweep.
+HOURLY_SECTIONS = ("consulting_board.py", "groupme_inbox.py", "board_rows.py")
+
+
+def collect_hourly(now: dt.datetime, log_path=None, budget_s: float = COLLECT_BUDGET_S,
+                   fixed_budget_s: float = None) -> dict:
+    """Mail + GroupMe + the board paint. Same guards, same (rows, error) contract,
+    same budgets as collect_all -- this is a narrower SELECTION, never a second
+    implementation, because two collectors drift and one of them is the one nobody
+    watches."""
+    log_path = log_path or ERROR_LOG
+    if fixed_budget_s is None:
+        fixed_budget_s = FIXED_BUDGET_S
+    sources = {"mail": _guarded("mail", lambda: collect_mail(now),
+                                fixed_budget_s, log_path)}
+    for stem, key, _title in OPTIONAL_SECTIONS:
+        if stem not in HOURLY_SECTIONS:
+            continue
+        absent = object()
+
+        def load_and_collect(stem=stem):
+            mod = _optional_module(stem)
+            if mod is None:
+                return absent
+            return mod.collect(now, dict(sources))
+
+        result = _guarded(key, load_and_collect, budget_s, log_path)
+        if result is absent:
+            _log_line(log_path, f"hourly section {key}: module {stem} absent")
+            continue
+        if result is None:
+            _log_line(log_path, f"hourly section {key}: module {stem} reports off")
+            continue
+        sources[key] = result
+    return sources
 
 
 def collect_all(now: dt.datetime, log_path=None, budget_s: float = COLLECT_BUDGET_S,
@@ -636,10 +843,73 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true",
                     help="build and print; send nothing, write no receipt")
+    ap.add_argument("--inbox-only", action="store_true",
+                    help="mail + GroupMe + the Notion board, nothing else. The hourly "
+                         "runner: no Slack message, no receipt, no calendar, no Linear, "
+                         "no launchd sweep.")
     args = ap.parse_args(argv)
 
     now = dt.datetime.now().astimezone()
-    message, degraded = build(now, collect_all(now))
+
+    if args.inbox_only:
+        # Founder-directed 2026-09-03: *"the email and groupme should be once an
+        # hour."* The board is where he looks; a once-a-day inbox means a client who
+        # writes at 08:00 is invisible until tomorrow.
+        #
+        # NO SLACK SEND, on purpose. Twelve messages a day is how a channel gets
+        # muted, and the 07:00 brief already carries the daily read. This run only
+        # repaints the board.
+        #
+        # consulting_board IS collected even though nothing here changes its rows,
+        # because board_rows archives only inside the scopes reported healthy. Skip it
+        # and the client scope is absent, not healthy, so those rows are KEPT -- but
+        # relying on that is relying on a safety net rather than on the design. Cheap
+        # anyway: it is three file reads.
+        if args.dry_run:
+            os.environ["KIPI_BRIEF_DRY_RUN"] = "1"
+        sources = collect_hourly(now)
+        for key in ("mail", "groupme", "board_rows"):
+            if key not in sources:
+                # OFF IS NOT BROKEN, and this line said it was (Codex round 7, minor).
+                # `collect_hourly` omits a module that reported itself off -- no
+                # GroupMe token, no Notion token -- which is the default on any fleet
+                # machine, so a healthy run printed two COULD NOT READ lines twelve
+                # times a day. It inverted the empty-versus-broken rule the whole file
+                # is built on, in the one surface an operator actually reads.
+                print(f"[{key}] off (not configured on this machine)")
+                continue
+            rows, error = sources[key]
+            if error:
+                print(f"[{key}] COULD NOT READ: {error}")
+            else:
+                print(f"[{key}] {len(rows)} row(s)")
+        # Exit 1 on a degraded run so launchd column 2 shows it and the fleet
+        # watchdog can see a broken hour without a human reading a log. An OFF
+        # section is not degraded: it is absent from `sources` and contributes
+        # nothing here, which is why this reads the dict rather than a default.
+        return 1 if any(sources[k][1] for k in ("mail", "groupme", "board_rows")
+                        if k in sources) else 0
+
+    if args.dry_run:
+        # Reaches the optional sections, which can write to places the send flag never
+        # covered. Set before collect_all, because collection IS when they write.
+        os.environ["KIPI_BRIEF_DRY_RUN"] = "1"
+    sources = collect_all(now)
+    # Engineering leaves BEFORE the founder's message is built, so a routing failure
+    # cannot silently become a section he reads.
+    filed, failed = route_engineering(
+        sources, notify=(lambda _m: None) if args.dry_run else None)
+    for line in filed:
+        # DRY RUN SAYS SO (round 11, minor). The notifier injected above sends
+        # nothing, and this printed the same "[to sana]" either way, so a dry run
+        # reported an alert that no one received. Every other refusal in this file
+        # names itself; this one claimed a delivery.
+        print(f"[to sana{' (dry run, not sent)' if args.dry_run else ''}] {line}")
+    for line, why in failed:
+        # Printed as NOT filed. An engineering problem that was detected and then lost
+        # on the way to the queue is worse than one never detected: it looks handled.
+        print(f"[to sana FAILED, not filed] {line} :: {why}")
+    message, degraded = build(now, sources)
     print(message)
     if args.dry_run:
         print("\n[dry-run] nothing sent, no receipt written")

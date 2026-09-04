@@ -185,6 +185,11 @@ def test_every_new_script_declares_its_off_switch_in_its_docstring():
     registered = _registered_scripts()
     expectations = {
         "notion_board.py": "OFF switch",
+        # The consulting morning board, 2026-09-03. Each names a REAL switch in its
+        # docstring: no consulting instance, no GroupMe token, no Notion token.
+        "consulting_board.py": "OFF switch",
+        "groupme_inbox.py": "OFF switch",
+        "board_rows.py": "OFF switch",
         "unknown_terms.py": "never pulls anything",
         "weekly-improve.py": "trigger is weekly-improve.sh",
         "friction-note.sh": "instance-owned",

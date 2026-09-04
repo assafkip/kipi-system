@@ -43,8 +43,9 @@ off, asleep or wedged silences the brief AND its alarm together.
 The gap is narrower than it sounds, and the narrowing is why StartInterval was
 chosen over StartCalendarInterval. A StartCalendarInterval job that misses its
 fire time is skipped outright; launchd does not catch up on wake. A StartInterval
-job with RunAtLoad DOES run on the next wake. So a Mac that was off at 07:00 and
-opens at 11:00 gets the alarm within thirty minutes of waking, not never.
+job with RunAtLoad DOES run on the next wake. So a Mac that was off at the brief's
+fire time and opens hours later gets the alarm within thirty minutes of waking,
+not never.
 
 What remains uncovered is precisely: the machine stays off past the moment the
 founder wanted to know. He is also not at his desk in that window, which is why
@@ -81,7 +82,10 @@ STATE_DIR = Path(os.environ.get("KIPI_STATE_DIR", os.path.expanduser("~/.config/
 RECEIPT_PATH = STATE_DIR / "morning-brief-last.json"
 ALARM_STATE = STATE_DIR / "morning-brief-deadman-state.json"
 
-# The brief fires at 07:00 local. The deadline is 09:00, founder-directed.
+# The deadline is 09:00, founder-directed. This file deliberately does NOT name the
+# hour the brief fires: it was a third copy of that number and it went stale the day
+# the schedule moved to 07:40, so the alarm told the founder "the 07:00 job did not
+# run" about a job that runs at 07:40 (Codex round 9). The plist is the record.
 DEADLINE_HOUR = int(os.environ.get("KIPI_BRIEF_DEADLINE_HOUR", "9"))
 
 
@@ -104,7 +108,7 @@ def check(now: dt.datetime, receipt_path=None):
     stamped = data.get("date")
     if stamped != today:
         return False, (f"last morning brief is stamped {stamped}, not {today} "
-                       f"-- the 07:00 job did not run")
+                       f"-- this morning's job did not run")
     if not data.get("delivered"):
         return False, (f"the {today} brief was built but NOT delivered: "
                        f"{data.get('reason') or 'no reason recorded'}")

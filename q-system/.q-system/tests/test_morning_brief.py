@@ -79,14 +79,22 @@ NOW = dt.datetime(2026, 8, 30, 7, 0, 0, tzinfo=dt.timezone.utc).astimezone()
 # --------------------------------------------------------------------------
 
 def _sources(**overrides):
-    """Four sections, all empty-and-healthy, with per-section overrides."""
+    """Every COLLECTED section, empty-and-healthy, with per-section overrides.
+
+    `owed` and `overnight` stayed here after 2026-09-03. They stopped being FOUNDER
+    sections and route to Sana instead; they did not stop being collected.
+    """
     base = {k: ([], None) for k in ("calendar", "mail", "owed", "overnight")}
     base.update(overrides)
     return base
 
 
 def test_every_section_can_say_failed_distinctly_from_zero(brief):
-    for name in ("calendar", "mail", "owed", "overnight"):
+    # Read from the registry, not typed. `owed` and `overnight` left this list on
+    # 2026-09-03: they no longer RENDER, so a broken one cannot look different from an
+    # empty one in a message that shows neither. The property they keep is asserted
+    # separately below, and it is the one that still matters for them.
+    for name, _title in brief.SECTIONS:
         empty, _ = brief.build(NOW, _sources())
         broken, degraded = brief.build(NOW, _sources(**{name: ([], "boom")}))
         assert empty != broken, f"{name}: a broken section renders like an empty one"
@@ -95,17 +103,43 @@ def test_every_section_can_say_failed_distinctly_from_zero(brief):
         assert degraded, f"{name}: a broken section did not mark the run degraded"
 
 
+def test_a_broken_ENGINEERING_section_still_degrades_the_run_without_rendering(brief):
+    """The half of the property above that survives for a routed section.
+
+    He never sees `Owed today` again, but a Linear outage must still mark the run
+    degraded, because the deadman and the receipt read that flag. A section that stops
+    being visible must not quietly stop being MONITORED, which is exactly what deleting
+    the collectors would have done."""
+    for name, _title in brief.ENGINEERING_SECTIONS:
+        message, degraded = brief.build(NOW, _sources(**{name: ([], "boom")}))
+        assert degraded, f"{name}: a broken engineering section did not degrade the run"
+        assert "boom" not in message, f"{name}: engineering detail reached his brief"
+
+
 def test_all_empty_is_not_degraded_and_says_nothing(brief):
     message, degraded = brief.build(NOW, _sources())
     assert not degraded
     assert "COULD NOT READ" not in message
-    assert message.count("nothing") == 4
+    # Counted from the module's own SECTIONS, never typed. It was 4 until 2026-09-03,
+    # when `owed` and `overnight` left the founder's brief for Sana's queue; taking the
+    # number from the registry means the next section change moves it by itself.
+    assert message.count("nothing") == len(brief.SECTIONS)
 
 
-def test_all_four_sections_are_present_by_name(brief):
+def test_all_founder_sections_are_present_by_name(brief):
     message, _ = brief.build(NOW, _sources())
-    for title in ("Today", "Mail", "Owed", "Overnight"):
+    for _key, title in brief.SECTIONS:
         assert title in message, f"section {title} missing from the brief"
+
+
+def test_the_engineering_sections_are_ABSENT_from_his_brief(brief):
+    """Founder 2026-09-03: "I'm not looking for this to be a build dashboard, but a
+    consulting dashboard." He found his board reporting Sana's Linear queue and the
+    overnight launchd run. This is the assertion that keeps them out, and it is the
+    inverse of the one above rather than a deletion of it."""
+    message, _ = brief.build(NOW, _sources())
+    for _key, title in brief.ENGINEERING_SECTIONS:
+        assert title not in message, f"{title} is engineering and is not his to read"
 
 
 def test_no_html_no_cards_no_scores(brief):
@@ -668,7 +702,11 @@ def test_a_raising_collector_costs_its_own_section_only(brief, tmp_path, monkeyp
     sources = brief.collect_all(NOW, log_path=log)
     message, degraded = brief.build(NOW, sources)
     assert degraded
-    assert message.count("fine") == 3, "the healthy sections did not render"
+    # One less than the founder's section count: mail is the victim here. Derived, so
+    # the 2026-09-03 drop from four sections to two did not need this line rewritten by
+    # hand -- and neither will the next change.
+    assert message.count("fine") == len(brief.SECTIONS) - 1, (
+        "the healthy sections did not render")
     assert "COULD NOT READ: mail failed (RuntimeError)" in message
     assert "abc123" not in message, "an exception message reached the brief"
     assert "abc123" in log.read_text(), "the message was not kept in the local log"
@@ -750,7 +788,10 @@ def test_an_optional_module_that_raises_at_import_costs_its_own_section_only(bri
     sources = brief.collect_all(NOW, log_path=tmp_path / "e.log")
     message, degraded = brief.build(NOW, sources)
     assert degraded
-    assert message.count("fine") == 4, "the healthy sections did not render"
+    # Every founder section is healthy here; only the optional module broke. Derived
+    # from the registry so the section set can change without this line being rewritten.
+    assert message.count("fine") == len(brief.SECTIONS), (
+        "the healthy sections did not render")
     assert "COULD NOT READ: broken failed (ImportError)" in message
     assert "import-time-token" not in message
 
@@ -791,8 +832,21 @@ def test_every_registered_section_is_guarded(brief, tmp_path, monkeypatch):
     monkeypatch.setattr(brief, "OPTIONAL_SECTIONS",
                         (("fake_section", "fake", "Fake section"),))
     monkeypatch.setattr(brief, "_optional_module", lambda stem: FakeMod)
+    # RENDERED keys only. The guard still wraps `owed` and `overnight` (they are in
+    # collect_all's fixed tuple and asserted below), but since 2026-09-03 they do not
+    # reach his message, so "COULD NOT READ: owed failed" cannot be looked for there.
     keys = [k for k, _ in brief.SECTIONS] + [k for _, k, _ in brief.OPTIONAL_SECTIONS]
-    assert len(keys) >= 5 and "fake" in keys
+    engineering = {k for k, _ in brief.ENGINEERING_SECTIONS}
+    for victim in engineering:
+        _all_ok(brief, monkeypatch)
+        def boom(*a, **k):
+            raise RuntimeError("secret=xyz")
+        monkeypatch.setattr(brief, f"collect_{victim}", boom)
+        sources = brief.collect_all(NOW, log_path=tmp_path / "e.log")
+        assert sources[victim][1] and "xyz" not in sources[victim][1], victim
+        assert brief.build(NOW, sources)[1], f"{victim} broke and the run was not degraded"
+    keys = [k for k in keys if k not in engineering]
+    assert "fake" in keys
     for victim in keys:
         _all_ok(brief, monkeypatch)
         if victim != "fake":
@@ -842,13 +896,16 @@ def test_an_optional_module_returning_none_is_off_not_a_section(brief, tmp_path,
     assert "board" in log.read_text() and "off" in log.read_text()
 
 
-def test_a_present_optional_module_renders_after_the_fixed_four(brief, tmp_path, monkeypatch):
+def test_a_present_optional_module_renders_after_the_fixed_sections(brief, tmp_path, monkeypatch):
     _all_ok(brief, monkeypatch)
 
     class Mod:
         @staticmethod
         def collect(now, sources):
-            assert sources["owed"] == (["fine"], None), "optional sections see the fixed four"
+            # `owed` is still COLLECTED after 2026-09-03, it just stopped being
+            # rendered, so an optional module still sees it. That is the whole reason
+            # the collectors were routed rather than deleted.
+            assert sources["owed"] == (["fine"], None), "optional sections see every collected section"
             return (["Widgetcorp"], None)
 
     monkeypatch.setattr(brief, "OPTIONAL_SECTIONS",
@@ -857,4 +914,162 @@ def test_a_present_optional_module_renders_after_the_fixed_four(brief, tmp_path,
     sources = brief.collect_all(NOW, log_path=tmp_path / "e.log")
     message, degraded = brief.build(NOW, sources)
     assert not degraded
-    assert message.index("Overnight") < message.index("Terms I do not know") < message.index("Widgetcorp")
+    last_fixed = brief.SECTIONS[-1][1]
+    assert message.index(last_fixed) < message.index("Terms I do not know") < message.index("Widgetcorp")
+
+
+def test_the_documented_hour_is_the_one_launchd_runs():
+    """Codex round 6 (minor): CLAUDE.md said 07:00 while the plist ran 07:40.
+
+    Held by a check rather than by care, because the two live in different files and
+    the only thing that had been keeping them together was somebody remembering. The
+    plist is the record: it is what actually fires.
+    """
+    import pathlib
+    import plistlib
+    import re
+    root = pathlib.Path(__file__).resolve().parents[3]
+    plist = root / "q-system" / ".q-system" / "scripts" / "com.kipi.morning-brief.plist"
+    when = plistlib.loads(plist.read_bytes())["StartCalendarInterval"]
+    runs_at = "%02d:%02d" % (when["Hour"], when["Minute"])
+    docs = (root / "CLAUDE.md").read_text(encoding="utf-8")
+    stated = re.search(r"Runs itself at ([0-9:]+) \(`com\.kipi\.morning-brief`\)", docs)
+    assert stated, "CLAUDE.md no longer states the brief's schedule at all"
+    assert stated.group(1) == runs_at, (
+        f"CLAUDE.md says {stated.group(1)}, launchd runs {runs_at}")
+
+
+def test_no_hourly_slot_fires_before_the_card_it_mirrors():
+    """Codex round 7 (major): the hourly inbox job's first slot was 07:05.
+
+    The consulting state card is written at 07:30 by another repo's job, and the board
+    MIRRORS that card: `read_heartbeat` withholds a card stamped yesterday, so a run at
+    07:05 can only ever see yesterday's. Every morning it spent a headless Opus mail
+    call, threw the result away, refused the board write and exited 1 into the launchd
+    watchdog. Not broken. Early, by construction, forever.
+
+    The anchor is the BRIEF's own slot rather than a 07:30 literal, because that plist
+    is this repo's record of "after the card is written" and a literal here would be a
+    second copy of it to drift.
+    """
+    import pathlib
+    import plistlib
+    scripts = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+
+    def minute_of_day(entry):
+        return entry["Hour"] * 60 + entry["Minute"]
+
+    brief = plistlib.loads((scripts / "com.kipi.morning-brief.plist").read_bytes())
+    after_the_card = minute_of_day(brief["StartCalendarInterval"])
+
+    hourly = plistlib.loads((scripts / "com.kipi.morning-inbox.plist").read_bytes())
+    slots = hourly["StartCalendarInterval"]
+    assert isinstance(slots, list) and slots, "the hourly job lost its schedule"
+    early = ["%02d:%02d" % (s["Hour"], s["Minute"])
+             for s in slots if minute_of_day(s) < after_the_card]
+    assert not early, (
+        f"slots {early} fire before the state card exists (the brief waits until "
+        f"{after_the_card // 60:02d}:{after_the_card % 60:02d}); each one is a wasted "
+        "model call and an exit 1 the watchdog reads as a broken hour")
+
+
+def test_the_deadman_alarm_names_no_clock_time():
+    """Codex round 9 (minor): the alarm said "the 07:00 job did not run" while launchd
+    ran it at 07:40. That was the THIRD copy of the schedule, after CLAUDE.md and a
+    comment in the plist, and it is the copy that reaches the founder.
+
+    The fix is to carry no hour rather than to sync a third one. A number that only
+    has to agree with two other places is a number that eventually will not.
+    """
+    import datetime as dt
+    import importlib.util
+    import json
+    import pathlib
+    import re
+    import tempfile
+    path = (pathlib.Path(__file__).resolve().parents[1] / "scripts"
+            / "morning-brief-deadman.py")
+    spec = importlib.util.spec_from_file_location("deadman", path)
+    deadman = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(deadman)
+
+    # DRIVE the alarm rather than grep its source: the first cut of this test scanned
+    # every double-quoted string and caught the module docstring's narrative, which
+    # says nothing to the founder.
+    with tempfile.TemporaryDirectory() as tmp:
+        receipt = pathlib.Path(tmp) / "receipt.json"
+        receipt.write_text(json.dumps({"date": "2026-09-02", "delivered": True}))
+        ok, reason = deadman.check(dt.datetime(2026, 9, 3, 9, 30), receipt_path=receipt)
+    assert ok is False
+    assert not re.search(r"\b\d{1,2}:\d{2}\b", reason), (
+        f"the alarm names a wall-clock time again: {reason!r}")
+
+
+def test_inbox_only_says_OFF_rather_than_COULD_NOT_READ(brief, capsys, monkeypatch):
+    """Codex round 7 (minor): a module that reported itself OFF is absent from
+    `collect_hourly`, and this loop's default turned that absence into
+    "COULD NOT READ: never collected".
+
+    That is the empty-versus-broken rule inverted, in the one surface an operator
+    reads, on any machine with no GroupMe token and no Notion token -- which is the
+    default -- twelve times a day. A log that cries wolf twelve times a day is a log
+    nobody reads on the morning it is right.
+    """
+    mb = brief
+    monkeypatch.setattr(mb, "collect_hourly", lambda *a, **k: {"mail": ([], None)})
+    rc = mb.main(["--inbox-only"])
+    out = capsys.readouterr().out
+    assert "COULD NOT READ" not in out, out
+    assert "[groupme] off" in out and "[board_rows] off" in out, out
+    assert rc == 0, "an OFF section made a healthy hour report itself broken"
+
+
+def test_but_a_real_failure_still_exits_1(brief, capsys, monkeypatch):
+    """The negative control. If OFF and BROKEN both print quietly, the fix has
+    replaced a false alarm with a missing one."""
+    mb = brief
+    monkeypatch.setattr(mb, "collect_hourly",
+                        lambda *a, **k: {"mail": ([], "gmail down")})
+    rc = mb.main(["--inbox-only"])
+    out = capsys.readouterr().out
+    assert "COULD NOT READ: gmail down" in out and rc == 1
+
+
+class TestNoCapUpstreamOfTheBoard:
+    """claude review 2026-09-04, major. A producer-side cap on mail trimmed threads
+    before `buckets()` saw them, so their board rows were archived inside a scope
+    that reported healthy -- an unanswered client thread vanished off his board,
+    pin and all.
+
+    Round 11 fixed this class inside the painter (`capped`: a cap is a write budget,
+    not a statement that the work is finished). A second cap upstream of the producer
+    routed around that rule. Display is capped by `_section`; data is not capped."""
+
+    def test_every_thread_the_model_returns_reaches_the_caller(self, brief):
+        n = 40
+        payload = json.dumps({"threads": [
+            {"id": f"t{i}", "from": f"p{i}@x.com", "subject": f"s{i}", "age_hours": i}
+            for i in range(n)]})
+        rows, error = brief.collect_mail(None, lambda p, t: (payload, None))
+        assert error is None
+        assert len(rows) == n, (
+            f"the producer dropped {n - len(rows)} threads; their board rows would be "
+            "archived inside a healthy scope")
+        assert len({r.key for r in rows}) == n
+
+    def test_no_synthetic_overflow_row_is_minted(self, brief):
+        """An overflow row needs a stable id and a scope. Inventing one puts a row on
+        the board that no thread corresponds to."""
+        payload = json.dumps({"threads": [
+            {"id": f"t{i}", "from": "p@x.com", "subject": "s", "age_hours": 1}
+            for i in range(30)]})
+        rows, _ = brief.collect_mail(None, lambda p, t: (payload, None))
+        assert not any("more unanswered" in str(r) for r in rows)
+        assert all(getattr(r, "key", "").startswith("mail:t") for r in rows)
+
+    def test_the_SECTION_still_caps_what_he_reads(self, brief):
+        """The Slack message stays short. That was the cap's only legitimate job."""
+        rows = [brief.Row(f"line {i}", f"mail:t{i}") for i in range(40)]
+        out = brief._section("Mail", rows, None)
+        assert len(out) == brief.MAX_ROWS + 2, out[:3]
+        assert "and 25 more" in out[-1]

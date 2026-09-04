@@ -256,6 +256,12 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
   sections: today's calendar, mail needing an answer, owed today, overnight jobs.
   No HTML, no action cards, no scores. Its freshness is watched by a SEPARATE
   launchd job, `com.kipi.morning-brief-deadman`, on a different trigger class.
+- **Amended 2026-09-03 [SYSTEM-INFERRED]:** the schedule moved from 07:00 to 07:40
+  local. The brief now MIRRORS the consulting state card, which is written at 07:30 by
+  `io.askconsulting.ask-crm-state-card`; at 07:00 it mirrored yesterday. A second job
+  at 07:40 was the alternative and was rejected, because two jobs racing one board is
+  how two writers start. The plist is the record; `test_the_documented_hour_is_the_one
+  _launchd_runs` holds the docs to it.
 - **Reason:** Founder-directed 2026-08-30: fully automated, no HTML page, one
   Slack message each morning. Measured the same day: the pipeline's last artifact
   is `schedule-data-2026-04-04.json`, 148 days old, and `find . -name
