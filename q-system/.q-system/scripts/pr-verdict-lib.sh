@@ -12,6 +12,44 @@
 # The worker only falls back to re-extracting from the review .md for PRs
 # reviewed before the record existed.
 
+# _final_message <review-file>
+# The path of the file holding ONLY the reviewer final message, or nothing.
+#
+# THE BOUNDARY, INSTEAD OF A FIFTH REGION RULE (ASK-1227 round 5). `codex exec`
+# writes its whole agent session to stdout -- the echoed prompt, every tool call,
+# every diff and file it read -- and the four rounds before this one each excluded
+# the one region that had just fabricated a verdict, then lost to the next. Round
+# 5 found two more at once on this branch: an unmatched fence anywhere in the
+# session hides the closing verdict (see _reviewer_prose), and `rg`-shaped tool
+# output `path:line:VERDICT: BLOCK` is statement-shaped prose (see extract_verdict).
+#
+# Both are the same defect: no textual rule separates the agent own answer from
+# the material it quoted, because the session file does not mark where the answer
+# begins. `codex exec -o FILE` does -- it writes ONLY the final agent message.
+# pr-review-agent.sh passes `-o "$REVIEW.last"`, so from this commit forward the
+# reader parses the reviewer answer instead of inferring it.
+#
+# ABSENT MEANS LEGACY, NOT BROKEN. All 991 records on disk at this commit predate
+# the flag and have no sidecar, and the claude fallback engine has no equivalent
+# flag, so the session file stays the source when the sidecar is missing or empty.
+# `-s`, not `-e`: a killed run can leave a zero-byte sidecar, and an empty answer
+# must fall back rather than read as a review that said nothing.
+_final_message() {
+  local last="${1:-}.last"
+  [ -s "$last" ] && printf '%s' "$last"
+  return 0
+}
+
+# _verdict_source <review-file>
+# The file the DELIMITED readers parse: the final message when there is one, the
+# whole session otherwise. Delimited, because `FINDINGS:` / `END FINDINGS` mark
+# their own region -- a findings block needs no positional window and never got one.
+_verdict_source() {
+  local m; m="$(_final_message "${1:-}")"
+  [ -n "$m" ] && { printf '%s' "$m"; return 0; }
+  printf '%s' "${1:-}"
+}
+
 # _reviewer_prose
 # stdin -> stdout, emitting ONLY lines that can be the reviewer's own prose
 # conclusion. Everything else is dropped.
@@ -59,17 +97,82 @@
 # takes, and reversible by a human. Measured across all 81 recorded transcripts in
 # ~/.config/kipi/pr-reviews: this filter changes the extracted verdict on none of
 # them, while flipping every reproducer above.
+#
+# THE FENCE RULE APPLIES ONLY WHEN ITS STATE IS WELL-FORMED (ASK-1227 round 5,
+# first major). Fence parity is the ONLY rule here that carries state between
+# lines; every other rule decides a line on its own bytes. That makes it the only
+# one an upstream oddity can knock out of phase, and an out-of-phase parity does
+# not degrade, it INVERTS: every line after the stray fence is judged backwards.
+#
+# It landed both ways on real records:
+#
+#   pr-190  23 lines match this pattern, an ODD count, so parity leaves the
+#           closing `**VERDICT: APPROVE**` inside a phantom fence -> read as
+#           quoted, verdict lost, and a required status stuck red on an approval.
+#   pr-159  17 matches in the last 250 lines, so the SAME closing verdict is
+#           visible whole-file and hidden window-scoped.
+#
+# Most of those lines are not fences at all. They are compiler and shellcheck
+# squiggles (`~~~~~~~~^^^^^^`) in tool output that merely START with three tildes,
+# and no tightening of the pattern fixes the class -- an agent session can quote
+# anything, including half of a fenced block.
+#
+# So the rule states its own precondition instead of assuming it. An EVEN number
+# of fence lines in the region means the fences close and parity is sound, so it
+# is tracked. An ODD number is proof the region is not fence-balanced, parity
+# would be a coin flip, and the rule stands down to the stateless filters, which
+# cannot be inverted by anything upstream.
+#
+# WHY STANDING DOWN IS THE SAFE SIDE. On an unbalanced region a fenced decoy token
+# does become visible. It cannot manufacture a verdict on its own: extract_verdict
+# needs a statement-shaped line whose marker LEADS, and the tail fallback takes the
+# LAST bold token, which is the reviewer's own conclusion because a review answers
+# after the material it read. Measured over all 991 recorded transcripts, no
+# resolved verdict moves toward approval. The inverted-parity bug, by contrast,
+# silently destroyed the verdict on 8 of them.
+#
+# TWO PASSES, because the count has to be known before the first line is judged.
+# The region is a bounded window or one final message, so buffering it is cheap.
 _reviewer_prose() {
   awk '
-    /^[[:space:]]*(```|~~~)/   { fence = !fence; next }
-    fence                      { next }
-    /^[[:space:]]*[+>-]/       { next }
-    # Indented code is four spaces or one tab; a diff CONTEXT line is one space.
-    /^(    |\t| )/             { next }
-    # A pipe means a row or a table. Neither is a sentence.
-    /[|]/                      { next }
-    { print }
+    { buf[NR] = $0; if ($0 ~ /^[[:space:]]*(```|~~~)/) nfence++ }
+    END {
+      # Odd => the region is not fence-balanced => parity is meaningless here.
+      tracked = (nfence % 2 == 0)
+      for (i = 1; i <= NR; i++) {
+        line = buf[i]
+        if (tracked && line ~ /^[[:space:]]*(```|~~~)/) { fence = !fence; continue }
+        if (tracked && fence)             continue
+        if (line ~ /^[[:space:]]*[+>-]/)  continue
+        # Indented code is four spaces or one tab; a diff CONTEXT line is one space.
+        if (line ~ /^(    |\t| )/)        continue
+        # A pipe means a row or a table. Neither is a sentence.
+        if (line ~ /[|]/)                 continue
+        print line
+      }
+    }
   ' 2>/dev/null
+}
+
+# _reviewer_prose_of <review-file>
+# THE ONE ENTRY POINT for both prose readers: pick the region, then filter it.
+#
+# ONE FUNCTION BECAUSE TWO WAS THE BUG. extract_verdict scanned the WHOLE file
+# while _bold_verdict_in_tail scanned the last 250 lines, so the two readers
+# disagreed about how much text existed -- and this file own header already names
+# that hazard: "Which of the two readers sees a quoted token first must not change
+# the answer, so both read the same filtered text." Now there is one region, one
+# filter, one place to change either.
+#
+# The final message is passed WHOLE; a legacy session gets the
+# measured tail window, which review_comment_body records the same way ("the
+# reviewer actual message is the last ~250 lines") and is the only boundary a
+# record with no sidecar offers.
+_reviewer_prose_of() {
+  local f="${1:-}" m
+  m="$(_final_message "$f")"
+  if [ -n "$m" ]; then _reviewer_prose <"$m" 2>/dev/null; return 0; fi
+  tail -n "${KIPI_VERDICT_TAIL_LINES:-250}" "$f" 2>/dev/null | _reviewer_prose partial
 }
 
 # extract_verdict <review-file>
@@ -155,7 +258,7 @@ _reviewer_prose() {
 extract_verdict() {
   local f="$1" found
   [ -s "$f" ] || return 0
-  found="$(_reviewer_prose <"$f" 2>/dev/null | awk '
+  found="$(_reviewer_prose_of "$f" | awk '
     function leading_token(s,   t) {
       sub(/^[[:space:]*_]+/, "", s)
       if (s ~ /^APPROVE WITH NITS/) return "APPROVE WITH NITS"
@@ -178,7 +281,18 @@ extract_verdict() {
       if (t != "") found = t
       next
     }
-    line ~ /VERDICT/ {
+    # THE MARKER LEADS THE SENTENCE, the mirror of the token rule below it
+    # (ASK-1227 round 5, second major). The token must lead what FOLLOWS
+    # `VERDICT:`; this says the marker must lead what PRECEDES it, modulo
+    # emphasis and heading punctuation. Without it the `^.*VERDICT` strip below
+    # is greedy, so `q-system/check.sh:42:VERDICT: BLOCK` -- the literal shape of
+    # the `rg` output a reviewer pastes into a real transcript -- parses as a
+    # stated BLOCK and outranks the closing approval the reviewer wrote. Not a
+    # fifth denylist entry: nothing here names rg, tool output, or a path. It is
+    # the existing shape test applied to the other side of the marker. Measured
+    # across all 991 recorded transcripts: it changes the extracted verdict on
+    # none of them, while flipping the reproducer above.
+    line ~ /^[[:space:]]*[*_#[:space:]]*VERDICT/ {
       rest = line
       sub(/^.*VERDICT[*_]*[[:space:]]*:?[[:space:]]*/, "", rest)
       t = leading_token(rest)
@@ -227,7 +341,7 @@ _bold_verdict_in_tail() {
   # (review_comment_body: "the reviewer's actual message is the last ~250 lines"),
   # so filtering before slicing would widen the window by however much quoted
   # material the stream happened to carry.
-  tail -n "${KIPI_VERDICT_TAIL_LINES:-250}" "$f" 2>/dev/null | _reviewer_prose | awk '
+  _reviewer_prose_of "$f" | awk '
     {
       line = $0
       gsub(/BLOCKERS?/, "", line)
@@ -316,6 +430,11 @@ _bold_verdict_in_tail() {
 findings_block() {
   local f="$1"
   [ -s "$f" ] || return 0
+  # The sidecar when there is one: the prompt puts the block LAST in the answer,
+  # so the final message carries it, and reading it there makes the echoed
+  # template and every quoted prior-round block structurally unreachable rather
+  # than merely skipped.
+  f="$(_verdict_source "$f")"
   awk '
     /^FINDINGS:/            { buf = $0 "\n"; open = 1; rows = 0; sev = 0; next }
     open && /^END FINDINGS/ { if (rows == 0 || sev > 0) last = buf $0 "\n"
@@ -337,7 +456,7 @@ findings_block() {
 # answer that never started. Internal to review_declined_to_start.
 _text_after_last_findings_block() {
   awk '/^END FINDINGS/ { tail = ""; next } { tail = tail $0 "\n" }
-       END { printf "%s", tail }' "${1:-}" 2>/dev/null
+       END { printf "%s", tail }' "$(_verdict_source "${1:-}")" 2>/dev/null
 }
 
 # review_declined_to_start <review-file>

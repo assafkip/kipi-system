@@ -4195,4 +4195,137 @@ ok "case E: a diff context line (one leading space) is quoted material"
 [ "$(extract_verdict "$WORK/conclusion-wins.md")" = "REQUEST CHANGES" ]   || fail "the allowlist swallowed a real stated conclusion: got '$(extract_verdict "$WORK/conclusion-wins.md")' (expected REQUEST CHANGES)"
 ok "case E control: an explicit conclusion above the findings block still wins"
 
+# --- ASK-1227 round 5: the reviewer FINAL MESSAGE is the boundary --------------
+#
+# Rounds 1-4 each excluded the region that had just fabricated a verdict, and
+# round 5 found two more at once. Codex own fix-first: "replace whole-session
+# Markdown inference with a deterministic boundary for the reviewer final
+# response." `codex exec -o FILE` is that boundary; these cases pin it.
+
+# --- case F: a stateful fence rule cannot survive a session transcript ---------
+#
+# THE REAL PRODUCER. On the recorded pr-190 review, whose artifact plainly ends
+# `**VERDICT: APPROVE**`, the round-4 lib resolved stated=<> derived=<APPROVE>
+# resolved=<> -- an approving review held red forever. Cause: 23 lines in that
+# session START with three tildes or backticks, so fence parity leaves the closing
+# verdict inside a phantom fence. Most of them are compiler squiggles
+# (`~~~~~~~~^^^^^`) in tool output, not fences. It lands the other way too: on
+# pr-159 the same verdict is visible whole-file and hidden in the last 250 lines.
+#
+# Fence tracking is the ONLY rule in _reviewer_prose that carries state between
+# lines, so it is the only one a truncated or noisy document can knock out of
+# phase. It now runs on the final message (a complete document) and nowhere else.
+{
+  printf 'Running shellcheck on the changed files.\n\n'
+  printf '```text\n'
+  printf 'In pr-verdict-lib.sh line 64:\n'
+  printf '~~~~~~~~~~^^^^^^^^^^^^^^^\n'
+  printf '```\n\n'
+  printf 'That is the whole read; nothing survived reproduction.\n\n'
+  printf '**VERDICT: APPROVE**\n\n'
+  printf 'FINDINGS:\nEND FINDINGS\n'
+} > "$WORK/squiggle.md"
+
+# The trap is REALLY THERE: an ODD number of fence-matching lines ahead of the
+# verdict is what puts it inside a phantom fence. Without this the case could pass
+# on a fixture that never contained the defect.
+FENCEN="$(awk '/^[[:space:]]*(```|~~~)/ { n++ } END { print n+0 }' "$WORK/squiggle.md")"
+[ "$((FENCEN % 2))" = "1" ] \
+  || fail "case F fixture has $FENCEN fence-matching lines (even), so parity never flips and the case proves nothing"
+ok "case F control: the fixture really carries an odd number of fence-matching lines"
+
+[ "$(extract_verdict "$WORK/squiggle.md")" = "APPROVE" ] \
+  || fail "an unmatched fence hid the closing verdict: got '$(extract_verdict "$WORK/squiggle.md")' (expected APPROVE)"
+[ "$(resolve_verdict "$(extract_verdict "$WORK/squiggle.md")" "$(verdict_from_findings "$WORK/squiggle.md")")" = "APPROVE" ] \
+  || fail "case F: an approving review with an empty block must resolve APPROVE, got '$(resolve_verdict "$(extract_verdict "$WORK/squiggle.md")" "$(verdict_from_findings "$WORK/squiggle.md")")'"
+ok "case F: a squiggle line that merely starts with ~~~ cannot hide the verdict"
+
+# THE REAL ARTIFACT, when this machine still has it. Operator-local, so its absence
+# is announced rather than silently skipped -- the synthetic fixture above is what
+# makes the case portable, this is what makes it producer-real.
+PR190="$HOME/.config/kipi/pr-reviews/codex/assafkip_kipi-system__pr-190-20260815-023743.md"
+if [ -s "$PR190" ]; then
+  grep -q '^\*\*VERDICT: APPROVE\*\*' "$PR190" \
+    || fail "the pr-190 record no longer ends in a stated APPROVE; the control below would prove nothing"
+  [ "$(extract_verdict "$PR190")" = "APPROVE" ] \
+    || fail "REGRESSION on the real pr-190 transcript: got '$(extract_verdict "$PR190")', artifact says **VERDICT: APPROVE**"
+  ok "case F: the real pr-190 transcript resolves to its stated APPROVE"
+else
+  echo "  SKIP case F real-artifact control: $PR190 is not on this machine"
+fi
+
+# --- case G: the sidecar is the source when it exists --------------------------
+#
+# pr-review-agent.sh passes `-o "$REVIEW.last"`, so codex writes ONLY its final
+# message there. Every reader takes it when present. The session file below is
+# deliberately hostile -- it states a BLOCK in clean prose and closes a major
+# findings block -- so the assertions can only pass by reading the sidecar.
+{
+  printf 'Prompt echo and tool output follow.\n\n'
+  printf 'VERDICT: BLOCK\n\n'
+  printf 'FINDINGS:\nmajor|read out of the session, not the answer|lib.sh:1\nEND FINDINGS\n'
+} > "$WORK/sidecar.md"
+{
+  printf 'Two nits, nothing that blocks.\n\n'
+  printf '**VERDICT: APPROVE WITH NITS**\n\n'
+  printf 'FINDINGS:\nminor|a real nit|lib.sh:2\nEND FINDINGS\n'
+} > "$WORK/sidecar.md.last"
+
+[ "$(extract_verdict "$WORK/sidecar.md")" = "APPROVE WITH NITS" ] \
+  || fail "case G: extract_verdict ignored the final-message sidecar, got '$(extract_verdict "$WORK/sidecar.md")'"
+[ "$(verdict_from_findings "$WORK/sidecar.md")" = "APPROVE WITH NITS" ] \
+  || fail "case G: verdict_from_findings read the SESSION block, got '$(verdict_from_findings "$WORK/sidecar.md")'"
+review_is_usable "$WORK/sidecar.md" \
+  || fail "case G: a review with a complete sidecar block must be usable"
+ok "case G: prose, findings and usability all read the final-message sidecar"
+
+# THE NEGATIVE SELF-TEST. Detach the sidecar and the SAME session file must give
+# the hostile answer. Without this the case above passes on a fixture whose
+# session half never disagreed, which is a check that cannot fail.
+mv "$WORK/sidecar.md.last" "$WORK/sidecar-detached"
+[ "$(extract_verdict "$WORK/sidecar.md")" = "BLOCK" ] \
+  || fail "case G control: with no sidecar the session file should read BLOCK, got '$(extract_verdict "$WORK/sidecar.md")' -- the sidecar was not what changed the answer"
+[ "$(verdict_from_findings "$WORK/sidecar.md")" = "REQUEST CHANGES" ] \
+  || fail "case G control: with no sidecar the session block should derive REQUEST CHANGES, got '$(verdict_from_findings "$WORK/sidecar.md")'"
+ok "case G control: without the sidecar the same file reads the session, so the sidecar is what did it"
+
+# An EMPTY sidecar is a killed run, not an answer, so it must fall back. `-s`, not
+# `-e`, is what makes that true.
+: > "$WORK/sidecar.md.last"
+[ "$(extract_verdict "$WORK/sidecar.md")" = "BLOCK" ] \
+  || fail "case G: a zero-byte sidecar must fall back to the session, got '$(extract_verdict "$WORK/sidecar.md")'"
+mv "$WORK/sidecar.md.last" "$WORK/sidecar-empty"
+ok "case G: a zero-byte sidecar falls back to the session file"
+
+# --- case H: tool output is not a verdict statement ---------------------------
+#
+# Codex round 5, second confirmed major, with a producer-real reproducer: existing
+# transcripts carry raw `rg` results shaped `path:line:source`, and some of those
+# source lines are verdict statements. The greedy `^.*VERDICT` strip took the
+# token and outranked the reviewer own later approval, posting a phantom BLOCK.
+# The marker must LEAD the sentence -- the mirror of the rule that the token must
+# lead what follows the marker.
+printf 'q-system/check.sh:42:VERDICT: BLOCK\nReviewer conclusion: **APPROVE WITH NITS**\n' > "$WORK/rgline.md"
+[ "$(extract_verdict "$WORK/rgline.md")" = "APPROVE WITH NITS" ] \
+  || fail "path-prefixed tool output fabricated a verdict: got '$(extract_verdict "$WORK/rgline.md")' (expected APPROVE WITH NITS)"
+ok "case H: a path:line: prefixed VERDICT is tool output, not a stated verdict"
+
+# The trap is REALLY IN the fixture.
+grep -q '^q-system/check.sh:42:VERDICT: BLOCK' "$WORK/rgline.md" \
+  || fail "case H fixture carries no path-prefixed verdict line, so it proves nothing"
+ok "case H control: the fixture really carries rg-shaped tool output"
+
+# AND THE REAL SHAPES STILL READ. Each of these is a conclusion recorded in the
+# corpus; the leading-marker rule must not eat any of them. Measured across all
+# 991 records: the rule changes the extracted verdict on none of them.
+printf '**VERDICT: APPROVE**\n'          > "$WORK/lead1.md"
+printf '## VERDICT: REQUEST CHANGES\n'   > "$WORK/lead2.md"
+printf 'VERDICT: APPROVE WITH NITS\n'    > "$WORK/lead3.md"
+printf '**VERDICT:** BLOCK\n'            > "$WORK/lead4.md"
+[ "$(extract_verdict "$WORK/lead1.md")" = "APPROVE" ]              || fail "case H: bold marker shape lost, got '$(extract_verdict "$WORK/lead1.md")'"
+[ "$(extract_verdict "$WORK/lead2.md")" = "REQUEST CHANGES" ]      || fail "case H: heading marker shape lost, got '$(extract_verdict "$WORK/lead2.md")'"
+[ "$(extract_verdict "$WORK/lead3.md")" = "APPROVE WITH NITS" ]    || fail "case H: bare marker shape lost, got '$(extract_verdict "$WORK/lead3.md")'"
+[ "$(extract_verdict "$WORK/lead4.md")" = "BLOCK" ]                || fail "case H: bold-colon marker shape lost, got '$(extract_verdict "$WORK/lead4.md")'"
+ok "case H control: every real marker shape in the corpus still reads"
+
 echo "PASS: $PASS/$PASS severity-floor checks"

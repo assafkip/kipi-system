@@ -840,12 +840,32 @@ END FINDINGS"
 # `codex exec` READS STDIN and hangs without a redirect (observed: "Reading
 # additional input from stdin..."), and outside a trusted directory it refuses
 # with "Not inside a trusted directory". Both are load-bearing, not decoration.
+#
+# `-o <file>` IS THE VERDICT BOUNDARY (ASK-1227 round 5). `codex exec` writes its
+# WHOLE agent session to stdout -- the echoed prompt, every tool call, every diff
+# and file it read -- and five review rounds in a row found a new region of that
+# stream where a stray verdict token fabricated a verdict nobody gave. Codex's own
+# fix-first on round 5: "replace whole-session Markdown inference with a
+# deterministic boundary for the reviewer's final response." This is that boundary.
+# `-o` writes ONLY the agent's final message, so pr-verdict-lib.sh parses the
+# reviewer's answer instead of inferring where it starts. The full session still
+# lands in $2 and is still what gets kept for the record.
+#
+# TRUNCATED BEFORE EVERY RUN, INCLUDING THE CLAUDE ONE. The sidecar is named after
+# the destination file, and the DEGRADED path reuses that same destination for the
+# Opus fallback after codex failed. Without this, a partial sidecar from the dead
+# codex attempt would be read as the FALLBACK's final message -- one engine's
+# verdict recorded against another engine's review, which is the false-provenance
+# shape aimed at the gating reader. `:` truncates rather than deletes: the readers
+# gate on `-s`, so a zero-byte sidecar already means "no answer here, use the
+# session", and claude has no `-o` equivalent to fill it.
 run_engine() {   # run_engine <claude|codex> <destination-file>
+  : > "$2.last" 2>/dev/null || true
   case "$1" in
     claude) run_bounded "$TIMEOUT_SECONDS" bash -c \
               "cd '$REVIEW_ROOT' && claude -p --model '$CLAUDE_MODEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "codex exec --ignore-user-config --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "codex exec --ignore-user-config --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' -o '$2.last' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
 }
 
