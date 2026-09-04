@@ -39,4 +39,6 @@
 ## Tomorrow
 Calendar for 2026-09-04: one event, 19:00 "Guinea Pig Cleaning – Lavie" on assafkip@gmail.com. `[verified: morning-brief.py run_claude with list_events on calendarId assafkip@gmail.com, week 2026-09-01..08 -> 9 events incl. this one; default-calendar read -> 0]`. This session's own connector binding is expired (session-level; the fresh headless sessions the brief uses work fine). `provenance: observed`
 
+**Ownership (founder, 2026-09-04): the morning brief has ONE owner, the "gmail connection" session (PR #296).** My PR #299 (sana/morning-brief-all-calendars, ASK-1235) finishes its review round and is NOT merged by me; that session lands #296 then merges #299 behind it. `[verified: git merge-tree --write-tree origin/feat/consulting-morning-board origin/sana/morning-brief-all-calendars -> 0 conflicts at 02ae6db3]`. No further edits to morning-brief.py from this session. `provenance: explicit_statement`
+
 **Defect found doing that, captured as sp-57823aef, Sana dispatched 2026-09-04 with a reproducer-first brief:** `collect_calendar` reads only the default calendar, which is empty; every event lives on the two named calendars, so the brief's calendar section has been printing nothing on days with events. `[verified: list_calendars -> 3 calendars, none primary; default week read -> {"events": []}; named read -> 9 events]`
