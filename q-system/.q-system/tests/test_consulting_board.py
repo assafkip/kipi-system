@@ -12,6 +12,7 @@ import sys
 import time
 from pathlib import Path
 
+import urllib.error
 import pytest
 
 HERE = Path(__file__).resolve().parent
@@ -1055,3 +1056,126 @@ class TestRound7:
                                       token_file=tmp_path / "tok", db_file=tmp_path / "db")
         assert err is None, err
         assert "1 row(s) over the" in out[0], out
+
+
+class TestEveryPersonOnTheCardReachesTheBoard:
+    """Codex round 8 (major): the real producer emitted four people to reach out and
+    this reader parsed ONE of them, at exit 0, with the board reporting success.
+
+    Two defects in one line-shape, and the first is a scar this file already carries.
+    `_CLIENT_LINE` was taught to tolerate the `*THE MOVE*` prefix after it silently
+    dropped the top-ranked client; the reach line is its sibling and was never
+    hardened, so when the top-ranked row is a reach-out (which is what the card looks
+    like on a day with no red clients) the whole line failed to match. The second is
+    the `then:` continuation, which the card packs with every remaining person and
+    this reader read as exactly one.
+
+    CAPTURED, not typed. The fixture below is the verbatim output of
+    `state_card.build_card` for four fire-temperature prospects, run 2026-09-03. It
+    cannot be imported here (`test_boundary.py` forbids this package from reaching into
+    the consulting pipeline), and a hand-written approximation of a producer's format
+    is what let this ship: every earlier fixture in this file puts `*THE MOVE*` on a
+    CLIENT line, so no test ever saw the shape the producer actually emits.
+    """
+
+    CAPTURED = (
+        "*Your book today* · 0 active · 0 in proposal · 4 to reach out · 2026-09-03\n"
+        "*THE MOVE* 📞 *4 to reach out* — 🔥 Alpha (fire, Alpha context): contact Alpha\n"
+        "     then: 🔥 Beta (fire) · 🔥 Gamma (fire) · 🔥 Delta (fire)\n"
+    )
+
+    def _rows(self, tmp_path):
+        paths = _tree(tmp_path, card=self.CAPTURED)
+        rows, err = cb.read_card(paths)
+        assert err is None, err
+        return rows
+
+    def test_all_four_are_parsed(self, tmp_path):
+        names = [r["name"] for r in self._rows(tmp_path)]
+        assert sorted(names) == ["Alpha", "Beta", "Delta", "Gamma"], names
+
+    def test_the_lead_person_is_not_the_one_dropped(self, tmp_path):
+        """Alpha carries `*THE MOVE*`, which is the card's own ranking: the person it
+        drops is the most important one on the line."""
+        assert "Alpha" in [r["name"] for r in self._rows(tmp_path)]
+
+    def test_each_one_is_its_own_board_row(self, tmp_path):
+        b = cb.buckets(NOW, {}, _tree(tmp_path, card=self.CAPTURED))
+        keys = [r["key"] for r in b["top_of_mind"] if r["key"].startswith("reach:")]
+        assert len(set(keys)) == 4, keys
+
+
+class TestRateLimitedNotionIsRetriedNotAbandoned:
+    """Codex round 8 (major): Notion documents ~3 requests/second and asks clients to
+    honour `Retry-After` on 429. This painter sends up to 40 sequential mutations with
+    no pacing and no retry, so an ordinary paint could abort part-written and report
+    the morning degraded. The next run reconciles the board, so the damage is alert
+    noise rather than corruption, which is why this is a retry and not a rewrite.
+    """
+
+    @staticmethod
+    def _opener(fail_on, retry_after="0"):
+        calls = []
+
+        def opener(req, timeout):
+            calls.append(req.full_url)
+            if len(calls) == fail_on:
+                raise urllib.error.HTTPError(
+                    req.full_url, 429, "rate_limited", {"Retry-After": retry_after},
+                    io.BytesIO(b"{}"))
+            if "/query" in req.full_url:
+                return io.BytesIO(b'{"results": [], "has_more": false}')
+            return io.BytesIO(b'{"id": "p1"}')
+        opener.calls = calls
+        return opener
+
+    def _rows(self, n=4):
+        return [{"key": f"mail:{i}", "title": f"t{i}", "detail": "",
+                 "scope": "inbox:Gmail"} for i in range(n)]
+
+    def test_a_429_mid_paint_is_retried_and_the_paint_completes(self):
+        opener = self._opener(fail_on=4)
+        counts = board_rows.paint(
+            {"top_of_mind": [], "this_week": [], "inbox": self._rows(),
+             "healthy_scopes": {"inbox:Gmail"}}, "t", "db", opener=opener)
+        assert counts["created"] == 4, counts
+        assert len(opener.calls) == 6, "the rejected write was not retried"
+
+    def test_a_retry_never_outlives_the_budget(self):
+        """The budget is the whole point of the round-4 fix: nothing may write after
+        the brief has moved on. A Retry-After longer than what is left is refused
+        rather than slept through."""
+        opener = self._opener(fail_on=2, retry_after="60")
+        # 2.0 rather than a fraction of a second: a budget that can expire before the
+        # first request turns this into a load-sensitive coin flip, and a flaky
+        # negative control is worse than none. The clamped wait (5s) is longer than
+        # this budget either way, which is the condition under test.
+        budget = board_rows._Budget(2.0)
+        started = time.monotonic()
+        # EITHER refusal is correct: the retry declines because the wait does not fit,
+        # or the budget was already spent and the next request refuses. The exception
+        # TYPE is not the property -- raising is what the unfixed code did too. The
+        # CLOCK is the property, and it separates the fix from the defect on its own
+        # (removing the budget check makes this same assertion fail after five seconds).
+        with pytest.raises((urllib.error.HTTPError, board_rows.Cancelled)):
+            board_rows.paint(
+                {"top_of_mind": [], "this_week": [], "inbox": self._rows(1),
+                 "healthy_scopes": {"inbox:Gmail"}}, "t", "db",
+                opener=opener, budget=budget)
+        assert time.monotonic() - started < 1.0, "it slept through the Retry-After"
+
+    def test_a_permanently_rate_limited_endpoint_gives_up(self):
+        """A retry loop with no cap is how a 15-second budget becomes a hung job."""
+        calls = []
+
+        def opener(req, timeout):
+            calls.append(req.full_url)
+            if "/query" in req.full_url:
+                return io.BytesIO(b'{"results": [], "has_more": false}')
+            raise urllib.error.HTTPError(req.full_url, 429, "rate_limited",
+                                         {"Retry-After": "0"}, io.BytesIO(b"{}"))
+        with pytest.raises(urllib.error.HTTPError):
+            board_rows.paint(
+                {"top_of_mind": [], "this_week": [], "inbox": self._rows(1),
+                 "healthy_scopes": {"inbox:Gmail"}}, "t", "db", opener=opener)
+        assert len(calls) <= 1 + board_rows.RATE_LIMIT_RETRIES + 1, calls

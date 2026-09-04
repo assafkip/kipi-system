@@ -93,9 +93,21 @@ def _paths(root: Path | None = None) -> dict:
 _CLIENT_LINE = re.compile(
     r"^\s*(?:\*THE MOVE\*\s*)?(?P<health>🔴|🟡|🟢|⚪|🟠)\s*\*(?P<name>[^*]+)\*"
     r"\s*·\s*(?P<rest>.+)$")
-_REACH_LINE = re.compile(r"^\s*📞\s*\*(?P<what>[^*]+)\*\s*(?P<rest>.*)$")
-#: "     then: 🔥 nicest.ai (fire)" -- the second reach-out, on its own indented line.
-_THEN_LINE = re.compile(r"^\s+then:\s*(?:[^\w\s]\s*)*(?P<who>[^(]+?)\s*(?:\(|$)")
+#: The `*THE MOVE*` prefix is optional HERE TOO. Round 8 (major): only `_CLIENT_LINE`
+#: had been taught it, so on a day whose top-ranked row is a reach-out -- which is what
+#: the card looks like with no red clients -- this line did not match at all and every
+#: person on it was dropped at exit 0. The sibling was hardened; this one was not, and
+#: nothing in the file made that asymmetry visible.
+_REACH_LINE = re.compile(
+    r"^\s*(?:\*THE MOVE\*\s*)?📞\s*\*(?P<what>[^*]+)\*\s*(?P<rest>.*)$")
+#: "     then: 🔥 Beta (fire) · 🔥 Gamma (fire)" -- EVERY remaining reach-out, packed
+#: onto one indented line. Round 8 (major): this used to capture a single name, so a
+#: card with three more people put one on the board and said nothing about the rest.
+#: The tail is split on the card's own separator and each piece goes through the same
+#: person extractor as the header line.
+_THEN_LINE = re.compile(r"^\s+then:\s*(?P<rest>.+)$")
+#: What the card puts between two people on a `then:` line.
+_THEN_SEP = "·"
 #: "— 🔥 Portant (fire, v1 CRM: ...)" -- the person, out of the reach-out header's tail.
 _REACH_WHO = re.compile(r"^[^A-Za-z0-9]*(?P<who>[A-Za-z0-9][^(:]*?)\s*(?:\(|:|$)")
 
@@ -138,13 +150,18 @@ def read_card(paths=None) -> tuple[list[dict], str | None]:
             continue
         m = _THEN_LINE.match(line)
         if m:
-            # The card puts the SECOND person to reach out on an indented "then:"
+            # The card puts every OTHER person to reach out on an indented "then:"
             # continuation line. Codex finding, 2026-09-03: this reader matched only
             # the header line, so the board claimed to be the full surface while the
             # second prospect never reached it. A dropped row is worse than a missing
-            # section, because nothing says it is missing.
-            rows.append({"kind": "reach", "health": "📞",
-                         "name": m.group("who").strip(), "detail": "then, after the first"})
+            # section, because nothing says it is missing. Round 8 found the same
+            # sentence still half true: the line was matched and then read as ONE
+            # person, so three of four went missing just as quietly.
+            for piece in m.group("rest").split(_THEN_SEP):
+                who = _person_from_reach(piece)
+                if who:
+                    rows.append({"kind": "reach", "health": "📞", "name": who,
+                                 "detail": "then, after the first"})
     if not rows:
         # A card that exists and parses to nothing is a FORMAT change, not a quiet
         # morning. state_card.py always emits at least the book line, so zero parsed

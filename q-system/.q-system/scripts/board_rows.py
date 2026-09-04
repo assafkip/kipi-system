@@ -71,6 +71,7 @@ import fcntl
 import hashlib
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -116,17 +117,62 @@ def _credentials(token_file=None, db_file=None):
     return token, db
 
 
+#: Codex round 8 (major): Notion documents roughly three requests per second and asks
+#: clients to honour `Retry-After` on a 429. This painter sends one query plus up to 40
+#: sequential mutations with no pacing, so an ordinary morning could be rejected
+#: part-way and report the whole brief degraded. Retried, not paced: a blanket sleep
+#: between every write would spend the 15-second budget on waiting even when nothing is
+#: rate limited, and the next paint reconciles a partial board anyway, so the cost of a
+#: 429 is alert noise rather than a wrong board.
+RATE_LIMIT_RETRIES = 2
+#: 502/503 join 429 because they are the same shape: the server saying "not now".
+RETRYABLE_STATUS = (429, 502, 503)
+#: What the header is allowed to ask for. A server asking for a minute is not something
+#: a 15-second budget can honour, and pretending to wait it out is worse than refusing.
+RETRY_WAIT_CAP_S = 5.0
+RETRY_WAIT_DEFAULT_S = 1.0
+
+
+def _retry_after(exc) -> float:
+    """Seconds the server asked us to wait, clamped. Never trusts the header blindly."""
+    raw = None
+    headers = getattr(exc, "headers", None)
+    if headers is not None:
+        try:
+            raw = headers.get("Retry-After")
+        except AttributeError:
+            raw = None
+    try:
+        wait = float(raw)
+    except (TypeError, ValueError):
+        wait = RETRY_WAIT_DEFAULT_S
+    return max(0.0, min(RETRY_WAIT_CAP_S, wait))
+
+
 def _request(token, method, path, body=None, opener=None, budget=None):
-    timeout = TIMEOUT_S
-    if budget is not None:
-        timeout = min(TIMEOUT_S, max(0.001, budget.check()))   # raises Cancelled when spent
-    req = urllib.request.Request(f"{API}{path}", method=method,
-                                 data=json.dumps(body).encode() if body is not None else None)
-    req.add_header("Authorization", f"Bearer {token}")
-    req.add_header("Notion-Version", VERSION)
-    req.add_header("Content-Type", "application/json")
-    with (opener or urllib.request.urlopen)(req, timeout=timeout) as fh:
-        return json.load(fh)
+    for attempt in range(RATE_LIMIT_RETRIES + 1):
+        timeout = TIMEOUT_S
+        if budget is not None:
+            timeout = min(TIMEOUT_S, max(0.001, budget.check()))  # raises Cancelled when spent
+        req = urllib.request.Request(
+            f"{API}{path}", method=method,
+            data=json.dumps(body).encode() if body is not None else None)
+        req.add_header("Authorization", f"Bearer {token}")
+        req.add_header("Notion-Version", VERSION)
+        req.add_header("Content-Type", "application/json")
+        try:
+            with (opener or urllib.request.urlopen)(req, timeout=timeout) as fh:
+                return json.load(fh)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in RETRYABLE_STATUS or attempt == RATE_LIMIT_RETRIES:
+                raise
+            wait = _retry_after(exc)
+            # SLEEPING PAST THE BUDGET IS THE ROUND-4 DEFECT WEARING A RETRY'S COAT.
+            # A worker the brief has already abandoned must not still be waiting to
+            # write. If the wait does not fit in what is left, this call fails now.
+            if budget is not None and wait >= budget.check():
+                raise
+            time.sleep(wait)
 
 
 def item_id(bucket_key: str, item: dict) -> str:
