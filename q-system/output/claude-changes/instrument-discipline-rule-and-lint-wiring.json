@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "slug": "instrument-discipline-rule-and-lint-wiring",
+  "reason": "case-004 (2026-09-03): five instrument defects in one day, none caught by a gate, while the lesson existed. Adds the paths-scoped rule instrument-discipline.md (scoped so it does not hit the always-on budget ratchet) and wires instrument-lint.py PostToolUse in .claude/settings.json AND settings-template.json in one transaction, so the hook does not ship dead to the fleet (settings-template-sync-check). Additive only: one create_file, two inserts, nothing removed.",
+  "requires": {
+    "files_present": [
+      ".claude/settings.json",
+      "settings-template.json",
+      "q-system/.q-system/scripts/instrument-lint.py",
+      "q-system/.q-system/scripts/test_instrument_lint.py",
+      "q-system/.q-system/skill-evals/instrument-discipline.json"
+    ],
+    "template_pairs": [
+      "scripts/instrument-lint.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/rules/instrument-discipline.md",
+      "op": "create_file",
+      "insert": "---\ndescription: Instrument discipline. A measurement is a draft until its instrument has been pointed at a case whose answer you already know. The null-claim half is held by instrument-lint.py; the rest is judgment and says so.\npaths:\n  - \"**/investigation/**\"\n  - \"**/output/analyses/**\"\n  - \"**/evidence/**\"\n  - \"**/canonical/evidence.jsonl\"\n---\n\n# Instrument discipline: point the instrument at a known answer first (ENFORCED for null claims, ADVISORY elsewhere)\n\nRead the heading narrowly. Verifying a CLAIM (citations, provenance, the evidence\nledger) has nineteen rules in this corpus. Verifying the INSTRUMENT that produced\nthe claim had none. This is that rule, and most of it cannot be a hook.\n\n## The scar\n\ncase-004, 2026-09-03. Five defects in one day, one shape, each caught by a person\nasking a question and none by a gate:\n\n1. A control group written up before its DNS was checked. One lookup collapsed it.\n2. A count of zero that was a property of the query set. Rerun with other query\n   language: 18 instances of the thing reported absent.\n3. A membership test never run against members it should exclude. `cash.app` and\n   `cal.com` classified as operator-controlled hosts.\n4. A corpus shaped by its seed (scam subreddits), read back as a picture of the\n   world. Correcting the frame moved every count.\n5. A verification command failing on a wrong path and reporting a clean zero,\n   indistinguishable from a clean result.\n\nThe lesson `every-measurement-needs-a-case-whose-answer-you-already-know` existed\nin the corpus the whole day. The pdftotext case (ASK-270: a token search over an\nempty string returns zero matches whatever the page says) is the same shape,\nfiled under a chain-of-custody protocol where nobody looking for it would look.\nWriting the rule a sixth time is not the fix; a rule that fires prevents the second\ninstance. So: one executable for the half a machine can see, and an honest label\non the half it cannot.\n\n## The one move\n\nBefore reporting a count, a zero, or a classification, name one input whose\nanswer you already know and include it in the run. An input that MUST return\nzero. An input that MUST hit. A row you hand-checked. A tab nothing could have\nwritten to. If every input's answer is unknown, you are generating numbers, not\nmeasuring.\n\nA number with no control is a draft. Say so when reporting it, or do not report\nit yet.\n\n## What is enforced (the executable)\n\n`q-system/.q-system/scripts/instrument-lint.py`, PostToolUse on Write/Edit in\nBOTH `.claude/settings.json` and `settings-template.json`, so the fleet sync\nships the switch and not only the script. Scope: `**/investigation/findings/*.md`\nand `**/output/analyses/**/*.md`; every other path exits 0 on the first check.\n\nIt blocks a file that reports a NULL-SHAPED claim (`0 of`, `Zero of`, `none\nfound`, `no evidence of`, `returned nothing`, `zero matches`, a bare `0` in a\ntable cell) and carries no CONTROL LABEL: a heading or bold label reading\n`Control`, `Negative control`, `Known-answer case` or `Calibration`. A label,\nnever bare prose, so the word \"control\" inside a sentence cannot satisfy it.\n\nFiles whose filename date is before 2026-09-04 are exempt. Measured before it\nshipped: 16 of 61 in-scope files fleet-wide carried an uncontrolled null claim,\nand a gate red on its own population gets switched off. Bypass per file:\n`instrument-lint-skip`. Engine test: `test_instrument_lint.py`.\n\n## What is NOT enforced (say it, do not hide it)\n\n- It checks a control label EXISTS, never that the control is real, ran, or\n  would have caught anything. `**Control:** n/a` passes.\n- Shapes 1, 3 and 4 above are not null-shaped sentences. An unchecked control\n  group, an unexercised membership test and a seed-shaped corpus pass this gate\n  untouched. They are judgment, and they get the advisory lane:\n  `q-system/.q-system/skill-evals/instrument-discipline.json`, run on demand by\n  `skill-trigger-eval.py`. A signal, never a pass/fail check.\n- A null result reported in chat and never written to a file is invisible to a\n  PostToolUse hook, the same blindness `plan-lint.py` states for a plan that was\n  skipped.\n\n## The tell\n\nWhen a result is surprising, suspect the harness before the subject. Four of the\nfive case-004 numbers were plausible and alarming, and in every case the\ninstrument was wrong and the world was fine. Print one flagged row in full before\nbelieving the aggregate.\n\n## Cross-references\n\n`evidence-ledger.md` (claim discipline; this is its instrument-side sibling) \u00b7\n`skill-hook-pairing.md` (why the judgment half stays interpretive) \u00b7\n`quick-plan.md` (plan-lint, the precedent for scope-first and date grandfathering)\n",
+      "reason": "One rule for the instrument side, findable from more than one direction, naming its executable so ENFORCED is honest and its boundary so it is not read wider than the hook holds."
+    },
+    {
+      "file": ".claude/settings.json",
+      "op": "insert_after",
+      "anchor": "\"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/plan-lint.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/plan-lint.py\\\"\",\n            \"timeout\": 5\n          },",
+      "insert": "\n          {\n            \"type\": \"command\",\n            \"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instrument-lint.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instrument-lint.py\\\"\",\n            \"timeout\": 5\n          },",
+      "reason": "Switch the engine on in the skeleton's own runtime, beside plan-lint, its precedent. test -f guard so a missing script is a no-op."
+    },
+    {
+      "file": "settings-template.json",
+      "op": "insert_after",
+      "anchor": "\"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/plan-lint.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/plan-lint.py\\\"\"\n          },",
+      "insert": "\n          {\n            \"type\": \"command\",\n            \"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instrument-lint.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instrument-lint.py\\\"\"\n          },",
+      "reason": "The fleet sync rebuilds instance settings from the template, so the switch lands here in the same transaction or the hook ships dead."
+    }
+  ]
+}
