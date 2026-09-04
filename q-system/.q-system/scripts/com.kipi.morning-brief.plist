@@ -44,8 +44,10 @@
     <string>/usr/bin/python3</string>
     <string>__KIPI_REPO__/q-system/.q-system/scripts/morning-brief.py</string>
   </array>
-  <!-- Local 07:00. launchd calendar intervals are LOCAL time, so this tracks
-       PST/PDT without a DST table. -->
+  <!-- launchd calendar intervals are LOCAL time, so this tracks PST/PDT without a
+       DST table. The hour itself is on the next comment; this one said 07:00 for a
+       day after the schedule moved, which is the doc-vs-code split Codex round 6
+       charged for two lines further down the same file. -->
   <!-- 07:40, not 07:00 (2026-09-03). The consulting state card is written at 07:30 by
        io.askconsulting.ask-crm-state-card, and this brief MIRRORS that card rather than
        recomputing it. At 07:00 it mirrored yesterday. A second job at 07:40 was the

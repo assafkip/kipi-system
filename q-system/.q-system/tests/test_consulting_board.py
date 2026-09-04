@@ -320,15 +320,22 @@ class TestTheDryRunWritesNothing:
 
 
 class TestHisDragAlwaysWins:
-    def test_an_existing_row_is_never_given_a_bucket(self):
+    def test_declining_to_move_a_row_writes_neither_Bucket_nor_Status(self):
+        """The narrow half of the promise. WHEN this module declines is
+        `_bucket_decision`'s call and is pinned by
+        TestARowHeNeverTouchedFollowsItsHealth; this holds that a decline really does
+        leave both columns alone. The old name said "an existing row is NEVER given a
+        bucket", which is the over-wide rule Codex round 6 charged for: a row nobody
+        touched was frozen in its first morning's bucket forever."""
         props = board_rows._properties({"title": "t", "detail": "d"}, "Top of Mind",
                                        "cb:abc", include_bucket=False)
         assert "Bucket" not in props and "Status" not in props
 
     def test_a_new_row_is(self):
         props = board_rows._properties({"title": "t"}, "Inbox", "cb:abc",
-                                       include_bucket=True)
+                                       include_bucket=True, status="Not started")
         assert props["Bucket"]["select"]["name"] == "Inbox"
+        assert props["Status"]["select"]["name"] == "Not started"
 
     def test_the_id_is_stable_across_mornings(self):
         """Hashed from `key` alone. The detail moves daily (due dates, reply counts)."""
@@ -763,7 +770,7 @@ class TestThisWeekHasASourceAtLast:
             "9.9": {"id": "9.9", "action": "a machine job", "performer": "mechanism",
                     "state": "ready", "rank": 1},
         }})
-        rows, err = cb.read_week(NOW, paths)
+        rows, err, _healthy = cb.read_week(NOW, paths)
         assert err is None
         assert not any(r["key"] == "gtm:9.9" for r in rows)
 
@@ -772,7 +779,7 @@ class TestThisWeekHasASourceAtLast:
         paths = _tree(tmp_path, commitments=json.dumps(
             {"id": "c1", "slug": "acme", "state": "open", "due": due,
              "promise": "send the audit"}), clients={"clients": []})
-        rows, _ = cb.read_week(NOW, paths)
+        rows, _, _healthy = cb.read_week(NOW, paths)
         hit = [r for r in rows if r["key"] == "due:c1"]
         assert hit, "a deliverable due in 3 days never reached This Week"
         assert "(3d)" in hit[0]["detail"]
@@ -784,7 +791,7 @@ class TestThisWeekHasASourceAtLast:
         paths = _tree(tmp_path, commitments=json.dumps(
             {"id": "c1", "slug": "acme", "state": "open", "due": past,
              "promise": "send the audit"}), clients={"clients": []})
-        rows, _ = cb.read_week(NOW, paths)
+        rows, _, _healthy = cb.read_week(NOW, paths)
         assert not any(r["key"] == "due:c1" for r in rows)
 
     def test_a_deliverable_beyond_the_week_is_not_this_weeks_problem(self, tmp_path):
@@ -792,13 +799,198 @@ class TestThisWeekHasASourceAtLast:
         paths = _tree(tmp_path, commitments=json.dumps(
             {"id": "c1", "slug": "acme", "state": "open", "due": far,
              "promise": "send the audit"}), clients={"clients": []})
-        rows, _ = cb.read_week(NOW, paths)
+        rows, _, _healthy = cb.read_week(NOW, paths)
         assert not any(r["key"] == "due:c1" for r in rows)
 
     def test_a_junk_due_date_is_skipped_not_crashed_on(self, tmp_path):
         paths = _tree(tmp_path, commitments=json.dumps(
             {"id": "c1", "slug": "acme", "state": "open", "due": "soon-ish",
              "promise": "send the audit"}), clients={"clients": []})
-        rows, err = cb.read_week(NOW, paths)
+        rows, err, _healthy = cb.read_week(NOW, paths)
         assert err is None
         assert not any(r["key"] == "due:c1" for r in rows)
+
+
+class TestARowHeNeverTouchedFollowsItsHealth:
+    """Codex round 6 (major): `Bucket` was written ONLY on create, so a client that
+    went red -> green stayed in Top of Mind forever and a human had to move it by hand.
+
+    The promise the module makes is narrower than the rule it implemented: HIS drag
+    wins, not every stale value the machine itself painted. Told apart the way
+    `gtm_board.apply_board_moves` does it -- record what THIS module last wrote, and a
+    live value that differs from that record was put there by a human, because nothing
+    else writes that column.
+    """
+
+    ITEM = {"key": "k1", "title": "t", "detail": "d", "scope": "card"}
+
+    @staticmethod
+    def _page(live_bucket, note):
+        return {"id": "p1", "properties": {
+            "Bucket": {"select": ({"name": live_bucket} if live_bucket else None)},
+            "Notes": {"rich_text": [{"plain_text": note}]}}}
+
+    def _patch(self, monkeypatch, live_bucket, note, computed_key, item=None):
+        """Paint over ONE existing row; return the properties it PATCHed."""
+        item = item or dict(self.ITEM)
+        have = {board_rows.item_id(computed_key, item): self._page(live_bucket, note)}
+        monkeypatch.setattr(board_rows, "existing_rows", lambda *a, **k: have)
+        calls = []
+        monkeypatch.setattr(
+            board_rows, "_request",
+            lambda token, method, path, body=None, opener=None, budget=None:
+            calls.append((method, body)) or {})
+        buckets = {"top_of_mind": [], "this_week": [], "inbox": [],
+                   "healthy_scopes": {"card"}}
+        buckets[computed_key] = [item]
+        board_rows.paint(buckets, "t", "db")
+        patches = [b for m, b in calls if m == "PATCH"]
+        assert len(patches) == 1, calls
+        return patches[0]["properties"]
+
+    @staticmethod
+    def _note(props):
+        return "".join(t["text"]["content"] for t in props["Notes"]["rich_text"])
+
+    def test_a_row_we_painted_and_he_never_moved_gets_its_new_bucket(self, monkeypatch):
+        """The finding. Live value equals what we last painted, so nobody has touched
+        it, so the computed health is free to move it."""
+        props = self._patch(monkeypatch, "Top of Mind",
+                            "d\nscope=card\nbucket=Top of Mind", "this_week")
+        assert props["Bucket"]["select"]["name"] == "This Week"
+        assert "bucket=This Week" in self._note(props)
+
+    def test_a_row_he_DRAGGED_is_not_moved_back(self, monkeypatch):
+        """Live Inbox against a record of Top of Mind: nothing but a human puts it
+        there. The row is pinned from this run on."""
+        props = self._patch(monkeypatch, "Inbox",
+                            "d\nscope=card\nbucket=Top of Mind", "top_of_mind")
+        assert "Bucket" not in props
+        assert "pinned=1" in self._note(props)
+
+    def test_and_it_STAYS_pinned_on_the_next_run(self, monkeypatch):
+        """The negative control, and the reason a straight port of gtm_board is wrong
+        here. There a drag CHANGES the computed state, so adopting the live value as
+        the new baseline is correct. Here health is computed from the card and a drag
+        cannot change it, so adopting would agree with the record next morning and
+        move the row back one run later. A pinned row is pinned for good."""
+        props = self._patch(monkeypatch, "Inbox",
+                            "d\nscope=card\nbucket=Inbox\npinned=1", "top_of_mind")
+        assert "Bucket" not in props
+        assert "pinned=1" in self._note(props)
+
+    def test_a_row_written_before_this_change_is_moved_ONCE(self, monkeypatch):
+        """Cold start: no record, and the live bucket disagrees with the computed one.
+        Nothing on disk can tell his drag from our own stale paint, so the bet is made
+        toward the reversible side. Moving a row he dragged costs one drag; pinning a
+        row he never touched is silent, permanent, and leaves the board wrong."""
+        props = self._patch(monkeypatch, "Top of Mind", "d\nscope=card", "this_week")
+        assert props["Bucket"]["select"]["name"] == "This Week"
+        assert "pinned=1" not in self._note(props)
+
+    def test_and_his_drag_back_pins_it_for_good(self, monkeypatch):
+        """The other half of that bet, and what makes it cost exactly one drag."""
+        props = self._patch(monkeypatch, "Inbox",
+                            "d\nscope=card\nbucket=This Week", "this_week")
+        assert "Bucket" not in props
+        assert "pinned=1" in self._note(props)
+
+    def test_a_cold_row_that_already_agrees_is_adopted_not_pinned(self, monkeypatch):
+        """Nothing is lost by recording a baseline that matches what is on screen."""
+        props = self._patch(monkeypatch, "This Week", "d\nscope=card", "this_week")
+        assert "bucket=This Week" in self._note(props)
+        assert "pinned=1" not in self._note(props)
+
+    def test_a_row_in_NO_bucket_is_given_one(self, monkeypatch):
+        """His three views all filter on Bucket, so a row with none is on no view at
+        all. Leaving it invisible forever is worse than placing it."""
+        props = self._patch(monkeypatch, "", "d\nscope=card", "top_of_mind")
+        assert props["Bucket"]["select"]["name"] == "Top of Mind"
+
+    def test_Status_is_never_rewritten_on_an_existing_row(self, monkeypatch):
+        """He marks rows done. A refresh that resets Status to Not started would undo
+        that every morning."""
+        props = self._patch(monkeypatch, "Top of Mind",
+                            "d\nscope=card\nbucket=Top of Mind", "this_week")
+        assert "Status" not in props
+
+    def test_the_machinery_lines_survive_a_long_detail(self, monkeypatch):
+        """`scope=` and `bucket=` live at the END of the note and the note is capped.
+        A long detail used to be able to push them off, which reads back as an unknown
+        scope (kept forever) and an unknown bucket (pinned forever) with no error."""
+        item = dict(self.ITEM, detail="x" * 4000, done="y" * 400)
+        props = self._patch(monkeypatch, "Top of Mind",
+                            "d\nscope=card\nbucket=Top of Mind", "this_week", item=item)
+        note = self._note(props)
+        assert len(note) <= 1900
+        assert "scope=card" in note and "bucket=This Week" in note
+
+
+class TestAWeeklyRowLeavesWhenItsWorkDoes:
+    """Codex round 6 (major): `read_week` emits `week:gtm` and `week:due`, and neither
+    scope was ever reported healthy, so the painter could not archive inside them. A
+    delivered commitment or a finished GTM step sat on the board forever.
+
+    The rule the other scopes follow holds here: healthy means THIS SOURCE ANSWERED
+    THIS RUN. An unreadable GTM queue or commitment book authorises nothing.
+    """
+
+    def _healthy_tree(self, tmp_path):
+        due = (NOW.date() + dt.timedelta(days=3)).isoformat()
+        return _tree(tmp_path, commitments=json.dumps(
+            {"id": "c1", "slug": "acme", "state": "open", "due": due,
+             "promise": "send the audit"}), clients={"clients": []})
+
+    def test_both_week_scopes_are_healthy_when_both_sources_read(self, tmp_path):
+        b = cb.buckets(NOW, {}, self._healthy_tree(tmp_path))
+        assert {"week:gtm", "week:due"} <= b["healthy_scopes"]
+
+    def test_an_unreadable_gtm_queue_does_NOT_authorise_archiving_week_gtm(self, tmp_path):
+        paths = self._healthy_tree(tmp_path)
+        paths["gtm"].write_text("{not json", encoding="utf-8")
+        b = cb.buckets(NOW, {}, paths)
+        assert "week:gtm" not in b["healthy_scopes"]
+        assert "week:due" in b["healthy_scopes"], "one broken source must not mute the other"
+
+    def test_an_unreadable_commitment_book_does_NOT_authorise_archiving_week_due(self, tmp_path):
+        paths = self._healthy_tree(tmp_path)
+        paths["commitments"].unlink()
+        paths["commitments"].mkdir()          # readable path, unreadable file
+        b = cb.buckets(NOW, {}, paths)
+        assert "week:due" not in b["healthy_scopes"]
+        assert "week:gtm" in b["healthy_scopes"]
+
+    def test_an_ABSENT_commitment_book_authorises_nothing_either(self, tmp_path):
+        """OFF, not broken: no book is a fact and not a failure, so no error row. It
+        still says NOTHING about rows written when the book existed, and nothing is
+        not "they are gone"."""
+        paths = _tree(tmp_path)
+        b = cb.buckets(NOW, {}, paths)
+        assert "week:due" not in b["healthy_scopes"]
+        assert not any("COULD NOT READ" in r["title"] for r in b["this_week"])
+
+    def test_every_scope_the_producer_emits_can_be_archived_when_it_is_healthy(self, tmp_path):
+        """The structural check, not a list of the scopes that exist today. Round 6
+        found two scopes with no health decision at all; this fails on the third."""
+        b = cb.buckets(NOW, {"mail": ([_brief().Row("a thread", "mail:t1")], None)},
+                       self._healthy_tree(tmp_path))
+        emitted = {r.get("scope") for r in b["top_of_mind"] + b["this_week"] + b["inbox"]}
+        assert emitted, "the fixture produced no rows at all"
+        assert emitted <= b["healthy_scopes"], (
+            f"scopes with no health decision: {sorted(emitted - b['healthy_scopes'])}")
+
+    def test_an_error_row_is_archived_once_its_source_recovers(self, tmp_path):
+        """The same hole, in the rows that REPORT the hole. A COULD NOT READ row is
+        scoped `week` or `myside`, and neither was ever healthy, so the apology
+        outlived the outage and nothing could clear it."""
+        paths = self._healthy_tree(tmp_path)
+        paths["gtm"].write_text("{not json", encoding="utf-8")
+        broken = cb.buckets(NOW, {}, paths)
+        assert any(r["scope"] == "week" for r in broken["this_week"])
+        assert "week" not in broken["healthy_scopes"]
+
+        paths = self._healthy_tree(tmp_path)          # source recovers
+        fixed = cb.buckets(NOW, {}, paths)
+        assert not any(r["scope"] == "week" for r in fixed["this_week"])
+        assert "week" in fixed["healthy_scopes"], "the apology row can never be cleared"
+        assert "myside" in fixed["healthy_scopes"]

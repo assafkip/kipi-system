@@ -19,13 +19,29 @@ The ids cost an hour and are recorded so nobody re-derives them:
   data source        3017ad50-...   404s on /v1/databases; it is not an API database id
   the page's blocks  3cfbf98c-...   LINKED VIEWS, queryable, not the source of truth
 
-## HIS DRAG ALWAYS WINS. This module never moves a row he moved.
+## HIS DRAG ALWAYS WINS. This module never moves a row HE moved.
 
 `Item id` carries "stable id the brief uses so a hand-moved item is never re-added". So:
 create a row that does not exist, refresh the Notes and Source of one that does, and
-NEVER write `Bucket` on an existing row. That is `gtm_board.record_paint`'s posture
+never move a row a human put somewhere. That is `gtm_board.record_paint`'s posture
 (painting is not deciding) and DEC-8/DEC-13's one-writer rule. The computed state is
 authoritative about WHAT is owed; he is authoritative about where it sits on his board.
+
+The first cut of that read "NEVER write `Bucket` on an existing row", which is a wider
+rule than the promise and Codex round 6 (major) is what it cost: a client going red ->
+green kept its old bucket forever and a human had to reconcile the board by hand. A
+stale value the MACHINE painted is not his drag.
+
+The two are told apart the way `gtm_board.apply_board_moves` does it: every write
+records `bucket=` in the row's own Notes, which is what this module last painted there.
+Nothing else writes that column, so a live value differing from the record is a human.
+
+One deliberate divergence from gtm_board, and it is the whole design: there a drag is
+applied back through `set_state`, so the computed state BECOMES his choice and adopting
+the live value as the next baseline is right. Here health is computed from the state
+card and no drag can change it, so adopting would make the record agree next morning and
+move his row back one run later. A row he has moved is therefore PINNED (`pinned=1` in
+the same note) and this module never sets its bucket again.
 
 ## Rows leave when the work does
 
@@ -176,6 +192,30 @@ def existing_rows(token, db, opener=None, dupes_out=None, budget=None) -> dict:
 
 
 SCOPE_PREFIX = "scope="
+#: What this module last PAINTED into the row's Bucket. See the module docstring.
+BUCKET_PREFIX = "bucket="
+#: A human moved this row. From then on the machine refreshes its text and never its
+#: bucket. One flag rather than an inference, because the inference is what would
+#: silently expire (see `_bucket_decision`).
+PINNED_LINE = "pinned=1"
+#: The note's machinery lines are short and fixed; the free text is capped so they
+#: always fit. Before this the whole note was truncated at the end, so a long detail
+#: could push `scope=` off and the row read back as an unknown scope: kept forever,
+#: with no error anywhere.
+NOTE_CAP = 1900
+
+
+def _note_of(page) -> str:
+    prop = (page.get("properties") or {}).get("Notes") or {}
+    return "".join(t.get("plain_text", "") for t in prop.get("rich_text", []))
+
+
+def _note_field(page, prefix: str) -> str:
+    """A `<prefix>value` line off the row's own Notes, or "" when it carries none."""
+    for part in _note_of(page).split("\n"):
+        if part.startswith(prefix):
+            return part[len(prefix):].strip()
+    return ""
 
 
 def _scope_of(page) -> str:
@@ -186,27 +226,76 @@ def _scope_of(page) -> str:
     for. Unknown scope is treated as UNHEALTHY by the caller, which fails safe: an
     unrecognised row is kept, never archived.
     """
-    prop = (page.get("properties") or {}).get("Notes") or {}
-    text = "".join(t.get("plain_text", "") for t in prop.get("rich_text", []))
-    for part in text.split("\n"):
-        if part.startswith(SCOPE_PREFIX):
-            return part[len(SCOPE_PREFIX):].strip()
-    return ""
+    return _note_field(page, SCOPE_PREFIX)
 
 
-def _properties(item, bucket, iid, include_bucket: bool):
+def _live_bucket_of(page) -> str:
+    """The bucket the row sits in RIGHT NOW, whoever put it there."""
+    prop = (page.get("properties") or {}).get("Bucket") or {}
+    return ((prop.get("select") or {}).get("name") or "").strip()
+
+
+def _bucket_decision(page, computed: str):
+    """(write_bucket, bucket_to_record, pinned) for an EXISTING row.
+
+    The whole of "his drag always wins" lives in these five branches, so each one says
+    what it is protecting.
+    """
+    if PINNED_LINE in _note_of(page).split("\n"):
+        return False, _live_bucket_of(page), True      # decided; never revisited
+    live = _live_bucket_of(page)
+    painted = _note_field(page, BUCKET_PREFIX)
+    if not live:
+        # His three board views all filter on Bucket, so a row in none of them is on no
+        # view at all. Leaving it invisible forever is worse than placing it.
+        return True, computed, False
+    if not painted:
+        # COLD START: a row written before this module recorded anything, which on the
+        # morning this ships is every row on the board. Nothing on disk can tell his
+        # drag from our own stale paint here, so this is a one-time bet and it is made
+        # toward the REVERSIBLE side. Moving a row he had dragged costs him one drag,
+        # and that drag pins the row for good. Pinning a row he never touched is
+        # silent, permanent, and leaves the board wrong with no lever to fix it, which
+        # is the round-6 finding wearing a fail-safe's coat.
+        return True, computed, False
+    if live != painted:
+        return False, live, True                       # nothing but a human writes this
+    if live == computed:
+        return False, live, False
+    return True, computed, False
+
+
+def _properties(item, bucket, iid, include_bucket: bool, *, status=None,
+                record_bucket=None, pinned=False):
+    """The row's Notion properties.
+
+    `include_bucket` writes `Bucket`; `status` writes `Status` when given (create only,
+    because he marks rows done and a refresh must never reset that). `record_bucket` is
+    what the row's Bucket will hold AFTER this write and defaults to `bucket`; a caller
+    DECLINING to move a row passes the live value instead, so the note never claims a
+    paint that did not happen.
+    """
     # The done signal leads the note, because it is the line that makes the row
-    # actionable; `scope=` is machinery the painter reads back and belongs last.
+    # actionable; `scope=` and `bucket=` are machinery the painter reads back and
+    # belong last.
     done = (item.get("done") or "").strip()
     note = ""
     if done:
         note += f"Done signal: {done}\n"
-    note += f"{(item.get('detail') or '')[:1500]}\n{SCOPE_PREFIX}{item.get('scope') or 'card'}"
+    note += (item.get("detail") or "")[:1500]
+    tail = f"{SCOPE_PREFIX}{item.get('scope') or 'card'}"
+    tail += f"\n{BUCKET_PREFIX}{record_bucket if record_bucket is not None else bucket}"
+    if pinned:
+        tail += f"\n{PINNED_LINE}"
+    # The FREE TEXT is what gets cut, never the machinery. Truncating the whole note
+    # from the end drops `scope=` first, and an unknown scope is kept forever with no
+    # error: a silent leak wearing a fail-safe's coat.
+    note = f"{note[:max(0, NOTE_CAP - len(tail) - 1)]}\n{tail}"
 
     props = {
         "Task": {"title": [{"text": {"content": (item.get("title") or "(untitled)")[:200]}}]},
         "Item id": {"rich_text": [{"text": {"content": iid}}]},
-        "Notes": {"rich_text": [{"text": {"content": note[:1900]}}]},
+        "Notes": {"rich_text": [{"text": {"content": note}}]},
         # The producer's own domain. Hardcoding "Consulting" put a GTM step and a
         # broken-source alarm under the client label, so the column could not be
         # filtered on -- which is the only thing a domain column is for.
@@ -221,9 +310,11 @@ def _properties(item, bucket, iid, include_bucket: bool):
         # "GroupMe" do not need to be added to the schema by hand first.
         props["Source"] = {"select": {"name": source[:100]}}
     if include_bucket:
-        # ONLY on create. On an existing row his drag is the truth.
         props["Bucket"] = {"select": {"name": bucket}}
-        props["Status"] = {"select": {"name": "Not started"}}
+    if status:
+        # Create only. He marks rows done on the board; a morning refresh that reset
+        # this to "Not started" would undo that every day.
+        props["Status"] = {"select": {"name": status}}
     return props
 
 
@@ -285,21 +376,30 @@ def paint(buckets: dict, token, db, opener=None, budget=None) -> dict:
         )
 
     have = existing_rows(token, db, opener, budget=budget)
-    created = updated = archived = 0
+    created = updated = archived = moved = pinned = 0
 
     for iid, (item, bucket) in wanted.items():
         page = have.get(iid)
         if page is None:
             _request(token, "POST", "/pages",
                      {"parent": {"database_id": db},
-                      "properties": _properties(item, bucket, iid, include_bucket=True)},
+                      "properties": _properties(item, bucket, iid, include_bucket=True,
+                                                status="Not started")},
                      opener, budget)
             created += 1
         else:
+            # Codex round 6 (major): this passed include_bucket=False unconditionally,
+            # so a row's bucket was frozen at whatever its FIRST morning computed. See
+            # `_bucket_decision` and the module docstring for how his drag is told from
+            # our own stale paint.
+            write, record, pin = _bucket_decision(page, bucket)
             _request(token, "PATCH", f"/pages/{page['id']}",
-                     {"properties": _properties(item, bucket, iid, include_bucket=False)},
+                     {"properties": _properties(item, record, iid, include_bucket=write,
+                                                record_bucket=record, pinned=pin)},
                      opener, budget)
             updated += 1
+            moved += 1 if write else 0
+            pinned += 1 if pin else 0
 
     kept = 0
     for iid, page in have.items():
@@ -312,7 +412,7 @@ def paint(buckets: dict, token, db, opener=None, budget=None) -> dict:
         archived += 1
 
     return {"created": created, "updated": updated, "archived": archived,
-            "kept": kept, "wanted": len(wanted)}
+            "kept": kept, "wanted": len(wanted), "moved": moved, "pinned": pinned}
 
 
 def read_back(token, db, opener=None, budget=None) -> int:
@@ -376,5 +476,6 @@ def collect(now, sources: dict, opener=None, token_file=None, db_file=None,
                     f"({counts['wanted']} written + {counts['kept']} kept from a quiet "
                     f"source), board shows {seen}")
     return [f"board: {counts['created']} new, {counts['updated']} refreshed, "
-            f"{counts['archived']} cleared, {counts['kept']} kept (source quiet), "
+            f"{counts['moved']} rebucketed, {counts['archived']} cleared, "
+            f"{counts['kept']} kept (source quiet), {counts['pinned']} yours (untouched), "
             "read-back ok"], None

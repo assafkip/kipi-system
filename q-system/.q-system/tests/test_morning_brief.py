@@ -916,3 +916,24 @@ def test_a_present_optional_module_renders_after_the_fixed_sections(brief, tmp_p
     assert not degraded
     last_fixed = brief.SECTIONS[-1][1]
     assert message.index(last_fixed) < message.index("Terms I do not know") < message.index("Widgetcorp")
+
+
+def test_the_documented_hour_is_the_one_launchd_runs():
+    """Codex round 6 (minor): CLAUDE.md said 07:00 while the plist ran 07:40.
+
+    Held by a check rather than by care, because the two live in different files and
+    the only thing that had been keeping them together was somebody remembering. The
+    plist is the record: it is what actually fires.
+    """
+    import pathlib
+    import plistlib
+    import re
+    root = pathlib.Path(__file__).resolve().parents[3]
+    plist = root / "q-system" / ".q-system" / "scripts" / "com.kipi.morning-brief.plist"
+    when = plistlib.loads(plist.read_bytes())["StartCalendarInterval"]
+    runs_at = "%02d:%02d" % (when["Hour"], when["Minute"])
+    docs = (root / "CLAUDE.md").read_text(encoding="utf-8")
+    stated = re.search(r"Runs itself at ([0-9:]+) \(`com\.kipi\.morning-brief`\)", docs)
+    assert stated, "CLAUDE.md no longer states the brief's schedule at all"
+    assert stated.group(1) == runs_at, (
+        f"CLAUDE.md says {stated.group(1)}, launchd runs {runs_at}")

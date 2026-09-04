@@ -324,7 +324,7 @@ def read_gtm(paths=None) -> tuple[dict | None, str | None]:
 WEEK_DAYS = 7
 
 
-def read_week(now: dt.datetime, paths=None) -> tuple[list[dict], str | None]:
+def read_week(now: dt.datetime, paths=None) -> tuple[list[dict], str | None, set]:
     """This Week: the GTM moves waiting on him, and deliverables coming due.
 
     Founder, 2026-09-03: *"This week should be this week's GTM moves and deliverables
@@ -342,9 +342,22 @@ def read_week(now: dt.datetime, paths=None) -> tuple[list[dict], str | None]:
     - Open commitments whose due date lands inside the next `WEEK_DAYS`. An OVERDUE
       one is deliberately excluded: it is already red in Top of Mind, and showing it
       in both places teaches him the two sections mean the same thing.
+
+    ## The third return value
+
+    Which of the two sources answered THIS RUN, as the scopes they emit. Codex round 6
+    (major): both scopes existed and neither was ever reported healthy, so the painter
+    could not archive inside them and a delivered commitment sat on the board forever.
+    Reported per SOURCE rather than per section, because the section has two of them and
+    one being down says nothing about the other.
+
+    A scope is healthy only when its source was READ. An absent commitment book is OFF
+    rather than broken (no error row), and it is still not healthy: a file that is not
+    there has said nothing about the rows written when it was, and nothing is not "they
+    are gone" (the round-2 archive-the-lot scar).
     """
     paths = paths or _paths()
-    out, errors = [], []
+    out, errors, healthy = [], [], set()
 
     lead, gtm_err = read_gtm(paths)
     if gtm_err:
@@ -372,6 +385,7 @@ def read_week(now: dt.datetime, paths=None) -> tuple[list[dict], str | None]:
                     "domain": "GTM",
                     "done": r.get("done_looks_like") or DONE_GTM_FALLBACK,
                     "bucket_reason": "gtm-week"})
+            healthy.add("week:gtm")       # only after the rows are actually built
         except (OSError, ValueError) as exc:
             errors.append(f"GTM queue unreadable ({type(exc).__name__})")
 
@@ -403,6 +417,7 @@ def read_week(now: dt.datetime, paths=None) -> tuple[list[dict], str | None]:
                 "domain": "Consulting",
                 "done": "you delivered it, or you moved the date with them",
                 "bucket_reason": "due-this-week"})
+        healthy.add("week:due")           # the book was read start to finish
     # A file that is ABSENT is not a file that is BROKEN. A machine with no commitment
     # book has no promises to report, which is a fact; a book that exists and cannot be
     # parsed or read is a failure that must be said out loud. Collapsing the two either
@@ -413,7 +428,7 @@ def read_week(now: dt.datetime, paths=None) -> tuple[list[dict], str | None]:
     except OSError as exc:
         errors.append(f"commitment book unreadable ({type(exc).__name__})")
 
-    return out, ("; ".join(errors) if errors else None)
+    return out, ("; ".join(errors) if errors else None), healthy
 
 
 def collect(now: dt.datetime, sources: dict, paths=None):
@@ -572,6 +587,11 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
     # The dates failing is reported ONCE, as its own row, never as a line stapled to
     # every client. A test proves this module still delivers with no registry in the
     # tree at all, and per-row noise would make that delivery look broken.
+    if not my_side_err:
+        # The apology row below is scoped `myside`, and until round 6 that scope was
+        # never healthy, so the row outlived the outage it reported and nothing could
+        # clear it. A source that recovered is what authorises clearing its own alarm.
+        healthy.add("myside")
     if my_side_err:
         top.append({"title": "Promise dates: COULD NOT READ", "key": "myside:error",
                     "detail": my_side_err, "source": "State card", "scope": "myside",
@@ -579,8 +599,14 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
                     "done": "the commitment book and registry read again",
                     "bucket_reason": "error"})
 
-    week_rows, week_err = read_week(now, paths)
+    week_rows, week_err, week_healthy = read_week(now, paths)
     week.extend(week_rows)
+    # Per SOURCE, not per section. Round 6 (major): `week:gtm` and `week:due` were
+    # emitted by every run and never reported healthy, so the painter could not archive
+    # inside them and a delivered commitment stayed on the board forever.
+    healthy |= week_healthy
+    if not week_err:
+        healthy.add("week")            # clears this section's own COULD NOT READ row
     if week_err:
         week.append({"title": "This Week: COULD NOT READ", "key": "week:error",
                      "detail": week_err, "source": "GTM queue", "scope": "week",
