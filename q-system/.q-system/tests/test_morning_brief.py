@@ -937,3 +937,37 @@ def test_the_documented_hour_is_the_one_launchd_runs():
     assert stated, "CLAUDE.md no longer states the brief's schedule at all"
     assert stated.group(1) == runs_at, (
         f"CLAUDE.md says {stated.group(1)}, launchd runs {runs_at}")
+
+
+def test_no_hourly_slot_fires_before_the_card_it_mirrors():
+    """Codex round 7 (major): the hourly inbox job's first slot was 07:05.
+
+    The consulting state card is written at 07:30 by another repo's job, and the board
+    MIRRORS that card: `read_heartbeat` withholds a card stamped yesterday, so a run at
+    07:05 can only ever see yesterday's. Every morning it spent a headless Opus mail
+    call, threw the result away, refused the board write and exited 1 into the launchd
+    watchdog. Not broken. Early, by construction, forever.
+
+    The anchor is the BRIEF's own slot rather than a 07:30 literal, because that plist
+    is this repo's record of "after the card is written" and a literal here would be a
+    second copy of it to drift.
+    """
+    import pathlib
+    import plistlib
+    scripts = pathlib.Path(__file__).resolve().parents[1] / "scripts"
+
+    def minute_of_day(entry):
+        return entry["Hour"] * 60 + entry["Minute"]
+
+    brief = plistlib.loads((scripts / "com.kipi.morning-brief.plist").read_bytes())
+    after_the_card = minute_of_day(brief["StartCalendarInterval"])
+
+    hourly = plistlib.loads((scripts / "com.kipi.morning-inbox.plist").read_bytes())
+    slots = hourly["StartCalendarInterval"]
+    assert isinstance(slots, list) and slots, "the hourly job lost its schedule"
+    early = ["%02d:%02d" % (s["Hour"], s["Minute"])
+             for s in slots if minute_of_day(s) < after_the_card]
+    assert not early, (
+        f"slots {early} fire before the state card exists (the brief waits until "
+        f"{after_the_card // 60:02d}:{after_the_card % 60:02d}); each one is a wasted "
+        "model call and an exit 1 the watchdog reads as a broken hour")

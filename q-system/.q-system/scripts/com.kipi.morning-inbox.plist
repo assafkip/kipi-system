@@ -19,7 +19,7 @@
      with a hardcoded home is unusable on any other machine and invisible to
      validate-separation (the b2df00e / ASK-113 scar).
 
-     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.morning-brief
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.morning-inbox
 
      WHY EnvironmentVariables AND NOT a login shell. Measured 2026-08-30 on this
      Mac: `env -i HOME=... PATH=/usr/bin:/bin /bin/bash -lc 'which claude'` finds
@@ -55,19 +55,28 @@
     <string>__KIPI_REPO__/q-system/.q-system/scripts/morning-brief.py</string>
     <string>--inbox-only</string>
   </array>
-  <!-- Local 07:00. launchd calendar intervals are LOCAL time, so this tracks
-       PST/PDT without a DST table. -->
-  <!-- 07:40, not 07:00 (2026-09-03). The consulting state card is written at 07:30 by
-       io.askconsulting.ask-crm-state-card, and this brief MIRRORS that card rather than
-       recomputing it. At 07:00 it mirrored yesterday. A second job at 07:40 was the
-       alternative and was rejected: two jobs racing one board is how two writers start.
-       Moving this one keeps a single schedule and a single writer. -->
-  <!-- :05 every hour, 07:05 to 19:05. WAKING HOURS ONLY: an inbox repainted at
-       03:00 is a model call and a Notion write nobody looks at before 07:00, and
-       the 07:00 brief covers the overnight gap. -->
+  <!-- launchd calendar intervals are LOCAL time, so this tracks PST/PDT without a
+       DST table. The two comments that stood here described the BRIEF's single daily
+       slot and were copy-pasted onto an hourly array, which is how the first slot
+       below kept the brief's old 07:00 reasoning while the brief itself had moved. -->
+  <!-- Hourly at :05 through the waking day, and the FIRST slot is 07:45 rather than
+       07:05. Codex round 7 (major): the board MIRRORS the consulting state card, which
+       io.askconsulting.ask-crm-state-card writes at 07:30, and `read_heartbeat`
+       withholds a card stamped yesterday. A 07:05 run could therefore only ever see
+       yesterday's: it spent a headless Opus mail call, discarded it, refused the board
+       write and exited 1, which the launchd watchdog reads as a broken hour. Not
+       broken, early, every morning.
+
+       07:45 and not 07:40: the brief paints the same board at 07:40 and the painter
+       takes an exclusive flock, so sharing the minute would make one of the two refuse
+       with BoardBusy. Five minutes is the gap, not a race.
+
+       WAKING HOURS ONLY: an inbox repainted at 03:00 is a model call and a Notion
+       write nobody looks at before morning, and the brief covers the overnight gap.
+       `test_no_hourly_slot_fires_before_the_card_it_mirrors` holds the ordering. -->
   <key>StartCalendarInterval</key>
   <array>
-    <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>45</integer></dict>
     <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>5</integer></dict>
     <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
     <dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>5</integer></dict>

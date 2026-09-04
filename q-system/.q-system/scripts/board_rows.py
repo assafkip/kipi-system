@@ -356,8 +356,17 @@ def paint(buckets: dict, token, db, opener=None, budget=None) -> dict:
     if buckets.get("error"):
         raise ValueError(buckets["error"])
 
-    wanted, scopes = {}, {}
+    wanted, scopes, over_cap = {}, {}, 0
     for key, bucket in BUCKET_OF.items():
+        # Round 7 (minor): this truncation was SILENT, and the read-back cannot see it
+        # because `wanted` has already lost the row before the count is taken. The
+        # inbox alone can produce 41 (mail 15 + its overflow row + GroupMe 25), so the
+        # 41st vanished with nothing said anywhere. The cap stays -- it bounds the
+        # Notion writes -- and what changes is that the loss is now counted and printed
+        # beside the other counts. Not an overflow ROW: a synthetic row needs a stable
+        # id and a scope, and inventing a scope the painter itself declares healthy
+        # would make it a writer of the archive authority it consumes.
+        over_cap += max(0, len(buckets.get(key) or []) - BUDGET_ROWS)
         for item in (buckets.get(key) or [])[:BUDGET_ROWS]:
             iid = item_id(key, item)
             wanted[iid] = (item, bucket)
@@ -412,7 +421,8 @@ def paint(buckets: dict, token, db, opener=None, budget=None) -> dict:
         archived += 1
 
     return {"created": created, "updated": updated, "archived": archived,
-            "kept": kept, "wanted": len(wanted), "moved": moved, "pinned": pinned}
+            "kept": kept, "wanted": len(wanted), "moved": moved, "pinned": pinned,
+            "over_cap": over_cap}
 
 
 def read_back(token, db, opener=None, budget=None) -> int:
@@ -475,7 +485,10 @@ def collect(now, sources: dict, opener=None, token_file=None, db_file=None,
         return [], (f"read-back mismatch: expected {expected} row(s) "
                     f"({counts['wanted']} written + {counts['kept']} kept from a quiet "
                     f"source), board shows {seen}")
-    return [f"board: {counts['created']} new, {counts['updated']} refreshed, "
+    line = (f"board: {counts['created']} new, {counts['updated']} refreshed, "
             f"{counts['moved']} rebucketed, {counts['archived']} cleared, "
             f"{counts['kept']} kept (source quiet), {counts['pinned']} yours (untouched), "
-            "read-back ok"], None
+            "read-back ok")
+    if counts["over_cap"]:
+        line += f"; {counts['over_cap']} row(s) over the {BUDGET_ROWS}-row cap, not written"
+    return [line], None

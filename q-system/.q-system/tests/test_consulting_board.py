@@ -994,3 +994,64 @@ class TestAWeeklyRowLeavesWhenItsWorkDoes:
         assert not any(r["scope"] == "week" for r in fixed["this_week"])
         assert "week" in fixed["healthy_scopes"], "the apology row can never be cleared"
         assert "myside" in fixed["healthy_scopes"]
+
+
+class TestRound7:
+    """Two findings the round-7 review raised against surfaces round 6 had not touched."""
+
+    def test_an_answer_them_row_is_today_in_BOTH_tables(self, tmp_path):
+        """PRIORITY_BY_HEALTH called 🟠 a P0 while the split sent it to This Week, so
+        one module said today and not-today about the same row.
+
+        Pins consistency between two tables in this file, NOT a producer behaviour:
+        `state_card.py` emits only 🔴🟡🟢⚪📞 and `board_sync.py` is where 🟠 lives. The
+        reviewer flagged that too, which is why this test says so rather than implying
+        the dot arrives today.
+        """
+        card = ("# TODAY CARD\n"
+                '🟠 *Northwind Design* · you said "reply to them" — not sent\n')
+        b = cb.buckets(NOW, {}, _tree(tmp_path, card=card))
+        top = [r for r in b["top_of_mind"] if "Northwind" in r["title"]]
+        assert top, "an 🟠 row landed outside Top of Mind while being called P0"
+        assert top[0]["priority"] == cb.PRIORITY_BY_HEALTH["🟠"] == "P0"
+
+    def test_a_row_over_the_cap_is_counted_and_said_out_loud(self, tmp_path, monkeypatch):
+        """The cap was silent, and the read-back structurally cannot see it: `wanted`
+        has lost the row before the count is taken. The inbox alone can produce 41."""
+        rows = [{"key": f"k{i}", "title": f"t{i}", "detail": "", "scope": "card"}
+                for i in range(board_rows.BUDGET_ROWS + 3)]
+        counts = board_rows.paint(
+            {"top_of_mind": [], "this_week": [], "inbox": rows,
+             "healthy_scopes": {"card"}}, "t", "db",
+            opener=lambda *a, **k: io.BytesIO(b'{"results": [], "has_more": false}'))
+        assert counts["wanted"] == board_rows.BUDGET_ROWS
+        assert counts["over_cap"] == 3
+
+    def test_and_the_brief_line_names_the_drop(self, tmp_path, monkeypatch):
+        (tmp_path / "tok").write_text("t")
+        (tmp_path / "db").write_text("db1")
+        monkeypatch.setattr(board_rows, "LOCK_FILE", tmp_path / "board.lock")
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        monkeypatch.delenv("KIPI_BRIEF_DRY_RUN", raising=False)
+        rows = [{"key": f"k{i}", "title": f"t{i}", "detail": "", "scope": "card"}
+                for i in range(board_rows.BUDGET_ROWS + 1)]
+        monkeypatch.setattr(board_rows.consulting_board, "buckets", lambda *a, **k: {
+            "error": None, "top_of_mind": [], "this_week": [], "inbox": rows,
+            "healthy_scopes": {"card"}})
+
+        made = []
+
+        def opener(req, timeout):
+            if "/databases/" in req.full_url:
+                results = [{"properties": {
+                    "Item id": {"rich_text": [{"plain_text": i}]},
+                    "Notes": {"rich_text": [{"plain_text": "scope=card"}]}}} for i in made]
+                return io.BytesIO(json.dumps(
+                    {"results": results, "has_more": False}).encode())
+            made.append(board_rows.item_id("inbox", rows[len(made)]))
+            return io.BytesIO(b'{"id": "p1"}')
+
+        out, err = board_rows.collect(NOW, {}, opener=opener,
+                                      token_file=tmp_path / "tok", db_file=tmp_path / "db")
+        assert err is None, err
+        assert "1 row(s) over the" in out[0], out

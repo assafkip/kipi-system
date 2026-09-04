@@ -580,9 +580,16 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
         phrase = my_side_phrase(rec, now) if rec else ""
         if phrase:
             item["detail"] = f"{item['detail']}\n{phrase}" if item["detail"] else phrase
-        # 🔴 and 📞 are today. Everything else is this week. The split is the card's
+        # 🔴, 🟠 and 📞 are today. Everything else is this week. The split is the card's
         # own health verdict, not a rule invented here.
-        (top if row["health"] in ("🔴", "📞") else week).append(item)
+        #
+        # 🟠 joined the today group in round 7 (minor): PRIORITY_BY_HEALTH calls it P0
+        # "answer them: a person is waiting on a reply" while this line sent it to This
+        # Week, so one module said today and not-today about the same row. The dot is
+        # not emitted by `state_card.py`, the only producer this reads -- `board_sync`
+        # uses it on the Clients board -- so this makes two tables in this file agree
+        # rather than changing a live path. `_CLIENT_LINE` has always parsed it.
+        (top if row["health"] in ("🔴", "🟠", "📞") else week).append(item)
 
     # The dates failing is reported ONCE, as its own row, never as a line stapled to
     # every client. A test proves this module still delivers with no registry in the
