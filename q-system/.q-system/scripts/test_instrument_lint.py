@@ -79,6 +79,8 @@ $ grep -c foo content.md
 Counts above are from the raw capture.
 """
 
+TILDE_FENCED_ONLY = FENCED_ONLY.replace("```", "~~~")
+
 PHRASES = [
     "0 of 40 domains resolved",
     "none found in the corpus",
@@ -108,12 +110,15 @@ NOT_CLAIMS = [
 # Labels that contain the word but are not a control (Codex, PR #298).
 NOT_CONTROL_LABELS = [
     "## Access control",
+    "## Control plane",
     "## Command and control (C2)",
     "- **Quality control:** fine",
     "# Reachability, controls, and what the seven returned",
 ]
 CONTROL_LABELS = [
     "## Control",
+    "1. **Negative control:** cash.app",
+    "> **Control:** the untouched tab",
     "## Negative control",
     "### Positive control: the row that MUST hit",
     "**Known-answer case:** EV-0095 returned zero, as it must.",
@@ -146,6 +151,8 @@ def main() -> int:
           IL.violations("f-2026-09-04.md", NO_NULL_CLAIM), [])
     check("null claim only inside a code fence: pass",
           IL.violations("f-2026-09-04.md", FENCED_ONLY), [])
+    check("null claim only inside a ~~~ fence: pass",
+          IL.violations("f-2026-09-04.md", TILDE_FENCED_ONLY), [])
     check("skip marker: pass",
           IL.violations("f-2026-09-04.md",
                         NULL_NO_CONTROL + "\ninstrument-lint-skip\n"), [])
@@ -171,8 +178,10 @@ def main() -> int:
     # uncontrolled null-shaped line; 0 remain red after the exemption (2026-09-03).
     check("pre-cutoff filename is grandfathered",
           IL.is_grandfathered("FINDING-commerce-corpus-2026-09-03.md"), True)
-    check("pre-cutoff DIRECTORY date is grandfathered (premortem layout)",
-          IL.is_grandfathered("/x/output/analyses/premortem-2026-08-13/premortem.md"), True)
+    check("a DIRECTORY date never exempts (new file in an old premortem dir)",
+          IL.is_grandfathered("/x/output/analyses/premortem-2026-08-13/followup.md"), False)
+    check("pre-cutoff basename under a dated directory is exempt",
+          IL.is_grandfathered("/x/output/analyses/PREMORTEM-2026-08-14.md"), True)
     check("on-cutoff file is in scope",
           IL.is_grandfathered(f"x-{IL.CUTOFF}.md"), False)
     check("undated, untracked file is NOT grandfathered (templates are in scope)",
@@ -190,6 +199,15 @@ def main() -> int:
         g = repo / "F-009-new.md"; g.write_text("y")
         check("undated file git has never seen is NOT grandfathered",
               IL.is_grandfathered(str(g), g), False)
+        # deleted then re-created after cutoff: a NEW file, not an old one
+        subprocess.run(["git", "rm", "-q", f.name], cwd=td, env=env, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "gone"], cwd=td, env=env, check=True, capture_output=True)
+        f.write_text("again")
+        env2 = dict(env, GIT_AUTHOR_DATE="2026-09-10T00:00:00", GIT_COMMITTER_DATE="2026-09-10T00:00:00")
+        subprocess.run(["git", "add", f.name], cwd=td, env=env2, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "back"], cwd=td, env=env2, check=True, capture_output=True)
+        check("file re-created after cutoff is NOT grandfathered (most recent add wins)",
+              IL.is_grandfathered(str(f), f), False)
 
     # --- scope: the first and widest refusal ----------------------------------
     check("findings path in scope",
@@ -221,6 +239,17 @@ def main() -> int:
         good = findings / "FINDING-hosts-2026-09-06.md"
         good.write_text(NULL_WITH_LABEL, encoding="utf-8")
         check("hook passes the controlled finding", run_hook(good)[0], 0)
+
+        # a cwd-relative payload path must still land in scope
+        import os
+        cwd0 = os.getcwd(); os.chdir(td)
+        try:
+            payload = json.dumps({"tool_input": {"file_path": "investigation/findings/FINDING-hosts-2026-09-05.md"}})
+            rc_rel = subprocess.run([sys.executable, str(LINT)], input=payload,
+                                    capture_output=True, text=True).returncode
+        finally:
+            os.chdir(cwd0)
+        check("relative path in the payload is resolved and blocks", rc_rel, 2)
 
         outside = Path(td) / "notes-2026-09-06.md"
         outside.write_text(NULL_NO_CONTROL, encoding="utf-8")

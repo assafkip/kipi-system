@@ -34,8 +34,8 @@ GRANDFATHERING: measured over every path in instance-registry.json on
 2026-09-03: 246 in-scope files, 36 carry a null-shaped line with no control
 label. All predate the rule. A gate red on its own population gets switched off,
 and a gate that is off protects nothing (plan-lint.py made the same call). A
-file is exempt when a date anywhere in its PATH is before CUTOFF, else when git
-first saw it before CUTOFF. Undated and untracked = in scope (templates).
+file is exempt when the date in its BASENAME is before CUTOFF, else when git
+most recently added it before CUTOFF. Undated and untracked = in scope.
 The first measurement of this population ran over a directory that does not
 exist, returned zero in-scope files, and was read as "clean". That is scar
 shape 5 in the rule, committed while building the gate for it.
@@ -43,8 +43,8 @@ shape 5 in the rule, committed while building the gate for it.
 HONEST BOUNDARY, four of them:
   1. Checks a control label EXISTS, never that the control is real, ran, or
      would have caught anything. `**Control:** n/a` passes.
-  2. Reads a DATE IN THE PATH (else git history) for the exemption. A back-dated
-     filename or directory walks past this gate. Deliberate trade for a
+  2. Reads a date in the BASENAME (else git history) for the exemption. A
+     back-dated filename walks past this gate. Deliberate trade for a
      self-maintaining exemption over a hand-kept list.
   3. Cannot see a null result reported in chat and never written to a file.
      A PostToolUse hook sees the file that was written, never the claim that
@@ -73,11 +73,13 @@ SKIP_MARKER = "instrument-lint-skip"
 CUTOFF = "2026-09-04"
 
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
-# Exemption reads the date from the FULL PATH, not the basename. The instance
-# with the most in-scope files names findings F-NNN-slug.md and dates its
-# premortems in the directory (output/analyses/premortem-2026-08-13/premortem.md);
-# a basename-only read left 9 pre-existing files red on ship day (Codex, PR #298).
-# A path with no date at all falls back to the date git first saw the file.
+# Exemption reads the date from the BASENAME, else the most recent date git ADDED
+# the file. Two rounds of review on PR #298 moved this: a basename-only read left
+# 9 pre-existing undated files red on ship day, and the round-1 fix (a date
+# anywhere in the path) exempted every NEW file written into an old dated
+# directory forever. Same finding class twice, so the heuristic went and history
+# took its place: git is the only source that knows a file is old, and the
+# basename date survives only for untracked files, which git cannot answer for.
 
 # A null-shaped claim: the sentence shape a zero takes when it is reported as a
 # fact about the world. Each alternative is individually load-bearing and has a
@@ -102,12 +104,15 @@ NULL_CLAIM_RE = re.compile(
 # A control counts when it appears as a LABEL -- a markdown heading, or a bold
 # run at the start of a line (including inside a bullet or table cell).
 HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s*(.+?)\s*$")
-BOLD_LABEL_RE = re.compile(r"^\s{0,6}(?:[-*+|]\s*)?\*\*(.+?)\*\*")
+BOLD_LABEL_RE = re.compile(r"^\s{0,6}(?:(?:[-*+|>]|\d+[.)])\s*)?\*\*(.+?)\*\*")
 # Anchored at the START of the label. Unanchored, `## Access control`, `## Command
 # and control (C2)` and `**Quality control:**` all passed the gate, and threat-intel
 # findings carry a C2 section as a matter of course (Codex, PR #298).
+# The label ENDS at a colon or end of line, so `## Control plane` is not a
+# control either (Codex round 2).
 CONTROL_LABEL_RE = re.compile(
-    r"(?i)^(?:(?:negative|positive) )?controls?\b|^known[- ]answer|^calibration")
+    r"(?i)^(?:(?:negative|positive) )?controls?(?::|\s*$)"
+    r"|^known[- ]answer(?: case)?(?::|\s*$)|^calibration(?::|\s*$)")
 
 
 def in_scope(fp: str) -> bool:
@@ -120,7 +125,7 @@ def null_claims(body: str) -> list[str]:
     out = []
     fenced = False
     for line in body.splitlines():
-        if line.lstrip().startswith("```"):
+        if line.lstrip().startswith(("```", "~~~")):
             fenced = not fenced
             continue
         if fenced:
@@ -139,26 +144,29 @@ def has_control_label(body: str) -> bool:
 
 
 def git_added_date(path: Path) -> str | None:
-    """YYYY-MM-DD git first saw this path, or None (untracked, no repo, no git).
+    """YYYY-MM-DD of the MOST RECENT commit that added this path, or None
+    (untracked, no repo, no git).
 
-    mtime was the obvious fallback and it is useless here: this hook runs AFTER
-    the write, so every file it inspects was modified seconds ago. A typo fix to
-    a months-old finding must stay exempt, and only history knows the file is old.
+    mtime is useless here: this hook runs AFTER the write, so every file it
+    inspects was modified seconds ago. Most recent add, not first: a file
+    deleted and re-created after CUTOFF is a new file. No --follow: rename
+    pairing let an unrelated old file lend its date (Codex round 2).
     """
     import subprocess
     try:
         out = subprocess.run(
-            ["git", "log", "--diff-filter=A", "--follow", "--format=%as", "--", path.name],
+            ["git", "log", "--diff-filter=A", "--format=%as", "--", path.name],
             cwd=path.parent, capture_output=True, text=True, timeout=3).stdout.split()
     except Exception:
         return None
-    return out[-1] if out else None
+    return out[0] if out else None
 
 
 def is_grandfathered(fp: str, path: Path | None = None) -> bool:
-    """True for a file that predates CUTOFF: by a date anywhere in its path, else
-    by the date git first saw it. Undated AND untracked = NOT exempt."""
-    dates = DATE_RE.findall(fp.replace("\\", "/"))
+    """True for a file that predates CUTOFF: by a date in its BASENAME, else by
+    the most recent date git added it. A directory date never counts. Undated
+    AND untracked = NOT exempt."""
+    dates = DATE_RE.findall(Path(fp.replace("\\", "/")).name)
     if dates:
         return dates[-1] < CUTOFF
     if path is not None:
@@ -168,10 +176,11 @@ def is_grandfathered(fp: str, path: Path | None = None) -> bool:
 
 
 def violations(fp: str, body: str, path: Path | None = None) -> list[str]:
-    if SKIP_MARKER in body or is_grandfathered(fp, path):
-        return []
+    # Pure-string checks first; git runs only on a file that would block.
     claims = null_claims(body)
-    if not claims or has_control_label(body):
+    if not claims or has_control_label(body) or SKIP_MARKER in body:
+        return []
+    if is_grandfathered(fp, path):
         return []
     return claims
 
@@ -183,9 +192,12 @@ def main() -> int:
         return 0
     ti = payload.get("tool_input") or {}
     fp = (ti.get("file_path") or ti.get("path") or "")
-    if not fp or not in_scope(fp):
+    if not fp:
         return 0
-    path = Path(fp)
+    path = Path(fp).resolve()  # a cwd-relative path must not fall out of scope
+    fp = str(path)
+    if not in_scope(fp):
+        return 0
     try:
         body = path.read_text(encoding="utf-8", errors="ignore")
     except Exception:

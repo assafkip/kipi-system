@@ -107,7 +107,7 @@ measured, and the rule says so.
 
 ## Acceptance criteria
 
-- [x] `python3 test_instrument_lint.py` green (49 checks); 3 mutations on a copy go red
+- [x] `python3 test_instrument_lint.py` green (56 checks after round 2); 3 mutations on a copy go red
 - [x] Hook fed the real `FINDING-commerce-corpus-2026-09-03.md` under a
       post-cutoff filename exits 2; under its real filename exits 0 (grandfather)
 - [x] `grep -c instrument-lint .claude/settings.json settings-template.json` = 1 each

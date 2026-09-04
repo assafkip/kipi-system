@@ -1,14 +1,13 @@
 {
   "schema_version": 1,
   "slug": "instrument-discipline-rule-and-lint-wiring",
-  "reason": "case-004 (2026-09-03): five instrument defects in one day, none caught by a gate, while the lesson existed. Adds the paths-scoped rule instrument-discipline.md (scoped so it does not hit the always-on budget ratchet) and wires instrument-lint.py PostToolUse in .claude/settings.json AND settings-template.json in one transaction, so the hook does not ship dead to the fleet (settings-template-sync-check). Additive only: one create_file, two inserts, nothing removed.",
+  "reason": "case-004 (2026-09-03): five instrument defects in one day, none caught by a gate, while the lesson existed. Adds the paths-scoped rule instrument-discipline.md (scoped so it does not hit the always-on budget ratchet) and wires instrument-lint.py PostToolUse in .claude/settings.json AND settings-template.json in one transaction, so the hook does not ship dead to the fleet (settings-template-sync-check). Additive only: one create_file, two inserts, nothing removed. HISTORICAL RECORD, NOT A STANDALONE REPLAY: this create_file body is the round-0 rule text. The five later proposals with the instrument-discipline-* and skill-hook-pairing-add-instrument-lint slugs supersede it in order; the merged rule on the branch is the truth. The skill-evals fixture it once required was removed in round 1 (sp-c4817fa9).",
   "requires": {
     "files_present": [
       ".claude/settings.json",
       "settings-template.json",
       "q-system/.q-system/scripts/instrument-lint.py",
-      "q-system/.q-system/scripts/test_instrument_lint.py",
-      "q-system/.q-system/skill-evals/instrument-discipline.json"
+      "q-system/.q-system/scripts/test_instrument_lint.py"
     ],
     "template_pairs": [
       "scripts/instrument-lint.py"
