@@ -285,12 +285,26 @@ def collect_mail(now: dt.datetime, runner=None):
     # keeping it under an id that may move. Keeping it wins, and it is not close: a
     # row he never sees cannot be acted on at all, while a row whose id shifts costs
     # him a position on the board. The suffix is ordinal and deliberately provisional.
-    seen = {}
-    for i, row in enumerate(rows):
-        n = seen.get(row.key, 0) + 1
-        seen[row.key] = n
-        if n > 1:
-            rows[i] = Row(str(row), f"{row.key}#{n}")
+    # THE ORDINAL SUFFIX WAS WITHDRAWN (round 10, major). It numbered duplicates by
+    # POSITION, so when the first of two "Re: invoice" threads was answered and left
+    # the list, the second was renumbered onto the first one's key -- and inherited its
+    # board row, its Status and the bucket he had dragged it to. A thread wearing
+    # another thread's identity is worse than either failure the note above weighed.
+    #
+    # With no thread id there is nothing that tells two identical rows apart, so this
+    # stops pretending there is. The group becomes ONE row that SAYS it is a group.
+    # No task is hidden (the count is on the row), no id is invented, and the key is
+    # stable because it is the thing they have in common.
+    groups = {}
+    for row in rows:
+        groups.setdefault(row.key, []).append(row)
+    rows = []
+    for key, members in groups.items():
+        if len(members) == 1:
+            rows.append(members[0])
+            continue
+        rows.append(Row(f"{members[0]} ({len(members)} threads, same sender and "
+                        "subject)", key))
     if len(rows) > MAIL_ROW_CAP:
         # Never a silent trim: the last row says how many are not shown, the same
         # rule the client section already follows.

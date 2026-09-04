@@ -664,17 +664,24 @@ class TestTwoThreadsAreNeverOneRow:
     Notion row. Read-back still passed, because `wanted` had already lost the second
     one -- the same shape as the round-3 defect, one layer up."""
 
-    def test_two_threads_from_one_person_with_one_subject_stay_two_rows(self):
+    def test_two_indistinguishable_threads_become_one_row_that_SAYS_two(self):
         brief = _brief()
         runner = lambda p, t: (json.dumps({"threads": [
             {"from": "Alice", "subject": "Re: invoice", "age_hours": 2},
             {"from": "Alice", "subject": "Re: invoice", "age_hours": 9}]}), None)
         rows, err = brief.collect_mail(None, runner)
         assert err is None
-        assert len(rows) == 2, "the producer must emit both threads"
-        assert rows[0].key != rows[1].key, (
-            f"both threads share the key {rows[0].key!r}; the board writes one row and "
-            "the second task is silently gone")
+        # ROUND 10 REVERSED THE SHAPE OF THIS FIX, and the harm it was written against
+        # still governs. The first fix numbered duplicates by POSITION, so answering
+        # the first thread renumbered the second onto its key and handed it that row's
+        # Status and the bucket he had dragged it to. A thread wearing another
+        # thread's identity is worse than either outcome the original note weighed.
+        #
+        # With no thread id nothing tells these two apart, so the group is ONE row
+        # that says how many it stands for. The task is not silently gone, which is
+        # what this class exists to prevent: he can see there are two and open both.
+        assert len(rows) == 1
+        assert "2 threads" in str(rows[0]), str(rows[0])
 
     def test_a_real_thread_id_still_wins_and_stays_stable(self):
         """The suffix is only for the id-less case. A thread WITH an id must not pick
@@ -693,7 +700,16 @@ class TestTwoThreadsAreNeverOneRow:
             {"from": "Alice", "subject": "Re: invoice", "age_hours": 9}]}), None)
         rows, _ = brief.collect_mail(None, runner)
         inbox = cb.buckets(NOW, {"mail": (rows, None)}, _tree(tmp_path))["inbox"]
-        assert len({i["key"] for i in inbox}) == 2, "one task never reached the board"
+        assert len(inbox) == 1 and "2 threads" in inbox[0]["title"], inbox
+        # And the id-LESS case is the only one that collapses: with real ids the board
+        # still gets two rows. That is the normal path and it must not regress.
+        keyed = lambda p, t: (json.dumps({"threads": [
+            {"id": "t1", "from": "Alice", "subject": "Re: invoice", "age_hours": 2},
+            {"id": "t2", "from": "Alice", "subject": "Re: invoice", "age_hours": 9}]}),
+            None)
+        rows2, _ = brief.collect_mail(None, keyed)
+        inbox2 = cb.buckets(NOW, {"mail": (rows2, None)}, _tree(tmp_path))["inbox"]
+        assert len({i["key"] for i in inbox2}) == 2, "a real thread id stopped working"
 
 
 class TestHisSideCarriesItsDates:
@@ -1360,3 +1376,48 @@ class TestTheAllowlistIsHisChoiceAndFailsCLOSED:
                   "last_message": {"user_id": "u99", "created_at": 10 ** 12,
                                    "text": "hi"}}]
         assert gm.waiting(NOW, "t", self._tree(tmp_path, chats=chats)) == []
+
+
+class TestABookWeCouldNotFullyReadArchivesNothing:
+    def test_a_malformed_line_withholds_the_week_due_scope(self, tmp_path):
+        """Round 10 (major), and it is my round-7 fix's own hole. `week:due` was
+        declared healthy after the loop finished, but the loop `continue`s past a line
+        that will not parse -- so the painter was authorised to archive the row for the
+        very deliverable the corrupt line described."""
+        due = (NOW.date() + dt.timedelta(days=3)).isoformat()
+        paths = _tree(tmp_path, commitments="\n".join([
+            "{ not json at all",
+            json.dumps({"id": "c1", "slug": "acme", "state": "open", "due": due,
+                        "promise": "send the audit"}),
+        ]), clients={"clients": []})
+        _rows, err, healthy = cb.read_week(NOW, paths)
+        assert "week:due" not in healthy
+        assert err and "unreadable line" in err
+
+    def test_a_clean_book_still_authorises_it(self, tmp_path):
+        due = (NOW.date() + dt.timedelta(days=3)).isoformat()
+        paths = _tree(tmp_path, commitments=json.dumps(
+            {"id": "c1", "slug": "acme", "state": "open", "due": due,
+             "promise": "send the audit"}), clients={"clients": []})
+        _rows, err, healthy = cb.read_week(NOW, paths)
+        assert err is None and "week:due" in healthy
+
+    def test_a_junk_DUE_DATE_is_still_only_a_skipped_row(self, tmp_path):
+        """Deliberately NOT the same thing. The row parsed; one field in it did not.
+        Withholding the whole scope for that would keep every deliverable row on the
+        board forever over one typo, which is the over-application I made first and
+        backed out."""
+        paths = _tree(tmp_path, commitments=json.dumps(
+            {"id": "c1", "slug": "acme", "state": "open", "due": "soon-ish",
+             "promise": "send the audit"}), clients={"clients": []})
+        _rows, err, healthy = cb.read_week(NOW, paths)
+        assert err is None and "week:due" in healthy
+
+    def test_no_allowlist_file_reads_everything_ON_PURPOSE(self, tmp_path, monkeypatch):
+        """Round 10 called this a silent widening. Kept, as a decision rather than an
+        oversight: nothing distinguishes a vanished file from a machine that never had
+        one, and requiring a marker would silence GroupMe on every machine without the
+        file. Reporting too much is visible in his own output; reporting nothing is the
+        failure the whole brief exists to prevent."""
+        monkeypatch.setattr(gm, "CHANNELS_FILE", tmp_path / "absent")
+        assert gm.load_allowlist() is None

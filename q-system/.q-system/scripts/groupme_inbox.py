@@ -81,7 +81,16 @@ def load_allowlist(path=None) -> set | None:
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return None                      # no choice recorded; read everything
+        # NO FILE MEANS NO CHOICE RECORDED, AND THAT STAYS PERMISSIVE. Round 10 called
+        # this a silent widening: if he had narrowed to one channel and the file later
+        # vanished, collection quietly goes back to everything. That is true and it is
+        # still the right side to fail to, because nothing on disk distinguishes "his
+        # file vanished" from "this machine never had one" -- and the alternative,
+        # requiring a marker before reading anything, silences GroupMe entirely on
+        # every machine that has no file, which is most of them. A section that
+        # silently reports nothing is the failure this whole brief was built against;
+        # a section that reports too much is visible in the founder's own output.
+        return None
     except OSError as exc:
         # ABSENT AND UNREADABLE ARE DIFFERENT FACTS, and collapsing them here failed
         # OPEN (Codex round 7, minor): a permission error on the founder's own

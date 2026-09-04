@@ -407,6 +407,7 @@ def read_week(now: dt.datetime, paths=None) -> tuple[list[dict], str | None, set
             errors.append(f"GTM queue unreadable ({type(exc).__name__})")
 
     horizon = now.date() + dt.timedelta(days=WEEK_DAYS)
+    unreadable_lines = 0
     try:
         for line in paths["commitments"].read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -415,6 +416,11 @@ def read_week(now: dt.datetime, paths=None) -> tuple[list[dict], str | None, set
             try:
                 row = json.loads(line)
             except ValueError:
+                # ROUND 10 (major): this skipped the line and the scope was still
+                # declared healthy below, which AUTHORISED the painter to archive the
+                # row for the very deliverable the corrupt line described. A book we
+                # could not read start to finish has not said those rows are gone.
+                unreadable_lines += 1
                 continue
             if row.get("state") != "open" or not row.get("due"):
                 continue
@@ -434,7 +440,11 @@ def read_week(now: dt.datetime, paths=None) -> tuple[list[dict], str | None, set
                 "domain": "Consulting",
                 "done": "you delivered it, or you moved the date with them",
                 "bucket_reason": "due-this-week"})
-        healthy.add("week:due")           # the book was read start to finish
+        if unreadable_lines:
+            errors.append(f"{unreadable_lines} unreadable line(s) in the commitment "
+                          "book; deliverable rows are kept rather than archived")
+        else:
+            healthy.add("week:due")       # the book was read start to finish
     # A file that is ABSENT is not a file that is BROKEN. A machine with no commitment
     # book has no promises to report, which is a fact; a book that exists and cannot be
     # parsed or read is a failure that must be said out loud. Collapsing the two either
