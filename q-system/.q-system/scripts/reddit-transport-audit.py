@@ -47,6 +47,7 @@ import argparse
 import ast
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -81,8 +82,15 @@ DENYLIST_NAMES = ("forbidden", "blocked", "denied", "banned", "retired",
 # three classes were the entire remainder after every real fetcher was converted.
 DATA_NAMES = ("hosts", "domains", "infra", "venue", "noise", "community",
               "tenant", "marker", "sample", "fixture", "case", "seed",
-              "example", "corpus", "known", "sites", "public", "profile",
-              "expected", "row", "item")
+              "example", "corpus", "known",
+              # "sites" and "profile" were HERE and are deliberately not, any
+              # more (2026-09-05). A table named _SITES in an OSINT probe holds
+              # URL TEMPLATES THAT GET FETCHED, so exempting the word hid a live
+              # `www.reddit.com/user/{u}/about.json` in a published repo. That is
+              # the cost of a suppression list written to quiet false positives:
+              # each entry buys silence on a real one somewhere. "public" stays
+              # because it labels the human-facing link built beside that probe.
+              "public", "expected", "row", "item")
 
 FORBIDDEN_SUBSTRINGS = (
     "old.reddit.com",
@@ -278,6 +286,41 @@ def violations_in(path: Path) -> list[dict]:
         source = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
+    return violations_in_source(source, str(path))
+
+
+def _joined_text(node: ast.AST) -> str:
+    """The whole template an f-string spells out, placeholders as <>.
+
+    THE REASON THIS EXISTS. `f"https://www.reddit.com/r/{sub}/hot/.rss"` is not
+    one string node. Python splits it: "https://www.reddit.com/r/" and
+    "/hot/.rss" are separate Constants with the placeholder between them. So a
+    test asking "does the literal containing reddit.com also look like an
+    endpoint" reads only the first fragment, sees no .rss, and calls a live RSS
+    fetch a display link. Measured 2026-09-05: that dropped three real findings
+    in published repos from the report while the checker still said it was
+    working.
+    """
+    parts = []
+    for sub in getattr(node, "values", []):
+        if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+            parts.append(sub.value)
+        else:
+            parts.append("<>")
+    return "".join(parts)
+
+
+def violations_in_source(source: str, label: str) -> list[dict]:
+    """The analysis, given content rather than a path.
+
+    Split out so a BARE repository can be read. A bare repo has no working tree,
+    so the file walk sees nothing in it and reports it clean. 33 published repos
+    were reported clean that way by a checker structurally unable to open any of
+    them, and three of them were shipping a retired Reddit transport at the time
+    (measured 2026-09-05). A clean result from a reader that cannot read is the
+    same defect this whole suite exists to refuse.
+    """
+    path = Path(label)
     if "reddit" not in source.lower():
         return []
     try:
@@ -287,13 +330,21 @@ def violations_in(path: Path) -> list[dict]:
 
     skip = _docstring_ids(tree) | _classification_ids(tree)
     labels = _context_names(tree)
+    # id(constant) -> the full f-string it is a fragment of
+    joined: dict[int, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            whole = _joined_text(node)
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                    joined[id(sub)] = whole
     found = []
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
             continue
         if id(node) in skip:
             continue
-        text = node.value
+        text = joined.get(id(node), node.value)
         low = text.lower()
         if "reddit" not in low:
             continue
@@ -311,21 +362,99 @@ def violations_in(path: Path) -> list[dict]:
         if why is None and "reddit.com" in low:
             label = (labels.get(id(node)) or "").lower()
             is_display = any(name in label for name in DISPLAY_NAMES)
-            looks_like_an_endpoint = (".json" in low or ".rss" in low
-                                      or "/search" in low or "?limit" in low)
-            if looks_like_an_endpoint or not is_display:
-                why = "reddit.com endpoint" if looks_like_an_endpoint else \
-                      "reddit.com in %r, which is not a display link" % (label or "?",)
+            # WHAT IT IS, not what it is called. The name-based rules were
+            # doing this job and doing it badly in both directions: exempting
+            # "sites" hid a live /user/<u>/about.json in a published repo, and
+            # un-exempting it then flagged the display link sitting beside it.
+            # A URL either names a machine endpoint or it names a page a person
+            # opens, and that is readable from the URL.
+            looks_like_an_endpoint = (
+                ".json" in low or ".rss" in low or "/api/" in low
+                or "/search" in low or "?" in low
+                # a listing feed, with or without a suffix
+                or any(seg in low for seg in ("/new/", "/hot/", "/top/",
+                                              "/new.", "/hot.", "/top.",
+                                              "/rising/", "/controversial/"))
+            )
+            # An endpoint is a finding regardless of what it is called. A
+            # non-endpoint reddit.com URL is a link a human opens, and the
+            # default for those is now CLEAN rather than suspicious. That is a
+            # deliberate loosening: FORBIDDEN_SUBSTRINGS still catches
+            # old.reddit.com, oauth.reddit.com, /api/ and the trudax actor
+            # absolutely, so the loosened half is only "a www.reddit.com URL
+            # with no endpoint shape", which is exactly what a profile or a
+            # permalink looks like.
+            if looks_like_an_endpoint:
+                why = "reddit.com endpoint"
         if why:
             found.append({"file": str(path), "line": node.lineno,
                           "reason": why, "text": text[:120]})
-    return found
+    # One finding per (line, reason). An f-string reports through every fragment
+    # it is made of, and three copies of one defect is a report people skim.
+    seen, unique = set(), []
+    for v in found:
+        key = (v["file"], v["line"], v["reason"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(v)
+    return unique
+
+
+def _bare_repo_violations(repo: Path) -> list[dict]:
+    """Read a bare repo's HEAD tree through git, since there is no checkout.
+
+    Only .py, because that is what this audit parses. A bare repo carrying a
+    Reddit fetcher in another language is a gap this names rather than hides.
+    """
+    try:
+        listing = subprocess.run(
+            ["git", "-C", str(repo), "ls-tree", "-r", "--name-only", "HEAD"],
+            capture_output=True, text=True, timeout=60)
+    except Exception:
+        return []
+    if listing.returncode != 0:
+        return []
+    out = []
+    for name in listing.stdout.splitlines():
+        if not name.endswith(".py"):
+            continue
+        try:
+            blob = subprocess.run(["git", "-C", str(repo), "show", "HEAD:" + name],
+                                  capture_output=True, text=True, timeout=60)
+        except Exception:
+            continue
+        if blob.returncode != 0 or "reddit" not in blob.stdout.lower():
+            continue
+        if _exception_for(Path(name)) or _is_test(Path(name)):
+            continue
+        for v in violations_in_source(blob.stdout, name):
+            v["file"] = "%s!%s" % (repo, name)   # ! marks a blob, not a file
+            out.append(v)
+    return out
+
+
+def _is_bare_repo(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    # A bare repo has HEAD/objects/refs at its top level and no .git dir.
+    return all((path / n).exists() for n in ("HEAD", "objects", "refs")) \
+        and not (path / ".git").exists()
 
 
 def walk(roots) -> list[dict]:
     out = []
     for root in roots:
         root = Path(root).expanduser()
+        if _is_bare_repo(root):
+            out.extend(_bare_repo_violations(root))
+            continue
+        # A directory OF bare repos (the publish mirrors) is the shape that hid
+        # three findings, so it is handled explicitly rather than left to the
+        # file walk that cannot see into any of them.
+        if root.is_dir():
+            bares = [c for c in sorted(root.glob("*.git")) if _is_bare_repo(c)]
+            for bare in bares:
+                out.extend(_bare_repo_violations(bare))
         if root.is_file():
             if not _skip(root):
                 out.extend(violations_in(root))

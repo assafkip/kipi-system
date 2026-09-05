@@ -150,6 +150,62 @@ def test_a_nested_linked_worktree_is_skipped_under_a_parent_root(audit, tmp_path
     assert audit.walk([tmp_path]), "the skip must not swallow a real finding"
 
 
+def test_an_fstring_endpoint_is_caught_across_its_fragments(audit, tmp_path):
+    """The defect that hid three findings in PUBLISHED repos.
+
+    `f"https://www.reddit.com/r/{sub}/hot/.rss"` is not one string node. Python
+    splits it, so the fragment carrying reddit.com has no .rss in it and the
+    endpoint test read only that fragment. The audit called a live RSS fetch a
+    display link and its own report went from 5 findings to 2 while still
+    claiming to work.
+    """
+    body = ('def feed(sub):\n'
+            '    return _get(f"https://www.reddit.com/r/{sub}/hot/.rss")\n')
+    found = audit.violations_in(_write(tmp_path, body))
+    assert found, "an f-string endpoint must be caught across its fragments"
+    assert found[0]["reason"] == "reddit.com endpoint"
+    # ONE finding, not one per fragment: three copies of a defect is a report
+    # people skim.
+    assert len(found) == 1, found
+
+
+def test_a_bare_repo_is_read_through_git(audit, tmp_path):
+    """A bare repo has no working tree, so the file walk sees nothing in it. 33
+    published repos were reported clean that way by a checker structurally
+    unable to open any of them, and three were shipping a retired transport."""
+    import subprocess
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "collector.py").write_text(
+        'def go(sub):\n    return _get(f"https://www.reddit.com/r/{sub}/hot.json")\n')
+    for cmd in (["init", "-q", "-b", "main"], ["add", "-A"],
+                ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"]):
+        subprocess.run(["git", "-C", str(work)] + cmd, check=True,
+                       capture_output=True)
+    bare = tmp_path / "published.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(work), str(bare)],
+                   check=True, capture_output=True)
+
+    assert audit._is_bare_repo(bare)
+    found = audit.walk([bare])
+    assert found, "a bare repo's HEAD tree must be read"
+    assert "!" in found[0]["file"], "a blob is marked, not passed off as a file"
+    # and found through a PARENT directory of bare repos, which is the shape the
+    # publish mirrors actually take
+    assert audit.walk([tmp_path])
+
+
+def test_a_reddit_profile_link_is_not_an_endpoint(audit, tmp_path):
+    """The other direction. `_SITES` in an OSINT probe holds fetch templates, so
+    exempting the word "sites" hid a live /user/<u>/about.json. Un-exempting it
+    then flagged the display link beside it. Neither name was the answer: what
+    the URL IS decides."""
+    body = ('_SITES = [("Reddit", "https://www.reddit.com/user/{u}", ("probe",))]\n')
+    assert audit.violations_in(_write(tmp_path, body)) == []
+    body2 = ('_SITES = [("Reddit", "https://www.reddit.com/user/{u}/about.json", ("j",))]\n')
+    assert audit.violations_in(_write(tmp_path, body2, name="b.py"))
+
+
 def test_the_fleet_is_clean_right_now(audit):
     """The claim the whole conversion was for. Scoped to the repos that exist on
     this machine, so it is a real check here and a skip elsewhere rather than a
