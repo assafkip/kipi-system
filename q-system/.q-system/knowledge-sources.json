@@ -1,0 +1,59 @@
+{
+  "_version": 1,
+  "_description": "The declared source set per task class for knowledge_supply.py. This file is the coverage contract and the budget contract in one place: a class lists the source classes it needs, each required or optional, with a freshness bound in days for event sources and a per-class excerpt cap. Coverage is FULL only when every required class resolved to a readable source. Instance override: <qroot>/.q-system/data/knowledge-sources.json (an instance-owned subtree, untouched by kipi update).",
+  "_why": "2026-09-04 knowledge-supply plan, section C. A declared input set as data is what lets the assembler assert that every declared source contributed or was recorded absent (lesson: assert what went into a composed artifact). A reader with no declaration cannot tell 'not found' from 'never searched'.",
+  "ceiling_chars": 8000,
+  "entity_kinds_that_fire_alone": ["slug", "client", "loop", "capability"],
+  "_state_predicates_why": "Supersession (older triple marked STALE by a newer one with the same subject and predicate) is only true for predicates that describe a STATE. Accumulative predicates (owns, confirmed, discovered) hold many objects at once; measured on the largest instance 2026-09-04, 'owns merging PR #19' wrongly superseded 'owns merged PR #8'. Grouping is per project as well, so the same name in two projects never supersedes itself.",
+  "state_predicates": ["status", "state", "stage", "phase", "works_at", "role", "role_is", "is", "is-a", "located_in", "title", "reports_to", "assigned_to"],
+  "classes": {
+    "entity_lookup": {
+      "sources": {
+        "graph": {"required": true, "cap": 12},
+        "relationships": {"required": false, "cap": 1},
+        "canonical": {"required": true, "cap": 6},
+        "decisions": {"required": false, "cap": 4},
+        "commitments": {"required": false, "fresh_days": 45, "cap": 6},
+        "meetings": {"required": false, "fresh_days": 45, "cap": 4},
+        "loops": {"required": false, "fresh_days": 30, "cap": 4},
+        "handoff": {"required": false, "fresh_days": 14, "cap": 3}
+      }
+    },
+    "temporal_event": {
+      "sources": {
+        "meetings": {"required": true, "fresh_days": 45, "cap": 8},
+        "commitments": {"required": true, "fresh_days": 45, "cap": 8},
+        "loops": {"required": false, "fresh_days": 30, "cap": 6},
+        "handoff": {"required": false, "fresh_days": 14, "cap": 3},
+        "graph": {"required": false, "cap": 6}
+      }
+    },
+    "commitment": {
+      "sources": {
+        "commitments": {"required": true, "fresh_days": 90, "cap": 12},
+        "meetings": {"required": true, "fresh_days": 90, "cap": 6},
+        "loops": {"required": false, "fresh_days": 60, "cap": 6},
+        "graph": {"required": false, "cap": 8},
+        "relationships": {"required": false, "cap": 1},
+        "canonical": {"required": false, "cap": 4}
+      }
+    },
+    "writing": {
+      "sources": {
+        "relationships": {"required": true, "cap": 1},
+        "graph": {"required": true, "cap": 10},
+        "canonical": {"required": true, "cap": 6},
+        "commitments": {"required": false, "fresh_days": 60, "cap": 4},
+        "meetings": {"required": false, "fresh_days": 45, "cap": 3},
+        "loops": {"required": false, "fresh_days": 30, "cap": 3}
+      }
+    },
+    "capability": {
+      "sources": {
+        "capability": {"required": true, "cap": 8},
+        "decisions": {"required": false, "cap": 4},
+        "canonical": {"required": false, "cap": 4}
+      }
+    }
+  }
+}
