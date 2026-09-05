@@ -325,6 +325,121 @@ def check_budget(voice, channels=None):
     return problems
 
 
+#: The share of an assembled prompt that may be CORRECTIONS rather than his own
+#: writing. A headroom alarm in the same posture as `assemble.BUDGET_CHARS`:
+#: suite-time only, never a runtime slice.
+#:
+#: why a share and not just a size: the founder-directed premise of this corpus is
+#: that posts are written FROM his examples, never from a model's impression of
+#: him. Corrections are RULES ABOUT him. When the rules outweigh the examples, that
+#: premise has quietly inverted while every size check still passes, because the
+#: total can sit inside budget with the mix completely wrong.
+#:
+#: MEASURED 2026-08-31 against the LARGEST assembly of 12 counters: linkedin 11618
+#: of 20552 chars (57%), x 10154 of 16994 (60%). Set at 0.70 to sit above that and
+#: bite within a few additions -- a guard set below the current reading is a guard
+#: someone switches off.
+#:
+#: THAT DENOMINATOR WAS THE WRONG END, so the two numbers above are the best case
+#: rather than the reading that matters (found in review on PR #301). Rules crowd
+#: his writing out worst at the THINNEST prompt a rotation produces, not the
+#: fattest. Re-measured 2026-09-04 on the live ASK corpus, same rows, dividing by
+#: the minimum: linkedin 11618 of 17995 (65%), x 10154 of 14293 (71%), reddit 527
+#: of 7541 (7%).
+#:
+#: 0.70 IS DELIBERATELY LEFT ALONE, so x trips the moment an instance picks this
+#: up. Moving the ceiling to clear a reading the corrected arithmetic has just
+#: exposed would be switching the alarm off in the same edit that made it work.
+#: How much of his prompt may be rules is the voice owner's number. The
+#: arithmetic under it is the engine's.
+#:
+#: The remedy when it fires is RETIREMENT, never rotation and never a quiet drop.
+#: `status` already gates this (`corpus.active_corrections` renders only "active";
+#: verified 2026-08-31 that promoted/retired rows really are absent from the
+#: prompt), so retiring a superseded rule is a one-field edit. Two rules that
+#: genuinely say one thing get MERGED into one loud statement, never dropped.
+CORRECTION_SHARE_CEILING = 0.70
+
+
+def check_correction_share(voice, channels=None):
+    """Corrections must not crowd his own writing out of the prompt."""
+    channels = channels or channel_registry.DEFAULT
+    problems = []
+    for channel in channels.assembled:
+        # THE MINIMUM, not the maximum. `check_budget` right above this uses `max`
+        # and is correct to -- largest assembly against a size cap -- and this loop
+        # was written from that one, which is how the wrong extremum arrived. Here
+        # the max reports the BEST case of the very thing being graded: a rotation's
+        # prompts differ by thousands of characters, so the fattest one always
+        # flatters the share. Measured on the live ASK corpus 2026-09-04, the x
+        # channel read 60% against the max and 71% against the min, with the ceiling
+        # at 70%. The guard returned [] on a corpus already over its own line.
+        # EVERY AXIS THE PRODUCER VARIES, all DERIVED, none written as a literal.
+        # This loop arrived as a copy of `check_budget` and each parameter it failed
+        # to reproduce was a blind spot: three review rounds on PR #301 found three,
+        # one per round, all the same class. `validate._resolved_slots` already
+        # states the rule they break -- a checker that re-derives the rule it checks
+        # is testing its own copy.
+        #
+        # counter: `selector.select` offsets by `counter % len(pool)`, so the period
+        # is the pool size, not the 12 this loop inherited. Live pools are 45/31/10.
+        #
+        # target_words: `voice_ref.py` declares `--words` required, so a prompt
+        # assembled with None is a shape production never builds, and it was the
+        # only shape sampled. A target REPLACES the pool with the nearest k rows
+        # (`selector.select`), so the thinnest prompt reachable is the one whose
+        # target sits at the corpus's own shortest register -- `length_band` ranks
+        # by distance, so no other target draws shorter rows. Taking that minimum
+        # from the corpus keeps this derived; a list of example word counts would be
+        # the same guess in a new costume.
+        rows = voice.active_exemplars()
+        lengths = []
+        # slot_kind: taken from SLOT_KINDS, the vocabulary this module already
+        # DECLARES and `voice_ref.py --slot-kind` already offers. It was pinned to
+        # "post", so a corpus whose comment prompts are 97% rules read clean.
+        for slot_kind in SLOT_KINDS:
+            base = selector.resolved_pool(rows, channel, slot_kind,
+                                          selector.DEFAULT_K)
+            if not base:
+                continue
+            # target_words: the corpus's own shortest register, which is the target
+            # that collapses the pool hardest -- `length_band` ranks by distance, so
+            # no other target draws shorter rows. None is kept because pre-2026
+            # callers still pass it.
+            for target in (None, min(selector._words(r) for r in base)):
+                pool = selector.resolved_pool(rows, channel, slot_kind,
+                                              selector.DEFAULT_K, target)
+                # counter: the period is the pool size, not a literal.
+                # len(pool) is an upper bound once a target narrows it, so this
+                # covers the full rotation. Over-sampling a pure string build is
+                # free; the live corpus measures 0.01s.
+                lengths += [len(assemble.voice_section(voice, channel, counter,
+                                                       slot_kind=slot_kind,
+                                                       target_words=target)[0])
+                            for counter in range(len(pool) or 1)]
+        # A counter that assembles to nothing has no share to measure, and taking a
+        # minimum over it divides by zero. Drop the empties so the channel is graded
+        # on the prompts it really produces; a channel with no prompt at all is
+        # skipped, which is what the old `if not worst_len` meant.
+        lengths = [n for n in lengths if n]
+        if not lengths:
+            continue
+        thinnest = min(lengths)
+        applied = [r for r in voice.active_corrections()
+                   if not r.get("scope") or channel in r["scope"]]
+        rules = sum(len(r.get("instruction") or "") for r in applied)
+        share = rules / thinnest
+        if share > CORRECTION_SHARE_CEILING:
+            problems.append(
+                f"{channel}: corrections are {rules} of {thinnest} chars "
+                f"({share:.0%}) of the thinnest assembly, over the "
+                f"{CORRECTION_SHARE_CEILING:.0%} ceiling. Retire a superseded "
+                f"correction (set its status off 'active'), or merge two that say "
+                f"one thing into one statement. Do not rotate them: a correction "
+                f"dropped from a prompt is a rule the model never sees.")
+    return problems
+
+
 def check_all(voice_dir, channels=None):
     """Every check, one list. [] is a healthy corpus.
 
@@ -353,6 +468,7 @@ def check_all(voice_dir, channels=None):
     problems += check_rotation_headroom(voice, channels=channels)
     problems += check_fingerprint_fresh(voice)
     problems += check_budget(voice, channels)
+    problems += check_correction_share(voice, channels)
     if voice.skipped_rows:
         problems.append(f"{voice.skipped_rows} corrupt JSONL row(s) skipped by the "
                         f"loader -- fix or remove them")

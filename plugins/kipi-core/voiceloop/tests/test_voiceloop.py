@@ -435,6 +435,33 @@ class TestAssemble:
             assert body.strip() in text
 
 
+    def test_external_source_correction_renders_under_its_own_header(self, tmp_path):
+        cor = [{"id": "his", "status": "active",
+                "instruction": "Never open with a number."},
+               {"id": "ext", "status": "active",
+                "source": assemble.EXTERNAL_SOURCE,
+                "instruction": "End on a colon line."}]
+        v = corpus.load(_voice_dir(tmp_path, corrections=cor))
+        text, prov = assemble.voice_section(v, "linkedin", counter=0)
+        standing = text.find("STANDING CORRECTIONS")
+        researched = text.find("RESEARCHED SHAPES")
+        assert -1 not in (standing, researched) and standing < researched
+        assert "End on a colon line" not in text[standing:researched], (
+            "an external correction must never sit under the override header")
+        assert prov["external_correction_ids"] == ["ext"]
+        assert prov["correction_ids"] == ["his", "ext"]
+
+    def test_unmarked_corrections_render_exactly_as_before(self, tmp_path):
+        """The fleet contract: a corpus that never sets source gets the legacy
+        single-block rendering byte for byte."""
+        cor = [{"id": "c1", "status": "active",
+                "instruction": "Never open with a number."}]
+        v = corpus.load(_voice_dir(tmp_path, corrections=cor))
+        text, prov = assemble.voice_section(v, "linkedin", counter=0)
+        assert "STANDING CORRECTIONS" in text
+        assert "RESEARCHED SHAPES" not in text
+        assert prov["external_correction_ids"] == []
+
 # --- validate ---------------------------------------------------------------------
 
 class TestValidate:
@@ -472,6 +499,218 @@ class TestValidate:
             r["text"] = "Long. " * 2000
         d = _voice_dir(tmp_path, rows=rows, fp=self._fresh_fp(rows))
         assert any("budget" in p for p in validate.check_all(d))
+
+    def test_corrections_crowding_out_his_writing_is_red(self, tmp_path):
+        """The share guard, and the reason it is not the size guard restated: this
+        corpus sits WELL INSIDE budget and is still wrong, because the rules about
+        him outweigh the writing by him."""
+        rows = _rows(6)
+        for r in rows:
+            r["text"] = "Short."
+        cor = [{"id": f"c{i}", "status": "active", "instruction": "Rule. " * 200}
+               for i in range(6)]
+        d = _voice_dir(tmp_path, rows=rows, corrections=cor,
+                       fp=self._fresh_fp(rows))
+        problems = validate.check_all(d)
+        assert any("crowd" in p or "ceiling" in p for p in problems), problems
+        assert not any("budget" in p for p in problems), (
+            "this fixture must be inside budget, or it proves nothing the size "
+            "check did not already catch: " + repr(problems))
+
+    def test_a_corpus_of_his_writing_with_few_rules_is_GREEN(self, tmp_path):
+        """The other side, so the guard cannot pass by refusing everything."""
+        rows = _rows(6)
+        for r in rows:
+            r["text"] = "I watched the queue back up. " * 40
+        cor = [{"id": "c1", "status": "active", "instruction": "End on a verdict."}]
+        d = _voice_dir(tmp_path, rows=rows, corrections=cor,
+                       fp=self._fresh_fp(rows))
+        assert not any("ceiling" in p for p in validate.check_all(d))
+
+    def test_a_RETIRED_correction_does_not_count_toward_the_share(self, tmp_path):
+        """Retirement is the named remedy, so it has to actually move the number."""
+        # His writing is held CONSTANT across both halves, so the only thing that
+        # moves the share is the retirement itself.
+        rows = _rows(6)
+        for r in rows:
+            r["text"] = "I watched the queue back up. " * 30
+        heavy = [{"id": f"c{i}", "status": "active", "instruction": "Rule. " * 400}
+                 for i in range(6)]
+        before = tmp_path / "before"
+        before.mkdir(parents=True, exist_ok=True)
+        after = tmp_path / "after"
+        after.mkdir(parents=True, exist_ok=True)
+        assert any("ceiling" in p for p in
+                   validate.check_all(_voice_dir(before, rows=rows,
+                                                 corrections=heavy,
+                                                 fp=self._fresh_fp(rows))))
+        retired = [dict(c, status="retired") for c in heavy[1:]]
+        assert not any("ceiling" in p for p in
+                       validate.check_all(_voice_dir(after, rows=rows,
+                                                     corrections=heavy[:1] + retired,
+                                                     fp=self._fresh_fp(rows))))
+
+    def test_the_share_samples_the_WHOLE_rotation_not_a_fixed_twelve(self,
+                                                                     tmp_path):
+        """The counter axis, isolated from the other two.
+
+        `selector.select` offsets by `counter % len(pool)`, so the period is the
+        pool size. The guard inherited `range(12)` from `check_budget` and could
+        not see counters 12 upward. Live pools measured 45 / 31 / 10.
+
+        EVERY ROW CARRIES THE SAME WORD COUNT on purpose. A length target draws
+        the nearest rows by word count, so on a mixed-register corpus it reaches
+        the thin rows on its own and a `range(12)` mutant survives -- measured,
+        it did. With one register the target axis cannot get there, and the only
+        way to the thinnest prompt is counting past 12. Character length falls as
+        the id rises, which puts that prompt at counter 16.
+
+        Sized so the two windows DISAGREE ON THE VERDICT: 60% over `range(12)`,
+        which is clean, and 74% over the full rotation, which is red.
+        """
+        import re
+        rows = []
+        for i in range(20):
+            word = "queuebackup" * max(7 - i // 3, 1)
+            rows.append({"id": f"ex-{i:02d}", "kind": "post", "channel": "any",
+                         "status": "active", "weight": 1.0, "anchor": False,
+                         "text": " ".join([word] * 30)})
+        heavy = [{"id": f"c{i}", "status": "active",
+                  "instruction": f"Rule {i}. " * 150} for i in range(6)]
+        d = _voice_dir(tmp_path, rows=rows, corrections=heavy,
+                       fp=self._fresh_fp(rows))
+        voice = corpus.load(d)
+        rules = sum(len(c["instruction"]) for c in heavy)
+        # The oracle is derived INDEPENDENTLY of the code's own window. Its first
+        # draft looped `range(12)` because the code did, which is the trap
+        # `validate._resolved_slots` names in this file: a checker that re-derives
+        # the rule it checks is testing its own copy.
+        pool = selector.resolved_pool(voice.active_exemplars(), "x", "post",
+                                      selector.DEFAULT_K)
+        assert len({selector._words(r) for r in pool}) == 1, (
+            "this fixture must be a single length register, or a length target "
+            "reaches the thin rows and the counter window stops mattering")
+        assert len(pool) > 12, f"rotation period is {len(pool)}, nothing to miss"
+        lengths = [len(assemble.voice_section(voice, "x", c)[0])
+                   for c in range(len(pool))]
+        assert lengths.index(min(lengths)) >= 12, (
+            f"the thinnest prompt is at counter {lengths.index(min(lengths))}, "
+            "inside a 12-counter window, so this fixture cannot tell the two apart")
+        assert rules / min(lengths[:12]) <= validate.CORRECTION_SHARE_CEILING, (
+            "a 12-counter window must read CLEAN here, or the old code passes "
+            f"this test too: {rules / min(lengths[:12]):.0%}")
+        assert rules / min(lengths) > validate.CORRECTION_SHARE_CEILING, (
+            f"the full rotation must read RED: {rules / min(lengths):.0%}")
+
+        problems = [p for p in validate.check_correction_share(voice)
+                    if p.startswith("x:")]
+        assert problems, (
+            "the guard stopped at counter 11 and called a corpus clean that is "
+            f"{rules / min(lengths):.0%} rules at counter "
+            f"{lengths.index(min(lengths))}")
+        reported = int(re.search(r" of (\d+) chars", problems[0]).group(1))
+        assert reported == min(lengths), (
+            f"the guard divided by {reported}; the thinnest prompt over the whole "
+            f"rotation is {min(lengths)} and the fattest is {max(lengths)}")
+
+    def test_the_share_samples_the_length_target_the_CLI_always_passes(self,
+                                                                      tmp_path):
+        """The third axis, and the third round of one defect class.
+
+        `voice_ref.py` declares `--words` required, so every prompt production
+        builds carries a length target, and a target REPLACES the pool with the
+        nearest k rows. The guard only ever sampled `target_words=None`, which is
+        a shape production never builds.
+
+        The fixture has two registers and is sized so the two paths DISAGREE ON
+        THE VERDICT: the untargeted prompt reads 68%, under the 70% ceiling, and
+        the shortest register reads 93%.
+        """
+        rows = []
+        for i in range(12):
+            body = "I watched the queue back up. " * (60 if i % 2 == 0 else 2)
+            rows.append({"id": f"ex-{i:02d}", "kind": "post", "channel": "any",
+                         "status": "active", "weight": 1.0, "anchor": False,
+                         "text": body + f" Tag {i}."})
+        heavy = [{"id": f"c{i}", "status": "active",
+                  "instruction": f"Rule {i}. " * 180} for i in range(6)]
+        d = _voice_dir(tmp_path, rows=rows, corrections=heavy,
+                       fp=self._fresh_fp(rows))
+        voice = corpus.load(d)
+        rules = sum(len(c["instruction"]) for c in heavy)
+        base = selector.resolved_pool(voice.active_exemplars(), "x", "post",
+                                      selector.DEFAULT_K)
+        thin_none = min(len(assemble.voice_section(voice, "x", c)[0])
+                        for c in range(len(base)))
+        assert rules / thin_none <= validate.CORRECTION_SHARE_CEILING, (
+            "the untargeted path must read CLEAN here, or a guard that samples "
+            f"only target_words=None passes this test too: {rules / thin_none:.0%}")
+
+        shortest = min(selector._words(r) for r in base)
+        pool = selector.resolved_pool(voice.active_exemplars(), "x", "post",
+                                      selector.DEFAULT_K, shortest)
+        thin_target = min(
+            len(assemble.voice_section(voice, "x", c, target_words=shortest)[0])
+            for c in range(len(pool)))
+        assert rules / thin_target > validate.CORRECTION_SHARE_CEILING, (
+            f"the shortest register must read RED: {rules / thin_target:.0%}")
+
+        problems = [p for p in validate.check_correction_share(voice)
+                    if p.startswith("x:")]
+        assert problems, (
+            "the guard never asked for a length target, so it graded a prompt "
+            f"shape the CLI cannot build and missed a real {rules / thin_target:.0%}")
+
+    def test_the_share_grades_every_slot_kind_the_engine_declares(self, tmp_path):
+        """The fourth axis, and the reason this loop now enumerates nothing.
+
+        `validate.SLOT_KINDS` is the vocabulary this module declares and
+        `voice_ref.py --slot-kind` offers. The guard pinned "post", so a corpus
+        whose COMMENT prompts are almost entirely rules read clean.
+
+        Long post rows plus short comment rows, sized so the two slots DISAGREE
+        ON THE VERDICT.
+        """
+        rows = []
+        for i in range(12):
+            rows.append({"id": f"ex-{i:02d}", "kind": "post", "channel": "any",
+                         "status": "active", "weight": 1.0, "anchor": False,
+                         "text": "I watched the queue back up. " * 70 + f" P{i}."})
+        for i in range(6):
+            rows.append({"id": f"cm-{i:02d}", "kind": "comment", "channel": "any",
+                         "status": "active", "weight": 1.0, "anchor": False,
+                         "text": f"Short comment {i}. It broke."})
+        heavy = [{"id": f"c{i}", "status": "active",
+                  "instruction": f"Rule {i}. " * 200} for i in range(6)]
+        d = _voice_dir(tmp_path, rows=rows, corrections=heavy,
+                       fp=self._fresh_fp(rows))
+        voice = corpus.load(d)
+        rules = sum(len(c["instruction"]) for c in heavy)
+
+        def thinnest(slot_kind):
+            base = selector.resolved_pool(voice.active_exemplars(), "x", slot_kind,
+                                          selector.DEFAULT_K)
+            out = []
+            for target in (None, min(selector._words(r) for r in base)):
+                pool = selector.resolved_pool(voice.active_exemplars(), "x",
+                                              slot_kind, selector.DEFAULT_K, target)
+                out += [len(assemble.voice_section(voice, "x", c,
+                                                   slot_kind=slot_kind,
+                                                   target_words=target)[0])
+                        for c in range(len(pool))]
+            return min(out)
+
+        assert rules / thinnest("post") <= validate.CORRECTION_SHARE_CEILING, (
+            "the post slot must read CLEAN here, or a guard pinned to post passes "
+            f"this test too: {rules / thinnest('post'):.0%}")
+        assert rules / thinnest("comment") > validate.CORRECTION_SHARE_CEILING, (
+            f"the comment slot must read RED: {rules / thinnest('comment'):.0%}")
+
+        problems = [p for p in validate.check_correction_share(voice)
+                    if p.startswith("x:")]
+        assert problems, (
+            "the guard graded only the post slot and missed a comment prompt that "
+            f"is {rules / thinnest('comment'):.0%} rules")
 
 
 # --- voice-1-instrument: review findings 1, 2, 8 ----------------------------------
