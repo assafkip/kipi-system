@@ -415,3 +415,41 @@ def _thread_result(link_id, got, pages, *, complete, capped) -> dict:
         "capped": capped,
         "source": "arctic",
     }
+
+
+def posts_by_id_url(ids) -> str:
+    if isinstance(ids, str):
+        ids = [ids]
+    clean = ",".join(str(i).removeprefix("t3_") for i in ids)
+    return f"{ARCTIC_BASE}/api/posts/ids?ids={urllib.parse.quote(clean)}"
+
+
+def posts_by_id(ids, *, timeout: int = DEFAULT_TIMEOUT, _opener=None,
+                _get=None) -> list[dict]:
+    """The post objects for specific ids, raw.
+
+    This is what makes a thread read able to state its DECLARED comment count,
+    which is the number the whole coverage contract is measured against.
+    VERIFIED LIVE 2026-09-04: /api/posts/ids?ids=1w67dpg returned one row with
+    num_comments 108 and the full permalink.
+
+    There is no PullPush fallback on this endpoint. A caller that loses it loses
+    `declared`, not the thread, so it raises here and the caller decides.
+    """
+    try:
+        return _items(_get_json(posts_by_id_url(ids), timeout, _opener, _get))
+    except Exception as exc:
+        raise RedditFetchFailed("mirror refused posts %s: %s: %s"
+                                % (ids, type(exc).__name__, exc))
+
+
+def link_id_from_permalink(permalink: str) -> str:
+    """`/r/x/comments/<id>/slug/` -> `<id>`. Accepts a bare id and a full url.
+
+    One parser, because every caller had its own and a wrong one silently reads
+    a different thread rather than failing."""
+    text = str(permalink or "").strip()
+    if "/comments/" in text:
+        tail = text.split("/comments/", 1)[1]
+        return tail.split("/", 1)[0].split("?", 1)[0]
+    return text.strip("/").split("/")[-1].split("?", 1)[0].removeprefix("t3_")

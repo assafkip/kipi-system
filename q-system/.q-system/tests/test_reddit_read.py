@@ -40,6 +40,7 @@ import ast
 import datetime as dt
 import importlib.util
 import json
+import pathlib
 import sys
 from pathlib import Path
 
@@ -292,16 +293,53 @@ def test_discovery_refuses_an_rss_url(rr):
         rr.listing_url("programming", period="month", path_override="/r/programming/top/.rss")
 
 
-def test_discovery_builds_an_old_reddit_listing_url(rr):
+def test_discovery_builds_an_arctic_listing_url(rr):
+    """REPLACED test_discovery_builds_an_old_reddit_listing_url (2026-09-04).
+    Rewritten rather than deleted: the claim it held (discovery has one url
+    shape, and it is not RSS) is still the claim. Only the host changed."""
     url = rr.listing_url("programming", period="month")
-    assert url.startswith("https://old.reddit.com/r/programming/top/")
-    assert "t=month" in url
-    assert ".rss" not in url
+    assert url.startswith("https://arctic-shift.photon-reddit.com/api/posts/search")
+    assert "subreddit=programming" in url
+    assert ".rss" not in url and "old.reddit.com" not in url
 
 
-def test_thread_url_asks_for_limit_500(rr):
-    """201 -> 215 of 214 declared. One query param, not an expansion API."""
-    assert "limit=500" in rr.thread_url("/r/x/comments/abc/t/")
+def test_thread_url_is_the_mirrors_comments_endpoint(rr):
+    """REPLACED test_thread_url_asks_for_limit_500 (2026-09-04). `limit=500`
+    bought as much of a thread as ONE old.reddit request could reach; it moved
+    one thread from 201 to 215 of 214 declared and did not rescue large ones.
+    The mirror pages, so completeness stopped being a query parameter."""
+    url = rr.thread_url("/r/x/comments/abc/t/")
+    assert url.startswith("https://arctic-shift.photon-reddit.com/api/comments/search")
+    assert "link_id=abc" in url
+    assert "old.reddit.com" not in url
+
+
+def test_no_function_here_builds_an_old_reddit_url(rr):
+    """The founder-directed rule, checked rather than asserted in prose: Arctic
+    Shift is the only way this fleet scrapes Reddit."""
+    # Parsed, not grepped. Comments and docstrings are exempt and MUST be: the
+    # retired host is named in the scar notes that explain why it is retired,
+    # and a line-level grep that forbids saying so is a check that deletes its
+    # own reason. A first attempt did exactly that and failed on the comment
+    # recording the founder directive it was written to enforce.
+    import ast
+    tree = ast.parse(pathlib.Path(rr.__file__).read_text())
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            first = node.body[0] if node.body else None
+            if (isinstance(first, ast.Expr)
+                    and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)):
+                docstrings.add(id(first.value))
+    live = [n.value for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and id(n) not in docstrings]
+    for text in live:
+        assert "old.reddit.com" not in text, text
+    assert rr.BASE == "https://www.reddit.com", (
+        "the only sanctioned reddit.com string is the display link a human clicks")
 
 
 # ---------------------------------------------------------------------------
@@ -367,27 +405,63 @@ def test_the_module_never_reaches_the_json_endpoint(rr):
 # End to end, through the injected transport (no network in this suite)
 # ---------------------------------------------------------------------------
 
-def test_read_thread_returns_a_full_artifact_from_a_200(rr, real_html):
-    calls = []
-
+def _mirror_double(calls, declared=224, rows=8):
+    """A double shaped like the mirror: the posts/ids call answers with the
+    declared count, the comments call answers with one short page."""
     def transport(url, headers, timeout):
         calls.append((url, headers))
-        return 200, real_html
+        if "/api/posts/ids" in url:
+            return 200, json.dumps({"data": [{"id": "1w3blbq", "num_comments": declared}]})
+        return 200, json.dumps({"data": [{"id": "c%d" % i, "created_utc": 1788136000 + i}
+                                         for i in range(rows)]})
+    return transport
 
-    art = rr.read_thread("/r/programming/comments/1w3blbq/t/", transport=transport,
+
+def test_read_thread_returns_a_full_artifact_from_a_200(rr):
+    """REWRITTEN for the mirror (2026-09-04). The artifact contract is what this
+    test was ever about, and it is unchanged: a 200 produces declared, fetched,
+    coverage, and a fetched_at, and `assert_coverage_recorded` accepts it."""
+    calls = []
+    art = rr.read_thread("/r/programming/comments/1w3blbq/t/",
+                         transport=_mirror_double(calls),
                          pacer=rr.NullPacer(), now=dt.datetime(2026, 8, 31, 12, 0))
     assert art["refused"] is False
     assert art["declared"] == 224 and art["fetched"] == 8
-    assert art["truncated"] is True
-    assert art["strategy"] == "single"
+    assert art["coverage_pct"] == 3.6
+    assert art["complete"] is True, "a short page means the mirror had no more"
+    assert art["truncated"] is False
+    assert art["strategy"] == "paginate"
     assert art["fetched_at"] == "2026-08-31T12:00:00"
-    assert "limit=500" in calls[0][0]
+    assert all("arctic-shift" in url for url, _ in calls)
     assert calls[0][1]["User-Agent"] == rr.USER_AGENT
     rr.assert_coverage_recorded(art)
 
 
-def test_the_artifact_is_json_serialisable(rr, real_html):
-    art = rr.read_thread("/r/x/comments/a/t/", transport=lambda u, h, t: (200, real_html),
+def test_a_thread_pages_until_the_mirror_runs_out(rr):
+    """The capability the HTML transport never had. Verified live on
+    r/programming 1w67dpg: declared 108, fetched 111 across two pages."""
+    pages = []
+
+    def transport(url, headers, timeout):
+        if "/api/posts/ids" in url:
+            return 200, json.dumps({"data": [{"id": "x", "num_comments": 150}]})
+        pages.append(url)
+        n = len(pages)
+        if n == 1:
+            rows = [{"id": "a%d" % i, "created_utc": 1788136000 + i} for i in range(100)]
+        else:
+            rows = [{"id": "b%d" % i, "created_utc": 1788137000 + i} for i in range(11)]
+        return 200, json.dumps({"data": rows})
+
+    art = rr.read_thread("/r/x/comments/x/t/", transport=transport,
+                         pacer=rr.NullPacer(), now=dt.datetime(2026, 8, 31, 12, 0))
+    assert art["fetched"] == 111 and art["pages"] == 2
+    assert art["complete"] is True and art["truncated"] is False
+    assert "after=" in pages[1], "page two must advance the cursor"
+
+
+def test_the_artifact_is_json_serialisable(rr):
+    art = rr.read_thread("/r/x/comments/a/t/", transport=_mirror_double([]),
                          pacer=rr.NullPacer(), now=dt.datetime(2026, 8, 31, 12, 0))
     json.dumps(art)
 
