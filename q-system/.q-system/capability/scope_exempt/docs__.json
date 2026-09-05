@@ -1,0 +1,4 @@
+{
+ "prefix": "docs/",
+ "reason": "docs/ carries the documentation coverage gate (check_coverage.py) and its self-test (test_check_coverage.py). The self-test is declared so the capability gate RUNS it; the tree is exempt from undeclared-artifact discovery because it is a documentation tree, not a scripts root, and widening the scan roots to docs/ would make every future docs helper a declaration debt. Measured 2026-09-05: PR #306 went RED on 'declared outside the scan roots and not exempt' for exactly this file."
+}

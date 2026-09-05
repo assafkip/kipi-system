@@ -260,10 +260,14 @@ def test_single_caller_the_plist_template_is_the_only_one_in_the_tree():
     under .claude/worktrees/ and .wt-*, bytecode, and the untracked DSSE
     runtime state under .claude/state/; nothing else under .claude is excluded
     (Codex, issue 14). .prd-os/ (issue specs and receipts describing this work)
-    is filtered afterwards, by name."""
+    and docs/ (the handbook, which NAMES the file so a reader can open it) are
+    filtered afterwards, by name: a page that mentions a script is not a caller.
+    Measured 2026-09-05: docs/systems/10 and docs/reference/scripts.md turned
+    this RED on PR #306 with zero new callers in the tree."""
     root = HERE.parent.parent.parent
     out = subprocess.run(["git", "-C", str(root), "grep", "-l", "--", "lessons-drift-report.py"], capture_output=True, text=True).stdout
-    rel = sorted(l for l in out.splitlines() if l and not l.startswith(".prd-os/"))
+    rel = sorted(l for l in out.splitlines()
+                 if l and not l.startswith(".prd-os/") and not l.startswith("docs/"))
     assert rel == ["q-system/.q-system/scripts/com.kipi.lessons-drift.plist",
                    "q-system/.q-system/tests/test_lessons_drift_report.py"], rel
 
