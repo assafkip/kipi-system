@@ -106,7 +106,6 @@ def _load_reddit_transport():
 # Honest identification. Any UA that is not empty and is not curl's default gets
 # a 200, so there is nothing to gain by impersonating a browser and the tests
 # forbid the strings that would.
-USER_AGENT = "kipi-research/1.0 (+https://ktlyst.com; research)"
 
 # NOT old.reddit.com ANY MORE (2026-09-04, founder-directed: "Any collection from
 # reddit that is not using arctic shift should be changed to it. this must be the
@@ -117,6 +116,12 @@ BASE = "https://www.reddit.com"
 
 # The transport lives once, in the kipi-core plugin. This script is a caller.
 _ARCTIC = _load_reddit_transport()
+
+# ONE definition, in the transport. It used to be a second copy of the same
+# string here, which is the shape this whole change exists to remove: two copies
+# of a rule drift, and this pair drifted into a hardcoded company domain that
+# the skeleton's own separation gate refuses.
+USER_AGENT = _ARCTIC.USER_AGENT
 
 # 3s pacing 429'd 11 of 12 RSS requests. 10s pacing ran 13 of 13 clean across
 # listing pages and thread fetches. This is the measured floor, not a guess.

@@ -77,12 +77,24 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import urllib.parse
 import urllib.request
 
 ARCTIC_BASE = "https://arctic-shift.photon-reddit.com"
 PULLPUSH_BASE = "https://api.pullpush.io"
-USER_AGENT = "kipi-research/1.0 (+https://ktlyst.com; research)"
+# NO COMPANY DOMAIN HERE. This module ships to every instance through the
+# skeleton, and validate-separation.py fails the build on a hardcoded brand
+# reference for exactly that reason: one instance's domain baked into fleet code
+# is wrong in every other instance. It cost this change a red `validate` on
+# 2026-09-05, which was the gate doing its job.
+#
+# We still identify ourselves truthfully. The default names the client and its
+# purpose and claims no affiliation; an instance that wants a contact URL sets
+# KIPI_REDDIT_UA. Impersonating a browser would be a choice to look like
+# something we are not, made for no benefit, since the mirror needs no auth.
+USER_AGENT = os.environ.get(
+    "KIPI_REDDIT_UA", "kipi-research/1.0 (automated research; contact via repo)")
 
 # The mirror is a plain JSON API, not a hosted actor run, so the ~300s Apify
 # server wall that shaped every timeout number in the retired path no longer
