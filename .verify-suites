@@ -69,6 +69,12 @@
 plugins/prd-os
 plugins/kipi-dsse
 plugins/kipi-core/voiceloop
+# The Arctic Shift transport, added 2026-09-05. It shipped with 26 tests and
+# was in NO manifest, so a revert of the one rule the module exists for -- raise
+# on a total mirror failure instead of returning [] -- would have merged green
+# (PR 307 review, MAJOR). A suite nothing runs is a suite that documents an
+# intention. Collects clean from the repo root.
+plugins/kipi-core/reddit_arctic
 automation
 rescued/memory-lifecycle
 q-system/.q-system/tests

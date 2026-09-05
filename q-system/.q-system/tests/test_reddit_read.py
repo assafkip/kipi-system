@@ -40,6 +40,7 @@ import ast
 import datetime as dt
 import importlib.util
 import json
+import pathlib
 import sys
 from pathlib import Path
 
@@ -236,17 +237,27 @@ def test_a_missing_declared_count_is_its_own_state(rr, real_html):
 # CONSTRAINT 3 -- pacing, listing discovery, 429 is a refusal
 # ---------------------------------------------------------------------------
 
-def test_the_pacer_holds_ten_seconds_between_requests(rr):
+def test_the_pacer_holds_its_interval_between_requests(rr):
+    """REPLACES test_the_pacer_holds_ten_seconds_between_requests.
+
+    The claim is unchanged: a second request inside the interval sleeps the
+    remainder. Only the NUMBER moved, because 10s was measured against
+    old.reddit.com and this module reads the Arctic mirror now. Asserting the
+    behaviour against whatever MIN_INTERVAL_S is keeps the test true when the
+    measurement changes, which a hardcoded 9.0 did not.
+    """
+    interval = rr.MIN_INTERVAL_S
+    elapsed = interval / 10.0
     slept = []
     clock = {"t": 1000.0}
-    pacer = rr.Pacer(min_interval_s=rr.MIN_INTERVAL_S,
+    pacer = rr.Pacer(min_interval_s=interval,
                      clock=lambda: clock["t"],
                      sleeper=lambda s: (slept.append(s), clock.__setitem__("t", clock["t"] + s)))
     pacer.wait()          # first call is free
     assert slept == []
-    clock["t"] += 1.0     # only 1s elapsed
+    clock["t"] += elapsed
     pacer.wait()
-    assert slept and slept[0] == pytest.approx(9.0, abs=0.01)
+    assert slept and slept[0] == pytest.approx(interval - elapsed, abs=0.01)
 
 
 def test_the_pacer_does_not_sleep_when_enough_time_already_passed(rr):
@@ -260,11 +271,22 @@ def test_the_pacer_does_not_sleep_when_enough_time_already_passed(rr):
     assert slept == []
 
 
-def test_the_default_interval_is_the_measured_one(rr):
-    """3s pacing 429'd 11 of 12 RSS requests. 10s ran 13 of 13 clean."""
-    assert rr.MIN_INTERVAL_S == 10
+def test_the_default_interval_belongs_to_the_host_this_module_reads(rr):
+    """REPLACES test_the_default_interval_is_the_measured_one.
 
+    That test asserted MIN_INTERVAL_S == 10, and 10 WAS the measured floor: 3s
+    pacing 429'd 11 of 12 RSS requests on old.reddit.com and 10s ran 13 of 13
+    clean. The measurement was real and it belonged to a host this module no
+    longer reads.
 
+    Keeping it cost 400 seconds per thread once the pacer started covering every
+    paged request. The retired number stays as a named constant carrying its
+    scar, so nobody mistakes the new one for that measurement, and the new one is
+    honest about being a COURTESY on a free archive rather than a measured floor:
+    Arctic's own limit has not been measured.
+    """
+    assert rr.RETIRED_REDDIT_MIN_INTERVAL_S == 10
+    assert rr.MIN_INTERVAL_S < rr.RETIRED_REDDIT_MIN_INTERVAL_S
 def test_a_429_is_recorded_as_a_refusal_never_as_zero_results(rr):
     def transport(url, headers, timeout):
         return 429, ""
@@ -292,49 +314,53 @@ def test_discovery_refuses_an_rss_url(rr):
         rr.listing_url("programming", period="month", path_override="/r/programming/top/.rss")
 
 
-def test_discovery_builds_an_old_reddit_listing_url(rr):
+def test_discovery_builds_an_arctic_listing_url(rr):
+    """REPLACED test_discovery_builds_an_old_reddit_listing_url (2026-09-04).
+    Rewritten rather than deleted: the claim it held (discovery has one url
+    shape, and it is not RSS) is still the claim. Only the host changed."""
     url = rr.listing_url("programming", period="month")
-    assert url.startswith("https://old.reddit.com/r/programming/top/")
-    assert "t=month" in url
-    assert ".rss" not in url
+    assert url.startswith("https://arctic-shift.photon-reddit.com/api/posts/search")
+    assert "subreddit=programming" in url
+    assert ".rss" not in url and "old.reddit.com" not in url
 
 
-def test_comments_bind_author_and_body_per_comment_not_by_position(rr):
-    """PR #294 review, major: a real page opens with the post's own data-author
-    and selftext <div class="md">, and a deleted comment carries no body, so a
-    positional join shifted every attribution by one. Control: the second
-    comment has no body and must read as None, not steal the third's."""
-    html = (
-        '<div class=" thing id-t3_post link " data-fullname="t3_post" data-author="op_poster">'
-        '<div class="md"><p>the post text</p></div></div>'
-        '<div class=" thing id-t1_aaa comment " data-fullname="t1_aaa" data-author="alice">'
-        '<div class="md"><p>first</p></div></div>'
-        '<div class=" thing id-t1_bbb comment " data-fullname="t1_bbb" data-author="[deleted]"></div>'
-        '<div class=" thing id-t1_ccc comment " data-fullname="t1_ccc" data-author="carol">'
-        '<div class="md"><p>third</p></div></div>'
-    )
-    got = rr.parse_comments(html)
-    assert [c["id"] for c in got] == ["t1_aaa", "t1_bbb", "t1_ccc"]
-    assert [c["author"] for c in got] == ["alice", "[deleted]", "carol"], got
-    assert [c["body"] for c in got] == ["first", None, "third"], got
+def test_thread_url_is_the_mirrors_comments_endpoint(rr):
+    """REPLACED test_thread_url_asks_for_limit_500 (2026-09-04). `limit=500`
+    bought as much of a thread as ONE old.reddit request could reach; it moved
+    one thread from 201 to 215 of 214 declared and did not rescue large ones.
+    The mirror pages, so completeness stopped being a query parameter."""
+    url = rr.thread_url("/r/x/comments/abc/t/")
+    assert url.startswith("https://arctic-shift.photon-reddit.com/api/comments/search")
+    assert "link_id=abc" in url
+    assert "old.reddit.com" not in url
 
 
-def test_thread_url_refuses_anything_that_is_not_a_reddit_thread(rr):
-    """PR #294 review, major: the MCP tool passed an absolute permalink straight
-    to the transport, so any http(s) target could be fetched and its body
-    returned through the tool. Only reddit hosts over https, or a reddit path."""
-    import pytest
-    assert rr.thread_url("https://old.reddit.com/r/x/comments/abc/t/").startswith("https://old.reddit.com/r/x/comments/abc/t/")
-    assert rr.thread_url("https://www.reddit.com/r/x/comments/abc/t/?sort=top").startswith("https://old.reddit.com/r/x/comments/abc/t/?sort=top")
-    for bad in ("https://evil.example/r/x/comments/abc/", "http://old.reddit.com/r/x/comments/abc/",
-                "https://old.reddit.com.evil.example/r/x/", "file:///etc/passwd", "r/x/comments/abc/"):
-        with pytest.raises(rr.PermalinkRefused):
-            rr.thread_url(bad)
-
-
-def test_thread_url_asks_for_limit_500(rr):
-    """201 -> 215 of 214 declared. One query param, not an expansion API."""
-    assert "limit=500" in rr.thread_url("/r/x/comments/abc/t/")
+def test_no_function_here_builds_an_old_reddit_url(rr):
+    """The founder-directed rule, checked rather than asserted in prose: Arctic
+    Shift is the only way this fleet scrapes Reddit."""
+    # Parsed, not grepped. Comments and docstrings are exempt and MUST be: the
+    # retired host is named in the scar notes that explain why it is retired,
+    # and a line-level grep that forbids saying so is a check that deletes its
+    # own reason. A first attempt did exactly that and failed on the comment
+    # recording the founder directive it was written to enforce.
+    import ast
+    tree = ast.parse(pathlib.Path(rr.__file__).read_text())
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            first = node.body[0] if node.body else None
+            if (isinstance(first, ast.Expr)
+                    and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)):
+                docstrings.add(id(first.value))
+    live = [n.value for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and id(n) not in docstrings]
+    for text in live:
+        assert "old.reddit.com" not in text, text
+    assert rr.BASE == "https://www.reddit.com", (
+        "the only sanctioned reddit.com string is the display link a human clicks")
 
 
 # ---------------------------------------------------------------------------
@@ -400,27 +426,63 @@ def test_the_module_never_reaches_the_json_endpoint(rr):
 # End to end, through the injected transport (no network in this suite)
 # ---------------------------------------------------------------------------
 
-def test_read_thread_returns_a_full_artifact_from_a_200(rr, real_html):
-    calls = []
-
+def _mirror_double(calls, declared=224, rows=8):
+    """A double shaped like the mirror: the posts/ids call answers with the
+    declared count, the comments call answers with one short page."""
     def transport(url, headers, timeout):
         calls.append((url, headers))
-        return 200, real_html
+        if "/api/posts/ids" in url:
+            return 200, json.dumps({"data": [{"id": "1w3blbq", "num_comments": declared}]})
+        return 200, json.dumps({"data": [{"id": "c%d" % i, "created_utc": 1788136000 + i}
+                                         for i in range(rows)]})
+    return transport
 
-    art = rr.read_thread("/r/programming/comments/1w3blbq/t/", transport=transport,
+
+def test_read_thread_returns_a_full_artifact_from_a_200(rr):
+    """REWRITTEN for the mirror (2026-09-04). The artifact contract is what this
+    test was ever about, and it is unchanged: a 200 produces declared, fetched,
+    coverage, and a fetched_at, and `assert_coverage_recorded` accepts it."""
+    calls = []
+    art = rr.read_thread("/r/programming/comments/1w3blbq/t/",
+                         transport=_mirror_double(calls),
                          pacer=rr.NullPacer(), now=dt.datetime(2026, 8, 31, 12, 0))
     assert art["refused"] is False
     assert art["declared"] == 224 and art["fetched"] == 8
-    assert art["truncated"] is True
-    assert art["strategy"] == "single"
+    assert art["coverage_pct"] == 3.6
+    assert art["complete"] is True, "a short page means the mirror had no more"
+    assert art["truncated"] is False
+    assert art["strategy"] == "paginate"
     assert art["fetched_at"] == "2026-08-31T12:00:00"
-    assert "limit=500" in calls[0][0]
+    assert all("arctic-shift" in url for url, _ in calls)
     assert calls[0][1]["User-Agent"] == rr.USER_AGENT
     rr.assert_coverage_recorded(art)
 
 
-def test_the_artifact_is_json_serialisable(rr, real_html):
-    art = rr.read_thread("/r/x/comments/a/t/", transport=lambda u, h, t: (200, real_html),
+def test_a_thread_pages_until_the_mirror_runs_out(rr):
+    """The capability the HTML transport never had. Verified live on
+    r/programming 1w67dpg: declared 108, fetched 111 across two pages."""
+    pages = []
+
+    def transport(url, headers, timeout):
+        if "/api/posts/ids" in url:
+            return 200, json.dumps({"data": [{"id": "x", "num_comments": 150}]})
+        pages.append(url)
+        n = len(pages)
+        if n == 1:
+            rows = [{"id": "a%d" % i, "created_utc": 1788136000 + i} for i in range(100)]
+        else:
+            rows = [{"id": "b%d" % i, "created_utc": 1788137000 + i} for i in range(11)]
+        return 200, json.dumps({"data": rows})
+
+    art = rr.read_thread("/r/x/comments/x/t/", transport=transport,
+                         pacer=rr.NullPacer(), now=dt.datetime(2026, 8, 31, 12, 0))
+    assert art["fetched"] == 111 and art["pages"] == 2
+    assert art["complete"] is True and art["truncated"] is False
+    assert "after=" in pages[1], "page two must advance the cursor"
+
+
+def test_the_artifact_is_json_serialisable(rr):
+    art = rr.read_thread("/r/x/comments/a/t/", transport=_mirror_double([]),
                          pacer=rr.NullPacer(), now=dt.datetime(2026, 8, 31, 12, 0))
     json.dumps(art)
 
@@ -437,3 +499,288 @@ def test_the_fixture_records_its_own_provenance(real_html):
     assert "FIXTURE PROVENANCE" in real_html
     assert "old.reddit.com" in real_html
     assert "TRIMMED" in real_html
+
+
+# RESTORED. A file-level landing off a 92-commit branch dropped this
+# along with the fix it guards (PR 307 review). Its subject is unchanged.
+def test_comments_bind_author_and_body_per_comment_not_by_position(rr):
+    """PR #294 review, major: a real page opens with the post's own data-author
+    and selftext <div class="md">, and a deleted comment carries no body, so a
+    positional join shifted every attribution by one. Control: the second
+    comment has no body and must read as None, not steal the third's."""
+    html = (
+        '<div class=" thing id-t3_post link " data-fullname="t3_post" data-author="op_poster">'
+        '<div class="md"><p>the post text</p></div></div>'
+        '<div class=" thing id-t1_aaa comment " data-fullname="t1_aaa" data-author="alice">'
+        '<div class="md"><p>first</p></div></div>'
+        '<div class=" thing id-t1_bbb comment " data-fullname="t1_bbb" data-author="[deleted]"></div>'
+        '<div class=" thing id-t1_ccc comment " data-fullname="t1_ccc" data-author="carol">'
+        '<div class="md"><p>third</p></div></div>'
+    )
+    got = rr.parse_comments(html)
+    assert [c["id"] for c in got] == ["t1_aaa", "t1_bbb", "t1_ccc"]
+    assert [c["author"] for c in got] == ["alice", "[deleted]", "carol"], got
+    assert [c["body"] for c in got] == ["first", None, "third"], got
+
+
+
+# RESTORED. A file-level landing off a 92-commit branch dropped this
+# along with the fix it guards (PR 307 review). Its subject is unchanged.
+def test_thread_url_refuses_anything_that_is_not_a_reddit_thread(rr):
+    """PR #294 review, major: the MCP tool passed an absolute permalink straight
+    to the transport, so any http(s) target could be fetched and its body
+    returned through the tool.
+
+    RESTORED after a file-level landing dropped it, and its assertions about the
+    RETURN VALUE are rewritten because thread_url now returns a mirror URL. Every
+    REFUSAL case below is the original's, unchanged: that is the half that was
+    protecting anything.
+    """
+    import pytest
+    ok = rr.thread_url("https://www.reddit.com/r/x/comments/abc/t/")
+    assert ok.startswith("https://arctic-shift.photon-reddit.com/")
+    assert "link_id=abc" in ok
+    assert rr.thread_url("/r/x/comments/abc/t/").startswith(
+        "https://arctic-shift.photon-reddit.com/")
+
+    for bad in ("https://evil.example/r/x/comments/abc/",
+                "http://old.reddit.com/r/x/comments/abc/",
+                "https://old.reddit.com.evil.example/r/x/comments/abc/",
+                "file:///etc/passwd",
+                "r/x/comments/abc/",
+                "https://www.reddit.com/r/x/"):
+        with pytest.raises(rr.PermalinkRefused):
+            rr.thread_url(bad)
+
+
+def test_a_thread_that_declares_nothing_has_no_coverage(rr):
+    """0.0 beside complete=True reads as "the read worked and returned none of
+    the thread". There is no denominator, so there is no percentage (review).
+    An EMPTY thread stays 100.0: it really was fully read."""
+    assert rr.coverage_pct(7, 0) is None
+    assert rr.coverage_pct(0, 0) == 100.0
+    assert rr.coverage_pct(32, 34) == 94.1
+
+
+def test_the_pacer_covers_every_request_a_paged_read_makes(rr):
+    """`Pacer` promises at most one request per min_interval_s. One wait() before
+    the read was that promise back when a thread was one request. `all_comments`
+    pages now, so a multi-page thread got one wait and the rest unpaced."""
+    import json
+    waits = []
+
+    class CountingPacer:
+        def wait(self):
+            waits.append(1)
+
+    pages = {"n": 0}
+
+    def transport(url, headers, timeout):
+        if "/api/posts/ids" in url:
+            return 200, json.dumps({"data": [{"id": "x", "num_comments": 300}]})
+        pages["n"] += 1
+        n = pages["n"]
+        rows = [{"id": "p%d_%d" % (n, i), "created_utc": 1788136000 + n * 1000 + i}
+                for i in range(100 if n < 3 else 5)]
+        return 200, json.dumps({"data": rows})
+
+    rr.read_thread("/r/x/comments/abc/t/", transport=transport,
+                   pacer=CountingPacer())
+    assert pages["n"] > 1, "the fixture must actually page"
+    assert len(waits) == pages["n"] + 1, (len(waits), pages["n"])
+
+
+def test_the_production_path_is_paced_not_only_the_injected_one(rr, monkeypatch):
+    """THE ROUND-6 MAJOR, and the mode-nobody-tests defect in one function.
+
+    Round 5 wrapped the injected getter and returned None when no transport was
+    supplied, reasoning "the transport does its own fetching, so there is nothing
+    to pace". Backwards: `transport` is None on the MCP and CLI paths, so the
+    only arm that got paced was the one TESTS supply. Production made up to 41
+    unpaced mirror requests per thread.
+    """
+    import json
+    import urllib.request as u
+
+    waits, opens = [], []
+
+    class CountingPacer:
+        def wait(self):
+            waits.append(1)
+
+    class Resp:
+        def __init__(self, payload):
+            self._b = json.dumps(payload).encode()
+
+        def read(self):
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        opens.append(url)
+        if "/api/posts/ids" in url:
+            return Resp({"data": [{"id": "x", "num_comments": 300}]})
+        n = len([o for o in opens if "comments/search" in o])
+        rows = [{"id": "p%d_%d" % (n, i), "created_utc": 1788136000 + n * 1000 + i}
+                for i in range(100 if n < 3 else 4)]
+        return Resp({"data": rows})
+
+    monkeypatch.setattr(u, "urlopen", fake_urlopen)
+    rr.read_thread("/r/x/comments/abc/t/", pacer=CountingPacer())
+
+    assert len(opens) > 1, "the fixture must actually page"
+    assert len(waits) == len(opens), (len(waits), len(opens))
+
+
+def test_the_pace_is_not_the_retired_reddit_number(rr):
+    """10s was MEASURED against old.reddit.com and was right for it. It is wrong
+    for the mirror, and keeping it did real damage once the pacer covered every
+    request instead of the first: one reddit_thread call became 41 requests and
+    400 seconds of deliberate sleeping against a host that never asked (review).
+
+    The retired number stays as a named constant carrying its scar, so nobody
+    reads the new one as the old measurement.
+    """
+    assert rr.RETIRED_REDDIT_MIN_INTERVAL_S == 10
+    assert rr.MIN_INTERVAL_S < 1, "the mirror is not old.reddit.com"
+    assert 41 * rr.MIN_INTERVAL_S < 30, "41 paged requests must not cost minutes"
+
+
+def test_a_paged_read_has_a_whole_read_deadline(rr, monkeypatch):
+    """A per-request pace bounds the GAP between requests and says nothing about
+    the total. 41 requests at any interval still needs a ceiling somebody chose.
+    """
+    import json
+    import urllib.request as u
+
+    assert rr.READ_DEADLINE_S > 0
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(rr._time, "monotonic", lambda: clock["t"])
+
+    class Resp:
+        def __init__(self, payload):
+            self._b = json.dumps(payload).encode()
+
+        def read(self):
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def slow(req, timeout=None):
+        clock["t"] += rr.READ_DEADLINE_S / 2.0     # each fetch eats half the budget
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        if "/api/posts/ids" in url:
+            return Resp({"data": [{"id": "x", "num_comments": 5000}]})
+        n = int(clock["t"])
+        return Resp({"data": [{"id": "p%d_%d" % (n, i),
+                               "created_utc": 1788136000 + n * 1000 + i}
+                              for i in range(100)]})
+
+    monkeypatch.setattr(u, "urlopen", slow)
+
+    class NoPacer:
+        def wait(self):
+            pass
+
+    art = rr.read_thread("/r/x/comments/abc/t/", pacer=NoPacer())
+    # NOT a refusal. Round 7 wrote this assertion as `refused is True`, and round
+    # 8 showed that was wrong: every page came back 200 and the read simply ran
+    # out of budget, so calling it a refusal blames a host that answered and
+    # discards what it returned. The deadline still has to BITE, which is what
+    # complete=False and deadline_hit assert.
+    assert art["deadline_hit"] is True
+    assert art["complete"] is False
+    assert art["http_status"] == 200
+
+
+def test_read_listing_passes_the_paced_opener_it_builds(rr, monkeypatch):
+    """Round 6 fixed read_thread and left its sibling building a paced opener and
+    never passing it, so the production LISTING path stayed unpaced (review)."""
+    import json
+    import urllib.request as u
+
+    waits, opens = [], []
+
+    class CountingPacer:
+        def wait(self):
+            waits.append(1)
+
+    class Resp:
+        def __init__(self, payload):
+            self._b = json.dumps(payload).encode()
+
+        def read(self):
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake(req, timeout=None):
+        opens.append(req.full_url if hasattr(req, "full_url") else str(req))
+        return Resp({"data": [{"id": "a", "title": "t", "subreddit": "x",
+                               "permalink": "/r/x/comments/a/t/",
+                               "num_comments": 3, "created_utc": 1788136000}]})
+
+    monkeypatch.setattr(u, "urlopen", fake)
+    rr.read_listing("x", pacer=CountingPacer())
+    assert opens, "the fixture must actually fetch"
+    assert len(waits) == len(opens), (len(waits), len(opens))
+
+
+def test_a_deadline_is_not_a_refusal(rr, monkeypatch):
+    """Every page already fetched came back 200; the read ran out of budget.
+    Reporting that as "mirror refused" threw away real comments and blamed a
+    host that answered every time (review, round 8)."""
+    import json
+    import urllib.request as u
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(rr._time, "monotonic", lambda: clock["t"])
+
+    class Resp:
+        def __init__(self, payload):
+            self._b = json.dumps(payload).encode()
+
+        def read(self):
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def slow(req, timeout=None):
+        clock["t"] += rr.READ_DEADLINE_S / 2.0
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        if "/api/posts/ids" in url:
+            return Resp({"data": [{"id": "x", "num_comments": 5000}]})
+        n = int(clock["t"])
+        return Resp({"data": [{"id": "p%d_%d" % (n, i),
+                               "created_utc": 1788136000 + n * 1000 + i}
+                              for i in range(100)]})
+
+    monkeypatch.setattr(u, "urlopen", slow)
+
+    class NoPacer:
+        def wait(self):
+            pass
+
+    art = rr.read_thread("/r/x/comments/abc/t/", pacer=NoPacer())
+    assert art["deadline_hit"] is True
+    assert art["complete"] is False, "an over-budget read is incomplete"
+    assert art["http_status"] == 200, "the mirror answered; do not blame it"
