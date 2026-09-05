@@ -580,6 +580,87 @@ def test_vocab_floor_is_parsed_once_per_version():
     assert ks._vocab_floor_at.cache_info().misses == 1
 
 
+# ---------------------------------------------------------------- Codex round 3 on PR #302
+
+def test_misses_are_deduped_capped_and_ledger_bounded(tmp_path):
+    """MAJOR: one row per occurrence, no cap, no prune wrote 1,600 rows from one
+    pasted transcript. Distinct candidates, at most MISS_CAP_PER_PROMPT per
+    prompt, a truncated paste gets one row, and the ledger stays under its size."""
+    root, q = make_instance(tmp_path)
+    ledger = q / "memory" / ".knowledge-supply-misses.jsonl"
+    # 60 distinct bigrams, each repeated 5 times: 300 occurrences on the wire.
+    transcript = " ".join(f"Vendor Number{n} said so, Vendor Number{n} again" for n in range(60) for _ in range(5))
+    run(root, transcript[:ks.PROMPT_SCAN_CHARS - 1])
+    rows = [json.loads(l) for l in ledger.read_text().splitlines()]
+    assert len(rows) == ks.MISS_CAP_PER_PROMPT, "capped per prompt, and the cap is the whole point"
+    assert len({r["candidate"] for r in rows}) == len(rows), "distinct per prompt"
+    ledger.unlink()
+    run(root, "x" * (ks.PROMPT_SCAN_CHARS + 10))
+    rows = [json.loads(l) for l in ledger.read_text().splitlines()]
+    assert rows == [rows[0]] and rows[0]["shape"] == "large_prompt_skipped"
+    ledger.write_text("".join(json.dumps({"candidate": f"Old Row{n}", "shape": "x"}) + "\n"
+                              for n in range(9000)))
+    assert ledger.stat().st_size > ks.MISS_LEDGER_MAX_BYTES
+    run(root, "tell me about Acme Corp")
+    assert ledger.stat().st_size <= ks.MISS_LEDGER_MAX_BYTES
+    assert ledger.read_text().splitlines()[-1].count("Acme Corp") == 1, "newest row survives the prune"
+
+
+def test_render_fits_ceiling_with_separators_and_footer(tmp_path):
+    """MINOR: separators and footer were outside the byte accounting, so the
+    rendered text ran past the ceiling under overflow 0. Now the fit is against
+    the rendered text; unpinned items drop until it fits."""
+    root, q = make_instance(tmp_path)
+    words = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India", "Juliet",
+             "Kilo", "Lima", "Mike", "November", "Oscar", "Papa", "Quebec", "Romeo", "Sierra", "Tango"]
+    names = [f"Fitted {w}" for w in words]
+    with open(q / "memory" / "graph.jsonl", "a") as f:
+        for n, name in enumerate(names):
+            f.write(json.dumps({"s": name, "p": "noted", "o": f"pinned {n} " + "p" * 170, "t": "2026-09-01", "project": "b"}) + "\n")
+            f.write(json.dumps({"s": name, "p": "also", "o": f"droppable {n} " + "d" * 170, "t": "2026-08-01", "project": "b"}) + "\n")
+    b = run(root, "status on " + ", ".join(names))
+    text = ks.render(b)
+    assert len(text) <= b["budget"]["ceiling"]
+    assert b["budget"]["overflow"] == 0 and b["budget"]["used"] == len(text)
+    assert b["budget"]["cut"] > 0 and b["receipt"]["ceiling_hit"] is True
+    assert all(items_of(b, "graph", name) for name in names), "every pin kept"
+
+
+def test_zero_items_is_one_short_line(tmp_path):
+    """MINOR: a resolved entity with nothing in any store injected an 800-char
+    header. One line now: searched, nothing recorded, coverage and receipt."""
+    root, _ = make_instance(tmp_path)
+    b = run(root, "what did Dana Okafor say on 2019-01-01")
+    assert b["items"] == []
+    text = ks.render(b)
+    assert len(text.splitlines()) == 1 and len(text) < 300
+    assert "nothing recorded" in text and "COVERAGE: FULL" in text
+
+
+def test_large_paste_against_big_index_is_fast_and_truncated(tmp_path):
+    """MINOR: O(prompt x index) resolution took 7.1 s for a 109 KB paste against
+    6,000 entities. Token prefilter plus a scan bound keep it well inside the
+    hook's 5 s timeout, and the receipt says the prompt was truncated."""
+    import time
+    root, q = make_instance(tmp_path)
+    with open(q / "memory" / "graph.jsonl", "a") as f:
+        for n in range(6000):
+            f.write(json.dumps({"s": f"Person Number{n}", "p": "works_at", "o": f"Firm{n}", "t": "2026-01-01"}) + "\n")
+    paste = ("Dana Okafor is in this paste. " + "lorem ipsum dolor sit amet " * 4000)[:109_000]
+    t0 = time.time()
+    b = run(root, paste)
+    elapsed = time.time() - t0
+    assert elapsed < 2.5, f"{elapsed:.2f}s"
+    assert b is not None and any(e["name"] == "Dana Okafor" for e in b["entities"])
+    assert b["receipt"]["prompt_truncated"] is True and b["receipt"]["prompt_chars"] == len(paste)
+    # The prune itself, without a clock: 6,000+ entities, a handful of candidates.
+    index = ks.build_index(ks.load_stores(q, root)[0])
+    assert len(index) > 6000
+    cands = ks.candidate_keys(index, ks.prompt_tokens(ks.norm(paste[:ks.PROMPT_SCAN_CHARS])))
+    assert len(cands) < 20, len(cands)
+    assert "dana okafor" in cands
+
+
 # ---------------------------------------------------------------- receipts and misses
 
 def test_receipt_and_misses_are_written(tmp_path):

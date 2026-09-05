@@ -316,14 +316,39 @@ def build_index(stores: dict) -> dict[str, Entity]:
     return index
 
 
+def prompt_tokens(pn: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", pn))
+
+
+def candidate_keys(index: dict[str, Entity], ptoks: set[str]) -> list[str]:
+    """Index keys whose name or an alias STARTS with a word the prompt contains.
+    Everything else cannot match and never reaches a regex. Pure, so the prune
+    is testable without a clock: a paste against 6,000 entities yields a
+    handful of candidates, not 6,000 regex scans."""
+    out = []
+    for key, ent in index.items():
+        for name in (ent.name, *ent.aliases):
+            first = re.findall(r"[a-z0-9]+", norm(name))
+            if first and first[0] in ptoks:
+                out.append(key)
+                break
+    return out
+
+
 def resolve_entities(prompt: str, index: dict[str, Entity], fire_alone: set[str]) -> list[dict]:
     """Which index entities the prompt names. Multi-token: phrase match. Single
     token: identifier kinds on a whole-word match, contacts on the capitalized
     form, graph-only names never (see module docstring). Aliases follow the
     same rules by their own token count, with an all-caps short alias allowed."""
     pn = norm(prompt)
+    # Token prefilter: an entity whose first token is not a word of the prompt
+    # cannot match, so it never reaches the regex. Codex round 3 on PR #302:
+    # a regex per entity over the whole prompt was O(prompt x index), 7.1 s for
+    # a 109 KB paste against 6,000 entities, past the hook's 5 s timeout.
+    ptoks = prompt_tokens(pn)
     found: dict[str, dict] = {}
-    for key, ent in index.items():
+    for key in candidate_keys(index, ptoks):
+        ent = index[key]
         hit_via = None
         names = [(ent.name, "self")] + [(a, "alias") for a in ent.aliases]
         for name, via in names:
@@ -870,6 +895,8 @@ def assemble(items: list[dict], entities: list[dict], ceiling: int, header_len: 
     # before the fill starts. If the pins alone overrun the ceiling, that is
     # REPORTED (ceiling_hit, overflow), never hidden: Codex round 2 on PR #302
     # found pinned items slipping past the ceiling under cut=0, ceiling_hit=False.
+    for idx, it in enumerate(deduped):
+        it["pinned"] = idx in pinned
     for idx in sorted(pinned):
         used += len(render_item(deduped[idx])) + 1
         kept.append(deduped[idx])
@@ -890,7 +917,7 @@ def assemble(items: list[dict], entities: list[dict], ceiling: int, header_len: 
             cut += 1
             ceiling_hit = True
     kept.sort(key=lambda i: (order.get(norm(i["entity"]), 99), TIER.get(i["kind"], 9)))  # stable: resolver order survives inside a tier (open commitments first, newest first)
-    return kept, cut, ceiling_hit, max(0, used - ceiling)
+    return kept, cut, ceiling_hit
 
 
 def render_item(it: dict) -> str:
@@ -920,6 +947,16 @@ def render_header(bundle: dict) -> str:
 
 
 def render(bundle: dict) -> str:
+    if not bundle["items"]:
+        # An entity resolved and every declared store was searched and held
+        # nothing: one line, not an 800-char header. Codex round 3 on PR #302.
+        # It is still a line and not zero bytes on purpose: "searched, nothing
+        # recorded" is the receipt this module exists to give.
+        cov = bundle["coverage"]
+        ents = ", ".join(e["name"] for e in bundle["entities"]) or "none"
+        miss = f" missing: {', '.join(cov['missing'])}." if cov["missing"] else ""
+        return (f"[knowledge-supply] COVERAGE: {cov['verdict']}. task={bundle['task_class']} entities={ents}. "
+                f"Searched, nothing recorded.{miss} receipt={bundle['receipt_path']}")
     parts = [render_header(bundle)]
     current = None
     for it in bundle["items"]:
@@ -951,21 +988,68 @@ def append_jsonl(path: Path, row: dict) -> None:
         os.close(fd)
 
 
+MISS_CAP_PER_PROMPT = 20
+MISS_LEDGER_MAX_BYTES = 256 * 1024
+
+
 def miss_candidates(prompt: str, entities: list[dict]) -> list[dict]:
+    """Distinct unresolved candidates, at most MISS_CAP_PER_PROMPT per prompt.
+    Codex round 3 on PR #302: one row per OCCURRENCE with no cap wrote 1,600
+    rows (245 KB) from a single pasted transcript. A ledger that grows without
+    bound from one paste is the noise that gets a hook switched off."""
     resolved = [norm(e["name"]) for e in entities] + [norm(a) for e in entities for a in e.get("aliases", [])]
-    out = []
+    out: dict[str, dict] = {}
     for m in CAP_BIGRAM_RE.finditer(prompt):
         a, b = m.group(1), m.group(2)
         if a.casefold() in STOPWORDS or b.casefold() in STOPWORDS:
             continue
         cand = f"{a} {b}"
         cn = norm(cand)
-        if any(cn in r or r in cn for r in resolved):
+        if cn in out or any(cn in r or r in cn for r in resolved):
             continue
-        out.append({"candidate": cand, "shape": "capitalized_bigram"})
+        out[cn] = {"candidate": cand, "shape": "capitalized_bigram"}
+        if len(out) >= MISS_CAP_PER_PROMPT:
+            break
     for m in HASH_REF_RE.finditer(prompt):
-        out.append({"candidate": m.group(0), "shape": "hash_ref"})
-    return out
+        if len(out) >= MISS_CAP_PER_PROMPT:
+            break
+        out.setdefault(m.group(0), {"candidate": m.group(0), "shape": "hash_ref"})
+    return list(out.values())
+
+
+def append_bounded(path: Path, row: dict, max_bytes: int = MISS_LEDGER_MAX_BYTES) -> None:
+    """append_jsonl, then keep the file under max_bytes by dropping the oldest
+    half of its lines (atomic rewrite). The receipts ledger is small per row and
+    one per firing; the misses ledger is the one that can balloon."""
+    append_jsonl(path, row)
+    try:
+        if path.stat().st_size <= max_bytes:
+            return
+        lines = read_lines(path)
+        keep = lines[len(lines) // 2:]
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text("\n".join(keep) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+PROMPT_SCAN_CHARS = 12000
+
+
+def _record_misses(qroot: Path, prompt: str, scan: str, truncated: bool,
+                   entities: list[dict], ts: str, session_id: str) -> None:
+    """One bounded write per prompt. A truncated prompt (a paste) gets ONE row
+    saying so instead of its candidates: the founder did not name those things,
+    the pasted text did."""
+    path = qroot / "memory" / MISSES_NAME
+    h = _hash(prompt)
+    if truncated:
+        append_bounded(path, {"ts": ts, "session_id": session_id, "prompt_hash": h,
+                              "candidate": None, "shape": "large_prompt_skipped", "chars": len(prompt)})
+        return
+    for miss in miss_candidates(scan, entities):
+        append_bounded(path, {"ts": ts, "session_id": session_id, "prompt_hash": h, **miss})
 
 
 # ------------------------------------------------------------------ entry point
@@ -992,14 +1076,16 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
     # Absent key: the shipped default. Present but empty: a deliberate quiet.
     fire_alone = set(manifest["entity_kinds_that_fire_alone"]
                      if "entity_kinds_that_fire_alone" in manifest else ["slug", "client"])
-    entities = resolve_entities(prompt, index, fire_alone)
-    cap_hits = capability_hits(prompt, capability_index(root)) if (CAPABILITY_RE.search(prompt) and not entities) else []
-    task_class, window = classify(prompt, entities, cap_hits, now)
+    # Only the head of a very long prompt is scanned: past PROMPT_SCAN_CHARS it
+    # is a paste, not a question, and the receipt says it was truncated.
+    scan = prompt[:PROMPT_SCAN_CHARS]
+    truncated = len(prompt) > PROMPT_SCAN_CHARS
+    entities = resolve_entities(scan, index, fire_alone)
+    cap_hits = capability_hits(scan, capability_index(root)) if (CAPABILITY_RE.search(scan) and not entities) else []
+    task_class, window = classify(scan, entities, cap_hits, now)
     if task_class == "none":
         if record:
-            for miss in miss_candidates(prompt, entities):
-                append_jsonl(qroot / "memory" / MISSES_NAME,
-                             {"ts": ts, "session_id": session_id, "prompt_hash": _hash(prompt), **miss})
+            _record_misses(qroot, prompt, scan, truncated, entities, ts, session_id)
         return None
 
     declared = (manifest.get("classes") or {}).get(task_class, {}).get("sources") or {}
@@ -1096,25 +1182,44 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
         "receipt_path": rel(receipts_path, root),
     }
     header_len = len(render_header(bundle)) + 200
-    kept, cut, ceiling_hit, overflow = assemble(items, entities, ceiling, header_len)
+    kept, cut, ceiling_hit = assemble(items, entities, ceiling, header_len)
     bundle["items"] = kept
-    bundle["budget"]["cut"] = cut + sum(r["cut"] for r in source_rows)
-    bundle["budget"]["overflow"] = overflow   # chars the pins alone ran past the ceiling; 0 when honest
+    source_cut = sum(r["cut"] for r in source_rows)
+    # Exact fit against the RENDERED text, separators and footer included, so
+    # the number in the receipt is the number on the wire. Codex round 3 on
+    # PR #302: the byte accounting skipped the per-entity separator lines, so
+    # render() ran past the ceiling while the receipt said overflow 0. Drops
+    # the lowest-priority unpinned item until it fits; pins never drop, and if
+    # pins alone overrun, overflow says by how much.
+    while True:
+        bundle["budget"]["cut"] = cut + source_cut
+        rendered = len(render(bundle))
+        if rendered <= ceiling:
+            break
+        drop = next((i for i in range(len(bundle["items"]) - 1, -1, -1)
+                     if not bundle["items"][i].get("pinned")), None)
+        ceiling_hit = True
+        if drop is None:
+            break
+        bundle["items"].pop(drop)
+        cut += 1
+    bundle["budget"]["cut"] = cut + source_cut
     bundle["budget"]["used"] = len(render(bundle))
+    overflow = max(0, bundle["budget"]["used"] - ceiling)
+    bundle["budget"]["overflow"] = overflow   # chars the pins alone ran past the ceiling; 0 when honest
     receipt = {
         "ts": ts, "session_id": session_id, "task_class": task_class, "prompt_hash": _hash(prompt),
         "entities": [e["name"] for e in entities], "window": window,
         "sources": source_rows, "declared_missing": missing, "coverage": verdict,
         "conflicts": conflicts, "ceiling_hit": ceiling_hit, "overflow": overflow,
+        "prompt_chars": len(prompt), "prompt_truncated": truncated,
         "items": len(kept), "bytes": bundle["budget"]["used"], "elapsed_ms": int((time.time() - t0) * 1000),
         "manifest": rel(manifest_path, root) if manifest_path else None,
     }
     bundle["receipt"] = receipt
     if record:
         append_jsonl(receipts_path, receipt)
-        for miss in miss_candidates(prompt, entities):
-            append_jsonl(qroot / "memory" / MISSES_NAME,
-                         {"ts": ts, "session_id": session_id, "prompt_hash": receipt["prompt_hash"], **miss})
+        _record_misses(qroot, prompt, scan, truncated, entities, ts, session_id)
     return bundle
 
 

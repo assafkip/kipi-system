@@ -12,9 +12,12 @@ client, a person, a promise or a capability got zero instance facts unless the
 model decided to grep. That makes retrieval quality a property of the transient
 session, which is the thesis violation the whole repo is built against.
 
-WHY ZERO BYTES WHEN NOTHING MATCHES: voice-dna-loader.py carries the measured
-result of a fixed 40 KB dump: output got WORSE. This fires only when the prompt
-names something the index knows, and it says so in its first line.
+WHY ZERO BYTES WHEN NO ENTITY RESOLVES: voice-dna-loader.py carries the
+measured result of a fixed 40 KB dump: output got WORSE. This fires only when
+the prompt names something the index knows. When it does and every declared
+store holds nothing, it emits ONE line ("searched, nothing recorded"), which is
+the receipt this hook exists to give; a coverage header with no items would be
+800 chars of nothing (Codex round 3 on PR #302).
 
 Kill switch: KNOWLEDGE_INJECT_OFF=1 (the miyo-session-pull shape).
 
