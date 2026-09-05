@@ -335,10 +335,23 @@ def check_budget(voice, channels=None):
 #: premise has quietly inverted while every size check still passes, because the
 #: total can sit inside budget with the mix completely wrong.
 #:
-#: MEASURED 2026-08-31 before the line was picked, both channels, worst assembly of
-#: 12 counters: linkedin 11618 of 20552 chars (57%), x 10154 of 16994 (60%). Set at
-#: 0.70 so it does not fire today and bites within a few additions, which is the
-#: point -- a guard set below the current reading is a guard someone switches off.
+#: MEASURED 2026-08-31 against the LARGEST assembly of 12 counters: linkedin 11618
+#: of 20552 chars (57%), x 10154 of 16994 (60%). Set at 0.70 to sit above that and
+#: bite within a few additions -- a guard set below the current reading is a guard
+#: someone switches off.
+#:
+#: THAT DENOMINATOR WAS THE WRONG END, so the two numbers above are the best case
+#: rather than the reading that matters (found in review on PR #301). Rules crowd
+#: his writing out worst at the THINNEST prompt a rotation produces, not the
+#: fattest. Re-measured 2026-09-04 on the live ASK corpus, same rows, dividing by
+#: the minimum: linkedin 11618 of 17995 (65%), x 10154 of 14293 (71%), reddit 527
+#: of 7541 (7%).
+#:
+#: 0.70 IS DELIBERATELY LEFT ALONE, so x trips the moment an instance picks this
+#: up. Moving the ceiling to clear a reading the corrected arithmetic has just
+#: exposed would be switching the alarm off in the same edit that made it work.
+#: How much of his prompt may be rules is the voice owner's number. The
+#: arithmetic under it is the engine's.
 #:
 #: The remedy when it fires is RETIREMENT, never rotation and never a quiet drop.
 #: `status` already gates this (`corpus.active_corrections` renders only "active";
@@ -353,21 +366,32 @@ def check_correction_share(voice, channels=None):
     channels = channels or channel_registry.DEFAULT
     problems = []
     for channel in channels.assembled:
-        worst_text, worst_len = "", 0
-        for counter in range(12):
-            text, _ = assemble.voice_section(voice, channel, counter)
-            if len(text) > worst_len:
-                worst_text, worst_len = text, len(text)
-        if not worst_len:
+        # THE MINIMUM, not the maximum. `check_budget` right above this uses `max`
+        # and is correct to -- largest assembly against a size cap -- and this loop
+        # was written from that one, which is how the wrong extremum arrived. Here
+        # the max reports the BEST case of the very thing being graded: a rotation's
+        # prompts differ by thousands of characters, so the fattest one always
+        # flatters the share. Measured on the live ASK corpus 2026-09-04, the x
+        # channel read 60% against the max and 71% against the min, with the ceiling
+        # at 70%. The guard returned [] on a corpus already over its own line.
+        lengths = [len(assemble.voice_section(voice, channel, counter)[0])
+                   for counter in range(12)]
+        # A counter that assembles to nothing has no share to measure, and taking a
+        # minimum over it divides by zero. Drop the empties so the channel is graded
+        # on the prompts it really produces; a channel with no prompt at all is
+        # skipped, which is what the old `if not worst_len` meant.
+        lengths = [n for n in lengths if n]
+        if not lengths:
             continue
+        thinnest = min(lengths)
         applied = [r for r in voice.active_corrections()
                    if not r.get("scope") or channel in r["scope"]]
         rules = sum(len(r.get("instruction") or "") for r in applied)
-        share = rules / worst_len
+        share = rules / thinnest
         if share > CORRECTION_SHARE_CEILING:
             problems.append(
-                f"{channel}: corrections are {rules} of {worst_len} chars "
-                f"({share:.0%}) of the largest assembly, over the "
+                f"{channel}: corrections are {rules} of {thinnest} chars "
+                f"({share:.0%}) of the thinnest assembly, over the "
                 f"{CORRECTION_SHARE_CEILING:.0%} ceiling. Retire a superseded "
                 f"correction (set its status off 'active'), or merge two that say "
                 f"one thing into one statement. Do not rotate them: a correction "
