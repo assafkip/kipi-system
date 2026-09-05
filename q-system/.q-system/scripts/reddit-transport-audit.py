@@ -48,6 +48,7 @@ import argparse
 import ast
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -122,6 +123,10 @@ SKIP_DIR_PARTS = (
     "consulting-baseline", "consulting-c3", "consulting-c4", "consulting-kipi",
     "kipi-system-main", "dead-hooks", ".review-tmp",
 )
+
+# The only tokens allowed to match INSIDE a directory name. Everything else in
+# SKIP_DIR_PARTS is compared as a whole segment.
+_FRAGMENT_TOKENS = {".wt-", "-wt-", "review-trees", ".review-tmp"}
 
 SUFFIXES = (".py",)
 
@@ -261,8 +266,22 @@ def _skip(path: Path, root=None) -> bool:
         rel = path.resolve().relative_to(Path(root).expanduser().resolve())
     except ValueError:
         return False
-    text = "/" + rel.as_posix()
-    return any(part in text for part in SKIP_DIR_PARTS)
+    # SEGMENTS, not substrings. `build` matched `reddit-build-radar`, a real
+    # fleet project holding a live old.reddit.com fetch, so the audit walked
+    # past it and printed 0. Measured in review: 28,051 .py files under
+    # ~/projects were excluded by a substring that is not a directory, 232 of
+    # them on `build` alone, including two source files in this repo.
+    segments = rel.parts
+    for token in SKIP_DIR_PARTS:
+        bare = token.strip("/")
+        for seg in segments:
+            if seg == bare:
+                return True
+            # Only these tokens are deliberately fragments, and even they are
+            # matched inside ONE segment so they cannot span a path boundary.
+            if token in _FRAGMENT_TOKENS and bare in seg:
+                return True
+    return False
 
 
 def _docstring_ids(tree: ast.AST) -> set[int]:
@@ -353,6 +372,31 @@ def violations_in(path: Path) -> list[dict]:
     return violations_in_source(source, str(path))
 
 
+def _name_says(label: str, tokens) -> bool:
+    """Match a name token on WORD boundaries, never as a bare substring.
+
+    `row` is in DATA_NAMES and `row` sits inside `browser`, so a variable named
+    `browser_feed` was exempt from every check (review, MAJOR 2). Identifiers
+    split on underscores, hyphens, dots and case changes; a token has to be one
+    of those pieces.
+    """
+    if not label:
+        return False
+    spaced = re.sub(r"(?<=[a-z])(?=[A-Z])", "_", label)
+    words = {w for w in re.split(r"[^A-Za-z0-9]+", spaced.lower()) if w}
+    return any(tok in words for tok in tokens)
+
+
+def _is_endpoint(low: str) -> bool:
+    """A URL either names a machine endpoint or a page a person opens. ONE
+    definition, used by the single place that decides."""
+    return (".json" in low or ".rss" in low or "/api/" in low
+            or "/search" in low or "?" in low
+            or any(seg in low for seg in ("/new/", "/hot/", "/top/",
+                                          "/new.", "/hot.", "/top.",
+                                          "/rising/", "/controversial/")))
+
+
 def _joined_text(node: ast.AST) -> str:
     """The whole template an f-string spells out, placeholders as <>.
 
@@ -392,6 +436,36 @@ def violations_in_source(source: str, label: str) -> list[dict]:
     except SyntaxError:
         return []
 
+    # WHICH FUNCTIONS BUILD AN ENDPOINT ANYWHERE IN THEIR BODY.
+    #
+    # `base = f"https://www.reddit.com/r/{sub}"` is not an endpoint on its own,
+    # and neither is `f"{base}/top/.rss"`. Split across two literals, each half
+    # reads as innocent and the audit walked past a live RSS listing fetch
+    # (reddit-build-radar `_reddit_listing_rss_url`).
+    #
+    # Joining them properly is dataflow, which this checker does not do. What it
+    # does instead is scoped and explainable: if a function names a reddit host
+    # AND any literal in that same function has an endpoint shape, the host
+    # literal is judged an endpoint. HONEST LIMIT: a builder that returns a bare
+    # host for a caller in another function to complete is still missed. That is
+    # a smaller hole than the one it closes, and naming it is better than
+    # implying the checker is complete.
+    endpoint_funcs = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            lits = [n.value for n in ast.walk(node)
+                    if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+            # A REAL CONCATENATION, not "this function also mentions an
+            # endpoint somewhere". The path half must be a PATH FRAGMENT: a
+            # literal starting with "/" that is itself an endpoint. Without that
+            # narrowing this rule flagged eight display links and refusal
+            # messages to catch one builder.
+            if any("reddit.com" in v.lower() for v in lits) and \
+               any(v.startswith("/") and _is_endpoint(v.lower()) for v in lits):
+                for n in ast.walk(node):
+                    if isinstance(n, ast.Constant) and isinstance(n.value, str):
+                        endpoint_funcs.add(id(n))
+
     skip = _docstring_ids(tree) | _classification_ids(tree)
     labels = _context_names(tree)
     # id(constant) -> the full f-string it is a fragment of
@@ -410,6 +484,12 @@ def violations_in_source(source: str, label: str) -> list[dict]:
             continue
         text = joined.get(id(node), node.value)
         low = text.lower()
+        # A URL HAS NO SPACES. Refusal messages and prompt samples mention the
+        # retired hosts by design ("reddit.com/.json is retired, use ..."), and
+        # flagging those turned a 1-real-finding report into 9. A sentence about
+        # a host is not a fetch of it.
+        if any(ch.isspace() for ch in text.strip()):
+            continue
         if "reddit" not in low:
             continue
         if any(host in low for host in ALLOWED_HOSTS):
@@ -424,41 +504,30 @@ def violations_in_source(source: str, label: str) -> list[dict]:
         # label. It cannot argue about a retired host.
         why = None
         label_early = (labels.get(id(node)) or "").lower()
-        if any(mark in label_early for mark in RETIREMENT_MARKERS):
+        if _name_says(label_early, RETIREMENT_MARKERS):
             continue          # a tombstone, not a call site
+
+        # THE HARD DENYLIST AND THE ENDPOINT TEST BOTH RUN BEFORE ANY NAME MAY
+        # EXEMPT. Round 2 moved the denylist ahead of the names and stopped
+        # there, so `.json` and `.rss` -- which are NOT in FORBIDDEN_SUBSTRINGS,
+        # they are decided by URL shape -- were still silenced by a variable
+        # called `fetch_items` or `known_feeds`. The comment below already
+        # claimed "an endpoint is a finding regardless of what it is called".
+        # Now it is true.
         for bad in FORBIDDEN_SUBSTRINGS:
             if bad in low:
                 why = bad
                 break
-        if why is None and any(name in label_early
-                               for name in DENYLIST_NAMES + DATA_NAMES):
+        if why is None and "reddit.com" in low and (
+                _is_endpoint(low) or id(node) in endpoint_funcs):
+            why = "reddit.com endpoint"
+        # A NAME MAY ONLY EXEMPT WHAT THE URL DID NOT ALREADY CONDEMN. What is
+        # left here is a plain www.reddit.com URL with no endpoint shape, which
+        # is what a profile or a permalink looks like, so a classification list
+        # or a piece of evidence data may say "this is a label, not a fetch".
+        if why is None and _name_says(label_early,
+                                      DENYLIST_NAMES + DATA_NAMES):
             continue
-        if why is None and "reddit.com" in low:
-            label = (labels.get(id(node)) or "").lower()
-            # WHAT IT IS, not what it is called. The name-based rules were
-            # doing this job and doing it badly in both directions: exempting
-            # "sites" hid a live /user/<u>/about.json in a published repo, and
-            # un-exempting it then flagged the display link sitting beside it.
-            # A URL either names a machine endpoint or it names a page a person
-            # opens, and that is readable from the URL.
-            looks_like_an_endpoint = (
-                ".json" in low or ".rss" in low or "/api/" in low
-                or "/search" in low or "?" in low
-                # a listing feed, with or without a suffix
-                or any(seg in low for seg in ("/new/", "/hot/", "/top/",
-                                              "/new.", "/hot.", "/top.",
-                                              "/rising/", "/controversial/"))
-            )
-            # An endpoint is a finding regardless of what it is called. A
-            # non-endpoint reddit.com URL is a link a human opens, and the
-            # default for those is now CLEAN rather than suspicious. That is a
-            # deliberate loosening: FORBIDDEN_SUBSTRINGS still catches
-            # old.reddit.com, oauth.reddit.com, /api/ and the trudax actor
-            # absolutely, so the loosened half is only "a www.reddit.com URL
-            # with no endpoint shape", which is exactly what a profile or a
-            # permalink looks like.
-            if looks_like_an_endpoint:
-                why = "reddit.com endpoint"
         if why:
             found.append({"file": str(path), "line": node.lineno,
                           "reason": why, "text": text[:120]})

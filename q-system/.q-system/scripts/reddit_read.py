@@ -153,6 +153,12 @@ class CoverageNotRecorded(Exception):
     """An artifact carrying comments without saying what fraction they are."""
 
 
+class PermalinkRefused(Exception):
+    """A permalink that is not a reddit thread. `reddit_thread` is an MCP tool, so
+    an absolute URL here is attacker-shaped input: without this check the tool
+    fetched any http(s) target and returned its body (PR #294 review, major)."""
+
+
 class DiscoveryRefused(Exception):
     """A discovery URL this lane will not use."""
 
@@ -226,18 +232,32 @@ def parse_comments(html: str) -> list:
     Deliberately shallow. Threading, scores and semantic scoring are not this
     module's job; it is a fetcher and an artifact.
     """
-    ids = comment_ids(html)
-    authors = _AUTHOR_RE.findall(html or "")
-    bodies = [_text(b) for b in _MD_RE.findall(html or "")]
+    # Bind author and body INSIDE each comment's own chunk, never by array
+    # position (PR #294 review, major): a real page opens with the post's own
+    # data-author and its selftext <div class="md">, and a deleted comment has
+    # no body, so positional joins attributed every comment to its neighbour.
+    text = html or ""
+    starts = []
+    seen = set()
+    for m in _COMMENT_RE.finditer(text):
+        cid = m.group(1)
+        if cid in seen:
+            continue
+        seen.add(cid)
+        tag_start = text.rfind("<", 0, m.start())
+        starts.append((cid, tag_start if tag_start >= 0 else m.start()))
     out = []
-    for i, cid in enumerate(ids):
+    for i, (cid, start) in enumerate(starts):
+        end = starts[i + 1][1] if i + 1 < len(starts) else len(text)
+        chunk = text[start:end]
+        a = _AUTHOR_RE.search(chunk)
+        b = _MD_RE.search(chunk)
         out.append({
             "id": cid,
-            "author": authors[i] if i < len(authors) else None,
-            "body": bodies[i] if i < len(bodies) else None,
+            "author": a.group(1) if a else None,
+            "body": _text(b.group(1)) if b else None,
         })
     return out
-
 
 def coverage_pct(fetched, declared):
     """Percentage of the declared thread actually parsed, or None when the page
@@ -345,8 +365,44 @@ def thread_url(permalink: str) -> str:
     a query parameter and became something the reader can just do. See
     `read_thread`.
     """
+    _refuse_if_not_a_thread(permalink)
     return _ARCTIC.comments_url(_ARCTIC.link_id_from_permalink(permalink),
                                 _ARCTIC.MAX_LIMIT)
+
+
+def _refuse_if_not_a_thread(permalink: str) -> None:
+    """`reddit_thread` is an MCP tool, so the permalink is CALLER-SUPPLIED.
+
+    Restored after a file-level landing dropped it along with its test. The
+    fetch URL is rebuilt from ARCTIC_BASE now, so a foreign host is never
+    contacted, but without this an arbitrary URL still produced
+    `refused: False, complete: True` for a thread that does not exist, with the
+    caller's string echoed into `display_url`, the field whose docstring calls
+    it "the link a human clicks" (PR 307 review).
+
+    Every clause here is one of the original test's cases: https only (so
+    `http://old.reddit.com/...` is refused), a reddit host and not a lookalike
+    (`old.reddit.com.evil.example`), a thread path, and no scheme-less relative
+    string that could be read as a host.
+    """
+    text = str(permalink or "").strip()
+    if "://" in text:
+        scheme, rest = text.split("://", 1)
+        if scheme.lower() != "https":
+            raise PermalinkRefused(
+                "only https reddit URLs are accepted, got %r" % permalink)
+        host = rest.split("/", 1)[0].lower().split("@")[-1].split(":")[0]
+        if not (host == "reddit.com" or host.endswith(".reddit.com")):
+            raise PermalinkRefused(
+                "not a reddit host: %r. A lookalike like reddit.com.evil.test "
+                "is refused for the reason a foreign host is." % permalink)
+    elif not text.startswith("/"):
+        raise PermalinkRefused(
+            "a relative permalink must start with '/', got %r" % permalink)
+    if "/comments/" not in text:
+        raise PermalinkRefused(
+            "not a reddit thread permalink: %r (expected .../comments/<id>/...)"
+            % permalink)
 
 
 def display_url(permalink: str) -> str:
@@ -434,7 +490,7 @@ def read_thread(permalink: str, transport=None, pacer=None, now=None,
     now = now or dt.datetime.now().astimezone()
     link_id = _ARCTIC.link_id_from_permalink(permalink)
     url = thread_url(permalink)
-    getter, seen = _as_getter(transport)
+    getter, seen = _as_getter(transport, timeout)
     pacer.wait()
     # TWO READS, TWO FATES. They shared one `try`, and `posts_by_id` runs first,
     # so a /api/posts/ids outage discarded a thread the comments endpoint served
@@ -479,7 +535,7 @@ def read_thread(permalink: str, transport=None, pacer=None, now=None,
     return artifact
 
 
-def _as_getter(transport):
+def _as_getter(transport, _timeout: int = DEFAULT_TIMEOUT_S):
     """Adapt the old `(url, headers, timeout) -> (status, body)` transport to the
     mirror's `(url) -> parsed json`, so existing callers and test doubles still
     drive this. Returns `(getter, seen)`.
@@ -495,8 +551,7 @@ def _as_getter(transport):
         return None, seen
 
     def _get(url):
-        status, body = transport(url, {"User-Agent": USER_AGENT},
-                                 DEFAULT_TIMEOUT_S)
+        status, body = transport(url, {"User-Agent": USER_AGENT}, _timeout)
         if status != 200:
             seen["status"] = status
             raise RuntimeError("transport returned %s for %s" % (status, url))
@@ -519,7 +574,7 @@ def read_listing(subreddit: str, period: str = "month", transport=None,
     pacer = pacer or NullPacer()
     now = now or dt.datetime.now().astimezone()
     url = listing_url(subreddit, period)
-    getter, seen = _as_getter(transport)
+    getter, seen = _as_getter(transport, timeout)
     pacer.wait()
     try:
         posts = _ARCTIC.recent(subreddit, max_items=_ARCTIC.MAX_LIMIT,

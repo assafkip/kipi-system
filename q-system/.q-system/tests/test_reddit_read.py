@@ -478,3 +478,55 @@ def test_the_fixture_records_its_own_provenance(real_html):
     assert "FIXTURE PROVENANCE" in real_html
     assert "old.reddit.com" in real_html
     assert "TRIMMED" in real_html
+
+
+# RESTORED. A file-level landing off a 92-commit branch dropped this
+# along with the fix it guards (PR 307 review). Its subject is unchanged.
+def test_comments_bind_author_and_body_per_comment_not_by_position(rr):
+    """PR #294 review, major: a real page opens with the post's own data-author
+    and selftext <div class="md">, and a deleted comment carries no body, so a
+    positional join shifted every attribution by one. Control: the second
+    comment has no body and must read as None, not steal the third's."""
+    html = (
+        '<div class=" thing id-t3_post link " data-fullname="t3_post" data-author="op_poster">'
+        '<div class="md"><p>the post text</p></div></div>'
+        '<div class=" thing id-t1_aaa comment " data-fullname="t1_aaa" data-author="alice">'
+        '<div class="md"><p>first</p></div></div>'
+        '<div class=" thing id-t1_bbb comment " data-fullname="t1_bbb" data-author="[deleted]"></div>'
+        '<div class=" thing id-t1_ccc comment " data-fullname="t1_ccc" data-author="carol">'
+        '<div class="md"><p>third</p></div></div>'
+    )
+    got = rr.parse_comments(html)
+    assert [c["id"] for c in got] == ["t1_aaa", "t1_bbb", "t1_ccc"]
+    assert [c["author"] for c in got] == ["alice", "[deleted]", "carol"], got
+    assert [c["body"] for c in got] == ["first", None, "third"], got
+
+
+
+# RESTORED. A file-level landing off a 92-commit branch dropped this
+# along with the fix it guards (PR 307 review). Its subject is unchanged.
+def test_thread_url_refuses_anything_that_is_not_a_reddit_thread(rr):
+    """PR #294 review, major: the MCP tool passed an absolute permalink straight
+    to the transport, so any http(s) target could be fetched and its body
+    returned through the tool.
+
+    RESTORED after a file-level landing dropped it, and its assertions about the
+    RETURN VALUE are rewritten because thread_url now returns a mirror URL. Every
+    REFUSAL case below is the original's, unchanged: that is the half that was
+    protecting anything.
+    """
+    import pytest
+    ok = rr.thread_url("https://www.reddit.com/r/x/comments/abc/t/")
+    assert ok.startswith("https://arctic-shift.photon-reddit.com/")
+    assert "link_id=abc" in ok
+    assert rr.thread_url("/r/x/comments/abc/t/").startswith(
+        "https://arctic-shift.photon-reddit.com/")
+
+    for bad in ("https://evil.example/r/x/comments/abc/",
+                "http://old.reddit.com/r/x/comments/abc/",
+                "https://old.reddit.com.evil.example/r/x/comments/abc/",
+                "file:///etc/passwd",
+                "r/x/comments/abc/",
+                "https://www.reddit.com/r/x/"):
+        with pytest.raises(rr.PermalinkRefused):
+            rr.thread_url(bad)
