@@ -4,7 +4,7 @@
 
 Every hook script wired in .claude/settings.json, settings-template.json, or a plugin's hooks.json, with the event and matcher it fires on.
 
-Count: 59
+Count: 62
 
 | Script | Fires on | Wired in |
 |---|---|---|
@@ -17,6 +17,7 @@ Count: 59
 | `claude-path-write-guard.py` | PreToolUse (Bash) | `.claude/settings.json` |
 | `client-output-evidence-gate.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |
 | `code_claim_grounding_guard.py` | Stop (*) | `.claude/settings.json` |
+| `consumer-parity-check.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |
 | `decision-origin-tag-lint.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |
 | `dogfood_gate.py` | PostToolUse (Write|Edit) | `plugins/kipi-design/hooks/hooks.json` |
 | `enforced-claim-lint.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |
@@ -30,6 +31,7 @@ Count: 59
 | `instance-automation-guard.py` | PostToolUse (Edit|Write|MultiEdit) | `settings-template.json` |
 | `instrument-lint.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |
 | `kb-graph-guard.py` | Stop (*) | `.claude/settings.json` |
+| `knowledge-inject.py` | UserPromptSubmit (*) | `.claude/settings.json` |
 | `lessons-index.py` | SessionStart (startup) | `.claude/settings.json` |
 | `lessons-inject.py` | UserPromptSubmit (*) | `.claude/settings.json` |
 | `lessons-validator.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |
@@ -66,4 +68,5 @@ Count: 59
 | `voice-lint.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |
 | `voice-stop-gate.py` | SessionStart (startup|resume|clear|compact) | `.claude/settings.json` |
 | `voice-substance-lint.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |
+| `voiceloop-band-lint.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |
 | `wiring-check.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |

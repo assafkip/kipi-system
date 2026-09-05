@@ -4,7 +4,7 @@
 
 Every always-on or path-scoped rule file under .claude/rules.
 
-Count: 39
+Count: 40
 
 - `anti-misclassification.md`
 - `audhd-interaction.md`
@@ -44,4 +44,5 @@ Count: 39
 - `sycophancy.md`
 - `token-discipline.md`
 - `voice-enforcement.md`
+- `voice-loop-anywhere.md`
 - `wiring-check.md`

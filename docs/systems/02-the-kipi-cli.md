@@ -75,10 +75,12 @@ Work
 - `kipi dor`: draft Definitions of Ready onto issues that lack one (`linear-dor-drafter.py`).
 - `kipi alert-triage`: triage the fleet-alert bucket (`linear-alert-triage.py`).
 - `kipi issue`: issue-first fast path that pairs with the commit-message gate.
-- `kipi linear pending`: what the offline queue captured (`linear-queue.py`).
-- `kipi linear status`, `kipi linear plan`, `kipi linear create`, `kipi linear remote`, `kipi linear progress`, `kipi linear record`, `kipi linear key`: the idempotent planner (`linear-sync.py`).
-- `kipi linear claim`, `kipi linear release`, `kipi linear claims`: the claim lock (`linear-claim.py`).
-- `kipi linear map`, `kipi linear overlap`: capability maps and cross-repo overlap (`capability-map-gen.py`, `capability-overlap.py`).
+- `kipi linear pending` (`kipi pending` in the dispatcher's case table): what the offline queue captured (`linear-queue.py`).
+- The idempotent planner (`linear-sync.py`), reachable as `kipi status`, `kipi plan`, `kipi create`, `kipi remote`, `kipi progress`, `kipi record`, `kipi key` under the linear verb.
+- The claim lock (`linear-claim.py`): `kipi claim`, `kipi release`, `kipi claims` under the linear verb.
+- `kipi map`, `kipi overlap`: capability maps and cross-repo overlap (`capability-map-gen.py`, `capability-overlap.py`).
+- `kipi promote <path>`: the up-rail; moves one general capability from an instance up to the skeleton (`kipi-promote.sh`); runs from an instance checkout with the skeleton's registry exported.
+- `kipi cluster add`: the `kipi add` subverb of cluster (`kipi-cluster-add.py`).
 
 Jobs
 - `kipi jobs`: one tracked Linear issue per scheduled job (`linear-job-migration.py`).
@@ -91,6 +93,17 @@ Dev
 - `kipi dev`: start Claude with all plugin groups loaded from disk (`claude --plugin-dir ...`).
 - `kipi selftest`: the dispatcher's own smoke test.
 - `kipi map`, `kipi overlap`: top-level aliases of the linear map and overlap subverbs.
+
+## Slash commands that are not kipi verbs
+
+The kipi-core plugin ships six slash commands that run inside a session rather than from
+the shell: `/wiring-check` (page 08), `/linear-drain` (page 09), `/voice-refresh` (page 06),
+`/rca-start` and `/rca-check` (scaffold a root-cause analysis from the canonical template
+and lint one against it; the rca skill carries the method and `rca-lint.py` blocks a
+malformed document), and `/say` (synthesize the previous assistant response to an mp3
+through OpenAI text-to-speech and autoplay it locally in a new Terminal window, because
+the slash-command sandbox blocks AppleEvents; over SSH it prints the play command). The
+kipi-dsse and prd-os commands are on page 08.
 
 ## Scars
 

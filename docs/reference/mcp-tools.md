@@ -26,7 +26,7 @@ Count: 73
 | `kipi_daily_metrics` | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py` | Upsert daily metrics for a given date. |
 | `kipi_deliverables_check` | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py` | Check that required deliverables exist for today. |
 | `kipi_export` | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py` | Export all kipi user data as a portable tar.gz archive. |
-| `kipi_gate_check` | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py` | RETIRED, do not call. Phase gate for the 9-phase morning pipeline. |
+| `kipi_gate_check` | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py` | Check if all prior phases are logged before a gate phase. |
 | `kipi_generate_schema` | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py` | Generate JSON-LD structured data for a page type. |
 | `kipi_get_harvest` | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py` | Get harvested records for a source. |
 | `kipi_get_notion_queue` | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py` | Get all pending Notion writes awaiting retry. |
@@ -46,7 +46,7 @@ Count: 73
 | `kipi_log_agent_metric` | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py` | Log agent execution timing for performance analysis. |
 | `kipi_log_linkedin_activity` | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py` | Log a shipped LinkedIn post or comment for cadence tracking. |
 | `kipi_monthly_learnings` | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py` | Generate a monthly learnings report from copy edit patterns. |
-| `kipi_morning_init` | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py` | RETIRED, do not call. Combined morning init for the 9-phase pipeline. |
+| `kipi_morning_init` | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py` | Combined morning initialization: preflight + bootstrap + digest + bus setup. |
 | `kipi_preflight` | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py` | Check system readiness: required files exist, system is configured. |
 | `kipi_query` | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py` | Query metrics data. Types: content, outreach, signals, edits, top_posts. |
 | `kipi_queue_notion_write` | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py` | Queue a Notion write that failed for retry on next morning. |

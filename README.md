@@ -12,6 +12,11 @@ It runs in Claude Code. Plain markdown all the way down. No vector database, no 
 
 ---
 
+**How it works, in full:** [docs/README.md](docs/README.md). A reader path for
+non-technical people, a systems reference for engineers, generated catalogs of every
+script, tool, hook, job and rule, and a coverage gate that fails when any surface the
+code exposes is missing from the docs.
+
 ## What it actually does
 
 Three things, repeatedly.

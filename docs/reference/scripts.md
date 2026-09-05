@@ -4,14 +4,12 @@
 
 Every executable script in the live tree (q-system/.q-system, q-system/hooks, scripts/, and the repo root), with the first line of its own docstring or header comment.
 
-Count: 208
+Count: 226
 
 | Name | Path | Purpose |
 |---|---|---|
 | `build-template-repo.sh` | `build-template-repo.sh` | Build a clean template repo for new (non-technical) users to fork |
 | `fix-imports.sh` | `fix-imports.sh` |  |
-| `fix-perm-wildcards.py` | `fix-perm-wildcards.py` | Drop the stale mid-command-wildcard allow rules from settings.local.json. |
-| `fix-voice-style.py` | `fix-voice-style.py` | Apply the two founder.md fixes AND commit them in one breath. |
 | `fleet-capability-verify.py` | `fleet-capability-verify.py` | Fleet capability verify: run the capability gate in EVERY registered |
 | `fleet-reach-audit.py` | `fleet-reach-audit.py` | Why the fleet cannot receive an update, per instance, read-only. |
 | `fleet-unblock.py` | `fleet-unblock.py` | Clear updater exhaust out of instances, and ONLY what it can attribute. |
@@ -21,12 +19,14 @@ Count: 208
 | `kipi-dispatch.sh` | `kipi-dispatch.sh` | The heartbeat that keeps the Linear loop running with NO terminal open. |
 | `kipi-migrate.py` | `kipi-migrate.py` | kipi-migrate.py - Programmatic instance compliance migration tool. |
 | `kipi-new-instance.sh` | `kipi-new-instance.sh` | kipi-new-instance.sh - Create a new kipi-system instance |
+| `kipi-promote.sh` | `kipi-promote.sh` | kipi promote <path>  --  move ONE general capability from this instance up to the skeleton. |
 | `kipi-push-upstream.sh` | `kipi-push-upstream.sh` | kipi-push-upstream.sh - Push generic improvements from an instance back to the skeleton |
 | `kipi-rollback.sh` | `kipi-rollback.sh` | kipi rollback [instance] -- revert the last skeleton-sync commit in one or all |
 | `kipi-settings-merge.py` | `kipi-settings-merge.py` | kipi-settings-merge: rebuild an instance's .claude/settings.json from |
 | `kipi-update-deletion-guard.py` | `kipi-update-deletion-guard.py` | Refuse a q-system sync whose --delete would remove instance-owned data. |
 | `kipi-update-gitignore-block.py` | `kipi-update-gitignore-block.py` | Ship the skeleton's instance-local-never-commit stanza into an instance's |
 | `kipi-update-preserve-scan.py` | `kipi-update-preserve-scan.py` | Preflight guard for kipi-update.sh: find TRACKED instance-only files that the |
+| `kipi-update-voiceloop-migrate.py` | `kipi-update-voiceloop-migrate.py` | Migrate ONE instance from the `voicekit` package name to `voiceloop`. |
 | `kipi-update-wip-check.py` | `kipi-update-wip-check.py` | Is this untracked instance file WORK, or exhaust the updater itself wrote? |
 | `kipi-update.sh` | `kipi-update.sh` | Never let GPG signing or a credential prompt hang the updater. Updater commits |
 | `create-from-template.sh` | `q-system/.q-system/agent-pipeline/templates/create-from-template.sh` | Create a new output folder from a template |
@@ -35,7 +35,6 @@ Count: 208
 | `db-init.py` | `q-system/.q-system/data/db-init.py` | Initialize the metrics SQLite database. Idempotent. |
 | `db-query.py` | `q-system/.q-system/data/db-query.py` | CLI query helper for the metrics database. |
 | `monthly-learnings.py` | `q-system/.q-system/data/monthly-learnings.py` | Monthly rollup of copy edit patterns. Run on the 1st of each month or manually. |
-| `destructive-op-deny.sh` | `q-system/.q-system/hooks/destructive-op-deny.sh` | destructive-op-deny.sh - PreToolUse hook that denies destructive |
 | `log-step.py` | `q-system/.q-system/log-step.py` | Morning routine step logger. |
 | `loop-tracker.py` | `q-system/.q-system/loop-tracker.py` | Loop Tracker - closes loops that AUDHD opens. |
 | `accept-rate.py` | `q-system/.q-system/scripts/accept-rate.py` | accept-rate.py - prd-os disposition / receipt-coverage metric. |
@@ -47,6 +46,7 @@ Count: 208
 | `audhd-output-eval.py` | `q-system/.q-system/scripts/audhd-output-eval.py` | Output-quality eval harness (H2) for the AUDHD output style. |
 | `batch-uniformity-lint.py` | `q-system/.q-system/scripts/batch-uniformity-lint.py` | batch-uniformity-lint.py — Catches uniform openers across multiple post/comment blocks. |
 | `blocked-claim-evidence-lint.py` | `q-system/.q-system/scripts/blocked-claim-evidence-lint.py` | blocked-claim-evidence-lint: a report saying "this is blocked" must carry the |
+| `board_rows.py` | `q-system/.q-system/scripts/board_rows.py` | Paint the Kipi backlog ROWS from the consulting state. The board's row writer. |
 | `break-glass-main-protection.sh` | `q-system/.q-system/scripts/break-glass-main-protection.sh` | break-glass-main-protection.sh - the escape hatch for `enforce_admins: true` on main. |
 | `browser_session.py` | `q-system/.q-system/scripts/browser_session.py` | The ONLY file in this repo that opens a browser for a research profile. |
 | `browser_session_deadman.py` | `q-system/.q-system/scripts/browser_session_deadman.py` | If the browser-session health check stopped running, this says so. |
@@ -68,6 +68,8 @@ Count: 208
 | `collection-gate.py` | `q-system/.q-system/scripts/collection-gate.py` | Collection gate: decides skip/collect per data source based on staleness. |
 | `compliance-check.py` | `q-system/.q-system/scripts/compliance-check.py` | Deterministic compliance check for generated content. |
 | `conftest.py` | `q-system/.q-system/scripts/conftest.py` | Keep a standalone verifier out of pytest's collection (ASK-634). |
+| `consulting_board.py` | `q-system/.q-system/scripts/consulting_board.py` | The consulting half of the morning brief: clients, the GTM move, the inbox. |
+| `consumer-parity-check.py` | `q-system/.q-system/scripts/consumer-parity-check.py` | consumer-parity-check: a module that declares an exclusion predicate cannot gain |
 | `containment-targets.py` | `q-system/.q-system/scripts/containment-targets.py` | Enumerate generic, tracked text surfaces for containment checks. |
 | `content-lint.py` | `q-system/.q-system/scripts/content-lint.py` | Structural lint: check canonical files for markers, orphans, and staleness. |
 | `control-file-propagate.py` | `q-system/.q-system/scripts/control-file-propagate.py` | control-file-propagate: bring ONE named control file in ONE named repo up to |
@@ -75,25 +77,29 @@ Count: 208
 | `copy-diff.py` | `q-system/.q-system/scripts/copy-diff.py` | Deterministic copy diff analyzer. |
 | `correction_outcome.py` | `q-system/.q-system/scripts/correction_outcome.py` | Record a `corrected` memory outcome (issue autocapture-corrected-path, |
 | `daily-linear-digest.py` | `q-system/.q-system/scripts/daily-linear-digest.py` | One Slack message a day: what closed, what opened, what could not be worked. |
+| `decision-corpus-cost.py` | `q-system/.q-system/scripts/decision-corpus-cost.py` | decision-corpus-cost.py -- what it would cost, per turn, to load the |
 | `decision-origin-tag-lint.py` | `q-system/.q-system/scripts/decision-origin-tag-lint.py` | decision-origin-tag-lint.py — Enforces decision origin tagging rule. |
+| `draft-vs-sent.py` | `q-system/.q-system/scripts/draft-vs-sent.py` | draft-vs-sent.py -- the producer for the draft-vs-sent learning stage. |
 | `enforced-claim-lint.py` | `q-system/.q-system/scripts/enforced-claim-lint.py` | enforced-claim-lint: make (ENFORCED) a claim a machine substantiates (ASK-965). |
+| `engineering_route.py` | `q-system/.q-system/scripts/engineering_route.py` | Engineering signal from the morning brief -> Sana's Linear triage. Never the founder. |
 | `evidence_ledger.py` | `q-system/.q-system/scripts/evidence_ledger.py` | evidence_ledger: the durable store of verified facts, and the single writer to it. |
 | `fable-escalate.py` | `q-system/.q-system/scripts/fable-escalate.py` | Cross-model escalation: when Opus is stuck, Fable triages (ASK-311). |
 | `firecrawl-scrape.py` | `q-system/.q-system/scripts/firecrawl-scrape.py` | Firecrawl scrape-to-FILE (H7). Persists the FULL source markdown of a web page to |
 | `fleet-board-refresh.py` | `q-system/.q-system/scripts/fleet-board-refresh.py` | SessionStart surfacer: keep the Fleet Loop Board fresh, event-driven. |
 | `fleet-health-daily.py` | `q-system/.q-system/scripts/fleet-health-daily.py` | Daily fleet health check. Every detector must DETECT, ACT, and feed LEARNING. |
 | `fleet-loop-board.py` | `q-system/.q-system/scripts/fleet-loop-board.py` | Fleet Loop Board generator: the AUDHD comprehension hedge for autonomous loops. |
-| `fleet-replica-divergence.py` | `q-system/.q-system/scripts/fleet-replica-divergence.py` | Second account for every fleet-replicated file: hash all copies, report disagreement. |
 | `format-lint.py` | `q-system/.q-system/scripts/format-lint.py` | format-lint.py — Generic DM and email format enforcer. |
 | `founder-judge-calibration.py` | `q-system/.q-system/scripts/founder-judge-calibration.py` | Build and score a blinded founder-vs-judge calibration set. |
+| `friction-note.sh` | `q-system/.q-system/scripts/friction-note.sh` | friction-note.sh -- append ONE friction line to this instance's friction ledger. |
 | `granola-voice-fingerprint.py` | `q-system/.q-system/scripts/granola-voice-fingerprint.py` | granola-voice-fingerprint.py — Stage 3 deterministic linguistic fingerprint. |
 | `granola-voice-harvest.py` | `q-system/.q-system/scripts/granola-voice-harvest.py` | granola-voice-harvest.py — Stage 1 deterministic harvest for founder-voice enrichment. |
 | `granola-voice-synthesize.py` | `q-system/.q-system/scripts/granola-voice-synthesize.py` | granola-voice-synthesize.py — Stage 2 LLM synthesis for founder-voice enrichment. |
+| `groupme_inbox.py` | `q-system/.q-system/scripts/groupme_inbox.py` | GroupMe conversations waiting on the founder, for the morning brief's Inbox. |
 | `handoff-provenance-lint.py` | `q-system/.q-system/scripts/handoff-provenance-lint.py` | handoff-provenance-lint: an inherited claim must not be indistinguishable from a |
 | `headline-lint.py` | `q-system/.q-system/scripts/headline-lint.py` | headline-lint.py — Deterministic headline pattern enforcer. |
 | `hook_envelope_audit.py` | `q-system/.q-system/scripts/hook_envelope_audit.py` | Audit every hook that injects additionalContext for the envelope that DELIVERS. |
 | `init-bus-day.sh` | `q-system/.q-system/scripts/init-bus-day.sh` | init-bus-day.sh - Create today's bus directory and write _meta.json |
-| `install-lessons-daily.sh` | `q-system/.q-system/scripts/install-lessons-daily.sh` | Install/refresh the daily autonomous-learning launchd job from this committed script. |
+| `install-lessons-daily.sh` | `q-system/.q-system/scripts/install-lessons-daily.sh` | Install/refresh the cross-instance learning heartbeat. SKELETON ONLY. |
 | `install-plist.sh` | `q-system/.q-system/scripts/install-plist.sh` | portability-lint-skip-file: this script is macOS-only BY DESIGN (launchd/plutil). |
 | `instance-automation-guard.py` | `q-system/.q-system/scripts/instance-automation-guard.py` | instance-automation-guard: block writing automation scripts into an INSTANCE's q-system/ subtree. |
 | `instance-diet-fix.sh` | `q-system/.q-system/scripts/instance-diet-fix.sh` | instance-diet-fix.sh - Fix broken imports and remove duplicate sections |
@@ -102,15 +108,20 @@ Count: 208
 | `instruction-budget-audit.py` | `q-system/.q-system/scripts/instruction-budget-audit.py` | Audit always-on instruction token budget. |
 | `instrument-lint.py` | `q-system/.q-system/scripts/instrument-lint.py` | instrument-lint: the deterministic slice of `.claude/rules/instrument-discipline.md`. |
 | `kb-graph-guard.py` | `q-system/.q-system/scripts/kb-graph-guard.py` | KB freshness guard: deterministic Stop-hook for memory/graph.jsonl. |
+| `knowledge-inject.py` | `q-system/.q-system/scripts/knowledge-inject.py` | knowledge-inject: put the instance's OWN facts about what the prompt names in |
+| `knowledge_supply.py` | `q-system/.q-system/scripts/knowledge_supply.py` | knowledge_supply: the read side of the instance knowledge base. |
 | `launchd-health-check.py` | `q-system/.q-system/scripts/launchd-health-check.py` | Watchdog for the founder's launchd jobs -- surfaces silent job deaths. |
 | `launchd-intent-verify.py` | `q-system/.q-system/scripts/launchd-intent-verify.py` | Verify that every launchd job's paused/running state matches a DECLARED intent. |
 | `lesson-note.sh` | `q-system/.q-system/scripts/lesson-note.sh` | lesson-note.sh -- drop a NON-failure learning into the corpus intake. |
 | `lessons-daily.sh` | `q-system/.q-system/scripts/lessons-daily.sh` | Daily autonomous cross-instance learning heartbeat (launchd-fired). |
 | `lessons-distill.py` | `q-system/.q-system/scripts/lessons-distill.py` | lessons-distill: autonomously turn every instance's new learnings into fleet-wide lessons. |
+| `lessons-drift-report.py` | `q-system/.q-system/scripts/lessons-drift-report.py` | What a declared hub instance has that the skeleton lacks, once a week. |
 | `lessons-inject.py` | `q-system/.q-system/scripts/lessons-inject.py` | lessons-inject: put the RELEVANT lesson bodies in front of the model, so |
 | `lessons-validator.py` | `q-system/.q-system/scripts/lessons-validator.py` | Allowlist validator for q-system/lessons/ lesson files. |
+| `lessons_notion_sync.py` | `q-system/.q-system/scripts/lessons_notion_sync.py` | Mirror q-system/lessons into the founder's Notion "Kipi lessons" database. |
 | `lessons_recall.py` | `q-system/.q-system/scripts/lessons_recall.py` | Retrieval over the whole lessons corpus, so a lesson can be FOUND rather than listed. |
 | `lessons_scrub.py` | `q-system/.q-system/scripts/lessons_scrub.py` | lessons_scrub: the fail-closed client-data gate for autonomous lesson publishing. |
+| `lessons_streak.py` | `q-system/.q-system/scripts/lessons_streak.py` | Single writer of the lessons-propagation streak file and escalations ledger. |
 | `linear-alert-triage.py` | `q-system/.q-system/scripts/linear-alert-triage.py` | Triage the fleet-alert bucket: the missing consumer between alert-to-linear.py |
 | `linear-claim.py` | `q-system/.q-system/scripts/linear-claim.py` | Agent claim-lock: refuse an issue that another agent session is already working. |
 | `linear-collapse-jobmigration.py` | `q-system/.q-system/scripts/linear-collapse-jobmigration.py` | Collapse the job-migration duplicate family into one surviving issue. |
@@ -125,7 +136,6 @@ Count: 208
 | `linear-worker.sh` | `q-system/.q-system/scripts/linear-worker.sh` | The autonomous worker: pick a ready Linear issue, do it, leave a trail, open a PR. |
 | `linkedin-format-lint.py` | `q-system/.q-system/scripts/linkedin-format-lint.py` | linkedin-format-lint.py — Deterministic LinkedIn format enforcer. |
 | `loops_path.py` | `q-system/.q-system/scripts/loops_path.py` | One place that knows where open-loops.json lives. |
-| `mcp-denylist-namespace-check.py` | `q-system/.q-system/scripts/mcp-denylist-namespace-check.py` | ASK-1144: refuse an MCP denylist namespace that names no server anywhere. |
 | `md-prune.py` | `q-system/.q-system/scripts/md-prune.py` | Autonomous markdown pruning. |
 | `memory-confidence-surface.py` | `q-system/.q-system/scripts/memory-confidence-surface.py` | Memory Confidence Surfacer Hook. |
 | `memory-confidence-validator.py` | `q-system/.q-system/scripts/memory-confidence-validator.py` | Confidence/provenance validator for auto-memory files. |
@@ -142,17 +152,20 @@ Count: 208
 | `morning-brief-deadman.py` | `q-system/.q-system/scripts/morning-brief-deadman.py` | If the morning brief did not land, this says so. It is a DIFFERENT job. |
 | `morning-brief.py` | `q-system/.q-system/scripts/morning-brief.py` | One Slack message each morning: what the founder has going on today. |
 | `notify-callsite-audit.py` | `q-system/.q-system/scripts/notify-callsite-audit.py` | Find callers that page a human and then ignore whether the page landed. |
+| `notion_board.py` | `q-system/.q-system/scripts/notion_board.py` | notion_board.py -- the Notion morning board (plan item 2m, founder-liked: |
 | `open-loops-heartbeat.sh` | `q-system/.q-system/scripts/open-loops-heartbeat.sh` | FLEET open-loops heartbeat (launchd-fired). One job sweeps every registered instance |
 | `open-loops.py` | `q-system/.q-system/scripts/open-loops.py` | Open-loops surfacer: nothing parked falls on the ground. (AUDHD anti-drop.) |
 | `pdf-extract.py` | `q-system/.q-system/scripts/pdf-extract.py` | pdf-extract.py — deterministic, token-aware extraction of a large PDF into a |
+| `permission-ask-counter.py` | `q-system/.q-system/scripts/permission-ask-counter.py` | permission-ask-counter.py -- count the turns that name a pick and then end by |
 | `plan-lint.py` | `q-system/.q-system/scripts/plan-lint.py` | plan-lint: the deterministic slice of `.claude/rules/quick-plan.md`. |
 | `plugin-version-bump-check.py` | `q-system/.q-system/scripts/plugin-version-bump-check.py` | plugin-version-bump-check: a changed plugin must bump its version. |
 | `portability-lint-hook.py` | `q-system/.q-system/scripts/portability-lint-hook.py` | PostToolUse ratchet for portability-lint.sh. |
 | `portability-lint.sh` | `q-system/.q-system/scripts/portability-lint.sh` | portability-lint.sh -- catch the "green locally, wrong where it runs" defect class. |
+| `pr-restack.py` | `q-system/.q-system/scripts/pr-restack.py` | Merge origin/main into every open PR branch that has gone DIRTY, and report. |
 | `pr-review-agent.sh` | `q-system/.q-system/scripts/pr-review-agent.sh` | THE review agent for every PR in this fleet. Fresh eyes, adversarial, reproducer-or-it-didn't-happen. |
 | `pr-verdict-lib.sh` | `q-system/.q-system/scripts/pr-verdict-lib.sh` | Shared verdict semantics for the PR review loop (ASK-113, severity floor). |
+| `pr_verify.py` | `q-system/.q-system/scripts/pr_verify.py` | Run a PR's tests and write the green receipt the merge gate reads. |
 | `probe_hook_envelope.py` | `q-system/.q-system/scripts/probe_hook_envelope.py` | Does a UserPromptSubmit hook's additionalContext reach the model WITHOUT |
-| `prompt-audit-ledger.py` | `q-system/.q-system/scripts/prompt-audit-ledger.py` | Prompt-audit ledger: render the founder-readable checklist, or verify it against the report. |
 | `prompt-only-enforcement-guard.py` | `q-system/.q-system/scripts/prompt-only-enforcement-guard.py` | Block prompt-only enforcement claims. |
 | `propagation-leak-gate.py` | `q-system/.q-system/scripts/propagation-leak-gate.py` | Fingerprint semantic leak findings so a baseline stays a real statement. |
 | `provenance_vocabulary.py` | `q-system/.q-system/scripts/provenance_vocabulary.py` | provenance_vocabulary: the ONE table both provenance validators read. |
@@ -166,6 +179,7 @@ Count: 208
 | `review-tier.py` | `q-system/.q-system/scripts/review-tier.py` | review-tier.py -- deterministic ESCALATE/SELF classifier for review routing. |
 | `reviewer-floor.sh` | `q-system/.q-system/scripts/reviewer-floor.sh` | The reviewer floor: turn an ABSENT verdict into a FAILING one (ASK-361). |
 | `ripple-verify.py` | `q-system/.q-system/scripts/ripple-verify.py` | Verify that all ripple targets were addressed after canonical edits. |
+| `roadmap_scope.py` | `q-system/.q-system/scripts/roadmap_scope.py` | roadmap_scope.py -- the ONE deterministic classifier for the product/roadmap |
 | `route-overrides-to-learn.py` | `q-system/.q-system/scripts/route-overrides-to-learn.py` | Route engagement-hitlist overrides into learn-from-correction inputs. |
 | `run-step-audit.py` | `q-system/.q-system/scripts/run-step-audit.py` | Generic step-completion auditor: expected - logged = silently skipped. |
 | `runtime-plugin-freshness.py` | `q-system/.q-system/scripts/runtime-plugin-freshness.py` | Fail when the RUNNING plugin copy is older than the merged one. |
@@ -183,15 +197,19 @@ Count: 208
 | `synthesize-schedule.py` | `q-system/.q-system/scripts/synthesize-schedule.py` | Deterministic schedule synthesis. Replaces the 07-synthesize.md Opus agent. |
 | `system_manifest.py` | `q-system/.q-system/scripts/system_manifest.py` | system_manifest: declare what a data path is MADE OF, so coverage is computable. |
 | `temperature-scoring.py` | `q-system/.q-system/scripts/temperature-scoring.py` | Deterministic temperature scoring for prospects. |
+| `trigger-inventory.py` | `q-system/.q-system/scripts/trigger-inventory.py` | Which stages actually have a trigger, derived from the tree, not from a list. |
 | `undefined-helper-lint.sh` | `q-system/.q-system/scripts/undefined-helper-lint.sh` | undefined-helper-lint.sh -- catch a helper that is CALLED but never DEFINED. |
+| `unknown_terms.py` | `q-system/.q-system/scripts/unknown_terms.py` | unknown_terms.py -- the "Terms I do not know" section of the morning brief. |
 | `update-preservation-manifest.py` | `q-system/.q-system/scripts/update-preservation-manifest.py` | Build a deterministic registry-derived manifest of instance-owned files. |
 | `verify-codex-review-live.sh` | `q-system/.q-system/scripts/verify-codex-review-live.sh` | portability-lint-skip-file: this script is macOS-only BY DESIGN (launchd/plutil). |
 | `verify-containment-export.py` | `q-system/.q-system/scripts/verify-containment-export.py` | Verify containment exports and retain failed-owner payloads safely. |
-| `voice-banned-list-duplication-check.py` | `q-system/.q-system/scripts/voice-banned-list-duplication-check.py` | Fail when a skill file restates the banned-word list that draft_scanner.py owns. |
 | `voice-dna-loader.py` | `q-system/.q-system/scripts/voice-dna-loader.py` | voice-dna-loader.py - Inject voice DNA into context on writing requests. |
 | `voice-lint.py` | `q-system/.q-system/scripts/voice-lint.py` | voice-lint.py — Deterministic voice rule enforcer (v2). |
 | `voice-stop-gate.py` | `q-system/.q-system/scripts/voice-stop-gate.py` | voice-stop-gate.py - Final voice check on assistant chat output. |
 | `voice-substance-lint.py` | `q-system/.q-system/scripts/voice-substance-lint.py` | voice-substance-lint.py - Positive-pattern voice enforcement. |
+| `voiceloop-band-lint.py` | `q-system/.q-system/scripts/voiceloop-band-lint.py` | voiceloop-band-lint: run the OTHER half of the voice engine on written drafts. |
+| `weekly-improve.py` | `q-system/.q-system/scripts/weekly-improve.py` | weekly-improve.py -- the weekly pass over the friction ledger and the |
+| `weekly-improve.sh` | `q-system/.q-system/scripts/weekly-improve.sh` | weekly-improve.sh -- the ONE registered trigger for the learning lane. |
 | `wiring-check.py` | `q-system/.q-system/scripts/wiring-check.py` | Post-tool ADVISORY DETECTOR for AUDHD coding rules. |
 | `sycophancy-harness.py` | `q-system/.q-system/sycophancy-harness.py` | Sycophancy audit verification harness. Runs AFTER the 06-sycophancy-audit |
 | `token-guard.py` | `q-system/.q-system/token-guard.py` | Token Bleed Guardrail System |

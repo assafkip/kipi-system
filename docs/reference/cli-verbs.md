@@ -4,7 +4,7 @@
 
 Every verb the kipi dispatcher accepts, read from its case statement.
 
-Count: 39
+Count: 40
 
 - `kipi update`
 - `kipi rollback`
@@ -12,6 +12,7 @@ Count: 39
 - `kipi dev`
 - `kipi sync-skills`
 - `kipi push`
+- `kipi promote`
 - `kipi review`
 - `kipi converge`
 - `kipi jobs`

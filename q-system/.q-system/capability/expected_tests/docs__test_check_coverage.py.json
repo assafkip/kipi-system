@@ -1,0 +1,4 @@
+{
+ "path": "docs/test_check_coverage.py",
+ "runner": "python3"
+}

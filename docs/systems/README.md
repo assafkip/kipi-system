@@ -56,6 +56,30 @@ is retired, so nobody mistakes an old surface for a live one.
 12. [Content and GTM tooling](12-content-and-gtm-tooling.md)
 13. [Research and browser](13-research-and-browser.md)
 14. [Retired and dormant](14-retired-and-dormant.md)
+15. [Tests: every proof in the tree](15-tests.md)
+
+## Where a change lands
+
+```mermaid
+flowchart LR
+    I([An idea or a bug]) --> P{Bigger than one line?}
+    P -->|no| E[edit it]
+    P -->|yes| Q[quick-plan: a plan.md with five sections, plan-lint.py holds the shape]
+    Q --> H{Gated work?}
+    H -->|yes| PRD[prd-os: draft, review, triage, approve, split, issue lifecycle]
+    H -->|no| B[build: fable-discipline, tests first, mutation on a copy]
+    PRD --> B
+    B --> W[/wiring-check: every change reachable, WIRING REPORT]
+    W --> PR[PR: verify.sh in CI, reviewer, auto-merge]
+    PR --> U[kipi update: preview, approve, fan out]
+    U --> R[receipt: the hook fires on a real instance]
+```
+
+The route every change takes through the pages above. A one-line change is edited. Anything
+larger gets a plan first, whose shape a lint holds. Gated work goes through the PRD
+operating system; the rest goes straight to the build discipline. Every build ends with the
+wiring check, a pull request the floor script and the reviewer decide, a fan-out the founder
+approves once, and a receipt from a real instance that the change is live there.
 
 ## Reading a systems page
 

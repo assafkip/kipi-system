@@ -4,15 +4,16 @@
 
 Every skill shipped by a plugin, with its frontmatter description. A skill is a packaged instruction set the model loads when its trigger fires.
 
-Count: 15
+Count: 16
 
 | Name | Path | Purpose |
 |---|---|---|
 | `architecture-review` | `plugins/kipi-core/skills/architecture-review/SKILL.md` | Surfaces architectural friction in real code — shallow modules, tight coupling, untested seams — and proposes deepening refactors using Ousterhout's deep-module principle (small interface hiding a lar |
 | `audhd-executive-function` | `plugins/kipi-core/skills/audhd-executive-function/SKILL.md` | AUDHD executive function accommodations. Apply to all output the founder will act on. |
-| `deck-ai` | `plugins/kipi-core/skills/deck-ai/SKILL.md` | Generate an editable PPTX presentation from markdown content. Runs locally, no subscription; python-pptx builds the slides and Unsplash supplies the imagery. Invoke when the user asks to "make a deck" |
+| `deck-ai` | `plugins/kipi-core/skills/deck-ai/SKILL.md` | Generate modern presentation decks (PDF) from markdown content. Local open-source alternative to Gamma — uses Slidev for layouts and Unsplash for imagery. Invoke when the user asks to "make a deck", " |
 | `founder-voice` | `plugins/kipi-core/skills/founder-voice/SKILL.md` | Founder voice enforcement for all written output. Apply to any text another person will read. |
 | `headline-engineering` | `plugins/kipi-core/skills/headline-engineering/SKILL.md` | Platform-optimized headline and hook engineering for X (Twitter), Reddit, LinkedIn, Medium, Substack. Apply when writing or reviewing any title, tweet, thread opener, Reddit post title, or social hook |
+| `improve` | `plugins/kipi-core/skills/improve/SKILL.md` | Critique an outside idea (a pasted tip, post, transcript or video summary) against what this system already has. Use when the founder pastes something and asks whether to adopt it, or says 'improve',  |
 | `learn-from-correction` | `plugins/kipi-core/skills/learn-from-correction/SKILL.md` | Propose a principle edit to a skill or persona file based on a (agent_output, human_output) correction pair. Outputs a proposal markdown for human review - never auto-edits the target file. |
 | `linkedin-brand` | `plugins/kipi-core/skills/linkedin-brand/SKILL.md` | LinkedIn + personal brand system for founders. Apply when drafting LinkedIn posts, reactions, DMs, LinkedIn About sections, or planning LLM visibility. |
 | `rca` | `plugins/kipi-core/skills/rca/SKILL.md` | Root-cause analysis for code. Use when a defect shipped and was caught after the fact, a run came back BLOCKED or a deliverable failed validation, a bug recurs after a prior fix, or the user says 'rca |

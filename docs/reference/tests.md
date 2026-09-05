@@ -4,7 +4,7 @@
 
 Every test file, so a reader can find the proof behind a script. A script with no test here has no proof beyond its own run.
 
-Count: 241
+Count: 269
 
 | Name | Path | Purpose |
 |---|---|---|
@@ -12,6 +12,7 @@ Count: 241
 | `test-ripple.py` | `q-system/.q-system/scripts/test-ripple.py` | Ripple system regression tests. Run automatically via `kipi check`. |
 | `ask293-append-negation-repro.sh` | `q-system/.q-system/scripts/test/ask293-append-negation-repro.sh` | ASK-293 reproducer: append-negation against apply_claude_changes.py. |
 | `ask293-decision-evidence.sh` | `q-system/.q-system/scripts/test/ask293-decision-evidence.sh` | ASK-293 decision evidence: BUILD the two candidate guards, then defeat them. |
+| `capability-map-gen.d20f412.py` | `q-system/.q-system/scripts/test/fixtures/capability-map-gen.d20f412.py` | Generate a CAPABILITY-MAP.json for a kipi instance repo by structural recon. |
 | `test-accept-rate-receipts.py` | `q-system/.q-system/scripts/test/test-accept-rate-receipts.py` | Pairs with accept-rate.py load_receipts. |
 | `test-apply-claude-changes.sh` | `q-system/.q-system/scripts/test/test-apply-claude-changes.sh` | Tests for apply-claude-changes: the safe path for landing .claude/ edits. |
 | `test-ask358-round3-mutation.sh` | `q-system/.q-system/scripts/test/test-ask358-round3-mutation.sh` | THE NEGATIVE SELF-TESTS FOR PR #211 ROUND 3 (ASK-358). Two majors, two |
@@ -27,6 +28,7 @@ Count: 241
 | `test-claim-page-once-routing.sh` | `q-system/.q-system/scripts/test/test-claim-page-once-routing.sh` | Reproducer + acceptance criterion for how linear-worker.sh routes the ledger's |
 | `test-claude-write-path.sh` | `q-system/.q-system/scripts/test/test-claude-write-path.sh` | test-claude-write-path.sh -- ASK-282, the .claude/ write path. |
 | `test-client-name-guard.py` | `q-system/.q-system/scripts/test/test-client-name-guard.py` | Paired test for client-name-guard.py (ASK-747). |
+| `test-consumer-parity-check.py` | `q-system/.q-system/scripts/test/test-consumer-parity-check.py` | consumer-parity-check: does it re-find the known defect, and can it be seen to fail? |
 | `test-containment-gitlink.py` | `q-system/.q-system/scripts/test/test-containment-gitlink.py` | Pairs with containment-targets.py: a gitlink must not take the gate down. |
 | `test-control-file-propagate.sh` | `q-system/.q-system/scripts/test/test-control-file-propagate.sh` | Negative-first self-test for control-file-propagate.py (ASK-755). |
 | `test-converge-capout.sh` | `q-system/.q-system/scripts/test/test-converge-capout.sh` | Reproducer + acceptance criteria for ASK-871: a converge cap-out is invisible |
@@ -58,7 +60,6 @@ Count: 241
 | `test-kipi-update-owned-deletion-guard.sh` | `q-system/.q-system/scripts/test/test-kipi-update-owned-deletion-guard.sh` | The q-system sync must REFUSE when --delete would remove instance-owned data. |
 | `test-kipi-update-plugin-excludes.sh` | `q-system/.q-system/scripts/test/test-kipi-update-plugin-excludes.sh` | A plugin-root .env is copied into all 23 instances and committed there. |
 | `test-kipi-update-preservation-failure.sh` | `q-system/.q-system/scripts/test/test-kipi-update-preservation-failure.sh` | A valid skeleton ships the propagation leak gate: kipi-update.sh is |
-| `test-kipi-update-replica-divergence-preflight.sh` | `q-system/.q-system/scripts/test/test-kipi-update-replica-divergence-preflight.sh` | The chokepoint: a replica that has drifted AHEAD of the skeleton must stop |
 | `test-kipi-update-safety.sh` | `q-system/.q-system/scripts/test/test-kipi-update-safety.sh` | H2+H4: kipi update must not destroy untracked (incl. gitignored) instance files, |
 | `test-kipi-update-source-provenance.sh` | `q-system/.q-system/scripts/test/test-kipi-update-source-provenance.sh` | The bytes fanned out to 23 instances must be the bytes that were reviewed. |
 | `test-kipi-update-system-state-commit.sh` | `q-system/.q-system/scripts/test/test-kipi-update-system-state-commit.sh` | The carve-out that exists to PREVENT the dirty-tree refusal is what causes it. |
@@ -101,12 +102,16 @@ Count: 241
 | `test-review-comment-body.sh` | `q-system/.q-system/scripts/test/test-review-comment-body.sh` | Reproducer for sp-b418be32: a codex review is too large for a GitHub comment, |
 | `test-review-degraded-provenance.sh` | `q-system/.q-system/scripts/test/test-review-degraded-provenance.sh` | Reproducer for sp-8379cd52: the verdict record could not distinguish a review |
 | `test-review-dry-run-labelled.sh` | `q-system/.q-system/scripts/test/test-review-dry-run-labelled.sh` | ASK-758: a dry run must SAY it is a dry run, at the moment a reader forms a |
+| `test-review-early-bail-ref.sh` | `q-system/.q-system/scripts/test/test-review-early-bail-ref.sh` | PR #265 codex major: an EARLY bail out of review_worktree left the stale |
+| `test-review-fallback-exact-sha.sh` | `q-system/.q-system/scripts/test/test-review-fallback-exact-sha.sh` | PR #265 codex major: the fallback tree search accepted a DESCENDANT worktree. |
 | `test-review-gate-no-fake-green.sh` | `q-system/.q-system/scripts/test/test-review-gate-no-fake-green.sh` | The review gate must not go green on a review that never ran (ASK-312). |
 | `test-review-invoker-provenance.sh` | `q-system/.q-system/scripts/test/test-review-invoker-provenance.sh` | Reproducer for sp-53aad86f: the verdict record could not distinguish a |
 | `test-review-plan-echo-gate.sh` | `q-system/.q-system/scripts/test/test-review-plan-echo-gate.sh` | Reproducer for sp-df1a458f: a review that NEVER RAN must never fill the gate. |
 | `test-review-redrive-absent.py` | `q-system/.q-system/scripts/test/test-review-redrive-absent.py` | review-redrive must see a reviewer slot that was NEVER POSTED (sp-d87c5416). |
 | `test-review-redrive.sh` | `q-system/.q-system/scripts/test/test-review-redrive.sh` | Pairs with review-redrive.py (ASK-352): a PR whose REVIEWER refused has no |
+| `test-review-root-and-lock.sh` | `q-system/.q-system/scripts/test/test-review-root-and-lock.sh` | PR #265 codex majors. |
 | `test-review-tree-guard.sh` | `q-system/.q-system/scripts/test/test-review-tree-guard.sh` | Reproducer for the tree-vs-PR-head guard in pr-review-agent.sh (ASK-221, |
+| `test-review-worktree-ref.sh` | `q-system/.q-system/scripts/test/test-review-worktree-ref.sh` | review_worktree must refresh refs/remotes/pr/<N>, not only HEAD (sp-690ba60b). |
 | `test-reviewer-floor-workflow.sh` | `q-system/.q-system/scripts/test/test-reviewer-floor-workflow.sh` | reviewer-floor.yml must never RUN pr-controlled code while holding statuses:write. |
 | `test-reviewer-floor.sh` | `q-system/.q-system/scripts/test/test-reviewer-floor.sh` | The reviewer floor posts RED on absence and NEVER touches a real verdict (ASK-361). |
 | `test-runtime-plugin-freshness-wired.sh` | `q-system/.q-system/scripts/test/test-runtime-plugin-freshness-wired.sh` | Pairs with detect_stale_runtime_plugins in |
@@ -114,7 +119,6 @@ Count: 241
 | `test-script-stable-under-self-edit.sh` | `q-system/.q-system/scripts/test/test-script-stable-under-self-edit.sh` | Reproducer + acceptance for ASK-351: a long-running bash driver corrupts itself |
 | `test-settings-merge.sh` | `q-system/.q-system/scripts/test/test-settings-merge.sh` | Required check for kipi-settings-merge.py (extracted from kipi-update.sh). |
 | `test-severity-floor.sh` | `q-system/.q-system/scripts/test/test-severity-floor.sh` | Reproducer + acceptance criteria for the review severity floor (ASK-113). |
-| `test-skill-refs-resolve.py` | `q-system/.q-system/scripts/test/test-skill-refs-resolve.py` | Every script path, sibling file and skill/command name a SKILL.md tells the |
 | `test-skill-trigger-eval.sh` | `q-system/.q-system/scripts/test/test-skill-trigger-eval.sh` | H1: skill-trigger eval harness, OFFLINE (mocks claude -p). Pairs with issue skill-trigger-eval. |
 | `test-social-reaction-gate-rule-wired.sh` | `q-system/.q-system/scripts/test/test-social-reaction-gate-rule-wired.sh` | ASK-138: .claude/rules/social-reaction-gate.md carried an (ENFORCED) heading and named |
 | `test-styles-csv-width.sh` | `q-system/.q-system/scripts/test/test-styles-csv-width.sh` | Gate for issue styles-csv-row77-width (spillover sp-42f164c5): |
@@ -134,11 +138,11 @@ Count: 241
 | `test-worker-refusal.sh` | `q-system/.q-system/scripts/test/test-worker-refusal.sh` | The refusal path: Sana judges an issue unexecutable, and that judgment sticks |
 | `test-zero-safe-count-idiom.sh` | `q-system/.q-system/scripts/test/test-zero-safe-count-idiom.sh` | `grep -c ... \|\| echo 0` is not a zero-safe count. Pins the corrected idiom |
 | `test_linear_alert_triage.py` | `q-system/.q-system/scripts/test/test_linear_alert_triage.py` | Pins the ONE property linear-alert-triage.py exists to create: after a |
+| `test_voiceloop_band_lint.py` | `q-system/.q-system/scripts/test/test_voiceloop_band_lint.py` | Pins the DETECTED claim in `.claude/rules/voice-loop-anywhere.md`. |
 | `verify-alert-wiring.sh` | `q-system/.q-system/scripts/test/verify-alert-wiring.sh` | ASK-636 wiring receipt. Checks the alert path end to end across every LIVE |
 | `test_autocapture_e2e.py` | `q-system/.q-system/scripts/test_autocapture_e2e.py` | End-to-end acceptance for memory auto-capture (issue autocapture-e2e-acceptance, |
 | `test_autocapture_wiring.py` | `q-system/.q-system/scripts/test_autocapture_wiring.py` | Reproducer-first tests for the design-partner-only wiring of memory auto-capture |
 | `test_blocked_claim_evidence_lint.py` | `q-system/.q-system/scripts/test_blocked_claim_evidence_lint.py` | Reproducer + negative self-test for blocked-claim-evidence-lint.py (ASK-317). |
-| `test_candidate_draft.py` | `q-system/.q-system/scripts/test_candidate_draft.py` | One draft definition, and the assistant cannot pick its own coverage. |
 | `test_capability_gate.py` | `q-system/.q-system/scripts/test_capability_gate.py` | Paired test for capability-gate.py (prd-silent-absence-capability-gate). |
 | `test_client_output_evidence_gate.py` | `q-system/.q-system/scripts/test_client_output_evidence_gate.py` | Self-test for client-output-evidence-gate.py. |
 | `test_correction_outcome.py` | `q-system/.q-system/scripts/test_correction_outcome.py` | Reproducer-first tests for correction_outcome.py (issue autocapture-corrected-path, |
@@ -150,6 +154,7 @@ Count: 241
 | `test_instruction_budget_audit.py` | `q-system/.q-system/scripts/test_instruction_budget_audit.py` | Tests for instruction-budget-audit.py count_lines (ASK-965). |
 | `test_instrument_lint.py` | `q-system/.q-system/scripts/test_instrument_lint.py` | Reproducer for instrument-lint.py (case-004 instrument discipline). |
 | `test_kb_graph_guard.py` | `q-system/.q-system/scripts/test_kb_graph_guard.py` | Tests for kb-graph-guard.py. Runnable directly or via pytest. |
+| `test_knowledge_supply.py` | `q-system/.q-system/scripts/test_knowledge_supply.py` | Tests for knowledge_supply.py and knowledge-inject.py. Runnable via pytest. |
 | `test_launchd_health_check.py` | `q-system/.q-system/scripts/test_launchd_health_check.py` | Regression tests for launchd-health-check.py (the silent-job-death watchdog). |
 | `test_launchd_intent_verify.py` | `q-system/.q-system/scripts/test_launchd_intent_verify.py` | Regression tests for launchd-intent-verify.py (sp-2c7e5819). |
 | `test_lessons_index.py` | `q-system/.q-system/scripts/test_lessons_index.py` | Tests for q-system/hooks/lessons-index.py (ASK-965, finding-12). |
@@ -165,12 +170,15 @@ Count: 241
 | `test_memory_scores_surface.py` | `q-system/.q-system/scripts/test_memory_scores_surface.py` | Tests for memory-scores-surface.py — the earned-trust recall surface. |
 | `test_merge_bypass_gate.py` | `q-system/.q-system/scripts/test_merge_bypass_gate.py` | Self-test for merge-bypass-gate.py. |
 | `test_merge_bypass_gate_admin_forms.py` | `q-system/.q-system/scripts/test_merge_bypass_gate_admin_forms.py` | Reproducer: `gh pr merge --admin=true` must be refused, not only bare `--admin`. |
+| `test_merge_bypass_gate_emits_deny.py` | `q-system/.q-system/scripts/test_merge_bypass_gate_emits_deny.py` | A classified bypass must actually EMIT a deny. End-to-end, via stdin (ASK-1136). |
 | `test_merge_bypass_gate_global_flags.py` | `q-system/.q-system/scripts/test_merge_bypass_gate_global_flags.py` | Reproducer: a gh GLOBAL FLAG must not be able to smuggle a merge past the gate. |
 | `test_merge_bypass_gate_hidden_tool.py` | `q-system/.q-system/scripts/test_merge_bypass_gate_hidden_tool.py` | Reproducer: the PUSH side must refuse a hidden `git`, exactly as the merge side does. |
 | `test_merge_bypass_gate_wrappers.py` | `q-system/.q-system/scripts/test_merge_bypass_gate_wrappers.py` | Reproducer: a wrapper or a compact separator must not hide a merge or a push. |
 | `test_miyo_kb_hooks.py` | `q-system/.q-system/scripts/test_miyo_kb_hooks.py` | Tests for the Miyo KB hooks: miyo-session-pull.py and miyo-research-gate.py. |
 | `test_plan_lint.py` | `q-system/.q-system/scripts/test_plan_lint.py` | Reproducer for plan-lint.py (ASK-136). |
 | `test_plugin_version_bump_check.py` | `q-system/.q-system/scripts/test_plugin_version_bump_check.py` | Test for plugin-version-bump-check.py (reproducer-first). |
+| `test_pr_restack_unknown.py` | `q-system/.q-system/scripts/test_pr_restack_unknown.py` | Self-test: pr-restack.py must not silently skip a PR it could not classify. |
+| `test_pr_verify.py` | `q-system/.q-system/scripts/test_pr_verify.py` | Self-test for pr_verify.py, the only writer of .prd-os/pr-receipts/. |
 | `test_prompt_only_enforcement_guard.py` | `q-system/.q-system/scripts/test_prompt_only_enforcement_guard.py` | Self-test for prompt-only-enforcement-guard.py. |
 | `test_provenance_vocabulary.py` | `q-system/.q-system/scripts/test_provenance_vocabulary.py` | Self-test for provenance_vocabulary.py, the ONE source both provenance |
 | `test_read_first_gate.py` | `q-system/.q-system/scripts/test_read_first_gate.py` | Self-test for read-first-gate.py. |
@@ -185,10 +193,12 @@ Count: 241
 | `test_token_guard_observation.py` | `q-system/.q-system/scripts/test_token_guard_observation.py` | Paired test for token-guard.py's observation exemption (sp-ff7611cd) and |
 | `test_voice_lint_caps.py` | `q-system/.q-system/scripts/test_voice_lint_caps.py` | test_voice_lint_caps: the capitalization rule in voice-lint.py. |
 | `test_voice_stop_gate_drain_only.py` | `q-system/.q-system/scripts/test_voice_stop_gate_drain_only.py` | The last post of a session surfaces its score (ASK-902, sp-08c34cf1). |
+| `test_voiceloop_migrate.py` | `q-system/.q-system/scripts/test_voiceloop_migrate.py` | Tests for kipi-update-voiceloop-migrate.py and its call site (sp-8d55455a). |
 | `test_wiring_check.py` | `q-system/.q-system/scripts/test_wiring_check.py` | Pins what `wiring-check.py` detects, and pins that detecting is ALL it does (ASK-132). |
 | `test-stat-verify.py` | `q-system/.q-system/scripts/tests/test-stat-verify.py` | End-to-end tests for stat-verify.py. Covers hook-mode payloads, JSON content |
 | `test_token_guard_runtime.py` | `q-system/.q-system/test_token_guard_runtime.py` | Test the token-guard runtime guard (scar sp-28bf75a4). |
 | `test_verify_adversarial.sh` | `q-system/.q-system/test_verify_adversarial.sh` | Adversarial test for verify.sh: does it actually BLOCK, or only pass tests? |
+| `destructive-op-deny.reference.sh` | `q-system/.q-system/tests/fixtures/destructive-op-deny.reference.sh` | destructive-op-deny.sh - PreToolUse hook that denies destructive |
 | `test_baseline_receipt.py` | `q-system/.q-system/tests/separation/test_baseline_receipt.py` |  |
 | `test_containment_claims.py` | `q-system/.q-system/tests/separation/test_containment_claims.py` |  |
 | `test_containment_export.py` | `q-system/.q-system/tests/separation/test_containment_export.py` |  |
@@ -205,32 +215,50 @@ Count: 241
 | `test_update_propagation.py` | `q-system/.q-system/tests/separation/test_update_propagation.py` | Updater final states must not give an injected instance fact a free ride. |
 | `test_updater_dependency_receipt.py` | `q-system/.q-system/tests/separation/test_updater_dependency_receipt.py` |  |
 | `test_alert_to_linear.py` | `q-system/.q-system/tests/test_alert_to_linear.py` | Pins alert-to-linear.py: the flood collapses, and a test can never file live. |
+| `test_alert_to_linear_race.py` | `q-system/.q-system/tests/test_alert_to_linear_race.py` | Two concurrent alert writers must open ONE permanent Linear ticket, not two. |
 | `test_auto_commit.py` | `q-system/.q-system/tests/test_auto_commit.py` | The auto-commit Stop hook (ASK-498). |
 | `test_browser_session.py` | `q-system/.q-system/tests/test_browser_session.py` | The six hard constraints of the persistent-browsing capability, as checks. |
 | `test_browser_session_states.py` | `q-system/.q-system/tests/test_browser_session_states.py` | Six probe states, per-surface alerting, and the two decisions that are code. |
+| `test_capability_gate_inert_closure.py` | `q-system/.q-system/tests/test_capability_gate_inert_closure.py` | The inert-engine check's wired-closure must cross the plugin boundary. |
 | `test_capmap_scratch_and_mention.py` | `q-system/.q-system/tests/test_capmap_scratch_and_mention.py` | A committed scratch tree is not a capability, and a mention is not a test. |
 | `test_claude_path_write_guard.py` | `q-system/.q-system/tests/test_claude_path_write_guard.py` | claude-path-write-guard must block writes and nothing else. |
-| `test_destructive_op_mcp_namespace.py` | `q-system/.q-system/tests/test_destructive_op_mcp_namespace.py` | ASK-1144: the MCP half of destructive-op-deny names servers that are not loaded. |
+| `test_consulting_board.py` | `q-system/.q-system/tests/test_consulting_board.py` | The consulting morning board: mirror, never a second derivation (2026-09-03). |
+| `test_decision_corpus_cost.py` | `q-system/.q-system/tests/test_decision_corpus_cost.py` | RED FIRST. Issue mbl-two-measurements (plan 2h, Codex finding-16). The cost |
+| `test_draft_vs_sent.py` | `q-system/.q-system/tests/test_draft_vs_sent.py` | RED FIRST. Issue mbl-draft-sent-pairing (prd-morning-brief-learns, Codex |
 | `test_fable_cap_page_deleted.py` | `q-system/.q-system/tests/test_fable_cap_page_deleted.py` | Reproducer + regression pin for ASK-504: the escalation-cap page. |
 | `test_fable_escalation.py` | `q-system/.q-system/tests/test_fable_escalation.py` | Tests for the Fable escalation branch on token-guard's stuck blocks (ASK-311). |
-| `test_fleet_replica_divergence.py` | `q-system/.q-system/tests/test_fleet_replica_divergence.py` | Tests for fleet-replica-divergence.py. |
 | `test_gitignore_block.py` | `q-system/.q-system/tests/test_gitignore_block.py` | The skeleton's never-commit stanza must reach every instance (sp-097d2e23). |
 | `test_grounding_manifest_health.py` | `q-system/.q-system/tests/test_grounding_manifest_health.py` | ASK-533: the grounding guard's coverage check must not fail open silently. |
-| `test_headless_model_pin.py` | `q-system/.q-system/tests/test_headless_model_pin.py` | The two headless `claude -p` jobs fixed for C-1 / C-2 must name their model. |
 | `test_hook_envelope_audit.py` | `q-system/.q-system/tests/test_hook_envelope_audit.py` | Pins hook_envelope_audit.py AND the fleet-shared hooks it audits. |
 | `test_instance_automation_guard.py` | `q-system/.q-system/tests/test_instance_automation_guard.py` | instance-automation-guard's instance-owned carve-out, held to the truth. |
+| `test_lessons_daily_label.py` | `q-system/.q-system/tests/test_lessons_daily_label.py` | RED FIRST. Issue lr-lessons-label-collision (prd-lessons-rail-and-up-rail). |
+| `test_lessons_daily_streak.py` | `q-system/.q-system/tests/test_lessons_daily_streak.py` | RED FIRST. Issue lr-propagation-streak-escalation (prd-lessons-rail-and-up-rail, |
+| `test_lessons_drift_report.py` | `q-system/.q-system/tests/test_lessons_drift_report.py` | RED FIRST. Issue lr-drift-reporter (prd-lessons-rail-and-up-rail, plan 4c) and |
+| `test_lessons_notion_sync.py` | `q-system/.q-system/tests/test_lessons_notion_sync.py` | RED FIRST. lessons_notion_sync.py mirrors the corpus into the founder's |
+| `test_lessons_recall_corpus.py` | `q-system/.q-system/tests/test_lessons_recall_corpus.py` | RED FIRST. Issue lr-recall-names-its-corpus (prd-lessons-rail-and-up-rail, |
 | `test_linear_filer_label_lint.py` | `q-system/.q-system/tests/test_linear_filer_label_lint.py` | Tests for linear-filer-label-lint.py (ASK-882). |
 | `test_linear_triage_health.py` | `q-system/.q-system/tests/test_linear_triage_health.py` | Pins linear-triage-health.py and the needs-triage marking in alert-to-linear.py. |
 | `test_loops_path.py` | `q-system/.q-system/tests/test_loops_path.py` | loops_path: missing must never render as empty. |
 | `test_md_prune_budgets.py` | `q-system/.q-system/tests/test_md_prune_budgets.py` | What md-prune is allowed to archive. |
 | `test_merge_bypass_gate_fail_open.py` | `q-system/.q-system/tests/test_merge_bypass_gate_fail_open.py` | merge-bypass-gate must DENY when it cannot classify (ASK-1179). |
 | `test_morning_brief.py` | `q-system/.q-system/tests/test_morning_brief.py` | Engine test for the morning brief (ASK-1178). |
+| `test_notion_board.py` | `q-system/.q-system/tests/test_notion_board.py` | RED FIRST. Issue mbl-board-section-bounded (prd-morning-brief-learns, |
+| `test_off_switches.py` | `q-system/.q-system/tests/test_off_switches.py` | RED FIRST. Issue mbl-off-switches (prd-morning-brief-learns, Codex |
+| `test_permission_ask_counter.py` | `q-system/.q-system/tests/test_permission_ask_counter.py` | RED FIRST. Issue mbl-two-measurements (plan 2i). The counter is advisory and |
+| `test_promotion_receipt.py` | `q-system/.q-system/tests/test_promotion_receipt.py` | RED FIRST. The promotion path (prd-lessons-rail-and-up-rail, Phase 4), one |
 | `test_reddit_read.py` | `q-system/.q-system/tests/test_reddit_read.py` | The Reddit read lane: an HTTP client with an honest User-Agent. |
+| `test_roadmap_scope.py` | `q-system/.q-system/tests/test_roadmap_scope.py` | RED FIRST. Issue mbl-roadmap-scope-classifier (prd-morning-brief-learns, |
+| `test_roadmap_scope_suite.py` | `q-system/.q-system/tests/test_roadmap_scope_suite.py` | RED FIRST. Issue mbl-roadmap-scope-paraphrase-suite (Codex finding-12 on |
+| `test_route_overrides_to_learn.py` | `q-system/.q-system/tests/test_route_overrides_to_learn.py` | RED FIRST. Issue mbl-weekly-improve-runner (prd-morning-brief-learns, Codex |
+| `test_skill_changelog.py` | `q-system/.q-system/tests/test_skill_changelog.py` | RED FIRST. Issue mbl-changelog-convention (prd-morning-brief-learns, |
 | `test_token_guard.py` | `q-system/.q-system/tests/test_token_guard.py` | Black-box tests for the token-guard circuit breaker (sp0-guard-actor-scope). |
 | `test_token_guard_cache_race.py` | `q-system/.q-system/tests/test_token_guard_cache_race.py` | The guard cache must survive parallel hook fires (sp-016776e6). |
-| `test_voice_banned_list_duplication.py` | `q-system/.q-system/tests/test_voice_banned_list_duplication.py` | Tests for voice-banned-list-duplication-check.py. |
+| `test_trigger_inventory.py` | `q-system/.q-system/tests/test_trigger_inventory.py` | RED FIRST. Issue lr-trigger-inventory (prd-lessons-rail-and-up-rail, plan 4d, |
+| `test_unknown_terms.py` | `q-system/.q-system/tests/test_unknown_terms.py` | RED FIRST. Issue mbl-unknown-term-detector (prd-morning-brief-learns, |
+| `test_voice_stop_gate_channel_registry.py` | `q-system/.q-system/tests/test_voice_stop_gate_channel_registry.py` | The skeleton Stop-gate routes a channel through an OPTIONAL instance registry. |
 | `test_voice_stop_gate_not_checked.py` | `q-system/.q-system/tests/test_voice_stop_gate_not_checked.py` | A missing lint must report NOT CHECKED, never a pass. |
 | `test_web_read_tools.py` | `q-system/.q-system/tests/test_web_read_tools.py` | The agent-facing surface for the two read lanes. |
+| `test_weekly_improve.py` | `q-system/.q-system/tests/test_weekly_improve.py` | RED FIRST. Issue mbl-friction-artifact (prd-morning-brief-learns, Codex |
 | `test_wip_check.py` | `q-system/.q-system/tests/test_wip_check.py` | An untracked file the skeleton itself wrote is exhaust, not work (sp-940bcf47). |
 | `test-lessons-index.sh` | `q-system/hooks/test/test-lessons-index.sh` | Test suite for lessons-index.py (SessionStart consumer). Pairs with issue lessons-consumer-hook. |
 | `test_persona_reorg.py` | `scripts/test_persona_reorg.py` | Unit tests for persona-reorg.py's hardened rewriter + single-source map. |
