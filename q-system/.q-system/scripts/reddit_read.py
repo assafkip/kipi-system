@@ -265,7 +265,14 @@ def coverage_pct(fetched, declared):
     if declared is None:
         return None
     if declared == 0:
-        return 100.0 if fetched == 0 else 0.0
+        # NOT 0.0 when rows came back. A thread declaring nothing that yielded 7
+        # comments reported coverage_pct 0.0 beside complete=True, which reads as
+        # "the read worked and returned none of the thread" (review). There is no
+        # denominator, so there is no percentage: None is the honest answer, and
+        # `declared` travels in the artifact for anyone who wants the raw counts.
+        #
+        # 0 fetched of 0 declared stays 100.0: an empty thread WAS fully read.
+        return 100.0 if fetched == 0 else None
     return round(100.0 * fetched / declared, 1)
 
 
@@ -490,8 +497,13 @@ def read_thread(permalink: str, transport=None, pacer=None, now=None,
     now = now or dt.datetime.now().astimezone()
     link_id = _ARCTIC.link_id_from_permalink(permalink)
     url = thread_url(permalink)
+    # THE PACER WRAPS THE GETTER, so it covers EVERY request. It used to be a
+    # single wait() before the read, which was one request back when a thread
+    # was one request. Now `all_comments` pages, so a 6-page thread got one
+    # wait and five unpaced fetches while the class docstring still promised
+    # "at most one request per min_interval_s" (review).
     getter, seen = _as_getter(transport, timeout)
-    pacer.wait()
+    getter = _paced(getter, pacer)
     # TWO READS, TWO FATES. They shared one `try`, and `posts_by_id` runs first,
     # so a /api/posts/ids outage discarded a thread the comments endpoint served
     # fine: refused=True, http_status=503, comments=None, for 7 comments that
@@ -539,6 +551,19 @@ def read_thread(permalink: str, transport=None, pacer=None, now=None,
     return artifact
 
 
+def _paced(getter, pacer):
+    """Every fetch waits, not just the first. `getter` may be None when no
+    transport was injected, and then the transport does its own fetching, so
+    there is nothing here to pace."""
+    if getter is None:
+        return None
+
+    def _get(url):
+        pacer.wait()
+        return getter(url)
+    return _get
+
+
 def _as_getter(transport, _timeout: int = DEFAULT_TIMEOUT_S):
     """Adapt the old `(url, headers, timeout) -> (status, body)` transport to the
     mirror's `(url) -> parsed json`, so existing callers and test doubles still
@@ -578,8 +603,13 @@ def read_listing(subreddit: str, period: str = "month", transport=None,
     pacer = pacer or NullPacer()
     now = now or dt.datetime.now().astimezone()
     url = listing_url(subreddit, period)
+    # THE PACER WRAPS THE GETTER, so it covers EVERY request. It used to be a
+    # single wait() before the read, which was one request back when a thread
+    # was one request. Now `all_comments` pages, so a 6-page thread got one
+    # wait and five unpaced fetches while the class docstring still promised
+    # "at most one request per min_interval_s" (review).
     getter, seen = _as_getter(transport, timeout)
-    pacer.wait()
+    getter = _paced(getter, pacer)
     try:
         posts = _ARCTIC.recent(subreddit, max_items=_ARCTIC.MAX_LIMIT,
                                timeout=timeout, _get=getter)

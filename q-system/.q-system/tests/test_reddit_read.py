@@ -530,3 +530,40 @@ def test_thread_url_refuses_anything_that_is_not_a_reddit_thread(rr):
                 "https://www.reddit.com/r/x/"):
         with pytest.raises(rr.PermalinkRefused):
             rr.thread_url(bad)
+
+
+def test_a_thread_that_declares_nothing_has_no_coverage(rr):
+    """0.0 beside complete=True reads as "the read worked and returned none of
+    the thread". There is no denominator, so there is no percentage (review).
+    An EMPTY thread stays 100.0: it really was fully read."""
+    assert rr.coverage_pct(7, 0) is None
+    assert rr.coverage_pct(0, 0) == 100.0
+    assert rr.coverage_pct(32, 34) == 94.1
+
+
+def test_the_pacer_covers_every_request_a_paged_read_makes(rr):
+    """`Pacer` promises at most one request per min_interval_s. One wait() before
+    the read was that promise back when a thread was one request. `all_comments`
+    pages now, so a multi-page thread got one wait and the rest unpaced."""
+    import json
+    waits = []
+
+    class CountingPacer:
+        def wait(self):
+            waits.append(1)
+
+    pages = {"n": 0}
+
+    def transport(url, headers, timeout):
+        if "/api/posts/ids" in url:
+            return 200, json.dumps({"data": [{"id": "x", "num_comments": 300}]})
+        pages["n"] += 1
+        n = pages["n"]
+        rows = [{"id": "p%d_%d" % (n, i), "created_utc": 1788136000 + n * 1000 + i}
+                for i in range(100 if n < 3 else 5)]
+        return 200, json.dumps({"data": rows})
+
+    rr.read_thread("/r/x/comments/abc/t/", transport=transport,
+                   pacer=CountingPacer())
+    assert pages["n"] > 1, "the fixture must actually page"
+    assert len(waits) == pages["n"] + 1, (len(waits), pages["n"])

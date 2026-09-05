@@ -392,9 +392,24 @@ def _is_endpoint(low: str) -> bool:
     definition, used by the single place that decides."""
     return (".json" in low or ".rss" in low or "/api/" in low
             or "/search" in low or "?" in low
-            or any(seg in low for seg in ("/new/", "/hot/", "/top/",
-                                          "/new.", "/hot.", "/top.",
-                                          "/rising/", "/controversial/")))
+            or _ends_in_a_listing(low))
+
+
+_LISTINGS = ("new", "hot", "top", "rising", "controversial", "best")
+
+
+def _ends_in_a_listing(low: str) -> bool:
+    """`/r/x/new` with no trailing slash is a listing feed too.
+
+    The old test looked for "/new/" and "/new.", so a URL ENDING in the segment
+    was classed a display link while the docstring said "a listing feed segment
+    is an endpoint" (review). Reddit serves both spellings.
+    """
+    path = low.split("?", 1)[0].rstrip("/")
+    tail = path.rsplit("/", 1)[-1]
+    if tail in _LISTINGS:
+        return True
+    return any("/%s/" % seg in low or "/%s." % seg in low for seg in _LISTINGS)
 
 
 def _joined_text(node: ast.AST) -> str:
@@ -477,8 +492,20 @@ def violations_in_source(source: str, label: str) -> list[dict]:
     # So: collect the names bound to a reddit host ANYWHERE (module, class or
     # function level), then flag that host literal if any `+` in the file joins
     # one of those names to an endpoint-shaped path. Still not dataflow, and the
-    # honest limit is the same as before: a host handed through a function
-    # ARGUMENT rather than a name is not seen.
+    # THE HONEST LIMIT, stated wider than it was. This sees `+` and f-strings.
+    # It does NOT see `"/".join([BASE, path])`, `urljoin(BASE, path)`,
+    # `BASE + PATH` where both sides are names, `%` formatting, or a host passed
+    # in as a function ARGUMENT. Each of those composes a URL without ever
+    # putting the host beside an endpoint literal, which is the only shape this
+    # rule reads.
+    #
+    # That is a real hole and naming it is the point: FORBIDDEN_SUBSTRINGS still
+    # catches old.reddit.com, oauth.reddit.com, /api/ and the trudax actor
+    # absolutely, in any composition, because those are decided on the literal
+    # alone. What escapes is a www.reddit.com host composed with an endpoint
+    # path through a route this rule cannot follow. Closing it properly is
+    # dataflow analysis, which this checker does not do and should not pretend
+    # to.
     # SCOPED. A name means different things in different functions, and the
     # first version of this rule did not care: `url` in `_reddit_archive_post`
     # holds a display link, and `url` in an unrelated Apify helper 180 lines

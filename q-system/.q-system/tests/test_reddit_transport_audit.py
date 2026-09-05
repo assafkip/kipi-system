@@ -289,6 +289,27 @@ def test_a_name_collision_across_scopes_does_not_condemn_a_display_link(audit, t
     assert audit.violations_in(_write(tmp_path, body)) == []
 
 
+def test_a_listing_feed_without_a_trailing_slash_is_an_endpoint(audit, tmp_path):
+    """`/r/x/new` and `/r/x/new/` are the same feed. The test looked for "/new/"
+    and "/new.", so the no-slash spelling was classed a display link while the
+    docstring claimed a listing segment is an endpoint (review)."""
+    assert audit._is_endpoint("https://www.reddit.com/r/x/new")
+    assert audit._is_endpoint("https://www.reddit.com/r/x/top/")
+    # NEGATIVE CONTROL: a permalink is still a link a person opens
+    assert not audit._is_endpoint("https://www.reddit.com/r/x/comments/1/y/")
+    assert not audit._is_endpoint("https://www.reddit.com/user/someone")
+
+
+def test_the_transport_suite_is_in_the_ci_manifest():
+    """THE ROUND-5 MAJOR. The transport shipped with 26 tests and was in no
+    manifest, so a revert of the one rule it exists for -- raise on a total
+    mirror failure rather than return [] -- would have merged green. A suite
+    nothing runs documents an intention."""
+    manifest = (HERE.parent.parent.parent / ".verify-suites")
+    assert manifest.exists(), manifest
+    assert "plugins/kipi-core/reddit_arctic" in manifest.read_text()
+
+
 def test_the_fleet_is_clean_right_now(audit):
     """The claim the whole conversion was for. Scoped to the repos that exist on
     this machine, so it is a real check here and a skip elsewhere rather than a

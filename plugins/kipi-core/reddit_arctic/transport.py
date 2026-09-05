@@ -365,7 +365,16 @@ def search(subreddit: str, term: str, *, max_items: int = DEFAULT_MAX_ITEMS,
     # rare term could otherwise walk a room forever looking for its tenth hit.
     raw, mirror = fetch_posts(subreddit, limit=MAX_LIMIT,
                               timeout=timeout, _opener=_opener, _get=_get)
-    if len(raw) >= MAX_LIMIT:
+    needle_early = (term or "").lower().strip()
+
+    def _hits(rows):
+        if not needle_early:
+            return len(rows)
+        return sum(1 for r in rows
+                   if needle_early in ((r.get("title") or "") + " " +
+                                       (r.get("selftext") or r.get("body") or "")).lower())
+
+    if len(raw) >= MAX_LIMIT and _hits(raw) < max_items:
         seen_ids = {r.get("id") for r in raw}
         cursor = None
         for _ in range(10):
@@ -380,7 +389,10 @@ def search(subreddit: str, term: str, *, max_items: int = DEFAULT_MAX_ITEMS,
             fresh = [r for r in page if r.get("id") not in seen_ids]
             seen_ids.update(r.get("id") for r in fresh)
             raw.extend(fresh)
-            if len(page) < MAX_LIMIT:
+            # STOP ONCE ENOUGH MATCHES ARE IN HAND. It used to page to its
+            # ceiling regardless, spending 11 fetches to return 15 hits
+            # (review). The term is matched here, so the count is knowable here.
+            if len(page) < MAX_LIMIT or _hits(raw) >= max_items:
                 break
     needle = (term or "").lower().strip()
     hits = []

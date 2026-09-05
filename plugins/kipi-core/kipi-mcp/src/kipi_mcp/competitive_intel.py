@@ -267,6 +267,7 @@ def collect_ai_raw_records(
     token = os.environ.get("APIFY_TOKEN", "") if apify_token is None else apify_token
 
     raw_records: list[dict[str, Any]] = []
+    source_failures: list[dict[str, Any]] = []
     for source in config.get("sources", []):
         if not source.get("enabled", True):
             continue
@@ -284,6 +285,15 @@ def collect_ai_raw_records(
                 )
             )
         except Exception as exc:
+            # RECORDED IN THE ARTIFACT, not only on stderr. A stderr line at an
+            # unattended entry point is a line nobody reads: the run still exited
+            # 0 and still wrote a clean-looking harvest with zero Reddit rows
+            # (review). The failures now travel WITH the output, so a consumer
+            # can tell "nothing was posted" from "nothing was reached".
+            source_failures.append({
+                "source": source.get("name") or source.get("type"),
+                "error": "%s: %s" % (type(exc).__name__, exc),
+            })
             # NAMED, not swallowed. The bare `continue` that used to sit here is
             # the reason the transport's raise would otherwise be pointless: a
             # source that died and a source with nothing new produced the same
@@ -300,6 +310,16 @@ def collect_ai_raw_records(
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(raw_records, indent=2))
+        if source_failures:
+            # Beside the artifact, not inside it, so every existing reader of
+            # that JSON list keeps working unchanged.
+            output.with_suffix(output.suffix + ".failures.json").write_text(
+                json.dumps(source_failures, indent=2))
+    if source_failures and not raw_records:
+        raise RedditFetchFailed(
+            "every source failed and the harvest is empty: %s"
+            % "; ".join("%s (%s)" % (f["source"], f["error"])
+                        for f in source_failures))
     return raw_records
 
 
