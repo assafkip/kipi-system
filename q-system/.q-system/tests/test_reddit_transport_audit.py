@@ -125,13 +125,39 @@ def test_every_exception_carries_a_reason(audit):
         assert len(reason) > 40, "exception %s needs a real reason, got %r" % (suffix, reason)
 
 
+def test_a_nested_linked_worktree_is_skipped_under_a_parent_root(audit, tmp_path):
+    """The regression that got past the first fix.
+
+    Passing each repo as its own root exercised the worktree check on the root.
+    The CLI default passes `~/projects` ONCE, so every checkout under it is just a
+    subdirectory and the check never reached it. consulting-landing, a worktree on
+    a two-week-old branch, came back a second time that way: green in the test,
+    red on the command line. A guard has to run where the thing it guards against
+    actually appears.
+    """
+    wt = tmp_path / "some-worktree"
+    wt.mkdir()
+    (wt / ".git").write_text("gitdir: /elsewhere/.git/worktrees/some-worktree\n")
+    (wt / "old.py").write_text('U = "https://www.reddit.com/r/x/new.json"\n')
+    assert audit.walk([wt]) == [], "a worktree passed as the root must be skipped"
+    assert audit.walk([tmp_path]) == [], "and skipped under a parent root too"
+
+    # NEGATIVE CONTROL: the same file in a plain directory is still caught, so the
+    # skip is doing its job rather than disabling the walk.
+    plain = tmp_path / "not-a-worktree"
+    plain.mkdir()
+    (plain / "old.py").write_text('U = "https://www.reddit.com/r/x/new.json"\n')
+    assert audit.walk([tmp_path]), "the skip must not swallow a real finding"
+
+
 def test_the_fleet_is_clean_right_now(audit):
     """The claim the whole conversion was for. Scoped to the repos that exist on
     this machine, so it is a real check here and a skip elsewhere rather than a
     green that proves nothing."""
-    roots = [p for p in (Path.home() / "projects").glob("*")
-             if (p / ".git").exists()]
-    if not roots:
+    root = Path.home() / "projects"
+    if not root.is_dir():
         pytest.skip("no fleet checkout on this machine")
-    found = audit.walk(roots)
+    # ONE root, the way the CLI is actually invoked. Passing each repo separately
+    # is a different code path and it is the one that hid a real finding.
+    found = audit.walk([root])
     assert found == [], "non-Arctic Reddit reads: %s" % found[:5]

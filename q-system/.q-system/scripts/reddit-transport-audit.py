@@ -333,7 +333,19 @@ def walk(roots) -> list[dict]:
         if _is_linked_worktree(root):
             continue
         for dirpath, dirnames, filenames in os.walk(root):
-            if _skip(Path(dirpath)):
+            here = Path(dirpath)
+            # PER DIRECTORY, not only on the root handed in. Checking the root
+            # alone is right when each repo is passed separately and useless when
+            # `~/projects` is passed once, because then every checkout under it is
+            # just a subdirectory and the check never reaches it. That is exactly
+            # how consulting-landing came back a second time after the first fix:
+            # the test passed each repo as its own root and the CLI default did
+            # not. A guard has to run where the thing it guards against actually
+            # appears.
+            if here != root and _is_linked_worktree(here):
+                dirnames[:] = []
+                continue
+            if _skip(here):
                 dirnames[:] = []
                 continue
             dirnames[:] = [d for d in dirnames
