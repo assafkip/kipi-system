@@ -572,13 +572,35 @@ class TestValidate:
         # two extremums of it.
         rows = _rows(20)
         for i, r in enumerate(rows):
-            r["text"] = f"Run {i}. " + "I watched the queue back up. " * (1 + i * 3)
+            # DESCENDING, so the shortest rows sit at the END of the pool order and
+            # the thinnest assembly falls at counter 16. Ascending put it at counter
+            # 0, where a 12-counter window still finds it -- that fixture let a
+            # range(12) mutant survive at 122 passed. A bound only fakes a check
+            # when the answer happens to sit inside it.
+            r["text"] = ("Run {}. ".format(i)
+                         + "I watched the queue back up. " * (1 + (19 - i) * 3))
         heavy = [{"id": f"c{i}", "status": "active",
                   "instruction": f"Rule {i}. " * 200} for i in range(6)]
         d = _voice_dir(tmp_path, rows=rows, corrections=heavy,
                        fp=self._fresh_fp(rows))
         voice = corpus.load(d)
-        lengths = [len(assemble.voice_section(voice, "x", c)[0]) for c in range(12)]
+        # THE ORACLE IS DERIVED INDEPENDENTLY, over the FULL rotation. Its first
+        # draft looped `range(12)` because the code did, which is the trap
+        # `_resolved_slots` already names in this file: a checker that re-derives
+        # the rule it checks is testing its own copy. The 12-window hid a second
+        # bug of the same class (PR #301 review round 2) because test and code
+        # sampled the same wrong window and agreed.
+        period = len(selector.resolved_pool(voice.active_exemplars(), "x", "post",
+                                            selector.DEFAULT_K))
+        assert period > 12, (
+            f"this fixture's rotation period is {period}, so a 12-counter window "
+            "would cover it and the test cannot see an under-sampling bug")
+        lengths = [len(assemble.voice_section(voice, "x", c)[0])
+                   for c in range(period)]
+        assert lengths.index(min(lengths)) >= 12, (
+            "the thinnest assembly is at counter "
+            f"{lengths.index(min(lengths))}, inside a 12-counter window, so this "
+            "fixture cannot tell full-rotation sampling from the old range(12)")
         rules = sum(len(c["instruction"]) for c in heavy)
         assert rules / max(lengths) <= validate.CORRECTION_SHARE_CEILING, (
             "the fattest assembly must read CLEAN here, or the old max-denominator "
