@@ -1,41 +1,161 @@
-# The Kipi System
+# Kipi
 
-**Your AI brain. Externalized.**
+**Give your AI the right knowledge, at the moment it needs it.**
 
-It remembers everything you do. Then it becomes whatever you need.
+Kipi turns the scattered knowledge around your work into context that follows you across AI sessions: decisions, conversations, projects, people, commitments, lessons, documents, history.
 
-Today it might run as your chief of staff. Tomorrow your lawyer. Next week your investigator. Same system, different role, because it remembers every decision, every conversation, every project you've ever brought it.
+You do not have to remember which file holds something, or tell Claude what to read. Ask a question. Kipi works out what you are asking about, reads the sources that matter for that kind of question, and puts the evidence in front of the model before it answers. Then it tells you what it found, which file and line each piece came from, which sources were empty, and which ones it could not read.
 
-It runs in Claude Code. Plain markdown all the way down. No vector database, no embeddings, no black box. You read it with `cat`, search it with `rg`, version it with `git`.
+The result is an AI that does not start from zero every conversation. Your brain, externalized, with the plumbing that gets the right memory into active thought.
+
+It runs in Claude Code. Plain markdown all the way down. No vector database, no black box. You can open every fact with `cat` and diff it with `git`.
 
 ---
 
-## The whole thing in one picture
+## Memory is not useful if the AI never receives it
+
+Saving information is the easy part. The hard part is getting the right information to the model when it matters.
+
+Kipi's own history is the proof. Every store in the system had a writer and a hook guarding it. The fact graph refused to close a session if it had fallen behind. The commitment ledger dropped any promise it could not quote verbatim. The decision log refused an entry without a tag saying who decided. And nothing read any of it when a question arrived. A question naming a client got none of the client's facts. Careful storage, zero delivery.
+
+So Kipi treats knowledge as a supply chain. Capture. Organize. Retrieve. Deliver. Prove what was delivered.
 
 ```mermaid
 flowchart LR
-    F([You]) -->|type| CC[Claude Code session]
-    CC <-->|small scripts run on every action| H[Guardrails]
-    CC <-->|reads and writes| K[(Your knowledge:<br/>plain files on disk)]
-    CC <-->|deterministic tools| M[Local tool server]
-    CC -->|opens| G[Pull requests + Linear issues]
-    J[Scheduled jobs on your machine] -->|review, merge, report| G
+    subgraph capture ["Capture"]
+        C1["a debrief after a conversation"]
+        C2["a handoff at session end"]
+        C3["a mistake, and why it happened"]
+    end
+    subgraph organize ["Organize"]
+        O1[("canonical: positioning, decisions, objections")]
+        O2[("a dated fact graph: people, companies, pushback")]
+        O3[("commitments, meetings, open follow-ups")]
+        O4[("lessons, shared across every copy")]
+    end
+    subgraph retrieve ["Retrieve"]
+        R["your question names a person,<br/>a project, or a kind of work"]
+    end
+    subgraph deliver ["Deliver"]
+        D["verbatim lines, each with<br/>file, line, date and status"]
+    end
+    subgraph prove ["Prove"]
+        P["a receipt per source: read, empty,<br/>unreadable or skipped.<br/>First line: FULL or PARTIAL"]
+    end
+    C1 --> O1
+    C1 --> O2
+    C2 --> O3
+    C3 --> O4
+    O1 --> R
+    O2 --> R
+    O3 --> R
+    O4 --> R
+    R --> D --> P
+```
+
+Ask about a person, and Kipi pulls their relationship history, the decisions that involved them, the commitments made to them, recent meetings, and the open follow-ups. Ask about a project, and a different set of sources becomes relevant. Ask it to build something, and the lessons from previous failures are placed in front of it before it starts.
+
+The model never has to remember to go looking.
+
+---
+
+## It knows when it does not know
+
+An empty search result is not proof that nothing exists. Most retrieval treats it that way.
+
+Kipi's supply step writes a receipt. Every source the question needed is recorded as read, empty, unreadable, or not searched because time ran out. The first line of what the model receives says `COVERAGE: FULL` or `COVERAGE: PARTIAL` and names what is missing.
+
+```mermaid
+flowchart TB
+    Q["ask about a client"] --> S{"each source the question needs"}
+    S -->|"read, has lines"| A["supplied verbatim, with file and line"]
+    S -->|"read, nothing there"| B["recorded: searched, empty"]
+    S -->|"file missing or corrupt"| C["recorded: could not read"]
+    S -->|"time ran out"| D["recorded: not searched"]
+    A --> F["COVERAGE: FULL"]
+    B --> F
+    C --> P["COVERAGE: PARTIAL, missing sources named"]
+    D --> P
+```
+
+So there is a difference between these two sentences, and the system says which one is true.
+
+"We searched the relevant sources and found nothing."
+
+"We could not read two of the sources that might hold the answer."
+
+Those should not produce the same confidence. Now they cannot.
+
+---
+
+## Why this is not search-and-paste
+
+Technical readers will file this under retrieval-augmented generation. The retrieval is the boring half. What Kipi cares about is what the retrieval knew.
+
+- Every excerpt is verbatim, with its file and line. There is no summarize step, because a summary is a copy that goes stale while the source moves.
+- Every fact carries a status: known, stale, conflicting, or unvalidated. The newest fact on a subject wins. The older one is marked stale, never deleted.
+- Every question leaves a receipt naming what was searched and what was not.
+- Every name in a question that the index could not resolve goes to a misses ledger. That ledger is the data the next improvement runs on.
+- Everything is a file. Open it, grep it, diff it, delete it.
+
+---
+
+## The more you work with it, the more useful its knowledge becomes
+
+It learns in two ways.
+
+**It learns about your world.** People, projects, decisions, preferences, relationships, commitments, terminology, history. A debrief after a conversation writes the facts. A handoff at the end of a session writes what tomorrow needs. Both are files, so both survive.
+
+**It learns from what went wrong.** When the system makes a mistake and you work out why, the lesson becomes durable knowledge supplied to future work. Kipi used to show the model a list of lesson titles and hope it opened one. It did not. It hit the exact failure one of those titles described. Now the relevant lesson bodies are placed in the prompt before the work starts. And where a script can catch the mistake, the lesson becomes a check that refuses it.
+
+```mermaid
+flowchart LR
+    subgraph world ["It learns about your world"]
+        DB["a debrief after a conversation"] --> G["a dated fact graph,<br/>newest fact wins"]
+        E["end of session"] --> HO["a handoff note, every claim<br/>labelled measured, stated or guessed"]
+    end
+    subgraph wrong ["It learns from what went wrong"]
+        M["a mistake, and why it happened"] --> L["a lesson, shared across every copy,<br/>client data scrubbed"]
+        M -. "when a script can catch it" .-> K["a check that refuses<br/>the same mistake"]
+    end
+    G -->|"a question naming someone"| S["the next session"]
+    HO -->|"session start"| S
+    L -->|"a request to build something"| S
+    K -->|"every action"| S
+```
+
+It grades itself too. A newer fact supersedes an older one. A handoff line says whether it was measured, stated or guessed. A memory that never gets opened stops being trusted. A source that could not be read is recorded, never assumed empty.
+
+Honest boundary: the lessons path proves the lesson entered the context. It cannot prove the model read it, or that it changed the work that followed. It is stronger than a promise, because a promise leaves no artifact. It is weaker than proof of application, and nothing here claims otherwise.
+
+---
+
+## What makes the knowledge trustworthy
+
+Everything above rests on one thing: the model receives files it cannot talk its way past. That takes machinery. Here is the machinery.
+
+```mermaid
+flowchart LR
+    F(["You"]) -->|"type"| CC["Claude Code session"]
+    CC <-->|"small scripts run on every action"| H["Guardrails"]
+    CC <-->|"reads and writes"| K[("Your knowledge:<br/>plain files on disk")]
+    CC <-->|"deterministic tools"| M["Local tool server"]
+    CC -->|"opens"| G["Pull requests + Linear issues"]
+    J["Scheduled jobs on your machine"] -->|"review, merge, report"| G
     J --> K
-    S[(One template repo)] -->|one command| I[Many copies,<br/>one per project]
-    I -.each one is.-> CC
+    S[("One template repo")] -->|"one command"| I["Many copies,<br/>one per project"]
+    I -. "each one is" .-> CC
 ```
 
 You type into a Claude Code session. Before, during and after every action, small scripts
-called hooks run: they add context the AI would otherwise forget, they block actions that
+called hooks run. They add context the AI would otherwise forget, they block actions that
 would break a rule, and they record what happened. The session reads and writes plain
 files that hold what you know. A local tool server gives the AI checks that return the
 same answer every time. Work leaves through pull requests and issues, where scheduled jobs
 review, merge and report without you in the loop. All of it lives in one template
 repository and is copied to every project you run.
 
----
-
-## The five ideas
+### The ideas underneath
 
 **1. Assume the AI is unreliable.** It invents facts, forgets what it read, agrees with
 whoever is talking, and says "done" before anything ran. Nothing here makes it accurate.
@@ -56,9 +176,7 @@ decide three things: publish, spend, delete. Everything else has a machine that 
 **5. One skeleton, many instances.** Improvements are made once and fanned out. Each copy
 keeps its own facts; the template owns the machinery.
 
----
-
-## What happens in one turn
+### What happens in one turn
 
 ```mermaid
 sequenceDiagram
@@ -69,7 +187,8 @@ sequenceDiagram
     Y->>S: open a session
     H-->>S: yesterday's handoff, open follow-ups, lessons learned, memories to doubt
     Y->>S: ask a question
-    H-->>S: your writing voice if you are drafting; your own facts if you named a person or client
+    H-->>S: the facts behind any person or client you named, with a coverage line
+    H-->>S: your writing voice if you are drafting, the relevant lessons if you are building
     S->>A: question plus that context
     A->>S: wants to edit a file or run a command
     alt a rule would break
@@ -85,47 +204,13 @@ sequenceDiagram
 
 When you open a session, hooks put yesterday's handoff, your open follow-ups and the
 lessons the whole fleet has learned in front of the AI. When you ask something, they add
-your writing voice if you are drafting and your own facts if you named a person, a client
-or a capability. Before a tool runs, a hook can refuse it. After a file is written, checks
-run on it. When the AI finishes, a last check can refuse the answer itself if it asserts
-something it never opened. Then the work is committed and the session is scored.
+the facts behind anyone you named, your writing voice if you are drafting, and the relevant
+lessons if you are building. Before a tool runs, a hook can refuse it. After a file is
+written, checks run on it. When the AI finishes, a last check can refuse the answer itself
+if it asserts something it never opened. Then the work is committed and the session is
+scored.
 
----
-
-## What it remembers, and how it grades itself
-
-```mermaid
-flowchart TB
-    subgraph in [How a fact gets in]
-        D[After a conversation: a debrief] --> C[canonical files: positioning, decisions, objections]
-        D --> G[a dated fact graph: who works where, who pushed back on what]
-        E[End of session] --> HO[a handoff note for tomorrow]
-        N[A nightly job] --> L[lessons shared across every copy, client data scrubbed]
-    end
-    subgraph out [How it comes back]
-        SS[Session start] --> HO
-        SS --> W[warnings: memories that decay fast or scored low]
-        Q[A question naming someone] --> KS[their facts, with the file and line, and a line saying FULL or PARTIAL]
-    end
-    subgraph grade [How it is graded]
-        G --> ST[newest fact wins; older marked stale]
-        HO --> PV[every claim says how it was known: measured, stated, or guessed]
-        W --> SC[a memory scores useful if its file was opened, dead if never touched]
-    end
-```
-
-Facts enter through a debrief after a conversation, through the end-of-session handoff,
-and through a nightly job that turns each copy's learnings into shared lessons with client
-data removed. They come back at session start and again when a question names something
-the system knows. And they are graded on their own: a newer fact supersedes an older one,
-a handoff line must say whether it was measured or guessed, and a memory that never gets
-used stops being trusted. The first line of any answer about a person or client says
-`COVERAGE: FULL` or `COVERAGE: PARTIAL` and names what could not be searched. "I did not
-find it" and "I never looked there" are different sentences, and the system says which.
-
----
-
-## How work leaves without you
+### How work leaves without you
 
 ```mermaid
 sequenceDiagram
@@ -135,8 +220,8 @@ sequenceDiagram
     participant R as Reviewer
     participant M as Merge
     D->>L: an issue is filed and labelled
-    L->>L: triaged: worked, parked, or voided, with the reason recorded
-    W->>L: claims a ready issue (one agent at a time)
+    L->>L: triaged as worked, parked, or voided, with the reason recorded
+    W->>L: claims a ready issue, one agent at a time
     W->>R: opens a pull request
     R->>R: a fresh-eyes review, verdict posted as a status
     alt changes requested
@@ -153,22 +238,22 @@ distinguishable from a human one. A triage pass records a decision on each so th
 does not only grow. A worker claims an issue under a lock, does the work on a branch and
 opens a pull request. A reviewer that has never seen the code reads the diff and posts a
 verdict. Fixes carry a test that fails without them. When every check is green, it merges
-itself. Red states have machine consumers; when they cannot cope, a ticket says so in an
+itself. Red states have machine consumers. When they cannot cope, a ticket says so in an
 agent's queue, not yours.
 
----
-
-## One template, many copies
+### One template, many copies
 
 ```mermaid
 flowchart LR
-    SK[(kipi-system: the template)] -->|kipi update| U{the updater}
-    REG[a registry of every copy] --> U
-    U -->|preview first, approve once| I1[Copy A: your chief of staff]
-    U --> I2[Copy B: a client engagement]
-    U --> I3[Copy C: an investigation]
-    U -.never touches.-> OWN[each copy's own facts, contacts, memory]
-    I1 & I2 & I3 -->|git commit before and after| RB[one-command rollback]
+    SK[("kipi-system: the template")] -->|"kipi update"| U{"the updater"}
+    REG["a registry of every copy"] --> U
+    U -->|"preview first, approve once"| I1["Copy A: your chief of staff"]
+    U --> I2["Copy B: a client engagement"]
+    U --> I3["Copy C: an investigation"]
+    U -. "never touches" .-> OWN["each copy's own facts, contacts, memory"]
+    I1 -->|"git commit before and after"| RB["one-command rollback"]
+    I2 --> RB
+    I3 --> RB
 ```
 
 Every project is a full copy with its own facts and the same machinery. The updater
@@ -181,7 +266,7 @@ than committing someone else's changes.
 
 ## Six real deployments
 
-All six share the same skeleton. They differ only in their canonical content.
+All six share the same skeleton. They differ only in what they know.
 
 - **Chief of staff.** Tracks conversations, talk tracks, decisions, positioning. Drafts updates, debriefs, follow-ups.
 - **PM for a client engagement.** Coordinates multiple projects, logs every decision, drafts deliverables, tracks stakeholder context.
