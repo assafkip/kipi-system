@@ -32,10 +32,13 @@ it matters; read-first-gate.py already teaches that shape.
 WHY SINGLE-TOKEN GRAPH ENTITIES NEVER FIRE ALONE: the largest instance's graph subjects
 include "Mark", "Lisa", "David". A hook that fires on "mark the file as done"
 is noise, and every previous guard that produced noise got switched off
-(kb-graph-guard.py docstring). Identifier kinds (client slugs, capability names)
-fire on a whole-word match; multi-token names fire on a phrase match; a bare
-first name never fires. The misses ledger records what the prompt named that
-the index could not resolve, which is the data the Phase 2 decisions run on.
+(kb-graph-guard.py docstring). Identifier kinds the manifest lists (client
+slugs, meeting keys) fire on a whole-word match; multi-token names fire on a
+phrase match; a bare first name fires only mid-sentence and only when it is the
+first token of exactly one multi-token entity (measured from the replay, commit
+184fcfbc), never at the start of a sentence, a line or a bullet. The misses
+ledger records what the prompt named that the index could not resolve, which is
+the data the Phase 2 decisions run on.
 
 WHY STATUS LABELS COME FROM provenance-vocabulary.json: that file is the ONE
 vocabulary, loaded at runtime by two lints already. A second table here would
@@ -327,7 +330,10 @@ def resolve_entities(prompt: str, index: dict[str, Entity], fire_alone: set[str]
                     continue
                 if len(tok) < 4:
                     continue
-                if ent.kind in fire_alone or ent.kind in ("slug", "client", "capability"):
+                if ent.kind in fire_alone:
+                    # The manifest decides which identifier kinds fire on one
+                    # word. No hardcoded second list: Codex round 1 on PR #302
+                    # found the knob inert because an `or` here overrode it.
                     if re.search(r"(?<!\w)" + re.escape(norm(tok)) + r"(?!\w)", pn):
                         hit_via = via
                 elif ent.kind == "contact":
@@ -362,7 +368,9 @@ def resolve_entities(prompt: str, index: dict[str, Entity], fire_alone: set[str]
             toks = ent.name.split()
             if len(toks) >= 2:
                 first_tokens.setdefault(toks[0].casefold(), []).append(key)
-        for m in re.finditer(r"(?<![.!?]\s)(?<!^)\b([A-Z][a-z]{3,})\b", prompt):
+        for m in re.finditer(r"\b([A-Z][a-z]{3,})\b", prompt):
+            if is_initial_position(prompt, m.start()):
+                continue
             tok = m.group(1)
             if tok.casefold() in STOPWORDS:
                 continue
@@ -384,11 +392,41 @@ def resolve_entities(prompt: str, index: dict[str, Entity], fire_alone: set[str]
     return kept
 
 
-def entity_matches(entity: dict, text: str) -> bool:
-    tn = norm(text)
-    if phrase_in(entity["name"], tn):
+def alias_in_text(alias: str, text: str) -> bool:
+    """Content-side alias match, the same rule resolve_entities applies on the
+    prompt side. A short alias (under 4 chars) is an initialism: it matches only
+    as an UPPERCASE whole word, case-sensitively, against the raw text. Codex
+    round 1 on PR #302: alias "DO" matched every store line containing the word
+    "do", so a rate-floor rule and another client's question rendered under a
+    person's heading in an outbound draft."""
+    a = normalize_ws(alias)
+    if not a:
+        return False
+    if len(a) < 4:
+        return a.isupper() and word_in_exact(a, text)
+    return phrase_in(a, norm(text))
+
+
+INITIAL_PREFIX_RE = re.compile(r"^\s*(?:[-*>•]+|\d+[.)])?\s*$")
+
+
+def is_initial_position(text: str, pos: int) -> bool:
+    """True when pos opens a sentence or a line (after an optional bullet or
+    numbering). A capitalized word there reads as a verb as often as a name
+    ('Mark the file as done'). Codex round 1 on PR #302: the old lookbehind knew
+    only sentence punctuation, so line-initial and bullet-initial tokens fired,
+    and bulleted multi-line prompts are the house style."""
+    line_start = text.rfind("\n", 0, pos) + 1
+    if INITIAL_PREFIX_RE.match(text[line_start:pos]):
         return True
-    return any(phrase_in(a, tn) for a in entity.get("aliases", []) if len(a) >= 2)
+    before = text[:pos].rstrip()
+    return not before or before[-1] in ".!?:;"
+
+
+def entity_matches(entity: dict, text: str) -> bool:
+    if phrase_in(entity["name"], norm(text)):
+        return True
+    return any(alias_in_text(a, text) for a in entity.get("aliases", []))
 
 
 # ------------------------------------------------------------------ router
@@ -482,7 +520,15 @@ def load_stores(qroot: Path, root: Path) -> tuple[dict, dict]:
             problems["graph"] = str(exc)
     elif paths["graph"].exists():
         problems["graph"] = "not a file"
-    stores["graph_rows"], stores["graph_bad_lines"] = rows, bad
+    stores["graph_rows"] = rows
+    # Bad lines are recorded PER STORE under one key the receipt reads, and a
+    # store with rows parsed == 0 and bad > 0 is UNREADABLE, not empty. Codex
+    # round 1 on PR #302: the commitments counter went to a key nothing read,
+    # so an all-corrupt promise ledger reported present=True under FULL, the
+    # exact "never searched vs not found" collapse the receipt exists to stop.
+    stores["bad_lines"] = {"graph": bad}
+    if bad and not rows:
+        problems["graph"] = f"unreadable: {bad} bad line(s), 0 parsed"
 
     contact_names = []
     if paths["relationships"].is_file():
@@ -497,21 +543,25 @@ def load_stores(qroot: Path, root: Path) -> tuple[dict, dict]:
             problems["relationships"] = str(exc)
     stores["contact_names"] = contact_names
 
-    commitments = []
+    commitments, bad_c = [], 0
     if paths["commitments"].is_file():
         try:
             for n, line in enumerate(read_lines(paths["commitments"]), start=1):
                 if line.strip():
                     try:
                         row = json.loads(line)
+                        if not isinstance(row, dict):
+                            raise ValueError("row is not an object")
                         row["_line"] = n
                         commitments.append(row)
                     except ValueError:
-                        problems.setdefault("commitments_bad_lines", 0)
-                        problems["commitments_bad_lines"] += 1
+                        bad_c += 1
         except OSError as exc:
             problems["commitments"] = str(exc)
     stores["commitments"] = commitments
+    stores["bad_lines"]["commitments"] = bad_c
+    if bad_c and not commitments:
+        problems["commitments"] = f"unreadable: {bad_c} bad line(s), 0 parsed"
     stores["slugs"] = sorted({r.get("slug") for r in commitments if isinstance(r.get("slug"), str)})
 
     meetings = {}
@@ -563,7 +613,8 @@ def resolve_graph(entity: dict, stores: dict, root: Path, window: dict | None,
     if entity.get("project"):
         rows = [r for r in rows if r.get("project") in (entity["project"], None, "all")]
     rows = [r for r in rows if in_window(r.get("t"), window)]
-    rows.sort(key=lambda r: ((r.get("t") or ""), -r["_line"]), reverse=True)
+    # Same date: the later line in the file is the later write (append-only store).
+    rows.sort(key=lambda r: ((r.get("t") or ""), r["_line"]), reverse=True)
     items, conflicts = [], 0
     groups: dict[tuple, list[dict]] = {}
     for r in rows:
@@ -913,7 +964,9 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
 
     stores, problems = load_stores(qroot, root)
     index = build_index(stores)
-    fire_alone = set(manifest.get("entity_kinds_that_fire_alone") or [])
+    # Absent key: the shipped default. Present but empty: a deliberate quiet.
+    fire_alone = set(manifest["entity_kinds_that_fire_alone"]
+                     if "entity_kinds_that_fire_alone" in manifest else ["slug", "client"])
     entities = resolve_entities(prompt, index, fire_alone)
     cap_hits = capability_hits(prompt, capability_index(root)) if (CAPABILITY_RE.search(prompt) and not entities) else []
     task_class, window = classify(prompt, entities, cap_hits, now)
@@ -945,6 +998,12 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
     for cls, spec in declared.items():
         present, path_s = present_of(cls)
         cls_items: list[dict] = []
+        # The cap is N per class PER ENTITY, applied to each resolver result
+        # before the lists are joined. Codex round 1 on PR #302: a cap applied
+        # to the joined list let the first entity eat the whole budget, so the
+        # header named three people and the body carried facts about one.
+        cap = spec.get("cap")
+        cut_here = 0
         if present:
             for ent in entities:
                 if cls == "graph":
@@ -967,23 +1026,25 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
                     got = resolve_handoff(ent, stores, root, window)
                 else:
                     got = []
+                if cap is not None and len(got) > cap:
+                    cut_here += len(got) - cap
+                    got = got[:cap]
                 cls_items += got
             if cls == "capability":
                 for name, entries in cap_hits:
-                    for path, line, desc in entries:
-                        cls_items.append(_item(name, "capability", desc or path.name, path, line,
-                                               mtime_date(path), root, pieces=[desc] if desc else []))
+                    got = [_item(name, "capability", desc or path.name, path, line,
+                                 mtime_date(path), root, pieces=[desc] if desc else [])
+                           for path, line, desc in entries]
+                    if cap is not None and len(got) > cap:
+                        cut_here += len(got) - cap
+                        got = got[:cap]
+                    cls_items += got
         fresh_days = spec.get("fresh_days")
         if fresh_days:
             for it in cls_items:
                 d = parse_date(it["t"])
                 if it["status"] == KNOWN and (d is None or (now - d).days > fresh_days):
                     it["status"] = STALE
-        cap = spec.get("cap")
-        cut_here = 0
-        if cap is not None and len(cls_items) > cap:
-            cut_here = len(cls_items) - cap
-            cls_items = cls_items[:cap]
         items += cls_items
         if not present and spec.get("required"):
             missing.append(cls)
@@ -994,6 +1055,7 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
             "mtime": mtime_date(src_path) if src_path and src_path.exists() else None,
             "fresh_days": fresh_days, "hits": len(cls_items) + cut_here, "cut": cut_here,
             "bytes": sum(len(i["text"]) for i in cls_items),
+            "bad_lines": stores["bad_lines"].get(cls, 0),
             "problem": problems.get(cls),
         })
 
@@ -1017,7 +1079,7 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
         "ts": ts, "session_id": session_id, "task_class": task_class, "prompt_hash": _hash(prompt),
         "entities": [e["name"] for e in entities], "window": window,
         "sources": source_rows, "declared_missing": missing, "coverage": verdict,
-        "conflicts": conflicts, "ceiling_hit": ceiling_hit, "graph_bad_lines": stores.get("graph_bad_lines", 0),
+        "conflicts": conflicts, "ceiling_hit": ceiling_hit,
         "items": len(kept), "bytes": bundle["budget"]["used"], "elapsed_ms": int((time.time() - t0) * 1000),
         "manifest": rel(manifest_path, root) if manifest_path else None,
     }

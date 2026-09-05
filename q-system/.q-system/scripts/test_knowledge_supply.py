@@ -437,6 +437,104 @@ def test_capability_class_reads_repo_index(tmp_path):
     assert any("rules/wiring-check.md" in i["src"] for i in caps)
 
 
+# ---------------------------------------------------------------- Codex round 1 on PR #302
+
+def test_multi_entity_each_gets_its_newest_fact(tmp_path):
+    """MAJOR 1: the per-class cap is per entity. One person with many rows must
+    not starve the others named in the same prompt."""
+    root, q = make_instance(tmp_path)
+    with open(q / "memory" / "graph.jsonl", "a") as f:
+        for n in range(14):
+            f.write(json.dumps({"s": "Dana Okafor", "p": "cares_about", "o": f"topic {n}",
+                                "t": f"2026-07-{n + 1:02d}", "project": "acme-app"}) + "\n")
+        f.write(json.dumps({"s": "Priya Raman", "p": "pushed_back_on", "o": "the timeline",
+                            "t": "2026-09-01", "project": "x"}) + "\n")
+        f.write(json.dumps({"s": "Tomas Lind", "p": "owns", "o": "the vendor review",
+                            "t": "2026-09-02", "project": "x"}) + "\n")
+    b = run(root, "what do we know about Dana Okafor, Priya Raman and Tomas Lind")
+    assert [e["name"] for e in b["entities"]] == ["Dana Okafor", "Priya Raman", "Tomas Lind"]
+    assert items_of(b, "graph", "Priya Raman"), "second entity got zero facts"
+    assert items_of(b, "graph", "Tomas Lind"), "third entity got zero facts"
+    cap = json.loads(MANIFEST.read_text())["classes"]["entity_lookup"]["sources"]["graph"]["cap"]
+    assert len(items_of(b, "graph", "Dana Okafor")) == cap, "cap applies per entity"
+    assert items_of(b, "graph", "Dana Okafor")[0]["t"] == "2026-09-02", "newest survives the per-entity cap"
+
+
+def test_short_alias_matches_only_uppercase_whole_word(tmp_path):
+    """MAJOR 2: a two-letter alias is an initialism. It matches store content only
+    as an uppercase whole word; never the English word it casefolds to."""
+    root, q = make_instance(tmp_path)
+    (q / "canonical" / "pricing-framework.md").write_text(
+        "# Pricing\nNever do discounts below the floor.\nGlobex asked what we do about weekend support.\n"
+        "DO confirmed the floor holds.\n")
+    b = run(root, "draft an email to Dana Okafor about pricing")
+    texts = [i["text"] for i in items_of(b, "canonical", "Dana Okafor")]
+    assert not any("Never do discounts" in t for t in texts)
+    assert not any("Globex asked" in t for t in texts)
+    assert any("DO confirmed" in t for t in texts), "uppercase whole-word alias still matches"
+    assert ks.alias_in_text("DO", "what do we do") is False
+    assert ks.alias_in_text("DO", "DO said yes") is True
+    assert ks.alias_in_text("dana", "Dana said yes") is True, "4+ char aliases stay case-insensitive"
+
+
+def test_corrupt_commitments_is_unreadable_not_empty(tmp_path):
+    """MAJOR 3: an all-corrupt promise ledger is a missing required source,
+    never an empty one. A partly corrupt one stays present and says how many
+    lines it could not read."""
+    root, q = make_instance(tmp_path)
+    (q / "my-project" / "commitments.jsonl").write_text("{not json\n[1,2]\n")
+    b = run(root, "what have we promised Dana Okafor")
+    assert b["coverage"]["verdict"] == "PARTIAL" and "commitments" in b["coverage"]["missing"]
+    row = {s["class"]: s for s in b["receipt"]["sources"]}["commitments"]
+    assert row["present"] is False and row["bad_lines"] == 2 and "unreadable" in row["problem"]
+    assert "unreadable" in ks.render(b).splitlines()[0]
+    with open(q / "my-project" / "commitments.jsonl", "w") as f:
+        f.write("{not json\n")
+        for r in COMMITMENTS:
+            f.write(json.dumps(r) + "\n")
+    b = run(root, "what have we promised Dana Okafor")
+    row = {s["class"]: s for s in b["receipt"]["sources"]}["commitments"]
+    assert row["present"] is True and row["bad_lines"] == 1 and row["hits"] >= 1
+    assert b["coverage"]["verdict"] == "FULL"
+
+
+def test_first_name_never_line_or_bullet_initial(tmp_path):
+    """MINOR 4: line-initial and bullet-initial are sentence-initial too."""
+    root, _ = make_instance(tmp_path)
+    for prompt in ("Mark the file as done", "Fix the tests\nMark the file as done",
+                   "- Mark the file as done", "1. Mark the file as done", "Notes:\nDana", "todo: Dana"):
+        assert run(root, prompt) is None, prompt
+    assert run(root, "what did Dana say") is not None
+    assert run(root, "Fix the tests, then ask Dana about it") is not None
+
+
+def test_same_date_later_line_is_newer(tmp_path):
+    """Append-only store: two rows on one date, the later line is the later write.
+    Reviewer noted the inverted tiebreak was masked by the conflict branch; this
+    pins it on a non-conflicting predicate where nothing masks it."""
+    root, q = make_instance(tmp_path)
+    with open(q / "memory" / "graph.jsonl", "a") as f:
+        f.write(json.dumps({"s": "Tomas Lind", "p": "noted", "o": "first write", "t": "2026-09-03", "project": "x"}) + "\n")
+        f.write(json.dumps({"s": "Tomas Lind", "p": "noted", "o": "second write", "t": "2026-09-03", "project": "x"}) + "\n")
+    b = run(root, "what do we know about Tomas Lind")
+    noted = [i for i in items_of(b, "graph", "Tomas Lind") if i["predicate"] == "noted"]
+    assert [i["text"] for i in noted][0].endswith("second write")
+
+
+def test_fire_alone_knob_is_live(tmp_path):
+    """MINOR 5: the manifest decides which identifier kinds fire on one word."""
+    root, q = make_instance(tmp_path)
+    assert run(root, "anything new on acme-labs") is not None
+    override = json.loads(MANIFEST.read_text())
+    override["entity_kinds_that_fire_alone"] = []
+    (q / ".q-system" / "data").mkdir()
+    (q / ".q-system" / "data" / "knowledge-sources.json").write_text(json.dumps(override))
+    assert run(root, "anything new on acme-labs") is None, "empty list is a deliberate quiet"
+    del override["entity_kinds_that_fire_alone"]
+    (q / ".q-system" / "data" / "knowledge-sources.json").write_text(json.dumps(override))
+    assert run(root, "anything new on acme-labs") is not None, "absent key is the shipped default"
+
+
 # ---------------------------------------------------------------- receipts and misses
 
 def test_receipt_and_misses_are_written(tmp_path):
