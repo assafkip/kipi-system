@@ -694,7 +694,14 @@ def test_a_paged_read_has_a_whole_read_deadline(rr, monkeypatch):
             pass
 
     art = rr.read_thread("/r/x/comments/abc/t/", pacer=NoPacer())
-    assert art["refused"] is True, "an over-deadline read is a refusal, not a partial"
+    # NOT a refusal. Round 7 wrote this assertion as `refused is True`, and round
+    # 8 showed that was wrong: every page came back 200 and the read simply ran
+    # out of budget, so calling it a refusal blames a host that answered and
+    # discards what it returned. The deadline still has to BITE, which is what
+    # complete=False and deadline_hit assert.
+    assert art["deadline_hit"] is True
+    assert art["complete"] is False
+    assert art["http_status"] == 200
 
 
 def test_read_listing_passes_the_paced_opener_it_builds(rr, monkeypatch):
@@ -732,3 +739,48 @@ def test_read_listing_passes_the_paced_opener_it_builds(rr, monkeypatch):
     rr.read_listing("x", pacer=CountingPacer())
     assert opens, "the fixture must actually fetch"
     assert len(waits) == len(opens), (len(waits), len(opens))
+
+
+def test_a_deadline_is_not_a_refusal(rr, monkeypatch):
+    """Every page already fetched came back 200; the read ran out of budget.
+    Reporting that as "mirror refused" threw away real comments and blamed a
+    host that answered every time (review, round 8)."""
+    import json
+    import urllib.request as u
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(rr._time, "monotonic", lambda: clock["t"])
+
+    class Resp:
+        def __init__(self, payload):
+            self._b = json.dumps(payload).encode()
+
+        def read(self):
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def slow(req, timeout=None):
+        clock["t"] += rr.READ_DEADLINE_S / 2.0
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        if "/api/posts/ids" in url:
+            return Resp({"data": [{"id": "x", "num_comments": 5000}]})
+        n = int(clock["t"])
+        return Resp({"data": [{"id": "p%d_%d" % (n, i),
+                               "created_utc": 1788136000 + n * 1000 + i}
+                              for i in range(100)]})
+
+    monkeypatch.setattr(u, "urlopen", slow)
+
+    class NoPacer:
+        def wait(self):
+            pass
+
+    art = rr.read_thread("/r/x/comments/abc/t/", pacer=NoPacer())
+    assert art["deadline_hit"] is True
+    assert art["complete"] is False, "an over-budget read is incomplete"
+    assert art["http_status"] == 200, "the mirror answered; do not blame it"

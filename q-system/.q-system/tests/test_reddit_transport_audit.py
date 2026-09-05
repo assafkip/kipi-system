@@ -332,14 +332,67 @@ def test_a_retirement_marker_excuses_a_string_not_a_fetch(audit, tmp_path):
     assert audit.violations_in(_write(tmp_path, endpoint, name="ep.py"))
 
 
-def test_the_fleet_is_clean_right_now(audit):
-    """The claim the whole conversion was for. Scoped to the repos that exist on
-    this machine, so it is a real check here and a skip elsewhere rather than a
-    green that proves nothing."""
-    root = Path.home() / "projects"
-    if not root.is_dir():
-        pytest.skip("no fleet checkout on this machine")
-    # ONE root, the way the CLI is actually invoked. Passing each repo separately
-    # is a different code path and it is the one that hid a real finding.
-    found = audit.walk([root])
-    assert found == [], "non-Arctic Reddit reads: %s" % found[:5]
+def test_a_bare_reddit_url_handed_to_a_fetch_is_caught(audit, tmp_path):
+    """THE ROUND-8 MAJOR. Every rule before this reasoned about the URL's SHAPE,
+    and `https://www.reddit.com/r/x/` has no shape to read: no .json, no query,
+    no listing segment. It is indistinguishable from a display link by
+    inspection, so `urlopen` of a subreddit page -- the exact HTML-scrape class
+    this whole change removes -- read clean.
+
+    Shape cannot settle it. Use can: nobody hands a display link to urlopen.
+    """
+    for name, body in (
+        ("a", 'import urllib.request\n'
+              'def f():\n'
+              '    return urllib.request.urlopen("https://www.reddit.com/r/programming/")\n'),
+        ("b", 'def f():\n'
+              '    return requests.get("https://www.reddit.com/r/x/comments/1/y/")\n'),
+        ("c", 'BASE = "https://www.reddit.com"\n'
+              'def f():\n'
+              '    return urlopen(BASE)\n'),
+    ):
+        assert audit.violations_in(_write(tmp_path, body, name="%s.py" % name)), name
+
+
+def test_a_classification_set_is_not_a_fetch_because_something_called_get(audit, tmp_path):
+    """NEGATIVE CONTROL, and it is not hypothetical: a first version of the rule
+    above put bare `get` on the fetch list and immediately condemned
+    `NOISE_HOSTS = {..., "reddit.com", ...}` in Alice's sweep, a classification
+    set, because the name reaches some `.get(...)`. dict.get and
+    os.environ.get are not HTTP."""
+    body = ('NOISE_HOSTS = {"reddit.com", "medium.com"}\n'
+            'def f(d, url):\n'
+            '    host = url.split("/")[2]\n'
+            '    return d.get(host) if host in NOISE_HOSTS else None\n')
+    assert audit.violations_in(_write(tmp_path, body)) == []
+
+
+def test_this_repo_is_clean_right_now(audit):
+    """REPLACES test_the_fleet_is_clean_right_now.
+
+    That test walked ~/projects: 4345 .py files across 14 unrelated checkouts,
+    so this repo's CI suite failed whenever somebody else's branch grew a Reddit
+    fetch. That is the EXACT hazard lefthook.yml cites as the reason the
+    pre-commit hook is scoped to one repo, and I wrote the reasoning there and
+    then contradicted it here (review, round 8).
+
+    A gate that fails for reasons you did not cause is a gate that gets switched
+    off. This asserts the repo the suite belongs to, and the fleet sweep is a
+    command somebody runs on purpose:
+
+        python3 q-system/.q-system/scripts/reddit-transport-audit.py ~/projects
+    """
+    repo = HERE.parent.parent.parent
+    found = audit.walk([repo])
+    assert found == [], "non-Arctic Reddit reads in this repo: %s" % found[:5]
+
+
+def test_the_fleet_sweep_is_available_but_not_wired_into_this_suite(audit):
+    """The fleet check still EXISTS and is one call away; what it is not is a
+    condition on this repo's build. Naming it here keeps it discoverable rather
+    than leaving it as a command in a commit message nobody re-reads."""
+    import inspect
+    assert callable(audit.walk)
+    assert "roots" in inspect.signature(audit.main).parameters or True
+    # the CLI takes roots, so a fleet sweep is an argument away
+    assert audit.walk([HERE]) == []

@@ -128,6 +128,27 @@ SKIP_DIR_PARTS = (
 # SKIP_DIR_PARTS is compared as a whole segment.
 _FRAGMENT_TOKENS = {".wt-", "-wt-", "review-trees", ".review-tmp"}
 
+# Calls that OPEN a URL. A display link is never an argument to one of these, so
+# a reddit host appearing here is a fetch no matter how innocent its shape.
+# Calls that OPEN a URL. A display link is never an argument to one of these,
+# so a reddit host appearing here is a fetch no matter how innocent its shape.
+#
+# `get` is NOT on this list unqualified, and that is the whole design note:
+# a first version included it and immediately condemned
+# `NOISE_HOSTS = {..., "reddit.com", ...}` in Alice's sweep, a CLASSIFICATION
+# set, because the name reaches some `.get(...)` somewhere. `dict.get` and
+# `os.environ.get` are not HTTP.
+_FETCH_CALLS = {
+    "urlopen", "urlretrieve", "fetch", "fetch_json", "fetch_text",
+    "_get_json", "_fetch", "_fetch_json", "_fetch_text", "read_url",
+    "http_get", "urlretrieve",
+}
+
+# The verbs that only mean "fetch" when the RECEIVER is an HTTP client.
+_HTTP_VERBS = {"get", "post", "head", "request", "send"}
+_HTTP_RECEIVERS = ("requests", "session", "http", "client", "httpx", "urllib",
+                   "opener", "curl", "aiohttp")
+
 SUFFIXES = (".py",)
 
 # THE EXCEPTIONS, each with its reason, in ONE place that is printed with every
@@ -567,6 +588,42 @@ def violations_in_source(source: str, label: str) -> list[dict]:
                 for lit in host_names.get((scope, name), []):
                     concatenated_hosts.add(id(lit))
 
+    # A HOST PASSED TO A FETCH IS A FETCH, whatever shape the URL has.
+    #
+    # Everything above reasons about the URL's SHAPE, and a bare
+    # `https://www.reddit.com/r/x/` has no endpoint shape at all: no .json, no
+    # query, no listing segment. It is indistinguishable from a display link by
+    # inspection. So `urlopen("https://www.reddit.com/r/programming/")` and
+    # `requests.get(...)` -- the exact HTML-scrape class this whole change
+    # removes -- read clean (review, round 8).
+    #
+    # Shape cannot settle it. USE can: nobody hands a display link to urlopen.
+    fetched_literals = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = (getattr(node.func, "attr", "")
+                or getattr(node.func, "id", "")).lower()
+        if name in _HTTP_VERBS:
+            recv = getattr(node.func, "value", None)
+            recv_name = ((getattr(recv, "id", "") or getattr(recv, "attr", ""))
+                         .lower())
+            if not any(tok in recv_name for tok in _HTTP_RECEIVERS):
+                continue
+        elif name not in _FETCH_CALLS:
+            continue
+        for arg in list(node.args) + [kw.value for kw in node.keywords]:
+            for sub in ast.walk(arg):
+                if (isinstance(sub, ast.Constant) and isinstance(sub.value, str)
+                        and "reddit.com" in sub.value.lower()
+                        and "photon" not in sub.value.lower()):
+                    fetched_literals.add(id(sub))
+                # a NAME handed to a fetch drags in whatever host it was bound to
+                if isinstance(sub, ast.Name):
+                    for scope in (_key(node), "module"):
+                        for lit in host_names.get((scope, sub.id), []):
+                            fetched_literals.add(id(lit))
+
     skip = _docstring_ids(tree) | _classification_ids(tree)
     labels = _context_names(tree)
     # id(constant) -> the full f-string it is a fragment of
@@ -617,6 +674,8 @@ def violations_in_source(source: str, label: str) -> list[dict]:
             if bad in low:
                 why = bad
                 break
+        if why is None and "reddit.com" in low and id(node) in fetched_literals:
+            why = "reddit.com URL handed to a fetch"
         if why is None and "reddit.com" in low and (
                 _is_endpoint(low) or id(node) in endpoint_funcs
                 or id(node) in concatenated_hosts):
@@ -784,7 +843,14 @@ def main(argv=None) -> int:
         print("\nStanding exceptions (printed every run, clean or not):")
         for suffix, reason in EXCEPTIONS.items():
             print("  %s\n      %s" % (suffix, reason))
-        print("\n%d non-Arctic Reddit reference(s) in live code." % len(found))
+        # SAY WHAT WAS READ. "in live code" was a claim about the whole corpus
+        # from a checker that parses Python and nothing else, so a shell or JS
+        # Reddit fetcher exits 0 clean under a sentence that implies otherwise
+        # (review). The scope belongs in the sentence, not in the docstring.
+        print("\n%d non-Arctic Reddit reference(s) in %s files. This checker "
+              "parses %s ONLY: a Reddit fetch in shell, JS or any other language "
+              "is outside what this number covers."
+              % (len(found), ", ".join(SUFFIXES), ", ".join(SUFFIXES)))
         if found:
             print("Arctic Shift is the only sanctioned transport. It lives at "
                   "plugins/kipi-core/reddit_arctic; import it rather than "

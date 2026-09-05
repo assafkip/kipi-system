@@ -544,9 +544,19 @@ def read_thread(permalink: str, transport=None, pacer=None, now=None,
             declared = rows[0].get("num_comments")
     except _ARCTIC.RedditFetchFailed:
         pass          # no declared count. coverage_pct becomes None, not zero.
+    partial = None
     try:
         read = _ARCTIC.all_comments(link_id, timeout=timeout, _get=getter,
                                     _opener=opener)
+    except TimeoutError as exc:
+        # A DEADLINE IS NOT A REFUSAL. Every page already fetched came back 200;
+        # the read simply ran out of budget. Reporting that as
+        # "mirror refused" threw away real comments and blamed a host that
+        # answered every time (review). It is an INCOMPLETE read, labelled as
+        # one, carrying what it got.
+        read = {"comments": [], "fetched": 0, "pages": 0,
+                "complete": False, "capped": True, "deadline": str(exc)}
+        partial = read
     except _ARCTIC.RedditFetchFailed as exc:
         return _refusal(url, seen.get("status", "EXC:RedditFetchFailed: %s" % exc), now)
 
@@ -573,6 +583,7 @@ def read_thread(permalink: str, transport=None, pacer=None, now=None,
         "expected_incomplete": bool(read["capped"]),
         "pages": read["pages"],
         "source": "arctic",
+        "deadline_hit": partial is not None,
         "user_agent": USER_AGENT,
     }
     assert_coverage_recorded(artifact)

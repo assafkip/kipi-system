@@ -112,6 +112,13 @@ MAX_LIMIT = 100
 RETIRED_ACTOR = "trudax/reddit-scraper-lite"
 
 
+# A CALLER'S DEADLINE IS NOT A MIRROR REFUSAL. `reddit_read` paces and bounds a
+# whole read by raising TimeoutError from its own opener; wrapping that into
+# RedditFetchFailed made an over-budget read indistinguishable from a host that
+# said no, and the caller then threw away pages the mirror had already returned
+# 200 for (PR 307 round 8). Every `except` below re-raises it unchanged.
+
+
 class RedditFetchFailed(RuntimeError):
     """Every mirror refused. Raised, never returned as an empty list, because an
     empty list is indistinguishable from an empty subreddit."""
@@ -188,10 +195,14 @@ def fetch_posts(subreddit: str, *, limit: int = DEFAULT_MAX_ITEMS,
         return _items(_get_json(arctic_url(subreddit, limit, after=after,
                                            before=before),
                                 timeout, _opener, _get)), "arctic"
+    except TimeoutError:
+        raise
     except Exception as arctic_exc:
         try:
             return _items(_get_json(pullpush_url(subreddit, limit),
                                     timeout, _opener, _get)), "pullpush"
+        except TimeoutError:
+            raise
         except Exception as pullpush_exc:
             raise RedditFetchFailed(
                 "both mirrors refused r/%s: arctic=%s: %s; pullpush=%s: %s"
@@ -214,6 +225,8 @@ def comments(link_id: str, *, limit: int = MAX_LIMIT,
     empty list is a QUIET thread and must never be a broken fetch wearing one."""
     try:
         data = _get_json(comments_url(link_id, limit), timeout, _opener, _get)
+    except TimeoutError:
+        raise
     except Exception as exc:
         raise RedditFetchFailed("mirror refused comments for %s: %s: %s"
                                 % (link_id, type(exc).__name__, exc))
@@ -237,6 +250,8 @@ def author_items(author: str, *, limit: int = 25, timeout: int = DEFAULT_TIMEOUT
     for kind in ("posts", "comments"):
         try:
             data = _get_json(author_url(kind, author, limit), timeout, _opener, _get)
+        except TimeoutError:
+            raise
         except Exception as exc:
             raise RedditFetchFailed("mirror refused %s for u/%s: %s: %s"
                                     % (kind, author, type(exc).__name__, exc))
@@ -478,6 +493,8 @@ def all_comments(link_id: str, *, page_size: int = MAX_LIMIT, max_pages: int = 4
         url = comments_url(link_id, page_size, after=after)
         try:
             batch = _items(_get_json(url, timeout, _opener, _get))
+        except TimeoutError:
+            raise
         except Exception as exc:
             raise RedditFetchFailed("mirror refused comments page %d for %s: %s: %s"
                                     % (pages + 1, link_id, type(exc).__name__, exc))
@@ -545,6 +562,8 @@ def posts_by_id(ids, *, timeout: int = DEFAULT_TIMEOUT, _opener=None,
     """
     try:
         return _items(_get_json(posts_by_id_url(ids), timeout, _opener, _get))
+    except TimeoutError:
+        raise
     except Exception as exc:
         raise RedditFetchFailed("mirror refused posts %s: %s: %s"
                                 % (ids, type(exc).__name__, exc))
