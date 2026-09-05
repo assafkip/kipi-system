@@ -53,6 +53,7 @@ stdlib only.
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import importlib.util
 import json
 import os
@@ -221,16 +222,26 @@ def load_manifest(qroot: Path, root: Path) -> tuple[dict | None, Path | None]:
     return None, None
 
 
-def load_vocab_floor() -> tuple[set[str], int]:
-    """(names ranked at the floor, floor rank). Read from the owner every call:
-    the file is small and a cached copy is the drift the file's own scar records."""
-    path = Path(__file__).resolve().parent / VOCAB_NAME
+VOCAB_PATH = Path(__file__).resolve().parent / VOCAB_NAME
+
+
+@functools.lru_cache(maxsize=4)
+def _vocab_floor_at(mtime_ns: int) -> tuple[frozenset[str], int]:
+    table = load_json(VOCAB_PATH)["provenance"]
+    floor = min(v["rank"] for v in table.values())
+    return frozenset(k for k, v in table.items() if v["rank"] <= floor), floor
+
+
+def load_vocab_floor() -> tuple[frozenset[str], int]:
+    """(names ranked at the floor, floor rank). Still read from the owner, keyed
+    on its mtime so an edit to the vocabulary is seen on the next call, but
+    parsed once per version rather than once per matched line. Codex round 2 on
+    PR #302: the per-line re-parse was the whole cost of status_for_line on a
+    hook wired at timeout 5."""
     try:
-        table = load_json(path)["provenance"]
-        floor = min(v["rank"] for v in table.values())
-        return {k for k, v in table.items() if v["rank"] <= floor}, floor
+        return _vocab_floor_at(VOCAB_PATH.stat().st_mtime_ns)
     except Exception:
-        return {"inferred"}, 10
+        return frozenset({"inferred"}), 10
 
 
 def status_for_line(line: str) -> str:
@@ -362,7 +373,10 @@ def resolve_entities(prompt: str, index: dict[str, Entity], fire_alone: set[str]
     # and is the first token of exactly ONE multi-token index entity resolves to
     # it. Sentence-initial stays out ("Mark the file as done" is a verb), so a
     # first name alone at the start of a prompt still never fires.
-    if not found:
+    # Runs ALONGSIDE the other resolutions, never only when they found nothing.
+    # Codex round 2 on PR #302: gated on `if not found`, a first name was dropped
+    # whenever any other entity resolved, under a FULL header and no misses row.
+    if True:
         first_tokens: dict[str, list[str]] = {}
         for key, ent in index.items():
             toks = ent.name.split()
@@ -852,20 +866,31 @@ def assemble(items: list[dict], entities: list[dict], ceiling: int, header_len: 
             seen_ent.add(norm(it["entity"]))
     used = header_len
     kept, cut, ceiling_hit = [], 0, False
-    # The first cut ends the fill for everything except pinned items. A per-item
-    # check would let a short low-tier line slip into the gap left after a
-    # higher-tier cut, which reorders priority by accident (measured: the pin
-    # mutation survived until this was a hard stop).
+    # Pins are reserved FIRST and always kept, so their cost sits inside `used`
+    # before the fill starts. If the pins alone overrun the ceiling, that is
+    # REPORTED (ceiling_hit, overflow), never hidden: Codex round 2 on PR #302
+    # found pinned items slipping past the ceiling under cut=0, ceiling_hit=False.
+    for idx in sorted(pinned):
+        used += len(render_item(deduped[idx])) + 1
+        kept.append(deduped[idx])
+    if used > ceiling:
+        ceiling_hit = True
+    # The first cut ends the fill for everything else. A per-item check would
+    # let a short low-tier line slip into the gap left after a higher-tier cut,
+    # which reorders priority by accident (measured: the pin mutation survived
+    # until this was a hard stop).
     for idx, it in enumerate(deduped):
+        if idx in pinned:
+            continue
         cost = len(render_item(it)) + 1
-        if idx in pinned or (not ceiling_hit and used + cost <= ceiling):
+        if not ceiling_hit and used + cost <= ceiling:
             kept.append(it)
             used += cost
         else:
             cut += 1
             ceiling_hit = True
     kept.sort(key=lambda i: (order.get(norm(i["entity"]), 99), TIER.get(i["kind"], 9)))  # stable: resolver order survives inside a tier (open commitments first, newest first)
-    return kept, cut, ceiling_hit
+    return kept, cut, ceiling_hit, max(0, used - ceiling)
 
 
 def render_item(it: dict) -> str:
@@ -1071,15 +1096,16 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
         "receipt_path": rel(receipts_path, root),
     }
     header_len = len(render_header(bundle)) + 200
-    kept, cut, ceiling_hit = assemble(items, entities, ceiling, header_len)
+    kept, cut, ceiling_hit, overflow = assemble(items, entities, ceiling, header_len)
     bundle["items"] = kept
     bundle["budget"]["cut"] = cut + sum(r["cut"] for r in source_rows)
+    bundle["budget"]["overflow"] = overflow   # chars the pins alone ran past the ceiling; 0 when honest
     bundle["budget"]["used"] = len(render(bundle))
     receipt = {
         "ts": ts, "session_id": session_id, "task_class": task_class, "prompt_hash": _hash(prompt),
         "entities": [e["name"] for e in entities], "window": window,
         "sources": source_rows, "declared_missing": missing, "coverage": verdict,
-        "conflicts": conflicts, "ceiling_hit": ceiling_hit,
+        "conflicts": conflicts, "ceiling_hit": ceiling_hit, "overflow": overflow,
         "items": len(kept), "bytes": bundle["budget"]["used"], "elapsed_ms": int((time.time() - t0) * 1000),
         "manifest": rel(manifest_path, root) if manifest_path else None,
     }

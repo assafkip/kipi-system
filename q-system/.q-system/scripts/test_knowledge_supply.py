@@ -535,6 +535,51 @@ def test_fire_alone_knob_is_live(tmp_path):
     assert run(root, "anything new on acme-labs") is not None, "absent key is the shipped default"
 
 
+# ---------------------------------------------------------------- Codex round 2 on PR #302
+
+def test_first_name_resolves_alongside_other_entities(tmp_path):
+    """MAJOR: expansion ran only when nothing else resolved, so 'Mark Chen and
+    Dana' silently dropped Dana under a FULL header."""
+    root, _ = make_instance(tmp_path)
+    b = run(root, "what do we know about Mark Chen and Dana")
+    names = {e["name"]: e for e in b["entities"]}
+    assert "Mark Chen" in names and "Dana Okafor" in names
+    assert names["Dana Okafor"]["resolved_from"] == "first_name"
+    assert items_of(b, "graph", "Dana Okafor"), "the first-named person's facts are present"
+    assert items_of(b, "graph", "Mark Chen")
+
+
+def test_pins_alone_over_ceiling_is_reported_not_hidden(tmp_path):
+    """MINOR: pinned items always ship, so if the pins alone overrun the ceiling
+    the receipt says so (ceiling_hit, overflow) instead of cut=0."""
+    root, q = make_instance(tmp_path)
+    words = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India", "Juliet",
+             "Kilo", "Lima", "Mike", "November", "Oscar", "Papa", "Quebec", "Romeo", "Sierra", "Tango",
+             "Uniform", "Victor", "Whiskey", "Xray", "Yankee", "Zulu", "Amber", "Bronze", "Coral", "Denim",
+             "Ember", "Flint", "Garnet", "Hazel", "Ivory", "Jade", "Khaki", "Lilac", "Mauve", "Nickel"]
+    names = [f"Pinned {w}" for w in words]
+    with open(q / "memory" / "graph.jsonl", "a") as f:
+        for n, name in enumerate(names):
+            f.write(json.dumps({"s": name, "p": "noted", "o": f"object {n} " + "z" * 250,
+                                "t": "2026-09-01", "project": "bulk"}) + "\n")
+    b = run(root, "status on " + ", ".join(names))
+    assert len(b["entities"]) == len(names)
+    assert all(items_of(b, "graph", name) for name in names), "every entity keeps its pinned fact"
+    assert b["receipt"]["ceiling_hit"] is True
+    assert b["budget"]["overflow"] > 0 and b["receipt"]["overflow"] == b["budget"]["overflow"]
+    assert len(ks.render(b)) > b["budget"]["ceiling"], "the overrun is real and reported, not hidden"
+
+
+def test_vocab_floor_is_parsed_once_per_version():
+    """MINOR: status_for_line re-parsed provenance-vocabulary.json per matched
+    line. Cached on the file's mtime, so an edit is still seen next call."""
+    ks._vocab_floor_at.cache_clear()
+    a = ks.load_vocab_floor()
+    b = ks.load_vocab_floor()
+    assert a == b and ks._vocab_floor_at.cache_info().hits >= 1
+    assert ks._vocab_floor_at.cache_info().misses == 1
+
+
 # ---------------------------------------------------------------- receipts and misses
 
 def test_receipt_and_misses_are_written(tmp_path):
