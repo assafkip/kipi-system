@@ -302,3 +302,32 @@ def test_search_pages_because_it_matches_locally():
 
     t.search("x", "needle", _get=one)
     assert len(calls) == 1, calls
+
+
+def test_the_contract_competitive_intel_depends_on():
+    """kipi-mcp's own suite is SKIPPED in CI for missing plugin deps
+    (apify-client, feedparser, mcp, pyyaml, tenacity), which is a documented
+    exclusion with a ticket, sp-97ce989b. So `competitive_intel` is guarded by
+    nothing there (PR 307 review).
+
+    What that module now does with Reddit is delegate to this transport through
+    the `_get` seam, so the ONE rule it depends on can be pinned HERE, in a suite
+    the floor runs: both mirrors refusing raises, and a quiet subreddit returns
+    an empty list. Reverting `_reddit_archive_posts` to `return []` still would
+    not fail its own suite; reverting THIS breaks a suite that runs.
+
+    That is a smaller claim than "competitive_intel is tested in CI" and it is
+    the true one. The dependency install is a CI-environment change with its own
+    blast radius and belongs to its ticket, not to this PR.
+    """
+    op = opener_for({"arctic-shift": OSError("down"), "pullpush": OSError("down")})
+    with pytest.raises(t.RedditFetchFailed):
+        t.fetch_posts("taxpros", limit=5, _opener=op)
+
+    # the `_get` seam competitive_intel injects through, both ways
+    with pytest.raises(t.RedditFetchFailed):
+        t.fetch_posts("taxpros", limit=5,
+                      _get=lambda url: (_ for _ in ()).throw(OSError("down")))
+    rows, mirror = t.fetch_posts("taxpros", limit=5,
+                                 _get=lambda url: {"data": []})
+    assert rows == [] and mirror == "arctic", "a quiet room is still empty"

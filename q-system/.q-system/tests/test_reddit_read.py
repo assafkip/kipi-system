@@ -567,3 +567,51 @@ def test_the_pacer_covers_every_request_a_paged_read_makes(rr):
                    pacer=CountingPacer())
     assert pages["n"] > 1, "the fixture must actually page"
     assert len(waits) == pages["n"] + 1, (len(waits), pages["n"])
+
+
+def test_the_production_path_is_paced_not_only_the_injected_one(rr, monkeypatch):
+    """THE ROUND-6 MAJOR, and the mode-nobody-tests defect in one function.
+
+    Round 5 wrapped the injected getter and returned None when no transport was
+    supplied, reasoning "the transport does its own fetching, so there is nothing
+    to pace". Backwards: `transport` is None on the MCP and CLI paths, so the
+    only arm that got paced was the one TESTS supply. Production made up to 41
+    unpaced mirror requests per thread.
+    """
+    import json
+    import urllib.request as u
+
+    waits, opens = [], []
+
+    class CountingPacer:
+        def wait(self):
+            waits.append(1)
+
+    class Resp:
+        def __init__(self, payload):
+            self._b = json.dumps(payload).encode()
+
+        def read(self):
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        opens.append(url)
+        if "/api/posts/ids" in url:
+            return Resp({"data": [{"id": "x", "num_comments": 300}]})
+        n = len([o for o in opens if "comments/search" in o])
+        rows = [{"id": "p%d_%d" % (n, i), "created_utc": 1788136000 + n * 1000 + i}
+                for i in range(100 if n < 3 else 4)]
+        return Resp({"data": rows})
+
+    monkeypatch.setattr(u, "urlopen", fake_urlopen)
+    rr.read_thread("/r/x/comments/abc/t/", pacer=CountingPacer())
+
+    assert len(opens) > 1, "the fixture must actually page"
+    assert len(waits) == len(opens), (len(waits), len(opens))

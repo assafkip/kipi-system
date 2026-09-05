@@ -310,6 +310,28 @@ def test_the_transport_suite_is_in_the_ci_manifest():
     assert "plugins/kipi-core/reddit_arctic" in manifest.read_text()
 
 
+def test_a_retirement_marker_excuses_a_string_not_a_fetch(audit, tmp_path):
+    """Neither order of the checks was the answer.
+
+    Marker before the denylist: `DEPRECATED_BASE = "https://old.reddit.com"`
+    composed into a live fetch was exempt on the strength of its name (round-6
+    review). Marker after: `RETIRED_ACTOR = "trudax/..."`, a bare string nothing
+    calls, got condemned. The question was never WHEN to read the name. It is
+    whether the literal is USED.
+    """
+    tomb = 'RETIRED_ACTOR = "trudax/reddit-scraper-lite"\n'
+    assert audit.violations_in(_write(tmp_path, tomb)) == []
+
+    used = ('DEPRECATED_BASE = "https://old.reddit.com"\n'
+            'def f(p):\n'
+            '    return _get(DEPRECATED_BASE + p + "/new.json")\n')
+    assert audit.violations_in(_write(tmp_path, used, name="used.py"))
+
+    # a marked name whose literal IS an endpoint on its own is also a fetch
+    endpoint = 'RETIRED_URL = "https://old.reddit.com/r/x/new.json"\n'
+    assert audit.violations_in(_write(tmp_path, endpoint, name="ep.py"))
+
+
 def test_the_fleet_is_clean_right_now(audit):
     """The claim the whole conversion was for. Scoped to the repos that exist on
     this machine, so it is a real check here and a skip elsewhere rather than a

@@ -503,7 +503,10 @@ def read_thread(permalink: str, transport=None, pacer=None, now=None,
     # wait and five unpaced fetches while the class docstring still promised
     # "at most one request per min_interval_s" (review).
     getter, seen = _as_getter(transport, timeout)
-    getter = _paced(getter, pacer)
+    paced = _paced(getter, pacer)
+    # One of the two seams, never both: a caller-supplied transport arrives as a
+    # getter, and the bare production path is paced at the opener.
+    getter, opener = (paced, None) if getter is not None else (None, paced)
     # TWO READS, TWO FATES. They shared one `try`, and `posts_by_id` runs first,
     # so a /api/posts/ids outage discarded a thread the comments endpoint served
     # fine: refused=True, http_status=503, comments=None, for 7 comments that
@@ -512,13 +515,15 @@ def read_thread(permalink: str, transport=None, pacer=None, now=None,
     # and not the thread, and this caller was the one deciding otherwise.
     declared = None
     try:
-        rows = _ARCTIC.posts_by_id(link_id, timeout=timeout, _get=getter)
+        rows = _ARCTIC.posts_by_id(link_id, timeout=timeout, _get=getter,
+                                   _opener=opener)
         if rows:
             declared = rows[0].get("num_comments")
     except _ARCTIC.RedditFetchFailed:
         pass          # no declared count. coverage_pct becomes None, not zero.
     try:
-        read = _ARCTIC.all_comments(link_id, timeout=timeout, _get=getter)
+        read = _ARCTIC.all_comments(link_id, timeout=timeout, _get=getter,
+                                    _opener=opener)
     except _ARCTIC.RedditFetchFailed as exc:
         return _refusal(url, seen.get("status", "EXC:RedditFetchFailed: %s" % exc), now)
 
@@ -552,16 +557,30 @@ def read_thread(permalink: str, transport=None, pacer=None, now=None,
 
 
 def _paced(getter, pacer):
-    """Every fetch waits, not just the first. `getter` may be None when no
-    transport was injected, and then the transport does its own fetching, so
-    there is nothing here to pace."""
-    if getter is None:
-        return None
+    """Every fetch waits. Including production, which is where it was not.
 
-    def _get(url):
+    Round 5 wrapped `getter` and returned None when no transport was injected,
+    reasoning that "the transport does its own fetching, so there is nothing
+    here to pace". That is exactly backwards: `transport` is None on the MCP and
+    CLI paths, so the ONLY arm that got paced was the one tests supply, and
+    production made up to 41 unpaced mirror requests per thread (review).
+
+    Fixing the injected path and leaving production alone is the mode-nobody-
+    tests defect in one function. When no transport is injected, this returns a
+    paced OPENER instead, which is the seam the transport actually uses.
+    """
+    if getter is not None:
+        def _get(url):
+            pacer.wait()
+            return getter(url)
+        return _get
+
+    import urllib.request as _u
+
+    def _opener(req, timeout=None):
         pacer.wait()
-        return getter(url)
-    return _get
+        return _u.urlopen(req, timeout=timeout)
+    return _opener
 
 
 def _as_getter(transport, _timeout: int = DEFAULT_TIMEOUT_S):
@@ -609,7 +628,10 @@ def read_listing(subreddit: str, period: str = "month", transport=None,
     # wait and five unpaced fetches while the class docstring still promised
     # "at most one request per min_interval_s" (review).
     getter, seen = _as_getter(transport, timeout)
-    getter = _paced(getter, pacer)
+    paced = _paced(getter, pacer)
+    # One of the two seams, never both: a caller-supplied transport arrives as a
+    # getter, and the bare production path is paced at the opener.
+    getter, opener = (paced, None) if getter is not None else (None, paced)
     try:
         posts = _ARCTIC.recent(subreddit, max_items=_ARCTIC.MAX_LIMIT,
                                timeout=timeout, _get=getter)

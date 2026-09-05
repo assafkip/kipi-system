@@ -605,8 +605,6 @@ def violations_in_source(source: str, label: str) -> list[dict]:
         # label. It cannot argue about a retired host.
         why = None
         label_early = (labels.get(id(node)) or "").lower()
-        if _name_says(label_early, RETIREMENT_MARKERS):
-            continue          # a tombstone, not a call site
 
         # THE HARD DENYLIST AND THE ENDPOINT TEST BOTH RUN BEFORE ANY NAME MAY
         # EXEMPT. Round 2 moved the denylist ahead of the names and stopped
@@ -627,6 +625,23 @@ def violations_in_source(source: str, label: str) -> list[dict]:
         # left here is a plain www.reddit.com URL with no endpoint shape, which
         # is what a profile or a permalink looks like, so a classification list
         # or a piece of evidence data may say "this is a label, not a fetch".
+        # A TOMBSTONE MAY NAME THE DEAD THING. It may not BE a live fetch.
+        #
+        # The marker used to run before the denylist, so `DEPRECATED_BASE =
+        # "https://old.reddit.com"` composed into a real fetch was exempt on the
+        # strength of its name (review). Running it after instead broke the case
+        # it exists for: `RETIRED_ACTOR = "trudax/..."` is a bare string that
+        # nothing calls, and the denylist condemned it.
+        #
+        # Neither order is the answer, because the question is not WHEN to check
+        # the name. It is whether the literal is USED. A retirement marker
+        # excuses a string that is never composed into a URL, and excuses
+        # nothing that is.
+        if _name_says(label_early, RETIREMENT_MARKERS) and \
+                id(node) not in concatenated_hosts and \
+                id(node) not in endpoint_funcs and \
+                not _is_endpoint(low):
+            continue
         if why is None and _name_says(label_early,
                                       DENYLIST_NAMES + DATA_NAMES):
             continue
