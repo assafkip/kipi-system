@@ -111,7 +111,14 @@ CAPABILITY_RE = re.compile(
     r"\b(?:how (?:does|do|is)|what (?:is|does|are)|what's|explain|describe|where (?:does|is)|walk me through)\s+"
     r"(?:the\s+|our\s+|kipi'?s?\s+)?([\w][\w./-]*(?:\s+[\w][\w./-]*){0,2})", re.IGNORECASE)
 HASH_REF_RE = re.compile(r"(?<![\w/])#\d{2,6}\b")
-CAP_BIGRAM_RE = re.compile(r"\b([A-Z][\w'-]+)\s+([A-Z][\w'-]+)\b")
+# Lookahead so the scan overlaps: "Ping Sarah Chen" yields "Sarah Chen" and not
+# only "Ping Sarah" (sp-c9b6401d). Sentence openers and articles as a FIRST
+# token are dropped by MISS_OPENERS, not by the initial-position rule, which
+# stays inside single_token_hit as its only call site.
+CAP_BIGRAM_RE = re.compile(r"(?=\b([A-Z][\w'-]+)\s+([A-Z][\w'-]+)\b)")
+MISS_OPENERS = {"the", "a", "an", "and", "or", "ping", "ask", "tell", "email", "call", "review",
+                "check", "send", "draft", "write", "read", "open", "run", "fix", "add", "update",
+                "see", "note", "re", "fw", "fwd", "please", "also", "then", "when", "what", "who"}
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 WRITING_FALLBACK = [r"\bwrit\w*\b", r"\bdraft\w*\b", r"\bcompose\w*\b", r"\bemail\w*\b",
@@ -335,6 +342,39 @@ def candidate_keys(index: dict[str, Entity], ptoks: set[str]) -> list[str]:
     return out
 
 
+def single_token_hit(tok: str, prompt: str, rule: str) -> bool:
+    """THE one place a one-word name is accepted from the prompt: a contact
+    heading, an uppercase alias, an identifier kind the manifest lists, or a
+    first-name expansion. Every occurrence is checked with the initial-position
+    rule, so a sentence-, line- or bullet-initial token never fires on any
+    path. ASK-1261: PR #302 round 1 minor 4 and round 5 major were the same
+    defect on two paths (one guard, applied to one of them). Two paths, one
+    guard, is the repeat; one chokepoint is the fix, and
+    test_initial_position_has_one_call_site pins that this is the only caller."""
+    if not tok or tok.casefold() in STOPWORDS:
+        return False
+    if rule == "alias":
+        if not (len(tok) >= 4 or tok.isupper()):
+            return False
+        pat, hay = re.compile(r"(?<!\w)" + re.escape(tok) + r"(?!\w)"), prompt
+    elif rule == "identifier":
+        if len(tok) < 4:
+            return False
+        # Positions preserved: casefold plus the same two replacements norm() makes.
+        pat = re.compile(r"(?<!\w)" + re.escape(norm(tok)) + r"(?!\w)")
+        hay = prompt.casefold().replace("-", " ").replace("_", " ")
+    elif rule == "contact":
+        if len(tok) < 4 or not tok[0].isupper():
+            return False
+        pat, hay = re.compile(r"(?<!\w)" + re.escape(tok) + r"(?!\w)"), prompt
+    else:
+        return False
+    for m in pat.finditer(hay):
+        if not is_initial_position(prompt, m.start()):
+            return True
+    return False
+
+
 def resolve_entities(prompt: str, index: dict[str, Entity], fire_alone: set[str]) -> list[dict]:
     """Which index entities the prompt names. Multi-token: phrase match. Single
     token: identifier kinds on a whole-word match, contacts on the capitalized
@@ -358,24 +398,19 @@ def resolve_entities(prompt: str, index: dict[str, Entity], fire_alone: set[str]
                     hit_via = via
             else:
                 tok = toks[0] if toks else ""
-                if not tok or tok.casefold() in STOPWORDS:
-                    continue
+                # Every single-token path goes through single_token_hit. The
+                # manifest decides which identifier kinds fire on one word (no
+                # hardcoded second list, Codex round 1 on PR #302); a graph-only
+                # single token never fires alone.
                 if via == "alias":
-                    if (len(tok) >= 4 or tok.isupper()) and word_in_exact(tok, prompt):
+                    if single_token_hit(tok, prompt, "alias"):
                         hit_via = via
-                    continue
-                if len(tok) < 4:
-                    continue
-                if ent.kind in fire_alone:
-                    # The manifest decides which identifier kinds fire on one
-                    # word. No hardcoded second list: Codex round 1 on PR #302
-                    # found the knob inert because an `or` here overrode it.
-                    if re.search(r"(?<!\w)" + re.escape(norm(tok)) + r"(?!\w)", pn):
+                elif ent.kind in fire_alone:
+                    if single_token_hit(tok, prompt, "identifier"):
                         hit_via = via
                 elif ent.kind == "contact":
-                    if word_in_exact(tok, prompt) and tok[0].isupper():
+                    if single_token_hit(tok, prompt, "contact"):
                         hit_via = via
-                # graph-only single token: never alone
             if hit_via:
                 break
         if not hit_via:
@@ -407,14 +442,14 @@ def resolve_entities(prompt: str, index: dict[str, Entity], fire_alone: set[str]
             toks = ent.name.split()
             if len(toks) >= 2:
                 first_tokens.setdefault(toks[0].casefold(), []).append(key)
+        seen_tok: set[str] = set()
         for m in re.finditer(r"\b([A-Z][a-z]{3,})\b", prompt):
-            if is_initial_position(prompt, m.start()):
-                continue
             tok = m.group(1)
-            if tok.casefold() in STOPWORDS:
+            if tok in seen_tok:
                 continue
+            seen_tok.add(tok)
             keys = first_tokens.get(tok.casefold()) or []
-            if len(keys) == 1 and keys[0] not in found:
+            if len(keys) == 1 and keys[0] not in found and single_token_hit(tok, prompt, "contact"):
                 ent = index[keys[0]]
                 found[keys[0]] = {"name": ent.name, "kind": ent.kind, "resolved_from": "first_name",
                                   "ambiguous": len(ent.orgs) >= 2, "project": None,
@@ -618,7 +653,15 @@ def load_stores(qroot: Path, root: Path) -> tuple[dict, dict]:
     if paths["loops"].is_file():
         try:
             data = load_json(paths["loops"])
-            loops = data if isinstance(data, list) else (data.get("loops") or [])
+            if isinstance(data, list):
+                loops = data
+            elif isinstance(data, dict):
+                loops = data.get("loops") or []
+            else:
+                problems["loops"] = f"not an object or a list: {type(data).__name__}"   # sp-a4a5028a
+            if not isinstance(loops, list):
+                problems["loops"] = "loops is not a list"
+                loops = []
         except (OSError, ValueError) as exc:
             problems["loops"] = str(exc)
     stores["loops"] = [l for l in loops if isinstance(l, dict)]
@@ -665,8 +708,8 @@ def resolve_graph(entity: dict, stores: dict, root: Path, window: dict | None,
         objs = {norm(g["o"]) for g in grp}
         if len(objs) > 1:
             conflicts += 1
-            if len({g.get("t") for g in grp[:2]}) == 1:
-                conflict_keys.add(key)
+            if len({g.get("t") for g in grp[:2]}) == 1 and len({norm(g["o"]) for g in grp[:2]}) > 1:
+                conflict_keys.add(key)   # sp-67d54572: two newest agree -> the older row is STALE, not CONFLICTING
         newest_src[key] = f"{rel(path, root)}:{grp[0]['_line']}"
     for r in rows:
         key = (norm(r["s"]), norm(str(r.get("p"))), r.get("project"))
@@ -684,12 +727,17 @@ def resolve_graph(entity: dict, stores: dict, root: Path, window: dict | None,
 
 
 def resolve_canonical(entity: dict, stores: dict, root: Path, kind: str = "canonical",
-                      files: list[Path] | None = None) -> list[dict]:
+                      files: list[Path] | None = None, errors: dict | None = None,
+                      cls: str = "canonical") -> list[dict]:
     items = []
     for path in (files if files is not None else stores["canonical_files"]):
         try:
             lines = read_lines(path)
-        except OSError:
+        except OSError as exc:
+            # sp-ca1769db: an unreadable file is a recorded problem, never a
+            # silent skip that reads as "present, 0 hits" under FULL.
+            if errors is not None:
+                errors[cls] = f"{path.name}: {exc}"
             continue
         t = mtime_date(path)
         in_fence = False
@@ -706,13 +754,16 @@ def resolve_canonical(entity: dict, stores: dict, root: Path, kind: str = "canon
     return items
 
 
-def resolve_blocks(entity: dict, path: Path, root: Path, kind: str, max_lines: int) -> list[dict]:
+def resolve_blocks(entity: dict, path: Path, root: Path, kind: str, max_lines: int,
+                   errors: dict | None = None, cls: str = "") -> list[dict]:
     """### blocks in relationships.md / decisions.md that mention the entity."""
     if not path.is_file():
         return []
     try:
         lines = read_lines(path)
-    except OSError:
+    except OSError as exc:
+        if errors is not None:
+            errors[cls or kind] = f"{path.name}: {exc}"   # sp-ca1769db
         return []
     items, start, in_fence = [], None, False
     blocks = []
@@ -877,7 +928,9 @@ def assemble(items: list[dict], entities: list[dict], ceiling: int, header_len: 
     seen: set[tuple] = set()
     deduped = []
     for it in items:
-        key = (it["kind"], norm(it["text"]))
+        if len(it["text"]) > ITEM_MAX_CHARS:
+            it["text"] = it["text"][:ITEM_MAX_CHARS] + f" [cut at {ITEM_MAX_CHARS} chars; open src]"
+        key = (norm(it["entity"]), it["kind"], norm(it["text"]))   # sp-1b3ef442: a shared line stays under each named entity
         if key in seen:
             continue
         seen.add(key)
@@ -1016,7 +1069,7 @@ def miss_candidates(prompt: str, entities: list[dict]) -> list[dict]:
     out: dict[str, dict] = {}
     for m in CAP_BIGRAM_RE.finditer(prompt):
         a, b = m.group(1), m.group(2)
-        if a.casefold() in STOPWORDS or b.casefold() in STOPWORDS:
+        if a.casefold() in STOPWORDS or b.casefold() in STOPWORDS or a.casefold() in MISS_OPENERS:
             continue
         cand = f"{a} {b}"
         cn = norm(cand)
@@ -1060,6 +1113,10 @@ PROMPT_SCAN_CHARS = 12000
 # An entity CAP bounds the multiplier at the source; the dropped names go in
 # the receipt.
 MAX_ENTITIES = 12
+# One triple with a multi-KB object could carry the whole ceiling on its own
+# (sp-d830d71e). Text past this is cut with an explicit marker; the src stays
+# so the model opens the full row, and the verbatim pieces are untouched.
+ITEM_MAX_CHARS = 600
 SUPPLY_DEADLINE_S = float(os.environ.get("KNOWLEDGE_SUPPLY_DEADLINE_S", "3.5"))
 
 
@@ -1167,11 +1224,11 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
                                            set(manifest.get("state_predicates") or []))
                     conflicts += c
                 elif cls == "canonical":
-                    got = resolve_canonical(ent, stores, root)
+                    got = resolve_canonical(ent, stores, root, errors=problems, cls=cls)
                 elif cls == "relationships":
-                    got = resolve_blocks(ent, paths["relationships"], root, "relationship", 12)
+                    got = resolve_blocks(ent, paths["relationships"], root, "relationship", 12, errors=problems, cls=cls)
                 elif cls == "decisions":
-                    got = resolve_blocks(ent, paths["decisions"], root, "decision", 8)
+                    got = resolve_blocks(ent, paths["decisions"], root, "decision", 8, errors=problems, cls=cls)
                 elif cls == "commitments":
                     got = resolve_commitments(ent, stores, root, window)
                 elif cls == "meetings":
@@ -1202,6 +1259,8 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
                 if it["status"] == KNOWN and (d is None or (now - d).days > fresh_days):
                     it["status"] = STALE
         items += cls_items
+        if present and problems.get(cls) and not cls_items:
+            present = False   # every file of the class failed to read: unreadable, not empty (sp-ca1769db)
         if not present and spec.get("required"):
             missing.append(cls)
             missing_paths[cls] = f"{path_s or cls} {'unreadable' if cls in problems else 'absent'}"

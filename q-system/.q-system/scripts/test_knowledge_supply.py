@@ -67,6 +67,9 @@ RELATIONSHIPS = """# Relationships
 
 ### Mark Chen — Engineer — Acme
 - **Type:** Practitioner
+
+### Ally — Founder — Intel Shop
+- **Type:** Design Partner
 """
 
 TALK_TRACKS = """# Talk tracks
@@ -727,6 +730,103 @@ def test_recall_records_each_surfaced_source_once(tmp_path):
     recall.unlink()
     run(root, "what do we know about Dana Okafor", record=False, recall_path=recall)
     assert not recall.exists()
+
+
+# ---------------------------------------------------------------- ASK-1261: one chokepoint + captured minors
+
+def test_single_token_chokepoint_all_paths(tmp_path):
+    """Contact heading, uppercase alias, first-name expansion: none fires at the
+    start of a sentence, a line or a bullet; each fires mid-sentence."""
+    root, _ = make_instance(tmp_path)
+    for path, tok in (("contact", "Ally"), ("alias", "DO"), ("first_name", "Dana")):
+        for prompt in (f"{tok} said hi", f"Fix it\n{tok} said hi", f"- {tok} said hi", f"1. {tok} said hi"):
+            assert run(root, prompt) is None, (path, prompt)
+        assert run(root, f"please ask {tok} about it") is not None, path
+    assert "Ally" in {e["name"] for e in run(root, "please ask Ally about it")["entities"]}
+    assert "Dana Okafor" in {e["name"] for e in run(root, "please ask DO about it")["entities"]}
+
+
+def test_initial_position_has_one_call_site():
+    """The grep-the-tree half of ASK-1261: the initial-position rule is called
+    from exactly one place in the engine, the chokepoint."""
+    lines = LIB.read_text().splitlines()
+    calls = [l for l in lines if "is_initial_position(" in l
+             and not l.lstrip().startswith(("def ", "#")) and '"""' not in l]
+    assert len(calls) == 1, calls
+    assert "single_token_hit" in "\n".join(lines[max(0, lines.index(calls[0]) - 40):lines.index(calls[0])])
+
+
+def test_unreadable_markdown_class_is_unreadable_not_empty(tmp_path):
+    """sp-ca1769db: every file of a markdown class unreadable -> the class is
+    a recorded problem and a required one drops coverage; never present, 0 hits."""
+    root, q = make_instance(tmp_path)
+    tt = q / "canonical" / "talk-tracks.md"
+    tt.chmod(0)
+    try:
+        b = run(root, "what do we know about Dana Okafor")
+    finally:
+        tt.chmod(0o644)
+    row = {s["class"]: s for s in b["receipt"]["sources"]}["canonical"]
+    assert row["problem"] and "talk-tracks" in row["problem"] and row["present"] is False
+    assert b["coverage"]["verdict"] == "PARTIAL" and "canonical" in b["coverage"]["missing"]
+
+
+def test_non_object_loops_is_a_problem_not_a_crash(tmp_path):
+    """sp-a4a5028a: a bare JSON string in open-loops.json is a recorded problem."""
+    root, q = make_instance(tmp_path)
+    (q / "memory" / "open-loops.json").write_text('"junk"')
+    b = run(root, "what do we know about Dana Okafor")
+    assert b is not None
+    row = {s["class"]: s for s in b["receipt"]["sources"]}["loops"]
+    assert row["present"] is False and "not an object" in row["problem"]
+
+
+def test_duplicate_facts_keep_each_entity_section(tmp_path):
+    """sp-1b3ef442: a line naming two entities renders under both sections."""
+    root, q = make_instance(tmp_path)
+    with open(q / "memory" / "graph.jsonl", "a") as f:
+        f.write(json.dumps({"s": "Priya Raman", "p": "works_at", "o": "Vendor Co", "t": "2026-08-01", "project": "v"}) + "\n")
+        f.write(json.dumps({"s": "Tomas Lind", "p": "works_at", "o": "Vendor Co", "t": "2026-08-01", "project": "v"}) + "\n")
+    with open(q / "canonical" / "talk-tracks.md", "a") as f:
+        f.write("Priya Raman and Tomas Lind both own the vendor review.\n")
+    b = run(root, "what do we know about Priya Raman and Tomas Lind")
+    assert items_of(b, "canonical", "Priya Raman") and items_of(b, "canonical", "Tomas Lind")
+    text = ks.render(b)
+    assert "== Priya Raman ==" in text and "== Tomas Lind ==" in text
+
+
+def test_conflict_only_when_newest_two_differ(tmp_path):
+    """sp-67d54572: two newest rows on one date that AGREE are not a conflict;
+    the older differing row is STALE."""
+    root, q = make_instance(tmp_path)
+    with open(q / "memory" / "graph.jsonl", "a") as f:
+        f.write(json.dumps({"s": "Dana Okafor", "p": "status", "o": "memo on hold pending send decision",
+                            "t": "2026-09-01", "project": "acme-app"}) + "\n")
+    b = run(root, "what is the memo status for Dana Okafor")
+    status = [i for i in items_of(b, "graph", "Dana Okafor") if i["predicate"] == "status"]
+    assert not any(i["status"] == "CONFLICTING" for i in status)
+    assert [i for i in status if i["t"] == "2026-08-20"][0]["status"] == "STALE"
+
+
+def test_miss_bigrams_overlap_and_skip_openers(tmp_path):
+    """sp-c9b6401d: 'Ping Sarah Chen about The Acme Contract' records the two
+    names, not the opener and the article."""
+    root, q = make_instance(tmp_path)
+    run(root, "Ping Sarah Chen about The Acme Contract")
+    rows = [json.loads(l) for l in (q / "memory" / ".knowledge-supply-misses.jsonl").read_text().splitlines()]
+    assert {r["candidate"] for r in rows} == {"Sarah Chen", "Acme Contract"}
+
+
+def test_item_text_capped_with_marker(tmp_path):
+    """sp-d830d71e: one multi-KB object cannot carry the ceiling; the text is cut
+    with an explicit marker, the src stays, the render fits."""
+    root, q = make_instance(tmp_path)
+    with open(q / "memory" / "graph.jsonl", "a") as f:
+        f.write(json.dumps({"s": "Dana Okafor", "p": "noted", "o": "x" * 5000, "t": "2026-09-03", "project": "acme-app"}) + "\n")
+    b = run(root, "what do we know about Dana Okafor")
+    big = [i for i in items_of(b, "graph", "Dana Okafor") if i["predicate"] == "noted"][0]
+    assert big["text"].endswith("open src]") and len(big["text"]) < ks.ITEM_MAX_CHARS + 60
+    assert len(ks.render(b)) <= b["budget"]["ceiling"] and b["budget"]["overflow"] == 0
 
 
 # ---------------------------------------------------------------- receipts and misses
