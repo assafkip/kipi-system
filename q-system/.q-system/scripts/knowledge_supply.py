@@ -64,7 +64,11 @@ MISSES_NAME = ".knowledge-supply-misses.jsonl"
 VOCAB_NAME = "provenance-vocabulary.json"
 
 KNOWN, STALE, CONFLICTING, UNVALIDATED = "KNOWN", "STALE", "CONFLICTING", "UNVALIDATED"
-UNVALIDATED_MARKERS = ("{{UNVALIDATED}}", "{{NEEDS_PROOF}}")
+# The four marker forms in live use: q-system/CLAUDE.md names the first two,
+# evidence-ledger.md names {{UNVERIFIED}}, and the skeleton's own talk-tracks.md
+# carries {{NEEDS_VALIDATION}} (seen in the 2026-09-04 hook probe). A prefix
+# match on "{{NEEDS_VALIDATION" also covers the annotated form "{{NEEDS_VALIDATION — ...}}".
+UNVALIDATED_MARKERS = ("{{UNVALIDATED}}", "{{NEEDS_PROOF}}", "{{UNVERIFIED}}", "{{NEEDS_VALIDATION")
 ALIAS_PREDICATES = {"alias_of": "s_is_alias", "uses_alias": "o_is_alias"}
 ORG_PREDICATES = ("works_at",)
 EVENT_KINDS = ("commitment", "meeting", "loop", "handoff")

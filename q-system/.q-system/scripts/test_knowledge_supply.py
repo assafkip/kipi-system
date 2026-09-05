@@ -74,6 +74,8 @@ TALK_TRACKS = """# Talk tracks
 The pricing memo for Dana Okafor was sent on 2026-08-20.
 Dana Okafor prefers async updates {{UNVALIDATED}}.
 Old Client onboarding line, provenance: inferred, Dana Okafor mentioned it.
+Dana Okafor budget figure {{UNVERIFIED}}.
+Dana Okafor quoted line {{NEEDS_VALIDATION — derived from her own language}}.
 """
 
 DECISIONS = """# Decision Log
@@ -262,6 +264,8 @@ def test_canonical_and_graph_both_present_with_hierarchy_header(tmp_path):
     unval = [i for i in canon if i["status"] == "UNVALIDATED"]
     assert any("prefers async" in i["text"] for i in unval), "{{UNVALIDATED}} marker -> UNVALIDATED"
     assert any("provenance: inferred" in i["text"] for i in unval), "inferred rank -> UNVALIDATED"
+    assert any("budget figure" in i["text"] for i in unval), "{{UNVERIFIED}} -> UNVALIDATED"
+    assert any("quoted line" in i["text"] for i in unval), "{{NEEDS_VALIDATION — ...}} -> UNVALIDATED"
 
 
 def test_status_threshold_is_derived_from_vocabulary_file():
