@@ -550,73 +550,116 @@ class TestValidate:
                                                      corrections=heavy[:1] + retired,
                                                      fp=self._fresh_fp(rows))))
 
-    def test_the_share_is_measured_at_the_THINNEST_prompt_not_the_fattest(self,
-                                                                          tmp_path):
-        """The denominator, and it is the whole guard.
+    def test_the_share_samples_the_WHOLE_rotation_not_a_fixed_twelve(self,
+                                                                     tmp_path):
+        """The counter axis, isolated from the other two.
 
-        Shipped taking the MAX over 12 counters, copied from `check_budget` where
-        max is right. Max reports the BEST case of the thing being graded, so on
-        the live ASK corpus 2026-09-04 the x channel read 60% against the max and
-        71% against the min, and the guard returned [] with the ceiling at 70%.
+        `selector.select` offsets by `counter % len(pool)`, so the period is the
+        pool size. The guard inherited `range(12)` from `check_budget` and could
+        not see counters 12 upward. Live pools measured 45 / 31 / 10.
 
-        This fixture is sized so the two denominators DISAGREE ON THE VERDICT:
-        66% against the fattest assembly, which is clean, and 90% against the
-        thinnest, which is red. A fixture merely far over the line passes against
-        either extremum and would not have caught the bug.
+        EVERY ROW CARRIES THE SAME WORD COUNT on purpose. A length target draws
+        the nearest rows by word count, so on a mixed-register corpus it reaches
+        the thin rows on its own and a `range(12)` mutant survives -- measured,
+        it did. With one register the target axis cannot get there, and the only
+        way to the thinnest prompt is counting past 12. Character length falls as
+        the id rises, which puts that prompt at counter 16.
+
+        Sized so the two windows DISAGREE ON THE VERDICT: 60% over `range(12)`,
+        which is clean, and 74% over the full rotation, which is red.
         """
         import re
-        # EVERY ROW A DIFFERENT LENGTH, on purpose. The first attempt at this
-        # fixture used two repeated bodies, so every row of a class was byte
-        # identical, every counter assembled to exactly 13615 chars, and min and
-        # max were one number. A uniform corpus cannot show a difference between
-        # two extremums of it.
-        rows = _rows(20)
-        for i, r in enumerate(rows):
-            # DESCENDING, so the shortest rows sit at the END of the pool order and
-            # the thinnest assembly falls at counter 16. Ascending put it at counter
-            # 0, where a 12-counter window still finds it -- that fixture let a
-            # range(12) mutant survive at 122 passed. A bound only fakes a check
-            # when the answer happens to sit inside it.
-            r["text"] = ("Run {}. ".format(i)
-                         + "I watched the queue back up. " * (1 + (19 - i) * 3))
+        rows = []
+        for i in range(20):
+            word = "queuebackup" * max(7 - i // 3, 1)
+            rows.append({"id": f"ex-{i:02d}", "kind": "post", "channel": "any",
+                         "status": "active", "weight": 1.0, "anchor": False,
+                         "text": " ".join([word] * 30)})
         heavy = [{"id": f"c{i}", "status": "active",
-                  "instruction": f"Rule {i}. " * 200} for i in range(6)]
+                  "instruction": f"Rule {i}. " * 150} for i in range(6)]
         d = _voice_dir(tmp_path, rows=rows, corrections=heavy,
                        fp=self._fresh_fp(rows))
         voice = corpus.load(d)
-        # THE ORACLE IS DERIVED INDEPENDENTLY, over the FULL rotation. Its first
-        # draft looped `range(12)` because the code did, which is the trap
-        # `_resolved_slots` already names in this file: a checker that re-derives
-        # the rule it checks is testing its own copy. The 12-window hid a second
-        # bug of the same class (PR #301 review round 2) because test and code
-        # sampled the same wrong window and agreed.
-        period = len(selector.resolved_pool(voice.active_exemplars(), "x", "post",
-                                            selector.DEFAULT_K))
-        assert period > 12, (
-            f"this fixture's rotation period is {period}, so a 12-counter window "
-            "would cover it and the test cannot see an under-sampling bug")
-        lengths = [len(assemble.voice_section(voice, "x", c)[0])
-                   for c in range(period)]
-        assert lengths.index(min(lengths)) >= 12, (
-            "the thinnest assembly is at counter "
-            f"{lengths.index(min(lengths))}, inside a 12-counter window, so this "
-            "fixture cannot tell full-rotation sampling from the old range(12)")
         rules = sum(len(c["instruction"]) for c in heavy)
-        assert rules / max(lengths) <= validate.CORRECTION_SHARE_CEILING, (
-            "the fattest assembly must read CLEAN here, or the old max-denominator "
-            f"code passes this test too: {rules / max(lengths):.0%}")
+        # The oracle is derived INDEPENDENTLY of the code's own window. Its first
+        # draft looped `range(12)` because the code did, which is the trap
+        # `validate._resolved_slots` names in this file: a checker that re-derives
+        # the rule it checks is testing its own copy.
+        pool = selector.resolved_pool(voice.active_exemplars(), "x", "post",
+                                      selector.DEFAULT_K)
+        assert len({selector._words(r) for r in pool}) == 1, (
+            "this fixture must be a single length register, or a length target "
+            "reaches the thin rows and the counter window stops mattering")
+        assert len(pool) > 12, f"rotation period is {len(pool)}, nothing to miss"
+        lengths = [len(assemble.voice_section(voice, "x", c)[0])
+                   for c in range(len(pool))]
+        assert lengths.index(min(lengths)) >= 12, (
+            f"the thinnest prompt is at counter {lengths.index(min(lengths))}, "
+            "inside a 12-counter window, so this fixture cannot tell the two apart")
+        assert rules / min(lengths[:12]) <= validate.CORRECTION_SHARE_CEILING, (
+            "a 12-counter window must read CLEAN here, or the old code passes "
+            f"this test too: {rules / min(lengths[:12]):.0%}")
         assert rules / min(lengths) > validate.CORRECTION_SHARE_CEILING, (
-            f"the thinnest assembly must read RED: {rules / min(lengths):.0%}")
+            f"the full rotation must read RED: {rules / min(lengths):.0%}")
 
         problems = [p for p in validate.check_correction_share(voice)
                     if p.startswith("x:")]
         assert problems, (
-            "the guard graded the fattest prompt and called a corpus clean that is "
-            f"{rules / min(lengths):.0%} rules at its thinnest")
+            "the guard stopped at counter 11 and called a corpus clean that is "
+            f"{rules / min(lengths):.0%} rules at counter "
+            f"{lengths.index(min(lengths))}")
         reported = int(re.search(r" of (\d+) chars", problems[0]).group(1))
         assert reported == min(lengths), (
-            f"the guard divided by {reported}; the thinnest assembly is "
-            f"{min(lengths)} and the fattest is {max(lengths)}")
+            f"the guard divided by {reported}; the thinnest prompt over the whole "
+            f"rotation is {min(lengths)} and the fattest is {max(lengths)}")
+
+    def test_the_share_samples_the_length_target_the_CLI_always_passes(self,
+                                                                      tmp_path):
+        """The third axis, and the third round of one defect class.
+
+        `voice_ref.py` declares `--words` required, so every prompt production
+        builds carries a length target, and a target REPLACES the pool with the
+        nearest k rows. The guard only ever sampled `target_words=None`, which is
+        a shape production never builds.
+
+        The fixture has two registers and is sized so the two paths DISAGREE ON
+        THE VERDICT: the untargeted prompt reads 68%, under the 70% ceiling, and
+        the shortest register reads 93%.
+        """
+        rows = []
+        for i in range(12):
+            body = "I watched the queue back up. " * (60 if i % 2 == 0 else 2)
+            rows.append({"id": f"ex-{i:02d}", "kind": "post", "channel": "any",
+                         "status": "active", "weight": 1.0, "anchor": False,
+                         "text": body + f" Tag {i}."})
+        heavy = [{"id": f"c{i}", "status": "active",
+                  "instruction": f"Rule {i}. " * 180} for i in range(6)]
+        d = _voice_dir(tmp_path, rows=rows, corrections=heavy,
+                       fp=self._fresh_fp(rows))
+        voice = corpus.load(d)
+        rules = sum(len(c["instruction"]) for c in heavy)
+        base = selector.resolved_pool(voice.active_exemplars(), "x", "post",
+                                      selector.DEFAULT_K)
+        thin_none = min(len(assemble.voice_section(voice, "x", c)[0])
+                        for c in range(len(base)))
+        assert rules / thin_none <= validate.CORRECTION_SHARE_CEILING, (
+            "the untargeted path must read CLEAN here, or a guard that samples "
+            f"only target_words=None passes this test too: {rules / thin_none:.0%}")
+
+        shortest = min(selector._words(r) for r in base)
+        pool = selector.resolved_pool(voice.active_exemplars(), "x", "post",
+                                      selector.DEFAULT_K, shortest)
+        thin_target = min(
+            len(assemble.voice_section(voice, "x", c, target_words=shortest)[0])
+            for c in range(len(pool)))
+        assert rules / thin_target > validate.CORRECTION_SHARE_CEILING, (
+            f"the shortest register must read RED: {rules / thin_target:.0%}")
+
+        problems = [p for p in validate.check_correction_share(voice)
+                    if p.startswith("x:")]
+        assert problems, (
+            "the guard never asked for a length target, so it graded a prompt "
+            f"shape the CLI cannot build and missed a real {rules / thin_target:.0%}")
 
 
 # --- voice-1-instrument: review findings 1, 2, 8 ----------------------------------

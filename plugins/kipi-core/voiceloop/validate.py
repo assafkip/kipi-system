@@ -374,18 +374,37 @@ def check_correction_share(voice, channels=None):
         # flatters the share. Measured on the live ASK corpus 2026-09-04, the x
         # channel read 60% against the max and 71% against the min, with the ceiling
         # at 70%. The guard returned [] on a corpus already over its own line.
-        # THE FULL ROTATION, not a fixed 12. `selector.select` offsets by
-        # `counter % len(pool)`, so the period is the pool size and a 12-counter
-        # window (inherited from `check_budget` with the rest of this loop) simply
-        # does not see counters 12..n-1. Measured on the live ASK corpus 2026-09-04:
-        # pools are 45 / 31 / 10, and linkedin's true thinnest prompt is 16987 chars
-        # against the 17995 the 12-window reported. Same defect class as the max/min
-        # bug this loop was just fixed for -- right extremum, wrong sample -- which
-        # is why the period is DERIVED here instead of being a second literal.
-        pool = selector.resolved_pool(voice.active_exemplars(), channel, "post",
-                                      selector.DEFAULT_K)
-        lengths = [len(assemble.voice_section(voice, channel, counter)[0])
-                   for counter in range(len(pool) or 1)]
+        # EVERY AXIS THE PRODUCER VARIES, all DERIVED, none written as a literal.
+        # This loop arrived as a copy of `check_budget` and each parameter it failed
+        # to reproduce was a blind spot: three review rounds on PR #301 found three,
+        # one per round, all the same class. `validate._resolved_slots` already
+        # states the rule they break -- a checker that re-derives the rule it checks
+        # is testing its own copy.
+        #
+        # counter: `selector.select` offsets by `counter % len(pool)`, so the period
+        # is the pool size, not the 12 this loop inherited. Live pools are 45/31/10.
+        #
+        # target_words: `voice_ref.py` declares `--words` required, so a prompt
+        # assembled with None is a shape production never builds, and it was the
+        # only shape sampled. A target REPLACES the pool with the nearest k rows
+        # (`selector.select`), so the thinnest prompt reachable is the one whose
+        # target sits at the corpus's own shortest register -- `length_band` ranks
+        # by distance, so no other target draws shorter rows. Taking that minimum
+        # from the corpus keeps this derived; a list of example word counts would be
+        # the same guess in a new costume.
+        rows = voice.active_exemplars()
+        base = selector.resolved_pool(rows, channel, "post", selector.DEFAULT_K)
+        targets = [None] + ([min(selector._words(r) for r in base)] if base else [])
+        lengths = []
+        for target in targets:
+            pool = selector.resolved_pool(rows, channel, "post", selector.DEFAULT_K,
+                                          target)
+            # len(pool) is an upper bound on the rotation once a target narrows it,
+            # so this covers the full period. Over-sampling a pure string build is
+            # free; the live corpus measures 0.01s.
+            lengths += [len(assemble.voice_section(voice, channel, counter,
+                                                   target_words=target)[0])
+                        for counter in range(len(pool) or 1)]
         # A counter that assembles to nothing has no share to measure, and taking a
         # minimum over it divides by zero. Drop the empties so the channel is graded
         # on the prompts it really produces; a channel with no prompt at all is
