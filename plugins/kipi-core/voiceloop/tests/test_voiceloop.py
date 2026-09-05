@@ -661,6 +661,57 @@ class TestValidate:
             "the guard never asked for a length target, so it graded a prompt "
             f"shape the CLI cannot build and missed a real {rules / thin_target:.0%}")
 
+    def test_the_share_grades_every_slot_kind_the_engine_declares(self, tmp_path):
+        """The fourth axis, and the reason this loop now enumerates nothing.
+
+        `validate.SLOT_KINDS` is the vocabulary this module declares and
+        `voice_ref.py --slot-kind` offers. The guard pinned "post", so a corpus
+        whose COMMENT prompts are almost entirely rules read clean.
+
+        Long post rows plus short comment rows, sized so the two slots DISAGREE
+        ON THE VERDICT.
+        """
+        rows = []
+        for i in range(12):
+            rows.append({"id": f"ex-{i:02d}", "kind": "post", "channel": "any",
+                         "status": "active", "weight": 1.0, "anchor": False,
+                         "text": "I watched the queue back up. " * 70 + f" P{i}."})
+        for i in range(6):
+            rows.append({"id": f"cm-{i:02d}", "kind": "comment", "channel": "any",
+                         "status": "active", "weight": 1.0, "anchor": False,
+                         "text": f"Short comment {i}. It broke."})
+        heavy = [{"id": f"c{i}", "status": "active",
+                  "instruction": f"Rule {i}. " * 200} for i in range(6)]
+        d = _voice_dir(tmp_path, rows=rows, corrections=heavy,
+                       fp=self._fresh_fp(rows))
+        voice = corpus.load(d)
+        rules = sum(len(c["instruction"]) for c in heavy)
+
+        def thinnest(slot_kind):
+            base = selector.resolved_pool(voice.active_exemplars(), "x", slot_kind,
+                                          selector.DEFAULT_K)
+            out = []
+            for target in (None, min(selector._words(r) for r in base)):
+                pool = selector.resolved_pool(voice.active_exemplars(), "x",
+                                              slot_kind, selector.DEFAULT_K, target)
+                out += [len(assemble.voice_section(voice, "x", c,
+                                                   slot_kind=slot_kind,
+                                                   target_words=target)[0])
+                        for c in range(len(pool))]
+            return min(out)
+
+        assert rules / thinnest("post") <= validate.CORRECTION_SHARE_CEILING, (
+            "the post slot must read CLEAN here, or a guard pinned to post passes "
+            f"this test too: {rules / thinnest('post'):.0%}")
+        assert rules / thinnest("comment") > validate.CORRECTION_SHARE_CEILING, (
+            f"the comment slot must read RED: {rules / thinnest('comment'):.0%}")
+
+        problems = [p for p in validate.check_correction_share(voice)
+                    if p.startswith("x:")]
+        assert problems, (
+            "the guard graded only the post slot and missed a comment prompt that "
+            f"is {rules / thinnest('comment'):.0%} rules")
+
 
 # --- voice-1-instrument: review findings 1, 2, 8 ----------------------------------
 

@@ -393,18 +393,30 @@ def check_correction_share(voice, channels=None):
         # from the corpus keeps this derived; a list of example word counts would be
         # the same guess in a new costume.
         rows = voice.active_exemplars()
-        base = selector.resolved_pool(rows, channel, "post", selector.DEFAULT_K)
-        targets = [None] + ([min(selector._words(r) for r in base)] if base else [])
         lengths = []
-        for target in targets:
-            pool = selector.resolved_pool(rows, channel, "post", selector.DEFAULT_K,
-                                          target)
-            # len(pool) is an upper bound on the rotation once a target narrows it,
-            # so this covers the full period. Over-sampling a pure string build is
-            # free; the live corpus measures 0.01s.
-            lengths += [len(assemble.voice_section(voice, channel, counter,
-                                                   target_words=target)[0])
-                        for counter in range(len(pool) or 1)]
+        # slot_kind: taken from SLOT_KINDS, the vocabulary this module already
+        # DECLARES and `voice_ref.py --slot-kind` already offers. It was pinned to
+        # "post", so a corpus whose comment prompts are 97% rules read clean.
+        for slot_kind in SLOT_KINDS:
+            base = selector.resolved_pool(rows, channel, slot_kind,
+                                          selector.DEFAULT_K)
+            if not base:
+                continue
+            # target_words: the corpus's own shortest register, which is the target
+            # that collapses the pool hardest -- `length_band` ranks by distance, so
+            # no other target draws shorter rows. None is kept because pre-2026
+            # callers still pass it.
+            for target in (None, min(selector._words(r) for r in base)):
+                pool = selector.resolved_pool(rows, channel, slot_kind,
+                                              selector.DEFAULT_K, target)
+                # counter: the period is the pool size, not a literal.
+                # len(pool) is an upper bound once a target narrows it, so this
+                # covers the full rotation. Over-sampling a pure string build is
+                # free; the live corpus measures 0.01s.
+                lengths += [len(assemble.voice_section(voice, channel, counter,
+                                                       slot_kind=slot_kind,
+                                                       target_words=target)[0])
+                            for counter in range(len(pool) or 1)]
         # A counter that assembles to nothing has no share to measure, and taking a
         # minimum over it divides by zero. Drop the empties so the channel is graded
         # on the prompts it really produces; a channel with no prompt at all is
