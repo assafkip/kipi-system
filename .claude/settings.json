@@ -150,6 +150,11 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/lessons-inject.py\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/knowledge-inject.py\"",
+            "timeout": 5
           }
         ]
       }
