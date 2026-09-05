@@ -501,17 +501,34 @@ def discover_tests(root):
         for p in scripts_root.rglob(pattern):
             if p.is_file():
                 found.add(str(p.relative_to(root)))
-        # top-level .q-system: non-recursive, or scripts/ would double-scan
-        for p in (root / SCAN_ROOTS[1]).glob(pattern):
+        # .q-system RECURSIVELY. This was `glob`, not `rglob`, and the reason
+        # given was that scripts/ would otherwise be scanned twice. It is a set:
+        # a second visit costs a directory walk and changes nothing. What the
+        # non-recursive scan actually bought was a hole -- every subdirectory of
+        # .q-system OTHER than scripts/ was invisible to the present-but-
+        # undeclared direction below.
+        #
+        # Measured on main at 569b0ec0: ten test files in .q-system/tests/ were
+        # declared nowhere and reached by no runner. 174 assertions, all green,
+        # executed by nothing. A gate whose stated job is that "one direction
+        # alone would miss F3 (an artifact that appears without a declaration)"
+        # could not see them, because F3 detection only looks where discovery
+        # looks. The check ran, passed, and was structurally blind to its own
+        # subject.
+        for p in (root / SCAN_ROOTS[1]).rglob(pattern):
             if p.is_file():
                 found.add(str(p.relative_to(root)))
     return found
 
 
 def in_scan_scope(path):
+    # Mirrors discover_tests EXACTLY. When these two disagree, a declared path
+    # lands in neither direction of the diff -- it is not checked for existence
+    # (out of scope) and its file is not checked for a declaration (not
+    # discovered), which is a declaration that means nothing and reads as fine.
     if path.startswith(SCAN_ROOTS[0] + "/"):
         return True
-    return path.startswith(SCAN_ROOTS[1] + "/") and "/" not in path[len(SCAN_ROOTS[1]) + 1:]
+    return path.startswith(SCAN_ROOTS[1] + "/")
 
 
 def diff_declared_vs_actual(root, manifest, errors, mode="skeleton"):

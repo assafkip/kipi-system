@@ -1,0 +1,4 @@
+{
+  "path": "q-system/.q-system/tests/separation/test_semantic_client_leakage.py",
+  "runner": "pytest"
+}
