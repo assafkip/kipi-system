@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import urllib.parse
 import urllib.request
 from html import unescape
@@ -15,9 +16,42 @@ from xml.etree import ElementTree
 import yaml
 
 
+def _load_reddit_transport():
+    """Walk up to the vendored `plugins/kipi-core` and import the transport.
+
+    A relative parents[N] would be right in this repo's src/ layout and wrong in
+    every other caller's, which is the failure `voiceloop/voice_ref.py` records:
+    a caller that does not travel with its engine is wired on one machine only.
+    """
+    import sys as _sys
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        for cand in (parent / "plugins" / "kipi-core", parent):
+            if cand.name == "kipi-core" or cand.parent.name == "plugins":
+                if (cand / "reddit_arctic").is_dir():
+                    if str(cand) not in _sys.path:
+                        _sys.path.insert(0, str(cand))
+                    from reddit_arctic import transport
+                    return transport
+    raise RuntimeError(
+        "no plugins/kipi-core/reddit_arctic above %s; the kipi updater has not "
+        "run in this instance" % here)
+
+
+
 USER_AGENT = "kipi-competitive-intel/1.0 (+https://ktlystlabs.com)"
-ARCTIC_BASE = "https://arctic-shift.photon-reddit.com"
-PULLPUSH_BASE = "https://api.pullpush.io"
+# THE REDDIT TRANSPORT IS NOT DEFINED HERE ANY MORE (2026-09-04, founder-directed
+# "this must be the only way we scrape reddit"). It lives once, in the kipi-core
+# plugin, and this module is a caller. Before the move there were two copies of
+# the same Arctic Shift fetch with OPPOSITE failure semantics: q-consult's raised
+# on a total refusal, this one returned [], so here a dead mirror and a quiet
+# subreddit were the same value and nothing downstream could tell them apart
+# (sp-a5461e0a). The copy that swallowed is the one that shipped to every
+# instance.
+_REDDIT = _load_reddit_transport()
+ARCTIC_BASE = _REDDIT.ARCTIC_BASE
+PULLPUSH_BASE = _REDDIT.PULLPUSH_BASE
+RedditFetchFailed = _REDDIT.RedditFetchFailed
 BROWSER_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
@@ -249,7 +283,16 @@ def collect_ai_raw_records(
                     apify_token=token,
                 )
             )
-        except Exception:
+        except Exception as exc:
+            # NAMED, not swallowed. The bare `continue` that used to sit here is
+            # the reason the transport's raise would otherwise be pointless: a
+            # source that died and a source with nothing new produced the same
+            # empty harvest, and the run looked healthy either way. One source
+            # still must not kill the batch, so this stays a continue. It just
+            # says what it lost.
+            print("[competitive-intel] source %r failed: %s: %s"
+                  % (source.get("name") or source.get("type"),
+                     type(exc).__name__, exc), file=sys.stderr)
             continue
 
     raw_records = _dedupe_raw_records(raw_records)[: int(config.get("pool_size", 60))]
@@ -875,39 +918,33 @@ def _collect_reddit_rss(source: dict[str, Any], limit: int, fetch_json: Any) -> 
 
 
 def _reddit_archive_posts(subreddit: str, after: str, limit: int, fetch_json: Any) -> list[dict[str, Any]]:
-    try:
-        return [
-            post
-            for post in (_reddit_archive_post(item) for item in _archive_items(fetch_json(_arctic_posts_url(subreddit, after, limit))))
-            if post
-        ]
-    except Exception:
-        pass
-    try:
-        return [
-            post
-            for post in (_reddit_archive_post(item) for item in _archive_items(fetch_json(_pullpush_posts_url(subreddit, limit))))
-            if post
-        ]
-    except Exception:
-        return []
+    """Arctic first, PullPush second, RAISE if both refuse.
+
+    The raise is the behaviour change. This function used to return [] there,
+    which made a dead mirror and a quiet subreddit the same value forever after.
+    `collect_ai_raw_records` now names the source it lost instead of continuing
+    in silence.
+
+    `fetch_json` is passed straight through as the transport's `_get` seam, so
+    every existing test double keeps working.
+    """
+    raw, _mirror = _REDDIT.fetch_posts(subreddit, limit=limit, after=after,
+                                       _get=fetch_json)
+    return [post for post in (_reddit_archive_post(item) for item in raw) if post]
 
 
 def _archive_items(payload: Any) -> list[dict[str, Any]]:
-    if isinstance(payload, dict):
-        data = payload.get("data", [])
-        return data if isinstance(data, list) else []
-    return payload if isinstance(payload, list) else []
+    """Kept as a delegate. It had callers and its own tests; the unwrapping rule
+    itself now lives once, in the transport."""
+    return _REDDIT._items(payload)
 
 
 def _arctic_posts_url(subreddit: str, after: str, limit: int) -> str:
-    query = urllib.parse.urlencode({"subreddit": subreddit, "after": after, "limit": limit, "sort": "desc"})
-    return f"{ARCTIC_BASE}/api/posts/search?{query}"
+    return _REDDIT.arctic_url(subreddit, limit, after=after)
 
 
 def _pullpush_posts_url(subreddit: str, limit: int) -> str:
-    query = urllib.parse.urlencode({"subreddit": subreddit, "size": limit, "sort": "desc"})
-    return f"{PULLPUSH_BASE}/reddit/search/submission?{query}"
+    return _REDDIT.pullpush_url(subreddit, limit)
 
 
 def _reddit_archive_post(data: dict[str, Any]) -> dict[str, Any] | None:
