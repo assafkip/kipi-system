@@ -553,17 +553,17 @@ def test_pins_alone_over_ceiling_is_reported_not_hidden(tmp_path):
     """MINOR: pinned items always ship, so if the pins alone overrun the ceiling
     the receipt says so (ceiling_hit, overflow) instead of cut=0."""
     root, q = make_instance(tmp_path)
+    # MAX_ENTITIES names, each with one triple long enough that the pins alone
+    # overrun the 8,000-char ceiling (12 x ~760 chars).
     words = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India", "Juliet",
-             "Kilo", "Lima", "Mike", "November", "Oscar", "Papa", "Quebec", "Romeo", "Sierra", "Tango",
-             "Uniform", "Victor", "Whiskey", "Xray", "Yankee", "Zulu", "Amber", "Bronze", "Coral", "Denim",
-             "Ember", "Flint", "Garnet", "Hazel", "Ivory", "Jade", "Khaki", "Lilac", "Mauve", "Nickel"]
+             "Kilo", "Lima"][:ks.MAX_ENTITIES]
     names = [f"Pinned {w}" for w in words]
     with open(q / "memory" / "graph.jsonl", "a") as f:
         for n, name in enumerate(names):
-            f.write(json.dumps({"s": name, "p": "noted", "o": f"object {n} " + "z" * 250,
+            f.write(json.dumps({"s": name, "p": "noted", "o": f"object {n} " + "z" * 700,
                                 "t": "2026-09-01", "project": "bulk"}) + "\n")
     b = run(root, "status on " + ", ".join(names))
-    assert len(b["entities"]) == len(names)
+    assert len(b["entities"]) == len(names) == ks.MAX_ENTITIES
     assert all(items_of(b, "graph", name) for name in names), "every entity keeps its pinned fact"
     assert b["receipt"]["ceiling_hit"] is True
     assert b["budget"]["overflow"] > 0 and b["receipt"]["overflow"] == b["budget"]["overflow"]
@@ -611,19 +611,29 @@ def test_render_fits_ceiling_with_separators_and_footer(tmp_path):
     rendered text ran past the ceiling under overflow 0. Now the fit is against
     the rendered text; unpinned items drop until it fits."""
     root, q = make_instance(tmp_path)
+    # MAX_ENTITIES names, one pinned and one droppable triple each, sized so the
+    # pins fit, the droppables overrun, and separators decide the last one.
     words = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India", "Juliet",
-             "Kilo", "Lima", "Mike", "November", "Oscar", "Papa", "Quebec", "Romeo", "Sierra", "Tango"]
+             "Kilo", "Lima"][:ks.MAX_ENTITIES]
     names = [f"Fitted {w}" for w in words]
     with open(q / "memory" / "graph.jsonl", "a") as f:
         for n, name in enumerate(names):
-            f.write(json.dumps({"s": name, "p": "noted", "o": f"pinned {n} " + "p" * 170, "t": "2026-09-01", "project": "b"}) + "\n")
-            f.write(json.dumps({"s": name, "p": "also", "o": f"droppable {n} " + "d" * 170, "t": "2026-08-01", "project": "b"}) + "\n")
+            f.write(json.dumps({"s": name, "p": "noted", "o": f"pinned {n} " + "p" * 300, "t": "2026-09-01", "project": "b"}) + "\n")
+            f.write(json.dumps({"s": name, "p": "also", "o": f"droppable {n} " + "d" * 300, "t": "2026-08-01", "project": "b"}) + "\n")
     b = run(root, "status on " + ", ".join(names))
     text = ks.render(b)
     assert len(text) <= b["budget"]["ceiling"]
     assert b["budget"]["overflow"] == 0 and b["budget"]["used"] == len(text)
     assert b["budget"]["cut"] > 0 and b["receipt"]["ceiling_hit"] is True
     assert all(items_of(b, "graph", name) for name in names), "every pin kept"
+    # The fit loop in isolation, where fixture sizing cannot mask it: lower the
+    # ceiling to just under the rendered size and the loop must drop unpinned
+    # items until the RENDERED text fits, with the numbers matching the wire.
+    tight = len(text) - 10
+    cut_before = b["budget"]["cut"]
+    cut, hit, overflow = ks.fit_to_ceiling(b, tight, cut_before, 0, False)
+    assert len(ks.render(b)) <= tight and overflow == 0 and hit is True and cut > cut_before
+    assert all(items_of(b, "graph", name) for name in names), "pins survive the tighter fit"
 
 
 def test_zero_items_is_one_short_line(tmp_path):
@@ -659,6 +669,45 @@ def test_large_paste_against_big_index_is_fast_and_truncated(tmp_path):
     cands = ks.candidate_keys(index, ks.prompt_tokens(ks.norm(paste[:ks.PROMPT_SCAN_CHARS])))
     assert len(cands) < 20, len(cands)
     assert "dana okafor" in cands
+
+
+# ---------------------------------------------------------------- Codex round 4 on PR #302 (structural)
+
+def test_deadline_yields_partial_bundle_with_receipt(tmp_path):
+    """MAJOR, structural: rounds 3 and 4 each found a different O(N x M) blowup
+    that killed the hook at its 5 s timeout with nothing injected and no
+    receipt. A wall-clock deadline inside supply() means the pass always
+    returns what it gathered, names where it stopped, and marks every class
+    after that point as NOT searched (required ones drop coverage to PARTIAL)."""
+    root, _ = make_instance(tmp_path)
+    b = run(root, "what have we promised Dana Okafor", deadline_s=0.0)
+    assert b is not None, "a deadline never returns nothing"
+    d = b["receipt"]["deadline_hit"]
+    assert d and d["at_class"] and d["at_entity"] == "Dana Okafor"
+    rows = {s["class"]: s for s in b["receipt"]["sources"]}
+    assert any(s["searched"] is False and s["problem"] == "not searched (deadline)" for s in rows.values())
+    assert b["coverage"]["verdict"] == "PARTIAL"
+    assert any("deadline" in v for v in b["coverage"]["missing_paths"].values())
+    text = ks.render(b)
+    assert "DEADLINE: stopped after" in text and "NOT searched" in text
+    b2 = run(root, "what have we promised Dana Okafor")
+    assert b2["receipt"]["deadline_hit"] is None and b2["coverage"]["verdict"] == "FULL"
+
+
+def test_entities_capped_and_dropped_names_in_receipt(tmp_path):
+    """Structural bound on the multiplier: at most MAX_ENTITIES resolve; the
+    rest are named in the receipt and the header, never silently ignored."""
+    root, q = make_instance(tmp_path)
+    words = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel", "India", "Juliet",
+             "Kilo", "Lima", "Mike", "November", "Oscar", "Papa", "Quebec", "Romeo", "Sierra", "Tango"]
+    names = [f"Capped {w}" for w in words]
+    with open(q / "memory" / "graph.jsonl", "a") as f:
+        for n, name in enumerate(names):
+            f.write(json.dumps({"s": name, "p": "noted", "o": f"thing {n}", "t": "2026-09-01", "project": "b"}) + "\n")
+    b = run(root, "status on " + ", ".join(names))
+    assert len(b["entities"]) == ks.MAX_ENTITIES
+    assert len(b["receipt"]["entities_dropped"]) == len(names) - ks.MAX_ENTITIES
+    assert "ENTITIES DROPPED" in ks.render(b) and b["receipt"]["entities_dropped"][0] in ks.render(b)
 
 
 # ---------------------------------------------------------------- receipts and misses

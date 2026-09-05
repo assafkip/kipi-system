@@ -929,6 +929,20 @@ def render_item(it: dict) -> str:
     return f"- [{tag} {it['t'] or 'undated'} {kind}] {text}  ({it['src']})"
 
 
+def deadline_note(bundle: dict) -> str:
+    """The one line that turns a killed hook into a receipt: where the pass
+    stopped, and that every class after it was NOT searched."""
+    parts = []
+    d = bundle.get("deadline_hit")
+    if d:
+        parts.append(f" DEADLINE: stopped after {d['elapsed_ms']} ms at {d['at_class']}/{d['at_entity']}; "
+                     "classes after it were NOT searched.")
+    dropped = bundle.get("entities_dropped") or []
+    if dropped:
+        parts.append(f" ENTITIES DROPPED (cap {MAX_ENTITIES}): {', '.join(dropped)}.")
+    return "".join(parts)
+
+
 def render_header(bundle: dict) -> str:
     cov = bundle["coverage"]
     if cov["verdict"] == "FULL":
@@ -940,6 +954,7 @@ def render_header(bundle: dict) -> str:
                      for e in bundle["entities"]) or "none"
     win = bundle.get("window")
     win_s = f" window={win['from']}..{win['to']}" if win else ""
+    win_s += deadline_note(bundle)
     return (f"{line} task={bundle['task_class']} entities={ents}.{win_s}\n"
             "[knowledge-supply] Hierarchy: graph beats canonical beats notes (q-system/methodology/anti-hallucination.md). "
             "Verbatim excerpts, newest first, each with path:line; open the src before asserting it. "
@@ -956,7 +971,7 @@ def render(bundle: dict) -> str:
         ents = ", ".join(e["name"] for e in bundle["entities"]) or "none"
         miss = f" missing: {', '.join(cov['missing'])}." if cov["missing"] else ""
         return (f"[knowledge-supply] COVERAGE: {cov['verdict']}. task={bundle['task_class']} entities={ents}. "
-                f"Searched, nothing recorded.{miss} receipt={bundle['receipt_path']}")
+                f"Searched, nothing recorded.{miss}{deadline_note(bundle)} receipt={bundle['receipt_path']}")
     parts = [render_header(bundle)]
     current = None
     for it in bundle["items"]:
@@ -1036,6 +1051,17 @@ def append_bounded(path: Path, row: dict, max_bytes: int = MISS_LEDGER_MAX_BYTES
 
 PROMPT_SCAN_CHARS = 12000
 
+# Two structural bounds on the resolver pass, added after Codex rounds 3 and 4
+# on PR #302 each found a different O(N x M) blowup (prompt x index, then
+# entities x store rows). Per-loop optimisation is the wrong fix shape when the
+# class repeats. A wall-clock DEADLINE inside supply() means the hook always
+# returns what it gathered plus a receipt naming where it stopped, instead of
+# being killed at the wired 5 s timeout with nothing injected and no receipt.
+# An entity CAP bounds the multiplier at the source; the dropped names go in
+# the receipt.
+MAX_ENTITIES = 12
+SUPPLY_DEADLINE_S = float(os.environ.get("KNOWLEDGE_SUPPLY_DEADLINE_S", "3.5"))
+
 
 def _record_misses(qroot: Path, prompt: str, scan: str, truncated: bool,
                    entities: list[dict], ts: str, session_id: str) -> None:
@@ -1055,8 +1081,10 @@ def _record_misses(qroot: Path, prompt: str, scan: str, truncated: bool,
 # ------------------------------------------------------------------ entry point
 
 def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = None,
-           record: bool = True) -> dict | None:
+           record: bool = True, deadline_s: float | None = None) -> dict | None:
     t0 = time.time()
+    t_deadline = t0 + (SUPPLY_DEADLINE_S if deadline_s is None else deadline_s)
+    deadline_hit: dict | None = None
     root = Path(root)
     now = now or dt.date.today()
     qroot = find_qroot(root)
@@ -1081,6 +1109,8 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
     scan = prompt[:PROMPT_SCAN_CHARS]
     truncated = len(prompt) > PROMPT_SCAN_CHARS
     entities = resolve_entities(scan, index, fire_alone)
+    entities_dropped = [e["name"] for e in entities[MAX_ENTITIES:]]
+    entities = entities[:MAX_ENTITIES]
     cap_hits = capability_hits(scan, capability_index(root)) if (CAPABILITY_RE.search(scan) and not entities) else []
     task_class, window = classify(scan, entities, cap_hits, now)
     if task_class == "none":
@@ -1109,6 +1139,16 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
     for cls, spec in declared.items():
         present, path_s = present_of(cls)
         cls_items: list[dict] = []
+        if deadline_hit is not None:
+            # Past the deadline: this class was never searched, and the receipt
+            # and the coverage line both say so. Never "present, 0 hits".
+            if spec.get("required"):
+                missing.append(cls)
+                missing_paths[cls] = f"{path_s or cls} not searched (deadline)"
+            source_rows.append({"class": cls, "path": path_s, "present": present, "required": bool(spec.get("required")),
+                                "searched": False, "mtime": None, "fresh_days": spec.get("fresh_days"),
+                                "hits": 0, "cut": 0, "bytes": 0, "bad_lines": 0, "problem": "not searched (deadline)"})
+            continue
         # The cap is N per class PER ENTITY, applied to each resolver result
         # before the lists are joined. Codex round 1 on PR #302: a cap applied
         # to the joined list let the first entity eat the whole budget, so the
@@ -1117,6 +1157,10 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
         cut_here = 0
         if present:
             for ent in entities:
+                if time.time() > t_deadline:
+                    deadline_hit = {"at_class": cls, "at_entity": ent["name"],
+                                    "elapsed_ms": int((time.time() - t0) * 1000)}
+                    break
                 if cls == "graph":
                     got, c = resolve_graph(ent, stores, root, window,
                                            set(manifest.get("state_predicates") or []))
@@ -1168,6 +1212,7 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
             "bytes": sum(len(i["text"]) for i in cls_items),
             "bad_lines": stores["bad_lines"].get(cls, 0),
             "problem": problems.get(cls),
+            "searched": "partial" if (deadline_hit and deadline_hit["at_class"] == cls) else True,
         })
 
     verdict = "FULL" if not missing else ("NONE" if all(not r["present"] for r in source_rows) else "PARTIAL")
@@ -1180,17 +1225,39 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
         "budget": {"ceiling": ceiling, "used": 0, "cut": 0},
         "delegated": {"lessons": "lessons-inject", "voice": "voice-dna-loader"},
         "receipt_path": rel(receipts_path, root),
+        "deadline_hit": deadline_hit, "entities_dropped": entities_dropped,
     }
     header_len = len(render_header(bundle)) + 200
     kept, cut, ceiling_hit = assemble(items, entities, ceiling, header_len)
     bundle["items"] = kept
     source_cut = sum(r["cut"] for r in source_rows)
-    # Exact fit against the RENDERED text, separators and footer included, so
-    # the number in the receipt is the number on the wire. Codex round 3 on
-    # PR #302: the byte accounting skipped the per-entity separator lines, so
-    # render() ran past the ceiling while the receipt said overflow 0. Drops
-    # the lowest-priority unpinned item until it fits; pins never drop, and if
-    # pins alone overrun, overflow says by how much.
+    cut, ceiling_hit, overflow = fit_to_ceiling(bundle, ceiling, cut, source_cut, ceiling_hit)
+    receipt = {
+        "ts": ts, "session_id": session_id, "task_class": task_class, "prompt_hash": _hash(prompt),
+        "entities": [e["name"] for e in entities], "window": window,
+        "sources": source_rows, "declared_missing": missing, "coverage": verdict,
+        "conflicts": conflicts, "ceiling_hit": ceiling_hit, "overflow": overflow,
+        "prompt_chars": len(prompt), "prompt_truncated": truncated,
+        "deadline_hit": deadline_hit, "entities_dropped": entities_dropped,
+        "items": len(kept), "bytes": bundle["budget"]["used"], "elapsed_ms": int((time.time() - t0) * 1000),
+        "manifest": rel(manifest_path, root) if manifest_path else None,
+    }
+    bundle["receipt"] = receipt
+    if record:
+        append_jsonl(receipts_path, receipt)
+        _record_misses(qroot, prompt, scan, truncated, entities, ts, session_id)
+    return bundle
+
+
+def fit_to_ceiling(bundle: dict, ceiling: int, cut: int, source_cut: int,
+                   ceiling_hit: bool) -> tuple[int, bool, int]:
+    """Exact fit against the RENDERED text, separators and footer included, so
+    the number in the receipt is the number on the wire. Codex round 3 on
+    PR #302: the byte accounting skipped the per-entity separator lines, so
+    render() ran past the ceiling while the receipt said overflow 0. Drops the
+    lowest-priority unpinned item until it fits; pins never drop, and if the
+    pins alone overrun, overflow says by how much. Mutates bundle["items"] and
+    bundle["budget"]; returns (cut, ceiling_hit, overflow)."""
     while True:
         bundle["budget"]["cut"] = cut + source_cut
         rendered = len(render(bundle))
@@ -1207,20 +1274,7 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
     bundle["budget"]["used"] = len(render(bundle))
     overflow = max(0, bundle["budget"]["used"] - ceiling)
     bundle["budget"]["overflow"] = overflow   # chars the pins alone ran past the ceiling; 0 when honest
-    receipt = {
-        "ts": ts, "session_id": session_id, "task_class": task_class, "prompt_hash": _hash(prompt),
-        "entities": [e["name"] for e in entities], "window": window,
-        "sources": source_rows, "declared_missing": missing, "coverage": verdict,
-        "conflicts": conflicts, "ceiling_hit": ceiling_hit, "overflow": overflow,
-        "prompt_chars": len(prompt), "prompt_truncated": truncated,
-        "items": len(kept), "bytes": bundle["budget"]["used"], "elapsed_ms": int((time.time() - t0) * 1000),
-        "manifest": rel(manifest_path, root) if manifest_path else None,
-    }
-    bundle["receipt"] = receipt
-    if record:
-        append_jsonl(receipts_path, receipt)
-        _record_misses(qroot, prompt, scan, truncated, entities, ts, session_id)
-    return bundle
+    return cut, ceiling_hit, overflow
 
 
 def _hash(text: str) -> str:
