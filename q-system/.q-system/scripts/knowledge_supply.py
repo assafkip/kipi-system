@@ -346,7 +346,29 @@ def resolve_entities(prompt: str, index: dict[str, Entity], fire_alone: set[str]
                       "resolved_from": "alias" if hit_via == "alias" else ent.kind,
                       "ambiguous": ambiguous, "project": scoped_project,
                       "orgs": sorted(ent.orgs), "aliases": sorted(ent.aliases)}
-    # Longest name wins when one resolved name contains another ("Dana Okafor" vs "Kumar Co").
+    # First-name expansion, measured not guessed. Replay of 2,131 real prompts
+    # (2026-09-04) showed the founder names people by bare first name; the top
+    # misses were exactly those. A capitalized token that is NOT sentence-initial
+    # and is the first token of exactly ONE multi-token index entity resolves to
+    # it. Sentence-initial stays out ("Mark the file as done" is a verb), so a
+    # first name alone at the start of a prompt still never fires.
+    if not found:
+        first_tokens: dict[str, list[str]] = {}
+        for key, ent in index.items():
+            toks = ent.name.split()
+            if len(toks) >= 2:
+                first_tokens.setdefault(toks[0].casefold(), []).append(key)
+        for m in re.finditer(r"(?<![.!?]\s)(?<!^)\b([A-Z][a-z]{3,})\b", prompt):
+            tok = m.group(1)
+            if tok.casefold() in STOPWORDS:
+                continue
+            keys = first_tokens.get(tok.casefold()) or []
+            if len(keys) == 1 and keys[0] not in found:
+                ent = index[keys[0]]
+                found[keys[0]] = {"name": ent.name, "kind": ent.kind, "resolved_from": "first_name",
+                                  "ambiguous": len(ent.orgs) >= 2, "project": None,
+                                  "orgs": sorted(ent.orgs), "aliases": sorted(ent.aliases)}
+    # Longest name wins when one resolved name contains another ("Dana Okafor" vs "Okafor Co").
     out = list(found.values())
     out.sort(key=lambda e: -len(e["name"]))
     kept: list[dict] = []

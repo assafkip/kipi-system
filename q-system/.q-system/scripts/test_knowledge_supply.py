@@ -189,6 +189,20 @@ def test_entity_lookup_graph_newest_first_with_src(tmp_path):
     assert all("graph.jsonl:" in i["src"] for i in g)
 
 
+def test_first_name_expands_when_unique_and_not_sentence_initial(tmp_path):
+    """Replay of 2,131 real prompts (2026-09-04): the top misses were bare first
+    names. Mid-sentence, a capitalized first token of exactly one multi-token
+    entity resolves; sentence-initial stays out (a verb reads the same)."""
+    root, _ = make_instance(tmp_path)
+    b = run(root, "what did Dana say about the runbook")
+    assert b is not None
+    ent = [e for e in b["entities"] if e["name"] == "Dana Okafor"]
+    assert ent and ent[0]["resolved_from"] == "first_name"
+    assert run(root, "Dana") is None, "sentence-initial bare first name never fires"
+    assert run(root, "Mark") is None
+    assert run(root, "mark the file as done") is None
+
+
 def test_alias_resolves_to_canonical_entity(tmp_path):
     root, _ = make_instance(tmp_path)
     b = run(root, "anything new from DO")
