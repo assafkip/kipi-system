@@ -6,63 +6,200 @@ It remembers everything you do. Then it becomes whatever you need.
 
 Today it might run as your chief of staff. Tomorrow your lawyer. Next week your investigator. Same system, different role, because it remembers every decision, every conversation, every project you've ever brought it.
 
-Most AI tools handle one job. This one handles every job you used to do yourself.
-
 It runs in Claude Code. Plain markdown all the way down. No vector database, no embeddings, no black box. You read it with `cat`, search it with `rg`, version it with `git`.
 
 ---
 
-**How it works, in full:** [docs/README.md](docs/README.md). A reader path for
-non-technical people, a systems reference for engineers, generated catalogs of every
-script, tool, hook, job and rule, and a coverage gate that fails when any surface the
-code exposes is missing from the docs.
+## The whole thing in one picture
 
-## What it actually does
+```mermaid
+flowchart LR
+    F([You]) -->|type| CC[Claude Code session]
+    CC <-->|small scripts run on every action| H[Guardrails]
+    CC <-->|reads and writes| K[(Your knowledge:<br/>plain files on disk)]
+    CC <-->|deterministic tools| M[Local tool server]
+    CC -->|opens| G[Pull requests + Linear issues]
+    J[Scheduled jobs on your machine] -->|review, merge, report| G
+    J --> K
+    S[(One template repo)] -->|one command| I[Many copies,<br/>one per project]
+    I -.each one is.-> CC
+```
 
-Three things, repeatedly.
+You type into a Claude Code session. Before, during and after every action, small scripts
+called hooks run: they add context the AI would otherwise forget, they block actions that
+would break a rule, and they record what happened. The session reads and writes plain
+files that hold what you know. A local tool server gives the AI checks that return the
+same answer every time. Work leaves through pull requests and issues, where scheduled jobs
+review, merge and report without you in the loop. All of it lives in one template
+repository and is copied to every project you run.
 
-**Remembers.** Every conversation, decision, debrief, and artifact lives in plain markdown files. A new session reads them. The system arrives with full context of what you've been doing.
+---
 
-**Reasons across.** Connections between projects, people, decisions, and patterns get logged in a knowledge graph (JSONL). When you ask a question, the system pulls from the right files automatically. Insights from one project apply to another without you wiring it.
+## The five ideas
 
-**Becomes any role.** The same skeleton can run as a chief of staff, a lawyer, a PM, an investigator, a content operator, a researcher. You configure what role each instance plays through a `canonical/` directory. The system adapts its behavior, voice, and outputs to the role.
+**1. Assume the AI is unreliable.** It invents facts, forgets what it read, agrees with
+whoever is talking, and says "done" before anything ran. Nothing here makes it accurate.
+Everything here makes its mistakes findable, so a wrong answer leaves a trail and a right
+one carries its evidence.
+
+**2. Files are receipts.** A chat transcript is folklore with a timestamp. A file can be
+opened tomorrow, searched by a script, diffed, and dated. If you told the system something
+and it did not make it into a file, it does not exist the next morning.
+
+**3. Guardrails, not reminders.** A reminder is a sentence the AI is supposed to remember.
+A guardrail is a script that runs whether or not anyone remembers. Anything a script can
+check is checked by a script that can say no.
+
+**4. You are never the next step.** Engineering signals go to a queue an agent drains. You
+decide three things: publish, spend, delete. Everything else has a machine that owns it.
+
+**5. One skeleton, many instances.** Improvements are made once and fanned out. Each copy
+keeps its own facts; the template owns the machinery.
+
+---
+
+## What happens in one turn
+
+```mermaid
+sequenceDiagram
+    participant Y as You
+    participant S as Session
+    participant H as Hooks
+    participant A as AI
+    Y->>S: open a session
+    H-->>S: yesterday's handoff, open follow-ups, lessons learned, memories to doubt
+    Y->>S: ask a question
+    H-->>S: your writing voice if you are drafting; your own facts if you named a person or client
+    S->>A: question plus that context
+    A->>S: wants to edit a file or run a command
+    alt a rule would break
+        H-->>A: refused, with the reason
+    else allowed
+        S->>S: the tool runs
+        H-->>A: findings on what was written, or nothing
+    end
+    A->>S: finishes
+    H-->>A: refused if the answer claims something never checked
+    H-->>S: commit the work, score the memories, log the effort
+```
+
+When you open a session, hooks put yesterday's handoff, your open follow-ups and the
+lessons the whole fleet has learned in front of the AI. When you ask something, they add
+your writing voice if you are drafting and your own facts if you named a person, a client
+or a capability. Before a tool runs, a hook can refuse it. After a file is written, checks
+run on it. When the AI finishes, a last check can refuse the answer itself if it asserts
+something it never opened. Then the work is committed and the session is scored.
+
+---
+
+## What it remembers, and how it grades itself
+
+```mermaid
+flowchart TB
+    subgraph in [How a fact gets in]
+        D[After a conversation: a debrief] --> C[canonical files: positioning, decisions, objections]
+        D --> G[a dated fact graph: who works where, who pushed back on what]
+        E[End of session] --> HO[a handoff note for tomorrow]
+        N[A nightly job] --> L[lessons shared across every copy, client data scrubbed]
+    end
+    subgraph out [How it comes back]
+        SS[Session start] --> HO
+        SS --> W[warnings: memories that decay fast or scored low]
+        Q[A question naming someone] --> KS[their facts, with the file and line, and a line saying FULL or PARTIAL]
+    end
+    subgraph grade [How it is graded]
+        G --> ST[newest fact wins; older marked stale]
+        HO --> PV[every claim says how it was known: measured, stated, or guessed]
+        W --> SC[a memory scores useful if its file was opened, dead if never touched]
+    end
+```
+
+Facts enter through a debrief after a conversation, through the end-of-session handoff,
+and through a nightly job that turns each copy's learnings into shared lessons with client
+data removed. They come back at session start and again when a question names something
+the system knows. And they are graded on their own: a newer fact supersedes an older one,
+a handoff line must say whether it was measured or guessed, and a memory that never gets
+used stops being trusted. The first line of any answer about a person or client says
+`COVERAGE: FULL` or `COVERAGE: PARTIAL` and names what could not be searched. "I did not
+find it" and "I never looked there" are different sentences, and the system says which.
+
+---
+
+## How work leaves without you
+
+```mermaid
+sequenceDiagram
+    participant D as A detector, or you
+    participant L as Linear
+    participant W as Worker
+    participant R as Reviewer
+    participant M as Merge
+    D->>L: an issue is filed and labelled
+    L->>L: triaged: worked, parked, or voided, with the reason recorded
+    W->>L: claims a ready issue (one agent at a time)
+    W->>R: opens a pull request
+    R->>R: a fresh-eyes review, verdict posted as a status
+    alt changes requested
+        R-->>W: findings, each reproduced
+        W->>R: fixes, each with a test that fails without it
+    else approved
+        M->>M: checks green, merged automatically
+    end
+    M-->>L: issue closed with the command that proves it
+```
+
+Issues arrive from detectors or from you and are labelled so a machine-filed issue is
+distinguishable from a human one. A triage pass records a decision on each so the board
+does not only grow. A worker claims an issue under a lock, does the work on a branch and
+opens a pull request. A reviewer that has never seen the code reads the diff and posts a
+verdict. Fixes carry a test that fails without them. When every check is green, it merges
+itself. Red states have machine consumers; when they cannot cope, a ticket says so in an
+agent's queue, not yours.
+
+---
+
+## One template, many copies
+
+```mermaid
+flowchart LR
+    SK[(kipi-system: the template)] -->|kipi update| U{the updater}
+    REG[a registry of every copy] --> U
+    U -->|preview first, approve once| I1[Copy A: your chief of staff]
+    U --> I2[Copy B: a client engagement]
+    U --> I3[Copy C: an investigation]
+    U -.never touches.-> OWN[each copy's own facts, contacts, memory]
+    I1 & I2 & I3 -->|git commit before and after| RB[one-command rollback]
+```
+
+Every project is a full copy with its own facts and the same machinery. The updater
+previews exactly what would be copied and removed per copy, waits for one approval, then
+fans the machinery out and leaves each copy's facts untouched. It commits before and after
+so any sync can be reverted alone. A copy with uncommitted work refuses the sync rather
+than committing someone else's changes.
 
 ---
 
 ## Six real deployments
 
-Six instances running across one person's work right now. All six share the same skeleton. They differ only in their canonical content.
+All six share the same skeleton. They differ only in their canonical content.
 
 - **Chief of staff.** Tracks conversations, talk tracks, decisions, positioning. Drafts updates, debriefs, follow-ups.
 - **PM for a client engagement.** Coordinates multiple projects, logs every decision, drafts deliverables, tracks stakeholder context.
 - **Lawyer.** Generates separation packages, contract redlines, compliance memos. Citations to relevant code on every position.
-- **Investigator.** Manages active OSINT cases, evidence artifacts, published intel reports. Cross-platform source orchestration.
+- **Investigator.** Manages active OSINT cases, evidence artifacts, published intel reports.
 - **Operator for a consulting business.** Pipeline tracking, content cadence, deliverable production.
 - **Architect for itself.** Manages its own PRDs, issues, reviews. The system builds the system.
 
 ---
 
-## How memory compounds
+## Read the full explanation
 
-Three layers, time-aware.
-
-| Layer | What it holds | Lifecycle |
-|---|---|---|
-| **Working** | Active session notes, scratch work | Auto-cleaned after 48h |
-| **Canonical** | Decisions, positioning, frameworks that persist | Updated on every conversation, never auto-deleted |
-| **Graph** | Who/what/when triples linking entities across projects | Append-only |
-
-Insights flow upward. A pattern noticed in scratch notes gets promoted to weekly. A repeated weekly pattern becomes canonical. The system gets sharper the longer you run it.
-
----
-
-## Cross-instance memory
-
-Each deployment is its own instance with its own directory, canonical files, and graph. But instances can share state through a bridge directory.
-
-A real example: an investigation instance pulled positioning context from a separate strategy instance mid-task, and produced a synthesized advisory across two projects that had never been connected manually.
-
-That's not storage. That's compounding across role-specific deployments.
+[docs/README.md](docs/README.md) is the book. Six short pages for anyone, each with a
+drawing and a "what this means for you" section. Fifteen deeper pages, one per part of
+the system, each with two drawings and every script listed with what it does and the
+mistake that made it exist. Generated catalogs of every tool, hook, job and rule. And a
+coverage check that fails, naming the gap, if any part of the code is missing from the
+docs, so the book cannot quietly fall behind.
 
 ---
 
@@ -88,32 +225,10 @@ Optional. Most usage is just talking to the system in Claude Code.
 | `/q-draft` | Quick email, DM, or content draft in your voice |
 | `/q-engage` | Generate engagement on someone else's post |
 | `/q-research` | Citation-only research mode |
-| `/q-morning` | Build a daily action plan (full routine, optional) |
+| `/q-morning` | The day brief: one message with your calendar, mail needing an answer, and your board |
 | `/q-wrap` | End-of-day health check |
 | `/q-handoff` | Save context for next session |
-
----
-
-## Architecture
-
-```
-kipi-system/
-├── canonical/              # Source of truth, updated by every conversation
-│   ├── decisions.md
-│   ├── positioning.md
-│   ├── insights.md
-│   └── ...
-├── memory/
-│   ├── working/            # 48h scratch
-│   ├── weekly/             # 7-day rollups
-│   ├── monthly/            # Persistent
-│   └── graph.jsonl         # Entity-relationship triples
-├── output/                 # Generated artifacts (drafts, reports, schedules)
-├── plugins/                # MCP tools, hooks, skills
-└── .claude/                # Agents, rules, settings
-```
-
-Each instance you spin up has its own copy of this structure.
+| `/wiring-check` | End-of-task gate: prove every change is connected |
 
 ---
 
@@ -126,8 +241,8 @@ Works standalone with local files. Each integration adds capability.
 | Notion | CRM, project tracking |
 | Google Calendar | Meeting detection, auto-prep |
 | Gmail | Email monitoring |
-| Linear | Issue tracking, PRD workflow |
-| Slack | Notifications |
+| Linear | Issue tracking, the autonomous work queue |
+| Slack | The morning brief |
 | Chrome (DevTools MCP) | Web automation, LinkedIn |
 | Apify | X/Twitter scraping |
 | Reddit | Search and post tracking |
@@ -142,30 +257,12 @@ If you don't, you still get an AI that doesn't make you decide who to contact, w
 
 ---
 
-## How the AI stays focused
-
-The AI running this system has the same context-loss problems a human brain does. Research calls it "Lost in the Middle." In long conversations, LLMs forget instructions from earlier context, skip middle steps, and self-report completion without verifying.
-
-The system has guardrails for that.
-
-**Verification gates.** Scripts check output before claiming done.
-
-**Re-injected step requirements.** Each step's instructions get fresh context.
-
-**No self-authorized skipping.** The AI cannot decide on its own to skip steps.
-
-**Structured logs.** What was actually produced, not just "completed."
-
-Research basis: "Lost in the Middle" (Stanford), "LLMs Get Lost in Multi-Turn Conversation" (Laban et al. 2025).
-
----
-
 ## Security
 
 - `.env`, credentials, and key files blocked from read/write
 - PreToolUse hooks intercept dangerous operations
 - No secrets in committed files
-- `rm -rf`, `sudo`, `git push --force` denied by default
+- `rm -rf`, `sudo`, `git push --force` denied by default; the fleet-wide sync needs an out-of-band approval
 
 ---
 
