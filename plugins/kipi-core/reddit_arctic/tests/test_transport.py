@@ -331,3 +331,68 @@ def test_the_contract_competitive_intel_depends_on():
     rows, mirror = t.fetch_posts("taxpros", limit=5,
                                  _get=lambda url: {"data": []})
     assert rows == [] and mirror == "arctic", "a quiet room is still empty"
+
+
+# --- a caller's budget is not a host's problem ----------------------------
+
+def test_a_socket_timeout_still_takes_the_pullpush_fallback():
+    """THE ROUND-9 MAJOR, and a regression I shipped in round 8.
+
+    `socket.timeout` IS `TimeoutError` since Python 3.10. Round 8 let bare
+    TimeoutError through every handler here so a caller's deadline would not be
+    mistaken for a refusal, and in doing so stopped a genuinely hung mirror from
+    falling back to PullPush, at exactly the moment a fallback matters most.
+    """
+    import socket
+    calls = []
+
+    def opener(req, timeout=None):
+        calls.append(req.full_url)
+        if "arctic-shift" in req.full_url:
+            raise socket.timeout("hung")
+        return _Resp({"data": [{"id": "a"}]})
+
+    rows, mirror = t.fetch_posts("taxpros", limit=5, _opener=opener)
+    assert mirror == "pullpush" and len(rows) == 1
+    assert len(calls) == 2, calls
+
+
+def test_a_callers_own_deadline_still_propagates():
+    """The other half. A dedicated class, not a builtin somebody else raises."""
+    with pytest.raises(t.ReadDeadlineExceeded):
+        t.fetch_posts("x", limit=5, _get=lambda u: (_ for _ in ()).throw(
+            t.ReadDeadlineExceeded("budget")))
+
+
+def test_a_deadline_hands_back_the_pages_it_already_collected():
+    """The caller's budget ran out; the rows it already paid for are not the
+    mirror's to take back."""
+    seen = {"n": 0}
+
+    def fake(url):
+        seen["n"] += 1
+        if seen["n"] > 2:
+            raise t.ReadDeadlineExceeded("budget")
+        return {"data": [{"id": "c%d_%d" % (seen["n"], i),
+                          "created_utc": 1788136000 + seen["n"] * 1000 + i}
+                         for i in range(100)]}
+
+    with pytest.raises(t.ReadDeadlineExceeded) as err:
+        t.all_comments("x", _get=fake)
+    assert getattr(err.value, "partial", None), "the collected pages were dropped"
+    assert len(err.value.partial) == 200
+
+
+def test_an_unrecognised_body_is_a_failure_not_an_empty_room():
+    """A 200 carrying an error object, an HTML interstitial or a renamed field
+    made all_comments report complete=True for a thread it read none of. That is
+    this module's founding defect arriving through the parser instead of the
+    fetch."""
+    for body in ({"error": "nope"}, "html", 42):
+        with pytest.raises(t.RedditFetchFailed):
+            t._items(body)
+
+    # NEGATIVE CONTROL: the genuinely empty answers stay empty
+    assert t._items({"data": []}) == []
+    assert t._items([]) == []
+    assert t._items({}) == []

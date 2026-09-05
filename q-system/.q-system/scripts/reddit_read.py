@@ -548,13 +548,18 @@ def read_thread(permalink: str, transport=None, pacer=None, now=None,
     try:
         read = _ARCTIC.all_comments(link_id, timeout=timeout, _get=getter,
                                     _opener=opener)
-    except TimeoutError as exc:
+    except _ARCTIC.ReadDeadlineExceeded as exc:
         # A DEADLINE IS NOT A REFUSAL. Every page already fetched came back 200;
         # the read simply ran out of budget. Reporting that as
         # "mirror refused" threw away real comments and blamed a host that
         # answered every time (review). It is an INCOMPLETE read, labelled as
         # one, carrying what it got.
-        read = {"comments": [], "fetched": 0, "pages": 0,
+        # CARRY WHAT WAS ALREADY READ. The previous version built an EMPTY read
+        # while its own comment claimed it carried what it got (round 9), which
+        # is the same discard it was written to stop, one layer in. The transport
+        # attaches the pages it had collected to the exception.
+        got = list(getattr(exc, "partial", []) or [])
+        read = {"comments": got, "fetched": len(got), "pages": 0,
                 "complete": False, "capped": True, "deadline": str(exc)}
         partial = read
     except _ARCTIC.RedditFetchFailed as exc:
@@ -607,7 +612,7 @@ def _paced(getter, pacer):
 
     def _deadline():
         if _time.monotonic() - started > READ_DEADLINE_S:
-            raise TimeoutError(
+            raise _ARCTIC.ReadDeadlineExceeded(
                 "read exceeded READ_DEADLINE_S=%ss. A per-request pace bounds "
                 "the gap between requests, never the total." % READ_DEADLINE_S)
 

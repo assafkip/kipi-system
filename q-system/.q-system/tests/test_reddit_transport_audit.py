@@ -367,6 +367,21 @@ def test_a_classification_set_is_not_a_fetch_because_something_called_get(audit,
     assert audit.violations_in(_write(tmp_path, body)) == []
 
 
+def test_a_tombstone_handed_to_a_fetch_is_not_a_tombstone(audit, tmp_path):
+    """Round 8 added `fetched_literals` and did not add it to the retirement
+    guard, so `RETIRED_BASE = "https://old.reddit.com"` passed to urlopen was
+    exempt on the strength of its name (round 9). Every way of USING the literal
+    has to disqualify the marker, or the marker becomes the hole."""
+    used = ('RETIRED_BASE = "https://old.reddit.com"\n'
+            'def f():\n'
+            '    return urlopen(RETIRED_BASE)\n')
+    assert audit.violations_in(_write(tmp_path, used))
+
+    # NEGATIVE CONTROL: a string nothing uses is still a tombstone
+    tomb = 'RETIRED_ACTOR = "trudax/reddit-scraper-lite"\n'
+    assert audit.violations_in(_write(tmp_path, tomb, name="t.py")) == []
+
+
 def test_this_repo_is_clean_right_now(audit):
     """REPLACES test_the_fleet_is_clean_right_now.
 

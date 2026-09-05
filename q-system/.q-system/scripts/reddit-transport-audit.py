@@ -696,9 +696,15 @@ def violations_in_source(source: str, label: str) -> list[dict]:
         # the name. It is whether the literal is USED. A retirement marker
         # excuses a string that is never composed into a URL, and excuses
         # nothing that is.
+        # A tombstone is a string nothing uses. Round 8 added `fetched_literals`
+        # -- a host handed straight to urlopen -- and did not add it here, so
+        # `RETIRED_BASE = "https://old.reddit.com"` passed to urlopen was exempt
+        # on the strength of its name (round 9). Every way of USING the literal
+        # has to disqualify the marker, or the marker becomes the hole.
         if _name_says(label_early, RETIREMENT_MARKERS) and \
                 id(node) not in concatenated_hosts and \
                 id(node) not in endpoint_funcs and \
+                id(node) not in fetched_literals and \
                 not _is_endpoint(low):
             continue
         if why is None and _name_says(label_early,

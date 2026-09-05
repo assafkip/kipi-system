@@ -112,11 +112,24 @@ MAX_LIMIT = 100
 RETIRED_ACTOR = "trudax/reddit-scraper-lite"
 
 
-# A CALLER'S DEADLINE IS NOT A MIRROR REFUSAL. `reddit_read` paces and bounds a
-# whole read by raising TimeoutError from its own opener; wrapping that into
-# RedditFetchFailed made an over-budget read indistinguishable from a host that
-# said no, and the caller then threw away pages the mirror had already returned
-# 200 for (PR 307 round 8). Every `except` below re-raises it unchanged.
+# A CALLER'S DEADLINE IS NOT A MIRROR REFUSAL, and it is NOT A NETWORK TIMEOUT
+# EITHER. Round 8 expressed the first half by letting bare TimeoutError through
+# every handler here, which was wrong for a reason worth stating plainly:
+# `socket.timeout` IS `TimeoutError` since Python 3.10. So a genuinely hung
+# mirror stopped falling back to PullPush and crashed out of read_thread, at
+# exactly the moment a fallback matters most (PR 307 round 9).
+#
+# The distinction is a DEDICATED class, not a builtin somebody else also raises.
+# ReadDeadlineExceeded is raised only by a caller's own budget and only that
+# propagates; a socket timeout is a refusal like any other and takes the
+# fallback.
+
+
+class ReadDeadlineExceeded(Exception):
+    """A CALLER ran out of its own time budget. Never raised by this module and
+    never caught by it: the caller sets the budget, so the caller hears about
+    it. Distinct from socket.timeout, which is a host problem and gets the
+    ordinary fallback."""
 
 
 class RedditFetchFailed(RuntimeError):
@@ -148,11 +161,26 @@ def _get_json(url: str, timeout: int, _opener=None, _get=None):
 
 def _items(payload) -> list:
     """Arctic wraps rows in {"data": [...]}. PullPush does the same. A bare list
-    is accepted because one PullPush deployment returns one."""
+    is accepted because one PullPush deployment returns one.
+
+    AN UNRECOGNISED BODY IS A FAILURE, NOT AN EMPTY ROOM. This returned [] for
+    anything it did not recognise, so a 200 carrying an error object, an HTML
+    interstitial or a renamed field made `all_comments` report complete=True and
+    truncated=False for a thread it had read none of (PR 307 round 9). That is
+    the module's founding defect, arriving through the parser instead of through
+    the fetch.
+    """
+    if isinstance(payload, list):
+        return payload
     if isinstance(payload, dict):
         data = payload.get("data")
-        return data if isinstance(data, list) else []
-    return payload if isinstance(payload, list) else []
+        if isinstance(data, list):
+            return data
+        if data is None and not payload:
+            return []          # a genuinely empty object is an empty answer
+    raise RedditFetchFailed(
+        "unrecognised mirror body (%s); refusing to read it as an empty result"
+        % type(payload).__name__)
 
 
 def arctic_url(subreddit: str, limit: int, *, after: str = "",
@@ -195,13 +223,13 @@ def fetch_posts(subreddit: str, *, limit: int = DEFAULT_MAX_ITEMS,
         return _items(_get_json(arctic_url(subreddit, limit, after=after,
                                            before=before),
                                 timeout, _opener, _get)), "arctic"
-    except TimeoutError:
+    except ReadDeadlineExceeded:
         raise
     except Exception as arctic_exc:
         try:
             return _items(_get_json(pullpush_url(subreddit, limit),
                                     timeout, _opener, _get)), "pullpush"
-        except TimeoutError:
+        except ReadDeadlineExceeded:
             raise
         except Exception as pullpush_exc:
             raise RedditFetchFailed(
@@ -225,7 +253,7 @@ def comments(link_id: str, *, limit: int = MAX_LIMIT,
     empty list is a QUIET thread and must never be a broken fetch wearing one."""
     try:
         data = _get_json(comments_url(link_id, limit), timeout, _opener, _get)
-    except TimeoutError:
+    except ReadDeadlineExceeded:
         raise
     except Exception as exc:
         raise RedditFetchFailed("mirror refused comments for %s: %s: %s"
@@ -250,7 +278,7 @@ def author_items(author: str, *, limit: int = 25, timeout: int = DEFAULT_TIMEOUT
     for kind in ("posts", "comments"):
         try:
             data = _get_json(author_url(kind, author, limit), timeout, _opener, _get)
-        except TimeoutError:
+        except ReadDeadlineExceeded:
             raise
         except Exception as exc:
             raise RedditFetchFailed("mirror refused %s for u/%s: %s: %s"
@@ -493,7 +521,11 @@ def all_comments(link_id: str, *, page_size: int = MAX_LIMIT, max_pages: int = 4
         url = comments_url(link_id, page_size, after=after)
         try:
             batch = _items(_get_json(url, timeout, _opener, _get))
-        except TimeoutError:
+        except ReadDeadlineExceeded as exc:
+            # HAND BACK WHAT WAS ALREADY COLLECTED. The caller's budget ran out;
+            # the rows it already paid for are not the mirror's to take back, and
+            # `read_thread` builds its partial artifact from exactly this.
+            exc.partial = out
             raise
         except Exception as exc:
             raise RedditFetchFailed("mirror refused comments page %d for %s: %s: %s"
@@ -562,7 +594,7 @@ def posts_by_id(ids, *, timeout: int = DEFAULT_TIMEOUT, _opener=None,
     """
     try:
         return _items(_get_json(posts_by_id_url(ids), timeout, _opener, _get))
-    except TimeoutError:
+    except ReadDeadlineExceeded:
         raise
     except Exception as exc:
         raise RedditFetchFailed("mirror refused posts %s: %s: %s"
