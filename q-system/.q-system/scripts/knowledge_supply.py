@@ -1081,7 +1081,8 @@ def _record_misses(qroot: Path, prompt: str, scan: str, truncated: bool,
 # ------------------------------------------------------------------ entry point
 
 def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = None,
-           record: bool = True, deadline_s: float | None = None) -> dict | None:
+           record: bool = True, deadline_s: float | None = None,
+           recall_path: Path | None = None) -> dict | None:
     t0 = time.time()
     t_deadline = t0 + (SUPPLY_DEADLINE_S if deadline_s is None else deadline_s)
     deadline_hit: dict | None = None
@@ -1246,6 +1247,7 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
     if record:
         append_jsonl(receipts_path, receipt)
         _record_misses(qroot, prompt, scan, truncated, entities, ts, session_id)
+        _record_recall(bundle, session_id, recall_path)
     return bundle
 
 
@@ -1275,6 +1277,31 @@ def fit_to_ceiling(bundle: dict, ceiling: int, cut: int, source_cut: int,
     overflow = max(0, bundle["budget"]["used"] - ceiling)
     bundle["budget"]["overflow"] = overflow   # chars the pins alone ran past the ceiling; 0 when honest
     return cut, ceiling_hit, overflow
+
+
+def _record_recall(bundle: dict, session_id: str, recall_path: Path | None) -> None:
+    """Producer half of the memory outcome loop (knowledge-supply plan, Phase 2).
+    Each distinct source file this pass surfaced is recorded in the session
+    recall artifact, the same one memory-scores-surface.py writes, so the Stop
+    hook memory_autocapture.py can score it: useful if the model opened that
+    file this session, dead_end if it never touched it. That is the only proxy
+    for "the bundle was used" this repo has, and it needs no new mechanism. The
+    id prefix lets a consumer tell these rows from auto-memory rows. Best
+    effort: a recall write must never fail a supply pass."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "session_recall", Path(__file__).resolve().parent / "session_recall.py")
+        sr = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sr)
+        seen: dict[str, str] = {}
+        for it in bundle["items"]:
+            seen.setdefault(it["abs_src"], it["src"])
+        entries = [{"memory_id": f"knowledge-supply:{rel_src}", "source_file": abs_src}
+                   for abs_src, rel_src in seen.items()]
+        if entries:
+            sr.record_surfaced(entries, session_id=session_id, path=recall_path)
+    except Exception:
+        pass
 
 
 def _hash(text: str) -> str:

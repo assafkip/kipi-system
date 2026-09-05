@@ -710,6 +710,25 @@ def test_entities_capped_and_dropped_names_in_receipt(tmp_path):
     assert "ENTITIES DROPPED" in ks.render(b) and b["receipt"]["entities_dropped"][0] in ks.render(b)
 
 
+# ---------------------------------------------------------------- Phase 2: recall producer
+
+def test_recall_records_each_surfaced_source_once(tmp_path):
+    """Every distinct source file the pass surfaced lands in the session recall
+    artifact under this session, so memory_autocapture can score it at Stop
+    (useful if opened, dead_end if never touched). record=False writes nothing."""
+    root, q = make_instance(tmp_path)
+    recall = tmp_path / "recall.json"
+    b = run(root, "what do we know about Dana Okafor", recall_path=recall)
+    entries = json.loads(recall.read_text())["test-session"]["surfaced"]
+    srcs = {e["source_file"] for e in entries}
+    assert srcs == {i["abs_src"] for i in b["items"]} and len(srcs) > 1
+    assert len(entries) == len(srcs), "one entry per source file"
+    assert all(e["memory_id"].startswith("knowledge-supply:") for e in entries)
+    recall.unlink()
+    run(root, "what do we know about Dana Okafor", record=False, recall_path=recall)
+    assert not recall.exists()
+
+
 # ---------------------------------------------------------------- receipts and misses
 
 def test_receipt_and_misses_are_written(tmp_path):
