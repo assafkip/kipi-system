@@ -270,3 +270,35 @@ def test_recent_below_the_ceiling_makes_exactly_one_request():
 
     t.recent("x", max_items=5, _get=fake)
     assert len(calls) == 1, calls
+
+
+def test_search_pages_because_it_matches_locally():
+    """`search` filters the term HERE, not at the mirror, so one 100-post window
+    is not "the first 100 matches", it is "the matches inside the first 100
+    posts". A room holding ten mentions returned three and said nothing (review,
+    MINOR 4). Same silent truncation `recent` was already fixed for."""
+    pool = [{"id": "p%d" % i, "subreddit": "x", "selftext": "",
+             "title": ("needle" if i % 40 == 0 else "x"),
+             "created_utc": 1788136000 - i} for i in range(250)]
+
+    def fake(url):
+        import urllib.parse as up
+        q = dict(up.parse_qsl(url.split("?", 1)[1]))
+        if "before" not in q:
+            return {"data": pool[:100]}
+        b = float(q["before"])
+        return {"data": [p for p in pool if p["created_utc"] < b][:100]}
+
+    hits = t.search("x", "needle", max_items=10, _get=fake)
+    assert len(hits) > 3, "one window would have found 3"
+
+    # NEGATIVE CONTROL: a short room must still cost exactly one request
+    calls = []
+
+    def one(url):
+        calls.append(url)
+        return {"data": [{"id": "a", "title": "needle", "subreddit": "x",
+                          "selftext": ""}]}
+
+    t.search("x", "needle", _get=one)
+    assert len(calls) == 1, calls

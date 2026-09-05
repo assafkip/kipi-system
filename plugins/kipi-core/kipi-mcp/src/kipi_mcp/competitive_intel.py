@@ -890,13 +890,27 @@ def _collect_hackernews(
 
 def _collect_reddit_rss(source: dict[str, Any], limit: int, fetch_json: Any) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
+    failures: list[str] = []
     subs = [str(sub).lstrip("/").removeprefix("r/") for sub in source.get("subreddits", [])]
     after = (date.today() - timedelta(days=int(source.get("lookback_days", 35)))).isoformat()
     per_sub = int(source.get("posts_per_sub") or source.get("per_sub") or limit)
     for sub in subs:
         if len(records) >= limit:
             break
-        for entry in _reddit_archive_posts(sub, after, per_sub, fetch_json):
+        try:
+            entries = _reddit_archive_posts(sub, after, per_sub, fetch_json)
+        except RedditFetchFailed as exc:
+            # PER ROOM, not per source. This raise used to escape into
+            # collect_ai_raw_records' `except Exception: continue`, so ONE dead
+            # subreddit lost the other three and the harvest still wrote a
+            # success artifact with zero Reddit rows and a stderr line nobody
+            # reads (review, MAJOR 2).
+            #
+            # The raise itself is right and stays: what changed is who catches
+            # it. A refused room is recorded and the rest are still read.
+            failures.append("%s: %s" % (sub, exc))
+            continue
+        for entry in entries:
             records.append(
                 _raw_record(
                     source_name=source["name"],
@@ -914,6 +928,17 @@ def _collect_reddit_rss(source: dict[str, Any], limit: int, fetch_json: Any) -> 
             )
             if len(records) >= limit:
                 break
+    # A HARVEST THAT LOST EVERY ROOM IS NOT A HARVEST. Returning [] here made a
+    # total Reddit outage indistinguishable from a quiet week, which is the same
+    # defect the transport raises to prevent, one layer up.
+    if failures and not records:
+        raise RedditFetchFailed(
+            "every subreddit refused for %s: %s"
+            % (source.get("name") or "reddit", "; ".join(failures)))
+    if failures:
+        print("[competitive-intel] %s: %d of %d rooms refused: %s"
+              % (source.get("name") or "reddit", len(failures), len(subs),
+                 "; ".join(failures)), file=sys.stderr)
     return records
 
 

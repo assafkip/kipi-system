@@ -522,7 +522,11 @@ def read_thread(permalink: str, transport=None, pacer=None, now=None,
         "coverage_pct": coverage_pct(fetched, declared),
         "stubs": 0,
         "complete": bool(read["complete"]),
-        "truncated": bool(read["capped"]),
+        # NOT `capped` alone. all_comments has a complete=False capped=False
+        # branch (it ran out of cursor to advance on), and mapping truncated
+        # from capped only labelled that artifact truncated=False while it was
+        # incomplete (review, MINOR 3). Truncated means "there was more".
+        "truncated": bool(read["capped"]) or not read["complete"],
         "anomaly": None,
         "comments": read["comments"],
         "strategy": "paginate",

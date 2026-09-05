@@ -253,6 +253,42 @@ def test_a_checkouts_own_address_cannot_disable_the_walk(audit, tmp_path):
     assert audit.walk([inner]) == []
 
 
+def test_a_module_level_host_constant_plus_an_endpoint_is_caught(audit, tmp_path):
+    """The reversion this gate exists to block, and it walked past it.
+
+    Round 3's rule looked inside ONE function, so the obvious way back in was to
+    put the host at module level and concatenate the endpoint in a function that
+    names no host. Each half is innocent in its own scope.
+    """
+    body = ('BASE = "https://www.reddit.com"\n'
+            'def fetch(sub):\n'
+            '    return _get(BASE + "/r/" + sub + "/new.json?limit=100")\n')
+    assert audit.violations_in(_write(tmp_path, body))
+
+    # function-local too, which is what round 3 already covered
+    local = ('def f(sub):\n'
+             '    base = "https://www.reddit.com"\n'
+             '    return base + "/r/%s/new.json" % sub\n')
+    assert audit.violations_in(_write(tmp_path, local, name="local.py"))
+
+
+def test_a_name_collision_across_scopes_does_not_condemn_a_display_link(audit, tmp_path):
+    """NEGATIVE CONTROL for the rule above, and it is not hypothetical.
+
+    `url` in competitive_intel's `_reddit_archive_post` holds a display link;
+    `url` in an unrelated Apify helper 180 lines later is joined to "?token=".
+    Scope-blind matching condemned the display link in NINE places across the
+    fleet on the strength of a name collision. A binding is visible in the
+    function that made it; a module-level one is visible everywhere.
+    """
+    body = ('def a():\n'
+            '    url = "https://www.reddit.com/r/x/comments/1/"\n'
+            '    return url\n'
+            'def b(url, token):\n'
+            '    return f"{url}?token={token}"\n')
+    assert audit.violations_in(_write(tmp_path, body)) == []
+
+
 def test_the_fleet_is_clean_right_now(audit):
     """The claim the whole conversion was for. Scoped to the repos that exist on
     this machine, so it is a real check here and a skip elsewhere rather than a

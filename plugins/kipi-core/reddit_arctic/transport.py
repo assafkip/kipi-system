@@ -355,8 +355,33 @@ def search(subreddit: str, term: str, *, max_items: int = DEFAULT_MAX_ITEMS,
     returned the room feed on a miss, so this is the honest version of what was
     already happening.
     """
-    raw, mirror = fetch_posts(subreddit, limit=max(max_items * 4, MAX_LIMIT),
+    # PAGE, like `recent` does, and for the reason `recent` was fixed. The
+    # matching happens HERE rather than at the mirror, so one 100-post window is
+    # not "the first 100 matches", it is "the matches inside the first 100
+    # posts". A room holding ten mentions of the term returned three, and
+    # nothing said so (review, MINOR 4).
+    #
+    # The scan is bounded by pages, not by the caller's max_items, because a
+    # rare term could otherwise walk a room forever looking for its tenth hit.
+    raw, mirror = fetch_posts(subreddit, limit=MAX_LIMIT,
                               timeout=timeout, _opener=_opener, _get=_get)
+    if len(raw) >= MAX_LIMIT:
+        seen_ids = {r.get("id") for r in raw}
+        cursor = None
+        for _ in range(10):
+            last = raw[-1].get("created_utc")
+            nxt = (last + 1) if isinstance(last, (int, float)) else None
+            if nxt is None or nxt == cursor:
+                break
+            cursor = nxt
+            page, _m = fetch_posts(subreddit, limit=MAX_LIMIT,
+                                   before=str(cursor), timeout=timeout,
+                                   _opener=_opener, _get=_get)
+            fresh = [r for r in page if r.get("id") not in seen_ids]
+            seen_ids.update(r.get("id") for r in fresh)
+            raw.extend(fresh)
+            if len(page) < MAX_LIMIT:
+                break
     needle = (term or "").lower().strip()
     hits = []
     for record in raw:

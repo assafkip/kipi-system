@@ -466,6 +466,80 @@ def violations_in_source(source: str, label: str) -> list[dict]:
                     if isinstance(n, ast.Constant) and isinstance(n.value, str):
                         endpoint_funcs.add(id(n))
 
+    # A HOST CONSTANT THAT SOMEBODY CONCATENATES AN ENDPOINT ONTO.
+    #
+    # The round-3 rule looked inside ONE function, so the obvious reversion
+    # walked past it: put `BASE = "https://www.reddit.com"` at module level, then
+    # fetch `BASE + "/r/x/new.json"` from a function that itself contains no
+    # host. Each half is innocent in its own scope and the pre-commit gate
+    # reported clean on the exact change it exists to block (review, MAJOR 1).
+    #
+    # So: collect the names bound to a reddit host ANYWHERE (module, class or
+    # function level), then flag that host literal if any `+` in the file joins
+    # one of those names to an endpoint-shaped path. Still not dataflow, and the
+    # honest limit is the same as before: a host handed through a function
+    # ARGUMENT rather than a name is not seen.
+    # SCOPED. A name means different things in different functions, and the
+    # first version of this rule did not care: `url` in `_reddit_archive_post`
+    # holds a display link, and `url` in an unrelated Apify helper 180 lines
+    # later is joined to "?token=". Scope-blind matching condemned the display
+    # link in nine places across the fleet on the strength of a name collision.
+    #
+    # A binding is visible in the function that made it, and a module-level one
+    # is visible everywhere. That is the whole of the scoping this needs.
+    def _scope_of(tree_):
+        owner = {}
+        for fn in ast.walk(tree_):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for n in ast.walk(fn):
+                    owner.setdefault(id(n), fn)
+        return owner
+
+    owner = _scope_of(tree)
+
+    def _key(node):
+        fn = owner.get(id(node))
+        return id(fn) if fn is not None else "module"
+
+    host_names = {}          # (scope, name) -> Constant nodes bound there
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            val = node.value
+            if val is None:
+                continue
+            lits = [n for n in ast.walk(val)
+                    if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                    and "reddit.com" in n.value.lower()
+                    and "photon" not in n.value.lower()]
+            if not lits:
+                continue
+            for tgt in targets:
+                if isinstance(tgt, ast.Name):
+                    host_names.setdefault((_key(node), tgt.id), []).extend(lits)
+
+    concatenated_hosts = set()
+    for node in ast.walk(tree):
+        joined_names, endpoint_here = set(), False
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            sides = [node.left, node.right]
+            joined_names = {n.id for side in sides for n in ast.walk(side)
+                            if isinstance(n, ast.Name)}
+            endpoint_here = any(
+                _is_endpoint(n.value.lower()) for side in sides
+                for n in ast.walk(side)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str))
+        elif isinstance(node, ast.JoinedStr):
+            joined_names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            endpoint_here = _is_endpoint(_joined_text(node).lower())
+        if not endpoint_here:
+            continue
+        here = _key(node)
+        for name in joined_names:
+            for scope in (here, "module"):
+                for lit in host_names.get((scope, name), []):
+                    concatenated_hosts.add(id(lit))
+
     skip = _docstring_ids(tree) | _classification_ids(tree)
     labels = _context_names(tree)
     # id(constant) -> the full f-string it is a fragment of
@@ -519,7 +593,8 @@ def violations_in_source(source: str, label: str) -> list[dict]:
                 why = bad
                 break
         if why is None and "reddit.com" in low and (
-                _is_endpoint(low) or id(node) in endpoint_funcs):
+                _is_endpoint(low) or id(node) in endpoint_funcs
+                or id(node) in concatenated_hosts):
             why = "reddit.com endpoint"
         # A NAME MAY ONLY EXEMPT WHAT THE URL DID NOT ALREADY CONDEMN. What is
         # left here is a plain www.reddit.com URL with no endpoint shape, which
