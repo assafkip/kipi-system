@@ -360,9 +360,14 @@ def single_token_hit(tok: str, prompt: str, rule: str) -> bool:
     elif rule == "identifier":
         if len(tok) < 4:
             return False
-        # Positions preserved: casefold plus the same two replacements norm() makes.
-        pat = re.compile(r"(?<!\w)" + re.escape(norm(tok)) + r"(?!\w)")
-        hay = prompt.casefold().replace("-", " ").replace("_", " ")
+        # Matched on the RAW prompt with IGNORECASE and a separator class, so
+        # every offset is exact. A casefolded haystack shifts offsets after any
+        # casefold-expanding character (PR #304 review).
+        parts = re.findall(r"[a-z0-9]+", norm(tok))
+        if not parts:
+            return False
+        pat = re.compile(r"(?<!\w)" + r"[\s_-]+".join(re.escape(p) for p in parts) + r"(?!\w)", re.IGNORECASE)
+        hay = prompt
     elif rule == "contact":
         if len(tok) < 4 or not tok[0].isupper():
             return False
@@ -731,11 +736,18 @@ def resolve_canonical(entity: dict, stores: dict, root: Path, kind: str = "canon
                       cls: str = "canonical") -> list[dict]:
     items = []
     for path in (files if files is not None else stores["canonical_files"]):
+        st = stores.setdefault("read_stats", {}).setdefault(cls, {"files": set(), "failed": set()})
+        st["files"].add(str(path))
         try:
             lines = read_lines(path)
         except OSError as exc:
             # sp-ca1769db: an unreadable file is a recorded problem, never a
-            # silent skip that reads as "present, 0 hits" under FULL.
+            # silent skip that reads as "present, 0 hits" under FULL. The
+            # class is UNREADABLE only when every file failed (read_stats),
+            # never from zero hits: PR #304 review found one unreadable file
+            # among readable ones marking the whole class unreadable on an
+            # entity with no hits, a false PARTIAL.
+            st["failed"].add(str(path))
             if errors is not None:
                 errors[cls] = f"{path.name}: {exc}"
             continue
@@ -755,13 +767,19 @@ def resolve_canonical(entity: dict, stores: dict, root: Path, kind: str = "canon
 
 
 def resolve_blocks(entity: dict, path: Path, root: Path, kind: str, max_lines: int,
-                   errors: dict | None = None, cls: str = "") -> list[dict]:
+                   errors: dict | None = None, cls: str = "", stores: dict | None = None) -> list[dict]:
     """### blocks in relationships.md / decisions.md that mention the entity."""
     if not path.is_file():
         return []
+    st = None
+    if stores is not None:
+        st = stores.setdefault("read_stats", {}).setdefault(cls or kind, {"files": set(), "failed": set()})
+        st["files"].add(str(path))
     try:
         lines = read_lines(path)
     except OSError as exc:
+        if st is not None:
+            st["failed"].add(str(path))
         if errors is not None:
             errors[cls or kind] = f"{path.name}: {exc}"   # sp-ca1769db
         return []
@@ -928,7 +946,9 @@ def assemble(items: list[dict], entities: list[dict], ceiling: int, header_len: 
     seen: set[tuple] = set()
     deduped = []
     for it in items:
-        if len(it["text"]) > ITEM_MAX_CHARS:
+        if it["kind"] == "graph" and len(it["text"]) > ITEM_MAX_CHARS:
+            # Graph triples only: a relationship block is a 12-line excerpt by
+            # design and was being cut at 600 (PR #304 review).
             it["text"] = it["text"][:ITEM_MAX_CHARS] + f" [cut at {ITEM_MAX_CHARS} chars; open src]"
         key = (norm(it["entity"]), it["kind"], norm(it["text"]))   # sp-1b3ef442: a shared line stays under each named entity
         if key in seen:
@@ -1226,9 +1246,9 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
                 elif cls == "canonical":
                     got = resolve_canonical(ent, stores, root, errors=problems, cls=cls)
                 elif cls == "relationships":
-                    got = resolve_blocks(ent, paths["relationships"], root, "relationship", 12, errors=problems, cls=cls)
+                    got = resolve_blocks(ent, paths["relationships"], root, "relationship", 12, errors=problems, cls=cls, stores=stores)
                 elif cls == "decisions":
-                    got = resolve_blocks(ent, paths["decisions"], root, "decision", 8, errors=problems, cls=cls)
+                    got = resolve_blocks(ent, paths["decisions"], root, "decision", 8, errors=problems, cls=cls, stores=stores)
                 elif cls == "commitments":
                     got = resolve_commitments(ent, stores, root, window)
                 elif cls == "meetings":
@@ -1259,8 +1279,9 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
                 if it["status"] == KNOWN and (d is None or (now - d).days > fresh_days):
                     it["status"] = STALE
         items += cls_items
-        if present and problems.get(cls) and not cls_items:
-            present = False   # every file of the class failed to read: unreadable, not empty (sp-ca1769db)
+        rs = stores.get("read_stats", {}).get(cls)
+        if present and rs and rs["failed"] and rs["failed"] >= rs["files"]:
+            present = False   # EVERY file of the class failed to read: unreadable, not empty (sp-ca1769db)
         if not present and spec.get("required"):
             missing.append(cls)
             missing_paths[cls] = f"{path_s or cls} {'unreadable' if cls in problems else 'absent'}"

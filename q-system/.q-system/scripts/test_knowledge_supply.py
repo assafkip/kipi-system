@@ -829,6 +829,51 @@ def test_item_text_capped_with_marker(tmp_path):
     assert len(ks.render(b)) <= b["budget"]["ceiling"] and b["budget"]["overflow"] == 0
 
 
+# ---------------------------------------------------------------- ASK-1261 review round
+
+def test_unreadable_is_every_file_not_zero_hits(tmp_path):
+    """One unreadable file among readable ones never marks the class
+    unreadable, with or without hits; every file failing does."""
+    root, q = make_instance(tmp_path)
+    (q / "canonical" / "objections.md").write_text("# Objections\nNothing about anyone here.\n")
+    tt = q / "canonical" / "talk-tracks.md"
+    tt.chmod(0)
+    try:
+        b_hits = run(root, "what do we know about Dana Okafor")
+        b_none = run(root, "what do we know about Mark Chen")
+    finally:
+        tt.chmod(0o644)
+    for b in (b_hits, b_none):
+        row = {s["class"]: s for s in b["receipt"]["sources"]}["canonical"]
+        assert row["present"] is True and row["problem"] and "talk-tracks" in row["problem"]
+        assert b["coverage"]["verdict"] == "FULL", "one unreadable file among readable ones is not PARTIAL"
+    (q / "canonical" / "objections.md").chmod(0)
+    tt.chmod(0)
+    try:
+        b = run(root, "what do we know about Mark Chen")
+    finally:
+        tt.chmod(0o644)
+        (q / "canonical" / "objections.md").chmod(0o644)
+    assert b["coverage"]["verdict"] == "PARTIAL" and "canonical" in b["coverage"]["missing"]
+
+
+def test_identifier_initial_position_survives_casefold_expansion(tmp_path):
+    """A casefold-expanding character before a line-initial slug must not shift
+    the offset the initial-position rule reads."""
+    root, _ = make_instance(tmp_path)
+    assert run(root, "Straße\nacme-labs said hi") is None
+    assert run(root, "Straße, then acme-labs said hi") is not None
+
+
+def test_relationship_block_is_not_cut(tmp_path):
+    root, q = make_instance(tmp_path)
+    with open(q / "my-project" / "relationships.md", "a") as f:
+        f.write("\n### Long Person — Ops — Big Co\n" + "".join(f"- **Note {n}:** " + "n" * 70 + "\n" for n in range(10)))
+    b = run(root, "what do we know about Long Person")
+    rel = items_of(b, "relationship", "Long Person")
+    assert rel and len(rel[0]["text"]) > ks.ITEM_MAX_CHARS and "[cut" not in rel[0]["text"]
+
+
 # ---------------------------------------------------------------- receipts and misses
 
 def test_receipt_and_misses_are_written(tmp_path):
