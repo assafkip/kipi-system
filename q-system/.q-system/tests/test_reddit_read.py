@@ -237,17 +237,27 @@ def test_a_missing_declared_count_is_its_own_state(rr, real_html):
 # CONSTRAINT 3 -- pacing, listing discovery, 429 is a refusal
 # ---------------------------------------------------------------------------
 
-def test_the_pacer_holds_ten_seconds_between_requests(rr):
+def test_the_pacer_holds_its_interval_between_requests(rr):
+    """REPLACES test_the_pacer_holds_ten_seconds_between_requests.
+
+    The claim is unchanged: a second request inside the interval sleeps the
+    remainder. Only the NUMBER moved, because 10s was measured against
+    old.reddit.com and this module reads the Arctic mirror now. Asserting the
+    behaviour against whatever MIN_INTERVAL_S is keeps the test true when the
+    measurement changes, which a hardcoded 9.0 did not.
+    """
+    interval = rr.MIN_INTERVAL_S
+    elapsed = interval / 10.0
     slept = []
     clock = {"t": 1000.0}
-    pacer = rr.Pacer(min_interval_s=rr.MIN_INTERVAL_S,
+    pacer = rr.Pacer(min_interval_s=interval,
                      clock=lambda: clock["t"],
                      sleeper=lambda s: (slept.append(s), clock.__setitem__("t", clock["t"] + s)))
     pacer.wait()          # first call is free
     assert slept == []
-    clock["t"] += 1.0     # only 1s elapsed
+    clock["t"] += elapsed
     pacer.wait()
-    assert slept and slept[0] == pytest.approx(9.0, abs=0.01)
+    assert slept and slept[0] == pytest.approx(interval - elapsed, abs=0.01)
 
 
 def test_the_pacer_does_not_sleep_when_enough_time_already_passed(rr):
@@ -261,11 +271,22 @@ def test_the_pacer_does_not_sleep_when_enough_time_already_passed(rr):
     assert slept == []
 
 
-def test_the_default_interval_is_the_measured_one(rr):
-    """3s pacing 429'd 11 of 12 RSS requests. 10s ran 13 of 13 clean."""
-    assert rr.MIN_INTERVAL_S == 10
+def test_the_default_interval_belongs_to_the_host_this_module_reads(rr):
+    """REPLACES test_the_default_interval_is_the_measured_one.
 
+    That test asserted MIN_INTERVAL_S == 10, and 10 WAS the measured floor: 3s
+    pacing 429'd 11 of 12 RSS requests on old.reddit.com and 10s ran 13 of 13
+    clean. The measurement was real and it belonged to a host this module no
+    longer reads.
 
+    Keeping it cost 400 seconds per thread once the pacer started covering every
+    paged request. The retired number stays as a named constant carrying its
+    scar, so nobody mistakes the new one for that measurement, and the new one is
+    honest about being a COURTESY on a free archive rather than a measured floor:
+    Arctic's own limit has not been measured.
+    """
+    assert rr.RETIRED_REDDIT_MIN_INTERVAL_S == 10
+    assert rr.MIN_INTERVAL_S < rr.RETIRED_REDDIT_MIN_INTERVAL_S
 def test_a_429_is_recorded_as_a_refusal_never_as_zero_results(rr):
     def transport(url, headers, timeout):
         return 429, ""
@@ -614,4 +635,100 @@ def test_the_production_path_is_paced_not_only_the_injected_one(rr, monkeypatch)
     rr.read_thread("/r/x/comments/abc/t/", pacer=CountingPacer())
 
     assert len(opens) > 1, "the fixture must actually page"
+    assert len(waits) == len(opens), (len(waits), len(opens))
+
+
+def test_the_pace_is_not_the_retired_reddit_number(rr):
+    """10s was MEASURED against old.reddit.com and was right for it. It is wrong
+    for the mirror, and keeping it did real damage once the pacer covered every
+    request instead of the first: one reddit_thread call became 41 requests and
+    400 seconds of deliberate sleeping against a host that never asked (review).
+
+    The retired number stays as a named constant carrying its scar, so nobody
+    reads the new one as the old measurement.
+    """
+    assert rr.RETIRED_REDDIT_MIN_INTERVAL_S == 10
+    assert rr.MIN_INTERVAL_S < 1, "the mirror is not old.reddit.com"
+    assert 41 * rr.MIN_INTERVAL_S < 30, "41 paged requests must not cost minutes"
+
+
+def test_a_paged_read_has_a_whole_read_deadline(rr, monkeypatch):
+    """A per-request pace bounds the GAP between requests and says nothing about
+    the total. 41 requests at any interval still needs a ceiling somebody chose.
+    """
+    import json
+    import urllib.request as u
+
+    assert rr.READ_DEADLINE_S > 0
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(rr._time, "monotonic", lambda: clock["t"])
+
+    class Resp:
+        def __init__(self, payload):
+            self._b = json.dumps(payload).encode()
+
+        def read(self):
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def slow(req, timeout=None):
+        clock["t"] += rr.READ_DEADLINE_S / 2.0     # each fetch eats half the budget
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        if "/api/posts/ids" in url:
+            return Resp({"data": [{"id": "x", "num_comments": 5000}]})
+        n = int(clock["t"])
+        return Resp({"data": [{"id": "p%d_%d" % (n, i),
+                               "created_utc": 1788136000 + n * 1000 + i}
+                              for i in range(100)]})
+
+    monkeypatch.setattr(u, "urlopen", slow)
+
+    class NoPacer:
+        def wait(self):
+            pass
+
+    art = rr.read_thread("/r/x/comments/abc/t/", pacer=NoPacer())
+    assert art["refused"] is True, "an over-deadline read is a refusal, not a partial"
+
+
+def test_read_listing_passes_the_paced_opener_it_builds(rr, monkeypatch):
+    """Round 6 fixed read_thread and left its sibling building a paced opener and
+    never passing it, so the production LISTING path stayed unpaced (review)."""
+    import json
+    import urllib.request as u
+
+    waits, opens = [], []
+
+    class CountingPacer:
+        def wait(self):
+            waits.append(1)
+
+    class Resp:
+        def __init__(self, payload):
+            self._b = json.dumps(payload).encode()
+
+        def read(self):
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake(req, timeout=None):
+        opens.append(req.full_url if hasattr(req, "full_url") else str(req))
+        return Resp({"data": [{"id": "a", "title": "t", "subreddit": "x",
+                               "permalink": "/r/x/comments/a/t/",
+                               "num_comments": 3, "created_utc": 1788136000}]})
+
+    monkeypatch.setattr(u, "urlopen", fake)
+    rr.read_listing("x", pacer=CountingPacer())
+    assert opens, "the fixture must actually fetch"
     assert len(waits) == len(opens), (len(waits), len(opens))

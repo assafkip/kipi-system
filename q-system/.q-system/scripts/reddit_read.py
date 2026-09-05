@@ -77,6 +77,7 @@ import json
 import re
 import sys
 import time
+import time as _time
 import urllib.error
 import urllib.request
 import pathlib
@@ -123,9 +124,31 @@ _ARCTIC = _load_reddit_transport()
 # the skeleton's own separation gate refuses.
 USER_AGENT = _ARCTIC.USER_AGENT
 
-# 3s pacing 429'd 11 of 12 RSS requests. 10s pacing ran 13 of 13 clean across
-# listing pages and thread fetches. This is the measured floor, not a guess.
-MIN_INTERVAL_S = 10
+# THIS NUMBER WAS MEASURED AGAINST A HOST THIS MODULE NO LONGER READS.
+#
+# 10s came from old.reddit.com, where 3s pacing 429'd 11 of 12 RSS requests and
+# 10s ran 13 of 13 clean. That was a measured floor and it was the right number
+# for Reddit.
+#
+# It is the wrong number for the Arctic Shift mirror, and keeping it did real
+# damage the moment the pacer started covering every request instead of the
+# first: `all_comments` pages, so ONE reddit_thread call became 41 requests and
+# 400 SECONDS of deliberate sleeping against a host that never asked for it
+# (review). Pacing harder made the previous fix worse.
+#
+# HONEST ABOUT WHAT IS MEASURED AND WHAT IS NOT. Arctic's own rate limit has NOT
+# been measured. What has: individual calls return under 3s, and this session
+# made hundreds of consecutive requests today with no 429 and no refusal. So
+# this is a COURTESY interval on a free archive somebody else pays for, not a
+# floor derived from a limit. If a 429 ever appears, that is the measurement,
+# and it belongs here with its date.
+RETIRED_REDDIT_MIN_INTERVAL_S = 10          # old.reddit.com. Kept for its scar.
+MIN_INTERVAL_S = 0.25
+
+# A whole-read deadline, because a per-request pace says nothing about how long
+# a paged read may take in total. 41 requests at any interval still needs a
+# ceiling somebody chose on purpose.
+READ_DEADLINE_S = 120
 
 # Derived from the population above, not picked:
 #   224 declared measured 97.3% in one request
@@ -569,8 +592,17 @@ def _paced(getter, pacer):
     tests defect in one function. When no transport is injected, this returns a
     paced OPENER instead, which is the seam the transport actually uses.
     """
+    started = _time.monotonic()
+
+    def _deadline():
+        if _time.monotonic() - started > READ_DEADLINE_S:
+            raise TimeoutError(
+                "read exceeded READ_DEADLINE_S=%ss. A per-request pace bounds "
+                "the gap between requests, never the total." % READ_DEADLINE_S)
+
     if getter is not None:
         def _get(url):
+            _deadline()
             pacer.wait()
             return getter(url)
         return _get
@@ -578,6 +610,7 @@ def _paced(getter, pacer):
     import urllib.request as _u
 
     def _opener(req, timeout=None):
+        _deadline()
         pacer.wait()
         return _u.urlopen(req, timeout=timeout)
     return _opener
@@ -634,7 +667,7 @@ def read_listing(subreddit: str, period: str = "month", transport=None,
     getter, opener = (paced, None) if getter is not None else (None, paced)
     try:
         posts = _ARCTIC.recent(subreddit, max_items=_ARCTIC.MAX_LIMIT,
-                               timeout=timeout, _get=getter)
+                               timeout=timeout, _get=getter, _opener=opener)
     except _ARCTIC.RedditFetchFailed as exc:
         out = _refusal(url, seen.get("status", "EXC:RedditFetchFailed: %s" % exc), now)
         out["threads"] = None
