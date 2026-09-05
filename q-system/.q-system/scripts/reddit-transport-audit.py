@@ -21,9 +21,10 @@ Comments and docstrings are exempt. String literals are not.
 ## What it deliberately allows
 
   https://www.reddit.com/...   as a DISPLAY link a human clicks. Never fetched.
-                               Recognised by the assignment or key it sits in,
-                               not by trust: `url`, `permalink`, `link`, `href`,
-                               `BASE`, `display`.
+                               Recognised by the URL's own SHAPE, not by what it
+                               is called: a bare profile or permalink is a link,
+                               while .json, .rss, /api/, /search, a query string
+                               or a listing feed segment is an endpoint.
 
 ## What it forbids
 
@@ -53,18 +54,28 @@ from pathlib import Path
 
 ALLOWED_HOSTS = ("arctic-shift.photon-reddit.com", "api.pullpush.io")
 
-# A display link is allowed only where it is plainly a link. The name the literal
-# is bound to (or the dict key it answers) has to say so.
-DISPLAY_NAMES = ("url", "permalink", "link", "href", "base", "display",
-                 "author_url", "thread_url", "source_url", "profile")
+# WHAT DECIDES A DISPLAY LINK IS THE URL, NOT THE NAME. A DISPLAY_NAMES list
+# lived here and went dead when the endpoint test moved to URL shape: still
+# computed, never read, and still documented in the module docstring as the
+# allow mechanism (PR 307 review, NIT 6). A list nothing reads is worse than no
+# list, because the next person tunes it and nothing happens.
 
 # A DENYLIST that names a host is the opposite of a violation: it is this rule
 # being enforced somewhere else. `browser_session_health.forbidden_probe_hosts`
 # was the first false positive this audit produced, and a checker that flags the
 # guard it agrees with is a checker people switch off.
-DENYLIST_NAMES = ("forbidden", "blocked", "denied", "banned", "retired",
-                  "refuse", "reject", "deprecated", "never", "not_allowed",
+DENYLIST_NAMES = ("forbidden", "blocked", "denied", "banned",
+                  "refuse", "reject", "never", "not_allowed",
                   "bad_hosts", "skip")
+
+# THE ONE THING THAT OUTRANKS THE HARD DENYLIST. Naming the retired actor is how
+# a module records that it is retired: `RETIRED_ACTOR = "trudax/..."` exists
+# precisely so a session grepping for the actor finds the note instead of finding
+# nothing and re-adding it. Making the denylist absolute (PR 307 review, MINOR 4)
+# was right for `old.reddit.com` hiding inside a variable called `fetch_items`,
+# and wrong for a constant whose name says RETIRED. The distinction is not "does
+# the name sound friendly" but "does the name declare this thing dead".
+RETIREMENT_MARKERS = ("retired", "deprecated", "removed", "dead")
 
 # NAMING A DOMAIN IS NOT FETCHING IT. Three distinct non-fetch uses turned up
 # across the corpus, and each one is a legitimate thing to write:
@@ -153,15 +164,48 @@ def _exception_for(path: Path):
 VENDORED = ("q-system", "plugins")
 
 
-def _is_vendored_copy(path: Path, root) -> bool:
-    text = str(path.resolve())
-    root = str(Path(root).expanduser().resolve())
-    if Path(root).name == "kipi-system":
+def _repo_root_of(path: Path):
+    """The checkout a file belongs to: nearest ancestor carrying a .git."""
+    for parent in path.resolve().parents:
+        if (parent / ".git").exists():
+            return parent
+    return None
+
+
+def _is_the_skeleton(repo) -> bool:
+    """The skeleton OWNS its q-system/ and plugins/; everywhere else those are
+    sync destinations. Identified by the registry it carries, with the directory
+    name as a fallback, so a rename cannot silently turn the source into a
+    copy."""
+    if repo is None:
         return False
-    if not text.startswith(root + os.sep):
+    return (repo / "instance-registry.json").exists() or repo.name == "kipi-system"
+
+
+def _is_vendored_copy(path: Path, root=None) -> bool:
+    """Decided from the FILE's own repo, never from the root handed in.
+
+    It used to read `Path(root).name == "kipi-system"`. The CLI default root is
+    `~/projects`, and the fleet test passes `~/projects` as one root by design,
+    so the name was `projects` and the SKELETON'S OWN q-system/ and plugins/
+    were classed as vendored and skipped. The sweep reporting "0 across every
+    checkout" was structurally unable to look at the two directories this audit
+    lives in (PR 307 review, MAJOR 2, reproduced with two planted
+    old.reddit.com fetchers that came back clean).
+
+    A file belongs to whatever repo contains it, and that answer does not change
+    with the argument the caller happened to pass.
+    """
+    repo = _repo_root_of(path)
+    if repo is None:
         return False
-    parts = Path(text[len(root) + 1:]).parts
-    return any(part in VENDORED for part in parts)
+    if _is_the_skeleton(repo):
+        return False
+    try:
+        rel = path.resolve().relative_to(repo)
+    except ValueError:
+        return False
+    return any(part in VENDORED for part in rel.parts)
 
 
 def _is_test(path: Path) -> bool:
@@ -351,17 +395,26 @@ def violations_in_source(source: str, label: str) -> list[dict]:
         if any(host in low for host in ALLOWED_HOSTS):
             continue
 
+        # THE HARD DENYLIST RUNS FIRST, BEFORE ANY NAME EXEMPTION. It used to
+        # run after, so `old.reddit.com` inside a variable called `fetch_items`
+        # was exempt purely because "item" is on the data list, while the same
+        # URL under a plain name was caught. A comment further down claimed the
+        # denylist "still catches old.reddit.com absolutely"; it did not (PR 307
+        # review, MINOR 4). A name can argue that a www.reddit.com URL is a
+        # label. It cannot argue about a retired host.
         why = None
         label_early = (labels.get(id(node)) or "").lower()
-        if any(name in label_early for name in DENYLIST_NAMES + DATA_NAMES):
-            continue
+        if any(mark in label_early for mark in RETIREMENT_MARKERS):
+            continue          # a tombstone, not a call site
         for bad in FORBIDDEN_SUBSTRINGS:
             if bad in low:
                 why = bad
                 break
+        if why is None and any(name in label_early
+                               for name in DENYLIST_NAMES + DATA_NAMES):
+            continue
         if why is None and "reddit.com" in low:
             label = (labels.get(id(node)) or "").lower()
-            is_display = any(name in label for name in DISPLAY_NAMES)
             # WHAT IT IS, not what it is called. The name-based rules were
             # doing this job and doing it badly in both directions: exempting
             # "sites" hid a live /user/<u>/about.json in a published repo, and
@@ -436,6 +489,13 @@ def _bare_repo_violations(repo: Path) -> list[dict]:
 def _is_bare_repo(path: Path) -> bool:
     if not path.is_dir():
         return False
+    # A NORMAL REPO'S OWN .git DIRECTORY passes the HEAD/objects/refs test, so
+    # without this the audit read every checkout's internal object store and
+    # reported findings at paths like `consulting/.git!q-consult/...`. Those are
+    # the same files it already reads from the working tree, attributed to a
+    # directory nobody edits.
+    if path.name == ".git":
+        return False
     # A bare repo has HEAD/objects/refs at its top level and no .git dir.
     return all((path / n).exists() for n in ("HEAD", "objects", "refs")) \
         and not (path / ".git").exists()
@@ -459,8 +519,20 @@ def walk(roots) -> list[dict]:
             if not _skip(root):
                 out.extend(violations_in(root))
             continue
-        if _is_linked_worktree(root):
-            continue
+        # A ROOT THE CALLER NAMED IS ALWAYS SCANNED. This used to `continue`
+        # when the root was a linked worktree, which made the pre-commit hook a
+        # NO-OP everywhere this fleet actually works: lefthook passes
+        # `git rev-parse --show-toplevel`, and inside a worktree that IS the
+        # worktree, so the only automatic wiring of this rule exited 0 on every
+        # commit without opening a file (PR 307 review, MAJOR 1, reproduced:
+        # exit 0 in the worktree and exit 1 in the main checkout, same planted
+        # file).
+        #
+        # The skip was written for a different case and still serves it: a
+        # worktree found BELOW a parent root is a second copy of a branch that
+        # gets audited at its own root, and reporting it twice blames the copy.
+        # That case is handled inside the walk. Being handed a path is a
+        # different act from finding one.
         for dirpath, dirnames, filenames in os.walk(root):
             here = Path(dirpath)
             # PER DIRECTORY, not only on the root handed in. Checking the root
@@ -484,7 +556,7 @@ def walk(roots) -> list[dict]:
                     path = Path(dirpath) / name
                     if (not _skip(path) and not _is_test(path)
                             and not _exception_for(path)
-                            and not _is_vendored_copy(path, root)):
+                            and not _is_vendored_copy(path)):
                         out.extend(violations_in(path))
     return out
 

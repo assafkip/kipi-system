@@ -391,6 +391,13 @@ def all_comments(link_id: str, *, page_size: int = MAX_LIMIT, max_pages: int = 4
     seen: set = set()
     after = None
     pages = 0
+    # CAP ONCE, HERE. `comments_url` capped internally while the short-page test
+    # below compared against the caller's uncapped number, so page_size=500
+    # asked for 100, got 100, saw 100 < 500, and called a 300-comment thread
+    # complete after one page (PR 307 review, MINOR 5). That is the exact silent
+    # truncation this module's docstring says it exists to end, reintroduced by
+    # comparing against a number the request never used.
+    page_size = min(page_size, MAX_LIMIT)
     while pages < max_pages:
         url = comments_url(link_id, page_size, after=after)
         try:

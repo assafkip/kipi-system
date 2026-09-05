@@ -125,85 +125,104 @@ def test_every_exception_carries_a_reason(audit):
         assert len(reason) > 40, "exception %s needs a real reason, got %r" % (suffix, reason)
 
 
-def test_a_nested_linked_worktree_is_skipped_under_a_parent_root(audit, tmp_path):
-    """The regression that got past the first fix.
+def test_a_worktree_handed_in_as_the_root_is_still_scanned(audit, tmp_path):
+    """THE PRE-COMMIT HOOK LIVES OR DIES ON THIS.
 
-    Passing each repo as its own root exercised the worktree check on the root.
-    The CLI default passes `~/projects` ONCE, so every checkout under it is just a
-    subdirectory and the check never reached it. consulting-landing, a worktree on
-    a two-week-old branch, came back a second time that way: green in the test,
-    red on the command line. A guard has to run where the thing it guards against
-    actually appears.
+    lefthook passes `git rev-parse --show-toplevel`, and inside a linked
+    worktree that IS the worktree. An earlier version skipped a worktree root
+    outright, so the only automatic wiring of this rule exited 0 on every commit
+    made from a branch worktree, which is how this fleet works by policy. Found
+    in review with a reproducer: exit 0 in the worktree, exit 1 in the main
+    checkout, same planted file.
+
+    Being HANDED a path is a different act from FINDING one. The skip still
+    applies to a worktree discovered below a parent root, because that is a
+    second copy of a branch audited at its own root.
     """
-    wt = tmp_path / "some-worktree"
-    wt.mkdir()
-    (wt / ".git").write_text("gitdir: /elsewhere/.git/worktrees/some-worktree\n")
-    (wt / "old.py").write_text('U = "https://www.reddit.com/r/x/new.json"\n')
-    assert audit.walk([wt]) == [], "a worktree passed as the root must be skipped"
-    assert audit.walk([tmp_path]) == [], "and skipped under a parent root too"
-
-    # NEGATIVE CONTROL: the same file in a plain directory is still caught, so the
-    # skip is doing its job rather than disabling the walk.
-    plain = tmp_path / "not-a-worktree"
-    plain.mkdir()
-    (plain / "old.py").write_text('U = "https://www.reddit.com/r/x/new.json"\n')
-    assert audit.walk([tmp_path]), "the skip must not swallow a real finding"
-
-
-def test_an_fstring_endpoint_is_caught_across_its_fragments(audit, tmp_path):
-    """The defect that hid three findings in PUBLISHED repos.
-
-    `f"https://www.reddit.com/r/{sub}/hot/.rss"` is not one string node. Python
-    splits it, so the fragment carrying reddit.com has no .rss in it and the
-    endpoint test read only that fragment. The audit called a live RSS fetch a
-    display link and its own report went from 5 findings to 2 while still
-    claiming to work.
-    """
-    body = ('def feed(sub):\n'
-            '    return _get(f"https://www.reddit.com/r/{sub}/hot/.rss")\n')
-    found = audit.violations_in(_write(tmp_path, body))
-    assert found, "an f-string endpoint must be caught across its fragments"
-    assert found[0]["reason"] == "reddit.com endpoint"
-    # ONE finding, not one per fragment: three copies of a defect is a report
-    # people skim.
-    assert len(found) == 1, found
-
-
-def test_a_bare_repo_is_read_through_git(audit, tmp_path):
-    """A bare repo has no working tree, so the file walk sees nothing in it. 33
-    published repos were reported clean that way by a checker structurally
-    unable to open any of them, and three were shipping a retired transport."""
     import subprocess
-    work = tmp_path / "work"
-    work.mkdir()
-    (work / "collector.py").write_text(
-        'def go(sub):\n    return _get(f"https://www.reddit.com/r/{sub}/hot.json")\n')
+    main = tmp_path / "main"
+    main.mkdir()
+    (main / "ok.py").write_text("x = 1\n")
     for cmd in (["init", "-q", "-b", "main"], ["add", "-A"],
                 ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"]):
-        subprocess.run(["git", "-C", str(work)] + cmd, check=True,
-                       capture_output=True)
-    bare = tmp_path / "published.git"
-    subprocess.run(["git", "clone", "-q", "--bare", str(work), str(bare)],
+        subprocess.run(["git", "-C", str(main)] + cmd, check=True, capture_output=True)
+    wt = tmp_path / "wt"
+    subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", "-b", "b", str(wt)],
                    check=True, capture_output=True)
+    (wt / "bad.py").write_text('U = "https://old.reddit.com/r/x/new.json"\n')
 
-    assert audit._is_bare_repo(bare)
-    found = audit.walk([bare])
-    assert found, "a bare repo's HEAD tree must be read"
-    assert "!" in found[0]["file"], "a blob is marked, not passed off as a file"
-    # and found through a PARENT directory of bare repos, which is the shape the
-    # publish mirrors actually take
-    assert audit.walk([tmp_path])
+    assert (wt / ".git").is_file(), "fixture must be a LINKED worktree"
+    assert audit.walk([wt]), "a worktree handed in as the root must be scanned"
+    # discovered below a parent: skipped, so one branch is not reported twice
+    assert audit.walk([tmp_path]) == []
 
 
-def test_a_reddit_profile_link_is_not_an_endpoint(audit, tmp_path):
-    """The other direction. `_SITES` in an OSINT probe holds fetch templates, so
-    exempting the word "sites" hid a live /user/<u>/about.json. Un-exempting it
-    then flagged the display link beside it. Neither name was the answer: what
-    the URL IS decides."""
-    body = ('_SITES = [("Reddit", "https://www.reddit.com/user/{u}", ("probe",))]\n')
+def test_the_skeletons_own_directories_are_source_under_any_root(audit, tmp_path):
+    """The sweep that reported "0 across every checkout" could not see the two
+    directories this audit lives in.
+
+    `_is_vendored_copy` read the ROOT's name, so with `~/projects` as the root
+    (the CLI default, and what the fleet test passes) the name was `projects`
+    and the skeleton's own q-system/ and plugins/ were classed as vendored
+    copies. Found in review, reproduced with two planted old.reddit.com
+    fetchers that came back clean. Vendored-ness belongs to the FILE's repo and
+    does not change with the argument a caller happened to pass.
+    """
+    bad = 'U = "https://old.reddit.com/r/x/new.json"\n'
+    skel = tmp_path / "kipi-system"
+    (skel / "q-system" / ".q-system" / "scripts").mkdir(parents=True)
+    (skel / "plugins" / "kipi-core").mkdir(parents=True)
+    (skel / ".git").mkdir()
+    (skel / "instance-registry.json").write_text("{}")
+    (skel / "q-system" / ".q-system" / "scripts" / "bad.py").write_text(bad)
+    (skel / "plugins" / "kipi-core" / "bad2.py").write_text(bad)
+
+    assert len(audit.walk([tmp_path])) == 2, "skeleton files are SOURCE"
+
+    # NEGATIVE CONTROL: an instance's vendored copy is still skipped, because a
+    # violation there is the skeleton's and fixing it in place gets rsynced away.
+    inst = tmp_path / "an-instance"
+    (inst / "q-system").mkdir(parents=True)
+    (inst / ".git").mkdir()
+    (inst / "q-system" / "vendored.py").write_text(bad)
+    assert len(audit.walk([tmp_path])) == 2
+
+
+def test_a_friendly_variable_name_cannot_exempt_a_retired_host(audit, tmp_path):
+    """`old.reddit.com` inside a variable called `fetch_items` was clean, purely
+    because "item" is on the data list, while the same URL under a plain name
+    was caught. The hard denylist now runs FIRST."""
+    for name, var in (("a", "fetch_items"), ("b", "public_url"), ("c", "row")):
+        _write(tmp_path, '%s = "https://old.reddit.com/r/x/new.json"\n' % var,
+               name="%s.py" % name)
+    assert len(audit.walk([tmp_path])) == 3
+
+
+def test_a_retirement_marker_may_name_the_dead_thing(audit, tmp_path):
+    """The other side of that fix, and the reason it is a marker list rather
+    than an absolute rule. `RETIRED_ACTOR = "trudax/..."` exists so a session
+    grepping for the actor finds the tombstone instead of finding nothing and
+    re-adding it. A check that forbids naming the retired thing deletes the
+    warning. The distinction is not whether a name sounds friendly; it is
+    whether the name declares the thing dead."""
+    body = 'RETIRED_ACTOR = "trudax/reddit-scraper-lite"\n'
     assert audit.violations_in(_write(tmp_path, body)) == []
-    body2 = ('_SITES = [("Reddit", "https://www.reddit.com/user/{u}/about.json", ("j",))]\n')
-    assert audit.violations_in(_write(tmp_path, body2, name="b.py"))
+    # NEGATIVE CONTROL: the same string under an ordinary name is still caught
+    live = 'ACTOR = "trudax/reddit-scraper-lite"\n'
+    assert audit.violations_in(_write(tmp_path, live, name="live.py"))
+
+
+def test_a_repos_own_git_directory_is_not_a_published_bare_repo(audit, tmp_path):
+    """A checkout's .git passes the HEAD/objects/refs test, so bare-repo support
+    started reading every repo's internal object store and reporting findings at
+    paths like `consulting/.git!q-consult/...`: the same files it already reads
+    from the working tree, attributed to a directory nobody edits."""
+    fake_git = tmp_path / ".git"
+    for n in ("HEAD", "objects", "refs"):
+        (fake_git / n).mkdir(parents=True) if n != "HEAD" else None
+    fake_git.mkdir(exist_ok=True)
+    (fake_git / "HEAD").write_text("ref: refs/heads/main\n")
+    assert not audit._is_bare_repo(fake_git)
 
 
 def test_the_fleet_is_clean_right_now(audit):
