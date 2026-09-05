@@ -70,6 +70,22 @@ def test_a_script_added_to_the_code_but_not_the_docs_goes_red(tmp_path):
     assert missing == ["script: ghost-not-documented.py  (q-system/.q-system/scripts/ghost-not-documented.py)"]
 
 
+def test_a_suffix_of_a_documented_name_is_not_documented(tmp_path):
+    """Codex on PR #306: under a bare substring test `lint.py`, `guard.py` and `notify.py`
+    came back documented, riding on `voice-lint.py`, `token-guard.py` and `rca-notify.py`."""
+    docs = docs_copy(tmp_path)
+    text = cc.systems_text(docs)
+    assert "voice-lint.py" in text and "token-guard.py" in text and "rca-notify.py" in text
+    ghosts = [inventory.Surface("script", "lint.py", "q-system/.q-system/scripts/lint.py", ""),
+              inventory.Surface("script", "guard.py", "q-system/.q-system/scripts/guard.py", ""),
+              inventory.Surface("hook", "notify.py", ".claude/settings.json", "")]
+    missing = cc.check_surfaces(docs, ghosts)
+    assert sorted(missing) == sorted(f"{g.cls}: {g.name}  ({g.path})" for g in ghosts), missing
+    # A real name preceded by a path separator or a backtick still counts as documented.
+    real = [inventory.Surface("script", "voice-lint.py", "q-system/.q-system/scripts/voice-lint.py", "")]
+    assert cc.check_surfaces(docs, real) == []
+
+
 def test_cli_verb_must_appear_as_a_kipi_command(tmp_path):
     docs = docs_copy(tmp_path)
     surfaces = [inventory.Surface("cli_verb", "zzz-verb", "kipi", "")]

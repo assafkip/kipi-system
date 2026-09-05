@@ -53,6 +53,10 @@ repository, the skeleton, and is copied to every instance the founder runs, one 
 - Looking something up: [reference/](reference/README.md). Generated catalogs of every
   script, tool, command, skill, hook, job, rule, agent and CLI verb, produced from the code.
 
+Also in this folder, outside the gate: [kipi-research-brief-business-use.md](kipi-research-brief-business-use.md),
+a research brief with a draft post for business readers. Not part of the handbook and not
+checked by the coverage gate; it sits here until it has a home of its own.
+
 ## How this book stays true
 
 The catalogs in `reference/` are generated from the code by `generate_reference.py`. The

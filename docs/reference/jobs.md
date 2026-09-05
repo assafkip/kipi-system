@@ -4,7 +4,7 @@
 
 Every com.kipi.* launchd label found in the live tree.
 
-Count: 14
+Count: 15
 
 - `com.kipi.browser-session-deadman` (q-system/.q-system/scripts/com.kipi.browser-session-deadman.plist)
 - `com.kipi.browser-session-health` (q-system/.q-system/scripts/com.kipi.browser-session-health.plist)
@@ -19,4 +19,5 @@ Count: 14
 - `com.kipi.morning-brief-deadman` (q-system/.q-system/scripts/com.kipi.morning-brief-deadman.plist)
 - `com.kipi.morning-inbox` (q-system/.q-system/scripts/com.kipi.morning-inbox.plist)
 - `com.kipi.openloops-heartbeat` (q-system/.q-system/scripts/com.kipi.openloops-heartbeat.plist)
+- `com.kipi.voice-refresh` (automation/com.kipi.voice-refresh.plist)
 - `com.kipi.weekly-improve` (q-system/.q-system/scripts/com.kipi.weekly-improve.plist)

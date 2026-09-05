@@ -4,14 +4,14 @@
 
 Generated from the code. Each page lists every surface of one class; the coverage gate regenerates and diffs them.
 
-- [Every script](scripts.md) (226)
-- [Every test](tests.md) (269)
+- [Every script](scripts.md) (229)
+- [Every test](tests.md) (272)
 - [Every MCP tool](mcp-tools.md) (73)
 - [Every MCP resource](mcp-resources.md) (6)
 - [Every slash command](commands.md) (21)
 - [Every skill](skills.md) (16)
 - [Every hook](hooks.md) (62)
-- [Every launchd job](jobs.md) (14)
+- [Every launchd job](jobs.md) (15)
 - [Every rule](rules.md) (40)
 - [Every agent](agents.md) (5)
 - [Every output style](output-styles.md) (2)

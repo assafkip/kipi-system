@@ -4,10 +4,13 @@
 
 Every executable script in the live tree (q-system/.q-system, q-system/hooks, scripts/, and the repo root), with the first line of its own docstring or header comment.
 
-Count: 226
+Count: 229
 
 | Name | Path | Purpose |
 |---|---|---|
+| `install-voice-refresh.sh` | `automation/install-voice-refresh.sh` | install-voice-refresh.sh — render + load the monthly voice-refresh launchd job. |
+| `voice-refresh-nudge.sh` | `automation/voice-refresh-nudge.sh` | voice-refresh-nudge.sh — monthly nudge that the voice refresh is due. |
+| `voice_refresh.py` | `automation/voice_refresh.py` | voice_refresh.py — Stage 2-3 orchestrator for the monthly voice refresh. |
 | `build-template-repo.sh` | `build-template-repo.sh` | Build a clean template repo for new (non-technical) users to fork |
 | `fix-imports.sh` | `fix-imports.sh` |  |
 | `fleet-capability-verify.py` | `fleet-capability-verify.py` | Fleet capability verify: run the capability gate in EVERY registered |

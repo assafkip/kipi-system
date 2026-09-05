@@ -64,7 +64,10 @@ def check_surfaces(docs: Path, surfaces: list[inventory.Surface]) -> list[str]:
         elif s.cls == "command":
             ok = re.search(re.escape(s.name) + r"\b", text) is not None
         else:
-            ok = s.name in text
+            # Not a bare substring: `lint.py` must not ride on `voice-lint.py` (Codex, PR #306).
+            # A path separator or backtick before the name still counts; a word char, dot or
+            # hyphen before it means this is the tail of a longer name.
+            ok = re.search(r"(?<![\w.-])" + re.escape(s.name) + r"(?!\w)", text) is not None
         if not ok:
             missing.append(f"{s.cls}: {s.name}  ({s.path})")
     return missing

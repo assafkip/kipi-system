@@ -17,7 +17,7 @@ Count: 62
 | `claude-path-write-guard.py` | PreToolUse (Bash) | `.claude/settings.json` |
 | `client-output-evidence-gate.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |
 | `code_claim_grounding_guard.py` | Stop (*) | `.claude/settings.json` |
-| `consumer-parity-check.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |
+| `consumer-parity-check.py` | PostToolUse (Edit|Write|MultiEdit); PostToolUse (MultiEdit) | `.claude/settings.json` |
 | `decision-origin-tag-lint.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |
 | `dogfood_gate.py` | PostToolUse (Write|Edit) | `plugins/kipi-design/hooks/hooks.json` |
 | `enforced-claim-lint.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |
@@ -63,10 +63,10 @@ Count: 62
 | `stop-logger.sh` | Stop (*) | `.claude/settings.json` |
 | `stop_gate.py` | Stop (*) | `plugins/kipi-dsse/hooks/hooks.json` |
 | `sycophancy-monthly-check.py` | SessionStart (startup) | `.claude/settings.json` |
-| `token-guard.py` | UserPromptSubmit (*) | `.claude/settings.json` |
+| `token-guard.py` | UserPromptSubmit (*); PreToolUse (.*); PostToolUse (Edit|Write|MultiEdit|Bash) | `.claude/settings.json` |
 | `voice-dna-loader.py` | UserPromptSubmit (*) | `.claude/settings.json` |
 | `voice-lint.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |
-| `voice-stop-gate.py` | SessionStart (startup|resume|clear|compact) | `.claude/settings.json` |
+| `voice-stop-gate.py` | SessionStart (startup|resume|clear|compact); Stop (*) | `.claude/settings.json` |
 | `voice-substance-lint.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |
 | `voiceloop-band-lint.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |
 | `wiring-check.py` | PostToolUse (Edit|Write|MultiEdit) | `.claude/settings.json` |

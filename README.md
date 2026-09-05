@@ -264,9 +264,9 @@ than committing someone else's changes.
 
 ---
 
-## Six real deployments
+## The roles it runs today
 
-All six share the same skeleton. They differ only in what they know.
+Every copy shares the same skeleton and differs only in what it knows. Six roles are live right now.
 
 - **Chief of staff.** Tracks conversations, talk tracks, decisions, positioning. Drafts updates, debriefs, follow-ups.
 - **PM for a client engagement.** Coordinates multiple projects, logs every decision, drafts deliverables, tracks stakeholder context.
@@ -357,4 +357,4 @@ I'm [Assaf Kipnis](https://www.linkedin.com/in/assafkipnis/). 12 years in threat
 
 Running a company solo with ADHD meant my brain couldn't hold everything it needed to hold. So I built a second one. It manages my work, writes in my voice, remembers what I forget, and compounds what I learn.
 
-Right now it runs as six different roles across my work. This repo is the general-purpose version. Fork it and teach it yours.
+Right now it runs as six roles across every copy of my work. This repo is the general-purpose version. Fork it and teach it yours.

@@ -6,7 +6,8 @@ exists (lesson: derive a value from the code that owns it, never restate it).
 
 Surface classes and where each is read from:
 
-  script     every .py and .sh under q-system/.q-system, q-system/hooks and the repo root
+  script     every .py and .sh under q-system/.q-system, q-system/hooks, scripts/, automation/
+             (repo-root instance automation, RULE-2026-06-30-A) and the repo root
              that is not a test (tests are a surface too, listed under `test`)
   test       the test files for those scripts
   mcp_tool   every @mcp.tool() in the MCP server
@@ -43,11 +44,11 @@ ROOT = Path(__file__).resolve().parent.parent
 SKIP_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", "worktrees", "docs",
     "fable-wt", "template-repo", "security-remediation", "runs", "review-scratch",
-    "review-tmp-pr11", "rescued", "dist", "sites", "automation",
+    "review-tmp-pr11", "rescued", "dist", "sites",
 }
 SKIP_PREFIXES = (".wt-", ".pr")
 
-SCRIPT_ROOTS = ("q-system/.q-system", "q-system/hooks", "scripts")
+SCRIPT_ROOTS = ("q-system/.q-system", "q-system/hooks", "scripts", "automation")
 ROOT_TOOL_GLOBS = ("*.py", "*.sh", "kipi")
 MCP_SERVER = "plugins/kipi-core/kipi-mcp/src/kipi_mcp/server.py"
 SETTINGS_FILES = (".claude/settings.json", "settings-template.json")
@@ -157,8 +158,13 @@ def commands_and_skills() -> list[Surface]:
 
 def hooks() -> list[Surface]:
     """Every hook reduced to the script it runs. Wired twice (both settings files) counts once;
-    the docs must name the SCRIPT, which is what a reader can open."""
-    out: dict[str, Surface] = {}
+    the docs must name the SCRIPT, which is what a reader can open. A script wired on more
+    than one event keeps EVERY event and matcher in its doc, in first-seen order. Codex on
+    PR #306 measured the first-wins version: token-guard.py is wired PreToolUse, PostToolUse
+    and UserPromptSubmit and the catalog named only one, so a reader debugging a blocked
+    Bash call was sent to the wrong event."""
+    paths: dict[str, str] = {}
+    fired: dict[str, list[str]] = {}
     files = [ROOT / f for f in SETTINGS_FILES] + sorted(ROOT.glob("plugins/*/hooks/hooks.json"))
     for f in files:
         try:
@@ -171,15 +177,16 @@ def hooks() -> list[Surface]:
                     cmd = hk.get("command", "")
                     names = re.findall(r"([\w.-]+\.(?:py|sh))\b", cmd)
                     name = names[-1] if names else cmd.strip()[:60]
-                    if name in out:
-                        continue
-                    out[name] = Surface("hook", name, _rel(f), f"{event} ({g.get('matcher', '*')})")
-    return list(out.values())
+                    paths.setdefault(name, _rel(f))
+                    on = f"{event} ({g.get('matcher', '*')})"
+                    if on not in fired.setdefault(name, []):
+                        fired[name].append(on)
+    return [Surface("hook", n, paths[n], "; ".join(fired[n])) for n in paths]
 
 
 def jobs() -> list[Surface]:
     out: dict[str, Surface] = {}
-    for base in ("q-system", "plugins", "scripts"):
+    for base in ("q-system", "plugins", "scripts", "automation"):
         b = ROOT / base
         if not b.is_dir():
             continue

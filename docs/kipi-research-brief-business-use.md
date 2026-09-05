@@ -153,7 +153,7 @@ Current files confirm:
 
 Claims that still need qualification:
 
-- `README.md` says six deployments, while the current registry says 25.
+- `README.md` names six roles, not six deployments; the registry holds 25 copies, several per role.
 - "Remembers everything" is positioning language, not literal proof that every interaction is retained.
 - The 30 to 50 percent token reduction is a documented estimate, not a measured result in this research pass.
 - Cross-instance learning depends on the lesson pipeline and schedule. It is not instant after every message.

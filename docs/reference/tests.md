@@ -4,10 +4,13 @@
 
 Every test file, so a reader can find the proof behind a script. A script with no test here has no proof beyond its own run.
 
-Count: 269
+Count: 272
 
 | Name | Path | Purpose |
 |---|---|---|
+| `test_voice_refresh.py` | `automation/test_voice_refresh.py` | Tests for the voice-refresh orchestrator (issue voice-refresh-orchestrator). |
+| `test_voice_refresh_command.py` | `automation/test_voice_refresh_command.py` | Validator for the /voice-refresh command (issue voice-refresh-command). |
+| `test_voice_refresh_schedule.py` | `automation/test_voice_refresh_schedule.py` | Validator for the monthly voice-refresh schedule (issue voice-refresh-schedule). |
 | `test-break-glass-audit.sh` | `q-system/.q-system/scripts/test-break-glass-audit.sh` | Regression test: the break-glass hatch may never open without a trace. |
 | `test-ripple.py` | `q-system/.q-system/scripts/test-ripple.py` | Ripple system regression tests. Run automatically via `kipi check`. |
 | `ask293-append-negation-repro.sh` | `q-system/.q-system/scripts/test/ask293-append-negation-repro.sh` | ASK-293 reproducer: append-negation against apply_claude_changes.py. |
