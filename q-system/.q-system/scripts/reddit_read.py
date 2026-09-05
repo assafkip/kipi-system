@@ -79,14 +79,44 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import pathlib
+
+
+def _load_reddit_transport():
+    """Walk up to the vendored `plugins/kipi-core` and import the transport.
+
+    Walked rather than a fixed `parents[N]`: this script ships to every instance
+    and sits at a different depth in some of them. The failure mode a hardcoded
+    depth produces is the one `voiceloop/voice_ref.py` records, a caller wired on
+    one machine only.
+    """
+    here = pathlib.Path(__file__).resolve()
+    for parent in here.parents:
+        cand = parent / "plugins" / "kipi-core"
+        if (cand / "reddit_arctic").is_dir():
+            if str(cand) not in sys.path:
+                sys.path.insert(0, str(cand))
+            from reddit_arctic import transport
+            return transport
+    raise RuntimeError(
+        "no plugins/kipi-core/reddit_arctic above %s; this instance has not "
+        "taken the skeleton update that ships it" % here)
+
 
 # Honest identification. Any UA that is not empty and is not curl's default gets
 # a 200, so there is nothing to gain by impersonating a browser and the tests
 # forbid the strings that would.
-USER_AGENT = "kipi-research/1.0 (+https://github.com/assafkip/kipi-system; research)"
+USER_AGENT = "kipi-research/1.0 (+https://ktlyst.com; research)"
 
-BASE = "https://old.reddit.com"
-REDDIT_HOSTS = frozenset({"old.reddit.com", "www.reddit.com", "reddit.com", "new.reddit.com"})
+# NOT old.reddit.com ANY MORE (2026-09-04, founder-directed: "Any collection from
+# reddit that is not using arctic shift should be changed to it. this must be the
+# only way we scrape reddit."). BASE is kept as a name because it builds DISPLAY
+# links a human clicks, and because a session that greps for it should land on
+# this note rather than on nothing.
+BASE = "https://www.reddit.com"
+
+# The transport lives once, in the kipi-core plugin. This script is a caller.
+_ARCTIC = _load_reddit_transport()
 
 # 3s pacing 429'd 11 of 12 RSS requests. 10s pacing ran 13 of 13 clean across
 # listing pages and thread fetches. This is the measured floor, not a guess.
@@ -98,6 +128,10 @@ MIN_INTERVAL_S = 10
 # So one request is complete enough at or below 250, and demonstrably is not at
 # or above 600. NOTHING WAS MEASURED BETWEEN 224 AND 613, and `choose_strategy`
 # says so rather than guessing which side that band falls on.
+# These bands described how much of a thread ONE old.reddit request could
+# reach. Pagination removed that ceiling, so they no longer choose a
+# strategy for the live path; `read_listing` still reports them so a caller
+# can rank threads by size, which is the use that outlived the transport.
 SINGLE_REQUEST_MAX = 250
 LARGE_THREAD_MIN = 600
 
@@ -112,12 +146,6 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 class CoverageNotRecorded(Exception):
     """An artifact carrying comments without saying what fraction they are."""
-
-
-class PermalinkRefused(Exception):
-    """A permalink that is not a reddit thread. `reddit_thread` is an MCP tool, so
-    an absolute URL here is attacker-shaped input: without this check the tool
-    fetched any http(s) target and returned its body (PR #294 review, major)."""
 
 
 class DiscoveryRefused(Exception):
@@ -193,30 +221,15 @@ def parse_comments(html: str) -> list:
     Deliberately shallow. Threading, scores and semantic scoring are not this
     module's job; it is a fetcher and an artifact.
     """
-    # Bind author and body INSIDE each comment's own chunk, never by array
-    # position (PR #294 review, major): a real page opens with the post's own
-    # data-author and its selftext <div class="md">, and a deleted comment has
-    # no body, so positional joins attributed every comment to its neighbour.
-    text = html or ""
-    starts = []
-    seen = set()
-    for m in _COMMENT_RE.finditer(text):
-        cid = m.group(1)
-        if cid in seen:
-            continue
-        seen.add(cid)
-        tag_start = text.rfind("<", 0, m.start())
-        starts.append((cid, tag_start if tag_start >= 0 else m.start()))
+    ids = comment_ids(html)
+    authors = _AUTHOR_RE.findall(html or "")
+    bodies = [_text(b) for b in _MD_RE.findall(html or "")]
     out = []
-    for i, (cid, start) in enumerate(starts):
-        end = starts[i + 1][1] if i + 1 < len(starts) else len(text)
-        chunk = text[start:end]
-        a = _AUTHOR_RE.search(chunk)
-        b = _MD_RE.search(chunk)
+    for i, cid in enumerate(ids):
         out.append({
             "id": cid,
-            "author": a.group(1) if a else None,
-            "body": _text(b.group(1)) if b else None,
+            "author": authors[i] if i < len(authors) else None,
+            "body": bodies[i] if i < len(bodies) else None,
         })
     return out
 
@@ -319,22 +332,23 @@ def assert_coverage_recorded(artifact: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def thread_url(permalink: str) -> str:
-    """?limit=500 moved one thread from 201 to 215 of 214 declared. It is one
-    query param and it is worth taking; it does not rescue large threads."""
-    if permalink.startswith("http"):
-        from urllib.parse import urlsplit
-        parts = urlsplit(permalink)
-        if parts.scheme != "https" or parts.netloc.lower() not in REDDIT_HOSTS:
-            raise PermalinkRefused(
-                f"refusing {permalink}: a thread permalink is a reddit path or an "
-                f"https URL on {sorted(REDDIT_HOSTS)}; this tool reads reddit, not the web")
-        path = f"{BASE}{parts.path}" + (f"?{parts.query}" if parts.query else "")
-    else:
-        if not permalink.startswith("/"):
-            raise PermalinkRefused(f"refusing {permalink}: a relative permalink starts with /")
-        path = BASE + permalink
-    joiner = "&" if "?" in path else "?"
-    return f"{path}{joiner}limit=500"
+    """The mirror's comments endpoint for this thread.
+
+    The old version built `old.reddit.com<permalink>?limit=500`, and the 500 was
+    the best available answer to a transport that could only ever return one
+    page. The mirror PAGES, so completeness stopped being something to buy with
+    a query parameter and became something the reader can just do. See
+    `read_thread`.
+    """
+    return _ARCTIC.comments_url(_ARCTIC.link_id_from_permalink(permalink),
+                                _ARCTIC.MAX_LIMIT)
+
+
+def display_url(permalink: str) -> str:
+    """The link a human clicks. Never fetched."""
+    if str(permalink).startswith("http"):
+        return permalink
+    return BASE + permalink
 
 
 def listing_url(subreddit: str, period: str = "month", path_override=None) -> str:
@@ -348,10 +362,13 @@ def listing_url(subreddit: str, period: str = "month", path_override=None) -> st
     path = path_override or f"/r/{subreddit}/top/"
     if ".rss" in path or path.endswith(".xml"):
         raise DiscoveryRefused(
-            f"refusing {path}: discovery uses listing HTML, not RSS. Measured "
-            "2026-08-31, RSS 429'd 11 of 12 requests at 3s pacing while listing "
-            "HTML ran clean.")
-    return f"{BASE}{path}?t={period}"
+            f"refusing {path}: discovery goes through the Arctic Shift mirror, "
+            "not RSS. Measured 2026-08-31, RSS 429'd 11 of 12 requests at 3s "
+            "pacing. The refusal outlived the HTML transport it was written for "
+            "because the reason did: a silent fallback to a throttling endpoint "
+            "is how a lane starts reporting zeros that are really refusals.")
+    sub = path.strip("/").split("/")[1] if path.startswith("/r/") else subreddit
+    return _ARCTIC.arctic_url(sub, _ARCTIC.MAX_LIMIT)
 
 
 # ---------------------------------------------------------------------------
@@ -390,49 +407,131 @@ def _refusal(url: str, status, now: dt.datetime) -> dict:
 
 def read_thread(permalink: str, transport=None, pacer=None, now=None,
                 timeout: int = DEFAULT_TIMEOUT_S) -> dict:
-    """One thread, one artifact. Read only."""
-    transport = transport or _default_transport
+    """One thread, one artifact, from the mirror. Read only.
+
+    THE COVERAGE RULE IS UNCHANGED AND IS NOW USUALLY SATISFIABLE. The rule was
+    never "report a percentage"; it was "never hand back comments without saying
+    what fraction of the thread they are", because 536 rows off a 1190-comment
+    thread looks exactly like a complete one. The HTML transport could only ever
+    take one page, so the honest answer was a well-labelled partial. The mirror
+    pages on `after=<created_utc>`, so the honest answer is a COMPLETE thread and
+    `coverage_pct` reaches 100.
+
+    VERIFIED LIVE 2026-09-04 on r/programming 1w67dpg: declared 108, fetched 111
+    across two pages. The archive can hold slightly more rows than the live post
+    declares, so `coverage_pct` is allowed above 100 and `complete` is decided by
+    pagination exhausting, never by matching `declared`.
+
+    `transport` is still accepted so every existing caller and test double keeps
+    working; it is passed to the mirror as its `_get` seam.
+    """
     pacer = pacer or NullPacer()
     now = now or dt.datetime.now().astimezone()
+    link_id = _ARCTIC.link_id_from_permalink(permalink)
     url = thread_url(permalink)
+    getter, seen = _as_getter(transport)
     pacer.wait()
-    status, body = transport(url, {"User-Agent": USER_AGENT}, timeout)
-    if status != 200:
-        return _refusal(url, status, now)
-    artifact = build_artifact(parse_thread(body, url=url), now)
+    try:
+        declared = None
+        rows = _ARCTIC.posts_by_id(link_id, timeout=timeout, _get=getter)
+        if rows:
+            declared = rows[0].get("num_comments")
+        read = _ARCTIC.all_comments(link_id, timeout=timeout, _get=getter)
+    except _ARCTIC.RedditFetchFailed as exc:
+        return _refusal(url, seen.get("status", "EXC:RedditFetchFailed: %s" % exc), now)
+
+    fetched = read["fetched"]
+    artifact = {
+        "url": url,
+        "display_url": display_url(permalink),
+        "refused": False,
+        "http_status": 200,
+        "fetched_at": now.isoformat(timespec="seconds"),
+        "declared": declared,
+        "fetched": fetched,
+        "coverage_pct": coverage_pct(fetched, declared),
+        "stubs": 0,
+        "complete": bool(read["complete"]),
+        "truncated": bool(read["capped"]),
+        "anomaly": None,
+        "comments": read["comments"],
+        "strategy": "paginate",
+        "expected_incomplete": bool(read["capped"]),
+        "pages": read["pages"],
+        "source": "arctic",
+        "user_agent": USER_AGENT,
+    }
     assert_coverage_recorded(artifact)
     return artifact
 
 
+def _as_getter(transport):
+    """Adapt the old `(url, headers, timeout) -> (status, body)` transport to the
+    mirror's `(url) -> parsed json`, so existing callers and test doubles still
+    drive this. Returns `(getter, seen)`.
+
+    A non-200 becomes a raise, which is what the mirror path expects and what
+    `read_thread` turns back into a refusal artifact. THE STATUS IS CARRIED OUT
+    IN `seen`, not left inside the exception text: a 429 recorded as
+    `EXC:something` is a throttled run that no longer looks like a throttled
+    run, and telling those apart is the entire reason `_refusal` exists.
+    """
+    seen = {}
+    if transport is None:
+        return None, seen
+
+    def _get(url):
+        status, body = transport(url, {"User-Agent": USER_AGENT},
+                                 DEFAULT_TIMEOUT_S)
+        if status != 200:
+            seen["status"] = status
+            raise RuntimeError("transport returned %s for %s" % (status, url))
+        return json.loads(body) if isinstance(body, str) else body
+    return _get, seen
+
+
 def read_listing(subreddit: str, period: str = "month", transport=None,
                  pacer=None, now=None, timeout: int = DEFAULT_TIMEOUT_S) -> dict:
-    """Candidate threads with the size Reddit declares for each, so a caller can
-    pick by size before spending a request per thread."""
-    transport = transport or _default_transport
+    """Candidate threads with the size the mirror declares for each, so a caller
+    can pick by size before spending a request per thread.
+
+    `period` is accepted and no longer filters: the mirror returns a room's most
+    recent posts and the window that produces is a property of how busy the room
+    is, not something a `t=` parameter can set. Measured 2026-08-31: r/taxpros
+    reached back 24.9 days at limit=100 and r/smallbusiness reached 0.6. Kept in
+    the signature and echoed in the artifact so no caller breaks, and so the
+    lie is visible rather than implied.
+    """
     pacer = pacer or NullPacer()
     now = now or dt.datetime.now().astimezone()
     url = listing_url(subreddit, period)
+    getter, seen = _as_getter(transport)
     pacer.wait()
-    status, body = transport(url, {"User-Agent": USER_AGENT}, timeout)
-    if status != 200:
-        out = _refusal(url, status, now)
+    try:
+        posts = _ARCTIC.recent(subreddit, max_items=_ARCTIC.MAX_LIMIT,
+                               timeout=timeout, _get=getter)
+    except _ARCTIC.RedditFetchFailed as exc:
+        out = _refusal(url, seen.get("status", "EXC:RedditFetchFailed: %s" % exc), now)
         out["threads"] = None
         return out
 
-    found = {}
-    for pattern in (r'data-comments-count="(\d+)"[^>]*data-permalink="([^"]+)"',
-                    r'data-permalink="([^"]+)"[^>]*data-comments-count="(\d+)"'):
-        for match in re.finditer(pattern, body):
-            first, second = match.group(1), match.group(2)
-            count, permalink = (int(first), second) if first.isdigit() else (int(second), first)
-            found[permalink] = count
-    threads = [{"permalink": p, "declared": c, "strategy": choose_strategy(c)}
-               for p, c in sorted(found.items(), key=lambda kv: kv[1])]
+    threads = []
+    for post in posts:
+        permalink = post.get("permalink") or ""
+        if not permalink:
+            continue
+        declared = int(post.get("num_comments") or 0)
+        threads.append({"permalink": permalink, "declared": declared,
+                        "strategy": choose_strategy(declared),
+                        "title": post.get("title", ""), "id": post.get("id", "")})
+    threads.sort(key=lambda t: t["declared"])
     return {
-        "url": url, "refused": False, "http_status": status,
+        "url": url, "refused": False, "http_status": 200,
         "fetched_at": now.isoformat(timespec="seconds"),
         "subreddit": subreddit, "period": period,
+        "period_is_advisory": True,
         "threads": threads, "thread_count": len(threads),
+        "source": "arctic",
         "user_agent": USER_AGENT, "comments": None,
     }
 
