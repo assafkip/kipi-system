@@ -49,12 +49,20 @@ def eligible(rows, channel, slot_kind="post", target_words=None):
     at 169 words, the one long-form linkedin sample a long-form request most needs.
     The founder's spec is that the skill sees all the examples; it saw 41 of 59.
 
+    A row with `eligible_for_voice_reference` explicitly False is OUT of both
+    tiers, anchors included (2026-08-23). Before this line the field was dead:
+    the corpus carried it, curation flipped it, and selection never read it, so
+    a hype-register post ("It's ALIVE!!!") sat as an anchor in every linkedin
+    prompt while believing it was retired. Absent or null keeps the row live --
+    retirement is an explicit act, recorded on the row with a reason.
+
     The 2026-08-09 scar is preserved exactly, because it is a scar about SHORT
     slots: article rhythm taught post slots and the engine published essays on a
     280-char channel. A short request still gets the strict tiering that fixed it.
     Only a long request promotes, and for a long request article rhythm is the
     right answer rather than the bug.
     """
+    rows = [r for r in rows if r.get("eligible_for_voice_reference") is not False]
     tiers = ELIGIBLE_KINDS.get(slot_kind, ELIGIBLE_KINDS["post"])
     primary_kinds, fallback_kinds = tiers[0], tiers[1]
     if (target_words is not None and target_words >= LONG_WORDS

@@ -435,6 +435,33 @@ class TestAssemble:
             assert body.strip() in text
 
 
+    def test_external_source_correction_renders_under_its_own_header(self, tmp_path):
+        cor = [{"id": "his", "status": "active",
+                "instruction": "Never open with a number."},
+               {"id": "ext", "status": "active",
+                "source": assemble.EXTERNAL_SOURCE,
+                "instruction": "End on a colon line."}]
+        v = corpus.load(_voice_dir(tmp_path, corrections=cor))
+        text, prov = assemble.voice_section(v, "linkedin", counter=0)
+        standing = text.find("STANDING CORRECTIONS")
+        researched = text.find("RESEARCHED SHAPES")
+        assert -1 not in (standing, researched) and standing < researched
+        assert "End on a colon line" not in text[standing:researched], (
+            "an external correction must never sit under the override header")
+        assert prov["external_correction_ids"] == ["ext"]
+        assert prov["correction_ids"] == ["his", "ext"]
+
+    def test_unmarked_corrections_render_exactly_as_before(self, tmp_path):
+        """The fleet contract: a corpus that never sets source gets the legacy
+        single-block rendering byte for byte."""
+        cor = [{"id": "c1", "status": "active",
+                "instruction": "Never open with a number."}]
+        v = corpus.load(_voice_dir(tmp_path, corrections=cor))
+        text, prov = assemble.voice_section(v, "linkedin", counter=0)
+        assert "STANDING CORRECTIONS" in text
+        assert "RESEARCHED SHAPES" not in text
+        assert prov["external_correction_ids"] == []
+
 # --- validate ---------------------------------------------------------------------
 
 class TestValidate:
@@ -472,6 +499,56 @@ class TestValidate:
             r["text"] = "Long. " * 2000
         d = _voice_dir(tmp_path, rows=rows, fp=self._fresh_fp(rows))
         assert any("budget" in p for p in validate.check_all(d))
+
+    def test_corrections_crowding_out_his_writing_is_red(self, tmp_path):
+        """The share guard, and the reason it is not the size guard restated: this
+        corpus sits WELL INSIDE budget and is still wrong, because the rules about
+        him outweigh the writing by him."""
+        rows = _rows(6)
+        for r in rows:
+            r["text"] = "Short."
+        cor = [{"id": f"c{i}", "status": "active", "instruction": "Rule. " * 200}
+               for i in range(6)]
+        d = _voice_dir(tmp_path, rows=rows, corrections=cor,
+                       fp=self._fresh_fp(rows))
+        problems = validate.check_all(d)
+        assert any("crowd" in p or "ceiling" in p for p in problems), problems
+        assert not any("budget" in p for p in problems), (
+            "this fixture must be inside budget, or it proves nothing the size "
+            "check did not already catch: " + repr(problems))
+
+    def test_a_corpus_of_his_writing_with_few_rules_is_GREEN(self, tmp_path):
+        """The other side, so the guard cannot pass by refusing everything."""
+        rows = _rows(6)
+        for r in rows:
+            r["text"] = "I watched the queue back up. " * 40
+        cor = [{"id": "c1", "status": "active", "instruction": "End on a verdict."}]
+        d = _voice_dir(tmp_path, rows=rows, corrections=cor,
+                       fp=self._fresh_fp(rows))
+        assert not any("ceiling" in p for p in validate.check_all(d))
+
+    def test_a_RETIRED_correction_does_not_count_toward_the_share(self, tmp_path):
+        """Retirement is the named remedy, so it has to actually move the number."""
+        # His writing is held CONSTANT across both halves, so the only thing that
+        # moves the share is the retirement itself.
+        rows = _rows(6)
+        for r in rows:
+            r["text"] = "I watched the queue back up. " * 30
+        heavy = [{"id": f"c{i}", "status": "active", "instruction": "Rule. " * 400}
+                 for i in range(6)]
+        before = tmp_path / "before"
+        before.mkdir(parents=True, exist_ok=True)
+        after = tmp_path / "after"
+        after.mkdir(parents=True, exist_ok=True)
+        assert any("ceiling" in p for p in
+                   validate.check_all(_voice_dir(before, rows=rows,
+                                                 corrections=heavy,
+                                                 fp=self._fresh_fp(rows))))
+        retired = [dict(c, status="retired") for c in heavy[1:]]
+        assert not any("ceiling" in p for p in
+                       validate.check_all(_voice_dir(after, rows=rows,
+                                                     corrections=heavy[:1] + retired,
+                                                     fp=self._fresh_fp(rows))))
 
 
 # --- voice-1-instrument: review findings 1, 2, 8 ----------------------------------

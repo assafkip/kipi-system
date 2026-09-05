@@ -325,6 +325,56 @@ def check_budget(voice, channels=None):
     return problems
 
 
+#: The share of an assembled prompt that may be CORRECTIONS rather than his own
+#: writing. A headroom alarm in the same posture as `assemble.BUDGET_CHARS`:
+#: suite-time only, never a runtime slice.
+#:
+#: why a share and not just a size: the founder-directed premise of this corpus is
+#: that posts are written FROM his examples, never from a model's impression of
+#: him. Corrections are RULES ABOUT him. When the rules outweigh the examples, that
+#: premise has quietly inverted while every size check still passes, because the
+#: total can sit inside budget with the mix completely wrong.
+#:
+#: MEASURED 2026-08-31 before the line was picked, both channels, worst assembly of
+#: 12 counters: linkedin 11618 of 20552 chars (57%), x 10154 of 16994 (60%). Set at
+#: 0.70 so it does not fire today and bites within a few additions, which is the
+#: point -- a guard set below the current reading is a guard someone switches off.
+#:
+#: The remedy when it fires is RETIREMENT, never rotation and never a quiet drop.
+#: `status` already gates this (`corpus.active_corrections` renders only "active";
+#: verified 2026-08-31 that promoted/retired rows really are absent from the
+#: prompt), so retiring a superseded rule is a one-field edit. Two rules that
+#: genuinely say one thing get MERGED into one loud statement, never dropped.
+CORRECTION_SHARE_CEILING = 0.70
+
+
+def check_correction_share(voice, channels=None):
+    """Corrections must not crowd his own writing out of the prompt."""
+    channels = channels or channel_registry.DEFAULT
+    problems = []
+    for channel in channels.assembled:
+        worst_text, worst_len = "", 0
+        for counter in range(12):
+            text, _ = assemble.voice_section(voice, channel, counter)
+            if len(text) > worst_len:
+                worst_text, worst_len = text, len(text)
+        if not worst_len:
+            continue
+        applied = [r for r in voice.active_corrections()
+                   if not r.get("scope") or channel in r["scope"]]
+        rules = sum(len(r.get("instruction") or "") for r in applied)
+        share = rules / worst_len
+        if share > CORRECTION_SHARE_CEILING:
+            problems.append(
+                f"{channel}: corrections are {rules} of {worst_len} chars "
+                f"({share:.0%}) of the largest assembly, over the "
+                f"{CORRECTION_SHARE_CEILING:.0%} ceiling. Retire a superseded "
+                f"correction (set its status off 'active'), or merge two that say "
+                f"one thing into one statement. Do not rotate them: a correction "
+                f"dropped from a prompt is a rule the model never sees.")
+    return problems
+
+
 def check_all(voice_dir, channels=None):
     """Every check, one list. [] is a healthy corpus.
 
@@ -353,6 +403,7 @@ def check_all(voice_dir, channels=None):
     problems += check_rotation_headroom(voice, channels=channels)
     problems += check_fingerprint_fresh(voice)
     problems += check_budget(voice, channels)
+    problems += check_correction_share(voice, channels)
     if voice.skipped_rows:
         problems.append(f"{voice.skipped_rows} corrupt JSONL row(s) skipped by the "
                         f"loader -- fix or remove them")

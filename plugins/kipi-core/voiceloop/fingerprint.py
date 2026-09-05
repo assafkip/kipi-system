@@ -310,3 +310,76 @@ def load(path):
     whether a missing/broken file degrades (daily job: yes) or fails (validator: no)."""
     with open(path, encoding="utf-8") as handle:
         return json.load(handle)
+
+
+# --- continuous scoring (2026-08-24, RCA-voice-enforcement) -------------------------
+#
+# why: binary min/max bounds answer "did he EVER do this" and almost always the
+# answer is yes, because generation is anchored on his own exemplars. The brief-era
+# failure was exactly that: a draft at colon_rate 1.29 scored inside [0, 20] and
+# every layer reported clean while the founder read it as not-him. Continuous
+# distance answers the question a human is actually asking: how FAR from his center
+# is this, measured in units of his own spread. External practice (style-drift
+# detection, stylometry verification) uses per-feature z-scores plus a multi-feature
+# aggregate; both are defined here so the caller keeps choosing policy.
+
+_P90_Z = 1.2816     # p90 of a standard normal: p10..p90 spans 2 x this
+_RANGE_DIV = 4.0    # degenerate-band fallback: treat observed range as ~4 sigma
+_MIN_SIGMA = {
+    # Counts and rates move in small steps; without a floor, one colon in a short
+    # post produces an enormous z and the aggregate becomes single-metric theater.
+    # Floors are in the metric's OWN units, chosen at the instrument level so no
+    # caller can forget them.
+    "colon_rate": 0.35, "hedge_count": 0.5, "formal_pair_count": 0.5,
+    "midpost_questions": 0.5, "monotony_run": 0.5, "para_max_sentences": 0.75,
+}
+
+
+def _sigma(band):
+    """Robust spread estimate for one metric's band, in the metric's units."""
+    p10, p90 = band.get("p10"), band.get("p90")
+    if p10 is None or p90 is None:
+        return None
+    if p90 > p10:
+        return max((p90 - p10) / (2 * _P90_Z), 0.0)
+    lo, hi = _bounds(band)
+    if lo is not None and hi is not None and hi > lo:
+        return (hi - lo) / _RANGE_DIV
+    return None
+
+
+def zscores(text, fingerprint_doc):
+    """Per-metric robust z: (value - p50) / sigma, sigma from the p10-p90 span.
+
+    Signed: negative means BELOW his median (e.g. too few first-person tokens),
+    positive means above. Metrics whose spread cannot be estimated are omitted
+    rather than guessed. Pure; no clock, no model.
+    """
+    got = metrics(text)
+    out = {}
+    for name, band in ((fingerprint_doc or {}).get("metrics") or {}).items():
+        value = got.get(name)
+        sigma = _sigma(band)
+        if value is None or not sigma:
+            continue
+        sigma = max(sigma, _MIN_SIGMA.get(name, 0.0))
+        p50 = band.get("p50")
+        if p50 is None:
+            continue
+        out[name] = round((value - p50) / sigma, 2)
+    return out
+
+
+def style_distance(zs, cap=8.0):
+    """Aggregate multi-axis distance: root sum of squares of capped |z|.
+
+    The cap stops one wild metric from dominating; the sqrt-of-sum keeps the
+    property that several mild deviations together outweigh one mild one, which
+    is the drift signal binary bounds cannot express at all.
+    """
+    total = 0.0
+    for z in (zs or {}).values():
+        az = min(abs(z), cap)
+        if az >= 0:
+            total += az * az
+    return round(total ** 0.5, 2)
