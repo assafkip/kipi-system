@@ -225,6 +225,34 @@ def test_a_repos_own_git_directory_is_not_a_published_bare_repo(audit, tmp_path)
     assert not audit._is_bare_repo(fake_git)
 
 
+def test_a_checkouts_own_address_cannot_disable_the_walk(audit, tmp_path):
+    """The round-2 MAJOR, and the same class as the round-1 pair.
+
+    SKIP_DIR_PARTS was tested against the FULL ABSOLUTE path, so a directory
+    name anywhere ABOVE the repo switched the whole audit off. `-wt-` is on that
+    list and concurrent-session-worktrees.md tells every session to work in
+    `../kipi-wt-<name>`; `review-trees` is on it and that is where this branch's
+    review ran. Measured in review: 0 of 575 .py files opened, exit 0, and a
+    printed claim about "live code".
+
+    A checkout's address is not a fact about its contents.
+    """
+    bad = 'U = "https://old.reddit.com/r/x/new.json"\n'
+    for name in ("plain-repo", "kipi-wt-session", "review-trees",
+                 "myproj-build-tools", "app-dist-x"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "bad.py").write_text(bad)
+        assert audit.walk([d]), "%s: the root's own name disabled the walk" % name
+
+    # NEGATIVE CONTROL: the same names INSIDE a root are still skipped, which is
+    # what the list is actually for.
+    inner = tmp_path / "ordinary"
+    (inner / "build").mkdir(parents=True)
+    (inner / "build" / "bad.py").write_text(bad)
+    assert audit.walk([inner]) == []
+
+
 def test_the_fleet_is_clean_right_now(audit):
     """The claim the whole conversion was for. Scoped to the repos that exist on
     this machine, so it is a real check here and a skip elsewhere rather than a

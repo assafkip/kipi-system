@@ -240,8 +240,28 @@ def _is_linked_worktree(root: Path) -> bool:
     return dot.is_file()
 
 
-def _skip(path: Path) -> bool:
-    text = str(path)
+def _skip(path: Path, root=None) -> bool:
+    """Skip decided on the path RELATIVE to the root handed in.
+
+    It used to test those substrings against the FULL ABSOLUTE path, so a
+    directory NAME anywhere ABOVE the repo switched the entire audit off. That
+    is not theoretical: `.claude/rules/concurrent-session-worktrees.md` tells
+    every session to work in `../kipi-wt-<name>`, and `-wt-` is on the list;
+    `review-trees` is on it too, and that is where this branch's own review ran.
+    Measured in review: 0 of 575 .py files opened, exit 0, and a printed claim
+    about "live code".
+
+    Worse than the worktree case round 1 fixed, because it also kills a MAIN
+    checkout whose parent directory happens to contain `build`, `dist`, `venv`
+    or `worktrees`. A checkout's own address is not a fact about its contents.
+    """
+    if root is None:
+        return False
+    try:
+        rel = path.resolve().relative_to(Path(root).expanduser().resolve())
+    except ValueError:
+        return False
+    text = "/" + rel.as_posix()
     return any(part in text for part in SKIP_DIR_PARTS)
 
 
@@ -516,7 +536,7 @@ def walk(roots) -> list[dict]:
             for bare in bares:
                 out.extend(_bare_repo_violations(bare))
         if root.is_file():
-            if not _skip(root):
+            if not _skip(root, root.parent):
                 out.extend(violations_in(root))
             continue
         # A ROOT THE CALLER NAMED IS ALWAYS SCANNED. This used to `continue`
@@ -546,15 +566,15 @@ def walk(roots) -> list[dict]:
             if here != root and _is_linked_worktree(here):
                 dirnames[:] = []
                 continue
-            if _skip(here):
+            if _skip(here, root):
                 dirnames[:] = []
                 continue
             dirnames[:] = [d for d in dirnames
-                           if not _skip(Path(dirpath) / d)]
+                           if not _skip(Path(dirpath) / d, root)]
             for name in filenames:
                 if name.endswith(SUFFIXES):
                     path = Path(dirpath) / name
-                    if (not _skip(path) and not _is_test(path)
+                    if (not _skip(path, root) and not _is_test(path)
                             and not _exception_for(path)
                             and not _is_vendored_copy(path)):
                         out.extend(violations_in(path))

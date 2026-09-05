@@ -436,11 +436,20 @@ def read_thread(permalink: str, transport=None, pacer=None, now=None,
     url = thread_url(permalink)
     getter, seen = _as_getter(transport)
     pacer.wait()
+    # TWO READS, TWO FATES. They shared one `try`, and `posts_by_id` runs first,
+    # so a /api/posts/ids outage discarded a thread the comments endpoint served
+    # fine: refused=True, http_status=503, comments=None, for 7 comments that
+    # were sitting right there (review, MINOR 2). The transport's own docstring
+    # states the opposite contract, that losing that endpoint loses `declared`
+    # and not the thread, and this caller was the one deciding otherwise.
+    declared = None
     try:
-        declared = None
         rows = _ARCTIC.posts_by_id(link_id, timeout=timeout, _get=getter)
         if rows:
             declared = rows[0].get("num_comments")
+    except _ARCTIC.RedditFetchFailed:
+        pass          # no declared count. coverage_pct becomes None, not zero.
+    try:
         read = _ARCTIC.all_comments(link_id, timeout=timeout, _get=getter)
     except _ARCTIC.RedditFetchFailed as exc:
         return _refusal(url, seen.get("status", "EXC:RedditFetchFailed: %s" % exc), now)

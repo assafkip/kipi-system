@@ -207,3 +207,66 @@ def test_coverage_of_a_thread_that_declares_nothing_is_none_not_full():
     assert t.coverage(0, 0) is None
     assert t.coverage(0, None) is None
     assert t.coverage(32, 34) == 94.1
+
+
+# --- paging, measured rather than assumed ---------------------------------
+
+def test_a_row_tying_the_cursor_second_is_not_dropped():
+    """The cursor is EXCLUSIVE, measured live against Arctic: passing a row's own
+    created_utc as `after` omits every row sharing that second. `seen` protects
+    against an INCLUSIVE cursor, the opposite case, so it could not recover them
+    and a 106-comment thread came back as 105 with complete=True."""
+    rows = [{"id": "c%d" % i, "created_utc": 1788136000 + i} for i in range(100)]
+    rows.append({"id": "c100", "created_utc": 1788136000 + 99})   # ties the edge
+    tail = [{"id": "d%d" % i, "created_utc": 1788136200 + i} for i in range(5)]
+
+    def fake(url):
+        import urllib.parse as up
+        q = dict(up.parse_qsl(url.split("?", 1)[1]))
+        pool = rows + tail
+        if "after" not in q:
+            return {"data": pool[:100]}
+        a = float(q["after"])
+        return {"data": [r for r in pool if r["created_utc"] > a][:100]}
+
+    got = t.all_comments("x", _get=fake)
+    assert {c["id"] for c in got["comments"]} >= {"c100"}, "boundary row dropped"
+    assert got["fetched"] == 106 and got["complete"] is True
+
+
+def test_recent_pages_past_the_ceiling_on_the_measured_cursor():
+    """`recent` used to send min(max_items, 100) and hand back the ceiling with
+    no flag, while MAX_LIMIT's comment called that "the exact shape this module
+    refuses".
+
+    The cursor is `before`, MEASURED 2026-09-05 against r/programming at
+    limit=10: the last row's created_utc passed as `after` returned nine rows
+    OVERLAPPING page one; passed as `before` it returned ten strictly older rows.
+    The first version of this loop used `after` and re-read its own page.
+    """
+    pool = [{"id": "p%d" % i, "title": "t", "subreddit": "x",
+             "created_utc": 1788136000 - i} for i in range(250)]
+
+    def fake(url):
+        import urllib.parse as up
+        q = dict(up.parse_qsl(url.split("?", 1)[1]))
+        if "before" not in q:
+            return {"data": pool[:100]}
+        b = float(q["before"])
+        return {"data": [p for p in pool if p["created_utc"] < b][:100]}
+
+    out = t.recent("x", max_items=250, _get=fake)
+    assert len(out) == 250, len(out)
+    assert len({p["id"] for p in out}) == 250, "the overlap was not deduped"
+
+
+def test_recent_below_the_ceiling_makes_exactly_one_request():
+    """The paging must not cost a second call for the ordinary case."""
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        return {"data": [{"id": "a", "title": "t", "subreddit": "x"}]}
+
+    t.recent("x", max_items=5, _get=fake)
+    assert len(calls) == 1, calls

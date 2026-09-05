@@ -148,11 +148,20 @@ def _items(payload) -> list:
     return payload if isinstance(payload, list) else []
 
 
-def arctic_url(subreddit: str, limit: int, *, after: str = "") -> str:
+def arctic_url(subreddit: str, limit: int, *, after: str = "",
+               before: str = "") -> str:
     q = {"subreddit": _clean_sub(subreddit), "limit": min(limit, MAX_LIMIT),
          "sort": "desc"}
     if after:
         q["after"] = after
+    # `before` is the cursor for a DESCENDING page, and that is measured rather
+    # than assumed (2026-09-05, r/programming, limit=10): passing the last row's
+    # created_utc as `after` returned nine rows that OVERLAPPED page one, newest
+    # first. Passing it as `before` returned ten strictly older rows with no
+    # overlap. A first attempt at paging `recent` used `after` and would have
+    # re-fetched the page it had just read.
+    if before:
+        q["before"] = before
     return f"{ARCTIC_BASE}/api/posts/search?{urllib.parse.urlencode(q)}"
 
 
@@ -167,7 +176,8 @@ def _clean_sub(subreddit: str) -> str:
 
 
 def fetch_posts(subreddit: str, *, limit: int = DEFAULT_MAX_ITEMS,
-                after: str = "", timeout: int = DEFAULT_TIMEOUT,
+                after: str = "", before: str = "",
+                timeout: int = DEFAULT_TIMEOUT,
                 _opener=None, _get=None) -> tuple[list, str]:
     """Arctic Shift first, PullPush second. Returns (raw posts, which mirror).
 
@@ -175,7 +185,8 @@ def fetch_posts(subreddit: str, *, limit: int = DEFAULT_MAX_ITEMS,
     than the identical-retry shape that made Apify's `retries=1` worthless.
     """
     try:
-        return _items(_get_json(arctic_url(subreddit, limit, after=after),
+        return _items(_get_json(arctic_url(subreddit, limit, after=after,
+                                           before=before),
                                 timeout, _opener, _get)), "arctic"
     except Exception as arctic_exc:
         try:
@@ -293,8 +304,36 @@ def recent(subreddit: str, *, max_items: int = 60, timeout: int = DEFAULT_TIMEOU
     any more. Kept as accepted-and-unused rather than removed so a caller that
     still passes them does not crash on an argument that stopped mattering.
     """
-    raw, mirror = fetch_posts(subreddit, limit=max_items, timeout=timeout,
-                              _opener=_opener, _get=_get)
+    # PAGE, rather than quietly hand back the ceiling. This used to send
+    # min(max_items, 100) and return whatever came, with no flag, while the
+    # comment at MAX_LIMIT said asking above the ceiling yields "a silently
+    # truncated answer, which is the exact shape this module refuses" (review,
+    # MINOR 4: a comment contradicting its own code twenty lines down).
+    #
+    # The cursor is `before`, MEASURED, not guessed. The first version of this
+    # loop used `after` and re-fetched the page it had just read. `+ 1` keeps a
+    # row that ties the boundary second, and `seen` throws away the overlap that
+    # buys, which is the same trade `all_comments` makes for the same reason.
+    raw, mirror = fetch_posts(subreddit, limit=min(max_items, MAX_LIMIT),
+                              timeout=timeout, _opener=_opener, _get=_get)
+    if max_items > MAX_LIMIT and len(raw) >= MAX_LIMIT:
+        seen_ids = {r.get("id") for r in raw}
+        cursor = None
+        for _ in range(20):                  # a real ceiling, not a while True
+            last = raw[-1].get("created_utc")
+            nxt = (last + 1) if isinstance(last, (int, float)) else None
+            if nxt is None or nxt == cursor:
+                break
+            cursor = nxt
+            page, _m = fetch_posts(subreddit, limit=MAX_LIMIT,
+                                   before=str(cursor), timeout=timeout,
+                                   _opener=_opener, _get=_get)
+            fresh = [r for r in page if r.get("id") not in seen_ids]
+            seen_ids.update(r.get("id") for r in fresh)
+            raw.extend(fresh)
+            if len(raw) >= max_items or len(page) < MAX_LIMIT:
+                break
+        raw = raw[:max_items]
     out = []
     for record in raw:
         post = normalize(record, subreddit, "")
@@ -415,7 +454,19 @@ def all_comments(link_id: str, *, page_size: int = MAX_LIMIT, max_pages: int = 4
         # be followed by more rows under `after` ordering.
         if len(batch) < page_size:
             return _thread_result(link_id, out, pages, complete=True, capped=False)
-        nxt = batch[-1].get("created_utc")
+        # THE CURSOR IS EXCLUSIVE, so step BACK one second and let `seen` dedupe
+        # the overlap. Measured live against Arctic in review: passing a row's
+        # own created_utc as `after` returns the rows AFTER it and omits every
+        # row sharing that second. The `seen` set protects against an inclusive
+        # cursor, which is the opposite case, so it could not recover them: a
+        # 106-comment thread came back as 105 rows with complete=True. A missing
+        # comment reported as a whole thread is the silent truncation this
+        # module exists to end.
+        #
+        # Overlapping by a second costs at most one repeated page of rows that
+        # `seen` throws away. Losing a comment costs a comment, silently.
+        last = batch[-1].get("created_utc")
+        nxt = (last - 1) if isinstance(last, (int, float)) else last
         if nxt is None or nxt == after:
             # No cursor to advance on. Stopping is correct; claiming completeness
             # is not, because the next page was never asked for.
