@@ -337,6 +337,44 @@ TESTFILES="$(git -C "$REPO" ls-files 'test_*.py' '*/test_*.py')"
 # REMOVES a broken suite and the gate would still run it and refuse. The whole
 # premise of --staged is "grade what the commit contains", and the file deciding
 # WHAT GETS GRADED was exempt from it.
+# THE INSTALLED GUARD MUST MATCH THE REVIEWED ONE (ASK-1144).
+#
+# `~/.claude/settings.json` runs destructive-op-deny.sh from the HOME tree; this
+# repo holds the vendored copy that gets reviewed. Nothing compared them, so a
+# corrected hook could merge while unattended agents kept executing the stale
+# one. Codex measured it on PR #279: checked_in_equals_installed=no.
+#
+# SCOPED TO A MACHINE THAT ACTUALLY RUNS HOOKS, and that is not a bypass. A
+# GitHub runner has no ~/.claude/hooks at all, so an unscoped check would be red
+# on every PR for a reason nobody can fix in a commit -- the exact shape the
+# .verify-suites comment below was written about, and the fastest way to get a
+# gate switched off. On a runner it prints a SKIP line rather than passing
+# silently: a check that could not run has to say so.
+# THE DENYLIST MUST NAME SERVERS THAT EXIST (ASK-1144). Operation-keyed denial
+# makes a MISSING namespace harmless; it does not make a DEAD one visible, and a
+# dead entry reading as coverage is what let the Linear hole survive review.
+# Machine-independent by construction (declared namespaces, not discovered), so
+# it means the same thing on a runner as on a laptop.
+# GUARDED ON THE FILES EXISTING, because verify.sh runs against trees that are
+# not this repo. The floor's own adversarial suite drives it at synthetic
+# fixtures with no q-system/ at all, and an unconditional check there fails for
+# "the file is missing" rather than for anything about the target -- 5 of 7
+# adversarial cases went red exactly that way. A check that cannot apply must
+# say so, not fail.
+_mcp_ns_check="$TARGET/q-system/.q-system/scripts/mcp-denylist-namespace-check.py"
+_mcp_ns_hook="$TARGET/q-system/.q-system/hooks/destructive-op-deny.sh"
+if [ -f "$_mcp_ns_check" ] && [ -f "$_mcp_ns_hook" ]; then
+  run_check "mcp-denylist-namespaces" \
+    python3 "$_mcp_ns_check" --hook "$_mcp_ns_hook"
+fi
+
+if [ -d "$HOME/.claude/hooks" ] && [ -f "$TARGET/q-system/.q-system/scripts/install-claude-hooks.py" ]; then
+  run_check "installed-hooks-match-repo" \
+    python3 "$TARGET/q-system/.q-system/scripts/install-claude-hooks.py" --check
+else
+  say "installed-hooks-match-repo" "SKIP (no ~/.claude/hooks on this machine)"
+fi
+
 MANIFEST="$TARGET/.verify-suites"
 if [ -f "$MANIFEST" ]; then
   if command -v pytest >/dev/null 2>&1 || python3 -c "import pytest" 2>/dev/null; then
