@@ -177,3 +177,11 @@ q-system/output/.update-check-*
 .sana-needs-scope
 .sana-blocked-capability
 .codex-blocked-capability
+#
+# The per-issue PR body the loop writes for `gh pr create`. Same mechanism as the
+# sentinels above and the same fix, but lower stakes: nothing READS a stale PR
+# body, so a swept-in one is clutter rather than a live defect (sp-b2a5e5be,
+# from ASK-700). Anchored to the repo root because that is the only place the
+# loop writes it -- a bare glob would also hide a real file someone adds under a
+# subdirectory later. Asserted by test_gitignore_agent_scratch.py.
+/.pr-body-*.md
