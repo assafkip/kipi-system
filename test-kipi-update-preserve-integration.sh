@@ -107,17 +107,23 @@ else
     echo "  FAIL: no preservation warning for $TARGET"
     FAILURES=$((FAILURES + 1))
   fi
-  if grep -q "restored untracked: $TARGET" "$LOG"; then
-    echo "  OK: the tracked instance-only file was restored after --delete"
+  # sp-a94c203c. This case used to grep "restored untracked: $TARGET" while its
+  # own success message called $TARGET the TRACKED instance-only file -- the
+  # assertion documented the confusion the message caused. Each kind now has to
+  # get ITS OWN line, which is what makes this able to fail: mislabelling either
+  # one turns exactly one of these two red instead of both staying green.
+  if grep -q "restored tracked instance-only.*: $TARGET" "$LOG"; then
+    echo "  OK: the tracked instance-only file was restored, and named as tracked"
   else
-    echo "  FAIL: $TARGET was not restored"
+    echo "  FAIL: $TARGET was not restored, or was not named as tracked"
     grep -i "restored" "$LOG" | head -3 | sed 's/^/      /'
     FAILURES=$((FAILURES + 1))
   fi
   if grep -q "restored untracked: q-system/.q-system/scripts/untracked-note.txt" "$LOG"; then
-    echo "  OK: the untracked file was restored too"
+    echo "  OK: the untracked file was restored too, and named as untracked"
   else
-    echo "  FAIL: the untracked file was not restored"
+    echo "  FAIL: the untracked file was not restored, or was not named as untracked"
+    grep -i "restored" "$LOG" | head -3 | sed 's/^/      /'
     FAILURES=$((FAILURES + 1))
   fi
 fi
