@@ -1,0 +1,4 @@
+{
+ "prefix": "q-system/.q-system/tests/",
+ "reason": "pytest suite tree, collected via pytest.ini rather than by the gate's TEST_PATTERNS discovery. The declared entries are the ones the gate also runs directly; the other 25 are sp-c3d0f4d3."
+}

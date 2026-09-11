@@ -35,14 +35,43 @@ import sys
 # stale skeleton copy from the old `git subtree add` creation path). Listing it
 # here stops this scanner from flagging shadow-tree files as preserve-candidates,
 # so the updater's rsync --delete can actually remove them (fleet cleanup 2026-07-01).
-EXCLUDED_PREFIXES = (
-    "my-project/",
-    "canonical/",
-    "memory/",
-    "output/",
-    ".q-system/agent-pipeline/bus/",
-    "q-system/",
-)
+def _owned_subtrees():
+    """INSTANCE_OWNED_SUBTREES, parsed out of kipi-update.sh.
+
+    DERIVED, NOT TRANSCRIBED (sp-3d5a247e). The comment above has always claimed
+    this list mirrors the updater's excludes "exactly"; measured 2026-08-14 it
+    was missing `research` and `.q-system/data`, so the claim had been false for
+    as long as those two entries had existed. A hand-kept second copy of a list
+    that lives somewhere else drifts the moment anyone adds an entry, and a
+    comment asserting the mirror is worse than no comment: it is read as
+    coverage, so nobody goes looking.
+
+    Refuses loudly rather than falling back to a literal. A silent fallback here
+    would preserve a file the updater is about to delete, or skip one it is not
+    permitted to touch, with nothing on screen either way.
+    """
+    import re
+    updater = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "kipi-update.sh")
+    with open(updater, encoding="utf-8") as handle:
+        text = handle.read()
+    match = re.search(r"^INSTANCE_OWNED_SUBTREES=\(\n(.*?)^\)", text, re.S | re.M)
+    if not match:
+        raise RuntimeError(
+            f"INSTANCE_OWNED_SUBTREES not found in {updater}; the preserve scan "
+            "cannot mirror the updater's excludes and refuses to guess them"
+        )
+    subs = [line.strip() for line in match.group(1).splitlines() if line.strip()]
+    if not subs:
+        raise RuntimeError(f"INSTANCE_OWNED_SUBTREES parsed empty from {updater}")
+    return tuple(f"{sub}/" for sub in subs)
+
+
+# The updater's own instance-owned subtrees, plus one entry that is NOT an rsync
+# exclude: "q-system/" is the forbidden nested shadow tree described above, and
+# it is excluded here for a different reason. Kept separate so the derived half
+# stays a faithful mirror.
+EXCLUDED_PREFIXES = _owned_subtrees() + ("q-system/",)
 
 
 def is_excluded(rel):

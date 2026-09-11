@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/stat-registry-extract.py",
+ "reason": "sibling extractor of the stat-verify engine, same founder decision",
+ "spillover_id": "sp-72b60bff"
+}

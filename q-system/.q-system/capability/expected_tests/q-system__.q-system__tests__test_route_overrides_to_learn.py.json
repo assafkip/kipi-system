@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_route_overrides_to_learn.py",
+ "runner": "python3",
+ "timeout_s": 180
+}

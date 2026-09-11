@@ -53,6 +53,11 @@ ALLOWED_KEYS = {
     "findings_triaged_at",
     "reviewed_at",
     "verified_at",
+    # ASK-988 round 3 (codex): a close row for an issue that later REOPENED
+    # kept downstream closure metrics counting unfinished work. A reopen is
+    # recorded with its own timestamped row; same shape contract as closed_at,
+    # no free text.
+    "reopened_at",
     "receipts",
 }
 NESTED_RECEIPT_KEYS = {"findings_triaged", "reviewed", "verified"}

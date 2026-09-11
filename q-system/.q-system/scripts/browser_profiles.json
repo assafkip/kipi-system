@@ -1,0 +1,72 @@
+{
+  "_why": [
+    "Profiles are DECLARED, never discovered by scanning a directory.",
+    "",
+    "A profile is an IDENTITY. A surface is a probe. Decided 2026-08-31 after one",
+    "jar was measured holding LinkedIn, Reddit, Google and YouTube at once, which",
+    "is the shared-computer shape the Grok Bot research rejected, arriving from",
+    "the other direction. The plan's isolation constraint only ever separated",
+    "research from the real Chrome, never research profiles from each other.",
+    "Splitting this jar needs the founder's sign-ins, so it is captured as",
+    "spillover rather than done here; expected_cookie_hosts makes the drift",
+    "visible in the meantime.",
+    "",
+    "logged_in_marker must be measured ABSENT on a signed-out load before it is",
+    "declared. A marker that is PRESENT while signed out reports alive forever,",
+    "and alive is silent, which is the worst failure available here. Measured",
+    "2026-08-31 against a throwaway signed-out profile:",
+    "  myaccount.google.com  'SignOutOptions' absent, 'Sign out' PRESENT (rejected)",
+    "  www.youtube.com       'SignOutOptions' absent, 'avatar'   PRESENT (rejected)",
+    "  news.ycombinator.com  'logout'         absent, 'login'    present",
+    "A marker never yet seen TRUE reports state 'unverified', never 'dead', so a",
+    "wrong guess cannot page the founder with a false death.",
+    "",
+    "unmonitored_surfaces are sessions this jar holds that are deliberately NOT",
+    "probed. They stay on the receipt and print on every run, because the blind",
+    "spot that started all of this was invisible, not accepted."
+  ],
+  "research_root": "~/.config/kipi/browser-profiles",
+  "profiles": [
+    {
+      "name": "research-hn",
+      "dir": "~/.config/kipi/browser-profiles/research-hn",
+      "identity": "the founder's own identity, currently sharing one jar across several surfaces",
+      "purpose": "Reference profile for the persistent-browsing capability. Continuity monitoring for the sessions this jar holds.",
+      "kill_switch": "~/.config/kipi/browser-profiles/research-hn.disabled",
+      "expected_cookie_hosts": [
+        "news.ycombinator.com",
+        "google.com",
+        "youtube.com",
+        "linkedin.com",
+        "reddit.com"
+      ],
+      "liveness_probes": [
+        {
+          "name": "hn",
+          "url": "https://news.ycombinator.com/news",
+          "logged_in_marker": "logout"
+        },
+        {
+          "name": "google",
+          "url": "https://myaccount.google.com/",
+          "logged_in_marker": "SignOutOptions"
+        },
+        {
+          "name": "youtube",
+          "url": "https://www.youtube.com/",
+          "logged_in_marker": "SignOutOptions"
+        }
+      ],
+      "unmonitored_surfaces": [
+        {
+          "host": "reddit.com",
+          "reason": "FORBIDDEN, and separately FOUNDER-DECLINED 2026-08-31 (\"dont watch linkedin or reddit\"). The refusal stands on its own: canon 2026-07-17 (reddit_driver.py) is that a Playwright-driven Reddit session is WAF-blocked, and this capability being headful and read-only is a real but UNMEASURED difference. Reddit actions go through the Chrome extension, not through this. Enforced at load by FORBIDDEN_PROBE_HOSTS; declining to watch is not permission to probe."
+        },
+        {
+          "host": "linkedin.com",
+          "reason": "FOUNDER-DECLINED 2026-08-31, verbatim: \"no. dont watch linkedin or reddit.\" He does not want continuity monitoring on this surface; he wants an ACTION path to it. Declining to watch is not permission to probe, so nothing here probes it."
+        }
+      ]
+    }
+  ]
+}

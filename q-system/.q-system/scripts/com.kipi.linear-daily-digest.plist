@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Daily Linear digest: what closed, what opened, what could not be worked.
+     Founder-directed 2026-08-13: one Slack message a day at 4pm, so the queue
+     stops being something he has to go and look at.
+
+     TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized by
+     install-plist.sh. The first version of this job was written STRAIGHT into
+     ~/Library/LaunchAgents with the founder's home path hardcoded and was never
+     committed at all, which is the b2df00e / ASK-113 scar repeating: unusable on
+     any other machine, invisible to validate-separation, and it made
+     daily-linear-digest.py read as an inert engine to the capability gate because
+     nothing in the repo referenced it. A scheduled job that exists on one laptop
+     is not a mechanism, it is a habit.
+
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.linear-daily-digest -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.linear-daily-digest</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <!-- Through a login shell so the Linear key and the Slack webhook resolve the
+         same way they do for a human. launchd does NOT inherit a login environment,
+         and a job that runs blind because its credentials are absent is exactly what
+         com.cole.delivery-watch did for 19 days before anyone noticed (ASK-718). -->
+    <string>python3 __KIPI_REPO__/q-system/.q-system/scripts/daily-linear-digest.py</string>
+  </array>
+  <!-- Local 16:00. launchd calendar intervals are LOCAL time, so this is 4pm
+       Pacific year-round without tracking PST/PDT. -->
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>0</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/linear-daily-digest.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/linear-daily-digest.err.log</string>
+</dict>
+</plist>

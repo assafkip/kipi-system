@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "slug": "ask-315-parity-gate-multiedit",
+  "reason": "ASK-315 (codex PR #82, major): the parity gate landed in .claude/settings.json's `Edit|Write` group while the same entry landed in settings-template.json's `Edit|Write|MultiEdit` group, so the skeleton's own runtime never fired it on a MultiEdit. This tool is additive-only on config (replace is pinned to rule text), so the entry cannot be relocated; a MultiEdit-only group arms the missing tool without double-firing on Edit or Write.",
+  "requires": {
+    "files_present": ["q-system/.q-system/scripts/consumer-parity-check.py"],
+    "template_pairs": ["consumer-parity-check.py"]
+  },
+  "edits": [
+    {
+      "file": ".claude/settings.json",
+      "op": "insert_after",
+      "anchor": "            \"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/portability-lint-hook.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/portability-lint-hook.py\\\"\"\n          }\n        ]\n      }",
+      "insert": ",\n      {\n        \"matcher\": \"MultiEdit\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\\\" && python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\\\"\",\n            \"timeout\": 10\n          }\n        ]\n      }",
+      "reason": "close the MultiEdit hole in the skeleton runtime; the matcher is part of the gate"
+    }
+  ]
+}

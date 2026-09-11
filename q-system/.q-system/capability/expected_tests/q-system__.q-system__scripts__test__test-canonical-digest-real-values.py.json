@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-canonical-digest-real-values.py",
+ "runner": "python3"
+}

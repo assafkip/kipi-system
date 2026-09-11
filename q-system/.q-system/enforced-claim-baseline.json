@@ -1,0 +1,42 @@
+{
+  "_doc": "Markers that predate enforced-claim-lint (ASK-965). Every entry is a marker someone still has to disposition. THIS FILE MAY ONLY SHRINK: --all reports a stale entry as a violation, and adding one is a deliberate act a reviewer can see. Generated 2026-08-21 from the tree as it stood when the gate landed; 29 rule files carried 35 markers across 32 headings and none had a disposition, so a gate red on all of them on day one would have been unsatisfiable and switched off.",
+  "generated_at": "2026-08-21",
+  "initial_count": 27,
+  "uncovered_markers": [
+    ".claude/rules/anti-misclassification.md::anti misclassification guardrails",
+    ".claude/rules/audhd-interaction.md::adhd aware interaction",
+    ".claude/rules/audhd-interaction.md::audhd rules",
+    ".claude/rules/automated-filer-marking.md::automated filers mark their own output",
+    ".claude/rules/coding-standards.md::test after edit",
+    ".claude/rules/design-auto-invoke.md::design skill auto invocation",
+    ".claude/rules/dev-skills-auto-invoke.md::development skills auto invocation",
+    ".claude/rules/dogfood-gate.md::dogfood gate every public page clears our own design bar before it ships",
+    ".claude/rules/evidence-ledger.md::evidence ledger store the evidence derive the conclusions",
+    ".claude/rules/fable-discipline-auto-invoke.md::fable discipline auto invocation",
+    ".claude/rules/folder-structure.md::folder structure",
+    ".claude/rules/founder-notifications.md::founder notifications",
+    ".claude/rules/md-hygiene.md::markdown hygiene",
+    ".claude/rules/memory-confidence.md::memory confidence provenance",
+    ".claude/rules/memory-freshness.md::memory freshness",
+    ".claude/rules/model-allocation.md::model allocation policy",
+    ".claude/rules/morning-pipeline.md::preflight fail fast and audit harness",
+    ".claude/rules/morning-pipeline.md::self healing loop",
+    ".claude/rules/no-orphan-findings.md::no orphan findings",
+    ".claude/rules/quick-plan.md::quick plan mode",
+    ".claude/rules/rca-mode.md::rca mode",
+    ".claude/rules/remote-coverage.md::remote coverage",
+    ".claude/rules/repair-first-generation.md::repair first a generation loop fixes what it can before it gates",
+    ".claude/rules/skill-hook-pairing.md::skill hook pairing",
+    ".claude/rules/social-reaction-gate.md::social reaction gate",
+    ".claude/rules/sycophancy.md::sycophancy",
+    ".claude/rules/wiring-check.md::definition of done fully wired"
+  ],
+  "_shrink_log": [
+    {
+      "date": "2026-08-21",
+      "from": 32,
+      "to": 27,
+      "why": "ASK-965 disposition pass batch 1: voice-enforcement, linear-first, coding-audhd, token-discipline (2 markers)"
+    }
+  ]
+}

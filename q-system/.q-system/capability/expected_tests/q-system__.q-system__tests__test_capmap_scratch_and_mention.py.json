@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_capmap_scratch_and_mention.py",
+ "runner": "python3",
+ "timeout_s": 60
+}

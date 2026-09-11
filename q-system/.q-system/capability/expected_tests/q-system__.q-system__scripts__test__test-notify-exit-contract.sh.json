@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-notify-exit-contract.sh",
+ "runner": "bash"
+}

@@ -80,9 +80,10 @@ SOURCES = (
 #
 # REVIEWER_SOURCES (was CODEX_SOURCES, renamed 2026-07-26) is the set that
 # counts as "an independent review actually ran", which is the property the
-# approval gate cares about — not which vendor ran it. Codex is out of credits
-# until 2026-08-24, so the reviewer is a Claude senior-staff-engineer subagent.
-# With only codex-* accepted, that reviewer had two bad options: stamp
+# approval gate cares about — not which vendor ran it. Any of these vendors may
+# be unavailable on a given day (credits, auth), and the reviewer that steps in
+# must be able to stamp itself honestly.
+# With only codex-* accepted, a non-Codex reviewer had two bad options: stamp
 # `codex-adversarial` and write a provenance record that is false, or skip the
 # stamp and never be able to approve. In a repo whose whole thesis is receipts,
 # faking the stamp is strictly worse than the blocker, so the honest sources

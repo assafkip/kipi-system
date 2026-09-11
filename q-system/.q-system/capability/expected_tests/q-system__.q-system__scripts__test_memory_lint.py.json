@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test_memory_lint.py",
+ "runner": "python3"
+}

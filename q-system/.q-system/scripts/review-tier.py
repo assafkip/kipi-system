@@ -97,9 +97,19 @@ WIRING_FILES = {
 # roster); gates.jsonl holds registered bypass gates. Editing either adds or
 # removes a required check.
 REQUIRED_CHECK_FILES = {
+    # Kept after the fragment migration on purpose: this file no longer exists,
+    # so a diff that re-adds it is a branch resurrecting the monolith, which the
+    # gate refuses. That is exactly a change worth escalating, not ignoring.
     "q-system/.q-system/capability-manifest.json",
     ".prd-os/gates.jsonl",
 }
+# A DIRECTORY of one-file-per-declaration. Basename matching cannot see these
+# (a fragment is named after the test it declares), so the prefix is matched
+# on the full path -- otherwise the split that killed the conflict class would
+# also have silently downgraded every test-adding PR out of the review tier.
+REQUIRED_CHECK_PREFIXES = (
+    "q-system/.q-system/capability/",
+)
 REQUIRED_CHECK_KEY = re.compile(r"^\s*(-\s*)?required_checks\s*:|required_checks")
 
 # Prose the runtime LOADS is not documentation. Editing a rule, skill, command
@@ -322,7 +332,8 @@ def classify(files, root, subject=""):
         if path in WIRING_FILES or base in WIRING_FILES:
             reasons.append(f"{path}: settings wiring surface")
 
-        if path in REQUIRED_CHECK_FILES or base in REQUIRED_CHECK_FILES:
+        if (path in REQUIRED_CHECK_FILES or base in REQUIRED_CHECK_FILES
+                or path.startswith(REQUIRED_CHECK_PREFIXES)):
             reasons.append(f"{path}: adds or removes a required check")
         elif path.startswith(".prd-os/issues/") and any(
                 REQUIRED_CHECK_KEY.search(ln) for ln in changed):

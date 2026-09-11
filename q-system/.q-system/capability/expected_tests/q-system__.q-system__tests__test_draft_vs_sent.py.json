@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_draft_vs_sent.py",
+ "runner": "python3",
+ "timeout_s": 120
+}

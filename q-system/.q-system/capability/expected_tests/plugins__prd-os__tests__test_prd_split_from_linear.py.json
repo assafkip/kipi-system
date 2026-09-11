@@ -1,0 +1,4 @@
+{
+ "path": "plugins/prd-os/tests/test_prd_split_from_linear.py",
+ "runner": "python3"
+}

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "slug": "ask136-quick-plan-names-plan-lint-inline",
+  "reason": "ASK-136, rule-text half. quick-plan.md claims ENFORCED and names no executable. The first shape of this edit added the scope text as its own paragraph and the instruction-budget ratchet refused the commit (always-on 511 -> 512, target 300) -- correctly: that gate is one-directional and only auto-tightens. The applier's own line ratchet forbids shrinking a rule to pay for it, so the two gates together mean this text has to be NET-ZERO on line count. So it is folded into the existing intro line rather than added below it: same substantive-line count, one new exec reference, (ENFORCED marker and its heading untouched. The settings.json / settings-template.json wiring landed in the sibling proposal ask136-quick-plan-names-and-wires-plan-lint and is not repeated here.",
+  "requires": {
+    "files_present": [
+      ".claude/rules/quick-plan.md",
+      "q-system/.q-system/scripts/plan-lint.py",
+      "q-system/.q-system/scripts/test/test-quick-plan-rule-wired.sh"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/rules/quick-plan.md",
+      "op": "replace",
+      "anchor": "The plan is the durable checkpoint that survives context loss.",
+      "insert": "The plan is the durable checkpoint that survives context loss, and its SHAPE is held by `q-system/.q-system/scripts/plan-lint.py`, wired PostToolUse on Edit/Write in BOTH `.claude/settings.json` and `settings-template.json` so the fleet updater ships the switch and not only the script: it exits 2 on a plan written under `q-system/output/plans/` that lacks the dated `<slug>-<YYYY-MM-DD>.md` filename or any of the five sections named below, and fast-exits on every other path. Read that narrowly -- it checks those sections EXIST, never that their content is true, grounded or complete; plans dated before 2026-08-21 are grandfathered (39 of the 57 on disk were short a section, and a gate red on its own population gets switched off); `plan-lint-skip` is the per-file bypass; and whether this reflex FIRES at all stays a model decision no hook observes, because a PostToolUse hook can inspect a plan that was written and is structurally blind to one that was skipped. Pinned by `test-quick-plan-rule-wired.sh` (the labelling and the wiring) and `test_plan_lint.py` (the engine).",
+      "reason": "Name the enforcing executable inside the (ENFORCED) heading's own section, on the line that is already there, and state the bound so the label is not read wider than the hook holds."
+    }
+  ]
+}

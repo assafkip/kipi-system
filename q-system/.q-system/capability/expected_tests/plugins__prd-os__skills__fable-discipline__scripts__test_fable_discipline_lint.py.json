@@ -1,0 +1,5 @@
+{
+ "path": "plugins/prd-os/skills/fable-discipline/scripts/test_fable_discipline_lint.py",
+ "runner": "python3",
+ "timeout_s": 120
+}

@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-review-plan-echo-gate.sh",
+ "runner": "bash"
+}

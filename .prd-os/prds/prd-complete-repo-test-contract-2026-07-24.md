@@ -146,10 +146,10 @@ declared path for shipped runtime suites.
     "priority": "p1",
     "allowed_files": ["q-system/.q-system/capability-manifest.json", "q-system/.q-system/scripts/capability-gate.py", "q-system/.q-system/scripts/test_capability_gate.py"],
     "disallowed_files": [".github/workflows/**", "plugins/**/src/**", "q-system/canonical/**", ".prd-os/**"],
-    "required_checks": ["python3 -m pytest -q q-system/.q-system/scripts/test_capability_gate.py"],
+    "required_checks": ["python3 q-system/.q-system/scripts/test_capability_gate.py"],
     "required_reviews": ["test-owner"],
     "acceptance": "Write a failing undeclared-artifact fixture first. Enumerate shipped plugin suites, script tests, self-tests, and enforcement hooks with owned exemptions.",
-    "bypass_check": "python3 -m pytest -q q-system/.q-system/scripts/test_capability_gate.py -k undeclared"
+    "bypass_check": "python3 q-system/.q-system/scripts/test_capability_gate.py"
   },
   {
     "id": "crtc-repo-entrypoint",

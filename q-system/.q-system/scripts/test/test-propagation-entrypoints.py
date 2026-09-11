@@ -90,6 +90,47 @@ EXEMPT = {
     "and destination are both synthetic fixtures under mktemp -d",
     "test-kipi-update-preserve-scan.sh": "a test harness for the same scanner; "
     "its copies are inside a throwaway temp fixture, not a real instance",
+    # --- ASK-1145 -------------------------------------------------------
+    # These eleven were always undeclared. Nobody added them since: this test
+    # was declared `runner: python3` on a pytest module, so the capability gate
+    # imported it and ran none of its cases. It has been red for as long as it
+    # has existed. Each reason below names the line first_match() actually
+    # returns, not an impression formed by reading the file.
+    "kipi": "false positive: the match is the `install-jobs)` case label in the "
+    "CLI dispatcher, which copies nothing and shells out to the real updater",
+    "kipi-update-deletion-guard.py": "read-only guard; the match is prose in its "
+    "module docstring describing what the updater does, same class as "
+    "kipi-update-preserve-scan.py",
+    "kipi-update-gitignore-block.py": "the match is os.replace(tmp, path), an "
+    "atomic in-place rewrite of one file in the repo it runs in, never an "
+    "outward copy into an instance",
+    # --- PR #292 --------------------------------------------------------
+    "kipi-update-voiceloop-migrate.py": "the match first_match() returns is the "
+    "shutil.copy2(path, keep) at line 397, which writes a .pre-voiceloop.bak "
+    "beside an UNTRACKED file in the instance being migrated, right before that "
+    "file is rewritten in place. It is a same-directory backup so the rewrite is "
+    "reversible for content version control never held, not an outward copy: "
+    "this script only ever reads and writes inside the ONE instance it is "
+    "pointed at, and has no skeleton source and no second destination. Same "
+    "class as kipi-update-gitignore-block.py above, whose os.replace this file "
+    "also carries",
+    "test-kipi-update-bash32-empty-array.sh": "test harness; its cp -R source "
+    "and destination are both synthetic fixtures under mktemp -d",
+    "test-kipi-update-cache-exclusion.sh": "test harness; its cp -R source and "
+    "destination are both synthetic fixtures under mktemp -d",
+    "test-kipi-update-config-commit-unwind.sh": "test harness; it copies the "
+    "updater into a throwaway skeleton fixture, never into an instance",
+    "test-kipi-update-dataloss-guards.sh": "test harness; its cp -R source and "
+    "destination are both synthetic fixtures under mktemp -d",
+    "test-kipi-update-dirty-guard-scope.sh": "test harness; its cp -R source "
+    "and destination are both synthetic fixtures under mktemp -d",
+    "test-kipi-update-restore-recovers.sh": "test harness; the copy reads a "
+    "scratch file out of its own temp fixture to assert restore worked",
+    "test_destructive_op_deny_anchor.py": "test harness; shutil.copy puts the "
+    "hook into a tmp dir so the copy can be patched and driven, which is "
+    "exactly how it stays read-only on the real one",
+    "test_fleet_unblock.py": "test harness; it copies one auditor into a "
+    "synthetic skeleton fixture built under tmp_path",
 }
 
 

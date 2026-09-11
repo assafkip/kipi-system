@@ -122,8 +122,16 @@ PY
     git_test commit -qm instance
   )
 
+  # A dry itemized rsync (-n / -ain) reads and writes nothing; the updater's
+  # instance-ahead preflight runs one before the preservation helper on
+  # purpose, so only a WRITING invocation counts as "rsync invoked".
   cat > "$fake_bin/rsync" <<'SH'
 #!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    -n|--dry-run|-*n*) [ "${arg#--}" = "$arg" ] && exit 0 ;;
+  esac
+done
 printf 'rsync invoked\n' >> "$RSYNC_LOG"
 exit 0
 SH

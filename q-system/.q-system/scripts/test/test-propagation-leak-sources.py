@@ -348,19 +348,30 @@ def test_filter_mirror_matches_the_updater():
     """
     gate = load_gate()
     updater = (REPO_ROOT / "kipi-update.sh").read_text(encoding="utf-8")
-    plugin_rsync = next(
-        line
-        for line in updater.splitlines()
-        if "--exclude=" in line and "__pycache__" in line
-    )
-    block = plugin_rsync + "".join(
-        updater.splitlines()[updater.splitlines().index(plugin_rsync) + 1:][:2]
-    )
-    declared = set(re.findall(r'--exclude="([^"]+)"', block))
+
+    # PLUGIN_COPY_EXCLUDES is the one truth both updater consumers read
+    # (plugin_copy_rsync_flags and plugin_copy_filter_regex), and
+    # test-kipi-update-plugin-excludes.sh already proves those two agree. Read
+    # it directly rather than a rendering of it: the previous version hunted
+    # for an inline `--exclude=` LINE, which stopped existing when the flags
+    # moved into this array, and the test died on StopIteration instead of
+    # reporting drift.
+    body = updater.split("PLUGIN_COPY_EXCLUDES=(", 1)
+    assert len(body) == 2, "kipi-update.sh no longer declares PLUGIN_COPY_EXCLUDES"
+    # Split on the array's CLOSING paren at line start, not the first `)`:
+    # the entries carry grep regexes and every one of them contains parens.
+    # The first cut split on `)` and parsed empty -- caught only because the
+    # assertion below refuses an empty parse instead of comparing two empty
+    # sets and reporting agreement.
+    entries = re.findall(r'"([^"]+)::[^"]*"', body[1].split("\n)", 1)[0])
+    assert entries, "PLUGIN_COPY_EXCLUDES parsed empty; the mirror check is blind"
+    declared = set(entries)
 
     mirrored = {f"{name}/" for name in gate.RSYNC_EXCLUDED_DIRS}
     mirrored |= {f"/{name}/" for name in gate.RSYNC_EXCLUDED_ROOT_DIRS}
     mirrored |= {f"*{suffix}" for suffix in gate.RSYNC_EXCLUDED_SUFFIXES}
+    mirrored |= set(gate.RSYNC_EXCLUDED_NAMES)
+    mirrored |= {f"{prefix}*" for prefix in gate.RSYNC_EXCLUDED_PREFIXES}
 
     assert declared == mirrored, (
         f"gate mirror {sorted(mirrored)} != kipi-update.sh {sorted(declared)}"

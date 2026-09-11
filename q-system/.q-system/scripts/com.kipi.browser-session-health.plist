@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Liveness probe for every declared research browser profile.
+     See browser_session_health.py.
+
+     WHY 30 MINUTES AND NOT FASTER. The probe opens a REAL Chrome and loads a
+     page on the very surface it is trying to stay signed into. A five-minute
+     probe is itself the bot-like access pattern that gets a session flagged, so
+     a faster check would break the thing it checks. Worst-case notification lag
+     is half an hour, against a repair that is a human sign-in happening at most
+     once a day.
+
+     WHY NOT /usr/bin/python3. Every other com.kipi.* plist here runs the system
+     python, which is right for a job that reads JSON. This one drives
+     Playwright, and measured 2026-08-30 on this Mac:
+         /usr/bin/python3           ModuleNotFoundError: No module named 'playwright'
+         /opt/homebrew/bin/python3  3.14.6, playwright imports
+     Copying the system-python line would ship a job launchd loads happily and
+     that dies on import forever, visible only in a log nobody reads.
+     test_plist_uses_an_interpreter_that_actually_has_playwright pins this.
+
+     WHY StartInterval AND NOT StartCalendarInterval. A calendar job is skipped
+     outright when the Mac is off at fire time; launchd does not catch up on
+     wake. This must resume on its own after a reboot or a closed lid.
+
+     The window is thrown far off-screen by browser_session.py rather than run
+     headless: headless returns 403 on the surfaces this exists for (NodeSeek,
+     measured 2026-08-27), and 96 visible windows a day is how a job gets killed.
+
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.browser-session-health
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.browser-session-health</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>__HOME__</string>
+    <key>USER</key><string>__USER__</string>
+    <key>LOGNAME</key><string>__USER__</string>
+    <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/python3</string>
+    <string>__KIPI_REPO__/q-system/.q-system/scripts/browser_session_health.py</string>
+  </array>
+  <key>StartInterval</key><integer>1800</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/browser-session-health.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/browser-session-health.err.log</string>
+</dict>
+</plist>

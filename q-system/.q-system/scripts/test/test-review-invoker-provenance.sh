@@ -15,6 +15,19 @@
 # hand-run, never as dispatcher-driven. Absent is not approved -- the same posture
 # the reviewer's commit status takes. Case 3 is that assertion, and it is the one
 # a careless default would break.
+# COST, AND WHY THIS ENTRY CARRIES timeout_s=240 IN THE CAPABILITY MANIFEST
+# (ASK-505). Cases 4, 5 and 6 each drive verify-codex-review-live.sh, and that
+# script shells `launchctl list` -- measured on the founder's box 2026-08-08 at
+# 21.56s / 29.45s / 23.92s per invocation, so this suite costs ~65-90s wall
+# against roughly 3s of CPU. It is waiting on launchd, not computing.
+#
+# The manifest gave this entry NO timeout_s, so it inherited the gate's
+# DEFAULT_TIMEOUT_S of 60. Three ~25s calls cannot fit in 60s, so the test was
+# killed mid-case-6 on every run: the capability gate reported a `test-timeout`
+# that read like a broken test, while the test itself passes in 65s standalone.
+# It had never passed under the gate. Do not "fix" a recurrence by shrinking the
+# assertions -- measure launchctl first, because the cost scales with how many
+# jobs are loaded on the machine and this box carries a lot of them.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -95,12 +108,19 @@ if ! command -v plutil >/dev/null 2>&1 || ! command -v launchctl >/dev/null 2>&1
   exit 0
 fi
 echo
+# THE `engine` VALUE IN EVERY FIXTURE BELOW IS THE PRIMARY ENGINE, and it must
+# move with the two defaults in pr-review-agent.sh. The verifier's receipt scan
+# filters on it (verify-codex-review-live.sh, the RECEIPT block) so an ADVISORY
+# engine's record cannot pass as proof the gating loop ran unattended -- which is
+# the whole question this file asks. These said "codex" until 2026-09-06 and the
+# flip to claude turned cases 5 and 6 RED while the nine suites the change ran
+# stayed green: this suite drives the verifier and was not among them.
 echo "== 4. a record with NO invoker key reads as not-dispatcher =="
 # Every record written before this change lacks the key entirely. Those must not
 # be counted either -- a missing field is the same unknown as a manual label.
 STATE="$WORK/state"; mkdir -p "$STATE/pr-reviews"
 cat > "$STATE/pr-reviews/pr-900.verdict.json" <<'JSON'
-{"pr":900,"issue":"ASK-900","verdict":"APPROVE","engine":"codex",
+{"pr":900,"issue":"ASK-900","verdict":"APPROVE","engine":"claude",
  "round":1,"head_sha":"deadbeefdeadbeef","ts":"2026-07-30T00:00:00Z"}
 JSON
 OUT="$(KIPI_STATE_DIR="$STATE" bash "$VERIFIER" 2>&1 | grep -E 'RECEIPT|dispatcher' || true)"
@@ -118,7 +138,7 @@ fi
 echo
 echo "== 5. a worker-labelled record IS reported as dispatcher-driven =="
 cat > "$STATE/pr-reviews/pr-901.verdict.json" <<'JSON'
-{"pr":901,"issue":"ASK-901","verdict":"APPROVE","engine":"codex","invoker":"worker",
+{"pr":901,"issue":"ASK-901","verdict":"APPROVE","engine":"claude","invoker":"worker",
  "round":1,"head_sha":"cafebabecafebabe","ts":"2026-07-30T01:00:00Z"}
 JSON
 OUT="$(KIPI_STATE_DIR="$STATE" bash "$VERIFIER" 2>&1 | grep -E 'RECEIPT|dispatcher' || true)"
@@ -135,7 +155,7 @@ echo "== 6. the newest worker record wins, not the newest record overall =="
 # A later HAND run must not displace the dispatcher receipt in the report: the
 # question "has the dispatcher ever done this" is not answered by recency.
 cat > "$STATE/pr-reviews/pr-902.verdict.json" <<'JSON'
-{"pr":902,"issue":"ASK-902","verdict":"APPROVE","engine":"codex","invoker":"manual",
+{"pr":902,"issue":"ASK-902","verdict":"APPROVE","engine":"claude","invoker":"manual",
  "round":1,"head_sha":"0123456789abcdef","ts":"2026-07-30T02:00:00Z"}
 JSON
 OUT="$(KIPI_STATE_DIR="$STATE" bash "$VERIFIER" 2>&1 | grep -iE 'dispatcher-driven' || true)"

@@ -3,17 +3,33 @@
 
 Runnable directly (`python3 automation/test_voice_refresh_schedule.py`): asserts
 the plist is valid and monthly, the nudge routes ONLY through slack-notify.sh
-(no osascript), and the installer registers with launchd-health. Exits non-zero
-on any failure.
+(no osascript), and the template is installable by the ONE shipped installer.
+
+2026-09-07: this file used to carry `test_installer_registers_health`, which
+asserted that `automation/install-voice-refresh.sh` contained the literal string
+"registration skipped". That message was a lie in both directions. The installer
+tested for `q-system/.q-system/scripts/launchd-health-register.sh`, a file that
+was never added in any of this repo's 3140 commits on any ref, so the else branch
+ran on every install and every install announced the watchdog absent. The watchdog
+is present at `q-system/.q-system/scripts/launchd-health-check.py` and needs no
+registration at all: `discover_problems()` globs `~/Library/LaunchAgents` per
+watched prefix, which is how com.kipi.voice-refresh was already covered (measured:
+70 labels enumerated, the target among them, with nothing registered anywhere).
+
+So the suite was pinning the defect. Inverting it is part of the fix, and the
+installer it asserted about is gone: install-plist.sh is the single writer.
 """
 import os
 import plistlib
+import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
 PLIST = os.path.join(HERE, "com.kipi.voice-refresh.plist")
 NUDGE = os.path.join(HERE, "voice-refresh-nudge.sh")
-INSTALLER = os.path.join(HERE, "install-voice-refresh.sh")
+INSTALLER = os.path.join(REPO, "q-system", ".q-system", "scripts", "install-plist.sh")
 
 
 def test_plist_valid_and_monthly():
@@ -33,21 +49,21 @@ def test_nudge_slack_only_no_osascript():
     assert not any("osascript" in l for l in code_lines), "osascript must not be invoked for founder pings"
 
 
-def test_installer_registers_health():
-    body = open(INSTALLER).read()
-    assert "launchd-health" in body, "installer must register with launchd-health"
-    assert "launchctl load" in body, "installer must load the launchd job"
-    # honest message: no unconditional "registered" claim
-    assert "registration skipped" in body, "installer must not falsely claim health registration"
+def test_template_renders_through_the_single_installer():
+    """The template must be reachable AND renderable by the one shipped installer.
 
-
-def test_rendered_plist_parses_with_tricky_path():
-    # Mirror the installer's render (XML-escape) so a path with #, &, < survives.
-    import xml.sax.saxutils as sx
-    tricky = "/tmp/re&po#dir"
-    rendered = open(PLIST).read().replace("__ROOT__", sx.escape(tricky))
-    pl = plistlib.loads(rendered.encode())
-    assert tricky in pl["ProgramArguments"][-1], "rendered path must survive intact"
+    --render-only, not a real install: this runs in CI and on the founder's laptop,
+    and a test that loads a job is a test that touches a live data path.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "rendered.plist")
+        r = subprocess.run(["bash", INSTALLER, "com.kipi.voice-refresh",
+                            "--render-only", out],
+                           capture_output=True, text=True, timeout=120)
+        assert r.returncode == 0, "installer could not render the template: " + r.stderr
+        body = open(out).read()
+        assert "__" not in body.replace("__pycache__", ""), "placeholder left in rendered plist"
+        plistlib.loads(body.encode())
 
 
 def _main():

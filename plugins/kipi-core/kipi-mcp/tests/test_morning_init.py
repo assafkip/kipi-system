@@ -15,6 +15,7 @@ from kipi_mcp.morning_init import (
     deliverables_check,
     retry_notion_queue,
     _check_db_integrity,
+    _parse_objections,
     auto_backup,
 )
 
@@ -22,6 +23,8 @@ from kipi_mcp.morning_init import (
 @pytest.fixture
 def paths(tmp_path):
     from kipi_mcp.paths import KipiPaths
+    from conftest import write_registry
+    write_registry(tmp_path / "base", tmp_path / "repo", instance="test")
     p = KipiPaths(base_dir=tmp_path / "base", repo_dir=tmp_path / "repo", instance="test")
     p.ensure_dirs()
     return p
@@ -214,6 +217,313 @@ class TestCanonicalDigest:
         _create_file(paths.canonical_dir / "decisions.md", "# [RULE] Test\nDo this.\n")
         result = canonical_digest(paths)
         assert result["valid"] is True
+
+    def test_h3_children_parse_into_their_h2_section(self, paths):
+        """sp-8804dee7. The live discovery.md sections with ## and nests its
+        28 real questions under ### vertical children; splitting at ANY heading
+        shipped the parent empty and lost every child to unmatched headings."""
+        content = (
+            "# Discovery Log\n\n"
+            "## Unanswered Questions\n\n"
+            "### ESG Vertical\n"
+            "- What ESG platforms do firms use?\n"
+            "- What is the buying decision-maker?\n\n"
+            "### IP Law Vertical\n"
+            "- Which patent platforms do boutiques use?\n\n"
+            "## Validation Gaps\n"
+            "- ESG ROI numbers unvalidated\n"
+        )
+        _create_file(paths.canonical_dir / "discovery.md", content)
+        result = canonical_digest(paths)
+        assert len(result["discovery"]["questions"]) == 3
+
+    def test_gap_sections_accumulate_never_overwrite(self, paths):
+        """sp-7e42845e mechanism 2. '## Validation Gaps' was overwritten by
+        '## Website Positioning Gap', shipping March website notes labelled as
+        validation gaps."""
+        content = (
+            "# Discovery Log\n\n"
+            "## Validation Gaps\n"
+            "- ESG ROI numbers unvalidated\n\n"
+            "## Website Positioning Gap\n"
+            "- askconsulting.io positioned as fraud investigation\n"
+        )
+        _create_file(paths.canonical_dir / "discovery.md", content)
+        result = canonical_digest(paths)
+        gaps = result["discovery"]["gaps"]
+        assert any("ESG ROI" in g for g in gaps), gaps
+        assert any("askconsulting.io" in g for g in gaps), gaps
+
+    def test_superseded_source_is_recorded_not_parsed(self, paths):
+        """ASK-510 retired three sources to pointer docs. Their bodies describe
+        the retirement; parsing them shipped retired content as live content."""
+        content = (
+            "---\nstatus: superseded\nsuperseded_by: ASK-510 2026-08-08\n---\n\n"
+            "# Talk Tracks\n\n> **SUPERSEDED 2026-08-08 (ASK-510).**\n\n"
+            "## Why this was retired rather than rewritten\n"
+            "- It sold the retired beachhead.\n"
+        )
+        _create_file(paths.canonical_dir / "talk-tracks.md", content)
+        _create_file(paths.canonical_dir / "objections.md",
+                     "# Obj\nResp.\n")   # not retired, must still parse
+        result = canonical_digest(paths)
+        assert result["retired_sources"]["talk_tracks"] == {"decision": "ASK-510"}
+        assert result["talk_tracks"] == {}
+        assert len(result["objections"]) == 1
+        assert not any("retired" in w or "talk-tracks" in w
+                       for w in result["warnings"]), result["warnings"]
+
+    def test_valid_false_names_its_failed_checks(self, paths):
+        """sp-7e42845e mechanism 3: valid=False arrived with warnings=[] and no
+        reason attached anywhere."""
+        _create_file(paths.canonical_dir / "decisions.md", "# [RULE] R\nD.\n")
+        result = canonical_digest(paths)
+        assert result["valid"] is False
+        assert "discovery: no questions parsed" in result["validation_failed"]
+
+    def test_retired_sources_drop_out_of_validity(self, paths):
+        """The schema decision: metaphor/definition/wedge/works_today belong to
+        sources deliberately retired under ASK-510. With those sources retired,
+        valid=True is reachable honestly from what still lives."""
+        for name in ("talk-tracks.md", "objections.md"):
+            _create_file(paths.canonical_dir / name,
+                         f"# {name}\n> SUPERSEDED 2026-08-08 (ASK-510).\n")
+        _create_file(paths.my_project_dir / "current-state.md",
+                     "---\nstatus: superseded\nsuperseded_by: ASK-510\n---\n")
+        _create_file(
+            paths.canonical_dir / "discovery.md",
+            "## Unanswered Questions\n### V\n- Q1\n\n## Validation Gaps\n- G1\n")
+        _create_file(paths.canonical_dir / "decisions.md", "# [RULE] R\nD.\n")
+        result = canonical_digest(paths)
+        assert set(result["retired_sources"]) == {
+            "talk_tracks", "objections", "current_state"}
+        assert result["valid"] is True, result["validation_failed"]
+
+
+# ── Objections: containers and template slots are not objections (ASK-992) ──
+
+
+# The repo's own canonical objections.md, read live rather than invented. A
+# fixture written from memory would test the author's belief about the template;
+# this file IS the template every instance ships with, so it is the only input
+# that can prove the parser stopped recording it.
+REAL_OBJECTIONS_MD = (
+    Path(__file__).resolve().parents[4] / "q-system" / "canonical" / "objections.md"
+)
+
+# Measured 2026-08-24 from the repo root: every record the old parser returned
+# for that file, and not one of them an objection.
+CONTAINER_RECORD_NAMES = {
+    "Objections",
+    "Format <!-- pin -->",
+    '"[Objection as they say it]"',
+    "Active Objections",
+}
+
+
+class TestObjectionsAreRealObjections:
+    """ASK-992 / sp-851714d6. `if heading and body.strip()` accepted every
+    section, so the document title, the `## Format` container, the heading
+    inside the template's code fence and `## Active Objections` all became
+    objection records. On this repo's own file that is 4 records and 0 real
+    ones, and the validity check `len(objections) > 0` read it as healthy."""
+
+    def test_real_objections_md_yields_no_container_records(self):
+        if not REAL_OBJECTIONS_MD.exists():
+            pytest.skip(f"no canonical objections.md at {REAL_OBJECTIONS_MD}")
+        names = [o["name"] for o in _parse_objections(REAL_OBJECTIONS_MD.read_text())]
+        assert not (set(names) & CONTAINER_RECORD_NAMES), names
+
+    def test_container_heading_yields_no_record_but_prose_heading_does(self, paths):
+        content = (
+            "# Objections\n\n"
+            "## Active Objections\n\n"
+            '### "It costs too much"\n'
+            "- **Response:** the pilot pays for itself in two weeks.\n"
+        )
+        _create_file(paths.canonical_dir / "objections.md", content)
+        names = [o["name"] for o in canonical_digest(paths)["objections"]]
+        assert names == ['"It costs too much"'], names
+
+    def test_template_placeholder_heading_yields_no_record(self, paths):
+        content = (
+            "## Active Objections\n\n"
+            '### "[Objection as they say it]"\n'
+            "- **Persona:** (who says this)\n"
+        )
+        _create_file(paths.canonical_dir / "objections.md", content)
+        assert canonical_digest(paths)["objections"] == []
+
+    def test_objections_check_goes_red_on_a_container_only_file(self, paths):
+        """The check exists to catch a file with no objections in it. Before
+        this it could not fail for that reason: the containers kept the count
+        above zero, so `objections: none parsed` never fired."""
+        if not REAL_OBJECTIONS_MD.exists():
+            pytest.skip(f"no canonical objections.md at {REAL_OBJECTIONS_MD}")
+        _create_file(paths.canonical_dir / "objections.md",
+                     REAL_OBJECTIONS_MD.read_text())
+        result = canonical_digest(paths)
+        assert "objections: none parsed" in result["validation_failed"]
+
+
+# ── Canonical Digest: wrong content (ASK-977) ──
+
+
+# Shapes taken from the live consulting tree as MEASURED and recorded in ASK-977
+# on 2026-08-23 (H2 sections with H3 children; '## Validation Gaps' immediately
+# followed by '## Website Positioning Gap'), not from an author's imagination.
+# This worktree cannot read that tree, so the provenance is the issue's
+# measurement, and these fixtures reproduce its SHAPE, never its content.
+
+DISCOVERY_H3_CHILDREN = """\
+# Discovery
+
+## Unanswered Questions
+
+### Pricing
+- What does a pilot actually cost?
+- Who signs the PO?
+
+### Scope
+- Which data sources are in scope?
+
+## Validation Gaps
+
+### Never tested
+- Nobody has paid for the weekly report yet
+
+## Website Positioning Gap
+
+- askconsulting.io reads as fraud investigation
+"""
+
+
+class TestDigestReturnsRightContent:
+    """ASK-977: canonical_digest returned WRONG content, not merely empty."""
+
+    def test_h3_children_stay_in_their_h2_parent(self, paths):
+        """Mechanism 1: H3 was a peer of H2, so the parent parsed to 0 items."""
+        _create_file(paths.canonical_dir / "discovery.md", DISCOVERY_H3_CHILDREN)
+        questions = canonical_digest(paths)["discovery"]["questions"]
+        assert "What does a pilot actually cost?" in questions
+        assert "Which data sources are in scope?" in questions
+
+    def test_matching_sections_accumulate_instead_of_overwriting(self, paths):
+        """Mechanism 2: last-match-wins shipped website notes AS validation gaps."""
+        _create_file(paths.canonical_dir / "discovery.md", DISCOVERY_H3_CHILDREN)
+        gaps = canonical_digest(paths)["discovery"]["gaps"]
+        assert "Nobody has paid for the weekly report yet" in gaps
+        assert "askconsulting.io reads as fraud investigation" in gaps
+
+    def test_accumulated_items_keep_the_cap_and_dedupe(self, paths):
+        """The cap survives accumulation, and a parent+child pair is not doubled."""
+        gap_sections = "\n\n".join(
+            f"## Gap {n}\n\n### detail\n- gap item {n}" for n in range(14)
+        )
+        _create_file(paths.canonical_dir / "discovery.md", gap_sections)
+        gaps = canonical_digest(paths)["discovery"]["gaps"]
+        assert len(gaps) == 10
+        assert len(set(gaps)) == 10
+
+    def test_flat_h1_documents_still_split_per_heading(self, paths):
+        """Nesting must not merge a document whose headings are all one depth."""
+        _create_file(
+            paths.canonical_dir / "objections.md",
+            "# Too expensive\nWe save time.\n\n# Already have a tool\nDoes it remember?\n",
+        )
+        objections = canonical_digest(paths)["objections"]
+        names = [o["name"] for o in objections]
+        assert names == ["Too expensive", "Already have a tool"]
+        assert objections[0]["response"] == "We save time."
+
+
+SUPERSEDED_TALK_TRACKS = """\
+---
+status: superseded
+superseded_by: ASK-510
+---
+
+# Primary Metaphor
+Your brain externalized.
+"""
+
+SUPERSEDED_CURRENT_STATE = """\
+> **SUPERSEDED** by ASK-510. Kept for history only.
+
+# What Works Today
+- Something that has not been true since March
+"""
+
+
+def _seed_live_sources(paths):
+    _create_file(paths.canonical_dir / "objections.md", "# Obj1\nResponse here.\n")
+    _create_file(paths.canonical_dir / "discovery.md", "# Top Questions\n- Q1\n")
+    _create_file(paths.canonical_dir / "decisions.md", "# [RULE] Test\nDo this.\n")
+
+
+class TestRetiredSources:
+    """A retired source must be distinguishable from an absent one."""
+
+    def test_superseded_frontmatter_is_recorded_not_parsed(self, paths):
+        _create_file(paths.canonical_dir / "talk-tracks.md", SUPERSEDED_TALK_TRACKS)
+        result = canonical_digest(paths)
+        assert result["retired_sources"]["talk_tracks"] == {"decision": "ASK-510"}
+        assert result["talk_tracks"].get("metaphor", "") == ""
+
+    def test_superseded_banner_is_recorded_not_parsed(self, paths):
+        _create_file(paths.my_project_dir / "current-state.md", SUPERSEDED_CURRENT_STATE)
+        result = canonical_digest(paths)
+        assert result["retired_sources"]["current_state"] == {"decision": "ASK-510"}
+        assert result["current_state"].get("works_today", []) == []
+
+    def test_retirement_adds_no_warning(self, paths):
+        """warnings stay a missing-file signal; retirement is not a missing file."""
+        _create_file(paths.canonical_dir / "talk-tracks.md", SUPERSEDED_TALK_TRACKS)
+        _create_file(paths.my_project_dir / "current-state.md", SUPERSEDED_CURRENT_STATE)
+        _seed_live_sources(paths)
+        assert canonical_digest(paths)["warnings"] == []
+
+    def test_a_live_source_is_not_marked_retired(self, paths):
+        """Negative self-test: without a banner the same file parses as before."""
+        _create_file(
+            paths.canonical_dir / "talk-tracks.md",
+            "# Primary Metaphor\nYour brain externalized.\n",
+        )
+        result = canonical_digest(paths)
+        assert result["retired_sources"] == {}
+        assert "externalized" in result["talk_tracks"]["metaphor"]
+
+
+class TestValidityAccounting:
+    def test_retired_source_checks_drop_out_and_valid_is_reachable(self, paths):
+        """ASK-510 retired talk-tracks + current-state; 3 of 7 checks were then
+        structurally unreachable, so valid could never go true honestly."""
+        _create_file(paths.canonical_dir / "talk-tracks.md", SUPERSEDED_TALK_TRACKS)
+        _create_file(paths.my_project_dir / "current-state.md", SUPERSEDED_CURRENT_STATE)
+        _seed_live_sources(paths)
+        result = canonical_digest(paths)
+        assert result["validation_failed"] == []
+        assert result["valid"] is True
+
+    def test_invalid_digest_names_every_reason(self, paths):
+        _create_file(paths.canonical_dir / "talk-tracks.md", "# Primary Metaphor\nX.\n")
+        result = canonical_digest(paths)
+        assert result["valid"] is False
+        assert result["validation_failed"], "valid=False named no reason"
+        joined = " ".join(result["validation_failed"])
+        assert "objections" in joined
+        assert "definition" in joined
+
+    def test_a_failing_check_on_a_live_source_still_invalidates(self, paths):
+        """Negative self-test: retirement drops checks, it does not pass them."""
+        _create_file(paths.canonical_dir / "talk-tracks.md", SUPERSEDED_TALK_TRACKS)
+        _create_file(paths.my_project_dir / "current-state.md", SUPERSEDED_CURRENT_STATE)
+        _create_file(paths.canonical_dir / "discovery.md", "# Top Questions\n- Q1\n")
+        _create_file(paths.canonical_dir / "decisions.md", "# [RULE] Test\nDo this.\n")
+        # objections.md absent -> a LIVE check fails and one warning is raised
+        result = canonical_digest(paths)
+        assert result["valid"] is False
+        assert any("objections" in r for r in result["validation_failed"])
 
 
 # ── Morning Init ──
@@ -438,7 +748,11 @@ class TestAutoBackup:
     @pytest.fixture
     def backup_mgr(self, paths):
         from kipi_mcp.backup import BackupManager
-        _create_file(paths.canonical_dir / "talk-tracks.md", "# TT")
+        # Seed PLUGIN-DATA, not canonical/. canonical_dir is repo-derived since the
+        # path-contract repoint and BackupManager sweeps global_dir + config_dir
+        # only, so a file seeded there produced an archive of 0 files and this
+        # case asserted >= 1 against an empty backup.
+        _create_file(paths.config_dir / "founder-profile.md", "# Profile")
         return BackupManager(paths)
 
     def test_auto_backup_creates_archive(self, backup_mgr):

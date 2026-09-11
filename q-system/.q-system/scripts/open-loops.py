@@ -64,14 +64,72 @@ def registry_loops(qroot):
     return out
 
 
+def ledger_root(repo_root):
+    """Directory holding the ONE spillover ledger, shared by every worktree.
+
+    Mirrors prd_runner.py `_ledger_root`: `.gitignore` excludes `*.jsonl`, so the
+    ledger never travels through git and a per-worktree root gives each worktree a
+    private copy. Resolving it any other way here would make this script blind to
+    captures the gate can see -- the same load-path mistake as the marketplace clone.
+    Fails open to repo_root (a missed skip only over-surfaces; it never drops).
+    """
+    import subprocess
+    try:
+        out = subprocess.run(["git", "rev-parse", "--git-common-dir"],
+                             cwd=str(repo_root), capture_output=True, text=True, timeout=10)
+        if out.returncode == 0 and out.stdout.strip():
+            common = Path(out.stdout.strip())
+            if not common.is_absolute():
+                common = Path(repo_root) / common
+            parent = common.resolve().parent
+            if (parent / ".git").exists():
+                return parent
+    except Exception:
+        pass
+    return repo_root
+
+
+def captured_finding_ids(repo_root):
+    """Set of `defer-<prd-slug>-<finding-id>` ids the spillover ledger already holds.
+
+    A `deferred` disposition AUTO-creates a spillover item (no-orphan-findings.md),
+    and `gates run` stays RED until that item resolves. So a captured finding is
+    TRACKED, not in limbo, whether its item is still open or already resolved --
+    counting it in the catch-all below re-reported tracked work as untracked at
+    every SessionStart (2026-08-14: 3 deterministic-reading findings nagged for
+    weeks, 2 of them already RESOLVED). Reading is enough; this never writes.
+    """
+    ids = set()
+    path = ledger_root(repo_root) / ".prd-os" / "spillover.jsonl"
+    try:
+        lines = path.read_text().splitlines()
+    except Exception:
+        return ids  # no ledger -> nothing is captured -> count everything (fail open)
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        rid = str(rec.get("id") or "")
+        if rid.startswith("defer-"):
+            ids.add(rid)
+    return ids
+
+
 def deferred_findings(repo_root):
     """Returns (surfaced, unclassified). surfaced = genuine future-work deferrals.
-    unclassified = deferred + not closeout-bookkeeping + not keyword-matched: COUNTED
-    (never silently dropped) so a plainly-worded parked finding can't fall on the ground."""
+    unclassified = deferred + not closeout-bookkeeping + not keyword-matched + not
+    already captured in the spillover ledger: COUNTED (never silently dropped) so a
+    plainly-worded parked finding can't fall on the ground."""
     out = []
     seen = set()
     unclassified = 0
+    captured = captured_finding_ids(repo_root)
     for jf in sorted(glob.glob(str(repo_root / ".prd-os" / "findings" / "*.jsonl"))):
+        prd_slug = Path(jf).name[: -len("-findings.jsonl")] if jf.endswith("-findings.jsonl") else Path(jf).stem
         try:
             lines = Path(jf).read_text().splitlines()
         except Exception:
@@ -86,6 +144,8 @@ def deferred_findings(repo_root):
                 continue
             if str(d.get("disposition", "")).lower() != "deferred":
                 continue
+            if f"defer-{prd_slug}-{d.get('id')}" in captured:
+                continue  # the spillover ledger owns it; `gates run` is its enforcer
             rationale = (d.get("rationale") or "").strip()
             if not rationale or FOLDED_RE.search(rationale):
                 continue  # closeout bookkeeping -> genuinely closed

@@ -1,136 +1,145 @@
-# Last handoff — 2026-07-26 (continuation session)
+# Session handoff, Sep 1-2 (morning-brief Phases 2-4 as two prd-os PRDs) [verified: git log]. READ THIS FIRST.
 
-Tracking epic **ASK-113**. PR #10 **merged to main** (`05af553`), 7 commits.
-Everything below was verified by running it, not by reading it.
-
-## Carried forward from the earlier 2026-07-26 session (still true)
-
-- **Goal 1, a Linear project per instance repo: DONE.** 25 of 25 (24 instances +
-  the skeleton). A fleet-wide re-plan creates zero projects.
-- **Goals 2 and 3, deterministic creation on build: SHIPPED** as queue-and-drain.
-  No Linear API key exists, so bash cannot reach the MCP server; capture is local
-  and offline, the agent drains it.
-- **Goal 5, overlap/collision analysis: SHIPPED** (`capability-overlap.py`).
-- **Goal 6, SDLC standard: WRITTEN**, adjustments recorded in its Part 0.
-- **Goal 4: still NOT STARTED.** Triage every issue in every project (done /
-  needs work / recorded, with evidence): 61 pre-existing kipi-system issues, 45
-  in cole-GTM.
-- **29 of 31 planned Linear issues remain uncreated.** Resumable:
-  `kipi linear status` says which repos are done without querying Linear.
-- Dedup key `<repo-slug>/<capability-slug>`, written into each Linear
-  description as `<!-- kipi-key: ... -->`. **Never drop that marker.**
-
-## Founder decisions this session
-
-- **Q2 (branch-protection bypass):** fix the 5 tests, make the gate real.
-- **Sequencing:** updater tests first, then the claim-lock.
-- **Merge:** merge PR #10 with the admin bypass, containment failure and all.
+Branch `prd/morning-brief-learns` in worktree `~/projects/kipi-wt-prd-mbl`, base `ddad93b1`, 61 commits [verified: git log --oneline ddad93b1..HEAD | wc -l]. Nothing pushed, nothing merged: git is Sana's.
 
 ## What shipped
 
-| Commit | What |
-|--------|------|
-| `226cf6f` | CI: git identity + `fetch-depth: 0` + track the receipts ledger |
-| `c307bed` | Close discipline into the SDLC standard §3.1 / §5 |
-| `a6ba923` | Instance identity out of 2 scar comments |
-| `d26b425` | Slice 0: truthful reviewer provenance (`claude-*` sources) |
-| `7c0fccb` | Slice B: the agent claim-lock |
-| `f32bfbd` | Adversarial review fixes: 2 blockers + 8 more |
+- PRD A `prd-morning-brief-learns-2026-09-01`: 14 of 15 issues CLOSED, issue `mbl-board-live-readback` cleared not closed (needs `~/.config/kipi/notion-token` + `notion-board-page`, founder action). Archive refuses until that close receipt exists [verified: prd_runner.py archive].
+- PRD B `prd-lessons-rail-and-up-rail-2026-09-02`: 14 of 14 issues CLOSED, every one RED-first, mutation-proven, reviewed twice (Codex; Claude subagents stamped `claude-review`/`claude-adversarial` when Codex was at capacity on issues 7 and 9) [verified: .prd-os/receipts.jsonl]. Archive refused by `gates run`: 52 blocking spillover items, 50 inherited, 2 this PRD's by design (sp-f09ac9e1 Sana dispatch, sp-193c5e93 plan-file paste) [verified: prd_runner.py gates run].
+- New: `lessons_streak.py` (atomic streak + escalation ledger), `lessons-daily.sh` seams and Nth-failure escalation, `lessons_recall.py --corpus/--both`, `install-lessons-daily.sh` skeleton-only + `com.kipi.lessons-daily.plist` template, `install-plist.sh --all` honours `kipi-scope: skeleton-only`, `trigger-inventory.py` + `stages-exempt.json`, `kipi promote` (`kipi-promote.sh`: containment, scrub from registry + clients.json + `tripwire-terms.txt`, two-phase receipts bound to blob AND base under one lock, `--candidates`, `--void`), `kipi-push-upstream.sh` guard honours matching done receipts read at FETCH_HEAD only and refuses instance-side receipt edits, `q-system/.q-system/promotions.receipts` (NOT .jsonl: gitignored fleet-wide), the weekly drift reporter script + `com.kipi.lessons-drift.plist` + `drift-hubs.json` (the reporter's file name is deliberately not spelled here: its single-caller test pins the plist and the test as the only two tracked files naming it).
 
-## The 5 updater CI failures — fixed
+## Notion (founder-directed 2026-09-02, after the PRDs) [provenance: observed]
 
-The prior session's theory (`sp-d29346e9`, "pytest skips the hidden
-`q-system/.q-system/` dir") was **wrong**: `capability-gate.py:303` runs tests by
-convention, not pytest discovery.
+- Integration `kipi`; token at `~/.config/kipi/notion-token`, board page id at `notion-board-page`, lessons database id at `notion-lessons-db`. Content access granted to the Morning board page and the three databases below.
+- Morning board page `3cfbf98c052981bd88e0dc27eaae166f`: four sections (Top of Mind gallery, This Week, Inbox, Lessons) as linked views, laid out like Bloom's task board. The 07:00 writer still writes bullets under headings there: sp-d351fa8c (redesign it to write Kipi backlog rows).
+- Databases: `Kipi build log` `7c012a0580554b4197407d0509fe7bbe` (one row per issue/PRD closed), `Kipi backlog` `0a09bd16b12e49bfa792fad15e008ed0` (Bucket/Priority/Size/Source), `Kipi lessons` `7a9d173f9fae442aba69238fa81acec4` (the corpus mirror).
+- `lessons_notion_sync.py` upserts every corpus lesson by id; wired into `lessons-daily.sh` after publish, non-fatal; first live run created every corpus row [verified: lessons_notion_sync.py output]. Status/Notes columns are the founder's and are never rewritten.
+- Stray Chrome-created "Morning board" page `3cfbf98c052980c6a30cf744535cb37c` is the founder's to trash (deletions are founder-only).
 
-Two causes, not five. **No git identity on the runner** (4 of 5):
-`kipi-update.sh:705` commits with none, the ubuntu runner's user has an empty
-gecos field, and `kipi-update.sh:1289` `abandon_instance ... && continue` is
-*upstream* of the plugins rsync at 1393 — so one missing identity produced four
-unrelated-looking symptoms. And **`.gitignore`'s blanket `*.jsonl`** hid
-`.prd-os/receipts.jsonl`, the ledger `test-updater-issue-sequence.py:101` audits.
+## Landing steps (Sana, in this order)
 
-Local macOS **cannot** reproduce this: its git guesses an identity from the
-passwd gecos field. Three failed reproducer attempts are recorded in
-`q-system/output/plans/ci-validate-green-2026-07-26.md` — do not retry them.
+1. Merge `prd/morning-brief-learns` (61 commits [verified: git log --oneline ddad93b1..HEAD | wc -l]; pre-commit gates green on every one [provenance: observed]).
+2. In the main checkout: `bash q-system/.q-system/scripts/install-plist.sh com.kipi.weekly-improve`, `... com.kipi.lessons-drift`, `bash q-system/.q-system/scripts/install-lessons-daily.sh` (refuses from a worktree by design), then `launchctl kickstart` each and record the launchd fact for sp-f09ac9e1's sibling note.
+3. Paste scratchpad `plan-2h-2i-section.md` (also in commit `02847a32`'s message [provenance: observed]) into `q-system/output/plans/morning-brief-overhaul-2026-08-30.md` above "Promotion rule for this register"; resolve sp-e7a50229 and sp-193c5e93.
+4. Fix the PRD B body wording captured as sp-5c3e4776 (receipts file name) and sp-b9a4625d (the override is never honoured), then archive PRD B; archive PRD A after the founder's Notion credential lands and `mbl-board-live-readback` closes.
+5. Decide the 9 consulting candidates: `KIPI_PROMOTE_SKELETON=<skeleton> bash kipi-promote.sh --candidates --instance ASK_AI_consultant` (live output saved as `.prd-os/issues/lr-promotion-candidates-status.live-run.txt`).
 
-## Two lessons worth carrying forward
+## Open captures from this session (all in `.prd-os/spillover.jsonl`)
 
-**1. A fixture invented by the author tests nothing.** The claim-lock's remote
-half read `state`; `mcp__linear__get_issue` emits `status` + `statusType`. That
-remote check is the ONLY cover for a cross-checkout collision and it granted
-unconditionally — while the suite stayed green, because the fixture was
-hand-rolled from the same mental model as the code. Fixtures are now the verbatim
-captured payload. Prefer `statusType` over the status NAME: teams rename states.
+sp-f09ac9e1 (3a Sana dispatch: fan-out aborts on a non-main skeleton HEAD), sp-636e91cf (--both lists a shared lesson twice), sp-44930c1d + sp-bc5a7fc1 (stale doc lines), sp-7c45ccee (inventory cannot see glob-invoked tests), sp-24aa7ebe (the inventory has no trigger of its own), sp-57cd7332 (push guard skips its deletion check when the instance has no lessons), sp-5c3e4776 + sp-b9a4625d (PRD B doc drift).
 
-**2. `\s` matches a newline even under `re.M`.** `^reviewed_by:\s*.*$` ate the
-FOLLOWING frontmatter line when the value was empty. Driven to a real exploit:
-eating `findings_path:` made the gate report "no findings" and a PRD with an
-untriaged BLOCKER advanced to `approved`, exit 0. Use `[^\n]*`.
+---
 
-## The claim lock (how to use it)
+# Session handoff, Aug 30 overnight [verified: date]. (previous)
 
-```
-kipi linear claim ASK-nnn --agent <name> --session <id>   # BEFORE branching; exit 3 = refused
-kipi linear claims                                        # who holds this tree
-kipi linear release ASK-nnn --agent <name> --session <id> # when the PR opens
-```
+## What shipped
 
-- Identity is **(agent, session)**, never agent alone — two sessions both named
-  "claude" were both granted, the exact `53f2eeb` scar. `KIPI_SESSION_ID` /
-  `CLAUDE_SESSION_ID` are honored.
-- **The resource is the working tree, not the issue.** A separate git worktree is
-  the remedy for a refusal, not `--break-stale`.
-- `--break-stale` is a compare-and-swap: needs `--holder <session>` naming the
-  exact claim you looked at.
-- Remote half: pass the verbatim `mcp__linear__get_issue` response as
-  `--remote-state`. Unrecognized shapes fail closed.
+Twelve PRs merged to origin/main [verified: git log --oneline origin/main -12].
+Merged: 269, 277, 278, 283, 282, 284, 264, 253, 276, 258, 252, 198 [verified: git log --oneline origin/main -12].
+The three the brief named as DIRTY are all in.
 
-## Still open — `validate` is NOT green
+- 269 voiceloop rename + the converged verify floor, nine review rounds [verified: ls ~/.config/kipi/pr-reviews/codex/*pr-269*].
+- 277 lessons-inject. It had never delivered a lesson [verified: probe_hook_envelope.py].
+- 278 voiceloop-band-lint. Same class: writing to a channel nobody reads [verified: gh pr view 278].
+- 283 ASK-1129, root pytest fleet-wide. 282 and 284, the backlog sweeper [verified: gh pr view 283].
 
-One pre-existing failure, ASK-58/ASK-59: semantic containment. The headline
-number misleads. Of ~11,800 findings, **all but 46 are
-`unclassified_populated_record`**, which `prd-prevent-fact-fanout-2026-07-25.md:83`
-says must never block. The **46 real** ones:
+## The two findings that matter most
 
-`source_identity` 25 · `pricing` 11 · `client_identity` 4 ·
-`sourced_interaction` 3 · `case_proof_gap` 3
+**A UserPromptSubmit hook needs `hookEventName` or its payload is discarded.**
+Measured, not inferred. Three headless `claude -p` sessions, a unique marker in
+each, and a positive control that had to pass before the other arms counted
+[verified: python3 q-system/.q-system/scripts/probe_hook_envelope.py].
 
-Unchanged this session. **The bypass on `main` stands until these are resolved.**
-That PRD has founder decisions already pending, so it was captured
-(`sp-88d889b5`), not started.
+    nested WITH hookEventName        -> delivered
+    nested WITHOUT hookEventName     -> ABSENT
+    top-level additionalContext      -> ABSENT
 
-## Open spillover
+The last of those matches the scar already recorded in token-guard.py
+[provenance: observed]. The published docs, read back by a summarizer, said the
+key was optional. They were wrong, and trusting them would have reverted a
+correct fix [provenance: observed]. The probe is reusable.
 
-- `sp-5375bc44` — `guarded_commit` still ambient-identity-dependent for the fleet
-  updater itself (launchd runs with a minimal env). Fixed at the CI layer only.
-- `sp-b386aba4` — `codex_reviewed_at` key is still vendor-named; renaming needs a
-  read-either/write-new compatibility window.
-- `sp-88d889b5` — `validate-separation.py:609` blocks on warn-only records,
-  hiding the actionable 46 behind ~11,800.
-- Pre-existing: `sp-7b123c14`, `sp-cfc861f1`, `sp-333f81b4`, `sp-3cb2e575`,
-  `sp-d29346e9`, `sp-2ae4df51`.
+**Consequence, still open: `voice-dna-loader.py` emits the shape that does NOT
+deliver** [verified: grep -n -A3 hookSpecificOutput on that file]. So the
+founder's voice DNA has not been reaching the model through that hook, which
+downstream gates cannot see because they all measure the output and none check
+whether the input arrived [provenance: inferred]. Tracked as sp-e85ff9dc and
+sp-c4031c2e. One-key fix. Sweep every `additionalContext` emitter in one pass,
+with the probe.
 
-## Correction on record
+## ASK-1129 is closed
 
-`a6ba923`'s message claimed removing instance names from comments closed a leak.
-**False.** `instance-registry.json`, `INSTANCES.md` and `kipi-update.sh` publish
-all 24 instance names with absolute home paths in the same public repo. Net leak
-reduction: zero. The PROPAGATION argument stands on its own and is why the change
-was kept (`q-system/.q-system/scripts/` rsyncs to every instance).
+Root pytest went from aborted collection, nothing executed, to a fully green root
+run [verified: python3 -m pytest -q --no-header at the repo root].
+Counts: 1777 passed, 3 skipped, 0 errors [verified: same command].
+The floor can now be armed in the instances that were blocked, though that has
+not yet been run in an instance [provenance: inferred].
 
-## Verification, as run (on merged main)
+The brief said one kipi-design test. Measured, it was two files from two causes,
+and chasing the numbers found a third [verified: python3 -m pytest --collect-only -q at origin/main].
+That third: 8 floor tests that could not go red [verified: the probe module in scratchpad].
 
-```
-capability-gate.py             GREEN, ran=61   (was 59)
-test-linear-claim.sh           30 checks       (was 21)
-test-receipts-ledger-check.sh   5 checks, 12 leak shapes blocked
-pytest plugins/prd-os/tests/   318 passed, 1 skipped
-validate-separation.py 1       1 FAIL (pre-existing containment), PASS 68
-```
+## Backlog state
 
-## Not done
+`pr-restack.py` is on main and drains two mechanical conflict classes:
+capability-manifest and version-only `plugin.json` [verified: the sweep reports in scratchpad].
+The manifest class was the conflict in 35 of 40 DIRTY PRs [verified: restack-dry.txt].
+Both resolvers refuse rather than guess, and both refusal branches are tested
+[verified: the resolver probes in scratchpad].
 
-`/prd-review` never ran as a prd-os ceremony — there is no active PRD; the work
-was built directly and reviewed by three adversarial subagents instead. If the
-prd-os receipt trail matters for this work, it needs a retro-PRD.
+Current sweep: examined 22 of 52 open PRs, 22 conflicted, 0 restackable [verified: python3 pr-restack.py].
+The mechanical layer is drained; what remains needs judgment.
+PR 207 is refused on purpose [verified: capability_manifest.py --add-from on that branch].
+It edits a declaration, and the replay tool reads an edit as a removal.
+Tracked as sp-6b25c567.
+
+## consulting
+
+Merged and pushed, floor green on 5 of 5 checks [verified: bash q-system/.q-system/verify.sh --full].
+The "data decision" in sp-9ebb574b was a false alarm. clients.json, gtm-queue.json
+and pipeline-ledger.json differed from main only in timestamps, local newer in
+every case, zero rows at risk [verified: a structural diff across HEAD, origin/main and the merge base].
+
+Caught mid-session: the worktree moved the branch ref under the primary checkout,
+leaving many paths that auto-commit could have committed as a revert of the merge.
+Classified: 4 stale, 28 live job writes, 65 untracked [verified: a per-path comparison against 427530f4 and HEAD].
+Refreshed only the stale ones [verified: git checkout HEAD -- on exactly those four paths].
+
+Open and unverifiable: that branch is far ahead of its main with no PR [verified: git rev-list --left-right --count].
+A memory says production runs the branch deliberately (DEC-28), but that decision
+is not in `decisions.md` or memory [verified: grep over q-consult/canonical/ and q-consult/memory/],
+so I acted on neither reading. sp-0edfcad6: write the decision down, or land the work.
+
+## The pattern worth carrying forward
+
+Repeatedly this session a check or a report could not tell "found nothing" from
+"looked at nothing", and every instance was in work written minutes earlier
+[provenance: observed]. The porcelain assertion that passed against its own
+defect. The `!=` that passed against a corpus walk. The import guard green only
+because of what was missing locally. Floor tests that could not go red. The
+discarded hook envelope. A sweep that under-examined the backlog and printed a
+small number [provenance: observed].
+
+Written up as a lesson, merged with 277 [verified: git log --oneline origin/main -12]:
+`q-system/lessons/the-author-of-a-fix-picks-the-oracle-the-fix-already-passes.md`.
+Its first rule: name the input that makes the assertion RED for the reason you
+care about, before writing it.
+
+## Needs the founder (removals only)
+
+Untracked in the kipi-system root: `.rescue/`, `error.log`,
+`fix-perm-wildcards.py`, `sana-brief2-report.md`. A stray `.verify-cache/` in the
+consulting worktree. Many stale worktrees under `~/.config/kipi/review-trees/`
+and `.claude/worktrees/` [verified: git worktree list]. None touched.
+
+## Spillover filed this session
+
+sp-ecb82e8f (tripwire cries wolf on a branch switch) · sp-66e74091 (MCP deny
+wildcards, owned by ASK-1144) · sp-e9e3b43a (path guard is direction-blind, and
+blocked three honest reads including the attempt to file this) · sp-0f3a664b and
+sp-7bd5da63 (kipi-mcp reds, and the scope-measurement correction) · sp-80307e44
+(pr-restack declared inert) · sp-947f04c7 (publish_gate skip is coarse) ·
+sp-6b25c567 (add_delta reads an edit as a removal) · sp-e85ff9dc and sp-c4031c2e
+(voice-dna-loader envelope, now measured) · sp-5a39176b (kipi-mcp tests may run
+an installed copy) · sp-ef1ef4cd (coding-cookie claim, needs one fixture) ·
+sp-0edfcad6 (consulting branch vs main).

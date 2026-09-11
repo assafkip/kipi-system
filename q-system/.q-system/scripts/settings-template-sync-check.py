@@ -67,7 +67,11 @@ SKELETON_ONLY = {
 # dead in the skeleton). Add here only when an asymmetry is deliberate.
 # Hooks that intentionally run ONLY on instances (the skeleton self-detects and no-ops),
 # so they belong in settings-template.json but NOT in the skeleton's own .claude/settings.json.
-FLEET_ONLY = {"instance-automation-guard.py"}
+FLEET_ONLY = {
+    "instance-automation-guard.py",
+    "miyo-session-pull.py",
+    "miyo-research-gate.py",
+}
 
 # A hook "propagates" when it invokes a script under a directory kipi update
 # rsyncs into instances. Such a hook's switch MUST live in the template too.

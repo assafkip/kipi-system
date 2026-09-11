@@ -15,21 +15,35 @@ SCHEMA_PATH = (
     REPO_ROOT
     / "q-system/.q-system/schemas/containment-inventory.schema.json"
 )
-ROOT_FIELDS = {
-    "record_count",
-    "records",
-    "schema_version",
-    "target_count",
-    "target_source",
-}
-RECORD_FIELDS = {
-    "content_sha256",
-    "fact_class",
-    "line",
-    "owner_sha256",
-    "redacted_identifier",
-    "source_path_sha256",
-}
+# ASK-608. These were restated literals that happened to match the schema
+# exactly -- which is not reassurance, it is the setup for silent drift: the day
+# the schema gains or loses a field, this file keeps asserting the old shape and
+# passes while the contract has moved.
+#
+# Third instance of the same pattern in this suite, found by sweeping for it
+# rather than by meeting it again. The other two were the fixture's helper list
+# (a missing file aborted every run) and the rsync excludes (moved behind
+# $(rsync_owned_excludes), read as zero excludes). The rule that falls out: if
+# the shipping code owns a value, derive it; a copy in a test is a second source
+# of truth that only ever agrees until it matters.
+#
+# Verified equal to the previous literals at the time of the change, so this is a
+# refactor and not a quiet relaxation.
+def _schema_fields():
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    root = set(schema.get("properties", {}))
+    records = set(
+        schema.get("properties", {})
+        .get("records", {})
+        .get("items", {})
+        .get("properties", {})
+    )
+    assert root, "schema declares no root properties; the derivation is broken"
+    assert records, "schema declares no record properties; the derivation is broken"
+    return root, records
+
+
+ROOT_FIELDS, RECORD_FIELDS = _schema_fields()
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 IDENTIFIER_RE = re.compile(r"^fact-[0-9a-f]{16}$")
 

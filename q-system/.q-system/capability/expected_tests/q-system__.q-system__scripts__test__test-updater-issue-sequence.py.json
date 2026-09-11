@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-updater-issue-sequence.py",
+ "runner": "python3",
+ "timeout_s": 240
+}

@@ -616,6 +616,281 @@ else
       "no reviewer call for ASK-804. Log: '${REVIEWED:-<empty>}'"
 fi
 
+# --- 13. the sentinels are NOT COMMITTABLE (codex round 1 on PR #141) --------
+# THE DEFECT, found on this suite's own branch. Case 5 proves the worker DELETES
+# the sentinel from the worktree after consuming it. That is a different fact
+# from "the sentinel is not in git", and ASK-700 shipped the gap between them:
+# Sana wrote her refusal to `.sana-needs-scope` and then `git add -A` swept it
+# into the commit. The worker later deleted the worktree copy exactly as case 5
+# demands, so case 5 stayed green while the file sat in the branch tip.
+#
+# What that costs on merge: `.sana-needs-scope` lands at the root of main, and
+# every worktree cut from main after that materializes it at checkout -- before
+# any agent runs. The worker reads a sentinel it did not write and refuses a
+# completely unrelated issue, carrying ASK-700's reason text into that issue's
+# Linear comment and needs-scope label. One stale file, and every subsequent
+# issue refuses itself with someone else's argument.
+#
+# THE FIX IS THE IGNORE, NOT A REVIEWER CATCHING IT. A sentinel that `git add -A`
+# cannot stage cannot be committed by any future agent on any future branch --
+# that deletes the defect class instead of guarding one instance of it. So this
+# asserts BOTH halves: not tracked now, and not stageable later.
+REPO_ROOT="$(cd "$SCRIPT_DIR" && git rev-parse --show-toplevel 2>/dev/null)"
+if [ -n "${REPO_ROOT:-}" ]; then
+  for SENTINEL in .sana-needs-scope .sana-blocked-capability .codex-blocked-capability; do
+    if git -C "$REPO_ROOT" ls-files --error-unmatch "$SENTINEL" >/dev/null 2>&1; then
+      bad "$SENTINEL is not tracked in git" \
+          "THE DEFECT: it is committed, so merging puts it on main and every new worktree refuses itself with a stale reason"
+    else
+      ok "$SENTINEL is not tracked in git"
+    fi
+    # `check-ignore` is asked about a path that need not exist: the question is
+    # whether the RULE covers the name, not whether the file is here right now.
+    if git -C "$REPO_ROOT" check-ignore -q "$SENTINEL" 2>/dev/null; then
+      ok "$SENTINEL is gitignored, so a future 'git add -A' cannot stage it"
+    else
+      bad "$SENTINEL is gitignored" \
+          "THE DEFECT: nothing stops the next agent's 'git add -A' from committing this sentinel"
+    fi
+  done
+
+  # 13b. NEGATIVE SELF-TEST. Both halves above pass for free if `ls-files` and
+  # `check-ignore` are silently erroring in this environment (wrong cwd, not a
+  # repo, git missing) -- an always-false ls-files reads as "not tracked" and an
+  # always-true check-ignore reads as "ignored". Pin each against a path whose
+  # answer is known and OPPOSITE, so a stuck verb is visible.
+  if git -C "$REPO_ROOT" ls-files --error-unmatch CLAUDE.md >/dev/null 2>&1; then
+    ok "negative self-test: ls-files DOES find a tracked file (the not-tracked results are real)"
+  else
+    bad "negative self-test: ls-files finds a tracked file" \
+        "ls-files could not find CLAUDE.md either -- the 'not tracked' results above are vacuous"
+  fi
+  if git -C "$REPO_ROOT" check-ignore -q CLAUDE.md 2>/dev/null; then
+    bad "negative self-test: check-ignore rejects a NON-ignored path" \
+        "check-ignore called CLAUDE.md ignored -- it is matching everything, so the 'is ignored' results above are vacuous"
+  else
+    ok "negative self-test: check-ignore rejects a non-ignored path (the ignore results are real)"
+  fi
+else
+  bad "the sentinels are not committable" "could not resolve the repo root from $SCRIPT_DIR"
+fi
+
+# --- 14. a STALE sentinel does not refuse the NEXT issue (codex round 2) -----
+# THE DEFECT CASE 13's FIX INTRODUCED. Before the ignore, a sentinel left behind
+# by a killed run was an UNTRACKED file, so `git status --porcelain` reported the
+# tree dirty and `position_tree_on_pr_head` declined the round. That decline was
+# accidental protection, but it was the only thing standing between a stale
+# `.sana-blocked-capability` and the next issue -- and gitignoring the sentinels
+# makes them invisible to `status`, so the tree now reads CLEAN and the round
+# proceeds into a tree that already holds someone else's refusal.
+#
+# The window is real, not theoretical: the agent writes the sentinel at the end
+# of its run and the worker consumes it a few lines later. A SIGKILL, a timeout,
+# a slept laptop or a reboot in between leaves the file, and the worktree is
+# reused across runs by design.
+#
+# THE FIX IS TO CLEAR BEFORE DISPATCH, not to restore the dirty-tree wedge.
+# Presence-after-run then means exactly one thing -- THIS run wrote it -- which
+# is the property the sentinel protocol assumed all along and never established.
+# `.codex-blocked-capability` already had its clear immediately before the Codex
+# dispatch; this is the same move at the Sana dispatch.
+#
+# A SEPARATE SKELETON, not the one above: run 1 left `sana/ask-801` checked out
+# in its own worktree, and git refuses to check one branch out twice. Second
+# repo, second state dir, second stub set -- no shared mutable state with run 1.
+# The BASENAME is load-bearing: the worker derives the repo identity from the
+# checkout's directory name and filters the board to the Linear project matching
+# it, so a second skeleton called anything else picks nothing and every
+# assertion below goes vacuous. Same name, different parent.
+mkdir -p "$WORK/stale-run"
+SKEL2="$WORK/stale-run/kipi-system"
+git init --quiet --bare "$WORK/origin-stale.git"
+git init --quiet "$SKEL2"
+git -C "$SKEL2" config user.email t@t; git -C "$SKEL2" config user.name t
+: > "$SKEL2/seed"; git -C "$SKEL2" add seed; git -C "$SKEL2" commit --quiet -m seed
+git -C "$SKEL2" remote add origin "$WORK/origin-stale.git"
+git -C "$SKEL2" push --quiet -u origin HEAD:main 2>/dev/null
+
+# The agent for THIS run writes NOTHING. That is the whole point: any sentinel
+# the worker finds afterwards can only be the planted one, so "did it refuse"
+# has exactly one possible cause and the case cannot pass for the wrong reason.
+STUB2="$WORK/stub-quiet"; mkdir -p "$STUB2"
+cp "$STUB/gh" "$STUB2/gh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB2/claude"
+chmod +x "$STUB2/claude" "$STUB2/gh"
+
+STATE2="$WORK/state-stale"
+STALE_TREE="$STATE2/worktrees/ask-801"
+mkdir -p "$STATE2/worktrees"
+git -C "$SKEL2" worktree add -q -B sana/ask-801 "$STALE_TREE" HEAD 2>>"$WORK/stale-setup.err"
+STALE_REASON="STALE: left by a run killed while working a DIFFERENT issue"
+printf '%s' "$STALE_REASON" > "$STALE_TREE/.sana-blocked-capability"
+
+PATH="$STUB2:$PATH" \
+   KIPI_SKEL="$SKEL2" KIPI_STATE_DIR="$STATE2" \
+   KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+   KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+   KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" \
+   KIPI_NOTIFY="/usr/bin/true" \
+   TEST_PR_MARKER="$WORK/pr-stale-none" \
+   bash "$WORKER" --apply --limit 1 > "$WORK/run-stale.out" 2>&1
+STALE_OUT="$(cat "$WORK/run-stale.out")
+$(cat "$STATE2/linear-worker.log" 2>/dev/null)"
+
+# 14a. POSITIVE SELF-TEST FIRST. Every assertion below is "the output does NOT
+# contain X", and a run that never reached ASK-801 at all satisfies all of them
+# for free. Pin that the dispatch really happened before reading its absence.
+if grep -q "start ASK-801" <<<"$STALE_OUT"; then
+  ok "positive self-test: the stale-sentinel run really dispatched ASK-801 (the absences below are real)"
+else
+  bad "positive self-test: the stale-sentinel run dispatched ASK-801" \
+      "no 'start ASK-801' line -- the assertions below would pass on a run that did nothing. Setup err: $(cat "$WORK/stale-setup.err" 2>/dev/null). Run output: $STALE_OUT"
+fi
+
+if grep -q "ASK-801 BLOCKED on a missing capability" <<<"$STALE_OUT"; then
+  bad "a stale sentinel does not refuse the next issue" \
+      "THE DEFECT: the worker read a sentinel its own agent never wrote and blocked ASK-801 with a previous issue's reason"
+else
+  ok "a stale sentinel does not refuse the next issue"
+fi
+
+# ...and specifically that the previous issue's REASON TEXT did not travel. This
+# is the half that reaches a human: the reason is what the worker puts in the
+# Linear comment, so a stale one mislabels an unrelated issue in the board.
+if grep -q "$STALE_REASON" <<<"$STALE_OUT"; then
+  bad "a previous issue's refusal reason does not reach this issue's report" \
+      "THE DEFECT: the stale reason text was carried into ASK-801's log line and Linear comment"
+else
+  ok "a previous issue's refusal reason does not reach this issue's report"
+fi
+
+# 14b. The clear must be a CLEAR, not a read-and-ignore: a sentinel still on
+# disk after the run refuses the round after this one instead. Assert the file
+# is gone, which is the only state that terminates the chain.
+if [ -e "$STALE_TREE/.sana-blocked-capability" ]; then
+  bad "the stale sentinel is cleared from the tree, not just ignored once" \
+      "THE DEFECT: it survives to refuse the NEXT round in this same reusable worktree"
+else
+  ok "the stale sentinel is cleared from the tree, not just ignored once"
+fi
+
+# 14c. NEGATIVE SELF-TEST for the clear. `[ -e ]` on a path in a directory that
+# does not exist also reports absent, so 14b passes for free if the worktree was
+# never created. Pin a file that IS there.
+if [ -e "$STALE_TREE/seed" ]; then
+  ok "negative self-test: the stale worktree exists (14b measured a deleted file, not a missing tree)"
+else
+  bad "negative self-test: the stale worktree exists" \
+      "$STALE_TREE has no seed file -- 14b is vacuous"
+fi
+
+# --- 15. NOTHING THIS RUN STARTED OUTLIVES IT (codex round 3 on PR #141) -----
+# THE HOLE LEFT BY CASE 14'S FIX. Clearing the sentinels before dispatch removes
+# every file that existed AT the clear. It says nothing about a file created
+# AFTER it, and `run_bounded` leaks exactly the process that can create one.
+#
+# On timeout the watchdog signals the job and the parent's `wait` returns the
+# moment that direct child dies -- so the parent cancels the watchdog BEFORE its
+# TERM-grace-KILL escalation finishes. A grandchild that outlives the TERM (an
+# ignored signal, a flushing write, a slow network call) is simply left running.
+# The next dispatch then clears the sentinels and starts its own agent while the
+# PREVIOUS issue's agent is still alive in the same reusable worktree, and the
+# write lands after the clear and before the read. The worker labels the wrong
+# issue blocked:capability and copies the other issue's reason into Linear.
+#
+# THE FIX IS TO REAP THE PROCESS GROUP, not to widen the clear: a clear cannot
+# outrun a writer that is still running. `set -m` puts the job in its own group
+# so the whole tree can be signalled without touching the worker itself, and the
+# parent escalates TERM -> KILL and waits for the group to be EMPTY before it
+# returns. Only then does presence-after-run mean "this run wrote it".
+#
+# THE FUNCTION UNDER TEST IS EXTRACTED FROM THE WORKER, never retyped here. A
+# copy of run_bounded would prove that the copy reaps, which is the one thing
+# nobody needs to know.
+extract_fn() {  # extract_fn <name> <file>
+  awk -v fn="$1" 'index($0, fn "() {") == 1 { p = 1 } p { print } p && $0 == "}" { exit }' "$2"
+}
+PG_SRC="$(extract_fn run_bounded "$WORKER")
+$(extract_fn reap_group "$WORKER")"
+
+# 15a. SELF-TEST FOR THE EXTRACTION. An awk that matched nothing evals to an
+# empty string, every call below becomes "command not found", and the absence
+# assertions all pass on a test that ran no worker code at all.
+if printf '%s' "$PG_SRC" | grep -q 'run_bounded() {' && [ "$(printf '%s\n' "$PG_SRC" | wc -l)" -gt 5 ]; then
+  ok "self-test: run_bounded was extracted from the worker (not an empty eval)"
+else
+  bad "self-test: run_bounded was extracted from the worker" \
+      "extract_fn returned $(printf '%s\n' "$PG_SRC" | wc -l) line(s) -- case 15 is vacuous"
+fi
+
+# The worker's own dependencies, since the function is being run outside it.
+TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+LOG="$WORK/pg.log"; : > "$LOG"
+eval "$PG_SRC"
+
+# The agent that will not die politely: it ignores SIGTERM, outlives its parent
+# shell, and writes a sentinel-shaped file long after the run that started it
+# returned. `& wait` reproduces the production shape -- run_bounded's direct
+# child is a `bash -c`, and the process that writes is its GRANDchild.
+ORPHAN_CODE='import signal,time,pathlib,sys; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(10); pathlib.Path(sys.argv[1]).write_text("a previous issue wrote this")'
+LATE_MARK="$WORK/late-sentinel"
+
+# 15b. SELF-TEST FOR THE ORPHAN. If the child cannot write at all -- wrong
+# python, wrong path, wrong quoting -- the real assertion below passes for free.
+# Run the identical command with NOBODY reaping it and require the write.
+bash -c "python3 -c '$ORPHAN_CODE' '$LATE_MARK.control' & wait" >/dev/null 2>&1 &
+CONTROL_PID=$!
+sleep 1
+# ...and while that control is provably alive, prove `pgrep -f` can SEE it. 15d
+# below asserts pgrep finds nothing; a pattern that matches nothing ever would
+# satisfy it without any reaping happening.
+if pgrep -f "a previous issue wrote this" >/dev/null 2>&1; then
+  ok "self-test: pgrep -f finds a live orphan (15d's absence is a real absence)"
+else
+  bad "self-test: pgrep -f finds a live orphan" \
+      "pgrep cannot match the running control process -- 15d is vacuous"
+fi
+sleep 11
+if [ -e "$LATE_MARK.control" ]; then
+  ok "self-test: the orphan really does write when nothing reaps it"
+else
+  bad "self-test: the orphan really does write when nothing reaps it" \
+      "no $LATE_MARK.control after 12s -- case 15's absence assertion is vacuous"
+fi
+wait "$CONTROL_PID" 2>/dev/null
+
+# 15c. THE ASSERTION. Time out a run whose grandchild ignores TERM, then do
+# exactly what the next dispatch does -- clear the sentinels -- and wait past
+# the moment the leaked process would have written. A file appearing here is a
+# refusal the current issue's agent never wrote.
+run_bounded 1 bash -c "python3 -c '$ORPHAN_CODE' '$LATE_MARK' & wait" >/dev/null 2>&1
+python3 -c "import os,sys; os.path.exists(sys.argv[1]) and os.remove(sys.argv[1])" "$LATE_MARK"
+
+# 15d. FIRST, the cause, read independently: is anything from that run still
+# running the moment the next dispatch's clear completes? This has to be asked
+# HERE and not after the wait below -- the leaked process exits on its own once
+# it has written, so ten seconds later pgrep finds nothing whether it leaked or
+# was reaped, and the assertion would pass in exactly the state it exists to
+# catch.
+if pgrep -f "a previous issue wrote this" >/dev/null 2>&1; then
+  bad "no process from the timed-out run is alive when the next dispatch starts" \
+      "THE DEFECT: pgrep still finds the leaked agent process after run_bounded returned"
+else
+  ok "no process from the timed-out run is alive when the next dispatch starts"
+fi
+
+# 15e. THEN the effect: wait past the moment the leaked process would have
+# written. A file appearing here is a refusal the current issue's agent never
+# wrote, which is what the worker would read and put in Linear.
+sleep 12
+if [ -e "$LATE_MARK" ]; then
+  bad "a timed-out run leaves nothing alive to write a sentinel after the clear" \
+      "THE DEFECT: a process from the previous dispatch wrote $LATE_MARK after the next dispatch cleared it"
+else
+  ok "a timed-out run leaves nothing alive to write a sentinel after the clear"
+fi
+
 # --- 7. NEGATIVE SELF-TEST --------------------------------------------------
 # Every assertion above greps a combined output blob. Prove the greps can miss:
 # a worker that refuses NOTHING must fail assertion 1. Without this, an empty

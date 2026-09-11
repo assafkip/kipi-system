@@ -1,0 +1,22 @@
+{
+  "name": "memory-lifecycle",
+  "description": "Memory freshness, auto-archive, and decay promotion for Claude Code. Tags memories with temporal trust. Warns on stale facts. Archives dead memories. Promotes verified ones.",
+  "version": "1.0.0",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$PLUGIN_DIR/hooks/session-start.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "rules": [
+    "rules/memory-freshness.md"
+  ]
+}

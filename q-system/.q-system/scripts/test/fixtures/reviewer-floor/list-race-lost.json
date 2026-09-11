@@ -1,0 +1,14 @@
+[
+  {
+    "context": "kipi/reviewer-approved",
+    "state": "success",
+    "description": "APPROVE",
+    "created_at": "2026-08-04T03:40:21Z"
+  },
+  {
+    "context": "kipi/reviewer-approved",
+    "state": "failure",
+    "description": "no reviewer verdict at this head (floor: absent is not approved)",
+    "created_at": "2026-08-04T03:40:20Z"
+  }
+]

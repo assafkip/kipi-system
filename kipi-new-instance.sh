@@ -237,6 +237,13 @@ else:
     print('  Already registered')
 "
 
+# Seed the instance's own knowledge base. Per-project by design (no
+# cross-instance sharing). Local-only file: the fleet lefthook bans *.jsonl
+# commits, so this stays untracked in every instance.
+mkdir -p memory
+touch memory/graph.jsonl
+echo "  Knowledge base seeded: memory/graph.jsonl"
+
 # Queue a Linear project for the new instance (ASK-113, goal 3).
 #
 # This CANNOT call Linear directly: there is no Linear API key in ~/.config/kipi/

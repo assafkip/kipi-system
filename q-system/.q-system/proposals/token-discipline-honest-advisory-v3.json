@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "slug": "token-discipline-honest-advisory-v3",
+  "reason": "ASK-965: correct a FALSE ENFORCED claim I introduced. The rule's own body says these clauses are NOT gated; token-guard.py is wired and blocking but implements neither. That is precisely the residue the lint documents - it proves a wired blocking executable EXISTS, never that it implements THIS clause - so where a rule's own text contradicts the status, the status is wrong. Both retired references stay named in superseded_by, which the exec-ref ratchet requires and which also records exactly what was wrongly claimed.",
+  "requires": {
+    "files_present": [
+      "q-system/.q-system/scripts/enforced-claim-lint.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/rules/token-discipline.md",
+      "op": "replace",
+      "anchor": "[\n  {\n    \"clause\": \"Cleanup / Migration Rule\",\n    \"status\": \"ENFORCED\",\n    \"exec\": \"q-system/.q-system/token-guard.py\",\n    \"config\": \".claude/settings.json\",\n    \"test\": \"q-system/.q-system/scripts/test/test-token-discipline-rule-wired.sh\",\n    \"directives\": 0\n  },\n  {\n    \"clause\": \"Pre-Action Echo\",\n    \"status\": \"ENFORCED\",\n    \"exec\": \"q-system/.q-system/token-guard.py\",\n    \"config\": \".claude/settings.json\",\n    \"test\": \"q-system/.q-system/scripts/test/test-token-discipline-rule-wired.sh\",\n    \"directives\": 1\n  }\n]",
+      "reason": "Two false ENFORCED entries become honest ADVISORY ones carrying a marker-removal ticket.",
+      "insert": "[\n  {\n    \"clause\": \"Cleanup / Migration Rule\",\n    \"status\": \"ADVISORY\",\n    \"note\": \"token-guard.py is wired and blocking but implements neither grep pass; the rule's own text says the passes are not gated\",\n    \"superseded_by\": \"was ENFORCED naming q-system/.q-system/token-guard.py, which does not implement this clause\",\n    \"marker_removal_ref\": \"sp-45473673\",\n    \"directives\": 0\n  },\n  {\n    \"clause\": \"Pre-Action Echo\",\n    \"status\": \"ADVISORY\",\n    \"note\": \"structurally unhookable: a PreToolUse hook sees tool_input, never prose, and waiting for OK needs a user turn\",\n    \"superseded_by\": \"was ENFORCED naming q-system/.q-system/scripts/test/test-token-discipline-rule-wired.sh as its receipt; that test pins the LABELLING, not this behaviour\",\n    \"marker_removal_ref\": \"sp-45473673\",\n    \"directives\": 1\n  }\n]"
+    }
+  ]
+}

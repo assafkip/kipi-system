@@ -52,7 +52,7 @@ Capture the `prd_id` and `spec_path` from the JSON output. If no PRD is active, 
    | Codex | `codex-review` | `codex-adversarial` |
    | Claude senior-staff-engineer subagent | `claude-review` | `claude-adversarial` |
 
-   Codex is out of credits until 2026-08-24 and Gemini needs auth, so today the reviewer is the Claude subagent and the source is `claude-*`. Stamping `codex-*` for a pass Codex did not run puts a false provenance record in the findings ledger — worse than being blocked, in a repo whose whole thesis is receipts. `manual` and `plan` are the author's own words and the writer refuses them here by design.
+   Pick the row for the reviewer that ACTUALLY ran. Stamping `codex-*` for a pass Codex did not run puts a false provenance record in the findings ledger — worse than being blocked, in a repo whose whole thesis is receipts. If one reviewer is unavailable (no credits, missing auth), use another row and stamp what ran. Do NOT hardcode an outage into this file: a stale availability note outlives the outage and sends every later session to the wrong reviewer. `manual` and `plan` are the author's own words and the writer refuses them here by design.
 
    Without the stamp, `/prd-approve` will refuse to advance the PRD — that is the intended behavior. Do not try to work around it.
 

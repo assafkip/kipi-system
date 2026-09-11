@@ -30,6 +30,9 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 LIB="$ROOT/q-system/.q-system/scripts/pr-verdict-lib.sh"
+. "$ROOT/q-system/.q-system/scripts/repo-slug-lib.sh"
+# The basename the reviewer will write for PR 901 in THIS repo.
+REC901="$(artifact_key "$(slug_for_repo "$ROOT")" 901).verdict.json"
 WORKER="$ROOT/q-system/.q-system/scripts/linear-worker.sh"
 REVIEWER="$ROOT/q-system/.q-system/scripts/pr-review-agent.sh"
 
@@ -45,7 +48,9 @@ trap 'rm -rf "$WORK"' EXIT
 
 # --- fixture: VERBATIM slice, real PR #11 round-2 review (2026-07-26) --------
 cat > "$WORK/r2.md" <<'EOF'
-**The test is not an orphan.** Registered at `q-system/.q-system/capability-manifest.json:17`.
+**The test is not an orphan.** Declared by its own fragment under
+`q-system/.q-system/capability/expected_tests/` (a line number into a shared
+array is exactly the pointer the fragment split removed).
 
 ---
 
@@ -862,7 +867,7 @@ EOF
 cat > "$SW/gh" <<EOF
 #!/usr/bin/env bash
 case "\$*" in
-  "pr view 901 --json"*) printf '$SHA_A\tpin the sha the review actually read\n' ;;
+  "pr view 901"*) printf '$SHA_A\tpin the sha the review actually read\n' ;;
   *) exit 1 ;;
 esac
 exit 0
@@ -880,7 +885,7 @@ chmod +x "$SW/python3" "$SW/gh" "$SW/claude"
 # "codex is not producing an independent review (PR #901)" to a capture endpoint.
 ( PATH="$SW:$PATH" HOME="$W2/home-writer" KIPI_NOTIFY="/usr/bin/true" \
   bash "$REVIEWER" 901 ) >"$W2/writer.out" 2>&1
-REC="$W2/home-writer/.config/kipi/pr-reviews/pr-901.verdict.json"
+REC="$W2/home-writer/.config/kipi/pr-reviews/$REC901"
 [ -s "$REC" ] \
   || fail "the reviewer wrote no verdict record at all. It said:
 $(sed 's/^/        /' "$W2/writer.out")"
@@ -1055,7 +1060,7 @@ run_status_reviewer "$N4" --post
 [ "$RC" = "0" ] \
   || fail "a failed status POST took the whole review down (exit $RC). The verdict record is the
       loop's hand-off; losing it to a transient GitHub error costs a full re-review."
-[ -s "$N4/home/.config/kipi/pr-reviews/pr-901.verdict.json" ] \
+[ -s "$N4/home/.config/kipi/pr-reviews/$REC901" ] \
   || fail "a failed status POST cost the verdict record, which converge.sh and linear-worker.sh
       both read"
 grep -q "$SHA_A" "$N4/err.txt" \
@@ -1877,12 +1882,17 @@ ok "step 5 says when the record it converged off is pinned to nothing"
 # Every assertion is on the gh CALL LOG or the page file, never on stdout prose.
 # Nothing here calls live Codex, live GitHub, or live Slack.
 # CODEX OWNS THE GATE (founder directive 2026-07-29). Codex is the engine that
-# checks Sana's work, so it posts the REQUIRED `kipi/reviewer-approved` and writes
-# the one verdict record the loop reads. Claude drops to an advisory slot. These
-# two constants are what the whole Q-series asserts against, so the contract flip
-# is stated once here rather than spelled into thirty greps.
-CODEX_CONTEXT="kipi/reviewer-approved"
-CLAUDE_CONTEXT="kipi/claude-approved"
+# CONTRACT FLIPPED 2026-09-06, founder-directed ("forget codex go with the claude
+# fallback"). CLAUDE now checks Sana's work, so it posts the REQUIRED
+# `kipi/reviewer-approved` and writes the one verdict record the loop reads, and
+# codex drops to the advisory slot. The Q-series below is unchanged and still
+# asserts the contract in BOTH directions; only which engine holds which slot moved.
+#
+# This is the flip the comment above these constants promised: they are what the
+# whole Q-series asserts against, so it is stated once here rather than spelled into
+# thirty greps. Swapping the two values is the entire change to this file.
+CODEX_CONTEXT="kipi/codex-approved"
+CLAUDE_CONTEXT="kipi/reviewer-approved"
 
 # The observed shape of real `codex exec` stdout: harness noise around the answer
 # (issue ASK-221 recorded `hook: Stop`, `tokens used`, and a repeated final line).
@@ -1914,17 +1924,27 @@ CODEX_TRUNCATED='hook: Stop
 FINDINGS:
 '
 
-# mk_engine_stubs <dir> <headRefOid> <codex-mode> <codex-body>
+# mk_engine_stubs <dir> <headRefOid> <codex-mode> <codex-body> [claude-body]
 #   codex-mode: ok | fail (non-zero exit) | empty (exit 0, no output)
-# The claude stub always emits $APPROVE_REVIEW, so a `success` status on a codex
+# The claude stub DEFAULTS to $APPROVE_REVIEW, so a `success` status on a codex
 # run can only have come from the Opus fallback -- which is what makes the
 # degraded cases readable at all.
+#
+# THE 5TH ARG EXISTS BECAUSE ITS ABSENCE HID A REAL DEFECT (review of PR #319).
+# The claude body was HARD-CODED to a well-formed review, so this harness was
+# structurally incapable of expressing "claude answered and said nothing
+# parseable" -- and on the day the 2026-09-06 flip made claude the PRIMARY
+# engine, that unexpressible case was the one that posted a green
+# kipi/reviewer-approved over an unread review. 198/198 stayed green throughout.
+# A stub that can only produce good output is a stub that certifies the happy
+# path and calls it coverage. It is a TRAILING OPTIONAL with a default, so every
+# existing 4-arg call site is unchanged (`set -u` is on; the `:-` is load-bearing).
 mk_engine_stubs() {
-  local d="$1" oid="$2" mode="$3" body="$4"
+  local d="$1" oid="$2" mode="$3" body="$4" clbody="${5:-$APPROVE_REVIEW}"
   mkdir -p "$d/bin" "$d/home"
   : > "$d/gh-calls.log"; : > "$d/codex-calls.log"; : > "$d/claude-calls.log"
   printf '%s' "$body" > "$d/codex-body.txt"
-  printf '%s' "$APPROVE_REVIEW" > "$d/claude-body.txt"
+  printf '%s' "$clbody" > "$d/claude-body.txt"
   cat > "$d/bin/python3" <<EOF
 #!/usr/bin/env bash
 exec "$REAL_PY" "\$@"
@@ -2108,7 +2128,7 @@ ok "an unusable codex answer is not laundered through the fallback"
 # Q1's fixture is the noisy one on purpose; this reads back what the parser
 # actually extracted from it, because a status assertion alone cannot tell
 # "the noise was ignored" from "the noise happened to be harmless".
-Q1_REVIEW="$(ls -t "$Q1/home/.config/kipi/pr-reviews/codex/pr-901-"*.md 2>/dev/null | head -1)"
+Q1_REVIEW="$(ls -t "$Q1/home/.config/kipi/pr-reviews/codex/${REC901%.verdict.json}-"*.md 2>/dev/null | head -1)"
 [ -n "$Q1_REVIEW" ] \
   || fail "the codex engine wrote no review file under pr-reviews/codex/, so nothing can be
       re-parsed. Tree was: $(find "$Q1/home/.config/kipi/pr-reviews" -type f 2>/dev/null | tr '\n' ' ')"
@@ -2153,52 +2173,164 @@ run_engine_reviewer "$Q3" --post --engine codex
 ok "recovery pages once on the way out of degraded mode, then goes quiet"
 
 # --- Q7. the ADVISORY engine cannot answer for the gate -----------------------
-# Before the founder directive this case asserted `--engine claude` == the default
-# path, both posting kipi/reviewer-approved. That equality is now FALSE BY DESIGN:
-# claude is the advisory engine and codex is the default. The guard that matters
-# is the inverse of the old one -- an advisory engine must NEVER be able to post
-# the required context, or a Claude review could satisfy the gate that exists
-# specifically to not be Claude.
+# The INVARIANT is direction-free and is the reason this case exists: whichever
+# engine is advisory must NEVER be able to post the required context, or a review
+# that was never meant to gate satisfies the gate.
+#
+# WHICH ENGINE IS ADVISORY FLIPPED 2026-09-06 (founder: "forget codex go with the
+# claude fallback"), AND THIS CASE CHANGED SUBJECT WHEN IT DID. It drives
+# `--engine claude`, which is now the PRIMARY engine, so what it actually pins is
+# the other half of the same one-engine-one-slot rule: the primary posts the
+# required context and does NOT also post the advisory one. The codex stub is
+# `fail` so a green here cannot have come from codex.
+#
+# THE DIRECTION-FREE INVARIANT ABOVE IS STILL HELD, just not here -- Q1 asserts
+# the advisory engine lands on kipi/codex-approved, and a mutant that makes the
+# advisory branch post kipi/reviewer-approved is killed by Q1, verified by
+# running it. Saying so rather than deleting the sentence: the invariant is the
+# reason both cases exist, and a comment that names the wrong guard sends the
+# next reader to a case that no longer checks it.
 Q7="$W2/eng-claude"
 mk_engine_stubs "$Q7" "$SHA_A" fail ""      # codex would FAIL if it were consulted
 run_engine_reviewer "$Q7" --post --engine claude
 CALL_EXPLICIT="$(status_call "$Q7")"
 [ ! -s "$Q7/codex-calls.log" ] \
-  || fail "--engine claude invoked codex. The advisory review path must not depend on a second
-      lab's CLI being installed. codex saw: $(cat "$Q7/codex-calls.log")"
+  || fail "--engine claude invoked codex. The PRIMARY review path must not depend on a second
+      lab's CLI being installed -- codex is out of credits and fails at exit 0, which is the
+      outage this flip exists to end. codex saw: $(cat "$Q7/codex-calls.log")"
 ok "--engine claude never shells codex"
 
 printf '%s' "$CALL_EXPLICIT" | grep -q "context=$CLAUDE_CONTEXT" \
-  || fail "--engine claude did not post its advisory context '$CLAUDE_CONTEXT'.
-      Call was: $CALL_EXPLICIT"
-printf '%s' "$CALL_EXPLICIT" | grep -q "context=$STATUS_CONTEXT" \
-  && fail "THE DEFECT THIS GUARDS: --engine claude posted the REQUIRED context
-      '$STATUS_CONTEXT'. Sana is Claude, so a Claude reviewer would then satisfy the
-      very gate that exists to be a different lab's opinion. Call was: $CALL_EXPLICIT"
-ok "--engine claude posts only its advisory $CLAUDE_CONTEXT, never the required gate"
+  || fail "--engine claude did not post the REQUIRED context '$CLAUDE_CONTEXT'. claude is the
+      PRIMARY engine since 2026-09-06, so every PR would block forever waiting on a status
+      nobody posts. Call was: $CALL_EXPLICIT"
+printf '%s' "$CALL_EXPLICIT" | grep -q "context=$CODEX_CONTEXT" \
+  && fail "--engine claude posted the ADVISORY context '$CODEX_CONTEXT' as well. One engine
+      answers one slot; posting both is the two-writers defect. Call was: $CALL_EXPLICIT"
+ok "--engine claude posts the required $CLAUDE_CONTEXT and not the advisory slot"
 
-# --- Q7D. the DEFAULT engine is codex and it owns the required context ---------
+# --- Q7D. the DEFAULT engine is claude and it owns the required context --------
 # kipi/reviewer-approved is ALREADY a required context. Breaking it blocks 100% of
 # PRs, so this pins the exact context and state on the DEFAULT path -- which is
-# now codex. The codex stub is set to `ok`: a failing codex would fall through to
-# the Opus fallback and mark the status DEGRADED, which is a different path than
-# the one under test here (Q3 already covers that one).
+# claude since 2026-09-06.
+#
+# The codex stub is set to `fail` ON PURPOSE and it is the load-bearing half of this
+# case: the default path must reach a verdict WITHOUT codex, because codex is the
+# engine that was returning "workspace is out of credits" at exit 0. If this case
+# ever needs a working codex to pass, the default path is secretly depending on it
+# again and the outage that caused this flip would recur unseen.
 Q7D="$W2/eng-default"
-mk_engine_stubs "$Q7D" "$SHA_A" ok "$CODEX_NOISY_APPROVE"
+mk_engine_stubs "$Q7D" "$SHA_A" fail ""
 run_engine_reviewer "$Q7D" --post
 CALL_DEFAULT="$(status_call "$Q7D")"
-[ -s "$Q7D/codex-calls.log" ] \
-  || fail "THE DEFECT: the default (no --engine) path did not shell codex, so the fleet's PRs are
-      still being checked by the same lab that wrote them. The founder directive was that codex
-      is the agent that checks Sana's work."
+[ -s "$Q7D/claude-calls.log" ] \
+  || fail "THE DEFECT: the default (no --engine) path did not shell claude, so the engine the
+      founder directed on 2026-09-06 is not the one answering the gate."
+[ ! -s "$Q7D/codex-calls.log" ] \
+  || fail "THE DEFECT: the default path shelled codex. codex is ADVISORY since 2026-09-06 and is
+      currently out of credits, so any default-path dependency on it re-creates the silent
+      outage this flip exists to end. codex saw: $(cat "$Q7D/codex-calls.log")"
 printf '%s' "$CALL_DEFAULT" | grep -q "context=$STATUS_CONTEXT" \
   || fail "the default engine stopped posting '$STATUS_CONTEXT', which is a REQUIRED context.
       Every PR in the repo would block forever. Call was: $CALL_DEFAULT"
 printf '%s' "$CALL_DEFAULT" | grep -q 'state=success' \
   || fail "the default engine's APPROVE no longer maps to state=success: $CALL_DEFAULT"
 printf '%s' "$CALL_DEFAULT" | grep -qi 'degraded' \
-  && fail "the default engine's status is marked degraded even though codex answered: $CALL_DEFAULT"
-ok "the default engine is codex and still posts $STATUS_CONTEXT=success (branch protection intact)"
+  && fail "the default engine's status is marked degraded even though claude answered: $CALL_DEFAULT"
+ok "the default engine is claude and still posts $STATUS_CONTEXT=success (branch protection intact)"
+
+# --- Q7U. an UNUSABLE answer from the PRIMARY engine never greens the gate -----
+# THE DEFECT THIS CASE WAS WRITTEN FROM (review of PR #319, reproduced before the
+# fix): the 2026-09-06 flip moved the REQUIRED kipi/reviewer-approved onto the
+# `ENGINE != codex` branch, which was the only one of the script's three dispatch
+# paths that never called review_is_usable. The codex path had the bar; the Opus
+# fallback got it after codex found the same hole there on 2026-07-29 (major).
+# The claude path did not, because until the flip it was ADVISORY and could only
+# green kipi/claude-approved, which gates nothing.
+#
+# Fed the IDENTICAL $CODEX_TRUNCATED stream Q4B already feeds codex -- harness
+# noise, a prose "VERDICT: APPROVE", and a FINDINGS: block that is never closed,
+# at exit 0 -- the default path posted:
+#     state=success -f context=kipi/reviewer-approved -f description=APPROVE
+# while the verdict record it wrote beside it recorded "usable": false. Same
+# stream through codex correctly posted state=failure. Nothing paged. An unclosed
+# FINDINGS block parses as an EMPTY findings list and an empty list derives
+# APPROVE, so exiting 0 is not evidence the reviewer said anything.
+#
+# THE FIXTURE IS REUSED ON PURPOSE, not renamed: the whole force of the finding is
+# that ONE byte-identical stream was refused on one path and laundered into a green
+# required gate on another. A separate constant would let the two drift apart and
+# hide exactly that comparison. The shape belongs to "an engine exited 0 without
+# reviewing", which is engine-independent -- it is the codex outage's own shape,
+# and claude reaches it the same way.
+Q7U="$W2/eng-default-truncated"
+mk_engine_stubs "$Q7U" "$SHA_A" fail "" "$CODEX_TRUNCATED"
+run_engine_reviewer "$Q7U" --post
+CALL_TRUNC="$(status_call "$Q7U")"
+printf '%s' "$CALL_TRUNC" | grep -q "context=$STATUS_CONTEXT" \
+  || fail "the truncated-primary case posted no '$STATUS_CONTEXT' at all. This case is about the
+      STATE on that context, so a missing context means the case is testing nothing.
+      Call was: $CALL_TRUNC"
+printf '%s' "$CALL_TRUNC" | grep -q 'state=success' \
+  && fail "THE DEFECT: the PRIMARY engine exited 0 with a truncated, unclosed FINDINGS block and
+      the REQUIRED context '$STATUS_CONTEXT' went GREEN. A green required gate over a review
+      nobody read is the worst outcome available in this script, and it releases the PR to
+      merge. Exiting 0 is not evidence the reviewer said anything. Call was: $CALL_TRUNC"
+ok "an unusable PRIMARY-engine answer leaves $STATUS_CONTEXT non-green (unread is never approved)"
+
+# THE RECORD MUST AGREE WITH THE GATE. Asserting only the status would pass on the
+# day the gate is held closed for some unrelated reason while the record still
+# claims a usable review happened -- and review-redrive.py selects on that key.
+python3 - "$Q7U/home/.config/kipi/pr-reviews" <<'PY' || fail "the truncated-primary run's verdict record does not report the review as unusable, so every consumer reading \`usable\` is told a review happened that did not"
+import glob, json, sys
+recs = glob.glob(sys.argv[1] + "/*.verdict.json")
+if not recs:
+    sys.exit("no verdict record written at the pr-reviews ROOT")
+r = json.load(open(recs[0]))
+sys.exit(0 if r.get("usable") is False else
+         "record says usable=%r for a truncated stream" % (r.get("usable"),))
+PY
+ok "the truncated-primary run records usable=false, so the record and the gate tell one story"
+
+# --- Q7F. the PRIMARY engine going DOWN holds the gate, it does not green it ---
+# THE PROPERTY THIS PR'S HEADER NOW ASSERTS, previously unpinned. Before the
+# 2026-09-06 flip a primary outage had the Opus fallback behind it and the whole
+# DEGRADED apparatus to announce itself. That apparatus hangs off the codex
+# branch, so with claude PRIMARY there is nothing behind it: the path exits
+# non-zero and posts NO status. That is the SAFE direction -- absent is not
+# approved, and reviewer-floor.sh turns an absent verdict into a red required
+# context -- but "safe by construction" is the kind of claim that stops being
+# true quietly, and a comment asserting it is not a test.
+#
+# NO fallback may fire either. A codex fallback under a claude outage would be
+# the two-writers defect wearing an outage as a costume, and codex is out of
+# credits, so it would fail at exit 0 and fill the gate with nothing.
+Q7F="$W2/eng-primary-down"
+mk_engine_stubs "$Q7F" "$SHA_A" fail ""
+# The harness has no claude-mode, so the stub is replaced in place rather than
+# growing a 6th positional every case would have to carry.
+cat > "$Q7F/bin/claude" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$Q7F/claude-calls.log"
+echo "claude: stream disconnected before first token" >&2
+exit 1
+EOF
+chmod +x "$Q7F/bin/claude"
+run_engine_reviewer "$Q7F" --post
+[ -s "$Q7F/claude-calls.log" ] \
+  || fail "the primary-outage case never reached claude, so it is testing nothing"
+[ "$RC" != "0" ] \
+  || fail "THE DEFECT: the PRIMARY engine failed and the reviewer still exited 0. A caller that
+      branches on the exit code reads a total outage as a completed review."
+CALL_DOWN="$(status_call "$Q7F")"
+printf '%s' "$CALL_DOWN" | grep -q 'state=success' \
+  && fail "THE DEFECT: the PRIMARY engine was DOWN and a green status was posted anyway. There is
+      no fallback in this direction, so nothing reviewed anything. Call was: $CALL_DOWN"
+[ ! -s "$Q7F/codex-calls.log" ] \
+  || fail "a claude outage fell through to codex. There is no fallback in this direction by
+      design, and codex is out of credits (it fails at EXIT 0), so this would fill the required
+      gate with an unreviewed green. codex saw: $(cat "$Q7F/codex-calls.log")"
+ok "a PRIMARY-engine outage exits non-zero, posts no green, and never falls through to codex"
 
 # --- Q7E. MOVED OUT (codex review round 1 of PR #34, minor) -------------------
 # This case used to build its non-ancestor fixture with
@@ -2237,30 +2369,34 @@ ok "an unknown PR sha warns and proceeds (a partial clone does not wedge the loo
 # globs pr-<N>-*.md -- count the EXISTING claude rounds as codex's own, arming the
 # anti-re-litigation rule a round early on every PR with review history. So the
 # round counters do not move even though the gate did.
-[ -n "$(ls "$Q7/home/.config/kipi/pr-reviews/pr-901-"*.md 2>/dev/null)" ] \
+[ -n "$(ls "$Q7/home/.config/kipi/pr-reviews/${REC901%.verdict.json}-"*.md 2>/dev/null)" ] \
   || fail "the claude engine stopped writing its review to pr-reviews/ ; the worker's
       \`ls pr-reviews/pr-<N>-*.md\` read would find nothing"
-[ -z "$(ls "$Q1/home/.config/kipi/pr-reviews/pr-901-"*.md 2>/dev/null)" ] \
+[ -z "$(ls "$Q1/home/.config/kipi/pr-reviews/${REC901%.verdict.json}-"*.md 2>/dev/null)" ] \
   || fail "a codex review landed in the CLAUDE review directory. review_round globs
       pr-901-*.md, so every codex run would advance the claude reviewer's round counter."
 ok "the engines keep separate review directories (round counters do not cross-count)"
 
-# THE VERDICT RECORD IS THE GATE, and it belongs to codex now. converge.sh:36 and
-# linear-worker.sh:76 both read pr-<N>.verdict.json at the pr-reviews ROOT. Codex
-# is the engine that checks Sana's work, so codex writes THAT file -- and the
-# advisory claude engine must not, or two writers would answer for one gate.
-[ -s "$Q1/home/.config/kipi/pr-reviews/pr-901.verdict.json" ] \
-  || fail "THE DEFECT: the codex engine wrote no verdict record at the pr-reviews ROOT, so the
+# THE VERDICT RECORD IS THE GATE, and it belongs to CLAUDE since 2026-09-06.
+# converge.sh:36 and linear-worker.sh:76 both read pr-<N>.verdict.json at the
+# pr-reviews ROOT. The PRIMARY engine writes THAT file -- and the advisory engine
+# must not, or two writers would answer for one gate.
+#
+# THE PAIR IS THE POINT, not either assertion alone: the primary must write it and
+# the advisory must not. Asserting only the first would pass on the day both engines
+# write it, which is the two-writers defect this repo keeps finding.
+[ -s "$Q7/home/.config/kipi/pr-reviews/$REC901" ] \
+  || fail "THE DEFECT: the claude engine wrote no verdict record at the pr-reviews ROOT, so the
       file converge.sh:36 and linear-worker.sh:76 gate the loop on is never written by the
       engine that actually reviewed. The loop would read a stale or absent verdict."
-[ ! -f "$Q7/home/.config/kipi/pr-reviews/pr-901.verdict.json" ] \
-  || fail "the ADVISORY claude engine wrote the loop's verdict record (pr-901.verdict.json).
-      Two engines answering for one gate is the single-writer defect this repo keeps finding;
-      a Claude verdict would drive the loop that exists to be checked by another lab."
-[ -s "$Q7/home/.config/kipi/pr-reviews/claude/pr-901.verdict.json" ] \
-  || fail "the claude engine wrote no verdict record of its own, so its advisory opinion is not
+[ ! -f "$Q1/home/.config/kipi/pr-reviews/$REC901" ] \
+  || fail "the ADVISORY codex engine wrote the loop's verdict record (pr-901.verdict.json).
+      Two engines answering for one gate is the single-writer defect this repo keeps finding,
+      and an advisory verdict would drive the loop it was never meant to gate."
+[ -s "$Q1/home/.config/kipi/pr-reviews/codex/$REC901" ] \
+  || fail "the codex engine wrote no verdict record of its own, so its advisory opinion is not
       recorded anywhere a later run can read"
-ok "codex writes the loop's verdict record; claude records its advisory one beside its reviews"
+ok "claude writes the loop's verdict record; codex records its advisory one beside its reviews"
 
 # --- Q8. both engines pin their model explicitly ------------------------------
 # Today the Claude reviewer passes no --model and inherits the session default,
@@ -2291,15 +2427,21 @@ grep -q 'codex exec.*</dev/null' "$REVIEWER" \
       at 3am that is a review that never returns until the 2400s bound kills it."
 ok "the codex dispatch redirects stdin from /dev/null"
 
-# --- Q9. the worker runs the codex engine as THE review -----------------------
+# --- Q9. the worker runs the PRIMARY engine as THE review ---------------------
 # A reviewer nobody invokes is text in a file. The worker is the only thing that
-# reviews PRs on a schedule, and it now states --engine codex explicitly at the
-# call site rather than inheriting the reviewer's default: which model checks this
-# fleet's work is a fact that should be readable where the review is dispatched.
-grep -q -- '--engine codex' "$WORKER" \
-  || fail "linear-worker.sh never runs the codex engine, so every PR in the autonomous loop is
-      reviewed by the same lab that wrote it"
-ok "worker wiring: the codex engine is dispatched as the review"
+# reviews PRs on a schedule, and it states the engine EXPLICITLY at the call site
+# rather than inheriting the reviewer's default: which model checks this fleet's
+# work is a fact that should be readable where the review is dispatched.
+#
+# The engine named here is claude since 2026-09-06 (founder: "forget codex go with
+# the claude fallback"). This pins that the worker dispatches the PRIMARY engine,
+# whichever it is; if the pair is ever flipped back, this string moves with the two
+# defaults in pr-review-agent.sh and the constants at the top of this file.
+grep -q -- '--engine claude' "$WORKER" \
+  || fail "linear-worker.sh never dispatches --engine claude, so the engine that owns
+      kipi/reviewer-approved is not the one reviewing on a schedule and every PR in the
+      autonomous loop waits on a status its reviewer never posts"
+ok "worker wiring: the primary (claude) engine is dispatched as the review"
 # EVERY PR THE WORKER TOUCHES ARMS ITS OWN AUTO-MERGE (ASK-222)
 # =============================================================================
 # THE DEFECT: nothing in CODE armed auto-merge. Every required piece already

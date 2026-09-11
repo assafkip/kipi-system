@@ -134,11 +134,60 @@ SKIP_MARKER = "fable-discipline-lint-skip"
 SPILL_SKIP_MARKER = "spillover-skip"
 _CODE_SUFFIXES = {".py", ".js", ".ts", ".jsx", ".tsx", ".sh", ".rb", ".go",
                   ".rs", ".java", ".c", ".cpp", ".h", ".mjs", ".cjs"}
-_DEFERRAL = re.compile(
-    r"out[- ]of[- ]scope|fix (?:it )?later|defer(?:red)? this|"
+# THE DETECTOR SHARED A WORD WITH THE VOCABULARY IT POLICES (ASK-734).
+#
+# `out-of-scope` and `scope-removed` are two of prd-os's own finding DISPOSITION
+# VALUES. Every file that handles dispositions -- the runner, the findings
+# writer, above all their tests -- carries the token as DATA, and this lint read
+# each one as a deferral. Measured 2026-08-13 on
+# plugins/prd-os/tests/test_judgment_compiler.py: 3 hits, all pre-existing in the
+# committed blob, none a deferral.
+#
+# Worse than a plain false positive, because this hook is PostToolUse: it fires
+# on the NEXT edit to a file, not the edit that introduced the text. An unrelated
+# one-line fix is refused over lines the author never wrote, and the cheapest way
+# out is a blanket `# spillover-skip`, which disarms the lint for the WHOLE file
+# including real deferrals. A gate whose cheapest fix is to switch it off will be
+# switched off.
+#
+# THE SPLIT: every other phrase here is a VERB -- a speech act that can only mean
+# "I am not doing this now". `out-of-scope` is the one NOUN, and it is this
+# repo's domain vocabulary, which is exactly why it was the only alternative
+# generating false positives. So the verbs still fire alone, and the noun now
+# needs a forward-looking CUE next to it -- the promise is what makes a deferral
+# a deferral. `# out-of-scope, handle later` fires; `one of: scope-removed,
+# out-of-scope, defer` does not.
+#
+# MEASURED, not assumed. Across the 47 code files under plugins/prd-os this took
+# the deferral count 14 -> 0, and each of the 14 was read by hand: all 14 were
+# vocabulary or prose describing the mechanism, none was a deferral. The cue
+# list deliberately omits the bare word `defer` -- it is itself a disposition
+# value and sits in those same enumerations; `defer this` keeps its own verb
+# alternative below.
+#
+# WHAT THIS GIVES UP, stated rather than hidden: a bare `# out of scope` with no
+# promise attached no longer fires. In a repo whose vocabulary contains the
+# words, the noun alone was never evidence. This lint is a write-time nudge and
+# already documents that it misses synonym phrasings; the standing spillover gate
+# is the enforcement.
+_DEFER_CUE = re.compile(
+    r"later|for now|to-?do|fixme|revisit|postpone|someday|another day|"
+    r"come back|not (?:doing|now)|future work|next (?:pass|round|time)",
+    re.IGNORECASE,
+)
+_DEFERRAL_VERB = re.compile(
+    r"fix (?:it )?later|defer(?:red)? this|"
     r"leave (?:this )?for later|won'?t fix(?: now)?|punt(?:ed|ing)? on",
     re.IGNORECASE,
 )
+_SCOPE_NOUN = re.compile(r"out[- ]of[- ]scope", re.IGNORECASE)
+
+
+def is_deferral_line(line):
+    """True when the line DEFERS work, not when it merely names a disposition."""
+    if _DEFERRAL_VERB.search(line):
+        return True
+    return bool(_SCOPE_NOUN.search(line) and _DEFER_CUE.search(line))
 
 
 def is_code_file(file_path):
@@ -150,7 +199,7 @@ def find_deferral_lines(text):
         return []
     hits = []
     for i, line in enumerate(text.splitlines(), 1):
-        if _DEFERRAL.search(line):
+        if is_deferral_line(line):
             hits.append((i, line.strip()[:80]))
     return hits
 

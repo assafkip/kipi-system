@@ -78,3 +78,18 @@ If a memory was written too narrowly and causes a recurring voice mistake, that 
 ## Deterministic enforcement
 
 A SessionStart hook (`q-system/.q-system/scripts/memory-freshness-check.py`) reads memory frontmatter at every session boot and prints `[FAST]` warnings to context. The model sees the warning whether it remembers this rule file or not. The hook is the enforcement; this file is the spec.
+
+## Relationship to `as_of` and supersession
+
+`decay` says how FAST a fact goes stale. `as_of` (defined in
+`memory-confidence.md`, alongside the `status` / `superseded_by` supersession
+convention) says WHEN the fact was last actually true. They compose: a
+`decay: fast` memory with an `as_of` from three months ago is overdue by its own
+declared clock, and `memory-lint.py` reports the `status: current` half of that
+without blocking anything.
+
+When verification fails, the instruction above still holds -- update the memory to
+reflect new state. If the correction is large enough that the old text is now
+WRONG rather than merely out of date, supersede it (`status: superseded` plus
+`superseded_by`) instead of overwriting, so the reversal survives. Deletion is
+reserved for memories that were never true.

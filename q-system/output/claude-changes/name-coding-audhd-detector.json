@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "slug": "name-coding-audhd-detector",
+  "reason": "coding-audhd.md claims ENFORCED while naming no executable, which is the exact shape its own no-prompt-only-enforcement rule bans. Name the detector, its wiring, its test, and state out loud that it exits 0 and therefore detects rather than prevents (ASK-132). No gate demands this edit; prompt-only-enforcement-guard.py already passes on the current copy. It is a correctness fix: a claim stronger than the code behind it is worse than no claim, because people trust it and stop looking.",
+  "requires": {
+    "files_present": [
+      "q-system/.q-system/scripts/wiring-check.py",
+      "q-system/.q-system/scripts/test_wiring_check.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/rules/coding-audhd.md",
+      "op": "insert_after",
+      "anchor": "# AUDHD Coding Rules (ENFORCED)",
+      "insert": "\n\n## Enforcement pairing (read before trusting the word ENFORCED above)\n\n| Piece | Path |\n|---|---|\n| Detector | `q-system/.q-system/scripts/wiring-check.py` |\n| Wiring | PostToolUse on Edit/Write, `.claude/settings.json` + `settings-template.json` |\n| Test | `q-system/.q-system/scripts/test_wiring_check.py` |\n\n**ADVISORY DETECTION, not prevention.** `wiring-check.py` inspects the written\nfile and reports max nesting, max function length, debug leftovers\n(`print`/`console.log`/`debugger`/`breakpoint`/TODO), bare `except`, unused\nimports, orphaned function defs, and hardcoded URLs/ports. It **exits 0 on every\npath**, violations included. Findings arrive as feedback to Claude and the write\nstill lands. ENFORCED here means detected-and-surfaced. It does not mean blocked\nand it does not mean prevented.\n\nFlipping it to exit 2 is a founder decision made in the open, never a silent one:\nthe hook ships via `settings-template.json`, so a hard block would land on every\ncode Edit/Write across every instance (ASK-132).\n\n**What no detector covers:** Presentation, Error Communication, Session\nStructure, and the banned-language list below are model behaviour, not\nfile-inspectable. They stay interpretive, per `skill-hook-pairing.md`'s decision\nrule: a judgment rule lives in the instruction, not in a hook. Nothing checks\nthem mechanically, so if the model drifts there, no gate will say so.",
+      "reason": "Name the executable, the wiring and the test directly under the ENFORCED heading, and qualify that word at the point it is claimed. The route is additive-only, so the H1 cannot be rewritten; the correction is placed where a reader hits it first instead."
+    },
+    {
+      "file": ".claude/rules/coding-audhd.md",
+      "op": "insert_after",
+      "anchor": "## Code Structure (Working Memory)",
+      "insert": "\n\n*Detected by `wiring-check.py`, advisory only: the 2-level nesting cap and the\n30-line function cap. The other three bullets below are read by you, not by any\nscript.*\n",
+      "reason": "Mark which two of this section's five bullets the detector actually reads, so the other three are not assumed to be covered."
+    }
+  ]
+}

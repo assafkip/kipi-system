@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/instance-diet.py",
+ "reason": "one-off maintenance tool, no wiring surface references",
+ "spillover_id": "sp-cc33bdb0"
+}

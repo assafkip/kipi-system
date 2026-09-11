@@ -487,7 +487,11 @@ class Linter:
 
         question_count = body.count("?")
         if question_count > 1:
-            warnings.append(f"body has {question_count} question marks — consider a single CTA")
+            # NOT "consider a single CTA" (2026-08-06). The founder does not end on a CTA,
+            # and `ending_gate` in the content engine BLOCKS one. A linter nudging the writer
+            # toward the thing another gate rejects costs a slot every time it is obeyed.
+            warnings.append(f"body has {question_count} question marks — pick the one that "
+                            f"lands and cut the rest; never replace them with an ask")
 
         return {
             "pass": len(errors) == 0,

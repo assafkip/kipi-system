@@ -369,7 +369,8 @@ resolve_verdict() {   # resolve_verdict <stated> <derived>
 # `gh pr view` is two readers of one input with drifting semantics. Empty on any
 # failure, which the gate treats as "still merges" -- see rework_gate.
 pr_merge_state() {
-  gh pr view "$1" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null | tr -d '[:space:]'
+  # shellcheck disable=SC2086  # scoped by the ONE derivation (ASK-738)
+  gh pr view "$1" ${KIPI_GH_REPO_ARGS:-} --json mergeStateStatus -q .mergeStateStatus 2>/dev/null | tr -d '[:space:]'
 }
 
 # pr_head_sha <pr-number>
@@ -381,7 +382,11 @@ pr_merge_state() {
 # defect class this file exists to close. Empty on any failure, which rework_gate
 # reads as "unknown, fall back and say so", never as drift.
 pr_head_sha() {
-  gh pr view "$1" --json headRefOid -q .headRefOid 2>/dev/null | tr -d '[:space:]'
+  # $KIPI_GH_REPO_ARGS is set ONCE by whichever script sourced this lib, from
+  # repo-slug-lib.sh (ASK-738). Unquoted so an empty value expands to nothing;
+  # it is never anything but "-R owner/repo" by construction.
+  # shellcheck disable=SC2086
+  gh pr view "$1" ${KIPI_GH_REPO_ARGS:-} --json headRefOid -q .headRefOid 2>/dev/null | tr -d '[:space:]'
 }
 
 # --- the arm-state record (ASK-222, PR #33 review round 3, finding 1) --------

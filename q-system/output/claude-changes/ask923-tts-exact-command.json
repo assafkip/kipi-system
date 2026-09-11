@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "slug": "ask923-tts-exact-command",
+  "reason": "ASK-923 (from sp-7c696491). Rule 8 of .claude/output-styles/audhd.md says commands stay exact, then its own example replaces the command with prose ('Run kipi update dry-run mode'). That contradicts rule 3 at line 65, which already writes the same command exactly as `kipi update --dry`, and it contradicts the AUDHD copy-paste principle. Additive only: one bullet is added at the end of the rule-8 list stating that the flag stays verbatim and that the surrounding sentence carries the audio. The offending line 111 is NOT rewritten - that needs the replace op, which rule_text_only refuses on output-styles/ by design, and widening that scope is the separate decision its docstring defers. No hook, setting, or template is touched.",
+  "requires": {
+    "files_present": [
+      ".claude/output-styles/audhd.md"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/output-styles/audhd.md",
+      "op": "insert_after",
+      "anchor": "- Headers and bold are fine (TTS skips markup). Structure that only works visually is not.",
+      "insert": "\n- Exact means the flag too: the --dry flag stays --dry, never \"dry-run mode\". The sentence around the command does the audio work, the way rule 3 above writes it: \"Run `kipi update --dry`. Reply with output.\"",
+      "reason": "Remove the ambiguity the line-111 example creates, without rewriting that example. Anchored on the last bullet of the rule-8 list (audhd.md:112) so the new line lands inside rule 8 and the anchor does not depend on the text a future replace op may change."
+    }
+  ]
+}

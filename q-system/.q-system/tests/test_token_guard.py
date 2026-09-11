@@ -34,6 +34,26 @@ VOLUME_CEILING = 50
 def run_guard(payload, env_overrides=None):
     """Invoke the guard exactly as the hook runner does: JSON on stdin."""
     env = dict(os.environ)
+    # THE RUNTIME MARKER IS AN INPUT, SO THIS HARNESS SETS IT.
+    #
+    # the scar (2026-08-27): token-guard.py's first statement is
+    #     if not os.environ.get("CLAUDECODE"): sys.exit(0)
+    # a deliberate circuit breaker so foreign runtimes (Codex loading the kipi
+    # plugins through its own marketplace clone) never fire it. CLAUDECODE=1 is
+    # set only by the Claude Code runtime.
+    #
+    # These tests INHERITED it. Every developer running them is inside Claude
+    # Code, so it was always set and 14 passed. In GitHub Actions it does not
+    # exist, the guard exited 0 before doing anything, and 12 tests failed
+    # asserting a block that never came ("assert 0 == 2", where 0 is the
+    # returncode) or a counter that never reset. Measured both ways on one
+    # machine, same commit:
+    #     env -u CLAUDECODE pytest test_token_guard.py -> 11 failed, 3 passed
+    #                       pytest test_token_guard.py -> 14 passed
+    #
+    # Set BEFORE the overrides so a test can still blank it deliberately, which
+    # is what test_a_foreign_runtime_is_a_no_op below does.
+    env["CLAUDECODE"] = "1"
     env.update(env_overrides or {})
     return subprocess.run(
         ["python3", GUARD], input=json.dumps(payload),
@@ -256,3 +276,24 @@ def test_auto_commit_subject_is_not_progress(session_id, fake_repo):
     result = run_guard(pre_tool_use(session_id),
                        env_overrides={"CLAUDE_PROJECT_DIR": fake_repo})
     assert result.returncode == 2
+
+
+def test_a_foreign_runtime_is_a_no_op(session_id):
+    """The other half of the marker, which nothing covered.
+
+    token-guard.py exits 0 immediately unless CLAUDECODE is set. That breaker
+    exists because a UserPromptSubmit block once fired inside `codex exec` and
+    killed an in-repo review (sp-28bf75a4). Every other test in this file now
+    sets the marker, so without this one the no-op path would be asserted
+    nowhere -- and it is the path that protects other runtimes.
+
+    It also proves the harness fix is load-bearing rather than cosmetic: blank
+    the marker and the guard stops blocking, which is exactly what CI was
+    seeing."""
+    seed_cache(session_id, tool_calls_since_user=VOLUME_CEILING + 5)
+    blocked = run_guard(pre_tool_use(session_id))
+    assert blocked.returncode == 2, "sanity: this payload must block normally"
+
+    inert = run_guard(pre_tool_use(session_id), env_overrides={"CLAUDECODE": ""})
+    assert inert.returncode == 0, "a foreign runtime must never be blocked"
+    assert inert.stdout == "", "a foreign runtime must not even emit context"

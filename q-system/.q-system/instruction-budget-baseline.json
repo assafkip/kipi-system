@@ -1,3 +1,4 @@
 {
-  "total_always_on": 512
+  "total_always_on": 512,
+  "note": "ASK-136 raised this from 511 by exactly 1. Read the reason before treating a future bump as routine: quick-plan.md claimed (ENFORCED) and named no executable, and naming plan-lint.py cost one always-on line. The repo's norm is that rule edits are NET-ZERO (ASK-137 and ASK-138 both landed this same CAP-22 fix class without touching this file), and that norm still stands. This bump exists because the two write paths into .claude/ deadlock: apply_claude_changes.py is additive-only and its line ratchet REFUSES to shrink a rule, while claude-path-write-guard blocks git checkout and direct Edit on .claude/, so once a line has been added through the sanctioned path an agent cannot take it back. Captured as spillover, not treated as settled. Target remains 300 and this file still only auto-tightens."
 }

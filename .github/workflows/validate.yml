@@ -65,21 +65,42 @@ jobs:
 
       - name: Run prd-os tests
         run: pytest plugins/prd-os/tests/ -q
+
+      # The skeleton's own harnesses had NO runner (adversarial review finding-5):
+      # test_auto_commit, test_token_guard and test_fable_escalation all sat unrun,
+      # so "a test locks the property" was an unenforced claim. wiring-check.md is
+      # explicit that a Python harness needs a caller.
+      - name: Run skeleton hook tests
+        # SCOPED TO THIS FILE deliberately. The sibling harnesses in that directory
+        # were unrun for a reason: separation/ has 6 failures predating this branch,
+        # and test_token_guard.py passes locally but fails 11 in CI (it depends on
+        # git identity and /tmp state the runner does not provide). Widening the gate
+        # onto either is how CI starts paging the founder for a bug this PR did not
+        # cause. Both are tracked; unignore them as they are fixed.
+        run: pytest q-system/.q-system/tests/test_auto_commit.py -q
         env:
           CI: true
 
       - name: Plugin version-bump guard (PR only)
         if: github.event_name == 'pull_request'
         run: |
-          # NOT --depth=1: that writes .git/shallow even into an already-complete
-          # clone, which silently undoes the `fetch-depth: 0` above and re-breaks
-          # the `merge-base --is-ancestor` probe in test-updater-issue-sequence.py.
-          # Today only step ORDER keeps that from firing (the capability gate runs
-          # earlier), and nothing encodes that dependency -- a reordering would
-          # quietly restore the original bug. History is already local, so there is
-          # nothing to shorten. Found by adversarial review 2026-07-26.
-          git fetch origin main || true
-          python3 q-system/.q-system/scripts/plugin-version-bump-check.py --against origin/main
+          # The base is GitHub's OWN base sha for this PR, not a fetched ref
+          # (ASK-514). `git fetch origin main || true` swallowed its failure and
+          # left origin/main STALE BUT RESOLVABLE, which is the dangerous shape:
+          # the gate's fail-closed guard never fires because the ref resolves,
+          # and version_at(stale base) then reads a HISTORICAL bump that makes
+          # the PR's own unbumped plugin look bumped. Measured on a scratch repo:
+          #     --against HEAD        -> exit 2   correctly refused
+          #     --against stale-main  -> exit 0   the violation was EXCUSED
+          #
+          # base.sha comes from the event payload, so it needs no network, always
+          # resolves, and cannot go stale. `fetch-depth: 0` on the checkout above
+          # is what guarantees the commit is present locally -- do not weaken it
+          # to --depth=1, which writes .git/shallow even into an already-complete
+          # clone and re-breaks the `merge-base --is-ancestor` probe in
+          # test-updater-issue-sequence.py (adversarial review 2026-07-26).
+          python3 q-system/.q-system/scripts/plugin-version-bump-check.py \
+            --against "${{ github.event.pull_request.base.sha }}"
         env:
           CI: true
 

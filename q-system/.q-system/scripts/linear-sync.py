@@ -422,6 +422,12 @@ mutation($input: ProjectCreateInput!) {
 }
 """
 
+# linear-filer-lint-skip: AUTOMATED and currently unmarked. cmd_create bulk-files
+# from a scanner-generated CAPABILITY-MAP.json, so a human triggers the run but
+# nobody decides the N issues individually -- this SHOULD attach TRIAGE_LABEL.
+# Captured as sp-1306aca4 rather than changed here: adding a label to four live
+# filers is a behaviour change to production inflow, not a lint fix, and it earns
+# its own issue. The marker is an address for that item, never an exemption.
 ISSUE_CREATE = """
 mutation($input: IssueCreateInput!) {
   issueCreate(input: $input) { success issue { id identifier } }

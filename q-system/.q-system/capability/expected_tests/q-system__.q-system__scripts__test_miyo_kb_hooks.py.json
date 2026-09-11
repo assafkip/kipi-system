@@ -1,0 +1,4 @@
+{
+  "path": "q-system/.q-system/scripts/test_miyo_kb_hooks.py",
+  "runner": "pytest"
+}

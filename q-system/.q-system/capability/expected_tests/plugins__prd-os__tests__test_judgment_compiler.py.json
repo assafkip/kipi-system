@@ -1,0 +1,5 @@
+{
+ "path": "plugins/prd-os/tests/test_judgment_compiler.py",
+ "runner": "python3",
+ "timeout_s": 240
+}

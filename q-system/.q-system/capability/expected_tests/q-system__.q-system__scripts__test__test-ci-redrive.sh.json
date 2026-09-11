@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-ci-redrive.sh",
+ "runner": "bash",
+ "timeout_s": 240
+}

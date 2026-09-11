@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-fleet-health-daily.py",
+ "runner": "python3"
+}

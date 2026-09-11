@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-converge-crossrepo-receipt.sh",
+ "runner": "bash",
+ "timeout_s": 120
+}

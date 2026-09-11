@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.kipi.lessons-daily -- the skeleton's cross-instance learning heartbeat
+  (distill, publish, propagate, alert).
+
+  kipi-scope: skeleton-only
+  (install-plist.sh --all reads that marker and skips this template anywhere
+  but the skeleton.) SKELETON ONLY because lessons-daily.sh shells
+  kipi-update.sh, which only works in the skeleton, and this label is unique
+  fleet-wide by construction (prd-lessons-rail-and-up-rail, issue
+  lr-lessons-label-collision; test_lessons_daily_label.py pins it).
+
+  TEMPLATE. Install with:  bash q-system/.q-system/scripts/install-lessons-daily.sh
+  which refuses outside the skeleton and then renders this file through
+  install-plist.sh (__KIPI_REPO__, __HOME__, __USER__). A literal path here
+  would fan out to 25 instances with one machine's home in it.
+
+  Monday 06:00 local, matching the job installed by hand before this template
+  existed (Weekday 1, 06:00). PATH carries ~/.local/bin because the job checks
+  for the claude CLI and treats a missing binary as a broken machine, not a
+  quiet night.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.lessons-daily</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>__HOME__</string>
+    <key>USER</key><string>__USER__</string>
+    <key>LOGNAME</key><string>__USER__</string>
+    <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__KIPI_REPO__/q-system/.q-system/scripts/lessons-daily.sh</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__KIPI_REPO__/q-system/output/lessons-daily.out</string>
+  <key>StandardErrorPath</key><string>__KIPI_REPO__/q-system/output/lessons-daily.err</string>
+</dict>
+</plist>

@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-apply-claude-changes.sh",
+ "runner": "bash"
+}

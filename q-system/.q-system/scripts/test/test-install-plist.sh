@@ -91,10 +91,12 @@ bash "$NEG/install-plist.sh" com.kipi.broken-probe --render-only "$TMP/broken.pl
 BROKEN_EXIT=$?
 set -e
 
-# __UNRESOLVED_TOKEN__ is not one of the two the guard greps for, so the render
-# succeeds -- and that is the honest limit of the guard: it catches the two known
-# placeholders, not arbitrary ones. Assert the guard's real contract instead:
-# a file still containing a KNOWN placeholder must be rejected.
+# __UNRESOLVED_TOKEN__ used to render fine: the guard grepped for the specific
+# names it substitutes, so any other spelling passed. That allowlist is how
+# automation/com.kipi.voice-refresh.plist's __ROOT__ went unnoticed while the
+# enumerator could not reach it. Since 2026-09-07 assert_rendered matches the
+# CLASS (__ANY_TOKEN__), so an unknown token is a rejection, and this is now an
+# assertion rather than the info line it was.
 cat > "$NEG/com.kipi.noop-probe.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict><key>Repo</key><string>__KIPI_REPO__</string></dict></plist>
@@ -130,7 +132,11 @@ else
   fail "negative self-test control: placeholder-free template failed (exit $CLEAN_EXIT), so the probe proves nothing"
 fi
 
-echo "  (info: unknown-token render exited $BROKEN_EXIT; the guard covers the two known placeholders by design)"
+if [ "$BROKEN_EXIT" -ne 0 ]; then
+  pass "an UNKNOWN placeholder is rejected too (exit $BROKEN_EXIT), so the guard covers the class"
+else
+  fail "unknown-token render exited 0: assert_rendered is back to an allowlist of known placeholders, which is how __ROOT__ went unnoticed"
+fi
 
 echo
 if [ "$FAILS" -eq 0 ]; then

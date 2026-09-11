@@ -108,9 +108,39 @@ def test_every_completed_containment_check_is_independently_green():
         )
         results[command] = result
 
-    failures = {
-        command: result.stdout + result.stderr
-        for command, result in results.items()
-        if result.returncode != 0
-    }
-    assert failures == {}
+    # "CANNOT RUN HERE" IS NOT "IS BROKEN", and conflating them made this test
+    # fail in CI for a reason no commit could fix.
+    #
+    # the scar (2026-08-27): several of these commands check a SIBLING INSTANCE
+    # by path -- `verify-containment-export.py --instance investigations` reads
+    # that instance's owner directory. On a developer machine the whole fleet is
+    # checked out, so they run. A CI runner has this repo and nothing else, so
+    # the checker correctly refuses with "instance owner path does not exist"
+    # and this assertion read that refusal as a containment defect. It was the
+    # last red on the floor's first green run.
+    #
+    # The checker already distinguishes the two cases in its own output, so the
+    # test honours that distinction instead of flattening it.
+    ABSENT_FLEET = "instance owner path does not exist"
+    failures = {}
+    unrunnable = {}
+    for command, result in results.items():
+        if result.returncode == 0:
+            continue
+        output = result.stdout + result.stderr
+        if ABSENT_FLEET in output:
+            unrunnable[command] = output
+        else:
+            failures[command] = output
+
+    # THE FLOOR, so this can never degrade into a test that skips everything and
+    # reports green. If the fleet is absent AND nothing else ran, the assertion
+    # below would be vacuous, which is the failure mode a lenient rule invites.
+    ran = [c for c, r in results.items() if r.returncode == 0]
+    assert ran or not unrunnable, (
+        "every containment command was unrunnable; this test proved nothing. "
+        f"unrunnable={sorted(unrunnable)}")
+
+    assert failures == {}, (
+        "containment checks failed for a real reason (not an absent sibling "
+        f"instance): {failures}")

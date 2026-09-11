@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.kipi.weekly-improve -- the registered trigger for the learning lane
+  (prd-morning-brief-learns-2026-09-01, issue mbl-weekly-improve-runner).
+
+  TEMPLATE. Install with:  bash q-system/.q-system/scripts/install-plist.sh weekly-improve
+  install-plist.sh renders __KIPI_REPO__, __HOME__ and __USER__ and bootstraps
+  the job; a literal path here would fan out to 25 instances with one
+  machine's home in it (kipi-push-upstream's tripwire refuses it anyway).
+
+  Monday 06:30 local, before the 07:00 brief, so the week's proposal is in the
+  founder's Slack when he opens it. USER/LOGNAME are set because
+  draft-vs-sent.py shells `claude -p` for the Gmail lookup and the keychain
+  needs them (measured on com.kipi.morning-brief).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.weekly-improve</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>__HOME__</string>
+    <key>USER</key><string>__USER__</string>
+    <key>LOGNAME</key><string>__USER__</string>
+    <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>ANTHROPIC_MODEL</key><string>claude-opus-5</string>
+  </dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__KIPI_REPO__/q-system/.q-system/scripts/weekly-improve.sh</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>30</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/weekly-improve.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/weekly-improve.err.log</string>
+</dict>
+</plist>

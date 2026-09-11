@@ -50,6 +50,27 @@ class TestListExcludedAndEliminated:
         assert eliminated[0]["name"] == "old-plugin"
 
 
+class TestPartialRegistryShape:
+    def test_registry_missing_known_keys_serves_defaults_not_crash(self, tmp_path):
+        # scar: the live instance-registry.json drifted to
+        # {eliminated, instances, skeleton, standalone} with no 'excluded'
+        # key; list_excluded()'s bare dict index crashed every reader and
+        # took the live kipi://instances resource down with it. Invisible
+        # until the suite could COLLECT (sp-dcd84af1): five files erroring
+        # at collection hid this failure too.
+        registry = {
+            "skeleton": {"path": str(tmp_path / "skeleton")},
+            "instances": [],
+            "standalone": [],
+        }
+        registry_path = tmp_path / "instance-registry.json"
+        registry_path.write_text(json.dumps(registry))
+        mgr = RegistryManager(registry_path)
+        assert mgr.list_instances() == []
+        assert mgr.list_excluded() == []
+        assert mgr.list_eliminated() == []
+
+
 class TestGetSkeleton:
     def test_get_skeleton_returns_config(self, tmp_registry):
         mgr = RegistryManager(tmp_registry)

@@ -69,7 +69,11 @@ def find_nested_repos(root: Path) -> set:
         parent = git.parent
         if parent.resolve() == root.resolve():
             continue
-        if any(d in SKIP_DIRS for d in parent.parts):
+        # Filters to the same parity as every other walker in this file (ASK-315).
+        # SKIP_DIRS alone was a partial application: is_vendored also knows about
+        # virtualenvs and vendor markers, and a repo checked out under a review tree
+        # is already dark to every consumer, so registering it as nested was noise.
+        if is_vendored(parent) or is_excluded_tree(parent, root):
             continue
         found.add(parent.resolve())
     return found
@@ -149,7 +153,7 @@ def walk(root: Path, *parts):
         return []
     out = []
     for p in base.rglob(parts[-1]):
-        if is_vendored(p):
+        if is_vendored(p) or is_excluded_tree(p, root):
             continue
         if p.is_file():
             out.append(p)
@@ -173,7 +177,7 @@ def collect_commands(root: Path) -> list:
         if not base.is_dir():
             continue
         for p in base.rglob("*.md"):
-            if is_vendored(p):
+            if is_vendored(p) or is_excluded_tree(p, root):
                 continue
             if base.name == "plugins" and "commands" not in p.parts:
                 continue
@@ -198,7 +202,9 @@ def collect_commands(root: Path) -> list:
 def collect_skills(root: Path) -> list:
     caps = []
     for p in root.rglob("SKILL.md"):
-        if is_vendored(p):
+        # A SKILL.md inside a review tree or a generated dir is a copy, not a skill
+        # this repo ships. Same predicate as every other walker here (ASK-315).
+        if is_vendored(p) or is_excluded_tree(p, root):
             continue
         text = read_text(p)
         name = p.parent.name
@@ -379,7 +385,29 @@ GENERATED_SURFACE_PREFIXES = ("q-system/output/",)
 # NOT a bare leading-dot rule. `.claude/` and `.q-system/` are this fleet's
 # PRIMARY wiring locations; treating every dotted component as scratch is what
 # made _witness_rank cite the wrong file (Fable A1).
-SCRATCH_DIR_RE = re.compile(r"^\.pr\d+rev|^\.prd-os$|^worktrees$|^review-trees$")
+# `.review-scratch/` AND `.review-tmp-*` ARE COMMITTED, AND WERE NOT MATCHED.
+# Measured 2026-08-14: `git ls-files` returns 20 tracked files under those two
+# prefixes, including full copies of linear-worker.sh, linear-claim.py and
+# pr-review-agent.sh. Because the pattern only knew `.prNNrev`, every one of
+# those copies was walked as a live surface -- emitted as a capability and
+# eligible to sync into a duplicate permanent Linear issue for a script that
+# already has one. Being COMMITTED is what made them invisible to this rule and
+# to a `git status` check alike.
+#
+# `.wt-`, `.fable-wt` and `.sana-tmp` are here for the same reason, not as
+# scope creep: repo-preflight.sh's `_shipping()` already excludes exactly that
+# set, and two scratch definitions that disagree is the defect this file keeps
+# rediscovering (sp-505140ae was the same shape in test-repo-preflight.sh).
+# Keep the two lists in step.
+#
+# STILL NOT a bare leading-dot rule. `.claude/` and `.q-system/` are this
+# fleet's PRIMARY wiring locations; treating every dotted component as scratch
+# is what made _witness_rank cite the wrong file (Fable A1). Each prefix here is
+# named on purpose.
+SCRATCH_DIR_RE = re.compile(
+    r"^\.pr\d+rev|^\.prd-os$|^worktrees$|^review-trees$"
+    r"|^\.review-|^\.wt-|^\.fable-wt|^\.sana-tmp"
+)
 
 
 def _is_excluded_part(part: str) -> bool:
@@ -390,12 +418,18 @@ def is_excluded_tree(p: Path, root: Path) -> bool:
     """Generated artifact or review scratch: not an engine, not a wiring surface,
     not a witness.
 
-    ONE predicate for all three consumers ON PURPOSE. Excluding a tree from only
-    some of them is the defect shape that has now recurred three times in this
-    file: engines excluded but still voting as surfaces (Fable B3), trees off the
-    surface but still collected as engines (review round 1 major), snapshots
-    skipped one way only. If a tree is not real, it is not real for any of the
-    three questions.
+    ONE predicate for EVERY consumer ON PURPOSE. Excluding a tree from only some of
+    them is the defect shape that recurred six times in this file in one night:
+    engines excluded but still voting as surfaces (Fable B3), trees off the surface
+    but still collected as engines (review round 1 major), snapshots skipped one way
+    only, has_test's own rglob left out of the very commit that claimed to
+    consolidate everything. If a tree is not real, it is not real for any question.
+
+    DO NOT WRITE A COUNT HERE (ASK-315). The previous version of this docstring said
+    "all three consumers" and shipped with a fourth, because the count came from
+    memory. `consumer-parity-check.py` now enumerates the consumers from this file's
+    AST and blocks on any walker that skips this predicate, so the census is taken by
+    a gate rather than recalled by a person.
     """
     try:
         rel = p.relative_to(root)
@@ -554,8 +588,37 @@ def collect_engines(root: Path) -> list:
     # shape survived inside the very change written to eliminate it. The count
     # of consumers is not fixed at three; grep is_excluded_tree before adding a
     # new walk over the repo.
+    # A DOCUMENT IS NOT A TEST, AND A MENTION IS NOT A PAIRING.
+    #
+    # This used to collect every file whose NAME starts with "test", regardless
+    # of extension, and `has_test` then asked whether the engine's stem appeared
+    # ANYWHERE inside one of those names as a substring. Two ways that goes wrong,
+    # and both were live:
+    #
+    #   1. A Markdown fixture (`test-something.md`, a DoR dump, a review note)
+    #      counted as a test. That is the Fable B2 shape one layer down -- a
+    #      document that merely NAMES a script was the thing certifying it tested.
+    #   2. The substring made `_sync_all` match `test_sync_all_helpers.md`, so
+    #      unwired copies of _sync_all.py reported LIVE.
+    #
+    # So only EXECUTABLE test files count. The substring match itself is kept
+    # deliberately -- see the scar below.
+    #
+    # TIGHTENING THE MATCH TO EXACT WAS TRIED AND REVERTED (codex, PR #164 r2).
+    # Requiring the test filename to equal the engine stem looks obviously right
+    # and is wrong: plugins/kipi-core/voiceloop/echo.py is genuinely tested by
+    # voiceloop/tests/test_voiceloop.py, which imports echo and exercises
+    # echo.prompt_echo and echo.opener_echo across ~20 lines. Its stem is
+    # "voiceloop", not "echo", so exact matching flipped a real, covered engine to
+    # UNWIRED -- a false alarm eligible for a permanent Linear issue, which is
+    # worse than the false LIVE it was meant to fix. One test file legitimately
+    # covers several engines, so filename equality cannot be the rule. The real
+    # signal is the CONTENT reference (test_sources); making that reliable is
+    # ASK-810, not a filename heuristic.
+    TEST_SUFFIXES = {".py", ".sh"}
     tests = {p.name for p in root.rglob("test*")
-             if p.is_file() and not is_vendored(p) and not is_excluded_tree(p, root)}
+             if p.is_file() and p.suffix in TEST_SUFFIXES
+             and not is_vendored(p) and not is_excluded_tree(p, root)}
 
     engines = []
     for p in root.rglob("*.py"):
@@ -623,7 +686,10 @@ def collect_domains(root: Path) -> list:
     for p in sorted(root.glob("q-*")):
         if not p.is_dir() or p.name in ("q-system",):
             continue
-        files = [f for f in p.rglob("*") if f.is_file() and not is_vendored(f)]
+        if is_vendored(p) or is_excluded_tree(p, root):
+            continue
+        files = [f for f in p.rglob("*")
+                 if f.is_file() and not is_vendored(f) and not is_excluded_tree(f, root)]
         caps.append({
             "name": f"domain {p.name}",
             "layer": L_DOMAIN,
@@ -703,6 +769,10 @@ def tag_origin(caps: list, root: Path, skeleton: Path) -> list:
 
 def build(root: Path, repo: str, skeleton: Path) -> dict:
     global _NESTED_REPOS
+    # Cleared FIRST: find_nested_repos now filters through is_vendored, which reads
+    # this global, so a value left over from a previous build() in the same process
+    # would decide which repos the next scan is allowed to see (ASK-315).
+    _NESTED_REPOS = set()
     _NESTED_REPOS = find_nested_repos(root)
     caps = []
     for fn in (collect_rules, collect_commands, collect_skills, collect_hooks,

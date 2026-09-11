@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-update-preservation-manifest.py",
+ "runner": "python3",
+ "timeout_s": 120
+}

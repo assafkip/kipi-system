@@ -1,8 +1,118 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
+
+CANONICAL_DIGEST = "canonical-digest.json"
+
+
+def _canonical_content_present() -> bool:
+    """True when the resolved canonical dir actually holds canonical content.
+
+    SEQUENCING GUARD (PRD finding-27). canonical-digest.json must become a REQUIRED
+    phase-1 file, but promoting it while paths.py still resolves canonical_dir to
+    {plugin-data}/instances/<name>/canonical -- a directory measured to hold ZERO
+    files -- turns every phase-1 run red on all 23 instances at once. So the
+    promotion is computed, not typed: optional until the path contract lands
+    (srsa-authoritative-path-contract), required automatically afterwards.
+
+    SCAR (Codex review of PR #240, blocker). The first version of this guard asked
+    "does canonical_dir resolve under the plugin-data base?" -- and
+    `KipiPaths.canonical_dir` is DEFINED as `{base}/instances/<name>/canonical`
+    where `{base}` is exactly `KIPI_PLUGIN_DATA` or `~/.kipi-system`. The answer
+    was therefore yes for every reachable configuration. It was a tautology
+    wearing a predicate's clothes: the required branch could only be entered by
+    monkeypatching this function, so the digest check shipped permanently optional
+    and the "make it able to fail" fix was inert in production.
+
+    Emptiness is the condition the docstring above actually names, and unlike a
+    path prefix it can be observed BOTH ways through the real code path: an empty
+    tree yields False (no outage today), a populated one yields True. When the
+    path contract repoints canonical_dir at a live tree, the promotion happens on
+    its own with no edit here.
+    """
+    from kipi_mcp.paths import KipiPaths
+
+    canonical = KipiPaths().canonical_dir
+    if not canonical.is_dir():
+        return False
+    return any(p.is_file() for p in canonical.iterdir())
+
+
+def canonical_digest_is_required() -> bool:
+    """The promotion predicate. Public so its BOTH branches can be tested; a
+    predicate whose false branch is never exercised reports success by default.
+
+    Fails toward NOT-required. A crash here must not be able to cause the outage
+    the sequencing guard exists to prevent.
+    """
+    return canonical_digest_requirement()[0]
+
+
+def canonical_digest_requirement() -> tuple[bool, str | None]:
+    """(is_required, resolution_error). THREE states, not two.
+
+    SCAR (Codex review of PR #240, major). This used to be a bare
+    `except Exception: return False`, which cannot tell these apart:
+
+      "the canonical tree is intentionally empty"  -> not required, correct
+      "path resolution CRASHED"                    -> we know nothing
+
+    Both silently selected the optional branch, so phase-1 verification passed
+    with the detector disabled. Measured against the repro the reviewer gave:
+
+      KIPI_REGISTRY=/definitely/missing KIPI_INSTANCE=prod
+      resolver: RAISED PathContractError
+      required: False        <- crash became "optional", quietly
+
+    That is the broad-except-hides-your-own-bug shape, and it got worse the moment
+    the resolver started raising by design. A resolution failure is now RETURNED so
+    the caller can make it an observable verification failure. Still no exception
+    escapes: an unattended verifier must not wedge, it must report.
+    """
+    from kipi_mcp.paths import PathContractError
+
+    try:
+        return _canonical_content_present(), None
+    except PathContractError as exc:
+        # kind SEPARATES a normal state from a misconfiguration, which is the whole
+        # point of the finding. "unregistered" is what the SKELETON and any fresh
+        # clone look like: there is no instance canonical tree and there is not
+        # supposed to be one, so the detector is legitimately optional and reding a
+        # run over it would wedge every non-instance checkout. Every other kind --
+        # a registry that is missing or unparseable, a duplicate row, a registered
+        # instance whose tree is absent -- means somebody has to fix something.
+        if getattr(exc, "kind", "unknown") == "unregistered":
+            return False, None
+        return False, str(exc)
+    except Exception as exc:  # unknown failure is still reportable, not silent
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def _canonical_digest_substantive(d: dict) -> bool:
+    """Reject a digest that parsed nothing, without asserting digest["valid"].
+
+    Calibrated against measurement, not intuition (2026-08-22):
+      * the LIVE tree yields decisions=10, objections=5, warnings=0 -> PASSES,
+        even though its valid is False and its talk_tracks are all empty because
+        those files were retired to pointer docs. Requiring talk_tracks here would
+        red every run against real data.
+      * the captured all-empty digest has decisions=[], objections=[], 5 warnings
+        -> FAILS.
+      * Codex finding-14's nonempty placeholder
+        {"talk_tracks":{"metaphor":"placeholder"},"objections":[],"decisions":[],...}
+        -> FAILS. Key-presence and "some field is nonempty" both accept it, which
+        is exactly why neither is used.
+    """
+    if not all(k in d for k in ("talk_tracks", "objections", "decisions")):
+        return False
+    if not isinstance(d.get("decisions"), list) or not d["decisions"]:
+        return False
+    if not isinstance(d.get("objections"), list) or not d["objections"]:
+        return False
+    return len(d.get("warnings") or []) < 3
 
 
 class BusVerifier:
@@ -29,6 +139,10 @@ class BusVerifier:
         optional = list(spec.get("optional", []))
         checks = spec.get("checks", {})
 
+        # REACHABILITY (PRD defect 1). canonical-digest.json sat in phase 1's `checks`
+        # dict but in neither `required` nor `optional`, so its lambda was never once
+        # invoked -- dead code that read as protection. Wire it into a list, promoting
+        # to required only when the path contract makes that survivable.
         day_name = datetime.strptime(date, "%Y-%m-%d").strftime("%A").lower()
         if phase == 4 and day_name in ("tuesday", "thursday"):
             if "tl-content.json" in optional:
@@ -39,6 +153,23 @@ class BusVerifier:
         results: list[dict] = []
         all_pass = True
 
+        # REACHABILITY (PRD defect 1). canonical-digest.json sat in phase 1's `checks`
+        # dict but in neither `required` nor `optional`, so its lambda was never once
+        # invoked -- dead code that read as protection. Wire it into a list, promoting
+        # to required only when the path contract makes that survivable.
+        # Sits AFTER results/all_pass on purpose: a path-resolution failure has to be
+        # recordable, and before this it could only silently pick `optional`.
+        if phase == 1 and CANONICAL_DIGEST not in required and CANONICAL_DIGEST not in optional:
+            is_required, resolve_error = canonical_digest_requirement()
+            if resolve_error:
+                results.append({
+                    "status": "fail", "type": "required", "file": CANONICAL_DIGEST,
+                    "detail": f"PATH RESOLUTION FAILED: {resolve_error}",
+                })
+                all_pass = False
+            else:
+                (required if is_required else optional).append(CANONICAL_DIGEST)
+
         for f in required:
             path = bus_day / f
             if not path.is_file():
@@ -48,8 +179,15 @@ class BusVerifier:
             try:
                 data = json.loads(path.read_text())
                 if "error" in data:
-                    results.append({"status": "warn", "type": "required", "file": f,
+                    # ERROR SHORT-CIRCUIT (PRD defect 3, the one the first draft missed).
+                    # This branch used to emit `warn` and leave all_pass untouched, so a
+                    # REQUIRED file containing {"error": "..."} produced pass:true -- and
+                    # it survived both the reachability and the substance fix, because it
+                    # returns before either is consulted. A required file that carries an
+                    # error produced nothing; that is a hard fail, same as MISSING.
+                    results.append({"status": "fail", "type": "required", "file": f,
                                     "detail": f"has error key ({data['error']})"})
+                    all_pass = False
                 elif f in checks and not checks[f](data):
                     results.append({"status": "fail", "type": "required", "file": f,
                                     "detail": "structure check failed"})
@@ -99,7 +237,9 @@ class BusVerifier:
                     "calendar.json": lambda d: "today" in d or "this_week" in d,
                     "gmail.json": lambda d: "emails" in d,
                     "notion.json": lambda d: "contacts" in d and "actions" in d,
-                    "canonical-digest.json": lambda d: "talk_tracks" in d and "objections" in d and "decisions" in d,
+                    # SUBSTANCE (PRD defect 2). Was key-presence only, which passes an
+                    # all-empty digest and passes Codex finding-14's nonempty placeholder.
+                    CANONICAL_DIGEST: _canonical_digest_substantive,
                 },
             },
             2: {

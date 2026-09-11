@@ -1,0 +1,5 @@
+{
+  "path": "q-system/.q-system/tests/test_voice_stop_gate_founder_text.py",
+  "runner": "pytest",
+  "timeout_s": 120
+}

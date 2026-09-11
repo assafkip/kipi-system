@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-kipi-update-owned-deletion-guard.sh",
+ "runner": "bash",
+ "timeout_s": 300
+}

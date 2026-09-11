@@ -31,8 +31,8 @@ There is no third way. You cannot hand-clear the gate.
 
 ## Deterministic backstops
 
-- A `deferred` triage disposition AUTO-creates an open spillover item
-  (findings_writer). Deferring is not a terminal state.
+- A `deferred` disposition AUTO-creates an open spillover item in BOTH findings
+  systems (findings_writer + issue_findings, sp-5bcfbfe8). Never terminal.
 - The fable-discipline lint blocks deferral language written into CODE without a
   capture (`# spillover-skip` acks an already-captured line).
 - `gates run` fails while any item is open (the enforcement of last resort).

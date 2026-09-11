@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # AUDHD anti-drop: open-loops.py surfaces every parked item. Pairs with open-loops.json registry.
+# spillover-skip -- every "deferred" string in this file is a TEST FIXTURE fed to the
+# surfacer, not a real parked item. Capturing them would put fake work in the ledger.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 S="$ROOT/q-system/.q-system/scripts/open-loops.py"
@@ -62,4 +64,29 @@ printf '%s\n' \
 OUT6="$(CLAUDE_PROJECT_DIR="$T3" python3 "$S" --report 2>&1)"
 echo "$OUT6" | grep -qi "not auto-classified" || fail "plainly-worded deferred not caught by catch-all (silent fall): $OUT6"
 
-echo "PASS: surfaces registry loops (incl seeded OSS PRs) + genuine deferred findings, excludes closed + folded bookkeeping, catch-all guarantees zero silent-fall, valid SessionStart JSON, never blocks on empty"
+# 7. already-captured: a plainly-worded deferred finding that the spillover ledger
+#    ALREADY holds (auto-created id `defer-<prd>-<finding-id>`, no-orphan-findings)
+#    is not in limbo -- the gate keeps it RED until resolved. Counting it in the
+#    catch-all re-surfaced tracked work as untracked every session (2026-08-14:
+#    3 deterministic-reading findings, 2 of them already RESOLVED, nagged forever).
+T4="$(mktemp -d)"; mkdir -p "$T4/q-system/memory" "$T4/.prd-os/findings"
+echo '{"loops":[]}' > "$T4/q-system/memory/open-loops.json"
+printf '%s\n' \
+ '{"id":"finding-3","disposition":"deferred","body":"captured already","rationale":"park this for now, real and out of scope here"}' \
+ '{"id":"finding-9","disposition":"deferred","body":"not captured","rationale":"park this for now, real and out of scope here"}' \
+ > "$T4/.prd-os/findings/prd-demo-2026-08-14-findings.jsonl"
+printf '%s\n' \
+ '{"id":"defer-prd-demo-2026-08-14-finding-3","source":"prd-demo-2026-08-14","description":"captured already","status":"open"}' \
+ > "$T4/.prd-os/spillover.jsonl"
+OUT7="$(CLAUDE_PROJECT_DIR="$T4" python3 "$S" --report 2>&1)"
+echo "$OUT7" | grep -q "1 deferred prd-os finding(s) not auto-classified" \
+  || fail "expected exactly 1 uncaptured finding in the catch-all (spillover-captured one must be excluded): $OUT7"
+
+# 7b. mutation guard: with NO ledger the same fixture must count BOTH, so section 7
+#     can fail for the reason it claims (a ledger-blind counter says 2).
+rm "$T4/.prd-os/spillover.jsonl"
+OUT7B="$(CLAUDE_PROJECT_DIR="$T4" python3 "$S" --report 2>&1)"
+echo "$OUT7B" | grep -q "2 deferred prd-os finding(s) not auto-classified" \
+  || fail "ledger-absent case must count both findings (check is decorative otherwise): $OUT7B"
+
+echo "PASS: surfaces registry loops (incl seeded OSS PRs) + genuine deferred findings, excludes closed + folded bookkeeping + spillover-captured, catch-all guarantees zero silent-fall, valid SessionStart JSON, never blocks on empty"

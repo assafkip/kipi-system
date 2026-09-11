@@ -17,18 +17,18 @@ When any of these happen, invoke the rca skill and write the analysis to
 
 ## The deterministic part
 
-The `rca-notify` hook (PostToolUse on Bash) watches command results and taps you
-to open an RCA when a test or run fails (non-zero exit, or FAIL / BLOCKED /
-Traceback in the output). The `rca-lint` hook validates every RCA doc on write.
-Both ship with the rca skill. The model decides; the hooks make sure the moment
-is not missed and the structure holds.
+Two executables hold the label above, both wired PostToolUse in the plugin's
+`hooks.json`. `plugins/kipi-core/skills/rca/scripts/rca-notify.py` (matcher Bash)
+TAPS you on a failed run -- non-zero exit, or FAIL / BLOCKED / Traceback -- and
+always exits 0, so it prompts and never blocks. Only
+`plugins/kipi-core/skills/rca/scripts/rca-lint.py` (Edit|Write) blocks: exit 2 on
+a malformed RCA or premortem doc. Neither gates the trigger; that is a model call.
 
 ## What the skill enforces
 
-Surface vs structural root cause, multi-factor with cause-type tags,
-evidence-backed verification ("ran X, got Y"), checkbox action items with
-owners, and blameless phrasing. Trivial bugs fixed in the same breath that never
-escaped a gate do not need an RCA.
+Surface vs structural root cause, multi-factor cause-type tags, evidence-backed
+verification ("ran X, got Y"), checkbox action items with owners, and blameless
+phrasing. A trivial bug fixed in the same breath, never escaping a gate, needs none.
 
 ## Relationship to other rules
 

@@ -16,6 +16,12 @@ would freeze all commits. Ratchet mode blocks only REGRESSION against the
 committed baseline (instruction-budget-baseline.json) and auto-tightens the
 baseline when the total shrinks. CLAUDE.md's own 200-line cap stays absolute
 (it passes today). The 514->300 trim is tracked as its own spillover item.
+
+prompt-only-enforcement-skip: THIS FILE IS A DETERMINISTIC BLOCKER (the pre-commit
+ratchet), and the guard fired on its PRE-EXISTING docstring above -- prose about
+baselines, blocks and caps -- the moment ASK-965 touched the file. Same
+vocabulary-vs-existence gap the enforced-claim lint was built to close: the guard
+matches words, and the words here describe the gate this file already is.
 """
 import json
 import os
@@ -37,11 +43,77 @@ BUDGET_TOTAL_ALWAYS_ON = 300
 CATCH_ALL_PATTERNS = {"**/*", "**/**", "**"}
 
 
+ENFORCEMENT_MARKER = "<!-- enforcement -->"
+# Same fence grammar the enforced-claim lint uses: a fence closes only on the
+# same character at the same length or longer, which is what makes a ````-fenced
+# example able to contain ```json without ending.
+_FENCE_RE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})[ \t]*([^`~\s]*)")
+
+
 def count_lines(path):
+    """Non-blank lines, EXCLUDING the machine-read enforcement block (ASK-965).
+
+    This budget measures always-on INSTRUCTION lines -- text a model loads and
+    reads every session. A rule's `<!-- enforcement -->` block is a fenced JSON
+    disposition for `enforced-claim-lint.py`; no model needs to read it, and
+    charging it here would mean either spending real instruction budget on JSON
+    nobody reads, or bumping the very ratchet that exists to stop that.
+
+    Measured when the first disposition pass landed: 4 blocks across always-on
+    rules moved the total 511 -> 545 (+34) against a target of 300.
+
+    Only the fence that FOLLOWS the marker is skipped, so an ordinary example
+    block in a rule still counts as the instruction text it is.
+    """
     if not os.path.exists(path):
         return 0
+    total = 0
+    outer_fence = None      # (char, length) of an enclosing example fence
+    block_fence = None      # length of the disposition fence being skipped
+    pending = False
     with open(path) as f:
-        return sum(1 for line in f if line.strip())
+        for line in f:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            fence = _FENCE_RE.match(stripped)
+
+            if block_fence is not None:
+                # Inside the disposition block. Closed by a fence of the same
+                # character at the same length or longer.
+                if fence and fence.group(1)[0] == "`" and len(fence.group(1)) >= block_fence:
+                    block_fence = None
+                continue
+
+            if fence:
+                char, length = fence.group(1)[0], len(fence.group(1))
+                if pending and char == "`" and fence.group(2) == "json" and outer_fence is None:
+                    # The disposition fence: skip its contents, count neither end.
+                    block_fence = length
+                    pending = False
+                    continue
+                pending = False
+                if outer_fence is None:
+                    outer_fence = (char, length)
+                elif char == outer_fence[0] and length >= outer_fence[1]:
+                    outer_fence = None
+                total += 1      # an ordinary fence line IS instruction text
+                continue
+
+            # MARKER ONLY AT TOP LEVEL. Reacting to it at any fence depth let a
+            # rule nest the marker plus an inner ```json inside a FOUR-backtick
+            # example: enforced-claim-lint ignores that marker (it is inside the
+            # outer fence) while this counter skipped the inner contents, so
+            # arbitrary instruction lines could be hidden from the budget
+            # (codex-adversarial review of 53a10d54, major). Two readers of one
+            # marker disagreeing about depth is the same drift class this PRD
+            # keeps finding; both now require depth 0.
+            if outer_fence is None and stripped == ENFORCEMENT_MARKER:
+                pending = True
+                continue
+            pending = False
+            total += 1
+    return total
 
 
 def parse_paths_from_frontmatter(path):

@@ -13,20 +13,19 @@
 - All actionable output follows AUDHD executive function rules (if enabled)
 - No filler phrases ("leverage," "innovative," "cutting-edge," "game-changing")
 - When something fails because an LLM misinterpreted instructions, the fix must be a deterministic script or code change
-- For any task involving more than a single file edit, state the planned approach and wait for OK
-- When fixing identified issues, fix exactly what was flagged. No scope expansion.
+- For any task involving more than a single file edit, state the planned approach and wait for OK. When fixing identified issues, fix exactly what was flagged. No scope expansion.
 - Never read or search files outside the current project directory without stating which directory and why
 - All product/system changes use the PRD template at `q-system/marketing/templates/prd.md`
 
 ## Commands
-- `/q-morning` - Full morning briefing (9-phase agent pipeline)
+- `/q-morning` - The day brief: one Slack message with today's calendar, the mail needing an answer, and his consulting board. What is owed today and which overnight jobs failed are still COLLECTED and no longer reach him: they are engineering signal and route to Sana's Linear triage (`founder-notifications.md`, 2026-08-10). Runs itself at 07:40 (`com.kipi.morning-brief`); the command just runs it early. A section that could not be read says COULD NOT READ, never "nothing". If no brief lands by 09:00 a separate job (`com.kipi.morning-brief-deadman`) says so. The 9-phase agent pipeline it replaced is RETIRED (decisions.md RULE-2026-08-30-A)
 - `/q-debrief` - Post-conversation extraction (highest priority)
 - `/q-calibrate` - Update canonical files
 - `/q-create` - Generate specific output (talk tracks, emails, slides, decks)
 - `/q-plan` - Review and prioritize actions
 - `/q-engage` - Social engagement mode
 - `/q-market-*` - Marketing system commands
-- `/q-draft` - Ad-hoc output generation
+- `/q-draft` - Ad-hoc output generation. `/improve` - the inverse: critique an outside idea against what this system already has; runs `plugins/kipi-core/skills/improve/scripts/improve_ground.py` first (`already-built` names the file or lesson, `adopt`, or `skip` when the roadmap classifier says what-to-build), corpora via `KIPI_LESSONS_CORPORA` each reported read / missing / unreadable; on demand only
 - `/q-wrap` - Evening health check
 - `/q-handoff` - Session continuity
 - `/q-research` - Anti-hallucination research mode

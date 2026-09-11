@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-kipi-update-plugin-excludes.sh",
+ "runner": "bash"
+}

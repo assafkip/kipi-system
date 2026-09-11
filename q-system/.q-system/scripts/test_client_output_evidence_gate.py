@@ -13,6 +13,7 @@ Run: python3 test_client_output_evidence_gate.py
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,15 @@ def _repo_with_ledger() -> Path:
     """A temp instance carrying one verified fact: the export has 1177 rows."""
     tmp = Path(tempfile.mkdtemp())
     (tmp / "q-thing" / "canonical").mkdir(parents=True)
+    # REGISTERED, because this fixture WRITES via EL.add and the write path refuses
+    # an unregistered repo (an unattended run must not append evidence to the wrong
+    # tree). The env var is picked up by the gate subprocess too. Reads do not need
+    # this; only the write does.
+    _registry = tmp / "registry.json"
+    _registry.write_text(json.dumps({"instances": [
+        {"name": "tmp-instance", "path": str(tmp), "instance_q_dir": "q-thing"}]}),
+        encoding="utf-8")
+    os.environ["KIPI_EVIDENCE_REGISTRY"] = str(_registry)
     EL.add(tmp, claim="Brightspeed export has 1177 rows", source="xlsx",
            command="openpyxl len(rows)", result="1177 rows, 332 hand-typed dates")
     return tmp

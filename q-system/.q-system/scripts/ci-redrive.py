@@ -158,9 +158,14 @@ its agent right now. The dispatching is the dispatcher's, and stays under the
 dispatcher's caps.
 
     scan            -> JSON of red agent PRs (read-only, no ledger write, no page)
-    redrive         -> read-only. prints `<issue>\t<signature>\t<head_sha>`,
+    redrive         -> read-only. prints
+                       `<issue>\t<signature>\t<head_sha>\t<branch>\t<pr>`,
                        exit 0. Nothing to offer -> exit 1. gh could not answer
                        -> exit 2. Escalates any candidate whose attempt is spent.
+                       <branch> is the head this selector OBSERVED, empty when
+                       the board did not confirm the head lives in this repo;
+                       the dispatcher's branch_guard reads it instead of asking
+                       gh a second time.
     mark-dispatched -> the atomic claim. exit 0 = dispatch it, exit 1 = do not.
 
 THE PROBE'S rc IS PART OF ITS ANSWER. `gh pr list` failing is not "no red PRs":
@@ -212,7 +217,41 @@ FAILED_CONCLUSIONS = {"FAILURE", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE",
 # The legacy commit-status half of the same rollup speaks a different vocabulary.
 FAILED_STATES = {"FAILURE", "ERROR"}
 
-PR_FIELDS = "number,headRefName,headRefOid,url,title,statusCheckRollup,isDraft"
+# isCrossRepository says whether the head branch lives in THIS repo or in a fork.
+# Every other field here is chosen by whoever opened the PR, including the two
+# `attribute()` reads (branch name and title), so on a public repo they are all
+# attacker-supplied. This one is GitHub's answer, not the author's, and it is the
+# only field that separates "an agent pushed this branch" from "a stranger named
+# their fork branch that". Requested for every consumer; read today by
+# review-redrive.branch_for (PR #211 round 1, MAJOR 2).
+PR_FIELDS = ("number,headRefName,headRefOid,url,title,statusCheckRollup,"
+             "isDraft,isCrossRepository")
+
+# Where a PR's head lives, as the BOARD answered it. Three values, not a boolean,
+# because "somebody else's repo" and "the board did not say" are different facts
+# and the readers pay opposite costs for confusing them. THIS is the authority --
+# review-redrive.py aliases these names rather than keeping a second copy, because
+# the field is requested here and two hand-maintained copies of one trust rule is
+# how a surface ends up owned by neither (PR #211 round 3, MAJOR 1).
+SAME_REPO = "same-repo"
+FORK = "fork"
+UNSTATED = "unstated"
+
+
+def head_provenance(pr_obj):
+    """SAME_REPO / FORK / UNSTATED for one PR's head.
+
+    ABSENCE IS NOT CONFIRMATION. `isCrossRepository` is requested in PR_FIELDS,
+    so a PR arriving without it is a board that did not answer the question, not
+    a board answering same-repo. A caller that cannot tell those apart has to
+    pick one cost for both, and the two callers here want opposite ones.
+    """
+    flagged = pr_obj.get("isCrossRepository")
+    if flagged is False:
+        return SAME_REPO
+    if flagged is None:
+        return UNSTATED
+    return FORK
 
 
 class GhUnavailable(Exception):
@@ -365,6 +404,38 @@ def signature(names):
 def candidates(repo_dir):
     out = []
     for pr in list_prs(repo_dir):
+        # A FORK IS NEVER A CANDIDATE (PR #211 round 3, MAJOR 1). This repo is
+        # PUBLIC. `attribute` below reads exactly two facts -- the head branch
+        # name and the PR title -- and on a fork the person who opened the PR
+        # chose both. So anyone could open `sana/ask-358` titled "... (ASK-358)"
+        # against this repo, let its CI go red, and have that PR selected as the
+        # machine's work for a real Linear issue: the agent gets handed back an
+        # issue on the strength of a stranger's branch, and the once-per-PR
+        # attempt for the REAL PR is spent on it.
+        #
+        # The field was requested in PR_FIELDS and then never read, which is the
+        # worst of the three states: the query looks defended and answers nothing.
+        # It is not a null check. `isCrossRepository` is the only field in the
+        # rollup that GitHub asserts rather than the author, and it is the whole
+        # boundary between "an agent pushed this branch" (which needs push
+        # access) and "a stranger named their fork branch that" (which needs a
+        # GitHub account).
+        #
+        # UNSTATED IS KEPT, BUT LOSES ITS BRANCH -- the same asymmetry
+        # review-redrive.candidates() takes, from the same predicate. Dropping
+        # every unconfirmed head would let one board that stops returning the
+        # field switch the whole red-CI lane off silently, which is the sibling
+        # defect class. So a CONFIRMED fork is dropped, and an unconfirmed head
+        # is still worked but may not ROUTE the work: field 4 of the offer goes
+        # out empty and branch_guard falls back to the naming rule, which is the
+        # legitimate branch, never a head we could not vouch for.
+        provenance = head_provenance(pr)
+        if provenance == FORK:
+            sys.stderr.write(
+                "ci-redrive: PR #%s head %s lives in a fork -- not a candidate, "
+                "its branch name and title are the author's to choose\n"
+                % (pr.get("number"), pr.get("headRefName")))
+            continue
         attributed = attribute(pr)
         if attributed is None:
             continue                       # not an agent PR, or not attributable
@@ -378,7 +449,7 @@ def candidates(repo_dir):
             "issue_source": source,
             "pr": pr.get("number"),
             "url": pr.get("url"),
-            "branch": pr.get("headRefName"),
+            "branch": pr.get("headRefName") if provenance == SAME_REPO else None,
             "head_sha": pr.get("headRefOid") or "",
             "failing_checks": failing,
             "signature": signature(failing),
@@ -403,6 +474,23 @@ def _ledger_claim_rc(path, issue, flag):
         [sys.executable, LEDGER_SCRIPT, path, "claim-flag", issue, flag],
         capture_output=True, text=True)
     if proc.returncode not in (0, 1):
+        sys.stderr.write("ci-redrive: ledger refused `%s` for %s: %s\n"
+                         % (flag, issue, (proc.stderr or "").strip()[:200]))
+    return proc.returncode
+
+
+def _ledger_claim_rc_uncapped(path, issue, flag):
+    """Raw rc of `claim-flag-uncapped`: 0 claimed, 1 already, 4 parked, 2/3 unwritten.
+
+    Separate from `_ledger_claim_rc` because the caller must distinguish 4 from
+    the rest; folding it into a bool here would put the park back in the same
+    bucket as "someone else owns it" and lose the operator line that names how to
+    un-park it.
+    """
+    proc = subprocess.run(
+        [sys.executable, LEDGER_SCRIPT, path, "claim-flag-uncapped", issue, flag],
+        capture_output=True, text=True)
+    if proc.returncode not in (0, 1, 4):
         sys.stderr.write("ci-redrive: ledger refused `%s` for %s: %s\n"
                          % (flag, issue, (proc.stderr or "").strip()[:200]))
     return proc.returncode
@@ -495,6 +583,96 @@ def attempts_path():
     return os.environ.get("KIPI_ATTEMPTS", DEFAULT_ATTEMPTS)
 
 
+# --- the cap-out park, read by BOTH redrives ---------------------------------
+# ONE DEFINITION, TWO CALLERS (ASK-871), for the same reason `is_reviewer_slot`
+# lives here: review-redrive.py imports this module rather than keeping its own
+# copy, and two hand-maintained copies of a refusal rule is how a state ends up
+# owned by both consumers or by neither.
+#
+# THE FACT IT READS: converge.sh stopped this ISSUE at its round cap and wrote it
+# to the ledger. Every other bound in this loop keys on a PR and a head sha,
+# which is deliberate -- a PR that pushes a real fix must earn a fresh attempt --
+# and it is exactly why nothing caught ASK-830 on 2026-08-16: each of its six
+# rounds moved the head, so every per-sha cap read as fresh while the ISSUE had
+# already been given up on. This is the missing axis, not a tightening of that one.
+
+CAPOUT_CLEAR = ("python3 q-system/.q-system/scripts/attempts-ledger.py "
+                "%s clear-capout %s")
+
+
+def capout(path, issue):
+    """The recorded reason converge gave up on this issue, or "" if it has not.
+
+    HONEST BOUNDARY: `ledger_get` answers "" both for "no cap-out" and for a
+    ledger it could not read at all, so a ledger that will not parse reads as
+    "not capped" and the redrive proceeds. That is the pre-existing direction of
+    every budget in this file (the `get` op swallows a read failure and returns
+    the default), not something this gate introduces -- but it means the silence
+    of this function is not proof the issue was never capped.
+    """
+    if not ledger_get(path, issue, "capout"):
+        return ""
+    return ledger_get(path, issue, "capout_why") or "no reason recorded"
+
+
+def capout_skip(path, issue, who, pr):
+    """True if this issue is parked; writes the operator line saying so.
+
+    Says how to UN-park it in the same breath. A refusal a human cannot reverse
+    is a permanent park, and the founder reading this line is the only thing
+    standing between a parked issue and the 29-hour outage.
+    """
+    why = capout(path, issue)
+    if not why:
+        return False
+    sys.stderr.write(
+        "%s: %s PR #%s -- converge already gave up on this issue (%s). Not "
+        "re-entering it until a human clears the cap-out: %s\n"
+        % (who, issue, pr, why, CAPOUT_CLEAR % (path, issue)))
+    return True
+
+
+def claim_unless_capped(path, issue, flag, who, pr=""):
+    """The atomic claim, refusing a parked issue in the SAME transaction.
+
+    True only when this run now owns the attempt. Replaces `ledger_claim` at both
+    mark-dispatched call sites (codex on PR #210, major): `capout_skip` guards the
+    read-only OFFER, and the claim that actually spends the attempt asked only
+    whether the flag was free. kipi-dispatch.sh does real work between the two --
+    a ps snapshot, a converge-live probe, a budget read -- so a cap-out landing in
+    that window authorized the dispatch it was written to stop.
+
+    Reading capout here, before calling claim-flag, would only shrink the window.
+    Two subprocesses cannot be atomic against a third writer, so the refusal is
+    delegated to the ledger's `claim-flag-uncapped`, which answers under the same
+    flock that sets the flag. rc 4 is the park; anything else non-zero is the
+    pre-existing "someone else owns it, or nothing was written" answer.
+
+    ONE DEFINITION, TWO CALLERS, like `capout_skip` and `is_reviewer_slot` above
+    and for the same reason: the two redrives must refuse the same parked issue.
+    """
+    rc = _ledger_claim_rc_uncapped(path, issue, flag)
+    if rc == 0:
+        return True
+    if rc == 4:
+        # LOUD, not quiet. A skipped dispatch nobody can see is the silent-park
+        # failure mode; the founder was already paged once by converge's exit-2,
+        # so this line is for whoever reads the dispatch log -- and it carries the
+        # clearing command because a park with no exit is the worse outage.
+        sys.stderr.write(
+            "%s: %s%s -- converge already gave up on this issue (%s). NOT "
+            "dispatching, and the attempt is NOT spent. Clear it with: %s\n"
+            % (who, issue, (" PR #%s" % pr) if pr else "",
+               capout(path, issue) or "no reason recorded",
+               CAPOUT_CLEAR % (path, issue)))
+        return False
+    sys.stderr.write(
+        "%s: the attempt for %s%s was already claimed (or the ledger could not be "
+        "written) -- not dispatching.\n"
+        % (who, issue, (" PR #%s" % pr) if pr else ""))
+    return False
+
+
 def cmd_redrive(cands):
     """READ-ONLY. Offers one pick; the dispatcher spends it via mark-dispatched."""
     path = attempts_path()
@@ -511,6 +689,13 @@ def cmd_redrive(cands):
                 "live -- not offering it and not escalating it this run\n"
                 % (cand["issue"], cand["pr"]))
             continue
+        # AND BEFORE THE ESCALATION TOO, same reasoning as the gate above. A
+        # capped-out issue has ALREADY paged the founder from converge.sh's
+        # exit-2 path, with the clearing command in the line; escalating here
+        # would be a second alarm about one unchanged fact 15 minutes later,
+        # which is the cry-wolf failure that trains the reader to skim.
+        if capout_skip(path, cand["issue"], "ci-redrive", cand["pr"]):
+            continue
         if ledger_get(path, cand["issue"], redrive_flag(cand)):
             escalate(path, cand)           # machine tier already spent on this
             continue
@@ -522,18 +707,31 @@ def cmd_redrive(cands):
         "ci-redrive: %s PR #%s red on %s -- offering it back to %s\n"
         % (chosen["issue"], chosen["pr"], ", ".join(chosen["failing_checks"]),
            chosen["agent"]))
-    print("%s\t%s\t%s" % (chosen["issue"], chosen["signature"],
-                          chosen["head_sha"]))
+    # FIELDS 4 AND 5 ARE THE OBSERVATION, NOT A RE-QUERY (PR #211 round 3,
+    # MAJOR 2). The selector has just READ the branch the chosen PR is on; the
+    # dispatcher's branch_guard used to throw that away and ask gh the same
+    # question again, which opens a window between the two answers. If the PR
+    # closes in between, the second answer is "no open PR", the guard takes its
+    # fail-open arm, and the work lands on exactly the branch the guard exists
+    # to reject. A guard whose whole thesis is "refuse a dispatch that would land
+    # on a branch no open PR is on" must not itself fail open on a stale read.
+    #
+    # EMPTY IS A REAL VALUE HERE. `candidates` leaves the branch empty for an
+    # UNSTATED head, and the dispatcher reads an empty field 4 as "no earlier
+    # observation" and takes the fail-open arm on purpose -- see candidates().
+    print("%s\t%s\t%s\t%s\t%s" % (chosen["issue"], chosen["signature"],
+                                    chosen["head_sha"], chosen["branch"] or "",
+                                    chosen["pr"]))
     return 0
 
 
 def cmd_mark_dispatched(issue, sig, head_sha):
     """The atomic claim. 0 = it is yours to dispatch, 1 = it is not."""
     path = attempts_path()
-    if not ledger_claim(path, issue, "ci_redrive_%s" % sig):
-        sys.stderr.write(
-            "ci-redrive: %s attempt for signature %s was already claimed (or the "
-            "ledger could not be written) -- not dispatching.\n" % (issue, sig))
+    # NOT `ledger_claim`. The park has to be refused inside the claim's own
+    # transaction, not read before it -- see claim_unless_capped.
+    if not claim_unless_capped(path, issue, "ci_redrive_%s" % sig,
+                               "ci-redrive [signature %s]" % sig):
         return 1
     # Order matters: record WHICH head first, then the marker saying a head was
     # recorded at all. The reverse order lets a failure between the two claim

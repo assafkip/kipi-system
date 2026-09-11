@@ -1,0 +1,4 @@
+{
+ "path": "plugins/kipi-design/hooks/test_dogfood_gate.py",
+ "runner": "python3"
+}

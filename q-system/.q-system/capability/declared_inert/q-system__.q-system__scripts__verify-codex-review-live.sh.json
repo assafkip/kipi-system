@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/verify-codex-review-live.sh",
+ "reason": "live-environment receipt check: asserts against the launchd plist and the live checkout, so it fails by design on any unmerged branch and cannot be an expected_test. Operator-invoked at PR landing.",
+ "spillover_id": "sp-b249b1b1"
+}

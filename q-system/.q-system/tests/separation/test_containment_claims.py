@@ -212,14 +212,56 @@ def rsync_excludes(segment):
             value = tokens[index + 1]
         if value is not None:
             values.add(normalize_operand(value).rstrip("/"))
+    # ASK-608. The updater no longer spells its excludes at the call site: they
+    # come from `$(rsync_owned_excludes)`, one helper feeding four consumers
+    # after the list drifted across duplicated sites. A parser that only knows
+    # literal `--exclude=` flags reads that as ZERO excludes and reports a
+    # correctly-hardened command as unprotected.
+    #
+    # Follow the indirection rather than accept a green on an empty set. The
+    # helper emits one --exclude per INSTANCE_OWNED_SUBTREES entry, so the array
+    # IS the exclude list; read it from the shipping script so the two cannot
+    # drift. This is the same "assert the behaviour, not the spelling" rule the
+    # flag checks already follow -- a consolidation is a spelling change.
+    if "rsync_owned_excludes" in segment or "pathspec_owned_excludes" in segment:
+        values |= owned_subtrees()
     return values
 
 
-def rsync_command(updater, source):
-    """The single rsync invocation that READS `source`, however it is written.
+def owned_subtrees():
+    """INSTANCE_OWNED_SUBTREES, read from kipi-update.sh.
 
-    Exactly one is required: two would make the assertions below ambiguous
-    about which invocation actually carries the excludes.
+    Derived, not restated: a copy here would pass while the updater's real list
+    lost an entry, which is precisely the drift the helper was introduced to
+    stop.
+    """
+    text = UPDATER.read_text(encoding="utf-8")
+    block = re.search(r'^INSTANCE_OWNED_SUBTREES=\((.*?)^\)',
+                      text, re.M | re.S)
+    assert block, "INSTANCE_OWNED_SUBTREES not found in kipi-update.sh"
+    entries = {
+        line.strip().rstrip("/")
+        for line in block.group(1).splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+    assert entries, "INSTANCE_OWNED_SUBTREES parsed as empty"
+    return {"/" + entry for entry in entries}
+
+
+def rsync_commands(updater, source):
+    """EVERY rsync invocation that READS `source`, however it is written.
+
+    ASK-608. This used to demand exactly one, on the reasoning that two would be
+    "ambiguous about which invocation carries the excludes". The deletion guard
+    then added a second read of the same archive -- an `-ain --delete` probe
+    piped into kipi-update-deletion-guard.py, which is what decides whether the
+    real transfer may run at all -- and the gate reported RED for a hardening
+    change.
+
+    Checking EVERY invocation removes the ambiguity properly. Requiring there be
+    only one removed it by forbidding a shape the updater legitimately needs, and
+    it was also weaker: had the guard's probe been the one MISSING the excludes,
+    the old form would have raised on the count and never looked at the flags.
     """
     wanted = normalize_operand(source)
     matches = [
@@ -227,6 +269,15 @@ def rsync_command(updater, source):
         for segment in shell_commands(updater)
         if rsync_source_operand(segment) == wanted
     ]
+    assert matches, f"no rsync invocation reads {source}"
+    return matches
+
+
+def rsync_command(updater, source):
+    """Exactly one invocation. Kept for the locator's own fixtures below, which
+    are single-command by construction, and for the two-command cases that
+    assert the locator does not silently merge them."""
+    matches = rsync_commands(updater, source)
     assert len(matches) == 1, (
         f"expected exactly one rsync invocation reading {source}, "
         f"found {len(matches)}"
@@ -269,16 +320,35 @@ def assert_preventive_contract(contract):
 
 def assert_updater_evidence():
     updater = UPDATER.read_text(encoding="utf-8")
-    real_command = rsync_command(updater, '"$ARCHIVE_TMP/q-system/"')
+    # EVERY invocation reading the archive, not one. The deletion guard added a
+    # second read of the same source -- an `-ain --delete` probe piped into
+    # kipi-update-deletion-guard.py, which decides whether the real transfer may
+    # run -- and demanding exactly one reported RED for that hardening (ASK-608).
+    real_commands = rsync_commands(updater, '"$ARCHIVE_TMP/q-system/"')
     dry_command = rsync_command(updater, '"$DRY_TMP/q-system/"')
 
     # Assert the BEHAVIOUR, not the spelling: `--archive` and `-a`, `-ain` and
     # `-a -i -n`, `--exclude=X` and `--exclude X` all mean the same thing, and a
     # gate that only knows one spelling reports RED for a rename.
-    real_flags = rsync_flags(real_command)
-    assert "-a" in real_flags or "--archive" in real_flags
-    assert "--delete" in real_flags
-    assert "/canonical" in rsync_excludes(real_command)
+    #
+    # The exclude check runs on EVERY reader of the archive. That is the point of
+    # the change and it is strictly stronger: if the guard's probe were the one
+    # missing `/canonical`, the old single-command form would have raised on the
+    # COUNT and never looked at the excludes at all.
+    for command in real_commands:
+        flags = rsync_flags(command)
+        assert "-a" in flags or "--archive" in flags
+        assert "--delete" in flags
+        assert "/canonical" in rsync_excludes(command), (
+            f"an rsync reading the archive does not exclude canonical: {command}"
+        )
+
+    # At least one must be the real transfer: a run with only dry probes would
+    # satisfy the loop above while copying nothing.
+    assert any(
+        "-n" not in rsync_flags(c) and "--dry-run" not in rsync_flags(c)
+        for c in real_commands
+    ), "no non-dry rsync reads the archive; the real transfer is missing"
 
     dry_flags = rsync_flags(dry_command)
     assert "-a" in dry_flags or "--archive" in dry_flags

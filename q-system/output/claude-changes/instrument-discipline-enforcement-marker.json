@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "slug": "instrument-discipline-enforcement-marker",
+  "reason": "enforced-claim-lint scan_blocks only reads a json fence that sits directly under the literal line <!-- enforcement -->. The block landed without that line, so C1 still fired. Additive: one insert_before.",
+  "requires": {
+    "files_present": [
+      ".claude/rules/instrument-discipline.md"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/rules/instrument-discipline.md",
+      "op": "insert_before",
+      "anchor": "```json\n[\n  {\n    \"clause\": \"Instrument discipline",
+      "insert": "<!-- enforcement -->\n",
+      "reason": "The marker line is what makes the fence an enforcement block instead of an example."
+    }
+  ]
+}

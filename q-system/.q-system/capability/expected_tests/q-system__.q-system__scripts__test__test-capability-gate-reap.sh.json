@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-capability-gate-reap.sh",
+ "runner": "bash"
+}

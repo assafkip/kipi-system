@@ -72,6 +72,11 @@ mkdir -p "$REPO_FIXTURE/q-system/.q-system/scripts"
 git -C "$REPO_FIXTURE" init -q 2>/dev/null || { echo "FATAL: could not git-init the fixture repo" >&2; exit 1; }
 cp "$AGENT" "$REPO_FIXTURE/q-system/.q-system/scripts/pr-review-agent.sh"
 cp "$LIB" "$REPO_FIXTURE/q-system/.q-system/scripts/pr-verdict-lib.sh"
+# The reviewer sources this too (ASK-738); without it every case refuses before
+# writing a record and the usable key reads as a constant rather than a bug here.
+# From the SCRIPTS DIR, not from $(dirname "$LIB"): $LIB is already a copy in a
+# temp dir, so deriving the sibling from it looks right and resolves to nothing.
+cp "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/repo-slug-lib.sh" "$REPO_FIXTURE/q-system/.q-system/scripts/repo-slug-lib.sh"
 AGENT="$REPO_FIXTURE/q-system/.q-system/scripts/pr-review-agent.sh"
 
 # --- stubs: the engine and gh are the seams, and both are stubbed ------------

@@ -23,7 +23,18 @@ fi
 
 # Safety check: warn if instance-specific content might be in the subtree
 echo "=== Pre-push safety check ==="
-INSTANCE_CONTENT=$(grep -ril "KTLYST\|ktlyst\|CISO\|re-breach\|Assaf\|/Users/" "$PREFIX/" 2>/dev/null | grep -v ".git/" | head -5 || true)
+# The term list lives in q-system/.q-system/scripts/tripwire-terms.txt, shared with
+# kipi-promote.sh's scrub (issue lr-promote-scrub-source); it used to be inline here.
+# The tripwire file itself carries the terms, so it is excluded from its own scan.
+TRIPWIRE_FILE="$PREFIX/.q-system/scripts/tripwire-terms.txt"
+# one python read, not a grep pipeline: under set -e + pipefail a missing file
+# aborted the pipeline before the fail-closed message below could print
+TRIPWIRE="$(python3 -c 'import sys; print("|".join(l.strip() for l in open(sys.argv[1]) if l.strip() and not l.startswith("#")))' "$TRIPWIRE_FILE" 2>/dev/null || true)"
+[ -n "$TRIPWIRE" ] || { echo "ERROR: tripwire term list missing or empty at $TRIPWIRE_FILE (fail-closed)"; exit 1; }
+# -E: the terms are joined with '|', which basic grep reads as a literal pipe.
+# Codex (issue lr-promote-scrub-source) caught the first version matching
+# nothing at all; test_push_script_blocks_a_planted_term pins this.
+INSTANCE_CONTENT=$(grep -rilE "$TRIPWIRE" "$PREFIX/" 2>/dev/null | grep -v ".git/" | grep -v "tripwire-terms.txt" | head -5 || true)
 if [ -n "$INSTANCE_CONTENT" ]; then
   echo "WARNING: Instance-specific content found in $PREFIX/:"
   echo "$INSTANCE_CONTENT"
@@ -38,7 +49,7 @@ echo ""
 # === Lessons read-only guard (lessons are skeleton-authored; instances are consumers) ===
 git fetch -q "$SKELETON_REMOTE" "$SKELETON_BRANCH" 2>/dev/null || true
 if ! python3 - "$PREFIX" <<'PYGUARD'
-import subprocess, sys
+import json, subprocess, sys
 prefix = sys.argv[1]
 def lessons(ref):
     try:
@@ -61,14 +72,72 @@ for line in st.splitlines():
     if "/lessons/" in ("/" + p) and p.endswith(".md") and not p.endswith("/README.md"):
         sys.stderr.write("uncommitted change under lessons/: " + p + "\n")
         sys.exit(1)
+def receipts():
+    """Promotion receipts, read from the SKELETON at FETCH_HEAD, never from this
+    instance's tree (issue lr-promote-receipt-hash-binding; the location rule is
+    issue 11). Only rows with status done count, keyed by the guard's own
+    lessons/<name> form and holding the set of blessed blobs. A receipt that
+    cannot be read means no receipt: fail-closed."""
+    import os
+    if os.environ.get("KIPI_PROMOTIONS_FILE"):
+        # No override, under pytest or anywhere else: an environment variable is
+        # the caller's to set, so a "pytest-only" receipts file would be a way to
+        # bless your own lesson (Codex adversarial, issue 11). Tests use real
+        # repos and FETCH_HEAD. The variable is named and ignored.
+        sys.stdout.write("KIPI_PROMOTIONS_FILE is never honoured; receipts are read from the skeleton at FETCH_HEAD\n")
+    try:
+        raw = subprocess.run(["git", "show", "FETCH_HEAD:q-system/.q-system/promotions.receipts"],
+                             capture_output=True, text=True, check=True).stdout
+    except Exception:
+        return {}
+    out = {}
+    for line in raw.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue  # a damaged line is no receipt, never a traceback that blocks every push
+        if row.get("status") != "done" or not isinstance(row.get("blob"), str) or not row["blob"]:
+            continue
+        base = row.get("base", "")
+        if not isinstance(base, str):
+            continue
+        p = "/" + str(row.get("path", ""))
+        if "/lessons/" not in p:
+            continue
+        out.setdefault("lessons/" + p.split("/lessons/", 1)[1], set()).add((row["blob"], base))
+    return out
+def blob_at(ref, path):
+    """The blob of one path at a ref, "" when absent."""
+    try:
+        out = subprocess.run(["git", "ls-tree", ref, "--", path], capture_output=True, text=True, check=True).stdout.split()
+        return out[2] if len(out) >= 3 else ""
+    except Exception:
+        return ""
+# The receipts file itself ships inside the pushed subtree, so an instance could
+# append its own row and push it (Claude adversarial review, issue 9). Receipts
+# are skeleton-authored: any instance-side difference in that file refuses.
+RECEIPTS_PATH = prefix.rstrip("/") + "/.q-system/promotions.receipts"
+if blob_at("HEAD", RECEIPTS_PATH) != blob_at("FETCH_HEAD", RECEIPTS_PATH):
+    sys.stderr.write("promotions.receipts differs from skeleton: receipts are skeleton-authored, run kipi update\n")
+    sys.exit(1)
 inst = lessons("HEAD") or {}
 if inst:
     skel = lessons("FETCH_HEAD")
     if skel is None:
         sys.stderr.write("cannot verify lessons/ against the skeleton (fetch failed); refusing push to prevent a lessons leak (fail-closed)\n")
         sys.exit(1)
+    blessed = receipts()
     for rel, blob in inst.items():
         if skel.get(rel) != blob:
+            # a divergent lesson passes ONLY on a done receipt for exactly this blob
+            # whose recorded base is what the skeleton holds NOW: once the skeleton
+            # moved past the promotion the receipt is spent, and a stale instance
+            # cannot push the receipted version back over the newer one
+            if (blob, skel.get(rel, "")) in blessed.get(rel, ()):
+                sys.stdout.write("promotion receipt honoured: " + rel + " (blob " + blob[:12] + ")\n")
+                continue
             sys.stderr.write("lessons/ differs from skeleton: " + rel + "\n")
             sys.exit(1)
     for rel in skel:

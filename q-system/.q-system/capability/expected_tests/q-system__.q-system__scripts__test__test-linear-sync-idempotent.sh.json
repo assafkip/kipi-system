@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-linear-sync-idempotent.sh",
+ "runner": "bash"
+}

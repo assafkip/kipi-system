@@ -7,24 +7,52 @@
 
 	<key>EnvironmentVariables</key>
 	<dict>
-		<key>KIPI_REPO</key>
+		<!-- NO KIPI_REPO HERE, DELIBERATELY (codex major, PR #122 r1).
+		     ProgramArguments below runs kipi-dispatch-pinned.sh, and the wrapper
+		     SETS KIPI_REPO to its own dedicated checkout before exec'ing
+		     dispatch. Declaring it here would override that with the shared
+		     checkout humans park on -- which is the 22.5h outage the wrapper
+		     exists to end, reintroduced through the config instead of the code.
+		     The wrapper reads KIPI_REPO_MAIN (defaulting to ~/projects/kipi-system)
+		     for the fetch and the object store; that is a different variable on
+		     purpose so the two roles cannot be confused. -->
+		<key>KIPI_REPO_MAIN</key>
 		<string>__KIPI_REPO__</string>
 		<!-- Same PATH as com.kipi.openloops-heartbeat, which is the proven
 		     working `claude -p` under launchd. gh and claude both live in
 		     /opt/homebrew/bin; without it the dispatcher pages and exits. -->
 		<key>PATH</key>
 		<string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-		<!-- ONE at a time, deliberately. Each run spawns a `claude -p` agent
-		     plus a reviewer, so this is also the spend ceiling -- but the real
-		     reason is conflicts. The dispatcher picks by readiness and has NO
+		<!-- HOW MANY RUNS AT ONCE, FLEET-WIDE. This was 1, and the reason was
+		     conflicts, not spend: the dispatcher picks by readiness and has NO
 		     idea which files an issue touches, so two concurrent runs can land
 		     on the same file (observed 2026-07-28: the next pick, ASK-223,
 		     edits the same linear-worker.sh region as the live ASK-222).
 		     Unattended, that yields a pile of conflicted PRs, which is worse
-		     than half the throughput. Raise this only once dispatch is
-		     file-disjointness aware (sp-see dispatch-conflict item). -->
+		     than half the throughput. The old comment here said to raise this
+		     only once dispatch is file-disjointness aware. That condition has
+		     been MET IN PART and the number reflects exactly the part.
+
+		     ASK-804 made the rule structural rather than numeric: a repo with
+		     a live run is DEPRIORITISED, so with several dispatchable repos the
+		     work spreads one per repo. Two runs in different repos share no
+		     working tree, no branch namespace and no file, so the conflict
+		     argument says nothing about them.
+
+		     IT IS A PREFERENCE, NOT A GUARANTEE. When only one repo is
+		     dispatchable, dispatch takes it anyway rather than idling -- an
+		     absolute rule re-created the ready-queue starvation that
+		     test-ci-redrive 14g exists to prevent. So same-repo overlap is
+		     still POSSIBLE at this cap, and this number is what bounds it.
+		     The open decision is ASK-811.
+
+		     3 IS DERIVED, NOT PICKED. instance-registry.json carries exactly
+		     two dispatch.enabled instances, plus the home repo, which selection
+		     treats as its own dispatchable target. Three repos, one run each. A
+		     fourth slot could never be filled by a conflict-free pick, so
+		     raising this further buys no throughput and only loosens spend. -->
 		<key>KIPI_DISPATCH_MAX</key>
-		<string>1</string>
+		<string>3</string>
 
 		<!-- THE SPEND DIAL. Founder-set 2026-07-28.
 		     How many issues may be STARTED per UTC day. One issue costs up to
@@ -35,9 +63,35 @@
 		     how many run AT ALL. Without it the heartbeat is unbounded.
 		     Raise or lower this number, then:
 		       launchctl unload ~/Library/LaunchAgents/com.kipi.dispatch.plist
-		       launchctl load   ~/Library/LaunchAgents/com.kipi.dispatch.plist -->
+		       launchctl load   ~/Library/LaunchAgents/com.kipi.dispatch.plist
+
+		     RAISED 4 -> 12 (ASK-804). 4 was set when ONE repo could be worked
+		     at a time, and it is a SECOND, INDEPENDENT ceiling: with the
+		     concurrency cap at 3 and this at 4, the fleet would still stop
+		     after four issues a day and per-repo concurrency would buy almost
+		     nothing. Measured on the live log 2026-08-14, the day's budget was
+		     already spent before any of this landed:
+		       DAILY CAP: 4/4 issues dispatched for budget day 2026-08-14
+		     12 is 4 per dispatchable repo, holding the ORIGINAL per-repo
+		     allowance and applying it to each of the three, rather than
+		     inventing a new appetite. Upper bound at full utilisation is
+		     12 x 6 = 72 `claude -p` sessions a day; one interactive night on
+		     2026-07-28 spent 89, so this stays inside a night the founder has
+		     already paid for once. Lower it here if that is too much; nothing
+		     in the code depends on the number.
+
+		     LOWERED 12 -> 10, founder-set 2026-08-15, after a run hit the
+		     account's usage limit. The limit did NOT arrive as an error: a
+		     killed agent exits 0 having written nothing, and the worker reads
+		     that as "ran, opened no PR" and retries. Measured that day, three
+		     issues (ASK-734, ASK-747, ASK-833) each reached attempt 4 of a
+		     3-attempt cap with empty branches, and the live plist had drifted
+		     to 40 while this committed copy still read 12 -- so the ceiling
+		     the founder had set was not the ceiling that ran. 10 is the
+		     founder's number; the drift is the part that made the spend
+		     unbounded, and it is fixed by writing BOTH copies. -->
 		<key>KIPI_DISPATCH_DAILY_MAX</key>
-		<string>4</string>
+		<string>10</string>
 
 		<!-- WHEN THE ALLOWANCE REFILLS, local hour. Founder-set 2026-07-28,
 		     for safety rather than tidiness: a midnight reset hands a full
@@ -50,10 +104,15 @@
 		<string>7</string>
 	</dict>
 
+	<!-- THE WRAPPER, NOT kipi-dispatch.sh DIRECTLY (codex major, PR #122 r1).
+	     Without this line the pinned checkout is dead code: the scheduler keeps
+	     running dispatch out of the shared checkout humans park on, stale_check()
+	     keeps refusing, and merging the wrapper fixes nothing. kipi-dispatch-pinned.sh
+	     builds/advances its own checkout and exec's kipi-dispatch.sh from THERE. -->
 	<key>ProgramArguments</key>
 	<array>
 		<string>/bin/bash</string>
-		<string>__KIPI_REPO__/kipi-dispatch.sh</string>
+		<string>__KIPI_REPO__/kipi-dispatch-pinned.sh</string>
 	</array>
 
 	<!-- Every 15 minutes. The heartbeat only TOPS UP to the concurrency cap;

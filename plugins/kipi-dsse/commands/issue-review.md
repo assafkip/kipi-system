@@ -40,7 +40,7 @@ Run the required reviews for the active DSSE issue. Execute in order:
    | Codex | `codex-review` | `codex-adversarial` |
    | Claude senior-staff-engineer subagent | `claude-review` | `claude-adversarial` |
 
-   Codex is out of credits until 2026-08-24 and Gemini needs auth, so today the reviewer is the Claude subagent and the sources are `claude-*`. Stamping `codex-*` for a pass Codex did not run puts a false provenance record in the findings ledger, which is worse than being blocked in a repo whose thesis is receipts.
+   Pick the row for the reviewer that ACTUALLY ran. Stamping `codex-*` for a pass Codex did not run puts a false provenance record in the findings ledger — worse than being blocked, in a repo whose whole thesis is receipts. If one reviewer is unavailable (no credits, missing auth), use another row and stamp what ran. Do NOT hardcode an outage into this file: a stale availability note outlives the outage and sends every later session to the wrong reviewer. `manual` and `plan` are the author's own words and the writer refuses them here by design.
 
    **Immediately pipe the standard-review findings to disk** (compaction hardening: if the conversation compacts after this point, the findings survive because they are on disk, not in narrative memory). Translate Codex's free-form verdict into `[{severity, body, affected_path}]`. The writer assigns sequential ids, stamps `created_at`, marks `out_of_scope=true` for paths outside `$ALLOWED`, and sets `disposition=pending`:
 

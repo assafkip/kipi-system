@@ -39,7 +39,7 @@ DISCOURSE = ["like", "so", "you know", "i mean", "right", "dude", "man", "litera
 # Corporate/founder cliches: the absence check. What he does NOT say is signal.
 CORPORATE_CLICHE = ["leverage", "synergy", "excited to", "thrilled", "humbled",
                     "circling back", "touch base", "low-hanging", "move the needle",
-                    "best practice", "stakeholder", "paradigm", "robust", "seamless",
+                    "best practice", "stakeholder", "paradigm", "seamless",
                     "cutting-edge", "cutting edge", "game-changing", "game changing",
                     "innovative", "disrupt", "empower", "holistic", "ecosystem",
                     "value-add", "deep dive", "north star", "double-click"]

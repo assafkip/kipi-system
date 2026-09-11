@@ -37,6 +37,7 @@ import json
 import os
 import sys
 import tempfile
+from datetime import datetime
 
 # Tunable. A deferred-major rate at or above this trips the soft alert. Not a
 # magic truth - calibrate against the first weeks of real output. The hard alert
@@ -89,11 +90,19 @@ def load_findings(prd_os_dir: str) -> tuple[dict[str, list[dict]], list[str]]:
 
 
 def load_receipts(prd_os_dir: str) -> set[tuple[str, str]]:
-    """Return {(prd_id, finding_id), ...} for every closed-out finding."""
-    closed: set[tuple[str, str]] = set()
+    """Return {(prd_id, finding_id), ...} for every closed-out finding.
+
+    ASK-988 round 4 (codex): state is resolved by EVENT TIMESTAMP, never by
+    physical line order. A union merge of two branches can interleave appended
+    rows, so "last line wins" could resurrect a closure that a reopen had
+    already undone. Round 5: timestamps are compared as parsed datetimes,
+    because the ledger format allows UTC offsets and offset-bearing strings
+    sort wrongly as text.
+    """
+    latest: dict[tuple[str, str], tuple[str, bool]] = {}
     path = os.path.join(prd_os_dir, "receipts.jsonl")
     if not os.path.isfile(path):
-        return closed
+        return closed_pairs(latest)
     with open(path, "r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
@@ -109,9 +118,51 @@ def load_receipts(prd_os_dir: str) -> set[tuple[str, str]]:
                 continue
             prd_id = obj.get("prd_id")
             finding_id = obj.get("finding_id")
-            if prd_id and finding_id:
-                closed.add((prd_id, finding_id))
-    return closed
+            if not (prd_id and finding_id):
+                continue
+            pair = (prd_id, finding_id)
+            if obj.get("reopened_at"):
+                event = (parse_event_time(obj["reopened_at"]), False)
+            elif obj.get("closed_at"):
+                event = (parse_event_time(obj["closed_at"]), True)
+            else:
+                continue
+            if event[0] is None:
+                # An unparseable timestamp proves nothing either way; skip is the
+                # safe side, same as a malformed row.
+                continue
+            prev = latest.get(pair)
+            # Round 6 (codex): identical timestamps must not fall back to
+            # physical order. Tie goes to REOPEN: reporting finished work as
+            # open is recoverable, reporting unfinished work as closed is not.
+            if (prev is None or prev[0] is None or event[0] > prev[0]
+                    or (event[0] == prev[0] and event[1] is False)):
+                latest[pair] = event
+    return closed_pairs(latest)
+
+
+def parse_event_time(value: str) -> datetime | None:
+    """Parse an ISO-8601 `_at` value to an aware datetime for ordering.
+
+    ASK-988 round 5 (codex): ISO strings must not be compared lexicographically
+    -- the ledger's own format allows UTC offsets, and "2026-03-01T00:00:00+02:00"
+    sorts after "2026-02-28T23:00:00Z" as text while being EARLIER in time.
+    """
+    try:
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            return None
+        return parsed
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def closed_pairs(latest: dict[tuple[str, str], tuple[str, bool]]) -> set[tuple[str, str]]:
+    """Project the latest-event map down to the still-closed pairs."""
+    return {pair for pair, (_ts, is_closed) in latest.items() if is_closed}
 
 
 def stats_for_prd(prd_id: str, items: list[dict], closed: set[tuple[str, str]]) -> dict:

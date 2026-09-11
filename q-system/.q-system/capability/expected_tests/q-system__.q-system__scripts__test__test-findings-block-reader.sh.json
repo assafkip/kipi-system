@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-findings-block-reader.sh",
+ "runner": "bash"
+}

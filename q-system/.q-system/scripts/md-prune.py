@@ -16,9 +16,23 @@ from pathlib import Path
 
 
 # --- Line budgets per file (soft limit triggers archive) ---
+#
+# canonical/decisions.md IS DELIBERATELY ABSENT. Founder decision 2026-08-14,
+# verbatim: "yes decisions.md should not be auto-pruned, delete the budget
+# entry." A decision LOG accumulates on purpose -- archiving its oldest rules is
+# archiving the reasoning the newest ones are built on, and the file's whole job
+# is that the reasoning stays readable. The 150-line budget was the defect, not
+# the file's length.
+#
+# It never actually pruned (get_qroot resolves to the SKELETON copy, so this
+# script has never opened an instance file at all -- ASK-788). That bug is real
+# and still open for the other entries. But decisions.md would have been the
+# FIRST casualty of fixing it: 11 sections, zero <!-- pin --> markers, so the
+# first correct run archives Core Positioning and Identity Rules.
+#
+# Pinned by test_md_prune_budgets.py. Re-adding it needs a founder reversal.
 BUDGETS = {
     # canonical/
-    "canonical/decisions.md": 150,
     "canonical/discovery.md": 150,
     "canonical/market-intelligence.md": 200,
     "canonical/objections.md": 150,

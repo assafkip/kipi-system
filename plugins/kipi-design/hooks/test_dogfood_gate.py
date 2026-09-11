@@ -190,4 +190,36 @@ if failures:
     for f in failures:
         print("  - " + f)
     sys.exit(1)
+# ── ASK-511: two false positives that blocked five legitimate site edits ──
+#
+# The gate exit-2'd every edit to askconsulting.io on 2026-08-08. A gate that
+# refuses correct work is a gate that gets switched off, so these are its own
+# regression tests. Both pages below are DELIBERATELY good.
+
+ANCHOR_CTA = """<!doctype html><html><head><style>
+  body { font-family:'Newsreader', Georgia, serif; background:#0b0f14; color:#e8e6e1; }
+  .btn { background:#d4a017; color:#0b0f14; }
+</style></head><body>
+  <h1>The parts of your business that still run on somebody remembering.</h1>
+  <p>12 years at LinkedIn, Meta, Google and ElevenLabs.</p>
+  <a class="btn" href="/start">Book the assessment</a>
+</body></html>"""
+
+for _fp, _tag in ((load_fingerprint(), "live"), (EMBEDDED_FALLBACK, "fallback")):
+    _f = labels(scan_html(ANCHOR_CTA, _fp))
+    ok("anchor-styled CTA counts as a primary action (%s)" % _tag,
+       "No form/input/button" not in _f)
+    # The page's only warm near-white is its TEXT colour on a near-black ground.
+    # A cream BACKGROUND is the tell; cream text on black is the opposite of one.
+    ok("warm text on a dark ground is not a cream background (%s)" % _tag,
+       "cream" not in _f.lower())
+
+print("test_dogfood_gate: ASK-511 regressions checked")
+
+if failures:
+    print("test_dogfood_gate: %d of %d checks FAILED" % (len(failures), checks))
+    for f in failures:
+        print("  FAIL  %s" % f)
+    raise SystemExit(1)
+
 print("test_dogfood_gate: %d checks passed (live + fallback)" % checks)

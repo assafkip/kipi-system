@@ -1,6 +1,15 @@
 from pathlib import Path
 
-from kipi_mcp.paths import APP_NAME, KipiPaths, _detect_instance, _slugify, generate_instance_name
+import pytest
+
+from kipi_mcp.paths import (
+    APP_NAME,
+    KipiPaths,
+    PathContractError,
+    _detect_instance,
+    _slugify,
+    generate_instance_name,
+)
 
 
 def test_default_resolution():
@@ -99,9 +108,11 @@ def test_global_dir(tmp_path):
 def test_instance_subdirectories(tmp_path):
     paths = KipiPaths(base_dir=tmp_path, instance="proj")
     inst = tmp_path / "instances" / "proj"
-    assert paths.canonical_dir == inst / "canonical"
+    # canonical_dir and my_project_dir are DELIBERATELY absent from this list now.
+    # They are repo-derived (see _state_root) because plugin-data held no content,
+    # which is what made kipi_canonical_digest return all-files-not-found. The rest
+    # of the table is genuinely tool-owned state and still lives under plugin data.
     assert paths.marketing_config_dir == inst / "marketing"
-    assert paths.my_project_dir == inst / "my-project"
     assert paths.memory_dir == inst / "memory"
     assert paths.output_dir == inst / "output"
     assert paths.bus_dir == inst / "bus"
@@ -133,10 +144,8 @@ def test_ensure_dirs(tmp_path):
         paths.voice_dir,
         paths.audhd_dir,
         paths.config_dir,
-        paths.canonical_dir,
         paths.marketing_config_dir,
         paths.marketing_config_dir / "assets",
-        paths.my_project_dir,
         paths.memory_dir,
         paths.memory_dir / "working",
         paths.memory_dir / "weekly",
@@ -147,3 +156,131 @@ def test_ensure_dirs(tmp_path):
     ]
     for d in expected:
         assert d.is_dir(), f"{d} was not created"
+
+    # And the two repo-owned dirs must NOT be conjured. They are tracked git
+    # content; ensure_dirs() with an unset repo_dir used to create them inside the
+    # real plugin directory. `instance="test"` is unregistered, so asking for the
+    # path at all is the fail-closed refusal -- which is itself the assertion.
+    with pytest.raises(PathContractError):
+        _ = paths.canonical_dir
+
+
+# --------------------------------------------------------------- path contract (srsa)
+# These pin the defect that made kipi_canonical_digest return valid:false in every
+# instance: canonical_dir and my_project_dir resolved to plugin-data
+# (~/.kipi-system/instances/<name>/), which holds zero files, instead of to the
+# instance's own tree. The digest exists to save 40-60K tokens against reading full
+# canonical; returning nothing sent agents back to raw files, where consulting has THREE
+# diverged copies. Written to fail first -- see the issue's reproducer-first acceptance.
+
+
+def test_canonical_dir_resolves_instance_domain_dir(registry_with_domain_dir, monkeypatch):
+    registry_path, repo = registry_with_domain_dir
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo))
+    paths = KipiPaths(base_dir=registry_path.parent, instance="domain-instance")
+    assert paths.canonical_dir == repo / "q-domain" / "canonical"
+
+
+def test_my_project_dir_resolves_instance_domain_dir(registry_with_domain_dir, monkeypatch):
+    """Part 5. Same defect, same file, different property.
+
+    morning_init.py:192 reads current-state.md from my_project_dir, so fixing only
+    canonical leaves current_state empty. Asserted directly and NOT via digest["valid"]:
+    _validate_digest needs 5 of 7 checks and 6 stay reachable without works_today, so
+    valid can go true with this half still broken.
+    """
+    registry_path, repo = registry_with_domain_dir
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo))
+    paths = KipiPaths(base_dir=registry_path.parent, instance="domain-instance")
+    assert paths.my_project_dir == repo / "q-domain" / "my-project"
+
+
+def test_null_domain_dir_falls_back_to_subtree_prefix(tmp_registry_with_instances, tmp_path, monkeypatch):
+    """instance_q_dir null means the state root IS <path>/<subtree_prefix>.
+
+    NOT <path>/<subtree_prefix>/q-system. A literal reading of the contract sentence
+    produces q-system/q-system, and those nested shadow trees were removed fleet-wide on
+    2026-07-01; re-deriving one here would resurrect the thing that flattening deleted.
+    """
+    repo = tmp_path / "test-instance"
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo))
+    paths = KipiPaths(base_dir=tmp_registry_with_instances.parent, instance="test-instance")
+    assert paths.canonical_dir == repo / "q-system" / "canonical"
+
+
+def test_duplicate_registry_paths_fail_closed(tmp_path, monkeypatch):
+    """Codex PR #240 round 3, major. The NAME axis was guarded in _state_root and
+    the PATH axis was not, so two rows sharing one path let the first silently win:
+
+        resolved_instance=alpha, ambiguity_reported=no
+
+    An unattended server then binds to whichever row is listed first and reads that
+    project's canonical data. Both axes now refuse.
+    """
+    import json
+    repo = tmp_path / "repo"
+    (repo / "q-system" / "canonical").mkdir(parents=True)
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "instance-registry.json").write_text(json.dumps({
+        "skeleton": {"path": str(tmp_path / "nope")},
+        "instances": [
+            {"name": "alpha", "path": str(repo), "subtree_prefix": "q-system",
+             "instance_q_dir": None},
+            {"name": "beta", "path": str(repo), "subtree_prefix": "q-system",
+             "instance_q_dir": None},
+        ],
+    }), encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo))
+    monkeypatch.setenv("KIPI_PLUGIN_DATA", str(base))
+    monkeypatch.delenv("KIPI_INSTANCE", raising=False)
+
+    with pytest.raises(PathContractError) as exc:
+        KipiPaths()
+    assert exc.value.kind == "duplicate-path"
+
+
+def test_unregistered_repo_fails_closed(tmp_path, tmp_registry_with_instances, monkeypatch):
+    """An unmapped repo must RAISE, never silently pick a default.
+
+    The whole defect class is a resolver that guesses and returns an empty directory that
+    reads as 'no data' rather than 'wrong path'.
+    """
+    stranger = tmp_path / "not-in-registry"
+    stranger.mkdir()
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(stranger))
+    paths = KipiPaths(base_dir=tmp_registry_with_instances.parent, instance="nope")
+    with pytest.raises(PathContractError):
+        _ = paths.canonical_dir
+
+
+def test_ensure_dirs_never_creates_repo_owned_dirs(registry_with_domain_dir, monkeypatch):
+    """ensure_dirs() must not mkdir canonical/ or my-project/ once they are repo-derived.
+
+    They are tracked git content, not tool-created state. Before this, ensure_dirs() with
+    an unset repo_dir would happily create them inside the real plugin directory.
+    """
+    registry_path, repo = registry_with_domain_dir
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(repo))
+    paths = KipiPaths(base_dir=registry_path.parent, instance="domain-instance")
+
+    # The fixture pre-creates both, so remove them: the only thing that can bring
+    # them back inside this test is ensure_dirs itself.
+    expected_canon = repo / "q-domain" / "canonical"
+    expected_proj = repo / "q-domain" / "my-project"
+    for d in (expected_canon, expected_proj):
+        if d.is_dir():
+            d.rmdir()
+
+    paths.ensure_dirs()
+
+    # Assert the RESOLVED properties. The first draft asserted that
+    # `repo/q-domain/should-not-appear` was absent -- nothing anywhere creates that
+    # name, so it held identically against fixed and unfixed code. Measured
+    # 2026-08-22: it was the one new case that PASSED on the reproducer run, which
+    # is how a vacuous test hides. A test that cannot fail is not a test.
+    # LITERAL paths, not the properties: with the tree deleted the property now
+    # refuses (correctly), and a refusal is not what this case is testing.
+    assert not expected_canon.exists(), f"ensure_dirs created {expected_canon}"
+    assert not expected_proj.exists(), f"ensure_dirs created {expected_proj}"
+    assert paths.bus_dir.is_dir(), "ensure_dirs must still create tool-owned state"
