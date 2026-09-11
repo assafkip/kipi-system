@@ -45,6 +45,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 
@@ -97,6 +98,209 @@ TRIAGE_LABEL_DESCRIPTION = (
 # gets a comment so a condition that is STILL true a day later is visible as
 # still-true rather than as one stale ticket nobody has touched.
 REPEAT_COMMENT_AFTER_HOURS = 12
+
+# THE MARKER A NON-PYTEST RUNNER EXPORTS (ASK-879).
+#
+# Presence, not truthiness: any non-blank value arms the refusal, `0` included.
+# A safety guard whose off-switch is a value someone might export by accident is
+# a guard that can be turned off by accident. Blank or unset is off, matching
+# KIPI_ALERT_CAPTURE's own convention two functions down.
+FIXTURE_ENV_MARKER = "KIPI_TEST_RUNNER"
+
+# A test FILE, by this repo's own naming conventions (folder-structure.md): a
+# `test_`/`test-` prefix or a `_test`/`-test` suffix on a .py or .sh. Matched with
+# `.match` against the BASENAME only, so a production script living under a
+# directory called `tests/` is not caught by its path, and `latest-run.py` -- which
+# CONTAINS `test-run.py` -- is not caught by a substring. Deliberately not matched:
+# `conftest.py` (pytest already sets its own marker) and any other extension.
+#
+# The leading anchor is `.match` itself and is NOT also written as `^`. It was, and
+# that made the two redundant: a mutant dropping either alone left the other holding
+# the property, the suite stayed green under both, and no test could tell them
+# apart. One guard per property, so a test is able to fail for it.
+_TEST_ENTRYPOINT_RE = re.compile(
+    r"(?:test[_-].+|.+[_-]test)\.(?:py|sh)$", re.IGNORECASE)
+
+# A script an interpreter was handed, test or not. Used ONLY to find where an
+# ancestor's identity stops and its ARGUMENTS begin -- see `_entrypoint_of`.
+_SCRIPT_TOKEN_RE = re.compile(r".+\.(?:py|sh)$", re.IGNORECASE)
+
+
+def _entrypoints() -> list[str]:
+    """The two places the RUNNING process's identity actually shows up.
+
+    Both are read because they answer for different shapes. A plain-python3 test
+    invoked as `python3 test_foo.py` puts the test in argv[0] AND in __main__;
+    a runner that hands the interpreter a different argv still has __main__.
+    Reading only one would leave a shape uncovered while looking covered.
+    """
+    found = [sys.argv[0] if sys.argv else ""]
+    main_mod = sys.modules.get("__main__")
+    found.append(getattr(main_mod, "__file__", "") or "")
+    return [os.path.basename(p) for p in found if p]
+
+
+# Deep enough for the real chain and several links of slack-notify.sh wrappers
+# above it; short enough that the walk stops well before a login shell or the
+# session leader, whose command lines have nothing to do with this run.
+_ANCESTRY_MAX_DEPTH = 8
+
+
+def _process_table() -> dict[int, tuple[int, str]]:
+    """pid -> (ppid, command line) for every process, read in ONE `ps` call.
+
+    One call rather than one per ancestor: this runs on an alerting path called
+    from Stop hooks, and N subprocess spawns to answer one question is a cost
+    paid on every alert. `-Ao pid=,ppid=,command=` is honoured by both macOS ps
+    and procps, which are the two this fleet runs on.
+
+    Returns {} on ANY failure, which is a deliberate fail-OPEN: see the boundary
+    note in `_ancestor_entrypoints`.
+    """
+    ps = shutil.which("ps")
+    if not ps:
+        return {}
+    try:
+        out = subprocess.run(
+            [ps, "-Ao", "pid=,ppid=,command="],
+            capture_output=True, text=True, timeout=5, check=False).stdout
+    except Exception:                                  # never crash a Stop hook
+        return {}
+    return _parse_process_table(out)
+
+
+def _parse_process_table(out: str) -> dict[int, tuple[int, str]]:
+    """Split apart from the `ps` call so a case can feed it a table directly.
+
+    A parser reachable only through a live `ps` is a parser tested against
+    whatever this machine happened to be running, which is the invented-fixture
+    shape in reverse: real data nobody chose. Rows that do not start with two
+    integers are skipped rather than raising -- ps prints a header on some
+    platforms and this must not become the thing that breaks alerting.
+    """
+    table: dict[int, tuple[int, str]] = {}
+    for row in out.splitlines():
+        parts = row.split(maxsplit=2)
+        if len(parts) < 2:
+            continue
+        try:
+            pid, ppid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        table[pid] = (ppid, parts[2] if len(parts) > 2 else "")
+    return table
+
+
+def _ancestor_entrypoints(table: dict[int, tuple[int, str]] | None = None,
+                          start: int | None = None) -> list[str]:
+    """Basenames of every token on this process's ANCESTORS' command lines.
+
+    WHY THIS EXISTS (PR #209 round 1, Codex major). `_entrypoints()` above reads
+    the RUNNING process, and on the real chain the running process is this
+    script: a suite calls slack-notify.sh, which runs alert-to-linear.py as a
+    subprocess, so by the time the guard executes there is nothing test-shaped
+    left to read. Every in-process case was blind to it -- calling `main()`
+    directly makes argv the runner's, the one arrangement where reading self and
+    reading the runner cannot be told apart. The env marker was written for this
+    boundary and no runner exports it yet (sp-aecfe5d8), so until one does, the
+    ancestry is the only signal that closes the measured shape.
+
+    Exactly ONE name per ancestor, chosen by `_entrypoint_of`, never every token.
+    Measured, not assumed: the first version read every token and the control
+    chain went RED on `test_hiring_harvest.py` -- a path inside the ALERT TEXT,
+    which slack-notify.sh passes to its child as an argument. Reading arguments
+    means any alert that happens to name a test file gets swallowed, and an
+    auto-commit alert naming an uncommitted test file is an ordinary Tuesday.
+
+    HONEST BOUNDARY, and it is a fail-OPEN one on purpose. No `ps`, an
+    unparseable table, a chain deeper than the cap, or a runner that daemonized
+    away from its parent all yield no ancestors and therefore no refusal. A guard
+    that fails CLOSED here would swallow real alerts whenever `ps` was
+    unavailable, and this file already holds that a swallowed alert is worse than
+    the bug it fixes. So this signal ADDS cover; it never becomes the reason an
+    alert is believed to be safe.
+    """
+    if table is None:
+        table = _process_table()
+    pid = os.getppid() if start is None else start
+    names: list[str] = []
+    seen: set[int] = set()
+    for _ in range(_ANCESTRY_MAX_DEPTH):
+        if pid <= 1 or pid in seen or pid not in table:
+            break
+        seen.add(pid)                 # a cycle in a bad table must not spin here
+        ppid, cmdline = table[pid]
+        name = _entrypoint_of(cmdline)
+        if name:
+            names.append(name)
+        pid = ppid
+    return names
+
+
+def _entrypoint_of(cmdline: str) -> str:
+    """The script an ancestor was handed: its FIRST script-shaped token, or "".
+
+    The interpreter comes first and the script's own arguments come after, so the
+    first `.py`/`.sh` token is the boundary between what a process IS and what it
+    was told to do. `python3 test_foo.py <msg>` and `python3 -u test_foo.py` both
+    answer `test_foo.py`; `bash slack-notify.sh <msg>` answers `slack-notify.sh`
+    and stops, so nothing in the message is ever read as an identity.
+
+    Reading argv[0] alone would not do: a plain-python3 suite is argv[1], which is
+    the whole shape this signal exists for.
+    """
+    for token in cmdline.split():
+        base = os.path.basename(token)
+        if _SCRIPT_TOKEN_RE.match(base):
+            return base
+    return ""
+
+
+def fixture_context() -> str | None:
+    """Why this run must NOT reach Linear, or None if it may. Read by main().
+
+    SCAR, measured 2026-08-14 (sp-5a3e3b7b): this used to be one line reading
+    PYTEST_CURRENT_TEST, which pytest sets and NOTHING else does. So the 2026-08-10
+    refusal was closed for exactly the runner that happened to be used that day.
+    test_launchd_health_check.py runs as plain python3 under a `__main__` guard,
+    set no such variable, was never refused, and filed real tickets from keyed
+    machines -- ASK-736 up to repeat #5, plus ASK-744 and ASK-745. Bash suites sat
+    in the same hole.
+
+    Three signals, on purpose, because each covers what the others cannot:
+
+      1. The env marker. Propagates to grandchildren, so it survives the real
+         call chain (suite -> slack-notify.sh -> this script as a subprocess),
+         where nothing about the leaf process looks like a test. It costs one
+         export in the runner, and today no runner pays it (sp-aecfe5d8).
+      2. The entry point. Needs no cooperation at all, which is the whole point
+         of a chokepoint: per-test stubbing only protects tests someone
+         remembered to fix, and a marker nobody exported is per-test stubbing
+         with extra steps. It cannot see across a subprocess boundary.
+      3. The ANCESTRY (PR #209 round 1, Codex major). Signal 2 reads the running
+         process, and across the boundary the running process is this script, so
+         signals 1 and 2 together left the measured shape open while reading
+         covered: signal 1 needs an export nobody makes, and signal 2 cannot see
+         past the fork. Walking the parents needs neither. It fails OPEN when the
+         table cannot be read -- see `_ancestor_entrypoints` -- so it is cover
+         added, never cover assumed.
+
+    Returns the reason so the stderr line names WHICH signal fired -- "REFUSED
+    under pytest" and "REFUSED under KIPI_TEST_RUNNER" debug differently, and a
+    swallowed alert with no attribution is the failure this path exists to
+    prevent.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return "pytest"
+    if (os.environ.get(FIXTURE_ENV_MARKER) or "").strip():
+        return FIXTURE_ENV_MARKER
+    for name in _entrypoints():
+        if _TEST_ENTRYPOINT_RE.match(name):
+            return f"a test entry point ({name})"
+    for name in _ancestor_entrypoints():
+        if _TEST_ENTRYPOINT_RE.match(name):
+            return f"a test entry point in a parent process ({name})"
+    return None
 
 
 def _state_dir() -> str:
@@ -1081,8 +1285,9 @@ def main(argv: list[str]) -> int:
     # and paged again. Per-test stubbing only protects tests someone remembered
     # to fix. A test written tomorrow must not be able to open a real ticket, so
     # the refusal lives here rather than in each suite.
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        print(f"alert-to-linear: REFUSED under pytest. NOT filed: {message}",
+    reason = fixture_context()
+    if reason:
+        print(f"alert-to-linear: REFUSED under {reason}. NOT filed: {message}",
               file=sys.stderr)
         return EXIT_REFUSED_FIXTURE
 
