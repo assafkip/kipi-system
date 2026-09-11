@@ -1,0 +1,4 @@
+{
+  "path": "q-system/.q-system/tests/test_alert_to_linear.py",
+  "runner": "pytest"
+}

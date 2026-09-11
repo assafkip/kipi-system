@@ -1,0 +1,4 @@
+{
+  "path": "q-system/.q-system/tests/separation/test_fact_grammar.py",
+  "runner": "pytest"
+}

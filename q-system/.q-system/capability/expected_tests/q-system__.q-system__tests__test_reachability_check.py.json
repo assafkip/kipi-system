@@ -1,0 +1,4 @@
+{
+  "path": "q-system/.q-system/tests/test_reachability_check.py",
+  "runner": "pytest"
+}

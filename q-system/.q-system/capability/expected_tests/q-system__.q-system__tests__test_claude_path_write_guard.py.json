@@ -1,0 +1,4 @@
+{
+  "path": "q-system/.q-system/tests/test_claude_path_write_guard.py",
+  "runner": "pytest"
+}

@@ -1,0 +1,4 @@
+{
+  "path": "q-system/.q-system/tests/separation/test_baseline_receipt.py",
+  "runner": "pytest"
+}

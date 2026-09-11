@@ -1,0 +1,4 @@
+{
+  "path": "q-system/.q-system/tests/separation/test_instance_fact_inventory.py",
+  "runner": "pytest"
+}

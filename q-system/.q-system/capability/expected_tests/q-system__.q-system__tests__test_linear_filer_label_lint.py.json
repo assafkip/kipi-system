@@ -1,0 +1,4 @@
+{
+  "path": "q-system/.q-system/tests/test_linear_filer_label_lint.py",
+  "runner": "pytest"
+}
