@@ -163,8 +163,29 @@ check "a stated APPROVE is still overridden by derived REQUEST CHANGES" \
       "$([ "$(resolve_verdict 'APPROVE' 'REQUEST CHANGES')" = "REQUEST CHANGES" ] && echo 0 || echo 1)"
 check "agreement passes through unchanged" \
       "$([ "$(resolve_verdict 'APPROVE' 'APPROVE')" = "APPROVE" ] && echo 0 || echo 1)"
-check "a lone derived verdict stands when nothing was stated" \
-      "$([ "$(resolve_verdict '' 'APPROVE')" = "APPROVE" ] && echo 0 || echo 1)"
+# A LONE DERIVED VERDICT STANDS ONLY WHEN IT IS NOT AN APPROVAL (ASK-1227).
+#
+# This check used to read `resolve_verdict '' 'APPROVE'` = APPROVE, and that
+# assertion PINNED THE DEFECT rather than a contract. APPROVE is the only verdict
+# the ladder can derive from a block with ZERO severity rows, so "derived APPROVE
+# with nothing stated" is precisely: an empty block, and a reviewer that never
+# said the PR was fine.
+#
+# Measured 2026-09-03 on PR #78: codex could not reach api.github.com, read no
+# diff, said "VERDICT: NOT ISSUED", and closed an empty block. NOT ISSUED is not
+# a verdict token, so stated was "" -- this exact call -- and the gate went green
+# on a review that had read nothing. A worker merged on it.
+#
+# The harsher directions are untouched: a lone derived BLOCK or REQUEST CHANGES
+# still stands alone, because failing closed needs no corroboration.
+check "a lone derived APPROVE does NOT stand when nothing was stated" \
+      "$([ -z "$(resolve_verdict '' 'APPROVE')" ] && echo 0 || echo 1)"
+check "a lone derived BLOCK still stands when nothing was stated" \
+      "$([ "$(resolve_verdict '' 'BLOCK')" = "BLOCK" ] && echo 0 || echo 1)"
+check "a lone derived REQUEST CHANGES still stands when nothing was stated" \
+      "$([ "$(resolve_verdict '' 'REQUEST CHANGES')" = "REQUEST CHANGES" ] && echo 0 || echo 1)"
+check "a lone derived APPROVE WITH NITS still stands when nothing was stated" \
+      "$([ "$(resolve_verdict '' 'APPROVE WITH NITS')" = "APPROVE WITH NITS" ] && echo 0 || echo 1)"
 check "a lone stated verdict stands when nothing derived" \
       "$([ "$(resolve_verdict 'REQUEST CHANGES' '')" = "REQUEST CHANGES" ] && echo 0 || echo 1)"
 
