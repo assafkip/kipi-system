@@ -14,11 +14,27 @@ is what executes it against the real fleet, on a schedule, and fails loudly.
 
 A digest mismatch alone is not loss. An instance holding an OLDER skeleton
 version is BEHIND and the next sync fixes it, which is the normal state of a
-fleet between syncs. Only content the skeleton's git history NEVER held is
-destroyed. Calling every mismatch red would make this runner red on a healthy
-fleet, and a gate red on its own population gets switched off (the same call
-`voice-loop-anywhere.md` and `coding-audhd.md` already made). `_skeleton_ever_had`
-is the same git-based answer the lessons-drift reporter uses.
+fleet between syncs. Only content the skeleton NEVER SHIPPED is destroyed.
+Calling every mismatch red would make this runner red on a healthy fleet, and a
+gate red on its own population gets switched off (the same call
+`voice-loop-anywhere.md` and `coding-audhd.md` already made).
+
+"SHIPPED" IS THE FAN-OUT BRANCH, NOT EVERY REF IN THE CLONE. The first version
+of `_skeleton_ever_had` walked `git log --all`, which is the exact boundary
+`kipi-update.sh` was tightened to reject on #151 round 7 -- a blob that only ever
+existed on an unmerged branch was never rsynced to any instance, so an instance
+holding it is AHEAD. That is not a corner case: the recorded 2026-09-06 loss
+says the port was "still on an open PR" (kipi-update.sh:310), and the live clone
+measures 1142 refs, 49 gate blobs reachable from `--all` and 8 from origin/main,
+so 41 blobs the old walk waved past were never shipped anywhere (PR #339 review
+round 3, major).
+
+The ship ref is not restated here. `_fan_out_ref` executes `fleet_ship_ref` out
+of `kipi-update.sh`'s own source, so changing the updater's preference moves this
+check's answer with it; a copy of that list would agree today and drift the day
+the owner changes (lessons/derive-a-value-from-its-owner). When it cannot be
+resolved, a mismatching instance is UNANSWERED, never `behind`: "cannot tell"
+must not print as the harmless one.
 
 The two citations of that reporter below name it WITHOUT its `.py`, deliberately.
 `test_lessons_drift_report.py::test_single_caller_the_plist_template_is_the_only_one_in_the_tree`
@@ -51,6 +67,8 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -58,12 +76,33 @@ from datetime import datetime, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_ROOT = os.path.realpath(os.path.join(HERE, "..", "..", ".."))
 GATE_REL = "q-system/.q-system/scripts/voice-stop-gate.py"
+UPDATER_REL = "kipi-update.sh"
+# A LOCAL artifact of the last scan, and the docs say only that. It was
+# described as "the manifest CI can lo" + "ad"; it is not, and the string is
+# broken here so this note cannot re-seed the grep that pins the claim gone.
+# q-system/output/*.json is gitignored, this is written only where the clones
+# are, and no reader exists outside the suite (PR #339 review round 3, minor).
+# The ALERT is the signal that leaves the machine. Kept anyway: it is what a
+# reader opens to see the last run without re-scanning 25 clones.
 MANIFEST_REL = "q-system/output/voice-gate-propagation.json"
 STATE_REL = "q-system/output/.voice-gate-propagation-state.json"
 NOTIFY = os.path.join(HERE, "slack-notify.sh")
 COULD_NOT_READ = "COULD NOT READ"
 NO_INSTANCES = "no instances in the registry"
+NO_FAN_OUT_REF = "the fan-out ref kipi-update.sh ships from"
+NO_REF_NOTE = ("cannot say ahead or behind: " + NO_FAN_OUT_REF + " did not resolve")
 NOTIFY_TIMEOUT_S = 20
+# slack-notify.sh's OWN exit contract, not ours: "3  nothing to file on: no
+# Linear API key configured (a setup state)". A setup state read as a send
+# FAILURE made every run on a keyless machine exit 2 forever with no ticket
+# (PR #339 review round 3, minor). The number is pinned to that contract by
+# test_the_setup_exit_code_is_derived_from_slack_notifys_own_contract.
+NOTIFY_UNCONFIGURED_RC = 3
+
+
+class NotifierUnconfigured(Exception):
+    """slack-notify.sh has no Linear key. Nothing was filed and that is not a
+    failure to retry-diagnose; it is a machine that was never set up."""
 
 
 def _digest(path: str) -> str:
@@ -74,23 +113,79 @@ def _digest(path: str) -> str:
     return h.hexdigest()
 
 
-def _skeleton_ever_had(skel_root: str, candidate: str) -> bool:
-    """True when the candidate's content is a version the skeleton's git history
-    holds for GATE_REL: the instance is BEHIND, not ahead. False when git cannot
-    answer (not a repo, no history), which keeps the conservative reading --
-    unknown provenance is treated as drift and gets looked at, never waved past.
-    """
+def _bash_function(source: str, name: str) -> str:
+    """The literal body of one `name() { ... }` from a shell script, sliced at
+    the closing brace in column 0. Empty when it is not there in that shape,
+    which the caller treats as unresolvable rather than guessing."""
+    start = source.find("\n%s() {\n" % name)
+    if start < 0:
+        return ""
+    end = source.find("\n}\n", start + 1)
+    return source[start + 1:end + 2] if end > start else ""
+
+
+def _fan_out_ref(skel_root: str) -> str:
+    """The ref `kipi update` would actually ship FROM, answered by executing
+    kipi-update.sh's own `fleet_ship_ref` rather than restating its preference
+    order here. "" when it cannot be resolved -- no updater, a renamed function,
+    a new global it needs -- and the caller must not read "" as `behind`."""
     try:
-        blob = subprocess.run(["git", "-C", skel_root, "hash-object", candidate],
+        with open(os.path.join(skel_root, UPDATER_REL), encoding="utf-8") as fh:
+            source = fh.read()
+    except OSError:
+        return ""
+    body = _bash_function(source, "fleet_ship_ref")
+    branch = re.search(r'^SKELETON_BRANCH="([^"]+)"', source, re.M)
+    if not body or not branch:
+        return ""
+    program = (f"SCRIPT_DIR={shlex.quote(skel_root)}\n"
+               f"SKELETON_BRANCH={shlex.quote(branch.group(1))}\n"
+               f"{body}\nfleet_ship_ref\n")
+    try:
+        done = subprocess.run(["bash", "-c", program],
                               capture_output=True, text=True, timeout=20)
-        if blob.returncode != 0:
-            return False
-        hits = subprocess.run(["git", "-C", skel_root, "log", "--all", "--format=%H",
-                               "--find-object=" + blob.stdout.strip(), "--", GATE_REL],
-                              capture_output=True, text=True, timeout=120)
-        return hits.returncode == 0 and bool(hits.stdout.strip())
     except (OSError, subprocess.SubprocessError):
-        return False
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def shipped_blobs(skel_root: str, ref: str):
+    """Every blob the skeleton ever SHIPPED for GATE_REL, reachable from `ref`.
+
+    Same algorithm as kipi-update.sh::fleet_authored_blob (walk the ship ref for
+    that path, read the blob at each commit), hoisted out of the per-instance
+    loop: the answer is a property of the skeleton, not of the instance asking.
+    None when git could not answer at all, which is not the same as an empty set.
+    """
+    if not ref:
+        return None
+    try:
+        walk = subprocess.run(["git", "-C", skel_root, "rev-list", ref, "--", GATE_REL],
+                              capture_output=True, text=True, timeout=120)
+        if walk.returncode != 0:
+            return None
+        commits = [c for c in walk.stdout.split() if c]
+        if not commits:
+            return set()
+        batch = subprocess.run(["git", "-C", skel_root, "cat-file",
+                                "--batch-check=%(objectname) %(objecttype)"],
+                               input="".join(f"{c}:{GATE_REL}\n" for c in commits),
+                               capture_output=True, text=True, timeout=120)
+        if batch.returncode != 0:
+            return None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {line.split()[0] for line in batch.stdout.splitlines()
+            if line.endswith(" blob")}
+
+
+def _blob_id(skel_root: str, candidate: str) -> str:
+    try:
+        done = subprocess.run(["git", "-C", skel_root, "hash-object", candidate],
+                              capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
 
 
 def resolve(root: str):
@@ -112,8 +207,14 @@ def resolve(root: str):
     return skeleton_ok, [p for p in pairs if p[0]]
 
 
-def classify(instance_root: str, skel_root: str) -> tuple:
-    """(state, note) for one instance: synced | behind | ahead | could-not-read."""
+def classify(instance_root: str, skel_root: str, shipped=None) -> tuple:
+    """(state, note) for one instance: synced | behind | ahead | could-not-read.
+
+    `shipped` is the set from shipped_blobs(), passed in rather than recomputed:
+    it is one answer about the skeleton, not 25 answers about the instances.
+    None means the ship ref never resolved, and then a MISMATCH is unanswered --
+    the one thing this file may never do is call an unknown instance `behind`.
+    """
     skel_gate = os.path.join(skel_root, GATE_REL)
     inst_gate = os.path.join(instance_root or "", GATE_REL)
     if not os.path.isfile(skel_gate):
@@ -126,9 +227,14 @@ def classify(instance_root: str, skel_root: str) -> tuple:
         return "could-not-read", str(exc)
     if same:
         return "synced", ""
-    if _skeleton_ever_had(skel_root, inst_gate):
+    if shipped is None:
+        return "could-not-read", NO_REF_NOTE
+    blob = _blob_id(skel_root, inst_gate)
+    if not blob:
+        return "could-not-read", f"git could not hash {inst_gate}"
+    if blob in shipped:
         return "behind", "an older skeleton version; the next sync fixes it"
-    return "ahead", "content the skeleton never had; the next sync DESTROYS it"
+    return "ahead", "content the skeleton never shipped; the next sync DESTROYS it"
 
 
 def scan(root: str) -> dict:
@@ -136,12 +242,20 @@ def scan(root: str) -> dict:
     root = os.path.realpath(root)
     skeleton_ok, pairs = resolve(root)
     rows = []
+    shipped = shipped_blobs(root, _fan_out_ref(root)) if skeleton_ok else None
     if skeleton_ok:
         for name, path in pairs:
-            state, note = classify(path, root)
+            state, note = classify(path, root, shipped)
             rows.append({"name": name, "path": path, "state": state, "note": note})
     ahead = [r["name"] for r in rows if r["state"] == "ahead"]
     unanswered = [r["name"] for r in rows if r["state"] == "could-not-read"]
+    # The CAUSE leads its own rows. An unresolvable ship ref turns every
+    # mismatching instance into an identical `cannot say`, and a title reading
+    # "RED UNANSWERED: a, b, c" names the symptom in 25 places and the reason in
+    # none. Only when it actually bit something: an all-synced fleet was fully
+    # answered, and a sentinel there would be a red with nothing behind it.
+    if any(r["note"] == NO_REF_NOTE for r in rows):
+        unanswered = [NO_FAN_OUT_REF] + unanswered
     # A registry this run could PARSE but that names no instance scanned nothing,
     # and nothing has the same bytes as a healthy fleet
     # (lessons/zero-selected-items-is-a-failure-not-a-pass.md). Zero and
@@ -225,6 +339,9 @@ def _send(message: str) -> None:
         raise FileNotFoundError(f"no notifier at {NOTIFY}; nothing was filed")
     done = subprocess.run(["bash", NOTIFY, message], check=False,
                           capture_output=True, timeout=NOTIFY_TIMEOUT_S)
+    if done.returncode == NOTIFY_UNCONFIGURED_RC:
+        raise NotifierUnconfigured(f"slack-notify.sh exited {NOTIFY_UNCONFIGURED_RC}: "
+                                   "no Linear API key configured")
     if done.returncode != 0:
         raise RuntimeError(f"slack-notify.sh exited {done.returncode}: "
                            f"{(done.stderr or b'').decode('utf-8', 'replace')[:300]}")
@@ -280,6 +397,16 @@ def run(root: str, notify=None, trigger=None, write_manifest=True) -> dict:
     try:
         (notify or _send)(body)
         out["alert"]["filed"] = True
+    except NotifierUnconfigured as exc:
+        # A machine with no Linear key is a SETUP state, which slack-notify.sh
+        # says in its own exit contract. Read as a send failure it made every
+        # 06:30 run there exit 2 into a log nobody reads, forever, and file
+        # nothing -- on a GREEN fleet too (PR #339 review round 3, minor).
+        # Nothing was filed, so the state is still not advanced: the first run
+        # after a key exists files the red that was waiting.
+        out["alert"]["skipped"] = True
+        out["alert"]["reason"] = f"notifier not configured, nothing filed ({exc})"
+        return out
     except Exception as exc:                      # never swallowed: the caller exits 2
         out["alert"]["error"] = f"{type(exc).__name__}: {exc}"
         return out                                # state NOT advanced: retry next run

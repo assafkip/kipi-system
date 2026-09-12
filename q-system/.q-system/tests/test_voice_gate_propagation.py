@@ -6,7 +6,7 @@ skeleton's copy over an instance copy that is AHEAD, destroying behaviour the
 instance's own suite asserts. That happened twice in one afternoon on 2026-09-06
 (sp-745f5962, sp-1ad08728) and the only check for it lived on a machine holding
 the 25 instance clones. This suite pins a runner that FAILS LOUDLY there and
-leaves a manifest CI can load.
+leaves a local manifest of the scan.
 
 Every tree here is tmp; the registry is a fixture. The ONE assertion that needs
 the real fleet carries the ONE skip in this file, and
@@ -19,6 +19,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -30,6 +31,9 @@ SCRIPTS = HERE.parent / "scripts"
 CHECK = SCRIPTS / "voice-gate-propagation-check.py"
 PLIST = SCRIPTS / "com.kipi.voice-gate-propagation.plist"
 GATE_REL = "q-system/.q-system/scripts/voice-stop-gate.py"
+REPO = HERE.parent.parent.parent
+KIPI_UPDATE = REPO / "kipi-update.sh"
+NOTIFY_SH = SCRIPTS / "slack-notify.sh"
 
 SKELETON_GATE = "def main():\n    return 0\n"
 AHEAD_GATE = SKELETON_GATE + "\ndef enforce_route_receipt():\n    raise SystemExit(2)\n"
@@ -47,11 +51,21 @@ def _git(root, *args):
     return subprocess.run(base + list(args), capture_output=True, text=True, check=True)
 
 
-def _fixture(tmp_path, instances=("consulting",), skeleton_path=None, commit=True):
-    """A skeleton git repo plus one clone per name, both holding the gate file."""
+def _fixture(tmp_path, instances=("consulting",), skeleton_path=None, commit=True,
+             updater=True):
+    """A skeleton git repo plus one clone per name, both holding the gate file.
+
+    The skeleton also carries a COPY OF THE REAL `kipi-update.sh`, never a
+    hand-written stand-in: the check derives the fan-out ref by executing that
+    file's own `fleet_ship_ref`, so a fixture updater written here would test
+    this fixture's idea of the updater (lessons/fixtures-come-from-producers).
+    `updater=False` is the negative: an unresolvable ref must not read green.
+    """
     root = tmp_path / "skeleton"
     (root / GATE_REL).parent.mkdir(parents=True)
     (root / GATE_REL).write_text(SKELETON_GATE)
+    if updater:
+        shutil.copy(KIPI_UPDATE, root / "kipi-update.sh")
     clones = {}
     for name in instances:
         clone = tmp_path / name
@@ -106,6 +120,64 @@ def test_an_instance_merely_behind_the_skeleton_is_not_loss(tmp_path):
     r = _run(root)
     assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
     assert "behind" in r.stdout and "AHEAD" not in r.stdout, r.stdout
+
+
+def test_content_only_on_an_unmerged_branch_is_ahead_not_behind(tmp_path):
+    """THE SECOND REPRODUCER (PR #339 review round 3, major). "The skeleton
+    shipped it" is the FAN-OUT branch, not every ref in the clone. A blob that
+    only ever existed on an unmerged feature branch was never rsynced to any
+    instance, so an instance holding it is AHEAD and the next sync destroys it.
+
+    This is the same boundary `kipi-update.sh` was tightened to on #151 round 7,
+    and the recorded 2026-09-06 loss says the port was "still on an open PR" --
+    exactly this input. Measured in the live clone: 1142 refs, 49 gate blobs
+    reachable from --all, 8 from origin/main, so 41 blobs the old walk accepted
+    were never shipped anywhere.
+    """
+    root, clones = _fixture(tmp_path)
+    head = _git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    _git(root, "checkout", "-q", "-b", "feat/voice-gate-port")
+    (root / GATE_REL).write_text(AHEAD_GATE)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "port, never merged")
+    _git(root, "checkout", "-q", head)
+    (clones["consulting"] / GATE_REL).write_text(AHEAD_GATE)
+    r = _run(root)
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert "AHEAD" in r.stdout and "consulting" in r.stdout, r.stdout
+    assert "behind" not in r.stdout, r.stdout
+
+
+def test_the_fan_out_ref_is_derived_from_kipi_update_not_restated(tmp_path):
+    """BOUND, not merely equal (lessons/derive-a-value-from-its-owner). The ref
+    order lives in `kipi-update.sh::fleet_ship_ref` and this check executes that
+    function out of its own source. Mutating the owner's preference has to move
+    the answer; a copy of the list here would agree today and drift silently."""
+    root, _ = _fixture(tmp_path)
+    m = _mod()
+    _git(root, "branch", "-q", "shipped-elsewhere")
+    assert m._fan_out_ref(str(root)), "the real updater must resolve a ref"
+    src = (root / "kipi-update.sh").read_text()
+    mutated = src.replace('for ref in "refs/remotes/origin/$SKELETON_BRANCH"',
+                          'for ref in "refs/heads/shipped-elsewhere"', 1)
+    assert mutated != src, "the ref list moved in kipi-update.sh; re-pin this test"
+    (root / "kipi-update.sh").write_text(mutated)
+    assert m._fan_out_ref(str(root)) == "refs/heads/shipped-elsewhere"
+
+
+def test_an_unresolvable_fan_out_ref_is_unanswered_not_behind(tmp_path):
+    """No updater, no answer. Without the ship ref the check cannot tell AHEAD
+    from BEHIND, and "cannot tell" must not print as the harmless one."""
+    root, clones = _fixture(tmp_path, updater=False)
+    (clones["consulting"] / GATE_REL).write_text(AHEAD_GATE)
+    r = _run(root)
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    # the per-instance STATE, not a substring: the note itself says the words
+    # "ahead or behind", and a bare `not in` on the whole message reads that as
+    # a verdict the run never rendered.
+    assert ": behind" not in r.stdout, r.stdout
+    assert "UNANSWERED" in r.stdout and _mod().NO_FAN_OUT_REF in r.stdout, r.stdout
+    assert "COULD NOT READ" in r.stdout, r.stdout
 
 
 def test_an_instance_without_the_gate_file_says_could_not_read(tmp_path):
@@ -249,9 +321,74 @@ def test_a_launchd_run_whose_alert_did_not_file_exits_nonzero(tmp_path):
     assert out["alert"]["filed"] is False and out["alert"]["error"], out["alert"]
 
 
-# ---- the manifest CI can load ------------------------------------------------
+def test_an_unconfigured_notifier_is_a_setup_state_not_a_filing_failure(tmp_path):
+    """PR #339 review round 3, minor. `slack-notify.sh` exit 3 is its own
+    documented "no Linear API key configured (a setup state)". Mapped to a send
+    FAILURE it made every 06:30 run on a keyless machine exit 2 into a log nobody
+    reads, forever, with no ticket -- including on a fleet that is green. Not
+    filed is still not filed, so the state is NOT advanced and the next run
+    retries the moment a key exists."""
+    root, clones = _fixture(tmp_path)
+    m = _mod()
 
-def test_the_run_writes_a_manifest_ci_could_load(tmp_path):
+    def unconfigured(_msg):
+        raise m.NotifierUnconfigured("slack-notify.sh exited 3: no Linear key")
+
+    (clones["consulting"] / GATE_REL).write_text(AHEAD_GATE)
+    out = m.run(str(root), notify=unconfigured, trigger="launchd")
+    assert out["alert"]["error"] == "", out["alert"]
+    assert out["alert"]["filed"] is False and out["alert"]["skipped"] is True
+    assert "not configured" in out["alert"]["reason"], out["alert"]
+    filed = []
+    out2 = m.run(str(root), notify=lambda msg: filed.append(msg), trigger="launchd")
+    assert out2["alert"]["filed"] is True and len(filed) == 1, \
+        "an unconfigured run must not have advanced the state past the real red"
+
+
+def test_send_maps_the_notifiers_setup_exit_and_not_only_the_injected_fake(tmp_path):
+    """The test above injects a fake that RAISES the exception, so it proves how
+    `run` reacts and nothing about `_send`. Measured: deleting the rc-3 branch
+    from `_send` left it green. This one drives a real notifier that exits 3 and
+    one that exits 1, so the mapping itself is what is pinned
+    (lessons/test-passes-for-the-wrong-reason)."""
+    m = _mod()
+    stub = tmp_path / "notify.sh"
+    real = m.NOTIFY
+    try:
+        stub.write_text("#!/bin/bash\nexit %d\n" % m.NOTIFY_UNCONFIGURED_RC)
+        m.NOTIFY = str(stub)
+        with pytest.raises(m.NotifierUnconfigured):
+            m._send("a red fleet")
+        stub.write_text("#!/bin/bash\necho boom >&2\nexit 1\n")
+        with pytest.raises(RuntimeError):
+            m._send("a red fleet")
+    finally:
+        m.NOTIFY = real
+
+
+def test_the_setup_exit_code_is_derived_from_slack_notifys_own_contract():
+    """The 3 is slack-notify.sh's number, not ours. Read out of its EXIT CONTRACT
+    block at test time so a renumbering there fails here instead of silently
+    turning a setup state back into a send failure."""
+    contract = NOTIFY_SH.read_text().split("EXIT CONTRACT", 1)[1].split("Usage:", 1)[0]
+    rows = dict(re.findall(r"^#\s+(\d+)\s+(.*)$", contract, re.M))
+    assert rows, "could not parse slack-notify.sh's exit contract"
+    setup = [code for code, text in rows.items() if "setup state" in text]
+    assert len(setup) == 1, rows
+    assert _mod().NOTIFY_UNCONFIGURED_RC == int(setup[0]), rows
+
+
+# ---- the manifest: a LOCAL run artifact, and the docs say only that -----------
+
+def test_the_run_writes_a_local_manifest_of_the_scan(tmp_path):
+    """PR #339 review round 3, minor. This file used to be described as a
+    manifest continuous integration could load. It is not: `q-system/output/*.json`
+    is gitignored, it is written only where the clones are, and a repo-wide grep
+    finds no reader outside this suite. Deleting it would lose a real local
+    artifact and adding a fake consumer would be worse, so what changed is the
+    CLAIM. The shape is pinned here because a file nothing else parses drifts
+    unnoticed. The prose above spells the phrase out rather than using it, for
+    the same reason the needle below is assembled."""
     root, clones = _fixture(tmp_path)
     (clones["consulting"] / GATE_REL).write_text(AHEAD_GATE)
     r = _run(root)
@@ -259,8 +396,18 @@ def test_the_run_writes_a_manifest_ci_could_load(tmp_path):
     manifest = root / "q-system" / "output" / "voice-gate-propagation.json"
     data = json.loads(manifest.read_text())
     assert data["red"] is True and data["generated_at"]
+    assert set(data) >= {"generated_at", "skeleton", "skeleton_ok", "instances",
+                         "ahead", "unanswered", "red"}, sorted(data)
     rows = {row["name"]: row["state"] for row in data["instances"]}
     assert rows == {"consulting": "ahead"}, rows
+    out = subprocess.run(["git", "-C", str(REPO), "check-ignore", "-q",
+                          "q-system/output/voice-gate-propagation.json"])
+    assert out.returncode == 0, "still gitignored, so no doc may promise CI reads it"
+    # the needle is ASSEMBLED for the same reason the skip counter's is: written
+    # out, this assertion is itself a match and the check measures the checker.
+    needle = "CI " + "can load"
+    assert needle not in CHECK.read_text(), "the script must not re-promise it"
+    assert needle not in Path(__file__).read_text(), "nor this suite"
 
 
 # ---- the live fleet: the ONE skip in this file -------------------------------
