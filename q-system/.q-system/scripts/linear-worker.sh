@@ -1957,15 +1957,15 @@ and the reviewer read (and the founder reads it too). When you have worked the
 findings, post ONE reply there:
 
   python3 q-system/.q-system/scripts/linear-sync.py progress $ISSUE \\
-    "<one line per finding: fixed + the test that now covers it, or answered + the file:line>" \\
-    --agent sana --evidence "<the command you ran and its real output>"
+    \"<one line per finding: fixed + the test that now covers it, or answered + the file:line>\" \\
+    --agent sana --evidence \"<the command you ran and its real output>\"
 
 One reply per rework pass, not one per finding: the issue is permanent and a
 comment per finding turns one review into ten objects nobody can read.
 
 Findings you disagree with are answered, never silently ignored -- a finding that
-gets no response reads as a finding nobody read. "I ran X and got Y" is an answer;
-"should be fine" is not.
+gets no response reads as a finding nobody read. \"I ran X and got Y\" is an answer;
+\"should be fine\" is not.
 
 The reviewer's own bar applies to your fixes too: a fix with no test that could
 have caught the bug is not a fix, it is a patch. Re-read what the reviewer said it
@@ -1973,12 +1973,12 @@ tried and could NOT break, and do not regress those.
 
 ## CHECK THE LAYER ABOVE YOUR FIX
 
-Observed on BOTH review rounds of this PR, so treat it as the likely failure mode
-rather than a hypothetical:
+Treat this as the likely failure mode of a rework round, not a hypothetical. One
+earlier PR (ASK-113) hit it on both of its review rounds:
 
-  round 1: the detector had no update path      -> you added one
-  round 2: the update path rewrites a CLOSED issue and never reopens it,
-           so the detector goes permanently dark after the operator does the
+  round 1: the detector had no update path      -> the fix added one
+  round 2: the update path rewrote a CLOSED issue and never reopened it,
+           so the detector went permanently dark after the operator did the
            right thing -- WORSE than before the fix
   round 2 also: 'the fix landed on the detector and not on the report'
 
@@ -2004,7 +2004,7 @@ Push to the SAME branch $BRANCH. Do not open a second PR."
   PROMPT="You are Sana, the kipi Systems Engineer, working Linear issue $ISSUE.$REWORK
 
 You are in a DEDICATED GIT WORKTREE at $TREE, already on branch $BRANCH off origin/main.
-Work here. Never `cd` to $TARGET_REPO and never switch this branch -- the founder may be using that checkout.
+Work here. Never \`cd\` to $TARGET_REPO and never switch this branch -- the founder may be using that checkout.
 
 1. Read the issue: \`python3 $SYNC progress $ISSUE\` is for REPORTING; to read it use the Linear MCP or
    \`gh\`-style inspection. The issue carries a Definition of Ready: Outcome, Files, Check, Blast radius, Not doing.
