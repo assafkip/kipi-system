@@ -29,6 +29,11 @@
 # 3. every <placeholder> and every backticked span in the builder source appears
 #    verbatim in a rendered prompt. The list is DERIVED from the worker source,
 #    never retyped here, so a new placeholder is covered the day it is written.
+# 4. every prompt LINE of the builder source renders as written, escapes undone
+#    and each interpolation a wildcard. This is the check that sees an unescaped
+#    quote around one word, which leaves no stderr and no missing placeholder.
+#    It does not see a stray quote on a shell control line or on the closing
+#    line's final character, which it strips.
 #
 # The builder blocks are extracted from the worker and evaluated with stub
 # values, the same seam test-worker-refusal.sh uses for run_bounded. A copy of
@@ -153,8 +158,12 @@ has fresh 'Never `cd` to /tmp/repo' "fresh prompt keeps the backticked \`cd\` (n
 # not prompt text; prompt lines that start with # sit at column 0 or 2.
 # Spans containing $ are skipped: they are interpolated on purpose.
 ALL="$WORK/all.prompt"
-cat "$WORK"/fresh.prompt "$WORK"/rework.prompt "$WORK"/rebase.prompt \
-    "$WORK"/rereview.prompt "$WORK"/codex.prompt > "$ALL"
+# One newline after each: a prompt carries no trailing newline, so a bare cat
+# would glue its last line to the next prompt's first and check 6 would see
+# neither as a whole line.
+for name in fresh rework rebase rereview codex; do
+  cat "$WORK/$name.prompt"; printf '\n'
+done > "$ALL"
 SRC_TEXT="$(printf '%s\n%s\n' "$SANA_SRC" "$CODEX_SRC" | grep -vE '^[[:space:]]{4,}#')"
 
 PLACEHOLDERS="$(printf '%s\n' "$SRC_TEXT" | grep -oE '<[a-z][^<>$]*>' | sort -u)"
@@ -183,6 +192,60 @@ if [ -z "$missing" ]; then
 else
   bad "every placeholder and backticked span reaches a rendered prompt verbatim" \
       "missing:$missing"
+fi
+
+# 6. EVERY PROMPT LINE, NOT ONLY ITS MARKED SPANS. An unescaped quote around one
+# space-free word closes and reopens the string with nothing on stderr, and the
+# quotes silently vanish: `pass, "never" one` renders `pass, never one`. Check 5
+# cannot see that (no placeholder, no backtick), so this one reads each source
+# line of the builders as the text it is meant to be -- escapes undone, each
+# interpolation a wildcard -- and requires it as a whole line of some rendered
+# prompt. Skipped: shell control lines and comments (not prompt text), and the
+# assignment opener / closing quote, which are stripped rather than skipped.
+line_report="$(printf '%s\n%s\n' "$SANA_SRC" "$CODEX_SRC" | python3 -c '
+import re, sys
+rendered = set(open(sys.argv[1], encoding="utf-8").read().split("\n"))
+control = re.compile(r"^\s*(if|elif|else|fi)(\s|$)|^\s{4,}#")
+interp = re.compile(r"\\\$|\$\([^)]*\)|\$\{[^}]*\}|\$[A-Za-z_][A-Za-z_0-9]*")
+checked, missing = 0, []
+for src in sys.stdin.read().split("\n"):
+    if not src.strip() or control.search(src):
+        continue
+    text = re.sub(r"^\s*[A-Z_]+=\"", "", src)
+    text = re.sub(r"(?<!\\)\"$", "", text)
+    parts, pattern = interp.split(text), []
+    tokens = interp.findall(text)
+    for i, part in enumerate(parts):
+        part = re.sub(r"\\([\"`\\])", r"\1", part)
+        pattern.append(re.escape(part))
+        if i < len(tokens):
+            pattern.append(r"\$" if tokens[i] == "\\$" else ".*")
+    rx = re.compile("^" + "".join(pattern) + "$")
+    checked += 1
+    if not any(rx.match(line) for line in rendered):
+        missing.append(src.strip())
+print(checked)
+for m in missing:
+    print(m)
+' "$ALL")"
+n_lines="$(printf '%s\n' "$line_report" | head -1)"
+line_missing="$(printf '%s\n' "$line_report" | tail -n +2)"
+if [ "${n_lines:-0}" -ge 150 ] && [ -z "$line_missing" ]; then
+  ok "every one of $n_lines prompt line(s) in the builders renders as written"
+else
+  bad "every prompt line in the builders renders as written" \
+      "checked=${n_lines:-0} (floor 150); not rendered as written:
+$(printf '%s\n' "$line_missing" | head -5 | sed 's/^/       /')"
+fi
+
+# 7. The rework text about ASK-113's two review rounds names that PR, not the one
+# Sana is reworking. It was dead text while REWORK was empty; once the quotes
+# were fixed it reached every rework round stated as fact about THIS PR.
+if grep -qF "review rounds of this PR" "$WORK/rework.prompt"; then
+  bad "rework prompt does not attribute ASK-113's review rounds to the current PR" \
+      "found: review rounds of this PR"
+else
+  ok "rework prompt does not attribute ASK-113's review rounds to the current PR"
 fi
 
 echo

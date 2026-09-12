@@ -1973,12 +1973,12 @@ tried and could NOT break, and do not regress those.
 
 ## CHECK THE LAYER ABOVE YOUR FIX
 
-Observed on BOTH review rounds of this PR, so treat it as the likely failure mode
-rather than a hypothetical:
+Treat this as the likely failure mode of a rework round, not a hypothetical. One
+earlier PR (ASK-113) hit it on both of its review rounds:
 
-  round 1: the detector had no update path      -> you added one
-  round 2: the update path rewrites a CLOSED issue and never reopens it,
-           so the detector goes permanently dark after the operator does the
+  round 1: the detector had no update path      -> the fix added one
+  round 2: the update path rewrote a CLOSED issue and never reopened it,
+           so the detector went permanently dark after the operator did the
            right thing -- WORSE than before the fix
   round 2 also: 'the fix landed on the detector and not on the report'
 
