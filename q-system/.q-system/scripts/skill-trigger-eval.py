@@ -88,8 +88,10 @@ def run_case(prompt):
     failed invocation is refused.
     """
     # Run claude -p from the REPO ROOT so the .claude/rules auto-invoke path loads.
+    # stream-json is what exposes the tool calls; the prompt stays at argv[2].
     try:
-        r = subprocess.run([CLAUDE, "-p", prompt], cwd=REPO_ROOT,
+        r = subprocess.run([CLAUDE, "-p", prompt, "--output-format", "stream-json",
+                            "--verbose"], cwd=REPO_ROOT,
                            capture_output=True, text=True, timeout=180)
     except Exception as e:
         raise InfraError("`" + CLAUDE + " -p` could not be run: " + repr(e))
@@ -100,15 +102,59 @@ def run_case(prompt):
     return r.stdout or ""
 
 
+def stream_events(out):
+    """The JSON events of one stream-json run. Raises InfraError on zero events:
+    a successful run always emits at least its result event, so an empty or
+    non-JSON stdout means the invocations were not observable, not that no
+    skill fired."""
+    events = []
+    for line in out.splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(ev, dict) and ev.get("type"):
+            events.append(ev)
+    if not events:
+        raise InfraError("`" + CLAUDE + " -p` exited 0 but emitted no stream-json "
+                         "events, so no tool call could be observed")
+    return events
+
+
+def invoked_skills(events):
+    """Skill names the run actually loaded, lowercased.
+
+    WHY tool calls and not text (ASK-135, Codex PR #238 round 4): the old test
+    was `marker in stdout`, so "I did not invoke skill-creator." scored as an
+    invocation and the eval could report 1.00 for work that never happened.
+    Two tool calls count: a Skill call (its `skill` input, plugin namespace
+    stripped) and a Read of `<skill>/SKILL.md`, the load path the
+    fable-discipline fixture relies on.
+    """
+    names = set()
+    for ev in events:
+        content = (ev.get("message") or {}).get("content") if ev.get("type") == "assistant" else None
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            args = block.get("input") or {}
+            if block.get("name") == "Skill" and isinstance(args.get("skill"), str):
+                names.add(args["skill"].strip().lower().split(":")[-1])
+            path = str(args.get("file_path", "")).replace("\\", "/")
+            if block.get("name") == "Read" and path.lower().endswith("/skill.md"):
+                names.add(path.rsplit("/", 2)[-2].lower())
+    return names
+
+
 def eval_skill(skill):
     fx = load_fixture(skill)
     correct = 0
     for i, c in enumerate(fx["cases"]):
         try:
-            out = run_case(c["prompt"]).lower()
+            invoked = invoked_skills(stream_events(run_case(c["prompt"])))
         except InfraError as e:
             raise InfraError(skill + " case " + str(i) + ": " + str(e))
-        fired = any(m in out for m in c["_markers"])
+        fired = any(m in invoked for m in c["_markers"])
         if fired == bool(c["should_trigger"]):
             correct += 1
     return {"skill": skill, "cases": len(fx["cases"]), "trigger_rate": correct / len(fx["cases"])}
