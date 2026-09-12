@@ -145,6 +145,11 @@ git init -q "$WORK/skel2"
 git -C "$WORK/skel2" remote add origin "$WORK/m2.git"
 git -C "$WORK/skel2" fetch -q origin
 git -C "$WORK/skel2" checkout -q -b master origin/master
+# git 2.48+ records origin/HEAD on every fetch (remote.<name>.followRemoteHEAD
+# defaults to "create"), including the worker's own fetch. `never` models the
+# older git and the checkout that opted out; an older git ignores the key.
+git -C "$WORK/skel2" config remote.origin.followRemoteHEAD never
+git -C "$WORK/skel2" remote set-head origin -d >/dev/null 2>&1 || true
 git -C "$WORK/skel2" symbolic-ref -q refs/remotes/origin/HEAD >/dev/null \
   && fail "fixture: origin/HEAD exists, so the fallback path would not be exercised"
 run_worker "$WORK/skel2" "$WORK/state2"
