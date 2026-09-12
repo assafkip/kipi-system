@@ -1957,15 +1957,15 @@ and the reviewer read (and the founder reads it too). When you have worked the
 findings, post ONE reply there:
 
   python3 q-system/.q-system/scripts/linear-sync.py progress $ISSUE \\
-    "<one line per finding: fixed + the test that now covers it, or answered + the file:line>" \\
-    --agent sana --evidence "<the command you ran and its real output>"
+    \"<one line per finding: fixed + the test that now covers it, or answered + the file:line>\" \\
+    --agent sana --evidence \"<the command you ran and its real output>\"
 
 One reply per rework pass, not one per finding: the issue is permanent and a
 comment per finding turns one review into ten objects nobody can read.
 
 Findings you disagree with are answered, never silently ignored -- a finding that
-gets no response reads as a finding nobody read. "I ran X and got Y" is an answer;
-"should be fine" is not.
+gets no response reads as a finding nobody read. \"I ran X and got Y\" is an answer;
+\"should be fine\" is not.
 
 The reviewer's own bar applies to your fixes too: a fix with no test that could
 have caught the bug is not a fix, it is a patch. Re-read what the reviewer said it
@@ -2004,7 +2004,7 @@ Push to the SAME branch $BRANCH. Do not open a second PR."
   PROMPT="You are Sana, the kipi Systems Engineer, working Linear issue $ISSUE.$REWORK
 
 You are in a DEDICATED GIT WORKTREE at $TREE, already on branch $BRANCH off origin/main.
-Work here. Never `cd` to $TARGET_REPO and never switch this branch -- the founder may be using that checkout.
+Work here. Never \`cd\` to $TARGET_REPO and never switch this branch -- the founder may be using that checkout.
 
 1. Read the issue: \`python3 $SYNC progress $ISSUE\` is for REPORTING; to read it use the Linear MCP or
    \`gh\`-style inspection. The issue carries a Definition of Ready: Outcome, Files, Check, Blast radius, Not doing.
