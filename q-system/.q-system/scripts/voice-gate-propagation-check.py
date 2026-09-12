@@ -62,6 +62,7 @@ MANIFEST_REL = "q-system/output/voice-gate-propagation.json"
 STATE_REL = "q-system/output/.voice-gate-propagation-state.json"
 NOTIFY = os.path.join(HERE, "slack-notify.sh")
 COULD_NOT_READ = "COULD NOT READ"
+NO_INSTANCES = "no instances in the registry"
 NOTIFY_TIMEOUT_S = 20
 
 
@@ -140,25 +141,53 @@ def scan(root: str) -> dict:
             state, note = classify(path, root)
             rows.append({"name": name, "path": path, "state": state, "note": note})
     ahead = [r["name"] for r in rows if r["state"] == "ahead"]
+    unanswered = [r["name"] for r in rows if r["state"] == "could-not-read"]
+    # A registry this run could PARSE but that names no instance scanned nothing,
+    # and nothing has the same bytes as a healthy fleet
+    # (lessons/zero-selected-items-is-a-failure-not-a-pass.md). Zero and
+    # never-ran must not both print green.
+    if skeleton_ok and not rows:
+        unanswered = [NO_INSTANCES]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "skeleton": root,
         "skeleton_ok": skeleton_ok,
         "instances": rows,
         "ahead": ahead,
-        # a root that is not the skeleton is RED: it means this ran somewhere it
-        # cannot answer the question, which is not the same as "no drift found".
-        "red": bool(ahead) or not skeleton_ok,
+        "unanswered": unanswered,
+        # THREE ways to be red, and the middle one is the PR #339 review's major:
+        # an instance whose gate file could not be read is UNKNOWN, never synced.
+        # An instance that is genuinely ahead AND unreadable at 06:30 used to
+        # score exit 0 with fingerprint `green`, so the branch this file's own
+        # docstring promised was never silently green was exactly the one that
+        # was. A root that is not the skeleton is the same defect one level up:
+        # it ran somewhere it cannot answer the question, which is not the same
+        # answer as "no drift found".
+        "red": bool(ahead) or bool(unanswered) or not skeleton_ok,
     }
 
 
 def render(report: dict) -> str:
+    """The summary leads, before the per-instance rows.
+
+    `alert-to-linear.py::title_for` flattens this to one line and truncates it,
+    so a RED line printed after 25 `name: synced` rows gave Sana a ticket titled
+    "X: synced Y: synced..." and never named the instance that is losing
+    behaviour (PR #339 review, minor). The NAMES come first inside the summary
+    for the same reason: truncation eats the tail.
+    """
     day = report["generated_at"][:10]
     lines = [f"voice-stop-gate propagation ({day})"]
     if not report["skeleton_ok"]:
         lines.append(f"skeleton: {COULD_NOT_READ} (the registry's skeleton entry is not "
                      f"this checkout: {report['skeleton']})")
         return "\n".join(lines)
+    if report["ahead"]:
+        lines.append(f"RED AHEAD: {', '.join(report['ahead'])} -- "
+                     "lose behaviour on the next sync")
+    if report["unanswered"]:
+        lines.append(f"RED UNANSWERED: {', '.join(report['unanswered'])} -- "
+                     "not scanned, so not known to be safe")
     for row in report["instances"]:
         if row["state"] == "could-not-read":
             lines.append(f"{row['name']}: {COULD_NOT_READ} ({row['note']})")
@@ -167,11 +196,6 @@ def render(report: dict) -> str:
         else:
             lines.append(f"{row['name']}: {row['state']}"
                          + (f" ({row['note']})" if row["note"] else ""))
-    if not report["instances"]:
-        lines.append("no instances in the registry")
-    if report["ahead"]:
-        lines.append(f"RED: {len(report['ahead'])} instance(s) lose behaviour on the "
-                     f"next sync: {', '.join(report['ahead'])}")
     return "\n".join(lines)
 
 
@@ -182,7 +206,15 @@ def fingerprint(report: dict) -> str:
     shape of a fix."""
     if not report["skeleton_ok"]:
         return "skeleton-unreadable"
-    return "ahead:" + ",".join(sorted(report["ahead"])) if report["ahead"] else "green"
+    parts = []
+    if report["ahead"]:
+        parts.append("ahead:" + ",".join(sorted(report["ahead"])))
+    # the unanswered set belongs to the STATE, not only to the exit code: left
+    # out, a newly-unreadable instance either never alerts or alerts on every
+    # run, and a channel repeating an unchanged condition stops being read.
+    if report["unanswered"]:
+        parts.append("unanswered:" + ",".join(sorted(report["unanswered"])))
+    return "|".join(parts) if parts else "green"
 
 
 def _send(message: str) -> None:
@@ -198,6 +230,16 @@ def _send(message: str) -> None:
                            f"{(done.stderr or b'').decode('utf-8', 'replace')[:300]}")
 
 
+def _remember(root: str, current: str, report: dict) -> None:
+    """The single writer of the state file. Advancing the state is what makes the
+    next run quiet, so it happens on exactly two paths -- after a filing, and on
+    the first quiet run -- and never after a failed filing."""
+    state_path = os.path.join(os.path.realpath(root), STATE_REL)
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    with open(state_path, "w", encoding="utf-8") as fh:
+        json.dump({"fingerprint": current, "at": report["generated_at"]}, fh)
+
+
 def run(root: str, notify=None, trigger=None, write_manifest=True) -> dict:
     report = scan(root)
     message = render(report)
@@ -208,7 +250,6 @@ def run(root: str, notify=None, trigger=None, write_manifest=True) -> dict:
         os.makedirs(os.path.dirname(manifest), exist_ok=True)
         with open(manifest, "w", encoding="utf-8") as fh:
             json.dump(report, fh, indent=2, sort_keys=True)
-        fh = None
     if trigger != "launchd":
         out["alert"]["reason"] = ("not launched by the plist (KIPI_TRIGGER != launchd): "
                                  "printed, filed nothing")
@@ -223,6 +264,16 @@ def run(root: str, notify=None, trigger=None, write_manifest=True) -> dict:
     if current == previous:
         out["alert"]["reason"] = f"no state change since the last run ({current})"
         return out
+    if not previous and not report["red"]:
+        # First scheduled run on a healthy fleet: "" -> "green" is a state change
+        # by string comparison, and filing "recovered" for a condition that never
+        # fired is a ticket somebody closes by hand (PR #339 review, minor).
+        # `is_noise()` in alert-to-linear does not match that wording, so it
+        # really does become a real ticket. The state is still RECORDED below, so
+        # the first genuine red is not muted by this branch.
+        _remember(root, current, report)
+        out["alert"]["reason"] = f"first run and nothing is red ({current}): state recorded"
+        return out
     out["alert"]["skipped"] = False
     body = message if report["red"] else (
         "voice-stop-gate propagation recovered: no instance is ahead of the skeleton")
@@ -232,9 +283,7 @@ def run(root: str, notify=None, trigger=None, write_manifest=True) -> dict:
     except Exception as exc:                      # never swallowed: the caller exits 2
         out["alert"]["error"] = f"{type(exc).__name__}: {exc}"
         return out                                # state NOT advanced: retry next run
-    os.makedirs(os.path.dirname(state_path), exist_ok=True)
-    with open(state_path, "w", encoding="utf-8") as fh:
-        json.dump({"fingerprint": current, "at": report["generated_at"]}, fh)
+    _remember(root, current, report)
     return out
 
 

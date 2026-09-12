@@ -109,12 +109,31 @@ def test_an_instance_merely_behind_the_skeleton_is_not_loss(tmp_path):
 
 
 def test_an_instance_without_the_gate_file_says_could_not_read(tmp_path):
-    """Never silently green: an unreadable instance is unknown, not synced."""
+    """Never silently green: an unreadable instance is unknown, not synced.
+
+    The EXIT CODE is the assertion that was missing here (PR #339 review, major).
+    An instance that is genuinely ahead but unreadable at 06:30 -- a permission,
+    a renamed directory, a stale registry row, a mid-sync moment -- used to score
+    exit 0 with fingerprint `green`, so the one branch the docstring promised was
+    never silently green was exactly the branch that was.
+    """
     root, clones = _fixture(tmp_path)
     (clones["consulting"] / GATE_REL).unlink()
     r = _run(root)
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
     assert "COULD NOT READ" in r.stdout, r.stdout
+    assert "UNANSWERED" in r.stdout and "consulting" in r.stdout, r.stdout
     assert "synced" not in r.stdout.split("consulting")[-1].splitlines()[0]
+
+
+def test_a_registry_with_zero_instances_is_not_a_clean_fleet(tmp_path):
+    """lessons/zero-selected-items-is-a-failure-not-a-pass. A registry the run
+    could parse but that names no instance means the scan covered nothing, which
+    has the same bytes as a healthy fleet and none of the meaning."""
+    root, _ = _fixture(tmp_path, instances=())
+    r = _run(root)
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert "UNANSWERED" in r.stdout and "no instances in the registry" in r.stdout
 
 
 def test_the_runner_refuses_unless_its_root_is_the_registry_skeleton(tmp_path):
@@ -156,6 +175,64 @@ def test_the_alert_fires_once_per_state_change_not_once_per_run(tmp_path):
     m.run(str(root), notify=notify, trigger="launchd")
     assert len(filed) == 2, "a red -> green transition is a state change"
     assert "recovered" in filed[1].lower(), filed[1]
+
+
+def test_the_first_launchd_run_on_a_green_fleet_records_state_and_files_nothing(tmp_path):
+    """PR #339 review, minor. On install `previous` is "" and `current` is
+    "green", which is a state CHANGE by string comparison and was filed as
+    "recovered" -- a ticket somebody closes by hand for a condition that never
+    fired. `is_noise()` in alert-to-linear does not match that string, so it
+    really does become a real ticket. Recovery still has to fire, so the state is
+    RECORDED on that first quiet run rather than the run being skipped outright.
+    """
+    root, clones = _fixture(tmp_path)
+    m = _mod()
+    filed = []
+    notify = lambda msg: filed.append(msg)
+    out = m.run(str(root), notify=notify, trigger="launchd")
+    assert filed == [], filed
+    assert out["alert"]["skipped"] is True and "first run" in out["alert"]["reason"]
+    (clones["consulting"] / GATE_REL).write_text(AHEAD_GATE)   # now it goes red
+    assert m.run(str(root), notify=notify, trigger="launchd")["alert"]["filed"] is True
+    assert len(filed) == 1, "the quiet first run must not have muted the real one"
+
+
+def test_an_instance_that_cannot_be_read_files_once_not_every_run(tmp_path):
+    """The unanswered set is part of the STATE, not just the exit code. Left out
+    of the fingerprint an unreadable instance would either never alert or alert
+    on every run, and a channel that repeats an unchanged condition stops being
+    read (founder-notifications.md)."""
+    root, clones = _fixture(tmp_path, instances=("consulting", "intel"))
+    (clones["consulting"] / GATE_REL).unlink()
+    m = _mod()
+    filed = []
+    notify = lambda msg: filed.append(msg)
+    assert m.run(str(root), notify=notify, trigger="launchd")["alert"]["filed"] is True
+    assert len(filed) == 1 and "consulting" in filed[0], filed
+    m.run(str(root), notify=notify, trigger="launchd")
+    assert len(filed) == 1, "the same unreadable instance must not file again"
+    (clones["intel"] / GATE_REL).unlink()                      # the set changed
+    m.run(str(root), notify=notify, trigger="launchd")
+    assert len(filed) == 2, "a second unreadable instance is a new state"
+
+
+def test_the_summary_leads_the_message_so_a_truncated_title_still_names_it(tmp_path):
+    """PR #339 review, minor. alert-to-linear flattens the message to one line
+    and truncates it for the ticket title, so a RED summary printed AFTER 25
+    per-instance rows gives Sana a title reading "X: synced Y: synced...". The
+    truncator is imported from the consumer that owns it rather than restated
+    here: a copied 110 stops being the real bound the day that file changes."""
+    names = tuple(f"inst{i:02d}" for i in range(25))
+    root, clones = _fixture(tmp_path, instances=names)
+    (clones["inst23"] / GATE_REL).write_text(AHEAD_GATE)
+    m = _mod()
+    message = m.render(m.scan(str(root)))
+    spec = importlib.util.spec_from_file_location("a2l", SCRIPTS / "alert-to-linear.py")
+    a2l = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(a2l)
+    title = a2l.title_for(message)
+    assert "inst23" in title, title
+    assert message.splitlines()[1].startswith("RED"), message.splitlines()[:3]
 
 
 def test_a_launchd_run_whose_alert_did_not_file_exits_nonzero(tmp_path):

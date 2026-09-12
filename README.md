@@ -332,7 +332,7 @@ The pages above are the knowledge half. The rest of the repo, with the command t
 - **21 namespaced slash commands**, listed above. Six in `kipi-core`, six in `kipi-dsse`, nine in `prd-os`.
 - **65 hook entries** in `settings-template.json` (`grep -o '"command": "[^"]*"' settings-template.json | wc -l`), plus seven more in the plugins' own `hooks.json`. Every copy gets the same switches, because they ship as one file.
 - **Six plugins** under `plugins/`, all six listed in `.claude-plugin/marketplace.json`.
-- **16 launchd jobs** committed as plists. `./kipi install-jobs` enumerates them with `git ls-files`, so a plist outside the scripts directory is still reached; run `bash q-system/.q-system/scripts/install-plist.sh` with no arguments to see the label list it will install.
+- **17 launchd jobs** committed as plists (`git ls-files '*.plist' | wc -l`). `./kipi install-jobs` enumerates them with `git ls-files`, so a plist outside the scripts directory is still reached; run `bash q-system/.q-system/scripts/install-plist.sh` with no arguments to see the label list it will install.
 
 ---
 
