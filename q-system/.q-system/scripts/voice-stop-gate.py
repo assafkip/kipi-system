@@ -427,6 +427,77 @@ def authorship_page():
         return
 
 
+# --- THE ONE SINK, and the measurement that settles it (ASK-1303) ------------
+#
+# MEASURED_STOP_HOOK_SINKS. This file used to carry two comments about the same
+# question, both written as fact and contradicting each other: finish_ok said a
+# Stop hook's plain stdout is dropped, report_not_checked said stdout is what a
+# successful hook is read on. Both cannot be true, and every NOT CHECKED line
+# PR #290 added depended on the answer.
+#
+# Settled by RUNNING it, not by reading docs. Three `claude -p` runs on
+# 2026-09-12, each wiring one throwaway Stop hook that exits with a marker on one
+# candidate channel, then grepping the harness's own stream-json output for that
+# marker:
+#
+#   exit 0, bare text on stdout .................. DISCARDED (marker absent)
+#   exit 0, {"systemMessage": X} on stdout ....... SURFACED as a `system` event
+#   exit 0, Stop additionalContext ............... absent from the harness output
+#                                                  (it is for the model, not him)
+#   exit 0, text on stderr ....................... DISCARDED
+#   exit 2, text on stderr ....................... SURFACED
+#
+# And the result that made this a live defect rather than a stale comment: a bare
+# line written BEFORE the JSON object destroys the JSON as well. Measured
+# separately -- bare+JSON on one stdout surfaced NEITHER, JSON alone surfaced.
+# So today's shape (report_not_checked writes bare lines, then finish_ok prints
+# the systemMessage) did not merely lose the NOT CHECKED warning; on any turn
+# that produced one it ALSO swallowed the authorship score line that would
+# otherwise have reached him.
+#
+# Hence one sink with one flush point. stdout carries exactly one JSON object or
+# nothing at all; stderr is still written immediately because report_not_checked
+# runs BEFORE the gate knows whether it will exit 2, and exit 2 is the one path
+# where stderr is the channel that works.
+_PENDING_SURFACE = []
+
+
+def surface(line, err=None):
+    """Queue one line for the founder, on the channel measured to survive.
+
+    Writes stderr NOW (covers the exit-2 paths, which never reach finish_ok) and
+    queues for the single systemMessage object finish_ok emits (covers exit 0).
+    Never writes bare stdout: see MEASURED_STOP_HOOK_SINKS above.
+    """
+    if not line:
+        return
+    _PENDING_SURFACE.append(line)
+    (err or sys.stderr).write(line + "\n")
+
+
+def pending_surface():
+    """The queued lines. A reader for the tests; nothing here mutates it."""
+    return list(_PENDING_SURFACE)
+
+
+def reset_pending_surface():
+    """Drop the queue. Only the tests call this; one process handles one turn."""
+    del _PENDING_SURFACE[:]
+
+
+def emit_pending(out=None):
+    """Flush the queue as ONE JSON object, or write nothing.
+
+    One object, not one per line: two concatenated objects are as unparseable as
+    a bare line preceding one, and the measurement says an unparseable stdout
+    loses everything on it rather than the offending part.
+    """
+    if not _PENDING_SURFACE:
+        return
+    (out or sys.stdout).write(
+        json.dumps({"systemMessage": "\n".join(_PENDING_SURFACE)}))
+
+
 def finish_ok():
     """Exit 0, surfacing any advisory line a previous turn's worker finished.
 
@@ -441,12 +512,12 @@ def finish_ok():
     """
     # Before the drain, and detached, so a Slack curl never delays his text.
     authorship_page()
-    line = authorship_drain()
-    if line:
-        # `systemMessage` on exit 0 is the ONLY hook field that puts text in
-        # front of the USER rather than the model. Plain stdout from a Stop hook
-        # is dropped, and `additionalContext` reaches Claude, not him.
-        print(json.dumps({"systemMessage": line}))
+    # Queued, not printed. `surface` is the only writer, so this line and any
+    # NOT CHECKED line queued earlier in the turn leave as ONE JSON object --
+    # which is the difference between both arriving and neither (see
+    # MEASURED_STOP_HOOK_SINKS).
+    surface(authorship_drain())
+    emit_pending()
     sys.exit(0)
 
 
@@ -707,22 +778,23 @@ def reply_carries_a_draft(text):
 NOT_CHECKED = "NOT_CHECKED"
 
 
-def report_not_checked(lines, out=None, err=None):
-    """Surface NOT CHECKED on the channel a SUCCESSFUL hook is actually read on.
+def report_not_checked(lines, err=None):
+    """Surface NOT CHECKED through the one sink, same as finish_ok.
 
-    The first version of this wrote to stderr only, on a path that then exits 0.
-    A Stop hook's stderr is fed back when it exits 2; on the success path it goes
-    nowhere. So the warning that a draft had not been graded was itself never
-    delivered -- the exact defect this whole change exists to close, reproduced
-    inside the fix for it (Codex major, PR #290).
+    The first version of this wrote to stderr only, on a path that then exits 0,
+    so the warning that a draft had not been graded was itself never delivered
+    (Codex major, PR #290). The second version fixed that by ALSO writing bare
+    stdout, on the strength of a comment asserting stdout is what a successful
+    hook is read on -- while finish_ok, twenty screens up, asserted the opposite.
+    The measurement recorded in MEASURED_STOP_HOOK_SINKS says finish_ok was
+    right, and that the bare line was additionally destroying the systemMessage
+    object printed after it.
 
-    Both streams on purpose. stdout is what a successful hook is read on; stderr
-    keeps the line present if this is ever called from the blocking path, where
-    stdout is not surfaced. Writing to one and hoping is what got us here.
+    So there is no `out` parameter any more: bare stdout is not a channel, and a
+    keyword that lets a caller aim at it is the mutation this exists to prevent.
     """
     for line in lines:
-        (out or sys.stdout).write(line + "\n")
-        (err or sys.stderr).write(line + "\n")
+        surface(line, err=err)
 
 
 # --- the OPTIONAL instance channel registry ----------------------------------
