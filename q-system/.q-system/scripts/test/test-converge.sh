@@ -152,7 +152,8 @@ ok "missing --issue -> usage error, never guesses an issue"
 # ahead of origin/main, because "remember to open it" is not enforcement.
 grep -q 'gh pr create' "$ROOT/q-system/.q-system/scripts/linear-worker.sh" \
   || fail "worker cannot open a PR itself; an agent that forgets strands its own work"
-grep -q 'rev-list --count origin/main..HEAD' "$ROOT/q-system/.q-system/scripts/linear-worker.sh" \
+# The base is the target repo's resolved default branch, not a literal main (ASK-1510).
+grep -q 'rev-list --count "$BASE_REF"..HEAD' "$ROOT/q-system/.q-system/scripts/linear-worker.sh" \
   || fail "PR auto-open must be gated on commits existing, or an empty branch opens an empty PR"
 ok "worker opens the PR in code when commits are pushed but no PR exists"
 

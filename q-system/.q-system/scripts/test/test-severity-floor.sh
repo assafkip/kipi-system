@@ -343,7 +343,7 @@ trap 'rm -rf "$WORK" "$W2"' EXIT
 unset KIPI_LINEAR_CLAIMS KIPI_SESSION_ID CLAUDE_SESSION_ID 2>/dev/null || true
 G() { git -c user.email=t@t.t -c user.name=t "$@"; }
 
-git init -q --bare "$W2/origin"
+git init -q --bare --initial-branch=main "$W2/origin"
 git init -q "$W2/skel"
 G -C "$W2/skel" commit -q --allow-empty -m c1
 git -C "$W2/skel" branch -M main
@@ -535,7 +535,7 @@ ok "approved + CLEAN is left alone at gate 10, and pages nobody"
 make_repo() {
   local d="$1"
   mkdir -p "$d"
-  git init -q --bare "$d/origin"
+  git init -q --bare --initial-branch=main "$d/origin"
   git init -q "$d/skel"
   G -C "$d/skel" commit -q --allow-empty -m "base commit"
   git -C "$d/skel" branch -M main
@@ -1185,7 +1185,7 @@ run_converge() { run_converge_at "$W2/skel" "$1" "$2" "${3:-1}"; }
 receipt_world() {
   local dir="$1" n="$2"
   mkdir -p "$dir"
-  git init -q --bare "$dir/origin"
+  git init -q --bare --initial-branch=main "$dir/origin"
   git init -q "$dir/skel"
   G -C "$dir/skel" commit -q --allow-empty -m c1
   git -C "$dir/skel" branch -M main
@@ -2604,7 +2604,7 @@ ok "the closing line on an armed PR says GitHub merges it, not a human"
 # the arm has to fire on THAT number.
 R_ARM2="$W2/repo-arm2"
 mkdir -p "$R_ARM2"
-git init -q --bare "$R_ARM2/origin"
+git init -q --bare --initial-branch=main "$R_ARM2/origin"
 git init -q "$R_ARM2/skel"
 G -C "$R_ARM2/skel" commit -q --allow-empty -m "base commit"
 git -C "$R_ARM2/skel" branch -M main
@@ -2712,7 +2712,7 @@ ok "a re-run on an already-armed PR: no call, no warning, no error"
 # whatever branch the cwd happens to be on.
 R_ARM5="$W2/repo-arm5"
 mkdir -p "$R_ARM5"
-git init -q --bare "$R_ARM5/origin"
+git init -q --bare --initial-branch=main "$R_ARM5/origin"
 git init -q "$R_ARM5/skel"
 G -C "$R_ARM5/skel" commit -q --allow-empty -m "base commit"
 git -C "$R_ARM5/skel" branch -M main

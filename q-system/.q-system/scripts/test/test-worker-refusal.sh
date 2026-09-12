@@ -245,7 +245,7 @@ chmod +x "$STUB/claude" "$STUB/gh"
 
 # --- a real git repo for SKEL ------------------------------------------------
 SKEL="$WORK/kipi-system"
-git init --quiet --bare "$WORK/origin.git"
+git init --quiet --bare --initial-branch=main "$WORK/origin.git"
 git init --quiet "$SKEL"
 git -C "$SKEL" config user.email t@t; git -C "$SKEL" config user.name t
 : > "$SKEL/seed"; git -C "$SKEL" add seed; git -C "$SKEL" commit --quiet -m seed
@@ -704,7 +704,7 @@ fi
 # assertion below goes vacuous. Same name, different parent.
 mkdir -p "$WORK/stale-run"
 SKEL2="$WORK/stale-run/kipi-system"
-git init --quiet --bare "$WORK/origin-stale.git"
+git init --quiet --bare --initial-branch=main "$WORK/origin-stale.git"
 git init --quiet "$SKEL2"
 git -C "$SKEL2" config user.email t@t; git -C "$SKEL2" config user.name t
 : > "$SKEL2/seed"; git -C "$SKEL2" add seed; git -C "$SKEL2" commit --quiet -m seed
