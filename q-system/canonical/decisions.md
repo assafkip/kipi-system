@@ -371,3 +371,87 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
   skips rows created before its CREATED_AT_CUTOFF and prints their count). The
   review agent's APPROVE WITH NITS path still tries to capture minors as spillover
   and is now refused; that path is the follow-up.
+
+## Reachable secrets get an inventory and a decision per authority row (ASK-1251, 2026-09-13)
+
+The rows live in `q-system/.q-system/secret-reach-registry.json`.
+`q-system/.q-system/scripts/secret-reach-inventory.py` fails when a reachable
+secret has no row, or an authority row has no tagged decision here that names it.
+
+### RULE-2026-09-13-A: The CRM local-proof file stays a presence gate, and it is not a control against a local agent
+- **Origin:** [SYSTEM-INFERRED]
+- **Decision:** `ask-crm-local-proof` stays a presence check. Its job is to
+  keep a cloud clone or CI checkout from sending real Gmail, and it does that
+  job: those environments do not have the file. It is NOT a control against an
+  agent on this machine, and no doc should cite it as one. On this machine the
+  file already exists, and a session running as the founder's uid can read it
+  and could create it with `touch`. So it adds no authority a local agent lacks.
+  The authority to send sits in the Gmail credential the CRM uses.
+- **Why presence is kept and not replaced with a capability token:** the
+  destructive-op token needs Touch ID for every use. That fits an action a person
+  is present for. CRM sending is delegated to unattended bots (founder-directed
+  2026-09-11: each bot can send mail and DMs). A biometric on every send would
+  make the founder the next actor on every message, which is the design failing.
+- **Date:** 2026-09-13
+- **Revisit:** If the CRM starts sending from an environment other than this
+  machine, or the agent moves to a separate uid. The Gmail credential is
+  `ask-crm-gmail-token`, bound in RULE-2026-09-13-C. The consulting doc wording
+  is captured as spillover from ASK-1251.
+
+### RULE-2026-09-13-B: Every other reachable authority secret stays where it is, recorded rather than moved
+- **Origin:** [SYSTEM-INFERRED]
+- **Decision:** These stay as they are today: `kipi-linear-api-key`,
+  `claude-credentials`, `gh-hosts`, `git-credentials`, `netrc`, `npmrc`,
+  `aws-credentials`, `docker-config`, `ssh-id-ed25519`, `ssh-id-rsa`,
+  `APIFY_TOKEN`, `CLAUDE_CODE_MESSAGING_TOKEN`, `ELEVENLABS_API_KEY`,
+  `NOTION_TOKEN`, `NOTION_TOKEN_ASK`, `PERPLEXITY_API_KEY`, `POSTHOG_API_KEY`,
+  `VIRUSTOTAL_API_KEY`, `WHOISXML_API_KEY`. A row for a file that does not
+  exist on a given machine costs nothing and is reported `absent`.
+- **Why:** each of these is how an unattended job already does its work: the
+  worker writes the board, `gh` opens PRs, scheduled jobs spend API credits. A
+  session running as the founder's uid can reach every one of them, so `0600`
+  does not stop this process. Moving them behind a per-use capability token would
+  stop the loops the founder delegated to. The ask on ASK-1251 was an inventory
+  and a decision per row, "not a scramble to lock things down". What changes is
+  that the reach is now written down and refreshed by a script, not remembered.
+- **Measured 2026-09-13:** this session's own environment held 9 secret-shaped
+  variable names, the 9 env rows above, with names read and values never
+  read. The 2026-09-04 probe on the issue found 3 exported in `~/.zshrc`.
+- **Date:** 2026-09-13
+- **Revisit:** If any row gains an irreversible or public effect beyond what is
+  written in its `grants` field, or the agent moves to a separate uid. Run
+  `python3 q-system/.q-system/scripts/secret-reach-inventory.py` from the
+  kipi-system root. A new secret-named variable in the environment or assigned
+  in a declared shell profile (or a file it sources by a literal path), or a
+  new secret-named file under a scan dir, shows up as UNCLASSIFIED and the run
+  exits 1. It does not see a name built at run time, a file sourced through a
+  variable path (printed NOT-SCANNED), or a secret stored under a name the
+  pattern does not match.
+
+### RULE-2026-09-13-C: The first live file and shell scan's authority rows stay where they are, recorded
+- **Origin:** [SYSTEM-INFERRED]
+- **Decision:** These stay as they are today, now recorded: `N8N_API_KEY`,
+  `GEMINI_API_KEY`, `ask-crm-gmail-token`, `ask-crm-slack-token`,
+  `bitbucket-token`, `client-tokens`, `cockpit-token`, `groupme-token`,
+  `linear-relay-token`, `n8n-api-key`, `notion-token`, `openai-key`,
+  `posthog-api-key`, `publer-api-key`, `slack-bot-token`,
+  `slack-webhook-old-workspace`, `slack-webhook-retired-2026-08-19`,
+  `voice-gate-key`, and the logged-in browser sessions `browser-profiles`,
+  `linkedin-profile`, `reddit-profile`, `substack-profile`. The four browser
+  rows are globs: each classifies everything under one named directory, so a
+  cookie file Chromium adds tomorrow is already covered. A new profile
+  directory is not, and shows up UNCLASSIFIED.
+- **Why:** same reason as RULE-2026-09-13-B. Each is how a delegated job does
+  its work (the CRM sends mail and DMs, the bots post), and a session running as
+  the founder's uid reaches all of them. The DoR asked for an inventory and a
+  decision per row, not a lockdown.
+- **Measured 2026-09-13:** the first live `--source file --source shell` run
+  (review round 3 of PR #345) found 63 unclassified names: these 22 rows plus
+  two empty spillover-ratchet ack files, classed knowledge by glob.
+  `ask-crm-gmail-token.json` is mode 0644, readable by every local user, not
+  only this uid. Its mode is captured as ASK-1667 (sp-0265abf0), not changed
+  here.
+- **Date:** 2026-09-13
+- **Revisit:** When either retired Slack webhook is confirmed dead (the row can
+  go), or when `client-tokens`, `posthog-api-key` or `voice-gate-key` has a
+  known reader and a known grant.
