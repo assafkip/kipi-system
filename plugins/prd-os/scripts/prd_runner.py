@@ -2746,7 +2746,7 @@ SPILLOVER_NONBLOCKING_SEVERITIES = ("minor", "low", "medium")
 
 # NEW MINORS ARE NEVER QUEUED. Founder, 2026-09-12, verbatim: "New minor findings:
 # fix or reject, never queue." Recorded in canonical/decisions.md as
-# DEC-2026-09-12 [CLAUDE-RECOMMENDED -> APPROVED]. A minor is fixed in the change
+# RULE-2026-09-12-A [CLAUDE-RECOMMENDED -> APPROVED]. A minor is fixed in the change
 # that found it or rejected with a reason; `spillover add` and a `deferred`
 # disposition both refuse it at the door, so the ledger only receives work that
 # files a Linear issue for Sana (medium and up). kipi-dsse's issue_findings.py

@@ -15,8 +15,8 @@ python3 plugins/prd-os/scripts/prd_runner.py spillover add \
   --source <prd-or-issue-id> --desc "<what it is, concretely>"
 ```
 
-Capture = a ledger row in `.prd-os/spillover.jsonl` AND one Linear issue for Sana (filed via
-`alert-to-linear.py`, id on the row). `gates run` stays RED until resolved. A mention is not capture.
+Capture (medium and up) = a ledger row in `.prd-os/spillover.jsonl` AND one Linear issue for Sana
+(via `alert-to-linear.py`, id on the row). A NEW minor is never queued: fix it now or reject it with a reason.
 
 ## How items leave the ledger (only two ways)
 
@@ -30,10 +30,10 @@ There is no third way. You cannot hand-clear the gate.
 
 ## Deterministic backstops
 
-- A `deferred` disposition AUTO-creates an open spillover item (and its Linear
-  issue) in BOTH findings systems (findings_writer + issue_findings, sp-5bcfbfe8).
+- A `deferred` medium-and-up finding AUTO-creates the item + Linear issue in BOTH findings
+  systems (findings_writer + issue_findings); `add` or defer of a minor/low/nit exits 2.
 - The fable-discipline lint blocks deferral language written into CODE without a
-  capture (`# spillover-skip` acks an already-captured line). Only this blocks.
+  capture (`# spillover-skip` acks an already-captured line).
 - `gates run` fails while any item is open (the enforcement of last resort).
 - `spillover-linear-check.py` (daily launchd) retries failed Linear filings, alerts Sana once; never blocks.
 
@@ -59,7 +59,7 @@ the item, the issue that resolved it, the fix, and how it affected the system.
     "exec": "plugins/prd-os/skills/fable-discipline/scripts/fable-discipline-lint.py",
     "config": "plugins/prd-os/hooks/hooks.json",
     "test": "plugins/prd-os/skills/fable-discipline/scripts/test_fable_discipline_lint.py",
-    "note": "ENFORCED covers only the blocking slice: deferral language in code without a capture. Whether a finding is captured at all is a model decision no hook observes. DETECTED, not blocking: capture-time Linear filing in plugins/prd-os/scripts/prd_runner.py and the daily retry q-system/.q-system/scripts/spillover-linear-check.py, wired in automation/com.kipi.spillover-linear-check.plist, pinned by q-system/.q-system/tests/test_spillover_linear_check.py."
+    "note": "ENFORCED covers the blocking slices: deferral language in code without a capture (this lint), and the refusal of a NEW minor/low/nit by spillover add and by a deferred disposition (exit 2 in plugins/prd-os/scripts/prd_runner.py, findings_writer.py and plugins/kipi-dsse/scripts/issue_findings.py, pinned by plugins/prd-os/tests/test_spillover_files_linear.py; RULE-2026-09-12-A). Whether a finding is captured at all is a model decision no hook observes. DETECTED, not blocking: capture-time Linear filing in plugins/prd-os/scripts/prd_runner.py and the daily retry q-system/.q-system/scripts/spillover-linear-check.py, wired in automation/com.kipi.spillover-linear-check.plist, pinned by q-system/.q-system/tests/test_spillover_linear_check.py."
   }
 ]
 ```
