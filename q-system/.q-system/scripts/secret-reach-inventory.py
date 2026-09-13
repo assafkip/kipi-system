@@ -36,13 +36,20 @@ names the row. The origin-tag vocabulary and the section parser are imported
 from decision-origin-tag-lint.py, the owner, never restated here.
 
 Run it from the kipi-system skeleton: the decisions it checks live in the
-skeleton's decisions.md, not an instance's.
+skeleton's decisions.md, not an instance's. In a checkout with no
+instance-registry.json at its root it exits 2 unless --decisions is passed.
+
+A file row carries either an exact `path` or a `glob` of the one shape
+`<literal dir>/*`, which classifies everything under that directory (Chromium
+profiles, dated ack receipts). A glob over a whole scan dir is refused.
+A non-regular file (a FIFO, a socket) is reported `not-regular`, never opened.
 
 Exit 0: everything discovered is classified and every authority row is bound.
 Exit 1: an UNCLASSIFIED name, an UNREADABLE source, or an authority row with no
         bound decision (a decision tagged REJECTED binds nothing).
-Exit 2: the registry itself is unusable (missing, empty, a bad class, or a
-        file row with no path).
+Exit 2: the registry itself is unusable (missing, empty, a bad class, a file
+        row with no path, a glob of any other shape), or an instance checkout
+        with no --decisions.
 """
 
 import argparse
@@ -66,6 +73,10 @@ SOURCES = ("env", "shell", "file")
 DECLARE_BUILTINS = ("export", "typeset", "declare", "readonly")
 SOURCE_BUILTINS = ("source", ".")
 SHELL_PUNCTUATION = set("();<>|&")
+# Words that open a compound command. Stripped before the command itself is
+# read: `if x; then source ~/.y; fi` is the shape the gcloud installer writes,
+# and reading only the first word saw `then` and skipped it (PR #345 round 3).
+SHELL_KEYWORDS = ("if", "then", "else", "elif", "do", "while", "until", "{", "!")
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Only for a line shlex cannot tokenize (a quote left open for a multi-line value).
 FALLBACK_ASSIGN_RE = re.compile(
@@ -104,19 +115,43 @@ def load_registry(path):
     if not rows:
         raise RegistryError(f"registry {path} has zero rows")
     for row in rows:
-        validate_row(row)
+        validate_row(row, data.get("scan_dirs", []))
     return data
 
 
-def validate_row(row):
+def validate_row(row, scan_dirs=()):
     if row.get("class") not in CLASSES:
         raise RegistryError(f"row {row.get('id')!r} has class {row.get('class')!r}, "
                             f"expected one of {CLASSES}")
     if row.get("kind") not in ("env", "file") or not row.get("id"):
         raise RegistryError(f"row {row!r} needs an id and kind env or file")
+    if row["kind"] == "file" and "glob" in row:
+        glob_prefix(row, scan_dirs)
+        return
     path = row.get("path")
     if row["kind"] == "file" and not (isinstance(path, str) and path):
         raise RegistryError(f"file row {row['id']!r} needs a non-empty path")
+
+
+def glob_prefix(row, scan_dirs):
+    """The one directory a glob row classifies, or RegistryError.
+
+    Rounds 2 and 3 of the PR #345 review: an exact-path registry can never
+    classify what a Chromium profile or spillover-ratchet.py keeps minting, so
+    the file scan could never hold GREEN. A glob row fixes that and is also a
+    blanket that could hide a real secret, so its only legal shape is
+    `<literal dir>/*`, and that dir may not be a scan dir itself. A new sibling
+    directory stays UNCLASSIFIED, which is the point.
+    """
+    glob = row.get("glob")
+    prefix = glob[:-2] if isinstance(glob, str) and glob.endswith("/*") else ""
+    if not prefix or any(c in prefix for c in "*?["):
+        raise RegistryError(f"file row {row['id']!r}: glob {glob!r} must be "
+                            "<literal dir>/* with no other wildcard")
+    if prefix.rstrip("/") in {d.rstrip("/") for d in scan_dirs}:
+        raise RegistryError(f"file row {row['id']!r}: glob {glob!r} blankets the "
+                            "whole scan dir, which would classify every secret in it")
+    return prefix
 
 
 def expand(home, raw):
@@ -139,6 +174,9 @@ def probe_file(path):
     except OSError:
         return {"state": "denied"}
     mode = f"{stat.S_IMODE(info.st_mode):04o}"
+    # Opening a FIFO read-only blocks until a writer appears, so the run hung.
+    if not stat.S_ISREG(info.st_mode):
+        return {"state": "not-regular", "mode": mode}
     try:
         fd = os.open(path, os.O_RDONLY)
         os.close(fd)
@@ -186,6 +224,12 @@ def assigned_names(words):
     return names
 
 
+def strip_keywords(words):
+    while words and words[0] in SHELL_KEYWORDS:
+        words = words[1:]
+    return words
+
+
 def sourced_path(arg, home):
     """The literal file `source ARG` reads, or None when ARG is computed."""
     for var in ("${HOME}", "$HOME"):
@@ -221,7 +265,9 @@ def shell_export_names(home, shell_files, name_re, report):
         seen.add(path)
         text = read_profile(raw, path, report)
         for line in (text or "").splitlines():
-            for words in shell_commands(line):
+            for words in map(strip_keywords, shell_commands(line)):
+                if not words:
+                    continue
                 if words[0] in SOURCE_BUILTINS and len(words) > 1:
                     target = sourced_path(words[1], home)
                     if target is None:
@@ -256,7 +302,8 @@ def discover(registry, home, sources):
     """Return (lines, unclassified, report) for every source requested."""
     name_re = re.compile(registry.get("secret_name_re", "(?i)(token|key|secret)"))
     by_env = {r["id"]: r for r in registry["rows"] if r["kind"] == "env"}
-    by_path = {r["path"]: r for r in registry["rows"] if r["kind"] == "file"}
+    by_path = {r["path"]: r for r in registry["rows"] if r["kind"] == "file" and "path" in r}
+    globs = [(glob_prefix(r, ()) + "/", r) for r in registry["rows"] if "glob" in r]
     lines, unclassified = [], []
     report = {"unreadable": [], "not_scanned": []}
     if "env" in sources:
@@ -272,7 +319,9 @@ def discover(registry, home, sources):
         for raw in list(by_path) + [p for p in scanned if p not in by_path]:
             info = probe_file(expand(home, raw))
             state = info["state"] + (f" {info['mode']}" if "mode" in info else "")
-            lines.append(describe(by_path.get(raw), raw, "file", state, unclassified))
+            row = by_path.get(raw) or next((r for pre, r in globs if raw.startswith(pre)), None)
+            where = "file" if row is None or "path" in row else f"file {raw}"
+            lines.append(describe(row, raw, where, state, unclassified))
     return lines, unclassified, report
 
 
@@ -319,14 +368,38 @@ def unbound_authority_rows(registry, decisions_path, tag_lint):
     return [p for p in problems if p]
 
 
+def instance_checkout_problem(decisions_flag):
+    """Why the default decisions file is the wrong one here, or None.
+
+    The script and registry ship to every instance through the synced q-system/
+    tree, and an instance's decisions.md never carries the skeleton's
+    RULE-2026-09-13 sections, so a run there reported 20 unbound rows that mean
+    nothing (PR #345 round 3). Same skeleton test capability-gate.py uses:
+    instance-registry.json at the repo root.
+    """
+    if decisions_flag is not None:
+        return None
+    registry = QROOT.parent / "instance-registry.json"
+    if registry.is_file():
+        return None
+    return (f"no {registry} here, so this is an instance checkout. The decisions "
+            "this binds against live in the kipi-system skeleton: run it there, "
+            "or pass --decisions.")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--registry", default=str(DEFAULT_REGISTRY))
-    ap.add_argument("--decisions", default=str(DEFAULT_DECISIONS))
+    ap.add_argument("--decisions", default=None,
+                    help="decisions.md to bind against (default: the skeleton's own)")
     ap.add_argument("--home", default=str(pathlib.Path.home()))
     ap.add_argument("--source", action="append", choices=SOURCES,
                     help="limit discovery to one source; repeatable (default: all)")
     args = ap.parse_args(argv)
+    problem = instance_checkout_problem(args.decisions)
+    if problem:
+        print(f"secret-reach-inventory: {problem}", file=sys.stderr)
+        return 2
     try:
         registry = load_registry(args.registry)
     except RegistryError as exc:
@@ -334,7 +407,8 @@ def main(argv=None):
         return 2
     sources = tuple(args.source or SOURCES)
     lines, unclassified, report = discover(registry, args.home, sources)
-    problems = unbound_authority_rows(registry, args.decisions, load_tag_lint())
+    decisions = args.decisions or str(DEFAULT_DECISIONS)
+    problems = unbound_authority_rows(registry, decisions, load_tag_lint())
     print(f"secret-reach-inventory: uid {os.getuid()}, sources {', '.join(sources)}")
     for line in lines:
         print(f"  {line}")

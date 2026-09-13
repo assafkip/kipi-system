@@ -41,7 +41,8 @@ def run(tmp_path, registry, decisions=DECISIONS_OK, env_extra=None, sources=None
            "--decisions", str(dec), "--home", str(home)]
     for s in sources or []:
         cmd += ["--source", s]
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    # A timeout, so a hang (the FIFO case) fails the test instead of the suite.
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=30)
     return proc, home
 
 
@@ -276,3 +277,93 @@ def test_approved_recommendation_binds(tmp_path):
     dec = DECISIONS_OK.replace("[SYSTEM-INFERRED]", "[CLAUDE-RECOMMENDED -> APPROVED]")
     proc, _ = run(tmp_path, base_registry(), decisions=dec)
     assert proc.returncode == 0, proc.stdout
+
+
+def glob_registry():
+    reg = base_registry(secret_name_re="(?i)(token|key|secret|cookie)")
+    reg["rows"] += [
+        {"id": "browser-profiles", "kind": "file",
+         "glob": "~/.config/kipi/browser-profiles/*", "class": "authority",
+         "grants": "logged-in sessions", "decision": "RULE-TEST-A"},
+        {"id": "ratchet-acks", "kind": "file", "glob": "~/.config/kipi/ratchet-ack/*",
+         "class": "knowledge", "grants": "nothing, a dated receipt"},
+    ]
+    return reg
+
+
+def test_glob_row_classifies_a_generated_tree_and_stops_at_its_boundary(tmp_path):
+    """PR #345 review rounds 2 and 3: exact paths cannot classify files a
+    browser profile or the spillover ratchet keeps minting."""
+    home = tmp_path / "home"
+    write_secret(home, ".config/kipi/browser-profiles/p1/Default/Cookies")
+    write_secret(home, ".config/kipi/browser-profiles/new-one/Default/Trust Tokens")
+    write_secret(home, ".config/kipi/ratchet-ack/2026-09-13-token-guard.py-abc")
+    write_secret(home, ".config/kipi/browser-profiles-token")
+    dec = DECISIONS_OK.replace("`board-key` and", "`board-key`, `browser-profiles` and")
+    proc, _ = run(tmp_path, glob_registry(), decisions=dec)
+    assert proc.returncode == 1, proc.stdout
+    assert "[AUTHORITY] browser-profiles  (file ~/.config/kipi/browser-profiles/p1" in proc.stdout
+    assert "[KNOWLEDGE] ratchet-acks" in proc.stdout
+    unclassified = [ln for ln in proc.stdout.splitlines() if "[UNCLASSIFIED]" in ln]
+    assert len(unclassified) == 1 and "browser-profiles-token" in unclassified[0]
+
+
+def test_glob_authority_row_needs_its_decision_too(tmp_path):
+    home = tmp_path / "home"
+    write_secret(home, ".config/kipi/browser-profiles/p1/Default/Cookies")
+    proc, _ = run(tmp_path, glob_registry())
+    assert proc.returncode == 1
+    assert "[UNBOUND] browser-profiles" in proc.stdout
+
+
+def test_a_glob_that_blankets_a_scan_dir_or_wildcards_a_name_refuses(tmp_path):
+    for bad in ("~/.config/kipi/*", "~/.config/kipi/*-profile/*", "~/.config/kipi/x"):
+        reg = base_registry()
+        reg["rows"].append({"id": "wide", "kind": "file", "glob": bad,
+                            "class": "knowledge", "grants": "x"})
+        proc, _ = run(tmp_path, reg)
+        assert proc.returncode == 2, bad
+        assert "glob" in proc.stderr and "Traceback" not in proc.stderr, proc.stderr
+
+
+def test_shell_keyword_one_liners_are_read(tmp_path):
+    """PR #345 review round 3: the gcloud installer writes `if ...; then source ...; fi`."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".extra").write_text("export SOURCED_TOKEN=v\n")
+    (home / ".zshrc").write_text(
+        "if true; then export THEN_TOKEN=v; fi\n"
+        "{ export BRACE_TOKEN=v; }\n"
+        "while false; do export DO_TOKEN=v; done\n"
+        "if [ -f ~/.extra ]; then source ~/.extra; fi\n"
+        "then\n")
+    proc, _ = run(tmp_path, base_registry())
+    assert proc.returncode == 1
+    for name in ("THEN_TOKEN", "BRACE_TOKEN", "DO_TOKEN", "SOURCED_TOKEN"):
+        assert f"[UNCLASSIFIED] {name}" in proc.stdout, name
+
+
+def test_a_fifo_under_a_scan_dir_is_not_opened(tmp_path):
+    home = tmp_path / "home"
+    (home / ".config" / "kipi").mkdir(parents=True)
+    os.mkfifo(home / ".config" / "kipi" / "relay-token")
+    proc, _ = run(tmp_path, base_registry())
+    assert "~/.config/kipi/relay-token  (file, not-regular" in proc.stdout
+
+
+def test_an_instance_checkout_refuses_without_an_explicit_decisions_file(tmp_path):
+    """PR #345 review round 3: instances do not carry the skeleton's decisions."""
+    scripts = tmp_path / "inst" / "q-system" / ".q-system" / "scripts"
+    scripts.mkdir(parents=True)
+    for name in ("secret-reach-inventory.py", "decision-origin-tag-lint.py"):
+        (scripts / name).write_text((SCRIPTS / name).read_text())
+    reg = tmp_path / "registry.json"
+    reg.write_text(json.dumps(base_registry()))
+    cmd = [sys.executable, str(scripts / "secret-reach-inventory.py"),
+           "--registry", str(reg), "--home", str(tmp_path / "home")]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "instance-registry.json" in proc.stderr
+    (tmp_path / "inst" / "instance-registry.json").write_text("{}")
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    assert proc.returncode != 2 or "instance-registry.json" not in proc.stderr
