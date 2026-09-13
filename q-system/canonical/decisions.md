@@ -421,4 +421,9 @@ secret has no row, or an authority row has no tagged decision here that names it
 - **Revisit:** If any row gains an irreversible or public effect beyond what is
   written in its `grants` field, or the agent moves to a separate uid. Run
   `python3 q-system/.q-system/scripts/secret-reach-inventory.py` from the
-  kipi-system root. A new secret shows up as UNCLASSIFIED and the run exits 1.
+  kipi-system root. A new secret-named variable in the environment or assigned
+  in a declared shell profile (or a file it sources by a literal path), or a
+  new secret-named file under a scan dir, shows up as UNCLASSIFIED and the run
+  exits 1. It does not see a name built at run time, a file sourced through a
+  variable path (printed NOT-SCANNED), or a secret stored under a name the
+  pattern does not match.

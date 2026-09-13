@@ -11,11 +11,21 @@ This script refreshes that answer instead of leaving it remembered. Three
 sources, each reported by NAME only:
 
 - env    the secret-shaped variable names in this process's environment
-- shell  `export NAME=` lines in the declared shell profiles (names only)
-- file   declared paths, plus secret-named files in the declared scan dirs
+- shell  variable assignments in the declared shell profiles, and in any
+         file they `source` by a literal path (names only)
+- file   declared paths, plus secret-named files anywhere under the declared
+         scan dirs, up to SCAN_DEPTH levels, skipping git checkouts
+
+What the shell source does NOT see, said here so its silence is read narrowly:
+a name built at run time (`eval`, `export "$x"`), a file sourced through a
+variable path other than $HOME (reported NOT-SCANNED, never followed), and
+anything a login shell loads from outside the declared profiles.
+
+A profile or scan dir that exists but cannot be read is UNREADABLE and turns
+the run RED. An absent one is normal: not every machine has every profile.
 
 A file is probed by opening it read-only and closing it. Zero bytes are read.
-An env or shell value is never stored past the regex that pulls out its name.
+An env or shell value is never stored past the parse that pulls out its name.
 Nothing here may print a value, and test_values_are_never_printed holds that.
 
 Every discovered name must have a row in secret-reach-registry.json saying
@@ -29,8 +39,10 @@ Run it from the kipi-system skeleton: the decisions it checks live in the
 skeleton's decisions.md, not an instance's.
 
 Exit 0: everything discovered is classified and every authority row is bound.
-Exit 1: an UNCLASSIFIED name, or an authority row with no bound decision.
-Exit 2: the registry itself is unusable (missing, empty, or a bad class).
+Exit 1: an UNCLASSIFIED name, an UNREADABLE source, or an authority row with no
+        bound decision (a decision tagged REJECTED binds nothing).
+Exit 2: the registry itself is unusable (missing, empty, a bad class, or a
+        file row with no path).
 """
 
 import argparse
@@ -39,6 +51,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import stat
 import sys
 
@@ -48,7 +61,23 @@ DEFAULT_REGISTRY = QROOT / ".q-system" / "secret-reach-registry.json"
 DEFAULT_DECISIONS = QROOT / "canonical" / "decisions.md"
 CLASSES = ("authority", "knowledge")
 SOURCES = ("env", "shell", "file")
-EXPORT_RE = re.compile(r"^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=")
+# Builtins whose arguments are NAME or NAME=value. `local` is left out on
+# purpose: a function-local variable never reaches the environment.
+DECLARE_BUILTINS = ("export", "typeset", "declare", "readonly")
+SOURCE_BUILTINS = ("source", ".")
+SHELL_PUNCTUATION = set("();<>|&")
+NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Only for a line shlex cannot tokenize (a quote left open for a multi-line value).
+FALLBACK_ASSIGN_RE = re.compile(
+    r"^\s*(?:(?:export|typeset|declare|readonly)(?:\s+[-+]\w+)*\s+)?([A-Za-z_][A-Za-z0-9_]*)=")
+# Subdirectory levels walked under a scan dir. Bounded because
+# ~/.config/kipi/worktrees holds whole repo checkouts full of secret-NAMED
+# source files, which is also why a directory holding .git is never entered.
+SCAN_DEPTH = 3
+# Absent is normal (not every machine has every profile). Anything else that
+# stops a read is UNREADABLE: the review of PR #345 caught the old code
+# folding a permission error into "absent" and reporting GREEN.
+ABSENT = (FileNotFoundError, NotADirectoryError)
 
 
 class RegistryError(Exception):
@@ -75,24 +104,40 @@ def load_registry(path):
     if not rows:
         raise RegistryError(f"registry {path} has zero rows")
     for row in rows:
-        if row.get("class") not in CLASSES:
-            raise RegistryError(f"row {row.get('id')!r} has class {row.get('class')!r}, "
-                                f"expected one of {CLASSES}")
-        if row.get("kind") not in ("env", "file") or not row.get("id"):
-            raise RegistryError(f"row {row!r} needs an id and kind env or file")
+        validate_row(row)
     return data
+
+
+def validate_row(row):
+    if row.get("class") not in CLASSES:
+        raise RegistryError(f"row {row.get('id')!r} has class {row.get('class')!r}, "
+                            f"expected one of {CLASSES}")
+    if row.get("kind") not in ("env", "file") or not row.get("id"):
+        raise RegistryError(f"row {row!r} needs an id and kind env or file")
+    path = row.get("path")
+    if row["kind"] == "file" and not (isinstance(path, str) and path):
+        raise RegistryError(f"file row {row['id']!r} needs a non-empty path")
 
 
 def expand(home, raw):
     return pathlib.Path(home) / raw[2:] if raw.startswith("~/") else pathlib.Path(raw)
 
 
+def display(home, path):
+    try:
+        return "~/" + str(pathlib.Path(path).relative_to(home))
+    except ValueError:
+        return str(path)
+
+
 def probe_file(path):
     """Existence, mode and whether THIS process can open it. Reads no bytes."""
     try:
         info = os.stat(path)
-    except OSError:
+    except ABSENT:
         return {"state": "absent"}
+    except OSError:
+        return {"state": "denied"}
     mode = f"{stat.S_IMODE(info.st_mode):04o}"
     try:
         fd = os.open(path, os.O_RDONLY)
@@ -107,54 +152,128 @@ def env_names(name_re):
     return sorted(k for k in os.environ if name_re.search(k))
 
 
-def shell_export_names(home, shell_files, name_re):
-    found = []
-    for raw in shell_files:
-        try:
-            lines = expand(home, raw).read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
+def shell_commands(line):
+    """Split one profile line into commands (lists of words), quotes respected."""
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    try:
+        words = list(lexer)
+    except ValueError:
+        match = FALLBACK_ASSIGN_RE.match(line)
+        return [[match.group(1) + "="]] if match else []
+    commands, current = [], []
+    for word in words:
+        if set(word) <= SHELL_PUNCTUATION:
+            commands.append(current)
+            current = []
+        else:
+            current.append(word)
+    return [c for c in commands + [current] if c]
+
+
+def assigned_names(words):
+    """Names a command assigns or exports. Values are dropped here, unread."""
+    if words[0] in DECLARE_BUILTINS:
+        args = [w for w in words[1:] if not w.startswith(("-", "+"))]
+        return [n for n in (a.split("=", 1)[0] for a in args) if NAME_RE.match(n)]
+    names = []
+    for word in words:  # leading NAME=value words, as in `A=1 B=2 cmd`
+        name, has_equals, _ = word.partition("=")
+        if not has_equals or not NAME_RE.match(name):
+            break
+        names.append(name)
+    return names
+
+
+def sourced_path(arg, home):
+    """The literal file `source ARG` reads, or None when ARG is computed."""
+    for var in ("${HOME}", "$HOME"):
+        if arg.startswith(var + "/"):
+            arg = str(home) + arg[len(var):]
+    if arg.startswith("~/"):
+        arg = str(home) + arg[1:]
+    if "$" in arg or "`" in arg:
+        return None
+    path = pathlib.Path(arg)
+    return path if path.is_absolute() else pathlib.Path(home) / path
+
+
+def read_profile(raw, path, report):
+    """Profile text, or None. Absent is silent; unreadable is a problem."""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except ABSENT:
+        return None
+    except OSError as exc:
+        report["unreadable"].append(f"{raw}: {type(exc).__name__}")
+        return None
+
+
+def shell_export_names(home, shell_files, name_re, report):
+    """Walk the profiles and the literal files they source. Returns (name, where)."""
+    found, seen = [], set()
+    queue = [(raw, expand(home, raw)) for raw in shell_files]
+    while queue:
+        raw, path = queue.pop(0)
+        if path in seen:
             continue
-        for line in lines:
-            match = EXPORT_RE.match(line)
-            if match and name_re.search(match.group(1)):
-                found.append((match.group(1), raw))
+        seen.add(path)
+        text = read_profile(raw, path, report)
+        for line in (text or "").splitlines():
+            for words in shell_commands(line):
+                if words[0] in SOURCE_BUILTINS and len(words) > 1:
+                    target = sourced_path(words[1], home)
+                    if target is None:
+                        report["not_scanned"].append(f"{words[1]} (sourced from {raw})")
+                    else:
+                        queue.append((display(home, target), target))
+                    continue
+                found += [(n, raw) for n in assigned_names(words)
+                          if name_re.search(n) and (n, raw) not in found]
     return found
 
 
-def scanned_files(home, scan_dirs, name_re):
+def scanned_files(home, scan_dirs, name_re, report):
     found = []
+
+    def unreadable(exc):
+        if not isinstance(exc, ABSENT):
+            report["unreadable"].append(f"{display(home, exc.filename)}: {type(exc).__name__}")
+
     for raw in scan_dirs:
         base = expand(home, raw)
-        try:
-            names = sorted(os.listdir(base))
-        except OSError:
-            continue
-        found += [f"{raw.rstrip('/')}/{n}" for n in names
-                  if name_re.search(n) and (base / n).is_file()]
+        for dirpath, dirnames, filenames in os.walk(base, onerror=unreadable):
+            rel = pathlib.Path(dirpath).relative_to(base)
+            dirnames[:] = sorted(d for d in dirnames if len(rel.parts) < SCAN_DEPTH
+                                 and not os.path.lexists(os.path.join(dirpath, d, ".git")))
+            found += [f"{raw.rstrip('/')}/{(rel / n).as_posix()}" for n in sorted(filenames)
+                      if name_re.search(n)]
     return found
 
 
 def discover(registry, home, sources):
-    """Return (lines, unclassified) for every source requested."""
+    """Return (lines, unclassified, report) for every source requested."""
     name_re = re.compile(registry.get("secret_name_re", "(?i)(token|key|secret)"))
     by_env = {r["id"]: r for r in registry["rows"] if r["kind"] == "env"}
     by_path = {r["path"]: r for r in registry["rows"] if r["kind"] == "file"}
     lines, unclassified = [], []
+    report = {"unreadable": [], "not_scanned": []}
     if "env" in sources:
         for name in env_names(name_re):
             lines.append(describe(by_env.get(name), name, "env", "present", unclassified))
     if "shell" in sources:
-        for name, raw in shell_export_names(home, registry.get("shell_files", []), name_re):
-            lines.append(describe(by_env.get(name), name, f"export in {raw}", "present",
+        shell_files = registry.get("shell_files", [])
+        for name, raw in shell_export_names(home, shell_files, name_re, report):
+            lines.append(describe(by_env.get(name), name, f"assigned in {raw}", "present",
                                   unclassified))
     if "file" in sources:
-        paths = list(by_path) + [p for p in scanned_files(home, registry.get("scan_dirs", []),
-                                                         name_re) if p not in by_path]
-        for raw in paths:
+        scanned = scanned_files(home, registry.get("scan_dirs", []), name_re, report)
+        for raw in list(by_path) + [p for p in scanned if p not in by_path]:
             info = probe_file(expand(home, raw))
             state = info["state"] + (f" {info['mode']}" if "mode" in info else "")
             lines.append(describe(by_path.get(raw), raw, "file", state, unclassified))
-    return lines, unclassified
+    return lines, unclassified, report
 
 
 def describe(row, name, where, state, unclassified):
@@ -166,6 +285,27 @@ def describe(row, name, where, state, unclassified):
     return f"[{label}] {row['id']}  ({where}, {state})  grants: {row.get('grants', '?')}{tail}"
 
 
+def binding_problem(row, sections, decisions_path, tag_lint):
+    """Why this authority row is not bound to a decision, or None if it is."""
+    ref = row.get("decision")
+    if not ref:
+        return f"{row['id']}: authority row has no decision id"
+    body = sections.get(ref)
+    if body is None:
+        return f"{row['id']}: decision {ref} not found in {decisions_path}"
+    # The section's first tag is its Origin line. Group 2 of the owner's regex
+    # is the CLAUDE-RECOMMENDED outcome; a recommendation the operator rejected
+    # is a record of NOT deciding, so it binds nothing.
+    tag = tag_lint.VALID_TAG_RE.search(body)
+    if tag is None:
+        return f"{row['id']}: decision {ref} carries no origin tag"
+    if tag.group(2) == "REJECTED":
+        return f"{row['id']}: decision {ref} is tagged {tag.group(0)}, which binds nothing"
+    if f"`{row['id']}`" not in body:
+        return f"{row['id']}: decision {ref} does not name `{row['id']}`"
+    return None
+
+
 def unbound_authority_rows(registry, decisions_path, tag_lint):
     """Every authority row needs a decision section that is tagged and names it."""
     try:
@@ -174,21 +314,9 @@ def unbound_authority_rows(registry, decisions_path, tag_lint):
         return [f"cannot read decisions file {decisions_path}: {exc}"]
     sections = {heading.split(":")[0].strip(): body
                 for _, heading, body in tag_lint.extract_sections(text)}
-    problems = []
-    for row in registry["rows"]:
-        if row["class"] != "authority":
-            continue
-        ref = row.get("decision")
-        body = sections.get(ref) if ref else None
-        if not ref:
-            problems.append(f"{row['id']}: authority row has no decision id")
-        elif body is None:
-            problems.append(f"{row['id']}: decision {ref} not found in {decisions_path}")
-        elif not tag_lint.VALID_TAG_RE.search(body):
-            problems.append(f"{row['id']}: decision {ref} carries no origin tag")
-        elif f"`{row['id']}`" not in body:
-            problems.append(f"{row['id']}: decision {ref} does not name `{row['id']}`")
-    return problems
+    problems = [binding_problem(row, sections, decisions_path, tag_lint)
+                for row in registry["rows"] if row["class"] == "authority"]
+    return [p for p in problems if p]
 
 
 def main(argv=None):
@@ -205,18 +333,25 @@ def main(argv=None):
         print(f"secret-reach-inventory: {exc}", file=sys.stderr)
         return 2
     sources = tuple(args.source or SOURCES)
-    lines, unclassified = discover(registry, args.home, sources)
+    lines, unclassified, report = discover(registry, args.home, sources)
     problems = unbound_authority_rows(registry, args.decisions, load_tag_lint())
     print(f"secret-reach-inventory: uid {os.getuid()}, sources {', '.join(sources)}")
     for line in lines:
         print(f"  {line}")
+    for item in report["unreadable"]:
+        print(f"  [UNREADABLE] {item}")
+    for item in report["not_scanned"]:
+        print(f"  [NOT-SCANNED] {item}  computed path, not followed")
     for problem in problems:
         print(f"  [UNBOUND] {problem}")
-    verdict = "RED" if unclassified or problems else "GREEN"
+    verdict = "RED" if unclassified or problems or report["unreadable"] else "GREEN"
     print(f"{verdict}: {len(lines)} reachable-surface rows, "
-          f"{len(unclassified)} unclassified, {len(problems)} unbound authority rows")
+          f"{len(unclassified)} unclassified, {len(report['unreadable'])} unreadable, "
+          f"{len(problems)} unbound authority rows, "
+          f"{len(report['not_scanned'])} sourced paths not scanned")
     return 1 if verdict == "RED" else 0
 
 
 if __name__ == "__main__":
     sys.exit(main())
+

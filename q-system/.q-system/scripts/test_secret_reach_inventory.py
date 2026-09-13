@@ -2,9 +2,11 @@
 """Tests for secret-reach-inventory.py (ASK-1251).
 
 Every fixture lives under a pytest tmp_path: a fake HOME, a fake registry, a
-fake decisions.md. The one test that reads the REAL registry and the REAL
-decisions.md reads repo files, never a secret path, because the inventory's
-job is a promise about those two files agreeing.
+fake decisions.md. This file runs fleet-wide, so it reads no instance-owned
+file. The check that the REAL registry and the REAL decisions.md agree lives in
+test_secret_reach_registry_binding.py, declared skeleton_only: an instance's
+decisions.md does not carry the skeleton's RULE-2026-09-13 sections (PR #345
+review, major).
 """
 
 import json
@@ -15,9 +17,6 @@ import sys
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 SCRIPT = SCRIPTS / "secret-reach-inventory.py"
-QROOT = SCRIPTS.parent.parent
-REAL_REGISTRY = QROOT / ".q-system" / "secret-reach-registry.json"
-REAL_DECISIONS = QROOT / "canonical" / "decisions.md"
 
 SECRET_VALUE = "sekrit-VALUE-must-never-print-4417"
 
@@ -179,21 +178,101 @@ def test_source_filter_skips_env(tmp_path):
     assert "ROGUE_API_KEY" not in proc.stdout
 
 
-def test_real_registry_binds_every_authority_row_to_a_tagged_decision(tmp_path):
-    """The shipped registry and the shipped decisions.md agree.
-
-    Runs with an empty fake HOME and an empty environment so nothing live is
-    touched; what is left is the binding check between the two repo files.
-    """
+def test_every_shell_assignment_shape_is_discovered(tmp_path):
+    """PR #345 review: the old `^export NAME=` regex saw one shape of five."""
     home = tmp_path / "home"
     home.mkdir()
-    proc = subprocess.run(
-        [sys.executable, str(SCRIPT), "--registry", str(REAL_REGISTRY),
-         "--decisions", str(REAL_DECISIONS), "--home", str(home)],
-        capture_output=True, text=True,
-        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home)},
-    )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    rows = json.loads(REAL_REGISTRY.read_text())["rows"]
-    assert any(r["class"] == "authority" for r in rows)
-    assert "ask-crm-local-proof" in {r["id"] for r in rows}
+    (home / ".extra").write_text("export SOURCED_TOKEN=v\n")
+    (home / ".zshrc").write_text(
+        "ASSIGNED_TOKEN=v\nexport ASSIGNED_TOKEN\n"
+        "export MULTI_A_TOKEN=v MULTI_B_TOKEN='w x'\n"
+        "typeset -x TYPESET_TOKEN=v\n"
+        "declare -gx DECLARED_TOKEN=v\n"
+        "[ -f ~/.extra ] && source ~/.extra\n"
+        "source $ZSH/oh-my-zsh.sh\n")
+    proc, _ = run(tmp_path, base_registry())
+    assert proc.returncode == 1
+    for name in ("ASSIGNED_TOKEN", "MULTI_A_TOKEN", "MULTI_B_TOKEN", "TYPESET_TOKEN",
+                 "DECLARED_TOKEN", "SOURCED_TOKEN"):
+        assert f"[UNCLASSIFIED] {name}" in proc.stdout, name
+    assert "[NOT-SCANNED] $ZSH/oh-my-zsh.sh" in proc.stdout
+
+
+def test_a_function_local_or_a_value_is_not_a_name(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".zshrc").write_text(
+        "f() { local LOCAL_TOKEN=v; }\n"
+        "export SAFE=\"a b_TOKEN=c\"\n"
+        "echo KEY_TOKEN=v\n")
+    proc, _ = run(tmp_path, base_registry())
+    assert proc.returncode == 0, proc.stdout
+    assert "LOCAL_TOKEN" not in proc.stdout and "b_TOKEN" not in proc.stdout
+    assert "KEY_TOKEN" not in proc.stdout
+
+
+def test_a_sourcing_loop_terminates(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".zshrc").write_text("source ~/.zshrc\nexport LOOP_TOKEN=v\n")
+    proc, _ = run(tmp_path, base_registry())
+    assert proc.returncode == 1
+    assert proc.stdout.count("[UNCLASSIFIED] LOOP_TOKEN") == 1
+
+
+def test_nested_secret_file_is_found_but_a_git_checkout_is_not_entered(tmp_path):
+    home = tmp_path / "home"
+    write_secret(home, ".config/kipi/sub/deeper/nested-token")
+    write_secret(home, ".config/kipi/worktrees/wt/.git")
+    write_secret(home, ".config/kipi/worktrees/wt/scripts/api_key.py")
+    proc, _ = run(tmp_path, base_registry())
+    assert proc.returncode == 1
+    assert "~/.config/kipi/sub/deeper/nested-token" in proc.stdout
+    assert "api_key.py" not in proc.stdout
+
+
+def test_unreadable_profile_and_scan_dir_go_red_by_name(tmp_path):
+    """PR #345 review: a permission error used to read exactly like absent."""
+    home = tmp_path / "home"
+    home.mkdir()
+    profile = home / ".zshrc"
+    profile.write_text("export HIDDEN_TOKEN=v\n")
+    scan = home / ".config" / "kipi"
+    scan.mkdir(parents=True)
+    profile.chmod(0)
+    scan.chmod(0)
+    try:
+        proc, _ = run(tmp_path, base_registry())
+    finally:
+        profile.chmod(0o600)
+        scan.chmod(0o700)
+    assert proc.returncode == 1
+    assert "[UNREADABLE] ~/.zshrc: PermissionError" in proc.stdout
+    assert "[UNREADABLE] ~/.config/kipi: PermissionError" in proc.stdout
+
+
+def test_absent_profile_and_scan_dir_stay_quiet(tmp_path):
+    proc, _ = run(tmp_path, base_registry(shell_files=["~/.nope"], scan_dirs=["~/.nodir"]))
+    assert proc.returncode == 0, proc.stdout
+    assert "UNREADABLE" not in proc.stdout
+
+
+def test_file_row_without_path_refuses_with_exit_2(tmp_path):
+    reg = base_registry()
+    del reg["rows"][0]["path"]
+    proc, _ = run(tmp_path, reg)
+    assert proc.returncode == 2
+    assert "needs a non-empty path" in proc.stderr and "Traceback" not in proc.stderr
+
+
+def test_rejected_recommendation_binds_nothing(tmp_path):
+    dec = DECISIONS_OK.replace("[SYSTEM-INFERRED]", "[CLAUDE-RECOMMENDED -> REJECTED]")
+    proc, _ = run(tmp_path, base_registry(), decisions=dec)
+    assert proc.returncode == 1
+    assert "binds nothing" in proc.stdout
+
+
+def test_approved_recommendation_binds(tmp_path):
+    dec = DECISIONS_OK.replace("[SYSTEM-INFERRED]", "[CLAUDE-RECOMMENDED -> APPROVED]")
+    proc, _ = run(tmp_path, base_registry(), decisions=dec)
+    assert proc.returncode == 0, proc.stdout
