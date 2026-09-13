@@ -1626,7 +1626,48 @@ def detect_promoted_audit(_ctx) -> list:
     }]
 
 
+def detect_hook_not_executable(_ctx, settings_paths=None) -> list:
+    """A PreToolUse guard that is missing or not executable is OFF (ASK-1250).
+
+    destructive-op-deny.sh is wired as a bare path, so `chmod -x` disarms it and
+    Claude Code reports nothing. Its header asked a human to notice a file mode;
+    this is the outward channel hook_liveness.py lacked. The finding carries the
+    guard's path and reason, never the command text (ASK-204).
+    """
+    import importlib.util
+
+    try:
+        spec = importlib.util.spec_from_file_location("hook_liveness", HERE / "hook_liveness.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        problems = module.audit(settings_paths or [module.USER_SETTINGS, module.REPO_SETTINGS])
+    except Exception as exc:  # noqa: BLE001 -- a blind check must not read as green
+        return [{
+            "subject": "hook-liveness-blind",
+            "title": "The PreToolUse guard liveness check could not run",
+            "body": (f"`hook_liveness.py` failed: `{exc.__class__.__name__}`. Nobody "
+                     "knows today whether the guards are armed.\n\n## Action\n"
+                     "Run `python3 q-system/.q-system/scripts/hook_liveness.py` by hand."),
+        }]
+    return [{
+        "subject": p.path,
+        "title": f"PreToolUse guard {Path(p.path).name} is {p.reason}, so it is OFF",
+        "body": (f"`{p.path}` is wired in `{p.settings}` and is **{p.reason}**. A "
+                 "PreToolUse guard that cannot execute refuses nothing, and Claude "
+                 "Code does not report it.\n\n## Action\n"
+                 f"Restore it (for a mode problem: `chmod +x {p.path}`), then re-run "
+                 "`python3 q-system/.q-system/scripts/hook_liveness.py` and read 0 broken."),
+    } for p in problems]
+
+
 DETECTORS = [
+    {
+        "id": "hook-not-executable",
+        "description": "a PreToolUse guard wired in settings.json is missing or has no execute bit",
+        "detect": detect_hook_not_executable,
+        "action": "file_issue",
+        "lesson": "a-gate-that-cannot-run-must-not-pass",
+    },
     {
         "id": "promoted-audit",
         "description": "daily re-check of promoted spillover rows against Linear; files only when the whole sweep was blind",
