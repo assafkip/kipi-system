@@ -340,3 +340,34 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Date:** 2026-08-30
 - **Revisit:** When the `owner:` labels are complete (21 issues carry none) this
   gets sharper. Re-measure then, do not assume.
+
+## Spillover capture reaches Linear; new minors are never queued (ASK-1552, 2026-09-12)
+
+### RULE-2026-09-12-A: New minors are fixed or rejected; medium and up file a Linear issue at capture
+- **Origin:** [CLAUDE-RECOMMENDED -> APPROVED]
+- **Decision:** A NEW minor finding (severity minor, low or nit) is fixed in the
+  change that found it or rejected with a reason. It is never queued:
+  `prd_runner.py spillover add` refuses it (exit 2), and a `deferred` disposition
+  on it is refused in both findings systems (findings_writer.py and
+  issue_findings.py). Findings at medium, high, major or blocker are captured as a
+  ledger row AND one Linear issue for Sana, filed at capture through
+  alert-to-linear.py, with the identifier recorded on the row.
+  `q-system/.q-system/scripts/spillover-linear-check.py` (launchd
+  `com.kipi.spillover-linear-check`, daily) retries rows whose filing failed and
+  alerts Sana once when any stay unlinked. The existing ledger is cleaned once:
+  majors to Linear, minors older than 30 days voided with a reason, recent minors
+  get one triage pass.
+- **Reason:** Founder, 2026-09-12, verbatim: "Backlog where? In linear or is it
+  going to disappear", then "You told me you saved this exact thing to memory many
+  times. Is not true." and "New minor findings: fix or reject, never queue."
+  Measured by script that day: `.prd-os/spillover.jsonl` is untracked in git in
+  chief, consulting and kipi-system, nothing carried it to Linear, and the open
+  rows were kipi-system 1,318, consulting 529, chief 3. Memory notes are not
+  enforcement; the refusal and the filing are code, pinned by
+  test_spillover_files_linear.py, test_deferred_spillover_files_linear.py and
+  test_spillover_linear_check.py.
+- **Date:** 2026-09-12
+- **Revisit:** After the one-time cleanup of the pre-existing rows (the daily check
+  skips rows created before its CREATED_AT_CUTOFF and prints their count). The
+  review agent's APPROVE WITH NITS path still tries to capture minors as spillover
+  and is now refused; that path is the follow-up.

@@ -340,7 +340,8 @@ def test_approve_allowed_when_all_dispositioned(fake_repo, write_config, run_prd
                 "prd_id": prd_id,
                 "source": "manual",
                 "severity": "nit",
-                "disposition": "deferred",
+                # rejected, not deferred: a nit may not be queued (founder 2026-09-12)
+                "disposition": "rejected",
                 "rationale": "later",
                 "body": "tweak wording",
                 "created_at": "2026-04-16T00:00:00Z",
@@ -349,7 +350,7 @@ def test_approve_allowed_when_all_dispositioned(fake_repo, write_config, run_prd
     )
     _capture_receipts(run_findings_writer, fake_repo, prd_id,
                       [("finding-1", "accepted", None),
-                       ("finding-2", "deferred", "later")])
+                       ("finding-2", "rejected", "later")])
     r = run_prd_runner(fake_repo, "advance", "approved")
     assert r.returncode == 0, r.stderr
 

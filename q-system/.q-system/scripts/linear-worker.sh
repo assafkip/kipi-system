@@ -2045,7 +2045,7 @@ Work here. Never `cd` to $TARGET_REPO and never switch this branch -- the founde
    genuinely unexecutable, not when it is merely hard.
 
 Anything real you find and are not fixing: capture it, never just mention it:
-  python3 $SKEL/plugins/prd-os/scripts/prd_runner.py spillover add --source $ISSUE --desc \"...\""
+  python3 $SKEL/plugins/prd-os/scripts/prd_runner.py spillover add --source $ISSUE --severity <medium|high|major|blocker> --desc \"...\" (a minor is fixed now or rejected, never queued)"
 
   # CLEAR BEFORE DISPATCH, so presence AFTER the run means exactly one thing:
   # THIS run wrote it (Codex round 2 on PR #141, major).

@@ -88,5 +88,5 @@ pending. If anything real turned up that you are not fixing, capture it rather
 than mentioning it:
 
 ```bash
-python3 plugins/prd-os/scripts/prd_runner.py spillover add --source ASK-113 --desc "..."
+python3 plugins/prd-os/scripts/prd_runner.py spillover add --source ASK-113 --severity medium --desc "..."
 ```

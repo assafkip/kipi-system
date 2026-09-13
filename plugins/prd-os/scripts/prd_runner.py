@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -1464,6 +1465,94 @@ def _spillover_append(cfg: Config, record: dict) -> None:
         fh.flush()
 
 
+def _spillover_linear_filer(cfg: Config):
+    """The shared capture-time filer (ASK-1552), or None when absent.
+
+    Loaded from the repo's q-system/.q-system/scripts/spillover-linear-check.py,
+    the same place `_spillover_autopromote` finds its promoter. One definition of
+    the Linear message and of how alert-to-linear's answer is read, shared with
+    kipi-dsse's deferred path and the daily check.
+    """
+    path = Path(cfg.repo_root) / "q-system" / ".q-system" / "scripts" / "spillover-linear-check.py"
+    if not path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("spillover_linear_check", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _spillover_record_link(cfg: Config, sid: str, link: dict) -> bool:
+    """Append the row's Linear link through the ledger's one write path.
+
+    Under the lock, re-read the CURRENT row and append a full copy with `linear`
+    set -- never a patch, and never a copy formed before the lock (the resurrect
+    race `_spillover_lock` documents). A row that is no longer open is left
+    alone, and a link that already names an issue is never downgraded by a later
+    failed retry.
+    """
+    with _spillover_lock(cfg):
+        current = _read_spillover(cfg).get(sid)
+        if current is None or current.get("status") != "open":
+            return False
+        prior = current.get("linear")
+        if (isinstance(prior, dict) and prior.get("state") in ("filed", "captured")
+                and link.get("state") not in ("filed", "captured")):
+            return False
+        out = dict(current)
+        out["linear"] = link
+        _spillover_append(cfg, out)
+    return True
+
+
+def _spillover_record_close(cfg: Config, sid: str, close: dict) -> bool:
+    """Record that a resolved row's capture ticket was closed (review F2, PR #344).
+
+    Same chokepoint shape as `_spillover_record_link`: under the lock, re-read the
+    CURRENT row and append a full copy. Only a row that is still `resolved` and
+    still carries a capture link is touched, so a reopen in between is never
+    overwritten with a stale resolved copy.
+    """
+    with _spillover_lock(cfg):
+        current = _read_spillover(cfg).get(sid)
+        if current is None or current.get("status") != "resolved":
+            return False
+        link = current.get("linear")
+        if not isinstance(link, dict) or link.get("closed_at"):
+            return False
+        out = dict(current)
+        out["linear"] = {**link, **close}
+        _spillover_append(cfg, out)
+    return True
+
+
+def _spillover_file_and_link(cfg: Config, record: dict) -> dict | None:
+    """File one new row to Linear, then record the link. Never raises.
+
+    why (founder, 2026-09-12): "Backlog where? In linear or is it going to
+    disappear". The ledger is untracked in git, so a row that exists only there
+    is invisible to Sana's queue. The ROW IS ALREADY WRITTEN before this runs:
+    a filer failure records `failed` + the exit code for the daily check
+    (spillover-linear-check.py) to retry, and can never lose the finding.
+    Returns the link, or None when no filer exists in this repo (the daily
+    check files it once the repo has one).
+    """
+    try:
+        filer = _spillover_linear_filer(cfg)
+        if filer is None:
+            return None
+        link = filer.file_record(record, Path(cfg.repo_root))
+        _spillover_record_link(cfg, record["id"], link)
+        return link
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"WARNING: spillover Linear filing failed ({exc!r}); the row "
+                         "is recorded and spillover-linear-check.py retries it\n")
+        return None
+
+
 def _issue_is_closed(cfg: Config, issue_id: str) -> bool:
     """A spillover item may only resolve against an issue that actually closed.
     The deterministic signal is the issue spec's frontmatter `status: closed`,
@@ -2356,6 +2445,11 @@ def cmd_spillover(cfg: Config, args) -> int:
     if sub == "ack":
         return _spillover_ack(cfg, args)
     if sub == "add":
+        if (args.severity or "minor").strip().lower() in SPILLOVER_REFUSED_SEVERITIES:
+            sys.stderr.write(f"refused: {MINOR_REFUSAL}\n"
+                             "A real finding at medium or above: pass --severity "
+                             "medium|high|major|blocker.\n")
+            return 2
         sid = args.id or f"sp-{_hashlib.sha256((args.source + args.desc).encode()).hexdigest()[:8]}"
         dor = _spillover_read_dor(args)
         blocking = args.severity in SPILLOVER_BLOCKING_SEVERITIES
@@ -2403,6 +2497,14 @@ def cmd_spillover(cfg: Config, args) -> int:
         # this whole mechanism was built to stop, committed inside it.
         if dor:
             record["dor"] = dor
+        # Re-adding a row that is already open and linked carries its link
+        # forward, so a repeated `add` never files a second Linear issue.
+        prior = _read_spillover(cfg).get(sid) or {}
+        prior_link = prior.get("linear")
+        already_linked = (prior.get("status") == "open" and isinstance(prior_link, dict)
+                          and prior_link.get("state") in ("filed", "captured"))
+        if already_linked:
+            record["linear"] = prior_link
         _spillover_append(cfg, record)
         out = {"id": sid, "status": "open"}
         if dor and not getattr(args, "no_promote", False):
@@ -2417,9 +2519,20 @@ def cmd_spillover(cfg: Config, args) -> int:
         elif blocking:
             out["promotion"] = {
                 "status": "needs_dor", "owner": "sana",
-                "note": ("blocking severity with no DoR: no Linear issue was created. "
-                         "Drain with `prd_runner.py spillover needs-dor`."),
+                "note": ("blocking severity with no DoR: not promoted, so the worker "
+                         "cannot pick it up yet (the capture ticket in `linear` is for "
+                         "visibility; promotion adopts it). Drain with "
+                         "`prd_runner.py spillover needs-dor`."),
             }
+        # ASK-1552: capture = ledger row + Linear issue. After promotion, so a
+        # row spillover-promote.py already filed (status promoted, no longer
+        # open) is not filed a second time; `_spillover_record_link` skips it.
+        if already_linked:
+            out["linear"] = prior_link
+        elif (_read_spillover(cfg).get(sid) or {}).get("status") == "open":
+            link = _spillover_file_and_link(cfg, record)
+            if link is not None:
+                out["linear"] = link
         print(json.dumps(out))
         return 0
     if sub == "needs-dor":
@@ -2430,7 +2543,7 @@ def cmd_spillover(cfg: Config, args) -> int:
         pending = [r for r in rows
                    if r.get("status") == "open"
                    and r.get("severity") in SPILLOVER_BLOCKING_SEVERITIES
-                   and not r.get("linear")]
+                   and not _promotion_linear(r)]
         for r in pending:
             print(f"{r['id']} [{r.get('severity')}] src={r.get('source')}")
             print(f"    {(r.get('description') or '')[:200]}")
@@ -2656,6 +2769,18 @@ SPILLOVER_BLOCKING_SEVERITIES = ("blocker", "major", "high")
 # CLI: an unknown severity is a triage failure, never a silent pass (ASK-402).
 SPILLOVER_NONBLOCKING_SEVERITIES = ("minor", "low", "medium")
 
+# NEW MINORS ARE NEVER QUEUED. Founder, 2026-09-12, verbatim: "New minor findings:
+# fix or reject, never queue." Recorded in canonical/decisions.md as
+# RULE-2026-09-12-A [CLAUDE-RECOMMENDED -> APPROVED]. A minor is fixed in the change
+# that found it or rejected with a reason; `spillover add` and a `deferred`
+# disposition both refuse it at the door, so the ledger only receives work that
+# files a Linear issue for Sana (medium and up). kipi-dsse's issue_findings.py
+# carries the same tuple and message: that plugin stays import-independent of
+# prd-os, and test_spillover_files_linear.py pins the two copies equal.
+SPILLOVER_REFUSED_SEVERITIES = ("minor", "low", "nit")
+MINOR_REFUSAL = ("a minor is fixed in this change or rejected with a reason; "
+                 "it is never queued (founder 2026-09-12)")
+
 # RULE-2026-08-24-B [USER-DIRECTED 2026-08-24]: "Everything should be owned
 # by Sana." One constant so the default cannot drift between the add door,
 # the backfill verb and the tests that pin them.
@@ -2792,8 +2917,22 @@ def _spillover_has_tracker_ref(record):
     audit reads. Both count -- keying on one would silently un-address every item
     filed through the other door.
     """
-    return bool(str(record.get("linear") or "").strip()
+    return bool(_promotion_linear(record)
                 or str(record.get("linear_ref") or "").strip())
+
+
+def _promotion_linear(record) -> str:
+    """The string `linear` a promotion wrote, or "".
+
+    ASK-1552 made `linear` a DICT on every new row: the capture-time alert
+    ticket (`_spillover_file_and_link`). That ticket makes the row VISIBLE to
+    Sana; it is not the promotion receipt above. `str(dict)` is truthy, so
+    without this every new blocking row would have minted its own address by
+    default -- the "check its own default satisfies" the comment above refuses.
+    Gate semantics stay exactly as they were before capture filing existed.
+    """
+    value = record.get("linear")
+    return value.strip() if isinstance(value, str) else ""
 
 
 

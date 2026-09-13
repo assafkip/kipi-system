@@ -459,19 +459,24 @@ def _sync_spillover_for_finding(cfg: Config, prd_id: str, finding: dict) -> None
     issue; moving the finding off `deferred` clears the item. Reuses
     prd_runner's ledger helpers so there is one definition of the format.
     Scar: `deferred` used to be a silent drop -- a rationale and then gone."""
-    from prd_runner import _read_spillover, _spillover_append  # sibling script
+    from prd_runner import (_read_spillover, _spillover_append,  # sibling script
+                            _spillover_file_and_link)
 
     sid = f"defer-{prd_id}-{finding['id']}"
     existing = _read_spillover(cfg).get(sid)
     if finding.get("disposition") == "deferred":
         if existing and existing.get("status") == "open":
             return  # idempotent: already tracked open
-        _spillover_append(cfg, {
+        record = {
             "id": sid, "source": prd_id, "finding_id": finding["id"],
             "description": f"deferred finding {finding['id']}: {str(finding.get('body', ''))[:120]}",
             "severity": finding.get("severity", "minor"),
             "status": "open", "created_at": _now_iso(),
-        })
+        }
+        _spillover_append(cfg, record)
+        # ASK-1552: the row first, then its Linear issue. A filer failure is
+        # recorded on the row for spillover-linear-check.py to retry.
+        _spillover_file_and_link(cfg, record)
     elif existing and existing.get("status") == "open":
         new = dict(existing)
         new.update(status="resolved",
@@ -550,6 +555,16 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
                 break
         if target is None:
             sys.stderr.write(f"finding not found: {args.finding_id}\n")
+            return 2
+        # Founder 2026-09-12: "New minor findings: fix or reject, never queue."
+        # Refused BEFORE the findings file changes; a missing severity is the
+        # `minor` default the spillover mirror would have stamped.
+        from prd_runner import MINOR_REFUSAL, SPILLOVER_REFUSED_SEVERITIES
+        if (args.disposition == "deferred"
+                and str(target.get("severity") or "minor").strip().lower()
+                in SPILLOVER_REFUSED_SEVERITIES):
+            sys.stderr.write(f"refused: {MINOR_REFUSAL}. Accept and fix it, or "
+                             "reject it with --rationale.\n")
             return 2
         target["disposition"] = args.disposition
         if getattr(args, "covered_by", "") and args.covered_by.strip():

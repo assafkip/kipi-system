@@ -47,8 +47,9 @@ Ledger CLI (no slash command; run through `kipi judgment <subcommand>`): the Jud
 An issue found mid-work that is out of scope must be CAPTURED, not mentioned. The
 ledger is `.prd-os/spillover.jsonl`; the standing gate enforces it.
 
-- Capture: `prd_runner.py spillover add --source <id> --desc "..."` (a `deferred`
-  triage disposition does this automatically; `rejected` does not).
+- Capture: `prd_runner.py spillover add --source <id> --severity <medium|high|major|blocker> --desc "..."`
+  (a `deferred` triage disposition does this automatically; `rejected` does not). A new
+  minor/low/nit is refused (exit 2): fix it now or reject it with a reason.
 - Gate: `prd_runner.py gates run` FAILS while any item is `open` — the same
   no-bypass re-proof as the registered gates. Forgetting an item = a red gate.
 - Resolve: `spillover resolve <id> --resolution-ref <closed-issue-id>` (refuses
