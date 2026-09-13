@@ -371,3 +371,31 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
   skips rows created before its CREATED_AT_CUTOFF and prints their count). The
   review agent's APPROVE WITH NITS path still tries to capture minors as spillover
   and is now refused; that path is the follow-up.
+
+## The destructive-op guard covers direct invocation only, and says so (ASK-1247, 2026-09-13)
+
+### RULE-2026-09-13-A: Accept and state the interpreter bound; no interpreter patterns
+- **Origin:** [SYSTEM-INFERRED]
+- **Decision:** Of the three options in ASK-1247, option 3 ships: the guard
+  `~/.claude/hooks/destructive-op-deny.sh` states in its header that it covers
+  direct invocation only, and lists the interpreter forms that walk through it
+  (python3 -c, node -e, perl -e, bash <script>). No interpreter pattern is added
+  to the deny list. Option 1 (move the boundary to the filesystem or syscall
+  layer) and option 2 (a Bash allowlist inside autonomous runs) are not taken
+  here; each is a PRD with fleet-wide blast radius.
+- **Reason:** Measured by `q-system/.q-system/tests/probe_hook.py` against the
+  reference fixture: both controls DENY, all five interpreter forms ALLOW. A
+  pattern for `python3 -c` loses to a payload built at runtime, read from a file
+  or base64'd, and a parser that decides a string is harmless is a new bypass
+  surface in the one hook between an agent and a production volume; the hook's
+  own 2026-08-07 comment already rejects that class. Stating the bound costs
+  nothing and stops the header being read as coverage it does not have.
+  `test_destructive_guard_interpreter_bound.py` pins the ALLOW rows and the
+  header sentence to each other, so a change to either goes red.
+- **Date:** 2026-09-13
+- **Revisit:** When a PRD for option 1 or 2 is approved. The live hook carries
+  the header only after
+  `q-system/.q-system/proposals/destructive-guard-state-interpreter-bound.json`
+  is applied with `apply-claude-changes.sh --root $HOME`; until then the drift
+  test in `test_destructive_op_deny_anchor.py` is red on any machine with the
+  live hook, which is the signal that it has not been applied.
