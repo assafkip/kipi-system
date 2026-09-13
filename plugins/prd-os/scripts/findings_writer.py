@@ -556,6 +556,16 @@ def cmd_set_disposition(cfg: Config, args: argparse.Namespace) -> int:  # noqa: 
         if target is None:
             sys.stderr.write(f"finding not found: {args.finding_id}\n")
             return 2
+        # Founder 2026-09-12: "New minor findings: fix or reject, never queue."
+        # Refused BEFORE the findings file changes; a missing severity is the
+        # `minor` default the spillover mirror would have stamped.
+        from prd_runner import MINOR_REFUSAL, SPILLOVER_REFUSED_SEVERITIES
+        if (args.disposition == "deferred"
+                and str(target.get("severity") or "minor").strip().lower()
+                in SPILLOVER_REFUSED_SEVERITIES):
+            sys.stderr.write(f"refused: {MINOR_REFUSAL}. Accept and fix it, or "
+                             "reject it with --rationale.\n")
+            return 2
         target["disposition"] = args.disposition
         if getattr(args, "covered_by", "") and args.covered_by.strip():
             # umbrella coverage: this finding is owned by a phase PRD

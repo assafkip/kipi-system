@@ -2424,6 +2424,9 @@ def cmd_spillover(cfg: Config, args) -> int:
     if sub == "ack":
         return _spillover_ack(cfg, args)
     if sub == "add":
+        if (args.severity or "minor").strip().lower() in SPILLOVER_REFUSED_SEVERITIES:
+            sys.stderr.write(f"refused: {MINOR_REFUSAL}\n")
+            return 2
         sid = args.id or f"sp-{_hashlib.sha256((args.source + args.desc).encode()).hexdigest()[:8]}"
         dor = _spillover_read_dor(args)
         blocking = args.severity in SPILLOVER_BLOCKING_SEVERITIES
@@ -2740,6 +2743,18 @@ SPILLOVER_BLOCKING_SEVERITIES = ("blocker", "major", "high")
 # louder the label the quieter the gate got. Fail-closed here and validate at the
 # CLI: an unknown severity is a triage failure, never a silent pass (ASK-402).
 SPILLOVER_NONBLOCKING_SEVERITIES = ("minor", "low", "medium")
+
+# NEW MINORS ARE NEVER QUEUED. Founder, 2026-09-12, verbatim: "New minor findings:
+# fix or reject, never queue." Recorded in canonical/decisions.md as
+# DEC-2026-09-12 [CLAUDE-RECOMMENDED -> APPROVED]. A minor is fixed in the change
+# that found it or rejected with a reason; `spillover add` and a `deferred`
+# disposition both refuse it at the door, so the ledger only receives work that
+# files a Linear issue for Sana (medium and up). kipi-dsse's issue_findings.py
+# carries the same tuple and message: that plugin stays import-independent of
+# prd-os, and test_spillover_files_linear.py pins the two copies equal.
+SPILLOVER_REFUSED_SEVERITIES = ("minor", "low", "nit")
+MINOR_REFUSAL = ("a minor is fixed in this change or rejected with a reason; "
+                 "it is never queued (founder 2026-09-12)")
 
 # RULE-2026-08-24-B [USER-DIRECTED 2026-08-24]: "Everything should be owned
 # by Sana." One constant so the default cannot drift between the add door,

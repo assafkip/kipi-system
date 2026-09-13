@@ -68,6 +68,9 @@ SOURCES = (
 )
 DISPOSITIONS = ("pending", "accepted", "rejected", "deferred")
 REQUIRES_RATIONALE = ("rejected", "deferred")
+REFUSED_DEFER_SEVERITIES = ("minor", "low", "nit")
+MINOR_REFUSAL = ("a minor is fixed in this change or rejected with a reason; "
+                 "it is never queued (founder 2026-09-12)")
 ID_RE = re.compile(r"^finding-([0-9]+)$")
 RECORD_FIELDS = (
     "id",
@@ -409,7 +412,6 @@ def _link_spillover(repo_root, ledger: Path, record: dict) -> None:
     except Exception as exc:  # noqa: BLE001
         sys.stderr.write(f"WARNING: spillover Linear filing failed ({exc!r}); the row "
                          "is recorded and spillover-linear-check.py retries it\n")
-        fh.flush()
 
 
 def cmd_set_disposition(args: argparse.Namespace) -> int:
@@ -430,6 +432,15 @@ def cmd_set_disposition(args: argparse.Namespace) -> int:
     target = None
     for rec in records:
         if rec.get("id") == args.finding_id:
+            # Founder 2026-09-12: "New minor findings: fix or reject, never
+            # queue." Refused before the findings file changes. Same tuple and
+            # message as prd_runner.py (this plugin does not import prd-os).
+            if (args.disposition == "deferred"
+                    and str(rec.get("severity") or "minor").strip().lower()
+                    in REFUSED_DEFER_SEVERITIES):
+                sys.stderr.write(f"refused: {MINOR_REFUSAL}. Accept and fix it, or "
+                                 "reject it with --rationale.\n")
+                return 2
             target = rec
             found = True
             old = rec.get("disposition")

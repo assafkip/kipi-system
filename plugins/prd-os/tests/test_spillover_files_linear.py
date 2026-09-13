@@ -24,6 +24,8 @@ PRD_RUNNER = PLUGIN_ROOT / "scripts" / "prd_runner.py"
 FINDINGS_WRITER = PLUGIN_ROOT / "scripts" / "findings_writer.py"
 SKEL_SCRIPTS = PLUGIN_ROOT.parents[1] / "q-system" / ".q-system" / "scripts"
 PRD_ID = "prd-demo-2026-09-12"
+REFUSAL = ("a minor is fixed in this change or rejected with a reason; "
+           "it is never queued (founder 2026-09-12)")
 
 
 @pytest.fixture
@@ -66,9 +68,39 @@ def _captured(capture: Path) -> list:
     return capture.read_text().splitlines() if capture.exists() else []
 
 
-def _add(repo: Path, capture: Path, *extra: str) -> subprocess.CompletedProcess:
+def _add(repo: Path, capture: Path, *extra: str, severity: str = "major") -> subprocess.CompletedProcess:
     return _run(PRD_RUNNER, repo, capture, "spillover", "add", "--source", "ASK-1552",
-                "--desc", "ledger rows never reach Linear", "--id", "sp-cap00001", *extra)
+                "--desc", "ledger rows never reach Linear", "--id", "sp-cap00001",
+                "--severity", severity, *extra)
+
+
+@pytest.mark.parametrize("severity", ["minor", "low"])
+def test_add_refuses_a_minor_or_low_and_writes_nothing(repo, tmp_path, severity):
+    """Founder 2026-09-12: "New minor findings: fix or reject, never queue"."""
+    cap = tmp_path / "capture.txt"
+    res = _add(repo, cap, severity=severity)
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert REFUSAL in res.stderr
+    assert _ledger(repo) == {}, "a refused minor still reached the ledger"
+    assert _captured(cap) == [], "a refused minor still reached Linear"
+
+
+def test_add_with_no_severity_is_a_refused_minor(repo, tmp_path):
+    """The CLI default is `minor`, so a bare add is the minor case."""
+    cap = tmp_path / "capture.txt"
+    res = _run(PRD_RUNNER, repo, cap, "spillover", "add", "--source", "ASK-1552",
+               "--desc", "bare add", "--id", "sp-bare0001")
+    assert res.returncode == 2 and REFUSAL in res.stderr
+    assert _ledger(repo) == {}
+
+
+@pytest.mark.parametrize("severity", ["medium", "blocker"])
+def test_add_medium_and_blocker_still_file(repo, tmp_path, severity):
+    cap = tmp_path / "capture.txt"
+    res = _add(repo, cap, severity=severity)
+    assert res.returncode == 0, res.stderr
+    assert len(_captured(cap)) == 1
+    assert _ledger(repo)["sp-cap00001"]["linear"]["state"] == "captured"
 
 
 def test_add_files_exactly_one_issue_and_row_carries_the_link(repo, tmp_path):
@@ -78,7 +110,7 @@ def test_add_files_exactly_one_issue_and_row_carries_the_link(repo, tmp_path):
     lines = _captured(cap)
     assert len(lines) == 1, lines
     assert "sp-cap00001" in lines[0] and "ASK-1552" in lines[0]
-    assert "minor" in lines[0] and "ledger rows never reach Linear" in lines[0]
+    assert "major" in lines[0] and "ledger rows never reach Linear" in lines[0]
     rec = _ledger(repo)["sp-cap00001"]
     assert rec["status"] == "open"
     assert rec["linear"]["state"] == "captured" and rec["linear"]["exit"] == 0
@@ -122,6 +154,30 @@ def test_deferred_disposition_files_exactly_one_issue(repo, tmp_path):
     assert rec["status"] == "open" and rec["linear"]["state"] == "captured"
 
 
+@pytest.mark.parametrize("severity", ["minor", "nit"])
+def test_deferring_a_minor_finding_is_refused(repo, tmp_path, severity):
+    """The only options for a minor are accepted (and fixed) or rejected with a
+    rationale. prd-os findings grade minor-class work as `minor` or `nit`."""
+    d = repo / ".prd-os" / "findings"
+    d.mkdir(parents=True)
+    rec = {"id": "finding-2", "prd_id": PRD_ID, "source": "codex-review",
+           "disposition": "pending", "body": "nit: rename a local",
+           "created_at": "2026-09-12T00:00:00Z"}
+    rec["severity"] = severity
+    fpath = d / f"{PRD_ID}-findings.jsonl"
+    fpath.write_text(json.dumps(rec) + "\n")
+    cap = tmp_path / "capture.txt"
+    res = _run(FINDINGS_WRITER, repo, cap, "set-disposition", PRD_ID, "finding-2",
+               "deferred", "--rationale", "later")
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert REFUSAL in res.stderr
+    assert json.loads(fpath.read_text().splitlines()[0])["disposition"] == "pending"
+    assert _ledger(repo) == {} and _captured(cap) == []
+    ok = _run(FINDINGS_WRITER, repo, cap, "set-disposition", PRD_ID, "finding-2",
+              "rejected", "--rationale", "not worth a change")
+    assert ok.returncode == 0, ok.stderr
+
+
 def test_capture_link_is_not_a_tracker_ref_for_the_gate():
     """The alert ticket makes the row VISIBLE; it is not the promotion receipt
     the scopeless gate accepts for a blocking item. Minting that receipt by
@@ -134,3 +190,16 @@ def test_capture_link_is_not_a_tracker_ref_for_the_gate():
     assert not prd_runner._spillover_has_tracker_ref(row)
     assert prd_runner._spillover_blocks(row, None)
     assert prd_runner._spillover_has_tracker_ref({"linear": "ASK-9"})  # the old door
+
+
+def test_the_two_plugin_copies_of_the_minor_rule_agree():
+    """kipi-dsse keeps its own copy so it stays import-independent of prd-os."""
+    import importlib.util as ilu
+    sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+    import prd_runner  # noqa: E402
+    spec = ilu.spec_from_file_location(
+        "issue_findings_copy", PLUGIN_ROOT.parent / "kipi-dsse" / "scripts" / "issue_findings.py")
+    dsse = ilu.module_from_spec(spec)
+    spec.loader.exec_module(dsse)
+    assert dsse.REFUSED_DEFER_SEVERITIES == prd_runner.SPILLOVER_REFUSED_SEVERITIES
+    assert dsse.MINOR_REFUSAL == prd_runner.MINOR_REFUSAL == REFUSAL

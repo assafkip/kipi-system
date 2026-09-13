@@ -81,3 +81,20 @@ def test_dsse_filer_failure_keeps_the_row(repo, tmp_path):
     rec = _ledger(repo)[SID]
     assert rec["status"] == "open"
     assert rec["linear"]["state"] == "failed" and rec["linear"]["exit"] == 1
+
+
+@pytest.mark.parametrize("severity", ["minor", "low"])
+def test_dsse_deferring_a_minor_is_refused(repo, tmp_path, severity):
+    """Founder 2026-09-12: "New minor findings: fix or reject, never queue"."""
+    fpath = repo / "issues" / "findings" / f"{ISSUE_ID}-findings.jsonl"
+    rec = json.loads(fpath.read_text().splitlines()[0])
+    rec["severity"] = severity
+    fpath.write_text(json.dumps(rec) + "\n")
+    cap = tmp_path / "capture.txt"
+    out = _defer(repo, cap)
+    assert out.returncode == 2, out.stdout + out.stderr
+    assert ("a minor is fixed in this change or rejected with a reason; "
+            "it is never queued (founder 2026-09-12)") in out.stderr
+    assert json.loads(fpath.read_text().splitlines()[0])["disposition"] == "pending"
+    assert not (repo / ".prd-os" / "spillover.jsonl").exists()
+    assert not cap.exists()

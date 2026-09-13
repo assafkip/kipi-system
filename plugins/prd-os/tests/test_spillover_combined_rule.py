@@ -36,11 +36,22 @@ from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from legacy_spillover import is_legacy_minor_add, seed_legacy_add  # noqa: E402
+
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 PRD_RUNNER = PLUGIN_ROOT / "scripts" / "prd_runner.py"
 
 
 def run(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    # A minor `add` seeds a pre-2026-09-12 row: the CLI now refuses new minors
+    # (founder 2026-09-12), and those legacy rows are what this suite models.
+    if is_legacy_minor_add(args):
+        return seed_legacy_add(repo, args)
+    return _run_cli(repo, *args)
+
+
+def _run_cli(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(PRD_RUNNER), "--repo-root", str(repo), *args],
         capture_output=True, text=True,
