@@ -394,9 +394,9 @@ secret has no row, or an authority row has no tagged decision here that names it
   make the founder the next actor on every message, which is the design failing.
 - **Date:** 2026-09-13
 - **Revisit:** If the CRM starts sending from an environment other than this
-  machine, or the agent moves to a separate uid. The consulting doc wording and
-  the Gmail credential path not yet being in the registry are both captured as
-  spillover from ASK-1251.
+  machine, or the agent moves to a separate uid. The Gmail credential is
+  `ask-crm-gmail-token`, bound in RULE-2026-09-13-C. The consulting doc wording
+  is captured as spillover from ASK-1251.
 
 ### RULE-2026-09-13-B: Every other reachable authority secret stays where it is, recorded rather than moved
 - **Origin:** [SYSTEM-INFERRED]
@@ -427,3 +427,31 @@ secret has no row, or an authority row has no tagged decision here that names it
   exits 1. It does not see a name built at run time, a file sourced through a
   variable path (printed NOT-SCANNED), or a secret stored under a name the
   pattern does not match.
+
+### RULE-2026-09-13-C: The first live file and shell scan's authority rows stay where they are, recorded
+- **Origin:** [SYSTEM-INFERRED]
+- **Decision:** These stay as they are today, now recorded: `N8N_API_KEY`,
+  `GEMINI_API_KEY`, `ask-crm-gmail-token`, `ask-crm-slack-token`,
+  `bitbucket-token`, `client-tokens`, `cockpit-token`, `groupme-token`,
+  `linear-relay-token`, `n8n-api-key`, `notion-token`, `openai-key`,
+  `posthog-api-key`, `publer-api-key`, `slack-bot-token`,
+  `slack-webhook-old-workspace`, `slack-webhook-retired-2026-08-19`,
+  `voice-gate-key`, and the logged-in browser sessions `browser-profiles`,
+  `linkedin-profile`, `reddit-profile`, `substack-profile`. The four browser
+  rows are globs: each classifies everything under one named directory, so a
+  cookie file Chromium adds tomorrow is already covered. A new profile
+  directory is not, and shows up UNCLASSIFIED.
+- **Why:** same reason as RULE-2026-09-13-B. Each is how a delegated job does
+  its work (the CRM sends mail and DMs, the bots post), and a session running as
+  the founder's uid reaches all of them. The DoR asked for an inventory and a
+  decision per row, not a lockdown.
+- **Measured 2026-09-13:** the first live `--source file --source shell` run
+  (review round 3 of PR #345) found 63 unclassified names: these 22 rows plus
+  two empty spillover-ratchet ack files, classed knowledge by glob.
+  `ask-crm-gmail-token.json` is mode 0644, readable by every local user, not
+  only this uid. Its mode is captured as ASK-1667 (sp-0265abf0), not changed
+  here.
+- **Date:** 2026-09-13
+- **Revisit:** When either retired Slack webhook is confirmed dead (the row can
+  go), or when `client-tokens`, `posthog-api-key` or `voice-gate-key` has a
+  known reader and a known grant.
