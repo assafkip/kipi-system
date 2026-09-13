@@ -69,6 +69,10 @@ FILER_TIMEOUT_SECONDS = 120
 # file, which is the only delivery a test run is allowed to make.
 LINKED_STATES = ("filed", "captured")
 
+# RULE-2026-09-12-A: a new minor is never queued. Instances that have not synced
+# the refusal yet still write these; the check counts them and files nothing.
+MINOR_CLASS = ("minor", "low", "nit")
+
 _IDENT = re.compile(r"\b(?:filed|repeat #\d+ on) ([A-Z][A-Z0-9]*-\d+)\b")
 
 
@@ -96,6 +100,17 @@ def is_new(rec: dict) -> bool:
     as pre-existing: the safe side of "do not flood Linear"."""
     created = _instant(rec.get("created_at"))
     return created is not None and created >= CUTOFF
+
+
+def is_minor(rec: dict) -> bool:
+    return str(rec.get("severity") or "minor").strip().lower() in MINOR_CLASS
+
+
+def needs_close(rec: dict) -> bool:
+    """A row that left the ledger while its capture ticket is still open."""
+    link = rec.get("linear")
+    return (rec.get("status") == "resolved" and isinstance(link, dict)
+            and link.get("state") in LINKED_STATES and not link.get("closed_at"))
 
 
 def is_linked(rec: dict) -> bool:
@@ -161,6 +176,72 @@ def file_record(rec: dict, repo_root) -> dict:
     return parse_filer_output(res.returncode, res.stdout, res.stderr)
 
 
+ISSUE_FOR_CLOSE = ('query($id:String!){issue(id:$id){id identifier state{type} '
+                   'team{states{nodes{id type}}}}}')
+ISSUE_SET_STATE = ('mutation($id:String!,$input:IssueUpdateInput!)'
+                   '{issueUpdate(id:$id,input:$input){success}}')
+COMMENT_CREATE = ('mutation($input:CommentCreateInput!)'
+                  '{commentCreate(input:$input){success}}')
+
+
+def _load_alert_module():
+    spec = importlib.util.spec_from_file_location("alert_to_linear_slc", FILER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def close_record(rec: dict, repo_root, ln=None) -> dict:
+    """Close the capture ticket of a row that left the ledger (review F2, PR #344).
+
+    why: the ticket is Sana's view of the row. A voided row whose ticket stays
+    open is work that does not exist, sitting in the queue a worker drains, and
+    nothing else ever closes it. Voided -> canceled, fixed -> completed, with a
+    comment saying which. Same test contract as the filer: KIPI_ALERT_CAPTURE
+    receives a line instead of a Linear write, and a pytest run with no capture
+    is refused. Never raises; a failure is retried by the next run.
+    """
+    sid = str(rec.get("id") or "?")
+    link = rec.get("linear") or {}
+    ident = link.get("identifier")
+    target = "canceled" if rec.get("void_reason") else "completed"
+    reason = (rec.get("void_reason") or rec.get("resolution_ref")
+              or "resolved in the spillover ledger")
+    capture = os.environ.get("KIPI_ALERT_CAPTURE")
+    if ln is None and capture:
+        try:
+            with open(capture, "a", encoding="utf-8") as fh:
+                fh.write(f"spillover-close {sid} {ident or 'captured'} {target}: {reason}\n")
+        except OSError as exc:
+            return {"close": "failed", "detail": repr(exc)[:300]}
+        return {"close": target, "closed_at": _now_iso()}
+    if ln is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        return {"close": "failed", "detail": "refused under pytest"}
+    if not ident:
+        return {"close": "failed", "detail": "no Linear identifier on the row"}
+    try:
+        if ln is None:
+            ln = _load_alert_module()._load_linear()
+        issue = (ln.graphql(ISSUE_FOR_CLOSE, {"id": ident}) or {}).get("issue") or {}
+        if not issue.get("id"):
+            return {"close": "failed", "detail": f"{ident} not found"}
+        if ((issue.get("state") or {}).get("type") or "") in ("completed", "canceled"):
+            return {"close": "already-closed", "closed_at": _now_iso()}
+        states = ((issue.get("team") or {}).get("states") or {}).get("nodes") or []
+        state_id = next((st["id"] for st in states if st.get("type") == target), None)
+        if not state_id:
+            return {"close": "failed", "detail": f"no {target} state on the team"}
+        ln.graphql(COMMENT_CREATE, {"input": {"issueId": issue["id"], "body": (
+            f"Spillover row `{sid}` left the ledger ({target}): {reason}. "
+            "Closed by spillover-linear-check.py.")}})
+        res = ln.graphql(ISSUE_SET_STATE, {"id": issue["id"], "input": {"stateId": state_id}})
+        if not ((res or {}).get("issueUpdate") or {}).get("success"):
+            return {"close": "failed", "detail": "issueUpdate did not succeed"}
+        return {"close": target, "closed_at": _now_iso()}
+    except Exception as exc:  # noqa: BLE001
+        return {"close": "failed", "detail": repr(exc)[:300]}
+
+
 # --------------------------------------------------------------------------
 # The daily check
 # --------------------------------------------------------------------------
@@ -207,6 +288,7 @@ def main(argv: list | None = None) -> int:
         return 1
 
     budget = max(args.limit, 0)
+    close_budget = max(args.limit, 0)
     failed_read = False
     totals = {"open": 0, "backlog": 0, "filed": 0, "still": 0}
     per_ledger = []
@@ -226,7 +308,9 @@ def main(argv: list | None = None) -> int:
             continue
         open_rows = [r for r in items.values() if r.get("status") == "open"]
         backlog = [r for r in open_rows if not is_new(r) and not is_linked(r)]
-        new_rows = [r for r in open_rows if is_new(r)]
+        new_all = [r for r in open_rows if is_new(r)]
+        new_minor = [r for r in new_all if is_minor(r)]
+        new_rows = [r for r in new_all if not is_minor(r)]
         already = [r for r in new_rows if is_linked(r)]
         todo = sorted((r for r in new_rows if not is_linked(r)),
                       key=lambda r: _instant(r.get("created_at")))
@@ -242,6 +326,17 @@ def main(argv: list | None = None) -> int:
             else:
                 failed_now += 1
         still = len(todo) - filed_now
+        closed_now = close_failed = 0
+        for rec in [r for r in items.values() if needs_close(r)]:
+            if args.dry_run or close_budget <= 0:
+                break
+            close_budget -= 1
+            close = close_record(rec, root)
+            if close.get("closed_at"):
+                runner._spillover_record_close(cfg, rec["id"], close)
+                closed_now += 1
+            else:
+                close_failed += 1
         per_ledger.append((name, still))
         totals["open"] += len(open_rows)
         totals["backlog"] += len(backlog)
@@ -250,7 +345,9 @@ def main(argv: list | None = None) -> int:
         print(f"spillover-linear-check {name}: open={len(open_rows)} "
               f"pre_cutoff_unlinked={len(backlog)} new_open={len(new_rows)} "
               f"already_linked={len(already)} filed_now={filed_now} "
-              f"failed_now={failed_now} still_unlinked={still}")
+              f"failed_now={failed_now} still_unlinked={still} "
+              f"new_minor_skipped={len(new_minor)} closed_now={closed_now} "
+              f"close_failed={close_failed}")
 
     print(f"spillover-linear-check TOTAL: open={totals['open']} "
           f"filed_now={totals['filed']} still_unlinked={totals['still']}")

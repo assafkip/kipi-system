@@ -203,3 +203,19 @@ def test_the_two_plugin_copies_of_the_minor_rule_agree():
     spec.loader.exec_module(dsse)
     assert dsse.REFUSED_DEFER_SEVERITIES == prd_runner.SPILLOVER_REFUSED_SEVERITIES
     assert dsse.MINOR_REFUSAL == prd_runner.MINOR_REFUSAL == REFUSAL
+
+
+def test_refusal_points_a_real_finding_at_severity(repo, tmp_path):
+    """Review F4: the documented bare `add` defaults to minor and is refused; the
+    refusal must tell an agent holding a real finding what to pass."""
+    res = _add(repo, tmp_path / "c.txt", severity="minor")
+    assert "--severity" in res.stderr
+
+
+def test_add_output_does_not_deny_the_capture_ticket(repo, tmp_path):
+    """Review F6: a blocking row with no DoR used to say "no Linear issue was
+    created" in the same JSON that carried the capture link."""
+    res = _add(repo, tmp_path / "c.txt", severity="major")
+    out = json.loads(res.stdout.strip().splitlines()[-1])
+    assert out["linear"]["state"] == "captured"
+    assert "no Linear issue was created" not in res.stdout

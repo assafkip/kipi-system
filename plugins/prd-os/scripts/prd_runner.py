@@ -1508,6 +1508,27 @@ def _spillover_record_link(cfg: Config, sid: str, link: dict) -> bool:
     return True
 
 
+def _spillover_record_close(cfg: Config, sid: str, close: dict) -> bool:
+    """Record that a resolved row's capture ticket was closed (review F2, PR #344).
+
+    Same chokepoint shape as `_spillover_record_link`: under the lock, re-read the
+    CURRENT row and append a full copy. Only a row that is still `resolved` and
+    still carries a capture link is touched, so a reopen in between is never
+    overwritten with a stale resolved copy.
+    """
+    with _spillover_lock(cfg):
+        current = _read_spillover(cfg).get(sid)
+        if current is None or current.get("status") != "resolved":
+            return False
+        link = current.get("linear")
+        if not isinstance(link, dict) or link.get("closed_at"):
+            return False
+        out = dict(current)
+        out["linear"] = {**link, **close}
+        _spillover_append(cfg, out)
+    return True
+
+
 def _spillover_file_and_link(cfg: Config, record: dict) -> dict | None:
     """File one new row to Linear, then record the link. Never raises.
 
@@ -2425,7 +2446,9 @@ def cmd_spillover(cfg: Config, args) -> int:
         return _spillover_ack(cfg, args)
     if sub == "add":
         if (args.severity or "minor").strip().lower() in SPILLOVER_REFUSED_SEVERITIES:
-            sys.stderr.write(f"refused: {MINOR_REFUSAL}\n")
+            sys.stderr.write(f"refused: {MINOR_REFUSAL}\n"
+                             "A real finding at medium or above: pass --severity "
+                             "medium|high|major|blocker.\n")
             return 2
         sid = args.id or f"sp-{_hashlib.sha256((args.source + args.desc).encode()).hexdigest()[:8]}"
         dor = _spillover_read_dor(args)
@@ -2496,8 +2519,10 @@ def cmd_spillover(cfg: Config, args) -> int:
         elif blocking:
             out["promotion"] = {
                 "status": "needs_dor", "owner": "sana",
-                "note": ("blocking severity with no DoR: no Linear issue was created. "
-                         "Drain with `prd_runner.py spillover needs-dor`."),
+                "note": ("blocking severity with no DoR: not promoted, so the worker "
+                         "cannot pick it up yet (the capture ticket in `linear` is for "
+                         "visibility; promotion adopts it). Drain with "
+                         "`prd_runner.py spillover needs-dor`."),
             }
         # ASK-1552: capture = ledger row + Linear issue. After promotion, so a
         # row spillover-promote.py already filed (status promoted, no longer

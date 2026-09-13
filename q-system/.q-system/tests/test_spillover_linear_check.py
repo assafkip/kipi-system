@@ -41,7 +41,7 @@ def _now() -> str:
 
 
 def _row(sid: str, created_at: str, status: str = "open", **extra) -> dict:
-    rec = {"id": sid, "source": "ASK-1552", "severity": "minor",
+    rec = {"id": sid, "source": "ASK-1552", "severity": "medium",
            "description": f"finding {sid} needs a Linear issue",
            "status": status, "created_at": created_at, "owner": "sana"}
     rec.update(extra)
@@ -203,3 +203,131 @@ def test_distinct_rows_never_collapse_into_one_ticket():
     b = _row("sp-bbbb2222", _now(), description="stale read in q-consult/b.py")
     assert atl.fingerprint(check.message_for(a)) != atl.fingerprint(check.message_for(b))
     assert atl.fingerprint(check.message_for(a)) == atl.fingerprint(check.message_for(dict(a)))
+
+
+# --- PR #344 review round 1 --------------------------------------------------
+
+def test_check_never_files_a_new_minor_row(repo, tmp_path):
+    """F3. Pre-sync instances still write minors; RULE-2026-09-12-A says a minor
+    is never queued, so the check counts them and files nothing."""
+    _seed(repo, [_row("sp-min00001", _now(), severity="minor"),
+                 _row("sp-nit00001", _now(), severity="nit"),
+                 _row("sp-med00001", _now(), severity="medium")])
+    cap = tmp_path / "capture.txt"
+    res = _check(repo, cap)
+    assert res.returncode == 0, res.stdout + res.stderr
+    lines = _captured(cap)
+    assert len(lines) == 1 and "sp-med00001" in lines[0], lines
+    assert "new_minor_skipped=2" in res.stdout
+
+
+def test_check_closes_the_ticket_of_a_row_that_left_the_ledger(repo, tmp_path):
+    """F2. A resolved or voided row's capture ticket must not stay open forever."""
+    link = {"state": "captured", "identifier": None, "exit": 0, "at": _now()}
+    _seed(repo, [_row("sp-void0001", _now(), status="resolved",
+                      void_reason="not real after all", linear=link),
+                 _row("sp-open0001", _now(), linear=dict(link))])
+    cap = tmp_path / "capture.txt"
+    res = _check(repo, cap)
+    assert res.returncode == 0, res.stdout + res.stderr
+    closes = [ln for ln in _captured(cap) if ln.startswith("spillover-close ")]
+    assert len(closes) == 1 and "sp-void0001" in closes[0], _captured(cap)
+    assert "closed_now=1" in res.stdout
+    assert _ledger(repo)["sp-void0001"]["linear"]["closed_at"]
+    assert "closed_at" not in _ledger(repo)["sp-open0001"]["linear"]
+    # Idempotent: the second run closes nothing.
+    again = _check(repo, cap)
+    assert len([ln for ln in _captured(cap) if ln.startswith("spillover-close ")]) == 1
+    assert "closed_now=0" in again.stdout
+
+
+class _CloseLinear:
+    """Fake linear-sync surface for the close path: one open issue."""
+
+    def __init__(self, state_type="unstarted"):
+        self.state_type, self.updates, self.comments = state_type, [], []
+
+    def graphql(self, query, variables):
+        if "issueUpdate" in query:
+            self.updates.append(variables)
+            return {"issueUpdate": {"success": True}}
+        if "commentCreate" in query:
+            self.comments.append(variables)
+            return {"commentCreate": {"success": True}}
+        if "issue(id" in query:
+            return {"issue": {"id": "uuid-7", "identifier": variables["id"],
+                              "state": {"type": self.state_type},
+                              "team": {"states": {"nodes": [
+                                  {"id": "st-done", "type": "completed"},
+                                  {"id": "st-cancel", "type": "canceled"},
+                                  {"id": "st-todo", "type": "unstarted"}]}}}}
+        raise AssertionError(query)
+
+
+def test_close_record_cancels_a_voided_row_and_completes_a_fixed_one(monkeypatch):
+    monkeypatch.delenv("KIPI_ALERT_CAPTURE", raising=False)
+    check = _load("slc_close", CHECK)
+    base = {"state": "filed", "identifier": "ASK-7", "exit": 0}
+    voided = _row("sp-v", _now(), status="resolved", void_reason="dup", linear=base)
+    fixed = _row("sp-f", _now(), status="resolved", resolution_ref="ASK-9", linear=base)
+    fake = _CloseLinear()
+    assert check.close_record(voided, Path("."), ln=fake)["close"] == "canceled"
+    assert fake.updates[-1]["input"]["stateId"] == "st-cancel"
+    assert check.close_record(fixed, Path("."), ln=fake)["close"] == "completed"
+    assert fake.updates[-1]["input"]["stateId"] == "st-done"
+    assert len(fake.comments) == 2
+    done = _CloseLinear(state_type="completed")
+    assert check.close_record(fixed, Path("."), ln=done)["close"] == "already-closed"
+    assert done.updates == []
+
+
+def test_promotion_adopts_the_capture_ticket_instead_of_filing_a_second(tmp_path):
+    """F1. A blocking row with no DoR files a capture ticket; promoting it later
+    must put the DoR on THAT ticket, not open a second permanent issue."""
+    sys.path.insert(0, str(SCRIPTS))
+    import test_spillover_promote_selection as sel  # the promoter's own stub
+
+    class AdoptLinear(sel.RecordingLinear):
+        def __init__(self, board=None):
+            super().__init__(board)
+            self.updated = None
+
+        def graphql(self, query, variables):
+            if "issueUpdate" in query:
+                self.updated = variables
+                for issue in self.board:
+                    if issue["identifier"] == variables["id"]:
+                        issue["description"] = variables["input"]["description"]
+                return {"issueUpdate": {"success": True,
+                                        "issue": {"identifier": variables["id"]}}}
+            return super().graphql(query, variables)
+
+    root = tmp_path
+    (root / ".prd-os").mkdir()
+    (root / ".prd-os" / "spillover.jsonl").write_text(json.dumps({
+        "id": "sp-test01", "status": "open", "severity": "major", "source": "ASK-451",
+        "description": "the conveyor is dead",
+        "linear": {"state": "filed", "identifier": "ASK-7001", "exit": 0}}) + "\n")
+    mod = sel.load_promote()
+    stub = AdoptLinear(board=[{"identifier": "ASK-7001",
+                               "description": "Filed automatically by the fleet alert path."}])
+    mod.linear_module = lambda: stub
+    dor = root / "dor.md"
+    dor.write_text(sel.DOR)
+    old_argv, old_env = sys.argv, dict(os.environ)
+    sys.argv = ["spillover-promote.py", "sp-test01", "--title", "conveyor",
+                "--dor-file", str(dor), "--repo-root", str(root)]
+    os.environ["KIPI_LINEAR_PROJECT"] = "kipi-system"
+    try:
+        rc = mod.main()
+    finally:
+        sys.argv = old_argv
+        os.environ.clear()
+        os.environ.update(old_env)
+    assert rc == 0
+    assert stub.created is None, "promotion filed a SECOND issue for one finding"
+    assert stub.updated and stub.updated["id"] == "ASK-7001"
+    body = stub.updated["input"]["description"]
+    assert body.startswith(mod.promotion_marker("sp-test01")) and "Definition of Ready" in body
+    rows = [json.loads(x) for x in (root / ".prd-os" / "spillover.jsonl").read_text().splitlines()]
+    assert rows[-1]["status"] == "promoted" and rows[-1]["linear_ref"] == "ASK-7001"

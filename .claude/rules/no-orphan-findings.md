@@ -12,7 +12,7 @@ capture, not a sentence:
 
 ```bash
 python3 plugins/prd-os/scripts/prd_runner.py spillover add \
-  --source <prd-or-issue-id> --desc "<what it is, concretely>"
+  --source <prd-or-issue-id> --severity <medium|high|major|blocker> --desc "<what it is, concretely>"
 ```
 
 Capture (medium and up) = a ledger row in `.prd-os/spillover.jsonl` AND one Linear issue for Sana
