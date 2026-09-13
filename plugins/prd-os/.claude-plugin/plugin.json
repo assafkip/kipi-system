@@ -1,6 +1,6 @@
 {
   "name": "prd-os",
-  "version": "0.30.4",
+  "version": "0.30.5",
   "description": "PRD operating system: capture rough ideas, draft reviewable PRDs, run standard and adversarial review (Codex or a Claude senior-staff-engineer subagent, recorded truthfully), triage findings, decompose approved PRDs into atomic issue specs, and execute those issues with scope enforcement, stop-gate receipts, and reviewer-attributed findings.",
   "author": {
     "name": "Assaf Kipnis"

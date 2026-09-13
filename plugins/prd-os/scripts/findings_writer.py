@@ -459,19 +459,24 @@ def _sync_spillover_for_finding(cfg: Config, prd_id: str, finding: dict) -> None
     issue; moving the finding off `deferred` clears the item. Reuses
     prd_runner's ledger helpers so there is one definition of the format.
     Scar: `deferred` used to be a silent drop -- a rationale and then gone."""
-    from prd_runner import _read_spillover, _spillover_append  # sibling script
+    from prd_runner import (_read_spillover, _spillover_append,  # sibling script
+                            _spillover_file_and_link)
 
     sid = f"defer-{prd_id}-{finding['id']}"
     existing = _read_spillover(cfg).get(sid)
     if finding.get("disposition") == "deferred":
         if existing and existing.get("status") == "open":
             return  # idempotent: already tracked open
-        _spillover_append(cfg, {
+        record = {
             "id": sid, "source": prd_id, "finding_id": finding["id"],
             "description": f"deferred finding {finding['id']}: {str(finding.get('body', ''))[:120]}",
             "severity": finding.get("severity", "minor"),
             "status": "open", "created_at": _now_iso(),
-        })
+        }
+        _spillover_append(cfg, record)
+        # ASK-1552: the row first, then its Linear issue. A filer failure is
+        # recorded on the row for spillover-linear-check.py to retry.
+        _spillover_file_and_link(cfg, record)
     elif existing and existing.get("status") == "open":
         new = dict(existing)
         new.update(status="resolved",
