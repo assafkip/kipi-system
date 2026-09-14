@@ -1751,10 +1751,14 @@ def _red_workflows(slug_: str, branch: str, gh_json) -> list:
     Per active workflow, never the repo-wide run list: that list still carries a
     deleted workflow's last failures, and ASK_AI_consultant's removed `verify`
     would read red forever.
+
+    `dynamic/` workflows are GitHub-managed (Dependabot, default CodeQL), not
+    files in the repo, so no build fix exists for them. The first live run read
+    kipi-investigations' `dynamic/dependabot/update-graph` red since 2026-06-02.
     """
     red = []
     for wf in gh_json(f"repos/{slug_}/actions/workflows").get("workflows") or []:
-        if wf.get("state") != "active":
+        if wf.get("state") != "active" or str(wf.get("path", "")).startswith("dynamic/"):
             continue
         runs = gh_json(f"repos/{slug_}/actions/workflows/{wf['id']}/runs"
                        f"?branch={quote(branch, safe='')}&status=completed"

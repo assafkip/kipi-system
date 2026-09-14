@@ -675,6 +675,18 @@ check("run order from the API does not change the verdict", _ci(_with_runs(_asce
 check("a disabled workflow is not watched",
       _ci(_with_runs(_CONSULT_RUNS, state="disabled_manually")), [])
 
+# GitHub-managed workflows live under `dynamic/`, not in the repo. The live
+# calibration run on 2026-09-14 read this exact row red on kipi-investigations
+# (since 2026-06-02). No file in the repo can fix it, and the finding's Action
+# ("fix the build or retire the workflow") would point at nothing.
+_dyn = _copy.deepcopy(_GH_TABLE)
+_dyn[f"repos/{_CONSULT}/actions/workflows"]["workflows"] = [
+    {"id": 288061469, "name": "Dependency Graph", "path": "dynamic/dependabot/update-graph",
+     "state": "active"}]
+_dyn[f"repos/{_CONSULT}/actions/workflows/288061469/{_RUNS_Q}"] = {
+    "total_count": 10, "workflow_runs": _CONSULT_RUNS}
+check("a GitHub-managed dynamic workflow is not the repo's CI", _ci(_dyn), [])
+
 # "I could not look" must never print as "I looked and found nothing".
 _blind = _ci(_GH_TABLE, repos=(_CONSULT, "assafkip/not-a-repo"))
 _blind_by = {f["subject"]: f for f in _blind}
