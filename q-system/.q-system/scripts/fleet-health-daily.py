@@ -61,6 +61,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -1626,7 +1627,196 @@ def detect_promoted_audit(_ctx) -> list:
     }]
 
 
+# ---------------------------------------------------------------------------
+# default-branch-ci-red (ASK-1174)
+#
+# assafkip/ktlyst-saas-product sat RED on main from 2026-07-07 to 2026-09-14.
+# GitHub did notify: into a notification backlog of 389 that nobody reads. The
+# only thing that surfaced it was a human being asked to read that backlog. A
+# notification is not a work item; a Linear issue is.
+# ---------------------------------------------------------------------------
+
+REGISTRY = REPO_ROOT / "instance-registry.json"
+
+# The launchd job gets PATH=/usr/bin:/bin and Homebrew installs gh outside it, so
+# a bare `gh` would fail every 08:15 run while every terminal run passed.
+GH_FALLBACKS = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh")
+
+# Only these conclusions are a verdict. `skipped` and `cancelled` say nothing about
+# the branch, so a newer skipped run must not hide the failure under it, and a
+# workflow that only ever skips (ktlyst's Golden Tests) must not read as red.
+RED_CONCLUSIONS = ("failure", "timed_out", "startup_failure")
+VERDICT_CONCLUSIONS = RED_CONCLUSIONS + ("success", "neutral", "action_required")
+
+# One `gh run list` per repo. A workflow whose last run is older than the newest
+# 100 default-branch runs is invisible here; at this fleet's push rate that is a
+# workflow nobody has triggered in months.
+RUN_WINDOW = 100
+
+_GITHUB_REMOTE_RE = re.compile(r"github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$")
+
+
+class GhUnavailable(RuntimeError):
+    """No gh binary anywhere. The CI result is unknown, never clean."""
+
+
+class GhCallFailed(RuntimeError):
+    """A gh call exited nonzero. Carries the exit code only (ASK-204): gh's stderr
+    is remote text and never crosses into a permanent Linear issue."""
+
+    def __init__(self, returncode: int):
+        super().__init__(f"gh exit {returncode}")
+        self.returncode = returncode
+
+
+def github_slug(remote: str):
+    """'owner/repo' for a GitHub remote URL, or None for anything else."""
+    found = _GITHUB_REMOTE_RE.search((remote or "").strip())
+    return f"{found.group(1)}/{found.group(2)}" if found else None
+
+
+def _git_origin(path: str) -> str:
+    try:
+        res = subprocess.run(["git", "-C", path, "remote", "get-url", "origin"],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def registered_github_repos(registry=None, origin_of=None):
+    """Sorted, deduped GitHub repos behind the registry, or None with no registry.
+
+    A declared `dispatch.expected_remote` wins over the checkout's origin. Several
+    registered instances share one repo, so the dedup is what keeps it one finding.
+    """
+    path = Path(registry) if registry is not None else REGISTRY
+    if not path.is_file():
+        return None  # an instance, not the skeleton: the fleet is watched from there
+    origin_of = origin_of or _git_origin
+    reg = json.loads(path.read_text())
+    remotes = [(reg.get("skeleton") or {}).get("remote")]
+    for inst in (reg.get("instances") or []) + (reg.get("standalone") or []):
+        declared = (inst.get("dispatch") or {}).get("expected_remote")
+        remotes.append(declared or origin_of(inst.get("path") or ""))
+    return sorted({s for s in (github_slug(r) for r in remotes) if s})
+
+
+def gh_binary() -> str:
+    found = shutil.which("gh")
+    if found:
+        return found
+    for candidate in GH_FALLBACKS:
+        if os.access(candidate, os.X_OK):
+            return candidate
+    raise GhUnavailable(f"gh not on PATH and not at any of {', '.join(GH_FALLBACKS)}")
+
+
+def _gh_json_caller(gh: str):
+    def gh_json(args):
+        res = subprocess.run([gh, *args], capture_output=True, text=True, timeout=60)
+        if res.returncode != 0:
+            print(f"  gh {' '.join(args[:3])} exit {res.returncode}: {res.stderr.strip()[:300]}",
+                  file=sys.stderr)
+            raise GhCallFailed(res.returncode)
+        return json.loads(res.stdout or "null")
+    return gh_json
+
+
+def red_workflows(runs: list) -> list:
+    """Workflows whose latest VERDICT run is red, with when the red streak began."""
+    by_workflow = {}
+    for run in sorted(runs, key=lambda r: r.get("createdAt") or "", reverse=True):
+        if run.get("status") != "completed" or run.get("conclusion") not in VERDICT_CONCLUSIONS:
+            continue
+        by_workflow.setdefault(run.get("workflowName") or "<unnamed>", []).append(run)
+    red = []
+    for workflow, verdicts in sorted(by_workflow.items()):
+        streak = []
+        for run in verdicts:
+            if run["conclusion"] not in RED_CONCLUSIONS:
+                break
+            streak.append(run)
+        if streak:
+            red.append({"workflow": workflow, "conclusion": streak[0]["conclusion"],
+                        "url": streak[0].get("url", ""), "head": (streak[0].get("headSha") or "")[:8],
+                        "last_red": streak[0]["createdAt"], "red_since": streak[-1]["createdAt"]})
+    return red
+
+
+def _red_branch_finding(repo: str, branch: str, red: list) -> dict:
+    lines = [f"- **{r['workflow']}**: `{r['conclusion']}` at `{r['head']}`, red since "
+             f"{r['red_since'][:10]} (last red run {r['last_red'][:10]}): {r['url']}"
+             for r in red]
+    return {
+        "subject": repo,
+        "title": f"{repo}: default branch `{branch}` has red CI",
+        "body": (
+            f"The latest verdict run on `{repo}` `{branch}` is red for "
+            f"{len(red)} workflow(s):\n\n" + "\n".join(lines)
+            + "\n\n## Action\nOpen the linked run, name the failing step's cause, then "
+              "fix the build or retire the workflow if it no longer earns its run. "
+              "A branch-only fix does not clear this; the next default-branch run does."
+        ),
+    }
+
+
+def _unreadable_finding(unreadable: list) -> dict:
+    return {
+        "subject": "default-branch-ci-unreadable",
+        "title": "Default-branch CI could not be read for some registered repos",
+        "body": (
+            "These registered repos returned an error from `gh`, so their default-branch "
+            "CI is UNKNOWN, not clean:\n\n"
+            + "\n".join(f"- `{repo}`: gh exit {code}" for repo, code in unreadable)
+            + "\n\n## Action\nRun `gh repo view <repo>` for each. A 404 means the "
+              "registry points at a remote that no longer exists; fix the remote or the "
+              "registry entry."
+        ),
+    }
+
+
+def default_branch_ci_findings(repos: list, gh_json) -> list:
+    """One finding per repo with red default-branch CI, plus one rollup for repos
+    that could not be read. Raises when NONE could be read: that is blind."""
+    findings, unreadable = [], []
+    for repo in repos:
+        try:
+            branch = gh_json(["api", f"repos/{repo}"])["default_branch"]
+            runs = gh_json(["run", "list", "-R", repo, "--branch", branch,
+                            "--limit", str(RUN_WINDOW), "--json",
+                            "workflowName,conclusion,status,createdAt,url,headSha"])
+        except GhCallFailed as exc:
+            unreadable.append((repo, exc.returncode))
+            continue
+        red = red_workflows(runs or [])
+        if red:
+            findings.append(_red_branch_finding(repo, branch, red))
+    if repos and len(unreadable) == len(repos):
+        raise GhCallFailed(unreadable[0][1])
+    if unreadable:
+        findings.append(_unreadable_finding(unreadable))
+    return findings
+
+
+def detect_default_branch_ci(_ctx) -> list:
+    """Red CI on any registered repo's default branch, read from GitHub directly."""
+    repos = registered_github_repos()
+    if repos is None:
+        return []
+    if not repos:
+        raise GhUnavailable("the registry resolved to zero GitHub repos")
+    return default_branch_ci_findings(repos, _gh_json_caller(gh_binary()))
+
+
 DETECTORS = [
+    {
+        "id": "default-branch-ci-red",
+        "description": "a registered repo's default branch has red CI (read from GitHub, not notifications)",
+        "detect": detect_default_branch_ci,
+        "action": "file_issue",
+        "lesson": "an-output-nobody-reads-is-the-same-as-no-output",
+    },
     {
         "id": "promoted-audit",
         "description": "daily re-check of promoted spillover rows against Linear; files only when the whole sweep was blind",

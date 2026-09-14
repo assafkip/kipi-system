@@ -567,6 +567,157 @@ check("it declares an action",
 check("its lesson slug is a real file",
       (_LESSONS / f"{_by_id['launchd-never-installed']['lesson']}.md").is_file(), True)
 
+# ---------------------------------------------------------------------------
+# default-branch-ci-red (ASK-1174): assafkip/ktlyst-saas-product sat RED on main
+# from 2026-07-07 to 2026-09-14 and the only thing that surfaced it was a human
+# reading 389 GitHub notifications. Nothing in the fleet watched default-branch CI.
+# ---------------------------------------------------------------------------
+check("an https remote resolves to its owner/repo",
+      fh.github_slug("https://github.com/assafkip/ktlyst-saas-product.git"),
+      "assafkip/ktlyst-saas-product")
+check("an ssh remote resolves too",
+      fh.github_slug("git@github.com:assafkip/kipi-system.git"), "assafkip/kipi-system")
+check("a non-GitHub remote is not watched", fh.github_slug("https://gitlab.com/a/b.git"), None)
+check("no remote at all is not watched", fh.github_slug(""), None)
+
+import json as _json
+
+with _tempfile.TemporaryDirectory() as _tmp:
+    _reg = Path(_tmp) / "instance-registry.json"
+    _reg.write_text(_json.dumps({
+        "skeleton": {"remote": "https://github.com/o/skeleton.git"},
+        "instances": [
+            {"name": "declared", "path": "/p/declared",
+             "dispatch": {"expected_remote": "https://github.com/o/declared.git"}},
+            {"name": "from-origin", "path": "/p/origin"},
+            {"name": "same-repo-again", "path": "/p/origin-sub"},
+            {"name": "no-remote", "path": "/p/none"},
+        ],
+        "standalone": [{"name": "elsewhere", "path": "/p/gitlab"}],
+    }))
+    _origins = {"/p/origin": "git@github.com:o/shared.git",
+                "/p/origin-sub": "https://github.com/o/shared.git",
+                "/p/none": "", "/p/gitlab": "https://gitlab.com/o/x.git"}
+    check("registered repos: skeleton + declared + origin, deduped, non-GitHub dropped",
+          fh.registered_github_repos(_reg, origin_of=_origins.get),
+          ["o/declared", "o/shared", "o/skeleton"])
+    check("no registry (an instance, not the skeleton) watches nothing",
+          fh.registered_github_repos(Path(_tmp) / "absent.json", origin_of=_origins.get), None)
+
+
+def _run(workflow, conclusion, created, status="completed", url=None):
+    return {"workflowName": workflow, "conclusion": conclusion, "status": status,
+            "createdAt": created, "url": url or f"https://gh/{workflow}/{created}",
+            "headSha": "abc1234def"}
+
+
+# The real shape on ktlyst-saas-product main, newest first as `gh run list` returns it.
+_KTLYST_MAIN = [
+    _run("Golden Tests", "skipped", "2026-08-01T18:56:22Z"),
+    _run("PRD + Issue gates", "failure", "2026-08-01T18:56:22Z"),
+    _run("Test Suites", "success", "2026-08-01T18:56:22Z"),
+    _run("PRD + Issue gates", "failure", "2026-07-28T15:00:00Z"),
+    _run("Golden Tests", "skipped", "2026-07-28T15:00:00Z"),
+    _run("PRD + Issue gates", "failure", "2026-07-07T19:46:42Z"),
+]
+_red = fh.red_workflows(_KTLYST_MAIN)
+check("the failing workflow is red", [r["workflow"] for r in _red], ["PRD + Issue gates"])
+check("red-since is the OLDEST run of the unbroken red streak",
+      _red[0]["red_since"], "2026-07-07T19:46:42Z")
+check("and the latest red run is the one linked",
+      _red[0]["url"], "https://gh/PRD + Issue gates/2026-08-01T18:56:22Z")
+check("a workflow that only ever skipped is not red (no verdict is not a failure)",
+      any(r["workflow"] == "Golden Tests" for r in _red), False)
+# Negative control: a later success clears it, or the detector can never go green.
+check("a success after the failure clears it",
+      fh.red_workflows([_run("W", "success", "2026-09-02T00:00:00Z"),
+                        _run("W", "failure", "2026-09-01T00:00:00Z")]), [])
+check("a newer cancelled/skipped run does not hide the failure under it",
+      [r["workflow"] for r in fh.red_workflows(
+          [_run("W", "cancelled", "2026-09-03T00:00:00Z"),
+           _run("W", "failure", "2026-09-01T00:00:00Z")])], ["W"])
+check("an in-progress run is not a verdict either",
+      [r["workflow"] for r in fh.red_workflows(
+          [_run("W", "", "2026-09-03T00:00:00Z", status="in_progress"),
+           _run("W", "timed_out", "2026-09-01T00:00:00Z")])], ["W"])
+
+
+def _fake_gh(table):
+    """`gh` stand-in: ('repo', slug) -> default branch, ('runs', slug) -> run list.
+    A value that is an int is the nonzero exit code that call returns."""
+    calls = []
+
+    def gh_json(args):
+        kind = "repo" if args[0] == "api" else "runs"
+        slug = args[1].split("/", 1)[1] if kind == "repo" else args[args.index("-R") + 1]
+        calls.append((kind, slug, tuple(args)))
+        got = table[(kind, slug)]
+        if isinstance(got, int):
+            raise fh.GhCallFailed(got)
+        return got
+    gh_json.calls = calls
+    return gh_json
+
+
+_gh = _fake_gh({
+    ("repo", "o/red"): {"default_branch": "main"},
+    ("runs", "o/red"): _KTLYST_MAIN,
+    ("repo", "o/green"): {"default_branch": "trunk"},
+    ("runs", "o/green"): [_run("CI", "success", "2026-09-01T00:00:00Z")],
+    ("repo", "o/gone"): 1,
+})
+_found = fh.default_branch_ci_findings(["o/gone", "o/green", "o/red"], _gh)
+_subjects = sorted(f["subject"] for f in _found)
+check("one finding for the red repo, one rollup for the unreadable one",
+      _subjects, ["default-branch-ci-unreadable", "o/red"])
+_red_f = next(f for f in _found if f["subject"] == "o/red")
+check("the red finding names the workflow", "PRD + Issue gates" in _red_f["body"], True)
+check("...how long it has been red", "2026-07-07" in _red_f["body"], True)
+check("...and links the failing run",
+      "https://gh/PRD + Issue gates/2026-08-01T18:56:22Z" in _red_f["body"], True)
+check("the title names the repo and its branch",
+      "o/red" in _red_f["title"] and "main" in _red_f["title"], True)
+check("runs are read for the repo's ACTUAL default branch, not an assumed main",
+      [c[2][c[2].index("--branch") + 1] for c in _gh.calls if c[0] == "runs" and c[1] == "o/green"],
+      ["trunk"])
+_gone_f = next(f for f in _found if f["subject"] == "default-branch-ci-unreadable")
+check("the unreadable rollup names the repo and the exit code, never gh's text",
+      "o/gone" in _gone_f["body"] and "exit 1" in _gone_f["body"], True)
+check("a green-only fleet files nothing",
+      fh.default_branch_ci_findings(["o/green"], _gh), [])
+try:
+    fh.default_branch_ci_findings(["o/gone"], _gh)
+    check("every repo unreadable raises (blind), never an all-clear", "no raise", "raise")
+except fh.GhCallFailed:
+    check("every repo unreadable raises (blind), never an all-clear", True, True)
+
+# The launchd job runs with PATH=/usr/bin:/bin, and gh lives in /opt/homebrew/bin.
+# A bare `gh` would fail every morning while the terminal run passes.
+with _tempfile.TemporaryDirectory() as _tmp:
+    _fake_bin = Path(_tmp) / "gh"
+    _fake_bin.write_text("#!/bin/sh\n")
+    _fake_bin.chmod(0o755)
+    _saved_which, _saved_fallbacks = fh.shutil.which, fh.GH_FALLBACKS
+    fh.shutil.which = lambda _name: None
+    try:
+        fh.GH_FALLBACKS = (str(Path(_tmp) / "missing-gh"), str(_fake_bin))
+        check("gh off PATH still resolves from a known install location",
+              fh.gh_binary(), str(_fake_bin))
+        fh.GH_FALLBACKS = (str(Path(_tmp) / "missing-gh"),)
+        try:
+            fh.gh_binary()
+            check("no gh anywhere raises (blind)", "no raise", "GhUnavailable")
+        except fh.GhUnavailable:
+            check("no gh anywhere raises (blind), never an all-clear", True, True)
+    finally:
+        fh.shutil.which, fh.GH_FALLBACKS = _saved_which, _saved_fallbacks
+
+check("default-branch-ci-red is registered", "default-branch-ci-red" in _by_id, True)
+check("it declares an action",
+      _by_id.get("default-branch-ci-red", {}).get("action"), "file_issue")
+check("its lesson slug is a real file",
+      (_LESSONS / f"{_by_id.get('default-branch-ci-red', {}).get('lesson')}.md").is_file(), True)
+
 if failures:
     print("FAIL:")
     for line in failures:
