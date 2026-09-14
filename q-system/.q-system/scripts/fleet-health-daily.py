@@ -1649,9 +1649,20 @@ RED_CONCLUSIONS = ("failure", "timed_out", "startup_failure")
 VERDICT_CONCLUSIONS = RED_CONCLUSIONS + ("success", "neutral", "action_required")
 
 # One `gh run list` per repo. A workflow whose last run is older than the newest
-# 100 default-branch runs is invisible here; at this fleet's push rate that is a
-# workflow nobody has triggered in months.
+# 100 default-branch runs is invisible here, and on a busy repo that is not long:
+# kipi-system's newest 100 reached back only 15 days (measured 2026-09-14). A red
+# streak running past the window's edge has no visible start, so it is reported
+# without a date rather than with one that slides every day (see red_workflows).
 RUN_WINDOW = 100
+GH_TIMEOUT = 60
+
+# Only a workflow that still EXISTS, is enabled, and is the repo's own can make a
+# branch red. Runs of a deleted workflow never age out of the run list, so
+# ktlyst-website (zero workflows) read red forever and closing its issue reopened
+# it every morning. GitHub-managed dynamic workflows (Dependabot's Dependency
+# Graph, path `dynamic/...`) are not the repo's CI (PR #354 review).
+WORKFLOW_DIR = ".github/workflows/"
+WORKFLOW_PAGE = 100
 
 _GITHUB_REMOTE_RE = re.compile(r"github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$")
 
@@ -1661,12 +1672,13 @@ class GhUnavailable(RuntimeError):
 
 
 class GhCallFailed(RuntimeError):
-    """A gh call exited nonzero. Carries the exit code only (ASK-204): gh's stderr
-    is remote text and never crosses into a permanent Linear issue."""
+    """A gh call did not return JSON. Carries a reason this script wrote (an exit
+    code, a timeout, an exception TYPE), never gh's stderr or an exception message
+    (ASK-204): those are remote text and never cross into a permanent Linear issue."""
 
-    def __init__(self, returncode: int):
-        super().__init__(f"gh exit {returncode}")
-        self.returncode = returncode
+    def __init__(self, reason: str):
+        super().__init__(f"gh {reason}")
+        self.reason = reason
 
 
 def github_slug(remote: str):
@@ -1699,7 +1711,12 @@ def registered_github_repos(registry=None, origin_of=None):
     for inst in (reg.get("instances") or []) + (reg.get("standalone") or []):
         declared = (inst.get("dispatch") or {}).get("expected_remote")
         remotes.append(declared or origin_of(inst.get("path") or ""))
-    return sorted({s for s in (github_slug(r) for r in remotes) if s})
+    # Deduped case-insensitively: GitHub slugs are, and `slug()` lowercases the
+    # kipi-key, so `O/Repo` and `o/repo` were two findings on ONE key in one run.
+    by_key = {}
+    for found in sorted(s for s in (github_slug(r) for r in remotes) if s):
+        by_key.setdefault(found.lower(), found)
+    return sorted(by_key.values())
 
 
 def gh_binary() -> str:
@@ -1713,41 +1730,91 @@ def gh_binary() -> str:
 
 
 def _gh_json_caller(gh: str):
+    """A gh-to-JSON call whose EVERY failure is a GhCallFailed.
+
+    TimeoutExpired, OSError and non-JSON output are not GhCallFailed, so they
+    escaped the per-repo catch and `run_detectors` marked the whole detector blind:
+    one hung repo hid every readable one (PR #354 review, minor 3)."""
     def gh_json(args):
-        res = subprocess.run([gh, *args], capture_output=True, text=True, timeout=60)
+        try:
+            res = subprocess.run([gh, *args], capture_output=True, text=True,
+                                 timeout=GH_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise GhCallFailed(f"timed out after {GH_TIMEOUT}s") from None
+        except OSError as exc:
+            raise GhCallFailed(f"could not start ({type(exc).__name__})") from None
         if res.returncode != 0:
             print(f"  gh {' '.join(args[:3])} exit {res.returncode}: {res.stderr.strip()[:300]}",
                   file=sys.stderr)
-            raise GhCallFailed(res.returncode)
-        return json.loads(res.stdout or "null")
+            raise GhCallFailed(f"exit {res.returncode}")
+        try:
+            return json.loads(res.stdout or "null")
+        except ValueError:
+            raise GhCallFailed("returned non-JSON output") from None
     return gh_json
 
 
-def red_workflows(runs: list) -> list:
-    """Workflows whose latest VERDICT run is red, with when the red streak began."""
+def ci_workflows(workflows: list) -> dict:
+    """{workflow id: row} for workflows that exist, are enabled and are the repo's own."""
+    return {w["id"]: w for w in workflows or []
+            if w.get("state") == "active" and (w.get("path") or "").startswith(WORKFLOW_DIR)}
+
+
+def _red_streak(verdicts: list) -> list:
+    """The newest-first run of red verdicts at the head of one workflow's list."""
+    streak = []
+    for run in verdicts:
+        if run["conclusion"] not in RED_CONCLUSIONS:
+            break
+        streak.append(run)
+    return streak
+
+
+def red_workflows(runs: list, workflows: list, window_full: bool = False) -> list:
+    """Live CI workflows whose latest VERDICT run is red, and the run that turned them red.
+
+    Grouped by workflow ID, not name: a rename inside one file keeps the id and
+    changes `workflowName`, so name-grouping left the old name red forever.
+
+    Every field here lands in a hashed issue body, so each one holds still while
+    the branch stays red: the run that STARTED the streak, never the latest one.
+    When the streak covers every verdict run a full window reached, its start is
+    out of sight and `red_since` is None instead of a date that slides daily.
+    """
+    live = ci_workflows(workflows)
     by_workflow = {}
     for run in sorted(runs, key=lambda r: r.get("createdAt") or "", reverse=True):
+        if run.get("workflowDatabaseId") not in live:
+            continue
         if run.get("status") != "completed" or run.get("conclusion") not in VERDICT_CONCLUSIONS:
             continue
-        by_workflow.setdefault(run.get("workflowName") or "<unnamed>", []).append(run)
+        by_workflow.setdefault(run["workflowDatabaseId"], []).append(run)
     red = []
-    for workflow, verdicts in sorted(by_workflow.items()):
-        streak = []
-        for run in verdicts:
-            if run["conclusion"] not in RED_CONCLUSIONS:
-                break
-            streak.append(run)
-        if streak:
-            red.append({"workflow": workflow, "conclusion": streak[0]["conclusion"],
-                        "url": streak[0].get("url", ""), "head": (streak[0].get("headSha") or "")[:8],
-                        "last_red": streak[0]["createdAt"], "red_since": streak[-1]["createdAt"]})
-    return red
+    for workflow_id, verdicts in by_workflow.items():
+        streak = _red_streak(verdicts)
+        if not streak:
+            continue
+        start, unseen_start = streak[-1], window_full and len(streak) == len(verdicts)
+        red.append({"workflow": live[workflow_id]["name"], "path": live[workflow_id]["path"],
+                    "conclusion": None if unseen_start else start["conclusion"],
+                    "url": "" if unseen_start else start.get("url", ""),
+                    "head": "" if unseen_start else (start.get("headSha") or "")[:8],
+                    "red_since": None if unseen_start else start["createdAt"]})
+    return sorted(red, key=lambda r: r["workflow"])
+
+
+def _red_line(repo: str, branch: str, r: dict) -> str:
+    if r["red_since"]:
+        return (f"- **{r['workflow']}** (`{r['path']}`): red since {r['red_since'][:10]}, "
+                f"turned `{r['conclusion']}` at `{r['head']}`: {r['url']}")
+    runs_page = (f"https://github.com/{repo}/actions/workflows/"
+                 f"{PurePosixPath(r['path']).name}?query=branch%3A{branch}")
+    return (f"- **{r['workflow']}** (`{r['path']}`): red on every one of its runs in the "
+            f"newest {RUN_WINDOW} `{branch}` runs, so it turned red before those: {runs_page}")
 
 
 def _red_branch_finding(repo: str, branch: str, red: list) -> dict:
-    lines = [f"- **{r['workflow']}**: `{r['conclusion']}` at `{r['head']}`, red since "
-             f"{r['red_since'][:10]} (last red run {r['last_red'][:10]}): {r['url']}"
-             for r in red]
+    lines = [_red_line(repo, branch, r) for r in red]
     return {
         "subject": repo,
         "title": f"{repo}: default branch `{branch}` has red CI",
@@ -1756,7 +1823,9 @@ def _red_branch_finding(repo: str, branch: str, red: list) -> dict:
             f"{len(red)} workflow(s):\n\n" + "\n".join(lines)
             + "\n\n## Action\nOpen the linked run, name the failing step's cause, then "
               "fix the build or retire the workflow if it no longer earns its run. "
-              "A branch-only fix does not clear this; the next default-branch run does."
+              f"A fix on another branch does not clear the finding; a green run on `{branch}` "
+              "does. This issue does not close itself: close it once that run is green. "
+              f"If `{branch}` is still red at the next morning's sweep, fleet-health reopens it."
         ),
     }
 
@@ -1768,12 +1837,26 @@ def _unreadable_finding(unreadable: list) -> dict:
         "body": (
             "These registered repos returned an error from `gh`, so their default-branch "
             "CI is UNKNOWN, not clean:\n\n"
-            + "\n".join(f"- `{repo}`: gh exit {code}" for repo, code in unreadable)
+            + "\n".join(f"- `{repo}`: gh {reason}" for repo, reason in unreadable)
             + "\n\n## Action\nRun `gh repo view <repo>` for each. A 404 means the "
               "registry points at a remote that no longer exists; fix the remote or the "
               "registry entry."
         ),
     }
+
+
+def _read_default_branch(repo: str, gh_json) -> tuple:
+    """(default branch, workflows, its newest RUN_WINDOW runs). Raises GhCallFailed."""
+    branch = gh_json(["api", f"repos/{repo}"])["default_branch"]
+    listed = gh_json(["api", f"repos/{repo}/actions/workflows?per_page={WORKFLOW_PAGE}"]) or {}
+    workflows = listed.get("workflows") or []
+    if (listed.get("total_count") or 0) > len(workflows):
+        # The unseen workflows' runs would be dropped as not-live: a silent clean.
+        raise GhCallFailed(f"lists {listed['total_count']} workflows, more than one page")
+    runs = gh_json(["run", "list", "-R", repo, "--branch", branch,
+                    "--limit", str(RUN_WINDOW), "--json",
+                    "workflowName,workflowDatabaseId,conclusion,status,createdAt,url,headSha"])
+    return branch, workflows, runs or []
 
 
 def default_branch_ci_findings(repos: list, gh_json) -> list:
@@ -1782,14 +1865,11 @@ def default_branch_ci_findings(repos: list, gh_json) -> list:
     findings, unreadable = [], []
     for repo in repos:
         try:
-            branch = gh_json(["api", f"repos/{repo}"])["default_branch"]
-            runs = gh_json(["run", "list", "-R", repo, "--branch", branch,
-                            "--limit", str(RUN_WINDOW), "--json",
-                            "workflowName,conclusion,status,createdAt,url,headSha"])
+            branch, workflows, runs = _read_default_branch(repo, gh_json)
         except GhCallFailed as exc:
-            unreadable.append((repo, exc.returncode))
+            unreadable.append((repo, exc.reason))
             continue
-        red = red_workflows(runs or [])
+        red = red_workflows(runs, workflows, window_full=len(runs) >= RUN_WINDOW)
         if red:
             findings.append(_red_branch_finding(repo, branch, red))
     if repos and len(unreadable) == len(repos):
