@@ -735,6 +735,63 @@ if hasattr(fh, "detect_default_branch_ci"):
               fh.registered_github_repos(_reg, origin_of=lambda p: _origins.get(str(p), "")),
               ["assafkip/kipi-system", "assafkip/ktlyst-saas-product"])
 
+    # PR #355 review, major: this script ships into every instance's q-system/,
+    # and an instance root has no instance-registry.json. The detector raised
+    # FileNotFoundError there, so the live loop above went red in 24 instances.
+    # gh=None proves the absent registry is decided BEFORE the gh check: the
+    # other order files a "gh not installed" rollup from every instance.
+    _saved_registry = fh.REGISTRY
+    try:
+        with _tempfile.TemporaryDirectory() as _tmp:
+            fh.REGISTRY = Path(_tmp) / "instance-registry.json"
+            try:
+                _inst = fh.detect_default_branch_ci(None, gh=None)
+            except Exception as exc:  # noqa: BLE001 - the raise IS the defect
+                _inst = f"raised {type(exc).__name__}"
+            check("an instance with no registry has no fleet to watch", _inst, [])
+    finally:
+        fh.REGISTRY = _saved_registry
+
+    # PR #355 review, minor: a red streak longer than the window has no knowable
+    # start. Dating it by the oldest run IN the window moves the date on every
+    # push (the window slides), and finding_hash covers the body, so the issue
+    # would be rewritten every morning the build stays red.
+    # One run per DAY: the body prints the date only, so runs inside one day
+    # would leave the hash equal even with the saturation branch deleted.
+    from datetime import datetime as _dt, timedelta as _td
+
+    def _red_run(day):
+        return {"conclusion": "failure", "head_branch": "main",
+                "created_at": (_dt(2026, 8, 1) + _td(days=day)).strftime("%Y-%m-%dT09:00:00Z")}
+
+    _full = [_red_run(d) for d in range(40, 40 - fh.CI_WINDOW, -1)]
+    _slid = [_red_run(41)] + _full[:-1]  # one more red push; GitHub drops the oldest
+    _full_f, _slid_f = _ci(_with_runs(_full)), _ci(_with_runs(_slid))
+    check("a streak older than the window says so, and invents no date",
+          bool(_full_f) and f"at least the last {fh.CI_WINDOW}" in _full_f[0]["body"]
+          and "red since" not in _full_f[0]["body"], True)
+    check("a saturated window leaves the finding byte-identical on the next push",
+          bool(_full_f) and bool(_slid_f)
+          and fh.finding_hash(_full_f[0]) == fh.finding_hash(_slid_f[0]), True)
+
+    # PR #355 review, minor: GhReadError.reason lands in a permanent Linear issue
+    # body, so it is a short label and never gh's stderr, which can carry a URL,
+    # a host or a token. A fake gh that writes a token to stderr proves it.
+    with _tempfile.TemporaryDirectory() as _tmp:
+        for _name, _stderr, _want in (
+                ("http", "gh: HTTP 404: Not Found token=ghp_LEAKME0000", "HTTP 404"),
+                ("bare", "error connecting to api.github.com token=ghp_LEAKME0000",
+                 "gh exited 1")):
+            _fake = Path(_tmp) / f"gh-{_name}"
+            _fake.write_text(f"#!/bin/sh\necho '{_stderr}' >&2\nexit 1\n")
+            _fake.chmod(0o755)
+            try:
+                fh._gh_reader(str(_fake))("repos/assafkip/x")
+                _reason = "no raise"
+            except fh.GhReadError as exc:
+                _reason = exc.reason
+            check(f"a failed gh read is labelled, never its stderr ({_name})", _reason, _want)
+
 _ci_det = _by_id.get("default-branch-ci-red", {})
 check("default-branch-ci-red is registered", bool(_ci_det), True)
 check("it files an issue", _ci_det.get("action"), "file_issue")

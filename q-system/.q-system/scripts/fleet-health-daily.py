@@ -1832,7 +1832,16 @@ def default_branch_ci_findings(repos: list, gh_json) -> list:
 
 
 def detect_default_branch_ci(_ctx, repos=None, gh=_UNSET) -> list:
-    """The production caller: registry repos, the real `gh`, read live."""
+    """The production caller: registry repos, the real `gh`, read live.
+
+    No registry means this copy is an instance, not the skeleton: this script
+    ships into every instance's q-system/, and only the skeleton root holds the
+    fleet's instance-registry.json. The skeleton is the one watcher; an instance
+    that reported "unreadable" instead would file the same rollup 24 times a day
+    (PR #355 review, major). Decided before the gh check for the same reason.
+    """
+    if repos is None and not REGISTRY.is_file():
+        return []
     repos = registered_github_repos() if repos is None else repos
     gh = resolve_gh() if gh is _UNSET else gh
     if not gh:
