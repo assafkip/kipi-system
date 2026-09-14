@@ -567,6 +567,99 @@ check("it declares an action",
 check("its lesson slug is a real file",
       (_LESSONS / f"{_by_id['launchd-never-installed']['lesson']}.md").is_file(), True)
 
+# ---------------------------------------------------------------------------
+# default-branch-ci (ASK-1175): assafkip/cole-gtm master was red from
+# 2026-08-28 for over two weeks and the only thing that surfaced it was a human
+# reading 389 GitHub notifications. Nothing in this job looked at CI.
+#
+# The runs below are REAL `gh run list --json` rows from assafkip/cole-gtm,
+# taken 2026-09-14, trimmed to the fields the detector reads. They are the
+# producer's output, not an invented shape.
+# ---------------------------------------------------------------------------
+_COLE_RUNS = [
+    {"workflowName": "podcast-deadman", "conclusion": "success", "status": "completed",
+     "headBranch": "master", "createdAt": "2026-09-13T18:36:17Z", "event": "schedule",
+     "databaseId": 34775139922},
+    {"workflowName": "podcast-deadman", "conclusion": "failure", "status": "completed",
+     "headBranch": "master", "createdAt": "2026-09-12T18:12:09Z", "event": "schedule",
+     "databaseId": 34710473301},
+    {"workflowName": "gtm-build", "conclusion": "failure", "status": "completed",
+     "headBranch": "master", "createdAt": "2026-08-31T16:41:01Z", "event": "push",
+     "databaseId": 33415457112},
+    {"workflowName": "gtm-build", "conclusion": "failure", "status": "completed",
+     "headBranch": "sana/decision-record-correction-2026-08-31",
+     "createdAt": "2026-08-31T16:40:55Z", "event": "pull_request",
+     "databaseId": 33415448416},
+]
+
+_red = getattr(fh, "red_workflows", None)
+_slug = getattr(fh, "github_slug", None)
+check("red_workflows exists", callable(_red), True)
+check("github_slug exists", callable(_slug), True)
+if callable(_red):
+    _got = _red(_COLE_RUNS, "master")
+    check("the red default-branch workflow is found by name",
+          [r["workflow"] for r in _got], ["gtm-build"])
+    check("...carrying the run id that proves it", _got[0]["run_id"] if _got else None,
+          33415457112)
+    # A scheduled job whose LATEST run is green is not red today, however it
+    # flapped before. Flagging history would file an issue that never clears.
+    check("a workflow whose latest completed run passed is not red",
+          any(r["workflow"] == "podcast-deadman" for r in _got), False)
+    # Negative control: turn master's gtm-build green and the finding must
+    # clear, or this detector can never go green and nags forever.
+    _fixed = [dict(r, conclusion="success") if r["databaseId"] == 33415457112 else r
+              for r in _COLE_RUNS]
+    check("a green latest run clears the finding", _red(_fixed, "master"), [])
+    # A red run on a PR branch is that branch's business, not the default branch's.
+    _pr_only = [r for r in _COLE_RUNS if r["databaseId"] != 33415457112]
+    check("a red run on a non-default branch is ignored", _red(_pr_only, "master"), [])
+    # An in-flight run has no verdict yet; the last COMPLETED run is the state.
+    _inflight = [{"workflowName": "gtm-build", "conclusion": "", "status": "in_progress",
+                  "headBranch": "master", "createdAt": "2026-09-14T00:00:00Z",
+                  "event": "push", "databaseId": 1}] + _COLE_RUNS
+    check("an in-progress run does not hide the last completed red one",
+          [r["workflow"] for r in _red(_inflight, "master")], ["gtm-build"])
+    # Rows arrive newest-first from gh, but the verdict must not depend on it.
+    check("the newest completed run wins regardless of row order",
+          [r["workflow"] for r in _red(list(reversed(_COLE_RUNS)), "master")],
+          ["gtm-build"])
+if callable(_slug):
+    check("an https remote resolves to owner/repo",
+          _slug("https://github.com/assafkip/cole-gtm.git"), "assafkip/cole-gtm")
+    check("an ssh remote resolves to owner/repo",
+          _slug("git@github.com:assafkip/kipi-system.git"), "assafkip/kipi-system")
+    check("a remote without .git resolves", _slug("https://github.com/o/r"), "o/r")
+    check("a non-GitHub remote is not watched", _slug("https://gitlab.com/o/r.git"), None)
+    check("no remote is not watched", _slug(""), None)
+
+check("default-branch-ci is registered", "default-branch-ci" in _by_id, True)
+check("it declares an action", _by_id.get("default-branch-ci", {}).get("action"),
+      "file_issue")
+_ci_lesson = _by_id.get("default-branch-ci", {}).get("lesson", "")
+check("its lesson slug is a real file",
+      bool(_ci_lesson) and (_LESSONS / f"{_ci_lesson}.md").is_file(), True)
+
+# Blindness is not cleanliness: when gh cannot be run at all, the detector must
+# RAISE so run_detectors marks it "error". Returning [] would print the same
+# thing as "every default branch is green".
+_ci_detect = _by_id.get("default-branch-ci", {}).get("detect")
+if callable(_ci_detect):
+    _saved_run = fh.subprocess.run
+
+    def _no_gh(cmd, *args, **kwargs):
+        if list(cmd)[:1] == ["gh"]:
+            raise FileNotFoundError("gh")
+        return _saved_run(cmd, *args, **kwargs)
+
+    fh.subprocess.run = _no_gh
+    try:
+        _, _ci_per = fh.run_detectors([_by_id["default-branch-ci"]])
+    finally:
+        fh.subprocess.run = _saved_run
+    check("a missing gh marks default-branch-ci blind, not clean",
+          _ci_per.get("default-branch-ci"), fh.DETECTOR_ERROR)
+
 if failures:
     print("FAIL:")
     for line in failures:

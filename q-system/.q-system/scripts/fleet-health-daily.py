@@ -1626,7 +1626,154 @@ def detect_promoted_audit(_ctx) -> list:
     }]
 
 
+# ---------------------------------------------------------------------------
+# default-branch-ci (ASK-1175): a red default branch nobody was told about
+# ---------------------------------------------------------------------------
+# Scar: assafkip/cole-gtm master went red on 2026-08-28 and stayed red for over
+# two weeks. GitHub DID notify -- into a backlog of 389 notifications that
+# nobody reads, which is the same as not notifying. This job watched launchd,
+# cron and spillover, and never looked at CI, so no Linear issue ever existed.
+
+REGISTRY = REPO_ROOT / "instance-registry.json"
+# A conclusion that means the code on the branch is broken. `cancelled`,
+# `skipped` and `action_required` say nothing about the code, so they do not
+# make a branch red.
+CI_RED_CONCLUSIONS = ("failure", "timed_out", "startup_failure")
+_GITHUB_REMOTE_RE = re.compile(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
+
+
+def github_slug(remote_url: str):
+    """`owner/repo` for a GitHub remote URL, None for anything else."""
+    m = _GITHUB_REMOTE_RE.search((remote_url or "").strip())
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+def red_workflows(runs: list, branch: str) -> list:
+    """Workflows whose LATEST completed run on `branch` is red. Pure.
+
+    The latest completed run is the branch's state; older runs are history. A
+    scheduled job that failed Tuesday and passed Wednesday is not red today, and
+    flagging it would file an issue that can never clear.
+    """
+    latest = {}
+    for run in runs:
+        if run.get("headBranch") != branch or run.get("status") != "completed":
+            continue
+        name = run.get("workflowName") or ""
+        if name not in latest or run.get("createdAt", "") > latest[name].get("createdAt", ""):
+            latest[name] = run
+    return [
+        {"workflow": name, "run_id": run.get("databaseId"),
+         "conclusion": run.get("conclusion"), "at": run.get("createdAt"),
+         "event": run.get("event")}
+        for name, run in sorted(latest.items())
+        if run.get("conclusion") in CI_RED_CONCLUSIONS
+    ]
+
+
+def registered_github_repos() -> list:
+    """Every GitHub repo the instance registry points at, deduplicated.
+
+    Derived from each registered path's own origin remote rather than a second
+    list here, so a repo added to the registry is watched with no edit to this
+    file. A path with no GitHub origin has no CI to watch and is skipped.
+    """
+    reg = json.loads(REGISTRY.read_text())
+    rows = [reg.get("skeleton") or {}] + list(reg.get("instances") or []) \
+        + list(reg.get("standalone") or [])
+    slugs = set()
+    for row in rows:
+        path = row.get("path")
+        if not path or not Path(path).is_dir():
+            continue
+        res = subprocess.run(["git", "-C", path, "config", "--get", "remote.origin.url"],
+                             capture_output=True, text=True, timeout=10)
+        slug_ = github_slug(res.stdout) if res.returncode == 0 else None
+        if slug_:
+            slugs.add(slug_)
+    return sorted(slugs)
+
+
+def _gh_json(args: list):
+    """Run one `gh` command and parse its JSON. Raises on any failure."""
+    res = subprocess.run(["gh"] + args, capture_output=True, text=True, timeout=60)
+    if res.returncode != 0:
+        raise RuntimeError(f"gh {args[0]} {args[1]} exited {res.returncode}")
+    return json.loads(res.stdout or "null")
+
+
+def default_branch_red(repo: str) -> list:
+    """(default branch, red workflows) for one repo. Only ACTIVE workflows count:
+    a workflow someone disabled has made its decision, and its last red run
+    would otherwise stand as a permanent issue."""
+    branch = _gh_json(["repo", "view", repo, "--json", "defaultBranchRef"])
+    branch = ((branch or {}).get("defaultBranchRef") or {}).get("name")
+    if not branch:
+        return branch, []
+    active = {w.get("name") for w in _gh_json(
+        ["workflow", "list", "-R", repo, "--json", "name,state"]) or []
+        if w.get("state") == "active"}
+    runs = _gh_json(["run", "list", "-R", repo, "--branch", branch, "--limit", "100",
+                     "--json", "workflowName,conclusion,status,headBranch,createdAt,"
+                     "event,databaseId"]) or []
+    return branch, [r for r in red_workflows(runs, branch) if r["workflow"] in active]
+
+
+def default_branch_finding(repo: str, branch: str, red: dict) -> dict:
+    run_url = f"https://github.com/{repo}/actions/runs/{red['run_id']}"
+    return {
+        "subject": f"{repo}/{red['workflow']}",
+        "title": f"default branch red: {repo} {branch} ({red['workflow']})",
+        "body": (
+            f"The latest completed `{red['workflow']}` run on `{repo}` **{branch}** "
+            f"concluded **{red['conclusion']}** ({red['event']}, {red['at']}).\n\n"
+            f"Run: {run_url}\n\n"
+            "## Action\n"
+            f"- Read the failure: `gh run view {red['run_id']} -R {repo} --log-failed`\n"
+            "- Name the cause, then fix it or retire the workflow if it no longer earns "
+            "its run (`gh workflow disable`). A disabled workflow stops being watched."
+        ),
+    }
+
+
+def detect_default_branch_ci(_ctx) -> list:
+    """A registered repo whose default branch's latest CI run is red.
+
+    Raises when it cannot look: gh missing or unauthenticated, the registry
+    unreadable, or zero repos resolved. Each of those is a blind spot, and
+    returning [] would print the same thing as "every default branch is green".
+    A repo that alone cannot be read is also raised on, after the readable ones
+    are checked, naming which repos went unchecked.
+    """
+    repos = registered_github_repos()
+    if not repos:
+        raise RuntimeError("instance registry resolved zero GitHub repos")
+    out, unreadable = [], []
+    for repo in repos:
+        try:
+            branch, reds = default_branch_red(repo)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(f"gh unavailable: {exc.__class__.__name__}") from exc
+        except (RuntimeError, json.JSONDecodeError):
+            unreadable.append(repo)
+            continue
+        out.extend(default_branch_finding(repo, branch, r) for r in reds)
+    if unreadable:
+        for f in out:
+            print(f"  default-branch-ci: {f['title']}", file=sys.stderr)
+        raise RuntimeError(f"CI unreadable for {len(unreadable)} repo(s): "
+                           f"{', '.join(unreadable)}")
+    return out
+
+
 DETECTORS = [
+    {
+        "id": "default-branch-ci",
+        "description": "a registered repo's default branch has a red latest CI run",
+        "detect": detect_default_branch_ci,
+        "action": "file_issue",
+        "lesson": "an-output-nobody-reads-is-the-same-as-no-output",
+    },
     {
         "id": "promoted-audit",
         "description": "daily re-check of promoted spillover rows against Linear; files only when the whole sweep was blind",
