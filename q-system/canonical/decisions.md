@@ -334,3 +334,37 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Date:** 2026-08-30
 - **Revisit:** When the `owner:` labels are complete (21 issues carry none) this
   gets sharper. Re-measure then, do not assume.
+
+## The pre-Chief #general posters are retired (2026-09-11)
+
+### RULE-2026-09-11-A: The Chief fleet replaces the kipi #general posters now, not after the soak
+- **Origin:** [USER-DIRECTED]
+- **Decision:** Four launchd jobs that posted into #general (C04Q71LA283) are
+  retired by bootout and plist rename, nothing deleted:
+  `com.kipi.morning-brief` (07:40, the same minute as Chief's brief),
+  `com.kipi.morning-inbox` (hourly 08-13), `com.kipi.morning-brief-deadman`
+  (watched the retired brief and would have paged its absence), and
+  `com.kipi.linear-daily-digest` (16:00). Plists are
+  `~/Library/LaunchAgents/<label>.plist.retired-2026-09-11`; the rename back
+  plus `launchctl bootstrap` is the rollback.
+- **Reason:** Founder, 2026-09-11 15:25 PT: "ensure the claude routines that
+  are messing up my slack are disabled if they are not needed." The claude.ai
+  routine list is empty (RemoteTrigger list returned 0 routines), so the
+  posters were these jobs. Each has a live replacement with a delivered
+  receipt: Chief's 07:40 brief (delivered 2026-09-10 and 2026-09-11), Chief's
+  hourly sweep pushes, Chief's own deadman, Triage's 09:00 brief over Linear.
+  Decision 14 in `q-system/output/plans/grokbot-bot-evaluation-2026-09-10.md`
+  parked this retirement until the soak ASK-1426 passed three weekdays; the
+  founder's directive supersedes that condition on day two of three.
+- **Date:** 2026-09-11
+- **Revisit:** If Chief's brief misses a weekday, the rollback above restores
+  the kipi brief in one minute; `python -m chief.bots status` is the check.
+- **Addendum 16:37 PT, same directive:** the cloud routines live on the
+  assafkip@gmail.com claude.ai account, not askconsulting. Six there; five were
+  already disabled (ask-crm-deadman, ask-client-email-watch and three one-shot
+  ktlyst verifiers). The sixth, `ask-crm-refresh` (trig_01JX1iLrn7oV9QbZhjVeFYuB,
+  every 4 h at :45 UTC, Slack connector attached), is now disabled too. Its
+  2026-09-11 20:45 run wrote only into a cloud clone that is never committed,
+  had its Slack digest refused by the local-proof gate, failed to file its Sana
+  findings (no Linear key there), and pushed a notification to his phone instead.
+  Re-enable at claude.ai/code/routines if wanted; nothing was deleted.
