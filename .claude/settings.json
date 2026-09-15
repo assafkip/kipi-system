@@ -190,11 +190,27 @@
           }
         ]
       }
+      ,
+      {
+        "matcher": "Bash|SendUserFile|Artifact|mcp__playwright__.*|mcp__claude-in-chrome__.*|mcp__plugin_chrome-devtools-mcp_chrome-devtools__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"",
+            "timeout": 15
+          }
+        ]
+      }
     ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit|Bash",
         "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"",
+            "timeout": 20
+          },
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\"",
@@ -350,6 +366,11 @@
     "Stop": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; fi",
+            "timeout": 15
+          },
           {
             "type": "command",
             "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/code_claim_grounding_guard.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/code_claim_grounding_guard.py\"; fi",

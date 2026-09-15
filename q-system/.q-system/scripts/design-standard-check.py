@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""design-standard-check: measure a rendered page against the POSITIVE standard the
+design canon records, and write standard.json for the design chain.
+
+WHY: site-design.md section 6 holds the standard as prose (three type sizes and two
+large elements in a view, 45 to 90 characters a line, body 15 to 25 px, one signal
+moment). Round 2 of the first screens (2026-09-15) passed every negative check
+(tripwire, bio_gate, fit) and broke most of section 6; the founder called it "a block
+of words". A standard that lives only in prose is one the builder skims. This turns
+the numbers into a measurement the chain cannot proceed without.
+
+Reads the numbers from design-chain.json ("standard"), never from this file, so the
+canon owns them. Requires playwright (python) and a served or file URL.
+
+Usage: design-standard-check.py <page.html> [--url URL] [--config design-chain.json]
+Writes/updates standard.json next to the page (one entry per page, keyed by name).
+exit 0 = pass, 1 = fail (the chain treats fail as open), 2 = could not measure.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+DEFAULTS = {
+    "max_type_sizes": 3, "max_large_elements": 2, "large_px": 40,
+    "max_words": 80, "min_body_px": 15, "max_line_chars": 90,
+    "signal": "#0066b3", "max_signal_elements": 2,
+    "viewports": [[1440, 900], [390, 844]],
+}
+
+JS = """
+(sig) => {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const sizes = new Map(); let large = 0, words = 0, minBody = 999, maxLine = 0, sigCount = 0;
+  const hex = (c) => { const m = c.match(/\\d+/g); if (!m) return c; return '#' + m.slice(0,3).map(n => (+n).toString(16).padStart(2,'0')).join(''); };
+  for (const el of document.body.querySelectorAll('*')) {
+    const r = el.getBoundingClientRect();
+    if (r.bottom <= 0 || r.top >= vh || r.width === 0) continue;
+    const own = [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join(' ').trim();
+    if (!own) continue;
+    const cs = getComputedStyle(el);
+    const fs = Math.round(parseFloat(cs.fontSize));
+    sizes.set(fs, (sizes.get(fs) || 0) + 1);
+    if (fs >= LARGE) large += 1;
+    if (fs < 24) minBody = Math.min(minBody, fs);
+    const w = own.split(/\\s+/).filter(Boolean).length; words += w;
+    const charsPerLine = r.width / (fs * 0.5);
+    if (w > 8) maxLine = Math.max(maxLine, Math.round(Math.min(charsPerLine, own.length)));
+    if (hex(cs.color) === sig.toLowerCase()) sigCount += 1;
+  }
+  return { type_sizes: [...sizes.keys()].sort((a,b)=>a-b), large_elements: large, words, min_body_px: minBody === 999 ? null : minBody, max_line_chars: maxLine, signal_elements: sigCount };
+}
+"""
+
+
+def measure(url: str, cfg: dict) -> list[dict]:
+    from playwright.sync_api import sync_playwright
+    out = []
+    with sync_playwright() as p:
+        b = p.chromium.launch()
+        for w, h in cfg["viewports"]:
+            pg = b.new_page(viewport={"width": w, "height": h})
+            pg.goto(url, wait_until="networkidle")
+            pg.wait_for_timeout(300)
+            m = pg.evaluate(JS.replace("LARGE", str(cfg["large_px"])), cfg["signal"])
+            m["viewport"] = f"{w}x{h}"
+            pg.close()
+            out.append(m)
+        b.close()
+    return out
+
+
+def judge(m: dict, cfg: dict) -> list[str]:
+    f = []
+    # the number of DISTINCT sizes; the two allowed large elements may add sizes of their own
+    small = [s for s in m["type_sizes"] if s < cfg["large_px"]]
+    if len(small) > cfg["max_type_sizes"]:
+        f.append(f"{len(small)} text sizes under {cfg['large_px']}px ({small}); max {cfg['max_type_sizes']}")
+    if m["large_elements"] > cfg["max_large_elements"]:
+        f.append(f"{m['large_elements']} large elements; max {cfg['max_large_elements']}")
+    if m["words"] > cfg["max_words"]:
+        f.append(f"{m['words']} words in view; max {cfg['max_words']}")
+    if m["min_body_px"] is not None and m["min_body_px"] < cfg["min_body_px"]:
+        f.append(f"smallest text {m['min_body_px']}px; min {cfg['min_body_px']}")
+    if m["max_line_chars"] > cfg["max_line_chars"]:
+        f.append(f"longest line about {m['max_line_chars']} chars; max {cfg['max_line_chars']}")
+    if m["signal_elements"] > cfg["max_signal_elements"]:
+        f.append(f"signal colour on {m['signal_elements']} elements; max {cfg['max_signal_elements']}")
+    return f
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("page")
+    ap.add_argument("--url")
+    ap.add_argument("--config")
+    a = ap.parse_args()
+    page = Path(a.page).resolve()
+    cfg = dict(DEFAULTS)
+    cpath = Path(a.config) if a.config else None
+    if not cpath:
+        for d in [page.parent] + list(page.parents):
+            if (d / "design-chain.json").is_file():
+                cpath = d / "design-chain.json"
+                break
+    if cpath and cpath.is_file():
+        cfg.update(json.loads(cpath.read_text()).get("standard", {}))
+    url = a.url or page.as_uri()
+    try:
+        ms = measure(url, cfg)
+    except Exception as e:  # playwright missing, page unreachable
+        print(f"could not measure: {e}", file=sys.stderr)
+        return 2
+    fails = {m["viewport"]: judge(m, cfg) for m in ms}
+    ok = not any(fails.values())
+    entry = {"page": page.name, "sha256": hashlib.sha256(page.read_bytes()).hexdigest(),
+             "pass": ok, "measurements": ms, "failures": fails, "config": cfg}
+    std_path = page.parent / "standard.json"
+    entries = []
+    if std_path.is_file():
+        try:
+            prev = json.loads(std_path.read_text())
+            entries = prev if isinstance(prev, list) else [prev]
+        except ValueError:
+            entries = []
+    entries = [e for e in entries if e.get("page") != page.name] + [entry]
+    std_path.write_text(json.dumps(entries, indent=2) + "\n")
+    print(f"{page.name}: {'PASS' if ok else 'FAIL'}")
+    for vp, fl in fails.items():
+        for x in fl:
+            print(f"  {vp}: {x}")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

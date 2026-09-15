@@ -29,6 +29,7 @@
 - `/q-wrap` - Evening health check
 - `/q-handoff` - Session continuity
 - `/q-research` - Anti-hallucination research mode
+- `/design-chain [project] [round]` - One design round for a named site (today: `askconsulting`; round defaults to today's date) through the design-chain gate: read the owner files, brief with verbatim canon anchors, three directions, build once per candidate stack, measure against `design-chain.json`, nine-question critique, proof labels, checks, ICP-persona gate, seal. Nothing is shown before the seal. Gate: `q-system/.q-system/scripts/design-chain-gate.py` (ASK-1743)
 - `/wiring-check` - End-of-task gate: verify every change is connected end-to-end. Full rule in `.claude/rules/wiring-check.md`
 - `/say` - Synthesize the previous assistant response to a stable mp3 via OpenAI TTS. Autoplays locally in a new Terminal window (mpv) so your keys drive speed/seek/pause; over SSH, without mpv, or with `--no-play` it just prints the play command. Manual replay: `mpv ~/.config/kipi/say-last.mp3` (or `say-play`). Over SSH: `ssh <mini> 'cat ~/.config/kipi/say-last.mp3' | mpv -`. `/say stop` clears stray playback.
 

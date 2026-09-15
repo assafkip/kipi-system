@@ -216,6 +216,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Bash|SendUserFile|Artifact|mcp__playwright__.*|mcp__claude-in-chrome__.*|mcp__plugin_chrome-devtools-mcp_chrome-devtools__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -226,6 +236,11 @@
             "type": "command",
             "command": "if [ -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\"; fi",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"",
+            "timeout": 20
           },
           {
             "type": "command",
@@ -312,6 +327,10 @@
           },
           {
             "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instrument-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instrument-lint.py\""
+          },
+          {
+            "type": "command",
             "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instance-automation-guard.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instance-automation-guard.py\"; fi",
             "timeout": 5
           },
@@ -359,6 +378,11 @@
           {
             "type": "command",
             "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/code_claim_grounding_guard.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/code_claim_grounding_guard.py\"; fi",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; fi",
             "timeout": 15
           },
           {
