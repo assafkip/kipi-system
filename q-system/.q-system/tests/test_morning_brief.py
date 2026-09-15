@@ -972,14 +972,21 @@ def test_no_hourly_slot_fires_before_the_card_it_mirrors():
     """Codex round 7 (major): the hourly inbox job's first slot was 07:05.
 
     The consulting state card is written at 07:30 by another repo's job, and the board
-    MIRRORS that card: `read_heartbeat` withholds a card stamped yesterday, so a run at
-    07:05 can only ever see yesterday's. Every morning it spent a headless Opus mail
-    call, threw the result away, refused the board write and exited 1 into the launchd
-    watchdog. Not broken. Early, by construction, forever.
+    MIRRORS that card, so a run at 07:05 can only ever see yesterday's. Every morning it
+    spent a headless Opus mail call, threw the result away, refused the board write and
+    exited 1 into the launchd watchdog. Not broken. Early, by construction, forever.
 
-    The anchor is the BRIEF's own slot rather than a 07:30 literal, because that plist
-    is this repo's record of "after the card is written" and a literal here would be a
-    second copy of it to drift.
+    The anchor is the BRIEF's own slot rather than a 07:30 literal, because a literal
+    here would be a second copy of the schedule to drift.
+
+    THIS DOCSTRING USED TO CALL THE BRIEF'S SLOT "after the card is written" AND IT IS
+    NOT, or rather it is only true of the COMMITTED 07:40 slot and was false of the
+    copy loaded on the founder's machine, which had drifted to 07:00 and read the card
+    thirty minutes before it existed. That belief was load-bearing here and wrong, and
+    the cost was a P0 alarm row painted on his board every morning. `read_heartbeat`
+    now accepts yesterday's card BEFORE 07:30, because it is the newest one there is,
+    and labels it; after 07:30 the same card is a real failure and still refused. The
+    ordering this test enforces is unchanged and still worth enforcing.
     """
     import pathlib
     import plistlib

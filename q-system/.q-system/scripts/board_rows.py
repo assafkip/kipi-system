@@ -59,10 +59,16 @@ because a token with no db file is a configured board, not an unconfigured one.
 
 ## A stale source writes NOTHING
 
-If `consulting_board.buckets` reports an error (the state card is yesterday's, or the
-07:30 job crashed), this writes no rows at all and returns that error. Mirroring a stale
-source onto a board that looks fresh is the one failure that would make him act on a
-wrong number.
+If `consulting_board.buckets` reports an error (the 07:30 job crashed, or it has run and
+the card is STILL yesterday's), this writes no rows at all and returns that error.
+Mirroring a stale source onto a board that looks fresh is the one failure that would
+make him act on a wrong number.
+
+Before 07:30 a card stamped yesterday is NOT an error, because yesterday's is then the
+newest one there is. The committed brief slot is 07:40, AFTER the card, so on the shipped
+schedule this never happens; it happens on a hand run, or on a machine whose job has
+drifted early, which is what it was built for. Those rows paint, and each one carries
+"from yesterday's card" in its detail so the board never looks fresher than its source.
 """
 from __future__ import annotations
 
