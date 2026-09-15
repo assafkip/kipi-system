@@ -26,6 +26,10 @@ Counts are against the LOCAL remote-tracking ref, as of the tree's last fetch.
 This script never fetches: it reads, it does not move refs under a running job.
 `fetched` in the report is the age of FETCH_HEAD so a stale ref is visible.
 
+The tree is the one the PLIST names. A wrapper that execs the real code from
+another tree defeats that, so the known ones (`_REEXEC_WRAPPERS`) get NO ANSWER
+and no rollup row. An unknown wrapper of that shape is read as the tree it lives in.
+
 Usage:
   launchd-deploy-gap.py                 # report every loaded watched job; read-only
   launchd-deploy-gap.py --live SHA LABEL
@@ -51,6 +55,13 @@ _ROLLUP_SUBJECT = "rollup"
 # the tree is named only inside a shell string.
 _PATH_TOKEN = re.compile(r"(?<![\w.~])(/[^\s'\"`;&|()<>]+)")
 _XML_COMMENT = re.compile(rb"<!--.*?-->", re.S)
+
+# Wrappers that exec the job's real code from a tree the plist never names.
+# kipi-dispatch-pinned.sh (com.kipi.dispatch) execs from a worktree it holds at
+# origin/main, so the checkout in the plist said LIVE for a branch-only commit and
+# NOT LIVE for a merged fix (PR #361 review r2, major). Such a job has no tree to
+# answer about here: NO ANSWER, and no rollup row.
+_REEXEC_WRAPPERS = ("kipi-dispatch-pinned.sh",)
 
 
 def git(top, *args):
@@ -87,13 +98,17 @@ def fetch_age_hours(top):
 
 
 def tree_state(top):
-    """Branch, resolved default, behind/ahead of it, and dirty count for one tree."""
+    """Branch, resolved default, behind/ahead of it, and dirty count for one tree.
+
+    dirty is None when `git status` fails: an empty stdout from a failed status
+    read as 0 dirty, so a tree with a corrupt index reported clean (PR #361 r2).
+    """
     default = resolve_default(top)
     _, branch = git(top, "rev-parse", "--abbrev-ref", "HEAD")
-    _, porcelain = git(top, "status", "--porcelain")
+    rc, porcelain = git(top, "status", "--porcelain")
     state = {"tree": str(top), "branch": branch, "default": default,
              "behind": None, "ahead": None,
-             "dirty": len([ln for ln in porcelain.splitlines() if ln.strip()]),
+             "dirty": len([ln for ln in porcelain.splitlines() if ln.strip()]) if rc == 0 else None,
              "fetched_hours_ago": fetch_age_hours(top)}
     if default:
         rc, counts = git(top, "rev-list", "--left-right", "--count", f"{default}...HEAD")
@@ -122,7 +137,9 @@ def risk_reasons(state, counts=True):
         for n, word in ((state["behind"], "behind"), (state["ahead"], "ahead")):
             if n:
                 reasons.append(f"{n} {word}" if counts else word)
-    if state["dirty"]:
+    if state["dirty"] is None:
+        reasons.append("status unreadable, dirty unknown")
+    elif state["dirty"]:
         reasons.append(f"{state['dirty']} dirty" if counts else "dirty")
     return reasons
 
@@ -181,6 +198,16 @@ def job_tree(program):
     return ""
 
 
+def reexec_wrapper(program):
+    """The known re-exec wrapper this job runs through, or ""."""
+    args = program.get("ProgramArguments") or [program.get("Program") or ""]
+    for arg in args:
+        for token in _PATH_TOKEN.findall(str(arg)):
+            if Path(token).name in _REEXEC_WRAPPERS:
+                return Path(token).name
+    return ""
+
+
 def survey(listing, prefixes, agents_dir=LAUNCH_AGENTS):
     """One record per LOADED watched job: label, tree, tree state, reasons."""
     jobs, states = [], {}
@@ -188,6 +215,11 @@ def survey(listing, prefixes, agents_dir=LAUNCH_AGENTS):
         program = read_program(Path(agents_dir) / f"{label}.plist")
         if program is None:
             jobs.append({"label": label, "tree": "", "reasons": ["no plist, tree unknown"]})
+            continue
+        wrapper = reexec_wrapper(program)
+        if wrapper:
+            jobs.append({"label": label, "tree": "", "reasons": [],
+                         "note": f"runs through {wrapper}, which execs from a tree the plist does not name"})
             continue
         top = job_tree(program)
         if not top:
@@ -218,17 +250,22 @@ def commit_live_for_job(label, sha, listing, prefixes, agents_dir=LAUNCH_AGENTS)
     if job is None:
         return None, f"{label} is not a loaded watched job"
     if not job["tree"]:
-        return None, f"{label} has no git tree ({', '.join(job['reasons']) or 'installed artifact'})"
+        return None, f"{label} has no git tree to check ({_treeless_why(job)})"
     return commit_live(job["tree"], sha)
+
+
+def _treeless_why(job):
+    return job.get("note") or ", ".join(job["reasons"]) or "installed artifact"
 
 
 def report_line(job):
     if not job["tree"]:
-        return f"{job['label']}: {', '.join(job['reasons']) or 'no working tree'}"
+        return f"{job['label']}: {_treeless_why(job)}"
     counts = ("behind ? / ahead ?" if job["behind"] is None
               else f"behind {job['behind']} / ahead {job['ahead']}")
+    dirty = "? dirty" if job["dirty"] is None else f"{job['dirty']} dirty"
     return (f"{job['label']}: {job['tree']} on {job['branch']}, default "
-            f"{job['default'] or 'UNRESOLVED'}, {counts}, {job['dirty']} dirty, "
+            f"{job['default'] or 'UNRESOLVED'}, {counts}, {dirty}, "
             f"fetched {job['fetched_hours_ago']}h ago"
             + (f" -- {'; '.join(job['reasons'])}" if job["reasons"] else ""))
 
@@ -289,9 +326,13 @@ def run_check(prefixes, fleet_health, dry_run, agents_dir=LAUNCH_AGENTS):
         print(f"DEPLOY-GAP {'RISK' if job['reasons'] else 'ok'}: {report_line(job)}")
     at_risk = sum(1 for j in jobs if j["reasons"])
     print(f"deploy gap: {at_risk} of {len(jobs)} loaded watched job(s) off their default")
-    return fleet_health.file_findings(
-        linear_findings(jobs, fleet_health.finding_key),
-        apply=not dry_run, filer="launchd-deploy-gap.py")
+    findings = linear_findings(jobs, fleet_health.finding_key)
+    outcome = fleet_health.file_findings(findings, apply=not dry_run, filer="launchd-deploy-gap.py")
+    # Only this side knows how many were owed. Without it the watchdog's
+    # unfiled_count fell back to skipped_no_key, and a refused write (errors=1)
+    # printed the clean fleet's unfiled=0 (PR #361 review r2).
+    outcome["owed"] = len(findings)
+    return outcome
 
 
 def _watched_prefixes():

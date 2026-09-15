@@ -246,6 +246,86 @@ try:
     rebranched = dg.linear_findings([dict(branched, reasons=dg.risk_reasons(branched))], key)
     check("11c a new KIND of risk does rewrite it",
           rebranched[0]["body"] != refiled[0]["body"], True)
+
+    # 12. A job that runs through a re-exec wrapper gets NO ANSWER, never a verdict
+    # about the checkout its plist names. PR #361 review r2, major: the plist names
+    # the primary checkout, and kipi-dispatch-pinned.sh execs the payload from a
+    # worktree pinned at origin/main, so --live answered LIVE / NOT LIVE inverted.
+    # The plist is the REAL template, rendered the way the installer renders it.
+    wrapper_home = tmp / "home"
+    wrapper_home.mkdir()
+    Path(clone, "kipi-dispatch-pinned.sh").write_text("#!/bin/bash\n")
+    template = (HERE / "com.kipi.dispatch.plist").read_text()
+    (agents / "com.kipi.dispatch.plist").write_text(
+        template.replace("__KIPI_REPO__", str(clone)).replace("__HOME__", str(wrapper_home)))
+    wrapped_listing = launchctl_list("com.kipi.dispatch")
+    wrapped = dg.survey(wrapped_listing, prefixes, agents)
+    check("12a the wrapped job is not mapped to the checkout its plist names",
+          [(j["label"], j["tree"]) for j in wrapped], [("com.kipi.dispatch", "")])
+    check("12b and it is not filed as off its default",
+          dg.linear_findings(wrapped, lambda d, s: s), [])
+    live, why = dg.commit_live_for_job("com.kipi.dispatch", "HEAD", wrapped_listing,
+                                       prefixes, agents)
+    check("12c --live gives NO ANSWER for it", live, None)
+    check("12d and names the wrapper", "kipi-dispatch-pinned.sh" in why, True)
+    check("12e the carve-out is bound to a wrapper that still re-execs elsewhere",
+          'exec env KIPI_REPO="$PINNED" bash "$PINNED/' in (REPO / "kipi-dispatch-pinned.sh").read_text(),
+          True)
+
+    # 13. A tree whose `git status` fails is unreadable, never clean. PR #361
+    # review r2: the return code was dropped and an empty stdout counted 0 dirty.
+    broken = tmp / "broken"
+    git(tmp, "clone", "-q", str(origin), str(broken))
+    Path(broken, "base").write_text("locally modified")
+    (broken / ".git" / "index").write_bytes(b"garbage")
+    broken_state = dg.tree_state(str(broken))
+    check("13a a failing status is no dirty count, not 0", broken_state["dirty"], None)
+    check("13b and the reason says so",
+          any("status unreadable" in r for r in dg.risk_reasons(broken_state)), True)
+    check("13c the report line does not print a count",
+          "None dirty" in dg.report_line(dict(broken_state, label="x",
+                                              reasons=dg.risk_reasons(broken_state))), False)
+
+    # 15. A git-IGNORED interpreter path is skipped, so a Homebrew-python job maps
+    # to its script's tree and not to /opt/homebrew (which is itself a git repo).
+    # PR #361 review r2, nit: deleting the check-ignore guard left the suite green.
+    brew = tmp / "brew"
+    brew.mkdir()
+    git(brew, "init", "-q")
+    Path(brew, ".gitignore").write_text("bin/\n")
+    commit(brew, "README")
+    (brew / "bin").mkdir()
+    (brew / "bin" / "python3").write_text("")
+    write_plist(agents, "com.kipi.brewpy",
+                {"ProgramArguments": [str(brew / "bin" / "python3"), f"{clone}/base"]})
+    brewed = dg.survey(launchctl_list("com.kipi.brewpy"), prefixes, agents)
+    check("15 an ignored interpreter path does not claim the job",
+          brewed[0]["tree"], str(clone))
+
+    # 14. A refused rollup write is owed-and-unfiled, never the clean fleet's line.
+    # PR #361 review r2: run_check set no `owed`, so the watchdog's unfiled_count
+    # fell back to skipped_no_key and printed unfiled=0 over errors=1.
+    wd = _load(HERE / "launchd-health-check.py", "wd")
+
+    class RefusingFleetHealth:
+        @staticmethod
+        def finding_key(detector, subject):
+            return f"fleet-health/{detector}/{subject}"
+
+        @staticmethod
+        def file_findings(findings, apply, filer):
+            return {"created": 0, "existing": 0, "skipped_no_key": 0, "errors": 1}
+
+    real_listing = dg.launchctl_listing
+    dg.launchctl_listing = lambda: launchctl_list("com.kipi.ghost")
+    try:
+        refused = dg.run_check(prefixes, RefusingFleetHealth, dry_run=False, agents_dir=agents)
+        dg.launchctl_listing = lambda: launchctl_list()
+        clean = dg.run_check(prefixes, RefusingFleetHealth, dry_run=False, agents_dir=agents)
+    finally:
+        dg.launchctl_listing = real_listing
+    check("14a a refused write leaves the rollup unfiled", wd.unfiled_count(refused), 1)
+    check("14b a clean fleet owes nothing", wd.unfiled_count(clean), 0)
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
