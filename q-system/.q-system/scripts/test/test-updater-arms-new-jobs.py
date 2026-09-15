@@ -192,7 +192,49 @@ def case_unnamed_scratch_tree_arms_nothing():
     check("launchctl never called from an unnamed tree", calls(log), "")
 
 
+# Each guard, broken in the FIXTURE COPY (never the repo file), must turn the
+# suite red. A guard no mutant can reach is decoration.
+MUTANTS = (
+    ("installed-skip removed", "q-system/.q-system/scripts/install-plist.sh",
+     'if [ -e "$HOME/Library/LaunchAgents/$_label.plist" ]; then', "if false; then"),
+    ("paused-skip removed", "q-system/.q-system/scripts/install-plist.sh",
+     'grep -qxF "$_label"', 'grep -qxF "no-such-label"'),
+    ("updater never arms", "kipi-update.sh", "\narm_new_jobs\n", "\ntrue\n"),
+    ("skeleton check dropped", "kipi-update.sh",
+     'if [ -z "$skeleton" ] || [ "$here" != "$skeleton" ]; then', "if false; then"),
+)
+
+
+def run_mutants():
+    global build_skeleton
+    real_build = build_skeleton
+    survivors = []
+    for name, rel, old, new in MUTANTS:
+        def mutated(work, name_it_skeleton, rel=rel, old=old, new=new):
+            sk = real_build(work, name_it_skeleton)
+            text = (sk / rel).read_text()
+            if old not in text:
+                raise SystemExit(f"mutant anchor not found in {rel}: {old!r}")
+            (sk / rel).write_text(text.replace(old, new, 1))
+            return sk
+        build_skeleton = mutated
+        FAILS.clear()
+        print(f"== mutant: {name}")
+        sk, work = case_updater_arms_only_the_missing_job()
+        case_worktree_refuses(sk, work)
+        case_unnamed_scratch_tree_arms_nothing()
+        killed = bool(FAILS)
+        print(f"== mutant {name}: {'KILLED' if killed else 'SURVIVED'}")
+        if not killed:
+            survivors.append(name)
+    build_skeleton = real_build
+    print(f"mutants: {len(MUTANTS) - len(survivors)}/{len(MUTANTS)} killed")
+    return 1 if survivors else 0
+
+
 def main():
+    if "--mutants" in sys.argv:
+        return run_mutants()
     print(f"test-updater-arms-new-jobs.py (source: {SOURCE_REF or 'working tree'})")
     sk, work = case_updater_arms_only_the_missing_job()
     case_worktree_refuses(sk, work)
