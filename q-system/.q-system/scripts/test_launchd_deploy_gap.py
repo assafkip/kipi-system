@@ -200,8 +200,67 @@ try:
           all(j["label"] in filed[0]["body"] for j in jobs), True)
     check("6d a clean fleet files nothing",
           dg.linear_findings([dict(jobs[0], reasons=[])], lambda d, s: s), [])
+
+    # 9. --live with launchctl failing is NO ANSWER (exit 2), never NOT LIVE (1).
+    # PR #361 review: the RuntimeError escaped and Python's own exit 1 read as a
+    # verdict about the commit.
+    fake_bin = tmp / "fake-bin"
+    fake_bin.mkdir()
+    (fake_bin / "launchctl").write_text("#!/bin/sh\necho refused >&2\nexit 1\n")
+    (fake_bin / "launchctl").chmod(0o755)
+    run = subprocess.run(
+        [sys.executable, str(Path(dg.__file__)), "--live", ASK_1132_FIX, "com.kipi.linear-dor"],
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+        capture_output=True, text=True)
+    check("9a launchctl failing gives exit 2", run.returncode, 2)
+    check("9b and says NO ANSWER", run.stdout.startswith("NO ANSWER"), True)
+
+    # 10. The survey takes no optional lock in a tree a live job writes to. A
+    # stat-stale index is the case where a plain `git status` rewrites the index
+    # under .git/index.lock (PR #361 review: a concurrent `git add` then failed).
+    locky = tmp / "locky"
+    locky.mkdir()
+    git(locky, "init", "-q")
+    commit(locky, "tracked")
+    os.utime(locky / "tracked", (1, 1))
+    index = locky / ".git" / "index"
+    before = (index.stat().st_mtime_ns, index.read_bytes())
+    dg.tree_state(str(locky))
+    check("10 tree_state leaves the index untouched",
+          (index.stat().st_mtime_ns, index.read_bytes()) == before, True)
+
+    # 11. The rollup describes what it files, and moves only when its CONTENT does.
+    on_default = {"label": "com.kipi.dirty-only", "tree": "/t/a", "branch": "master",
+                  "default": "origin/master", "behind": 0, "ahead": 0, "dirty": 2}
+    key = lambda d, s: s  # noqa: E731
+    dirty_only = dg.linear_findings([dict(on_default, reasons=dg.risk_reasons(on_default))], key)
+    check("11a a dirty tree on its default is not filed as off its default branch",
+          "off its default branch" in dirty_only[0]["title"], False)
+    counted = dict(on_default, behind=1)
+    moved = dict(on_default, behind=4, dirty=3)
+    filed, refiled = (dg.linear_findings([dict(s, reasons=dg.risk_reasons(s))], key)
+                      for s in (counted, moved))
+    check("11b a count that moves does not rewrite the rollup",
+          (refiled[0]["title"], refiled[0]["body"]), (filed[0]["title"], filed[0]["body"]))
+    branched = dict(moved, branch="feat/x")
+    rebranched = dg.linear_findings([dict(branched, reasons=dg.risk_reasons(branched))], key)
+    check("11c a new KIND of risk does rewrite it",
+          rebranched[0]["body"] != refiled[0]["body"], True)
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
+
+
+# 8. Test 5 needs kipi-system commit 896b0e5a, which no instance history has, so
+# this suite is skeleton-only. Unlisted, it crashed `kipi check` in every
+# instance (PR #361 review, major).
+sys.path.insert(0, str(HERE))
+import capability_manifest  # noqa: E402
+
+manifest_errors = []
+manifest = capability_manifest.load(REPO, manifest_errors) or {}
+check("8 this suite is declared skeleton-only",
+      "q-system/.q-system/scripts/test_launchd_deploy_gap.py" in manifest.get("skeleton_only", []),
+      True)
 
 
 # 7. Negative self-test: the default-branch guard is what holds test 1.

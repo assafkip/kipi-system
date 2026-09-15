@@ -55,9 +55,14 @@ _XML_COMMENT = re.compile(rb"<!--.*?-->", re.S)
 
 def git(top, *args):
     """(returncode, stdout stripped). Never raises: a tree we cannot read is a
-    finding, not a crash of the job that reports it."""
+    finding, not a crash of the job that reports it.
+
+    --no-optional-locks on every call: a plain `git status` refreshes a stat-stale
+    index under .git/index.lock, in a tree a live job writes to. A concurrent
+    `git add` there failed, and a timeout kill left the lock behind (PR #361 review).
+    """
     try:
-        proc = subprocess.run(["git", "-C", str(top), *args],
+        proc = subprocess.run(["git", "--no-optional-locks", "-C", str(top), *args],
                               capture_output=True, text=True, timeout=30)
     except Exception:  # noqa: BLE001
         return 1, ""
@@ -97,8 +102,13 @@ def tree_state(top):
     return state
 
 
-def risk_reasons(state):
-    """Why this tree is not the default branch, one short phrase each. [] = clean."""
+def risk_reasons(state, counts=True):
+    """Why this tree is not the default branch, one short phrase each. [] = clean.
+
+    counts=False drops the numbers and keeps the kinds. The Linear rollup is
+    rewritten whenever its body changes, and behind/ahead/dirty counts move on
+    every commit and fetch, so the filed body carries kinds only (PR #361 review).
+    """
     default = state["default"]
     if not default:
         return ["default UNRESOLVED (origin/HEAD unset: `git remote set-head origin -a`)"]
@@ -111,10 +121,16 @@ def risk_reasons(state):
     else:
         for n, word in ((state["behind"], "behind"), (state["ahead"], "ahead")):
             if n:
-                reasons.append(f"{n} {word}")
+                reasons.append(f"{n} {word}" if counts else word)
     if state["dirty"]:
-        reasons.append(f"{state['dirty']} dirty")
+        reasons.append(f"{state['dirty']} dirty" if counts else "dirty")
     return reasons
+
+
+def filed_reasons(job):
+    """The count-free reasons for the rollup. A job with no tree has no state to
+    recompute from, and its reasons carry no counts to begin with."""
+    return risk_reasons(job, counts=False) if job.get("tree") else job["reasons"]
 
 
 def loaded_labels(listing, prefixes):
@@ -230,20 +246,24 @@ def linear_findings(jobs, finding_key):
     for tree in sorted(by_tree):
         rows = by_tree[tree]
         sections.append(f"### {tree} ({len(rows)} job(s))\n\n"
-                        f"{'; '.join(rows[0]['reasons'])}\n\n"
+                        f"{'; '.join(filed_reasons(rows[0]))}\n\n"
                         + "\n".join(f"- `{j['label']}`" for j in rows))
-    body = ("These loaded launchd jobs run from a git tree that is not its default "
-            "branch. A fix merged to the default does not reach them, and whatever "
-            "is ahead or dirty in the tree runs without having passed a gate.\n\n"
+    body = ("These loaded launchd jobs run from a git tree that differs from its "
+            "default branch as merged: another branch, commits behind or ahead, or "
+            "uncommitted changes. A fix merged to the default does not reach them, "
+            "and whatever is ahead or dirty in the tree runs without having passed "
+            "a gate.\n\n"
             + "\n\n".join(sections)
-            + "\n\n## Check one fix\n"
+            + "\n\n## Counts and one fix\n"
+            "`python3 q-system/.q-system/scripts/launchd-deploy-gap.py` prints behind, "
+            "ahead and dirty per job. They move on every commit and fetch, so they "
+            "stay out of this issue.\n\n"
             "`python3 q-system/.q-system/scripts/launchd-deploy-gap.py --live <sha> <label>`\n"
             "\n---\nMeasured: `launchctl list` (loaded jobs only), the job's plist, "
-            "and `git symbolic-ref refs/remotes/origin/HEAD` per tree. Counts are "
-            "against the local remote-tracking ref as of the tree's last fetch.")
+            "and `git symbolic-ref refs/remotes/origin/HEAD` per tree.")
     return [{
         "subject": _ROLLUP_SUBJECT,
-        "title": f"launchd deploy gap: {len(at_risk)} loaded job(s) run from a tree off its default branch",
+        "title": f"launchd deploy gap: {len(at_risk)} loaded job(s) do not run their default branch as merged",
         "body": body,
         "key": finding_key(LINEAR_DETECTOR, _ROLLUP_SUBJECT),
         "detector": LINEAR_DETECTOR,
@@ -251,7 +271,12 @@ def linear_findings(jobs, finding_key):
 
 
 def launchctl_listing():
-    proc = subprocess.run(["launchctl", "list"], capture_output=True, text=True, timeout=30)
+    """`launchctl list` stdout. Every failure is a RuntimeError, so a caller has
+    one exception to turn into NO ANSWER."""
+    try:
+        proc = subprocess.run(["launchctl", "list"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"launchctl list failed: {exc}") from exc
     if proc.returncode != 0:
         raise RuntimeError(f"launchctl list exited {proc.returncode}")
     return proc.stdout
@@ -284,7 +309,14 @@ def main(argv):
         if len(argv) != 3:
             print("usage: launchd-deploy-gap.py --live SHA LABEL", file=sys.stderr)
             return 2
-        live, why = commit_live_for_job(argv[2], argv[1], launchctl_listing(), _watched_prefixes())
+        try:
+            listing = launchctl_listing()
+        except RuntimeError as exc:
+            # Exit 1 means "not live". A listing we could not read says nothing
+            # about the commit, so it is NO ANSWER (PR #361 review).
+            print(f"NO ANSWER: {exc}")
+            return 2
+        live, why = commit_live_for_job(argv[2], argv[1], listing, _watched_prefixes())
         print(("LIVE: " if live else "NOT LIVE: " if live is False else "NO ANSWER: ") + why)
         return {True: 0, False: 1}.get(live, 2)
     if argv:
