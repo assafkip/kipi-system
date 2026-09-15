@@ -148,8 +148,10 @@
       "type": "subtree",
       "has_git": true,
       "dispatch": {
-        "enabled": true,
-        "expected_remote": "https://github.com/assafkip/kipi-interview-coach.git"
+        "enabled": false,
+        "expected_remote": "https://github.com/assafkip/kipi-interview-coach.git",
+        "decision": "paused 2026-09-12, reinstate with the base-branch fix",
+        "reason": "PAUSED, not refused. Every dispatch here fails before any work: linear-worker.sh cuts each worktree from a hardcoded BASE=\"origin/main\" (line ~1725), and this repo's remote has only `master`, so git fails with `invalid reference: origin/main`. The worker correctly logs it as INFRA and does not charge the issue, but each attempt still spends a slot of the 10/day dispatch budget. Measured 2026-09-12 17:03Z: ASK-1104 dispatched, worktree failed, no PR, 7 seconds. Preflight itself passes. Flip enabled back to true once the worker resolves the remote's default branch."
       }
     },
     {
