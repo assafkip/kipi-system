@@ -276,9 +276,13 @@ def run_capture(problems, fleet_health, dry=False, state=None):
     instead of by the live call that used to prove it as a side effect.
     """
     saved = (wd.discover_problems, wd.load_state, wd.write_state,
-             wd.send_ping, wd._FLEET_HEALTH, wd.run_intent_check)
+             wd.send_ping, wd._FLEET_HEALTH, wd.run_intent_check,
+             wd.run_deploy_gap_check)
     pings, writes = [], []
     _intent_calls.clear()
+    # Stubbed for the same reason as run_intent_check: live, it shells the
+    # operator's real `launchctl list` and files to Linear (ASK-1135).
+    wd.run_deploy_gap_check = lambda dry_run: _intent_calls.append(f"deploy-gap:{dry_run}")
     wd.discover_problems = lambda: (_intent_calls.append("discover"), problems)[1]
     wd.load_state = lambda: dict(state or {})
     wd.write_state = lambda s: writes.append(s)
@@ -291,7 +295,8 @@ def run_capture(problems, fleet_health, dry=False, state=None):
             wd.run(dry)
     finally:
         (wd.discover_problems, wd.load_state, wd.write_state,
-         wd.send_ping, wd._FLEET_HEALTH, wd.run_intent_check) = saved
+         wd.send_ping, wd._FLEET_HEALTH, wd.run_intent_check,
+         wd.run_deploy_gap_check) = saved
     return out.getvalue(), err.getvalue(), pings, writes
 
 
@@ -686,11 +691,13 @@ check("every detector the watchdog files under is in fleet-health's registry",
 # path was never entered -- and it goes red the moment the stub is removed.
 run_capture(_TWO_REAL, _fh_stub(created="all"))
 check("run_capture never loads the live intent module", wd._INTENT, None)
-check("the intent check still runs, and BEFORE problems are discovered",
-      _intent_calls[:2], ["intent:False", "discover"])
+check("the intent and deploy-gap checks run, BEFORE problems are discovered",
+      _intent_calls[:3], ["intent:False", "deploy-gap:False", "discover"])
 run_capture(_NOTHING_TO_FILE, _fh_stub(), dry=True)
 check("dry mode reaches the intent check in dry mode too",
       _intent_calls[0], "intent:True")
+check("and the deploy-gap check in dry mode too (ASK-1135)",
+      _intent_calls[1], "deploy-gap:True")
 
 # --- an undelivered alert must not be recorded as seen (PR #134 review, major) -
 # THE REPRODUCER: run_intent_check() called commit() unconditionally. With Linear
@@ -941,8 +948,10 @@ with tempfile.TemporaryDirectory() as _capdir:
 def _run_with_verdict(delivered, state=None):
     """run() live, send_ping scripted to `delivered`. Returns the state written."""
     saved = (wd.discover_problems, wd.load_state, wd.write_state,
-             wd.send_ping, wd.run_intent_check, wd.file_linear_findings)
+             wd.send_ping, wd.run_intent_check, wd.file_linear_findings,
+             wd.run_deploy_gap_check)
     writes = []
+    wd.run_deploy_gap_check = lambda dry_run: None
     wd.discover_problems = lambda: [_ONE_DEAD_JOB]
     wd.load_state = lambda: dict(state or {})
     wd.write_state = writes.append
@@ -957,7 +966,8 @@ def _run_with_verdict(delivered, state=None):
             wd.run(False)
     finally:
         (wd.discover_problems, wd.load_state, wd.write_state,
-         wd.send_ping, wd.run_intent_check, wd.file_linear_findings) = saved
+         wd.send_ping, wd.run_intent_check, wd.file_linear_findings,
+         wd.run_deploy_gap_check) = saved
     return writes[-1] if writes else {}, err.getvalue()
 
 
