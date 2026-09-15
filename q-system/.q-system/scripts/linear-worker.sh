@@ -412,6 +412,37 @@ try:
 except Exception:
     reg, ok = [], False
 entries = reg.get("instances", reg) if isinstance(reg, dict) else reg
+rows = [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+# THE SKELETON IS A ROW TOO (ASK-881, the same shape ASK-839 fixed in
+# alert-to-linear.py:_registry_rows). The registry keeps it under its OWN
+# top-level `skeleton` key, never as a member of `instances`, so walking only
+# `instances` is blind to it -- and BOTH facts this one read produces were wrong
+# for it. Repo identity fell through to `basename $TARGET_REPO`, correct today
+# only because basename(kipi-system) happens to equal the board project name,
+# which is the derivation-that-works-until-it-doesnt ASK-840 removed everywhere
+# else; a worktree, a CI clone or a rename resolves to no project and the run
+# dies MISCONFIG. And local_repos never counted the skeleton checkout, so an
+# issue on its project read UNREACHABLE from every other repo in the rotation --
+# the log telling the operator to clone the repo the worker is reading its own
+# registry out of.
+#
+# MIRRORED, NOT IMPORTED, and that is a deliberate call rather than an oversight.
+# _registry_rows() does its own open() through _registry_path()s ladder, which is
+# NOT this scripts rule (here the registry is always $SKEL, per the comment
+# above), and it collapses unreadable-registry into the same [] as
+# empty-registry, which is exactly the distinction `ok` exists to keep. Importing
+# it would trade a correct `ok` for a shared parser. The row SHAPE is copied
+# exactly, is_skeleton tag included, so folding both into one helper later is a
+# move rather than a merge. Captured as sp-a777235f, not left as a comment.
+#
+# `standalone` rows stay out, for the reason _registry_rows() gives: has_skeleton
+# is false, they ship no notifier and no dispatcher can ever reach them, so
+# adding them would only lengthen the queue with work nobody can pick up.
+skeleton = reg.get("skeleton") if isinstance(reg, dict) else None
+if isinstance(skeleton, dict) and skeleton.get("path"):
+    # Tagged rather than positional so a caller can ask "which row is the
+    # skeleton" without counting on it being first.
+    rows = [dict(skeleton, is_skeleton=True)] + rows
 name = ""
 local = []
 
@@ -421,9 +452,7 @@ def linear_project(entry):
     return (entry.get("linear_project") or entry.get("name") or "").strip()
 
 
-for e in entries if isinstance(entries, list) else []:
-    if not isinstance(e, dict):
-        continue
+for e in rows:
     p = e.get("path")
     if not p:
         continue
@@ -434,9 +463,26 @@ for e in entries if isinstance(entries, list) else []:
         # The pinned remote travels WITH the row, because repo-preflight needs it
         # and re-reading the registry to find it is the second reader ASK-729
         # already refused to add.
+        #
+        # TWO FIELD NAMES FOR ONE FACT, because the registry states them that way
+        # (PR #205 codex round 1, major). An instance pins at
+        # `dispatch.expected_remote`; the skeleton object pins at a TOP-LEVEL
+        # `remote` and carries no dispatch block at all. Promoting the skeleton
+        # into this list without translating its pin only moved it from the
+        # UNREACHABLE bucket to the REFUSED one -- repo-preflight check 4 refuses
+        # an empty remote outright ("an unpinned repo is never entered"), so every
+        # OTHER repo's run would report the skeleton off limits for a pin sitting
+        # in the file it just read.
+        #
+        # SCOPED TO THE SKELETON ROW, not a general `or e.get("remote")`. The
+        # top-level key is the skeleton object's documented shape; reading it on
+        # any row would silently start treating a stray `remote` on an instance as
+        # a dispatch pin, which is the one direction that turns a refusal into an
+        # entry. An instance that pins nothing still arrives empty and is still
+        # refused, which is the rule this must not soften.
         d = e.get("dispatch") if isinstance(e.get("dispatch"), dict) else {}
-        local.append({"project": proj, "path": p,
-                      "remote": d.get("expected_remote") or ""})
+        pin = d.get("expected_remote") or (e.get("remote") if e.get("is_skeleton") else "")
+        local.append({"project": proj, "path": p, "remote": pin or ""})
 local.sort(key=lambda r: r["project"])
 # WHO OWNS THE UNSET POPULATION (codex PR #215 round 6, major). A founder-routed
 # issue with no project is claimed by no repo, so an earlier round widened
