@@ -14,6 +14,8 @@ Run: python3 test-fleet-health-daily.py   (exit 0 = pass)
 """
 
 import importlib.util
+import plistlib
+import shutil
 import sys
 from pathlib import Path
 
@@ -106,6 +108,13 @@ check(
 )
 
 # every shipped detector must be callable and return a list
+# default-branch-ci reads gh and the live registry. The ubuntu runner has
+# neither, so there it raised "zero GitHub repos" and turned CI red (run
+# 34872313833), and on the Mac it made this loop hit GitHub. Its shape is checked
+# against a one-repo fake here; the sweeps further down test what it finds.
+_live_gh = fh.registered_github_repos, fh._gh_json
+fh.registered_github_repos = lambda: ["o/r"]
+fh._gh_json = lambda args: {"defaultBranchRef": {"name": "main"}} if args[0] == "repo" else []
 for det in fh.DETECTORS:
     try:
         result = det["detect"](None)
@@ -118,6 +127,7 @@ for det in fh.DETECTORS:
     for f in result:
         if not f.get("subject"):
             failures.append(f"detector {det['id']} emitted a finding with no stable subject")
+fh.registered_github_repos, fh._gh_json = _live_gh
 print(f"  ok: all {len(fh.DETECTORS)} shipped detectors run and return findings with subjects")
 
 # --- a dead filer must not read like a clean run (ASK-181 review, finding 1) --
@@ -566,6 +576,229 @@ check("it declares an action",
       _by_id.get("launchd-never-installed", {}).get("action"), "file_issue")
 check("its lesson slug is a real file",
       (_LESSONS / f"{_by_id['launchd-never-installed']['lesson']}.md").is_file(), True)
+
+# ---------------------------------------------------------------------------
+# default-branch-ci (ASK-1175): assafkip/cole-gtm master was red from
+# 2026-08-28 for over two weeks and the only thing that surfaced it was a human
+# reading 389 GitHub notifications. Nothing in this job looked at CI.
+#
+# The runs below are REAL `gh run list --json` rows from assafkip/cole-gtm,
+# taken 2026-09-14, trimmed to the fields the detector reads. They are the
+# producer's output, not an invented shape.
+# ---------------------------------------------------------------------------
+_COLE_RUNS = [
+    {"workflowName": "podcast-deadman", "conclusion": "success", "status": "completed",
+     "headBranch": "master", "createdAt": "2026-09-13T18:36:17Z", "event": "schedule",
+     "databaseId": 34775139922, "workflowDatabaseId": 312404631},
+    {"workflowName": "podcast-deadman", "conclusion": "failure", "status": "completed",
+     "headBranch": "master", "createdAt": "2026-09-12T18:12:09Z", "event": "schedule",
+     "databaseId": 34710473301, "workflowDatabaseId": 312404631},
+    {"workflowName": "gtm-build", "conclusion": "failure", "status": "completed",
+     "headBranch": "master", "createdAt": "2026-08-31T16:41:01Z", "event": "push",
+     "databaseId": 33415457112, "workflowDatabaseId": 319937121},
+    {"workflowName": "gtm-build", "conclusion": "failure", "status": "completed",
+     "headBranch": "sana/decision-record-correction-2026-08-31",
+     "createdAt": "2026-08-31T16:40:55Z", "event": "pull_request",
+     "databaseId": 33415448416, "workflowDatabaseId": 319937121},
+]
+_GTM_RED = next(r for r in _COLE_RUNS if r["databaseId"] == 33415457112)
+
+_red = getattr(fh, "red_workflows", None)
+_slug = getattr(fh, "github_slug", None)
+check("red_workflows exists", callable(_red), True)
+check("github_slug exists", callable(_slug), True)
+if callable(_red):
+    _got = _red(_COLE_RUNS, "master")
+    check("the red default-branch workflow is found by name",
+          [r["workflow"] for r in _got], ["gtm-build"])
+    check("...carrying the run id that proves it", _got[0]["run_id"] if _got else None,
+          33415457112)
+    # A scheduled job whose LATEST run is green is not red today, however it
+    # flapped before. Flagging history would file an issue that never clears.
+    check("a workflow whose latest completed run passed is not red",
+          any(r["workflow"] == "podcast-deadman" for r in _got), False)
+    # Negative control: turn master's gtm-build green and the finding must
+    # clear, or this detector can never go green and nags forever.
+    _fixed = [dict(r, conclusion="success") if r["databaseId"] == 33415457112 else r
+              for r in _COLE_RUNS]
+    check("a green latest run clears the finding", _red(_fixed, "master"), [])
+    # A red run on a PR branch is that branch's business, not the default branch's.
+    _pr_only = [r for r in _COLE_RUNS if r["databaseId"] != 33415457112]
+    check("a red run on a non-default branch is ignored", _red(_pr_only, "master"), [])
+    # An in-flight run has no verdict yet; the last COMPLETED run is the state.
+    _inflight = [{"workflowName": "gtm-build", "conclusion": "", "status": "in_progress",
+                  "headBranch": "master", "createdAt": "2026-09-14T00:00:00Z",
+                  "event": "push", "databaseId": 1}] + _COLE_RUNS
+    check("an in-progress run does not hide the last completed red one",
+          [r["workflow"] for r in _red(_inflight, "master")], ["gtm-build"])
+    # Rows arrive newest-first from gh, but the verdict must not depend on it.
+    check("the newest completed run wins regardless of row order",
+          [r["workflow"] for r in _red(list(reversed(_COLE_RUNS)), "master")],
+          ["gtm-build"])
+    # A cancelled or skipped run says nothing about the code (PR #353 review):
+    # it must not stand in front of the red run and read as a green branch.
+    _cancelled = [dict(_GTM_RED, conclusion="cancelled", databaseId=2,
+                       createdAt="2026-09-01T00:00:00Z")] + _COLE_RUNS
+    check("a newer cancelled run does not hide the last red one",
+          [r["run_id"] for r in _red(_cancelled, "master")], [33415457112])
+    # A fork PR from its own `main`/`master` carries headBranch == the default
+    # branch. It is the fork's state, not ours, in either direction.
+    _fork_green = [dict(_GTM_RED, conclusion="success", event="pull_request",
+                        databaseId=3, createdAt="2026-09-02T00:00:00Z")] + _COLE_RUNS
+    check("a newer green fork PR does not mask a red default branch",
+          [r["run_id"] for r in _red(_fork_green, "master")], [33415457112])
+    _fork_red = [dict(_GTM_RED, event="pull_request_target", databaseId=4,
+                      createdAt="2026-09-02T00:00:00Z")] \
+        + [dict(_GTM_RED, conclusion="success")] + _COLE_RUNS[:2]
+    check("a red fork PR does not make a green default branch red",
+          _red(_fork_red, "master"), [])
+    # Two workflow files may share a display name (Codex P2, PR #353). Grouping
+    # by name let one file's newer green run hide the other file's red run.
+    _twins = [dict(_GTM_RED, workflowDatabaseId=1, databaseId=10,
+                   createdAt="2026-09-01T00:00:00Z"),
+              dict(_GTM_RED, workflowDatabaseId=2, databaseId=11, conclusion="success",
+                   createdAt="2026-09-03T00:00:00Z")]
+    check("same-named workflows keep separate verdicts",
+          [r["run_id"] for r in _red(_twins, "master")], [10])
+if callable(_slug):
+    check("an https remote resolves to owner/repo",
+          _slug("https://github.com/assafkip/cole-gtm.git"), "assafkip/cole-gtm")
+    check("an ssh remote resolves to owner/repo",
+          _slug("git@github.com:assafkip/kipi-system.git"), "assafkip/kipi-system")
+    check("a remote without .git resolves", _slug("https://github.com/o/r"), "o/r")
+    check("a non-GitHub remote is not watched", _slug("https://gitlab.com/o/r.git"), None)
+    check("no remote is not watched", _slug(""), None)
+
+check("default-branch-ci is registered", "default-branch-ci" in _by_id, True)
+check("it declares an action", _by_id.get("default-branch-ci", {}).get("action"),
+      "file_issue")
+_ci_lesson = _by_id.get("default-branch-ci", {}).get("lesson", "")
+check("its lesson slug is a real file",
+      bool(_ci_lesson) and (_LESSONS / f"{_ci_lesson}.md").is_file(), True)
+
+# The sweep below runs against a FAKE gh and a FAKE registry. Reading the live
+# registry let the missing-gh check pass on the ubuntu runner through the
+# zero-repos branch instead (PR #353 review), so it could not catch its mutant.
+_ci_detect = _by_id.get("default-branch-ci", {}).get("detect")
+
+
+def _fake_gh(repos: dict):
+    """A `_gh_json` over {repo: {"workflows": [...], "runs": [...]}}. A repo
+    whose value is an exception class raises it on every call. A run list with
+    no --workflow returns only the newest --limit rows, the way gh does."""
+    def gh(args):
+        repo = args[2] if args[0] == "repo" else args[args.index("-R") + 1]
+        spec = repos[repo]
+        if isinstance(spec, type) and issubclass(spec, BaseException):
+            raise spec(["gh"], 60) if spec is fh.subprocess.TimeoutExpired else spec("x")
+        if args[0] == "repo":
+            return {"defaultBranchRef": {"name": "master"}}
+        if args[0] == "workflow":
+            return spec["workflows"]
+        runs = sorted(spec["runs"], key=lambda r: r["createdAt"], reverse=True)
+        if "--workflow" in args:
+            wid = int(args[args.index("--workflow") + 1])
+            runs = [r for r in runs if r["workflowDatabaseId"] == wid]
+        return runs[:int(args[args.index("--limit") + 1])]
+    return gh
+
+
+def _sweep(repos: dict):
+    saved = fh.registered_github_repos, fh._gh_json
+    fh.registered_github_repos = lambda: sorted(repos)
+    fh._gh_json = _fake_gh(repos)
+    try:
+        return fh.run_detectors([_by_id["default-branch-ci"]])
+    finally:
+        fh.registered_github_repos, fh._gh_json = saved
+
+
+_COLE_WORKFLOWS = [{"id": 319937121, "name": "gtm-build", "state": "active"},
+                   {"id": 312404631, "name": "podcast-deadman", "state": "active"}]
+_COLE = {"workflows": _COLE_WORKFLOWS, "runs": _COLE_RUNS}
+
+if callable(_ci_detect):
+    # Blindness is not cleanliness: when gh cannot be run at all, the detector
+    # must RAISE so run_detectors marks it "error". Returning [] would print the
+    # same thing as "every default branch is green".
+    _saved_run = fh.subprocess.run
+    _saved_repos = fh.registered_github_repos
+
+    def _no_gh(cmd, *args, **kwargs):
+        if list(cmd)[:1] == ["gh"]:
+            raise FileNotFoundError("gh")
+        return _saved_run(cmd, *args, **kwargs)
+
+    fh.subprocess.run = _no_gh
+    fh.registered_github_repos = lambda: ["assafkip/cole-gtm"]
+    try:
+        _, _ci_per = fh.run_detectors([_by_id["default-branch-ci"]])
+    finally:
+        fh.subprocess.run = _saved_run
+        fh.registered_github_repos = _saved_repos
+    check("a missing gh marks default-branch-ci blind, not clean",
+          _ci_per.get("default-branch-ci"), fh.DETECTOR_ERROR)
+
+    # gh present but unauthenticated: every call exits non-zero. Not one repo
+    # was read, so the answer is unknown, never "all clean".
+    _, _ci_per = _sweep({"o/a": RuntimeError, "o/b": RuntimeError})
+    check("gh unauthenticated for every repo marks it blind, not clean",
+          _ci_per.get("default-branch-ci"), fh.DETECTOR_ERROR)
+
+    # THE MAJOR (PR #353 review, Codex P1): one unreadable repo used to raise,
+    # and run_detectors threw away the reds already found, so cole-gtm's red
+    # went unfiled again -- the exact scar this detector exists for.
+    _found, _ci_per = _sweep({"assafkip/cole-gtm": _COLE, "o/gone": RuntimeError})
+    check("one unreadable repo does not discard another repo's red",
+          any("gtm-build" in f["title"] for f in _found), True)
+    check("...and the unreadable repo is filed under its own subject",
+          [f["subject"] for f in _found if "o/gone" in f["subject"]],
+          ["o/gone/ci-unreadable"])
+    check("...so the detector reports a count, not blind",
+          _ci_per.get("default-branch-ci"), 2)
+
+    # A timeout on one repo is that repo's blind spot, not "gh unavailable" for
+    # the fleet, and must not stop the other repos from being read.
+    _found, _ci_per = _sweep({"assafkip/cole-gtm": _COLE,
+                              "o/slow": fh.subprocess.TimeoutExpired})
+    check("a timeout on one repo leaves the rest of the sweep standing",
+          sorted(f["subject"].split("/")[-1] for f in _found),
+          sorted(["ci-unreadable", f"gtm-build#{319937121}"]))
+
+    # A disabled workflow has made its decision; its last red run stands still.
+    _found, _ = _sweep({"assafkip/cole-gtm": {
+        "workflows": [dict(w, state="disabled_manually") if w["name"] == "gtm-build"
+                      else w for w in _COLE_WORKFLOWS], "runs": _COLE_RUNS}})
+    check("a disabled workflow's red run is not filed", _found, [])
+
+    # Codex P1, PR #353: one 100-row window per repo cannot see a workflow
+    # whose last default-branch run is older than 100 busier runs. cole-gtm's
+    # Dependency Graph last ran on master 2026-06-18. Each active workflow gets
+    # its own verdict.
+    _busy = [dict(_COLE_RUNS[0], databaseId=900 + i,
+                  createdAt=f"2026-09-14T{i // 60:02d}:{i % 60:02d}:00Z")
+             for i in range(120)]
+    _found, _ = _sweep({"assafkip/cole-gtm": {"workflows": _COLE_WORKFLOWS,
+                                              "runs": _busy + [_GTM_RED]}})
+    check("a rarely-run workflow's red run behind 120 newer runs is still found",
+          [f["title"] for f in _found],
+          ["default branch red: assafkip/cole-gtm master (gtm-build)"])
+
+# The 08:15 run is launchd's, and launchd's default PATH is
+# /usr/bin:/bin:/usr/sbin:/sbin. gh sits in /opt/homebrew/bin, so with no PATH of
+# its own the scheduled job reported default-branch-ci blind every morning while
+# every hand run from a terminal read 24 repos (PR #353 review major). gh's token
+# is in the keychain, whose lookup needs USER/LOGNAME under launchd (ASK-1178).
+_PLIST = HEALTH.parent / "com.kipi.fleet-health.plist"
+_LAUNCHD_DEFAULT_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+_job_env = plistlib.loads(_PLIST.read_bytes()).get("EnvironmentVariables") or {}
+check("the 08:15 plist pins PATH, HOME, USER and LOGNAME",
+      sorted(k for k in ("PATH", "HOME", "USER", "LOGNAME") if k in _job_env),
+      ["HOME", "LOGNAME", "PATH", "USER"])
+if shutil.which("gh"):
+    check("the 08:15 job's PATH resolves gh on this machine",
+          shutil.which("gh", path=_job_env.get("PATH", _LAUNCHD_DEFAULT_PATH)) is not None,
+          True)
 
 if failures:
     print("FAIL:")

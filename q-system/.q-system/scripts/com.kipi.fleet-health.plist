@@ -37,5 +37,19 @@
 
   <key>WorkingDirectory</key>
   <string>__KIPI_REPO__</string>
+
+  <!-- default-branch-ci shells gh. launchd's default PATH has no
+       /opt/homebrew/bin, so without this block every 08:15 run reported the
+       detector blind while every terminal run read 24 repos (PR #353 review,
+       ASK-1175). gh's token is in the keychain, whose lookup needs USER and
+       LOGNAME under launchd (ASK-1178, see install-plist.sh). -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>__HOME__</string>
+    <key>USER</key><string>__USER__</string>
+    <key>LOGNAME</key><string>__USER__</string>
+  </dict>
 </dict>
 </plist>
