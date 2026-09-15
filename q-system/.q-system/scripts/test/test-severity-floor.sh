@@ -4046,4 +4046,462 @@ ok "the reviewer parses (bash -n)"
 bash -n "$LIB" || fail "pr-verdict-lib.sh does not parse"
 ok "the lib parses (bash -n)"
 
+
+# --- ASK-1227 case A: the network-blocked codex run that posted SUCCESS -------
+#
+# VERBATIM tail of the real producer: codex v0.147.0 on PR #78 2026-09-03
+# 12:31 (~/.config/kipi/pr-reviews/codex/assafkip_ASK_AI_consultant__pr-78-20260903-123139.md).
+# `gh` could not reach api.github.com, so codex read NOTHING and said so, then
+# closed a STRUCTURALLY COMPLETE but EMPTY findings block.
+#
+# What the old code did with it, step by step:
+#   extract_verdict      -> ""         ("NOT ISSUED" is not one of the four tokens)
+#   verdict_from_findings -> "APPROVE" (zero severity rows == nothing was wrong)
+#   resolve_verdict "" APPROVE -> "APPROVE"   <-- the empty derivation stood alone
+# and kipi/reviewer-approved went green on a review that had read no diff at all.
+# A worker then merged on it. This is the worst outcome available in this script:
+# absent evidence read as consent.
+cat > "$WORK/notissued.md" <<'EOF'
+Review blocked by the repository fail-stop rule.
+
+- Broken step: `gh -R assafkip/ASK_AI_consultant pr view 78`
+- Output:
+
+```text
+error connecting to api.github.com
+check your internet connection or https://githubstatus.com
+```
+
+- Impact: I could not read the PR diff or earlier review rounds.
+- Required: restore GitHub API access, then rerun this review.
+- VERDICT: NOT ISSUED. No evidence-based verdict is possible.
+
+FINDINGS:
+END FINDINGS
+EOF
+
+[ -z "$(extract_verdict "$WORK/notissued.md")" ] \
+  || fail "'VERDICT: NOT ISSUED' must not parse as a verdict, got '$(extract_verdict "$WORK/notissued.md")'"
+ok "case A: an explicit NOT ISSUED yields no stated verdict"
+
+# The derivation itself is UNCHANGED on purpose. Empty-block-derives-APPROVE is a
+# deliberate contract (a round 2 that refutes every round-1 finding closes with an
+# empty block and must be able to land). Moving the fix into this function would
+# collide with that contract and with test-findings-block-reader.sh case 2.
+[ "$(verdict_from_findings "$WORK/notissued.md")" = "APPROVE" ] \
+  || fail "verdict_from_findings must still derive APPROVE from an empty block (pinned contract)"
+ok "case A: the empty-block derivation is left alone"
+
+# THE FIX, at the composition. "Reviewed and found nothing" and "never started"
+# are byte-identical INSIDE the block, so the empty derivation needs corroboration
+# from OUTSIDE it -- the reviewer's own stated verdict. With none, this is unstated.
+[ -z "$(resolve_verdict "" "APPROVE")" ] \
+  || fail "an empty-block APPROVE with NO stated verdict must resolve to UNSTATED, got '$(resolve_verdict "" "APPROVE")'"
+ok "case A: empty-block APPROVE + no stated verdict => UNSTATED (the false green is closed)"
+
+# NEGATIVE CONTROL for case A. The corroborated shape must still land, or a
+# clean round 2 wedges forever and the fix is worse than the defect.
+[ "$(resolve_verdict "APPROVE" "APPROVE")" = "APPROVE" ] \
+  || fail "a reviewer that STATED approve over an empty block must still land APPROVE"
+ok "case A control: stated APPROVE over an empty block still lands"
+[ "$(resolve_verdict "APPROVE WITH NITS" "APPROVE")" = "APPROVE WITH NITS" ] \
+  || fail "stated APPROVE WITH NITS over an empty block must survive"
+ok "case A control: a corroborated empty block keeps the stated verdict"
+
+# --- ASK-1227 case B: the real 6-minute review scored UNSTATED ----------------
+#
+# VERBATIM slice of the real producer: the --engine claude run on PR #79
+# 2026-09-03 12:49 (~/.config/kipi/pr-reviews/assafkip_ASK_AI_consultant__pr-79-20260903-124901.md),
+# recorded verdict "" / stated "" / source prose / usable false, and posted a
+# FAILURE. It is a substantive review that states its verdict in bold prose and
+# never writes the literal word VERDICT, which is the only thing the old
+# extractor could see. A reviewer that did the work got the same status as one
+# that never ran.
+cat > "$WORK/proseverdict.md" <<'EOF'
+Last gap closed: `test_granola_candidates.py` has zero `SlackTransport` hits (grep exit 1). The background search agrees with what I found directly, `GRANOLA_GENERAL_OVERRIDE` has no consumer anywhere, `REFUSED_CHANNELS` and `SlackTransport` are referenced only in their own module, the tests, and `GRANOLA-APPROVALS.md`, and the only live path is `granola_candidates.py` to `TerminalTransport`. No launchd plist and no `.claude/commands/` entry touches this lane, so the "not headless" claim holds.
+
+That confirms the reachability premise all three findings were already scored against. The review stands as posted: three minor findings, **APPROVE WITH NITS**, fix finding 1 first (`offer_all` should check `cand.lane == transport.lane`).
+EOF
+
+[ "$(extract_verdict "$WORK/proseverdict.md")" = "APPROVE WITH NITS" ] \
+  || fail "a stated bold prose verdict must be read when the review carries no findings block, got '$(extract_verdict "$WORK/proseverdict.md")'"
+ok "case B: a bold prose verdict is read (the false red is closed)"
+
+# NEGATIVE CONTROL for case B, and the reason the fallback demands EMPHASIS.
+# The reviewer PROMPT is echoed into every codex transcript and contains the
+# grading ladder as plain text. Measured across 80 recorded reviews on
+# 2026-09-03: zero carry a BOLD verdict token in their prompt region. A fallback
+# that matched bare tokens would read a verdict out of the prompt's own rules.
+cat > "$WORK/promptecho.md" <<'EOF'
+- **VERDICT:** decided by THIS RULE, not by feel:
+    - any blocker finding             => BLOCK
+    - any major finding               => REQUEST CHANGES
+    - only minor/nit findings         => APPROVE WITH NITS
+    - nothing above nit               => APPROVE
+EOF
+[ -z "$(extract_verdict "$WORK/promptecho.md")" ] \
+  || fail "the prompt's own grading ladder must not be read as a stated verdict, got '$(extract_verdict "$WORK/promptecho.md")'"
+ok "case B control: the echoed prompt ladder yields no verdict"
+
+# A truncated stream is NOT case B and must stay unstated: it ATTEMPTED a block
+# and died inside it. The discriminator is the orphan FINDINGS: marker.
+printf 'Some partial analysis.\n\nFINDINGS:\nmajor|foo.py|1|it broke\n' > "$WORK/truncated.md"
+[ -z "$(verdict_from_findings "$WORK/truncated.md")" ] \
+  || fail "an unclosed findings block must derive nothing, got '$(verdict_from_findings "$WORK/truncated.md")'"
+ok "case B control: a truncated block still derives nothing"
+
+# --- ASK-1227 case C: codex major on PR #297 round 1 --------------------------
+#
+# THE FINDING, verbatim: "The bold fallback treats any emphasized verdict token
+# anywhere in the transcript as the reviewer conclusion, so unrelated source text
+# can fabricate a BLOCK and wedge the unattended review gate"
+# (pr-verdict-lib.sh:119). It was right, and the first cut of case B scanned the
+# whole file.
+#
+# WHY IT MATTERS MORE THAN A FALSE APPROVE. A codex review file is not a review,
+# it is the whole agent session INCLUDING every diff and file it read. This very
+# repo is full of emphasized verdict tokens: the reviewer prompt, this test, and
+# the lib comments all contain them. A fabricated BLOCK on an unattended gate
+# wedges the PR with a verdict no reviewer gave.
+#
+# The fixture puts the decoy in the transcript body -- quoted diff, blockquote,
+# and fenced code, which is how read material actually appears -- and the real
+# conclusion in the tail, exactly the layout of a codex transcript.
+{
+  printf 'Reading the diff for PR 900.
+
+'
+  printf '```
+**BLOCK**
+```
+
+'
+  printf '> a quoted earlier round said **REQUEST CHANGES**
+
+'
+  printf -- '+ some_added_line = "**BLOCK**"
+'
+  printf -- '-  removed_line = "**REQUEST CHANGES**"
+
+'
+  printf '    indented_code = "**BLOCK**"
+
+'
+  for i in $(seq 1 400); do printf 'transcript filler line %s
+' "$i"; done
+  printf '
+That is the whole read. **APPROVE WITH NITS**, fix the naming first.
+'
+} > "$WORK/decoy.md"
+
+[ "$(extract_verdict "$WORK/decoy.md")" = "APPROVE WITH NITS" ]   || fail "quoted source in the transcript body fabricated a verdict: got '$(extract_verdict "$WORK/decoy.md")' (expected the tail conclusion APPROVE WITH NITS)"
+ok "case C: quoted diff/fence/blockquote tokens cannot fabricate a verdict"
+
+# The decoys are REALLY THERE. Without this the case above could pass because the
+# fixture never contained them, which is a test that cannot fail.
+grep -q '\*\*BLOCK\*\*' "$WORK/decoy.md"   || fail "the decoy fixture carries no **BLOCK** token, so case C proves nothing"
+ok "case C control: the fixture really does carry decoy verdict tokens"
+
+# And a VERDICT-marked line still outranks the tail fallback.
+printf 'VERDICT: REQUEST CHANGES
+
+closing thought **APPROVE**
+' > "$WORK/marked.md"
+[ "$(extract_verdict "$WORK/marked.md")" = "REQUEST CHANGES" ]   || fail "the tail fallback overrode an explicit VERDICT line, got '$(extract_verdict "$WORK/marked.md")'"
+ok "case C control: an explicit VERDICT line still wins over the fallback"
+
+# THE SHARP HALF of the codex finding: a transcript that states NO verdict of its
+# own, carrying emphasized tokens only in material it READ. Last-one-wins already
+# stops a decoy from beating a real later conclusion, so this is the shape where
+# the exclusion rules are the only thing standing between quoted source and a
+# fabricated verdict on an unattended gate.
+{
+  printf 'I read the following files.
+
+'
+  printf '```
+**BLOCK**
+```
+
+'
+  printf '> earlier round: **REQUEST CHANGES**
+
+'
+  printf -- '+ added = "**APPROVE**"
+'
+  printf '    indented = "**BLOCK**"
+
+'
+  printf 'I ran out of budget before forming a conclusion.
+'
+} > "$WORK/decoy-noverdict.md"
+
+[ -z "$(extract_verdict "$WORK/decoy-noverdict.md")" ]   || fail "a transcript that stated NO verdict got one manufactured from quoted material: got '$(extract_verdict "$WORK/decoy-noverdict.md")'"
+ok "case C sharp: quoted tokens with no stated conclusion yield NO verdict"
+
+# --- case D: the PRIMARY reader must exclude quoted material too (ASK-1227 rd 2) -
+# Case C above proved the TAIL FALLBACK ignores quoted tokens. It could not see
+# this: a quoted line that is STATEMENT-shaped (`VERDICT: <token>` with the token
+# leading) is matched by extract_verdict's own reader, which returns before the
+# fallback ever runs. Codex's round-2 reproducer on PR #297, verbatim in shape --
+# a diff line adding a printf of a verdict, then the reviewer's real prose call.
+# Ran against 850a56d3 it returned REQUEST CHANGES on a review that approved: a
+# false RED, which on a required context wedges the PR with nobody watching.
+{
+  printf -- '+printf %sVERDICT: REQUEST CHANGES\n' "'"
+  printf 'Reviewer conclusion: **APPROVE WITH NITS**\n'
+} > "$WORK/quoted-statement.md"
+
+[ "$(extract_verdict "$WORK/quoted-statement.md")" = "APPROVE WITH NITS" ]   || fail "a statement-shaped VERDICT inside a quoted diff line beat the reviewer's own conclusion: got '$(extract_verdict "$WORK/quoted-statement.md")' (expected APPROVE WITH NITS)"
+ok "case D: a quoted statement-shaped VERDICT line cannot outrank the real conclusion"
+
+# The trap is REALLY IN the fixture. Without this the case above passes on a
+# fixture that never carried a quoted verdict statement -- a check that cannot fail.
+grep -q '^+printf .VERDICT: REQUEST CHANGES' "$WORK/quoted-statement.md"   || fail "case D fixture carries no quoted VERDICT statement, so it proves nothing"
+ok "case D control: the fixture really does carry a quoted VERDICT statement"
+
+# End to end, the way the gate consumes it: the resolved verdict is what gets
+# posted. resolve_verdict takes the HARSHER of stated and derived, so a false
+# REQUEST CHANGES here survives all the way to the status.
+[ "$(resolve_verdict "$(extract_verdict "$WORK/quoted-statement.md")" "APPROVE WITH NITS")" = "APPROVE WITH NITS" ]   || fail "resolved verdict for the quoted-statement transcript should be APPROVE WITH NITS, got '$(resolve_verdict "$(extract_verdict "$WORK/quoted-statement.md")" "APPROVE WITH NITS")'"
+ok "case D: the resolved verdict the gate posts is APPROVE WITH NITS"
+
+# The same exclusion must not swallow a REAL verdict statement that merely sits
+# near quoted material. Pairs with the case C control above, one layer down.
+{
+  printf -- '+ added_line = "**BLOCK**"\n'
+  printf 'VERDICT: REQUEST CHANGES\n'
+} > "$WORK/quoted-then-real.md"
+[ "$(extract_verdict "$WORK/quoted-then-real.md")" = "REQUEST CHANGES" ]   || fail "an unquoted VERDICT statement next to a diff line was dropped, got '$(extract_verdict "$WORK/quoted-then-real.md")'"
+ok "case D control: an unquoted VERDICT statement beside quoted material still counts"
+
+# A TAB is an indented code block too (codex round 3 on PR #297). The filter's
+# first cut matched four spaces only, so tab-indented quoted source fabricated a
+# BLOCK -- the worst direction, since a false BLOCK wedges an unattended gate.
+printf 'I read this file:\n\tVERDICT: BLOCK\nReviewer conclusion: **APPROVE WITH NITS**\n' > "$WORK/tabquote.md"
+[ "$(extract_verdict "$WORK/tabquote.md")" = "APPROVE WITH NITS" ]   || fail "a TAB-indented quoted VERDICT fabricated a verdict: got '$(extract_verdict "$WORK/tabquote.md")' (expected APPROVE WITH NITS)"
+ok "case D: tab-indented quoted material is excluded like space-indented"
+
+[ "$(awk '/^\tVERDICT: BLOCK/ { n++ } END { print n+0 }' "$WORK/tabquote.md")" = "1" ]   || fail "the tab fixture is not actually tab-indented, so the case above proves nothing"
+ok "case D control: the fixture really is TAB-indented"
+
+# --- case E: a FINDINGS ROW is not verdict prose (ASK-1227 round 4) ------------
+# THE REVIEWER'S EXACT CASE, and it demonstrated itself live. Round 4 of codex on
+# PR #297 wrote a minor whose CLAIM TEXT contained the words `VERDICT: BLOCK`.
+# extract_verdict scanned the machine-readable block as prose, took that token
+# over the reviewer's own stated `**REQUEST CHANGES**`, and the gate posted
+# kipi/reviewer-approved=failure with verdict BLOCK on cbc4b751. A review reporting
+# this defect was mis-scored BY the defect.
+#
+# Rows are pipe-delimited by contract, so a line containing `|` is a row or a
+# table and never the sentence a verdict is stated in. That rule holds even when a
+# row leaks OUTSIDE its block, which is how a truncated or echoed block arrives.
+{
+  printf 'VERDICT: APPROVE WITH NITS\n\n'
+  printf 'FINDINGS:\n'
+  printf 'minor|The quote filter accepts VERDICT: BLOCK from a diff context line|q-system/.q-system/scripts/pr-verdict-lib.sh:38\n'
+  printf 'END FINDINGS\n'
+} > "$WORK/findings-row-verdict.md"
+
+[ "$(extract_verdict "$WORK/findings-row-verdict.md")" = "APPROVE WITH NITS" ]   || fail "a FINDINGS row's claim text overwrote the stated verdict: got '$(extract_verdict "$WORK/findings-row-verdict.md")' (expected APPROVE WITH NITS)"
+ok "case E: a VERDICT token inside a findings row cannot overwrite the stated verdict"
+
+# The trap is REALLY IN the fixture, and the stated verdict really is above it.
+grep -q '^minor|.*VERDICT: BLOCK' "$WORK/findings-row-verdict.md"   || fail "case E fixture carries no findings row naming a verdict, so it proves nothing"
+grep -q '^VERDICT: APPROVE WITH NITS' "$WORK/findings-row-verdict.md"   || fail "case E fixture states no verdict above the block, so it proves nothing"
+ok "case E control: the fixture really pairs a stated verdict with a verdict-naming row"
+
+# A row that leaked OUTSIDE its block is the truncated/echoed shape. The pipe rule
+# is what holds here; the block-region rule cannot see it.
+printf 'VERDICT: APPROVE WITH NITS\nminor|claim mentioning VERDICT: BLOCK|lib.sh:38\n' > "$WORK/orphan-row.md"
+[ "$(extract_verdict "$WORK/orphan-row.md")" = "APPROVE WITH NITS" ]   || fail "a findings row outside its block set the verdict: got '$(extract_verdict "$WORK/orphan-row.md")'"
+ok "case E: a findings row outside its block is still not verdict prose"
+
+# A diff CONTEXT line begins with ONE SPACE, so it survived a filter that only knew
+# +/- and four-space indents. Same round-4 review named this one.
+printf ' VERDICT: BLOCK\nReviewer conclusion: **APPROVE WITH NITS**\n' > "$WORK/diff-context.md"
+[ "$(extract_verdict "$WORK/diff-context.md")" = "APPROVE WITH NITS" ]   || fail "a one-space diff CONTEXT line fabricated a verdict: got '$(extract_verdict "$WORK/diff-context.md")'"
+ok "case E: a diff context line (one leading space) is quoted material"
+
+# AND THE ALLOWLIST MUST NOT EAT THE ANSWER. An explicit conclusion still wins,
+# stated above its own findings block exactly as the prompt orders them.
+{
+  printf 'Reviewed the whole diff.\n\n## VERDICT\n\n**REQUEST CHANGES**\n\n'
+  printf 'FINDINGS:\nmajor|a real problem|lib.sh:10\nEND FINDINGS\n'
+} > "$WORK/conclusion-wins.md"
+[ "$(extract_verdict "$WORK/conclusion-wins.md")" = "REQUEST CHANGES" ]   || fail "the allowlist swallowed a real stated conclusion: got '$(extract_verdict "$WORK/conclusion-wins.md")' (expected REQUEST CHANGES)"
+ok "case E control: an explicit conclusion above the findings block still wins"
+
+# --- ASK-1227 round 5: the reviewer FINAL MESSAGE is the boundary --------------
+#
+# Rounds 1-4 each excluded the region that had just fabricated a verdict, and
+# round 5 found two more at once. Codex own fix-first: "replace whole-session
+# Markdown inference with a deterministic boundary for the reviewer final
+# response." `codex exec -o FILE` is that boundary; these cases pin it.
+
+# --- case F: a stateful fence rule cannot survive a session transcript ---------
+#
+# THE REAL PRODUCER. On the recorded pr-190 review, whose artifact plainly ends
+# `**VERDICT: APPROVE**`, the round-4 lib resolved stated=<> derived=<APPROVE>
+# resolved=<> -- an approving review held red forever. Cause: 23 lines in that
+# session START with three tildes or backticks, so fence parity leaves the closing
+# verdict inside a phantom fence. Most of them are compiler squiggles
+# (`~~~~~~~~^^^^^`) in tool output, not fences. It lands the other way too: on
+# pr-159 the same verdict is visible whole-file and hidden in the last 250 lines.
+#
+# Fence tracking is the ONLY rule in _reviewer_prose that carries state between
+# lines, so it is the only one a truncated or noisy document can knock out of
+# phase. It now runs on the final message (a complete document) and nowhere else.
+{
+  printf 'Running shellcheck on the changed files.\n\n'
+  printf '```text\n'
+  printf 'In pr-verdict-lib.sh line 64:\n'
+  printf '~~~~~~~~~~^^^^^^^^^^^^^^^\n'
+  printf '```\n\n'
+  printf 'That is the whole read; nothing survived reproduction.\n\n'
+  printf '**VERDICT: APPROVE**\n\n'
+  printf 'FINDINGS:\nEND FINDINGS\n'
+} > "$WORK/squiggle.md"
+
+# The trap is REALLY THERE: an ODD number of fence-matching lines ahead of the
+# verdict is what puts it inside a phantom fence. Without this the case could pass
+# on a fixture that never contained the defect.
+FENCEN="$(awk '/^[[:space:]]*(```|~~~)/ { n++ } END { print n+0 }' "$WORK/squiggle.md")"
+[ "$((FENCEN % 2))" = "1" ] \
+  || fail "case F fixture has $FENCEN fence-matching lines (even), so parity never flips and the case proves nothing"
+ok "case F control: the fixture really carries an odd number of fence-matching lines"
+
+# ON AN UNBALANCED WINDOW THE VERDICT IS LOST, AND THAT IS THE ACCEPTED COST.
+# Round 6 tried making the fence rule stand down when the count is odd, so this
+# fixture would read APPROVE. It did read APPROVE, and it also made a FENCED
+# `VERDICT: BLOCK` visible, which is statement-shaped and outranks a later
+# approval -- case I below is that reproducer. Losing a stated verdict holds a PR;
+# fabricating one wedges it. So the loss stands and the test says so out loud
+# rather than pinning a behaviour the lib does not have.
+[ -z "$(resolve_verdict "$(extract_verdict "$WORK/squiggle.md")" "$(verdict_from_findings "$WORK/squiggle.md")")" ] \
+  || fail "case F: an unbalanced window must resolve UNSTATED (hold), never a manufactured verdict, got '$(resolve_verdict "$(extract_verdict "$WORK/squiggle.md")" "$(verdict_from_findings "$WORK/squiggle.md")")'"
+ok "case F: an unbalanced answer window holds the PR instead of manufacturing a verdict"
+
+# THE REAL ARTIFACT, when this machine still has it. Operator-local, so its absence
+# is announced rather than silently skipped -- the synthetic fixture above is what
+# makes the case portable, this is what makes it producer-real.
+PR190="$HOME/.config/kipi/pr-reviews/codex/assafkip_kipi-system__pr-190-20260815-023743.md"
+if [ -s "$PR190" ]; then
+  grep -q '^\*\*VERDICT: APPROVE\*\*' "$PR190" \
+    || fail "the pr-190 record no longer ends in a stated APPROVE; the control below would prove nothing"
+  [ "$(extract_verdict "$PR190")" = "APPROVE" ] \
+    || fail "REGRESSION on the real pr-190 transcript: got '$(extract_verdict "$PR190")', artifact says **VERDICT: APPROVE**"
+  ok "case F: the real pr-190 transcript resolves to its stated APPROVE"
+else
+  echo "  SKIP case F real-artifact control: $PR190 is not on this machine"
+fi
+
+# --- case G: the sidecar is the source when it exists --------------------------
+#
+# pr-review-agent.sh passes `-o "$REVIEW.last"`, so codex writes ONLY its final
+# message there. Every reader takes it when present. The session file below is
+# deliberately hostile -- it states a BLOCK in clean prose and closes a major
+# findings block -- so the assertions can only pass by reading the sidecar.
+{
+  printf 'Prompt echo and tool output follow.\n\n'
+  printf 'VERDICT: BLOCK\n\n'
+  printf 'FINDINGS:\nmajor|read out of the session, not the answer|lib.sh:1\nEND FINDINGS\n'
+} > "$WORK/sidecar.md"
+{
+  printf 'Two nits, nothing that blocks.\n\n'
+  printf '**VERDICT: APPROVE WITH NITS**\n\n'
+  printf 'FINDINGS:\nminor|a real nit|lib.sh:2\nEND FINDINGS\n'
+} > "$WORK/sidecar.md.last"
+
+[ "$(extract_verdict "$WORK/sidecar.md")" = "APPROVE WITH NITS" ] \
+  || fail "case G: extract_verdict ignored the final-message sidecar, got '$(extract_verdict "$WORK/sidecar.md")'"
+[ "$(verdict_from_findings "$WORK/sidecar.md")" = "APPROVE WITH NITS" ] \
+  || fail "case G: verdict_from_findings read the SESSION block, got '$(verdict_from_findings "$WORK/sidecar.md")'"
+review_is_usable "$WORK/sidecar.md" \
+  || fail "case G: a review with a complete sidecar block must be usable"
+ok "case G: prose, findings and usability all read the final-message sidecar"
+
+# THE NEGATIVE SELF-TEST. Detach the sidecar and the SAME session file must give
+# the hostile answer. Without this the case above passes on a fixture whose
+# session half never disagreed, which is a check that cannot fail.
+mv "$WORK/sidecar.md.last" "$WORK/sidecar-detached"
+[ "$(extract_verdict "$WORK/sidecar.md")" = "BLOCK" ] \
+  || fail "case G control: with no sidecar the session file should read BLOCK, got '$(extract_verdict "$WORK/sidecar.md")' -- the sidecar was not what changed the answer"
+[ "$(verdict_from_findings "$WORK/sidecar.md")" = "REQUEST CHANGES" ] \
+  || fail "case G control: with no sidecar the session block should derive REQUEST CHANGES, got '$(verdict_from_findings "$WORK/sidecar.md")'"
+ok "case G control: without the sidecar the same file reads the session, so the sidecar is what did it"
+
+# An EMPTY sidecar is a killed run, not an answer, so it must fall back. `-s`, not
+# `-e`, is what makes that true.
+: > "$WORK/sidecar.md.last"
+[ "$(extract_verdict "$WORK/sidecar.md")" = "BLOCK" ] \
+  || fail "case G: a zero-byte sidecar must fall back to the session, got '$(extract_verdict "$WORK/sidecar.md")'"
+mv "$WORK/sidecar.md.last" "$WORK/sidecar-empty"
+ok "case G: a zero-byte sidecar falls back to the session file"
+
+# --- case H: tool output is not a verdict statement ---------------------------
+#
+# Codex round 5, second confirmed major, with a producer-real reproducer: existing
+# transcripts carry raw `rg` results shaped `path:line:source`, and some of those
+# source lines are verdict statements. The greedy `^.*VERDICT` strip took the
+# token and outranked the reviewer own later approval, posting a phantom BLOCK.
+# The marker must LEAD the sentence -- the mirror of the rule that the token must
+# lead what follows the marker.
+printf 'q-system/check.sh:42:VERDICT: BLOCK\nReviewer conclusion: **APPROVE WITH NITS**\n' > "$WORK/rgline.md"
+[ "$(extract_verdict "$WORK/rgline.md")" = "APPROVE WITH NITS" ] \
+  || fail "path-prefixed tool output fabricated a verdict: got '$(extract_verdict "$WORK/rgline.md")' (expected APPROVE WITH NITS)"
+ok "case H: a path:line: prefixed VERDICT is tool output, not a stated verdict"
+
+# The trap is REALLY IN the fixture.
+grep -q '^q-system/check.sh:42:VERDICT: BLOCK' "$WORK/rgline.md" \
+  || fail "case H fixture carries no path-prefixed verdict line, so it proves nothing"
+ok "case H control: the fixture really carries rg-shaped tool output"
+
+# AND THE REAL SHAPES STILL READ. Each of these is a conclusion recorded in the
+# corpus; the leading-marker rule must not eat any of them. Measured across all
+# 991 records: the rule changes the extracted verdict on none of them.
+printf '**VERDICT: APPROVE**\n'          > "$WORK/lead1.md"
+printf '## VERDICT: REQUEST CHANGES\n'   > "$WORK/lead2.md"
+printf 'VERDICT: APPROVE WITH NITS\n'    > "$WORK/lead3.md"
+printf '**VERDICT:** BLOCK\n'            > "$WORK/lead4.md"
+[ "$(extract_verdict "$WORK/lead1.md")" = "APPROVE" ]              || fail "case H: bold marker shape lost, got '$(extract_verdict "$WORK/lead1.md")'"
+[ "$(extract_verdict "$WORK/lead2.md")" = "REQUEST CHANGES" ]      || fail "case H: heading marker shape lost, got '$(extract_verdict "$WORK/lead2.md")'"
+[ "$(extract_verdict "$WORK/lead3.md")" = "APPROVE WITH NITS" ]    || fail "case H: bare marker shape lost, got '$(extract_verdict "$WORK/lead3.md")'"
+[ "$(extract_verdict "$WORK/lead4.md")" = "BLOCK" ]                || fail "case H: bold-colon marker shape lost, got '$(extract_verdict "$WORK/lead4.md")'"
+ok "case H control: every real marker shape in the corpus still reads"
+
+# --- case I: a fenced verdict must never outrank a later approval (round 6) -----
+#
+# THE ROUND-6 REVIEWER'S EXACT FIXTURE, and it demonstrated the defect on this
+# branch: a fenced `VERDICT: BLOCK` beside a `~~~~~~~~^^^^` compiler diagnostic,
+# which makes the fence count ODD, then a real closing `**APPROVE WITH NITS**`.
+# Under the fence stand-down the fenced token became visible, parsed as a stated
+# BLOCK, and outranked the approval -- a phantom rejection on an unattended gate.
+# Reproduced 2026-09-03, `stated=<BLOCK> ... resolved=<BLOCK>`; the stand-down was
+# reverted, and this pins that it stays reverted.
+{
+  printf 'Review evidence:\n\n'
+  printf '```text\n'
+  printf 'VERDICT: BLOCK\n'
+  printf '~~~~~~~~^^^^ compiler diagnostic\n'
+  printf '```\n\n'
+  printf 'Nothing gates. **APPROVE WITH NITS**\n\n'
+  printf 'FINDINGS:\nminor|bounded wording issue|demo.sh:1\nEND FINDINGS\n'
+} > "$WORK/fenced-block.md"
+
+# The trap is REALLY THERE: the fenced BLOCK and the odd fence count both.
+grep -q '^VERDICT: BLOCK' "$WORK/fenced-block.md" \
+  || fail "case I fixture carries no fenced VERDICT: BLOCK, so it proves nothing"
+FENCEI="$(awk '/^[[:space:]]*(```|~~~)/ { n++ } END { print n+0 }' "$WORK/fenced-block.md")"
+[ "$((FENCEI % 2))" = "1" ] \
+  || fail "case I fixture has $FENCEI fence-matching lines (even); the defect needed an ODD count, so it proves nothing"
+ok "case I control: the fixture really pairs a fenced BLOCK with an odd fence count"
+
+RESI="$(resolve_verdict "$(extract_verdict "$WORK/fenced-block.md")" "$(verdict_from_findings "$WORK/fenced-block.md")")"
+[ "$RESI" != "BLOCK" ] \
+  || fail "case I: a FENCED verdict token fabricated a BLOCK over the reviewer's approval (got '$RESI')"
+[ "$RESI" = "APPROVE WITH NITS" ] \
+  || fail "case I: expected the minor-derived APPROVE WITH NITS to stand, got '$RESI'"
+ok "case I: a fenced VERDICT: BLOCK cannot outrank a later approving conclusion"
+
 echo "PASS: $PASS/$PASS severity-floor checks"
