@@ -105,20 +105,52 @@ check(
     "com-cole-reddit-radar-daily",
 )
 
-# every shipped detector must be callable and return a list
-for det in fh.DETECTORS:
-    try:
-        result = det["detect"](None)
-    except Exception as exc:  # noqa: BLE001
-        failures.append(f"detector {det['id']} raised: {exc}")
-        continue
-    if not isinstance(result, list):
-        failures.append(f"detector {det['id']} returned {type(result).__name__}, want list")
-        continue
-    for f in result:
-        if not f.get("subject"):
-            failures.append(f"detector {det['id']} emitted a finding with no stable subject")
+# every shipped detector must be callable and return a list.
+#
+# It must not reach GitHub while doing so. default-branch-ci-red made this loop
+# issue 48 live `gh` calls (46s), and on a runner where gh is not logged in every
+# call exits 1, the detector raises blind, and the WHOLE suite exits 1 for a
+# reason that has nothing to do with the code (PR #354 review, minor 5). The spy
+# counts gh subprocess calls; the detector's own wiring is exercised against a
+# hermetic gh below.
+_gh_subprocess_calls = []
+_saved_run = fh.subprocess.run
+
+
+def _gh_spy(cmd, *args, **kwargs):
+    if Path(str(list(cmd)[0])).name == "gh":
+        _gh_subprocess_calls.append(list(cmd))
+    return _saved_run(cmd, *args, **kwargs)
+
+
+def _hermetic_gh(args):
+    """Every registered repo reads as a readable, workflow-less, green branch."""
+    if args[0] == "api" and "/actions/workflows" in args[1]:
+        return {"total_count": 0, "workflows": []}
+    return {"default_branch": "main"} if args[0] == "api" else []
+
+
+_saved_gh = (fh.gh_binary, fh._gh_json_caller)
+fh.gh_binary, fh._gh_json_caller = (lambda: "gh"), (lambda _gh: _hermetic_gh)
+fh.subprocess.run = _gh_spy
+try:
+    for det in fh.DETECTORS:
+        try:
+            result = det["detect"](None)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"detector {det['id']} raised: {exc}")
+            continue
+        if not isinstance(result, list):
+            failures.append(f"detector {det['id']} returned {type(result).__name__}, want list")
+            continue
+        for f in result:
+            if not f.get("subject"):
+                failures.append(f"detector {det['id']} emitted a finding with no stable subject")
+finally:
+    fh.subprocess.run = _saved_run
+    fh.gh_binary, fh._gh_json_caller = _saved_gh
 print(f"  ok: all {len(fh.DETECTORS)} shipped detectors run and return findings with subjects")
+check("the shipped-detector loop makes no live gh call", len(_gh_subprocess_calls), 0)
 
 # --- a dead filer must not read like a clean run (ASK-181 review, finding 1) --
 # file_findings catches its own network errors and returns skipped_no_key=N. This
@@ -566,6 +598,311 @@ check("it declares an action",
       _by_id.get("launchd-never-installed", {}).get("action"), "file_issue")
 check("its lesson slug is a real file",
       (_LESSONS / f"{_by_id['launchd-never-installed']['lesson']}.md").is_file(), True)
+
+# ---------------------------------------------------------------------------
+# default-branch-ci-red (ASK-1174): assafkip/ktlyst-saas-product sat RED on main
+# from 2026-07-07 to 2026-09-14 and the only thing that surfaced it was a human
+# reading 389 GitHub notifications. Nothing in the fleet watched default-branch CI.
+# ---------------------------------------------------------------------------
+check("an https remote resolves to its owner/repo",
+      fh.github_slug("https://github.com/assafkip/ktlyst-saas-product.git"),
+      "assafkip/ktlyst-saas-product")
+check("an ssh remote resolves too",
+      fh.github_slug("git@github.com:assafkip/kipi-system.git"), "assafkip/kipi-system")
+check("a non-GitHub remote is not watched", fh.github_slug("https://gitlab.com/a/b.git"), None)
+check("no remote at all is not watched", fh.github_slug(""), None)
+
+import json as _json
+
+with _tempfile.TemporaryDirectory() as _tmp:
+    _reg = Path(_tmp) / "instance-registry.json"
+    _reg.write_text(_json.dumps({
+        "skeleton": {"remote": "https://github.com/o/skeleton.git"},
+        "instances": [
+            {"name": "declared", "path": "/p/declared",
+             "dispatch": {"expected_remote": "https://github.com/o/declared.git"}},
+            {"name": "from-origin", "path": "/p/origin"},
+            {"name": "same-repo-again", "path": "/p/origin-sub"},
+            {"name": "no-remote", "path": "/p/none"},
+        ],
+        "standalone": [{"name": "elsewhere", "path": "/p/gitlab"}],
+    }))
+    _origins = {"/p/origin": "git@github.com:o/shared.git",
+                "/p/origin-sub": "https://github.com/o/shared.git",
+                "/p/none": "", "/p/gitlab": "https://gitlab.com/o/x.git"}
+    check("registered repos: skeleton + declared + origin, deduped, non-GitHub dropped",
+          fh.registered_github_repos(_reg, origin_of=_origins.get),
+          ["o/declared", "o/shared", "o/skeleton"])
+    check("no registry (an instance, not the skeleton) watches nothing",
+          fh.registered_github_repos(Path(_tmp) / "absent.json", origin_of=_origins.get), None)
+
+    # GitHub slugs are case-insensitive and `slug()` lowercases, so `O/Shared` and
+    # `o/shared` were two repos sharing ONE kipi-key: two findings in one run, both
+    # created before either reached the ledger (PR #354 review, nit 8).
+    _reg.write_text(_json.dumps({
+        "skeleton": {"remote": "https://github.com/O/Shared.git"},
+        "instances": [{"name": "lower", "path": "/p/origin"}],
+    }))
+    check("case-variant remotes for one repo are ONE repo",
+          len(fh.registered_github_repos(_reg, origin_of=_origins.get)), 1)
+
+
+_WORKFLOW_IDS = {}
+
+
+def _wid(workflow):
+    """A stable fake workflow database id per workflow name."""
+    return _WORKFLOW_IDS.setdefault(workflow, 1000 + len(_WORKFLOW_IDS))
+
+
+def _run(workflow, conclusion, created, status="completed", url=None, workflow_id=None,
+         sha="abc1234def"):
+    return {"workflowName": workflow, "conclusion": conclusion, "status": status,
+            "createdAt": created, "url": url or f"https://gh/{workflow}/{created}",
+            "headSha": sha, "workflowDatabaseId": workflow_id or _wid(workflow)}
+
+
+def _active(*names, path=None):
+    """The workflows API's rows for workflows that exist and are enabled."""
+    return [{"id": _wid(n), "name": n, "state": "active",
+             "path": path or f".github/workflows/{fh.slug(n)}.yml"} for n in names]
+
+
+# The real shape on ktlyst-saas-product main, newest first as `gh run list` returns it.
+_KTLYST_MAIN = [
+    _run("Golden Tests", "skipped", "2026-08-01T18:56:22Z"),
+    _run("PRD + Issue gates", "failure", "2026-08-01T18:56:22Z"),
+    _run("Test Suites", "success", "2026-08-01T18:56:22Z"),
+    _run("PRD + Issue gates", "failure", "2026-07-28T15:00:00Z"),
+    _run("Golden Tests", "skipped", "2026-07-28T15:00:00Z"),
+    _run("PRD + Issue gates", "failure", "2026-07-07T19:46:42Z"),
+]
+_KTLYST_WORKFLOWS = _active("Golden Tests", "PRD + Issue gates", "Test Suites")
+_red = fh.red_workflows(_KTLYST_MAIN, _KTLYST_WORKFLOWS)
+check("the failing workflow is red", [r["workflow"] for r in _red], ["PRD + Issue gates"])
+check("red-since is the OLDEST run of the unbroken red streak",
+      _red[0]["red_since"], "2026-07-07T19:46:42Z")
+# The run that STARTED the streak, not the latest one: the latest changes on every
+# failing push, and it rode in the hashed body, so each new red run rewrote the
+# issue and fired a Slack line ending "nothing to do now" (PR #354 review, minor 4).
+check("the run that started the red streak is the one linked",
+      _red[0]["url"], "https://gh/PRD + Issue gates/2026-07-07T19:46:42Z")
+check("a workflow that only ever skipped is not red (no verdict is not a failure)",
+      any(r["workflow"] == "Golden Tests" for r in _red), False)
+# Negative control: a later success clears it, or the detector can never go green.
+check("a success after the failure clears it",
+      fh.red_workflows([_run("W", "success", "2026-09-02T00:00:00Z"),
+                        _run("W", "failure", "2026-09-01T00:00:00Z")], _active("W")), [])
+check("a newer cancelled/skipped run does not hide the failure under it",
+      [r["workflow"] for r in fh.red_workflows(
+          [_run("W", "cancelled", "2026-09-03T00:00:00Z"),
+           _run("W", "failure", "2026-09-01T00:00:00Z")], _active("W"))], ["W"])
+check("an in-progress run is not a verdict either",
+      [r["workflow"] for r in fh.red_workflows(
+          [_run("W", "", "2026-09-03T00:00:00Z", status="in_progress"),
+           _run("W", "timed_out", "2026-09-01T00:00:00Z")], _active("W"))], ["W"])
+
+# --- only workflows that still EXIST can make a branch red (PR #354, major) --
+# ktlyst-website has zero workflows and its last runs are failures of a deleted
+# `Skeleton Validation`; those runs never age out, so the repo read red forever and
+# closing the issue reopened it every morning.
+check("runs of a DELETED workflow are not red (the workflows API no longer lists it)",
+      fh.red_workflows([_run("Skeleton Validation", "failure", "2026-04-11T19:05:47Z")], []), [])
+check("runs of a DISABLED workflow are not red",
+      fh.red_workflows([_run("W", "failure", "2026-09-01T00:00:00Z")],
+                       [{**_active("W")[0], "state": "disabled_manually"}]), [])
+# A rename inside one file keeps the workflow id and changes the run's
+# workflowName. Grouped by NAME, the old name's last failure stayed red forever
+# next to the new name's green.
+check("a renamed workflow's old failures are superseded by its newer success",
+      fh.red_workflows([_run("Checks", "success", "2026-09-02T00:00:00Z", workflow_id=_wid("CI")),
+                        _run("CI", "failure", "2026-09-01T00:00:00Z")], _active("CI")), [])
+check("...and a red renamed workflow shows its CURRENT name",
+      [r["workflow"] for r in fh.red_workflows(
+          [_run("Old name", "failure", "2026-09-01T00:00:00Z", workflow_id=_wid("New name"))],
+          _active("New name"))], ["New name"])
+# GitHub-managed dynamic workflows are not the repo's CI (PR #354 review, minor 2):
+# kipi-investigations read red only from a 2026-06-02 Dependency Graph run.
+check("a dynamic GitHub-managed workflow (Dependency Graph) is not repo CI",
+      fh.red_workflows([_run("Dependency Graph", "failure", "2026-06-02T00:00:00Z")],
+                       _active("Dependency Graph", path="dynamic/dependabot/update-graph")), [])
+
+# --- the hashed body is stable while the branch STAYS red (minor 4) ----------
+_newer_red = [_run("PRD + Issue gates", "failure", "2026-09-10T00:00:00Z", sha="fff9999aaa")]
+_body_before = fh._red_branch_finding("o/r", "main", _red)
+_body_after = fh._red_branch_finding(
+    "o/r", "main", fh.red_workflows(_newer_red + _KTLYST_MAIN, _KTLYST_WORKFLOWS))
+check("a new failing run on a still-red branch does not change the finding hash",
+      fh.finding_hash(_body_after), fh.finding_hash(_body_before))
+
+# A streak longer than the read window has no visible start. Naming the oldest red
+# run the window still reaches would move that date every day the window slides.
+_full_red = [_run("W", "failure", f"2026-09-{d:02d}T00:00:00Z") for d in range(28, 0, -1)]
+_saved_window = fh.RUN_WINDOW
+fh.RUN_WINDOW = 20
+try:
+    _slid_a = fh.red_workflows(_full_red[:20], _active("W"), window_full=True)
+    _slid_b = fh.red_workflows(_full_red[1:21], _active("W"), window_full=True)
+finally:
+    fh.RUN_WINDOW = _saved_window
+check("a streak reaching past the read window reports no red-since date",
+      _slid_a[0]["red_since"], None)
+check("...so a sliding window does not rewrite the issue",
+      fh.finding_hash(fh._red_branch_finding("o/r", "main", _slid_a)),
+      fh.finding_hash(fh._red_branch_finding("o/r", "main", _slid_b)))
+
+# --- the body does not promise a close nobody performs (minor 6) -------------
+check("the body does not claim a green run clears the issue",
+      "the next default-branch run does" in _body_before["body"], False)
+check("...it says the issue does not close itself",
+      "does not close itself" in _body_before["body"], True)
+
+
+def _fake_gh(table):
+    """`gh` stand-in: ('repo'|'workflows'|'runs', slug) -> the JSON that call returns.
+    An int is the nonzero exit code the call fails with. A missing 'workflows' row
+    means every workflow the repo's runs name is active."""
+    calls = []
+
+    def gh_json(args):
+        if args[0] == "api":
+            path = args[1].split("?")[0]
+            kind = "workflows" if path.endswith("/actions/workflows") else "repo"
+            slug = "/".join(path.split("/")[1:3])
+        else:
+            kind, slug = "runs", args[args.index("-R") + 1]
+        calls.append((kind, slug, tuple(args)))
+        if kind == "workflows" and (kind, slug) not in table:
+            names = sorted({r["workflowName"] for r in table.get(("runs", slug)) or []})
+            return {"total_count": len(names), "workflows": _active(*names)}
+        got = table[(kind, slug)]
+        if isinstance(got, int):
+            raise fh.GhCallFailed(f"exit {got}")
+        return got
+    gh_json.calls = calls
+    return gh_json
+
+
+_gh = _fake_gh({
+    ("repo", "o/red"): {"default_branch": "main"},
+    ("runs", "o/red"): _KTLYST_MAIN,
+    ("repo", "o/green"): {"default_branch": "trunk"},
+    ("runs", "o/green"): [_run("CI", "success", "2026-09-01T00:00:00Z")],
+    ("repo", "o/gone"): 1,
+    ("repo", "o/deleted-only"): {"default_branch": "main"},
+    ("workflows", "o/deleted-only"): {"total_count": 0, "workflows": []},
+    ("runs", "o/deleted-only"): [_run("Skeleton Validation", "failure", "2026-04-11T19:05:47Z")],
+})
+_found = fh.default_branch_ci_findings(["o/deleted-only", "o/gone", "o/green", "o/red"], _gh)
+_subjects = sorted(f["subject"] for f in _found)
+check("one finding for the red repo, one rollup for the unreadable one, none for deleted-only",
+      _subjects, ["default-branch-ci-unreadable", "o/red"])
+_red_f = next(f for f in _found if f["subject"] == "o/red")
+check("the red finding names the workflow", "PRD + Issue gates" in _red_f["body"], True)
+check("...how long it has been red", "2026-07-07" in _red_f["body"], True)
+check("...and links the run that turned it red",
+      "https://gh/PRD + Issue gates/2026-07-07T19:46:42Z" in _red_f["body"], True)
+check("the title names the repo and its branch",
+      "o/red" in _red_f["title"] and "main" in _red_f["title"], True)
+check("runs are read for the repo's ACTUAL default branch, not an assumed main",
+      [c[2][c[2].index("--branch") + 1] for c in _gh.calls if c[0] == "runs" and c[1] == "o/green"],
+      ["trunk"])
+_gone_f = next(f for f in _found if f["subject"] == "default-branch-ci-unreadable")
+check("the unreadable rollup names the repo and the exit code, never gh's text",
+      "o/gone" in _gone_f["body"] and "exit 1" in _gone_f["body"], True)
+check("a green-only fleet files nothing",
+      fh.default_branch_ci_findings(["o/green"], _gh), [])
+try:
+    fh.default_branch_ci_findings(["o/gone"], _gh)
+    check("every repo unreadable raises (blind), never an all-clear", "no raise", "raise")
+except fh.GhCallFailed:
+    check("every repo unreadable raises (blind), never an all-clear", True, True)
+
+# More workflows than one page returns: the unseen ones would silently read clean.
+_gh_paged = _fake_gh({
+    ("repo", "o/big"): {"default_branch": "main"},
+    ("workflows", "o/big"): {"total_count": 150, "workflows": _active("W")},
+    ("runs", "o/big"): [],
+    ("repo", "o/green"): {"default_branch": "trunk"},
+    ("runs", "o/green"): [_run("CI", "success", "2026-09-01T00:00:00Z")],
+})
+check("a repo with more workflows than one page is unreadable, not clean",
+      [f["subject"] for f in fh.default_branch_ci_findings(["o/big", "o/green"], _gh_paged)],
+      ["default-branch-ci-unreadable"])
+
+# --- one repo's hung or missing gh must not blind every repo (minor 3) -------
+# TimeoutExpired and OSError are not GhCallFailed, so they escaped the per-repo
+# catch, `run_detectors` recorded the WHOLE detector as blind, and 23 readable
+# repos went unreported because one timed out. Driven through the real
+# `_gh_json_caller`, with only `subprocess.run` scripted.
+
+
+class _Proc:
+    def __init__(self, stdout, returncode=0):
+        self.stdout, self.stderr, self.returncode = stdout, "", returncode
+
+
+def _scripted_run(cmd, *args, **kwargs):
+    joined = " ".join(str(c) for c in cmd)
+    if "o/hung" in joined:
+        raise fh.subprocess.TimeoutExpired(cmd, 60)
+    if "o/broken" in joined:
+        raise OSError("exec format error")
+    if "o/garbled" in joined:
+        return _Proc("<html>not json</html>")
+    if "/actions/workflows" in joined:
+        return _Proc(_json.dumps({"total_count": 1, "workflows": _active("CI")}))
+    if joined.split()[1] == "api":
+        return _Proc(_json.dumps({"default_branch": "main"}))
+    return _Proc(_json.dumps([_run("CI", "failure", "2026-09-01T00:00:00Z")]))
+
+
+fh.subprocess.run = _scripted_run
+try:
+    _mixed = fh.default_branch_ci_findings(
+        ["o/broken", "o/garbled", "o/hung", "o/red"], fh._gh_json_caller("gh"))
+    _mixed_error = None
+except Exception as exc:  # noqa: BLE001 - the assertion below is on exactly this
+    _mixed, _mixed_error = [], exc
+finally:
+    fh.subprocess.run = _saved_run
+check("a timeout, an OSError and non-JSON stay per-repo, never blind the detector",
+      type(_mixed_error).__name__ if _mixed_error else None, None)
+check("...the readable red repo is still reported",
+      any(f["subject"] == "o/red" for f in _mixed), True)
+_mixed_rollup = next((f["body"] for f in _mixed
+                      if f["subject"] == "default-branch-ci-unreadable"), "")
+check("...and all three land in the unreadable rollup",
+      all(r in _mixed_rollup for r in ("o/broken", "o/garbled", "o/hung")), True)
+check("the rollup names the exception type, never its message",
+      "exec format error" in _mixed_rollup, False)
+
+# The launchd job runs with PATH=/usr/bin:/bin, and gh lives in /opt/homebrew/bin.
+# A bare `gh` would fail every morning while the terminal run passes.
+with _tempfile.TemporaryDirectory() as _tmp:
+    _fake_bin = Path(_tmp) / "gh"
+    _fake_bin.write_text("#!/bin/sh\n")
+    _fake_bin.chmod(0o755)
+    _saved_which, _saved_fallbacks = fh.shutil.which, fh.GH_FALLBACKS
+    fh.shutil.which = lambda _name: None
+    try:
+        fh.GH_FALLBACKS = (str(Path(_tmp) / "missing-gh"), str(_fake_bin))
+        check("gh off PATH still resolves from a known install location",
+              fh.gh_binary(), str(_fake_bin))
+        fh.GH_FALLBACKS = (str(Path(_tmp) / "missing-gh"),)
+        try:
+            fh.gh_binary()
+            check("no gh anywhere raises (blind)", "no raise", "GhUnavailable")
+        except fh.GhUnavailable:
+            check("no gh anywhere raises (blind), never an all-clear", True, True)
+    finally:
+        fh.shutil.which, fh.GH_FALLBACKS = _saved_which, _saved_fallbacks
+
+check("default-branch-ci-red is registered", "default-branch-ci-red" in _by_id, True)
+check("it declares an action",
+      _by_id.get("default-branch-ci-red", {}).get("action"), "file_issue")
+check("its lesson slug is a real file",
+      (_LESSONS / f"{_by_id.get('default-branch-ci-red', {}).get('lesson')}.md").is_file(), True)
 
 if failures:
     print("FAIL:")
