@@ -985,6 +985,18 @@ run_status_reviewer() {
 }
 
 status_call() { grep 'statuses/' "$1/gh-calls.log" 2>/dev/null | head -1; }
+# THE LAST STATUS CALL, WHICH IS WHAT GITHUB ENDS UP SHOWING. Commit statuses
+# append and the latest for a context wins, so a reader on the PR sees this one.
+#
+# WHY BOTH HELPERS EXIST (sp-fa810306, 2026-09-07). The reviewer now posts the
+# status BEFORE the comment, so a kill between the two loses prose and never the
+# verdict. That means the FIRST status has no target_url yet -- there is no
+# comment to link to at the moment it is posted -- and a second call re-posts the
+# same context and verdict with the link once the comment lands. So the two
+# questions split: "did the gate move, on the right sha, with the right state"
+# is about the FIRST call (that is the one a kill would leave standing), and
+# "can a human click through to the review" is about the LAST one.
+status_call_last() { grep 'statuses/' "$1/gh-calls.log" 2>/dev/null | tail -1; }
 
 APPROVE_REVIEW='## VERDICT: APPROVE
 
@@ -1024,10 +1036,32 @@ printf '%s' "$CALL" | grep -q 'state=success' \
   || fail "an APPROVE did not map to state=success. Call was: $CALL"
 ok "APPROVE maps to state=success on context $STATUS_CONTEXT"
 
-printf '%s' "$CALL" | grep -q "target_url=$COMMENT_URL_FIXTURE" \
+# READS THE LAST STATUS CALL, not the first. The reviewer posts the status before
+# the comment now (sp-fa810306), so the first call cannot carry a link that does
+# not exist yet; the second re-posts the same context and verdict with the link.
+# What a human sees on the PR is the last one, and that is what this asserts.
+CALL_LAST="$(status_call_last "$N1")"
+printf '%s' "$CALL_LAST" | grep -q "target_url=$COMMENT_URL_FIXTURE" \
   || fail "the status did not carry the PR-comment URL --post had just created, so a human
-      clicking the check lands nowhere. Call was: $CALL"
+      clicking the check lands nowhere. Last status call was: $CALL_LAST"
 ok "target_url is the PR comment URL --post actually created"
+
+# THE ORDERING ITSELF, asserted here because this suite already owns the status
+# post and would otherwise pass on a script that went back to commenting first.
+# The comment is prose a human reads later; the status is what converge.sh, the
+# required check and the next session all read. A kill can land between the two,
+# so the one that survives has to be the status (PR #314, 2026-09-07: an
+# APPROVE WITH NITS comment landed at 00:29:47Z, the status never did, and the
+# re-run overturned the approval).
+STATUS_LINE_NO="$(grep -n 'statuses/' "$N1/gh-calls.log" 2>/dev/null | head -1 | cut -d: -f1)"
+COMMENT_LINE_NO="$(grep -n 'pr comment' "$N1/gh-calls.log" 2>/dev/null | head -1 | cut -d: -f1)"
+if [ -n "$STATUS_LINE_NO" ] && [ -n "$COMMENT_LINE_NO" ]; then
+  [ "$STATUS_LINE_NO" -lt "$COMMENT_LINE_NO" ] \
+    || fail "the PR comment was posted BEFORE the commit status (comment at line $COMMENT_LINE_NO,
+      status at line $STATUS_LINE_NO). A kill between them then loses the verdict and keeps the
+      prose, which is what cost PR #314 an earned approval on 2026-09-07 (sp-fa810306)."
+  ok "the commit status is posted before the PR comment"
+fi
 
 # N2. a gate that can only ever say success is not a gate.
 N2="$W2/st-block"
