@@ -655,6 +655,21 @@ def sec_negative_proof():
         add_test(root, "q-system/.q-system/scripts/test_sneaky.py")
         rc, out = run_gate(root, "--check-only")
         check("F1: present-but-undeclared RED", rc == 1 and "present-but-undeclared" in out)
+    # F1b: the SAME defect one directory over. F1 above places its undeclared
+    # file in `scripts/`, which discovery has always walked recursively -- so
+    # the negative proof exercised the one path that already worked, and the
+    # sibling directories were never asked about. `.q-system` itself was
+    # scanned with `glob`, not `rglob`, so every subdirectory of it except
+    # scripts/ was invisible to this direction of the diff. On main at
+    # 569b0ec0 that hid ten real test files in `.q-system/tests/`: 174
+    # assertions, green, executed by no runner at all. This case is the one
+    # that goes red if discovery is ever narrowed back.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        add_test(root, "q-system/.q-system/tests/test_sneaky_nested.py")
+        rc, out = run_gate(root, "--check-only")
+        check("F1b: present-but-undeclared in a NESTED .q-system dir RED",
+              rc == 1 and "test_sneaky_nested.py" in out)
     # F3a: declared skeleton_only is SKIPPED in an instance (no crash) — and
     # the skip must be visible via the SKIP path, not an unrelated no-run
     # (codex, sag-negative-proof-matrix)

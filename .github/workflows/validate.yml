@@ -53,6 +53,14 @@ jobs:
         env:
           CI: true
 
+      # The gate above scopes q-system/.q-system. This one asks the wider
+      # question it cannot: across the WHOLE repo, is each test file reached by
+      # any runner at all? 53 are not, and that set is frozen in
+      # q-system/.q-system/test-reachability-baseline.json so it can only
+      # shrink. A new one fails here.
+      - name: Test reachability ratchet (no new test that nothing runs)
+        run: python3 q-system/.q-system/scripts/reachability-check.py --repo-root .
+
       # CAPABILITY_GATE_SKIP: the gate just ran as its own step above; running
       # it again inside validate-separation would execute the suite twice per
       # CI run (finding-15). The skip is honored only with caller proof
