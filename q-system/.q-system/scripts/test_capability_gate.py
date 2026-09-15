@@ -524,6 +524,30 @@ def sec_wiring():
         (root / ".claude/settings.json").write_text('{"hooks": "hooked-engine.py"}')
         rc, out = run_gate(root, "--check-only")
         check("wiring: settings.json reference is wired", rc == 0)
+    # ASK-1170: verify.sh is what .github/workflows/verify.yml runs on every
+    # push, so a script called only from there executes in CI. PR #279 was RED on
+    # `inert-engine: mcp-denylist-namespace-check.py` while CI ran it. The line
+    # below is the shape that PR wrote into verify.sh, not an invented one.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        engine(root, "q-system/.q-system/scripts/ci-only-engine.py")
+        (root / "q-system/.q-system/verify.sh").write_text(
+            '#!/bin/bash\n'
+            '_ci_check="$TARGET/q-system/.q-system/scripts/ci-only-engine.py"\n'
+            'run_check "ci-only" python3 "$_ci_check"\n')
+        rc, out = run_gate(root, "--check-only")
+        check("ASK-1170: engine wired ONLY in verify.sh is NOT inert",
+              rc == 0 and "ci-only-engine.py" not in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        # PRECISION half: the widening is verify.sh by name, not every shell
+        # file beside it. A sibling script nothing runs still wires nothing.
+        root = make_repo(tmp)
+        engine(root, "q-system/.q-system/scripts/sibling-only.py")
+        (root / "q-system/.q-system/scratch.sh").write_text(
+            '#!/bin/bash\npython3 "$TARGET/q-system/.q-system/scripts/sibling-only.py"\n')
+        rc, out = run_gate(root, "--check-only")
+        check("ASK-1170: a sibling .sh next to verify.sh is NOT wiring, still RED",
+              rc == 1 and "sibling-only.py" in out)
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         main_guard = 'if __name__ == "__main__":\n    pass\n'
