@@ -10,6 +10,7 @@ pass this test forever while the real one drifted -- which is precisely the
 docstring names.
 """
 import importlib.util
+import os
 import re
 import sys
 import unittest
@@ -25,7 +26,15 @@ def _load(name, filename):
     return mod
 
 
-triage = _load("triage", "linear-alert-triage.py")
+# alert_triage_mutants.py points this at a copy with one fix reverted, to show
+# the pin for that defect goes RED. Unset, it is the shipped script.
+UNDER_TEST = os.environ.get("KIPI_ALERT_TRIAGE_UNDER_TEST")
+if UNDER_TEST:
+    _spec = importlib.util.spec_from_file_location("triage", UNDER_TEST)
+    triage = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(triage)
+else:
+    triage = _load("triage", "linear-alert-triage.py")
 drafter = _load("drafter", "linear-dor-drafter.py")
 
 
@@ -823,7 +832,8 @@ def promotes_by_hand_during_the_call(board, verdict, body):
 
 def lane_plists():
     found = []
-    for p in sorted(SCRIPTS.glob("com.kipi.*.plist")):
+    plist_dir = Path(os.environ.get("KIPI_ALERT_TRIAGE_PLIST_DIR") or SCRIPTS)
+    for p in sorted(plist_dir.glob("com.kipi.*.plist")):
         # Only the lane's own template is parsed: several sibling templates are
         # not well-formed XML until install-plist.sh materializes them.
         if "alert-triage" not in p.read_text(encoding="utf-8"):
