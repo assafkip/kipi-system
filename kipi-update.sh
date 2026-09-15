@@ -2913,6 +2913,42 @@ if [ -n "$ONLY" ] && [ "$((PASS+FAIL+SKIP))" -eq 0 ]; then
   exit 1
 fi
 
+# ARM NEWLY COMMITTED LAUNCHD JOBS (ASK-1130). Nothing called `kipi install-jobs`,
+# so a merged com.kipi.*.plist ran nowhere until somebody knew to type it: the
+# same shape ASK-729 closed at the installer and left open here. This is the call.
+#
+# It runs `install-plist.sh --missing`, which installs only a template with no job
+# yet and never rewrites or boots out an installed one (see that mode's header),
+# and it runs ONLY when this checkout is the registry's skeleton. That check is the
+# chokepoint, not a nicety: ~15 updater tests run this script from a scratch
+# `git init` tree with the real HOME, and a scratch tree passes install-plist's
+# worktree refusal. Their registries carry no skeleton entry, so they cannot arm a
+# real job pointing at a directory that is deleted a second later. A worktree or a
+# second clone is not the registry's skeleton either, so it cannot rebind a job to
+# itself. Dry runs arm nothing.
+JOBS_NOT_ARMED=""
+arm_new_jobs() {
+  local skeleton here out rc=0
+  skeleton="$(python3 -c 'import json,os,sys; print(os.path.realpath(json.load(open(sys.argv[1])).get("skeleton",{}).get("path","")))' "$REGISTRY" 2>/dev/null || true)"
+  here="$(cd "$SCRIPT_DIR" && pwd -P)"
+  if [ -z "$skeleton" ] || [ "$skeleton" = "/" ] || [ "$here" != "$skeleton" ]; then
+    echo "  jobs: not armed; $here is not the registry skeleton"
+    return 0
+  fi
+  if [ -n "${DRY_RUN:-}" ]; then
+    say "  jobs: not armed (dry run)"
+    return 0
+  fi
+  out="$(bash "$SCRIPT_DIR/q-system/.q-system/scripts/install-plist.sh" --missing 2>&1)" || rc=$?
+  printf '%s\n' "$out" | sed 's/^/  /'
+  if [ "$rc" -ne 0 ]; then
+    JOBS_NOT_ARMED="$(printf '%s\n' "$out" | sed -n 's/^install-jobs: could not install://p')"
+    JOBS_NOT_ARMED="${JOBS_NOT_ARMED:- (install-plist.sh --missing exited $rc)}"
+  fi
+}
+echo "=== Launchd jobs ==="
+arm_new_jobs
+
 echo "=== Summary ==="
 echo "  Updated: $PASS"
 echo "  Failed:  $FAIL"
@@ -2935,4 +2971,8 @@ if [ -n "${UNDECLARED:-}" ]; then
   echo "  UNDECLARED NON-PROPAGATING:$UNDECLARED"
 fi
 
-[ "$FAIL" -eq 0 ] && [ -z "${GATE_FAIL:-}" ] && exit 0 || exit 1
+if [ -n "$JOBS_NOT_ARMED" ]; then
+  echo "  LAUNCHD JOBS NOT ARMED:$JOBS_NOT_ARMED"
+fi
+
+[ "$FAIL" -eq 0 ] && [ -z "${GATE_FAIL:-}" ] && [ -z "$JOBS_NOT_ARMED" ] && exit 0 || exit 1

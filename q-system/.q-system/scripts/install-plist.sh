@@ -103,14 +103,27 @@ fi
 # laptop is not a mechanism. This is the caller, so a fresh checkout can arm the
 # fleet's jobs in one step, and each install still reports its own result rather
 # than the loop reporting a single aggregate success.
-if [ "$1" = "--all" ]; then
+#
+# --missing: the same walk, but it installs ONLY a template with no job in
+# ~/Library/LaunchAgents yet (ASK-1130). It is the mode the fleet updater calls
+# after every sync, so a merged com.kipi.*.plist gets armed without anyone typing
+# a command. An already-installed job is never touched, and that is the safety
+# argument, not a convenience:
+#   * its plist is not rewritten, so it keeps pointing where it points and a live
+#     value set during an incident survives (fleet-health's REPORT, NEVER REPAIR);
+#   * it is never booted out, so a job that is running right now (lessons-daily
+#     is the job that runs the updater) is not killed by its own update.
+# A label in the paused ledger is skipped too: paused is a decision somebody made,
+# and re-arming it on the next sync would overrule them silently.
+MODE="$1"
+if [ "$MODE" = "--all" ] || [ "$MODE" = "--missing" ]; then
   # REFUSE FROM A WORKTREE. Measured the hard way 2026-08-14: running --all from a
   # git worktree rewrote every live job to point at that worktree, including the
   # dispatcher, seconds before the directory was to be deleted. One label is a
   # deliberate act on one job; --all is a fleet-wide rewrite, and aiming that at a
   # temporary checkout silently disarms every scheduled job on the machine.
   if [ -f "$KIPI_REPO/.git" ] || [ ! -d "$KIPI_REPO/.git" ]; then
-    echo "REFUSED: --all only runs from the primary checkout, not a worktree." >&2
+    echo "REFUSED: $MODE only runs from the primary checkout, not a worktree." >&2
     echo "  resolved KIPI_REPO=$KIPI_REPO" >&2
     echo "  every installed job would point here and break when it is removed." >&2
     echo "  install a single label instead: install-plist.sh <label>" >&2
@@ -128,8 +141,19 @@ if [ "$1" = "--all" ]; then
   if [ -f "$KIPI_REPO/instance-registry.json" ]; then
     _skeleton="$(python3 -c 'import json,sys,os; print(os.path.realpath(json.load(open(sys.argv[1]))["skeleton"]["path"]))' "$KIPI_REPO/instance-registry.json" 2>/dev/null || true)"
   fi
+  # The paused ledger has ONE reader, launchd-health-check.py's, which fleet-health
+  # reuses for the same reason. Fail CLOSED: if it cannot be read, --missing arms
+  # nothing, because arming a job somebody paused is the harm this mode must not do.
+  _paused=""
+  if [ "$MODE" = "--missing" ]; then
+    if ! _paused="$(python3 -c 'import importlib.util,sys; s=importlib.util.spec_from_file_location("wd",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print("\n".join(sorted(m.load_paused_labels())))' "$SCRIPT_DIR/launchd-health-check.py")"; then
+      echo "REFUSED: --missing could not read the paused-label ledger; arming nothing." >&2
+      exit 2
+    fi
+  fi
   rc=0
   _n_installed=0
+  _n_present=0
   _n_skipped=0
   _n_failed=0
   _failed_labels=""
@@ -141,6 +165,17 @@ if [ "$1" = "--all" ]; then
       echo "  skipped (skeleton-only): $_label"
       _n_skipped=$((_n_skipped + 1))
       continue
+    fi
+    if [ "$MODE" = "--missing" ]; then
+      if [ -e "$HOME/Library/LaunchAgents/$_label.plist" ]; then
+        _n_present=$((_n_present + 1))
+        continue
+      fi
+      if printf '%s\n' "$_paused" | grep -qxF "$_label"; then
+        echo "  skipped (paused): $_label"
+        _n_skipped=$((_n_skipped + 1))
+        continue
+      fi
     fi
     if bash "$0" "$_label"; then
       _n_installed=$((_n_installed + 1))
@@ -160,7 +195,11 @@ EOF
   # 0. The founder's only signal was silence. Every committed label now lands in
   # exactly one of these three counts, and a template that could not be installed
   # is named and carries the exit code out.
-  echo "install-jobs: $_n_installed installed, $_n_skipped skipped, $_n_failed failed (of $((_n_installed + _n_skipped + _n_failed)) committed)"
+  if [ "$MODE" = "--missing" ]; then
+    echo "install-jobs: $_n_installed newly installed, $_n_present already installed (untouched), $_n_skipped skipped, $_n_failed failed (of $((_n_installed + _n_present + _n_skipped + _n_failed)) committed)"
+  else
+    echo "install-jobs: $_n_installed installed, $_n_skipped skipped, $_n_failed failed (of $((_n_installed + _n_skipped + _n_failed)) committed)"
+  fi
   if [ "$_n_failed" -gt 0 ]; then
     echo "install-jobs: could not install:$_failed_labels" >&2
   fi
