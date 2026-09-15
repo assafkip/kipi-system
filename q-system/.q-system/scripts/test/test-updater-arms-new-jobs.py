@@ -20,7 +20,7 @@ recording launchctl stub (a real launchctl here would bootstrap live jobs):
   5. A scratch tree whose registry does not name it the skeleton arms nothing,
      which is what keeps ~15 other updater tests from arming real jobs.
 
-NEGATIVE SELF-TEST. `KIPI_TEST_SOURCE_REF=origin/main python3 <this>` builds the
+NEGATIVE SELF-TEST. `python3 <this> --source-ref origin/main` builds the
 fixture from the pre-change scripts; case 1 goes RED there, which is the proof
 the check can fail.
 
@@ -64,22 +64,33 @@ def git(args, cwd):
     return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=120)
 
 
-def source_bytes(rel):
+def stage_tree(sk):
+    """The whole tracked tree, not a hand-picked file list.
+
+    The first version copied three files and the updater aborted before its loop
+    on a missing fail-closed gate, so the RED it produced was about the fixture,
+    not the gap. The updater's own preconditions decide what it needs; the test
+    does not get to restate them.
+    """
+    sk.mkdir(parents=True)
     if SOURCE_REF:
-        out = subprocess.run(["git", "show", f"{SOURCE_REF}:{rel}"], cwd=str(REPO),
-                             capture_output=True, timeout=60)
-        if out.returncode != 0:
-            raise SystemExit(f"cannot read {rel} at {SOURCE_REF}")
-        return out.stdout
-    return (REPO / rel).read_bytes()
+        arch = subprocess.run(["git", "archive", SOURCE_REF], cwd=str(REPO), capture_output=True, timeout=300)
+        subprocess.run(["tar", "-x", "-C", str(sk)], input=arch.stdout, capture_output=True, timeout=300)
+        return
+    files = [f for f in git(["ls-files", "-z"], REPO).stdout.split("\0") if f and (REPO / f).exists()]
+    listing = sk.parent / "tracked.txt"
+    listing.write_text("\n".join(files))
+    tarball = sk.parent / "tree.tar"
+    subprocess.run(["tar", "-cf", str(tarball), "-T", str(listing)], cwd=str(REPO), capture_output=True, timeout=300)
+    subprocess.run(["tar", "-xf", str(tarball)], cwd=str(sk), capture_output=True, timeout=300)
 
 
 def build_skeleton(work, name_it_skeleton):
     sk = work / "skeleton"
+    stage_tree(sk)
     for rel in FILES:
-        dest = sk / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(source_bytes(rel))
+        if not (sk / rel).is_file():
+            raise SystemExit(f"fixture is missing {rel}")
     scripts = sk / "q-system/.q-system/scripts"
     for label in ("com.kipi.old", "com.kipi.new", "com.kipi.paused"):
         (scripts / f"{label}.plist").write_text(TEMPLATE.format(label=label))
@@ -135,8 +146,11 @@ def case_updater_arms_only_the_missing_job():
     check("updater exits 0", proc.returncode, 0)
     new = agents / "com.kipi.new.plist"
     check("newly committed job is installed", new.is_file(), True)
+    # Either spelling of the scratch path: on macOS /var is a symlink to
+    # /private/var, and the installer renders the path it was invoked through.
+    rendered = new.read_text() if new.is_file() else ""
     check("installed job points at the skeleton",
-          new.is_file() and f"{sk.resolve()}/run.sh" in new.read_text(), True)
+          f"{sk}/run.sh" in rendered or f"{sk.resolve()}/run.sh" in rendered, True)
     check("already-installed job's plist is byte-identical", (agents / "com.kipi.old.plist").read_text(), LIVE_OLD)
     check("launchctl never hears the installed label", "com.kipi.old" in calls(log), False)
     check("paused job is not armed", (agents / "com.kipi.paused.plist").exists(), False)
@@ -154,7 +168,11 @@ def case_worktree_refuses(sk, work):
     env, log = env_for(work / "a-worktree", home)
     direct = subprocess.run(["bash", str(wt / "q-system/.q-system/scripts/install-plist.sh"), "--missing"],
                             capture_output=True, text=True, timeout=120, env=env)
+    # The message, not only the code: an installer that does not know --missing
+    # also exits 2 ("no committed plist template for label"), which is a pass for
+    # the wrong reason.
     check("install-plist.sh --missing refuses with exit 2", direct.returncode, 2)
+    check("the refusal is the worktree refusal", "REFUSED: --missing only runs from the primary checkout" in direct.stderr, True)
     run_updater(wt, env)
     listing = sorted(p.name for p in (home / "Library" / "LaunchAgents").iterdir())
     check("no plist written from the worktree", listing, ["com.kipi.old.plist"])

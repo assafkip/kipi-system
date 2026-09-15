@@ -2929,9 +2929,12 @@ fi
 JOBS_NOT_ARMED=""
 arm_new_jobs() {
   local skeleton here out rc=0
-  skeleton="$(python3 -c 'import json,os,sys; print(os.path.realpath(json.load(open(sys.argv[1])).get("skeleton",{}).get("path","")))' "$REGISTRY" 2>/dev/null || true)"
+  # An absent path prints NOTHING, never realpath(""): that is the cwd, which is
+  # this checkout, so a registry with no skeleton entry read as "this is the
+  # skeleton" and armed 15 jobs from a scratch tree (caught by case 5 of the test).
+  skeleton="$(python3 -c 'import json,os,sys; p=(json.load(open(sys.argv[1])).get("skeleton") or {}).get("path") or ""; print(os.path.realpath(p) if p else "")' "$REGISTRY" 2>/dev/null || true)"
   here="$(cd "$SCRIPT_DIR" && pwd -P)"
-  if [ -z "$skeleton" ] || [ "$skeleton" = "/" ] || [ "$here" != "$skeleton" ]; then
+  if [ -z "$skeleton" ] || [ "$here" != "$skeleton" ]; then
     echo "  jobs: not armed; $here is not the registry skeleton"
     return 0
   fi
