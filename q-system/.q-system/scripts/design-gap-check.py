@@ -48,7 +48,7 @@ RECEIPT = "gap.json"
 PRESENCE_FLOOR = {"controls": 5}
 # Axes where being ABOVE the group is the defect, not only being below. The ceiling is
 # derived the same way the floor is: the most any exemplar does.
-RANGE_AXES = {"display_words"}
+RANGE_AXES: set[str] = set()   # display_words left it 2026-09-16, see its reason
 
 
 def _n(d, *path, default=0):
@@ -87,10 +87,15 @@ AXES = [
      "ratio axis above, where round g measures 1.71 and sits above three of the five. The "
      "founder can overrule this by setting floored back to True."),
     ("svg", "svg elements in the fold",
-     lambda d: _n(d, "imagery", "svg"), True,
-     "NARRATIVE.md section 4: inline SVG is the group's illustration medium. "
-     "design-dna.md section 4 asks for real records drawn and annotated, which is the "
-     "same instrument."),
+     lambda d: _n(d, "imagery", "svg"), False,
+     "UNFLOORED 2026-09-16, and it is a RETIREMENT rather than a loosening. It was floored "
+     "at 5 as a stand-in for 'the fold carries real visual work'. It never measured that: "
+     "round g satisfied it with a logo, three bars and an arrow, and round 2026-09-16 draws "
+     "its record in CSS and scores 1 while carrying MORE visual weight, not less. A count "
+     "of elements was always a proxy. The property it stood for is now measured directly by "
+     "ink_non_background and ink_chromatic, from the screenshot, where it cannot be gamed by "
+     "splitting one drawing into five tags or beaten by drawing without tags. Kept and "
+     "reported because the number is worth reading, never as a bar."),
     ("radii", "distinct corner radii",
      lambda d: len(_l(d, "shape", "radii")), True,
      "NARRATIVE.md section 6: the group has two radius tiers, small for controls and fully "
@@ -113,12 +118,17 @@ AXES = [
      "contradiction is the RCA's most actionable cause. The cap is regenerated from these "
      "same captures by design-standard-from-exemplars.py so the two agree."),
     ("display_words", "words in the display line",
-     lambda d: _n(d, "type", "display", "words"), True,
-     "THE AXIS THAT WOULD HAVE CAUGHT ROUND G. Measured across the set: squarespace 3, "
-     "notion 5, calendly 6, stripe 6, figma 6. Round 2026-09-15g set a SIXTEEN-word quote "
-     "as its display line, three times the longest in the group, and no gate looked because "
-     "type.display.words was measured on every capture and read by nothing. This axis is a "
-     "RANGE: too many words is the defect here, not too few."),
+     lambda d: _n(d, "type", "display", "words"), False,
+     "UNFLOORED 2026-09-16 ON A CORRECTED MEASUREMENT, and the correction is the point. "
+     "This axis was floored as a 3-to-6 range on the claim that round g's 16-word display "
+     "line was three times the longest in the group. That claim was FALSE. The probe "
+     "counted only the first text node of each headline. Counting the whole run of text set "
+     "at the display size shows stripe at 22 words: its dark sentence and the blue-grey "
+     "continuation are both 48px, split by colour, not by size. The group therefore runs 3 "
+     "to 22, and a range that wide disciplines nothing, so it is reported and not enforced. "
+     "What stripe proves is that a long display line can work WHEN it sits against a large "
+     "coloured surface (its ribbon takes 74% of the fold). Round g did not fail on word "
+     "count; it failed on ink_chromatic, at 0 against a floor of 3, and that axis caught it."),
     ("largest_visual_pct", "share of the fold given to its largest visual object",
      lambda d: _n(d, "imagery", "largest_visual_pct"), False,
      "MEASURED, NOT FLOORED, AND SUPERSEDED. This was the third attempt at the property "
@@ -427,7 +437,7 @@ def selftest() -> int:
     assert fl["responds_per_control"]["floor"] == want, (fl["responds_per_control"]["floor"], want)
     assert fl["controls"]["floor"] == 5 and not fl["controls"]["derived"], \
         "controls is a stated presence floor, not a derived one"
-    assert fl["svg"]["floor"] == 6
+    assert fl["svg"]["floor"] is None, "svg is retired as a floor"
     assert fl["type_sizes"]["floor"] == 4
     assert fl["shadows"]["floor"] is None, "an unfloored axis must carry no floor"
     assert fl["images"]["floor"] is None
@@ -450,7 +460,7 @@ def selftest() -> int:
     assert any("not the page's own background" in b for b in bad), bad
     assert any("real colour" in b for b in bad), bad
     labels = " ".join(bad)
-    for must in ("background colours", "svg", "corner radii", "interactive controls"):
+    for must in ("background colours", "corner radii", "interactive controls"):
         assert must in labels, f"the bland shape should fail on {must}: {bad}"
 
     # An axis that is floored must actually be able to fail on its own.
@@ -465,33 +475,19 @@ def selftest() -> int:
             one_short["color"]["backgrounds"] = []
         elif key == "transitioned":
             one_short["motion"]["transitioned"] = 0
-        elif key == "svg":
-            one_short["imagery"]["svg"] = 0
+
         elif key == "radii":
             one_short["shape"]["radii"] = []
         elif key == "controls":
             one_short["layout"]["buttons_in_fold"] = 0
         elif key == "type_sizes":
             one_short["type"]["size_ramp"] = [16]
-        elif key == "display_words":
-            one_short["type"]["display"]["words"] = 0
         elif key == "ink_non_background":
             one_short["ink"]["non_background_pct"] = 0
         elif key == "ink_chromatic":
             one_short["ink"]["chromatic_pct"] = 0
         got = judge(one_short, fl)
         assert len(got) == 1 and label in got[0], f"{key} did not fail alone: {got}"
-
-    # The range axis must fail in BOTH directions, which is what makes it a range.
-    assert fl["display_words"]["floor"] == 3 and fl["display_words"]["ceiling"] == 6, fl["display_words"]
-    long_line = json.loads(json.dumps(rich))
-    long_line["type"]["display"]["words"] = 16
-    got = judge(long_line, fl)
-    assert len(got) == 1 and "display line" in got[0] and "most any exemplar" in got[0], got
-    short_line = json.loads(json.dumps(rich))
-    short_line["type"]["display"]["words"] = 1
-    got = judge(short_line, fl)
-    assert len(got) == 1 and "display line" in got[0] and "least any exemplar" in got[0], got
 
     # An unmeasurable axis must never read as met.
     no_shot = json.loads(json.dumps(rich)); no_shot.pop("ink")

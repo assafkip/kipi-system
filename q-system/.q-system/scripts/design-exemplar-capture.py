@@ -80,12 +80,37 @@ PROBE = r"""
       weights.set(c.fontWeight, (weights.get(c.fontWeight) || 0) + 1);
       textColors.set(c.color, (textColors.get(c.color) || 0) + 1);
       const r = e.getBoundingClientRect();
-      if (!display || s > display.px) display = {
-        px: s, family: f, weight: c.fontWeight,
-        tracking: c.letterSpacing, leading: c.lineHeight,
-        width_px: Math.round(r.width), width_pct: Math.round(100 * r.width / vw),
-        words: t.split(/\s+/).filter(Boolean).length, text: t.slice(0, 90)
-      };
+      if (!display || s > display.px) {
+        // the whole visible line, not this element's own text nodes: a headline with a
+        // tone-shifted span or an inline highlight pill splits into several nodes, and a
+        // reader sees one sentence. Measured 2026-09-16: a five-word display line read as
+        // two because the span carried the rest.
+        // The display LINE is the run of text set at the display size, which is neither
+        // this element's own text nodes (a tone-shifted span splits the line: a five-word
+        // headline read as two) nor the whole heading element (stripe's h1 carries its
+        // subhead: six words read as twenty-two). Collect every text node inside the host
+        // whose computed size matches, and nothing smaller.
+        const host = e.closest('h1,h2,h3,[role=heading]') || e;
+        let whole = '';
+        const sameSize = n => {
+          const owner = n.nodeType === 3 ? n.parentElement : n;
+          return owner && Math.round(parseFloat(getComputedStyle(owner).fontSize)) === s;
+        };
+        const walk = n => {
+          for (const k of n.childNodes) {
+            if (k.nodeType === 3) { if (sameSize(k)) whole += ' ' + k.textContent; }
+            else if (k.nodeType === 1) walk(k);
+          }
+        };
+        walk(host);
+        whole = (whole.trim() || t).replace(/\s+/g, ' ').trim();
+        display = {
+          px: s, family: f, weight: c.fontWeight,
+          tracking: c.letterSpacing, leading: c.lineHeight,
+          width_px: Math.round(r.width), width_pct: Math.round(100 * r.width / vw),
+          words: whole.split(/\s+/).filter(Boolean).length, text: whole.slice(0, 90)
+        };
+      }
     }
     if (c.backgroundColor !== 'rgba(0, 0, 0, 0)')
       bgColors.set(c.backgroundColor, (bgColors.get(c.backgroundColor) || 0) + 1);
