@@ -195,6 +195,24 @@ def craft_problems(rd: Path, page: Path, cfg: dict) -> list[str]:
 
     probs: list[str] = []
     mpath = rd / CRAFT_MANIFEST
+
+    # A ROUND may declare itself a wireframe round, which the instance default must not
+    # be flipped to do. Without this the only way to keep an honest copy-test round
+    # sealed is to set craft.tier=wireframe in design-chain.json, which silently lowers
+    # the bar for every future round -- the opposite of the point. A round-local
+    # declaration is narrow, dated by its own directory, and has to carry a reason, so
+    # it reads as a labelled exception rather than a quiet downgrade.
+    if mpath.is_file():
+        try:
+            declared = json.loads(mpath.read_text())
+        except ValueError:
+            declared = {}
+        if declared.get("tier") == "wireframe":
+            if not str(declared.get("reason", "")).strip():
+                return [f"{CRAFT_MANIFEST} declares tier 'wireframe' with no reason. A "
+                        f"round may opt out of the craft bar, but it says why, in "
+                        f"writing, in the round."]
+            return []
     if craft.get("require_craft_manifest"):
         if not mpath.is_file():
             probs.append(

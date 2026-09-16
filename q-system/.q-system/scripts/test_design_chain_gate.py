@@ -22,6 +22,7 @@ GATE = HERE / "design-chain-gate.py"
 OWNER_LINE = "> **A business where somebody is paid to be accurate, and being wrong costs money"
 IDEA_LINE = "**Two records that should agree, and don't.**"
 RULE_LINE = "- **RULE-2026-09-15-C [USER-DIRECTED]:** **The public site starts from the visitor's one pain, not from the system; and no three-box card rows.** Founder, verbatim..."
+CRAFT_MANIFEST = "craft-manifest.json"
 RULE_TITLE = "The public site starts from the visitor's one pain, not from the system; and no three-box card rows."
 
 
@@ -232,6 +233,25 @@ class TestCraftBar(Base):
         self.craft_cfg(tier="wireframe")
         rc, out = run(["seal", str(self.round)], env=self.env)
         self.assertEqual(rc, 0, out)
+
+    def test_round_may_declare_wireframe_with_a_reason(self):
+        """A copy-test round opts out WITHOUT lowering the instance default for every
+        future round. The reason is mandatory so it reads as a labelled exception."""
+        self.complete_chain()
+        self.craft_cfg()
+        (self.round / CRAFT_MANIFEST).write_text(json.dumps(
+            {"tier": "wireframe", "reason": "structure and copy test; judged by the "
+                                            "comprehension gate, never shown as a design"}))
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 0, out)
+
+    def test_round_wireframe_declaration_without_a_reason_is_refused(self):
+        self.complete_chain()
+        self.craft_cfg()
+        (self.round / CRAFT_MANIFEST).write_text(json.dumps({"tier": "wireframe"}))
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("no reason", out)
 
     def test_craft_block_absent_leaves_the_chain_as_it_was(self):
         """An instance with no craft block is not silently held to the new bar."""
