@@ -298,6 +298,24 @@ class TestCraftBar(Base):
         self.assertEqual(rc, 2, out)
         self.assertIn("TEARDOWN.md", out)
 
+    def test_withdrawn_round_needs_a_reason(self):
+        self.complete_chain()
+        self.craft_cfg(require_grounding="refs/TEARDOWN.md")
+        (self.round / CRAFT_MANIFEST).write_text(json.dumps({"status": "withdrawn"}))
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("no reason", out)
+
+    def test_withdrawn_round_with_a_reason_is_out_of_scope(self):
+        """The gate stops unfinished work being SHOWN. A round the founder already
+        rejected will not be shown, so holding it to the bar only forces a faked receipt."""
+        self.complete_chain()
+        self.craft_cfg(require_grounding="refs/TEARDOWN.md")
+        (self.round / CRAFT_MANIFEST).write_text(json.dumps(
+            {"status": "withdrawn", "reason": "founder rejected it; superseded by the next round"}))
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 0, out)
+
     def test_craft_block_absent_leaves_the_chain_as_it_was(self):
         """An instance with no craft block is not silently held to the new bar."""
         self.complete_chain()

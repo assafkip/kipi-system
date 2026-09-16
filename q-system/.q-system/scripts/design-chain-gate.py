@@ -207,6 +207,17 @@ def craft_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None) -> li
             declared = json.loads(mpath.read_text())
         except ValueError:
             declared = {}
+        # A WITHDRAWN round is one the founder has already rejected. This gate exists to
+        # stop unfinished work being SHOWN, and a withdrawn round is never going to be
+        # shown, so holding it to the bar only forces its author to either fake a receipt
+        # or stay stuck. It still carries a reason, and it is one-way: nothing here lets a
+        # round be withdrawn and then presented, because presenting it would mean writing
+        # it back to a live tier in the open.
+        if declared.get("status") == "withdrawn":
+            if not str(declared.get("reason", "")).strip():
+                return [f"{CRAFT_MANIFEST} declares status 'withdrawn' with no reason. A "
+                        f"round may be withdrawn, but the record says why."]
+            return []
         if declared.get("tier") == "wireframe":
             if not str(declared.get("reason", "")).strip():
                 return [f"{CRAFT_MANIFEST} declares tier 'wireframe' with no reason. A "
