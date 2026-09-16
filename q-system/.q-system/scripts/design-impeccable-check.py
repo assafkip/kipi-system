@@ -12,12 +12,17 @@ receipt file; this produces it, with the two things that make the receipt mean a
    (ASK-1746). A clean report whose control never fired is decoration.
 2. THE DETECTOR'S OWN BLIND SPOT IS PRINTED, not swallowed. impeccable has two engines:
    static HTML parsing, and a real browser via URL that resolves computed styles. The
-   browser engine needs puppeteer, which is installed nowhere in this fleet as of
-   2026-09-15 -- so every impeccable claim made here to date, including
+   browser engine needs puppeteer, which was installed nowhere in this fleet until
+   2026-09-15 -- so every impeccable claim made here before that date, including
    `site-design.md` section 8's, was static-mode only. Worse, the detector exits 0 when
    puppeteer is missing, so that gap is invisible to any caller reading exit codes. This
    script asks for URL mode first and records in the receipt exactly which engine
-   actually ran.
+   actually ran, so the same gap cannot reopen silently if the dependency goes away.
+
+   The control goes through that SAME engine. Running it statically while the pages get
+   the browser proves only the static parser and leaves the browser's zeros unproven.
+   Measured the hour puppeteer landed: through the browser the control raised
+   `ai-color-palette`, which the static parse had missed on the identical file.
 
 WHAT THIS DOES NOT DO: certify a page. impeccable is a defect-ABSENCE detector, the same
 class as the tripwire and the standard check. Zero findings means "no known anti-pattern
@@ -124,10 +129,19 @@ def main() -> int:
         ctrl_path.write_text(CONTROL_HTML)
     w("=== NEGATIVE CONTROL (a deliberately slop page; these results are only worth")
     w("    reading because this one trips) ===")
-    crc, cout = run_detector(detector, str(ctrl_path))
+    # The control must go through the SAME engine as the pages. Running it statically
+    # while the pages get the browser engine proves the static parser works and leaves
+    # the browser engine's zeros unproven -- a control that cannot fail for the engine
+    # you care about is decoration (2026-09-15, caught the first time puppeteer was
+    # present). URL first, falling back only if the browser engine is unavailable.
+    ctrl_target = f"{a.url_base.rstrip('/')}/{ctrl_path.name}" if ctrl_path.parent == rd else str(ctrl_path)
+    crc, cout = run_detector(detector, ctrl_target)
+    if "unavailable" in engine_of(cout, ctrl_target):
+        ctrl_target = str(ctrl_path)
+        crc, cout = run_detector(detector, ctrl_target)
     ctrl_fired = "anti-patterns found" in cout and " 0 anti-patterns" not in cout
-    w(f"control: {ctrl_path}")
-    w(f"engine: {engine_of(cout, str(ctrl_path))}")
+    w(f"control: {ctrl_target}")
+    w(f"engine: {engine_of(cout, ctrl_target)}")
     for ln in cout.splitlines():
         w("    " + ln)
     w(f"control fired: {'YES' if ctrl_fired else 'NO -- treat every page result below as UNPROVEN'}")
