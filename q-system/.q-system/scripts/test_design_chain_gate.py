@@ -769,3 +769,99 @@ class TestWithdrawnShortCircuits(Base):
         rc, out = self.stop()
         self.assertEqual(rc, 2)
         self.assertIn("brief.md", out)
+
+
+class TestCorrections(Base):
+    """A factual correction to a page that is already public is not a design round.
+
+    Founder, 2026-09-16, picking the fix after the gate blocked a one-sentence correction of a
+    false claim on a live work page: add a corrections path, where an already-live page may skip
+    the round when its only change is wording, checked by comparing the page before and after,
+    with every such fix logged with its reason."""
+
+    def setUp(self):
+        super().setUp()
+        self.work = self.inst / "site" / "work"
+        self.work.mkdir(parents=True)
+        self.live = self.work / "case.html"
+        self.live.write_text('<html><head><style>p{color:#111}</style></head><body>'
+                             '<h2>The number</h2><p>The firm bought the system.</p>'
+                             '<a href="/work">All work</a></body></html>')
+        g = lambda *a: subprocess.run(["git", "-C", str(self.inst), *a], capture_output=True, text=True, check=True)
+        g("init", "-q"); g("config", "user.email", "t@t"); g("config", "user.name", "t")
+        g("add", "-A"); g("commit", "-q", "-m", "live page")
+        self.git = g
+
+    def correct(self, reason="the deployment was never invoiced", page=None):
+        return run(["correct", str(page or self.live), "--reason", reason], env=self.env)
+
+    def problems(self):
+        rc, out = run(["status-page", str(self.live)], env=self.env)
+        return rc, out
+
+    def test_uncorrected_edit_to_a_live_page_still_needs_the_chain(self):
+        self.live.write_text(self.live.read_text().replace("bought the system", "agreed to buy the system"))
+        rc, out = self.problems()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("brief.md", out)
+
+    def test_wording_change_with_a_logged_correction_passes(self):
+        self.live.write_text(self.live.read_text().replace("bought the system", "agreed to buy the system"))
+        rc, out = self.correct()
+        self.assertEqual(rc, 0, out)
+        rc, out = self.problems()
+        self.assertEqual(rc, 0, out)
+        log = [json.loads(l) for l in (self.work / "corrections.jsonl").read_text().splitlines()]
+        self.assertEqual(log[0]["reason"], "the deployment was never invoiced")
+        self.assertEqual(log[0]["after_sha256"], self.sha(self.live))
+
+    def test_correction_already_committed_is_judged_against_the_commit_before(self):
+        self.live.write_text(self.live.read_text().replace("bought the system", "agreed to buy the system"))
+        self.git("commit", "-qam", "fix claim")
+        rc, out = self.correct()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.problems()[0], 0)
+
+    def test_an_added_element_is_not_a_correction(self):
+        self.live.write_text(self.live.read_text().replace("</p>", "</p><img src=x.png>"))
+        rc, out = self.correct()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("not a wording change", out)
+        self.assertFalse((self.work / "corrections.jsonl").exists())
+
+    def test_a_changed_attribute_is_not_a_correction(self):
+        self.live.write_text(self.live.read_text().replace('href="/work"', 'href="/elsewhere"'))
+        self.assertEqual(self.correct()[0], 2)
+
+    def test_changed_css_is_not_a_correction(self):
+        self.live.write_text(self.live.read_text().replace("color:#111", "color:#f00"))
+        self.assertEqual(self.correct()[0], 2)
+
+    def test_a_forged_log_entry_does_not_pass_a_structural_change(self):
+        self.live.write_text(self.live.read_text().replace("</p>", "</p><img src=x.png>"))
+        head = self.git("rev-parse", "HEAD").stdout.strip()
+        (self.work / "corrections.jsonl").write_text(json.dumps({
+            "page": "case.html", "before_commit": head, "after_sha256": self.sha(self.live),
+            "reason": "forged"}) + "\n")
+        self.assertEqual(self.problems()[0], 2)
+
+    def test_a_later_edit_invalidates_the_correction(self):
+        self.live.write_text(self.live.read_text().replace("bought the system", "agreed to buy the system"))
+        self.assertEqual(self.correct()[0], 0)
+        self.live.write_text(self.live.read_text().replace("agreed to buy", "might buy"))
+        self.assertEqual(self.problems()[0], 2)
+
+    def test_a_reason_is_required(self):
+        self.live.write_text(self.live.read_text().replace("bought the system", "agreed to buy the system"))
+        rc, out = self.correct(reason="  ")
+        self.assertEqual(rc, 2, out)
+
+    def test_a_page_never_committed_cannot_be_corrected(self):
+        new = self.work / "new.html"
+        new.write_text("<html><body><p>fresh</p></body></html>")
+        rc, out = self.correct(page=new)
+        self.assertEqual(rc, 2, out)
+
+
+if __name__ == "__main__":
+    unittest.main()

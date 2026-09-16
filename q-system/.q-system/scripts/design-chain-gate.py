@@ -51,8 +51,10 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import time
+from html.parser import HTMLParser
 from pathlib import Path
 
 PAGE_EXTS = {".html", ".htm", ".astro", ".jsx", ".tsx", ".vue", ".svelte"}
@@ -487,6 +489,121 @@ def sealed_and_unedited(page: Path) -> bool:
 
 
 NOT_A_ROUND = ".not-a-round"
+CORRECTIONS = "corrections.jsonl"
+
+
+class _Shape(HTMLParser):
+    """Everything about a page except its visible words: tags, attributes, and the contents of
+    script and style (a CSS or JS change is a design change, even though it arrives as text)."""
+
+    RAW = {"script", "style"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out, self._raw = [], 0
+
+    def handle_starttag(self, tag, attrs):
+        self.out.append(("start", tag, tuple(sorted((k, v or "") for k, v in attrs))))
+        if tag in self.RAW:
+            self._raw += 1
+
+    def handle_startendtag(self, tag, attrs):
+        self.out.append(("empty", tag, tuple(sorted((k, v or "") for k, v in attrs))))
+
+    def handle_endtag(self, tag):
+        self.out.append(("end", tag))
+        if tag in self.RAW and self._raw:
+            self._raw -= 1
+
+    def handle_data(self, data):
+        if self._raw:
+            self.out.append(("raw", data))
+
+
+def page_shape(text: str) -> list:
+    sh = _Shape()
+    sh.feed(text)
+    sh.close()
+    return sh.out
+
+
+def _git(page: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(page.parent), *args], capture_output=True, text=True)
+
+
+def _committed_text(page: Path, commit: str) -> str | None:
+    top = _git(page, "rev-parse", "--show-toplevel")
+    if top.returncode:
+        return None
+    rel = page.resolve().relative_to(Path(top.stdout.strip()).resolve())
+    shown = _git(page, "show", f"{commit}:{rel.as_posix()}")
+    return shown.stdout if shown.returncode == 0 else None
+
+
+def corrected_page(page: Path) -> bool:
+    """True when this exact page carries a logged correction whose only change, against the
+    committed version it corrects, is wording.
+
+    Founder, 2026-09-16, choosing the fix after this gate blocked a one-sentence correction of a
+    false claim on a live work page: "Add a corrections path". A correction is not a design
+    round: the page was already public, and holding a fix to a false claim behind a brief, three
+    directions and a reader gate leaves the false claim standing. The shape check runs again
+    here, not only when the entry is written, so a hand-written log line cannot carry a
+    structural change past the gate."""
+    log = page.parent / CORRECTIONS
+    if not log.is_file():
+        return False
+    cur = sha(page)
+    for line in log.read_text().splitlines():
+        try:
+            ent = json.loads(line)
+        except ValueError:
+            continue
+        if ent.get("page") != page.name or ent.get("after_sha256") != cur:
+            continue
+        if not str(ent.get("reason", "")).strip():
+            continue
+        before = _committed_text(page, str(ent.get("before_commit", "")))
+        if before is not None and page_shape(before) == page_shape(page.read_text()):
+            return True
+    return False
+
+
+def correct(page: Path, reason: str) -> int:
+    """Log a wording-only correction to an already-committed page."""
+    if not reason.strip():
+        print("correct: a reason is required; the log says why the page changed", file=sys.stderr)
+        return 2
+    if not page.is_file():
+        print(f"correct: page not found: {page}", file=sys.stderr)
+        return 2
+    rel_status = _git(page, "status", "--porcelain", "--", page.name)
+    if rel_status.returncode:
+        print(f"correct: {page} is not in a git repository, so there is no public version to compare", file=sys.stderr)
+        return 2
+    if rel_status.stdout.strip():
+        before_commit = _git(page, "rev-parse", "HEAD").stdout.strip()
+    else:
+        last = _git(page, "log", "-n", "1", "--format=%H", "--", page.name).stdout.strip()
+        before_commit = (last + "^") if last else ""
+        if before_commit:
+            before_commit = _git(page, "rev-parse", before_commit).stdout.strip()
+    before = _committed_text(page, before_commit) if before_commit else None
+    if before is None:
+        print(f"correct: {page.name} has no committed earlier version, so it is new, not a correction", file=sys.stderr)
+        return 2
+    if page_shape(before) != page_shape(page.read_text()):
+        print(f"correct: {page.name} is not a wording change: its tags, attributes, CSS or scripts "
+              f"differ from {before_commit[:12]}. That is a design change and needs the chain.", file=sys.stderr)
+        return 2
+    entry = {"page": page.name, "before_commit": before_commit,
+             "before_sha256": hashlib.sha256(before.encode()).hexdigest(),
+             "after_sha256": sha(page), "reason": reason.strip(),
+             "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    with (page.parent / CORRECTIONS).open("a") as fh:
+        fh.write(json.dumps(entry) + "\n")
+    print(f"correct: logged a wording correction to {page.name} against {before_commit[:12]}")
+    return 0
 
 
 def tool_directory_problems(page: Path) -> list[str] | None:
@@ -577,6 +694,8 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     declared = tool_directory_problems(page)
     if declared is not None:
         return declared
+    if corrected_page(page):
+        return []
     reason = withdrawn_reason(round_dir_for(page))
     if reason is not None:
         return [] if reason else [
@@ -835,6 +954,15 @@ def hook(payload: dict) -> int:
 
 
 def main(argv: list[str]) -> int:
+    if argv and argv[0] == "correct":
+        reason = argv[argv.index("--reason") + 1] if "--reason" in argv else ""
+        return correct(Path(argv[1]).resolve(), reason)
+    if argv and argv[0] == "status-page":
+        probs = chain_problems(Path(argv[1]).resolve())
+        print("COMPLETE" if not probs else "OPEN")
+        for x in probs:
+            print("   - " + x)
+        return 2 if probs else 0
     if argv and argv[0] == "seal":
         return seal(Path(argv[1]).resolve())
     if argv and argv[0] == "status":
