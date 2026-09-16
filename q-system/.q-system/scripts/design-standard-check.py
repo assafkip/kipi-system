@@ -56,7 +56,31 @@ JS = """
     if (w > 8) maxLine = Math.max(maxLine, Math.round(Math.min(charsPerLine, own.length)));
     if (hex(cs.color) === sig.toLowerCase()) sigCount += 1;
   }
-  return { type_sizes: [...sizes.keys()].sort((a,b)=>a-b), large_elements: large, words, min_body_px: minBody === 999 ? null : minBody, max_line_chars: maxLine, signal_elements: sigCount };
+  // The headline: the first h1 in view (else the largest text in view). Where its words sit
+  // is what a reader sees as the page's alignment, so measure the TEXT, not the h1 box:
+  // a Range around the h1's contents gives the ink's extent inside a full-width block.
+  let hero = null, heroEl = null;
+  for (const h of document.querySelectorAll('h1')) {
+    const r = h.getBoundingClientRect();
+    if (r.bottom > 0 && r.top < vh && r.width > 1) { heroEl = h; break; }
+  }
+  if (!heroEl) {
+    let best = 0;
+    for (const el of document.body.querySelectorAll('*')) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom <= 0 || r.top >= vh || r.width <= 1) continue;
+      const own = [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
+      const fs = parseFloat(getComputedStyle(el).fontSize);
+      if (own && fs > best) { best = fs; heroEl = el; }
+    }
+  }
+  if (heroEl) {
+    const rg = document.createRange(); rg.selectNodeContents(heroEl);
+    const t = rg.getBoundingClientRect();
+    hero = { text_align: getComputedStyle(heroEl).textAlign,
+             offset_pct: Math.round(Math.abs((t.left + t.right) / 2 - vw / 2) / vw * 1000) / 10 };
+  }
+  return { type_sizes: [...sizes.keys()].sort((a,b)=>a-b), large_elements: large, words, min_body_px: minBody === 999 ? null : minBody, max_line_chars: maxLine, signal_elements: sigCount, hero };
 }
 """
 
@@ -94,6 +118,22 @@ def judge(m: dict, cfg: dict) -> list[str]:
         f.append(f"longest line about {m['max_line_chars']} chars; max {cfg['max_line_chars']}")
     if m["signal_elements"] > cfg["max_signal_elements"]:
         f.append(f"signal colour on {m['signal_elements']} elements; max {cfg['max_signal_elements']}")
+    # Hero alignment, when the canon asks for one. Founder, 2026-09-15: left-aligned
+    # everything reads as slop. That note lived only in a critique and the headline was
+    # back on the left a day later (round 2026-09-16d: "the text is again on lined on the
+    # left"). Two conditions, because either alone is fooled: text-align:center inside a
+    # left-hand column is still a left-hand headline, and a centred box can hold
+    # left-aligned lines.
+    want = cfg.get("hero_align")
+    if want == "center":
+        h = m.get("hero")
+        tol = cfg.get("hero_center_tolerance_pct", 5)
+        if not h:
+            f.append("no headline in view to check alignment against; hero_align is center")
+        elif h["text_align"] not in ("center", "-webkit-center") or h["offset_pct"] > tol:
+            f.append(f"headline is not centred (text-align {h['text_align']}, its text sits "
+                     f"{h['offset_pct']}% of the viewport off centre; max {tol}%); "
+                     f"hero_align is center")
     return f
 
 
