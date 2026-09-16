@@ -45,7 +45,21 @@ PROBE = r"""
   const vh = innerHeight, vw = innerWidth;
   const inFold = e => { const r = e.getBoundingClientRect();
     return r.width > 0 && r.height > 0 && r.top < vh && r.bottom > 0; };
-  const all = [...document.body.querySelectorAll('*')];
+  // querySelectorAll does NOT pierce shadow roots, so a site that renders its hero inside
+  // a web component is invisible to the probe. Measured 2026-09-15: figma.com reported 0
+  // images and 0% visual area in the fold while its own screenshot shows three large
+  // artwork panels. The page carries 87 <img> elements and 11 shadow hosts; every one of
+  // those images sits inside a shadow root. The probe was not describing figma, it was
+  // describing its own blindness, and a floor derived from that number would have been
+  // derived from a measurement error.
+  const deepAll = (root, out) => {
+    for (const e of root.querySelectorAll('*')) {
+      out.push(e);
+      if (e.shadowRoot) deepAll(e.shadowRoot, out);
+    }
+    return out;
+  };
+  const all = deepAll(document.body, []);
   const fold = all.filter(inFold);
 
   const fam = new Map(), sizes = new Map(), weights = new Map();
