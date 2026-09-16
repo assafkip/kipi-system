@@ -190,3 +190,4 @@
 {"closed_at": "2026-09-02T04:07:24Z", "commit_sha": "a7c824f1f31406d03898005c9808a9ed6be446d3", "finding_id": "finding-6", "findings_triaged_at": "2026-09-02T04:07:15Z", "issue_id": "mbl-board-live-readback", "prd_id": "prd-morning-brief-learns-2026-09-01", "reviewed_at": "2026-09-02T04:06:31Z", "verified_at": "2026-09-02T04:07:15Z"}
 {"commit_sha": "fb92670f2decbc95e7f024c904349b525f3606a6", "issue_id": "ASK-1247", "receipts": {"reviewed": "2026-09-13T17:10:53Z"}, "reviewed_at": "2026-09-13T17:10:53Z"}
 {"commit_sha": "d0ae78f1b3c93005db0e104092c7163c8f01a54b", "issue_id": "ASK-1124", "receipts": {"reviewed": "2026-09-16T14:59:16Z"}, "reviewed_at": "2026-09-16T14:59:16Z"}
+{"commit_sha": "18aae0f3ebe96e69a0bf7402909f8dd3ac7d6b26", "issue_id": "ASK-1124", "receipts": {"reviewed": "2026-09-16T15:23:43Z"}, "reviewed_at": "2026-09-16T15:23:43Z"}
