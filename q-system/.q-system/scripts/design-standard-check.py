@@ -92,7 +92,7 @@ JS = """
     for (const el of document.body.querySelectorAll('*')) {
       if (heroEl.contains(el) || el.contains(heroEl)) continue;
       const own = [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join(' ').trim();
-      const w = own.split(/\s+/).filter(Boolean).length;
+      const w = own.split(/\\s+/).filter(Boolean).length;
       if (w < 3) continue;
       const r = el.getBoundingClientRect();
       if (r.width <= 1 || r.height <= 1 || r.top < hr.top - 80 || r.top > hr.bottom + 260) continue;
