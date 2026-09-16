@@ -189,6 +189,33 @@ def round_dir_for(page: Path) -> Path:
 
 # ---------------------------------------------------------------- the chain check
 
+def copied_brief_problems(rd: Path) -> list[str]:
+    """A brief that is a byte-copy of an earlier round's brief is a round that never read
+    the owners.
+
+    Step 1 of the command is "read the owners, in full, this session", and step 2 is to
+    write a brief quoting them. The anchor check proves the brief CONTAINS the quotes; it
+    cannot tell a brief that was written from one that was `cp`'d. Measured 2026-09-15:
+    five consecutive rounds carried the identical brief, sha c3b247f7b6, so four of them
+    did step 1 by copying a file.
+
+    Writing the brief IS the act of reading. Copying it is the act of not reading, and it
+    is the one part of that a checksum can see.
+    """
+    bp = rd / "brief.md"
+    if not bp.is_file():
+        return []
+    mine = sha(bp)
+    for other in sorted(p for p in rd.parent.iterdir() if p.is_dir() and p != rd):
+        ob = other / "brief.md"
+        if ob.is_file() and sha(ob) == mine:
+            return [f"brief.md is byte-identical to {other.name}/brief.md. Step 1 is to read "
+                    f"the owners in full THIS round; writing the brief is how that happens "
+                    f"and copying it is how it does not. Re-read them and write this "
+                    f"round's brief, even if much of it lands the same."]
+    return []
+
+
 def disposition_problems(rd: Path) -> list[str]:
     """Every weakness the critique names must carry an answer before the round seals.
 
@@ -384,6 +411,8 @@ def craft_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None) -> li
                     probs.append(f"{CRAFT_MANIFEST}: technique '{t.get('id','?')}' cites "
                                  f"'{ref}', which is not in {tpath.name}. Tear the reference "
                                  f"down there first, or the citation is decoration.")
+    if craft.get("require_fresh_brief"):
+        probs += copied_brief_problems(rd)
     if craft.get("require_dispositions"):
         probs += disposition_problems(rd)
     if craft.get("require_impeccable"):

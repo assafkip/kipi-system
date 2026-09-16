@@ -414,6 +414,29 @@ class TestCraftBar(Base):
         rc, out = run(["seal", str(self.round)], env=self.env)
         self.assertEqual(rc, 0, out)
 
+    def test_copied_brief_blocks(self):
+        """Measured 2026-09-15: five consecutive rounds carried the identical brief (sha
+        c3b247f7b6), so four of them did the read-the-owners step by copying a file. The
+        anchor check proves the brief CONTAINS the quotes and cannot tell a written brief
+        from a copied one."""
+        self.complete_chain()
+        self.craft_cfg(require_fresh_brief=True, require_craft_manifest=False,
+                       require_impeccable=False)
+        prev = self.round.parent / "r0"; prev.mkdir()
+        (prev / "brief.md").write_text((self.round / "brief.md").read_text())
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("byte-identical", out)
+
+    def test_brief_written_this_round_seals(self):
+        self.complete_chain()
+        self.craft_cfg(require_fresh_brief=True, require_craft_manifest=False,
+                       require_impeccable=False)
+        prev = self.round.parent / "r0"; prev.mkdir()
+        (prev / "brief.md").write_text("# an earlier round's brief\n")
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 0, out)
+
     def test_withdrawn_round_needs_a_reason(self):
         self.complete_chain()
         self.craft_cfg(require_grounding="refs/TEARDOWN.md")
