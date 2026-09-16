@@ -76,6 +76,7 @@ CHAIN_DIRS = ("checks", "gate")
 # level with no execution tier, so premium and floor realizations were equally
 # compliant; effort-economy ran downhill to the cheapest passing artifact.
 CRAFT_MANIFEST = "craft-manifest.json"
+GAP_CHECK = "gap.json"
 # A weakness the author wrote down and then shipped anyway. Measured 2026-09-15 across
 # three sealed rounds: 11 findings marked WEAK in critique.md, 0 required an answer, and
 # two of them were the exact defects the founder and the reader gate then caught. The
@@ -411,6 +412,38 @@ def craft_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None) -> li
                     probs.append(f"{CRAFT_MANIFEST}: technique '{t.get('id','?')}' cites "
                                  f"'{ref}', which is not in {tpath.name}. Tear the reference "
                                  f"down there first, or the citation is decoration.")
+    # THE DISTANCE CHECK. Everything above this line, and every other mechanical check in
+    # the chain, is a defect-ABSENCE detector. A bland page has no defects, so it passes
+    # all of them: measured 2026-09-15, a deliberately bland control page cleared
+    # design-standard-check.py, the dogfood_gate tripwire AND the impeccable browser
+    # detector in one run whose own control fired (RCA
+    # rca-design-chain-passes-bland-2026-09-15.md). Seven rounds drifted the same way while
+    # every gate stayed green and the founder's word for the result was "bland".
+    #
+    # design-gap-check.py is the missing instrument: not "is anything wrong" but "how far
+    # is this from the exemplars the founder actually named", with floors derived from
+    # their captures rather than chosen. This is the half that makes its verdict block.
+    if craft.get("require_gap_check"):
+        gp = rd / "checks" / GAP_CHECK
+        if not gp.is_file():
+            probs.append(
+                f"missing {gp}: run design-gap-check.py <round> --url-base <served> --write. "
+                f"Every other check here can only find defects, and a page with nothing on "
+                f"it has none.")
+        else:
+            try:
+                gap = json.loads(gp.read_text())
+            except ValueError as e:
+                gap, probs = {}, probs + [f"{GAP_CHECK} is not valid JSON: {e}"]
+            ent = (gap.get("pages") or {}).get(page.name)
+            if not ent:
+                probs.append(f"{GAP_CHECK} has no entry for {page.name}")
+            elif ent.get("sha256") != sha(page):
+                probs.append(f"{GAP_CHECK} is stale for {page.name}: the page changed after "
+                             f"it was measured. Re-run design-gap-check.py.")
+            else:
+                for axis in ent.get("below_floor") or []:
+                    probs.append(f"{page.name} is below the exemplar floor. {axis}")
     if craft.get("require_fresh_brief"):
         probs += copied_brief_problems(rd)
     if craft.get("require_dispositions"):

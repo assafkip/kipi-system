@@ -1,0 +1,384 @@
+#!/usr/bin/env python3
+"""Measure a built page AGAINST the captured exemplars. Distance, not absence.
+
+The gap this closes, RCA rca-design-chain-passes-bland-2026-09-15.md: every other
+mechanical check in the design chain is a defect-ABSENCE detector, and a bland page has no
+defects. A deliberately bland control page passed design-standard-check.py, the
+dogfood_gate tripwire AND the impeccable browser detector, all three, in one run whose own
+control fired. Seven rounds drifted the same way while every gate stayed green.
+
+What was missing is not another detector. It is a DISTANCE to a target, where the target is
+the founder's own exemplars, measured rather than described. The numbers already existed in
+references/*.json and no executable read them.
+
+THE FLOORS ARE DERIVED, NEVER HAND-WRITTEN. Each floor is the MINIMUM any exemplar in the
+set reaches on that axis: "at least as much as the least of your own examples." That makes
+the bar move when the roster moves, and it makes it impossible to set the bar by taste. It
+is also deliberately the weakest defensible target: matching the median would be a demand
+to equal the best of the group on every axis at once.
+
+NOT EVERY AXIS IS FLOORED, and the reasons are per axis in AXES below. Flooring an axis the
+canon argues against would make this script fight site-design.md, which is the exact
+failure that produced the RCA: design-chain.json's `standard` capped type sizes at 3 while
+the measured group runs 4 to 7, so passing the floor GUARANTEED being sparser than every
+exemplar. A gate that contradicts the canon wins silently, so this one only floors axes
+where the canon and the measurement agree.
+
+Exit 0 = every floored axis is met. Exit 2 = at least one is not, or bad input.
+There is no exit code meaning "this page is good", for the same reason
+check_technique_parity.py has none: a floor is not a finish line.
+
+Usage:
+  design-gap-check.py <round-dir> --url-base http://127.0.0.1:PORT [--refs DIR] [--write]
+  design-gap-check.py --selftest
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import statistics
+import sys
+from pathlib import Path
+
+FORBIDDEN_VERDICTS = ("PASS", "DONE", "GOOD", "SHIPPED", "APPROVED")
+RECEIPT = "gap.json"
+
+
+def _n(d, *path, default=0):
+    cur = d
+    for k in path:
+        if not isinstance(cur, dict):
+            return default
+        cur = cur.get(k)
+    return cur if isinstance(cur, (int, float)) else default
+
+
+# (key, label, extractor, floored, why)
+AXES = [
+    ("background_colours", "distinct background colours",
+     lambda d: len(_l(d, "color", "backgrounds")), True,
+     "NARRATIVE.md section 3, measured and then ignored by the build: 'Depth comes from "
+     "colour fields and layering, not from drop shadows.' The canon and the group agree, "
+     "and the round that triggered the RCA had zero."),
+    ("transitioned", "elements that respond to the pointer",
+     lambda d: _n(d, "motion", "transitioned"), True,
+     "NARRATIVE.md section 5: the group runs about 40 transitioned elements per animated "
+     "one. design-dna.md section 4 restricts ANIMATION, never interaction state, so the "
+     "canon does not argue against this."),
+    ("svg", "svg elements in the fold",
+     lambda d: _n(d, "imagery", "svg"), True,
+     "NARRATIVE.md section 4: inline SVG is the group's illustration medium. "
+     "design-dna.md section 4 asks for real records drawn and annotated, which is the "
+     "same instrument."),
+    ("radii", "distinct corner radii",
+     lambda d: len(_l(d, "shape", "radii")), True,
+     "NARRATIVE.md section 6: the group has two radius tiers, small for controls and fully "
+     "round for chips, with no 12px middle. Two tiers needs two radii."),
+    ("controls", "interactive controls in the fold",
+     lambda d: _n(d, "layout", "buttons_in_fold"), True,
+     "Every exemplar's fold contains its navigation. RULE-2026-09-15-H item 5 puts the "
+     "action in the first screen. The round that triggered the RCA had one button, no "
+     "nav, no logo and no footer: a slide rather than a page."),
+    ("type_sizes", "type sizes in the fold",
+     lambda d: len(_l(d, "type", "size_ramp")), True,
+     "design-chain.json `standard` capped this at 3 while the group runs 4 to 7. That "
+     "contradiction is the RCA's most actionable cause. The cap is regenerated from these "
+     "same captures by design-standard-from-exemplars.py so the two agree."),
+    ("images", "images in the fold",
+     lambda d: _n(d, "imagery", "img"), False,
+     "NOT FLOORED. design-dna.md section 4 bans stock imagery and allows only real records "
+     "recreated and anonymized. squarespace's 20 images are its product; demanding a count "
+     "here would push the build toward exactly the stock filler the canon forbids."),
+    ("shadows", "shadows",
+     lambda d: _n(d, "shape", "shadow_count"), False,
+     "NOT FLOORED. NARRATIVE.md section 3 measured the group as essentially flat and "
+     "site-design.md section 7 treats shadow-heavy depth as a tell. Flooring this would "
+     "fight the canon."),
+    ("gradients", "gradients",
+     lambda d: _n(d, "color", "gradient_count"), False,
+     "NOT FLOORED. site-design.md section 7 bans gradient-on-type and the palette question "
+     "is an open founder decision in OPEN-DECISIONS.md."),
+    ("video", "video elements",
+     lambda d: _n(d, "imagery", "video"), False,
+     "NOT FLOORED. Three of five exemplars have zero, so the set does not support a floor."),
+    ("display_px", "display size in px",
+     lambda d: _n(d, "type", "display", "px"), False,
+     "NOT FLOORED here because design-chain.json `standard` already governs large elements "
+     "and a round may legitimately carry no display line at all (round 2026-09-15f's "
+     "Exhibit direction, founder-directed: 'Why do we have to have the heading at all')."),
+]
+
+
+def _l(d, *path):
+    cur = d
+    for k in path:
+        if not isinstance(cur, dict):
+            return []
+        cur = cur.get(k)
+    return cur if isinstance(cur, list) else []
+
+
+def sha(p: Path) -> str:
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def load_exemplars(refs: Path) -> dict:
+    """Every captured exemplar's laptop fold. A capture that failed is excluded BY NAME in
+    the narrative, not silently here, so a bot-walled site cannot quietly lower the bar."""
+    out = {}
+    for f in sorted(refs.glob("*.json")):
+        if f.name == "exemplars.json":
+            continue
+        try:
+            d = json.loads(f.read_text())
+        except ValueError:
+            continue
+        vps = d.get("viewports", {}) if isinstance(d, dict) else {}
+        wide = vps.get("laptop") or next(
+            (v for v in vps.values() if str(v.get("viewport", "")).startswith("1440")), None)
+        if not wide:
+            continue
+        out[f.stem] = wide
+    return out
+
+
+def usable(ex: dict) -> tuple[dict, list[str]]:
+    """Split the captures into the ones that describe a DESIGN and the ones that describe
+    an error page, and hand back the rejects BY NAME.
+
+    This exists because of a live miss, not a hypothetical. canva.com returned its bot-wall
+    page ("We'll have you designing again soon", one SVG, zero buttons). NARRATIVE.md
+    section 1 says so in writing and excludes it from every claim; this script did not, so
+    on its first real run against a round the canva row pulled the background-colour floor
+    from 3 down to 1 and would have pulled every other floor with it. A failed capture that
+    silently LOWERS a bar is the same defect class as a skipped check reading as a pass
+    (ASK-1746).
+
+    The test is a property no marketing page lacks and no bot wall has: at least one
+    interactive control in the fold, and at least three distinct type sizes."""
+    good, rejected = {}, []
+    for name, cap in ex.items():
+        controls = _n(cap, "layout", "buttons_in_fold")
+        sizes = len(_l(cap, "type", "size_ramp"))
+        if controls < 1 or sizes < 3:
+            rejected.append(f"{name} (controls={controls}, type sizes={sizes}: reads as an "
+                            f"error or bot-wall page, not a design)")
+        else:
+            good[name] = cap
+    return good, rejected
+
+
+def floors(ex: dict) -> dict:
+    """floor = the least any exemplar reaches. Derived, so taste cannot set it."""
+    out = {}
+    for key, label, fn, floored, why in AXES:
+        vals = [fn(v) for v in ex.values()]
+        out[key] = {
+            "label": label, "floored": floored, "why": why,
+            "floor": min(vals) if (floored and vals) else None,
+            "median": statistics.median(vals) if vals else None,
+            "range": [min(vals), max(vals)] if vals else None,
+        }
+    return out
+
+
+def probe_pages(round_dir: Path, url_base: str, names: list[str]) -> dict:
+    import importlib.util
+    cap_path = Path(__file__).resolve().parent / "design-exemplar-capture.py"
+    spec = importlib.util.spec_from_file_location("cap", cap_path)
+    cap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cap)
+    from playwright.sync_api import sync_playwright
+    out = {}
+    with sync_playwright() as pw:
+        b = pw.chromium.launch()
+        for name in names:
+            pg = b.new_page(viewport={"width": 1440, "height": 900})
+            pg.goto(f"{url_base}/{name}", wait_until="networkidle")
+            pg.wait_for_timeout(1200)
+            out[name] = pg.evaluate(cap.PROBE)
+            pg.close()
+        b.close()
+    return out
+
+
+def judge(measured: dict, fl: dict) -> list[str]:
+    """Every floored axis this page does not reach. Empty list means every floor is met,
+    which is NOT the same as the page being any good."""
+    bad = []
+    for key, label, fn, floored, why in AXES:
+        if not floored or fl[key]["floor"] is None:
+            continue
+        got, want = fn(measured), fl[key]["floor"]
+        if got < want:
+            bad.append(f"{label}: {got}, and the least any exemplar reaches is {want} "
+                       f"(their range {fl[key]['range'][0]} to {fl[key]['range'][1]})")
+    return bad
+
+
+def report(round_dir: Path, url_base: str, refs: Path, write: bool) -> int:
+    ex, rejected = usable(load_exemplars(refs))
+    if rejected:
+        print("EXCLUDED CAPTURES (a failed capture must never quietly lower a floor):")
+        for r in rejected:
+            print(f"  {r}")
+        print()
+    if len(ex) < 3:
+        print(f"only {len(ex)} usable exemplar capture(s) in {refs}; the floors would be "
+              f"set by too small a set to mean anything. Run design-exemplar-capture.py.",
+              file=sys.stderr)
+        return 2
+    fl = floors(ex)
+    names = sorted(p.name for p in round_dir.glob("*.html"))
+    if not names:
+        print(f"no pages in {round_dir}", file=sys.stderr)
+        return 2
+    got = probe_pages(round_dir, url_base, names)
+
+    print(f"GAP TO THE EXEMPLARS: {', '.join(sorted(ex))}")
+    print("floor = the least any one of them reaches. Derived from the captures, not chosen.\n")
+    receipt, failed = {"_exemplars": sorted(ex), "_floors": fl, "pages": {}}, 0
+    for name in names:
+        bad = judge(got[name], fl)
+        receipt["pages"][name] = {
+            "sha256": sha(round_dir / name),
+            "axes": {k: f(got[name]) for k, _, f, _, _ in AXES},
+            "below_floor": bad,
+        }
+        head = "MEETS EVERY FLOOR" if not bad else f"{len(bad)} AXIS/AXES BELOW FLOOR"
+        print(f"{name}: {head}")
+        for b in bad:
+            print(f"    {b}")
+        failed += bool(bad)
+
+    print("\nnot floored, and why (read this before assuming silence is approval):")
+    for key, label, _, floored, why in AXES:
+        if not floored:
+            print(f"  {label}: {why.splitlines()[0]}")
+    print("""
+THIS IS A FLOOR, NOT A FINISH LINE. Meeting every floor means the page is not sparser than
+the least of the exemplars on the axes measured. It says nothing about whether the page is
+good, whether the composition works, or whether a buyer understands it. Counting elements
+is not judging them.""")
+    if write:
+        (round_dir / "checks").mkdir(exist_ok=True)
+        (round_dir / "checks" / RECEIPT).write_text(json.dumps(receipt, indent=2) + "\n")
+        print(f"\nwrote {round_dir / 'checks' / RECEIPT}")
+    return 2 if failed else 0
+
+
+def selftest() -> int:
+    """The guard has to be shown able to fail, and shown unable to emit a certificate."""
+    src = Path(__file__).read_text()
+    body = src.split('def selftest', 1)[0]
+    for word in FORBIDDEN_VERDICTS:
+        # the word may appear in the forbidden list itself and in prose about it
+        printed = [ln for ln in body.splitlines()
+                   if "print(" in ln and word in ln and "FORBIDDEN" not in ln]
+        assert not printed, f"selftest: this tool must never print {word!r}: {printed}"
+
+    ex = {
+        "a": {"color": {"backgrounds": [1, 2, 3], "gradient_count": 0},
+              "motion": {"transitioned": 20, "animated": 0},
+              "imagery": {"svg": 6, "img": 0, "video": 0, "background_images": 0},
+              "shape": {"radii": [1, 2], "shadow_count": 0},
+              "layout": {"buttons_in_fold": 8},
+              "type": {"size_ramp": [14, 16, 32, 48], "display": {"px": 48}}},
+        "b": {"color": {"backgrounds": [1, 2, 3, 4, 5, 6], "gradient_count": 0},
+              "motion": {"transitioned": 200, "animated": 1},
+              "imagery": {"svg": 60, "img": 20, "video": 5, "background_images": 1},
+              "shape": {"radii": [1, 2, 3, 4, 5], "shadow_count": 4},
+              "layout": {"buttons_in_fold": 120},
+              "type": {"size_ramp": [12, 14, 16, 20, 22, 72, 96], "display": {"px": 96}}},
+        "c": {"color": {"backgrounds": [1, 2, 3, 4], "gradient_count": 9},
+              "motion": {"transitioned": 40, "animated": 0},
+              "imagery": {"svg": 11, "img": 4, "video": 0, "background_images": 0},
+              "shape": {"radii": [1, 2, 3], "shadow_count": 2},
+              "layout": {"buttons_in_fold": 10},
+              "type": {"size_ramp": [16, 18, 30, 56], "display": {"px": 56}}},
+    }
+    fl = floors(ex)
+    assert fl["background_colours"]["floor"] == 3, fl["background_colours"]
+    assert fl["transitioned"]["floor"] == 20
+    assert fl["svg"]["floor"] == 6
+    assert fl["type_sizes"]["floor"] == 4
+    assert fl["shadows"]["floor"] is None, "an unfloored axis must carry no floor"
+    assert fl["images"]["floor"] is None
+
+    rich = ex["c"]
+    assert judge(rich, fl) == [], f"an exemplar-shaped page must meet the floors: {judge(rich, fl)}"
+
+    bland = {"color": {"backgrounds": [], "gradient_count": 0},
+             "motion": {"transitioned": 2, "animated": 1},
+             "imagery": {"svg": 0, "img": 0, "video": 0, "background_images": 0},
+             "shape": {"radii": [6], "shadow_count": 0},
+             "layout": {"buttons_in_fold": 1},
+             "type": {"size_ramp": [15, 16, 84], "display": {"px": 84}}}
+    bad = judge(bland, fl)
+    assert len(bad) == 6, f"the bland shape must fail every floored axis, got {len(bad)}: {bad}"
+
+    # An axis that is floored must actually be able to fail on its own.
+    for key, label, fn, floored, _ in AXES:
+        if not floored:
+            continue
+        one_short = json.loads(json.dumps(rich))
+        # drive this axis under the floor without touching the others
+        if key == "background_colours":
+            one_short["color"]["backgrounds"] = []
+        elif key == "transitioned":
+            one_short["motion"]["transitioned"] = 0
+        elif key == "svg":
+            one_short["imagery"]["svg"] = 0
+        elif key == "radii":
+            one_short["shape"]["radii"] = []
+        elif key == "controls":
+            one_short["layout"]["buttons_in_fold"] = 0
+        elif key == "type_sizes":
+            one_short["type"]["size_ramp"] = [16]
+        got = judge(one_short, fl)
+        assert len(got) == 1 and label in got[0], f"{key} did not fail alone: {got}"
+
+    # A bot-wall capture must be rejected BY NAME, and its rejection must RAISE the floors
+    # rather than leave them where its near-zero numbers put them.
+    botwall = {"color": {"backgrounds": [1], "gradient_count": 0},
+               "motion": {"transitioned": 0, "animated": 0},
+               "imagery": {"svg": 1, "img": 0, "video": 0, "background_images": 0},
+               "shape": {"radii": [], "shadow_count": 0},
+               "layout": {"buttons_in_fold": 0},
+               "type": {"size_ramp": [28], "display": {"px": 28}}}
+    with_wall = dict(ex, canva=botwall)
+    kept, rej = usable(with_wall)
+    assert "canva" not in kept and len(rej) == 1 and "canva" in rej[0], (kept, rej)
+    assert len(kept) == 3, kept
+    polluted = floors(with_wall)
+    assert polluted["background_colours"]["floor"] == 1, "the bot wall should pull it to 1"
+    assert floors(kept)["background_colours"]["floor"] == 3, "rejecting it must restore 3"
+
+    # Too few exemplars must refuse rather than set a bar from one site.
+    assert len(load_exemplars(Path("/nonexistent"))) == 0
+    print("selftest: a bot-wall capture is rejected by name and rejecting it restores the floor it had lowered; floors derive from the set, an exemplar-shaped page meets them, the "
+          "bland shape fails all 6, each floored axis fails alone, no certificate word is "
+          "ever printed")
+    return 0
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("round_dir", nargs="?")
+    ap.add_argument("--url-base", default="http://127.0.0.1:8793")
+    ap.add_argument("--refs")
+    ap.add_argument("--write", action="store_true")
+    ap.add_argument("--selftest", action="store_true")
+    a = ap.parse_args(argv)
+    if a.selftest:
+        return selftest()
+    if not a.round_dir:
+        ap.error("round_dir is required")
+    rd = Path(a.round_dir).resolve()
+    refs = Path(a.refs).resolve() if a.refs else rd.parent / "references"
+    return report(rd, a.url_base, refs, a.write)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

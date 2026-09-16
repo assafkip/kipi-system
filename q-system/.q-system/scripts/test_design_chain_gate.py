@@ -590,3 +590,55 @@ class TestSealedRoundsAreHistory(Base):
         rc, out = self.stop()
         self.assertEqual(rc, 2, "an edited page kept its grandfather")
         self.assertIn("pain-model.md", out)
+
+
+class TestGapCheck(Base):
+    """The design chain had no DISTANCE check, only absence checks, and a deliberately
+    bland page passed all three of them (RCA rca-design-chain-passes-bland-2026-09-15.md).
+    design-gap-check.py measures a built page against the captured exemplars; this is the
+    gate half that makes its verdict block a seal."""
+
+    def enable(self):
+        cfgp = self.inst / "design-chain.json"
+        cfg = json.loads(cfgp.read_text())
+        cfg.setdefault("craft", {})["require_gap_check"] = True
+        cfgp.write_text(json.dumps(cfg))
+
+    def gap(self, below=(), sha=None):
+        (self.round / "checks").mkdir(exist_ok=True)
+        (self.round / "checks" / "gap.json").write_text(json.dumps({
+            "_exemplars": ["a", "b", "c"],
+            "pages": {self.page.name: {"sha256": sha or self.sha(self.page),
+                                       "axes": {}, "below_floor": list(below)}},
+        }))
+
+    def test_missing_gap_receipt_blocks(self):
+        self.enable(); self.complete_chain()
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2)
+        self.assertIn("gap.json", out)
+
+    def test_an_axis_below_floor_blocks_and_names_it(self):
+        self.enable(); self.complete_chain()
+        self.gap(below=["distinct background colours: 0, and the least any exemplar reaches is 3"])
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2)
+        self.assertIn("background colours", out)
+
+    def test_a_stale_gap_receipt_blocks(self):
+        self.enable(); self.complete_chain()
+        self.gap(sha="0" * 64)
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2)
+        self.assertIn("stale", out.lower())
+
+    def test_every_floor_met_and_fresh_seals(self):
+        self.enable(); self.complete_chain()
+        self.gap()
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 0, out)
+
+    def test_an_instance_that_has_not_opted_in_is_unaffected(self):
+        self.complete_chain()  # no require_gap_check, no gap.json
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 0, out)
