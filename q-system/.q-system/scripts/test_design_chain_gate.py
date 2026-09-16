@@ -877,6 +877,7 @@ class TestCorrectionsReachSearchText(TestCorrections):
             '<html><head><meta name="description" content="The firm bought the system.">'
             '<meta property="og:image:alt" content="Running by Friday.">'
             '<script type="application/ld+json">{"@type": "FAQPage", "url": "https://x.io/work", '
+            '"offers": {"@type": "Offer", "price": "1000", "priceCurrency": "USD", "url": "https://x.io/start"}, '
             '"mainEntity": [{"@type": "Question", "name": "How long?", '
             '"acceptedAnswer": {"@type": "Answer", "text": "Running by Friday."}}]}</script>'
             '<script>var n = 1;</script></head><body><p>The firm bought the system.</p>'
@@ -908,6 +909,15 @@ class TestCorrectionsReachSearchText(TestCorrections):
 
     def test_json_ld_new_key_is_still_design(self):
         self.edit('"@type": "FAQPage",', '"@type": "FAQPage", "price": "0",')
+        self.assertEqual(self.correct()[0], 2)
+
+    def test_removing_an_offer_price_is_a_correction(self):
+        self.edit('"price": "1000", "priceCurrency": "USD", ', '')
+        self.assertEqual(self.correct()[0], 0)
+        self.assertEqual(self.problems()[0], 0)
+
+    def test_the_offer_url_is_still_design(self):
+        self.edit('"url": "https://x.io/start"', '"url": "https://x.io/other"')
         self.assertEqual(self.correct()[0], 2)
 
     def test_meta_name_is_still_design(self):

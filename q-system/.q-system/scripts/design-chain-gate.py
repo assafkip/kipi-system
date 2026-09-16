@@ -498,13 +498,19 @@ CORRECTIONS = "corrections.jsonl"
 WORDING_META = {"description", "og:description", "og:title", "og:image:alt",
                 "twitter:description", "twitter:title", "twitter:image:alt"}
 WORDING_JSONLD_KEYS = {"text", "description", "name", "headline", "alternateName"}
+# An Offer's price is a published claim, not structure. Founder, 2026-09-16: "remove the $1,000
+# from anywhere in the site"; the structured-data copy could not be removed as a correction while
+# its price keys counted as design. Only inside an Offer: a price key anywhere else stays design.
+OFFER_CLAIM_KEYS = {"price", "priceCurrency"}
 WORDING = "<wording>"
 
 
 def _jsonld_shape(value, key=None):
     """JSON-LD with its prose values blanked: keys, types, URLs and every other value stay."""
     if isinstance(value, dict):
-        return {k: _jsonld_shape(v, k) for k, v in value.items()}
+        offer = value.get("@type") == "Offer"
+        return {k: _jsonld_shape(v, k) for k, v in value.items()
+                if not (offer and k in OFFER_CLAIM_KEYS)}
     if isinstance(value, list):
         return [_jsonld_shape(v, key) for v in value]
     if isinstance(value, str) and key in WORDING_JSONLD_KEYS:
