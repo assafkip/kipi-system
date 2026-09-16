@@ -476,6 +476,43 @@ def sealed_and_unedited(page: Path) -> bool:
     return isinstance(ent, dict) and ent.get("sha256") == sha(page)
 
 
+NOT_A_ROUND = ".not-a-round"
+
+
+def tool_directory_problems(page: Path) -> list[str] | None:
+    """None when this page is an ordinary round page. A list (possibly empty) when its
+    directory has declared itself NOT a design round.
+
+    Why this exists, twice in one session on 2026-09-15: a known-slop control page written
+    to prove the tripwire was alive, and a type specimen comparing free faces, were both
+    treated as rounds of one with no brief. Neither is a page a visitor reaches and neither
+    can ever have a brief, three directions or a reader gate. A gate that blocks on work it
+    structurally cannot accept is the pressure that makes someone route around it, which is
+    the opposite of what it is for.
+
+    It is narrow on purpose:
+      - the marker carries a REASON, and an empty one is refused, so the directory says
+        what it is rather than just opting out
+      - a directory holding brief.md IS a round and the marker cannot switch it off, so
+        this can never turn the chain off for real work
+    """
+    d = page.parent
+    marker = d / NOT_A_ROUND
+    if not marker.is_file():
+        return None
+    if (d / "brief.md").is_file():
+        return [f"{marker} sits in a directory that holds brief.md, which makes it a design "
+                f"round. A round cannot declare itself not a round. Remove one or the other."]
+    try:
+        reason = marker.read_text().strip()
+    except OSError:
+        reason = ""
+    if not reason:
+        return [f"{marker} carries no reason. A directory may declare that it holds tools "
+                f"rather than round pages, and it says in writing what they are."]
+    return []
+
+
 def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     """Everything missing or stale for one page. Empty list = chain complete.
 
@@ -499,6 +536,9 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     probs: list[str] = []
     if not page.is_file():
         return [f"page not found: {page}"]
+    declared = tool_directory_problems(page)
+    if declared is not None:
+        return declared
     if honor_seal and sealed_and_unedited(page):
         return []
     rd = round_dir_for(page)

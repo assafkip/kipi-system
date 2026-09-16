@@ -642,3 +642,55 @@ class TestGapCheck(Base):
         self.complete_chain()  # no require_gap_check, no gap.json
         rc, out = run(["seal", str(self.round)], env=self.env)
         self.assertEqual(rc, 0, out)
+
+
+class TestNotARound(Base):
+    """Some HTML under the design tree is a TOOL, not a round page: a known-slop control, a
+    type specimen, a fixture. The gate treated each as a round of one with no brief and
+    blocked, twice in one session, which is the pressure that makes someone route around a
+    gate instead of using it. A directory may declare itself not-a-round, with a reason,
+    and the declaration is refused where a real round lives."""
+
+    def tool_dir(self, reason="a type specimen for the founder, not a page a visitor reaches"):
+        d = self.inst / "site" / "design" / "references"
+        d.mkdir(parents=True, exist_ok=True)
+        page = d / "type-specimen.html"
+        page.write_text("<html><body><h1>Specimen</h1></body></html>")
+        if reason is not None:
+            (d / ".not-a-round").write_text(reason + "\n")
+        return page
+
+    def write_of(self, page):
+        return run([], {"hook_event_name": "PostToolUse", "tool_name": "Write",
+                        "session_id": self.sid, "tool_input": {"file_path": str(page)}}, self.env)
+
+    def test_a_declared_tool_directory_does_not_block(self):
+        page = self.tool_dir()
+        self.write_of(page)
+        rc, out = self.stop()
+        self.assertEqual(rc, 0, out)
+
+    def test_without_the_marker_it_still_blocks(self):
+        page = self.tool_dir(reason=None)
+        self.write_of(page)
+        rc, out = self.stop()
+        self.assertEqual(rc, 2)
+        self.assertIn("brief.md", out)
+
+    def test_an_empty_marker_is_refused(self):
+        page = self.tool_dir(reason="")
+        self.write_of(page)
+        rc, out = self.stop()
+        self.assertEqual(rc, 2)
+        self.assertIn("reason", out.lower())
+
+    def test_the_marker_cannot_switch_off_a_real_round(self):
+        # brief.md is what makes a directory a round. The first version of this test wrote
+        # the marker into a directory that had none, so honouring it was CORRECT and the
+        # test was wrong about what it was testing.
+        (self.round / "brief.md").write_text("# Brief\n")
+        (self.round / ".not-a-round").write_text("trying to skip the chain\n")
+        self.write_hook()
+        rc, out = self.stop()
+        self.assertEqual(rc, 2, "a directory holding brief.md is a round and cannot opt out")
+        self.assertIn("cannot declare itself not a round", out)
