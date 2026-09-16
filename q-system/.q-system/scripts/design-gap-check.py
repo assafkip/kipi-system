@@ -46,6 +46,9 @@ RECEIPT = "gap.json"
 # A floor that is NOT derived carries its number here, in the open, so a reader can
 # tell a measured bar from a chosen one at a glance.
 PRESENCE_FLOOR = {"controls": 5}
+# Axes where being ABOVE the group is the defect, not only being below. The ceiling is
+# derived the same way the floor is: the most any exemplar does.
+RANGE_AXES = {"display_words"}
 
 
 def _n(d, *path, default=0):
@@ -109,6 +112,29 @@ AXES = [
      "design-chain.json `standard` capped this at 3 while the group runs 4 to 7. That "
      "contradiction is the RCA's most actionable cause. The cap is regenerated from these "
      "same captures by design-standard-from-exemplars.py so the two agree."),
+    ("display_words", "words in the display line",
+     lambda d: _n(d, "type", "display", "words"), True,
+     "THE AXIS THAT WOULD HAVE CAUGHT ROUND G. Measured across the set: squarespace 3, "
+     "notion 5, calendly 6, stripe 6, figma 6. Round 2026-09-15g set a SIXTEEN-word quote "
+     "as its display line, three times the longest in the group, and no gate looked because "
+     "type.display.words was measured on every capture and read by nothing. This axis is a "
+     "RANGE: too many words is the defect here, not too few."),
+    ("largest_visual_pct", "share of the fold given to its largest visual object",
+     lambda d: _n(d, "imagery", "largest_visual_pct"), False,
+     "MEASURED, NOT FLOORED, AND THE REASON IS AN INSTRUMENT FAULT RATHER THAN A JUDGEMENT. "
+     "This is the property that actually separates the exemplar folds from ours: calendly "
+     "85%, squarespace 95%, stripe 74%, notion 27%, against a page whose largest visual is a "
+     "small chart. It is also the honest replacement for the svg COUNT floor, which round g "
+     "satisfied with a logo, three bars and an arrow. It is not floored because the probe "
+     "reads figma at 0% while figma's own screenshot shows three large artwork panels: they "
+     "are transparent DIVs carrying no img and no background-image, and the probe cannot "
+     "see whatever renders them. A floor derived from a set where one of five is provably "
+     "wrong is the same defect as letting a bot-walled capture set one. Fix the probe, then "
+     "floor it."),
+    ("visual_area_pct", "share of the fold covered by visuals in total",
+     lambda d: _n(d, "imagery", "visual_area_pct"), False,
+     "MEASURED, NOT FLOORED, same instrument fault as largest_visual_pct. Reads calendly "
+     "100%, squarespace 100%, stripe 100%, notion 66%, figma 0%."),
     ("images", "images in the fold",
      lambda d: _n(d, "imagery", "img"), False,
      "NOT FLOORED. design-dna.md section 4 bans stock imagery and allows only real records "
@@ -208,6 +234,7 @@ def floors(ex: dict) -> dict:
             "label": label, "floored": bool(floored),
             "derived": floored is True, "why": why,
             "floor": floor,
+            "ceiling": (max(vals) if (key in RANGE_AXES and vals) else None),
             "median": statistics.median(vals) if vals else None,
             "range": [min(vals), max(vals)] if vals else None,
         }
@@ -235,13 +262,18 @@ def probe_pages(round_dir: Path, url_base: str, names: list[str]) -> dict:
 
 
 def judge(measured: dict, fl: dict) -> list[str]:
-    """Every floored axis this page does not reach. Empty list means every floor is met,
-    which is NOT the same as the page being any good."""
+    """Every floored axis this page does not reach, plus every range axis it overshoots.
+    Empty list means every floor is met, which is NOT the same as the page being good."""
     bad = []
     for key, label, fn, floored, why in AXES:
         if not floored or fl[key]["floor"] is None:
             continue
         got, want = fn(measured), fl[key]["floor"]
+        ceiling = fl[key].get("ceiling")
+        if ceiling is not None and got > ceiling:
+            bad.append(f"{label}: {got}, and the most any exemplar uses is {ceiling} "
+                       f"(their range {fl[key]['range'][0]} to {fl[key]['range'][1]})")
+            continue
         if got < want:
             how = ("the least any exemplar reaches is" if fl[key]["derived"]
                    else "the stated presence floor is")
@@ -317,19 +349,19 @@ def selftest() -> int:
               "imagery": {"svg": 6, "img": 0, "video": 0, "background_images": 0},
               "shape": {"radii": [1, 2], "shadow_count": 0},
               "layout": {"buttons_in_fold": 8},
-              "type": {"size_ramp": [14, 16, 32, 48], "display": {"px": 48}}},
+              "type": {"size_ramp": [14, 16, 32, 48], "display": {"px": 48, "words": 6}}},
         "b": {"color": {"backgrounds": [1, 2, 3, 4, 5, 6], "gradient_count": 0},
               "motion": {"transitioned": 200, "animated": 1},
               "imagery": {"svg": 60, "img": 20, "video": 5, "background_images": 1},
               "shape": {"radii": [1, 2, 3, 4, 5], "shadow_count": 4},
               "layout": {"buttons_in_fold": 120},
-              "type": {"size_ramp": [12, 14, 16, 20, 22, 72, 96], "display": {"px": 96}}},
+              "type": {"size_ramp": [12, 14, 16, 20, 22, 72, 96], "display": {"px": 96, "words": 3}}},
         "c": {"color": {"backgrounds": [1, 2, 3, 4], "gradient_count": 9},
               "motion": {"transitioned": 40, "animated": 0},
               "imagery": {"svg": 11, "img": 4, "video": 0, "background_images": 0},
               "shape": {"radii": [1, 2, 3], "shadow_count": 2},
               "layout": {"buttons_in_fold": 10},
-              "type": {"size_ramp": [16, 18, 30, 56], "display": {"px": 56}}},
+              "type": {"size_ramp": [16, 18, 30, 56], "display": {"px": 56, "words": 5}}},
     }
     fl = floors(ex)
     assert fl["background_colours"]["floor"] == 3, fl["background_colours"]
@@ -354,7 +386,7 @@ def selftest() -> int:
              "imagery": {"svg": 0, "img": 0, "video": 0, "background_images": 0},
              "shape": {"radii": [6], "shadow_count": 0},
              "layout": {"buttons_in_fold": 1},
-             "type": {"size_ramp": [15, 16, 84], "display": {"px": 84}}}
+             "type": {"size_ramp": [15, 16, 84], "display": {"px": 84, "words": 4}}}
     bad = judge(bland, fl)
     # The bland shape must still fail, and it must fail on the axes that survived the two
     # loosenings, not only on the ones that were removed. This is the counter-check for
@@ -384,8 +416,21 @@ def selftest() -> int:
             one_short["layout"]["buttons_in_fold"] = 0
         elif key == "type_sizes":
             one_short["type"]["size_ramp"] = [16]
+        elif key == "display_words":
+            one_short["type"]["display"]["words"] = 0
         got = judge(one_short, fl)
         assert len(got) == 1 and label in got[0], f"{key} did not fail alone: {got}"
+
+    # The range axis must fail in BOTH directions, which is what makes it a range.
+    assert fl["display_words"]["floor"] == 3 and fl["display_words"]["ceiling"] == 6, fl["display_words"]
+    long_line = json.loads(json.dumps(rich))
+    long_line["type"]["display"]["words"] = 16
+    got = judge(long_line, fl)
+    assert len(got) == 1 and "display line" in got[0] and "most any exemplar" in got[0], got
+    short_line = json.loads(json.dumps(rich))
+    short_line["type"]["display"]["words"] = 1
+    got = judge(short_line, fl)
+    assert len(got) == 1 and "display line" in got[0] and "least any exemplar" in got[0], got
 
     # A bot-wall capture must be rejected BY NAME, and its rejection must RAISE the floors
     # rather than leave them where its near-zero numbers put them.
@@ -394,7 +439,7 @@ def selftest() -> int:
                "imagery": {"svg": 1, "img": 0, "video": 0, "background_images": 0},
                "shape": {"radii": [], "shadow_count": 0},
                "layout": {"buttons_in_fold": 0},
-               "type": {"size_ramp": [28], "display": {"px": 28}}}
+               "type": {"size_ramp": [28], "display": {"px": 28, "words": 5}}}
     with_wall = dict(ex, canva=botwall)
     kept, rej = usable(with_wall)
     assert "canva" not in kept and len(rej) == 1 and "canva" in rej[0], (kept, rej)

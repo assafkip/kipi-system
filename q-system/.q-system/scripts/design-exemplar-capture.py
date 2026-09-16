@@ -105,6 +105,26 @@ PROBE = r"""
   const bgImgs = fold.filter(e => { const b = getComputedStyle(e).backgroundImage;
     return b !== 'none' && !b.includes('gradient'); });
 
+  // HOW MUCH OF THE FOLD IS A VISUAL OBJECT, by area rather than by count.
+  // Counting elements is gameable and was gamed: a round met an svg floor of 5 with a
+  // logo, three bars and an arrow, while every exemplar's fold is dominated by a large
+  // visual (a chromatic ribbon, a gradient field, a product screen, artwork panels, a
+  // full-bleed photograph). Area is the property that separates them; count is not.
+  const visualTags = new Set(['IMG', 'SVG', 'VIDEO', 'CANVAS', 'PICTURE']);
+  const visuals = fold.filter(e => visualTags.has(e.tagName.toUpperCase()) ||
+      (getComputedStyle(e).backgroundImage || 'none') !== 'none');
+  const clipped = e => { const r = e.getBoundingClientRect();
+    const w = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
+    const h = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+    return w * h; };
+  // an element nested inside another visual would be counted twice, so only count a
+  // visual whose nearest visual ancestor is not itself in the set
+  const outermost = visuals.filter(e => !visuals.some(o => o !== e && o.contains(e)));
+  const areas = outermost.map(clipped);
+  const foldArea = vw * vh;
+  const largest = areas.length ? Math.max(...areas) : 0;
+  const covered = areas.reduce((a, b) => a + b, 0);
+
   // widest block of running text = the content measure the page actually uses
   let measure = 0;
   for (const e of fold) { const t = own(e);
@@ -123,6 +143,8 @@ PROBE = r"""
                video: fold.filter(e => e.tagName === 'VIDEO').length,
                canvas: fold.filter(e => e.tagName === 'CANVAS').length,
                background_images: bgImgs.length,
+               largest_visual_pct: Math.round(100 * largest / foldArea),
+               visual_area_pct: Math.min(100, Math.round(100 * covered / foldArea)),
                img_src_sample: imgs.slice(0, 3).map(e => (e.currentSrc || e.src || '').slice(-60)) },
     motion: { animated: fold.filter(e => getComputedStyle(e).animationName !== 'none').length,
               transitioned: fold.filter(e => { const c = getComputedStyle(e);
@@ -225,6 +247,9 @@ def main() -> int:
             f"- backgrounds: {[b['value'] for b in c['backgrounds']]}",
             f"- gradients in fold: {c['gradient_count']}",
             f"- radii: {[x['value'] for x in s['radii']]}   shadows: {s['shadow_count']}",
+            f"- fold given to visuals: largest object {im.get('largest_visual_pct', 0)}%% of the fold, "
+            f"all visuals {im.get('visual_area_pct', 0)}%% "
+            f"(counting elements is gameable; area is what separates these folds)",
             f"- imagery: img {im['img']}, svg {im['svg']}, video {im['video']}, "
             f"canvas {im['canvas']}, background-images {im['background_images']}",
             f"- motion: {mo['animated']} animated, {mo['transitioned']} transitioned",
