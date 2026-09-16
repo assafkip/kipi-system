@@ -58,6 +58,31 @@ class JudgeHeroAlign(unittest.TestCase):
         self.assertIn("no headline", f[0])
 
 
+class JudgeHeroCluster(unittest.TestCase):
+    """Founder 2026-09-16: "the text kind of bunches up in the middle, wrapped, and it looks
+    like a block of text". Measured on the five exemplars the same day: the most text any of
+    them puts around the headline is calendly's 2 pieces, 18 words, 3 lines."""
+    CAPS = dict(max_hero_pieces=2, max_hero_words=18, max_hero_lines=3)
+
+    def test_no_caps_no_finding(self):
+        m = dict(BASE, hero={"text_align": "center", "offset_pct": 0.0, "pieces": 4, "words": 43, "lines": 6})
+        self.assertEqual(dsc.judge(m, cfg()), [])
+
+    def test_block_fails(self):
+        m = dict(BASE, hero={"text_align": "center", "offset_pct": 0.0, "pieces": 4, "words": 43, "lines": 6})
+        f = dsc.judge(m, cfg(**self.CAPS))
+        self.assertEqual(len(f), 1)
+        self.assertIn("block", f[0])
+
+    def test_calendly_amount_passes(self):
+        m = dict(BASE, hero={"text_align": "center", "offset_pct": 0.0, "pieces": 2, "words": 18, "lines": 3})
+        self.assertEqual(dsc.judge(m, cfg(**self.CAPS)), [])
+
+    def test_one_long_wrapped_piece_fails_on_lines(self):
+        m = dict(BASE, hero={"text_align": "center", "offset_pct": 0.0, "pieces": 1, "words": 17, "lines": 4})
+        self.assertEqual(len(dsc.judge(m, cfg(**self.CAPS))), 1)
+
+
 class MeasureHeroAlign(unittest.TestCase):
     """Runs the real browser probe on two pages that differ only in alignment."""
 
@@ -71,6 +96,17 @@ class MeasureHeroAlign(unittest.TestCase):
         for m in self._measure("", ""):
             c = cfg(hero_align="center")
             self.assertTrue(dsc.judge(m, c), m["viewport"])
+
+    def test_cluster_is_counted_on_a_real_page(self):
+        d = pathlib.Path(tempfile.mkdtemp())
+        page = d / "p.html"
+        page.write_text(PAGE.replace("<p>A line of body copy under the headline.</p>",
+            "<p>A line of body copy under the headline.</p><p>And a second line of body copy here.</p>"
+            "<p>And a third one, which makes the block.</p>") % ("text-align:center", "text-align:center"))
+        m = dsc.measure(page.as_uri(), cfg(viewports=[[1440, 900]]))[0]
+        self.assertEqual(m["hero"]["pieces"], 3, m["hero"])
+        self.assertEqual(m["hero"]["words"], 24, m["hero"])
+        self.assertTrue(dsc.judge(m, cfg(**JudgeHeroCluster.CAPS)))
 
     def test_centered_page_is_measured_centered(self):
         for m in self._measure("text-align:center", "text-align:center"):

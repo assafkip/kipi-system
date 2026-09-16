@@ -78,7 +78,30 @@ JS = """
     const rg = document.createRange(); rg.selectNodeContents(heroEl);
     const t = rg.getBoundingClientRect();
     hero = { text_align: getComputedStyle(heroEl).textAlign,
-             offset_pct: Math.round(Math.abs((t.left + t.right) / 2 - vw / 2) / vw * 1000) / 10 };
+             offset_pct: Math.round(Math.abs((t.left + t.right) / 2 - vw / 2) / vw * 1000) / 10,
+             pieces: 0, words: 0, lines: 0 };
+    // The text a reader sees as one block with the headline: every other piece of 3 or more
+    // words from 80px above it to 260px below it, outside fixed or sticky layers and outside
+    // header, nav, footer and controls. Lines are rendered height over line height.
+    const hr = heroEl.getBoundingClientRect();
+    const layered = (e) => { for (let x = e; x && x.nodeType === 1; x = x.parentElement) {
+        const c = getComputedStyle(x);
+        if (c.position === 'fixed' || c.position === 'sticky') return true;
+        if (/^(HEADER|NAV|FOOTER|BUTTON|A|DIALOG)$/.test(x.tagName) || x.getAttribute('role') === 'dialog') return true;
+      } return false; };
+    for (const el of document.body.querySelectorAll('*')) {
+      if (heroEl.contains(el) || el.contains(heroEl)) continue;
+      const own = [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join(' ').trim();
+      const w = own.split(/\s+/).filter(Boolean).length;
+      if (w < 3) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 1 || r.height <= 1 || r.top < hr.top - 80 || r.top > hr.bottom + 260) continue;
+      if (layered(el)) continue;
+      const c = getComputedStyle(el);
+      if (c.visibility === 'hidden' || +c.opacity === 0) continue;
+      let lh = parseFloat(c.lineHeight); if (!lh) lh = parseFloat(c.fontSize) * 1.2;
+      hero.pieces += 1; hero.words += w; hero.lines += Math.max(1, Math.round(r.height / lh));
+    }
   }
   return { type_sizes: [...sizes.keys()].sort((a,b)=>a-b), large_elements: large, words, min_body_px: minBody === 999 ? null : minBody, max_line_chars: maxLine, signal_elements: sigCount, hero };
 }
@@ -134,6 +157,20 @@ def judge(m: dict, cfg: dict) -> list[str]:
             f.append(f"headline is not centred (text-align {h['text_align']}, its text sits "
                      f"{h['offset_pct']}% of the viewport off centre; max {tol}%); "
                      f"hero_align is center")
+    # The block around the headline. Founder 2026-09-16: "the text kind of bunches up in the
+    # middle, wrapped, and it looks like a block of text. It's not about the length, it's
+    # about what it looks like." Measured on the five exemplars the same day
+    # (site/design/2026-09-16g/checks/hero-text-laptop.txt): the most any of them puts
+    # around the headline is calendly's 2 pieces, 18 words, 3 lines; round 16e had 4, 43, 6.
+    # Words alone would miss it (he said it is not the length), so pieces and wrapped lines
+    # are held too.
+    h = m.get("hero") or {}
+    caps = [("pieces", "max_hero_pieces", "separate pieces of text"),
+            ("words", "max_hero_words", "words"), ("lines", "max_hero_lines", "wrapped lines")]
+    over = [f"{h.get(k, 0)} {label} (max {cfg[c]})" for k, c, label in caps
+            if c in cfg and h and h.get(k, 0) > cfg[c]]
+    if over:
+        f.append("the text around the headline reads as a block: " + ", ".join(over))
     return f
 
 
