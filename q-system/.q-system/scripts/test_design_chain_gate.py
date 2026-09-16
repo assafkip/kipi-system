@@ -253,6 +253,51 @@ class TestCraftBar(Base):
         self.assertEqual(rc, 2, out)
         self.assertIn("no reason", out)
 
+    def test_technique_citing_an_untorn_down_reference_is_refused(self):
+        """The input half. A manifest filled from the builder's own prior passes the parity
+        check trivially, because he built what he imagined. Every technique must cite a page
+        that was actually opened and written up."""
+        self.complete_chain()
+        self.craft_cfg(require_grounding="refs/TEARDOWN.md")
+        (self.inst / "refs").mkdir(exist_ok=True)
+        (self.inst / "refs" / "TEARDOWN.md").write_text("# Teardown\n\n## trailofbits.com\n"
+                                                        "mono counter bar of real numbers\n")
+        (self.round / "checks" / "impeccable.txt").write_text("ran\n")
+        (self.round / CRAFT_MANIFEST).write_text(json.dumps({"techniques": [
+            {"id": "invented", "technique": "a move from nowhere", "role": "hero",
+             "reference": "my own head", "import": ["gsap"], "applied": ["gsap"]}]}))
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("not in TEARDOWN.md", out)
+
+    def test_technique_citing_a_torn_down_reference_passes(self):
+        self.complete_chain()
+        self.craft_cfg(require_grounding="refs/TEARDOWN.md")
+        (self.inst / "refs").mkdir(exist_ok=True)
+        (self.inst / "refs" / "TEARDOWN.md").write_text("# Teardown\n\n## trailofbits.com\n"
+                                                        "mono counter bar of real numbers\n")
+        (self.round / "checks" / "impeccable.txt").write_text("ran\n")
+        self.page.write_text(self.page.read_text().replace(
+            "</body>", "<script src='gsap.min.js'></script></body>"))
+        (self.round / "standard.json").write_text(json.dumps(
+            [{"page": self.page.name, "sha256": self.sha(self.page), "pass": True}]))
+        (self.round / CRAFT_MANIFEST).write_text(json.dumps({"techniques": [
+            {"id": "counter-bar", "technique": "real numbers as chrome", "role": "header",
+             "reference": "trailofbits.com", "import": ["gsap"], "applied": ["gsap"]}]}))
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 0, out)
+
+    def test_missing_teardown_blocks_when_grounding_required(self):
+        self.complete_chain()
+        self.craft_cfg(require_grounding="refs/TEARDOWN.md")
+        (self.round / "checks" / "impeccable.txt").write_text("ran\n")
+        (self.round / CRAFT_MANIFEST).write_text(json.dumps({"techniques": [
+            {"id": "x", "technique": "y", "role": "z", "reference": "trailofbits.com",
+             "import": ["gsap"], "applied": ["gsap"]}]}))
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("TEARDOWN.md", out)
+
     def test_craft_block_absent_leaves_the_chain_as_it_was(self):
         """An instance with no craft block is not silently held to the new bar."""
         self.complete_chain()

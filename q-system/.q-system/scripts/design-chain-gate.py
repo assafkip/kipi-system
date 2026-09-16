@@ -174,7 +174,7 @@ def round_dir_for(page: Path) -> Path:
 
 # ---------------------------------------------------------------- the chain check
 
-def craft_problems(rd: Path, page: Path, cfg: dict) -> list[str]:
+def craft_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None) -> list[str]:
     """The bar-check. Silent unless the instance declares a `craft` block, so an
     instance that has not opted in keeps exactly the behaviour it had.
 
@@ -248,6 +248,38 @@ def craft_problems(rd: Path, page: Path, cfg: dict) -> list[str]:
                         probs.append(f"{CRAFT_MANIFEST}: technique '{t.get('id', '?')}' "
                                      f"({t.get('role', '?')}) is declared but absent from "
                                      f"{page.name}: {missing}")
+    # GROUNDING. The chain had an enforcement half and no input half: the manifest made
+    # the build prove it used what it declared, and nothing made the declaration come from
+    # anywhere but the builder's own prior. So it verified that the builder built what he
+    # imagined, and passed while producing the same generic page three rounds running.
+    # Founder, 2026-09-15: "This is the most generic stuff ever... do you need an example
+    # to work from?" cole-gtm's design-room had the step and only its back half was ported:
+    #   theirs:  ground -> teardown -> steal-manifest -> build -> parity
+    #   ported:                     craft-manifest -> build -> parity
+    ground = craft.get("require_grounding")
+    if ground and mpath.is_file():
+        tpath = (cfg_path.parent / ground) if cfg_path else Path(ground)
+        if not tpath.is_file():
+            probs.append(f"missing {tpath}: at tier '{craft.get('tier','craft')}' the craft "
+                         f"manifest must be filled from real pages that were opened, not "
+                         f"from memory. Load the references, record what makes each one "
+                         f"not generic, then declare techniques that cite them.")
+        else:
+            teardown = tpath.read_text()
+            try:
+                man = json.loads(mpath.read_text())
+            except ValueError:
+                man = {}
+            for t in man.get("techniques") or []:
+                ref = str(t.get("reference", "")).strip()
+                if not ref:
+                    probs.append(f"{CRAFT_MANIFEST}: technique '{t.get('id','?')}' cites no "
+                                 f"reference. A technique with no source is invention.")
+                elif not any(_norm(part) and _norm(part) in _norm(teardown)
+                             for part in re.split(r"[+,]", ref)):
+                    probs.append(f"{CRAFT_MANIFEST}: technique '{t.get('id','?')}' cites "
+                                 f"'{ref}', which is not in {tpath.name}. Tear the reference "
+                                 f"down there first, or the citation is decoration.")
     if craft.get("require_impeccable"):
         ip = rd / "checks" / IMPECCABLE_CHECK
         if not ip.is_file() or not ip.read_text().strip():
@@ -318,7 +350,7 @@ def chain_problems(page: Path) -> list[str]:
         elif not any(e.get("pass") is True and e.get("sha256") == cur for e in mine):
             probs.append(f"standard.json for {page.name}: pass is not true or hash is stale (re-run design-standard-check.py)")
 
-    probs += craft_problems(rd, page, cfg)
+    probs += craft_problems(rd, page, cfg, cfg_path)
 
     # receipts: sealed, and fresh
     rc = rd / "receipts.json"
