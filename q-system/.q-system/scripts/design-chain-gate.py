@@ -426,11 +426,48 @@ def craft_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None) -> li
     return probs
 
 
-def chain_problems(page: Path) -> list[str]:
-    """Everything missing or stale for one page. Empty list = chain complete."""
+def sealed_and_unedited(page: Path) -> bool:
+    """True when this exact page bytes already carry a seal receipt.
+
+    `seal` runs the ENTIRE chain before it writes a receipt, so a fresh receipt is
+    the evidence that the chain ran, under the ruleset in force at that moment.
+    """
+    rc = round_dir_for(page) / "receipts.json"
+    if not rc.is_file():
+        return False
+    try:
+        rec = json.loads(rc.read_text())
+    except ValueError:
+        return False
+    ent = rec.get(page.name)
+    return isinstance(ent, dict) and ent.get("sha256") == sha(page)
+
+
+def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
+    """Everything missing or stale for one page. Empty list = chain complete.
+
+    honor_seal=True (the passive gate): an already-sealed, unedited page is HISTORY
+    and is not re-litigated. Tightening the ruleset applies to rounds that seal from
+    now on, never backwards.
+
+    Scar, 2026-09-15: adding a fifth owner (the pain model) and require_fresh_brief
+    turned this gate red on ALL FIVE rounds that had already sealed, blocking the end
+    of the turn with findings no edit could clear -- you cannot retroactively make a
+    past round have read a file. A gate red on its own population gets switched off,
+    and a switched-off gate protects nothing. Same call plan-lint made with its dated
+    grandfather and linear-filer-label-lint made after measuring 8 filers and 1
+    compliant.
+
+    honor_seal=False (an explicit `seal`): today's full bar, no grandfather. Re-sealing
+    a round is a claim about it NOW, so it is checked against the rules now. That is
+    what keeps this from being a blanket amnesty: the escape hatch is one-way and only
+    the passive path takes it.
+    """
     probs: list[str] = []
     if not page.is_file():
         return [f"page not found: {page}"]
+    if honor_seal and sealed_and_unedited(page):
+        return []
     rd = round_dir_for(page)
     cfg, cfg_path = load_config(page)
     if not cfg:
@@ -514,9 +551,9 @@ def seal(rd: Path) -> int:
     for p in pages:
         if rc.is_file():
             # ignore the existing receipt so a re-seal re-validates everything else
-            probs = [x for x in chain_problems(p) if "receipt" not in x and "not sealed" not in x]
+            probs = [x for x in chain_problems(p, honor_seal=False) if "receipt" not in x and "not sealed" not in x]
         else:
-            probs = [x for x in chain_problems(p) if "not sealed" not in x]
+            probs = [x for x in chain_problems(p, honor_seal=False) if "not sealed" not in x]
         if probs:
             bad.append((p.name, probs))
     if bad:

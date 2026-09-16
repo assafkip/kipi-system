@@ -548,3 +548,45 @@ class TestPasses(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSealedRoundsAreHistory(Base):
+    """A round that already sealed does not un-seal when the ruleset later tightens.
+
+    Scar 2026-09-15: adding a fifth owner and require_fresh_brief turned the Stop
+    gate red on all five rounds that had already sealed, so the session could not
+    end at all. A gate red on its own population gets switched off, and a switched
+    off gate protects nothing (same lesson as plan-lint's dated grandfather and
+    linear-filer-label-lint's measured 8-files-1-compliant).
+    """
+
+    def _seal_then_tighten(self):
+        """Seal under today's config, then add an owner anchor the brief cannot quote."""
+        self.complete_chain()
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 0, out)
+        cfgp = self.inst / "design-chain.json"
+        cfg = json.loads(cfgp.read_text())
+        (self.inst / "canonical" / "pain-model.md").write_text('"word": "(dribble the data in)"\n')
+        cfg["owners"].append({"file": "canonical/pain-model.md", "anchors": ['"word": "\\(dribble the data in\\)"']})
+        cfgp.write_text(json.dumps(cfg))
+
+    def test_stop_gate_does_not_unseal_a_round_when_a_new_owner_is_added(self):
+        self._seal_then_tighten()
+        self.write_hook()
+        rc, out = self.stop()
+        self.assertEqual(rc, 0, f"a sealed, unedited page was re-litigated by the new anchor:\n{out}")
+
+    def test_an_explicit_reseal_still_runs_todays_full_bar(self):
+        self._seal_then_tighten()
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2, "re-seal ignored the new owner anchor")
+        self.assertIn("pain-model.md", out)
+
+    def test_editing_the_page_after_seal_re_opens_the_whole_chain(self):
+        self._seal_then_tighten()
+        self.page.write_text("<html><body><h1>Different headline entirely.</h1></body></html>")
+        self.write_hook()
+        rc, out = self.stop()
+        self.assertEqual(rc, 2, "an edited page kept its grandfather")
+        self.assertIn("pain-model.md", out)
