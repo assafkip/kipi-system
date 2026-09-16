@@ -77,7 +77,7 @@ EXTRA_PREFIXES_FILE = Path.home() / ".config" / "kipi" / "launchd-watch-prefixes
 # Scar (ASK-1123/ASK-1124, 2026-08-29): the watchdog used to enumerate ONLY the
 # watched prefixes. A full sweep found two of seven owned families unwatched --
 # io.askconsulting. (11 jobs, one failing undetected for days, ASK-1122) and
-# com.alice. (3 jobs, healthy, which is why nobody noticed). An allowlist fails
+# a second owned family (3 jobs, healthy, which is why nobody noticed). An allowlist fails
 # silently for every family nobody remembered; a denylist fails as noise. The set
 # of third-party vendors on a host is bounded and reviewable; the set of families
 # we might one day own is not.
