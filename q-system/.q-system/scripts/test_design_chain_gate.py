@@ -334,6 +334,86 @@ class TestCraftBar(Base):
         rc, out = run(["seal", str(self.round)], env=self.env)
         self.assertEqual(rc, 0, out)
 
+    def test_untagged_weakness_blocks(self):
+        """Measured 2026-09-15: three sealed rounds carried 11 findings marked WEAK and
+        nothing required an answer. Two of them were the exact defects the founder and the
+        reader gate then caught."""
+        self.complete_chain()
+        self.craft_cfg(require_dispositions=True, require_craft_manifest=False,
+                       require_impeccable=False)
+        (self.round / "critique.md").write_text(
+            "".join(f"## {d}\n" + "".join(f"{i}. answer\n" for i in range(1,10))
+                    for d in "ABC") +
+            "4. Could this be anyone else's page? WEAK. it could.\n")
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("no tag", out)
+
+    def test_tagged_weakness_without_a_disposition_blocks(self):
+        self.complete_chain()
+        self.craft_cfg(require_dispositions=True, require_craft_manifest=False,
+                       require_impeccable=False)
+        (self.round / "critique.md").write_text(
+            "".join(f"## {d}\n" + "".join(f"{i}. answer\n" for i in range(1,10))
+                    for d in "ABC") +
+            "4. WEAK[one-column] every round has been a single column.\n")
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("one-column", out)
+
+    def test_disposition_without_a_reason_blocks(self):
+        self.complete_chain()
+        self.craft_cfg(require_dispositions=True, require_craft_manifest=False,
+                       require_impeccable=False)
+        (self.round / "critique.md").write_text(
+            "".join(f"## {d}\n" + "".join(f"{i}. answer\n" for i in range(1,10))
+                    for d in "ABC") +
+            "4. WEAK[one-column] single column again.\n\n- one-column: DEFERRED\n")
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("no\n", out) if False else self.assertIn("reason", out)
+
+    def test_answered_weakness_seals(self):
+        self.complete_chain()
+        self.craft_cfg(require_dispositions=True, require_craft_manifest=False,
+                       require_impeccable=False)
+        (self.round / "critique.md").write_text(
+            "".join(f"## {d}\n" + "".join(f"{i}. answer\n" for i in range(1,10))
+                    for d in "ABC") +
+            "4. WEAK[one-column] single column again.\n\n"
+            "- one-column: CARRIED to the next round, which varies composition not material.\n")
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 0, out)
+
+    def test_founder_question_not_in_the_ledger_blocks(self):
+        """Same class as the weak finding, found by sweeping for it: 'founder decision'
+        appeared 9 times across the chain's artifacts with no executable reading any of
+        them back. A gate cannot make him decide; it can refuse to let a question be
+        raised and buried."""
+        self.complete_chain()
+        self.craft_cfg(require_dispositions=True, require_craft_manifest=False,
+                       require_impeccable=False)
+        (self.round / "critique.md").write_text(
+            "".join(f"## {d}\n" + "".join(f"{i}. answer\n" for i in range(1,10))
+                    for d in "ABC") +
+            "\n9. The typeface is a purchase. FOUNDER[typeface]\n")
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("typeface", out)
+
+    def test_founder_question_in_the_ledger_seals(self):
+        self.complete_chain()
+        self.craft_cfg(require_dispositions=True, require_craft_manifest=False,
+                       require_impeccable=False)
+        (self.round.parent / "OPEN-DECISIONS.md").write_text(
+            "# Open decisions\n\n## typeface\nAll six exemplars bought one. Blocks: the final type pick.\n")
+        (self.round / "critique.md").write_text(
+            "".join(f"## {d}\n" + "".join(f"{i}. answer\n" for i in range(1,10))
+                    for d in "ABC") +
+            "\n9. The typeface is a purchase. FOUNDER[typeface]\n")
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 0, out)
+
     def test_withdrawn_round_needs_a_reason(self):
         self.complete_chain()
         self.craft_cfg(require_grounding="refs/TEARDOWN.md")

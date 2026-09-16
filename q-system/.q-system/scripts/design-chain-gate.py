@@ -76,6 +76,21 @@ CHAIN_DIRS = ("checks", "gate")
 # level with no execution tier, so premium and floor realizations were equally
 # compliant; effort-economy ran downhill to the cheapest passing artifact.
 CRAFT_MANIFEST = "craft-manifest.json"
+# A weakness the author wrote down and then shipped anyway. Measured 2026-09-15 across
+# three sealed rounds: 11 findings marked WEAK in critique.md, 0 required an answer, and
+# two of them were the exact defects the founder and the reader gate then caught. The
+# critique step was producing findings into a file nothing read back.
+# A decision handed to the founder and buried in a file he does not open. Same class as
+# the WEAK finding above, found by sweeping for it: "founder decision" / "founder question"
+# appeared 9 times across the chain's artifacts on 2026-09-15 with no executable reading
+# any of them back, while {{UNVALIDATED}} and {{NEEDS_PROOF}} both have blocking linters.
+# The ones the founder answered, he answered because they came up in conversation.
+# A gate cannot make him decide. It CAN refuse to let a question be raised and buried.
+FOUNDER_RE = re.compile(r"\bFOUNDER\[([a-z0-9][a-z0-9-]*)\]")
+OPEN_DECISIONS = "OPEN-DECISIONS.md"
+WEAK_RE = re.compile(r"\bWEAK(?:EST)?\b(?:\[([a-z0-9][a-z0-9-]*)\])?")
+DISPOSITION_RE = re.compile(r"^\s*[-*]\s*([a-z0-9][a-z0-9-]*)\s*:\s*(FIXED|DEFERRED|CARRIED)\b(.*)$",
+                            re.M)
 IMPECCABLE_CHECK = "impeccable.txt"
 # Bash commands that put a page in front of a HUMAN. Blocked while the chain is open.
 #
@@ -173,6 +188,65 @@ def round_dir_for(page: Path) -> Path:
 
 
 # ---------------------------------------------------------------- the chain check
+
+def disposition_problems(rd: Path) -> list[str]:
+    """Every weakness the critique names must carry an answer before the round seals.
+
+    HONEST BOUNDARY, stated because this repo has been burned by gates that imply more
+    than they check: this sees the marker `WEAK[tag]` and nothing else. A weakness written
+    in prose ("this is the risk", "I have not yet tried") is invisible to it, and that is
+    not a TODO -- deciding that a sentence describes a weakness is a judgment no regex
+    makes. What it does close is the specific hole measured on 2026-09-15: an author who
+    DOES mark a finding weak can no longer seal without saying what happened to it.
+    """
+    cp = rd / "critique.md"
+    if not cp.is_file():
+        return []
+    text = cp.read_text()
+    probs: list[str] = []
+    # Findings are RAISED above the dispositions section and DISCUSSED inside it. Scanning
+    # the whole file counted the section's own explanation of the marker as a new untagged
+    # finding, which is a check firing on its own documentation.
+    head = re.split(r"^##+\s*Disposition", text, maxsplit=1, flags=re.M | re.I)[0]
+    tags, untagged = [], 0
+    for m in WEAK_RE.finditer(head):
+        # the file's own instructions explain the marker; that mention is not a finding
+        line = head[head.rfind("\n", 0, m.start()) + 1: head.find("\n", m.end())]
+        if "are marked WEAK" in line or "WEAK_RE" in line:
+            continue
+        if m.group(1):
+            tags.append(m.group(1))
+        else:
+            untagged += 1
+    if untagged:
+        probs.append(f"critique.md marks {untagged} finding(s) WEAK with no tag. Write "
+                     f"WEAK[some-tag] so the disposition below can answer it by name.")
+    # founder questions: raised in a round, registered in ONE ledger he can read
+    asks = sorted({m.group(1) for m in FOUNDER_RE.finditer(head)})
+    if asks:
+        ledger = rd.parent / OPEN_DECISIONS
+        have = ledger.read_text() if ledger.is_file() else ""
+        missing = [t for t in asks if t not in have]
+        if missing:
+            probs.append(
+                f"critique.md raises founder question(s) {missing} that are not in "
+                f"{ledger}. A question written into a round and nowhere else is a question "
+                f"he never sees. Add each to the ledger with what is being asked and what "
+                f"is blocked until he answers.")
+
+    disposed = {m.group(1): (m.group(2), m.group(3).strip()) for m in DISPOSITION_RE.finditer(text)}
+    for t in tags:
+        if t not in disposed:
+            probs.append(f"critique.md: weakness '{t}' has no disposition. Add a line "
+                         f"'- {t}: FIXED <what changed> | DEFERRED <why> | CARRIED <where>'. "
+                         f"A weakness you wrote down and shipped anyway is the failure this "
+                         f"check exists for.")
+        elif not disposed[t][1]:
+            probs.append(f"critique.md: weakness '{t}' is marked {disposed[t][0]} with no "
+                         f"reason. The disposition says what happened, not just that "
+                         f"something did.")
+    return probs
+
 
 def craft_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None) -> list[str]:
     """The bar-check. Silent unless the instance declares a `craft` block, so an
@@ -310,6 +384,8 @@ def craft_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None) -> li
                     probs.append(f"{CRAFT_MANIFEST}: technique '{t.get('id','?')}' cites "
                                  f"'{ref}', which is not in {tpath.name}. Tear the reference "
                                  f"down there first, or the citation is decoration.")
+    if craft.get("require_dispositions"):
+        probs += disposition_problems(rd)
     if craft.get("require_impeccable"):
         ip = rd / "checks" / IMPECCABLE_CHECK
         if not ip.is_file() or not ip.read_text().strip():
