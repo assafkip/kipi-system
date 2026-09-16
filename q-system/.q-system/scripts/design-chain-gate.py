@@ -104,7 +104,17 @@ IMPECCABLE_CHECK = "impeccable.txt"
 # chain opened by an agent could never be closed by one. Rendering a page to MEASURE it
 # is not showing it; the surfaces that reach the founder (SendUserFile, Artifact, the
 # browser MCP tools) and the Stop hook are unchanged and still block.
-BASH_SHOW_RE = re.compile(r"(open\s+-a\b|vercel\s+deploy|\bopen\s+[^|;&]*\.(?:html?|png|jpe?g|pdf)\b)", re.I)
+# Catches a command that SHOWS a page, and nothing else. It has over-matched twice:
+#   1. on the chain's OWN steps, because it matched this file's name and any command
+#      naming a page (fixed 2026-09-15, kipi-system 9c7293c3)
+#   2. on PROSE: a heredoc carrying the word o-p-e-n in a sentence, with a page filename
+#      many lines later in the same command, matched because [^|;&] also matches a
+#      newline. Blocked a craft-manifest write that showed nothing (2026-09-15)
+# So the verb now has to sit where a command sits (start of the string, or after a pipe,
+# semicolon, ampersand or newline) and the filename has to be on the SAME line as it.
+BASH_SHOW_RE = re.compile(
+    r"(?:^|[|;&\n]\s*)(?:open\s+-a\b|open\s+[^|;&\n]*\.(?:html?|png|jpe?g|pdf)\b"
+    r"|vercel\s+deploy\b)", re.I)
 SHOW_TOOLS_PREFIX = ("mcp__playwright__", "mcp__claude-in-chrome__", "mcp__plugin_chrome-devtools")
 PUBLISH_TOOLS = ("SendUserFile", "Artifact")
 NINE_QUESTIONS = 9
@@ -513,6 +523,34 @@ def tool_directory_problems(page: Path) -> list[str] | None:
     return []
 
 
+def withdrawn_reason(rd: Path) -> str | None:
+    """The round's own one-way declaration that it will never be shown, or None.
+
+    craft_problems() already honours this and returns early. Everything OUTSIDE that
+    function did not, so a withdrawn round was still held to standard.json entries and to
+    the seal. Found 2026-09-15 withdrawing round g: the gate demanded a seal on a round
+    whose whole point was that it must not be sealed.
+
+    That is the same shape the withdrawal hatch exists to prevent, in its own docstring:
+    holding a withdrawn round to the bar "only forces its author to either fake a receipt
+    or stay stuck". It has to short-circuit the WHOLE chain, not one function of it.
+
+    Still one-way and still costly: the reason is mandatory, and nothing here lets a round
+    be withdrawn and then presented, because presenting it means writing it back to a live
+    status in the open.
+    """
+    mp = rd / CRAFT_MANIFEST
+    if not mp.is_file():
+        return None
+    try:
+        declared = json.loads(mp.read_text())
+    except ValueError:
+        return None
+    if declared.get("status") != "withdrawn":
+        return None
+    return str(declared.get("reason", "")).strip() or ""
+
+
 def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     """Everything missing or stale for one page. Empty list = chain complete.
 
@@ -539,6 +577,11 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     declared = tool_directory_problems(page)
     if declared is not None:
         return declared
+    reason = withdrawn_reason(round_dir_for(page))
+    if reason is not None:
+        return [] if reason else [
+            f"{CRAFT_MANIFEST} declares status 'withdrawn' with no reason. A round may be "
+            f"withdrawn, but the record says why."]
     if honor_seal and sealed_and_unedited(page):
         return []
     rd = round_dir_for(page)

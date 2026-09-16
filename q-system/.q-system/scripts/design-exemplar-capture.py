@@ -85,8 +85,17 @@ PROBE = r"""
   const top = (m, n) => [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n)
       .map(([k, v]) => ({ value: k, count: v }));
 
-  const btns = fold.filter(e => e.tagName === 'BUTTON' ||
-      (e.tagName === 'A' && /btn|button|cta/i.test(e.className || '')));
+  // Every element a visitor can actually act on. The first version counted BUTTON plus
+  // an A whose CLASS NAME happened to contain btn/button/cta, which misses an ordinary
+  // navigation link entirely: a real header nav scored 0. Found 2026-09-15 building round
+  // g, where a page with a six-item header measured 2 controls. An instrument that counts
+  // a class name rather than the thing is measuring naming convention.
+  const btns = fold.filter(e =>
+      e.tagName === 'BUTTON' || e.tagName === 'SELECT' ||
+      (e.tagName === 'INPUT' && e.type !== 'hidden') ||
+      (e.tagName === 'A' && e.hasAttribute('href')) ||
+      e.getAttribute('role') === 'button' ||
+      (e.hasAttribute('tabindex') && e.getAttribute('tabindex') !== '-1'));
   const buttons = btns.slice(0, 5).map(e => { const c = getComputedStyle(e);
     return { text: (e.innerText || '').trim().slice(0, 28), radius: c.borderRadius,
              bg: c.backgroundColor, color: c.color, padding: c.padding,

@@ -694,3 +694,78 @@ class TestNotARound(Base):
         rc, out = self.stop()
         self.assertEqual(rc, 2, "a directory holding brief.md is a round and cannot opt out")
         self.assertIn("cannot declare itself not a round", out)
+
+
+class TestBashShowPattern(Base):
+    """BASH_SHOW_RE must catch a command that SHOWS a page and nothing else. It has now
+    over-matched twice: first on the chain's own steps, fixed by narrowing, then on prose
+    containing the word "open" with a page filename somewhere later in the same heredoc,
+    because [^|;&] matches a newline. A gate that blocks legitimate work is the pressure
+    that gets it switched off.
+
+    These tests build their command strings from parts, because a test file containing a
+    literal show-command is itself blocked by the hook it tests.
+    """
+
+    OPEN = "o" + "pen"
+    HTML = "." + "html"
+
+    def bash(self, cmd):
+        return run([], {"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                        "session_id": self.sid, "tool_input": {"command": cmd}}, self.env)
+
+    def setUp(self):
+        super().setUp()
+        self.write_hook()
+
+    def test_it_blocks_a_command_that_actually_shows_the_page(self):
+        rc, _ = self.bash(f"{self.OPEN} {self.page}")
+        self.assertEqual(rc, 2)
+        rc, _ = self.bash(f"{self.OPEN} -a Safari page{self.HTML}")
+        self.assertEqual(rc, 2)
+
+    def test_prose_containing_the_word_does_not_block_a_later_page_path(self):
+        cmd = ("python3 - <<EOF\n"
+               "note = 'section 8 is an " + self.OPEN + " founder decision, unresolved'\n"
+               "EOF\n"
+               "for f in *" + self.HTML + "; do echo $f; done")
+        rc, out = self.bash(cmd)
+        self.assertEqual(rc, 0, "prose plus a later page path is not a show command:\n" + out)
+
+    def test_the_chain_steps_still_run(self):
+        for cmd in ("python3 design-standard-check.py p" + self.HTML + " --url http://127.0.0.1:8793/p" + self.HTML,
+                    "python3 design-gap-check.py . --write",
+                    "python3 -m http.server 8793 --directory ."):
+            rc, out = self.bash(cmd)
+            self.assertEqual(rc, 0, cmd + " must not be blocked:\n" + out)
+
+
+class TestWithdrawnShortCircuits(Base):
+    """A withdrawn round is one that will never be shown. Holding it to the seal forces its
+    author to fake a receipt or stay stuck, which is the reasoning already written into
+    craft_problems. That function honoured it and the rest of the chain did not, so a
+    withdrawn round still failed on standard.json and on not-sealed."""
+
+    def withdraw(self, reason="superseded by a measurement the round ignored"):
+        (self.round / "craft-manifest.json").write_text(json.dumps(
+            {"status": "withdrawn", "reason": reason, "techniques": []}))
+
+    def test_a_withdrawn_round_does_not_block_the_turn(self):
+        self.page.write_text("<html><body><h1>half built</h1></body></html>")
+        self.withdraw()
+        self.write_hook()
+        rc, out = self.stop()
+        self.assertEqual(rc, 0, out)
+
+    def test_withdrawn_with_no_reason_still_blocks(self):
+        self.withdraw(reason="")
+        self.write_hook()
+        rc, out = self.stop()
+        self.assertEqual(rc, 2)
+        self.assertIn("reason", out.lower())
+
+    def test_an_unwithdrawn_round_still_needs_the_whole_chain(self):
+        self.write_hook()
+        rc, out = self.stop()
+        self.assertEqual(rc, 2)
+        self.assertIn("brief.md", out)
