@@ -277,6 +277,25 @@ def craft_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None) -> li
                          f"not generic, then declare techniques that cite them.")
         else:
             teardown = tpath.read_text()
+            # Every exemplar the founder has named must appear in the narrative. Founder,
+            # 2026-09-15: "you should do that every time I put in more exemplars." Adding
+            # a site and not re-reading the GROUP is the forgettable step, so it is a
+            # blocked state instead of a promise.
+            roster = tpath.parent / "exemplars.json"
+            if roster.is_file():
+                try:
+                    named = [e.get("url", "") for e in
+                             json.loads(roster.read_text()).get("exemplars", [])]
+                except ValueError:
+                    named = []
+                host = lambda u: u.split("//")[-1].split("/")[0].lower().removeprefix("www.")
+                stale = [u for u in named if host(u) and host(u) not in _norm(teardown)]
+                if stale:
+                    probs.append(
+                        f"{tpath.name} does not read the whole exemplar set: {stale} "
+                        f"{'is' if len(stale) == 1 else 'are'} in {roster.name} and absent "
+                        f"from the narrative. A new exemplar changes what the others mean, "
+                        f"so the group gets re-read, not appended to.")
             try:
                 man = json.loads(mpath.read_text())
             except ValueError:

@@ -298,6 +298,42 @@ class TestCraftBar(Base):
         self.assertEqual(rc, 2, out)
         self.assertIn("TEARDOWN.md", out)
 
+    def test_new_exemplar_not_in_the_narrative_blocks(self):
+        """Founder: 'you should do that every time I put in more exemplars.' Adding a site
+        and not re-reading the group is the forgettable step, so it blocks."""
+        self.complete_chain()
+        self.craft_cfg(require_grounding="refs/NARRATIVE.md")
+        refs = self.inst / "refs"; refs.mkdir(exist_ok=True)
+        (refs / "NARRATIVE.md").write_text("# Narrative\n\n## stripe.com\nbig light type\n")
+        (refs / "exemplars.json").write_text(json.dumps({"exemplars": [
+            {"url": "https://stripe.com"}, {"url": "https://figma.com"}]}))
+        (self.round / "checks" / "impeccable.txt").write_text("ran\n")
+        (self.round / CRAFT_MANIFEST).write_text(json.dumps({"techniques": [
+            {"id": "t", "technique": "x", "role": "hero", "reference": "stripe.com",
+             "import": ["gsap"], "applied": ["gsap"]}]}))
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("figma.com", out)
+
+    def test_narrative_covering_every_exemplar_passes(self):
+        self.complete_chain()
+        self.craft_cfg(require_grounding="refs/NARRATIVE.md")
+        refs = self.inst / "refs"; refs.mkdir(exist_ok=True)
+        (refs / "NARRATIVE.md").write_text(
+            "# Narrative\n\nstripe.com and figma.com both set big light type.\n")
+        (refs / "exemplars.json").write_text(json.dumps({"exemplars": [
+            {"url": "https://stripe.com"}, {"url": "https://www.figma.com"}]}))
+        (self.round / "checks" / "impeccable.txt").write_text("ran\n")
+        self.page.write_text(self.page.read_text().replace(
+            "</body>", "<script src='gsap.min.js'></script></body>"))
+        (self.round / "standard.json").write_text(json.dumps(
+            [{"page": self.page.name, "sha256": self.sha(self.page), "pass": True}]))
+        (self.round / CRAFT_MANIFEST).write_text(json.dumps({"techniques": [
+            {"id": "t", "technique": "x", "role": "hero", "reference": "stripe.com",
+             "import": ["gsap"], "applied": ["gsap"]}]}))
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 0, out)
+
     def test_withdrawn_round_needs_a_reason(self):
         self.complete_chain()
         self.craft_cfg(require_grounding="refs/TEARDOWN.md")
