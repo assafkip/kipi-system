@@ -129,7 +129,7 @@ AXES = [
      "the tree is not measuring the page. The property now lives in ink_non_background "
      "and ink_chromatic, measured from the screenshot, where it is stable and does not "
      "care how the page painted. Kept and reported because the DOM numbers are still "
-     "worth reading next to the pixel ones, never as a bar.""),
+     "worth reading next to the pixel ones, never as a bar."),
     ("visual_area_pct", "share of the fold covered by visuals in total",
      lambda d: _n(d, "imagery", "visual_area_pct"), False,
      "MEASURED, NOT FLOORED, same instrument fault as largest_visual_pct. Reads calendly "
