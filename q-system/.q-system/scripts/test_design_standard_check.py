@@ -108,6 +108,16 @@ class MeasureHeroAlign(unittest.TestCase):
         self.assertEqual(m["hero"]["words"], 24, m["hero"])
         self.assertTrue(dsc.judge(m, cfg(**JudgeHeroCluster.CAPS)))
 
+    def test_text_inside_a_figure_is_not_the_block(self):
+        # a drawing's labels are part of the picture, not prose stacked under the headline
+        d = pathlib.Path(tempfile.mkdtemp())
+        page = d / "p.html"
+        page.write_text(PAGE.replace("<p>A line of body copy under the headline.</p>",
+            "<figure><p>Where the hours leak</p><p>The records behind it</p><p>The build that stops it</p></figure>")
+            % ("text-align:center", "text-align:center"))
+        m = dsc.measure(page.as_uri(), cfg(viewports=[[1440, 900]]))[0]
+        self.assertEqual(m["hero"]["pieces"], 0, m["hero"])
+
     def test_centered_page_is_measured_centered(self):
         for m in self._measure("text-align:center", "text-align:center"):
             self.assertEqual(dsc.judge(m, cfg(hero_align="center")), [], m)

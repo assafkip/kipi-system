@@ -87,7 +87,9 @@ JS = """
     const layered = (e) => { for (let x = e; x && x.nodeType === 1; x = x.parentElement) {
         const c = getComputedStyle(x);
         if (c.position === 'fixed' || c.position === 'sticky') return true;
-        if (/^(HEADER|NAV|FOOTER|BUTTON|A|DIALOG)$/.test(x.tagName) || x.getAttribute('role') === 'dialog') return true;
+        // FIGURE: a drawing's own labels are part of the picture, not prose stacked under the
+        // headline. The honest boundary: prose wrapped in a figure to dodge this is not caught.
+        if (/^(HEADER|NAV|FOOTER|BUTTON|A|DIALOG|FIGURE)$/.test(x.tagName) || x.getAttribute('role') === 'dialog') return true;
       } return false; };
     for (const el of document.body.querySelectorAll('*')) {
       if (heroEl.contains(el) || el.contains(heroEl)) continue;
