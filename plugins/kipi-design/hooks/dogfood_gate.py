@@ -259,7 +259,7 @@ def scan_html(content, fp, brand=None):
         if v in SYSTEM_FONTS:
             continue
         if v in decl_blob:
-            findings.append({"label": "Converged font: %s" % t.get("label", v),
+            findings.append({"value": t.get("value", v), "label": "Converged font: %s" % t.get("label", v),
                              "fix": t.get("fix", "Use a face with a point of view, not the default builder font.")})
             break
 
@@ -267,7 +267,7 @@ def scan_html(content, fp, brand=None):
     if "linear-gradient" in cl and re.search(r"(-webkit-)?background-clip\s*:\s*text", cl):
         gt = active_tokens(fp, "gradient")
         fix = next((t.get("fix") for t in gt if t["value"] == "text-gradient" and t.get("fix")), "Make the headline one solid color.")
-        findings.append({"label": "Gradient text on a heading — the #1 'AI made this' tell.", "fix": fix})
+        findings.append({"value": "text-gradient", "label": "Gradient text on a heading — the #1 'AI made this' tell.", "fix": fix})
 
     # 3) palette: any current-default hue family present in the CSS (the warm-cream fix)
     palette = active_tokens(fp, "palette")
@@ -302,7 +302,7 @@ def scan_html(content, fp, brand=None):
                     continue
                 if rng and t["value"] not in seen and _in_range(hsl, rng):
                     seen.add(t["value"])
-                    findings.append({"label": "Default palette: %s" % t.get("label", t["value"]),
+                    findings.append({"value": t["value"], "label": "Default palette: %s" % t.get("label", t["value"]),
                                      "fix": t.get("fix", "Pick a color with intent, not the current default hue.")})
 
     # 4) emoji used as icons inside headings/buttons
@@ -387,6 +387,29 @@ def is_public_facing_page(path):
     return not any(marker in low for marker in INTERNAL_PATH_MARKERS)
 
 
+def allowed_tells_for(path):
+    """Tells this project has decided to permit, as {tell_value: reason}.
+
+    Read from the nearest `design-chain.json` above the page, key `craft.allow_tells`. An
+    allowance with no reason is ignored: the point is a recorded decision, not a way to
+    quiet the gate. Nothing here can allow a tell globally; it is per project, per tell.
+    """
+    d = os.path.dirname(os.path.abspath(path))
+    while True:
+        cfg = os.path.join(d, "design-chain.json")
+        if os.path.isfile(cfg):
+            try:
+                with open(cfg) as f:
+                    raw = (json.load(f).get("craft") or {}).get("allow_tells") or {}
+            except Exception:
+                return {}
+            return {k: v for k, v in raw.items() if isinstance(v, str) and v.strip()}
+        parent = os.path.dirname(d)
+        if parent == d:
+            return {}
+        d = parent
+
+
 def main():
     try:
         data = json.load(sys.stdin)
@@ -413,6 +436,8 @@ def main():
     if "eyeball-gate-skip" in cl:
         sys.exit(0)
 
+    allowed = allowed_tells_for(path)
+
     fp = load_fingerprint()
     # FAIL CLOSED: this gate's whole job is preventing a bad page from shipping. If the
     # scan itself errors, block (exit 2) and point to the manual render check, rather
@@ -425,6 +450,20 @@ def main():
             "  invoke the design-room skill on %s before shipping\n" % (path, e, path))
         sys.exit(2)
 
+    # A founder decision has to be able to reach this hook. Before this, the only bypass
+    # was the whole-file marker, which silences EVERY tell on the page: use it to allow one
+    # colour and you also switch off gradient-text, emoji icons, converged fonts and the
+    # no-interactive-element check. Founder 2026-09-15 allowed the violet for a look and the
+    # hook kept blocking, because a conversation is not a config. Allowances are per TELL,
+    # need a written reason, and are REPORTED rather than silenced, so the page never looks
+    # clean when it is only permitted.
+    waived = [f for f in findings if f.get("value") in allowed]
+    findings = [f for f in findings if f.get("value") not in allowed]
+    if waived:
+        sys.stderr.write("dogfood gate: %d tell(s) ALLOWED on %s (not clean, permitted):\n" % (len(waived), path))
+        for f in waived:
+            sys.stderr.write("  - %s  <- allowed: %s\n" % (f["label"], allowed[f["value"]]))
+
     if findings:
         msg = ["dogfood gate BLOCKED a public page: " + path,
                "Tells found (static check vs the current AI-default fingerprint):"]
@@ -432,7 +471,9 @@ def main():
         msg += ["",
                 "Run the authoritative design/UX read before shipping:",
                 "  invoke the design-room skill on " + path,
-                "If the slop is intentional (a parody/demo), add  <!-- eyeball-gate-skip -->  to the file."]
+                "If the slop is intentional (a parody/demo), add  <!-- eyeball-gate-skip -->  to the file.",
+                "To allow ONE tell on this project (a founder decision, with a reason), add it to",
+                "design-chain.json:  craft.allow_tells = {\"%s\": \"why\"}" % findings[0].get("value", "tell-id")]
         sys.stderr.write("\n".join(msg) + "\n")
         sys.exit(2)
 
