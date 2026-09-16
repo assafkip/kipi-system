@@ -60,13 +60,35 @@ def _searchable(src: str) -> str:
     return src
 
 
-def find_gaps(manifest: dict, build_src: str) -> list[dict]:
+def _claims(tech: dict, build_label: str) -> bool:
+    """Does this technique claim this page?
+
+    A technique may carry `pages`: the filenames it applies to. Absent or empty means
+    EVERY page, so silence is still the strict reading and scoping has to be deliberate.
+    Matched on basename so a caller passing a path and a caller passing a filename agree.
+    """
+    pages = tech.get("pages") or []
+    if not pages:
+        return True
+    if not build_label:
+        # No label means the caller cannot say which page this is, so it does not get the
+        # narrower check. Silence must not be the easiest way out (the same posture the
+        # design-chain gate takes on an undeclared tier).
+        return True
+    from os.path import basename
+    return basename(build_label) in {basename(x) for x in pages}
+
+
+def find_gaps(manifest: dict, build_src: str, build_label: str = "") -> list[dict]:
     """Return one gap record per declared technique that is absent/not-applied.
     A technique that declares NO fingerprint (empty import AND applied) is a gap —
-    it cannot be verified present, so it must not silently pass (Codex review)."""
+    it cannot be verified present, so it must not silently pass (Codex review).
+    A technique scoped to other pages via `pages` is not this page's business."""
     src = _searchable(build_src)
     gaps = []
     for tech in manifest.get("techniques", []):
+        if not _claims(tech, build_label):
+            continue
         imp = tech.get("import") or []
         app = tech.get("applied") or []
         base = {"id": tech.get("id", "?"), "technique": tech.get("technique", "?"),
@@ -82,12 +104,14 @@ def find_gaps(manifest: dict, build_src: str) -> list[dict]:
     return gaps
 
 
-def present_techniques(manifest: dict, build_src: str) -> list[str]:
+def present_techniques(manifest: dict, build_src: str, build_label: str = "") -> list[str]:
     """Techniques whose fingerprints are all present (for the founder's eye to judge HOW WELL).
     A no-fingerprint technique is never 'present' — it is unverifiable (see find_gaps)."""
     src = _searchable(build_src)
     out = []
     for tech in manifest.get("techniques", []):
+        if not _claims(tech, build_label):
+            continue
         imp = tech.get("import") or []
         app = tech.get("applied") or []
         if (imp or app) and not _present(imp, src) and not _present(app, src):
@@ -102,7 +126,7 @@ def report(manifest: dict, build_src: str, build_label: str) -> int:
               "A steal-manifest must declare what the build steals (Codex review 2026-06-25).",
               file=sys.stderr)
         return 2
-    gaps = find_gaps(manifest, build_src)
+    gaps = find_gaps(manifest, build_src, build_label)
     if gaps:
         print(f"technique-parity vs {ref}: {len(gaps)} declared technique(s) MISSING from {build_label}:", file=sys.stderr)
         for g in gaps:
@@ -115,7 +139,7 @@ def report(manifest: dict, build_src: str, build_label: str) -> int:
         print("\nyou declared these and dropped them. not a verdict — a regression alarm.", file=sys.stderr)
         return 2
     # No technique missing. This does NOT certify the page — hand it to the eye.
-    here = present_techniques(manifest, build_src)
+    here = present_techniques(manifest, build_src, build_label)
     print(f"regression-clean vs {ref}: every declared technique is present.")
     print("this certifies nothing about craft. the founder's eye decides whether each")
     print("lands the same way as the reference:")
