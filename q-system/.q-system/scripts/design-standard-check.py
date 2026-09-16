@@ -39,6 +39,11 @@ JS = """
   for (const el of document.body.querySelectorAll('*')) {
     const r = el.getBoundingClientRect();
     if (r.bottom <= 0 || r.top >= vh || r.width === 0) continue;
+    // Screen-reader-only text is not visible text. The standard visually-hidden pattern
+    // is a 1px box with clip, and counting it charged a page 60 words for an accessible
+    // description of its diagram (round 2026-09-16c read 143 words for about 80 visible).
+    // Penalising accessibility is the one thing a word budget must never do.
+    if (r.width <= 1 || r.height <= 1) continue;
     const own = [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join(' ').trim();
     if (!own) continue;
     const cs = getComputedStyle(el);
