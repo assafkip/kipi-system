@@ -166,6 +166,96 @@ class TestBlocks(Base):
         rc, _ = self.stop(); self.assertEqual(rc, 0)
 
 
+class TestCraftBar(Base):
+    """The BAR half. CHAIN_FILES and the standard block are a FLOOR: they see word
+    count, type sizes and the absence of AI-default tells. On 2026-09-15 a round
+    cleared every one of them while shipping three wireframes with zero imagery, zero
+    motion and zero depth, which is the failure
+    q-system/lessons/a-defect-absence-gate-is-a-floor-not-a-finish-line.md already
+    named (from cole-gtm's rca-design-room-skipped-premium-tools-2026-06-25). These
+    tests exist so a wireframe is NON-COMPLIANT rather than merely less ambitious."""
+
+    def craft_cfg(self, **over):
+        """Re-write the instance config with a craft block on."""
+        cfg = json.loads((self.inst / "design-chain.json").read_text())
+        cfg["craft"] = {"tier": "craft", "require_craft_manifest": True,
+                        "require_impeccable": True, **over}
+        (self.inst / "design-chain.json").write_text(json.dumps(cfg))
+
+    def test_craft_manifest_required_when_config_asks(self):
+        self.complete_chain()
+        self.craft_cfg()
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("craft-manifest.json", out)
+
+    def test_empty_craft_manifest_is_a_gap_not_a_pass(self):
+        """Declaring nothing must not be the cheapest way to comply. cole-gtm's
+        check_technique_parity.py takes the same position: a manifest with no
+        techniques verified nothing."""
+        self.complete_chain()
+        self.craft_cfg()
+        (self.round / "craft-manifest.json").write_text(json.dumps({"techniques": []}))
+        (self.round / "checks" / "impeccable.txt").write_text("ran\n")
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("declares no techniques", out)
+
+    def test_impeccable_check_required_when_config_asks(self):
+        self.complete_chain()
+        self.craft_cfg()
+        (self.round / "craft-manifest.json").write_text(json.dumps(
+            {"techniques": [{"id": "t", "technique": "x", "role": "hero",
+                             "import": ["gsap"], "applied": ["gsap.to"]}]}))
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("impeccable", out)
+
+    def test_declared_technique_absent_from_the_page_blocks(self):
+        """The TZOREF failure: a technique named in the manifest and used nowhere."""
+        self.complete_chain()
+        self.craft_cfg()
+        (self.round / "craft-manifest.json").write_text(json.dumps(
+            {"techniques": [{"id": "scroll-reveal", "technique": "GSAP reveal",
+                             "role": "the mismatch", "import": ["gsap"],
+                             "applied": ["ScrollTrigger"]}]}))
+        (self.round / "checks" / "impeccable.txt").write_text("ran\n")
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("scroll-reveal", out)
+
+    def test_wireframe_tier_is_declared_not_assumed(self):
+        """A round may be built at wireframe tier for a copy test, but it has to SAY
+        so. An undeclared tier defaults to the required one, so silence is not the
+        cheap path."""
+        self.complete_chain()
+        self.craft_cfg(tier="wireframe")
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 0, out)
+
+    def test_craft_block_absent_leaves_the_chain_as_it_was(self):
+        """An instance with no craft block is not silently held to the new bar."""
+        self.complete_chain()
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 0, out)
+
+    def test_satisfied_craft_manifest_seals(self):
+        self.complete_chain()
+        self.craft_cfg()
+        self.page.write_text(self.page.read_text().replace(
+            "</body>", "<script src='gsap.min.js'></script>"
+            "<script>gsap.to('.mark',{opacity:1})</script></body>"))
+        (self.round / "standard.json").write_text(json.dumps(
+            [{"page": self.page.name, "sha256": self.sha(self.page), "pass": True}]))
+        (self.round / "craft-manifest.json").write_text(json.dumps(
+            {"techniques": [{"id": "reveal", "technique": "GSAP reveal on the mismatch",
+                             "role": "the mismatch", "import": ["gsap"],
+                             "applied": [r"gsap\.to"]}]}))
+        (self.round / "checks" / "impeccable.txt").write_text("ran, control blocked\n")
+        rc, out = run(["seal", str(self.round)], env=self.env)
+        self.assertEqual(rc, 0, out)
+
+
 class TestChainStepsRun(Base):
     """The steps of /design-chain must be runnable WHILE the chain is open, because
     running them is how it closes. Scar 2026-09-15: BASH_SHOW_RE and the

@@ -93,6 +93,44 @@ departs from, by filename, and say what changes.
 
 A direction that could belong to another consultant's page is not a direction.
 
+## Step 3b: craft-manifest.json (the BAR; everything else here is a FLOOR)
+
+Every other check in this command is defect-ABSENCE: missing files, unquoted anchors,
+word counts, type sizes, AI-default tells. None of them can see craft. On 2026-09-15 a
+round cleared all of them and shipped three wireframes, measured at 0 image assets, 0
+background images and 0 animated elements. That failure was already written down:
+`q-system/lessons/a-defect-absence-gate-is-a-floor-not-a-finish-line.md`, distilled from
+`cole-gtm/q-system/output/rca/rca-design-room-skipped-premium-tools-2026-06-25.md`. Its
+four causes: a floor-detector became the definition of done; grounding enforced
+provenance, not ambition; the direction was resolved at concept level with no execution
+tier, so the premium and the cheap realization were equally compliant; effort-economy ran
+downhill to the cheapest passing artifact.
+
+Before building, write `<round>/craft-manifest.json`. Shape is cole-gtm's
+`steal-manifest.json`, one entry per technique:
+
+```json
+{"techniques": [{"id": "mismatch-reveal",
+  "technique": "what it is and which reference it comes from",
+  "role": "the mismatch", "reference": "...",
+  "pages": ["Clock-html-laptop.html"],
+  "import": ["gsap"], "applied": ["ScrollTrigger"]}]}
+```
+
+`import` and `applied` are case-SENSITIVE regexes checked against the built page with HTML
+and block comments stripped, so a fingerprint surviving only in commented-out code does
+not count. The gate BLOCKS when a declared technique is absent. A manifest that declares
+nothing is itself a gap: declaring nothing must not be the cheapest way to comply.
+`pages` is optional and scopes a technique to the pages that should carry it.
+
+The tier comes from `design-chain.json` `craft.tier`. `craft` is the default and is
+required for anything the founder compares or that reaches a visitor. `wireframe` is
+legitimate only for a copy test and must be DECLARED; an undeclared tier is the required
+one, so silence is never the cheap path.
+
+This check never certifies a page. Green means "not a wireframe". The founder's eye and
+five real buyer conversations are the bar (`site-design.md` section 8).
+
 ## Step 4: build, once per candidate stack
 
 `site-design.md` section 10: the stack is not chosen; the agreed design is built
@@ -133,6 +171,20 @@ reliability, outcome, pedigree) and the record it comes from
 confidence label the record carries.
 
 ## Step 8: checks/
+Run the impeccable step with the script, not by hand. It is required by the gate
+(`craft.require_impeccable`) and it writes `checks/impeccable.txt` itself:
+
+```bash
+python3 <kipi-system>/q-system/.q-system/scripts/design-impeccable-check.py <round>
+```
+
+It runs a known-slop control in the same invocation, because a clean report whose control
+never fired is decoration, and it records WHICH ENGINE ran. impeccable has two: a static
+HTML parse, and a real browser via URL that resolves computed styles. The browser engine
+needs puppeteer, which is installed nowhere in this fleet as of 2026-09-15, and the
+detector exits 0 when it is missing rather than failing, so that gap is invisible to a
+caller reading exit codes. The receipt prints it under "WHAT THIS RUN COULD NOT SEE".
+
 
 Run and save into `<round>/checks/`:
 - `bio_gate` on every line of copy that mentions an employer (consulting:

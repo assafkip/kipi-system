@@ -65,6 +65,18 @@ INTERNAL_MARKERS = (
 )
 CHAIN_FILES = ("brief.md", "directions.md", "standard.json", "critique.md", "proof.md")
 CHAIN_DIRS = ("checks", "gate")
+# The BAR half, switched on per instance by a `craft` block in design-chain.json.
+# Everything above this line is a FLOOR: it sees missing files, unquoted anchors, word
+# counts and type sizes. A round cleared all of it on 2026-09-15 while shipping three
+# wireframes with no imagery, no motion and no depth -- the failure
+# q-system/lessons/a-defect-absence-gate-is-a-floor-not-a-finish-line.md already named,
+# distilled from cole-gtm rca-design-room-skipped-premium-tools-2026-06-25. Its four
+# causes, all of which recurred: a floor-detector became the definition of done;
+# grounding enforced provenance, not ambition; the direction was resolved at concept
+# level with no execution tier, so premium and floor realizations were equally
+# compliant; effort-economy ran downhill to the cheapest passing artifact.
+CRAFT_MANIFEST = "craft-manifest.json"
+IMPECCABLE_CHECK = "impeccable.txt"
 # Bash commands that put a page in front of a HUMAN. Blocked while the chain is open.
 #
 # WHY this list is short (2026-09-15, found the first time the command was run end to
@@ -162,6 +174,73 @@ def round_dir_for(page: Path) -> Path:
 
 # ---------------------------------------------------------------- the chain check
 
+def craft_problems(rd: Path, page: Path, cfg: dict) -> list[str]:
+    """The bar-check. Silent unless the instance declares a `craft` block, so an
+    instance that has not opted in keeps exactly the behaviour it had.
+
+    It never certifies a page as good, and deliberately has no success message. Green
+    here means ONLY "not a wireframe"; the founder's eye and five real buyer
+    conversations are the bar (site-design.md section 8). That posture is borrowed
+    whole from cole-gtm's check_technique_parity.py, whose docstring carries the
+    founder line this all rests on: "when you have a floor, you are programmed to only
+    pass the floor."
+    """
+    craft = cfg.get("craft") or {}
+    if not craft:
+        return []
+    # An undeclared tier is the REQUIRED tier, never the cheap one: silence must not be
+    # the easiest way out (the RCA's cause #4, effort-economy toward the cheapest pass).
+    if craft.get("tier", "craft") == "wireframe":
+        return []
+
+    probs: list[str] = []
+    mpath = rd / CRAFT_MANIFEST
+    if craft.get("require_craft_manifest"):
+        if not mpath.is_file():
+            probs.append(
+                f"missing {mpath}: at tier '{craft.get('tier', 'craft')}' each direction "
+                f"declares its signature moment and the technique that realizes it "
+                f"(id, technique, role, reference, import[], applied[]). Without it the "
+                f"research is decorative and the cheapest layout wins.")
+        else:
+            try:
+                man = json.loads(mpath.read_text())
+            except ValueError as e:
+                man, probs = {}, probs + [f"{CRAFT_MANIFEST} is not valid JSON: {e}"]
+            techs = man.get("techniques") or []
+            if not techs:
+                probs.append(f"{CRAFT_MANIFEST} declares no techniques, so nothing was "
+                             f"verified. Declaring nothing must not be the cheapest way "
+                             f"to comply.")
+            else:
+                src = page.read_text(errors="replace")
+                src = re.sub(r"<!--.*?-->", " ", src, flags=re.DOTALL)
+                src = re.sub(r"/\*.*?\*/", " ", src, flags=re.DOTALL)
+                for t in techs:
+                    if t.get("pages") and page.name not in t["pages"]:
+                        continue
+                    imp, app = t.get("import") or [], t.get("applied") or []
+                    if not imp and not app:
+                        probs.append(f"{CRAFT_MANIFEST}: technique "
+                                     f"'{t.get('id', '?')}' declares no fingerprint, so it "
+                                     f"cannot be verified present")
+                        continue
+                    missing = [p for p in imp + app if not re.search(p, src)]
+                    if missing:
+                        probs.append(f"{CRAFT_MANIFEST}: technique '{t.get('id', '?')}' "
+                                     f"({t.get('role', '?')}) is declared but absent from "
+                                     f"{page.name}: {missing}")
+    if craft.get("require_impeccable"):
+        ip = rd / "checks" / IMPECCABLE_CHECK
+        if not ip.is_file() or not ip.read_text().strip():
+            probs.append(
+                f"missing or empty {ip}: run the impeccable detector on the SERVED URL "
+                f"(URL mode drives a real browser and resolves computed styles, which is "
+                f"the only thing it does that the static tripwire cannot) and include a "
+                f"known-slop control, or the zeros mean nothing.")
+    return probs
+
+
 def chain_problems(page: Path) -> list[str]:
     """Everything missing or stale for one page. Empty list = chain complete."""
     probs: list[str] = []
@@ -220,6 +299,8 @@ def chain_problems(page: Path) -> list[str]:
             probs.append(f"standard.json has no entry for {page.name}")
         elif not any(e.get("pass") is True and e.get("sha256") == cur for e in mine):
             probs.append(f"standard.json for {page.name}: pass is not true or hash is stale (re-run design-standard-check.py)")
+
+    probs += craft_problems(rd, page, cfg)
 
     # receipts: sealed, and fresh
     rc = rd / "receipts.json"
