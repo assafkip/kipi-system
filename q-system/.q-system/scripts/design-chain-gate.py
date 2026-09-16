@@ -492,32 +492,71 @@ NOT_A_ROUND = ".not-a-round"
 CORRECTIONS = "corrections.jsonl"
 
 
+# Words a search engine or a link preview shows are wording too. Found 2026-09-16 auditing
+# askconsulting.io: the false "39 cases, 288 evidence items" and "two blocklists" also sat in
+# meta content and JSON-LD, which the correction path counted as design and so could not fix.
+WORDING_META = {"description", "og:description", "og:title", "og:image:alt",
+                "twitter:description", "twitter:title", "twitter:image:alt"}
+WORDING_JSONLD_KEYS = {"text", "description", "name", "headline", "alternateName"}
+WORDING = "<wording>"
+
+
+def _jsonld_shape(value, key=None):
+    """JSON-LD with its prose values blanked: keys, types, URLs and every other value stay."""
+    if isinstance(value, dict):
+        return {k: _jsonld_shape(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_jsonld_shape(v, key) for v in value]
+    if isinstance(value, str) and key in WORDING_JSONLD_KEYS:
+        return WORDING
+    return value
+
+
 class _Shape(HTMLParser):
-    """Everything about a page except its visible words: tags, attributes, and the contents of
-    script and style (a CSS or JS change is a design change, even though it arrives as text)."""
+    """Everything about a page except its words: tags, attributes, and the contents of script
+    and style (a CSS or JS change is a design change, even though it arrives as text). Words are
+    the visible text, image alt text, the preview meta content (WORDING_META) and the prose
+    values inside JSON-LD (WORDING_JSONLD_KEYS)."""
 
     RAW = {"script", "style"}
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.out, self._raw = [], 0
+        self.out, self._raw, self._jsonld = [], 0, False
+
+    def _attrs(self, tag, attrs):
+        d = {k: v or "" for k, v in attrs}
+        if tag == "meta" and (d.get("name") in WORDING_META or d.get("property") in WORDING_META):
+            d["content"] = WORDING
+        if tag == "img" and "alt" in d:
+            d["alt"] = WORDING
+        return tuple(sorted(d.items()))
 
     def handle_starttag(self, tag, attrs):
-        self.out.append(("start", tag, tuple(sorted((k, v or "") for k, v in attrs))))
+        self.out.append(("start", tag, self._attrs(tag, attrs)))
         if tag in self.RAW:
             self._raw += 1
+            self._jsonld = tag == "script" and dict(attrs).get("type") == "application/ld+json"
 
     def handle_startendtag(self, tag, attrs):
-        self.out.append(("empty", tag, tuple(sorted((k, v or "") for k, v in attrs))))
+        self.out.append(("empty", tag, self._attrs(tag, attrs)))
 
     def handle_endtag(self, tag):
         self.out.append(("end", tag))
         if tag in self.RAW and self._raw:
             self._raw -= 1
+            self._jsonld = False
 
     def handle_data(self, data):
-        if self._raw:
-            self.out.append(("raw", data))
+        if not self._raw:
+            return
+        if self._jsonld:
+            try:
+                self.out.append(("jsonld", json.dumps(_jsonld_shape(json.loads(data)), sort_keys=True)))
+                return
+            except ValueError:
+                pass  # unparseable JSON-LD is compared as raw text, like any script
+        self.out.append(("raw", data))
 
 
 def page_shape(text: str) -> list:

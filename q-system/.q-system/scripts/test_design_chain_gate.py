@@ -863,5 +863,65 @@ class TestCorrections(Base):
         self.assertEqual(rc, 2, out)
 
 
+class TestCorrectionsReachSearchText(TestCorrections):
+    """The same false claim lives in the words a search engine or a link preview shows: the
+    meta description, the preview title and image alt, and the prose inside JSON-LD. Found
+    2026-09-16 auditing askconsulting.io: "39 cases, 288 evidence items" and "two
+    criminal-infrastructure blocklists" sat in meta content the visible fix could not reach,
+    because every attribute and every script counted as design. Those fields are wording;
+    the tags, the other attributes, URLs, keys and code stay design."""
+
+    def setUp(self):
+        super().setUp()
+        self.live.write_text(
+            '<html><head><meta name="description" content="The firm bought the system.">'
+            '<meta property="og:image:alt" content="Running by Friday.">'
+            '<script type="application/ld+json">{"@type": "FAQPage", "url": "https://x.io/work", '
+            '"mainEntity": [{"@type": "Question", "name": "How long?", '
+            '"acceptedAnswer": {"@type": "Answer", "text": "Running by Friday."}}]}</script>'
+            '<script>var n = 1;</script></head><body><p>The firm bought the system.</p>'
+            '<img src="a.png" alt="A sheet, 39 cases"></body></html>')
+        self.git("commit", "-qam", "live page with search text")
+
+    def edit(self, a, b):
+        s = self.live.read_text()
+        self.assertIn(a, s)
+        self.live.write_text(s.replace(a, b))
+
+    def test_meta_description_wording_is_a_correction(self):
+        self.edit('content="The firm bought the system."', 'content="The firm uses a copy of the system."')
+        self.assertEqual(self.correct()[0], 0)
+        self.assertEqual(self.problems()[0], 0)
+
+    def test_preview_alt_and_image_alt_wording_is_a_correction(self):
+        self.edit('content="Running by Friday."', 'content="Findings by Friday."')
+        self.edit('alt="A sheet, 39 cases"', 'alt="A sheet, 22 cases"')
+        self.assertEqual(self.correct()[0], 0)
+
+    def test_json_ld_answer_text_is_a_correction(self):
+        self.edit('"text": "Running by Friday."', '"text": "Findings and options by Friday."')
+        self.assertEqual(self.correct()[0], 0)
+
+    def test_json_ld_url_is_still_design(self):
+        self.edit('"url": "https://x.io/work"', '"url": "https://x.io/elsewhere"')
+        self.assertEqual(self.correct()[0], 2)
+
+    def test_json_ld_new_key_is_still_design(self):
+        self.edit('"@type": "FAQPage",', '"@type": "FAQPage", "price": "0",')
+        self.assertEqual(self.correct()[0], 2)
+
+    def test_meta_name_is_still_design(self):
+        self.edit('name="description"', 'name="keywords"')
+        self.assertEqual(self.correct()[0], 2)
+
+    def test_plain_script_is_still_design(self):
+        self.edit("var n = 1;", "var n = 2;")
+        self.assertEqual(self.correct()[0], 2)
+
+    def test_image_src_is_still_design(self):
+        self.edit('src="a.png"', 'src="b.png"')
+        self.assertEqual(self.correct()[0], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
