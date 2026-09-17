@@ -38,6 +38,19 @@ SED_CLAUDE_PLUGIN = (
     "plugins/kipi-core/.claude-plugin/plugin.json"
 )
 
+# Reading a plugin's declared version through a pipe writes nothing. The
+# pipeline branch used a raw ".claude" substring and refused it (ASK-733).
+PIPE_CLAUDE_PLUGIN_READ = (
+    "git show HEAD:plugins/prd-os/.claude-plugin/plugin.json "
+    "| python3 -m json.tool"
+)
+
+# The negative half: the same pipe over a real `.claude/` file stays blocked.
+PIPE_CLAUDE_DIR_INTO_INTERPRETER = (
+    "git show HEAD:.claude/settings.json "
+    "| python3 -c 'import sys; sys.stdin.read()'"
+)
+
 CONTROLS = [
     ("touch .claude/_probe.txt",
      "plain write into .claude"),
@@ -78,6 +91,16 @@ def test_claude_plugin_edit_passes():
     assert run_guard(SED_CLAUDE_PLUGIN) == 0
 
 
+def test_claude_plugin_pipeline_read_passes():
+    assert run_guard(PIPE_CLAUDE_PLUGIN_READ) == 0
+
+
+def test_claude_dir_pipeline_into_interpreter_still_blocks():
+    assert run_guard(PIPE_CLAUDE_DIR_INTO_INTERPRETER) == 2, (
+        "a .claude/ file piped into an interpreter is the write shape the "
+        "pipeline branch exists for; the plugin fix must not eat it")
+
+
 def test_write_controls_still_block():
     for cmd, name in CONTROLS:
         rc = run_guard(cmd)
@@ -93,6 +116,8 @@ def test_round9_hidden_tail_plus_rebaseline_still_blocks():
 if __name__ == "__main__":
     test_reader_find_enumerations_pass()
     test_claude_plugin_edit_passes()
+    test_claude_plugin_pipeline_read_passes()
+    test_claude_dir_pipeline_into_interpreter_still_blocks()
     test_write_controls_still_block()
     test_round9_hidden_tail_plus_rebaseline_still_blocks()
     print("claude-path-write-guard tests: PASS")
