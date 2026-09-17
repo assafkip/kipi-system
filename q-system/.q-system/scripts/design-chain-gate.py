@@ -832,6 +832,61 @@ def withdrawn_reason(rd: Path) -> str | None:
     return str(declared.get("reason", "")).strip() or ""
 
 
+def implemented_direction(rd: Path, cfg_path: Path | None) -> tuple[dict | None, list[str]]:
+    """The decision a round BUILDS, from craft-manifest.json `implements`, or None.
+
+    The chain is built for fanning out: three directions, nine questions each, then the founder
+    picks. It had no shape for the round that comes after the pick, and a round that builds one
+    picked direction was held to three headings and 27 answers. The only ways to comply were to
+    invent two directions nobody is offering, or to copy 18 answers forward to satisfy a counter.
+    Both are the cheapest-passing-artifact failure the craft tier exists to stop, so the gate
+    grew the missing shape instead. Found 2026-09-17 building the founder's pick from round
+    2026-09-17d ("Drawing 1 + D1").
+
+    It cannot be used to skip the fan-out, which is the whole point of the three:
+
+      - it must NAME a round that exists, in this instance's own rounds directory
+      - that round must be SEALED (it has receipts), so it was measured, not merely started
+      - that round must itself carry three direction headings
+      - the reason is mandatory and is where the founder's own words go
+
+    Shape, in the round's craft-manifest.json:
+
+        "implements": {"round": "2026-09-17d", "direction": "D1", "reason": "founder, verbatim"}
+    """
+    mp = rd / CRAFT_MANIFEST
+    if not mp.is_file():
+        return None, []
+    try:
+        declared = json.loads(mp.read_text())
+    except ValueError:
+        return None, []
+    impl = declared.get("implements")
+    if not isinstance(impl, dict):
+        return None, []
+    named, direction = str(impl.get("round", "")).strip(), str(impl.get("direction", "")).strip()
+    reason = str(impl.get("reason", "")).strip()
+    if not named or not direction:
+        return None, [f"{CRAFT_MANIFEST} `implements` needs both a round and a direction; it is the "
+                      f"record of which fan-out this round builds."]
+    if not reason:
+        return None, [f"{CRAFT_MANIFEST} `implements` carries no reason. A round that builds a pick "
+                      f"says in writing why that one won, in the words it was picked in."]
+    src = rd.parent / named
+    if not src.is_dir():
+        return None, [f"{CRAFT_MANIFEST} `implements` names round '{named}', which does not exist "
+                      f"in {rd.parent}."]
+    if not (src / "receipts.json").is_file():
+        return None, [f"{CRAFT_MANIFEST} `implements` names round '{named}', which is not sealed. A "
+                      f"pick can only be made from a round that was measured."]
+    src_dirs = (src / "directions.md").read_text() if (src / "directions.md").is_file() else ""
+    n_src = len(re.findall(r"^#{1,3}\s+\S", src_dirs, re.M))
+    if n_src < 3:
+        return None, [f"{CRAFT_MANIFEST} `implements` names round '{named}', which carries {n_src} "
+                      f"direction heading(s). The three are what a pick is picked from."]
+    return impl, []
+
+
 def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     """Everything missing or stale for one page. Empty list = chain complete.
 
@@ -894,8 +949,12 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     # directions: three, plus an exemplar citation when exemplars exist
     dirs_txt = (rd / "directions.md").read_text() if (rd / "directions.md").is_file() else ""
     n_dir = len(re.findall(r"^#{1,3}\s+\S", dirs_txt, re.M))
-    if n_dir < 3:
-        probs.append(f"directions.md names {n_dir} direction heading(s); three are required")
+    impl, impl_probs = implemented_direction(rd, cfg_path)
+    probs += impl_probs
+    need_dirs = 1 if impl else 3
+    if n_dir < need_dirs:
+        probs.append(f"directions.md names {n_dir} direction heading(s); "
+                     f"{'one is' if need_dirs == 1 else 'three are'} required")
     ex_dir = (cfg_path.parent / cfg.get("exemplars_dir", "design/exemplars")) if cfg_path else None
     if ex_dir and ex_dir.is_dir():
         ex = [p.name for p in ex_dir.iterdir() if p.is_file()]
@@ -905,8 +964,11 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     # critique: nine questions per direction (count of numbered answers)
     crit = (rd / "critique.md").read_text() if (rd / "critique.md").is_file() else ""
     n_q = len(re.findall(r"^\s*(?:\d\.|\*\*\d\.|Q\d)", crit, re.M))
-    if n_q < NINE_QUESTIONS * max(n_dir, 1):
-        probs.append(f"critique.md has {n_q} numbered answers; {NINE_QUESTIONS} per direction x {max(n_dir,1)} = {NINE_QUESTIONS*max(n_dir,1)} required")
+    # An implementing round answers the nine for the one direction it builds. The other two were
+    # answered in the round it names, which this gate has already checked and sealed.
+    n_crit = 1 if impl else max(n_dir, 1)
+    if n_q < NINE_QUESTIONS * n_crit:
+        probs.append(f"critique.md has {n_q} numbered answers; {NINE_QUESTIONS} per direction x {n_crit} = {NINE_QUESTIONS*n_crit} required")
 
     # standard: pass true and hash matches THIS page
     std_path = rd / "standard.json"
