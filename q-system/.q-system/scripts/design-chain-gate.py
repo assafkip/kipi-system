@@ -490,6 +490,125 @@ def sealed_and_unedited(page: Path) -> bool:
 
 NOT_A_ROUND = ".not-a-round"
 CORRECTIONS = "corrections.jsonl"
+SOURCES = "sources.json"
+SOURCE_SUFFIXES = {".astro", ".js", ".mjs", ".ts", ".json", ".md", ".py", ".sh", ".html", ".htm"}
+
+
+def declared_sources(rd: Path, root: Path) -> dict[Path, str]:
+    """{resolved source page -> the round's reason for rendering it} from <round>/sources.json.
+
+    A round whose pages are BUILT from live copy-source files edits those files. On
+    askconsulting.io the served pages are built by the newest sealed round, which reads
+    `site/<page>/index.html` at build time and carries its markup into the article
+    (site/DEPLOY.md, 2026-09-16). So a founder-approved structural edit to a copy source
+    IS a design change, the gate is right to say so, and the chain that covers it already
+    ran -- in the round that rendered, measured, critiqued and sealed the result.
+
+    What the gate could not see was the link between the two. Without it the only paths
+    left were a false wording-correction or a `.not-a-round` marker on a directory whose
+    markup does reach a visitor, and both are ways of routing around a gate that is
+    correct. Found 2026-09-17 cutting two repeating sections from About in round
+    2026-09-17c.
+    """
+    sp = rd / SOURCES
+    if not sp.is_file():
+        return {}
+    try:
+        declared = json.loads(sp.read_text())
+    except ValueError:
+        return {}
+    out: dict[Path, str] = {}
+    for rel, why in (declared.get("sources") or {}).items():
+        out[(root / str(rel)).resolve()] = str(why or "").strip()
+    return out
+
+
+def _round_dirs(root: Path, cfg: dict) -> list[Path]:
+    """Every round directory of this instance: the siblings of the exemplars folder."""
+    rounds = Path(cfg.get("rounds_dir") or
+                  str(Path(cfg.get("exemplars_dir", "site/design/exemplars")).parent))
+    d = (root / rounds).resolve()
+    return [p for p in sorted(d.iterdir()) if p.is_dir()] if d.is_dir() else []
+
+
+def names_the_source(rd: Path, rel: str) -> bool:
+    """The round's own files name the source path. A round may not claim a live page it
+    does not render: without this, sources.json would be a list anyone could lengthen.
+
+    A build names the page the way it reaches it, so the tails of the path count too
+    ("about/index.html" is how the Astro round addresses site/about/index.html). Two
+    components minimum: "index.html" alone would match every round ever built.
+    """
+    parts = Path(rel).parts
+    wanted = ["/".join(parts[i:]) for i in range(len(parts) - 1)] or [rel]
+    for p in rd.rglob("*"):
+        if not p.is_file() or p.name == SOURCES or p.suffix.lower() not in SOURCE_SUFFIXES:
+            continue
+        try:
+            text = p.read_text(errors="ignore")
+        except OSError:
+            continue
+        if any(w in text for w in wanted):
+            return True
+    return False
+
+
+def sourced_page(page: Path) -> bool:
+    """True when a SEALED round declares this page as a source it renders, at these bytes.
+
+    Self-invalidating by construction: the receipt stores the sha it sealed, so the next
+    edit to the source is red again and needs a round of its own. The reason and the
+    name-check are re-run here, not only at seal time, so a hand-written receipt cannot
+    carry a page past the gate.
+
+    HONEST BOUNDARY: this says the round sealed a build made from these bytes. It does
+    not say a human compared the two, and it cannot see a source the round reads but
+    never declared.
+    """
+    cfg, cfg_path = load_config(page)
+    if not cfg_path:
+        return False
+    root = cfg_path.parent
+    try:
+        rel = str(page.resolve().relative_to(root))
+    except ValueError:
+        return False
+    for rd in _round_dirs(root, cfg):
+        why = declared_sources(rd, root).get(page.resolve())
+        if not why:
+            continue
+        rc = rd / "receipts.json"
+        if not rc.is_file():
+            continue
+        try:
+            rec = json.loads(rc.read_text())
+        except ValueError:
+            continue
+        if (rec.get("__sources__") or {}).get(rel) != sha(page):
+            continue
+        if names_the_source(rd, rel):
+            return True
+    return False
+
+
+def source_problems(rd: Path, root: Path) -> list[str]:
+    """Everything wrong with a round's declared sources, checked before it seals."""
+    probs = []
+    for src, why in declared_sources(rd, root).items():
+        try:
+            rel = str(src.relative_to(root))
+        except ValueError:
+            probs.append(f"{SOURCES} lists {src}, which is outside {root}")
+            continue
+        if not src.is_file():
+            probs.append(f"{SOURCES} lists {rel}, which does not exist")
+        elif not why:
+            probs.append(f"{SOURCES} gives no reason for {rel}. A round says in writing why "
+                         f"it renders a live page before it seals that page's words.")
+        elif not names_the_source(rd, rel):
+            probs.append(f"{SOURCES} lists {rel}, which nothing in this round names. A round "
+                         f"cannot seal a page it does not render.")
+    return probs
 
 
 # Words a search engine or a link preview shows are wording too. Found 2026-09-16 auditing
@@ -741,6 +860,8 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
         return declared
     if corrected_page(page):
         return []
+    if sourced_page(page):
+        return []
     reason = withdrawn_reason(round_dir_for(page))
     if reason is not None:
         return [] if reason else [
@@ -836,6 +957,11 @@ def seal(rd: Path) -> int:
             probs = [x for x in chain_problems(p, honor_seal=False) if "not sealed" not in x]
         if probs:
             bad.append((p.name, probs))
+    cfg, cfg_path = load_config(pages[0])
+    root = cfg_path.parent if cfg_path else rd
+    sprobs = source_problems(rd, root)
+    if sprobs:
+        bad.append((SOURCES, sprobs))
     if bad:
         print("seal REFUSED:", file=sys.stderr)
         for name, probs in bad:
@@ -843,6 +969,9 @@ def seal(rd: Path) -> int:
                 print(f"  {name}: {x}", file=sys.stderr)
         return 2
     rec = {p.name: {"sha256": sha(p), "sealed": time.strftime("%Y-%m-%dT%H:%M:%S")} for p in pages}
+    srcs = declared_sources(rd, root)
+    if srcs:
+        rec["__sources__"] = {str(s.relative_to(root)): sha(s) for s in srcs}
     rc.write_text(json.dumps(rec, indent=2) + "\n")
     print(f"sealed {len(pages)} page(s) in {rd}")
     return 0
