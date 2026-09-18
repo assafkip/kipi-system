@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/tests/test_destructive_op_deny_script_form.py",
+ "runner": "pytest"
+}
