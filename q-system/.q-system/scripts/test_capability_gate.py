@@ -927,6 +927,33 @@ def sec_repo_wide():
         rc, out = run_gate(root, "--check-only")
         check("repo-wide CONTROL: instance undeclared inside old roots still RED",
               rc == 1 and "present-but-undeclared" in out)
+    # 9. PR #369 review, major: kipi update rsyncs a newly declared test into
+    #    an instance and runs this gate BEFORE anything commits it. A declared
+    #    file on disk but untracked is present, as it was on main; only the
+    #    git index missing it must not read as declared-but-missing.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, skeleton=False,
+                         manifest=base_manifest(expected_tests=[entry(planted)]))
+        add_test(root, planted)
+        git_track(root, "q-system")
+        rc, out = run_gate(root, "--check-only")
+        check("repo-wide: declared test on disk but untracked is present",
+              rc == 0 and "declared-but-missing" not in out)
+        (root / planted).unlink()
+        rc, out = run_gate(root, "--check-only")
+        check("repo-wide CONTROL: declared test gone from disk is still missing",
+              rc == 1 and f"declared-but-missing: {planted}" in out)
+    # 10. PR #369 review, minor: the scan-scope note must not claim BOTH
+    #     directions for an instance entry outside the v1 roots, where the
+    #     undeclared direction is report-only.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, skeleton=False,
+                         manifest=base_manifest(expected_tests=[entry(planted)]))
+        add_test(root, planted)
+        rc, out = run_gate(root, "--check-only")
+        check("repo-wide: instance scan-scope note splits report-only entries",
+              "0 declared entries inside the scan roots (checked BOTH directions)" in out
+              and "1 outside the v1 roots (undeclared direction report-only" in out)
 
 
 SECTIONS = {

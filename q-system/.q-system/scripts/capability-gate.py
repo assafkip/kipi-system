@@ -616,7 +616,11 @@ def diff_declared_vs_actual(root, manifest, errors, mode="skeleton", notes=None)
     declared = {e["path"] for e in manifest.get("expected_tests", []) if e.get("path")}
     discovered = discover_tests(root, notes)
     in_scope_declared = {p for p in declared if in_scan_scope(p)}
-    for missing in sorted(in_scope_declared - discovered):
+    # A declared file on disk is present even when git does not track it yet:
+    # kipi update rsyncs a new test in and runs this gate before anything
+    # commits it, so index-only discovery turned the fleet RED (PR #369 review).
+    for missing in sorted(p for p in in_scope_declared - discovered
+                          if not (root / p).is_file()):
         errors.append(f"declared-but-missing: {missing}")
     known = uncovered_paths(manifest)
     if notes is not None:
@@ -1065,8 +1069,16 @@ def main():
     n_exempt = sum(1 for e in expected
                    if isinstance(e, dict) and e.get("path")
                    and not in_scan_scope(e["path"]))
-    notes.append(f"scan scope: {len(expected) - n_exempt} declared entries inside "
-                 f"the scan roots (checked BOTH directions), {n_exempt} exempt "
+    # An instance only reports an undeclared test outside the v1 roots, so
+    # those entries are not checked BOTH directions there (PR #369 review).
+    n_report_only = 0 if mode != "instance" else sum(
+        1 for e in expected
+        if isinstance(e, dict) and e.get("path") and in_scan_scope(e["path"])
+        and not in_legacy_roots(e["path"]))
+    notes.append(f"scan scope: {len(expected) - n_exempt - n_report_only} declared "
+                 "entries inside the scan roots (checked BOTH directions), "
+                 f"{n_report_only} outside the v1 roots (undeclared direction "
+                 f"report-only in an instance), {n_exempt} exempt "
                  "from undeclared-artifact detection (existence-checked only)")
     if errors:  # fail closed on structural problems before trusting the sets
         report(mode, errors, notes)
