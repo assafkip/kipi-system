@@ -160,6 +160,16 @@ had a detection hole:
   `plugins/*/tests` and repo-root test files are OUT of v1 scope and are
   listed in the manifest under `uncovered_known` so the boundary itself is
   declared (finding-9, deferred).
+- **Coverage boundary (ASK-541, 2026-09-18):** discovery is now repo-wide:
+  every git-tracked `test_*.py` / `test-*.py` / `test-*.sh`, plus an
+  untracked-inclusive walk of the two v1 roots. An undeclared test anywhere
+  in the skeleton is RED. A discovered test the gate deliberately does not
+  run is a per-path `uncovered_known` `{path, reason}` entry (145 at
+  cut-over), which clears that exact path only and goes RED when the file is
+  gone. In an INSTANCE, an undeclared test outside the v1 roots is reported,
+  not RED, because the canonical manifest cannot know instance-own tests.
+  `scope_exempt` now only matters for a declared path whose name matches no
+  test pattern.
 
 ### Quick-fix bounds (finding-11)
 

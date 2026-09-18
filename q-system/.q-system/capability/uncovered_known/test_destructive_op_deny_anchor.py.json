@@ -1,0 +1,4 @@
+{
+ "path": "test_destructive_op_deny_anchor.py",
+ "reason": "Declared, deliberately NOT run by the capability gate: surfaced when discovery went repo-wide (ASK-541), which scoped out running any of these for the first time. Promote to expected_tests once seen green."
+}

@@ -754,8 +754,11 @@ def sec_scan_scope():
     the fix: an unannounced escape is refused, an announced one is counted out
     loud and still has to exist.
     """
-    stray = "test-stray-probe.sh"
-    # 1. THE REPRODUCER. Declaring a repo-root path is out of both scan roots.
+    # ASK-541: discovery is repo-wide for test-pattern NAMES, so the escape
+    # that is left is a declared file whose name no pattern matches. The probe
+    # was `test-stray-probe.sh`, which discovery now sees, so it tested nothing.
+    stray = "stray-probe.sh"
+    # 1. THE REPRODUCER. A declaration discovery can never see.
     #    Before the fix this was accepted in silence and the gate went GREEN.
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
@@ -765,8 +768,8 @@ def sec_scan_scope():
         rc, out = run_gate(root, "--check-only")
         check("scan-scope: undeclared-exemption escape is RED",
               rc == 1 and "outside the scan roots" in out)
-        check("scan-scope: the refusal NAMES the scan roots",
-              "q-system/.q-system/scripts" in out)
+        check("scan-scope: the refusal NAMES the test patterns",
+              "test_*.py" in out)
 
     # 2. CONTROL. The same artifact inside a scan root is still reported by the
     #    F3 direction exactly as before -- the fix must not trade one blindness
@@ -781,7 +784,7 @@ def sec_scan_scope():
     # 3. An ANNOUNCED escape is accepted -- and the run says how many entries
     #    are riding it, so the boundary is legible on every run instead of
     #    being a property you have to go read the source to discover.
-    exempt = [{"prefix": "test-", "reason": "repo-root automation tests"}]
+    exempt = [{"prefix": "stray-", "reason": "repo-root automation tests"}]
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         add_test(root, stray)
@@ -832,12 +835,107 @@ def sec_scan_scope():
                   rc == 1 and want in out and "unknown top-level keys" not in out)
 
 
+def git_track(root, *rels):
+    """Put files in a real git index so discovery takes its `git ls-files` path.
+
+    The other sections run in a plain tempdir, which exercises the filesystem
+    fallback. Both paths have to see the same planted file, or the widening
+    only holds in whichever one the suite happened to use.
+    """
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "--", *rels], check=True)
+
+
+def sec_repo_wide():
+    """ASK-541: discovery covered only the two q-system/.q-system scan roots.
+
+    Measured 2026-09-18: 190 tracked test artifacts lived outside them
+    (plugins/, q-system/.q-system/tests/, the repo root, automation/ ...), and
+    an undeclared test in any of those trees left the gate GREEN. These cases
+    plant a test outside the old roots and demand RED, then pin the one honest
+    way to leave it unrun: a per-path uncovered_known entry with a reason.
+    """
+    planted = "plugins/demo/tests/test_planted.py"
+    # 1. THE REPRODUCER, filesystem path (no git).
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        add_test(root, planted)
+        rc, out = run_gate(root, "--check-only")
+        check("repo-wide: undeclared test outside old roots RED (fs walk)",
+              rc == 1 and f"present-but-undeclared: {planted}" in out)
+    # 2. Same, through `git ls-files`.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        add_test(root, planted)
+        git_track(root, planted)
+        rc, out = run_gate(root, "--check-only")
+        check("repo-wide: undeclared test outside old roots RED (git index)",
+              rc == 1 and f"present-but-undeclared: {planted}" in out)
+    # 3. A per-path uncovered_known entry clears it, and the run counts it.
+    known = {"path": planted, "reason": "fixture: declared, deliberately not run"}
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, manifest=base_manifest(uncovered_known=[known]))
+        add_test(root, planted)
+        rc, out = run_gate(root, "--check-only")
+        check("repo-wide: uncovered_known path entry is GREEN", rc == 0)
+        check("repo-wide: the run COUNTS known-uncovered artifacts",
+              "1 known-uncovered" in out)
+        # BOUND, not merely equal: a second planted file beside it is still RED.
+        add_test(root, "plugins/demo/tests/test_second.py")
+        rc, out = run_gate(root, "--check-only")
+        check("repo-wide: uncovered_known covers its path only, not its dir",
+              rc == 1 and "present-but-undeclared: plugins/demo/tests/test_second.py" in out)
+    # 4. The entry itself is validated.
+    for bad, want, why in (
+        ({"path": planted}, "uncovered_known entry needs path+reason", "reasonless"),
+        ({"path": "/etc/test_x.py", "reason": "x"},
+         "unsafe or non-relative path in uncovered_known", "absolute"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_repo(tmp, manifest=base_manifest(uncovered_known=[bad]))
+            add_test(root, planted)
+            rc, out = run_gate(root, "--check-only")
+            check(f"repo-wide: {why} uncovered_known entry RED", rc == 1 and want in out)
+    # 5. A stale entry (the file is gone) is RED in the skeleton, or the list
+    #    becomes a silencer for nothing.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, manifest=base_manifest(uncovered_known=[known]))
+        rc, out = run_gate(root, "--check-only")
+        check("repo-wide: stale uncovered_known path RED in skeleton",
+              rc == 1 and "uncovered_known names no test artifact" in out)
+    # 6. One path cannot be both run and not-run.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, manifest=base_manifest(
+            expected_tests=[entry(planted)], uncovered_known=[known]))
+        add_test(root, planted)
+        rc, out = run_gate(root, "--check-only")
+        check("repo-wide: path in expected_tests AND uncovered_known RED",
+              rc == 1 and "both expected_tests and uncovered_known" in out)
+    # 7. Instance mode: an instance's own tests outside the old roots are
+    #    REPORTED, never RED -- the canonical manifest cannot know them, and
+    #    `kipi update` runs this gate in every instance.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, skeleton=False)
+        add_test(root, "automation/test_instance_own.py")
+        rc, out = run_gate(root, "--check-only")
+        check("repo-wide: instance-own test outside old roots is report-only",
+              rc == 0 and "UNDECLARED (report-only, instance): automation/test_instance_own.py" in out)
+    # 8. CONTROL: inside the old roots an instance is still RED, as before.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, skeleton=False)
+        add_test(root, "q-system/.q-system/scripts/test_inside.py")
+        rc, out = run_gate(root, "--check-only")
+        check("repo-wide CONTROL: instance undeclared inside old roots still RED",
+              rc == 1 and "present-but-undeclared" in out)
+
+
 SECTIONS = {
     "schema": sec_schema, "overlay": sec_overlay, "replay": sec_replay, "quarantine": sec_quarantine,
     "wiring": sec_wiring, "runner": sec_runner, "mode": sec_mode,
     "negative-proof": sec_negative_proof,
     "skeleton_only_absent": sec_skeleton_only_absent,
     "scan-scope": sec_scan_scope,
+    "repo-wide": sec_repo_wide,
 }
 
 
