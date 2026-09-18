@@ -82,6 +82,14 @@ WIRING_SURFACE_GLOBS = (
     "q-system/.q-system/**/*.md",
     "q-system/.q-system/**/*.py",
     "q-system/.q-system/*.py",
+    # verify.sh and its siblings live HERE, not under scripts/, and `*.sh` above
+    # is a Path.glob pattern that never crosses a directory separator. So the
+    # repo's floor -- the script lefthook runs at pre-commit and CI runs at
+    # --full -- was not a wiring surface at all. Measured 2026-09-18 (ASK-1795):
+    # verify_select.py, called from verify.sh and from nowhere else, was reported
+    # inert. A commit-blocking script is the strongest wiring there is, which is
+    # the same argument that put lefthook.yml on the list above.
+    "q-system/.q-system/*.sh",
     # The MCP server's source tree is where an agent-facing tool gets wired
     # (wiring-check.md: "any new MCP tool is registered in the server"). Without
     # it reddit_read.py, called only from kipi-mcp's web_read.py, was reported

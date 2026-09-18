@@ -243,17 +243,31 @@ if [ -n "$PYFILES" ]; then
   # the file. Plain utf-8 leaves the BOM in the string and compile() then
   # reports a SyntaxError on a file Python itself runs happily. No such file is
   # in the repo today, which is precisely why it would have been found late.
+  #
+  # ONE interpreter for every file, not one per file (ASK-1795). The per-file
+  # loop spawned ~1500 python3 processes in consulting: 35s measured on
+  # 2026-09-18, paid on every commit before a single test ran. Same compile(),
+  # same tokenize.open, same verdict per file. dont_inherit=True so the checker's
+  # own __future__ flags can never leak into the file being compiled, which is
+  # exactly what the old fresh-process-per-file gave for free.
   run_check "python syntax" bash -c '
     cd "$1" || exit 1
-    fail=0
-    while IFS= read -r f; do
-      [ -f "$f" ] || continue
-      python3 -c "import sys,tokenize
-with tokenize.open(sys.argv[1]) as fh:
-    src = fh.read()
-compile(src, sys.argv[1], \"exec\")" "$f" 2>&1 || fail=1
-    done <<< "$2"
-    exit $fail
+    printf "%s\n" "$2" | python3 -c "
+import sys, tokenize
+fail = 0
+for f in sys.stdin.read().splitlines():
+    try:
+        fh = tokenize.open(f)
+    except FileNotFoundError:
+        continue
+    try:
+        with fh:
+            compile(fh.read(), f, \"exec\", dont_inherit=True)
+    except Exception as e:
+        print(f\"{f}: {type(e).__name__}: {e}\")
+        fail = 1
+sys.exit(fail)
+"
   ' _ "$TARGET" "$PYFILES"
 fi
 
@@ -276,14 +290,23 @@ fi
 # A malformed one fails at 07:30 in a launchd job nobody is watching.
 JSONFILES="$(git -C "$REPO" ls-files '*.json' | grep -v -E '(^|/)(dist|node_modules)/' | head -3000)"
 if [ -n "$JSONFILES" ]; then
+  # One interpreter for all of them, same reason as python syntax (ASK-1795).
   run_check "json parse" bash -c '
     cd "$1" || exit 1
-    fail=0
-    while IFS= read -r f; do
-      [ -f "$f" ] || continue
-      python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" 2>&1 || fail=1
-    done <<< "$2"
-    exit $fail
+    printf "%s\n" "$2" | python3 -c "
+import json, os, sys
+fail = 0
+for f in sys.stdin.read().splitlines():
+    if not os.path.isfile(f):
+        continue
+    try:
+        with open(f) as fh:
+            json.load(fh)
+    except Exception as e:
+        print(f\"{f}: {type(e).__name__}: {e}\")
+        fail = 1
+sys.exit(fail)
+"
   ' _ "$TARGET" "$JSONFILES"
 fi
 
