@@ -25,6 +25,7 @@ set -euo pipefail
 
 MODE="${1:---full}"
 REPO="$(git rev-parse --show-toplevel)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Where pytest's ordering cache lives. Git's COMMON dir, never the working tree:
 # see the long note at the `-o cache_dir` call below. --path-format=absolute so a
 # `cd` inside the pytest subshell cannot re-root a relative `.git`; the fallback
@@ -423,10 +424,63 @@ if [ -f "$MANIFEST" ]; then
       # picture, not the fastest no. The file-entry branch above also keeps neither:
       # a single test file is already the fast case, so --ff would buy nothing and
       # -x would hide sibling failures in the same file.
+      #
+      # --staged ALSO NARROWS THE SUITE TO THE TESTS THAT OWN THE CHANGE (ASK-1795).
+      # A suite used to run IN FULL on any staged path under it: every commit
+      # touching q-consult/ in the consulting instance ran ~6300 tests, 620s and
+      # 788s measured 2026-09-18, and the founder asked twice that day for the
+      # pre-commit door to stop doing that. verify_select.py picks the owning test
+      # files and prints WHY per staged path; a path no test names takes the
+      # suite's declared fallback (<suite>/.verify-fallback, else the full suite),
+      # never nothing. --full is untouched, so pre-push and CI still run all of it.
+      #
+      # The selector comes from the TREE BEING GRADED, same rule as the manifest.
+      # If it is missing or errors, the suite runs in full: a broken selector may
+      # cost time, it may never cost coverage.
       if [ "$MODE" = "--staged" ]; then
-        run_check "pytest:$suite" bash -c \
-          'cd "$1/$2" && python3 -m pytest -q --no-header --ff -x -o cache_dir="$3"' \
-          _ "$TARGET" "$suite" "$VERIFY_CACHE_ROOT/$(printf '%s' "$suite" | tr / _)"
+        _cache="$VERIFY_CACHE_ROOT/$(printf '%s' "$suite" | tr / _)"
+        _sel_src="$TARGET/q-system/.q-system/verify_select.py"
+        [ -f "$_sel_src" ] || _sel_src="$SCRIPT_DIR/verify_select.py"
+        _sel_mode="full"; _sel_out=""
+        if [ -f "$_sel_src" ] && \
+           _sel_out="$(printf '%s\n' "$ANY_STAGED" | \
+                       python3 "$_sel_src" --target "$TARGET" --suite "$suite")"; then
+          _sel_mode="$(printf '%s\n' "$_sel_out" | head -1)"
+        else
+          echo "      selector unavailable or failed -> full suite"
+        fi
+        if [ "$_sel_mode" = "select" ]; then
+          _plug="$TMP/verify-select-plugin"
+          mkdir -p "$_plug"
+          cp "$_sel_src" "$_plug/_kipi_verify_select.py"
+          _list="$TMP/verify-select-$(printf '%s' "$suite" | tr / _).txt"
+          # sed -n, never `| head`: under pipefail head's early exit SIGPIPEs the
+          # writer and kills the script (the 141 scar in the discovery note above).
+          printf '%s\n' "$_sel_out" | sed -n '2,$p' | sed '/^$/d' > "$_list.rel"
+          sed "s|^|$TARGET/$suite/|" "$_list.rel" > "$_list"
+          _n=$(sed -n '$=' "$_list"); _n="${_n:-0}"
+          sed -n '1,40p' "$_list.rel" | sed 's/^/        /'
+          if [ "$_n" -gt 40 ]; then echo "        ... and $((_n - 40)) more"; fi
+          # Exit 5 is "collected nothing": every selected file was collect_ignored
+          # or held no test. That is an empty selection, so it takes the full
+          # suite rather than passing on zero tests run.
+          run_check "pytest:$suite ($_n selected)" bash -c '
+            cd "$1/$2" || exit 1
+            PYTHONPATH="$4${PYTHONPATH:+:$PYTHONPATH}" KIPI_VERIFY_SELECT="$5" \
+              python3 -m pytest -q --no-header --ff -x -o cache_dir="$3" \
+              -p _kipi_verify_select
+            rc=$?
+            if [ "$rc" -eq 5 ]; then
+              echo "selection collected no tests -> full suite"
+              python3 -m pytest -q --no-header --ff -x -o cache_dir="$3"
+              rc=$?
+            fi
+            exit $rc' _ "$TARGET" "$suite" "$_cache" "$_plug" "$_list"
+        else
+          run_check "pytest:$suite" bash -c \
+            'cd "$1/$2" && python3 -m pytest -q --no-header --ff -x -o cache_dir="$3"' \
+            _ "$TARGET" "$suite" "$_cache"
+        fi
       else
         run_check "pytest:$suite" bash -c 'cd "$1/$2" && python3 -m pytest -q --no-header' \
                   _ "$TARGET" "$suite"

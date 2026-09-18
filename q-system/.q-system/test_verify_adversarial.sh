@@ -9,6 +9,9 @@
 # phantom failures that had nothing to do with verify.sh. A test harness that
 # perturbs its own subject is measuring itself.
 VERIFY_SRC="${1:?usage: adversarial.sh /path/to/verify.sh}"
+# The selector ships beside verify.sh and --staged reads it from the graded tree,
+# so every fixture repo carries it exactly as a real instance does (ASK-1795).
+SELECT_SRC="$(dirname "$VERIFY_SRC")/verify_select.py"
 pass=0; fail=0
 
 newrepo() {
@@ -17,6 +20,7 @@ newrepo() {
   git -C "$d" config user.email t@t; git -C "$d" config user.name t
   mkdir -p "$d/q-system/.q-system"
   cp "$VERIFY_SRC" "$d/q-system/.q-system/verify.sh"
+  if [ -f "$SELECT_SRC" ]; then cp "$SELECT_SRC" "$d/q-system/.q-system/verify_select.py"; fi
   printf "print('ok')\n" > "$d/good.py"
   printf '{"a": 1}\n'    > "$d/good.json"
   printf 'echo hi\n'     > "$d/good.sh"
@@ -286,6 +290,99 @@ printf '\xef\xbb\xbfdef f():\n    return 1\n' > "$R/withbom.py"
 git -C "$R" add withbom.py
 run "$R" --staged; check "valid file with a UTF-8 BOM still PASSES" 0 $?
 rm -rf "$R"
+
+# --- ASK-1795: --staged RUNS THE TESTS THAT OWN THE CHANGE, NOT THE WHOLE SUITE ---
+#
+# Every commit touching q-consult/ in consulting ran ~6300 tests (620s, 788s
+# measured 2026-09-18). Each fixture below holds a suite with one RED test that
+# names nothing, test_red_bystander.py. It is the witness: a staged run that
+# passes proves it was NOT run, and a run that must reach the full suite proves
+# it WAS, because it blocks. Committed with plain `git commit`, the fixture repo
+# has no hook, so the red test can sit in history.
+ownrepo() {
+  local d; d="$(newrepo)"
+  mkdir -p "$d/suite"
+  printf 'suite\n' > "$d/.verify-suites"
+  printf 'VALUE = 1\n' > "$d/suite/mod_a.py"
+  printf 'import mod_a\ndef test_a():\n    assert mod_a.VALUE == 1\n' > "$d/suite/test_mod_a.py"
+  printf 'def test_bystander():\n    assert False\n' > "$d/suite/test_red_bystander.py"
+  printf '{"k": 1}\n' > "$d/suite/data.json"
+  printf 'import json\ndef test_data():\n    assert json.load(open("data.json"))["k"] == 1\n' \
+    > "$d/suite/test_data.py"
+  git -C "$d" add -A; git -C "$d" commit -qm fixture
+  printf '%s' "$d"
+}
+
+R=$(ownrepo)
+printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+OUT="$( cd "$R" && bash q-system/.q-system/verify.sh --staged 2>&1 )"; rc=$?
+check "staged module runs ONLY its owning test" 0 $rc
+case "$OUT" in
+  *"(1 selected)"*) check "selection is printed with its count" 0 0 ;;
+  *) echo "$OUT" | sed 's/^/    /'; check "selection is printed with its count" 0 1 ;;
+esac
+case "$OUT" in
+  *"named as 'mod_a' by 1 test file"*) check "selection prints its reason" 0 0 ;;
+  *) check "selection prints its reason" 0 1 ;;
+esac
+rm -rf "$R"
+
+# THE NEGATIVE SELF-TEST. Narrowing must not mean skipping: a red OWNING test
+# still blocks.
+R=$(ownrepo)
+printf 'VALUE = 2\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+run "$R" --staged; check "red owning test still BLOCKS" 1 $?; rm -rf "$R"
+
+# A staged test file selects itself.
+R=$(ownrepo)
+printf 'def test_new():\n    assert False\n' > "$R/suite/test_new.py"; git -C "$R" add suite/test_new.py
+run "$R" --staged; check "staged red test file BLOCKS" 1 $?; rm -rf "$R"
+
+# A data file selects the tests that name its basename.
+R=$(ownrepo)
+printf '{"k": 2}\n' > "$R/suite/data.json"; git -C "$R" add suite/data.json
+run "$R" --staged; check "staged json runs the test naming it" 1 $?; rm -rf "$R"
+
+# A path NO test names, and no declared fallback: the FULL suite runs, so the
+# bystander blocks. Never an empty selection that passes.
+R=$(ownrepo)
+printf 'notes\n' > "$R/suite/readme.md"; git -C "$R" add suite/readme.md
+run "$R" --staged; check "unowned path, no fallback -> full suite" 1 $?; rm -rf "$R"
+
+# The same path with a DECLARED fallback runs the fallback, and the fallback is
+# really run: green passes, red blocks.
+R=$(ownrepo)
+printf 'test_mod_a.py\n' > "$R/suite/.verify-fallback"
+printf 'notes\n' > "$R/suite/readme.md"; git -C "$R" add suite/readme.md suite/.verify-fallback
+run "$R" --staged; check "unowned path runs the declared fallback" 0 $?; rm -rf "$R"
+R=$(ownrepo)
+printf 'test_red_bystander.py\n' > "$R/suite/.verify-fallback"
+printf 'notes\n' > "$R/suite/readme.md"; git -C "$R" add suite/readme.md suite/.verify-fallback
+run "$R" --staged; check "a red declared fallback BLOCKS" 1 $?; rm -rf "$R"
+
+# conftest collect_ignore still holds. Explicit pytest file arguments bypass it
+# (measured, pytest 9.0.3), which is why selection prunes at collection instead.
+R=$(ownrepo)
+printf 'collect_ignore = ["test_ignored.py"]\n' > "$R/suite/conftest.py"
+printf 'import mod_a\ndef test_ign():\n    assert False\n' > "$R/suite/test_ignored.py"
+git -C "$R" add -A; git -C "$R" commit -qm ignore
+printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+run "$R" --staged; check "collect_ignore still honoured" 0 $?; rm -rf "$R"
+
+# A staged pytest config changes every test: full suite.
+R=$(ownrepo)
+printf '# touched\n' > "$R/suite/conftest.py"; git -C "$R" add suite/conftest.py
+run "$R" --staged; check "staged conftest -> full suite" 1 $?; rm -rf "$R"
+
+# No selector in the graded tree: the full suite, never a skip. The fixture's
+# verify.sh sits in the same dir, so SCRIPT_DIR finds nothing either.
+R=$(ownrepo)
+git -C "$R" rm -q q-system/.q-system/verify_select.py
+printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+run "$R" --staged; check "missing selector -> full suite" 1 $?; rm -rf "$R"
+
+# --full is untouched: the bystander blocks.
+R=$(ownrepo); run "$R" --full; check "--full still runs every test" 1 $?; rm -rf "$R"
 
 echo
 echo "adversarial: $pass passed, $fail failed"
