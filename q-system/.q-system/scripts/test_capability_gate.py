@@ -832,12 +832,95 @@ def sec_scan_scope():
                   rc == 1 and want in out and "unknown top-level keys" not in out)
 
 
+# The RED lines only full mode can produce: run_tests is the one thing
+# --check-only skips (capability-gate.py main), so these are the entire allowed
+# difference between the two invocations.
+TEST_EXECUTION_RED = ("test-failed rc=", "test-timeout (", "zero-execution test: ")
+
+
+def red_lines(out):
+    return {ln.strip()[len("RED: "):] for ln in out.splitlines()
+            if ln.strip().startswith("RED: ")}
+
+
+def split_red(out):
+    reds = red_lines(out)
+    execution = {r for r in reds if r.startswith(TEST_EXECUTION_RED)}
+    return reds - execution, execution
+
+
+def sec_mode_agreement():
+    """ASK-1243: in consulting-kipi the updater's --check-only run said GREEN
+    and a bare full run said RED (32), and nobody knew which one was lying.
+    Both were telling the truth about different questions: --check-only never
+    executes a test. This pins that the two invocations AGREE on every
+    structural verdict, and that the only RED lines full mode may add are
+    test-execution lines. A structural check that one mode skips, or that
+    reads differently in the two, turns this RED."""
+    passing = "import sys; sys.exit(0)"
+    failing = 'print("real failure")\nimport sys; sys.exit(2)'
+    ok_rel = "q-system/.q-system/scripts/test_ok.py"
+    bad_rel = "q-system/.q-system/scripts/test_bad.py"
+    stray_rel = "q-system/.q-system/scripts/test_stray.py"
+    gone_rel = "q-system/.q-system/scripts/test_gone.py"
+
+    def clean(root):
+        add_test(root, ok_rel, passing)
+        return base_manifest(expected_tests=[entry(ok_rel)])
+
+    def undeclared(root):
+        add_test(root, stray_rel, passing)
+        return clean(root)
+
+    def vanished(root):
+        m = clean(root)
+        m["expected_tests"].append(entry(gone_rel))
+        return m
+
+    def data_missing(root):
+        m = clean(root)
+        m["required_data"] = [{"path": "q-system/canonical/nope.md", "scope": "all"}]
+        return m
+
+    def test_fails(root):
+        add_test(root, bad_rel, failing)
+        return base_manifest(expected_tests=[entry(bad_rel)])
+
+    # (name, builder, instance?, structural RED expected, execution RED expected)
+    cases = (
+        ("clean skeleton", clean, False, False, False),
+        ("clean instance", clean, True, False, False),
+        ("present-but-undeclared", undeclared, True, True, False),
+        ("declared-but-missing", vanished, True, True, False),
+        ("required-data-missing", data_missing, True, True, False),
+        ("failing test", test_fails, True, False, True),
+    )
+    for name, build, instance, want_struct, want_exec in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_repo(tmp, skeleton=not instance)
+            write_manifest(root, build(root))
+            rc_check, out_check = run_gate(root, "--check-only")
+            rc_full, out_full = run_gate(root)
+        struct_check, exec_check = split_red(out_check)
+        struct_full, exec_full = split_red(out_full)
+        check(f"mode-agreement [{name}]: identical structural RED set in both modes",
+              struct_check == struct_full and bool(struct_full) == want_struct)
+        check(f"mode-agreement [{name}]: --check-only reports no test-execution RED",
+              not exec_check)
+        check(f"mode-agreement [{name}]: full mode's extra RED is test execution only",
+              bool(exec_full) == want_exec)
+        check(f"mode-agreement [{name}]: exit codes follow the RED sets",
+              rc_check == (1 if struct_check else 0)
+              and rc_full == (1 if struct_full or exec_full else 0))
+
+
 SECTIONS = {
     "schema": sec_schema, "overlay": sec_overlay, "replay": sec_replay, "quarantine": sec_quarantine,
     "wiring": sec_wiring, "runner": sec_runner, "mode": sec_mode,
     "negative-proof": sec_negative_proof,
     "skeleton_only_absent": sec_skeleton_only_absent,
     "scan-scope": sec_scan_scope,
+    "mode-agreement": sec_mode_agreement,
 }
 
 
