@@ -148,6 +148,12 @@ class ExitCodeIsNotEvidence(Base):
         self.assertEqual(rc, 2, out)
         self.assertIn("FAILS the standard", out, "the producer was hijacked before it could judge")
 
+    def test_a_missing_module_names_the_user_base_tradeoff(self):
+        rc, out = self.seal(STUB_STANDARD="nomodule")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("could not measure", out)
+        self.assertIn("PYTHONUSERBASE", out)
+
     def test_one_failure_is_reported_once(self):
         rc, out = self.seal(STUB_STANDARD="fail")
         self.assertEqual(rc, 2, out)
@@ -214,7 +220,14 @@ class GapProducer(Base):
 
 
 class NoOverride(unittest.TestCase):
-    """Refused by Sana: any producer-directory override production can honor. The first
+    """A REVIEW AID, NOT A GUARANTEE. It catches an honest future change that adds a producer
+    override to the gate. It cannot stop someone who edits the gate, because they can edit
+    this file too: round 2 evaded it by rebinding subprocess.run at module scope, the same
+    class as round 1's evasion, and a third pattern would only be found by the next reviewer.
+    What binds a receipt to the real gate and the real producers is dc-10 (path + sha that
+    matches now or appears in git history). Sana, 2026-09-18: do not call this a guarantee.
+
+    Refused by Sana: any producer-directory override production can honor. The first
     version of this class was a five-token blocklist, and the adversarial reviewer evaded all
     five with `HERE = Path(os.environ.get('DC_BIN') or Path(__file__).resolve().parent)` while
     the suite stayed green. So this reads the STRUCTURE: what HERE is, and what gets executed."""

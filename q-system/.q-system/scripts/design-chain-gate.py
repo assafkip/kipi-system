@@ -157,7 +157,15 @@ def clean_env() -> dict:
 
     Adversarial review of c598d5f5, reproduced against the installed gate: a sitecustomize.py
     on PYTHONPATH made the real producer exit 0 before it measured anything. The child also
-    runs with -E, which makes the interpreter ignore those variables even if one survives."""
+    runs with -E, which makes the interpreter ignore those variables even if one survives.
+
+    THE TRADEOFF, stated because it is real: -E ignores PYTHONUSERBASE too, so a producer
+    dependency installed with `pip install --user` under a NON-DEFAULT user base (a CI
+    container with a read-only HOME) is not importable in the child, and seal says "could
+    not measure". Letting the variable through buys nothing (-E ignores it) and the refusal
+    message names it. WHAT THIS DOES NOT CLOSE: -E leaves the DEFAULT user site enabled, so a
+    usercustomize.py there is still imported at child startup (measured by Sana, 2026-09-18).
+    Running the child with -s closes that and is dc-03's, with its own test."""
     return {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
 
 
@@ -175,6 +183,9 @@ def run_producer(name: str, args: list[str]) -> tuple[int, str]:
     except OSError as e:
         return 2, f"could not measure: {name} did not start: {e}"
     tail = " | ".join((r.stdout + r.stderr).strip().splitlines()[-4:])
+    if "ModuleNotFoundError" in tail:
+        tail += (" | the producer child runs with -E and no PYTHON* variables, so PYTHONUSERBASE "
+                 "is ignored: install the dependency where the default site can see it")
     return r.returncode, tail
 
 
@@ -189,7 +200,10 @@ def _fresh_standard_entry(std_path: Path, before_ns: int, page: Path) -> dict | 
     """The entry the producer wrote for THIS page during THIS run, or None.
 
     An exit code is a claim. The verdict is the file the producer writes, so it has to have
-    been rewritten after the run started and carry this page's current bytes. A producer that
+    been rewritten after the run started and carry this page's current bytes. ASSUMPTION:
+    st_mtime_ns strictly increases between two writes, true on APFS (0 false refusals in 120
+    checks, review of c6696467) and wrong in principle on 1-second filesystems. dc-03 makes
+    seal remove the page's prior entry before the run, so mtime becomes a cross-check. A producer that
     exits 0 having written nothing (hijacked, or crashed past its own handler) returns None,
     and a verdict typed by hand before the run is older than the run."""
     if _mtime_ns(std_path) <= before_ns:
