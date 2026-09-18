@@ -674,6 +674,42 @@ def restore(root, baseline, modified, added, removed):
     return restored, failed
 
 
+def git_operation_in_progress(root):
+    """True while git itself is mid-operation: merge, rebase, cherry-pick, revert.
+
+    2026-09-18. A merge of origin/main reverted six watched files and then left the
+    tree wedged: `git merge --abort` refused ("not uptodate"), and restoring the
+    files so it could abort is itself a write into .claude/, which the path guard
+    blocks. Both gates behaved correctly and between them there was no legal way out.
+
+    WHY THE EXISTING HOLD DID NOT COVER IT. `matches_head` is the provenance oracle:
+    content equal to the HEAD blob means the change arrived through a reviewed path.
+    During a merge HEAD has NOT moved yet, so merged content is by definition unequal
+    to HEAD and every incoming file reads as an unsanctioned shell write. The oracle
+    is not wrong; it is being asked mid-flight, when it cannot be right.
+
+    This is the same class as the scar recorded in the --enforce block above, where
+    reverting a held path un-applied a `git checkout` three ways. The answer there is
+    the answer here: REPORT, DO NOT REVERT. Detection is unchanged and the alarm still
+    fires; only the automatic undo stands down, and only while git is mid-operation.
+    """
+    gitdir = os.path.join(root, ".git")
+    if os.path.isfile(gitdir):                       # a worktree: .git is a file pointing at the real dir
+        try:
+            line = open(gitdir).read().strip()
+            if line.startswith("gitdir:"):
+                gitdir = line.split(":", 1)[1].strip()
+        except OSError:
+            return False
+    for marker in ("MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"):
+        if os.path.exists(os.path.join(gitdir, marker)):
+            return True
+    for d in ("rebase-merge", "rebase-apply"):
+        if os.path.isdir(os.path.join(gitdir, d)):
+            return True
+    return False
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=default_root())
@@ -878,6 +914,18 @@ def verify(root, args):
         return 1
 
     if args.enforce:
+        # A GIT OPERATION IN FLIGHT IS HELD, NEVER REVERTED (2026-09-18). See
+        # git_operation_in_progress: mid-merge the provenance oracle cannot be right,
+        # because HEAD has not moved yet. Reverting there both loses main's content and
+        # wedges the merge, since `git merge --abort` then refuses and the repair is a
+        # write into .claude/ that the path guard blocks. Detection is unchanged.
+        if git_operation_in_progress(root):
+            msg = summary + (" | a git merge/rebase/cherry-pick is in progress -- "
+                             "reported, NOT reverted; re-check after it completes")
+            print("SECURITY(held): " + msg, file=sys.stderr)
+            notify(root, msg)
+            return 1
+
         # THE INVARIANT: --enforce never leaves the worktree inconsistent with
         # HEAD. A drifted path whose state already EQUALS HEAD is HELD -- paged
         # and reported, never reverted. Reverting those is what un-applied a
