@@ -326,9 +326,22 @@ def _run_producers(rd: Path, pages: list[Path], cfg: dict) -> list[tuple[str, li
     return bad
 
 
-# The chain's own records. Everything ELSE in the round is something a page can load, so it
-# is part of what was measured.
-_DIGEST_SKIP_DIRS = {"checks", "gate"}
+# The chain's own records, by exact path relative to the round. Everything ELSE in the round
+# is something a page can load, so it is part of what was measured.
+#
+# NEVER a directory, never a suffix. The first version skipped checks/ and gate/ wholesale and
+# every *.md, while the server serves all of them: a page loaded gate/style.css, the digest
+# ignored it, and the stylesheet was swapped AFTER the seal with every sha still matching
+# (final review of c3607e0d, reproduced with the real gate). A file is skipped only because
+# the CHAIN writes it, and the list is closed.
+_CHAIN_RECORDS = frozenset({
+    "brief.md", "directions.md", "critique.md", "proof.md",
+    "standard.json", "receipts.json", "craft-manifest.json", "sources.json",
+    "corrections.jsonl", ".not-a-round", "citations.json", "engines.jsonl",
+    "checks/gap.json", "checks/impeccable.txt", "checks/bio_gate.txt",
+    "checks/voice-lint.txt", "checks/tripwire.txt",
+    "gate/reader-runs.jsonl",
+})
 
 
 def round_asset_digest(rd: Path) -> str:
@@ -340,13 +353,10 @@ def round_asset_digest(rd: Path) -> str:
     and written by seal; dc-10 makes the passive gate recompute it. It goes stale on an unused
     asset too, which is correct: COMPLETE means unedited. A playwright response hook was
     refused, because it records what chromium chose to request, which is a subset."""
-    # built here, not at import: three of these names are defined further down the module
-    skip_names = {"standard.json", "receipts.json", CRAFT_MANIFEST, SOURCES, CORRECTIONS, NOT_A_ROUND}
     h = hashlib.sha256()
     for p in sorted(rd.rglob("*"), key=lambda q: q.relative_to(rd).as_posix()):
         rel = p.relative_to(rd)
-        if (not p.is_file() or p.suffix.lower() == ".md" or p.name in skip_names
-                or rel.parts[0] in _DIGEST_SKIP_DIRS or "__pycache__" in rel.parts):
+        if not p.is_file() or rel.as_posix() in _CHAIN_RECORDS or "__pycache__" in rel.parts:
             continue
         h.update(rel.as_posix().encode() + b"\x00" + p.read_bytes() + b"\x1f")
     return h.hexdigest()
@@ -1341,8 +1351,13 @@ def seal(rd: Path) -> int:
         return 0
     # What this seal is about, read ONCE before anything is measured. The receipt may only
     # carry these, and they are re-read immediately before it is written.
-    sealing = {p.name: sha(p) for p in pages}
-    assets_before = round_asset_digest(rd)
+    try:
+        sealing = {p.name: sha(p) for p in pages}
+        assets_before = round_asset_digest(rd)
+    except OSError as e:
+        # an unreadable or vanishing file in the round: a refusal like every other, not exit 1
+        print(f"seal REFUSED:\n  could not measure: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
     measured = producer_problems(rd, pages, seal_cfg)
     bad += measured
     reported = {name for name, _ in measured}
@@ -1367,9 +1382,13 @@ def seal(rd: Path) -> int:
             for x in probs:
                 print(f"  {name}: {x}", file=sys.stderr)
         return 2
-    moved = [p.name for p in pages if sha(p) != sealing[p.name]]
-    if round_asset_digest(rd) != assets_before:
-        moved.append("an asset the pages load (css, script, image or font)")
+    try:
+        moved = [p.name for p in pages if sha(p) != sealing[p.name]]
+        if round_asset_digest(rd) != assets_before:
+            moved.append("an asset the pages load (css, script, image or font)")
+    except OSError as e:
+        print(f"seal REFUSED:\n  could not measure: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
     if moved:
         print("seal REFUSED:", file=sys.stderr)
         print(f"  {moved} changed while this seal was running, so what was measured is not what "

@@ -408,13 +408,38 @@ class AssetDigest(Base):
         self.assertNotEqual(recorded, dcg.round_asset_digest(self.round))
 
     def test_the_chains_own_records_do_not_move_the_digest(self):
+        # By NAME, at the round's top level and in checks/ and gate/, only the files the chain
+        # itself writes. Nothing is skipped because of the directory it sits in.
         dcg = _load_gate("dcg_digest2")
         before = dcg.round_asset_digest(self.round)
         (self.round / "critique.md").write_text("rewritten" + chr(10))
         (self.round / "standard.json").write_text("[]")
-        (self.round / "checks" / "anything.txt").write_text("x")
+        (self.round / "checks" / "gap.json").write_text("{}")
+        (self.round / "checks" / "impeccable.txt").write_text("x")
         (self.round / "gate" / "reader-runs.jsonl").write_text("{}")
         self.assertEqual(before, dcg.round_asset_digest(self.round))
+
+    def test_an_asset_parked_in_gate_or_checks_moves_the_digest(self):
+        # Final review of c3607e0d, reproduced with the real gate: the server serves gate/ and
+        # checks/, the page loaded gate/style.css, and the digest skipped the whole directory,
+        # so the stylesheet could be swapped AFTER the seal with every sha still matching.
+        dcg = _load_gate("dcg_digest5")
+        for rel in ("gate/style.css", "checks/app.js", "notes.md", "gate/readme.md"):
+            before = dcg.round_asset_digest(self.round)
+            (self.round / rel).write_text("/* anything a page can load */")
+            self.assertNotEqual(before, dcg.round_asset_digest(self.round), f"{rel} is served and not digested")
+
+    def test_an_unreadable_file_in_the_round_is_a_refusal_not_a_traceback(self):
+        logo = self.round / "logo.png"
+        logo.write_bytes(b"png")
+        logo.chmod(0)
+        try:
+            rc, out = self.seal()
+        finally:
+            logo.chmod(0o644)
+        self.assertEqual(rc, 2, out)
+        self.assertNotIn("Traceback", out)
+        self.assertIn("could not measure", out)
 
     def test_an_asset_swapped_after_measuring_and_before_the_receipt_is_refused(self):
         dcg = _load_gate("dcg_digest3")
