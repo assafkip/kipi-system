@@ -371,7 +371,10 @@ class EngineTest(unittest.TestCase):
         the rsync's own --delete or a founder decision.
         """
         r = build_instance(os.path.join(self.tmp, "i"))
+        # A real package, not a bare dir: an empty dir is not a package
+        # (ASK-1239), and this fixture used to be one, pinning that defect.
         os.makedirs(os.path.join(r, "plugins", "kipi-core", NEW))
+        open(os.path.join(r, "plugins", "kipi-core", NEW, "__init__.py"), "w").write("VERSION = 2\n")
         self.assertEqual(mig.plan(r)["package_action"], "both_present")
         mig.apply(r, commit=False)
         self.assertTrue(os.path.isdir(os.path.join(r, "plugins/kipi-core", OLD)))
@@ -677,6 +680,80 @@ class EngineTest(unittest.TestCase):
         p = mig.plan(r)
         self.assertEqual(p["staged_migration"], [])
         self.assertFalse(p["needs_work"])
+
+    def _cache_only_shell(self, root):
+        """The shape consulting carried on 2026-09-04: a NEW-named directory
+        holding bytecode and a pytest cache and not one source file."""
+        shell = os.path.join(root, "plugins", "kipi-core", NEW)
+        os.makedirs(os.path.join(shell, "__pycache__"), exist_ok=True)
+        open(os.path.join(shell, "__pycache__", "x.pyc"), "wb").write(b"\x00")
+        os.makedirs(os.path.join(shell, ".pytest_cache"), exist_ok=True)
+        open(os.path.join(shell, ".pytest_cache", "README.md"), "w").write("cache\n")
+        return shell
+
+    def test_a_cache_only_new_dir_is_not_a_package(self):
+        """ASK-1239 / sp-273637ee. `os.path.isdir` read the cache shell as the
+        package, so plan said both_present, the move was skipped, every import
+        was rewritten to a package with no code, and the instance's verify.sh
+        failed on ModuleNotFoundError. Reproduced on consulting 2026-09-04 on two
+        apply runs; the sync then refused that instance."""
+        r = build_instance(os.path.join(self.tmp, "i"))
+        self._cache_only_shell(r)
+        self.assertEqual(mig.plan(r)["package_action"], "move")
+        out = mig.apply(r, commit=False)
+        self.assertTrue(out["verified"], out["errors"])
+        self.assertTrue(out["moved"])
+        new = os.path.join(r, "plugins/kipi-core", NEW)
+        self.assertTrue(os.path.isfile(os.path.join(new, "__init__.py")), "package not renamed")
+        self.assertFalse(os.path.exists(os.path.join(new, OLD)), "moved INTO the shell")
+        self.assertFalse(os.path.isdir(os.path.join(r, "plugins/kipi-core", OLD)))
+
+    def test_a_cache_only_new_dir_in_a_git_instance_is_renamed_and_committed(self):
+        """Same shape, tracked package, ignored caches: `git mv` onto an existing
+        directory moves the source INTO it, so the shell has to be out of the way
+        first. It is set aside, never deleted: its bytes survive."""
+        r = build_instance(os.path.join(self.tmp, "i"))
+        open(os.path.join(r, ".gitignore"), "w").write("__pycache__/\n.pytest_cache/\n")
+        subprocess.run(["git", "-C", r, "init", "-q"], check=True)
+        subprocess.run(["git", "-C", r, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", r, "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "base"], check=True)
+        self._cache_only_shell(r)
+        out = mig.apply(r, commit=True)
+        self.assertTrue(out["committed"], out["errors"])
+        tracked = subprocess.run(["git", "-C", r, "ls-files", "plugins/kipi-core"],
+                                 capture_output=True, text=True).stdout.split()
+        self.assertIn("plugins/kipi-core/" + NEW + "/__init__.py", tracked)
+        self.assertFalse([t for t in tracked if "/" + OLD + "/" in t], tracked)
+        kept = [os.path.join(dp, f) for dp, _, fs in os.walk(os.path.join(r, "plugins"))
+                for f in fs if f == "x.pyc"]
+        self.assertEqual(len(kept), 1, "the cache shell was deleted, not set aside")
+
+    def test_a_real_new_package_beside_the_old_is_still_both_present(self):
+        """Negative control: one .py file makes it a package, and a half-synced
+        instance must keep the no-delete both_present path."""
+        r = build_instance(os.path.join(self.tmp, "i"))
+        shell = self._cache_only_shell(r)
+        open(os.path.join(shell, "__init__.py"), "w").write("VERSION = 2\n")
+        self.assertEqual(mig.plan(r)["package_action"], "both_present")
+
+    def test_a_file_that_defines_the_mapping_is_left_byte_identical(self):
+        """ASK-1239. The token swap rewrote consulting's exporter RENAMES table
+        from the pair (OLD, NEW) to (NEW, NEW), which broke the public-mirror
+        transform. A file defining the mapping is skipped whole; a caller in the
+        same repo still migrates, so the skip is per file and not global."""
+        table = ('RENAMES = (\n    ("' + OLD + '", "' + NEW + '"),\n)\n'
+                 'import ' + OLD + '.core\n')
+        r = build_instance(os.path.join(self.tmp, "i"), package=NEW, extra=[
+            ("automation/export_voice_loop.py", table),
+            ("automation/caller.py", "import " + OLD + ".core\n"),
+        ])
+        out = mig.apply(r, commit=False)
+        self.assertEqual(open(os.path.join(r, "automation/export_voice_loop.py")).read(), table)
+        self.assertEqual(open(os.path.join(r, "automation/caller.py")).read(),
+                         "import " + NEW + ".core\n")
+        self.assertTrue(out["verified"], out["errors"])
+        self.assertEqual(out["defines_mapping"], ["automation/export_voice_loop.py"])
 
     def test_refuses_to_run_against_the_skeleton(self):
         r = build_instance(os.path.join(self.tmp, "i"))
