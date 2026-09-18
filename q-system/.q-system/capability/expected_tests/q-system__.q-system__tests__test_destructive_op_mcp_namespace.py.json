@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/tests/test_destructive_op_mcp_namespace.py",
+ "runner": "python3"
+}
