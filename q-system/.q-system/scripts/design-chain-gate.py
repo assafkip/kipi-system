@@ -52,10 +52,14 @@ import functools
 import hashlib
 import http.server
 import json
+import mimetypes
 import os
+import posixpath
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import threading
 import urllib.parse
@@ -201,31 +205,106 @@ def run_producer(name: str, args: list[str]) -> tuple[int, str]:
     return r.returncode, tail
 
 
+def round_files(rd: Path) -> dict[str, bytes]:
+    """Every file the round can serve, read ONCE: {posix path relative to the round: bytes}.
+
+    Skips what the server refuses anyway (a path that resolves outside the round: GET
+    /out/hosts returned /etc/hosts through a symlink) and __pycache__. Raises OSError on an
+    unreadable or vanishing file; seal turns that into a refusal."""
+    root = rd.resolve()
+    out: dict[str, bytes] = {}
+    for p in rd.rglob("*"):
+        rel = p.relative_to(rd)
+        if "__pycache__" in rel.parts or not p.is_file():
+            continue
+        if root not in p.resolve().parents:
+            continue
+        out[rel.as_posix()] = p.read_bytes()
+    return out
+
+
+class RoundSnapshot:
+    """The bytes one seal is about: held in memory, and copied to a private directory because
+    the producers take a path.
+
+    WHY (ASK-1808): dc-03 compared the round before and after measuring. A -> X -> A walks
+    through that: swap shared.css to a passing version when seal's server comes up, swap it
+    back once the verdict is written, and a page whose real stylesheet FAILS sealed COMPLETE
+    with every sha matching (final review of c3607e0d, real gate, real producers, real
+    chromium). A comparison of two instants says nothing about the time between them. So the
+    browser is served `files`, which nothing outside this process can write, and the receipt
+    is written only if the live round equals `files` at the end."""
+
+    def __init__(self, rd: Path, files: dict[str, bytes], directory: Path):
+        self.live, self.files, self.dir = rd, files, directory
+
+    def sha(self, rel: str) -> str:
+        return hashlib.sha256(self.files[rel]).hexdigest()
+
+
+_SNAPSHOTS: dict[Path, RoundSnapshot] = {}   # live round (resolved) -> the snapshot seal holds
+
+
 @contextlib.contextmanager
-def served_round(rd: Path):
+def snapshot_round(rd: Path):
+    files = round_files(rd)
+    tmp = Path(tempfile.mkdtemp(prefix="dc-seal-"))          # mkdtemp is mode 0700
+    try:
+        snap_dir = tmp / rd.name
+        for rel, data in files.items():
+            dest = snap_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+        snap = RoundSnapshot(rd, files, snap_dir)
+        _SNAPSHOTS[rd.resolve()] = snap
+        yield snap
+    finally:
+        _SNAPSHOTS.pop(rd.resolve(), None)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@contextlib.contextmanager
+def served_round(rd: Path, files: dict[str, bytes] | None = None):
     """Serve the round on a loopback port the OS picks, for the length of one seal.
 
     Nothing owned the server before: the command doc backgrounded one on a typed port and
     never stopped it. A leftover from an earlier round kept the port, the new bind failed
     silently, and the standard producer measured the OLD round over the URL while writing
     the sha of the NEW local file (PRD finding-3). Port 0 cannot collide, the server dies in
-    the finally, and each producer refuses when the served bytes differ from the local file."""
-    root = rd.resolve()
+    the finally, and each producer refuses when the served bytes differ from the local file.
 
-    class Quiet(http.server.SimpleHTTPRequestHandler):
-        """Files under the round, and nothing else. The stock handler lists directories and
-        follows symlinks: GET /out/hosts returned /etc/hosts through a symlink (review)."""
+    ASK-1808: it serves `files`, bytes read once and held in memory. It used to read the disk
+    on every GET, which is what let a file be one thing for the browser and another for both
+    of seal's checks."""
+    held = round_files(rd) if files is None else files
 
-        def send_head(self):
-            target = Path(self.translate_path(self.path)).resolve()
-            if not target.is_file() or root not in target.parents:
+    class Held(http.server.BaseHTTPRequestHandler):
+        """Files of the round, and nothing else: no listing, nothing outside it."""
+
+        def _answer(self, body: bool):
+            path = urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
+            rel = posixpath.normpath(path).lstrip("/")
+            data = held.get(rel)
+            if data is None:
                 self.send_error(404, "not a file in this round")
-                return None
-            return super().send_head()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", mimetypes.guess_type(rel)[0] or "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            if body:
+                self.wfile.write(data)
+
+        def do_GET(self):
+            self._answer(True)
+
+        def do_HEAD(self):
+            self._answer(False)
 
         def log_message(self, *args):
             pass
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=str(rd)))
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Held)
     thread = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
     thread.start()
     try:
@@ -257,10 +336,11 @@ def _drop_prior_verdict(std_path: Path, page: Path) -> None:
         std_path.write_text(json.dumps(kept, indent=2) + "\n")
 
 
-def _fresh_standard_entry(std_path: Path, page: Path) -> dict | None:
+def _fresh_standard_entry(std_path: Path, page: Path, cur: str | None = None) -> dict | None:
     """The entry the producer wrote for THIS page during THIS run, or None. An exit code is a
-    claim; the verdict is the entry, and it has to carry this page's current bytes."""
-    cur = sha(page)
+    claim; the verdict is the entry, and it has to carry this page's bytes: `cur`, the sha of
+    the bytes seal holds in memory (ASK-1808), else the file as it stands."""
+    cur = cur or sha(page)
     for e in _read_standard(std_path):
         if e.get("page") == page.name and e.get("sha256") == cur:
             return e
@@ -279,24 +359,49 @@ def round_declaration(rd: Path) -> dict:
 
 
 def producer_problems(rd: Path, pages: list[Path], cfg: dict) -> list[tuple[str, list[str]]]:
-    """Run the producers for a round against a server this call owns. Returns (name, problems)
-    pairs in seal's `bad` shape."""
+    """Run the producers for a round against a snapshot and a server this call owns. Returns
+    (name, problems) pairs in seal's `bad` shape. seal holds the snapshot so it can compare the
+    live round to it afterwards; a direct call takes its own."""
     try:
-        return _run_producers(rd, pages, cfg)
+        held = _SNAPSHOTS.get(rd.resolve())
+        if held is not None:
+            return _run_producers(held, pages, cfg)
+        with snapshot_round(rd) as snap:
+            return _run_producers(snap, pages, cfg)
     except OSError as e:
         # No loopback, no file descriptors, a read-only standard.json or checks/. Every other
         # producer failure refuses with exit 2; a traceback and exit 1 is a code nobody defined.
         return [("seal", [f"could not measure: {type(e).__name__}: {e}"])]
 
 
-def _run_producers(rd: Path, pages: list[Path], cfg: dict) -> list[tuple[str, list[str]]]:
+def _copy_back(snap: RoundSnapshot, rel: str) -> None:
+    """A verdict the producer wrote in the snapshot goes back to the round, pass or fail. A
+    verdict that was NOT written removes the round's old one: only this run may speak."""
+    src, dest = snap.dir / rel, snap.live / rel
+    if src.is_file():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(src.read_bytes())
+    else:
+        dest.unlink(missing_ok=True)
+
+
+def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tuple[str, list[str]]]:
     bad: list[tuple[str, list[str]]] = []
-    std_path = rd / "standard.json"
-    with served_round(rd) as base:
+    rd = snap.live
+    std_path = snap.dir / "standard.json"
+    # The producers find design-chain.json and references/ by walking up from the round. The
+    # snapshot has neither above it, so both are handed over by path.
+    cfg_path = find_config(rd.resolve())
+    with served_round(rd, snap.files) as base:
         for p in pages:
-            _drop_prior_verdict(std_path, p)
-            rc, tail = run_producer(STANDARD_PRODUCER, [str(p), "--url", f"{base}/{urllib.parse.quote(p.name)}"])
-            entry = _fresh_standard_entry(std_path, p)
+            sp = snap.dir / p.name
+            _drop_prior_verdict(std_path, sp)
+            args = [str(sp), "--url", f"{base}/{urllib.parse.quote(p.name)}"]
+            if cfg_path:
+                args += ["--config", str(cfg_path)]
+            rc, tail = run_producer(STANDARD_PRODUCER, args)
+            entry = _fresh_standard_entry(std_path, sp, snap.sha(p.name))
+            _copy_back(snap, "standard.json")
             if rc == 0 and entry and entry.get("pass") is True:
                 continue
             if rc == 1 and entry and entry.get("pass") is False:
@@ -312,9 +417,13 @@ def _run_producers(rd: Path, pages: list[Path], cfg: dict) -> list[tuple[str, li
         round_is_wireframe = declared.get("tier") == "wireframe" and str(declared.get("reason", "")).strip()
         if (craft.get("require_gap_check") and craft.get("tier", "craft") != "wireframe"
                 and not round_is_wireframe):
-            gap_path = rd / "checks" / GAP_CHECK
+            gap_rel = f"checks/{GAP_CHECK}"
+            gap_path = snap.dir / gap_rel
             gap_path.unlink(missing_ok=True)          # same rule: only this run may write it
-            rc, tail = run_producer(GAP_PRODUCER, [str(rd), "--write", "--url-base", base])
+            gap_path.parent.mkdir(parents=True, exist_ok=True)
+            rc, tail = run_producer(GAP_PRODUCER, [str(snap.dir), "--write", "--url-base", base,
+                                                   "--refs", str(rd.parent / "references")])
+            _copy_back(snap, gap_rel)
             if rc == 0 and not gap_path.is_file():
                 bad.append((GAP_PRODUCER, [f"could not measure ({GAP_PRODUCER} exit 0 and wrote no {GAP_CHECK}): {tail}"]))
             elif rc == 2:
@@ -344,6 +453,14 @@ _CHAIN_RECORDS = frozenset({
 })
 
 
+def asset_digest(files: dict[str, bytes]) -> str:
+    h = hashlib.sha256()
+    for rel in sorted(files):
+        if rel not in _CHAIN_RECORDS:
+            h.update(rel.encode() + b"\x00" + files[rel] + b"\x1f")
+    return h.hexdigest()
+
+
 def round_asset_digest(rd: Path) -> str:
     """One sha256 over every file in the round except the chain's own records.
 
@@ -353,13 +470,17 @@ def round_asset_digest(rd: Path) -> str:
     and written by seal; dc-10 makes the passive gate recompute it. It goes stale on an unused
     asset too, which is correct: COMPLETE means unedited. A playwright response hook was
     refused, because it records what chromium chose to request, which is a subset."""
-    h = hashlib.sha256()
-    for p in sorted(rd.rglob("*"), key=lambda q: q.relative_to(rd).as_posix()):
-        rel = p.relative_to(rd)
-        if not p.is_file() or rel.as_posix() in _CHAIN_RECORDS or "__pycache__" in rel.parts:
-            continue
-        h.update(rel.as_posix().encode() + b"\x00" + p.read_bytes() + b"\x1f")
-    return h.hexdigest()
+    return asset_digest(round_files(rd))
+
+
+def assets_that_differ(a: dict[str, bytes], b: dict[str, bytes]) -> list[str]:
+    return sorted(rel for rel in set(a) | set(b) if rel not in _CHAIN_RECORDS and a.get(rel) != b.get(rel))
+
+
+SEAL_RESIDUAL = ("the same OS user can write to the snapshot directory mid-seal (the browser is served "
+                 "from memory, so that refuses the seal and cannot forge a pass) and can alter the "
+                 "producers or the interpreter's site-packages. A seal is evidence against edits to the "
+                 "round, not against the account that runs it.")
 
 
 def is_page(path: str) -> bool:
@@ -1349,15 +1470,18 @@ def seal(rd: Path) -> int:
     if why_withdrawn is not None:
         print(f"seal: {rd.name} is withdrawn. Nothing to seal, no receipt written.")
         return 0
-    # What this seal is about, read ONCE before anything is measured. The receipt may only
-    # carry these, and they are re-read immediately before it is written.
     try:
-        sealing = {p.name: sha(p) for p in pages}
-        assets_before = round_asset_digest(rd)
+        with snapshot_round(rd) as snap:
+            return _seal_snapshot(rd, pages, seal_cfg, snap)
     except OSError as e:
         # an unreadable or vanishing file in the round: a refusal like every other, not exit 1
         print(f"seal REFUSED:\n  could not measure: {type(e).__name__}: {e}", file=sys.stderr)
         return 2
+
+
+def _seal_snapshot(rd: Path, pages: list[Path], seal_cfg: dict, snap: RoundSnapshot) -> int:
+    rc = rd / "receipts.json"
+    bad = []
     measured = producer_problems(rd, pages, seal_cfg)
     bad += measured
     reported = {name for name, _ in measured}
@@ -1382,20 +1506,16 @@ def seal(rd: Path) -> int:
             for x in probs:
                 print(f"  {name}: {x}", file=sys.stderr)
         return 2
-    try:
-        moved = [p.name for p in pages if sha(p) != sealing[p.name]]
-        if round_asset_digest(rd) != assets_before:
-            moved.append("an asset the pages load (css, script, image or font)")
-    except OSError as e:
-        print(f"seal REFUSED:\n  could not measure: {type(e).__name__}: {e}", file=sys.stderr)
-        return 2
+    # The receipt is about the SNAPSHOT: those are the bytes the browser was given. It is
+    # written only if the round on disk is those bytes now.
+    moved = assets_that_differ(snap.files, round_files(rd))
     if moved:
         print("seal REFUSED:", file=sys.stderr)
-        print(f"  {moved} changed while this seal was running, so what was measured is not what "
+        print(f"  {moved} differ from what this seal measured, so what was measured is not what "
               f"would be sealed. Seal again.", file=sys.stderr)
         return 2
-    rec = {p.name: {"sha256": sealing[p.name], "sealed": time.strftime("%Y-%m-%dT%H:%M:%S")} for p in pages}
-    rec["__assets__"] = {"sha256": assets_before}
+    rec = {p.name: {"sha256": snap.sha(p.name), "sealed": time.strftime("%Y-%m-%dT%H:%M:%S")} for p in pages}
+    rec["__assets__"] = {"sha256": asset_digest(snap.files), "measured": "snapshot", "residual": SEAL_RESIDUAL}
     srcs = declared_sources(rd, root)
     if srcs:
         rec["__sources__"] = {str(s.relative_to(root)): sha(s) for s in srcs}
