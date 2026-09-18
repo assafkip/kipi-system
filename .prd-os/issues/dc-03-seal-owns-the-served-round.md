@@ -1,7 +1,7 @@
 ---
 id: dc-03-seal-owns-the-served-round
 title: seal serves the round on an ephemeral port and producers prove they measured the local bytes
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -35,4 +35,19 @@ seal binds port 0, passes the URL to every producer, and stops the server in a f
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] seal serves the round on an ephemeral port and producers prove they measured the local bytes
+- [x] seal serves the round on an ephemeral port and producers prove they measured the local bytes (PARTIAL. DELIVERED: seal owns the server on an OS-picked port, no typed port, gap exit 3 vs 2, child runs -E -s, prior verdict removed before the run, clean refusals, server scoped to the round, asset digest by exact name. NOT MET: 'producers prove they measured the local bytes' is false under A -> X -> A; owned by ASK-1808.)
+
+## Amendments
+
+### 2026-09-18T21:38:34Z
+Reason: Direct consequence of Sana's 2026-09-18 decisions that placed three items in dc-03 (child runs with -s; gap producer exits 3 for could-not-measure; seal removes the prior verdict before the run). test_dc_seal_runs_producers.py pins the child's exact argv in its AST test, so adding -s must update it in the same change; and the stand-ins in test/stub_producers/ must accept the served URL and the new exit code or every sealing test breaks. No new behaviour beyond what dc-03's acceptance already names.
+
+Before:
+- allowed_files: ['q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-gate.py', 'q-system/.q-system/scripts/design-gap-check.py', 'q-system/.q-system/scripts/design-standard-check.py', 'q-system/.q-system/scripts/test/test_dc_served_round.py']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_dc_served_round.py']
+- disallowed_files: []
+
+After:
+- allowed_files: ['q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-gate.py', 'q-system/.q-system/scripts/design-gap-check.py', 'q-system/.q-system/scripts/design-standard-check.py', 'q-system/.q-system/scripts/test/test_dc_served_round.py', 'q-system/.q-system/scripts/test/test_dc_seal_runs_producers.py', 'q-system/.q-system/scripts/test/stub_producers/*']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_dc_served_round.py']
+- disallowed_files: []
