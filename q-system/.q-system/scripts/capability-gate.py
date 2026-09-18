@@ -19,6 +19,7 @@ Exit codes: 0 green, 1 red, 3 refused (worktree copy).
 
 import argparse
 import datetime
+import fnmatch
 import json
 import os
 import re
@@ -41,9 +42,14 @@ ALLOWED_TOP_KEYS = {
 }
 OVERLAY_ALLOWED_KEYS = {"expected_tests", "required_data"}
 TEST_PATTERNS = ("test_*.py", "test-*.py", "test-*.sh")
-# Both contracted roots: scripts/ recursive, plus top-level .q-system test
+# The v1 contracted roots: scripts/ recursive, plus top-level .q-system test
 # files (finding-9/adversarial: token-guard-adjacent tests may land there).
+# Discovery is REPO-WIDE since ASK-541; these roots are now only where an
+# INSTANCE is still held RED on an undeclared test (see diff_declared_vs_actual).
 SCAN_ROOTS = ("q-system/.q-system/scripts", "q-system/.q-system")
+# Pruned from the no-git fallback walk: another checkout's copy of this tree,
+# or third-party code, is not this repo's test population.
+WALK_PRUNE = (".git", "node_modules", "__pycache__")
 DEFAULT_TIMEOUT_S = 60
 TIMEOUT_MIN_S, TIMEOUT_MAX_S = 5, 600
 
@@ -182,11 +188,11 @@ def declaration_scope_error(path, exempt_prefixes):
     if any(path.startswith(pref) for pref in exempt_prefixes):
         return None
     return (f"declared outside the scan roots and not exempt: {path} — "
-            f"expected_tests paths live under {SCAN_ROOTS[0]}/ or directly in "
-            f"{SCAN_ROOTS[1]}/, because the undeclared-artifact direction of the "
-            "diff can only see what those roots discover. Move it, or add a "
-            "scope_exempt {prefix, reason} entry saying why this tree is not "
-            "scanned.")
+            f"discovery finds {', '.join(TEST_PATTERNS)} anywhere in the repo, "
+            "and this name matches none of them, so the undeclared-artifact "
+            "direction of the diff can never see it. Rename it to a test "
+            "pattern, or add a scope_exempt {prefix, reason} entry saying why "
+            "it is not scanned.")
 
 
 def validate_test_entry(entry, seen, errors, exempt_prefixes=()):
@@ -277,6 +283,38 @@ def validate_data_entry(entry, errors):
         errors.append(f"required_data scope must be 'all'|'skeleton'|[instance...]: {scope!r}")
 
 
+def validate_uncovered_known(data, errors):
+    """uncovered_known holds two shapes. A bare STRING is a prose note about a
+    gap no path can express (the v1 shape, still read by nobody). An OBJECT
+    {path, reason} declares one discovered test artifact the gate deliberately
+    does not run (ASK-541): it clears the undeclared direction for that exact
+    path and nothing beside it, so a new file in the same tree is still RED.
+    """
+    run = {e.get("path") for e in data.get("expected_tests", []) if isinstance(e, dict)}
+    seen = set()
+    for item in data.get("uncovered_known", []):
+        if isinstance(item, str):
+            continue
+        if not isinstance(item, dict) or not item.get("path") or not item.get("reason"):
+            errors.append(f"uncovered_known entry needs path+reason: {item!r}")
+            continue
+        p = item["path"]
+        if unsafe_path(p):
+            errors.append(f"unsafe or non-relative path in uncovered_known: {p!r}")
+        elif p in seen:
+            errors.append(f"duplicate path in uncovered_known: {p}")
+        elif p in run:
+            errors.append(f"declared in both expected_tests and uncovered_known: {p} "
+                          "— a test is either run by this gate or declared unrun, "
+                          "never both. Remove one.")
+        seen.add(p)
+
+
+def uncovered_paths(manifest):
+    return {i["path"] for i in manifest.get("uncovered_known", [])
+            if isinstance(i, dict) and i.get("path")}
+
+
 def validate_manifest(data, errors):
     if not isinstance(data, dict):
         errors.append("manifest must be a JSON object")
@@ -300,6 +338,7 @@ def validate_manifest(data, errors):
             errors.append(f"duplicate path in {set_name}: {dup}")
     for entry in data.get("required_data", []):
         validate_data_entry(entry, errors)
+    validate_uncovered_known(data, errors)
     for p in data.get("skeleton_only", []):
         if unsafe_path(p):
             errors.append(f"unsafe or non-relative path in skeleton_only: {p!r}")
@@ -494,7 +533,15 @@ def load_overlay(root, manifest, errors):
         manifest.setdefault("required_data", []).append(entry)
 
 
-def discover_tests(root):
+def is_test_name(path):
+    name = path.rsplit("/", 1)[-1]
+    return any(fnmatch.fnmatchcase(name, pat) for pat in TEST_PATTERNS)
+
+
+def discover_legacy_roots(root):
+    """Filesystem walk of the v1 roots. Kept beside the repo-wide pass because
+    it sees UNTRACKED files, so a test written but not yet committed under
+    scripts/ is RED at pre-commit exactly as it was before ASK-541."""
     found = set()
     scripts_root = root / SCAN_ROOTS[0]
     for pattern in TEST_PATTERNS:
@@ -508,21 +555,92 @@ def discover_tests(root):
     return found
 
 
-def in_scan_scope(path):
+def discover_tracked(root):
+    """Every test-pattern file git tracks, anywhere in the repo, or None when
+    git cannot answer. Tracked rather than walked so scratch clones, build
+    output and other checkouts nested in the tree are not counted."""
+    try:
+        r = subprocess.run(["git", "-C", str(root), "ls-files", "-z"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return {p for p in r.stdout.split("\0") if p and is_test_name(p)
+            and (root / p).is_file()}
+
+
+def discover_walk(root):
+    """No-git fallback: walk the whole tree, pruning WALK_PRUNE and any
+    .claude/worktrees copy (a parallel checkout, never this repo's tests)."""
+    found = set()
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = os.path.relpath(dirpath, root)
+        dirnames[:] = [d for d in dirnames if d not in WALK_PRUNE
+                       and not (d == "worktrees" and rel_dir.endswith(".claude"))]
+        for f in filenames:
+            rel = f if rel_dir == "." else f"{rel_dir}/{f}"
+            if is_test_name(rel):
+                found.add(rel)
+    return found
+
+
+def discover_tests(root, notes=None):
+    """ASK-541: repo-wide. v1 walked only the two SCAN_ROOTS, so 190 tracked
+    test artifacts elsewhere (plugins/, q-system/.q-system/tests/, the repo
+    root ...) were invisible and an undeclared one there left the gate GREEN."""
+    tracked = discover_tracked(root)
+    if tracked is None:
+        tracked = discover_walk(root)
+        if notes is not None:
+            notes.append("discovery: git ls-files unavailable, walked the "
+                         "filesystem instead (untracked files included)")
+    return discover_legacy_roots(root) | tracked
+
+
+def in_legacy_roots(path):
     if path.startswith(SCAN_ROOTS[0] + "/"):
         return True
     return path.startswith(SCAN_ROOTS[1] + "/") and "/" not in path[len(SCAN_ROOTS[1]) + 1:]
 
 
-def diff_declared_vs_actual(root, manifest, errors, mode="skeleton"):
+def in_scan_scope(path):
+    """Can discovery see this path? Since ASK-541 any test-pattern name
+    anywhere, plus anything under the legacy roots."""
+    return is_test_name(path) or in_legacy_roots(path)
+
+
+def diff_declared_vs_actual(root, manifest, errors, mode="skeleton", notes=None):
     """The two-direction diff. One direction alone would miss F3 (an artifact
     that appears without a declaration) or mask a vanished test."""
     declared = {e["path"] for e in manifest.get("expected_tests", []) if e.get("path")}
-    discovered = discover_tests(root)
+    discovered = discover_tests(root, notes)
     in_scope_declared = {p for p in declared if in_scan_scope(p)}
-    for missing in sorted(in_scope_declared - discovered):
+    # A declared file on disk is present even when git does not track it yet:
+    # kipi update rsyncs a new test in and runs this gate before anything
+    # commits it, so index-only discovery turned the fleet RED (PR #369 review).
+    for missing in sorted(p for p in in_scope_declared - discovered
+                          if not (root / p).is_file()):
         errors.append(f"declared-but-missing: {missing}")
-    for extra in sorted(discovered - declared):
+    known = uncovered_paths(manifest)
+    if notes is not None:
+        notes.append(f"uncovered: {len(known & discovered)} known-uncovered test "
+                     "artifact(s) declared and deliberately NOT run (uncovered_known)")
+    if mode == "skeleton":
+        # A stale entry silences nothing today and silences the next file
+        # written at that path tomorrow. An instance skips it: skeleton-only
+        # trees (the repo-root kipi-update suite) are not synced there.
+        for stale in sorted(known - discovered):
+            errors.append(f"uncovered_known names no test artifact: {stale} — "
+                          "the file is gone; remove its fragment.")
+    for extra in sorted(discovered - declared - known):
+        if mode == "instance" and not in_legacy_roots(extra):
+            # The canonical manifest cannot know an instance's own tests, and
+            # kipi update runs this gate in every instance, so outside the v1
+            # roots an instance is TOLD, never turned RED (ASK-541 blast radius).
+            if notes is not None:
+                notes.append(f"UNDECLARED (report-only, instance): {extra}")
+            continue
         # Name the exact file to create. The old message said "add to
         # expected_tests" and every author then appended to the same array,
         # which is what made this manifest the conflict in 37 of 41
@@ -951,8 +1069,16 @@ def main():
     n_exempt = sum(1 for e in expected
                    if isinstance(e, dict) and e.get("path")
                    and not in_scan_scope(e["path"]))
-    notes.append(f"scan scope: {len(expected) - n_exempt} declared entries inside "
-                 f"the scan roots (checked BOTH directions), {n_exempt} exempt "
+    # An instance only reports an undeclared test outside the v1 roots, so
+    # those entries are not checked BOTH directions there (PR #369 review).
+    n_report_only = 0 if mode != "instance" else sum(
+        1 for e in expected
+        if isinstance(e, dict) and e.get("path") and in_scan_scope(e["path"])
+        and not in_legacy_roots(e["path"]))
+    notes.append(f"scan scope: {len(expected) - n_exempt - n_report_only} declared "
+                 "entries inside the scan roots (checked BOTH directions), "
+                 f"{n_report_only} outside the v1 roots (undeclared direction "
+                 f"report-only in an instance), {n_exempt} exempt "
                  "from undeclared-artifact detection (existence-checked only)")
     if errors:  # fail closed on structural problems before trusting the sets
         report(mode, errors, notes)
@@ -963,7 +1089,7 @@ def main():
             if q:
                 notes.append(f"QUARANTINED (until {q['expires']}, {q['spillover_id']}): "
                              f"{e['path']} — {q['reason']}")
-    diff_declared_vs_actual(root, manifest, errors, mode)
+    diff_declared_vs_actual(root, manifest, errors, mode, notes)
     check_required_data(root, manifest, mode, errors)
     # Inert-engine detection is a SKELETON-mode check. An instance's synced
     # scripts are wired by skeleton-root surfaces (validate.yml,

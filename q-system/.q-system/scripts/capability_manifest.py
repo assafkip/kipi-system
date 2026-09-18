@@ -91,11 +91,13 @@ def fragment_name(section, entry):
     """
     key = entry_key(section, entry)
     safe = key.replace("/", "__")
+    # A leading dot would make a hidden file, which load() skips, so the
+    # declaration would vanish in silence (ASK-541: `.review-scratch/...`).
     if ("__" not in key and "--" not in key and len(safe) <= 120
-            and _SAFE_NAME.match(safe)):
+            and _SAFE_NAME.match(safe) and not safe.startswith(".")):
         return safe + ".json"
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
-    stem = _UNSAFE_CHARS.sub("_", safe)[:96].strip("_") or "entry"
+    stem = _UNSAFE_CHARS.sub("_", safe)[:96].strip("_.") or "entry"
     return "%s--%s.json" % (stem, digest)
 
 
