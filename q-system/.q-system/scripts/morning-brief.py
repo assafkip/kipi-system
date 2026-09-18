@@ -624,6 +624,14 @@ ENGINEERING_SECTIONS = (
     ("overnight", "Overnight jobs"),
 )
 
+#: THE CLOCK WARNING IS ROUTED SEPARATELY and is deliberately NOT in the tuple above.
+#: That tuple means "collected by collect_all", and `engineering_route.route` treats a
+#: missing key there as degraded, correctly: a section that vanished from collection is
+#: news. This one is INJECTED, so adding it there made every partial-sources caller page
+#: Sana about a section nobody had collected. Three tests caught it, which is the
+#: contract working. Same machinery, its own one-entry section list.
+CLOCK_SECTION = (("board_clock", "Board clock"),)
+
 
 # Optional sections live in their OWN sibling modules and register here, once.
 # Each module exposes `collect(now, sources) -> (rows, error)` and receives the
@@ -657,7 +665,7 @@ OPTIONAL_SECTIONS = (
 ERROR_LOG = STATE_DIR / "logs" / "morning-brief-errors.log"
 COLLECT_BUDGET_S = 20.0
 # The fixed four are bounded too (PR #294 review, major: `fixed_budget_s=None`
-# meant one hung calendar or mail call held the 07:00 brief, its Slack send and
+# meant one hung calendar or mail call held the morning brief, its Slack send and
 # its receipt forever, and the 09:00 deadman was the first thing to notice).
 # Calendar shells `claude -p` under CLAUDE_TIMEOUT and mail shells the ledger under
 # LEDGER_TIMEOUT_S (clamped below it, ASK-1323), so the thread bound sits one minute
@@ -717,7 +725,7 @@ def _guarded(key: str, fn, budget_s: float, log_path) -> tuple:
     # A DAEMON thread, not a ThreadPoolExecutor. Codex review of this issue
     # (findings 1 and 2, 2026-09-01): pool workers are non-daemon and the
     # interpreter joins them at exit, so a collector that never returns would
-    # keep the 07:00 process alive forever after the brief had "moved on". A
+    # keep the brief's process alive forever after the brief had "moved on". A
     # daemon thread is abandoned at exit; the brief, the send and the receipt
     # all complete on schedule.
     box: dict = {}
@@ -784,6 +792,25 @@ def route_engineering(sources: dict, notify=None) -> list:
     """
     mod = _load_sibling("engineering_route", "engineering_route.py")
     return mod.route(sources, ENGINEERING_SECTIONS, notify=notify)   # (filed, failed)
+
+
+def route_clock(now: dt.datetime, notify=None) -> tuple:
+    """(filed, failed) for the one signal that says this brief ran too early.
+
+    Its own route rather than a third ENGINEERING_SECTIONS entry: see CLOCK_SECTION.
+    Silent unless `consulting_board.clock_warning` returns an error, and never at the
+    cost of his brief, which is why the module absence and the call both fall back to a
+    clean answer rather than raising.
+    """
+    board = _optional_module("consulting_board")
+    if board is None:
+        return [], []
+    try:
+        entry = board.clock_warning(now)
+    except Exception as exc:                            # noqa: BLE001
+        entry = ([], f"clock_warning failed: {exc}")
+    mod = _load_sibling("engineering_route", "engineering_route.py")
+    return mod.route({"board_clock": entry}, CLOCK_SECTION, notify=notify)
 
 
 #: What the hourly run collects. Mail and GroupMe are the inbox; board_rows paints it.
@@ -918,7 +945,7 @@ def main(argv=None) -> int:
         # writes at 08:00 is invisible until tomorrow.
         #
         # NO SLACK SEND, on purpose. Twelve messages a day is how a channel gets
-        # muted, and the 07:00 brief already carries the daily read. This run only
+        # muted, and the morning brief already carries the daily read. This run only
         # repaints the board.
         #
         # consulting_board IS collected even though nothing here changes its rows,
@@ -958,8 +985,13 @@ def main(argv=None) -> int:
     sources = collect_all(now)
     # Engineering leaves BEFORE the founder's message is built, so a routing failure
     # cannot silently become a section he reads.
-    filed, failed = route_engineering(
-        sources, notify=(lambda _m: None) if args.dry_run else None)
+    _quiet = (lambda _m: None) if args.dry_run else None
+    filed, failed = route_engineering(sources, notify=_quiet)
+    # THE DRIFT SIGNAL. It replaces a P0 row on his board with one line in Sana's queue,
+    # so deleting that row did not make an early brief silent.
+    clock_filed, clock_failed = route_clock(now, notify=_quiet)
+    filed = list(filed) + list(clock_filed)
+    failed = list(failed) + list(clock_failed)
     for line in filed:
         # DRY RUN SAYS SO (round 11, minor). The notifier injected above sends
         # nothing, and this printed the same "[to sana]" either way, so a dry run
