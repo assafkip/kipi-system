@@ -880,10 +880,21 @@ fi
 # Both numbers, unconditionally, even when they are zero: "0 opted in" is the
 # single most useful fact about why no client repo is being served, and a line
 # that only appears when something happens cannot say it.
-FLEET_TOTAL="$(python3 -c 'import json,sys
+# WHY THE NOT-OPTED ROWS ARE SPLIT IN TWO (ASK-1176). "2 of 25 opted in" read the
+# same whether the 23 were a deliberate containment or a default nobody revisited.
+# The registry already holds the difference, on the convention ASK-842 set: only
+# `dispatch.enabled` as the JSON boolean false is a DECISION. A missing key, or any
+# non-boolean value, is the DEFAULT -- and it is where every newly registered repo
+# lands, because kipi-new-instance.sh and registry.py add_instance write no
+# dispatch key. Measured 2026-09-14: 2 decided off (ASK-842), 21 by default, none
+# of the 23 ever opted in across the registry's 42 commits.
+FLEET_TOTAL=0; FLEET_DECIDED_OFF=0; FLEET_DEFAULT_OFF=0
+read -r FLEET_TOTAL FLEET_DECIDED_OFF FLEET_DEFAULT_OFF < <(python3 -c 'import json,sys
 try: d=json.load(open(sys.argv[1]))
 except Exception: sys.exit(0)
-print(len(d.get("instances",[])))' "${KIPI_DISPATCH_REGISTRY:-$REPO/instance-registry.json}" 2>/dev/null)"
+rows=d.get("instances",[])
+states=[(e.get("dispatch") or {}).get("enabled") if isinstance(e.get("dispatch"),dict) else None for e in rows]
+print(len(rows), sum(1 for s in states if s is False), sum(1 for s in states if s is not True and s is not False))' "${KIPI_DISPATCH_REGISTRY:-$REPO/instance-registry.json}" 2>/dev/null) || true
 FLEET_OPTED="$(fleet_candidates 2>/dev/null | awk -F'\t' -v h="$REPO" 'NF && $2 != h' | wc -l | tr -d ' ')"
 # NO "HELD" COUNT ANY MORE. This line was written while kipi-dispatch.sh:726 held
 # every non-home target on unfinished cross-repo gh scoping, and it counted each
@@ -896,7 +907,7 @@ FLEET_OPTED="$(fleet_candidates 2>/dev/null | awk -F'\t' -v h="$REPO" 'NF && $2 
 # The opted-in count survives because it is the useful half: "0 of 25 opted in" is
 # still the single most useful fact about why no other repo is being served, and a
 # line that only appears when something happens cannot say it.
-say "dispatch: ${FLEET_OPTED:-0} of ${FLEET_TOTAL:-0} registered repo(s) opted in for cross-repo dispatch"
+say "dispatch: ${FLEET_OPTED:-0} of ${FLEET_TOTAL:-0} registered repo(s) opted in for cross-repo dispatch; ${FLEET_DECIDED_OFF:-0} decided off (dispatch.enabled false), ${FLEET_DEFAULT_OFF:-0} off by default (no decision recorded)"
 
 TARGET_NAME=""
 TARGET_PATH=""
