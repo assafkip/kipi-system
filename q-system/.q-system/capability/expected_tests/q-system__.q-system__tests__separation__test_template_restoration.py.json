@@ -1,0 +1,4 @@
+{
+  "path": "q-system/.q-system/tests/separation/test_template_restoration.py",
+  "runner": "pytest"
+}

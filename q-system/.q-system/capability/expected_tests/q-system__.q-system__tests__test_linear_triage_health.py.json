@@ -1,0 +1,4 @@
+{
+  "path": "q-system/.q-system/tests/test_linear_triage_health.py",
+  "runner": "pytest"
+}
