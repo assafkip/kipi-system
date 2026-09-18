@@ -20,7 +20,7 @@ The daily heartbeat (`lessons-daily.sh`, launchd-fired; run once by hand with `k
 2. **GATE (fail-closed)** — `lessons_scrub.py` finds client-data signals and scrubs them; a lesson PUBLISHES only if the scrubbed text is deterministically clean AND an LLM semantic pass confirms no residual real entity. Anything the gate can't clear is HELD in `lesson-candidates/` for founder review, never published.
 3. **PUBLISH** — clean lessons are written to `q-system/lessons/<id>.md` and committed to the skeleton.
 4. **PROPAGATE** — `kipi-update.sh` fans the corpus read-only to every instance; `lessons-index.py` surfaces titles at SessionStart fleet-wide.
-5. **LEDGER** — every source is recorded (`lesson-candidates/.processed.json`) so daily runs are idempotent.
+5. **LEDGER** — every source is recorded (`lesson-candidates/.processed.json`) so daily runs are idempotent. A published row also carries the `lesson_id` it became, so each lesson traces to its source. `test-lessons-provenance.sh` fails on any lesson dated after the first such row that no row names (lessons from before provenance started are exempt).
 
 ### Adding a learning by hand
 
@@ -31,7 +31,7 @@ To add a lesson, pick the path that matches where you are standing:
   bash q-system/.q-system/scripts/lesson-note.sh "short title" "the HOW, in your words"
   ```
   Writes to this instance's `q-system/output/learnings/` (instance-protected; survives `kipi update`).
-- **Directly in the skeleton** (founder, fully-formed lesson) — create `q-system/lessons/<id>.md`. Copy `single-writer-chokepoint.md` as a template.
+- **Directly in the skeleton** (founder, fully-formed lesson) — create `q-system/lessons/<id>.md`. Copy `single-writer-chokepoint.md` as a template. Then add its ledger row to `lesson-candidates/.processed.json`, key `hand-<id>`, value `{"instance": "skeleton", "status": "hand-authored", "date": "<date>", "lesson_id": "<id>"}`; the provenance test fails without it.
 
 ## Read-only-consumer invariant
 
