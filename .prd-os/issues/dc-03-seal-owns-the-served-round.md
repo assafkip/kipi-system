@@ -28,7 +28,7 @@ Parent PRD: `.prd-os/prds/prd-design-chain-seal-reads-verdicts-2026-09-18.md`
 
 ## Acceptance
 
-seal binds port 0, passes the URL to every producer, and stops the server in a finally. Producers compare the sha of the served bytes with the local file and exit 2 on a mismatch. Test: a decoy server serving different bytes cannot produce a pass. No literal port remains in the gate or the producers.
+seal binds port 0, passes the URL to every producer, and stops the server in a finally. Producers compare the sha of the served bytes with the local file and exit 2 on a mismatch. Test: a decoy server serving different bytes cannot produce a pass. No literal port remains in the gate or the producers. ADDED 2026-09-18 by Sana's decision on dc-02's adversarial finding-8: design-gap-check.py exits 3 for could-not-measure and keeps 2 for below-the-exemplar-floor; seal labels each code distinctly, with a test per code.
 
 ## Deliverables
 

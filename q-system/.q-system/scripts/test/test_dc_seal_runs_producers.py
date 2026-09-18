@@ -7,10 +7,11 @@ by hand sealed a round (RCA rca-design-chain-trusts-its-own-account-2026-09-18, 
 HOW THE STAND-INS GET SELECTED (Sana, 2026-09-18): the gate resolves producers as siblings
 of its own file. These tests copy the gate into a temp bin directory next to the stand-ins
 in test/stub_producers/ and run THAT copy. Shipped code has no override to widen, and
-test_no_producer_override_exists_in_the_gate goes red if one is added.
+the NoOverride class reads the gate's AST and goes red if one is added.
 
 Temp directories only. Touches no real round.
 """
+import ast
 import hashlib
 import json
 import os
@@ -116,6 +117,59 @@ class StandardProducer(Base):
         self.assertEqual(names, {self.page.name, second.name})
 
 
+class ExitCodeIsNotEvidence(Base):
+    """Adversarial review of c598d5f5, each reproduced by the reviewer against the real gate."""
+
+    def test_exit_0_with_no_fresh_output_is_not_a_pass(self):
+        # A sitecustomize.py on PYTHONPATH made the real producer exit 0 before measuring, and
+        # seal then re-read the verdict typed by hand. A bare exit code is not evidence.
+        self.typed_pass()
+        rc, out = self.seal(STUB_STANDARD="silent")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("could not measure", out)
+        self.assertFalse((self.round / "receipts.json").exists())
+
+    def test_a_crashed_producer_is_could_not_measure_not_a_failed_page(self):
+        self.typed_pass()
+        rc, out = self.seal(STUB_STANDARD="crash")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("could not measure", out)
+        self.assertNotIn("FAILS the standard", out)
+
+    def test_the_child_interpreter_ignores_PYTHONPATH(self):
+        evil = self.tmp / "evil"
+        evil.mkdir()
+        (evil / "sitecustomize.py").write_text(
+            "import os, sys\n"
+            "if sys.argv and sys.argv[0].endswith('design-standard-check.py'):\n"
+            "    os._exit(0)\n")
+        self.typed_pass()
+        rc, out = self.seal(STUB_STANDARD="fail", PYTHONPATH=str(evil))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("FAILS the standard", out, "the producer was hijacked before it could judge")
+
+    def test_one_failure_is_reported_once(self):
+        rc, out = self.seal(STUB_STANDARD="fail")
+        self.assertEqual(rc, 2, out)
+        self.assertNotIn("standard.json for", out)
+
+
+class WithdrawnRound(Base):
+    def test_a_withdrawn_round_gets_no_receipt(self):
+        # Reviewer: withdraw, seal, delete the manifest -> the page read COMPLETE on a receipt
+        # nothing measured. A withdrawn round has nothing to seal.
+        self.typed_pass()
+        (self.round / "craft-manifest.json").write_text(json.dumps({"status": "withdrawn", "reason": "parked"}))
+        rc, out = self.seal()
+        self.assertFalse((self.round / "receipts.json").exists(), out)
+        self.assertIn("withdrawn", out)
+        (self.round / "craft-manifest.json").unlink()
+        e = {k: v for k, v in os.environ.items() if k not in ("DESIGN_CHAIN_ALLOW", "CLAUDE_PROJECT_DIR")}
+        r = subprocess.run([sys.executable, str(self.gate), "status-page", str(self.page)],
+                           capture_output=True, text=True, env=e)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
+
 class GapProducer(Base):
     def setUp(self):
         super().setUp()
@@ -139,6 +193,19 @@ class GapProducer(Base):
         self.assertEqual(rc, 2, out)
         self.assertIn("could not measure", out)
 
+    def test_a_round_declared_wireframe_is_not_gap_measured(self):
+        # craft_problems() already honors a round-local wireframe declaration with a reason.
+        # The producer step has to honor the same declaration or the round is stuck.
+        (self.round / "craft-manifest.json").write_text(json.dumps(
+            {"tier": "wireframe", "reason": "copy test, layout only"}))
+        rc, out = self.seal(STUB_GAP="below")
+        self.assertEqual(rc, 0, out)
+
+    def test_a_silent_gap_producer_is_not_a_pass(self):
+        self.typed_clean_gap()
+        rc, out = self.seal(STUB_GAP="silent")
+        self.assertEqual(rc, 2, out)
+
     def test_gap_is_not_run_when_the_instance_did_not_declare_it(self):
         self.cfg.pop("craft")
         self.write_cfg()
@@ -147,15 +214,53 @@ class GapProducer(Base):
 
 
 class NoOverride(unittest.TestCase):
-    def test_no_producer_override_exists_in_the_gate(self):
-        # Refused by Sana: any producer-directory override production can honor. An env var,
-        # a flag, or a temp-dir-conditional is the gate trusting an account of itself again.
-        src = REAL_GATE.read_text()
-        for token in ("--producers-dir", "PRODUCER_DIR", "PRODUCERS_DIR", "gettempdir", "STUB_"):
-            self.assertNotIn(token, src, f"design-chain-gate.py carries an override token: {token}")
+    """Refused by Sana: any producer-directory override production can honor. The first
+    version of this class was a five-token blocklist, and the adversarial reviewer evaded all
+    five with `HERE = Path(os.environ.get('DC_BIN') or Path(__file__).resolve().parent)` while
+    the suite stayed green. So this reads the STRUCTURE: what HERE is, and what gets executed."""
 
-    def test_producers_are_resolved_beside_the_gate_file(self):
-        self.assertIn("Path(__file__).resolve().parent", REAL_GATE.read_text())
+    @classmethod
+    def setUpClass(cls):
+        cls.tree = ast.parse(REAL_GATE.read_text())
+
+    def run_producer_fn(self):
+        return next(n for n in ast.walk(self.tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == "run_producer")
+
+    def test_HERE_is_assigned_once_and_only_from_the_gate_file(self):
+        values = []
+        for node in ast.walk(self.tree):
+            targets = []
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+                targets = [node.target]
+            for t in targets:
+                if isinstance(t, ast.Name) and t.id == "HERE":
+                    values.append(ast.unparse(node.value))
+        self.assertEqual(values, ["Path(__file__).resolve().parent"])
+
+    def test_nothing_rebinds_HERE_another_way(self):
+        for node in ast.walk(self.tree):
+            if isinstance(node, (ast.Global, ast.Nonlocal)):
+                self.assertNotIn("HERE", node.names)
+            if isinstance(node, ast.Call) and ast.unparse(node.func) in ("globals", "setattr", "vars"):
+                self.fail(f"{ast.unparse(node)} can rebind a module name")
+
+    def test_run_producer_executes_only_a_sibling_of_the_gate(self):
+        fn = self.run_producer_fn()
+        scripts = [ast.unparse(n.value) for n in ast.walk(fn)
+                   if isinstance(n, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == "script" for t in n.targets)]
+        self.assertEqual(scripts, ["HERE / name"])
+        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and ast.unparse(n.func) == "subprocess.run"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(ast.unparse(calls[0].args[0]), "[sys.executable, '-E', str(script), *args]")
+
+    def test_the_child_runs_in_a_cleaned_environment(self):
+        call = next(n for n in ast.walk(self.run_producer_fn())
+                    if isinstance(n, ast.Call) and ast.unparse(n.func) == "subprocess.run")
+        self.assertEqual({k.arg: ast.unparse(k.value) for k in call.keywords}.get("env"), "clean_env()")
 
 
 class RealProducer(Base):
@@ -175,7 +280,29 @@ class RealProducer(Base):
         entry = json.loads(std_path.read_text())[0]
         self.assertNotIn("_stub", entry)
         self.assertIn("measurements", entry, "standard.json was not written by the real producer")
-        self.assertEqual(rc, 0 if entry["pass"] else 2, out)
+        self.assertTrue(entry["pass"], f"the real producer failed a 9-word page: {entry.get('failures')}")
+        self.assertEqual(rc, 0, out)
+
+    def test_the_real_producer_FAILS_a_page_built_to_break_the_standard(self):
+        # The input that makes it red: 400 words against max_words 80. Without this the real
+        # producer only ever walked the PASS path, and one regressed to always-pass stayed green.
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            msg = "playwright is not installed: the REAL producer's FAIL path was NOT exercised"
+            if os.environ.get("DC_REQUIRE_REAL_PRODUCERS") == "1":
+                self.fail(msg)
+            self.skipTest(msg)
+        self.cfg["standard"] = {"max_words": 80}
+        self.write_cfg()
+        self.page.write_text("<html><body><h1>Too many words</h1><p>" + "word " * 400
+                             + "</p><a href='#'>Book</a></body></html>")
+        rc, out = self.seal(gate=REAL_GATE)
+        self.assertEqual(rc, 2, out)
+        entry = json.loads((self.round / "standard.json").read_text())[0]
+        self.assertIs(entry["pass"], False)
+        self.assertIn("measurements", entry)
+        self.assertFalse((self.round / "receipts.json").exists())
 
 
 if __name__ == "__main__":

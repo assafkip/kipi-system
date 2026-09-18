@@ -27,6 +27,10 @@ _BIN = Path(tempfile.mkdtemp(prefix="dcg-bin-"))
 shutil.copy(REAL_GATE, _BIN / REAL_GATE.name)
 for _stub in (HERE / "test" / "stub_producers").glob("*.py"):
     shutil.copy(_stub, _BIN / _stub.name)
+import atexit
+# A gate copy beside stand-ins is a working kit for sealing a REAL round. The first version
+# leaked one per run; the reviewer sealed a failing page with a leftover (c598d5f5).
+atexit.register(shutil.rmtree, _BIN, ignore_errors=True)
 GATE = _BIN / REAL_GATE.name
 STANDARD_STUB = _BIN / "design-standard-check.py"
 

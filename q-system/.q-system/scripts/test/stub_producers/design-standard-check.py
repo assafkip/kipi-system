@@ -6,7 +6,7 @@ temp bin directory beside THIS file and run that copy, so the gate's own rule (p
 are siblings of the gate) selects the stand-in with no override in shipped code
 (Sana, 2026-09-18, ASK-1796: no producer-directory override may exist in production).
 
-STUB_STANDARD = pass (default) | fail | cannot. Exit codes match the real contract:
+STUB_STANDARD = pass (default) | fail | cannot | silent | crash. Exit codes match the real contract:
 0 pass, 1 fail, 2 could not measure. Writes standard.json the way the real one does,
 minus `measurements`, which is how a test tells a stand-in's output from a real run.
 """
@@ -18,6 +18,10 @@ from pathlib import Path
 
 page = Path(sys.argv[1]).resolve()
 mode = os.environ.get("STUB_STANDARD", "pass")
+if mode == "silent":      # exits 0 and writes NOTHING: what a hijacked interpreter looks like
+    sys.exit(0)
+if mode == "crash":       # an unhandled exception exits 1, the same code as a judged FAIL
+    raise RuntimeError("stub crashed before producing a verdict")
 if mode == "cannot":
     print("could not measure: stub says so", file=sys.stderr)
     sys.exit(2)

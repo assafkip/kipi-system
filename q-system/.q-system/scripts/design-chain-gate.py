@@ -152,6 +152,15 @@ GAP_PRODUCER = "design-gap-check.py"
 PRODUCER_TIMEOUT_S = 600
 
 
+def clean_env() -> dict:
+    """The child's environment with every PYTHON* variable removed.
+
+    Adversarial review of c598d5f5, reproduced against the installed gate: a sitecustomize.py
+    on PYTHONPATH made the real producer exit 0 before it measured anything. The child also
+    runs with -E, which makes the interpreter ignore those variables even if one survives."""
+    return {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
+
+
 def run_producer(name: str, args: list[str]) -> tuple[int, str]:
     """(exit code, tail of output). A producer that is missing, hangs or cannot start is
     exit 2: it could not measure, and could-not-measure is never a pass."""
@@ -159,8 +168,8 @@ def run_producer(name: str, args: list[str]) -> tuple[int, str]:
     if not script.is_file():
         return 2, f"could not measure: producer missing at {script}"
     try:
-        r = subprocess.run([sys.executable, str(script), *args], capture_output=True,
-                           text=True, timeout=PRODUCER_TIMEOUT_S)
+        r = subprocess.run([sys.executable, "-E", str(script), *args], capture_output=True,
+                           text=True, timeout=PRODUCER_TIMEOUT_S, env=clean_env())
     except subprocess.TimeoutExpired:
         return 2, f"could not measure: {name} timed out after {PRODUCER_TIMEOUT_S}s"
     except OSError as e:
@@ -169,25 +178,84 @@ def run_producer(name: str, args: list[str]) -> tuple[int, str]:
     return r.returncode, tail
 
 
+def _mtime_ns(path: Path) -> int:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return -1
+
+
+def _fresh_standard_entry(std_path: Path, before_ns: int, page: Path) -> dict | None:
+    """The entry the producer wrote for THIS page during THIS run, or None.
+
+    An exit code is a claim. The verdict is the file the producer writes, so it has to have
+    been rewritten after the run started and carry this page's current bytes. A producer that
+    exits 0 having written nothing (hijacked, or crashed past its own handler) returns None,
+    and a verdict typed by hand before the run is older than the run."""
+    if _mtime_ns(std_path) <= before_ns:
+        return None
+    try:
+        data = json.loads(std_path.read_text())
+    except (OSError, ValueError):
+        return None
+    cur = sha(page)
+    for e in (data if isinstance(data, list) else [data]):
+        if isinstance(e, dict) and e.get("page") == page.name and e.get("sha256") == cur:
+            return e
+    return None
+
+
+def round_declaration(rd: Path) -> dict:
+    mp = rd / CRAFT_MANIFEST
+    if not mp.is_file():
+        return {}
+    try:
+        d = json.loads(mp.read_text())
+    except ValueError:
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
 def producer_problems(rd: Path, pages: list[Path], cfg: dict) -> list[tuple[str, list[str]]]:
     """Run the producers for a round. Returns (name, problems) pairs in seal's `bad` shape."""
     bad: list[tuple[str, list[str]]] = []
+    std_path = rd / "standard.json"
     for p in pages:
+        before = _mtime_ns(std_path)
         rc, tail = run_producer(STANDARD_PRODUCER, [str(p)])
-        if rc == 1:
+        entry = _fresh_standard_entry(std_path, before, p)
+        if rc == 0 and entry and entry.get("pass") is True:
+            continue
+        if rc == 1 and entry and entry.get("pass") is False:
             bad.append((p.name, [f"{STANDARD_PRODUCER} measured this page and it FAILS the standard: {tail}"]))
-        elif rc != 0:
-            bad.append((p.name, [f"could not measure ({STANDARD_PRODUCER} exit {rc}): {tail}"]))
+        else:
+            # exit 2, a crash (also exit 1), or an exit code with no fresh verdict behind it
+            bad.append((p.name, [f"could not measure ({STANDARD_PRODUCER} exit {rc}, "
+                                 f"{'no' if not entry else 'a contradicting'} fresh verdict for this page): {tail}"]))
     craft = cfg.get("craft") or {}
-    if craft.get("require_gap_check") and craft.get("tier", "craft") != "wireframe":
+    declared = round_declaration(rd)
+    # The same round-local opt-out craft_problems() honors: a declared wireframe round carries
+    # a written reason and is exempt from the craft bar. Measuring it anyway leaves it stuck.
+    round_is_wireframe = declared.get("tier") == "wireframe" and str(declared.get("reason", "")).strip()
+    if (craft.get("require_gap_check") and craft.get("tier", "craft") != "wireframe"
+            and not round_is_wireframe):
+        gap_path = rd / "checks" / GAP_CHECK
+        before = _mtime_ns(gap_path)
         args = [str(rd), "--write"]
         url_base = (cfg.get("serve") or {}).get("url_base")
         if url_base:
             args += ["--url-base", str(url_base)]
         rc, tail = run_producer(GAP_PRODUCER, args)
-        if rc != 0:
-            what = "could not measure" if "could not measure" in tail else "below the exemplar floor or bad input"
-            bad.append((GAP_PRODUCER, [f"{what} ({GAP_PRODUCER} exit {rc}): {tail}"]))
+        if rc == 0 and _mtime_ns(gap_path) <= before:
+            bad.append((GAP_PRODUCER, [f"could not measure ({GAP_PRODUCER} exit 0 and wrote no fresh "
+                                       f"{GAP_CHECK}): {tail}"]))
+        elif rc != 0:
+            # design-gap-check.py uses exit 2 for BOTH outcomes today. Guessing which from its
+            # prose labelled every real exit 2 wrongly (the phrase this used to look for is
+            # printed only by the test stand-in). One honest label until dc-03 gives the
+            # producer an exit code of its own for could-not-measure (Sana, 2026-09-18).
+            bad.append((GAP_PRODUCER, [f"below the exemplar floor OR could not measure ({GAP_PRODUCER} "
+                                       f"exit {rc}; it uses one code for both): {tail}"]))
     return bad
 
 
@@ -1165,15 +1233,30 @@ def seal(rd: Path) -> int:
     rc = rd / "receipts.json"
     bad = []
     seal_cfg, _ = load_config(pages[0])
-    # A withdrawn round is never going to be shown, so there is nothing to measure.
-    if withdrawn_reason(rd) is None:
-        bad += producer_problems(rd, pages, seal_cfg)
+    # A withdrawn round is never going to be shown, so it has nothing to seal and gets NO
+    # receipt. The first version of dc-02 skipped the producers for it and then fell through
+    # and wrote one anyway: withdraw, seal, delete the manifest, and the page read COMPLETE
+    # on a receipt nothing had measured (adversarial review of c598d5f5, reproduced).
+    why_withdrawn = withdrawn_reason(rd)
+    if why_withdrawn == "":
+        # withdrawing is allowed; withdrawing without saying why is not (unchanged rule)
+        print(f"seal REFUSED:\n  {CRAFT_MANIFEST}: declares status 'withdrawn' with no reason. A "
+              f"round may be withdrawn, but the record says why.", file=sys.stderr)
+        return 2
+    if why_withdrawn is not None:
+        print(f"seal: {rd.name} is withdrawn. Nothing to seal, no receipt written.")
+        return 0
+    measured = producer_problems(rd, pages, seal_cfg)
+    bad += measured
+    reported = {name for name, _ in measured}
     for p in pages:
         if rc.is_file():
             # ignore the existing receipt so a re-seal re-validates everything else
             probs = [x for x in chain_problems(p, honor_seal=False) if "receipt" not in x and "not sealed" not in x]
         else:
             probs = [x for x in chain_problems(p, honor_seal=False) if "not sealed" not in x]
+        if p.name in reported:
+            probs = [x for x in probs if not x.startswith("standard.json for")]
         if probs:
             bad.append((p.name, probs))
     cfg, cfg_path = load_config(pages[0])
