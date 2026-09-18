@@ -1,7 +1,7 @@
 ---
 id: dc-03-seal-owns-the-served-round
 title: seal serves the round on an ephemeral port and producers prove they measured the local bytes
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -10,6 +10,8 @@ allowed_files:
   - q-system/.q-system/scripts/design-gap-check.py
   - q-system/.q-system/scripts/design-standard-check.py
   - q-system/.q-system/scripts/test/test_dc_served_round.py
+  - q-system/.q-system/scripts/test/test_dc_seal_runs_producers.py
+  - q-system/.q-system/scripts/test/stub_producers/*
 disallowed_files: []
 required_checks:
   - python3 q-system/.q-system/scripts/test/test_dc_served_round.py

@@ -47,13 +47,18 @@ stdlib only. Self-test: test_design_chain_gate.py.
 """
 from __future__ import annotations
 
+import contextlib
+import functools
 import hashlib
+import http.server
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+import threading
+import urllib.parse
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -165,7 +170,8 @@ def clean_env() -> dict:
     not measure". Letting the variable through buys nothing (-E ignores it) and the refusal
     message names it. WHAT THIS DOES NOT CLOSE: -E leaves the DEFAULT user site enabled, so a
     usercustomize.py there is still imported at child startup (measured by Sana, 2026-09-18).
-    Running the child with -s closes that and is dc-03's, with its own test."""
+    dc-03 closed it: the child also runs with -s, which disables the user site entirely
+    (test_a_usercustomize_cannot_alter_a_verdict plants one and watches it lose)."""
     return {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
 
 
@@ -176,7 +182,7 @@ def run_producer(name: str, args: list[str]) -> tuple[int, str]:
     if not script.is_file():
         return 2, f"could not measure: producer missing at {script}"
     try:
-        r = subprocess.run([sys.executable, "-E", str(script), *args], capture_output=True,
+        r = subprocess.run([sys.executable, "-E", "-s", str(script), *args], capture_output=True,
                            text=True, timeout=PRODUCER_TIMEOUT_S, env=clean_env())
     except subprocess.TimeoutExpired:
         return 2, f"could not measure: {name} timed out after {PRODUCER_TIMEOUT_S}s"
@@ -184,37 +190,62 @@ def run_producer(name: str, args: list[str]) -> tuple[int, str]:
         return 2, f"could not measure: {name} did not start: {e}"
     tail = " | ".join((r.stdout + r.stderr).strip().splitlines()[-4:])
     if "ModuleNotFoundError" in tail:
-        tail += (" | the producer child runs with -E and no PYTHON* variables, so PYTHONUSERBASE "
-                 "is ignored: install the dependency where the default site can see it")
+        tail += (" | the producer child runs with -E -s and no PYTHON* variables, so PYTHONUSERBASE "
+                 "and the user site are both ignored: a `pip install --user` dependency is invisible "
+                 "to it. Install it where the interpreter's own site-packages can see it")
     return r.returncode, tail
 
 
-def _mtime_ns(path: Path) -> int:
+@contextlib.contextmanager
+def served_round(rd: Path):
+    """Serve the round on a loopback port the OS picks, for the length of one seal.
+
+    Nothing owned the server before: the command doc backgrounded one on a typed port and
+    never stopped it. A leftover from an earlier round kept the port, the new bind failed
+    silently, and the standard producer measured the OLD round over the URL while writing
+    the sha of the NEW local file (PRD finding-3). Port 0 cannot collide, the server dies in
+    the finally, and each producer refuses when the served bytes differ from the local file."""
+    class Quiet(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=str(rd)))
+    thread = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
+    thread.start()
     try:
-        return path.stat().st_mtime_ns
-    except OSError:
-        return -1
+        yield f"http://127.0.0.1:{srv.server_address[1]}"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        thread.join(timeout=5)
 
 
-def _fresh_standard_entry(std_path: Path, before_ns: int, page: Path) -> dict | None:
-    """The entry the producer wrote for THIS page during THIS run, or None.
-
-    An exit code is a claim. The verdict is the file the producer writes, so it has to have
-    been rewritten after the run started and carry this page's current bytes. ASSUMPTION:
-    st_mtime_ns strictly increases between two writes, true on APFS (0 false refusals in 120
-    checks, review of c6696467) and wrong in principle on 1-second filesystems. dc-03 makes
-    seal remove the page's prior entry before the run, so mtime becomes a cross-check. A producer that
-    exits 0 having written nothing (hijacked, or crashed past its own handler) returns None,
-    and a verdict typed by hand before the run is older than the run."""
-    if _mtime_ns(std_path) <= before_ns:
-        return None
+def _read_standard(std_path: Path) -> list:
     try:
         data = json.loads(std_path.read_text())
     except (OSError, ValueError):
-        return None
+        return []
+    return [e for e in (data if isinstance(data, list) else [data]) if isinstance(e, dict)]
+
+
+def _drop_prior_verdict(std_path: Path, page: Path) -> None:
+    """Remove THIS page's entry before the producer runs, so an entry afterwards can only
+    have been written by this run. dc-02 inferred freshness from st_mtime_ns strictly
+    increasing, which is an assumption about the filesystem (wrong in principle at 1-second
+    granularity). Owning the output file needs no assumption. Other pages' entries stay."""
+    if not std_path.is_file():
+        return
+    entries = _read_standard(std_path)
+    kept = [e for e in entries if e.get("page") != page.name]
+    if len(kept) != len(entries):
+        std_path.write_text(json.dumps(kept, indent=2) + "\n")
+
+
+def _fresh_standard_entry(std_path: Path, page: Path) -> dict | None:
+    """The entry the producer wrote for THIS page during THIS run, or None. An exit code is a
+    claim; the verdict is the entry, and it has to carry this page's current bytes."""
     cur = sha(page)
-    for e in (data if isinstance(data, list) else [data]):
-        if isinstance(e, dict) and e.get("page") == page.name and e.get("sha256") == cur:
+    for e in _read_standard(std_path):
+        if e.get("page") == page.name and e.get("sha256") == cur:
             return e
     return None
 
@@ -231,45 +262,41 @@ def round_declaration(rd: Path) -> dict:
 
 
 def producer_problems(rd: Path, pages: list[Path], cfg: dict) -> list[tuple[str, list[str]]]:
-    """Run the producers for a round. Returns (name, problems) pairs in seal's `bad` shape."""
+    """Run the producers for a round against a server this call owns. Returns (name, problems)
+    pairs in seal's `bad` shape."""
     bad: list[tuple[str, list[str]]] = []
     std_path = rd / "standard.json"
-    for p in pages:
-        before = _mtime_ns(std_path)
-        rc, tail = run_producer(STANDARD_PRODUCER, [str(p)])
-        entry = _fresh_standard_entry(std_path, before, p)
-        if rc == 0 and entry and entry.get("pass") is True:
-            continue
-        if rc == 1 and entry and entry.get("pass") is False:
-            bad.append((p.name, [f"{STANDARD_PRODUCER} measured this page and it FAILS the standard: {tail}"]))
-        else:
-            # exit 2, a crash (also exit 1), or an exit code with no fresh verdict behind it
-            bad.append((p.name, [f"could not measure ({STANDARD_PRODUCER} exit {rc}, "
-                                 f"{'no' if not entry else 'a contradicting'} fresh verdict for this page): {tail}"]))
-    craft = cfg.get("craft") or {}
-    declared = round_declaration(rd)
-    # The same round-local opt-out craft_problems() honors: a declared wireframe round carries
-    # a written reason and is exempt from the craft bar. Measuring it anyway leaves it stuck.
-    round_is_wireframe = declared.get("tier") == "wireframe" and str(declared.get("reason", "")).strip()
-    if (craft.get("require_gap_check") and craft.get("tier", "craft") != "wireframe"
-            and not round_is_wireframe):
-        gap_path = rd / "checks" / GAP_CHECK
-        before = _mtime_ns(gap_path)
-        args = [str(rd), "--write"]
-        url_base = (cfg.get("serve") or {}).get("url_base")
-        if url_base:
-            args += ["--url-base", str(url_base)]
-        rc, tail = run_producer(GAP_PRODUCER, args)
-        if rc == 0 and _mtime_ns(gap_path) <= before:
-            bad.append((GAP_PRODUCER, [f"could not measure ({GAP_PRODUCER} exit 0 and wrote no fresh "
-                                       f"{GAP_CHECK}): {tail}"]))
-        elif rc != 0:
-            # design-gap-check.py uses exit 2 for BOTH outcomes today. Guessing which from its
-            # prose labelled every real exit 2 wrongly (the phrase this used to look for is
-            # printed only by the test stand-in). One honest label until dc-03 gives the
-            # producer an exit code of its own for could-not-measure (Sana, 2026-09-18).
-            bad.append((GAP_PRODUCER, [f"below the exemplar floor OR could not measure ({GAP_PRODUCER} "
-                                       f"exit {rc}; it uses one code for both): {tail}"]))
+    with served_round(rd) as base:
+        for p in pages:
+            _drop_prior_verdict(std_path, p)
+            rc, tail = run_producer(STANDARD_PRODUCER, [str(p), "--url", f"{base}/{urllib.parse.quote(p.name)}"])
+            entry = _fresh_standard_entry(std_path, p)
+            if rc == 0 and entry and entry.get("pass") is True:
+                continue
+            if rc == 1 and entry and entry.get("pass") is False:
+                bad.append((p.name, [f"{STANDARD_PRODUCER} measured this page and it FAILS the standard: {tail}"]))
+            else:
+                # exit 2, a crash (also exit 1), or an exit code with no fresh verdict behind it
+                bad.append((p.name, [f"could not measure ({STANDARD_PRODUCER} exit {rc}, "
+                                     f"{'no' if not entry else 'a contradicting'} fresh verdict for this page): {tail}"]))
+        craft = cfg.get("craft") or {}
+        declared = round_declaration(rd)
+        # The same round-local opt-out craft_problems() honors: a declared wireframe round carries
+        # a written reason and is exempt from the craft bar. Measuring it anyway leaves it stuck.
+        round_is_wireframe = declared.get("tier") == "wireframe" and str(declared.get("reason", "")).strip()
+        if (craft.get("require_gap_check") and craft.get("tier", "craft") != "wireframe"
+                and not round_is_wireframe):
+            gap_path = rd / "checks" / GAP_CHECK
+            gap_path.unlink(missing_ok=True)          # same rule: only this run may write it
+            rc, tail = run_producer(GAP_PRODUCER, [str(rd), "--write", "--url-base", base])
+            if rc == 0 and not gap_path.is_file():
+                bad.append((GAP_PRODUCER, [f"could not measure ({GAP_PRODUCER} exit 0 and wrote no {GAP_CHECK}): {tail}"]))
+            elif rc == 2:
+                # dc-03 gave the producer an exit code of its own for could-not-measure, so 2
+                # means one thing. craft_problems() lists the axes per page below this line.
+                bad.append((GAP_PRODUCER, [f"below the exemplar floor ({GAP_PRODUCER} exit 2): {tail}"]))
+            elif rc != 0:
+                bad.append((GAP_PRODUCER, [f"could not measure ({GAP_PRODUCER} exit {rc}): {tail}"]))
     return bad
 
 

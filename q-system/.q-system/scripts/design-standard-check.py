@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import urllib.request
 import json
 import sys
 from pathlib import Path
@@ -193,6 +194,18 @@ def main() -> int:
     if cpath and cpath.is_file():
         cfg.update(json.loads(cpath.read_text()).get("standard", {}))
     url = a.url or page.as_uri()
+    if a.url:
+        # dc-03: prove the bytes about to be measured are the bytes about to be hashed. A stale
+        # server on the same port served the OLD round while this wrote the NEW file's sha.
+        try:
+            served = hashlib.sha256(urllib.request.urlopen(a.url, timeout=20).read()).hexdigest()
+        except OSError as e:
+            print(f"could not measure: {a.url} is not being served: {e}", file=sys.stderr)
+            return 2
+        if served != hashlib.sha256(page.read_bytes()).hexdigest():
+            print(f"could not measure: served bytes differ from {page.name}. {a.url} is handing out "
+                  f"another page, so a verdict here would be about the wrong bytes.", file=sys.stderr)
+            return 2
     try:
         ms = measure(url, cfg)
     except Exception as e:  # playwright missing, page unreachable

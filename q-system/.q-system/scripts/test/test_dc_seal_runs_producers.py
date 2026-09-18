@@ -268,7 +268,7 @@ class NoOverride(unittest.TestCase):
         self.assertEqual(scripts, ["HERE / name"])
         calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and ast.unparse(n.func) == "subprocess.run"]
         self.assertEqual(len(calls), 1)
-        self.assertEqual(ast.unparse(calls[0].args[0]), "[sys.executable, '-E', str(script), *args]")
+        self.assertEqual(ast.unparse(calls[0].args[0]), "[sys.executable, '-E', '-s', str(script), *args]")
 
     def test_the_child_runs_in_a_cleaned_environment(self):
         call = next(n for n in ast.walk(self.run_producer_fn())

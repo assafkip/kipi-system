@@ -24,17 +24,20 @@ the measured group runs 4 to 7, so passing the floor GUARANTEED being sparser th
 exemplar. A gate that contradicts the canon wins silently, so this one only floors axes
 where the canon and the measurement agree.
 
-Exit 0 = every floored axis is met. Exit 2 = at least one is not, or bad input.
+Exit 0 = every floored axis is met. Exit 2 = at least one is BELOW the floor. Exit 3 = COULD NOT
+MEASURE (too few exemplar captures, no pages, no served round, served bytes differ, no browser).
 There is no exit code meaning "this page is good", for the same reason
 check_technique_parity.py has none: a floor is not a finish line.
 
 Usage:
-  design-gap-check.py <round-dir> --url-base http://127.0.0.1:PORT [--refs DIR] [--write]
+  design-gap-check.py <round-dir> --url-base <served round> [--refs DIR] [--write]
   design-gap-check.py --selftest
 """
 from __future__ import annotations
 
 import argparse
+import urllib.parse
+import urllib.request
 import hashlib
 import json
 import statistics
@@ -343,7 +346,31 @@ def judge(measured: dict, fl: dict) -> list[str]:
     return bad
 
 
+# Exit codes (dc-03). 2 used to mean BOTH "an axis is below the floor" and "bad input", so
+# seal could not tell a judged failure from a run that judged nothing. 2 now means one thing.
+BELOW_FLOOR = 2
+COULD_NOT_MEASURE = 3
+
+
 def report(round_dir: Path, url_base: str, refs: Path, write: bool) -> int:
+    names = sorted(p.name for p in round_dir.glob("*.html"))
+    if not names:
+        print(f"could not measure: no pages in {round_dir}", file=sys.stderr)
+        return COULD_NOT_MEASURE
+    if not url_base:
+        print("could not measure: no --url-base. The round has to be SERVED to be measured; "
+              "design-chain-gate.py seal serves it on a port of its own.", file=sys.stderr)
+        return COULD_NOT_MEASURE
+    for name in names:
+        try:
+            served = hashlib.sha256(urllib.request.urlopen(f"{url_base}/{urllib.parse.quote(name)}", timeout=20).read()).hexdigest()
+        except OSError as e:
+            print(f"could not measure: {url_base}/{name} is not being served: {e}", file=sys.stderr)
+            return COULD_NOT_MEASURE
+        if served != sha(round_dir / name):
+            print(f"could not measure: served bytes differ from {name}. {url_base} is handing out "
+                  f"another round, so a verdict here would be about the wrong bytes.", file=sys.stderr)
+            return COULD_NOT_MEASURE
     ex, rejected = usable(load_exemplars(refs))
     if rejected:
         print("EXCLUDED CAPTURES (a failed capture must never quietly lower a floor):")
@@ -351,16 +378,16 @@ def report(round_dir: Path, url_base: str, refs: Path, write: bool) -> int:
             print(f"  {r}")
         print()
     if len(ex) < 3:
-        print(f"only {len(ex)} usable exemplar capture(s) in {refs}; the floors would be "
-              f"set by too small a set to mean anything. Run design-exemplar-capture.py.",
+        print(f"could not measure: only {len(ex)} usable exemplar capture(s) in {refs}; the floors "
+              f"would be set by too small a set to mean anything. Run design-exemplar-capture.py.",
               file=sys.stderr)
-        return 2
+        return COULD_NOT_MEASURE
     fl = floors(ex)
-    names = sorted(p.name for p in round_dir.glob("*.html"))
-    if not names:
-        print(f"no pages in {round_dir}", file=sys.stderr)
-        return 2
-    got = probe_pages(round_dir, url_base, names)
+    try:
+        got = probe_pages(round_dir, url_base, names)
+    except Exception as e:  # playwright missing, a page that will not load
+        print(f"could not measure: {e}", file=sys.stderr)
+        return COULD_NOT_MEASURE
 
     print(f"GAP TO THE EXEMPLARS: {', '.join(sorted(ex))}")
     print("floor = the least any one of them reaches. Derived from the captures, not chosen.\n")
@@ -391,7 +418,7 @@ is not judging them.""")
         (round_dir / "checks").mkdir(exist_ok=True)
         (round_dir / "checks" / RECEIPT).write_text(json.dumps(receipt, indent=2) + "\n")
         print(f"\nwrote {round_dir / 'checks' / RECEIPT}")
-    return 2 if failed else 0
+    return BELOW_FLOOR if failed else 0
 
 
 def selftest() -> int:
@@ -522,7 +549,7 @@ def selftest() -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("round_dir", nargs="?")
-    ap.add_argument("--url-base", default="http://127.0.0.1:8793")
+    ap.add_argument("--url-base")          # no default: a typed port is how a stale server got measured
     ap.add_argument("--refs")
     ap.add_argument("--write", action="store_true")
     ap.add_argument("--selftest", action="store_true")
