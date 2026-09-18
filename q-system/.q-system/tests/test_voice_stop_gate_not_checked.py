@@ -17,6 +17,7 @@ NAMED path even when it is missing and lets the caller decide." That shape was
 never carried the twenty lines down to `run_check`.
 """
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -129,26 +130,112 @@ class TestTheWarningIsActuallyDelivered:
     asserted the return value and none asserted delivery -- the same
     output-versus-input blindness the whole change exists to close, reproduced
     inside the fix for it.
+
+    ASK-1303 corrected the destination this class asserts. It used to require the
+    line on BARE stdout, which the measurement in `MEASURED_STOP_HOOK_SINKS`
+    proves is the one exit-0 channel that is discarded.
     """
 
-    def test_the_line_reaches_stdout(self):
-        """stdout is what a SUCCESSFUL hook is read on. This is the arm that
-        was missing."""
+    def test_the_line_is_queued_for_the_surfacing_channel(self):
+        """The arm that matters: the line is held for the systemMessage flush."""
         import io
-        out, err = io.StringIO(), io.StringIO()
-        gate.report_not_checked(["voice-stop-gate: X is MISSING"], out=out, err=err)
-        assert "X is MISSING" in out.getvalue(), "nothing reached stdout"
+        err = io.StringIO()
+        gate.reset_pending_surface()
+        gate.report_not_checked(["voice-stop-gate: X is MISSING"], err=err)
+        assert "X is MISSING" in "\n".join(gate.pending_surface()), (
+            "the line was not queued for the channel that survives exit 0")
 
     def test_the_line_also_reaches_stderr(self):
-        """Kept for the blocking path, where stdout is not surfaced."""
+        """Kept for the blocking path, where stderr IS fed back (measured)."""
         import io
-        out, err = io.StringIO(), io.StringIO()
-        gate.report_not_checked(["voice-stop-gate: X is MISSING"], out=out, err=err)
+        err = io.StringIO()
+        gate.reset_pending_surface()
+        gate.report_not_checked(["voice-stop-gate: X is MISSING"], err=err)
         assert "X is MISSING" in err.getvalue()
 
     def test_nothing_is_written_when_every_lint_ran(self):
         """The control. A gate that always shouts is a gate that gets muted."""
         import io
-        out, err = io.StringIO(), io.StringIO()
-        gate.report_not_checked([], out=out, err=err)
-        assert out.getvalue() == "" and err.getvalue() == ""
+        err = io.StringIO()
+        gate.reset_pending_surface()
+        gate.report_not_checked([], err=err)
+        assert err.getvalue() == "" and gate.pending_surface() == []
+
+
+# --- the reproducer for ASK-1303 ---------------------------------------------
+#
+# WHAT THIS CAN AND CANNOT PROVE, stated up front because the defect it guards
+# was born of exactly this confusion. A test in this process cannot observe what
+# the Claude Code harness renders. What it CAN do is assert that the bytes the
+# gate puts on its own stdout match the SHAPE that was measured to survive.
+#
+# The measurement is recorded in voice-stop-gate.py's `MEASURED_STOP_HOOK_SINKS`
+# block (three `claude -p` runs, 2026-09-12). Its load-bearing results:
+#   - a bare line on stdout at exit 0 is DISCARDED;
+#   - `{"systemMessage": ...}` on stdout at exit 0 surfaces as a `system` event;
+#   - a bare line PRECEDING that JSON destroys the JSON too -- both are lost.
+#
+# So the shape contract is: at exit 0, this process's stdout is either empty or
+# exactly one JSON object. A bare NOT CHECKED line anywhere in it is the defect.
+_DRIVER = r"""
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("voice_stop_gate", %r)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.report_not_checked(["voice-stop-gate: SENTINELLINT is MISSING"])
+mod.authorship_page = lambda: None
+mod.authorship_drain = lambda: ""
+mod.finish_ok()
+"""
+
+
+def _run_driver():
+    """Run the real functions in a real process and return its real stdout."""
+    r = subprocess.run([sys.executable, "-c", _DRIVER % GATE],
+                       capture_output=True, text=True, timeout=60)
+    return r
+
+
+class TestTheNotCheckedLineUsesASinkTheMeasurementSaysSurvives:
+
+    def test_stdout_is_empty_or_exactly_one_json_object(self):
+        """RED before the fix: stdout is 'line\\n{...}', which parses as nothing.
+
+        This is the arm that goes red the moment any caller is pointed back at
+        bare stdout, which is the mutation this test exists to kill.
+        """
+        r = _run_driver()
+        blob = r.stdout.strip()
+        assert blob, "the NOT CHECKED line reached no surviving channel at all"
+        try:
+            parsed = json.loads(blob)
+        except json.JSONDecodeError as exc:
+            raise AssertionError(
+                "stdout is not one JSON object, so the harness parses none of "
+                "it and the whole line is discarded: %r (%s)" % (blob, exc))
+        assert isinstance(parsed, dict), parsed
+
+    def test_the_line_rides_the_systemMessage_field(self):
+        """Not merely present in stdout: present in the field that surfaces."""
+        r = _run_driver()
+        parsed = json.loads(r.stdout.strip())
+        assert "SENTINELLINT" in parsed.get("systemMessage", ""), parsed
+
+    def test_no_bare_copy_of_the_line_precedes_the_json(self):
+        """The specific mutation: writing the line to stdout as well as queueing
+        it looks harmless and destroys the JSON that carries it."""
+        r = _run_driver()
+        first = r.stdout.lstrip()[:1]
+        assert first == "{", (
+            "stdout begins with %r, so something bare was written before the "
+            "JSON object; measured, that discards both" % (r.stdout[:60],))
+
+    def test_the_line_is_still_on_stderr_for_the_blocking_path(self):
+        """The negative control for the change: exit-2 delivery must not regress.
+
+        report_not_checked runs BEFORE the gate knows whether it will exit 2, and
+        stderr is the measured channel there. Without this arm, deleting the
+        stderr write entirely would pass every assertion above.
+        """
+        r = _run_driver()
+        assert "SENTINELLINT" in r.stderr, r.stderr
