@@ -231,6 +231,14 @@
       "instance_q_dir": null,
       "type": "subtree",
       "has_git": true
+    },
+    {
+      "name": "consulting-kipi",
+      "path": "/Users/assafkipnis/projects/consulting-kipi",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true
     }
   ],
   "standalone": [
