@@ -79,7 +79,13 @@ if [ "$MODE" = "--staged" ]; then
   # of a module, or deleting a test file, is exactly the change a floor should
   # look at -- the remaining tree still has to parse and its suites still have to
   # pass without it.
-  ANY_STAGED="$(git -C "$REPO" diff --cached --name-only)"
+  # --no-renames, because ANY_STAGED also feeds the test selector (ASK-1795).
+  # Rename detection is on by default and prints ONLY the new path, so a
+  # `git mv helper.py helper2.py` hid the old module name, and the tests that
+  # still import `helper` were not selected. Reviewer finding on PR #371, with a
+  # reproducer: with renames on, the selection was the declared fallback alone;
+  # with `-c diff.renames=false`, both names appear and test_helper.py is picked.
+  ANY_STAGED="$(git -C "$REPO" diff --cached --no-renames --name-only)"
   STAGED="$(git -C "$REPO" diff --cached --name-only --diff-filter=ACMR)"
   if [ -z "$ANY_STAGED" ]; then
     echo "verify.sh --staged: nothing staged, nothing to verify."

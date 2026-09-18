@@ -384,6 +384,32 @@ run "$R" --staged; check "missing selector -> full suite" 1 $?; rm -rf "$R"
 # --full is untouched: the bystander blocks.
 R=$(ownrepo); run "$R" --full; check "--full still runs every test" 1 $?; rm -rf "$R"
 
+# --- A RENAME HIDES THE OLD MODULE NAME unless renames are off (PR #371 review).
+# `git diff --cached --name-only` detects renames and prints only the NEW path,
+# so a `git mv mod_a.py mod_b.py` left the tests that still import mod_a
+# unselected: they took the declared fallback and the commit passed with a
+# broken import. Visible only once a suite declares a fallback, which is the
+# consulting case this was built for.
+R=$(ownrepo)
+printf 'test_data.py\n' > "$R/suite/.verify-fallback"
+git -C "$R" add suite/.verify-fallback; git -C "$R" commit -qm fallback
+git -C "$R" mv suite/mod_a.py suite/mod_b.py
+run "$R" --staged; check "a renamed module still selects its tests" 1 $?; rm -rf "$R"
+
+# --- AN __init__.py IS ITS PACKAGE, not the literal string "__init__".
+# At the suite root dirname is empty, so the name fell back to "__init__" and
+# selected whichever file happened to contain that token. Here the red test
+# names the package and nothing names "__init__", so the old behaviour took the
+# green fallback and passed.
+R=$(ownrepo)
+printf 'test_data.py\n' > "$R/suite/.verify-fallback"
+printf '' > "$R/suite/__init__.py"
+printf 'def test_pkg():\n    """guards the suite package"""\n    assert False\n' \
+  > "$R/suite/test_pkg_named.py"
+git -C "$R" add -A; git -C "$R" commit -qm pkg
+printf '# touched\n' > "$R/suite/__init__.py"; git -C "$R" add suite/__init__.py
+run "$R" --staged; check "__init__.py selects by package name" 1 $?; rm -rf "$R"
+
 echo
 echo "adversarial: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

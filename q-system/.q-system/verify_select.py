@@ -73,13 +73,18 @@ def tracked_tests(target: str, suite: str) -> list[str]:
     return sorted(out)
 
 
-def names_for(rel: str) -> tuple[str, re.Pattern[str]]:
+def names_for(rel: str, suite: str = "") -> tuple[str, re.Pattern[str]]:
     """The name a test would use to reach this path, and the pattern that finds it."""
     base = os.path.basename(rel)
     if base.endswith(".py"):
         stem = base[:-3]
         if stem == "__init__":
-            parent = os.path.basename(os.path.dirname(rel))
+            # The package this file IS. At the suite root the path is bare
+            # "__init__.py" and dirname is empty, so the name is the suite's own
+            # basename. Reviewer finding on PR #371: without this,
+            # voiceloop/__init__.py matched the literal "__init__" and selected
+            # 1 test file where all 10 name `voiceloop`.
+            parent = os.path.basename(os.path.dirname(rel)) or os.path.basename(suite.rstrip("/"))
             stem = parent or stem
         return stem, re.compile(r"\b" + re.escape(stem) + r"\b")
     # A data file is named by its basename. Word-ish edges so `a.json` does not
@@ -139,7 +144,7 @@ def select(target: str, suite: str, staged: list[str]) -> tuple[str, list[str], 
                 # still graded by whatever else is staged, and by --full.
                 why.append(f"{rel}: test file deleted -> nothing to run for it")
             continue
-        name, pat = names_for(rel)
+        name, pat = names_for(rel, suite)
         owners = [t for t in tests if t != rel and pat.search(text_of(t))]
         if owners:
             chosen.update(owners)
