@@ -399,3 +399,47 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
   is applied with `apply-claude-changes.sh --root $HOME`; until then the drift
   test in `test_destructive_op_deny_anchor.py` is red on any machine with the
   live hook, which is the signal that it has not been applied.
+
+## The blanket delete allow rule stays; the hook is the boundary (ASK-1158, 2026-09-15)
+
+### RULE-2026-09-15-A: KEEP `Bash(rm:*)` in settings.local.json; do not narrow it
+- **Origin:** [SYSTEM-INFERRED]
+- **Decision:** KEEP. The `Bash(rm:*)` allow rule in
+  `~/projects/kipi-system/.claude/settings.local.json` is left as it is, and
+  `fix-perm-wildcards.py` gets no second target list. The PreToolUse hook
+  `~/.claude/hooks/destructive-op-deny.sh` is the only thing standing between an
+  agent and a recursive or forced delete, and that is accepted on purpose.
+- **What the hook covers (so nobody re-opens this to find out):** it denies any
+  `rm` whose argv carries `-r`, `-R`, `-f`, `--recursive` or `--force`, at any
+  position, behind `sudo`/`env`/`nice` prefixes, with the program token quoted or
+  path-qualified (`/bin/rm`); plus `find ... -delete`, `find ... -exec rm`,
+  `shred`, `git clean -f`. So what `Bash(rm:*)` actually waves through unprompted
+  is the non-recursive, non-forced delete: measured against the live hook with
+  `probe_hook.decide` on 2026-09-15, ALLOW for `rm FILE`, `rm A B`, `rm -v FILE`,
+  `rm -i FILE`, `rm -d EMPTYDIR`, `rm DIR/*`, `rm -- FILE`. The hook does NOT
+  cover interpreter deletes (RULE-2026-09-13-A), and no allow rule touches those.
+- **Reason:** NARROW cannot bound what gets deleted, only how the command starts.
+  Claude Code's permissions page (code.claude.com/docs/en/permissions, read
+  2026-09-15): "Bash rules match the whole command text, with `*` standing in for
+  any text", and "Bash permission patterns that try to constrain command arguments
+  are fragile." A narrowed rule such as `Bash(rm /tmp/ *)` still admits
+  `rm /tmp/x ~/projects/anything`, because every operand after the prefix is free.
+  So narrowing converts ordinary file deletes into prompts, which get approved on
+  reflex, and adds no protection the hook lacks. The same page names a PreToolUse
+  hook as the place for command-text logic, which is where the argv inspection
+  already lives. Keeping the rule changes nothing in the founder's workflow, which
+  is the side effect ASK-1158 said must not arrive unannounced.
+- **Accepted residual:** an unprompted `rm DIR/*` or a multi-operand `rm` can
+  remove untracked files that git cannot bring back. And the hook reads command
+  TEXT, so a flag held in a variable (`rm $F DIR`) is invisible to it and this
+  rule waves it through; a narrowed prefix would admit the same string. Stated
+  here rather than discovered later.
+- **Not measured:** the session transcripts and shell history (the NARROW
+  evidence ASK-1158 names) were not read; the dispatch sandbox confines reads to
+  the worktree, and a read of settings.local.json was refused. That the rule is
+  still present today is {{UNVERIFIED}}; it was measured present on 2026-08-30.
+  The reason above does not depend on which shapes are in use.
+- **Date:** 2026-09-15
+- **Revisit:** If `probe_hook.py` ever prints ALLOW on its `rm -rf <dir>` control
+  row, or the live hook loses its execute bit (ASK-1118). Then this rule becomes a
+  live hole; the fix is re-arming the hook, not narrowing the allowlist.
