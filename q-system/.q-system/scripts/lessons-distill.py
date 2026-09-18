@@ -15,7 +15,8 @@ Per new learning:
      real entity. Anything the gate can't clear is HELD (written to the held dir), never published.
   3. PUBLISH clean lessons to q-system/lessons/<id>.md (frontmatter {id,kind,title,date}); the rail
      fans them read-only to every instance on the next `kipi update`.
-  4. LEDGER every source so each learning is processed once (idempotent daily runs).
+  4. LEDGER every source so each learning is processed once (idempotent daily runs); a published
+     row also names the lesson_id it became, so each lesson traces to its source.
 
 Emits a JSON summary (published / held / scanned) for the daily heartbeat to Slack.
 
@@ -229,7 +230,12 @@ def main():
                 f"source: {held_source_link(path)}\n\n"
                 f"proposed title: {distilled['title']}\n\n{distilled['body']}\n")
             held.append(distilled["title"])
-        ledger[h] = {"instance": name, "status": "published" if published_text else "held", "date": stamp}
+        row = {"instance": name, "status": "published" if published_text else "held", "date": stamp}
+        if published_text:
+            # Provenance: which lesson this source became. Without it the ledger said a source
+            # was published but no published lesson traced back to anything (ASK-539).
+            row["lesson_id"] = lid
+        ledger[h] = row
 
     if not args.dry:
         ledger_path.parent.mkdir(parents=True, exist_ok=True)
