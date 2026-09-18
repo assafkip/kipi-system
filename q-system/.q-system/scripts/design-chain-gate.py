@@ -134,6 +134,63 @@ def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+# ---------------------------------------------------------------- producers
+#
+# `seal` used to READ standard.json and checks/gap.json as trusted inputs, so a verdict
+# typed by hand sealed a round (RCA rca-design-chain-trusts-its-own-account-2026-09-18,
+# C3 and C7: round A sealed at exit 0). It now RUNS the producers and uses their exit
+# codes. The files they write are outputs of this run, not claims handed to it.
+#
+# Producers are the siblings of THIS file and nothing else. There is deliberately no
+# environment variable, flag or path condition that points seal at another directory
+# (Sana, 2026-09-18: any override production can honor is the gate trusting an account of
+# itself again). Tests get stand-ins by running a COPY of this file placed beside them,
+# and test_dc_seal_runs_producers.py goes red if an override token appears here.
+HERE = Path(__file__).resolve().parent
+STANDARD_PRODUCER = "design-standard-check.py"
+GAP_PRODUCER = "design-gap-check.py"
+PRODUCER_TIMEOUT_S = 600
+
+
+def run_producer(name: str, args: list[str]) -> tuple[int, str]:
+    """(exit code, tail of output). A producer that is missing, hangs or cannot start is
+    exit 2: it could not measure, and could-not-measure is never a pass."""
+    script = HERE / name
+    if not script.is_file():
+        return 2, f"could not measure: producer missing at {script}"
+    try:
+        r = subprocess.run([sys.executable, str(script), *args], capture_output=True,
+                           text=True, timeout=PRODUCER_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return 2, f"could not measure: {name} timed out after {PRODUCER_TIMEOUT_S}s"
+    except OSError as e:
+        return 2, f"could not measure: {name} did not start: {e}"
+    tail = " | ".join((r.stdout + r.stderr).strip().splitlines()[-4:])
+    return r.returncode, tail
+
+
+def producer_problems(rd: Path, pages: list[Path], cfg: dict) -> list[tuple[str, list[str]]]:
+    """Run the producers for a round. Returns (name, problems) pairs in seal's `bad` shape."""
+    bad: list[tuple[str, list[str]]] = []
+    for p in pages:
+        rc, tail = run_producer(STANDARD_PRODUCER, [str(p)])
+        if rc == 1:
+            bad.append((p.name, [f"{STANDARD_PRODUCER} measured this page and it FAILS the standard: {tail}"]))
+        elif rc != 0:
+            bad.append((p.name, [f"could not measure ({STANDARD_PRODUCER} exit {rc}): {tail}"]))
+    craft = cfg.get("craft") or {}
+    if craft.get("require_gap_check") and craft.get("tier", "craft") != "wireframe":
+        args = [str(rd), "--write"]
+        url_base = (cfg.get("serve") or {}).get("url_base")
+        if url_base:
+            args += ["--url-base", str(url_base)]
+        rc, tail = run_producer(GAP_PRODUCER, args)
+        if rc != 0:
+            what = "could not measure" if "could not measure" in tail else "below the exemplar floor or bad input"
+            bad.append((GAP_PRODUCER, [f"{what} ({GAP_PRODUCER} exit {rc}): {tail}"]))
+    return bad
+
+
 def is_page(path: str) -> bool:
     p = str(Path(path).resolve()) if path else ""
     if not p or Path(p).suffix.lower() not in PAGE_EXTS:
@@ -1107,6 +1164,10 @@ def seal(rd: Path) -> int:
         return 2
     rc = rd / "receipts.json"
     bad = []
+    seal_cfg, _ = load_config(pages[0])
+    # A withdrawn round is never going to be shown, so there is nothing to measure.
+    if withdrawn_reason(rd) is None:
+        bad += producer_problems(rd, pages, seal_cfg)
     for p in pages:
         if rc.is_file():
             # ignore the existing receipt so a re-seal re-validates everything else

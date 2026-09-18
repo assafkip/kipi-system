@@ -1,13 +1,15 @@
 ---
 id: dc-02-seal-runs-the-producers
 title: seal runs the standard and gap producers itself and uses their exit codes
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
   - q-system/.q-system/capability/expected_tests/*
   - q-system/.q-system/scripts/design-chain-gate.py
   - q-system/.q-system/scripts/test/test_dc_seal_runs_producers.py
+  - q-system/.q-system/scripts/test_design_chain_gate.py
+  - q-system/.q-system/scripts/test/stub_producers/*
 disallowed_files: []
 required_checks:
   - python3 q-system/.q-system/scripts/test/test_dc_seal_runs_producers.py

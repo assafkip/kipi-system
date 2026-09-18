@@ -17,7 +17,18 @@ import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-GATE = HERE / "design-chain-gate.py"
+REAL_GATE = HERE / "design-chain-gate.py"
+# dc-02 (ASK-1796): seal RUNS the producers, which are the siblings of the gate file. The
+# real ones need playwright and chromium and turned this suite from 3 s into 63 s. So the
+# suite runs a COPY of the gate placed beside the stand-ins in test/stub_producers/. The
+# shipped gate has no override to point it elsewhere (Sana, 2026-09-18), and
+# test/test_dc_seal_runs_producers.py holds one run against the REAL producer.
+_BIN = Path(tempfile.mkdtemp(prefix="dcg-bin-"))
+shutil.copy(REAL_GATE, _BIN / REAL_GATE.name)
+for _stub in (HERE / "test" / "stub_producers").glob("*.py"):
+    shutil.copy(_stub, _BIN / _stub.name)
+GATE = _BIN / REAL_GATE.name
+STANDARD_STUB = _BIN / "design-standard-check.py"
 
 OWNER_LINE = "> **A business where somebody is paid to be accurate, and being wrong costs money"
 IDEA_LINE = "**Two records that should agree, and don't.**"
@@ -67,6 +78,12 @@ class Base(unittest.TestCase):
     def sha(self, p):
         return hashlib.sha256(p.read_bytes()).hexdigest()
 
+    def measure(self, page=None):
+        """standard.json as the PRODUCER writes it. Typing the verdict by hand is the hole
+        dc-02 closes, so the suite no longer does it either."""
+        subprocess.run([sys.executable, str(STANDARD_STUB), str(page or self.page)],
+                       check=True, capture_output=True)
+
     def complete_chain(self, brief_ok=True):
         rd = self.round
         anchors = [OWNER_LINE, IDEA_LINE, RULE_TITLE]
@@ -78,7 +95,7 @@ class Base(unittest.TestCase):
         (rd / "proof.md").write_text("Pair-laptop.html: capability proof, INDEX Alice OSINT sweep\n")
         (rd / "checks").mkdir(exist_ok=True); (rd / "checks" / "bio_gate.txt").write_text("ok\n")
         (rd / "gate").mkdir(exist_ok=True); (rd / "gate" / "icp.md").write_text("answers\n")
-        (rd / "standard.json").write_text(json.dumps([{"page": self.page.name, "sha256": self.sha(self.page), "pass": True}]))
+        self.measure()
 
     def write_hook(self):
         return run([], {"hook_event_name": "PostToolUse", "tool_name": "Write", "session_id": self.sid,
@@ -154,10 +171,9 @@ class TestBlocks(Base):
 
     def test_standard_fail_blocks(self):
         self.complete_chain()
-        (self.round / "standard.json").write_text(json.dumps([{"page": self.page.name, "sha256": self.sha(self.page), "pass": False}]))
-        rc, out = run(["seal", str(self.round)], env=self.env)
+        rc, out = run(["seal", str(self.round)], env=dict(self.env, STUB_STANDARD="fail"))
         self.assertEqual(rc, 2, out)
-        self.assertIn("standard.json", out)
+        self.assertIn("FAILS the standard", out)
 
     def test_internal_html_ignored(self):
         internal = self.inst / "q-system" / "output" / "daily-schedule-2026-09-15.html"
@@ -279,8 +295,7 @@ class TestCraftBar(Base):
         (self.round / "checks" / "impeccable.txt").write_text("ran\n")
         self.page.write_text(self.page.read_text().replace(
             "</body>", "<script src='gsap.min.js'></script></body>"))
-        (self.round / "standard.json").write_text(json.dumps(
-            [{"page": self.page.name, "sha256": self.sha(self.page), "pass": True}]))
+        self.measure()
         (self.round / CRAFT_MANIFEST).write_text(json.dumps({"techniques": [
             {"id": "counter-bar", "technique": "real numbers as chrome", "role": "header",
              "reference": "trailofbits.com", "import": ["gsap"], "applied": ["gsap"]}]}))
@@ -326,8 +341,7 @@ class TestCraftBar(Base):
         (self.round / "checks" / "impeccable.txt").write_text("ran\n")
         self.page.write_text(self.page.read_text().replace(
             "</body>", "<script src='gsap.min.js'></script></body>"))
-        (self.round / "standard.json").write_text(json.dumps(
-            [{"page": self.page.name, "sha256": self.sha(self.page), "pass": True}]))
+        self.measure()
         (self.round / CRAFT_MANIFEST).write_text(json.dumps({"techniques": [
             {"id": "t", "technique": "x", "role": "hero", "reference": "stripe.com",
              "import": ["gsap"], "applied": ["gsap"]}]}))
@@ -467,8 +481,7 @@ class TestCraftBar(Base):
         self.page.write_text(self.page.read_text().replace(
             "</body>", "<script src='gsap.min.js'></script>"
             "<script>gsap.to('.mark',{opacity:1})</script></body>"))
-        (self.round / "standard.json").write_text(json.dumps(
-            [{"page": self.page.name, "sha256": self.sha(self.page), "pass": True}]))
+        self.measure()
         (self.round / "craft-manifest.json").write_text(json.dumps(
             {"techniques": [{"id": "reveal", "technique": "GSAP reveal on the mismatch",
                              "role": "the mismatch", "import": ["gsap"],
