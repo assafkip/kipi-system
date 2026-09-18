@@ -48,7 +48,6 @@ stdlib only. Self-test: test_design_chain_gate.py.
 from __future__ import annotations
 
 import contextlib
-import functools
 import hashlib
 import http.server
 import json
@@ -57,6 +56,7 @@ import os
 import posixpath
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -237,6 +237,8 @@ class RoundSnapshot:
 
     def __init__(self, rd: Path, files: dict[str, bytes], directory: Path):
         self.live, self.files, self.dir = rd, files, directory
+        self.cfg_path: Path | None = None      # the ONE design-chain.json this seal reads
+        self.missed: list[str] = []            # paths the browser asked for and got a 404
 
     def sha(self, rel: str) -> str:
         return hashlib.sha256(self.files[rel]).hexdigest()
@@ -247,6 +249,11 @@ _SNAPSHOTS: dict[Path, RoundSnapshot] = {}   # live round (resolved) -> the snap
 
 @contextlib.contextmanager
 def snapshot_round(rd: Path):
+    if rd.resolve() in _SNAPSHOTS:
+        # Two seals sharing one entry: the first to finish pops it and the other's producers
+        # quietly take a snapshot of their own (standard review of 4ab043d7). An OSError, so
+        # it is a refusal like every other.
+        raise BlockingIOError(f"a seal of {rd} is already running in this process")
     files = round_files(rd)
     tmp = Path(tempfile.mkdtemp(prefix="dc-seal-"))          # mkdtemp is mode 0700
     try:
@@ -264,7 +271,7 @@ def snapshot_round(rd: Path):
 
 
 @contextlib.contextmanager
-def served_round(rd: Path, files: dict[str, bytes] | None = None):
+def served_round(rd: Path, files: dict[str, bytes] | None = None, missed: list[str] | None = None):
     """Serve the round on a loopback port the OS picks, for the length of one seal.
 
     Nothing owned the server before: the command doc backgrounded one on a typed port and
@@ -286,10 +293,18 @@ def served_round(rd: Path, files: dict[str, bytes] | None = None):
             rel = posixpath.normpath(path).lstrip("/")
             data = held.get(rel)
             if data is None:
+                if missed is not None and rel not in missed:
+                    missed.append(rel)
                 self.send_error(404, "not a file in this round")
                 return
+            ctype = mimetypes.guess_type(rel)[0] or "application/octet-stream"
+            if ctype.startswith("text/") or ctype in ("application/javascript", "application/json", "image/svg+xml"):
+                # No charset made chromium decode a UTF-8 page as windows-1252 and then ask for
+                # a mojibake stylesheet name, which 404ed, and the page PASSED on the browser's
+                # 16px default (adversarial review of 4ab043d7, spy server output pasted there).
+                ctype += "; charset=utf-8"
             self.send_response(200)
-            self.send_header("Content-Type", mimetypes.guess_type(rel)[0] or "application/octet-stream")
+            self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
@@ -348,11 +363,23 @@ def _fresh_standard_entry(std_path: Path, page: Path, cur: str | None = None) ->
 
 
 def round_declaration(rd: Path) -> dict:
-    mp = rd / CRAFT_MANIFEST
-    if not mp.is_file():
-        return {}
+    """The round's craft-manifest.json. While a seal holds a snapshot of this round, the
+    SNAPSHOT's: a wireframe declaration that existed on disk only while seal was running
+    skipped the gap producer and the round sealed, with no manifest on disk before or after
+    (adversarial review of 4ab043d7)."""
+    held = _SNAPSHOTS.get(rd.resolve())
+    if held is not None:
+        raw = held.files.get(CRAFT_MANIFEST)
+        if raw is None:
+            return {}
+        text = raw.decode("utf-8", "replace")
+    else:
+        mp = rd / CRAFT_MANIFEST
+        if not mp.is_file():
+            return {}
+        text = mp.read_text()
     try:
-        d = json.loads(mp.read_text())
+        d = json.loads(text)
     except ValueError:
         return {}
     return d if isinstance(d, dict) else {}
@@ -367,6 +394,7 @@ def producer_problems(rd: Path, pages: list[Path], cfg: dict) -> list[tuple[str,
         if held is not None:
             return _run_producers(held, pages, cfg)
         with snapshot_round(rd) as snap:
+            snap.cfg_path = load_config(pages[0])[1] if pages else None
             return _run_producers(snap, pages, cfg)
     except OSError as e:
         # No loopback, no file descriptors, a read-only standard.json or checks/. Every other
@@ -390,9 +418,11 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
     rd = snap.live
     std_path = snap.dir / "standard.json"
     # The producers find design-chain.json and references/ by walking up from the round. The
-    # snapshot has neither above it, so both are handed over by path.
-    cfg_path = find_config(rd.resolve())
-    with served_round(rd, snap.files) as base:
+    # snapshot has neither above it, so both are handed over by path. The config path is the
+    # one seal itself loaded: resolving it a second time here reached a DIFFERENT file through
+    # a symlinked parent (canon 30 by the typed path, 5 by the resolved one).
+    cfg_path = snap.cfg_path
+    with served_round(rd, snap.files, snap.missed) as base:
         for p in pages:
             sp = snap.dir / p.name
             _drop_prior_verdict(std_path, sp)
@@ -432,7 +462,23 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
                 bad.append((GAP_PRODUCER, [f"below the exemplar floor ({GAP_PRODUCER} exit 2): {tail}"]))
             elif rc != 0:
                 bad.append((GAP_PRODUCER, [f"could not measure ({GAP_PRODUCER} exit {rc}): {tail}"]))
+    unserved = sorted(m for m in snap.missed if m not in BROWSER_ASKS_UNPROMPTED)
+    if unserved:
+        bad.append(("seal", [f"the page asked for {unserved} and this round does not serve it, so the "
+                             f"verdict would be about a page missing that file, not about the page. "
+                             f"Add the file to the round or remove the reference. (A link outside the "
+                             f"round, a name whose case differs from the file, and a symlink out of "
+                             f"the round all land here.)"]))
     return bad
+
+
+# What a browser requests on its own, without the page asking. Exact names; never a directory,
+# never a suffix; it grows by an issue. Anything else a page asks for and does not get means
+# chromium rendered a different page than the round's: a 404 stylesheet left 16px browser
+# default text, which PASSES a 15px floor (adversarial review of 4ab043d7, three ways in).
+BROWSER_ASKS_UNPROMPTED = frozenset({
+    "favicon.ico", "apple-touch-icon.png", "apple-touch-icon-precomposed.png", "robots.txt",
+})
 
 
 # The chain's own records, by exact path relative to the round. Everything ELSE in the round
@@ -473,8 +519,15 @@ def round_asset_digest(rd: Path) -> str:
     return asset_digest(round_files(rd))
 
 
-def assets_that_differ(a: dict[str, bytes], b: dict[str, bytes]) -> list[str]:
-    return sorted(rel for rel in set(a) | set(b) if rel not in _CHAIN_RECORDS and a.get(rel) != b.get(rel))
+# Two lists for two jobs. _CHAIN_RECORDS is what the DIGEST leaves out (records the chain
+# keeps writing after a seal). _SEAL_WRITES is what the live-vs-snapshot COMPARE leaves out:
+# only the files this seal itself writes while it runs. The compare used to borrow the
+# digest's list, so brief.md could be swapped under a running seal and left swapped.
+_SEAL_WRITES = frozenset({"standard.json", f"checks/{GAP_CHECK}", "receipts.json"})
+
+
+def files_that_differ(a: dict[str, bytes], b: dict[str, bytes]) -> list[str]:
+    return sorted(rel for rel in set(a) | set(b) if rel not in _SEAL_WRITES and a.get(rel) != b.get(rel))
 
 
 SEAL_RESIDUAL = ("the same OS user can write to the snapshot directory mid-seal (the browser is served "
@@ -1456,7 +1509,7 @@ def seal(rd: Path) -> int:
         return 2
     rc = rd / "receipts.json"
     bad = []
-    seal_cfg, _ = load_config(pages[0])
+    seal_cfg, seal_cfg_path = load_config(pages[0])
     # A withdrawn round is never going to be shown, so it has nothing to seal and gets NO
     # receipt. The first version of dc-02 skipped the producers for it and then fell through
     # and wrote one anyway: withdraw, seal, delete the manifest, and the page read COMPLETE
@@ -1470,13 +1523,63 @@ def seal(rd: Path) -> int:
     if why_withdrawn is not None:
         print(f"seal: {rd.name} is withdrawn. Nothing to seal, no receipt written.")
         return 0
+    code = 2
+    with _die_cleanly():
+        try:
+            with snapshot_round(rd) as snap:
+                snap.cfg_path = seal_cfg_path
+                gone = [p.name for p in pages if p.name not in snap.files]
+                if gone:
+                    # listed a moment ago, absent from the snapshot: checked HERE, once, so no
+                    # later caller meets a KeyError (standard review of 4ab043d7)
+                    print(f"seal REFUSED:\n  could not measure: {gone} vanished before this seal "
+                          f"could read them", file=sys.stderr)
+                else:
+                    code = _seal_snapshot(rd, pages, seal_cfg, snap)
+        except OSError as e:
+            # an unreadable or vanishing file in the round: a refusal like every other, not exit 1
+            print(f"seal REFUSED:\n  could not measure: {type(e).__name__}: {e}", file=sys.stderr)
+        finally:
+            if code != 0:
+                _withdraw_passes(rd, pages)
+    return code
+
+
+@contextlib.contextmanager
+def _die_cleanly():
+    """SIGTERM and SIGHUP become SystemExit for the length of one seal, so the snapshot's
+    finally runs. The default action kills the process where it stands and left a full copy
+    of the round in the temp dir (adversarial review of 4ab043d7; SIGTERM is how launchd,
+    `timeout` and a CI cancel stop this). Main thread only (signal.signal raises elsewhere),
+    only over SIG_DFL (never a caller's handler), and the prior handler is put back."""
+    taken = {}
+    if threading.current_thread() is threading.main_thread():
+        def stop(signum, _frame):
+            raise SystemExit(128 + signum)
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            if signal.getsignal(sig) is signal.SIG_DFL:
+                taken[sig] = signal.signal(sig, stop)
     try:
-        with snapshot_round(rd) as snap:
-            return _seal_snapshot(rd, pages, seal_cfg, snap)
-    except OSError as e:
-        # an unreadable or vanishing file in the round: a refusal like every other, not exit 1
-        print(f"seal REFUSED:\n  could not measure: {type(e).__name__}: {e}", file=sys.stderr)
-        return 2
+        yield
+    finally:
+        for sig, prior in taken.items():
+            signal.signal(sig, prior)
+
+
+def _withdraw_passes(rd: Path, pages: list[Path]) -> None:
+    """A seal that refused leaves no `pass: true` behind it. The verdict is copied back while
+    the seal runs (chain_problems reads it there), so a round whose stylesheet changed after
+    the snapshot was left saying pass for bytes no longer on disk. A FAILING verdict stays: it
+    agrees with the refusal and it is what the builder reads next. One function, one caller."""
+    std = rd / "standard.json"
+    try:
+        entries = _read_standard(std)
+        names = {p.name for p in pages}
+        kept = [e for e in entries if not (e.get("page") in names and e.get("pass") is True)]
+        if len(kept) != len(entries):
+            std.write_text(json.dumps(kept, indent=2) + "\n")
+    except OSError:
+        pass        # the refusal already stands; an unwritable file cannot make it a pass
 
 
 def _seal_snapshot(rd: Path, pages: list[Path], seal_cfg: dict, snap: RoundSnapshot) -> int:
@@ -1508,7 +1611,7 @@ def _seal_snapshot(rd: Path, pages: list[Path], seal_cfg: dict, snap: RoundSnaps
         return 2
     # The receipt is about the SNAPSHOT: those are the bytes the browser was given. It is
     # written only if the round on disk is those bytes now.
-    moved = assets_that_differ(snap.files, round_files(rd))
+    moved = files_that_differ(snap.files, round_files(rd))
     if moved:
         print("seal REFUSED:", file=sys.stderr)
         print(f"  {moved} differ from what this seal measured, so what was measured is not what "

@@ -29,8 +29,9 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parents[1]
 REAL_GATE = SCRIPTS / "design-chain-gate.py"
 OWNER = "> **A business where somebody is paid to be accurate, and being wrong costs money"
-FAILING_CSS = "p{font-size:9px}"       # honest verdict: smallest text 9px; min 15
-PASSING_CSS = "p{font-size:18px}"
+CANON_MIN_BODY_PX = 17                 # NOT the producer's DEFAULTS value (15): a dropped --config must show
+FAILING_CSS = "p{font-size:9px}"       # honest verdict: smallest text 9px; min 17
+PASSING_CSS = "p,a{font-size:18px}"     # the link too: at the browser's 16px it fails the canon's 17
 PAGE = ("<html><head><link rel='stylesheet' href='shared.css'></head><body>"
         "<h1>You work more hours than you bill.</h1><p>Somebody retypes it every week.</p>"
         "<a href='#'>Book</a></body></html>")
@@ -55,7 +56,7 @@ class Base(unittest.TestCase):
         (inst / "canonical" / "the-business.md").write_text("# B\n\n" + OWNER + "\n")
         (inst / "design-chain.json").write_text(json.dumps({
             "owners": [{"file": "canonical/the-business.md", "anchors": ["^> \\*\\*A business where somebody is paid"]}],
-            "standard": {"min_body_px": 15}}))
+            "standard": {"min_body_px": CANON_MIN_BODY_PX}}))
         rd = self.round = inst / "site" / "design" / "r1"
         rd.mkdir(parents=True)
         self.page = rd / "Pair-laptop.html"
@@ -103,6 +104,21 @@ def seal_is_listening(pid):
     return "LISTEN" in r.stdout
 
 
+def wait_for_the_server(proc, limit=60.0):
+    """WHY the wait ended: 'listening', 'exited' or 'timeout'. The first version swapped the file
+    after the loop whatever had ended it, so with lsof missing or slow the swap landed after seal
+    had gone and the test stayed green without attacking anything (standard review of 4ab043d7).
+    Looked up through the module, so a test can prove this check is able to fail."""
+    t0 = time.time()
+    while time.time() - t0 < limit:
+        if proc.poll() is not None:
+            return "exited"
+        if sys.modules[__name__].seal_is_listening(proc.pid):
+            return "listening"
+        time.sleep(0.01)
+    return "timeout"
+
+
 class Controls(Base):
     """Honest runs, so the adversarial results below mean something."""
 
@@ -120,6 +136,16 @@ class Controls(Base):
         self.assertIs(self.verdict()["pass"], True)
         self.assertTrue((self.round / "receipts.json").is_file())
 
+    def test_the_producer_is_handed_the_rounds_own_canon_not_its_defaults(self):
+        # Mutant M-H (adversarial review of 4ab043d7): drop the --config seal hands the producer
+        # and every test stayed green, because the fixture's 15 WAS the producer's default. The
+        # snapshot has no design-chain.json above it, so without --config the canon is ignored.
+        self.css.write_text("p,a{font-size:16px}")          # passes a floor of 15, fails the canon's 17
+        rc, out = self.seal()
+        self.assertEqual(self.verdict()["config"]["min_body_px"], CANON_MIN_BODY_PX, out)
+        self.assertEqual(rc, 2, out)
+        self.assertIs(self.verdict()["pass"], False)
+
 
 class SwapAndRestore(Base):
     """A -> X -> A. The file on disk is A before the seal and A after it. X exists only while
@@ -128,8 +154,10 @@ class SwapAndRestore(Base):
     def swap_and_restore(self, log):
         def during(proc):
             t0 = time.time()
-            while proc.poll() is None and not seal_is_listening(proc.pid):
-                time.sleep(0.01)
+            why = wait_for_the_server(proc)
+            log.append(why)
+            if why != "listening":
+                return
             self.css.write_text(PASSING_CSS)
             log.append(f"swapped to X at +{time.time() - t0:.2f}s (seal's server is up)")
             while proc.poll() is None and not (self.verdict() or {}).get("sha256"):
@@ -146,7 +174,8 @@ class SwapAndRestore(Base):
                   f"shared.css on disk now == A (9px): {self.css.read_text() == FAILING_CSS}\n"
                   f"verdict: {self.verdict()}\nreceipt written: {(self.round / 'receipts.json').exists()}")
         print("\n--- A -> X -> A against the real gate ---\n" + report, file=sys.stderr)
-        self.assertEqual(len(log), 2, f"the watcher never got its window, so nothing was tested\n{report}")
+        self.assertEqual(log[0], "listening", f"the watcher never saw seal's server, so nothing was attacked\n{report}")
+        self.assertEqual(len(log), 3, report)
         self.assertEqual(self.css.read_text(), FAILING_CSS)
         self.assertNotEqual(rc, 0, "SEALED a round whose real stylesheet FAILS the standard\n" + report)
         self.assertFalse((self.round / "receipts.json").exists(), report)
@@ -164,6 +193,8 @@ class SwapAndLeave(Base):
         self.assertNotEqual(rc, 0, out)
         self.assertIn("shared.css", out)
         self.assertFalse((self.round / "receipts.json").exists())
+        # the snapshot (18px) measured PASS; the round on disk is no longer those bytes
+        self.assertIsNone(self.verdict(), "a refused seal left a pass:true verdict in the live round")
 
 
 class VerdictsComeBack(Base):
@@ -175,7 +206,7 @@ class VerdictsComeBack(Base):
         self.assertIsNotNone(v, "standard.json did not come back to the round")
         self.assertIn("measurements", v)
 
-    def test_nothing_is_left_behind_in_the_temp_directory(self):
+    def test_nothing_is_left_behind_after_a_seal_that_exits_on_its_own(self):
         self.css.write_text(PASSING_CSS)
         before = {p.name for p in Path(tempfile.gettempdir()).glob("dc-seal-*")}
         rc, out = self.seal()
@@ -192,8 +223,9 @@ class SwapThePageItself(Base):
         log = []
 
         def during(proc):
-            while proc.poll() is None and not seal_is_listening(proc.pid):
-                time.sleep(0.01)
+            log.append(wait_for_the_server(proc))
+            if log[0] != "listening":
+                return
             self.page.write_text(PAGE)
             log.append("X")
             while proc.poll() is None and not (self.verdict() or {}).get("sha256"):
@@ -201,7 +233,7 @@ class SwapThePageItself(Base):
             self.page.write_text(long_page)
             log.append("A")
         rc, out = self.seal(during=during)
-        self.assertEqual(log, ["X", "A"], "the watcher never got its window\n" + out)
+        self.assertEqual(log, ["listening", "X", "A"], "the watcher never saw seal's server\n" + out)
         self.assertNotEqual(rc, 0, out)
         self.assertFalse((self.round / "receipts.json").exists(), out)
 
@@ -299,8 +331,9 @@ class TheDigestCoversEveryServedPath(Base):
         with gate.served_round(self.round) as base:
             for rel, data in files.items():
                 self.assertEqual(urllib.request.urlopen(f"{base}/{rel}", timeout=5).read(), data, rel)
-            with self.assertRaises(urllib.error.HTTPError):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
                 urllib.request.urlopen(f"{base}/../../design-chain.json", timeout=5)
+            ctx.exception.close()
 
     def test_a_seal_names_a_new_file_dropped_into_gate_while_it_ran(self):
         self.css.write_text(PASSING_CSS)
@@ -366,6 +399,220 @@ class OneSnapshotPerSeal(Base):
         # the live page) also refuses, and the first version of this test passed on that alone
         self.assertIn("no fresh verdict for this page", err.getvalue())
         self.assertFalse((self.round / "receipts.json").exists())
+
+
+class WhatThePageAskedForAndDidNotGet(Base):
+    """A 404 stylesheet leaves the browser's 16px default, which passed a 15px floor: the round
+    sealed with its real stylesheet at 9px, no race needed (adversarial review of 4ab043d7).
+    Each test asserts the REASON, because the canon here (17) also fails a 16px page."""
+
+    def refused_for(self, name):
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("does not serve it", out)
+        self.assertIn(name, out)
+        self.assertFalse((self.round / "receipts.json").exists())
+
+    def test_a_stylesheet_symlinked_outside_the_round(self):
+        (self.round.parent / "shared.css").write_text(FAILING_CSS)
+        self.css.symlink_to(self.round.parent / "shared.css")
+        self.refused_for("shared.css")
+
+    def test_a_stylesheet_with_a_non_ascii_name_is_served_under_its_own_name(self):
+        # no charset on the page made chromium ask for a mojibake name. With the charset the
+        # real file is found, measured at 9px, and the refusal is the HONEST one.
+        (self.round / "h\u00e9r\u00f3.css").write_text(FAILING_CSS)
+        self.page.write_text(PAGE.replace("shared.css", "h\u00e9r\u00f3.css"), encoding="utf-8")
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertNotIn("does not serve it", out)
+        self.assertIn("smallest text 9px", out)
+
+    def test_a_link_whose_case_differs_from_the_file(self):
+        # the pre-commit disk server found shared.css for /Shared.CSS through APFS; a static
+        # host on Linux does not. Case is not folded: the refusal is the honest answer.
+        self.css.write_text(FAILING_CSS)
+        self.page.write_text(PAGE.replace("shared.css", "Shared.CSS"))
+        self.refused_for("Shared.CSS")
+
+    def test_what_a_browser_asks_for_unprompted_is_not_held_against_the_round(self):
+        gate = load_real_gate()
+        import urllib.error
+        import urllib.request
+        self.css.write_text(PASSING_CSS)
+        missed = []
+        with gate.served_round(self.round, None, missed) as base:
+            for path in ("/favicon.ico", "/robots.txt", "/nope.css"):
+                try:
+                    urllib.request.urlopen(base + path, timeout=5)
+                except urllib.error.HTTPError as e:
+                    e.close()
+        self.assertEqual(sorted(missed), ["favicon.ico", "nope.css", "robots.txt"])
+        self.assertEqual([m for m in missed if m not in gate.BROWSER_ASKS_UNPROMPTED], ["nope.css"])
+        rc, out = self.seal()                  # chromium asks for /favicon.ico on its own
+        self.assertEqual(rc, 0, out)
+
+
+class ChainRecordsAreComparedToo(Base):
+    def test_a_chain_record_changed_under_a_running_seal_and_left_changed_is_refused(self):
+        # directions.md on purpose: no chain check reads its wording, so only the compare can see it
+        self.css.write_text(PASSING_CSS)
+        why = []
+
+        def during(proc):
+            why.append(wait_for_the_server(proc))
+            if why[0] == "listening":
+                with (self.round / "directions.md").open("a") as f:
+                    f.write("a line added while the seal ran, no new heading\n")
+        rc, out = self.seal(during=during)
+        self.assertEqual(why, ["listening"], out)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("directions.md", out)
+        self.assertFalse((self.round / "receipts.json").exists())
+
+    def test_a_wireframe_declaration_that_exists_only_during_the_seal_does_not_skip_the_gap_producer(self):
+        self.css.write_text(PASSING_CSS)
+        cfgp = self.round.parents[2] / "design-chain.json"
+        cfg = json.loads(cfgp.read_text())
+        cfg["craft"] = {"tier": "craft", "require_gap_check": True}
+        cfgp.write_text(json.dumps(cfg))
+        manifest = self.round / "craft-manifest.json"
+        why = []
+
+        def during(proc):
+            why.append(wait_for_the_server(proc))
+            if why[0] != "listening":
+                return
+            manifest.write_text(json.dumps({"tier": "wireframe", "reason": "only while seal looks"}))
+            proc.wait()
+            manifest.unlink()
+        rc, out = self.seal(during=during)
+        self.assertEqual(why, ["listening"], out)
+        self.assertNotEqual(rc, 0, out)
+        # the REASON: the compare also refuses (the manifest was still there at the end), so the
+        # exit code alone cannot tell whether the gap producer was skipped
+        self.assertIn("design-gap-check.py", out)
+        self.assertFalse(manifest.exists())
+
+
+class ASealThatIsKilled(Base):
+    def test_sigterm_and_sighup_leave_no_snapshot_behind(self):
+        import signal
+        self.css.write_text(PASSING_CSS)
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            before = {p.name for p in Path(tempfile.gettempdir()).glob("dc-seal-*")}
+            why = []
+
+            def during(proc):
+                why.append(wait_for_the_server(proc))
+                if why[0] == "listening":
+                    proc.send_signal(sig)
+            rc, out = self.seal(during=during)
+            self.assertEqual(why, ["listening"], out)
+            self.assertNotEqual(rc, 0, out)
+            left = {p.name for p in Path(tempfile.gettempdir()).glob("dc-seal-*")} - before
+            self.assertEqual(left, set(), f"{sig.name} left a copy of the round in the temp dir")
+            self.assertFalse((self.round / "receipts.json").exists())
+
+
+class TheWatcherCheckCanFail(Base):
+    def test_a_run_that_never_sees_the_server_is_reported_as_such(self):
+        # Sana: "with seal_is_listening stubbed to always return False, the test goes red."
+        me = sys.modules[__name__]
+        real = me.seal_is_listening
+        me.seal_is_listening = lambda pid: False
+        self.addCleanup(setattr, me, "seal_is_listening", real)
+        self.css.write_text(PASSING_CSS)
+        why = []
+        self.seal(during=lambda proc: why.append(wait_for_the_server(proc)))
+        self.assertEqual(why, ["exited"])
+
+
+class CleanRefusals(Base):
+    def run_seal(self, gate):
+        import contextlib
+        import io
+        os.environ["DESIGN_CHAIN_STATE"] = str(self.tmp / "state")
+        self.addCleanup(os.environ.pop, "DESIGN_CHAIN_STATE", None)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = gate.seal(self.round)
+        return rc, err.getvalue()
+
+    def test_a_page_that_vanishes_before_the_snapshot_is_a_refusal_not_a_traceback(self):
+        gate = load_real_gate()
+        self.css.write_text(PASSING_CSS)
+        real = gate.round_files
+
+        def without_the_page(rd):
+            files = real(rd)
+            files.pop(self.page.name, None)
+            return files
+        gate.round_files = without_the_page
+        rc, err = self.run_seal(gate)
+        self.assertEqual(rc, 2)
+        self.assertIn("vanished", err)
+
+    def test_a_second_seal_of_the_same_round_in_one_process_is_refused(self):
+        gate = load_real_gate()
+        self.css.write_text(PASSING_CSS)
+        with gate.snapshot_round(self.round):
+            rc, err = self.run_seal(gate)
+        self.assertEqual(rc, 2)
+        self.assertIn("already running", err)
+
+    def test_a_stale_verdict_does_not_stand_in_for_a_producer_that_wrote_nothing(self):
+        # Mutant M-V. A STAND-IN producer (the second and last in this file): the real one
+        # always writes an entry when it exits 0, so only a silent one reaches this.
+        import hashlib
+        gate = load_real_gate()
+        self.css.write_text(PASSING_CSS)
+        (self.round / "standard.json").write_text(json.dumps([{
+            "page": self.page.name, "sha256": hashlib.sha256(self.page.read_bytes()).hexdigest(), "pass": True}]))
+        gate.run_producer = lambda name, args: (0, "")
+        rc, err = self.run_seal(gate)
+        self.assertEqual(rc, 2)
+        self.assertIn("no fresh verdict for this page", err)
+        self.assertIsNone(self.verdict(), "the typed pass:true survived a seal that refused")
+
+    def test_a_gap_receipt_this_run_did_not_write_is_removed_from_the_round(self):
+        # Mutant M-S. Real producers: with no exemplar captures the real gap producer cannot
+        # measure and writes nothing, so the stale receipt must go.
+        self.css.write_text(PASSING_CSS)
+        cfgp = self.round.parents[2] / "design-chain.json"
+        cfg = json.loads(cfgp.read_text())
+        cfg["craft"] = {"tier": "craft", "require_gap_check": True}
+        cfgp.write_text(json.dumps(cfg))
+        stale = self.round / "checks" / "gap.json"
+        stale.write_text(json.dumps({"pages": {self.page.name: {"below_floor": []}}}))
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertFalse(stale.exists(), "a gap receipt from an earlier run outlived a run that wrote none")
+
+
+class NothingOutsideTheRoundIsServed(Base):
+    def test_symlinks_out_loops_broken_links_and_encoded_slashes(self):
+        import urllib.error
+        import urllib.request
+        gate = load_real_gate()
+        self.css.write_text(PASSING_CSS)
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        (outside / "secret.css").write_text("secret")
+        (self.round / "out.css").symlink_to(outside / "secret.css")
+        (self.round / "outdir").symlink_to(outside)
+        (self.round / "loop").symlink_to(self.round / "loop")
+        (self.round / "broken.css").symlink_to(self.round / "nothing-here.css")
+        files = gate.round_files(self.round)
+        for rel in ("out.css", "outdir/secret.css", "loop", "broken.css"):
+            self.assertNotIn(rel, files)
+        with gate.served_round(self.round) as base:
+            for path in ("/out.css", "/outdir/secret.css", "/loop", "/broken.css",
+                         "/..%2f..%2fdesign-chain.json", "/%2e%2e/%2e%2e/design-chain.json"):
+                with self.assertRaises(urllib.error.HTTPError, msg=path) as ctx:
+                    urllib.request.urlopen(base + path, timeout=5)
+                self.assertEqual(ctx.exception.code, 404, path)
+                ctx.exception.close()
 
 
 def load_real_gate():
