@@ -60,6 +60,14 @@ WIRING_SURFACES = (
     # the strongest wiring a script can have. Added 2026-07-26 when
     # receipts-ledger-check.py, wired in lefthook and nowhere else, was flagged.
     "lefthook.yml",
+    # .github/workflows/verify.yml runs `bash q-system/.q-system/verify.sh --full`
+    # on every push, so a script called from verify.sh executes in CI. Neither
+    # glob below matches it (`*.sh` is root-only, the other is scripts/), and
+    # PR #279 went RED on `inert-engine: mcp-denylist-namespace-check.py` while
+    # CI ran it (ASK-1170). Named by path, not a `q-system/.q-system/*.sh` glob:
+    # CI runs this one file, not its siblings. Measured before adding: zero
+    # scripts on main changed verdict.
+    "q-system/.q-system/verify.sh",
 )
 WIRING_SURFACE_GLOBS = (
     "plugins/*/hooks/hooks.json",
