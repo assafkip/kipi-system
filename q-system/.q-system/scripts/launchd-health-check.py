@@ -70,6 +70,28 @@ WATCHED_PREFIXES = (
 # file = base set only (harmless no-op).
 EXTRA_PREFIXES_FILE = Path.home() / ".config" / "kipi" / "launchd-watch-prefixes.txt"
 
+# Third-party families: never checked, never reported. EVERY other installed
+# family is checked, and one that is neither watched nor denylisted is itself a
+# finding (`unwatched_family`).
+#
+# Scar (ASK-1123/ASK-1124, 2026-08-29): the watchdog used to enumerate ONLY the
+# watched prefixes. A full sweep found two of seven owned families unwatched --
+# io.askconsulting. (11 jobs, one failing undetected for days, ASK-1122) and
+# a second owned family (3 jobs, healthy, which is why nobody noticed). An allowlist fails
+# silently for every family nobody remembered; a denylist fails as noise. The set
+# of third-party vendors on a host is bounded and reviewable; the set of families
+# we might one day own is not.
+IGNORED_PREFIXES = (
+    "com.apple.",
+    "com.docker.",
+    "com.google.",
+    "com.contourdesign.",
+)
+
+# Host-local denylist additions, same format as EXTRA_PREFIXES_FILE. The skeleton
+# ships fleet-wide, so a vendor that only exists on one machine goes here.
+IGNORED_PREFIXES_FILE = Path.home() / ".config" / "kipi" / "launchd-ignore-prefixes.txt"
+
 # Labels that are not_loaded ON PURPOSE. A deliberately paused job is not a
 # failure, and pinging about one is the alert-fatigue mechanism that teaches the
 # founder to ignore this channel entirely.
@@ -102,11 +124,11 @@ def load_paused_labels():
     return paused
 
 
-def load_watched_prefixes():
-    """Base families plus any instance-local additions from EXTRA_PREFIXES_FILE."""
-    prefixes = list(WATCHED_PREFIXES)
+def _prefixes_with_file(base, path):
+    """`base` plus one prefix per line of `path` ('#' comments). Missing = base."""
+    prefixes = list(base)
     try:
-        lines = EXTRA_PREFIXES_FILE.read_text().splitlines()
+        lines = path.read_text().splitlines()
     except FileNotFoundError:
         return tuple(prefixes)
     for line in lines:
@@ -114,6 +136,25 @@ def load_watched_prefixes():
         if entry and entry not in prefixes:
             prefixes.append(entry)
     return tuple(prefixes)
+
+
+def load_watched_prefixes():
+    """Base families plus any instance-local additions from EXTRA_PREFIXES_FILE."""
+    return _prefixes_with_file(WATCHED_PREFIXES, EXTRA_PREFIXES_FILE)
+
+
+def load_ignored_prefixes():
+    """Third-party families plus any host-local additions."""
+    return _prefixes_with_file(IGNORED_PREFIXES, IGNORED_PREFIXES_FILE)
+
+
+def family_of(label):
+    """'io.askconsulting.ask-crm' -> 'io.askconsulting.'. A label with fewer than
+    three components is its own family, so it is still named, never dropped."""
+    parts = label.split(".")
+    if len(parts) < 3:
+        return label
+    return ".".join(parts[:2]) + "."
 
 
 def normalize_exit(raw):
@@ -175,27 +216,43 @@ def job_status(label):
     return classify_status(result.returncode, result.stdout)
 
 
+def status_problem(label, paused):
+    """The (label, kind, detail) for one job, or None when it is healthy."""
+    kind, code = job_status(label)
+    if kind == "failing":
+        return (label, "failing", f"exit {code}")
+    if kind != "not_loaded":
+        return None
+    if label in paused:
+        # Intentional. Reported so it stays visible, never pinged.
+        return (label, "paused", "paused on purpose")
+    return (label, "not_loaded", "installed but not running")
+
+
 def discover_problems():
-    """List (label, kind, detail) for every watched job that is failing or
-    installed-but-unloaded. Watched = any watched-prefix plist, minus self."""
+    """List (label, kind, detail) for every installed job that is failing or
+    installed-but-unloaded, plus one `unwatched_family` finding per family that
+    is neither watched nor denylisted. Every plist is checked except self and the
+    denylisted families; a watched prefix beats the denylist."""
     problems = []
-    seen = set()
+    unwatched = {}
     paused = load_paused_labels()
-    for prefix in load_watched_prefixes():
-        for plist in sorted(LAUNCH_AGENTS.glob(f"{prefix}*.plist")):
-            label = plist.stem
-            if label == SELF_LABEL or label in seen:
-                continue
-            seen.add(label)
-            kind, code = job_status(label)
-            if kind == "failing":
-                problems.append((label, "failing", f"exit {code}"))
-            elif kind == "not_loaded":
-                if label in paused:
-                    # Intentional. Reported so it stays visible, never pinged.
-                    problems.append((label, "paused", "paused on purpose"))
-                else:
-                    problems.append((label, "not_loaded", "installed but not running"))
+    watched = load_watched_prefixes()
+    ignored = load_ignored_prefixes()
+    for plist in sorted(LAUNCH_AGENTS.glob("*.plist")):
+        label = plist.stem
+        is_watched = label.startswith(watched)
+        if label == SELF_LABEL or (label.startswith(ignored) and not is_watched):
+            continue
+        if not is_watched:
+            unwatched.setdefault(family_of(label), []).append(label)
+        problem = status_problem(label, paused)
+        if problem:
+            problems.append(problem)
+    for family, members in sorted(unwatched.items()):
+        problems.append((family, "unwatched_family",
+                         f"{len(members)} installed job(s) in a family neither "
+                         f"watched nor denylisted"))
     return problems
 
 
@@ -584,7 +641,7 @@ def file_intent_coverage(intent, findings, coverage_tuple, dry_run):
           + ("" if landed else " -- THE GAP REACHED NOBODY"))
 
 
-def run_intent_check(dry_run):
+def run_intent_check(dry_run, broken_labels=frozenset()):
     """Verify declared intent against launchd's override DB; print, ping, file.
 
     Never raises. A watchdog that dies because the intent manifest is malformed
@@ -608,6 +665,11 @@ def run_intent_check(dry_run):
         return
 
     for label, kind, detail in findings:
+        # ASK-1124: io.askconsulting.ask-crm-morning-refresh was failing and the
+        # only line it produced was "no declared intent", which reads as
+        # paperwork. A job the watchdog reports as broken gets that line instead.
+        if kind == "undeclared" and label in (broken_labels or ()):
+            continue
         print(f"INTENT-{kind.upper()}: {label} -- {detail}")
     print(f"intent coverage: {declared}/{total} installed jobs declared")
     file_intent_coverage(intent, findings, (declared, total), dry_run)
@@ -753,14 +815,16 @@ def record_pings(state, due, now, delivered):
 
 
 def run(dry_run):
+    problems = discover_problems()
+
     # BEFORE the early return below, not after. `problems` is empty exactly when
     # every watched job is loaded and healthy -- which is the state a job running
     # against an explicit pause decision produces. Wiring the intent check after
     # the `if not problems: return` would make it dead on the only fleet state it
-    # exists to judge.
-    run_intent_check(dry_run)
-
-    problems = discover_problems()
+    # exists to judge. After discovery (ASK-1124), so it knows which jobs are
+    # already reported as broken.
+    run_intent_check(dry_run, broken_labels=frozenset(
+        label for label, kind, _ in problems if kind in ("failing", "not_loaded")))
 
     if not problems:
         if dry_run:

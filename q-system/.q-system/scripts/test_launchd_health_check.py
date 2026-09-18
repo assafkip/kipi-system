@@ -252,6 +252,7 @@ def _fh_stub(created=0, existing=0, unfiled=0, record=None):
 
 
 _intent_calls = []
+_intent_broken_labels = []
 
 
 def run_capture(problems, fleet_health, dry=False, state=None):
@@ -284,7 +285,9 @@ def run_capture(problems, fleet_health, dry=False, state=None):
     wd.write_state = lambda s: writes.append(s)
     wd.send_ping = lambda message: (pings.append(message), True)[1]
     wd._FLEET_HEALTH = fleet_health
-    wd.run_intent_check = lambda dry_run: _intent_calls.append(f"intent:{dry_run}")
+    wd.run_intent_check = lambda dry_run, broken_labels=None: (
+        _intent_broken_labels.append(broken_labels),
+        _intent_calls.append(f"intent:{dry_run}"))
     out, err = io.StringIO(), io.StringIO()
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -686,11 +689,15 @@ check("every detector the watchdog files under is in fleet-health's registry",
 # path was never entered -- and it goes red the moment the stub is removed.
 run_capture(_TWO_REAL, _fh_stub(created="all"))
 check("run_capture never loads the live intent module", wd._INTENT, None)
-check("the intent check still runs, and BEFORE problems are discovered",
-      _intent_calls[:2], ["intent:False", "discover"])
+# Discovery now comes FIRST (ASK-1124): the intent check needs the broken labels
+# so it never prints "no declared intent" for a failing job. What this pin
+# protected -- the intent check runs even when discovery finds nothing -- is held
+# by the dry, nothing-to-file run just below.
+check("the intent check still runs, AFTER problems are discovered",
+      _intent_calls[:2], ["discover", "intent:False"])
 run_capture(_NOTHING_TO_FILE, _fh_stub(), dry=True)
 check("dry mode reaches the intent check in dry mode too",
-      _intent_calls[0], "intent:True")
+      _intent_calls[:2], ["discover", "intent:True"])
 
 # --- an undelivered alert must not be recorded as seen (PR #134 review, major) -
 # THE REPRODUCER: run_intent_check() called commit() unconditionally. With Linear
@@ -947,7 +954,7 @@ def _run_with_verdict(delivered, state=None):
     wd.load_state = lambda: dict(state or {})
     wd.write_state = writes.append
     wd.send_ping = lambda message: delivered
-    wd.run_intent_check = lambda dry_run: None
+    wd.run_intent_check = lambda dry_run, broken_labels=None: None
     wd.file_linear_findings = lambda problems, apply=True: {
         "created": 0, "existing": len(problems), "skipped_no_key": 0,
         "owed": len(problems)}
@@ -1155,6 +1162,133 @@ check("the drift's own NEW issue is still delivery",
       _cov_capture(_MIXED, _MIXED_DUE,
                    {"launchd-intent-drift": {"created": 1},
                     "launchd-intent-coverage": {"existing": 1}}, False)[0], [True])
+
+
+# --- an unknown job family is a finding, not silence (ASK-1124) --------------
+# THE REPRODUCER: the watchdog read an ALLOWLIST of families, so a family nobody
+# added was never enumerated at all. Measured 2026-08-29: io.askconsulting. (11
+# jobs, one failing, ASK-1122) and a second owned family (3 jobs) were both unwatched, and
+# the only line the failing job ever produced was the intent check's "no declared
+# intent". Before the fix, the fake machine below yields NO problems at all.
+def _fake_machine(labels, failing, ignore_lines=None):
+    """A temp LaunchAgents dir plus a stubbed job_status. Returns (problems,
+    labels job_status was asked about). Nothing touches the operator's launchd."""
+    asked = []
+    tmp = Path(tempfile.mkdtemp())
+    agents = tmp / "LaunchAgents"
+    agents.mkdir()
+    for label in labels:
+        (agents / f"{label}.plist").write_text("<plist/>")
+    ignore_file = tmp / "ignore.txt"
+    if ignore_lines is not None:
+        ignore_file.write_text("\n".join(ignore_lines) + "\n")
+    saved = (wd.LAUNCH_AGENTS, wd.EXTRA_PREFIXES_FILE, wd.PAUSED_LABEL_FILES,
+             wd.job_status, getattr(wd, "IGNORED_PREFIXES_FILE", None))
+    wd.LAUNCH_AGENTS = agents
+    wd.EXTRA_PREFIXES_FILE = tmp / "absent-extra.txt"
+    wd.PAUSED_LABEL_FILES = ()
+    wd.IGNORED_PREFIXES_FILE = ignore_file
+    wd.job_status = lambda label: (asked.append(label),
+                                   ("failing", failing[label]) if label in failing
+                                   else ("ok", 0))[1]
+    try:
+        return wd.discover_problems(), asked
+    finally:
+        (wd.LAUNCH_AGENTS, wd.EXTRA_PREFIXES_FILE, wd.PAUSED_LABEL_FILES,
+         wd.job_status, wd.IGNORED_PREFIXES_FILE) = saved
+
+
+_UNKNOWN_MACHINE = ["com.kipi.dispatch", "io.newfam.sync", "io.newfam.refresh",
+                    "com.docker.helper", "com.apple.thing",
+                    "com.google.keystone.agent", "com.contourdesign.helper"]
+_unk_problems, _unk_asked = _fake_machine(
+    _UNKNOWN_MACHINE, {"io.newfam.refresh": 1})
+check("an unknown family is reported BY NAME as a finding",
+      [p for p in _unk_problems if p[1] == "unwatched_family"],
+      [("io.newfam.", "unwatched_family",
+        "2 installed job(s) in a family neither watched nor denylisted")])
+check("a failing job in an unknown family is reported as FAILING",
+      ("io.newfam.refresh", "failing", "exit 1") in _unk_problems, True)
+# The vendors ASK-1124 names are the contract; the shipped denylist must hold them.
+_THIRD_PARTY = ("com.apple.", "com.docker.", "com.google.", "com.contourdesign.")
+check("the shipped denylist holds every vendor the issue names",
+      sorted(set(_THIRD_PARTY) - set(getattr(wd, "IGNORED_PREFIXES", ()))), [])
+check("third-party families are never status-checked",
+      sorted(l for l in _unk_asked if l.startswith(_THIRD_PARTY)), [])
+check("and never reported",
+      [p for p in _unk_problems if p[0].startswith(("com.docker", "com.apple",
+                                                    "com.google", "com.contour"))], [])
+check("a watched family is still checked and raises no family finding",
+      ("com.kipi.dispatch" in _unk_asked,
+       any(p[0] == "com.kipi." for p in _unk_problems)), (True, False))
+
+# The local denylist is the bounded way to silence a family that is truly not ours.
+_den_problems, _den_asked = _fake_machine(
+    _UNKNOWN_MACHINE, {"io.newfam.refresh": 1},
+    ignore_lines=["# third party on this host", "io.newfam."])
+check("a locally denylisted family raises no finding and is not checked",
+      (_den_problems, [l for l in _den_asked if l.startswith("io.newfam.")]),
+      ([], []))
+
+# A label with no family part is its own family, and a watched prefix beats the
+# denylist (an explicit watch is the stronger statement).
+check("family_of reduces to the first two components",
+      [getattr(wd, "family_of", lambda _l: None)(l) for l in ("io.askconsulting.ask-crm", "loner", "a.b")],
+      ["io.askconsulting.", "loner", "a.b"])
+
+# No detection regression: the 4 failures known on 2026-08-29 are all still
+# reported, including the one whose family used to be unwatched.
+_KNOWN_FOUR = {"com.ask.parser-watchdog": 1,
+               "io.askconsulting.ask-crm-morning-refresh": 1,
+               "com.cole.daily-social-deadman": 3,
+               "com.cole.delivery-watch": 1}
+_four_problems, _ = _fake_machine(
+    list(_KNOWN_FOUR) + ["com.cole.healthy", "io.askconsulting.healthy"],
+    _KNOWN_FOUR)
+check("all four known failures are still reported",
+      sorted(l for l, k, _ in _four_problems if k == "failing"), sorted(_KNOWN_FOUR))
+
+# The family finding reaches a channel (ping), and is not filed under a detector
+# fleet-health-daily.py does not own.
+check("an unwatched family is due for a ping",
+      wd.problems_to_ping([("io.newfam.", "unwatched_family", "x")], {}, 0),
+      [("io.newfam.", "unwatched_family", "x")])
+check("an unwatched family is not filed under a borrowed detector",
+      "unwatched_family" in wd.LINEAR_DETECTOR_BY_KIND, False)
+
+# 'no declared intent' is never printed for a job the watchdog reports as broken.
+_FAILING_UNDECLARED = [("io.newfam.refresh", "undeclared", "no declared intent"),
+                       ("io.newfam.sync", "undeclared", "no declared intent")]
+
+
+def _intent_stdout(problem_labels):
+    saved = (wd._INTENT, wd._FLEET_HEALTH, wd.send_ping)
+    wd._INTENT = _cov_intent_stub([], _FAILING_UNDECLARED, [])
+    wd._FLEET_HEALTH = _cov_fh_stub([], {})
+    wd.send_ping = lambda message: False
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            wd.run_intent_check(dry_run=True, broken_labels=problem_labels)
+    except TypeError as exc:  # a pre-ASK-1124 signature: report RED, not a crash
+        return f"run_intent_check refused broken_labels: {exc}"
+    finally:
+        (wd._INTENT, wd._FLEET_HEALTH, wd.send_ping) = saved
+    return out.getvalue()
+
+
+_intent_out = _intent_stdout(frozenset({"io.newfam.refresh"}))
+check("'no declared intent' is not printed for a failing job",
+      "io.newfam.refresh -- no declared intent" in _intent_out, False)
+check("and is still printed for a healthy undeclared job",
+      "io.newfam.sync -- no declared intent" in _intent_out, True)
+
+# run() hands the intent check the labels it found broken, so discovery comes
+# first; the intent check still runs before the early return (pinned above by
+# the dry, nothing-to-file run reaching it).
+run_capture(_TWO_REAL, _fh_stub(created="all"))
+check("run() passes the broken labels to the intent check",
+      _intent_broken_labels[-1], frozenset(l for l, _, _ in _TWO_REAL))
 
 
 def _report() -> int:
