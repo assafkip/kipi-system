@@ -14,8 +14,10 @@ Also here, placed in dc-03 by Sana's dispositions of dc-02's review (2026-09-18)
 
 Temp directories only. Stand-ins are selected by running a COPY of the gate beside them.
 """
+import ast
 import hashlib
 import http.server
+import importlib.util
 import json
 import os
 import re
@@ -126,10 +128,32 @@ class SealServesTheRound(Base):
         self.assertRegex(gap["_url_base"], r"^http://127\.0\.0\.1:\d+$")
 
     def test_no_typed_port_remains_in_the_gate_or_the_producers(self):
+        # A REVIEW AID. The first version regexed for a host:port STRING or the literal 8793
+        # after stripping '#' comments by hand (which also truncated "#0066b3"). The bind is
+        # a TUPLE, ("127.0.0.1", 0), and the reviewer changed the 0 to 8080 with this test
+        # green. So it reads the AST: no (host, nonzero int) tuple, no host:digits in any
+        # string constant, and an f-string may carry "127.0.0.1:" only inside served_round().
+        hosts = {"127.0.0.1", "localhost", "0.0.0.0", ""}
         for f in (REAL_GATE, REAL_STANDARD, REAL_GAP):
-            code = re.sub(r'"""[\s\S]*?"""', "", f.read_text())       # docstrings may tell the history
-            code = "\n".join(ln.split("#")[0] for ln in code.splitlines())
-            self.assertNotRegex(code, r"127\.0\.0\.1:\d{2,5}|localhost:\d{2,5}|\b8793\b", f"{f.name} types a port")
+            tree = ast.parse(f.read_text())
+            docstrings = {id(n.body[0].value) for n in ast.walk(tree)
+                          if isinstance(n, (ast.Module, ast.FunctionDef, ast.ClassDef)) and n.body
+                          and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
+            allowed_fstrings = set()
+            for fn in ast.walk(tree):
+                if isinstance(fn, ast.FunctionDef) and fn.name == "served_round":
+                    allowed_fstrings = {id(n) for n in ast.walk(fn) if isinstance(n, ast.JoinedStr)}
+            for n in ast.walk(tree):
+                if isinstance(n, ast.Tuple) and len(n.elts) == 2:
+                    h, p = n.elts
+                    if (isinstance(h, ast.Constant) and h.value in hosts
+                            and isinstance(p, ast.Constant) and isinstance(p.value, int)):
+                        self.assertEqual(p.value, 0, f"{f.name}:{n.lineno} binds a typed port {p.value}")
+                if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docstrings:
+                    self.assertNotRegex(n.value, r"(127\.0\.0\.1|localhost):\d{2,5}", f"{f.name}:{n.lineno} types a port")
+                if isinstance(n, ast.JoinedStr) and id(n) not in allowed_fstrings:
+                    text = "".join(v.value for v in n.values if isinstance(v, ast.Constant) and isinstance(v.value, str))
+                    self.assertNotRegex(text, r"(127\.0\.0\.1|localhost):$", f"{f.name}:{n.lineno} builds a host:port outside served_round()")
 
 
 class ServerLifetime(unittest.TestCase):
@@ -221,15 +245,52 @@ class GapExitCodes(Base):
         self.assertNotIn("below the exemplar floor", out)
 
     def test_the_REAL_gap_producer_exits_3_with_no_exemplar_captures(self):
-        # no playwright needed: the input check comes before any browser
-        r = subprocess.run([sys.executable, str(REAL_GAP), str(self.round), "--url-base", "http://127.0.0.1:9",
-                            "--refs", str(self.tmp / "no-refs")], capture_output=True, text=True, env=clean())
+        # The round is really SERVED here. The first version pointed at a dead port, so the
+        # served-bytes check answered first and --refs was never read: right code, wrong branch.
+        with _Serve(self.round) as base:
+            r = subprocess.run([sys.executable, str(REAL_GAP), str(self.round), "--url-base", base,
+                                "--refs", str(self.tmp / "no-refs")], capture_output=True, text=True, env=clean())
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
-        self.assertIn("could not measure", r.stdout + r.stderr)
+        self.assertIn("usable exemplar capture", r.stdout + r.stderr)
+
+    def test_a_usage_error_is_could_not_measure_not_below_the_floor(self):
+        # argparse exits 2 by default, and 2 now means "below the exemplar floor"
+        for argv in (["--nope"], [], [str(self.round), "--url-base"]):
+            r = subprocess.run([sys.executable, str(REAL_GAP), *argv], capture_output=True, text=True, env=clean())
+            self.assertEqual(r.returncode, 3, f"{argv}: {r.stdout + r.stderr}")
 
     def test_the_REAL_gap_producer_exits_3_with_no_url_base(self):
         r = subprocess.run([sys.executable, str(REAL_GAP), str(self.round)], capture_output=True, text=True, env=clean())
         self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+
+
+class _Serve:
+    """The round, really served, for tests that must get PAST the served-bytes check."""
+
+    def __init__(self, directory, after_get=None):
+        self.directory, self.after_get = str(directory), after_get
+
+    def __enter__(self):
+        outer = self
+
+        class H(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *a, **k):
+                super().__init__(*a, directory=outer.directory, **k)
+
+            def do_GET(self):
+                super().do_GET()
+                if outer.after_get:
+                    outer.after_get(self.path)
+
+            def log_message(self, *a):
+                pass
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.srv.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
+        return f"http://127.0.0.1:{self.srv.server_address[1]}"
+
+    def __exit__(self, *a):
+        self.srv.shutdown()
+        self.srv.server_close()
 
 
 class _Decoy:
@@ -280,6 +341,149 @@ class RealProducersRefuseADecoy(Base):
         self.assertFalse((self.round / "checks" / "gap.json").exists())
 
 
+def _load_gate(name):
+    spec = importlib.util.spec_from_file_location(name, REAL_GATE)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class OneReadOfTheBytes(Base):
+    """Adversarial review of 4998d7b7, reproduced with real chromium: the producer hashed the
+    page AFTER measuring it, so a file swapped while the browser was mid-measure came back
+    PASS, signed with the sha of bytes nothing had measured."""
+
+    def test_the_REAL_producer_refuses_a_page_that_changed_while_it_was_measured(self):
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            msg = "playwright is not installed: the measure-then-hash window was NOT exercised"
+            if os.environ.get("DC_REQUIRE_REAL_PRODUCERS") == "1":
+                self.fail(msg)
+            self.skipTest(msg)
+        gets = []
+
+        def swap_on_the_browsers_get(path):
+            gets.append(path)
+            if len(gets) == 2:          # 1st GET is the producer's own byte check, 2nd is the browser
+                self.page.write_text("<html><body>" + "<p style='font-size:9px'>slop</p>" * 40 + "</body></html>")
+        with _Serve(self.round, after_get=swap_on_the_browsers_get) as base:
+            r = subprocess.run([sys.executable, str(REAL_STANDARD), str(self.page), "--url", f"{base}/{self.page.name}"],
+                               capture_output=True, text=True, env=clean())
+        self.assertGreaterEqual(len(gets), 2, "the browser never fetched the page, so the window was not exercised")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("changed while it was being measured", r.stdout + r.stderr)
+        self.assertFalse((self.round / "standard.json").exists(), "a verdict was signed over bytes nothing measured")
+
+    def test_seal_rechecks_the_bytes_immediately_before_it_writes_the_receipt(self):
+        dcg = _load_gate("dcg_recheck")
+        dcg.producer_problems = lambda rd, pages, cfg: []
+
+        def chain_then_swap(page, honor_seal=True):
+            page.write_text(PAGE.replace("bill", "invoice"))     # the window after the last check
+            return []
+        dcg.chain_problems = chain_then_swap
+        rc = dcg.seal(self.round)
+        self.assertEqual(rc, 2)
+        self.assertFalse((self.round / "receipts.json").exists())
+
+
+class AssetDigest(Base):
+    """Adversarial review of 4998d7b7: the byte proof covered the HTML only. Measure with one
+    shared.css, swap it, and every sha still matched while an honest re-measure FAILED. Sana:
+    seal computes ONE digest over every file in the round except the chain's own records and
+    writes it into the receipt; dc-10 makes the passive gate recompute it."""
+
+    def setUp(self):
+        super().setUp()
+        (self.round / "shared.css").write_text("p{font-size:18px}")
+
+    def test_the_receipt_records_a_digest_that_moves_when_an_asset_changes(self):
+        rc, out = self.seal()
+        self.assertEqual(rc, 0, out)
+        recorded = json.loads((self.round / "receipts.json").read_text())["__assets__"]["sha256"]
+        dcg = _load_gate("dcg_digest")
+        self.assertEqual(recorded, dcg.round_asset_digest(self.round))
+        (self.round / "shared.css").write_text("p{font-size:9px}")
+        self.assertNotEqual(recorded, dcg.round_asset_digest(self.round))
+
+    def test_the_chains_own_records_do_not_move_the_digest(self):
+        dcg = _load_gate("dcg_digest2")
+        before = dcg.round_asset_digest(self.round)
+        (self.round / "critique.md").write_text("rewritten" + chr(10))
+        (self.round / "standard.json").write_text("[]")
+        (self.round / "checks" / "anything.txt").write_text("x")
+        (self.round / "gate" / "reader-runs.jsonl").write_text("{}")
+        self.assertEqual(before, dcg.round_asset_digest(self.round))
+
+    def test_an_asset_swapped_after_measuring_and_before_the_receipt_is_refused(self):
+        dcg = _load_gate("dcg_digest3")
+
+        def measured_then_swapped(rd, pages, cfg):
+            (rd / "shared.css").write_text("p{font-size:9px}")
+            return []
+        dcg.producer_problems = measured_then_swapped
+        dcg.chain_problems = lambda page, honor_seal=True: []
+        self.assertEqual(dcg.seal(self.round), 2)
+        self.assertFalse((self.round / "receipts.json").exists())
+
+    def test_a_renamed_asset_moves_the_digest(self):
+        dcg = _load_gate("dcg_digest4")
+        before = dcg.round_asset_digest(self.round)
+        (self.round / "shared.css").rename(self.round / "other.css")
+        self.assertNotEqual(before, dcg.round_asset_digest(self.round))
+
+
+class SealRefusesCleanly(Base):
+    def test_a_bind_failure_is_could_not_measure_not_a_traceback(self):
+        dcg = _load_gate("dcg_bind")
+
+        def refuse(*a, **k):
+            raise OSError("Address family not supported")
+        dcg.http.server.ThreadingHTTPServer = refuse
+        try:
+            bad = dcg.producer_problems(self.round, [self.page], {})
+        finally:
+            importlib.reload(http.server)
+        self.assertTrue(bad)
+        self.assertIn("could not measure", bad[0][1][0])
+
+    def test_an_unwritable_standard_json_is_a_refusal_not_a_traceback(self):
+        std = self.round / "standard.json"
+        std.write_text(json.dumps([{"page": self.page.name, "sha256": "x", "pass": True}]))
+        std.chmod(0o444)
+        try:
+            rc, out = self.seal()
+        finally:
+            std.chmod(0o644)
+        self.assertEqual(rc, 2, out)
+        self.assertNotIn("Traceback", out)
+        self.assertIn("could not measure", out)
+
+
+class ServerServesOnlyTheRound(unittest.TestCase):
+    def test_no_directory_listing_and_nothing_outside_the_round(self):
+        import urllib.error
+        import urllib.request
+        dcg = _load_gate("dcg_scope")
+        tmp = Path(tempfile.mkdtemp(prefix="dc03-scope-"))
+        try:
+            rd = tmp / "round"
+            rd.mkdir()
+            (rd / "a.html").write_text(PAGE)
+            (rd / "sub").mkdir()
+            (tmp / "secret.txt").write_text("outside the round")
+            (rd / "out").symlink_to(tmp)
+            with dcg.served_round(rd) as base:
+                self.assertEqual(urllib.request.urlopen(f"{base}/a.html", timeout=5).status, 200)
+                for path in ("/", "/sub/", "/out/secret.txt"):
+                    with self.assertRaises(urllib.error.HTTPError, msg=path) as ctx:
+                        urllib.request.urlopen(base + path, timeout=5)
+                    self.assertEqual(ctx.exception.code, 404, path)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class ChildIgnoresTheUserSite(Base):
     def test_a_usercustomize_cannot_alter_a_verdict(self):
         # -E ignores PYTHONUSERBASE but leaves the DEFAULT user site on, and usercustomize.py
@@ -308,7 +512,10 @@ class ChildIgnoresTheUserSite(Base):
     def test_a_missing_module_names_the_flags_that_hide_it(self):
         rc, out = self.seal(STUB_STANDARD="nomodule")
         self.assertEqual(rc, 2, out)
-        self.assertIn("-s", out)
+        # NOT assertIn("-s"): that is a substring of "design-standard-check.py", which every
+        # refusal names, so the first version stayed green with the whole hint deleted.
+        self.assertIn("pip install --user", out)
+        self.assertIn("-E -s", out)
 
 
 if __name__ == "__main__":

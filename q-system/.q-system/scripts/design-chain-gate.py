@@ -170,8 +170,13 @@ def clean_env() -> dict:
     not measure". Letting the variable through buys nothing (-E ignores it) and the refusal
     message names it. WHAT THIS DOES NOT CLOSE: -E leaves the DEFAULT user site enabled, so a
     usercustomize.py there is still imported at child startup (measured by Sana, 2026-09-18).
-    dc-03 closed it: the child also runs with -s, which disables the user site entirely
-    (test_a_usercustomize_cannot_alter_a_verdict plants one and watches it lose)."""
+    dc-03: the child also runs with -s, which disables the USER site
+    (test_a_usercustomize_cannot_alter_a_verdict plants one and watches it lose).
+
+    STILL OPEN, and no flag closes it: startup code in the interpreter's OWN site-packages. A
+    .pth there runs under -E -s and under -I; only -S stops it, and -S cannot import
+    playwright. Where that directory is user-writable (Homebrew: it is), whoever can write to
+    the machine can still decide a verdict. Measured by the adversarial review of 4998d7b7."""
     return {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
 
 
@@ -205,7 +210,19 @@ def served_round(rd: Path):
     silently, and the standard producer measured the OLD round over the URL while writing
     the sha of the NEW local file (PRD finding-3). Port 0 cannot collide, the server dies in
     the finally, and each producer refuses when the served bytes differ from the local file."""
+    root = rd.resolve()
+
     class Quiet(http.server.SimpleHTTPRequestHandler):
+        """Files under the round, and nothing else. The stock handler lists directories and
+        follows symlinks: GET /out/hosts returned /etc/hosts through a symlink (review)."""
+
+        def send_head(self):
+            target = Path(self.translate_path(self.path)).resolve()
+            if not target.is_file() or root not in target.parents:
+                self.send_error(404, "not a file in this round")
+                return None
+            return super().send_head()
+
         def log_message(self, *args):
             pass
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=str(rd)))
@@ -264,6 +281,15 @@ def round_declaration(rd: Path) -> dict:
 def producer_problems(rd: Path, pages: list[Path], cfg: dict) -> list[tuple[str, list[str]]]:
     """Run the producers for a round against a server this call owns. Returns (name, problems)
     pairs in seal's `bad` shape."""
+    try:
+        return _run_producers(rd, pages, cfg)
+    except OSError as e:
+        # No loopback, no file descriptors, a read-only standard.json or checks/. Every other
+        # producer failure refuses with exit 2; a traceback and exit 1 is a code nobody defined.
+        return [("seal", [f"could not measure: {type(e).__name__}: {e}"])]
+
+
+def _run_producers(rd: Path, pages: list[Path], cfg: dict) -> list[tuple[str, list[str]]]:
     bad: list[tuple[str, list[str]]] = []
     std_path = rd / "standard.json"
     with served_round(rd) as base:
@@ -298,6 +324,32 @@ def producer_problems(rd: Path, pages: list[Path], cfg: dict) -> list[tuple[str,
             elif rc != 0:
                 bad.append((GAP_PRODUCER, [f"could not measure ({GAP_PRODUCER} exit {rc}): {tail}"]))
     return bad
+
+
+# The chain's own records. Everything ELSE in the round is something a page can load, so it
+# is part of what was measured.
+_DIGEST_SKIP_DIRS = {"checks", "gate"}
+
+
+def round_asset_digest(rd: Path) -> str:
+    """One sha256 over every file in the round except the chain's own records.
+
+    The byte proof covered the HTML only, and the verdict is almost entirely a function of the
+    CSS: measure with one shared.css, swap it, and every sha still matched while an honest
+    re-measure FAILED (adversarial review of 4998d7b7). Sana, 2026-09-18: one digest, computed
+    and written by seal; dc-10 makes the passive gate recompute it. It goes stale on an unused
+    asset too, which is correct: COMPLETE means unedited. A playwright response hook was
+    refused, because it records what chromium chose to request, which is a subset."""
+    # built here, not at import: three of these names are defined further down the module
+    skip_names = {"standard.json", "receipts.json", CRAFT_MANIFEST, SOURCES, CORRECTIONS, NOT_A_ROUND}
+    h = hashlib.sha256()
+    for p in sorted(rd.rglob("*"), key=lambda q: q.relative_to(rd).as_posix()):
+        rel = p.relative_to(rd)
+        if (not p.is_file() or p.suffix.lower() == ".md" or p.name in skip_names
+                or rel.parts[0] in _DIGEST_SKIP_DIRS or "__pycache__" in rel.parts):
+            continue
+        h.update(rel.as_posix().encode() + b"\x00" + p.read_bytes() + b"\x1f")
+    return h.hexdigest()
 
 
 def is_page(path: str) -> bool:
@@ -1287,6 +1339,10 @@ def seal(rd: Path) -> int:
     if why_withdrawn is not None:
         print(f"seal: {rd.name} is withdrawn. Nothing to seal, no receipt written.")
         return 0
+    # What this seal is about, read ONCE before anything is measured. The receipt may only
+    # carry these, and they are re-read immediately before it is written.
+    sealing = {p.name: sha(p) for p in pages}
+    assets_before = round_asset_digest(rd)
     measured = producer_problems(rd, pages, seal_cfg)
     bad += measured
     reported = {name for name, _ in measured}
@@ -1311,7 +1367,16 @@ def seal(rd: Path) -> int:
             for x in probs:
                 print(f"  {name}: {x}", file=sys.stderr)
         return 2
-    rec = {p.name: {"sha256": sha(p), "sealed": time.strftime("%Y-%m-%dT%H:%M:%S")} for p in pages}
+    moved = [p.name for p in pages if sha(p) != sealing[p.name]]
+    if round_asset_digest(rd) != assets_before:
+        moved.append("an asset the pages load (css, script, image or font)")
+    if moved:
+        print("seal REFUSED:", file=sys.stderr)
+        print(f"  {moved} changed while this seal was running, so what was measured is not what "
+              f"would be sealed. Seal again.", file=sys.stderr)
+        return 2
+    rec = {p.name: {"sha256": sealing[p.name], "sealed": time.strftime("%Y-%m-%dT%H:%M:%S")} for p in pages}
+    rec["__assets__"] = {"sha256": assets_before}
     srcs = declared_sources(rd, root)
     if srcs:
         rec["__sources__"] = {str(s.relative_to(root)): sha(s) for s in srcs}

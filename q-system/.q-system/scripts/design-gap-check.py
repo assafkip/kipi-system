@@ -361,13 +361,15 @@ def report(round_dir: Path, url_base: str, refs: Path, write: bool) -> int:
         print("could not measure: no --url-base. The round has to be SERVED to be measured; "
               "design-chain-gate.py seal serves it on a port of its own.", file=sys.stderr)
         return COULD_NOT_MEASURE
+    # ONE read per page, before any browser; these are the only shas the receipt may carry.
+    measured = {name: sha(round_dir / name) for name in names}
     for name in names:
         try:
             served = hashlib.sha256(urllib.request.urlopen(f"{url_base}/{urllib.parse.quote(name)}", timeout=20).read()).hexdigest()
         except OSError as e:
             print(f"could not measure: {url_base}/{name} is not being served: {e}", file=sys.stderr)
             return COULD_NOT_MEASURE
-        if served != sha(round_dir / name):
+        if served != measured[name]:
             print(f"could not measure: served bytes differ from {name}. {url_base} is handing out "
                   f"another round, so a verdict here would be about the wrong bytes.", file=sys.stderr)
             return COULD_NOT_MEASURE
@@ -391,11 +393,16 @@ def report(round_dir: Path, url_base: str, refs: Path, write: bool) -> int:
 
     print(f"GAP TO THE EXEMPLARS: {', '.join(sorted(ex))}")
     print("floor = the least any one of them reaches. Derived from the captures, not chosen.\n")
+    changed = [n for n in names if sha(round_dir / n) != measured[n]]
+    if changed:
+        print(f"could not measure: {changed} changed while being measured, so no verdict can be "
+              f"signed for either version. Measure again.", file=sys.stderr)
+        return COULD_NOT_MEASURE
     receipt, failed = {"_exemplars": sorted(ex), "_floors": fl, "pages": {}}, 0
     for name in names:
         bad = judge(got[name], fl)
         receipt["pages"][name] = {
-            "sha256": sha(round_dir / name),
+            "sha256": measured[name],
             "axes": {k: f(got[name]) for k, _, f, _, _ in AXES},
             "below_floor": bad,
         }
@@ -546,8 +553,18 @@ def selftest() -> int:
     return 0
 
 
+class _Parser(argparse.ArgumentParser):
+    """argparse exits 2 on a usage error, and 2 means BELOW THE FLOOR here. A run that never
+    started did not judge anything."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        print(f"could not measure: {message}", file=sys.stderr)
+        sys.exit(COULD_NOT_MEASURE)
+
+
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser()
+    ap = _Parser()
     ap.add_argument("round_dir", nargs="?")
     ap.add_argument("--url-base")          # no default: a typed port is how a stale server got measured
     ap.add_argument("--refs")

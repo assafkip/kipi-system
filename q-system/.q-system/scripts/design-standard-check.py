@@ -194,6 +194,11 @@ def main() -> int:
     if cpath and cpath.is_file():
         cfg.update(json.loads(cpath.read_text()).get("standard", {}))
     url = a.url or page.as_uri()
+    # ONE read of the bytes, BEFORE the browser, and its sha is the only one the entry may
+    # carry. This used to hash page.read_bytes() AFTER measure(): a file swapped while the
+    # browser was mid-measure came back PASS, signed with the sha of bytes nothing had measured
+    # (adversarial review of 4998d7b7, reproduced with real chromium).
+    measured_sha = hashlib.sha256(page.read_bytes()).hexdigest()
     if a.url:
         # dc-03: prove the bytes about to be measured are the bytes about to be hashed. A stale
         # server on the same port served the OLD round while this wrote the NEW file's sha.
@@ -202,7 +207,7 @@ def main() -> int:
         except OSError as e:
             print(f"could not measure: {a.url} is not being served: {e}", file=sys.stderr)
             return 2
-        if served != hashlib.sha256(page.read_bytes()).hexdigest():
+        if served != measured_sha:
             print(f"could not measure: served bytes differ from {page.name}. {a.url} is handing out "
                   f"another page, so a verdict here would be about the wrong bytes.", file=sys.stderr)
             return 2
@@ -211,9 +216,13 @@ def main() -> int:
     except Exception as e:  # playwright missing, page unreachable
         print(f"could not measure: {e}", file=sys.stderr)
         return 2
+    if hashlib.sha256(page.read_bytes()).hexdigest() != measured_sha:
+        print(f"could not measure: {page.name} changed while it was being measured, so no verdict "
+              f"can be signed for either version. Measure again.", file=sys.stderr)
+        return 2
     fails = {m["viewport"]: judge(m, cfg) for m in ms}
     ok = not any(fails.values())
-    entry = {"page": page.name, "sha256": hashlib.sha256(page.read_bytes()).hexdigest(),
+    entry = {"page": page.name, "sha256": measured_sha,
              "pass": ok, "measurements": ms, "failures": fails, "config": cfg}
     std_path = page.parent / "standard.json"
     entries = []

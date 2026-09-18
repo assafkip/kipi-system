@@ -27,7 +27,7 @@ Parent PRD: `.prd-os/prds/prd-design-chain-seal-reads-verdicts-2026-09-18.md`
 
 ## Acceptance
 
-Exit contract: 0 control fired and pages clean; 1 control did not fire; 2 could not run; 3 at least one page flagged. The value computed at worst = max(worst, rc) is consumed. seal refuses on 1, 2 and 3. Test drives the script with a stub detector.
+Exit contract: 0 control fired and pages clean; 1 control did not fire; 2 could not run; 3 at least one page flagged. The value computed at worst = max(worst, rc) is consumed. seal refuses on 1, 2 and 3. Test drives the script with a stub detector. ADDED 2026-09-18 by Sana's decision on dc-03 finding-4: `design-impeccable-check.py` has no default `--url-base`; seal hands it the served round, and it exits 2 when served bytes differ from the local file.
 
 ## Deliverables
 
