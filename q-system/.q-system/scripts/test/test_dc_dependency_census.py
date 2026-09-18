@@ -24,8 +24,21 @@ EXPECTED = {
     "design-standard-from-exemplars.py", "design-ink-coverage.py", "design-axis-coverage.py",
     "check_technique_parity.py",
 }
-SIBLING_CALL = re.compile(r"_load_sibling\(\s*[\"']([\w-]+)[\"']\s*\)")
-SIBLING_PATH = re.compile(r"[\"']((?:design|check_technique)[\w-]*\.py)[\"']")
+# A sibling reference is ANY string constant naming a design script, with or without ".py".
+# Scar, same day, caught by both reviewers of this file's first version: it matched
+# _load_sibling("x") and quoted "x.py" literals only, so design-axis-coverage.py's own
+# loader, load("design-gap-check") -> HERE / f"{mod}.py", returned NOTHING. A helper loaded
+# that way was deleted in a copy and this census stayed green while the script died with
+# FileNotFoundError. Matching the loader's spelling misses the next loader; matching the
+# NAME does not care how the path is built.
+SIBLING_NAME = re.compile(r"^(design-[a-z0-9-]+|check_technique_parity)(\.py)?$")
+# Executables and out-of-repo paths the scripts shell out to. The only hard non-Python
+# dependency in the set is here: node plus a detector that lives in another repo.
+DECLARED_EXECUTABLES = {"node", "git"}
+DECLARED_EXTERNAL_PATHS = {
+    "~/projects/cole-gtm/.agents/skills/impeccable/scripts/detector/detect-antipatterns.mjs",
+    "~/.config/kipi/design-chain",      # the gate's per-session ledger directory
+}
 
 
 def design_scripts():
@@ -44,17 +57,45 @@ def third_party_imports(path: Path) -> set[str]:
     return {m for m in mods if m not in sys.stdlib_module_names}
 
 
+def string_constants(path: Path) -> list[str]:
+    return [n.value for n in ast.walk(ast.parse(path.read_text()))
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+
+
 def sibling_loads(path: Path) -> set[str]:
-    text = path.read_text()
-    names = {f"{m}.py" for m in SIBLING_CALL.findall(text)}
-    names |= {m for m in SIBLING_PATH.findall(text) if m != path.name}
+    names = set()
+    for value in string_constants(path):
+        m = SIBLING_NAME.match(value.strip())
+        if m and f"{m.group(1)}.py" != path.name:
+            names.add(f"{m.group(1)}.py")
     return names
 
 
+def shelled_executables(path: Path) -> set[str]:
+    """First element of a list literal passed to subprocess.run / check_output / Popen."""
+    found = set()
+    for node in ast.walk(ast.parse(path.read_text())):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"run", "check_output", "check_call", "Popen", "call"}
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess"):
+            continue
+        if node.args and isinstance(node.args[0], ast.List) and node.args[0].elts:
+            first = node.args[0].elts[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                found.add(first.value)
+    return found
+
+
+def external_paths(path: Path) -> set[str]:
+    return {v for v in string_constants(path) if v.startswith("~/") or v.startswith("/Users/")}
+
+
 class Census(unittest.TestCase):
-    def test_the_census_found_scripts_at_all(self):
-        # a glob that matches nothing turns every check below into a green no-op
-        self.assertGreaterEqual(len(design_scripts()), len(EXPECTED))
+    def test_the_population_is_exactly_the_declared_set(self):
+        # Equality, not >=. A floor on len(EXPECTED) stayed green while the tree shrank as
+        # soon as one design-*.py existed outside the list. A new script (dc-06 adds one)
+        # turns this red until it is added here on purpose, which is the point.
+        self.assertEqual({p.name for p in design_scripts()}, EXPECTED)
 
     def test_every_expected_script_is_present(self):
         have = {p.name for p in design_scripts()}
@@ -72,6 +113,24 @@ class Census(unittest.TestCase):
         # design-gap-check.py is the script that taught this lesson; if the scan stops seeing
         # its filename load, the check above is reading nothing
         self.assertIn("design-ink-coverage.py", sibling_loads(SCRIPTS / "design-gap-check.py"))
+
+    def test_the_scan_sees_a_load_built_from_a_variable(self):
+        # the loader the first version of this file could not see
+        self.assertIn("design-gap-check.py", sibling_loads(SCRIPTS / "design-axis-coverage.py"))
+
+    def test_shelled_executables_are_declared(self):
+        found = set()
+        for p in design_scripts():
+            found |= shelled_executables(p)
+        self.assertEqual(found - DECLARED_EXECUTABLES, set(), "undeclared executable shelled out to")
+        self.assertIn("node", found, "node is declared but nothing shells it: the scan is unbound")
+
+    def test_out_of_repo_paths_are_declared(self):
+        found = set()
+        for p in design_scripts():
+            found |= external_paths(p)
+        self.assertEqual(found - DECLARED_EXTERNAL_PATHS, set(), "undeclared path outside the repo")
+        self.assertEqual(DECLARED_EXTERNAL_PATHS - found, set(), "declared external path nothing references")
 
     def test_third_party_imports_are_declared(self):
         found = set()

@@ -1,11 +1,12 @@
 ---
 id: dc-01-carry-the-real-file-set
 title: Carry the 12 design-chain files onto main with a dependency census taken by code
-status: open
+status: in-progress
 priority: p0
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
   - q-system/.q-system/capability/expected_tests/*
+  - q-system/.q-system/capability/declared_inert/*
   - q-system/.q-system/scripts/check_technique_parity.py
   - q-system/.q-system/scripts/design-*.py
   - q-system/.q-system/scripts/test/test_dc_dependency_census.py
