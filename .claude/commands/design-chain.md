@@ -31,7 +31,35 @@ EOF
 
 If it prints UNKNOWN or NO, stop and say so. The round name, if given, is the SECOND argument.
 
-## Why this command exists
+## Why this command exists## Step 0b: the VISION comes before the brief (2026-09-18, founder-directed)
+
+Founder: *"add this process into the design chain tool we built so it is forced into the
+process."* The process: say the vision first, keep a running notebook of the key points and
+reasons, break it into components, spec each one, tighten the specs together, then build.
+
+**Why this is a gate and not advice.** On 2026-09-17/18 this chain produced three fully
+specced, measured, critiqued and SEALED directions that were all wrong, and the persona gate
+returned 51 negatives against 1 "it helped" across 23 runs. Nothing was skipped. Every brief
+was assembled from CONSTRAINTS and not one of them said what the page was trying to BE.
+
+Checked by `design-chain-gate.py` `vision_problems()`, which fires when the instance's
+`design-chain.json` declares a `vision` block:
+
+- `<vision.file>` exists (default `site/design/VISION.md`).
+- It carries at least `min_founder_quotes` blocks in his own words, shaped
+  `**Founder, <date>:** "..."`, the same shape `decisions.md` uses.
+- `brief.md` quotes at least one of those lines VERBATIM, so the round is built FROM the
+  vision rather than merely near it.
+- If `craft-manifest.json` declares a `component`, `<vision.specs_dir>/<component>.md` exists
+  and carries a `REVIEWED BY FOUNDER: <date>` line.
+
+**What it cannot see, so its silence is not over-read:** whether the vision is any good,
+whether the quoted words are really his, or whether a spec marked reviewed was read. A marker
+makes skipping DELIBERATE, not impossible. Test:
+`q-system/.q-system/scripts/test/test_design_chain_vision_stage.py`, seven cases, each seen
+red before the check existed.
+
+
 
 Founder, 2026-09-15: "When I try to create web design, you continuously find ways
 to go back to your generic stuff. If it's not reading the prose, ignoring the

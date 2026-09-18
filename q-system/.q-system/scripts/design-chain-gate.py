@@ -887,6 +887,100 @@ def implemented_direction(rd: Path, cfg_path: Path | None) -> tuple[dict | None,
     return impl, []
 
 
+# ---------------------------------------------------------------------------------------
+# THE VISION STAGE (2026-09-18, founder-directed).
+#
+# Founder: "add this process into the design chain tool we built so it is forced into the
+# process." The process he means: sit down and say the VISION first, keep a running notebook
+# of the key points and reasons, break it into components, spec each one, review the specs,
+# then build.
+#
+# WHY IT IS A GATE AND NOT ADVICE. On 2026-09-17/18 this chain produced three fully specced,
+# measured, critiqued and SEALED directions that were all wrong, and the persona gate found
+# 51 negatives against 1 "it helped" across 23 runs. Nothing in the chain was skipped. Every
+# brief was assembled from CONSTRAINTS (word budgets, type sizes, banned patterns, pain
+# anchors) and not one of them said what the page was trying to BE. A chain that checks the
+# shape of the work cannot notice that the work is aimed at nothing.
+#
+# WHAT THIS CAN AND CANNOT SEE, stated here so its silence is not over-read:
+#   IT CAN see that a vision file exists, that it carries at least N blocks marked as the
+#   founder's own words, that the round's brief quotes one of them verbatim, and that a page
+#   whose round declares a component has a spec for that component carrying a review marker.
+#   IT CANNOT see whether the vision is any good, whether the quoted words are really his, or
+#   whether a spec marked reviewed was actually read. A marker makes skipping DELIBERATE. It
+#   does not make it impossible, and no regex will.
+# ---------------------------------------------------------------------------------------
+
+VISION_DEFAULTS = {
+    "file": "design/VISION.md",
+    "specs_dir": "design/specs",
+    "min_founder_quotes": 3,
+    "require_brief_quotes_vision": True,
+    "review_marker": r"(?im)^\s*REVIEWED BY FOUNDER:\s*\S+",
+}
+# A founder block is a dated line naming him and carrying his words in quotes. The same shape
+# decisions.md has used since 2026-09-15, so the notebook and the canon read alike.
+FOUNDER_QUOTE_RE = re.compile(r"(?im)^\s*[*_>\s-]*Founder[^\n:]*:\s*.*?[\"\u201c\u2018']")
+
+
+def vision_cfg(cfg: dict) -> dict:
+    out = dict(VISION_DEFAULTS)
+    out.update((cfg or {}).get("vision") or {})
+    return out
+
+
+def vision_problems(rd: Path, cfg: dict, cfg_path: Path | None) -> list[str]:
+    """The vision stage, checked. Returns [] when the config declares no vision block AND no
+    vision file exists, so an instance that has not adopted this is not broken by it; but an
+    instance that HAS a vision file is held to the whole stage. Non-adoption is visible in the
+    config rather than silent."""
+    if cfg_path is None:
+        return []
+    vc = vision_cfg(cfg)
+    vf = (cfg_path.parent / vc["file"])
+    declared = bool((cfg or {}).get("vision"))
+    if not declared and not vf.is_file():
+        return []                                   # not adopted here; say nothing
+    probs: list[str] = []
+    if not vf.is_file():
+        return [f"missing {vf}: the chain declares a vision stage and the vision has not been "
+                f"written. The brief is assembled from constraints; the vision is what the page "
+                f"is FOR, and a round briefed without one is aimed at nothing."]
+    vtext = vf.read_text()
+    quotes = FOUNDER_QUOTE_RE.findall(vtext)
+    need = int(vc["min_founder_quotes"])
+    if len(quotes) < need:
+        probs.append(f"{vf} carries {len(quotes)} founder block(s); {need} required. The vision is "
+                     f"HIS, in his words. A vision written by the builder is the builder grading "
+                     f"his own aim.")
+    if vc.get("require_brief_quotes_vision"):
+        brief = (rd / "brief.md")
+        btxt = _norm(brief.read_text()) if brief.is_file() else ""
+        lines = [ln.strip() for ln in vtext.splitlines()
+                 if len(ln.strip()) > 40 and FOUNDER_QUOTE_RE.match(ln)]
+        if lines and not any(_norm(ln) in btxt for ln in lines):
+            probs.append(f"brief.md quotes no line from {vf.name} verbatim. The round has to be "
+                         f"built FROM the vision, not merely near it.")
+    # component specs: only checked when the round declares which component it builds
+    man = {}
+    mpath = rd / CRAFT_MANIFEST
+    if mpath.is_file():
+        try:
+            man = json.loads(mpath.read_text())
+        except json.JSONDecodeError:
+            man = {}          # craft_problems already reports a malformed manifest; do not double-report
+    comp = man.get("component")
+    if comp:
+        sp = cfg_path.parent / vc["specs_dir"] / f"{comp}.md"
+        if not sp.is_file():
+            probs.append(f"{CRAFT_MANIFEST} declares component '{comp}' and {sp} does not exist. "
+                         f"Specs come before the build, which is the whole point of the stage.")
+        elif not re.search(vc["review_marker"], sp.read_text()):
+            probs.append(f"{sp} carries no 'REVIEWED BY FOUNDER: <date>' line. A spec the founder "
+                         f"has not tightened is the builder's spec.")
+    return probs
+
+
 def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     """Everything missing or stale for one page. Empty list = chain complete.
 
@@ -945,6 +1039,8 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
             probs.append(f"owner anchor unreadable: {label} -> {line}")
         elif _norm(line) not in nb:
             probs.append(f"brief.md does not quote verbatim: {label}")
+
+    probs += vision_problems(rd, cfg, cfg_path)
 
     # directions: three, plus an exemplar citation when exemplars exist
     dirs_txt = (rd / "directions.md").read_text() if (rd / "directions.md").is_file() else ""
