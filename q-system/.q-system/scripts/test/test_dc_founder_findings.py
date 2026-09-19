@@ -66,6 +66,73 @@ class FounderFindings(unittest.TestCase):
         (self.rd / "critique.md").write_text("- nav-width: CARRIED to round r2 brief\n")
         self.assertEqual(self.problems(), [])
 
+    def write(self, name, text):
+        f = self.rd / name
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(text) if isinstance(text, str) else f.write_bytes(text)
+
+    def test_a_weak_disposition_does_not_answer_a_founder_finding(self):
+        # std-1: WEAK[layout] and FOUNDER-FINDING[layout] share the tag, so the tag is ambiguous
+        self.write("critique.md", "WEAK[layout] cramped\n## Dispositions\n- layout: FIXED looser gutters\n")
+        self.write("notes.md", "FOUNDER-FINDING[layout] pricing breaks on mobile\n")
+        self.assertTrue(any("layout" in p and "WEAK" in p for p in self.problems()), self.problems())
+
+    def test_other_spellings_of_the_marker_are_seen(self):
+        # adv-1
+        for spelling in ("FOUNDER-FINDING[Hero]", "founder-finding[hero]", "FOUNDER-FINDING [hero]",
+                         "FOUNDER\u2011FINDING[hero]", "FOUNDER-FINDING\\[hero\\]"):
+            self.write("critique.md", spelling + " x\n")
+            self.assertTrue(any("hero" in p.casefold() for p in self.problems()), (spelling, self.problems()))
+
+    def test_a_tag_no_disposition_can_answer_refuses(self):
+        # adv-1: an underscore cannot appear in a disposition tag
+        self.write("critique.md", "FOUNDER-FINDING[hero_cta] x\n")
+        self.assertTrue(any("hero_cta" in p and "can name" in p for p in self.problems()), self.problems())
+
+    def test_an_untagged_marker_refuses(self):
+        # adv-2
+        for text in ("FOUNDER-FINDING: cta is buried\n", "FOUNDER-FINDING[] x\n"):
+            self.write("critique.md", text)
+            self.assertTrue(any("no tag" in p for p in self.problems()), (text, self.problems()))
+
+    def test_a_file_that_cannot_be_read_refuses(self):
+        # adv-3
+        self.write("notes.md", b"FOUNDER-FINDING[hero] x \xff\n")
+        self.assertTrue(any("cannot be read" in p for p in self.problems()), self.problems())
+
+    def test_other_text_files_are_scanned(self):
+        # adv-4
+        for name in ("notes.txt", "notes.markdown", "NOTES.MD"):
+            for f in self.rd.iterdir():
+                if f.name != "brief.md":
+                    f.unlink()
+            self.write(name, "FOUNDER-FINDING[hero] x\n")
+            self.assertTrue(any("hero" in p for p in self.problems()), (name, self.problems()))
+
+    def test_a_symlinked_directory_is_scanned(self):
+        # adv-4
+        outside = self.tmp / "elsewhere"
+        outside.mkdir()
+        (outside / "notes.md").write_text("FOUNDER-FINDING[hero] x\n")
+        (self.rd / "linked").symlink_to(outside, target_is_directory=True)
+        self.assertTrue(any("hero" in p for p in self.problems()), self.problems())
+
+    def test_a_one_character_reason_is_not_a_reason(self):
+        # adv-5
+        self.write("critique.md", "FOUNDER-FINDING[hero] x\n- hero: FIXED .\n")
+        self.assertTrue(any("no reason" in p for p in self.problems()), self.problems())
+
+    def test_a_hidden_disposition_does_not_count(self):
+        # adv-6
+        for hidden in ("<!-- - hero: FIXED rewrote it -->\n", "```\n- hero: FIXED rewrote it\n```\n"):
+            self.write("critique.md", "FOUNDER-FINDING[hero] x\n" + hidden)
+            self.assertTrue(any("no disposition" in p for p in self.problems()), (hidden, self.problems()))
+
+    def test_a_finding_line_does_not_answer_itself(self):
+        # adv-9
+        self.write("critique.md", "- hero: CARRIED FOUNDER-FINDING[hero] cta is buried\n")
+        self.assertTrue(any("no disposition" in p for p in self.problems()), self.problems())
+
     def test_seal_refuses_an_undisposed_founder_finding(self):
         # RED FIRST: only WEAK[tag] had to be answered
         (self.rd / "critique.md").write_text("FOUNDER-FINDING[hero-copy] the hero sells the tool\n")

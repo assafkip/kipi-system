@@ -1090,30 +1090,63 @@ def disposition_problems(rd: Path) -> list[str]:
     return probs
 
 
-FOUNDER_FINDING_RE = re.compile(r"\bFOUNDER-FINDING\[([a-z0-9][a-z0-9-]*)\]")
+# any case, a space before the bracket, an escaped bracket, any hyphen; a marker with no tag is
+# still a marker (dc-14 review: each of these spellings sealed with the finding unanswered)
+FOUNDER_FINDING_RE = re.compile(r"FOUNDER[-\u2010\u2011\u2012\u2013]FINDING(?:[ \t]*\\?\[([^\]\n]*?)\\?\])?", re.I)
+_ROUND_TEXT_SUFFIXES = (".md", ".markdown", ".txt")
 
 
 def founder_finding_problems(rd: Path) -> list[str]:
     """dc-14: a finding the founder raised on a round is answered before the round seals. Only
-    WEAK[tag] in critique.md had to be (RCA 2026-09-18, S1). Every FOUNDER-FINDING[tag] in any .md
-    file under the round needs a DISPOSITION_RE line '- tag: FIXED|DEFERRED|CARRIED <reason>' in any
-    .md file under the round. Unconditional: a founder finding is not an opt-in. Like WEAK[tag],
-    this sees the marker and nothing else; a finding written as prose is invisible to it."""
-    texts = []
-    for f in sorted(rd.rglob("*.md")):
-        try:
-            texts.append(f.read_text())
-        except (OSError, UnicodeDecodeError):
+    WEAK[tag] in critique.md had to be (RCA 2026-09-18, S1). Every FOUNDER-FINDING[tag] in any text
+    file under the round (.md, .markdown, .txt, symlinked dirs followed) needs a DISPOSITION_RE line
+    '- tag: FIXED|DEFERRED|CARRIED <reason>' outside comments and fences, on a line that is not the
+    finding itself. Unconditional: a founder finding is not an opt-in. A file that cannot be read
+    refuses. HONEST BOUNDARY: this sees the marker and nothing else; a finding written as prose, or
+    a marker deleted from the round, is invisible to it."""
+    probs, texts, seen = [], [], set()
+    for root, dirs, files in os.walk(rd, followlinks=True):
+        real = os.path.realpath(root)
+        if real in seen:
+            dirs[:] = []
             continue
+        seen.add(real)
+        dirs.sort()
+        for name in sorted(files):
+            if not name.casefold().endswith(_ROUND_TEXT_SUFFIXES):
+                continue
+            f = Path(root) / name
+            try:
+                texts.append(f.read_text())
+            except (OSError, UnicodeDecodeError) as e:
+                probs.append(f"{f} cannot be read, so a founder finding in it cannot be checked: {e}")
     text = "\n".join(texts)
-    tags = sorted({m.group(1) for m in FOUNDER_FINDING_RE.finditer(text)})
-    disposed = {m.group(1): (m.group(2), m.group(3).strip()) for m in DISPOSITION_RE.finditer(text)}
-    probs = []
-    for t in tags:
-        if t not in disposed:
+    tags, untagged = set(), 0
+    for m in FOUNDER_FINDING_RE.finditer(text):
+        t = (m.group(1) or "").strip().casefold()
+        if t:
+            tags.add(t)
+        else:
+            untagged += 1
+    if untagged:
+        probs.append(f"{untagged} FOUNDER-FINDING marker(s) carry no tag. Write FOUNDER-FINDING[some-tag] so a "
+                     f"disposition can answer it by name.")
+    weak = {m.group(1) for m in WEAK_RE.finditer(text) if m.group(1)}
+    # a disposition hidden in a comment or fence, or on the finding's own line, answers nothing
+    shown = _PROOF_HIDDEN_RE.sub("", text)
+    disposed = {m.group(1): (m.group(2), m.group(3).strip()) for m in DISPOSITION_RE.finditer(shown)
+                if not FOUNDER_FINDING_RE.search(m.group(0))}
+    for t in sorted(tags):
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", t):
+            probs.append(f"FOUNDER-FINDING[{t}] has a tag no disposition line can name; use lowercase "
+                         f"letters, digits and hyphens.")
+        elif t in weak:
+            probs.append(f"FOUNDER-FINDING[{t}] shares its tag with WEAK[{t}], so one disposition would answer "
+                         f"both; give the founder finding its own tag.")
+        elif t not in disposed:
             probs.append(f"FOUNDER-FINDING[{t}] has no disposition. Add a line "
                          f"'- {t}: FIXED <what changed> | DEFERRED <why> | CARRIED <where>' to the round.")
-        elif not disposed[t][1]:
+        elif not re.search(r"[^\W_]{2,}", disposed[t][1]):
             probs.append(f"FOUNDER-FINDING[{t}] is marked {disposed[t][0]} with no reason; say what happened.")
     return probs
 
