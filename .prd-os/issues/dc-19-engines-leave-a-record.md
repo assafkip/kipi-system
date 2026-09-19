@@ -1,7 +1,7 @@
 ---
 id: dc-19-engines-leave-a-record
 title: Engine invocations are recorded and seal requires one for every engine a technique names
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -32,4 +32,4 @@ PostToolUse on Skill appends {skill, session, at} to the active round's engines.
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Engine invocations are recorded and seal requires one for every engine a technique names
+- [x] Engine invocations are recorded and seal requires one for every engine a technique names

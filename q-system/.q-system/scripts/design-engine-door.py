@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""design-engine-door.py -- PreToolUse on the Skill tool (dc-18, ASK-1796).
+"""design-engine-door.py -- PreToolUse and PostToolUse on the Skill tool (dc-18, dc-19, ASK-1796).
 
 /design-chain is the one design command (founder, 2026-09-18). The other design skills stay
 installed as ENGINES the chain calls at a stage. This hook refuses a listed engine when the
@@ -57,8 +57,29 @@ def canonical(raw: str) -> str:
     return (parts[-1] if parts else "").strip().strip("/").casefold().replace("_", "-")
 
 
+def record(payload: dict) -> None:
+    """PostToolUse (dc-19): an engine that ran inside the open round appends {skill, raw, session, at}
+    to that round's engines.jsonl, so a technique crediting an engine can be checked against a run.
+    The copied-animation incident credited hyperframes-animation with motion copied from a reference."""
+    raw = str((payload.get("tool_input") or {}).get("skill") or "").strip()
+    name = canonical(raw)
+    if not name or name not in listed():
+        return
+    sid = payload.get("session_id", "")
+    rd = active_round(sid)
+    if rd is None:
+        return
+    import time
+    with open(rd / "engines.jsonl", "a") as f:
+        f.write(json.dumps({"skill": name, "raw": raw, "session": sid,
+                            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}) + "\n")
+
+
 def decide(payload: dict) -> tuple[int, str]:
     if payload.get("tool_name") != "Skill":
+        return 0, ""
+    if payload.get("hook_event_name") == "PostToolUse":
+        record(payload)
         return 0, ""
     raw = str((payload.get("tool_input") or {}).get("skill") or "").strip()
     name = canonical(raw)                  # "kipi-design:brand" is the brand engine

@@ -2434,6 +2434,7 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     probs += citation_problems(rd)
     probs += proof_problems(rd, cfg, cfg_path)
     probs += founder_finding_problems(rd)
+    probs += engine_problems(rd)
 
     # brief: verbatim anchors, read live
     brief = (rd / "brief.md").read_text() if (rd / "brief.md").is_file() else ""
@@ -2884,6 +2885,43 @@ def citation_problems(rd: Path) -> list[str]:
         return [f"{c} is cited but was never opened in the session that wrote the citation; read it, "
                 f"then write the citation again" for c in (unopened if isinstance(unopened, list) else cited)]
     return []
+
+
+# ---------------------------------------------------------------- engine records (dc-19)
+
+ENGINES_LOG = "engines.jsonl"
+
+
+def engine_problems(rd: Path) -> list[str]:
+    """dc-19: a craft-manifest technique that names an `engine` needs a run of that engine recorded in
+    the round's engines.jsonl, which design-engine-door.py appends on the Skill tool's PostToolUse. The
+    copied-animation incident: a technique credited hyperframes-animation and the engine never ran.
+    Names compare folded, as the door folds them. The log is a round file, builder-writable like every
+    round file (ASK-1834)."""
+    try:
+        man = json.loads((rd / CRAFT_MANIFEST).read_text())
+    except (OSError, ValueError):
+        return []
+    techs = man.get("techniques") if isinstance(man, dict) else None
+    fold = lambda n: str(n).strip().split(":")[-1].strip().strip("/").casefold().replace("_", "-")
+    wanted = {}
+    for t in techs if isinstance(techs, list) else []:
+        if isinstance(t, dict) and t.get("engine"):
+            wanted.setdefault(fold(t["engine"]), []).append(str(t.get("id", "?")))
+    ran = set()
+    try:
+        for line in (rd / ENGINES_LOG).read_text().splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("skill"):
+                ran.add(fold(row["skill"]))
+    except OSError:
+        pass
+    return [f"{CRAFT_MANIFEST} credits technique(s) {ids} to engine '{e}', and {ENGINES_LOG} records no run "
+            f"of it in this round. Run the engine through /design-chain, or credit what was actually done."
+            for e, ids in sorted(wanted.items()) if e not in ran]
 
 
 # ---------------------------------------------------------------- brief reads (dc-16)
