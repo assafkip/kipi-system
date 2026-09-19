@@ -141,6 +141,37 @@ class Verdicts(Round):
         self.assertEqual(rc, 0, out)
 
 
+class WhatTheReaderWasShown(Round):
+    def test_a_stylesheet_swapped_after_the_readers_ran_voids_their_rows(self):
+        # dc-07 adv-1: the rows bound only the HTML; a decoy stylesheet for the run kept STAY counting
+        (self.rd / "shared.css").write_text("h1{color:#123}")
+        (self.rd / "Home-laptop.html").write_text(PAGE.replace("</style>", "</style><link rel='stylesheet' href='shared.css'>"))
+        self.read(*[answers("STAY", "ops consulting")] * 3)
+        rc, out = self.seal()
+        self.assertEqual(rc, 0, out)
+        (self.rd / "shared.css").write_text("h1{color:#321}")
+        (self.rd / "receipts.json").unlink()
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("was shown files that are not this round's bytes now", out)
+
+    def test_a_persona_changed_after_the_readers_ran_voids_their_rows(self):
+        self.read(*[answers("STAY", "ops consulting")] * 3)
+        (self.inst / "persona.md").write_text("You like every page.\n")
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("was given another persona", out)
+
+    def test_a_founder_line_inside_a_code_fence_is_an_example(self):
+        # dc-07 std-2
+        self.read(answers("STAY", "ops consulting"), answers("LEAVE", "ops consulting"), answers("STAY", "ops consulting"))
+        (self.rd / "gate" / "dispositions.md").write_text(
+            f"Format:\n```\n- reader {IDS[1]}: FOUNDER example only\n```\n")
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"reader {IDS[1]} said LEAVE", out)
+
+
 class TheFloor(Round):
     def test_an_answer_that_is_not_one_of_the_choices_is_not_answered(self):
         self.read(answers("STAY", "ops consulting"), answers("maybe", "ops consulting"), answers("STAY", "consulting"))
@@ -195,26 +226,82 @@ class TheInjectedRunner(unittest.TestCase):
     """In-process: a round outside the OS temp roots would be a live path. The roots come from the
     OS, not TMPDIR (which a builder can set)."""
 
-    def test_injected_rows_count_only_in_a_test_round(self):
-        g = load(GATE, "dc07_gate")
-        tmp = Path(tempfile.mkdtemp(prefix="dc07-inproc-"))
-        self.addCleanup(shutil.rmtree, tmp, True)
-        rd = tmp / "r1"
-        (rd / "gate").mkdir(parents=True)
-        page = rd / "Home-laptop.html"
-        page.write_text(PAGE)
-        readers = {"n": 1, "labels": LABELS}
-        qs = g._reader_gate().full_questions(readers)
+    def setUp(self):
         import hashlib
-        row = {"page": page.name, "viewport": [1440, 900], "instance": 1,
-               "html_sha256": hashlib.sha256(page.read_bytes()).hexdigest(),
-               "answers": list(answers("STAY", "ops consulting").values()),
-               "_provenance": {"runner": "injected", "questions_sha256": hashlib.sha256(json.dumps(qs).encode()).hexdigest()}}
-        (rd / "gate" / "reader-runs.jsonl").write_text(json.dumps(row) + "\n")
-        self.assertEqual(g.reader_problems(rd, page, {"readers": readers}), [])
-        g.TEST_ROUND_ROOTS = (str(tmp / "elsewhere"),)
-        probs = g.reader_problems(rd, page, {"readers": readers})
+        self.h = lambda b: hashlib.sha256(b).hexdigest()
+        self.g = load(GATE, "dc07_gate")
+        self.tmp = Path(tempfile.mkdtemp(prefix="dc07-inproc-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.rd = self.tmp / "t" / "r1"
+        (self.rd / "gate").mkdir(parents=True)
+        self.page = self.rd / "Home-laptop.html"
+        self.page.write_text(PAGE)
+        self.cfg_path = self.tmp / "t" / "design-chain.json"
+        (self.tmp / "t" / "persona.md").write_text("You run a small tax practice.\n")
+        self.readers = {"n": 1, "labels": LABELS, "narrow": NARROW, "persona_file": "persona.md"}
+
+    def row(self, verdict="STAY", label="ops consulting", runner="injected", **prov):
+        g, h = self.g, self.h
+        qs = g._reader_gate().full_questions(self.readers)
+        p = {"runner": runner, "questions_sha256": h(json.dumps(qs).encode()),
+             "persona_sha256": h((self.tmp / "t" / "persona.md").read_bytes()),
+             "model": "claude-haiku-4-5", "model_reported": ["claude-haiku-4-5"], **prov}
+        return {"page": self.page.name, "viewport": [1440, 900], "instance": 1,
+                "html_sha256": h(self.page.read_bytes()), "served": {self.page.name: h(self.page.read_bytes())},
+                "answers": list(answers(verdict, label).values()), "_provenance": p}
+
+    def problems(self, *rows):
+        (self.rd / "gate" / "reader-runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return self.g.reader_problems(self.rd, self.page, {"readers": self.readers}, self.cfg_path)
+
+    def roots(self, *dirs):
+        self.g.TEST_ROUND_ROOTS = tuple(f(str(d)) for d in dirs for f in (os.path.normpath, os.path.realpath))
+
+    def test_injected_rows_count_only_in_a_test_round(self):
+        self.roots(self.tmp / "t")
+        self.assertEqual(self.problems(self.row()), [])
+        self.roots(self.tmp / "elsewhere")
+        probs = self.problems(self.row())
         self.assertTrue(any("runner 'injected'" in p for p in probs), probs)
+
+    def test_a_round_named_through_a_symlink_into_a_temp_root_is_not_a_test_round(self):
+        # dc-07 adv-6: seal resolves its argument, so the path as the caller named it is what counts
+        self.roots(self.tmp / "t")
+        (self.tmp / "repo").mkdir()
+        os.symlink(self.rd, self.tmp / "repo" / "r1")
+        self.g._SEAL_ARG = str(self.tmp / "repo" / "r1")
+        probs = self.problems(self.row())
+        self.assertTrue(any("runner 'injected'" in p for p in probs), probs)
+        self.g._SEAL_ARG = str(self.rd)
+        self.assertEqual(self.problems(self.row()), [])
+
+    def test_a_row_given_another_persona_does_not_count(self):
+        # dc-07 adv-2
+        self.roots(self.tmp / "t")
+        probs = self.problems(self.row(persona_sha256="0" * 64))
+        self.assertTrue(any("another persona" in p for p in probs), probs)
+
+    def test_a_row_answered_by_another_model_does_not_count(self):
+        self.roots(self.tmp / "t")
+        probs = self.problems(self.row(runner="claude", model_reported=["some-compliant-model"]))
+        self.assertTrue(any("not the configured 'claude-haiku-4-5'" in p for p in probs), probs)
+        self.assertEqual(self.problems(self.row(runner="claude")), [])
+
+    def test_a_stay_row_does_not_hide_a_leave_row_for_the_same_reader(self):
+        # dc-07 std-3: dc-08 appends runs, so two rows for one reader id becomes the normal case
+        self.roots(self.tmp / "t")
+        for rows in ((self.row(), self.row("LEAVE")), (self.row("LEAVE"), self.row())):
+            probs = self.problems(*rows)
+            self.assertTrue(any("said LEAVE" in p for p in probs), probs)
+
+    def test_a_label_that_is_a_prefix_of_another_is_its_own_label(self):
+        rg = self.g._reader_gate()
+        r = {"labels": ["consulting", "consulting services"]}
+        base = ["x"] * 8
+        self.assertEqual(rg.read_answers(base + ["STAY", "consulting", "unknown"], r)["label"], "consulting")
+        self.assertEqual(rg.read_answers(base + ["STAY", "Consulting Services", "unknown"], r)["label"],
+                         "consulting services")
+        self.assertIsNone(rg.read_answers(base + ["STAY", "consult", "unknown"], r)["label"])
 
     def test_tmpdir_does_not_make_a_round_a_test_round(self):
         # TMPDIR must be WRITABLE to be honored: TMPDIR=/ fell back to /tmp and this test checked

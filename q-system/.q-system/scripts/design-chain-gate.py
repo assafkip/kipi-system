@@ -407,6 +407,10 @@ def _outside_inputs(root: Path, rd: Path, files: dict[str, bytes], cfg: dict, cf
     declared = doc(SOURCES).get("sources")
     for rel in (declared if isinstance(declared, dict) else {}):
         _take(inputs, _within(root, base, rel, f"{SOURCES} entry"))
+    readers = cfg.get("readers")
+    if isinstance(readers, dict) and isinstance(readers.get("persona_file"), str) and readers["persona_file"].strip():
+        # seal checks every reader row's persona sha against this file (dc-07 adv-2), so it is held
+        _take(inputs, _within(root, base, readers["persona_file"], "readers.persona_file"))
     return inputs, sources
 
 
@@ -815,8 +819,10 @@ SEAL_RESIDUAL = ("the same OS user can write to the snapshot directory mid-seal 
                  "producers or the interpreter's site-packages. It can also change an input OUTSIDE the "
                  "round in ways the local census does not bind (an implements source round's assets, "
                  "a nearer design-chain.json appearing mid-seal); CI recompute from committed bytes "
-                 "closes that window (ASK-1827). A seal is evidence against edits to the "
-                 "round, not against the account that runs it.")
+                 "closes that window (ASK-1834, which absorbed ASK-1827). A checkout whose real path "
+                 "lives under a temp root is indistinguishable from a test round, so its injected "
+                 "reader rows count; the same CI recompute refuses them. A seal is evidence against "
+                 "edits to the round, not against the account that runs it.")
 
 
 def is_page(path: str) -> bool:
@@ -1964,11 +1970,14 @@ def _temp_roots() -> tuple[str, ...]:
             roots.add(os.confstr(65537) or "")
         except (ValueError, OSError):
             pass
-    return tuple(sorted({os.path.realpath(r) for r in roots if r}))
+    # each root as spelled AND as resolved (/var/folders is /private/var/folders on macOS): a
+    # round counts as a test round only when its path is under one both as named and as resolved
+    return tuple(sorted({f(r.rstrip("/") or "/") for r in roots if r for f in (os.path.normpath, os.path.realpath)}))
 
 
 TEST_ROUND_ROOTS = _temp_roots()
 _READER_GATE = None
+_SEAL_ARG: str | None = None
 
 
 def _reader_gate():
@@ -1984,7 +1993,7 @@ def _reader_gate():
     return _READER_GATE
 
 
-def reader_problems(rd: Path, page: Path, cfg: dict) -> list[str]:
+def reader_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None = None) -> list[str]:
     """dc-07: seal READS the readers. Round A sealed with three readers who all said they would
     leave, because the gate checked only that gate/ was not empty (RCA 2026-09-18).
 
@@ -2017,6 +2026,16 @@ def reader_problems(rd: Path, page: Path, cfg: dict) -> list[str]:
         return [f"{CONFIG_NAME} readers.n or readers.viewports is not a count and a list of [width, height]"]
     expected = {f"{page.name}@{w}x{h}#{i}" for w, h in vps for i in range(1, n + 1)}
     qsha = hashlib.sha256(json.dumps(questions).encode()).hexdigest()
+    # the persona and the model are part of what the readers were; a steered persona or a more
+    # compliant model, used for one run and then put back, left rows that counted (dc-07 adv-2)
+    model = readers.get("model", rg.DEFAULT_MODEL)
+    pf = readers.get("persona_file")
+    try:
+        if cfg_path is None or not isinstance(pf, str) or not pf.strip():
+            raise OSError("no readers.persona_file")
+        persona_sha = hashlib.sha256((cfg_path.parent / pf).read_bytes()).hexdigest()
+    except OSError as e:
+        return [f"{CONFIG_NAME} readers.persona_file cannot be read ({e}); a reader row is checked against it"]
     page_sha = sha(page)
     path = rd / READER_ROWS
     try:
@@ -2037,11 +2056,28 @@ def reader_problems(rd: Path, page: Path, cfg: dict) -> list[str]:
         return [f"no reader rows for these bytes of {page.name}: every row in {_live(path)} is about "
                 f"another page or an earlier version. Run design-reader-gate.py on the page as it is."]
     try:
-        disposed = set(READER_DISPOSITION_RE.findall((rd / DISPOSITIONS).read_text()))
+        # a line inside a ``` fence is an example, not a ruling (dc-07 std-2)
+        text = re.sub(r"(?ms)^\s*(```|~~~).*?^\s*\1[^\n]*$", "", (rd / DISPOSITIONS).read_text())
+        disposed = set(READER_DISPOSITION_RE.findall(text))
     except OSError:
         disposed = set()
-    live = os.path.realpath(_live(rd))
-    test_round = any(live == t or live.startswith(t + os.sep) for t in TEST_ROUND_ROOTS)
+    # BOTH the path as named and where it resolves: a round dir symlinked into /tmp resolved
+    # under a temp root and its injected rows counted (dc-07 adv-6)
+    def under_temp(p):
+        return any(p == t or p.startswith(t + os.sep) for t in TEST_ROUND_ROOTS)
+    named = os.path.abspath(_live(rd))
+    if _SEAL_ARG and os.path.realpath(_SEAL_ARG) == os.path.realpath(named):
+        named = _SEAL_ARG               # seal resolved its argument; judge the path as the caller named it
+    test_round = under_temp(named) and under_temp(os.path.realpath(named))
+    shas: dict[str, str | None] = {}
+
+    def now_sha(rel):
+        if rel not in shas:
+            try:
+                shas[rel] = hashlib.sha256((rd / rel).read_bytes()).hexdigest()
+            except OSError:
+                shas[rel] = None
+        return shas[rel]
     probs, answered = [], set()
     for r in rows:
         vp, inst = r.get("viewport"), r.get("instance")
@@ -2057,6 +2093,21 @@ def reader_problems(rd: Path, page: Path, cfg: dict) -> list[str]:
             continue
         if prov.get("questions_sha256") != qsha:
             probs.append(f"reader {rid} was asked other questions than {CONFIG_NAME} sets now; run the "
+                         f"readers again")
+            continue
+        if prov.get("persona_sha256") != persona_sha:
+            probs.append(f"reader {rid} was given another persona than {pf} holds now; run the readers again")
+            continue
+        if prov.get("runner") == "claude" and (prov.get("model") != model or prov.get("model_reported") != [model]):
+            probs.append(f"reader {rid} was model {prov.get('model_reported')!r}, not the configured {model!r}")
+            continue
+        # every file the reader's browser was served, not only the HTML: a decoy stylesheet swapped in
+        # for the run and out again kept STAY rows counting (dc-07 adv-1)
+        served = r.get("served")
+        if (not isinstance(served, dict) or not served
+                or any(not isinstance(k, str) or k.startswith("/") or ".." in k.split("/") or now_sha(k) != v
+                       for k, v in served.items())):
+            probs.append(f"reader {rid} was shown files that are not this round's bytes now; run the "
                          f"readers again")
             continue
         ans = r.get("answers")
@@ -2125,7 +2176,7 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
         d = rd / name
         if not d.is_dir() or not any(d.iterdir()):
             probs.append(f"missing or empty {d}/")
-    probs += reader_problems(rd, page, cfg)
+    probs += reader_problems(rd, page, cfg, cfg_path)
 
     # brief: verbatim anchors, read live
     brief = (rd / "brief.md").read_text() if (rd / "brief.md").is_file() else ""
@@ -2493,6 +2544,8 @@ def main(argv: list[str]) -> int:
             print("   - " + x)
         return 2 if probs else 0
     if argv and argv[0] == "seal":
+        global _SEAL_ARG
+        _SEAL_ARG = os.path.abspath(argv[1])      # as named, before resolve() erases a symlink
         return seal(Path(argv[1]).resolve())
     if argv and argv[0] == "status":
         rd = Path(argv[1]).resolve()

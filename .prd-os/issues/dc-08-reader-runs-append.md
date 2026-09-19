@@ -29,6 +29,12 @@ Parent PRD: `.prd-os/prds/prd-design-chain-seal-reads-verdicts-2026-09-18.md`
 
 design-reader-gate.py opens gate/reader-runs.jsonl in append mode only. seal reads every row whose html_sha256 matches the current page, so a later all-STAY run does not erase an earlier LEAVE. Test: run LEAVE then STAY, seal still refuses.
 
+From dc-07's reviews (Sana, 2026-09-19; dc-07 adv-3, adv-4, adv-5 and std-1, rejected there with this issue as the follow-up):
+
+Each design-reader-gate.py invocation gets a run_id recorded in every row it writes, plus the readers config it ran under: n, viewports, labels, narrow, floor, persona_sha256, model. seal groups rows by run_id and counts a run complete only when it holds every expected id for the page. Among complete runs for the current page bytes, seal counts only the run(s) whose recorded config equals today's design-chain.json readers block; a floor or n lowered after a run recorded a higher one refuses instead of passing. Any LEAVE or narrow label in ANY complete run for the current bytes refuses. Reader rows present in reader-runs.jsonl for this page with no readers block in design-chain.json refuses at seal (closes deleting the config to escape a LEAVE). Test: two separate runs with different run_ids, rows spliced from each into one page's set so no run_id is complete; seal refuses for lack of a complete run, not for the spliced verdicts.
+
+A run with --page for one page of a multi-page round leaves every other page's rows in the file (std-1: it overwrote them, and seal then refused the other page with no reader rows). Test: read PageA, then PageB, seal sees rows for both.
+
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
