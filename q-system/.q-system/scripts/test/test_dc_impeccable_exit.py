@@ -189,6 +189,11 @@ class EveryRecordedStageIsBelievable(unittest.TestCase):
         src = REAL_GATE.read_text()
         names = sorted(set(re.findall(r'stage_record\("([a-z]+)"', src)))
         self.assertGreaterEqual(len(names), 3, names)          # the parse found the stages at all
+        # every call is either a literal name or the registry's check:<name>; any other computed name
+        # would escape this census (review of 180acf05)
+        calls = len(re.findall(r"(?<!def )\bstage_record\(", src))
+        known = len(re.findall(r'stage_record\("[a-z]+"', src)) + len(re.findall(r'stage_record\(f"check:\{name\}"', src))
+        self.assertEqual(calls, known, "a stage_record call names its stage some other way; extend this census")
         spec = importlib.util.spec_from_file_location("dc1845_gate", REAL_GATE)
         g = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(g)
