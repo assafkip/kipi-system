@@ -1,7 +1,7 @@
 ---
 id: dc-12-citations-are-checked-where-the-transcript-is
 title: A hook verifies cited repo files were opened this session and seal requires that record
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
