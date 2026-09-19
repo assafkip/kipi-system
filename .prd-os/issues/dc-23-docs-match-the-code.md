@@ -1,7 +1,7 @@
 ---
 id: dc-23-docs-match-the-code
 title: The command doc matches the code and every RCA box is closed or voided
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -32,4 +32,4 @@ test_dc_command_doc.py asserts every script path the command names exists, every
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] The command doc matches the code and every RCA box is closed or voided
+- [x] The command doc matches the code and every RCA box is closed or voided
