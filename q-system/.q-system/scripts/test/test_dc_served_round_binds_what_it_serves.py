@@ -129,6 +129,64 @@ class SealDoesNotServeWhatItDoesNotBind(Round):
         self.assertEqual(rc, 0, out)
 
 
+    def test_a_symlink_to_a_file_the_seal_writes_refuses(self):
+        # adv-2: style.css -> receipts.json served the receipt's bytes as a stylesheet, and the
+        # seal's own receipt write then changed what style.css serves
+        (self.rd / "receipts.json").write_text("body{font:18px/1.5 Georgia,serif;margin:40px}")
+        os.symlink("receipts.json", self.rd / "style.css")
+        (self.rd / "Home-laptop.html").write_text(
+            "<!doctype html><html><head><meta charset='utf-8'><link rel='stylesheet' href='style.css'>"
+            "</head><body><h1>Two records</h1><p><a href='#book'>Book a call</a></p></body></html>")
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("style.css: is the same file as receipts.json", out)
+
+    def test_a_page_naming_another_file_that_shares_a_skipped_name_still_seals(self):
+        # adv-1: blog/receipts.json is a file of its own, served and bound like any other
+        (self.rd / "shared.css").write_text("body{font:18px/1.5 Georgia,serif;margin:40px}")
+        (self.rd / "blog").mkdir()
+        (self.rd / "blog" / "receipts.json").write_text("[]")
+        (self.rd / "Home-laptop.html").write_text(
+            "<!doctype html><html><head><meta charset='utf-8'><link rel='stylesheet' href='shared.css'>"
+            "<script type='text/plain'>fetch('blog/receipts.json')</script></head><body><h1>Two records</h1>"
+            "<p><a href='#book'>Book a call</a></p></body></html>")
+        rc, out = self.seal()
+        self.assertEqual(rc, 0, out)
+
+
+def load_gate():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("dc1838_gate", GATE)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TheReferenceIsAWholePath(unittest.TestCase):
+    def test_a_path_that_only_contains_a_skipped_name_is_another_file(self):
+        g = load_gate()
+        for body in (b'fetch("data/nonstandard.json")', b'fetch("blog/receipts.json")',
+                     b'.x{background:url(spotchecks/gap.json)}',
+                     b'.i{background:url(https://cdn.example.com/assets/standard.json)}'):
+            self.assertEqual(g.unbound_references({"a.js": body}), {}, body)
+
+    def test_the_round_s_own_skipped_file_is_still_named(self):
+        g = load_gate()
+        for body in (b'fetch("standard.json")', b"fetch('./receipts.json')", b'url(/checks/gap.json)',
+                     b'fetch("../standard.json?v=2")'):
+            self.assertNotEqual(g.unbound_references({"a.js": body}), {}, body)
+
+    def test_a_case_alias_is_the_same_file(self):
+        tmp = Path(tempfile.mkdtemp(prefix="dc1838-case-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "Receipts.json").write_text("p{font-size:18px}")
+        if not (tmp / "receipts.json").exists():
+            self.skipTest("case-sensitive disk: Receipts.json is a file of its own here")
+        g = load_gate()
+        files = g.round_files(tmp)
+        self.assertEqual(g.skipped_aliases(tmp, files), {"Receipts.json": "receipts.json"})
+
+
 class TheReaderGateFollowsTheSameList(Round):
     def test_the_reader_gate_does_not_serve_a_file_the_seal_does_not_bind(self):
         (self.rd / "standard.json").write_text(BIG)

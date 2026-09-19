@@ -758,7 +758,13 @@ def served_files(files: dict[str, bytes]) -> dict[str, bytes]:
 
 def unbound_references(files: dict[str, bytes]) -> dict[str, list[str]]:
     """{web file: [skipped paths its bytes name]}. A 404 at seal time is not enough: the built
-    site ships the round, so a visitor's fetch of standard.json would succeed (Sana, ASK-1838)."""
+    site ships the round, so a visitor's fetch of standard.json would succeed (Sana, ASK-1838).
+
+    A TRIPWIRE, not the guard. A text scan cannot see a path built at runtime ('stand'+'ard.json'),
+    escaped, entity-encoded, or hidden between a "/*" and a "*/" inside two strings, and a fetch
+    that runs only on a click or off the seal's host never reaches the seal's 404 either (review
+    of eb2a48d4, std-1 and adv-3). What holds for visitors is the build leaving these files out,
+    which is ASK-1839."""
     out = {}
     for rel, data in files.items():
         if Path(rel).suffix.lower() in WEB_SUFFIXES:
@@ -766,9 +772,37 @@ def unbound_references(files: dict[str, bytes]) -> dict[str, list[str]]:
             # "(checks/gap.json)" inside /* */ (measured 2026-09-19 over 6660 web files)
             code = re.sub(rb"/\*.*?\*/|<!--.*?-->", b" ", data, flags=re.S)
             code = re.sub(rb"(?m)(^|[\s;{}])//[^\n]*", rb"\1", code)
-            named = sorted(p for p in _DIGEST_SKIP if p.encode() in code)
+            # a whole path, not a substring: blog/receipts.json, nonstandard.json and a CDN's
+            # .../assets/standard.json are other files (review of eb2a48d4, adv-1 and std-2)
+            named = sorted(p for p in _DIGEST_SKIP
+                           if re.search(rb"(?<![\w./-])(?:\.{1,2}/|/)?" + re.escape(p.encode()) + rb"(?![\w-])", code))
             if named:
                 out[rel] = named
+    return out
+
+
+def skipped_aliases(rd: Path, files: dict[str, bytes]) -> dict[str, str]:
+    """{round file: the skipped file it IS}. Bound by file identity, not by name: a symlink
+    style.css -> receipts.json, a hard link, or Receipts.json on a case-insensitive disk served
+    a skipped file's bytes under a name the seal does not skip, and the seal's own receipt write
+    then changed what that name serves (review of eb2a48d4, adv-2)."""
+    ids = {}
+    for s in _DIGEST_SKIP:
+        try:
+            st = os.stat(rd / s)
+        except OSError:
+            continue
+        ids[(st.st_dev, st.st_ino)] = s
+    out = {}
+    for rel in files:
+        if rel in _DIGEST_SKIP:
+            continue
+        try:
+            st = os.stat(rd / rel)
+        except OSError:
+            continue
+        if (st.st_dev, st.st_ino) in ids:
+            out[rel] = ids[(st.st_dev, st.st_ino)]
     return out
 
 
@@ -2125,6 +2159,9 @@ def _seal_snapshot(rd: Path, pages: list[Path], seal_cfg: dict, snap: RoundSnaps
     for rel, named in sorted(unbound_references(snap.files).items()):
         bad.append((rel, [f"names {named}, which the seal writes or skips and does not bind; a built "
                           f"site would serve them to visitors. Keep page resources out of those files."]))
+    for rel, target in sorted(skipped_aliases(rd, snap.files).items()):
+        bad.append((rel, [f"is the same file as {target}, which the seal writes or skips; the seal's "
+                          f"own write would change what {rel} serves. Make it a file of its own."]))
     # The declared sources are read from the held round and the held tree, like the chain: seal
     # read them live after the chain, so a source present only inside the window sealed
     # (review of f091da79, finding-3).
