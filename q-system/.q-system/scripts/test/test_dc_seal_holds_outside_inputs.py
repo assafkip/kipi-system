@@ -180,13 +180,15 @@ class AnInputSwappedOnlyInsideTheWindowIsNotWhatSealReads(Base):
         seen = []
         real_run = gate.run_producer
 
-        def spy(producer, args):
+        # *rest: dc-05 gave run_producer a timeout and a stage name, and a spy taking only
+        # (producer, args) made every seal here a TypeError, red and unseen since (ASK-1841)
+        def spy(producer, args, *rest):
             for flag in ("--refs", "--config"):
                 if flag in args:
                     p = Path(args[args.index(flag) + 1])
                     body = (p / "a.json").read_text() if p.is_dir() else p.read_text()
                     seen.append((flag, body))
-            return real_run(producer, args)
+            return real_run(producer, args, *rest)
         gate.run_producer = spy
         rc, err = self.seal_in_process(gate)
         self.assertEqual(rc, 2, err)
