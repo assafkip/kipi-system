@@ -1,7 +1,7 @@
 ---
 id: dc-15-exemplars-fail-loudly
 title: A malformed exemplars.json refuses, and exemplar citation has a floor
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
