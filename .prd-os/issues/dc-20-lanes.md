@@ -1,7 +1,7 @@
 ---
 id: dc-20-lanes
 title: /design-chain takes a lane and the receipt says which stages a lane does not run
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -34,4 +34,4 @@ craft-manifest.json declares lane in {site, brand, deck, motion}; default site. 
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] /design-chain takes a lane and the receipt says which stages a lane does not run
+- [x] /design-chain takes a lane and the receipt says which stages a lane does not run

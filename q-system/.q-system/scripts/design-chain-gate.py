@@ -672,8 +672,12 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
     cfg_path = snap.cfg_path
     # only what the compare AND the digest bind: a page fetched CSS it had hidden in standard.json,
     # which seal overwrites and both skip, and a 9px page sealed COMPLETE (ASK-1838)
+    lane = round_lane(snap.dir)
     with served_round(rd, served_files(snap.files), snap.missed) as base:
         for p in pages:
+            if lane != "site":
+                snap.stages.setdefault(p.name, []).append(na_record("standard", lane))
+                continue
             sp = snap.dir / p.name
             _drop_prior_verdict(std_path, sp)
             args = [str(sp), "--url", f"{base}/{urllib.parse.quote(p.name)}"]
@@ -697,6 +701,9 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
         # a written reason and is exempt from the craft bar. Measuring it anyway leaves it stuck.
         round_is_wireframe = declared.get("tier") == "wireframe" and str(declared.get("reason", "")).strip()
         if (craft.get("require_gap_check") and craft.get("tier", "craft") != "wireframe"
+                and not round_is_wireframe and lane != "site"):
+            snap.stages.setdefault("", []).append(na_record("gap", lane))
+        elif (craft.get("require_gap_check") and craft.get("tier", "craft") != "wireframe"
                 and not round_is_wireframe):
             gap_rel = f"checks/{GAP_CHECK}"
             gap_path = snap.dir / gap_rel
@@ -718,6 +725,9 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
         # read only that checks/impeccable.txt was non-empty, so any text sealed ("ran" did),
         # and the producer exited 0 on a flagged page whenever its control fired.
         if (craft.get("require_impeccable") and craft.get("tier", "craft") != "wireframe"
+                and not round_is_wireframe and lane != "site"):
+            snap.stages.setdefault("", []).append(na_record("impeccable", lane))
+        elif (craft.get("require_impeccable") and craft.get("tier", "craft") != "wireframe"
                 and not round_is_wireframe):
             imp_rel = f"checks/{IMPECCABLE_CHECK}"
             imp_path = snap.dir / imp_rel
@@ -742,6 +752,10 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
         bad.append(("seal", [why]))
     for name in names:
         spec = CHECKS[name]
+        if lane != "site" and f"check:{name}" in WEB_ONLY:
+            for p in pages:
+                snap.stages.setdefault(p.name, []).append(na_record(f"check:{name}", lane))
+            continue
         for p in pages:
             # the held bytes are scanned; the live path decides scope and the brand kit
             brand = ["--brand-from", str(cfg_path.parent)] if cfg_path else []
@@ -1329,6 +1343,33 @@ GATE_FILE = Path(__file__).resolve()
 ROUND_CACHE = "round-cache.json"
 
 
+LANES = ("site", "brand", "deck", "motion")
+# measured against a web bar, so skipped outside the site lane (dc-20, Sana 2026-09-19): the tripwire
+# refuses a page with no interactive element, which is every deck
+WEB_ONLY = frozenset({"standard", "gap", "impeccable", "check:tripwire"})
+
+
+def round_lane(rd: Path) -> str:
+    """The round's lane, from craft-manifest.json `lane` (inside the round, so the digest binds it and a
+    flip after the seal opens the round). Missing, unreadable or unknown: site, the lane measured most."""
+    try:
+        lane = json.loads((rd / CRAFT_MANIFEST).read_text()).get("lane")
+    except (OSError, ValueError, AttributeError):
+        return "site"
+    return lane if lane in LANES else "site"
+
+
+def na_record(stage: str, lane: str) -> dict:
+    """The one writer of a stage that did not run because of the lane. exit is null, so a receipt that
+    does not believe the lane reads it as a stage that did not pass, never as a pass (dc-20)."""
+    return {"stage": stage, "path": "", "sha256": "", "exit": None, "not_applicable": f"lane: {lane}"}
+
+
+def _believed_na(r: dict, lane: str) -> bool:
+    return (lane != "site" and r.get("exit") is None and r.get("not_applicable") == f"lane: {lane}"
+            and r.get("stage") in WEB_ONLY and r.get("path") == "" and r.get("sha256") == "")
+
+
 def stage_record(stage: str, producer: str, rd: Path, rc: int) -> dict:
     """What ran, for one stage: which producer file, its bytes, its exit code. Only for stages
     this gate really runs (dc-10, Sana 2026-09-19): a record for a producer that does not exist
@@ -1507,6 +1548,8 @@ def _stage_shape_problem(rec: dict, ent: dict) -> str | None:
     if not isinstance(stages, list):
         return "stages is not a list"
     for r in stages:
+        if isinstance(r, dict) and r.get("exit") is None and "not_applicable" in r:
+            continue            # a lane row: receipt_problems decides whether it is believed (dc-20)
         if not (isinstance(r, dict) and isinstance(r.get("stage"), str) and isinstance(r.get("path"), str)
                 and isinstance(r.get("sha256"), str) and isinstance(r.get("exit"), int)
                 and not isinstance(r.get("exit"), bool)):
@@ -1549,10 +1592,19 @@ def receipt_problems(page: Path) -> list[str]:
         shape = _stage_shape_problem(rec, ent)
         if shape:
             return [f"the receipt's stage record is malformed ({shape}): seal again"]
-        if not any(r["stage"] == "standard" for r in ent["stages"]):
+        lane = round_lane(rd)
+        if rec.get("__lane__", "site") != lane:
+            probs.append(f"the receipt's lane {rec.get('__lane__', 'site')!r} is not the manifest's {lane!r}: "
+                         f"seal again")
+        if not any(r.get("stage") == "standard" for r in ent["stages"]):
             probs.append(f"the receipt records no standard stage for {page.name}, so nothing shows the "
                          f"page was measured: seal again")
         for r in ent["stages"]:
+            if "not_applicable" in r or r.get("exit") is None:
+                if not _believed_na(r, lane):
+                    probs.append(f"the receipt calls the {r.get('stage')} stage not applicable, and the "
+                                 f"round's lane ({lane}) does not skip it: seal again")
+                continue
             if r["exit"] != 0:
                 probs.append(f"the receipt records the {r['stage']} producer exiting {r['exit']}, so the "
                              f"stage did not pass: seal again")
@@ -1563,6 +1615,8 @@ def receipt_problems(page: Path) -> list[str]:
             probs.append("the receipt names a gate that is neither at its path now nor in this repo's "
                          "history, so nothing shows which gate sealed it")
         for r in ent.get("stages", []):
+            if "not_applicable" in r:
+                continue        # no producer ran, so there is none to find (a bad row is refused above)
             if not facts["stages"].get(f"{r.get('stage')}:{r.get('sha256')}"):
                 probs.append(f"the receipt names a {r.get('stage')} producer that is neither at its path "
                              f"now nor in this repo's history")
@@ -2421,7 +2475,10 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     if not cfg:
         probs.append(f"no {CONFIG_NAME} found above {page} (the instance has no owner anchors configured)")
 
+    lane = round_lane(rd)
     for name in CHAIN_FILES:
+        if name == "standard.json" and lane != "site":
+            continue            # the web standard is not this lane's bar (dc-20)
         if not (rd / name).is_file():
             probs.append(f"missing {rd / name}")
     for name in CHAIN_DIRS:
@@ -2477,7 +2534,7 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
 
     # standard: pass true and hash matches THIS page
     std_path = rd / "standard.json"
-    if std_path.is_file():
+    if std_path.is_file() and lane == "site":
         try:
             std = json.loads(std_path.read_text())
         except ValueError:
@@ -2642,6 +2699,7 @@ def _seal_snapshot(rd: Path, pages: list[Path], seal_cfg: dict, snap: RoundSnaps
             rec[p.name]["readers"] = dict(reader_history(snap.dir, snap.dir / p.name),
                                           reader_runs_max=seal_cfg["readers"].get("reader_runs_max",
                                                                                   _reader_gate().DEFAULT_RUNS_MAX))
+    rec["__lane__"] = round_lane(snap.dir)       # for audit; the manifest is the bound copy (dc-20)
     rec["__gate__"] = {"path": repo_path(GATE_FILE, rd), "sha256": sha(GATE_FILE)}
     rec["__assets__"] = {"sha256": asset_digest(snap.files), "measured": "snapshot", "residual": SEAL_RESIDUAL}
     srcs = declared_sources(snap.dir, root)
