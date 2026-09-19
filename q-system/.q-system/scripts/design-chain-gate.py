@@ -2892,22 +2892,57 @@ def citation_problems(rd: Path) -> list[str]:
 ENGINES_LOG = "engines.jsonl"
 
 
+def _engine_credits(node, out: list) -> None:
+    """Every engine a manifest credits, wherever it sits: any key whose name contains "engine", with
+    a string or a list of strings. Only techniques[].engine was read, so "Engine", "engines" and a
+    credit nested under directions all sealed with no run behind them (dc-19 adv-1, adv-3)."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if "engine" in str(k).casefold():
+                for e in (v if isinstance(v, list) else [v]):
+                    if isinstance(e, str) and e.strip():
+                        out.append(e)
+                    elif e not in (None, "", [], {}):
+                        out.append(json.dumps(e))
+            _engine_credits(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            _engine_credits(v, out)
+
+
+def _no_duplicate_keys(pairs):
+    keys = [k for k, _ in pairs]
+    dup = sorted({k for k in keys if keys.count(k) > 1})
+    if dup:
+        raise ValueError(f"duplicate key(s) {dup}")
+    return dict(pairs)
+
+
 def engine_problems(rd: Path) -> list[str]:
-    """dc-19: a craft-manifest technique that names an `engine` needs a run of that engine recorded in
-    the round's engines.jsonl, which design-engine-door.py appends on the Skill tool's PostToolUse. The
+    """dc-19: every engine the craft manifest credits needs a run of that engine recorded in the
+    round's engines.jsonl, which design-engine-door.py appends on the Skill tool's PostToolUse. The
     copied-animation incident: a technique credited hyperframes-animation and the engine never ran.
-    Names compare folded, as the door folds them. The log is a round file, builder-writable like every
-    round file (ASK-1834)."""
+    Names fold through the door's own canonical(), one definition for both ends (adv-7). A record
+    shows the engine was LOADED in this round, not that its output was used; that is judgment, left to
+    the readers and the critique. The log is a round file, builder-writable like every one (ASK-1834)."""
     try:
-        man = json.loads((rd / CRAFT_MANIFEST).read_text())
-    except (OSError, ValueError):
+        text = (rd / CRAFT_MANIFEST).read_text()
+    except OSError:
         return []
-    techs = man.get("techniques") if isinstance(man, dict) else None
-    fold = lambda n: str(n).strip().split(":")[-1].strip().strip("/").casefold().replace("_", "-")
-    wanted = {}
-    for t in techs if isinstance(techs, list) else []:
-        if isinstance(t, dict) and t.get("engine"):
-            wanted.setdefault(fold(t["engine"]), []).append(str(t.get("id", "?")))
+    try:
+        man = json.loads(text, object_pairs_hook=_no_duplicate_keys)
+    except ValueError as e:
+        # a duplicate key shows one value in the file and parses to another (adv-2)
+        return [f"{CRAFT_MANIFEST} cannot be read as one unambiguous object: {e}"] if "duplicate" in str(e) else []
+    credits: list = []
+    _engine_credits(man, credits)
+    if not credits:
+        return []
+    try:
+        door = _load_sibling_module("design-engine-door.py", "dc_engine_door")
+    except (OSError, ImportError) as e:
+        return [f"{CRAFT_MANIFEST} credits engines {sorted(set(credits))}, and design-engine-door.py cannot be "
+                f"loaded to read their names ({e})"]
     ran = set()
     try:
         for line in (rd / ENGINES_LOG).read_text().splitlines():
@@ -2915,13 +2950,25 @@ def engine_problems(rd: Path) -> list[str]:
                 row = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(row, dict) and row.get("skill"):
-                ran.add(fold(row["skill"]))
+            if isinstance(row, dict) and isinstance(row.get("skill"), str):
+                ran.add(row["skill"])        # the door writes the canonical name
     except OSError:
         pass
-    return [f"{CRAFT_MANIFEST} credits technique(s) {ids} to engine '{e}', and {ENGINES_LOG} records no run "
-            f"of it in this round. Run the engine through /design-chain, or credit what was actually done."
-            for e, ids in sorted(wanted.items()) if e not in ran]
+    wanted = sorted({door.canonical(c) or c for c in credits})
+    return [f"{CRAFT_MANIFEST} credits engine '{e}', and {ENGINES_LOG} records no run of it in this round. "
+            f"Run the engine through /design-chain, or credit what was actually done."
+            for e in wanted if e not in ran]
+
+
+def _load_sibling_module(filename: str, modname: str):
+    import importlib.util
+    path = HERE / filename
+    if not path.is_file():
+        raise OSError(f"{path} is missing")
+    spec = importlib.util.spec_from_file_location(modname, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 # ---------------------------------------------------------------- brief reads (dc-16)

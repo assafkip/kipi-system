@@ -70,9 +70,12 @@ def record(payload: dict) -> None:
     if rd is None:
         return
     import time
-    with open(rd / "engines.jsonl", "a") as f:
-        f.write(json.dumps({"skill": name, "raw": raw, "session": sid,
-                            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}) + "\n")
+    try:
+        with open(rd / "engines.jsonl", "a") as f:
+            f.write(json.dumps({"skill": name, "raw": raw, "session": sid,
+                                "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}) + "\n")
+    except OSError:
+        return            # the round went away mid-call: no record, and seal refuses the credit
 
 
 def decide(payload: dict) -> tuple[int, str]:

@@ -78,6 +78,12 @@ class EngineRecords(unittest.TestCase):
         self.assertEqual(self.rows(), [])
         self.assertEqual(list(self.cwd.iterdir()), [])
 
+    def test_a_record_that_cannot_be_written_is_a_quiet_no_op(self):
+        # std-2: the hook's exit contract is 0 or 2, never a traceback
+        self.open_round()
+        (self.rd / "engines.jsonl").mkdir()
+        self.post_skill("frontend-design")          # asserts exit 0
+
     def test_an_unlisted_skill_is_not_recorded(self):
         self.open_round()
         self.post_skill("q-debrief")
@@ -98,6 +104,43 @@ class EngineRecords(unittest.TestCase):
     def test_a_manifest_without_engine_fields_needs_no_record(self):
         (self.rd / "craft-manifest.json").write_text(json.dumps({"techniques": [{"id": "t1", "reference": "x.com"}]}))
         self.assertEqual(load_gate().engine_problems(self.rd), [])
+
+    def raw_manifest(self, text):
+        (self.rd / "craft-manifest.json").write_text(text)
+        return load_gate().engine_problems(self.rd)
+
+    def test_an_engine_credit_under_another_key_is_seen(self):
+        # adv-1
+        for key in ("Engine", "engines", "engine_used"):
+            probs = self.raw_manifest(json.dumps({"techniques": [{"id": "m", key: "hyperframes-animation"}]}))
+            self.assertTrue(any("hyperframes-animation" in p for p in probs), (key, probs))
+
+    def test_a_list_of_engines_needs_a_run_of_each(self):
+        self.open_round()
+        self.post_skill("brand")
+        probs = self.raw_manifest(json.dumps({"techniques": [{"id": "m", "engines": ["brand", "hyperframes-animation"]}]}))
+        self.assertEqual(len(probs), 1, probs)
+        self.assertIn("'hyperframes-animation'", probs[0])
+        self.assertNotIn("brand", probs[0])
+
+    def test_a_duplicate_key_refuses(self):
+        # adv-2
+        probs = self.raw_manifest('{"techniques": [{"id": "m", "engine": "hyperframes-animation", "engine": ""}]}')
+        self.assertTrue(any("duplicate" in p for p in probs), probs)
+
+    def test_a_nested_credit_is_seen(self):
+        # adv-3
+        for shape in ({"directions": [{"techniques": [{"engine": "hyperframes-animation"}]}]},
+                      {"techniques": {"m": {"engine": "hyperframes-animation"}}},
+                      [{"engine": "hyperframes-animation"}]):
+            probs = self.raw_manifest(json.dumps(shape))
+            self.assertTrue(any("hyperframes-animation" in p for p in probs), (shape, probs))
+
+    def test_the_gate_folds_names_as_the_door_does(self):
+        # adv-7: a run recorded, credit written with a trailing colon
+        self.open_round()
+        self.post_skill("hyperframes-animation")
+        self.assertEqual(self.raw_manifest(json.dumps({"techniques": [{"engine": "hyperframes-animation:"}]})), [])
 
     def test_seal_refuses_a_copied_animation(self):
         # RED FIRST: nothing recorded which engines a round ran
