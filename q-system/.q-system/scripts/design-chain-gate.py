@@ -280,6 +280,14 @@ def _within(root: Path, base: Path, value, what: str) -> Path:
         raise EscapingPath(f"{what} '{v}' is absolute or climbs out of the tree this seal holds. "
                            f"A seal reads only bytes it holds, so it cannot measure that path. "
                            f"Name it relative to {base}.")
+    # The held tree mirrors paths as TEXT; the OS follows a symlink before it applies '..'. So
+    # 'lnk/../exemplars' named one directory live and another held, and the exemplar check went
+    # quiet (review of b5d3f611, finding-1). Refused, not modelled: fail closed.
+    lexical = os.path.normpath(os.path.join(os.path.realpath(base), v))
+    if os.path.realpath(os.path.join(base, v)) != lexical:
+        raise EscapingPath(f"{what} '{v}' passes through a symlink. A seal holds paths as written "
+                           f"and the filesystem follows links, so the two could name different "
+                           f"files. Name the real path relative to {base}.")
     return base / v
 
 
@@ -359,7 +367,9 @@ def _outside_inputs(root: Path, rd: Path, files: dict[str, bytes], cfg: dict, cf
     specs = _within(root, base, vc["specs_dir"], "vision.specs_dir")
     _take(inputs, specs)
     if man.get("component"):
-        _within(root, specs, f"{man['component']}.md", f"{CRAFT_MANIFEST} component")
+        # held like every other input: discarding this left a spec outside specs_dir missing
+        # from the held tree (review of b5d3f611, finding-5)
+        _take(inputs, _within(root, specs, f"{man['component']}.md", f"{CRAFT_MANIFEST} component"))
     ground = (cfg.get("craft") or {}).get("require_grounding")
     if ground:
         g = _within(root, base, ground, "craft.require_grounding")
@@ -680,7 +690,10 @@ def files_that_differ(a: dict[str, bytes], b: dict[str, bytes]) -> list[str]:
 
 SEAL_RESIDUAL = ("the same OS user can write to the snapshot directory mid-seal (the browser is served "
                  "from memory, so that refuses the seal and cannot forge a pass) and can alter the "
-                 "producers or the interpreter's site-packages. A seal is evidence against edits to the "
+                 "producers or the interpreter's site-packages. It can also change an input OUTSIDE the "
+                 "round in ways the local census does not bind (an implements source round's assets, "
+                 "a nearer design-chain.json appearing mid-seal); CI recompute from committed bytes "
+                 "closes that window (ASK-1827). A seal is evidence against edits to the "
                  "round, not against the account that runs it.")
 
 
@@ -2036,13 +2049,16 @@ def _seal_snapshot(rd: Path, pages: list[Path], seal_cfg: dict, snap: RoundSnaps
         return 2
     # The receipt is about the SNAPSHOT: those are the bytes the browser was given. It is
     # written only if the round on disk is those bytes now.
+    # The round is read on BOTH sides of the outside census: once before it only, a round file
+    # changed while the census ran was written into the receipt (review of b5d3f611, finding-4).
     moved = files_that_differ(snap.files, round_files(rd))
+    moved_out = outside_inputs_that_differ(snap)
+    moved = sorted(set(moved) | set(files_that_differ(snap.files, round_files(rd))))
     if moved:
         print("seal REFUSED:", file=sys.stderr)
         print(f"  {moved} differ from what this seal measured, so what was measured is not what "
               f"would be sealed. Seal again.", file=sys.stderr)
         return 2
-    moved_out = outside_inputs_that_differ(snap)
     if moved_out:
         print("seal REFUSED:", file=sys.stderr)
         print(f"  {moved_out} (outside the round) changed while this seal held them, so the chain "

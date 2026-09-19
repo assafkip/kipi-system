@@ -145,6 +145,61 @@ class APathThatEscapesTheHeldTreeIsRefused(Binding):
         self.assert_refused(rc, err, "climbs out of the tree")
 
 
+class ReviewOfB5d3f611(Binding):
+    """Sana's triage of b5d3f611's reviews: findings 1, 4, 5 (and 6 for the fields they touch)."""
+
+    def test_a_config_path_through_a_symlink_is_refused(self):
+        # finding-1: 'lnk/../exemplars' is inside the tree lexically, but the OS follows the link
+        # first; the held tree has no link, so the exemplar check went quiet and the round sealed
+        (self.inst / "deep" / "a").mkdir(parents=True)
+        put(self.inst / "deep" / "exemplars" / "stripe.png", "png")()
+        (self.inst / "lnk").symlink_to(self.inst / "deep" / "a")
+        self.config(exemplars_dir="lnk/../exemplars")
+        rc, err = self.seal_in_process(load_gate("dcb_r1"))
+        self.assert_refused(rc, err, "symlink")
+
+    def test_a_component_spec_outside_specs_dir_is_held_and_read(self):
+        # finding-5: the component spec was never held, so one named with a '..' that stays in
+        # the tree was missing from the held tree and an honest round could not seal
+        self.config(vision={"file": "VISION.md", "specs_dir": "specs", "min_founder_quotes": 0,
+                            "require_brief_quotes_vision": False})
+        put(self.inst / "VISION.md", "# Vision\n")()
+        put(self.inst / "specs" / "README.md", "specs\n")()
+        put(self.inst / "shared-specs" / "hero.md", "# hero\nREVIEWED BY FOUNDER: 2026-09-19\n")()
+        (self.round / "craft-manifest.json").write_text(json.dumps({"component": "../shared-specs/hero"}))
+        rc, err = self.seal_in_process(load_gate("dcb_r5"))
+        self.assertEqual(rc, 0, err)
+
+    def test_a_component_spec_changed_after_the_snapshot_is_refused(self):
+        self.config(vision={"file": "VISION.md", "specs_dir": "specs", "min_founder_quotes": 0,
+                            "require_brief_quotes_vision": False})
+        put(self.inst / "VISION.md", "# Vision\n")()
+        spec = self.inst / "specs" / "hero.md"
+        put(spec, "# hero\nREVIEWED BY FOUNDER: 2026-09-19\n")()
+        (self.round / "craft-manifest.json").write_text(json.dumps({"component": "hero"}))
+        gate = load_gate("dcb_r5b")
+        real_producers = gate.producer_problems
+
+        def unreview(rd, pages, cfg):
+            spec.write_text("# hero\nnot reviewed\n")
+            return real_producers(rd, pages, cfg)
+        gate.producer_problems = unreview
+        self.assert_refused(*self.seal_in_process(gate), "changed while this seal")
+
+    def test_a_round_file_changed_while_the_outside_census_runs_is_refused(self):
+        # finding-4: the round compare ran BEFORE the outside census, so a round file changed
+        # during the census and left changed was written into a receipt
+        gate = load_gate("dcb_r4")
+        real_census = gate.outside_inputs_that_differ
+
+        def census_then_edit(s):
+            out = real_census(s)
+            (self.round / "critique.md").write_text("## A\n1. a\n")
+            return out
+        gate.outside_inputs_that_differ = census_then_edit
+        self.assert_refused(*self.seal_in_process(gate), "critique.md")
+
+
 class SealReadsTheSourcesAfterTheChainFromHeldBytes(Binding):
     def test_a_declared_source_that_exists_only_inside_the_window_is_refused(self):
         live = self.inst / "site" / "live" / "index.html"
