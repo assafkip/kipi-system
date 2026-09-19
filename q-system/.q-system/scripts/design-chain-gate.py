@@ -2666,8 +2666,9 @@ _PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_.\-/]+\.[A-Za-z0-9]+")
 
 
 def _read_first_gate():
-    """read-first-gate.py, loaded once: its transcript reader and opened() decide whether a file was
-    opened this session, for both gates (one definition of 'opened', not a copy)."""
+    """read-first-gate.py, loaded once: its transcript reader (_records, _tool_uses) is the one parser
+    of a session transcript. Its opened() is NOT used: it is tool-agnostic by design, and a citation
+    needs a Read of the file itself (_opened_files)."""
     import importlib.util
     spec = importlib.util.spec_from_file_location("read_first_gate_for_dc", HERE / "read-first-gate.py")
     mod = importlib.util.module_from_spec(spec)
@@ -2678,8 +2679,12 @@ def _read_first_gate():
 def cited_repo_paths(rd: Path) -> list[str]:
     """Repo files the round cites: technique references in the craft manifest and path tokens in
     proof.md that name an existing file in the round's own repo. A host name or a round file is not
-    a repo citation. No repo, no citations."""
-    top = _toplevel(_live(rd))
+    a repo citation. No repo, no citations.
+
+    A citation is recognised in the forms a reader would follow: 'canon/pain.md', 'canon/pain.md:40',
+    'canon/pain.md#L40', and an absolute path inside the repo. Each of those skipped the check before
+    (dc-12 adv-4, adv-5); a URL names a remote object and is not a repo citation."""
+    top = _citation_top(rd)
     if top is None:
         return []
     tokens: list[str] = []
@@ -2695,11 +2700,44 @@ def cited_repo_paths(rd: Path) -> list[str]:
     except OSError:
         pass
     out = set()
+    top_real = os.path.realpath(top)
     for tok in tokens:
-        tok = tok.strip().strip("`'\".,;:()")
-        if tok and not tok.startswith("/") and ".." not in tok.split("/") and (top / tok).is_file():
+        tok = re.sub(r"(:\d+(-\d+)?|#L\d+(-L?\d+)?)$", "", tok.strip().strip("`'\".,;()")).strip(":")
+        if tok.startswith("//"):
+            continue                                  # a URL's path, not a repo file
+        if tok.startswith("/"):
+            real = os.path.realpath(tok)
+            if not real.startswith(top_real + os.sep):
+                continue
+            tok = os.path.relpath(real, top_real)
+        if tok and ".." not in tok.split("/") and (top / tok).is_file():
             out.add(tok)
     return sorted(out)
+
+
+def _citation_top(rd: Path) -> Path | None:
+    """The repo a round's citations resolve against: the one holding the instance config, never a
+    repo nested in the round (a git init there made every outer citation vanish, dc-12 adv-6)."""
+    cfg = find_config(rd / "_")
+    base = _live(cfg).parent if cfg is not None else _live(rd).parent
+    return _toplevel(base)
+
+
+def _opened_files(uses) -> set:
+    """Real paths of the files this session READ. Only a Read counts: the old test was a substring
+    of any tool input, so the Write that made the citation vouched for itself, and a Bash echo, a
+    Grep, or reading canon/pain.md.bak all counted as opening canon/pain.md (dc-12 adv-1..3, std-1)."""
+    out = set()
+    for name, blob in uses:
+        if name != "Read":
+            continue
+        try:
+            fp = json.loads(blob).get("file_path")
+        except ValueError:
+            continue
+        if isinstance(fp, str) and fp:
+            out.add(os.path.realpath(fp))
+    return out
 
 
 def _cited_bytes_sha(rd: Path) -> dict:
@@ -2716,10 +2754,12 @@ def record_citations(rd: Path, transcript_path: str, session_id: str) -> None:
     if not records:
         rec_path.unlink(missing_ok=True)
         return
-    uses = rfg._tool_uses(records)
+    read = _opened_files(rfg._tool_uses(records))
     cited = cited_repo_paths(rd)
+    top = _citation_top(rd)
     rec_path.write_text(json.dumps({"session_id": session_id, "bytes": _cited_bytes_sha(rd), "cited": cited,
-                                    "unopened": [c for c in cited if not rfg.opened(uses, c)]}, indent=2) + "\n")
+                                    "unopened": [c for c in cited if os.path.realpath(top / c) not in read]},
+                                   indent=2) + "\n")
 
 
 def citation_problems(rd: Path) -> list[str]:
@@ -2727,6 +2767,8 @@ def citation_problems(rd: Path) -> list[str]:
     transcript, for THESE manifest and proof bytes, with every cited file opened. A craft manifest or
     proof.md could name any repo file as its source with nothing checking it was ever read (RCA
     2026-09-18). The record is builder-writable like every round file; forging it is ASK-1834's."""
+    if (_live(rd) / ".git").exists():
+        return [f"{_live(rd)} holds its own .git; a round is files in the instance's repo, not a repo"]
     cited = cited_repo_paths(rd)
     if not cited:
         return []

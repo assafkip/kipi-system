@@ -106,6 +106,60 @@ class Citations(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertTrue(any("canon/pain.md" in p and "never opened" in p for p in self.problems()), self.problems())
 
+    def tool_transcript(self, *uses):
+        t = self.tmp / "session.jsonl"
+        rows = [{"message": {"role": "assistant", "content": [{"type": "tool_use", "name": n, "input": i}]}}
+                for n, i in uses]
+        t.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        return t
+
+    def unopened_after(self, *uses):
+        self.hook(self.tool_transcript(*uses))
+        return json.loads((self.rd / "citations.json").read_text())["unopened"]
+
+    def test_the_write_that_makes_the_citation_does_not_vouch_for_it(self):
+        # adv-1: the Write's content holds the cited path
+        self.assertEqual(self.unopened_after(("Write", {"file_path": str(self.manifest),
+                                                        "content": self.manifest.read_text()})), ["canon/pain.md"])
+
+    def test_mentioning_the_path_is_not_reading_it(self):
+        # adv-2
+        self.assertEqual(self.unopened_after(("Bash", {"command": "echo canon/pain.md"}),
+                                             ("Grep", {"pattern": "canon/pain.md"})), ["canon/pain.md"])
+
+    def test_reading_a_longer_path_is_not_reading_the_cited_one(self):
+        # adv-3, std-1
+        (self.repo / "canon" / "pain.md.bak").write_text("old\n")
+        self.assertEqual(self.unopened_after(("Read", {"file_path": str(self.repo / "canon" / "pain.md.bak")})),
+                         ["canon/pain.md"])
+
+    def test_a_line_suffix_is_still_a_citation(self):
+        # adv-4
+        self.cite("canon/pain.md:40")
+        self.assertTrue(any("no citation record" in p for p in self.problems()), self.problems())
+
+    def test_an_absolute_path_inside_the_repo_is_still_a_citation(self):
+        # adv-5
+        self.cite("stripe.com")
+        (self.rd / "proof.md").write_text(f"quoted from {self.repo / 'canon' / 'pain.md'}\n")
+        self.assertTrue(any("no citation record" in p for p in self.problems()), self.problems())
+
+    def test_writing_the_cited_file_is_not_reading_it(self):
+        # a Write that names the file (authoring the "source") is not opening it (mutant D1 survived)
+        self.assertEqual(self.unopened_after(("Write", {"file_path": str(self.repo / "canon" / "pain.md"),
+                                                        "content": "a source written to be cited\n"})),
+                         ["canon/pain.md"])
+
+    def test_a_repo_between_the_round_and_the_config_does_not_hide_citations(self):
+        # git init in site/design made it the toplevel, so canon/pain.md stopped resolving (mutant D4 survived)
+        subprocess.run(["git", "init", "-q", str(self.rd.parent)], check=True, timeout=60)
+        self.assertTrue(any("no citation record" in p for p in self.problems()), self.problems())
+
+    def test_a_repo_nested_in_the_round_refuses(self):
+        # adv-6
+        subprocess.run(["git", "init", "-q", str(self.rd)], check=True, timeout=60)
+        self.assertTrue(any("holds its own .git" in p for p in self.problems()), self.problems())
+
     def test_seal_refuses_a_cited_file_with_no_record(self):
         # RED FIRST: seal never asked whether a cited file was opened
         (self.rd / "Home-laptop.html").write_text("<html><body><p>x</p></body></html>")
