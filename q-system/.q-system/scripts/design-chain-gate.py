@@ -1993,6 +1993,34 @@ def _reader_gate():
     return _READER_GATE
 
 
+def reader_history(rd: Path, page: Path) -> dict:
+    """{runs, leave_runs}: every reader run this page has had in the round, over EVERY version of its
+    bytes, and how many carried a LEAVE. Seal caps the first and writes both into the receipt, so a
+    re-roll after a one-byte edit is refused past the cap and visible below it (ASK-1840). A row with
+    no run id counts as a run of its own. Lines that are not JSON are reader_problems' refusal."""
+    rg = _reader_gate()
+    runs, leave = set(), set()
+    try:
+        lines = (rd / READER_ROWS).read_text().splitlines()
+    except OSError:
+        lines = []
+    for k, line in enumerate(lines):
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(r, dict) or r.get("page") != page.name:
+            continue
+        prov = r.get("_provenance") if isinstance(r.get("_provenance"), dict) else {}
+        run = prov.get("run_id") if isinstance(prov.get("run_id"), str) and prov.get("run_id") else f"line-{k}"
+        runs.add(run)
+        ans = r.get("answers")
+        if isinstance(ans, list) and len(ans) >= 3 and all(isinstance(a, str) for a in ans):
+            if rg.read_answers(ans, {"labels": []})["verdict"] == "LEAVE":
+                leave.add(run)
+    return {"runs": len(runs), "leave_runs": len(leave)}
+
+
 def reader_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None = None) -> list[str]:
     """dc-07: seal READS the readers. Round A sealed with three readers who all said they would
     leave, because the gate checked only that gate/ was not empty (RCA 2026-09-18).
@@ -2019,6 +2047,11 @@ def reader_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None = Non
         rg.check_readers(readers)
     except ValueError as e:
         return [f"{CONFIG_NAME} readers: {e}"]
+    hist, cap = reader_history(rd, page), readers.get("reader_runs_max", rg.DEFAULT_RUNS_MAX)
+    if hist["runs"] > cap:
+        return [f"{page.name} has had {hist['runs']} reader runs in this round ({hist['leave_runs']} with a "
+                f"LEAVE), over readers.reader_runs_max {cap}. Re-running the readers until they say STAY is "
+                f"not a new reading; change the page's design, or answer the LEAVE with a FOUNDER line."]
     narrow = {x.strip().casefold() for x in readers.get("narrow", [])}
     floor = readers.get("floor", 1.0)
     n = readers.get("n", rg.DEFAULT_N)
@@ -2429,6 +2462,11 @@ def _seal_snapshot(rd: Path, pages: list[Path], seal_cfg: dict, snap: RoundSnaps
         return 2
     rec = {p.name: {"sha256": snap.sha(p.name), "sealed": time.strftime("%Y-%m-%dT%H:%M:%S"),
                     "stages": snap.stages.get(p.name, []) + snap.stages.get("", [])} for p in pages}
+    if isinstance(seal_cfg.get("readers"), dict):
+        for p in pages:
+            # every reader run the page had in this round and how many said LEAVE: a re-roll under
+            # the cap is still on the record (ASK-1840)
+            rec[p.name]["readers"] = reader_history(snap.dir, snap.dir / p.name)
     rec["__gate__"] = {"path": repo_path(GATE_FILE, rd), "sha256": sha(GATE_FILE)}
     rec["__assets__"] = {"sha256": asset_digest(snap.files), "measured": "snapshot", "residual": SEAL_RESIDUAL}
     srcs = declared_sources(snap.dir, root)

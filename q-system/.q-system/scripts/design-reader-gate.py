@@ -50,6 +50,10 @@ from pathlib import Path
 DEFAULT_MODEL = "claude-haiku-4-5"
 DEFAULT_VIEWPORTS = [[1440, 900]]
 DEFAULT_N = 3
+# ASK-1840: reader runs one page may have in one round, over every version of its bytes. A one-byte
+# edit made the LEAVE rows about other bytes, so re-running until the readers said STAY cost one
+# newline (dc-08 adversarial review, adv-2).
+DEFAULT_RUNS_MAX = 3
 # The default questions. An instance sets its own in design-chain.json readers.questions; the
 # LAST question is always the control, a fact the page does not state, whose honest answer is
 # "unknown". Written for any page, not one consultant: the first version asked what "he" sells
@@ -115,6 +119,10 @@ def check_readers(readers: dict) -> None:
     n = readers.get("n", DEFAULT_N)
     if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= 20:
         raise ValueError(f"readers.n is {n!r}; a whole number of readers from 1 to 20")
+    cap = readers.get("reader_runs_max", DEFAULT_RUNS_MAX)
+    if isinstance(cap, bool) or not isinstance(cap, int) or not 1 <= cap <= 50:
+        raise ValueError(f"readers.reader_runs_max is {cap!r}; how many reader runs a page may have in one "
+                         f"round, a whole number from 1 to 50")
     vps = readers.get("viewports", DEFAULT_VIEWPORTS)
     if (not isinstance(vps, list) or not vps
             or not all(isinstance(v, list) and len(v) == 2
