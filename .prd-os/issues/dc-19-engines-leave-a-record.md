@@ -1,7 +1,7 @@
 ---
 id: dc-19-engines-leave-a-record
 title: Engine invocations are recorded and seal requires one for every engine a technique names
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
