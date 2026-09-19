@@ -1,7 +1,7 @@
 ---
 id: dc-14-founder-findings-close
 title: A FOUNDER-FINDING[tag] line needs a disposition before seal
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
