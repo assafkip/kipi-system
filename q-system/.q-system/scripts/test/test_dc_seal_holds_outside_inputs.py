@@ -225,6 +225,44 @@ class TheImplementsSourceMustBeSealedForReal(Base):
         self.assertTrue((self.round / "receipts.json").is_file())
 
 
+class NoPageSkipsTheChainAtSeal(Base):
+    """Adversarial review of f091da79, findings 4 and 5 (Sana's triage: fixed here)."""
+
+    def test_a_round_that_declares_its_own_page_a_source_is_still_checked(self):
+        # finding-4, NEW in f091da79: the held config let sourced_page() work during a seal, so
+        # a hand-written __sources__ receipt skipped the brief, the critique and gate/. Only on a
+        # resolved temp dir; on macOS the /var symlink refused it by accident, so pin one here.
+        import hashlib
+        import shutil
+        import tempfile
+        (self.round / "brief.md").write_text(BAD_BRIEF)
+        (self.round / "critique.md").unlink()
+        shutil.rmtree(self.round / "gate")
+        rel = "site/design/r1/Pair-laptop.html"
+        (self.round / "sources.json").write_text(json.dumps({"sources": {rel: "founder: me"}}))
+        (self.round / "proof.md").write_text("proof of r1/Pair-laptop.html\n")
+        (self.round / "receipts.json").write_text(json.dumps(
+            {"__sources__": {rel: hashlib.sha256(self.page.read_bytes()).hexdigest()}}))
+        old = tempfile.tempdir
+        tempfile.tempdir = os.path.realpath(tempfile.gettempdir())
+        self.addCleanup(setattr, tempfile, "tempdir", old)
+        rc, err = self.seal_in_process(load_gate("dco_f4"))
+        self.assertEqual(rc, 2, err)
+        self.assertIn("brief.md does not quote verbatim", err)
+
+    def test_a_round_path_containing_receipt_does_not_hide_a_problem_on_reseal(self):
+        # finding-5: the re-seal filter dropped every problem whose text held "receipt"
+        import shutil
+        shutil.rmtree(self.round / "gate")
+        (self.round / "receipts.json").write_text("{}\n")
+        new = self.tmp / "receipt-instance"
+        self.inst.rename(new)
+        self.round = new / "site" / "design" / "r1"
+        rc, err = self.seal_in_process(load_gate("dco_f5"))
+        self.assertEqual(rc, 2, err)
+        self.assertIn("gate/", err)
+
+
 class NoReadInsideTheSealLeavesTheHeldTree(Base):
     """The class check. Nine tests above name nine inputs; this one names none, so an input
     nobody has thought of yet is caught when a read reaches it."""

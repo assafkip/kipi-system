@@ -1320,6 +1320,11 @@ def sourced_page(page: Path) -> bool:
     not say a human compared the two, and it cannot see a source the round reads but
     never declared.
     """
+    if _held_snapshot(page) is not None:
+        # an exemption of the passive gate's alone: a seal writes a receipt, and a receipt says
+        # the chain was measured. The held config made this pass at seal on a hand-written
+        # __sources__ receipt and skip the whole chain (review of f091da79, finding-4).
+        return False
     cfg, cfg_path = load_config(page)
     if not cfg_path:
         return False
@@ -1469,6 +1474,8 @@ def corrected_page(page: Path) -> bool:
     directions and a reader gate leaves the false claim standing. The shape check runs again
     here, not only when the entry is written, so a hand-written log line cannot carry a
     structural change past the gate."""
+    if _held_snapshot(page) is not None:
+        return False            # the passive gate's exemption alone, as sourced_page (ASK-1831)
     log = page.parent / CORRECTIONS
     if not log.is_file():
         return False
@@ -1939,14 +1946,11 @@ def _seal_snapshot(rd: Path, pages: list[Path], seal_cfg: dict, snap: RoundSnaps
         # the chain check and back before the final compare sealed (ASK-1808 finding-10, NOT MET
         # there, reproduced in-process by test_dc_chain_reads_snapshot.py).
         raw = [_unheld(x) for x in chain_problems(snap.dir / p.name, honor_seal=False)]
-        if rc.is_file():
-            # ignore the existing receipt so a re-seal re-validates everything else
-            probs = [x for x in raw if "receipt" not in x and not x.startswith("not sealed:")]
-        else:
-            # receipt_problems' own answer inside a seal, by its prefix: a substring match also
-            # dropped "names round 'r0', which is not sealed" and a pick from an unsealed round
-            # sealed (ASK-1831, test_4)
-            probs = [x for x in raw if not x.startswith("not sealed:")]
+        # Inside a seal receipt_problems answers only "not sealed: ...", and this is the one line
+        # set aside, by its prefix. Substring matches dropped "names round 'r0', which is not
+        # sealed" (a pick from an unsealed round sealed) and, on a re-seal, every problem whose
+        # PATH held "receipt" (review of f091da79, finding-5).
+        probs = [x for x in raw if not x.startswith("not sealed:")]
         if p.name in reported:
             probs = [x for x in probs if not x.startswith("standard.json for")]
         if probs:
