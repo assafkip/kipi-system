@@ -143,7 +143,11 @@ def keyed_answers(obj, n: int) -> list[str] | None:
     answers to 9 questions); a key cannot shift."""
     if not isinstance(obj, dict) or set(obj) != {str(i) for i in range(1, n + 1)}:
         return None
-    return [str(obj[str(i)]) for i in range(1, n + 1)]
+    # each answer is text: a null or a nested object was stored as the string "None" or its repr,
+    # and the control check read that (review of 2d342634)
+    if not all(isinstance(obj[k], str) for k in obj):
+        return None
+    return [obj[str(i)] for i in range(1, n + 1)]
 
 
 def main(argv: list[str]) -> int:

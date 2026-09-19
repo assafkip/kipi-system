@@ -290,6 +290,17 @@ class KeyedAnswersAndRetries(Base):
         self.assertEqual(rc, 2, out)
         self.assertIn("answers not keyed exactly 1..9", out)
 
+    def test_an_answer_that_is_not_text_is_a_wrong_shape(self):
+        # review of 2d342634: {"9": null} passed the key check and was stored as the text "None"
+        for bad in (None, 7, ["unknown"], {"note": "unknown"}):
+            with self.subTest(value=bad):
+                broken = keyed(ANSWERS)
+                broken["9"] = bad
+                self.responses(broken)
+                rc, out = self.run_gate()
+                self.assertEqual(rc, 2, out)
+                self.assertIn("3 attempts", out)
+
     def test_an_answer_the_run_dislikes_is_never_retried(self):
         leave = keyed(ANSWERS[:6] + ["LEAVE: generic", "everything", "Stanford"])
         self.responses(leave, keyed(ANSWERS))
