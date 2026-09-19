@@ -1615,6 +1615,23 @@ def _round_dirs(root: Path, cfg: dict) -> list[Path]:
     return [p for p in sorted(d.iterdir()) if p.is_dir()] if d.is_dir() else []
 
 
+def _is_round(rd: Path) -> bool:
+    """A design round, for the engine door: a direct child of the rounds folder (_round_dirs) of a
+    design-chain.json found by walking UP from it. Any brief.md folder under a config counted, so a
+    template folder opened the door (dc-18 adv-1), and the CLAUDE_PROJECT_DIR fallback made a
+    brief.md folder anywhere on disk a round (adv-3). That the round holds brief.md is checked once,
+    by the door, every time it decides (a copy here could never be the check that fails)."""
+    for d in rd.parents:
+        c = d / CONFIG_NAME
+        if c.is_file():
+            try:
+                cfg = json.loads(c.read_text())
+            except (OSError, ValueError):
+                return False
+            return isinstance(cfg, dict) and rd.resolve() in _round_dirs(d, cfg)
+    return False
+
+
 def names_the_source(rd: Path, rel: str) -> bool:
     """The round's own files name the source path. A round may not claim a live page it
     does not render: without this, sources.json would be a list anyone could lengthen.
@@ -3061,10 +3078,11 @@ def hook(payload: dict) -> int:
             record_citations(Path(fp).resolve().parent, payload.get("transcript_path", ""), sid)
         if fp and Path(fp).name == "brief.md":
             record_brief_reads(Path(fp).resolve().parent, payload.get("transcript_path", ""), sid)
-        # the session's open round, read by design-engine-door.py (dc-18, Sana option A): a write in a
-        # folder that holds brief.md under an instance's design-chain.json
-        rd = Path(fp).resolve().parent if fp else None
-        if rd is not None and (rd / "brief.md").is_file() and find_config(rd / "_") is not None:
+        # the session's open round, read by design-engine-door.py (dc-18, Sana option A)
+        # the write may sit up to 3 folders below the round, as round_dir_for allows (dc-18 std-1)
+        here = Path(fp).resolve() if fp else None
+        rd = next((d for d in (here.parents[:3] if here else []) if _is_round(d)), None)
+        if rd is not None:
             led["round"] = str(rd)
             save_ledger(sid, led)
         return 0

@@ -46,14 +46,22 @@ def active_round(session_id: str) -> Path | None:
     if not isinstance(rd, str) or not rd:
         return None
     rd = Path(rd)
-    return rd if rd.is_dir() and not (rd / "receipts.json").exists() else None
+    # open until sealed, and only while it is still a round (a deleted brief closed nothing, adv-4)
+    return rd if (rd / "brief.md").is_file() and not (rd / "receipts.json").exists() else None
+
+
+def canonical(raw: str) -> str:
+    """The engine a Skill call names: the last non-empty ':' part, case, spaces, slashes and '_' vs '-'
+    folded ("Frontend-Design", "frontend-design:", "/frontend_design" all missed the list, adv-5)."""
+    parts = [p for p in raw.strip().split(":") if p.strip()]
+    return (parts[-1] if parts else "").strip().strip("/").casefold().replace("_", "-")
 
 
 def decide(payload: dict) -> tuple[int, str]:
     if payload.get("tool_name") != "Skill":
         return 0, ""
     raw = str((payload.get("tool_input") or {}).get("skill") or "").strip()
-    name = raw.split(":")[-1]              # "kipi-design:brand" is the brand engine
+    name = canonical(raw)                  # "kipi-design:brand" is the brand engine
     if not name or name not in listed():
         return 0, ""
     if active_round(payload.get("session_id", "")) is not None:

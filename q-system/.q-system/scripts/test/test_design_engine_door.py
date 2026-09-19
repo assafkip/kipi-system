@@ -39,6 +39,7 @@ class Door(unittest.TestCase):
         return r.returncode, r.stderr
 
     def open_round(self, session="s-dc18"):
+        (self.rd / "brief.md").write_text("brief\n")
         (self.state / f"{session}.json").write_text(json.dumps({"pages": {}, "bash_marker": 0,
                                                                 "round": str(self.rd)}))
 
@@ -91,10 +92,62 @@ class Door(unittest.TestCase):
         self.gate_write(self.rd / "brief.md")
         self.assertEqual(self.run_door("frontend-design")[0], 0)
 
+    def test_a_write_in_a_round_subfolder_opens_the_round(self):
+        # std-1: build output lives below the round folder
+        (self.tmp / "inst" / "design-chain.json").write_text(json.dumps({"project": "dc18", "owners": []}))
+        (self.rd / "brief.md").write_text("brief\n")
+        cand = self.rd / "directions" / "candidate-a"
+        cand.mkdir(parents=True)
+        (cand / "index.html").write_text("<html></html>")
+        self.gate_write(cand / "index.html")
+        self.assertEqual(self.run_door("frontend-design")[0], 0)
+
     def test_a_folder_with_a_brief_but_no_config_is_not_a_round(self):
         (self.rd / "brief.md").write_text("brief\n")
         self.gate_write(self.rd / "brief.md")
         self.assertEqual(self.run_door("frontend-design")[0], 2)
+
+    def test_a_brief_folder_outside_the_rounds_dir_is_not_a_round(self):
+        # adv-1: a template folder holding brief.md under the instance is not a design round
+        (self.tmp / "inst" / "design-chain.json").write_text(json.dumps({"project": "dc18", "owners": []}))
+        tpl = self.tmp / "inst" / "q-consult" / "templates" / "content"
+        tpl.mkdir(parents=True)
+        (tpl / "brief.md").write_text("template\n")
+        self.gate_write(tpl / "research.md")
+        self.assertEqual(self.run_door("frontend-design")[0], 2)
+
+    def test_the_project_dir_fallback_config_does_not_make_a_round(self):
+        # adv-3: a brief.md folder outside the instance, with only the project config
+        proj = self.tmp / "proj"
+        proj.mkdir()
+        (proj / "design-chain.json").write_text(json.dumps({"project": "p", "owners": []}))
+        far = self.tmp / "elsewhere" / "y"
+        far.mkdir(parents=True)
+        (far / "brief.md").write_text("b\n")
+        env = {k: v for k, v in os.environ.items() if k != "DESIGN_CHAIN_ALLOW"}
+        env.update({"DESIGN_CHAIN_STATE": str(self.state), "CLAUDE_PROJECT_DIR": str(proj)})
+        payload = {"hook_event_name": "PostToolUse", "tool_name": "Write", "session_id": "s-dc18",
+                   "tool_input": {"file_path": str(far / "note.txt")}}
+        subprocess.run([sys.executable, str(GATE)], input=json.dumps(payload), capture_output=True, text=True,
+                       env=env, timeout=120)
+        self.assertEqual(self.run_door("frontend-design")[0], 2)
+
+    def test_a_round_whose_brief_is_gone_is_not_open(self):
+        # adv-4
+        self.open_round()
+        (self.rd / "brief.md").unlink(missing_ok=True)
+        self.assertEqual(self.run_door("frontend-design")[0], 2)
+
+    def test_other_spellings_of_an_engine_are_the_engine(self):
+        # adv-5
+        for spelling in ("Frontend-Design", " frontend-design ", "frontend-design:", "/frontend-design",
+                         "frontend-design/", "frontend_design"):
+            self.assertEqual(self.run_door(spelling)[0], 2, spelling)
+
+    def test_installed_design_skills_are_listed(self):
+        # adv-6
+        for skill in ("anthropic-skills:canvas-design", "hyperframes-core", "nateherk-design:scroll-craft"):
+            self.assertEqual(self.run_door(skill)[0], 2, skill)
 
     def door_copy(self, registry_text):
         d = self.tmp / "bin"
