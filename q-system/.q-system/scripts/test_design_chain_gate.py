@@ -641,13 +641,19 @@ class TestGapCheck(Base):
         self.enable(); self.complete_chain()
         rc, out = self.seal_with_producer("silent")
         self.assertEqual(rc, 2, out)
-        self.assertIn("gap.json", out)
+        # the producer branch's own words: "gap.json" alone also comes from craft_problems(), which
+        # stays red even when seal never runs the producer (review of c033a842, mutant survived)
+        self.assertIn("exit 0 and wrote no gap.json", out)
 
     def test_an_axis_below_floor_blocks_and_names_it(self):
         self.enable(); self.complete_chain()
         rc, out = self.seal_with_producer("below")
         self.assertEqual(rc, 2, out)
-        self.assertIn("below", out.lower())
+        # the exit-code-2 branch, by its own words: craft_problems() re-reads gap.json and also says
+        # "below the exemplar floor", so the bare word survived seal ignoring exit 2 (same review)
+        # the whole phrase: with the exit-2 branch gone, exit 2 falls to "could not measure
+        # (design-gap-check.py exit 2)", which a shorter substring also matched
+        self.assertIn("below the exemplar floor (design-gap-check.py exit 2)", out)
 
     def test_a_typed_gap_receipt_is_never_what_seal_reads(self):
         # a passing receipt typed into the round, and a stale one. The producer writes NOTHING
@@ -662,8 +668,7 @@ class TestGapCheck(Base):
             self.assertFalse((self.round / "receipts.json").exists())
 
     def test_every_floor_met_and_fresh_seals(self):
-        self.enable(); self.complete_chain()
-        self.gap()
+        self.enable(); self.complete_chain()   # the producer (mode pass) writes the receipt
         rc, out = run(["seal", str(self.round)], env=self.env)
         self.assertEqual(rc, 0, out)
 
