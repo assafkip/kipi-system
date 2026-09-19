@@ -191,7 +191,7 @@ class TheFloor(Round):
         rows.write_text("".join(ln + "\n" for ln in rows.read_text().splitlines() if '"instance": 2' not in ln))
         rc, out = self.seal()
         self.assertEqual(rc, 2, out)
-        self.assertIn("readers answered 2 of 3", out)
+        self.assertIn("no complete reader run for these bytes of Home-laptop.html: the fullest holds 2 of 3", out)
 
     def test_a_lower_floor_from_config_is_honored(self):
         self.config(floor=0.6)
@@ -243,9 +243,10 @@ class TheInjectedRunner(unittest.TestCase):
     def row(self, verdict="STAY", label="ops consulting", runner="injected", **prov):
         g, h = self.g, self.h
         qs = g._reader_gate().full_questions(self.readers)
-        p = {"runner": runner, "questions_sha256": h(json.dumps(qs).encode()),
-             "persona_sha256": h((self.tmp / "t" / "persona.md").read_bytes()),
-             "model": "claude-haiku-4-5", "model_reported": ["claude-haiku-4-5"], **prov}
+        persona = h((self.tmp / "t" / "persona.md").read_bytes())
+        p = {"runner": runner, "questions_sha256": h(json.dumps(qs).encode()), "persona_sha256": persona,
+             "model": "claude-haiku-4-5", "model_reported": ["claude-haiku-4-5"], "run_id": "run1",
+             "readers_config": g._reader_gate().run_config(self.readers, persona, "claude-haiku-4-5"), **prov}
         return {"page": self.page.name, "viewport": [1440, 900], "instance": 1,
                 "html_sha256": h(self.page.read_bytes()), "served": {self.page.name: h(self.page.read_bytes())},
                 "answers": list(answers(verdict, label).values()), "_provenance": p}

@@ -2003,7 +2003,15 @@ def reader_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None = Non
     LEAVE row lowers the count. Refuses on any LEAVE or narrow label no FOUNDER line answers."""
     readers = cfg.get("readers") if isinstance(cfg, dict) else None
     if not isinstance(readers, dict):
-        return []
+        # rows for this page with no readers block: the block was deleted to escape a LEAVE
+        # (dc-07 adv-4). An instance that never configured readers has no rows and is untouched.
+        try:
+            mine = [ln for ln in (rd / READER_ROWS).read_text().splitlines()
+                    if f'"page": {json.dumps(page.name)}' in ln]
+        except OSError:
+            mine = []
+        return [f"{_live(rd / READER_ROWS)} holds reader rows for {page.name}, and {CONFIG_NAME} has no readers "
+                f"block; put the block back"] if mine else []
     rg = _reader_gate()
     try:
         questions = rg.full_questions(readers)
@@ -2078,52 +2086,99 @@ def reader_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None = Non
             except OSError:
                 shas[rel] = None
         return shas[rel]
-    probs, answered = [], set()
-    for r in rows:
+    today = rg.run_config(readers, persona_sha, model)
+
+    def rid_of(r):
         vp, inst = r.get("viewport"), r.get("instance")
-        ok_id = (isinstance(vp, list) and len(vp) == 2 and all(type(x) is int for x in vp) and type(inst) is int)
-        rid = f"{page.name}@{vp[0]}x{vp[1]}#{inst}" if ok_id else "?"
-        if rid not in expected:
-            probs.append(f"reader row {rid} is not one of the {len(expected)} readers {CONFIG_NAME} configures")
-            continue
-        prov = r.get("_provenance") if isinstance(r.get("_provenance"), dict) else {}
-        if prov.get("runner") != "claude" and not test_round:
-            probs.append(f"reader {rid} was answered by runner {prov.get('runner')!r}; outside a test round "
-                         f"only a model reader counts")
-            continue
-        if prov.get("questions_sha256") != qsha:
-            probs.append(f"reader {rid} was asked other questions than {CONFIG_NAME} sets now; run the "
-                         f"readers again")
-            continue
-        if prov.get("persona_sha256") != persona_sha:
-            probs.append(f"reader {rid} was given another persona than {pf} holds now; run the readers again")
-            continue
-        if prov.get("runner") == "claude" and (prov.get("model") != model or prov.get("model_reported") != [model]):
-            probs.append(f"reader {rid} was model {prov.get('model_reported')!r}, not the configured {model!r}")
-            continue
-        # every file the reader's browser was served, not only the HTML: a decoy stylesheet swapped in
-        # for the run and out again kept STAY rows counting (dc-07 adv-1)
+        ok = isinstance(vp, list) and len(vp) == 2 and all(type(x) is int for x in vp) and type(inst) is int
+        return f"{page.name}@{vp[0]}x{vp[1]}#{inst}" if ok else "?"
+
+    def shown_now(r):
+        # every file the reader's browser was served, not only the HTML: a decoy stylesheet swapped
+        # in for the run and out again kept STAY rows counting (dc-07 adv-1)
         served = r.get("served")
-        if (not isinstance(served, dict) or not served
-                or any(not isinstance(k, str) or k.startswith("/") or ".." in k.split("/") or now_sha(k) != v
-                       for k, v in served.items())):
-            probs.append(f"reader {rid} was shown files that are not this round's bytes now; run the "
-                         f"readers again")
-            continue
+        return isinstance(served, dict) and bool(served) and all(
+            isinstance(k, str) and not k.startswith("/") and ".." not in k.split("/") and now_sha(k) == v
+            for k, v in served.items())
+
+    probs, stale = [], []
+    about = []                      # rows about THESE bytes: the HTML and every file it was shown
+    for r in rows:
+        (about if shown_now(r) else stale).append(r)
+    if not about:
+        return [f"reader {rid_of(r)} was shown files that are not this round's bytes now; run the readers "
+                f"again" for r in stale[:len(expected)]]
+    # dc-08: EVERY row about these bytes is read. A LEAVE or a narrow label in any of them refuses,
+    # whichever run it came from and whatever config that run had: re-running until a run says STAY
+    # was free when only one run counted (dc-07 adv-5). A typed LEAVE only hurts whoever typed it.
+    for r in about:
+        rid, prov = rid_of(r), (r.get("_provenance") if isinstance(r.get("_provenance"), dict) else {})
+        rc_ = prov.get("readers_config") if isinstance(prov.get("readers_config"), dict) else {}
         ans = r.get("answers")
-        if not (isinstance(ans, list) and len(ans) == len(questions) and all(isinstance(a, str) for a in ans)):
+        if not (isinstance(ans, list) and len(ans) >= 3 and all(isinstance(a, str) for a in ans)):
             continue
-        got = rg.read_answers(ans, readers)
-        if got["verdict"] is None or got["label"] is None or got["contaminated"]:
-            continue
-        answered.add(rid)
-        if (got["verdict"] == "LEAVE" or got["label"].casefold() in narrow) and rid not in disposed:
+        was_labels = rc_.get("labels")
+        if not (isinstance(was_labels, list) and was_labels and all(isinstance(x, str) for x in was_labels)):
+            was_labels = readers["labels"]
+        got = rg.read_answers(ans, {"labels": was_labels})
+        if ((got["verdict"] == "LEAVE" or (got["label"] or "").casefold() in narrow)
+                and rid not in disposed and not got["contaminated"]):
             probs.append(f"reader {rid} said {got['verdict']}, and that it sells {got['label']!r}. Change "
                          f"the page, or answer it with '- reader {rid}: FOUNDER <reason>' in {DISPOSITIONS}.")
-    if len(answered) < floor * len(expected):
-        probs.append(f"readers answered {len(answered)} of {len(expected)} for {page.name}, under the floor "
-                     f"of {floor}. A reader who did not give exactly one of the choices, or failed the "
-                     f"control, did not answer.")
+        # a floor, n, viewport list or narrow list made weaker after a run ran under the stronger one:
+        # lowering the bar after the readers answered is not a new bar (dc-07 adv-3)
+        def num(x):
+            return x if isinstance(x, (int, float)) and not isinstance(x, bool) else 0
+        was_vps, was_nar = rc_.get("viewports"), rc_.get("narrow")
+        if rc_ and (today["floor"] < num(rc_.get("floor")) or today["n"] < num(rc_.get("n"))
+                    or len(today["viewports"]) < (len(was_vps) if isinstance(was_vps, list) else 0)
+                    or not {x for x in (was_nar if isinstance(was_nar, list) else []) if isinstance(x, str)}
+                    <= set(today["narrow"])):
+            probs.append(f"{CONFIG_NAME} readers is weaker than the config run {str(prov.get('run_id'))[:8]} "
+                         f"ran under (floor, n, viewports or narrow); put it back or change the page")
+    # runs: a run counts whole or not at all, only under today's config, and only if every one of its
+    # rows is a reader this seal trusts (dc-08; rows spliced from several runs formed a set, adv-5)
+    runs: dict[str, list] = {}
+    why: list[str] = []
+    for r in about:
+        rid, prov = rid_of(r), (r.get("_provenance") if isinstance(r.get("_provenance"), dict) else {})
+        bad = None
+        if prov.get("runner") != "claude" and not test_round:
+            bad = (f"reader {rid} was answered by runner {prov.get('runner')!r}; outside a test round only a "
+                   f"model reader counts")
+        elif prov.get("questions_sha256") != qsha:
+            bad = f"reader {rid} was asked other questions than {CONFIG_NAME} sets now; run the readers again"
+        elif prov.get("persona_sha256") != persona_sha:
+            bad = f"reader {rid} was given another persona than {pf} holds now; run the readers again"
+        elif prov.get("runner") == "claude" and (prov.get("model") != model or prov.get("model_reported") != [model]):
+            bad = f"reader {rid} was model {prov.get('model_reported')!r}, not the configured {model!r}"
+        # No equality check on the recorded readers_config: mutant D8 (2026-09-19) showed it adds nothing.
+        # Labels are in the questions hash, a raised n or new viewport leaves the old run incomplete, a raised
+        # floor is applied to every run, a lowered one refuses above, and persona and model are checked here.
+        run = prov.get("run_id") if isinstance(prov.get("run_id"), str) and prov.get("run_id") else None
+        if bad or run is None:
+            why.append(bad or f"reader {rid} carries no run id; run the readers again")
+            continue
+        runs.setdefault(run, []).append(r)
+    whole = {k: v for k, v in runs.items() if {rid_of(r) for r in v} == expected and len(v) == len(expected)}
+    if not whole:
+        fullest = max((len({rid_of(r) for r in v} & expected) for v in runs.values()), default=0)
+        return probs + why[:len(expected)] + [
+            f"no complete reader run for these bytes of {page.name}: the fullest holds {fullest} of "
+            f"{len(expected)} readers. A run counts whole or not at all; run the readers again."]
+    for run, v in sorted(whole.items()):
+        answered = set()
+        for r in v:
+            ans = r.get("answers")
+            if not (isinstance(ans, list) and len(ans) == len(questions) and all(isinstance(a, str) for a in ans)):
+                continue
+            got = rg.read_answers(ans, readers)
+            if got["verdict"] and got["label"] and not got["contaminated"]:
+                answered.add(rid_of(r))
+        if len(answered) < floor * len(expected):
+            probs.append(f"readers answered {len(answered)} of {len(expected)} for {page.name} in run {run[:8]}, "
+                         f"under the floor of {floor}. A reader who did not give exactly one of the choices, "
+                         f"or failed the control, did not answer.")
     return probs
 
 

@@ -1,7 +1,7 @@
 ---
 id: dc-08-reader-runs-append
 title: Reader runs append to one file and every run on the current page bytes counts
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -9,6 +9,8 @@ allowed_files:
   - q-system/.q-system/scripts/design-chain-gate.py
   - q-system/.q-system/scripts/design-reader-gate.py
   - q-system/.q-system/scripts/test/test_dc_reader_runs.py
+  - q-system/.q-system/scripts/test/test_dc_reader_verdicts.py
+  - q-system/.q-system/scripts/test/test_dc_reader_gate.py
 disallowed_files: []
 required_checks:
   - python3 q-system/.q-system/scripts/test/test_dc_reader_runs.py
@@ -38,4 +40,4 @@ A run with --page for one page of a multi-page round leaves every other page's r
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Reader runs append to one file and every run on the current page bytes counts
+- [x] Reader runs append to one file and every run on the current page bytes counts

@@ -186,7 +186,8 @@ class ReviewOfC911e33f(Base):
                 self.answers.write_text(json.dumps(keyed(ANSWERS[:-1] + [control])))
                 rc, out = self.run_gate()
                 self.assertEqual(rc, 0, out)
-                self.assertIs(self.rows()[0]["contaminated"], contaminated)
+                # rows append (dc-08): this run is the last row
+                self.assertIs(self.rows()[-1]["contaminated"], contaminated)
 
     def test_no_runner_named_is_refused_before_any_model_call(self):
         rc, out = self.run_bare(env=self.fake())

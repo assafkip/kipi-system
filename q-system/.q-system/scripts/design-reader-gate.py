@@ -94,6 +94,15 @@ def full_questions(readers: dict) -> list[str]:
     return qs[:-1] + [VERDICT_Q, LABEL_Q + "; ".join(x.strip() for x in labels)] + [qs[-1]]
 
 
+def run_config(readers: dict, persona_sha: str, model: str) -> dict:
+    """The readers config one run ran under, in one normal form. Seal compares a run's recorded
+    copy with today's, so both sides are built here."""
+    return {"n": readers.get("n", DEFAULT_N), "viewports": readers.get("viewports", DEFAULT_VIEWPORTS),
+            "labels": [x.strip() for x in readers.get("labels", []) if isinstance(x, str)],
+            "narrow": sorted({x.strip().casefold() for x in readers.get("narrow", []) if isinstance(x, str)}),
+            "floor": readers.get("floor", 1.0), "persona_sha256": persona_sha, "model": model}
+
+
 def read_answers(answers: list[str], readers: dict) -> dict:
     """{verdict, label, contaminated} parsed from answers to full_questions(readers). An answer that
     is not exactly one of the choices parses to None: it counts as not answered, never as a guess."""
@@ -407,9 +416,13 @@ def main(argv: list[str]) -> int:
     if not names or bad:
         return refuse(f"no readable HTML page to show readers{': ' + str(bad) if bad else ''}")
 
+    import uuid
+    # dc-08: one id per invocation and the readers config it ran under, so seal can tell a whole run
+    # from rows spliced out of several, and a run from a config changed after it (dc-07 adv-3, adv-5)
     prov = {"runner": a.runner, "model": model_used, "persona_file": pf,
             "persona_sha256": sha(persona), "questions_sha256": sha(json.dumps(questions).encode()),
-            "at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")}
+            "at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+            "run_id": uuid.uuid4().hex, "readers_config": run_config(readers, sha(persona), model)}
     rows = []
     held = HeldRound(files)
     try:
@@ -467,7 +480,10 @@ def main(argv: list[str]) -> int:
         held.close()
     out = rd / OUTPUT
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    # APPEND, never overwrite: an overwrite let an all-STAY run erase an earlier LEAVE, and a run for
+    # one page wiped every other page's rows (dc-08; dc-07 std-1)
+    with open(out, "a") as fh:
+        fh.write("".join(json.dumps(r) + "\n" for r in rows))
     print(f"wrote {len(rows)} reader row(s) to {out} (runner {a.runner})")
     return 0
 
