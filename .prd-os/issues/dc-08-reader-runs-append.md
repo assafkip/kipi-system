@@ -1,7 +1,7 @@
 ---
 id: dc-08-reader-runs-append
 title: Reader runs append to one file and every run on the current page bytes counts
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -41,3 +41,18 @@ A run with --page for one page of a multi-page round leaves every other page's r
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
 - [x] Reader runs append to one file and every run on the current page bytes counts
+
+## Amendments
+
+### 2026-09-19T10:52:23Z
+Reason: append-only rows and whole-run counting legitimately break dc-07's in-process row helper (no run_id/readers_config), its deleted-row message, and test_dc_reader_gate's rows()[0] read; Sana's standing rule approves amends for tests a change legitimately breaks
+
+Before:
+- allowed_files: ['q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-gate.py', 'q-system/.q-system/scripts/design-reader-gate.py', 'q-system/.q-system/scripts/test/test_dc_reader_runs.py']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_dc_reader_runs.py']
+- disallowed_files: []
+
+After:
+- allowed_files: ['q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-gate.py', 'q-system/.q-system/scripts/design-reader-gate.py', 'q-system/.q-system/scripts/test/test_dc_reader_runs.py', 'q-system/.q-system/scripts/test/test_dc_reader_verdicts.py', 'q-system/.q-system/scripts/test/test_dc_reader_gate.py']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_dc_reader_runs.py']
+- disallowed_files: []
