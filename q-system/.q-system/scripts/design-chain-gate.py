@@ -922,11 +922,19 @@ def _blob_shas(rd: Path, rel: str) -> list[tuple[str, str]]:
     return out
 
 
-def _believed(record, rd: Path, top: Path | None) -> bool:
-    """A recorded file is believed when the file at its path has those bytes now, or when the
-    round's own repo has ever committed those bytes at that path (an upgrade keeps history).
-    A copy that ran from a temp dir that is gone is neither."""
-    if not isinstance(record, dict) or not record.get("path") or not record.get("sha256"):
+STAGE_PRODUCERS = {"standard": STANDARD_PRODUCER, "gap": GAP_PRODUCER}
+
+
+def _believed(record, rd: Path, top: Path | None, expected: Path | None) -> bool:
+    """A recorded file is believed only at the path THIS gate expects for it (its own file, or
+    the producer it runs for that stage), and only when that file has those bytes now or, for a
+    repo-relative path, the round's own repo once committed them there (an upgrade keeps
+    history). The first version believed any path whose file had the recorded sha, so a
+    modified gate copy in a temp dir sealed a failing page and read COMPLETE for as long as the
+    dir existed (dc-10 review, finding-1)."""
+    if expected is None or not isinstance(record, dict) or not record.get("path") or not record.get("sha256"):
+        return False
+    if record["path"] != repo_path(expected, rd):
         return False
     path = Path(record["path"])
     here = path if path.is_absolute() else (top / path if top else None)
@@ -969,6 +977,13 @@ def _named_files(rd: Path, rec: dict) -> list[Path]:
     return out
 
 
+def _stat_key(st) -> str:
+    """Size and mtime can both be put back after a same-length rewrite (os.utime, rsync -t,
+    cp -p); ctime and the inode cannot, from userland. A (size, mtime) fingerprint served a
+    stale COMPLETE for rewritten bytes (dc-10 review, finding-3 / finding-11)."""
+    return f"{st.st_size}\0{st.st_mtime_ns}\0{st.st_ctime_ns}\0{st.st_ino}"
+
+
 def _fingerprint(rd: Path, rec: dict) -> str:
     """Cheap: names, sizes and mtimes, no reads, no git. Covers the round, the running gate, and
     every file the receipt names: without the producers in it, a producer changed after the seal
@@ -977,11 +992,11 @@ def _fingerprint(rd: Path, rec: dict) -> str:
     for p in sorted(rd.rglob("*")):
         if p.is_file() and "__pycache__" not in p.parts:
             st = p.stat()
-            h.update(f"{p.relative_to(rd).as_posix()}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
-    for p in _named_files(rd, rec):
+            h.update(f"{p.relative_to(rd).as_posix()}\0{_stat_key(st)}\n".encode())
+    for p in _named_files(rd, rec) + [HERE / n for n in STAGE_PRODUCERS.values()]:
         try:
             st = p.stat()
-            h.update(f"{p}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+            h.update(f"{p}\0{_stat_key(st)}\n".encode())
         except OSError:
             h.update(f"{p}\0gone\n".encode())
     return h.hexdigest()
@@ -1005,9 +1020,10 @@ def _round_facts(rd: Path, rec: dict) -> dict:
     staged = any(isinstance(v, dict) and "stages" in v for k, v in rec.items() if not k.startswith("__"))
     ent = {"fp": fp, "computed": (ent or {}).get("computed", 0) + 1,
            "digest": round_asset_digest(rd),
-           "gate": _believed(rec.get("__gate__"), rd, top) if staged else None,
+           "gate": _believed(rec.get("__gate__"), rd, top, GATE_FILE) if staged else None,
            "stages": {} if not staged else {
-               f"{r.get('stage')}:{r.get('sha256')}": _believed(r, rd, top)
+               f"{r.get('stage')}:{r.get('sha256')}": _believed(
+                   r, rd, top, (HERE / STAGE_PRODUCERS[r["stage"]]) if r.get("stage") in STAGE_PRODUCERS else None)
                for k, v in rec.items() if not k.startswith("__") and isinstance(v, dict)
                for r in v.get("stages", []) if isinstance(r, dict)},
            "grandfathered": None if staged else _grandfathered(rd, top)}
@@ -1020,6 +1036,22 @@ def _round_facts(rd: Path, rec: dict) -> dict:
     except OSError:
         pass      # a cache that cannot be written only costs time
     return ent
+
+
+def _stage_shape_problem(rec: dict, ent: dict) -> str | None:
+    """What is wrong with the shape of a staged receipt, or None. A string or a list of
+    non-objects under `stages` was an AttributeError traceback (dc-10 review, finding-12)."""
+    if not isinstance(rec.get("__gate__"), dict) or not isinstance(rec.get("__assets__"), dict):
+        return "__gate__ and __assets__ must be objects"
+    stages = ent.get("stages")
+    if not isinstance(stages, list):
+        return "stages is not a list"
+    for r in stages:
+        if not (isinstance(r, dict) and isinstance(r.get("stage"), str) and isinstance(r.get("path"), str)
+                and isinstance(r.get("sha256"), str) and isinstance(r.get("exit"), int)
+                and not isinstance(r.get("exit"), bool)):
+            return "each stage needs a string stage, path and sha256 and an integer exit"
+    return None
 
 
 def receipt_problems(page: Path) -> list[str]:
@@ -1050,6 +1082,16 @@ def receipt_problems(page: Path) -> list[str]:
         return [f"receipt cannot be checked: {type(e).__name__}: {e}"]
     probs = []
     if "stages" in ent:
+        shape = _stage_shape_problem(rec, ent)
+        if shape:
+            return [f"the receipt's stage record is malformed ({shape}): seal again"]
+        if not any(r["stage"] == "standard" for r in ent["stages"]):
+            probs.append(f"the receipt records no standard stage for {page.name}, so nothing shows the "
+                         f"page was measured: seal again")
+        for r in ent["stages"]:
+            if r["exit"] != 0:
+                probs.append(f"the receipt records the {r['stage']} producer exiting {r['exit']}, so the "
+                             f"stage did not pass: seal again")
         if (rec.get("__assets__") or {}).get("sha256") != facts["digest"]:
             probs.append("a file in the round changed after the seal (its receipt's digest no longer "
                          "matches): redo what changed and seal again")

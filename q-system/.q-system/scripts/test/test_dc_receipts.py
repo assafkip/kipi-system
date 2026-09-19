@@ -104,6 +104,10 @@ class AnEditAfterTheSealOpensTheRound(Base):
                      "sources.json", "gate/reader-runs.jsonl", "shared.css")
 
     def test_every_chain_record_and_asset_edited_after_the_seal_opens_the_round(self):
+        # seeded before the seal, so each one below is EDITED, not created (review of 92e9f77c)
+        (self.round / "craft-manifest.json").write_text('{"note": "seeded"}\n')
+        (self.round / "sources.json").write_text("{}\n")
+        (self.round / "gate" / "reader-runs.jsonl").write_text('{"reader": "seeded"}\n')
         self.seal_ok()
         rc, out = self.status()
         self.assertEqual(rc, 0, out)
@@ -246,6 +250,82 @@ class AGateThatChangedIsNotBelieved(Base):
         rc, out = self.status(d / REAL_GATE.name)
         self.assertEqual(rc, 2, out)
         self.assertIn("names a gate", out)
+
+class ReviewRound1(Base):
+    """dc-10 review round 1 (92e9f77c), Sana's triage 2026-09-19."""
+
+    def edit_receipt(self, fn):
+        rec = self.receipt()
+        fn(rec)
+        (self.round / "receipts.json").write_text(json.dumps(rec))
+
+    def test_a_modified_gate_copy_is_refused_while_its_directory_still_exists(self):
+        # finding-1: the old test only passed because it deleted the copy first
+        bin_ = Path(tempfile.mkdtemp(prefix="dc10-keep-"))
+        self.addCleanup(shutil.rmtree, bin_, True)
+        (bin_ / REAL_GATE.name).write_text(REAL_GATE.read_text() + "\n# a copy\n")
+        for p in PRODUCERS:
+            shutil.copy(SCRIPTS / p, bin_ / p)
+        self.seal_ok(bin_ / REAL_GATE.name)
+        self.assertTrue((bin_ / REAL_GATE.name).is_file())
+        rc, out = self.status()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("names a gate", out)
+
+    def test_a_stage_that_did_not_exit_0_is_not_believed(self):
+        self.seal_ok()
+        self.edit_receipt(lambda r: r[self.page.name]["stages"][0].update(exit=1))
+        rc, out = self.status()
+        self.assertEqual(rc, 2, out)
+
+    def test_a_gate_record_pointing_at_another_file_is_not_believed(self):
+        import hashlib
+        self.seal_ok()
+        brief = self.round / "brief.md"
+        self.edit_receipt(lambda r: r.update(__gate__={
+            "path": str(brief.resolve()), "sha256": hashlib.sha256(brief.read_bytes()).hexdigest()}))
+        rc, out = self.status()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("names a gate", out)
+
+    def test_a_page_with_no_standard_stage_is_open(self):
+        self.seal_ok()
+        self.edit_receipt(lambda r: r[self.page.name].update(stages=[]))
+        rc, out = self.status()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("standard", out)
+
+    def test_a_same_length_rewrite_with_its_mtime_restored_is_caught(self):
+        # finding-3 / finding-11: the cache fingerprint was (size, mtime) only
+        self.seal_ok()
+        rc, out = self.status()
+        self.assertEqual(rc, 0, out)
+        st = self.css.stat()
+        text = self.css.read_text()
+        self.assertIn("18px", text)
+        self.css.write_text(text.replace("18px", "09px"))
+        os.utime(self.css, ns=(st.st_atime_ns, st.st_mtime_ns))
+        rc, out = self.status()
+        self.assertEqual(rc, 2, out)
+
+    def test_a_malformed_stage_record_is_a_clean_open(self):
+        # finding-12: an AttributeError traceback and exit 1
+        self.seal_ok()
+        good = (self.round / "receipts.json").read_text()
+        for bad in ("not-a-list", ["not-a-dict"], [None], [{}]):
+            self.edit_receipt(lambda r: r[self.page.name].update(stages=bad))
+            rc, out = self.status()
+            self.assertEqual(rc, 2, f"{bad!r}: {out}")
+            self.assertNotIn("Traceback", out)
+            self.assertIn("malformed", out)
+            (self.round / "receipts.json").write_text(good)
+
+    def test_a_new_screenshot_after_the_seal_opens_the_round(self):
+        self.seal_ok()
+        (self.round / "Pair-desktop.png").write_bytes(b"png taken after the seal")
+        rc, out = self.status()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("changed after", out)
 
 class ThePassiveCheckIsCached(Base):
     def test_repeated_checks_recompute_once_and_again_after_a_change(self):
