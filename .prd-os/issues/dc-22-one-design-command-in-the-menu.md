@@ -1,7 +1,7 @@
 ---
 id: dc-22-one-design-command-in-the-menu
 title: Our design skills leave the menu and the design rules name the door
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -37,4 +37,4 @@ The four in-repo design skills carry user-invocable: false. Both rule files name
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Our design skills leave the menu and the design rules name the door
+- [x] Our design skills leave the menu and the design rules name the door

@@ -48,3 +48,7 @@ page failing UX is a credibility hole. The fix is this gate, not better intentio
 
 - Internal/founder-only HTML (dashboards, schedules, logs) — see the
   `design-auto-invoke.md` gate. Copy-only/typo edits to an existing passing page.
+
+## One door (dc-22)
+
+Design work routes through `/design-chain`. The design skills named above are engines, not commands: `design-engine-door.py` (PreToolUse and PostToolUse on the Skill tool) refuses a listed engine when the session has no open design-chain round, and records each run inside one in the round's `engines.jsonl`. The engines carry `user-invocable: false`, so the slash menu shows one design command. Receipts: `test_design_engine_door.py` (the door) and `test_dc_one_door_menu.py` (the menu).
