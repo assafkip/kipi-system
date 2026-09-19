@@ -63,6 +63,7 @@ import tempfile
 import time
 import threading
 import urllib.parse
+from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -239,6 +240,7 @@ class RoundSnapshot:
         self.live, self.files, self.dir = rd, files, directory
         self.cfg_path: Path | None = None      # the ONE design-chain.json this seal reads
         self.missed: list[str] = []            # paths the browser asked for and got a 404
+        self.stages: dict[str, list] = {}      # page name -> stage records; "" -> round-wide
 
     def sha(self, rel: str) -> str:
         return hashlib.sha256(self.files[rel]).hexdigest()
@@ -430,6 +432,7 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
             if cfg_path:
                 args += ["--config", str(cfg_path)]
             rc, tail = run_producer(STANDARD_PRODUCER, args)
+            snap.stages.setdefault(p.name, []).append(stage_record("standard", STANDARD_PRODUCER, rd, rc))
             entry = _fresh_standard_entry(std_path, sp, snap.sha(p.name))
             _copy_back(snap, "standard.json")
             if rc == 0 and entry and entry.get("pass") is True:
@@ -453,6 +456,7 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
             gap_path.parent.mkdir(parents=True, exist_ok=True)
             rc, tail = run_producer(GAP_PRODUCER, [str(snap.dir), "--write", "--url-base", base,
                                                    "--refs", str(rd.parent / "references")])
+            snap.stages.setdefault("", []).append(stage_record("gap", GAP_PRODUCER, rd, rc))
             _copy_back(snap, gap_rel)
             if rc == 0 and not gap_path.is_file():
                 bad.append((GAP_PRODUCER, [f"could not measure ({GAP_PRODUCER} exit 0 and wrote no {GAP_CHECK}): {tail}"]))
@@ -481,34 +485,25 @@ BROWSER_ASKS_UNPROMPTED = frozenset({
 })
 
 
-# The chain's own records, by exact path relative to the round. Everything ELSE in the round
-# is something a page can load, so it is part of what was measured.
-#
-# NEVER a directory, never a suffix. The first version skipped checks/ and gate/ wholesale and
-# every *.md, while the server serves all of them: a page loaded gate/style.css, the digest
-# ignored it, and the stylesheet was swapped AFTER the seal with every sha still matching
-# (final review of c3607e0d, reproduced with the real gate). A file is skipped only because
-# the CHAIN writes it, and the list is closed.
-_CHAIN_RECORDS = frozenset({
-    "brief.md", "directions.md", "critique.md", "proof.md",
-    "standard.json", "receipts.json", "craft-manifest.json", "sources.json",
-    "corrections.jsonl", ".not-a-round", "citations.json", "engines.jsonl",
-    "checks/gap.json", "checks/impeccable.txt", "checks/bio_gate.txt",
-    "checks/voice-lint.txt", "checks/tripwire.txt",
-    "gate/reader-runs.jsonl",
-})
-
-
+# What the digest leaves out: the files the GATE itself writes during a seal (_SEAL_WRITES, below)
+# and after one (corrections.jsonl, written by `correct`, which shape-checks every line against the
+# committed page). Nothing else. By exact path, never a directory, never a suffix: a digest that
+# skipped checks/ and gate/ wholesale let a stylesheet under gate/ be swapped after the seal
+# (final review of c3607e0d). dc-10: the list used to be every chain record, so brief.md, the
+# critique or the craft manifest could be rewritten after the seal and the round still read
+# COMPLETE; now an edit to any of them opens the round.
 def asset_digest(files: dict[str, bytes]) -> str:
     h = hashlib.sha256()
     for rel in sorted(files):
-        if rel not in _CHAIN_RECORDS:
+        # the pages themselves are left out: each carries its own sha in the receipt, and a
+        # wording correction to one page must not open every other page in the round (dc-10)
+        if rel not in _DIGEST_SKIP and not ("/" not in rel and Path(rel).suffix.lower() in PAGE_EXTS):
             h.update(rel.encode() + b"\x00" + files[rel] + b"\x1f")
     return h.hexdigest()
 
 
 def round_asset_digest(rd: Path) -> str:
-    """One sha256 over every file in the round except the chain's own records.
+    """One sha256 over every file in the round except what the gate itself writes.
 
     The byte proof covered the HTML only, and the verdict is almost entirely a function of the
     CSS: measure with one shared.css, swap it, and every sha still matched while an honest
@@ -519,11 +514,13 @@ def round_asset_digest(rd: Path) -> str:
     return asset_digest(round_files(rd))
 
 
-# Two lists for two jobs. _CHAIN_RECORDS is what the DIGEST leaves out (records the chain
-# keeps writing after a seal). _SEAL_WRITES is what the live-vs-snapshot COMPARE leaves out:
-# only the files this seal itself writes while it runs. The compare used to borrow the
-# digest's list, so brief.md could be swapped under a running seal and left swapped.
+# Two lists for two jobs. _SEAL_WRITES is what the live-vs-snapshot COMPARE leaves out: only
+# the files this seal itself writes while it runs. _DIGEST_SKIP is what the DIGEST leaves out:
+# those, plus what the gate writes after a seal. They are kept apart on purpose (Sana,
+# 2026-09-19): the compare once borrowed the digest's list, so brief.md could be swapped under
+# a running seal and left swapped.
 _SEAL_WRITES = frozenset({"standard.json", f"checks/{GAP_CHECK}", "receipts.json"})
+_DIGEST_SKIP = _SEAL_WRITES | {"corrections.jsonl"}
 
 
 def files_that_differ(a: dict[str, bytes], b: dict[str, bytes]) -> list[str]:
@@ -874,20 +871,199 @@ def craft_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None) -> li
 
 
 def sealed_and_unedited(page: Path) -> bool:
-    """True when this exact page bytes already carry a seal receipt.
+    """True when this exact page carries a receipt the gate can still believe (receipt_problems).
 
-    `seal` runs the ENTIRE chain before it writes a receipt, so a fresh receipt is
-    the evidence that the chain ran, under the ruleset in force at that moment.
-    """
-    rc = round_dir_for(page) / "receipts.json"
-    if not rc.is_file():
+    `seal` runs the ENTIRE chain before it writes a receipt, so a believed receipt is the
+    evidence that the chain ran, under the ruleset in force at that moment."""
+    return not receipt_problems(page)
+
+
+GATE_FILE = Path(__file__).resolve()
+ROUND_CACHE = "round-cache.json"
+
+
+def stage_record(stage: str, producer: str, rd: Path, rc: int) -> dict:
+    """What ran, for one stage: which producer file, its bytes, its exit code. Only for stages
+    this gate really runs (dc-10, Sana 2026-09-19): a record for a producer that does not exist
+    yet would be fabricated evidence, the shape dc-02 finding-6 closed."""
+    p = HERE / producer
+    return {"stage": stage, "path": repo_path(p, rd), "sha256": sha(p) if p.is_file() else None, "exit": rc}
+
+
+def _toplevel(rd: Path) -> Path | None:
+    r = subprocess.run(["git", "-C", str(rd), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    return Path(r.stdout.strip()).resolve() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def repo_path(f: Path, rd: Path) -> str:
+    """`f` relative to the round's own repo when it lives there (what an instance has after
+    the fleet sync), else absolute: then only "the file there now has these bytes" can
+    believe it, because the round's repo has no history for it."""
+    top = _toplevel(rd)
+    f = f.resolve()
+    if top is not None and top in f.parents:
+        return f.relative_to(top).as_posix()
+    return str(f)
+
+
+def _blob_shas(rd: Path, rel: str) -> list[tuple[str, str]]:
+    """[(sha256 of the blob, ISO commit date)] for every commit that touched `rel` in the
+    round's own repo, newest first."""
+    # `:(top)`: a pathspec is read from the current directory, and -C puts that inside the
+    # round, so a root-relative path found no history at all (first dc-10 test run)
+    log = subprocess.run(["git", "-C", str(rd), "log", "--format=%H %cI", "--", f":(top){rel}"],
+                         capture_output=True, text=True)
+    out = []
+    for line in log.stdout.splitlines():
+        h, _, when = line.partition(" ")
+        shown = subprocess.run(["git", "-C", str(rd), "show", f"{h}:{rel}"], capture_output=True)
+        if shown.returncode == 0:
+            out.append((hashlib.sha256(shown.stdout).hexdigest(), when))
+    return out
+
+
+def _believed(record, rd: Path, top: Path | None) -> bool:
+    """A recorded file is believed when the file at its path has those bytes now, or when the
+    round's own repo has ever committed those bytes at that path (an upgrade keeps history).
+    A copy that ran from a temp dir that is gone is neither."""
+    if not isinstance(record, dict) or not record.get("path") or not record.get("sha256"):
         return False
+    path = Path(record["path"])
+    here = path if path.is_absolute() else (top / path if top else None)
+    if here is not None and here.is_file() and sha(here) == record["sha256"]:
+        return True
+    if path.is_absolute() or top is None:
+        return False
+    return any(b == record["sha256"] for b, _ in _blob_shas(rd, path.as_posix()))
+
+
+def _grandfathered(rd: Path, top: Path | None) -> bool:
+    """A bare receipt (no stage record) was written by the gate that came before dc-10. It is
+    history when git shows these exact receipts.json bytes committed BEFORE the stages-aware
+    gate arrived in this repo. The cutover is not a stored constant (Sana, 2026-09-19): it is
+    the date of the commit that brought the gate's current bytes into the round's own repo, so
+    it moves by itself when the fleet sync lands. No history for the gate here: fail closed."""
+    if top is None or top not in GATE_FILE.parents:
+        return False
+    mine = sha(GATE_FILE)
+    arrived = [when for b, when in _blob_shas(rd, GATE_FILE.relative_to(top).as_posix()) if b == mine]
+    if not arrived:
+        return False
+    cutover = min(datetime.fromisoformat(w) for w in arrived)
+    rc_rel = (rd / "receipts.json").resolve().relative_to(top).as_posix()
+    now = sha(rd / "receipts.json")
+    return any(b == now and datetime.fromisoformat(w) < cutover for b, w in _blob_shas(rd, rc_rel))
+
+
+def _named_files(rd: Path, rec: dict) -> list[Path]:
+    """Every file the receipt vouches for, found without spawning git: a relative path is read
+    from the nearest directory above the round that holds `.git`."""
+    top = next((d for d in [rd.resolve(), *rd.resolve().parents] if (d / ".git").exists()), None)
+    out = [GATE_FILE]
+    recs = [rec.get("__gate__")] + [r for k, v in rec.items() if not k.startswith("__") and isinstance(v, dict)
+                                    for r in v.get("stages", []) if isinstance(r, dict)]
+    for r in recs:
+        if isinstance(r, dict) and r.get("path"):
+            p = Path(r["path"])
+            out.append(p if p.is_absolute() else (top / p if top else p))
+    return out
+
+
+def _fingerprint(rd: Path, rec: dict) -> str:
+    """Cheap: names, sizes and mtimes, no reads, no git. Covers the round, the running gate, and
+    every file the receipt names: without the producers in it, a producer changed after the seal
+    stayed believed from the cache (dc-10, caught by its own test)."""
+    h = hashlib.sha256()
+    for p in sorted(rd.rglob("*")):
+        if p.is_file() and "__pycache__" not in p.parts:
+            st = p.stat()
+            h.update(f"{p.relative_to(rd).as_posix()}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+    for p in _named_files(rd, rec):
+        try:
+            st = p.stat()
+            h.update(f"{p}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+        except OSError:
+            h.update(f"{p}\0gone\n".encode())
+    return h.hexdigest()
+
+
+def _round_facts(rd: Path, rec: dict) -> dict:
+    """The expensive half of believing a receipt (the round digest, git history), computed once
+    per change of the round. The passive hook runs on every browser show and every Stop, so
+    this is cached in STATE_DIR keyed by a cheap fingerprint (dc-10)."""
+    key = str(rd.resolve())
+    fp = _fingerprint(rd, rec)
+    cache_path = STATE_DIR / ROUND_CACHE
+    try:
+        cache = json.loads(cache_path.read_text())
+    except (OSError, ValueError):
+        cache = {}
+    ent = cache.get(key) if isinstance(cache.get(key), dict) else None
+    if ent and ent.get("fp") == fp:
+        return ent
+    top = _toplevel(rd)
+    staged = any(isinstance(v, dict) and "stages" in v for k, v in rec.items() if not k.startswith("__"))
+    ent = {"fp": fp, "computed": (ent or {}).get("computed", 0) + 1,
+           "digest": round_asset_digest(rd),
+           "gate": _believed(rec.get("__gate__"), rd, top) if staged else None,
+           "stages": {} if not staged else {
+               f"{r.get('stage')}:{r.get('sha256')}": _believed(r, rd, top)
+               for k, v in rec.items() if not k.startswith("__") and isinstance(v, dict)
+               for r in v.get("stages", []) if isinstance(r, dict)},
+           "grandfathered": None if staged else _grandfathered(rd, top)}
+    cache[key] = ent
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = cache_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(cache))
+        tmp.replace(cache_path)
+    except OSError:
+        pass      # a cache that cannot be written only costs time
+    return ent
+
+
+def receipt_problems(page: Path) -> list[str]:
+    """Why this page's receipt cannot be believed. Empty = believed.
+
+    Before dc-10 this compared ONE page sha, so a hand-typed receipts.json read COMPLETE (RCA
+    rca-design-chain-trusts-its-own-account, round B) and a stylesheet swapped after the seal
+    left the round COMPLETE, because the digest seal wrote had no reader (ASK-1808 finding-7).
+    Every message says "receipt", so an explicit re-seal can set them aside."""
+    rd = round_dir_for(page)
+    rc = rd / "receipts.json"
+    if not rc.is_file():
+        return [f"not sealed: run `design-chain-gate.py seal {rd}`"]
     try:
         rec = json.loads(rc.read_text())
     except ValueError:
-        return False
+        rec = {}
+    if not isinstance(rec, dict):
+        rec = {}
     ent = rec.get(page.name)
-    return isinstance(ent, dict) and ent.get("sha256") == sha(page)
+    if not isinstance(ent, dict):
+        return [f"receipts.json has no entry for {page.name}"]
+    if ent.get("sha256") != sha(page):
+        return [f"receipt stale for {page.name}: page edited after seal; redo the chain and seal again"]
+    try:
+        facts = _round_facts(rd, rec)
+    except OSError as e:
+        return [f"receipt cannot be checked: {type(e).__name__}: {e}"]
+    probs = []
+    if "stages" in ent:
+        if (rec.get("__assets__") or {}).get("sha256") != facts["digest"]:
+            probs.append("a file in the round changed after the seal (its receipt's digest no longer "
+                         "matches): redo what changed and seal again")
+        if not facts.get("gate"):
+            probs.append("the receipt names a gate that is neither at its path now nor in this repo's "
+                         "history, so nothing shows which gate sealed it")
+        for r in ent.get("stages", []):
+            if not facts["stages"].get(f"{r.get('stage')}:{r.get('sha256')}"):
+                probs.append(f"the receipt names a {r.get('stage')} producer that is neither at its path "
+                             f"now nor in this repo's history")
+    elif not facts.get("grandfathered"):
+        probs.append("the receipt records no stages, and git does not show it committed before the "
+                     "stages-aware gate arrived in this repo: seal again")
+    return probs
 
 
 NOT_A_ROUND = ".not-a-round"
@@ -1485,20 +1661,8 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
 
     probs += craft_problems(rd, page, cfg, cfg_path)
 
-    # receipts: sealed, and fresh
-    rc = rd / "receipts.json"
-    if not rc.is_file():
-        probs.append(f"not sealed: run `design-chain-gate.py seal {rd}`")
-    else:
-        try:
-            rec = json.loads(rc.read_text())
-        except ValueError:
-            rec = {}
-        ent = rec.get(page.name)
-        if not ent:
-            probs.append(f"receipts.json has no entry for {page.name}")
-        elif ent.get("sha256") != sha(page):
-            probs.append(f"receipt stale for {page.name}: page edited after seal; redo the chain and seal again")
+    # receipts: sealed, fresh, and believable (dc-10)
+    probs += receipt_problems(page)
     return probs
 
 
@@ -1617,7 +1781,9 @@ def _seal_snapshot(rd: Path, pages: list[Path], seal_cfg: dict, snap: RoundSnaps
         print(f"  {moved} differ from what this seal measured, so what was measured is not what "
               f"would be sealed. Seal again.", file=sys.stderr)
         return 2
-    rec = {p.name: {"sha256": snap.sha(p.name), "sealed": time.strftime("%Y-%m-%dT%H:%M:%S")} for p in pages}
+    rec = {p.name: {"sha256": snap.sha(p.name), "sealed": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "stages": snap.stages.get(p.name, []) + snap.stages.get("", [])} for p in pages}
+    rec["__gate__"] = {"path": repo_path(GATE_FILE, rd), "sha256": sha(GATE_FILE)}
     rec["__assets__"] = {"sha256": asset_digest(snap.files), "measured": "snapshot", "residual": SEAL_RESIDUAL}
     srcs = declared_sources(rd, root)
     if srcs:

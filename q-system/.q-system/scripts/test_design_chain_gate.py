@@ -537,9 +537,11 @@ class TestChainStepsRun(Base):
 class TestPasses(Base):
     def test_full_chain_passes_send_and_stop(self):
         self.complete_chain()
+        # the screenshot lands BEFORE the seal, as in the real flow: the gap check reads it, so a
+        # screenshot written after the seal is a changed input and opens the round (dc-10)
+        png = self.round / "Pair-laptop.png"; png.write_bytes(b"png")
         rc, out = run(["seal", str(self.round)], env=self.env); self.assertEqual(rc, 0, out)
         self.write_hook()
-        png = self.round / "Pair-laptop.png"; png.write_bytes(b"png")
         rc, out = self.send([str(png)]); self.assertEqual(rc, 0, out)
         rc, out = self.stop(); self.assertEqual(rc, 0, out)
 

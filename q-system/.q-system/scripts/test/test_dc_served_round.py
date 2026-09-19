@@ -407,17 +407,25 @@ class AssetDigest(Base):
         (self.round / "shared.css").write_text("p{font-size:9px}")
         self.assertNotEqual(recorded, dcg.round_asset_digest(self.round))
 
-    def test_the_chains_own_records_do_not_move_the_digest(self):
-        # By NAME, at the round's top level and in checks/ and gate/, only the files the chain
-        # itself writes. Nothing is skipped because of the directory it sits in.
+    def test_only_what_the_gate_writes_leaves_the_digest_unmoved(self):
+        # dc-10 reversed the dc-03 rule: the chain's records (critique, craft manifest, reader
+        # runs, impeccable output) are INPUTS a reviewer relies on, so an edit to any of them after
+        # the seal must open the round. Only the files the gate itself writes, and the pages
+        # (each with its own sha in the receipt), leave the digest where it was. By exact name.
         dcg = _load_gate("dcg_digest2")
         before = dcg.round_asset_digest(self.round)
-        (self.round / "critique.md").write_text("rewritten" + chr(10))
         (self.round / "standard.json").write_text("[]")
         (self.round / "checks" / "gap.json").write_text("{}")
-        (self.round / "checks" / "impeccable.txt").write_text("x")
-        (self.round / "gate" / "reader-runs.jsonl").write_text("{}")
+        (self.round / "receipts.json").write_text("{}")
+        (self.round / "corrections.jsonl").write_text("{}" + chr(10))
+        self.page.write_text(self.page.read_text() + chr(10))
         self.assertEqual(before, dcg.round_asset_digest(self.round))
+        for rel in ("critique.md", "checks/impeccable.txt", "gate/reader-runs.jsonl"):
+            f = self.round / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("rewritten after the seal" + chr(10))
+            self.assertNotEqual(before, dcg.round_asset_digest(self.round), f"{rel} did not move the digest")
+            before = dcg.round_asset_digest(self.round)
 
     def test_an_asset_parked_in_gate_or_checks_moves_the_digest(self):
         # Final review of c3607e0d, reproduced with the real gate: the server serves gate/ and
