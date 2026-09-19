@@ -136,7 +136,9 @@ def run_config(readers: dict, persona_sha: str, model: str) -> dict:
     return {"n": readers.get("n", DEFAULT_N), "viewports": readers.get("viewports", DEFAULT_VIEWPORTS),
             "labels": [x.strip() for x in readers.get("labels", []) if isinstance(x, str)],
             "narrow": sorted({x.strip().casefold() for x in readers.get("narrow", []) if isinstance(x, str)}),
-            "floor": readers.get("floor", 1.0), "persona_sha256": persona_sha, "model": model}
+            "floor": readers.get("floor", 1.0), "persona_sha256": persona_sha, "model": model,
+            # recorded like the floor, so raising the cap after the runs is a weakening (ASK-1840 adv-2)
+            "reader_runs_max": readers.get("reader_runs_max", DEFAULT_RUNS_MAX)}
 
 
 def read_answers(answers: list[str], readers: dict) -> dict:

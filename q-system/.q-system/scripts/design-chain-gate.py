@@ -2012,7 +2012,10 @@ def reader_history(rd: Path, page: Path) -> dict:
         if not isinstance(r, dict) or r.get("page") != page.name:
             continue
         prov = r.get("_provenance") if isinstance(r.get("_provenance"), dict) else {}
-        run = prov.get("run_id") if isinstance(prov.get("run_id"), str) and prov.get("run_id") else f"line-{k}"
+        # a row with no run id is grouped by the time its invocation stamped, else it is its own run:
+        # one per row made one old n=5 invocation five runs (ASK-1840 std-2)
+        run = prov.get("run_id") if isinstance(prov.get("run_id"), str) and prov.get("run_id") else (
+            f"at-{prov['at']}" if isinstance(prov.get("at"), str) and prov.get("at") else f"line-{k}")
         runs.add(run)
         ans = r.get("answers")
         if isinstance(ans, list) and len(ans) >= 3 and all(isinstance(a, str) for a in ans):
@@ -2047,11 +2050,27 @@ def reader_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None = Non
         rg.check_readers(readers)
     except ValueError as e:
         return [f"{CONFIG_NAME} readers: {e}"]
+    # rows for a page the round no longer holds: renaming the page reset its run count and left its
+    # LEAVE rows unread (ASK-1840 adv-1). Said once, by the first page of the round.
+    held = sorted(p.name for p in rd.iterdir() if p.is_file() and p.suffix.lower() in PAGE_EXTS)
+    if held and page.name == held[0]:
+        try:
+            named = {r.get("page") for r in (json.loads(x) for x in (rd / READER_ROWS).read_text().splitlines()
+                                              if x.strip()) if isinstance(r, dict)}
+        except (OSError, ValueError):
+            named = set()
+        gone = sorted(str(x) for x in named - set(held))
+        if gone:
+            return [f"{_live(rd / READER_ROWS)} holds reader rows for {gone}, which this round no longer holds. "
+                    f"A renamed page keeps its readers' history; put the name back."]
     hist, cap = reader_history(rd, page), readers.get("reader_runs_max", rg.DEFAULT_RUNS_MAX)
     if hist["runs"] > cap:
+        # what works (ASK-1840 std-1): editing the page never lowers a count taken over every version
+        # of it, FOUNDER lines are not read past the cap, and raising the cap after the runs refuses
         return [f"{page.name} has had {hist['runs']} reader runs in this round ({hist['leave_runs']} with a "
                 f"LEAVE), over readers.reader_runs_max {cap}. Re-running the readers until they say STAY is "
-                f"not a new reading; change the page's design, or answer the LEAVE with a FOUNDER line."]
+                f"not a new reading. Start a new round for this page; the count is per round, and CI "
+                f"recompute (ASK-1834) runs the readers itself on the committed page."]
     narrow = {x.strip().casefold() for x in readers.get("narrow", [])}
     floor = readers.get("floor", 1.0)
     n = readers.get("n", rg.DEFAULT_N)
@@ -2149,7 +2168,8 @@ def reader_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None = Non
                 rg.check_readers(rc_)
                 was_vps, was_nar = rc_["viewports"], rc_["narrow"]
                 weaker = (today["floor"] < rc_["floor"] or today["n"] < rc_["n"]
-                          or len(today["viewports"]) < len(was_vps) or not set(was_nar) <= set(today["narrow"]))
+                          or len(today["viewports"]) < len(was_vps) or not set(was_nar) <= set(today["narrow"])
+                          or today["reader_runs_max"] > rc_["reader_runs_max"])
             except (ValueError, KeyError, TypeError):
                 weaker = True
             if weaker:
@@ -2466,7 +2486,9 @@ def _seal_snapshot(rd: Path, pages: list[Path], seal_cfg: dict, snap: RoundSnaps
         for p in pages:
             # every reader run the page had in this round and how many said LEAVE: a re-roll under
             # the cap is still on the record (ASK-1840)
-            rec[p.name]["readers"] = reader_history(snap.dir, snap.dir / p.name)
+            rec[p.name]["readers"] = dict(reader_history(snap.dir, snap.dir / p.name),
+                                          reader_runs_max=seal_cfg["readers"].get("reader_runs_max",
+                                                                                  _reader_gate().DEFAULT_RUNS_MAX))
     rec["__gate__"] = {"path": repo_path(GATE_FILE, rd), "sha256": sha(GATE_FILE)}
     rec["__assets__"] = {"sha256": asset_digest(snap.files), "measured": "snapshot", "residual": SEAL_RESIDUAL}
     srcs = declared_sources(snap.dir, root)
