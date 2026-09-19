@@ -1,10 +1,11 @@
 ---
 id: dc-25-rollout-proof
 title: A script proves the fleet load path end to end
-status: open
+status: in-progress
 priority: p2
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
+  - .github/workflows/validate.yml
   - q-system/.q-system/capability/expected_tests/*
   - q-system/.q-system/scripts/design-chain-rollout-proof.sh
 disallowed_files: []
@@ -32,4 +33,4 @@ The script checks: the marketplace clone holds the command; an instance root pas
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] A script proves the fleet load path end to end
+- [x] A script proves the fleet load path end to end
