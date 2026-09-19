@@ -32,6 +32,9 @@ Each row has verdict in {STAY, LEAVE} and a what_he_sells label parsed from a fo
 
 The RED FIRST test is round A (dc_fixtures, with provenance): it seals before this change and refuses after, naming the readers. (Sana, 2026-09-19, moved from dc-21.)
 
+
+Round A's reader rows are captured from design-reader-gate.py with the injected runner, provenance runner=injected: honest, and what dc-07 tests is how seal consumes verdicts, not what a model says. Condition, with its own RED FIRST: seal refuses a row whose provenance says runner=injected in any round that is not a test fixture, or the injected runner becomes the new way to hand-type verdicts (Sana, 2026-09-19).
+
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->

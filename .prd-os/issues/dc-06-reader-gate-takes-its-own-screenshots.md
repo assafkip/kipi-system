@@ -28,6 +28,9 @@ Parent PRD: `.prd-os/prds/prd-design-chain-seal-reads-verdicts-2026-09-18.md`
 
 New script in the skeleton. It renders each page at the configured viewports with playwright, hashes the PNG, and writes html_sha256 and png_sha256 into every row plus a _provenance block (model, persona sha, at). It never reads a PNG the round supplied. The model call is injectable so the test never spends one (PYTEST_CURRENT_TEST and an explicit runner argument).
 
+
+One real model run on one page (a few cents) proves the render, hash and model path end to end; its row, with real provenance, is recorded in the closeout (Sana, 2026-09-19).
+
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
