@@ -1,7 +1,7 @@
 ---
 id: dc-16-decoration-is-measured-then-removed
 title: The critique line count and byte-copy brief checks are measured, then deleted or re-bound
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
