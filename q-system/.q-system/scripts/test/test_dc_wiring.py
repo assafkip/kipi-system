@@ -57,11 +57,57 @@ class Wiring(unittest.TestCase):
                            text=True, env=env, timeout=300)
         return r.returncode, r.stdout + r.stderr
 
-    def test_both_settings_files_wire_the_same_five_hooks(self):
+    def test_both_settings_files_wire_the_gate_and_the_door(self):
         live, template = wired(LIVE), wired(TEMPLATE)
-        self.assertEqual(len(live), 5, sorted(live))
-        self.assertEqual(sorted(live), sorted(template), "the two settings files disagree")
-        self.assertEqual(sorted(k[0] for k in live), ["PostToolUse", "PostToolUse", "PreToolUse", "PreToolUse", "Stop"])
+        # by ROLE, not by count: a proposal may only ADD to the live file, so the template replaces
+        # its narrow matcher while the live file carries the narrow one plus the wider block
+        for name, got in (("live", live), ("template", template)):
+            roles = {(ev, matcher == "Skill") for (ev, matcher) in got}
+            for ev, is_door in (("PreToolUse", False), ("PreToolUse", True), ("PostToolUse", False),
+                                ("PostToolUse", True), ("Stop", False), ("SubagentStop", False)):
+                self.assertIn((ev, is_door), roles,
+                              f"{name}: no {'door' if is_door else 'gate'} hook on {ev}: {sorted(got)}")
+            wide = [m for (ev, m) in got if ev == "PreToolUse" and m and "chrome-devtools" in m]
+            self.assertTrue(any(m.endswith("mcp__plugin_chrome-devtools.*") for m in wide),
+                            f"{name}: the chrome-devtools surface is narrower than the gate's own prefix")
+        # the same scripts in both, which is what settings-template-sync-check compares
+        self.assertEqual({GATE in c for c in live.values()}, {GATE in c for c in template.values()})
+
+    def test_the_template_the_fleet_gets_runs_the_hooks_isolated(self):
+        # `python3 <script>` runs sitecustomize.py from PYTHONPATH before the gate's first line, so a
+        # session could no-op every hook. The gate already gives its own producers -I (dc-24 review)
+        for (ev, matcher), cmd in sorted(wired(TEMPLATE).items()):
+            self.assertIn("python3 -I ", cmd, f"{ev}/{matcher} is not isolated")
+
+    def test_a_sitecustomize_cannot_silence_the_isolated_command(self):
+        site = self.tmp / "pypath"
+        site.mkdir()
+        (site / "sitecustomize.py").write_text("import os\nos._exit(0)\n")
+        cmd = next(c for (ev, m), c in wired(TEMPLATE).items() if ev == "PreToolUse" and GATE in c)
+        self.run_hook(next(c for (ev, m), c in wired(TEMPLATE).items() if ev == "PostToolUse" and GATE in c),
+                      {"hook_event_name": "PostToolUse", "tool_name": "Write", "session_id": "s-site",
+                       "tool_input": {"file_path": str(self.page)}})
+        env_before = os.environ.get("PYTHONPATH")
+        os.environ["PYTHONPATH"] = str(site)
+        try:
+            rc, out = self.run_hook(cmd, {"hook_event_name": "PreToolUse", "tool_name": "SendUserFile",
+                                          "session_id": "s-site", "tool_input": {"files": [str(self.page)]}})
+        finally:
+            os.environ.pop("PYTHONPATH", None)
+            if env_before is not None:
+                os.environ["PYTHONPATH"] = env_before
+        self.assertEqual(rc, 2, out)
+
+    def test_a_missing_script_is_a_silent_no_op_which_is_the_fleet_convention(self):
+        # measured, not assumed (dc-24 review): the Pre/Post form exits 1 with no output and the tool
+        # proceeds; the Stop form exits 0. An instance that got the switch without the script is open.
+        for (ev, matcher), cmd in sorted(wired(TEMPLATE).items()):
+            broken = cmd.replace("design-chain-gate.py", "design-chain-gate-absent.py").replace(
+                "design-engine-door.py", "design-engine-door-absent.py")
+            rc, out = self.run_hook(broken, {"hook_event_name": ev, "tool_name": "Read", "session_id": "s-gone",
+                                             "tool_input": {}})
+            self.assertEqual(out.strip(), "", f"{ev}/{matcher} said something when its script was missing")
+            self.assertIn(rc, (0, 1), f"{ev}/{matcher} exited {rc} with its script missing")
 
     def test_every_wired_command_runs_and_passes_a_benign_payload(self):
         for (ev, matcher), cmd in sorted(wired(LIVE).items()):

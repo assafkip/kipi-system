@@ -68,6 +68,16 @@
     "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/statusline.sh\""
   },
   "hooks": {
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; then python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; fi"
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "startup",
@@ -160,6 +170,15 @@
       }
     ],
     "PreToolUse": [
+      {
+        "matcher": "mcp__plugin_chrome-devtools.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\" && python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\""
+          }
+        ]
+      },
       {
         "matcher": "Bash|SendUserFile|Artifact|mcp__playwright__.*|mcp__claude-in-chrome__.*|mcp__plugin_chrome-devtools-mcp_chrome-devtools__.*",
         "hooks": [
@@ -409,6 +428,14 @@
       }
     ],
     "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; then python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; fi"
+          }
+        ]
+      },
       {
         "hooks": [
           {

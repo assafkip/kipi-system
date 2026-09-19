@@ -223,11 +223,11 @@
         ]
       },
       {
-        "matcher": "Bash|SendUserFile|Artifact|mcp__playwright__.*|mcp__claude-in-chrome__.*|mcp__plugin_chrome-devtools-mcp_chrome-devtools__.*",
+        "matcher": "Bash|SendUserFile|Artifact|mcp__playwright__.*|mcp__claude-in-chrome__.*|mcp__plugin_chrome-devtools.*",
         "hooks": [
           {
             "type": "command",
-            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\""
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\" && python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\""
           }
         ]
       },
@@ -236,7 +236,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-engine-door.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-engine-door.py\""
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-engine-door.py\" && python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-engine-door.py\""
           }
         ]
       }
@@ -262,7 +262,7 @@
           },
           {
             "type": "command",
-            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\""
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\" && python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\""
           }
         ]
       },
@@ -387,7 +387,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-engine-door.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-engine-door.py\""
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-engine-door.py\" && python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-engine-door.py\""
           }
         ]
       }
@@ -443,7 +443,17 @@
           },
           {
             "type": "command",
-            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; fi"
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; then python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; fi"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; then python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; fi"
           }
         ]
       }
