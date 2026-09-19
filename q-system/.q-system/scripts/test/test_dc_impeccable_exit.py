@@ -35,8 +35,10 @@ REAL_DETECTOR = Path("~/projects/cole-gtm/.agents/skills/impeccable/scripts/dete
 STUB_DETECTOR = r"""
 const t = process.argv[2] || '';
 const env = process.env;
+if (env.STUB_LOG) (await import('fs')).appendFileSync(env.STUB_LOG, JSON.stringify({argv: process.argv.slice(2), cwd: process.cwd()}) + '\n');
 if (t.includes('impeccable-control')) {
   if (env.STUB_CONTROL === 'dead') { console.error('0 anti-patterns found.'); process.exit(0); }
+  if (env.STUB_CONTROL === 'nobrowser' && t.startsWith('http')) { console.error('puppeteer is required for URL scanning'); process.exit(0); }
   console.error('[gradient-text]\n2 anti-patterns found.'); process.exit(2);
 }
 const m = env.STUB_PAGES || 'clean';
@@ -132,6 +134,51 @@ class TheScript(unittest.TestCase):
         self.assertFalse((self.rd / ".impeccable-control.html").exists())
 
 
+class ThePageListAndTheDetectorsOwnConfig(TheScript):
+    """Review of d0492b36, Sana's triage (findings 1-3)."""
+
+    def test_a_page_in_the_round_it_was_not_given_is_2(self):
+        (self.rd / "Offer.htm").write_text(CLEAN)
+        rc, out = self.run_script("--page", "Home-laptop.html")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("Offer.htm", out)
+
+    def test_a_page_it_cannot_scan_as_html_is_2(self):
+        (self.rd / "Home.astro").write_text("---\n---\n<h1>x</h1>")
+        rc, out = self.run_script("--page", "Home-laptop.html", "--page", "Home.astro")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("cannot scan Home.astro", out)
+
+    def test_an_htm_page_given_is_scanned(self):
+        (self.rd / "Offer.htm").write_text(CLEAN)
+        rc, out = self.run_script("--page", "Home-laptop.html", "--page", "Offer.htm", pages="flag")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("Offer.htm", (self.rd / "checks" / "impeccable.txt").read_text())
+
+    def calls(self, **stub):
+        log = self.tmp / "calls.jsonl"
+        rc, out = self.run_script(log=str(log), **stub)
+        self.assertEqual(rc, 0, out)
+        return [json.loads(l) for l in log.read_text().splitlines()]
+
+    def test_every_detector_call_passes_no_config(self):
+        calls = self.calls()
+        self.assertTrue(calls)
+        self.assertTrue(all("--no-config" in c["argv"] for c in calls), calls)
+
+    def test_every_detector_call_runs_from_an_empty_directory(self):
+        # a .impeccable/config.json in the caller's cwd switched rules off (finding-3)
+        for c in self.calls():
+            self.assertNotEqual(os.path.realpath(c["cwd"]), os.path.realpath(os.getcwd()), c)
+            self.assertEqual(os.listdir(c["cwd"]) if os.path.isdir(c["cwd"]) else [], [], c)
+
+    def test_the_browser_unavailable_fallback_leaves_no_temp_dir(self):
+        before = set(Path(tempfile.gettempdir()).glob("impeccable-control-*"))
+        self.run_script(control="nobrowser")
+        after = set(Path(tempfile.gettempdir()).glob("impeccable-control-*"))
+        self.assertEqual(after - before, set())
+
+
 class SealRunsIt(unittest.TestCase):
     """The real gate, real producers, the real detector."""
 
@@ -163,11 +210,11 @@ class SealRunsIt(unittest.TestCase):
         (rd / "gate").mkdir()
         (rd / "gate" / "icp.md").write_text("answers\n")
 
-    def seal(self):
+    def seal(self, cwd=None):
         env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_PROJECT_DIR", "DESIGN_CHAIN_ALLOW")}
         env["DESIGN_CHAIN_STATE"] = str(self.tmp / "state")
         r = subprocess.run([sys.executable, str(REAL_GATE), "seal", str(self.rd)], capture_output=True,
-                           text=True, env=env, timeout=900)
+                           text=True, env=env, timeout=900, cwd=cwd)
         return r.returncode, r.stdout + r.stderr
 
     def test_a_clean_page_seals_with_a_receipt_the_producer_wrote(self):
@@ -175,6 +222,24 @@ class SealRunsIt(unittest.TestCase):
         rc, out = self.seal()
         self.assertEqual(rc, 0, out)
         self.assertIn("control fired: YES", (self.rd / "checks" / "impeccable.txt").read_text())
+
+    def test_a_slop_page_named_htm_beside_a_clean_one_is_refused(self):
+        # finding-2: the producer scanned *.html only, and seal seals every page
+        (self.rd / "Home-laptop.html").write_text(CLEAN)
+        (self.rd / "Offer.htm").write_text(SLOP)
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("raised an anti-pattern", out)
+
+    def test_a_detector_config_in_the_callers_directory_does_not_switch_rules_off(self):
+        (self.rd / "Home-laptop.html").write_text(SLOP)
+        cwd = self.tmp / "caller"
+        (cwd / ".impeccable").mkdir(parents=True)
+        (cwd / ".impeccable" / "config.json").write_text(json.dumps(
+            {"detector": {"ignoreRules": ["gradient-text", "ai-color-palette", "low-contrast"]}}))
+        rc, out = self.seal(cwd=cwd)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("raised an anti-pattern", out)
 
     def test_a_page_with_an_anti_pattern_is_refused_whatever_receipt_the_round_carries(self):
         (self.rd / "Home-laptop.html").write_text(SLOP)

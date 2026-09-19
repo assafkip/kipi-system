@@ -246,6 +246,15 @@ class TestCraftBar(Base):
             self.assertEqual(rc, 2, out)
             self.assertIn(words, out, mode)
 
+    def test_seal_hands_the_producer_every_page_it_seals(self):
+        # review of d0492b36, finding-2: the producer scanned its own *.html glob, so a page seal
+        # sealed under another suffix was never scanned. Now seal names every page it seals.
+        self.complete_chain()
+        self.craft_cfg()
+        run(["seal", str(self.round)], env=self.env)
+        rec = (self.round / "checks" / "impeccable.txt").read_text()
+        self.assertIn(f"pages given: ['{self.page.name}']", rec)
+
     def test_declared_technique_absent_from_the_page_blocks(self):
         """The TZOREF failure: a technique named in the manifest and used nowhere."""
         self.complete_chain()

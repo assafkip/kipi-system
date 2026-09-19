@@ -87,9 +87,15 @@ def find_detector(explicit: str | None) -> Path | None:
 
 
 def run_detector(detector: Path, target: str) -> tuple[int, str]:
+    """One detector call, from an EMPTY directory and with --no-config. The detector reads
+    .impeccable/config.json (ignoreRules, ignoreValues, designSystem) from its cwd, so the
+    caller's directory decided which rules ran: a config there switched gradient-text off and
+    a slop page sealed (adversarial review of d0492b36, finding-3). Both halves, each pinned
+    by its own test."""
     try:
-        r = subprocess.run(["node", str(detector), target],
-                           capture_output=True, text=True, timeout=300)
+        with tempfile.TemporaryDirectory(prefix="impeccable-cwd-") as empty:
+            r = subprocess.run(["node", str(detector), target, "--no-config"], cwd=empty,
+                               capture_output=True, text=True, timeout=300)
     except FileNotFoundError:
         return 2, "node is not on PATH"
     except subprocess.TimeoutExpired:
@@ -102,6 +108,7 @@ def run_detector(detector: Path, target: str) -> tuple[int, str]:
 # found" and not " 0 anti-patterns"), which read "0 anti-patterns found." at the start of the
 # output as a control that fired (dc-04 test, red on the old script).
 DETECTOR_FOUND = 2
+HTML_SUFFIXES = {".html", ".htm"}
 
 
 @contextlib.contextmanager
@@ -156,12 +163,31 @@ def main() -> int:
                     help="the served round; no default, so a leftover server is never measured")
     ap.add_argument("--detector")
     ap.add_argument("--control")
+    ap.add_argument("--page", action="append", default=[],
+                    help="a page to scan, by name; seal passes every page it seals")
     a = ap.parse_args()
 
     rd = Path(a.round).resolve()
-    pages = sorted(p for p in rd.glob("*.html"))
-    if not pages:
-        print(f"no .html pages in {rd}", file=sys.stderr)
+    # The pages are the ones the CALLER seals, not a glob of our own: this scanned *.html and
+    # seal seals .htm (and more), so a slop Offer.htm beside a clean Home sealed "pages flagged:
+    # none" (adversarial review of d0492b36, finding-2). A page we cannot scan as HTML refuses,
+    # and an HTML page in the round we were not handed refuses: never a silent skip.
+    html = {p.name for p in rd.iterdir() if p.is_file() and p.suffix.lower() in HTML_SUFFIXES}
+    names = a.page or sorted(html)
+    cannot = [n for n in names if Path(n).suffix.lower() not in HTML_SUFFIXES]
+    if cannot:
+        print(f"could not measure: cannot scan {', '.join(cannot)} as HTML; the detector reads "
+              f"rendered HTML only", file=sys.stderr)
+        return 2
+    unlisted = sorted(html - set(names))
+    if unlisted:
+        print(f"could not measure: {unlisted} are pages in the round this run was not given",
+              file=sys.stderr)
+        return 2
+    pages = [rd / n for n in names]
+    missing = [p.name for p in pages if not p.is_file()]
+    if not pages or missing:
+        print(f"no pages to scan in {rd}" + (f": {missing} do not exist" if missing else ""), file=sys.stderr)
         return 2
     detector = find_detector(a.detector)
     if not detector:
@@ -186,14 +212,15 @@ def main() -> int:
     # the browser engine's zeros unproven -- a control that cannot fail for the engine
     # you care about is decoration (2026-09-15, caught the first time puppeteer was
     # present). URL first, falling back only if the browser engine is unavailable.
-    html = Path(a.control).expanduser().read_text() if a.control else CONTROL_HTML
-    with control_server(html) as ctrl_target:
+    control = Path(a.control).expanduser().read_text() if a.control else CONTROL_HTML
+    with control_server(control) as ctrl_target:
         crc, cout = run_detector(detector, ctrl_target)
         if "unavailable" in engine_of(cout, ctrl_target):
-            fallback = Path(tempfile.mkdtemp(prefix="impeccable-control-")) / ".impeccable-control.html"
-            fallback.write_text(html)
-            crc, cout = run_detector(detector, str(fallback))
-            ctrl_target = str(fallback)
+            with tempfile.TemporaryDirectory(prefix="impeccable-control-") as fb:
+                fallback = Path(fb) / ".impeccable-control.html"
+                fallback.write_text(control)
+                crc, cout = run_detector(detector, str(fallback))
+                ctrl_target = str(fallback)
     ctrl_fired = crc == DETECTOR_FOUND
     w(f"control: {ctrl_target}")
     w(f"engine: {engine_of(cout, ctrl_target)}")

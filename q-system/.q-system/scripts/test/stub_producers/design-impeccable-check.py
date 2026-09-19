@@ -21,6 +21,7 @@ ap.add_argument("round")
 ap.add_argument("--url-base", required=True)
 ap.add_argument("--detector")
 ap.add_argument("--control")
+ap.add_argument("--page", action="append", default=[])
 a = ap.parse_args()
 mode = os.environ.get("STUB_IMPECCABLE", "pass")
 if mode == "silent":
@@ -34,6 +35,6 @@ flagged = ["Home-laptop.html"] if mode == "flag" else []
 out = rd / "checks" / "impeccable.txt"
 out.parent.mkdir(parents=True, exist_ok=True)
 out.write_text(f"STAND-IN impeccable receipt (test/stub_producers)\nurl-base: {a.url_base}\n"
-               f"pages flagged: {flagged or 'none'}\ncontrol fired: {'YES' if fired else 'NO'}\n")
+               f"pages given: {a.page}\npages flagged: {flagged or 'none'}\ncontrol fired: {'YES' if fired else 'NO'}\n")
 print(f"wrote {out}")
 sys.exit(1 if not fired else (3 if flagged else 0))

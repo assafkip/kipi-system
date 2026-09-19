@@ -637,7 +637,10 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
             imp_path = snap.dir / imp_rel
             imp_path.unlink(missing_ok=True)          # only this run may write it
             imp_path.parent.mkdir(parents=True, exist_ok=True)
-            rc, tail = run_producer(IMPECCABLE_PRODUCER, [str(snap.dir), "--url-base", base])
+            # every page this seal seals, by name: the producer refuses one it cannot scan and
+            # one it was not handed (review of d0492b36, finding-2)
+            rc, tail = run_producer(IMPECCABLE_PRODUCER, [str(snap.dir), "--url-base", base,
+                                                          *[x for p in pages for x in ("--page", p.name)]])
             snap.stages.setdefault("", []).append(stage_record("impeccable", IMPECCABLE_PRODUCER, rd, rc))
             _copy_back(snap, imp_rel)
             if rc == 0 and not imp_path.is_file():
