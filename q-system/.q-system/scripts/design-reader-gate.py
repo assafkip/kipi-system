@@ -40,8 +40,11 @@ import os
 import shutil
 import subprocess
 import sys
+import http.server
+import posixpath
 import tempfile
-import urllib.request
+import threading
+import urllib.parse
 from pathlib import Path
 
 DEFAULT_MODEL = "claude-haiku-4-5"
@@ -76,15 +79,70 @@ def refuse(msg: str) -> int:
     return 2
 
 
-def served_bytes_differ(url: str, local: Path) -> str | None:
-    try:
-        with urllib.request.urlopen(url, timeout=30) as r:
-            got = r.read()
-    except OSError as e:
-        return f"could not fetch {url}: {e}"
-    if sha(got) != sha(local.read_bytes()):
-        return f"served bytes differ from {local.name} at {url}"
-    return None
+OUTPUT = "gate/reader-runs.jsonl"
+# What a browser asks for on its own, with no page asking: never a reason to refuse.
+BROWSER_ASKS_UNPROMPTED = frozenset({"favicon.ico", "apple-touch-icon.png",
+                                     "apple-touch-icon-precomposed.png", "robots.txt"})
+
+
+def round_files(rd: Path) -> dict[str, bytes]:
+    """Every file the readers can be shown, read ONCE. A symlink that resolves out of the round is
+    not a round file (it is simply absent, so a page that needs it refuses as unserved), nor is
+    this script's own output or a __pycache__."""
+    root = rd.resolve()
+    out: dict[str, bytes] = {}
+    for p in sorted(rd.rglob("*")):
+        rel = p.relative_to(rd).as_posix()
+        if rel == OUTPUT or "__pycache__" in p.parts or not p.is_file():
+            continue
+        if root not in p.resolve().parents:
+            continue
+        out[rel] = p.read_bytes()
+    return out
+
+
+class HeldRound:
+    """The round's bytes on a loopback port the OS picks. ASK-1836: the page was fetched once by
+    urllib for its hash and again by Chromium for the screenshot, so a server under the builder's
+    control could hand each a different page (adversarial review of c911e33f, finding-1). Now there
+    is one copy, in memory, and it records every file the browser was given."""
+
+    def __init__(self, files: dict[str, bytes]):
+        self.files, self.served, self.missed = files, {}, []
+        held = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                rel = posixpath.normpath(urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)).lstrip("/")
+                data = held.files.get(rel)
+                if data is None:
+                    if rel not in held.missed:
+                        held.missed.append(rel)
+                    self.send_error(404)
+                    return
+                held.served[rel] = sha(data)
+                self.send_response(200)
+                ctype = {".html": "text/html", ".htm": "text/html", ".css": "text/css",
+                         ".js": "application/javascript", ".svg": "image/svg+xml"}.get(
+                    Path(rel).suffix.lower(), "application/octet-stream")
+                self.send_header("Content-Type", ctype + ("; charset=utf-8" if ctype.startswith(("text/", "application/j", "image/svg")) else ""))
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.srv.server_address[1]}"
+
+    def reset(self):
+        self.served, self.missed = {}, []
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
 
 
 def shoot(url: str, viewports: list, dest: Path) -> list[tuple[list, Path]]:
@@ -153,7 +211,6 @@ def keyed_answers(obj, n: int) -> list[str] | None:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("round")
-    ap.add_argument("--url-base", required=True)
     ap.add_argument("--config", required=True)
     ap.add_argument("--page", action="append", default=[])
     # required: with a default of claude, a test that forgot to inject spent a model call, and the
@@ -229,12 +286,16 @@ def main(argv: list[str]) -> int:
             return {"answers": got}
         model_used = "injected"
 
+    try:
+        files = round_files(rd)
+    except OSError as e:
+        return refuse(f"could not read the round: {e}")
     html = sorted(p.name for p in rd.iterdir() if p.is_file() and p.suffix.lower() in HTML_SUFFIXES)
     names = a.page or html
     outside = [x for x in names if Path(x).name != x]
     if outside:
         return refuse(f"{outside} is not a page in the round: name a page file in {rd} by its name")
-    bad = [x for x in names if Path(x).suffix.lower() not in HTML_SUFFIXES or not (rd / x).is_file()]
+    bad = [x for x in names if Path(x).suffix.lower() not in HTML_SUFFIXES or x not in files]
     if not names or bad:
         return refuse(f"no readable HTML page to show readers{': ' + str(bad) if bad else ''}")
 
@@ -242,18 +303,24 @@ def main(argv: list[str]) -> int:
             "persona_sha256": sha(persona), "questions_sha256": sha(json.dumps(questions).encode()),
             "at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")}
     rows = []
-    with tempfile.TemporaryDirectory(prefix="reader-shots-") as shots:
+    held = HeldRound(files)
+    try:
+      with tempfile.TemporaryDirectory(prefix="reader-shots-") as shots:
         for name in names:
-            page = rd / name
-            url = f"{a.url_base.rstrip('/')}/{name}"
-            why = served_bytes_differ(url, page)
-            if why:
-                return refuse(why)
-            html_sha = sha(page.read_bytes())
+            url = f"{held.base}/{urllib.parse.quote(name)}"
+            html_sha = sha(files[name])
+            held.reset()
             try:
                 taken = shoot(url, viewports, Path(shots))
             except Exception as e:           # no browser, a crash: never a row
                 return refuse(f"could not render {name}: {type(e).__name__}: {e}")
+            unserved = sorted(m for m in held.missed if m not in BROWSER_ASKS_UNPROMPTED)
+            if unserved:
+                return refuse(f"{name} asked for {unserved}, which the round does not hold (a missing "
+                              f"file, a name whose case differs, or a symlink out of the round); readers "
+                              f"would be shown a page missing it")
+            served = dict(sorted(held.served.items()))
+            round_digest = sha(json.dumps(served, sort_keys=True).encode())
             for vp, png in taken:
                 png_sha = sha(png.read_bytes())
                 if a.keep_screens:
@@ -281,12 +348,15 @@ def main(argv: list[str]) -> int:
                         return refuse(f"reader {i + 1} on {name} {vp}, {MAX_ATTEMPTS} attempts: {why}")
                     row_prov = dict(prov, model_reported=res.get("model_reported", ["injected"]), attempts=attempt)
                     rows.append({"page": name, "viewport": vp, "instance": i + 1,
-                                 "html_sha256": html_sha, "png_sha256": png_sha, "answers": ans,
+                                 "html_sha256": html_sha, "png_sha256": png_sha,
+                                 "served": served, "round_digest": round_digest, "answers": ans,
                                  # the control's honest answer IS "unknown"; containing the word
                                  # anywhere passed "his school is not unknown to me" (adv-2)
                                  "contaminated": not ans[-1].strip().lower().startswith("unknown"),
                                  "_provenance": row_prov})
-    out = rd / "gate" / "reader-runs.jsonl"
+    finally:
+        held.close()
+    out = rd / OUTPUT
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("".join(json.dumps(r) + "\n" for r in rows))
     print(f"wrote {len(rows)} reader row(s) to {out} (runner {a.runner})")

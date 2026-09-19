@@ -12,14 +12,12 @@ The REAL script at its tracked path with real playwright; the model call is the 
 so no test spends one. The real-model run is recorded once in the closeout (Sana, 2026-09-19).
 """
 import hashlib
-import http.server
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 
@@ -39,21 +37,6 @@ def keyed(answers):
 
 def sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
-
-
-class Served:
-    def __init__(self, directory: Path):
-        class Quiet(http.server.SimpleHTTPRequestHandler):
-            def log_message(self, *a):
-                pass
-        handler = lambda *a, **k: Quiet(*a, directory=str(directory), **k)
-        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
-        self.base = f"http://127.0.0.1:{self.srv.server_address[1]}"
-
-    def close(self):
-        self.srv.shutdown()
-        self.srv.server_close()
 
 
 class Base(unittest.TestCase):
@@ -78,18 +61,16 @@ class Base(unittest.TestCase):
         self.config()
         self.answers = self.tmp / "answers.json"
         self.answers.write_text(json.dumps(keyed(ANSWERS)))
-        self.srv = Served(self.rd)
-        self.addCleanup(self.srv.close)
         self.keep = self.tmp / "screens"
 
     def config(self, **readers):
         (self.inst / "design-chain.json").write_text(json.dumps({"project": "dc06", "owners": [], "readers": {
             "persona_file": "canonical/persona.md", "n": 1, **readers}}))
 
-    def run_gate(self, *extra, url_base=None, env=None, runner="injected"):
+    def run_gate(self, *extra, env=None, runner="injected"):
         e = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
         e.update(env or {})
-        args = [sys.executable, str(SCRIPT), str(self.rd), "--url-base", url_base or self.srv.base,
+        args = [sys.executable, str(SCRIPT), str(self.rd),
                 "--config", str(self.inst / "design-chain.json"), "--runner", runner,
                 "--keep-screens", str(self.keep)]
         if runner == "injected":
@@ -137,15 +118,8 @@ class ReaderGate(Base):
         self.assertEqual(sorted(tuple(r["viewport"]) for r in rows), [(390, 844), (1440, 900)])
         self.assertEqual(len({r["png_sha256"] for r in rows}), 2)
 
-    def test_served_bytes_that_are_not_the_local_page_refuse(self):
-        other = self.tmp / "other"
-        other.mkdir()
-        (other / "Home-laptop.html").write_text(PAGE.replace("agree", "differ"))
-        srv = Served(other)
-        self.addCleanup(srv.close)
-        rc, out = self.run_gate(url_base=srv.base)
-        self.assertEqual(rc, 2, out)
-        self.assertIn("served bytes differ", out)
+    # served-bytes check: replaced by the script serving the round itself (ASK-1836,
+    # test_dc_reader_gate_serves_itself.py)
 
     def test_the_real_model_is_never_called_from_a_test(self):
         # PYTEST_CURRENT_TEST is how a test run is recognised; the claude runner refuses under it
@@ -188,7 +162,7 @@ class ReviewOfC911e33f(Base):
     def run_bare(self, *args, env=None):
         e = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_PROJECT_DIR", "PYTEST_CURRENT_TEST")}
         e.update(env or {})
-        base = [sys.executable, str(SCRIPT), str(self.rd), "--url-base", self.srv.base,
+        base = [sys.executable, str(SCRIPT), str(self.rd),
                 "--config", str(self.inst / "design-chain.json")]
         r = subprocess.run(base + list(args), capture_output=True, text=True, env=e, timeout=300)
         return r.returncode, r.stdout + r.stderr
