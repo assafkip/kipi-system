@@ -83,7 +83,7 @@ class Round(unittest.TestCase):
 
     def config(self, **readers):
         (self.inst / "design-chain.json").write_text(json.dumps({
-            "project": "dc07", "owners": [], "standard": {"min_body_px": 15},
+            "project": "dc07", "owners": [{"file": "persona.md"}], "standard": {"min_body_px": 15},
             "readers": {"persona_file": "persona.md", "n": 3, "labels": LABELS, "narrow": NARROW, **readers}}))
 
     def read(self, *responses):
@@ -258,7 +258,8 @@ class TheInjectedRunner(unittest.TestCase):
 
     def problems(self, *rows):
         (self.rd / "gate" / "reader-runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
-        return self.g.reader_problems(self.rd, self.page, {"readers": self.readers}, self.cfg_path)
+        return self.g.reader_problems(self.rd, self.page, {"readers": self.readers,
+                                      "owners": [{"file": "persona.md"}]}, self.cfg_path)
 
     def roots(self, *dirs):
         self.g.TEST_ROUND_ROOTS = tuple(f(str(d)) for d in dirs for f in (os.path.normpath, os.path.realpath))

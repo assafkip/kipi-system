@@ -61,7 +61,7 @@ class Held(unittest.TestCase):
         (self.rd / "shared.css").write_text(GREEN_CSS)
         (self.inst / "persona.md").write_text("You run a small tax practice.\n")
         (self.inst / "design-chain.json").write_text(json.dumps(
-            {"project": "dc06b", "owners": [], "readers": {"persona_file": "persona.md", "n": 1, "labels": ["ops", "other"]}}))
+            {"project": "dc06b", "owners": [{"file": "persona.md"}], "readers": {"persona_file": "persona.md", "n": 1, "labels": ["ops", "other"]}}))
         self.answers = self.tmp / "answers.json"
         self.answers.write_text(json.dumps(ANSWERS))
         self.keep = self.tmp / "screens"

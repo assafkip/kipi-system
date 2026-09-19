@@ -67,7 +67,7 @@ class Base(unittest.TestCase):
         self.keep = self.tmp / "screens"
 
     def config(self, **readers):
-        (self.inst / "design-chain.json").write_text(json.dumps({"project": "dc06", "owners": [], "readers": {
+        (self.inst / "design-chain.json").write_text(json.dumps({"project": "dc06", "owners": [{"file": "canonical/persona.md"}], "readers": {
             "persona_file": "canonical/persona.md", "n": 1, "labels": LABELS, **readers}}))
 
     def run_gate(self, *extra, env=None, runner="injected"):

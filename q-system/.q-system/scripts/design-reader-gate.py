@@ -130,6 +130,21 @@ def check_readers(readers: dict) -> None:
         raise ValueError(f"readers.viewports is {vps!r}; a list of [width, height] in pixels")
 
 
+def persona_owner_problem(cfg: dict) -> str | None:
+    """Why readers.persona_file is not one of design-chain.json's owners files, or None. dc-09: the
+    persona is the buyer the readers role-play, so it is canon an owner keeps, the same as every
+    anchor the brief quotes; a persona file only the builder had heard of could say anything.
+    Called by the reader gate before a run and by seal on today's config."""
+    readers = cfg.get("readers") if isinstance(cfg.get("readers"), dict) else {}
+    pf = readers.get("persona_file")
+    owners = {os.path.normpath(o["file"]) for o in cfg.get("owners", []) if isinstance(cfg.get("owners"), list)
+              and isinstance(o, dict) and isinstance(o.get("file"), str) and o["file"].strip()}
+    if not isinstance(pf, str) or os.path.normpath(pf) not in owners:
+        return (f"readers.persona_file {pf!r} is not one of the owners files {sorted(owners)}; name the persona "
+                f"as an owner, like every anchor the brief quotes")
+    return None
+
+
 def run_config(readers: dict, persona_sha: str, model: str) -> dict:
     """The readers config one run ran under, in one normal form. Seal compares a run's recorded
     copy with today's, so both sides are built here."""
@@ -391,6 +406,9 @@ def main(argv: list[str]) -> int:
     if os.path.isabs(pf) or cfg_path.parent.resolve() not in (cfg_path.parent / pf).resolve().parents:
         return refuse(f"readers.persona_file {pf!r} is not a file inside {cfg_path.parent}; name it "
                       f"relative to the config")
+    why = persona_owner_problem(cfg)
+    if why:
+        return refuse(why)
     persona_path = cfg_path.parent / pf
     try:
         persona = persona_path.read_bytes()

@@ -1,7 +1,7 @@
 ---
 id: dc-09-reader-persona-comes-from-an-owner
 title: The reader persona is read from an owners file and its sha rides on every row
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -9,6 +9,10 @@ allowed_files:
   - q-system/.q-system/scripts/design-chain-gate.py
   - q-system/.q-system/scripts/design-reader-gate.py
   - q-system/.q-system/scripts/test/test_dc_reader_persona.py
+  - q-system/.q-system/scripts/test/test_dc_reader_verdicts.py
+  - q-system/.q-system/scripts/test/test_dc_reader_gate.py
+  - q-system/.q-system/scripts/test/test_dc_reader_gate_serves_itself.py
+  - q-system/.q-system/scripts/test/test_dc_served_round_binds_what_it_serves.py
 disallowed_files: []
 required_checks:
   - python3 q-system/.q-system/scripts/test/test_dc_reader_persona.py
@@ -32,4 +36,4 @@ design-chain.json names readers.persona_file, which must be one of the files und
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] The reader persona is read from an owners file and its sha rides on every row
+- [x] The reader persona is read from an owners file and its sha rides on every row

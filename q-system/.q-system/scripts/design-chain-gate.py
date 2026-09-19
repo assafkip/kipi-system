@@ -2050,6 +2050,9 @@ def reader_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None = Non
         rg.check_readers(readers)
     except ValueError as e:
         return [f"{CONFIG_NAME} readers: {e}"]
+    why = rg.persona_owner_problem(cfg)
+    if why:
+        return [f"{CONFIG_NAME} {why}"]
     # rows for a page the round no longer holds: renaming the page reset its run count and left its
     # LEAVE rows unread (ASK-1840 adv-1). Said once, by the first page of the round.
     held = sorted(p.name for p in rd.iterdir() if p.is_file() and p.suffix.lower() in PAGE_EXTS)

@@ -194,6 +194,7 @@ class TheReaderGateFollowsTheSameList(Round):
         (self.inst / "persona.md").write_text("You run a small tax practice.\n")
         cfg = json.loads((self.inst / "design-chain.json").read_text())
         cfg["readers"] = {"persona_file": "persona.md", "n": 1, "labels": ["ops", "other"]}
+        cfg["owners"] = [{"file": "persona.md"}]
         (self.inst / "design-chain.json").write_text(json.dumps(cfg))
         answers = self.tmp / "answers.json"
         answers.write_text(json.dumps({str(i): ("unknown" if i == 11 else "x") for i in range(1, 12)}))
