@@ -1,7 +1,7 @@
 ---
 id: dc-20-lanes
 title: /design-chain takes a lane and the receipt says which stages a lane does not run
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
