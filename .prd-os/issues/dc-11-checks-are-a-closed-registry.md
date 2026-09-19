@@ -32,6 +32,9 @@ Parent PRD: `.prd-os/prds/prd-design-chain-seal-reads-verdicts-2026-09-18.md`
 
 design-chain.json lists check NAMES with path arguments; commands and pass criteria live in the gate. An unknown name is refused. seal runs each and reads the exit code; checks/ being non-empty no longer counts. dogfood_gate.py gains a distinguishable result for 'skipped as internal' (ASK-1746) that the registry treats as not run.
 
+
+The RED FIRST test is A-checks: round A with every reader STAY and tripwire FAIL, bio_gate BLOCKED; it seals before this change and refuses after, naming the checks. (Sana, 2026-09-19, moved from dc-21.)
+
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->

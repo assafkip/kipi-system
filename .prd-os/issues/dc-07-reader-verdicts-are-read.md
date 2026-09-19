@@ -29,6 +29,9 @@ Parent PRD: `.prd-os/prds/prd-design-chain-seal-reads-verdicts-2026-09-18.md`
 
 Each row has verdict in {STAY, LEAVE} and a what_he_sells label parsed from a forced-choice final question; an unparseable answer counts as not answered. seal applies a floor (answered out of attempted, from config) and refuses on any LEAVE or a label in the narrow list unless '- reader <id>: FOUNDER <reason>' exists. Negative control: RCA round A refuses naming the readers.
 
+
+The RED FIRST test is round A (dc_fixtures, with provenance): it seals before this change and refuses after, naming the readers. (Sana, 2026-09-19, moved from dc-21.)
+
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
