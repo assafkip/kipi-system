@@ -1,7 +1,7 @@
 ---
 id: dc-17-scan-only-design-roots
 title: The post-Bash scan walks only roots that hold a design-chain.json
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -31,4 +31,4 @@ scan_roots() drops any registered instance root with no design-chain.json and pr
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] The post-Bash scan walks only roots that hold a design-chain.json
+- [x] The post-Bash scan walks only roots that hold a design-chain.json

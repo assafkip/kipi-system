@@ -2666,9 +2666,14 @@ def scan_roots(payload: dict) -> list[Path]:
                     roots.append(Path(inst["path"]))
         except ValueError:
             pass
+    # only roots under a design-chain.json: every Bash call walked all 26 registered instances,
+    # 25 of them with no config (dc-17, measured 2026-09-19)
+    def _designed(r: Path) -> bool:
+        return any((d / CONFIG_NAME).is_file() for d in (r, *r.parents))
     # de-dup by prefix
     out: list[Path] = []
-    for r in sorted({r.resolve() for r in roots if r.exists()}, key=lambda p: len(str(p))):
+    for r in sorted({r.resolve() for r in roots if r.exists() and _designed(r.resolve())},
+                    key=lambda p: len(str(p))):
         if not any(str(r).startswith(str(o) + os.sep) or r == o for o in out):
             out.append(r)
     return out
@@ -2681,7 +2686,9 @@ def newer_pages(roots: list[Path], since: float) -> list[str]:
     found = []
     for root in roots:
         for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in PRUNE]
+            # nested worktrees are other checkouts, not this instance's pages (dc-17)
+            dirnames[:] = [d for d in dirnames if d not in PRUNE and not d.startswith(".wt-")
+                           and not (d == "worktrees" and os.path.basename(dirpath) == ".claude")]
             for fn in filenames:
                 if Path(fn).suffix.lower() in PAGE_EXTS:
                     fp = os.path.join(dirpath, fn)
