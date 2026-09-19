@@ -2795,14 +2795,18 @@ def citation_problems(rd: Path) -> list[str]:
 # ---------------------------------------------------------------- proof shape (dc-13)
 
 PROOF_KINDS = ("problem", "capability", "reliability", "outcome", "pedigree")
-_PROOF_KIND_RE = re.compile(r"Proof kind:\s*\**\s*([A-Za-z-]+)", re.I)
+# one line only: an empty "Proof kind:" must not borrow the next prose word (std-1); the whole token
+# is read so "outcome/testimonial" or a backticked kind refuses instead of passing as a prefix (adv-7)
+_PROOF_KIND_RE = re.compile(r"Proof kind:[ \t]*\**[ \t]*([^\s*]*)", re.I)
+_PROOF_HIDDEN_RE = re.compile(r"<!--.*?-->|^```.*?^```", re.S | re.M)
+_PROOF_HEADING_RE = re.compile(r"(?m)^#{1,6}\s+")
 _INDEX_RECORD_RE = re.compile(r"(?m)^\s*-\s*\*\*(.+?)\.?\*\*")
 
 
 def proof_problems(rd: Path, cfg: dict, cfg_path: Path | None) -> list[str]:
     """dc-13: with a `proof` block in design-chain.json, proof.md is read, not only found. Round A
-    sealed with a one-character proof.md (RCA 2026-09-18). An artifact block is a `##` block with a
-    "Proof kind:" line; each names a kind from PROOF_KINDS and at least one record id that the index
+    sealed with a one-character proof.md (RCA 2026-09-18). An artifact block is any heading block (or the
+    text before the first heading) with a "Proof kind:" line; each names a kind from PROOF_KINDS and at least one record id that the index
     file the config names actually holds ("- **Client A, Record 7.** ..."), and proof.md holds at
     least one such block. Blocks without a kind are commentary. Opt-in like readers and checks."""
     block = cfg.get("proof") if isinstance(cfg, dict) else None
@@ -2823,23 +2827,29 @@ def proof_problems(rd: Path, cfg: dict, cfg_path: Path | None) -> list[str]:
         text = (rd / "proof.md").read_text()
     except OSError:
         return []                       # a missing proof.md is CHAIN_FILES' refusal
+    # a record in a comment or a code fence is not a citation a reader sees (adv-2)
+    text = _PROOF_HIDDEN_RE.sub("", text)
+    parts = _PROOF_HEADING_RE.split(text)
     probs, artifacts = [], 0
-    for chunk in re.split(r"(?m)^##\s+", text)[1:]:
-        title = chunk.splitlines()[0].strip() if chunk.strip() else "?"
+    # any heading level splits (adv-6); the text before the first heading is a block too (adv-5)
+    for i, chunk in enumerate(parts):
+        title = "(before the first heading)" if i == 0 else (chunk.splitlines()[0].strip() if chunk.strip() else "?")
         kinds = _PROOF_KIND_RE.findall(chunk)
         if not kinds:
             continue
         artifacts += 1
         for k in kinds:
+            k = k.rstrip(".:,;")
             if k.casefold() not in PROOF_KINDS:
                 probs.append(f"proof.md block {title!r} names proof kind {k!r}, not one of the closed list "
                              f"{list(PROOF_KINDS)}")
         low = chunk.casefold()
-        if not any(r and r in low for r in records):
+        # a whole id, not a substring: "Record 1" must not stand in for "Record 12" (adv-1, std-2)
+        if not any(r and re.search(r"(?<!\w)" + re.escape(r) + r"(?!\w)", low) for r in records):
             probs.append(f"proof.md block {title!r} cites no record that {idx} holds; name one as the index "
                          f"writes it (e.g. 'Client, Record N')")
     if not artifacts:
-        probs.append(f"proof.md has no artifact block: a '## ' block with a 'Proof kind:' line naming one of "
+        probs.append(f"proof.md has no artifact block: a heading block with a 'Proof kind:' line naming one of "
                      f"{list(PROOF_KINDS)} and a record from {idx}")
     return probs
 

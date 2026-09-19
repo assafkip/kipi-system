@@ -2,8 +2,8 @@
 """dc-13: proof.md has a shape the gate reads.
 
 WHY. proof.md only had to exist: round A sealed with a one-character proof.md (RCA 2026-09-18).
-With a `proof` block in design-chain.json naming the proof index, every artifact block (a `##`
-block carrying a "Proof kind:" line) names a kind from the closed list and a record id that
+With a `proof` block in design-chain.json naming the proof index, every artifact block (any
+heading block, or the text before the first heading, carrying a "Proof kind:" line) names a kind from the closed list and a record id that
 resolves in that index, and proof.md holds at least one such block.
 
 The shape follows real consulting rounds: `**Proof kind: reliability**` inside `##` blocks, and
@@ -89,6 +89,41 @@ class Proof(unittest.TestCase):
     def test_without_a_proof_block_the_shape_is_not_required(self):
         self.cfg.pop("proof")
         self.assertEqual(self.proof("x\n"), [])
+
+    def test_a_longer_record_id_is_not_the_indexed_one(self):
+        # adv-1, std-2: "Client A, Record 7" is indexed, "Client A, Record 77" is not
+        probs = self.proof("## The hero\n\n**Proof kind: problem.** Client A, Record 77.\n")
+        self.assertTrue(any("no record" in p for p in probs), probs)
+
+    def test_a_record_in_a_comment_or_fence_is_not_a_citation(self):
+        # adv-2
+        probs = self.proof("## The hero\n\n**Proof kind: problem.** <!-- Client A, Record 7 -->\n")
+        self.assertTrue(any("no record" in p for p in probs), probs)
+        probs = self.proof("## The hero\n\n**Proof kind: problem.**\n```\nClient A, Record 7\n```\n")
+        self.assertTrue(any("no record" in p for p in probs), probs)
+
+    def test_the_text_before_the_first_heading_is_a_block(self):
+        # adv-5
+        probs = self.proof("**Proof kind: problem.** no record named\n\n## B\n\n**Proof kind: problem.** Client A, Record 7.\n")
+        self.assertTrue(any("before the first heading" in p for p in probs), probs)
+
+    def test_any_heading_level_starts_a_block(self):
+        # adv-6: a ### artifact does not borrow the record of the ## block above it
+        probs = self.proof("## A\n\n**Proof kind: problem.** Client A, Record 7.\n\n"
+                           "### B\n\n**Proof kind: outcome.** no record named\n")
+        self.assertTrue(any("'B'" in p and "no record" in p for p in probs), probs)
+
+    def test_the_whole_kind_token_is_read(self):
+        # adv-7, adv-4: a kind with a suffix or in backticks refuses
+        probs = self.proof("## The hero\n\n**Proof kind: outcome/testimonial.** Client A, Record 7.\n")
+        self.assertTrue(any("closed list" in p for p in probs), probs)
+        probs = self.proof("## The hero\n\nProof kind: `testimonial`. Client A, Record 7.\n")
+        self.assertTrue(any("closed list" in p for p in probs), probs)
+
+    def test_an_empty_kind_does_not_borrow_the_next_line(self):
+        # std-1
+        probs = self.proof("## The hero\n\n**Proof kind:**\n\nproblem: Client A, Record 7 shows it.\n")
+        self.assertTrue(any("closed list" in p for p in probs), probs)
 
     def test_seal_refuses_a_one_character_proof(self):
         # RED FIRST: proof.md only had to exist
