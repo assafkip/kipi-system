@@ -34,6 +34,13 @@ atexit.register(shutil.rmtree, _BIN, ignore_errors=True)
 GATE = _BIN / REAL_GATE.name
 STANDARD_STUB = _BIN / "design-standard-check.py"
 
+# The receipt design-impeccable-check.py really wrote, frozen with its provenance (dc-21). The
+# gate reads only that checks/impeccable.txt is present and non-empty; these tests used to type
+# "ran" into it, which proves the reader matches a fixture and nothing about the producer.
+sys.path.insert(0, str(HERE / "test"))
+import dc_fixtures  # noqa: E402
+IMPECCABLE_RECEIPT = dc_fixtures.load("impeccable-receipt")["content"]
+
 OWNER_LINE = "> **A business where somebody is paid to be accurate, and being wrong costs money"
 IDEA_LINE = "**Two records that should agree, and don't.**"
 RULE_LINE = "- **RULE-2026-09-15-C [USER-DIRECTED]:** **The public site starts from the visitor's one pain, not from the system; and no three-box card rows.** Founder, verbatim..."
@@ -217,7 +224,7 @@ class TestCraftBar(Base):
         self.complete_chain()
         self.craft_cfg()
         (self.round / "craft-manifest.json").write_text(json.dumps({"techniques": []}))
-        (self.round / "checks" / "impeccable.txt").write_text("ran\n")
+        (self.round / "checks" / "impeccable.txt").write_text(IMPECCABLE_RECEIPT)
         rc, out = run(["seal", str(self.round)], env=self.env)
         self.assertEqual(rc, 2, out)
         self.assertIn("declares no techniques", out)
@@ -240,7 +247,7 @@ class TestCraftBar(Base):
             {"techniques": [{"id": "scroll-reveal", "technique": "GSAP reveal",
                              "role": "the mismatch", "import": ["gsap"],
                              "applied": ["ScrollTrigger"]}]}))
-        (self.round / "checks" / "impeccable.txt").write_text("ran\n")
+        (self.round / "checks" / "impeccable.txt").write_text(IMPECCABLE_RECEIPT)
         rc, out = run(["seal", str(self.round)], env=self.env)
         self.assertEqual(rc, 2, out)
         self.assertIn("scroll-reveal", out)
@@ -282,7 +289,7 @@ class TestCraftBar(Base):
         (self.inst / "refs").mkdir(exist_ok=True)
         (self.inst / "refs" / "TEARDOWN.md").write_text("# Teardown\n\n## trailofbits.com\n"
                                                         "mono counter bar of real numbers\n")
-        (self.round / "checks" / "impeccable.txt").write_text("ran\n")
+        (self.round / "checks" / "impeccable.txt").write_text(IMPECCABLE_RECEIPT)
         (self.round / CRAFT_MANIFEST).write_text(json.dumps({"techniques": [
             {"id": "invented", "technique": "a move from nowhere", "role": "hero",
              "reference": "my own head", "import": ["gsap"], "applied": ["gsap"]}]}))
@@ -296,7 +303,7 @@ class TestCraftBar(Base):
         (self.inst / "refs").mkdir(exist_ok=True)
         (self.inst / "refs" / "TEARDOWN.md").write_text("# Teardown\n\n## trailofbits.com\n"
                                                         "mono counter bar of real numbers\n")
-        (self.round / "checks" / "impeccable.txt").write_text("ran\n")
+        (self.round / "checks" / "impeccable.txt").write_text(IMPECCABLE_RECEIPT)
         self.page.write_text(self.page.read_text().replace(
             "</body>", "<script src='gsap.min.js'></script></body>"))
         self.measure()
@@ -309,7 +316,7 @@ class TestCraftBar(Base):
     def test_missing_teardown_blocks_when_grounding_required(self):
         self.complete_chain()
         self.craft_cfg(require_grounding="refs/TEARDOWN.md")
-        (self.round / "checks" / "impeccable.txt").write_text("ran\n")
+        (self.round / "checks" / "impeccable.txt").write_text(IMPECCABLE_RECEIPT)
         (self.round / CRAFT_MANIFEST).write_text(json.dumps({"techniques": [
             {"id": "x", "technique": "y", "role": "z", "reference": "trailofbits.com",
              "import": ["gsap"], "applied": ["gsap"]}]}))
@@ -326,7 +333,7 @@ class TestCraftBar(Base):
         (refs / "NARRATIVE.md").write_text("# Narrative\n\n## stripe.com\nbig light type\n")
         (refs / "exemplars.json").write_text(json.dumps({"exemplars": [
             {"url": "https://stripe.com"}, {"url": "https://figma.com"}]}))
-        (self.round / "checks" / "impeccable.txt").write_text("ran\n")
+        (self.round / "checks" / "impeccable.txt").write_text(IMPECCABLE_RECEIPT)
         (self.round / CRAFT_MANIFEST).write_text(json.dumps({"techniques": [
             {"id": "t", "technique": "x", "role": "hero", "reference": "stripe.com",
              "import": ["gsap"], "applied": ["gsap"]}]}))
@@ -342,7 +349,7 @@ class TestCraftBar(Base):
             "# Narrative\n\nstripe.com and figma.com both set big light type.\n")
         (refs / "exemplars.json").write_text(json.dumps({"exemplars": [
             {"url": "https://stripe.com"}, {"url": "https://www.figma.com"}]}))
-        (self.round / "checks" / "impeccable.txt").write_text("ran\n")
+        (self.round / "checks" / "impeccable.txt").write_text(IMPECCABLE_RECEIPT)
         self.page.write_text(self.page.read_text().replace(
             "</body>", "<script src='gsap.min.js'></script></body>"))
         self.measure()
@@ -490,7 +497,7 @@ class TestCraftBar(Base):
             {"techniques": [{"id": "reveal", "technique": "GSAP reveal on the mismatch",
                              "role": "the mismatch", "import": ["gsap"],
                              "applied": [r"gsap\.to"]}]}))
-        (self.round / "checks" / "impeccable.txt").write_text("ran, control blocked\n")
+        (self.round / "checks" / "impeccable.txt").write_text(IMPECCABLE_RECEIPT)
         rc, out = run(["seal", str(self.round)], env=self.env)
         self.assertEqual(rc, 0, out)
 
