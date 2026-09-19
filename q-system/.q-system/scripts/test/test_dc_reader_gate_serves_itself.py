@@ -174,6 +174,36 @@ class WhatTheBrowserWasGivenPerRender(Held):
         self.assertNotEqual(by_vp[(1440, 900)]["round_digest"], by_vp[(390, 844)]["round_digest"])
 
 
+class ARequestInFlightStaysWithItsRender(unittest.TestCase):
+    """Final review of fd898d86: reset() swapped the served map while a request from the previous
+    render was still inside its handler, so that file was recorded against the next render."""
+
+    def test_reset_waits_for_a_request_already_in_its_handler(self):
+        import threading
+        import time
+        import urllib.request
+        mod = load_script("drg_race")
+        real_sha = mod.sha
+        entered = threading.Event()
+
+        def slow_sha(b):
+            if b == b"slow":
+                entered.set()
+                time.sleep(0.5)
+            return real_sha(b)
+        mod.sha = slow_sha
+        held = mod.HeldRound({"slow.css": b"slow"})
+        self.addCleanup(held.close)
+        t = threading.Thread(target=lambda: urllib.request.urlopen(f"{held.base}/slow.css").read())
+        t.start()
+        self.assertTrue(entered.wait(5))
+        before = held.served
+        held.reset()                        # the next render starts while slow.css is mid-handler
+        t.join(5)
+        self.assertEqual(held.served, {}, "a request from the previous render landed in the next one")
+        self.assertIn("slow.css", before)
+
+
 class NothingOutsideTheRoundReachesTheScreenshot(Held):
     """Adversarial review of c38d2bf9: Chromium had no request routing, so an iframe, an @import or a
     late stylesheet from another origin rendered in the screenshot without reaching the held server;

@@ -109,19 +109,31 @@ class HeldRound:
 
     def __init__(self, files: dict[str, bytes]):
         self.files, self.served, self.missed = files, {}, []
-        self.lock = threading.Lock()
+        self.lock = threading.Condition()
+        self.active = 0                    # requests inside a handler right now
         held = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
+                with held.lock:
+                    held.active += 1
+                try:
+                    self._answer()
+                finally:
+                    with held.lock:
+                        held.active -= 1
+                        held.lock.notify_all()
+
+            def _answer(self):
                 rel = posixpath.normpath(urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)).lstrip("/")
                 data = held.files.get(rel)
+                digest = sha(data) if data is not None else None
                 with held.lock:
                     if data is None:
                         if rel not in held.missed:
                             held.missed.append(rel)
                     else:
-                        held.served[rel] = sha(data)
+                        held.served[rel] = digest
                 if data is None:
                     self.send_error(404)
                     return
@@ -141,8 +153,13 @@ class HeldRound:
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.srv.server_address[1]}"
 
-    def reset(self):
-        self.served, self.missed = {}, []
+    def reset(self, drain_s: float = 10.0):
+        """A fresh record for the next render, once every request still inside a handler has
+        finished: a late request from the previous render was recorded against the next one
+        (final review of fd898d86)."""
+        with self.lock:
+            self.lock.wait_for(lambda: self.active == 0, timeout=drain_s)
+            self.served, self.missed = {}, []
 
     def close(self):
         self.srv.shutdown()
