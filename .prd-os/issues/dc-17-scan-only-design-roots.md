@@ -1,7 +1,7 @@
 ---
 id: dc-17-scan-only-design-roots
 title: The post-Bash scan walks only roots that hold a design-chain.json
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
