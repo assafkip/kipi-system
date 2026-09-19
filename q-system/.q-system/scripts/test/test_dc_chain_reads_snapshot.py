@@ -157,16 +157,18 @@ class ReadsThatLeaveTheRoundResolveLive(Base):
         self.assertEqual(rc, 2, err)
         self.assertIn("byte-identical to r0/brief.md", err)
 
-    def test_a_round_that_implements_a_sealed_sibling_seals(self):
+    def test_the_round_an_implements_names_is_found_beside_the_round(self):
+        # Only that it RESOLVES. Whether it counts as sealed is ASK-1831's: a '{}' receipt no
+        # longer does, and a round the gate really sealed does
+        # (test_dc_seal_holds_outside_inputs.py, TheImplementsSourceMustBeSealedForReal).
         import json
         src = self.sibling("r0", "# the fan-out round's brief\n")
         (src / "directions.md").write_text("# A\nx\n# B\nx\n# C\nx\n")
-        (src / "receipts.json").write_text("{}\n")
         (self.round / "craft-manifest.json").write_text(json.dumps(
             {"implements": {"round": "r0", "direction": "A", "reason": "founder: build A"}}))
         rc, err = self.seal_in_process(load_gate("dcg_l3"))
         self.assertNotIn("does not exist", err)
-        self.assertNotIn("not sealed. A", err)
+        self.assertIn("names round 'r0', which is not sealed", err)
 
     def test_a_seal_leaves_no_cache_entry_for_its_temp_snapshot(self):
         # a RE-seal: only then is there a receipt in the snapshot to check (K5 survived a first seal)
