@@ -2668,11 +2668,31 @@ def scan_roots(payload: dict) -> list[Path]:
             pass
     # only roots under a design-chain.json: every Bash call walked all 26 registered instances,
     # 25 of them with no config (dc-17, measured 2026-09-19)
-    def _designed(r: Path) -> bool:
-        return any((d / CONFIG_NAME).is_file() for d in (r, *r.parents))
+    # A config at or above the root keeps the root; a config up to 3 levels BELOW it makes that
+    # folder the root (a root/frontend/design-chain.json instance was dropped whole, dc-17 std-1).
+    # Only directory names are listed below the root, never files, and never inside a nested checkout.
+    def _design_roots(r: Path) -> list[Path]:
+        if any((d / CONFIG_NAME).is_file() for d in (r, *r.parents)):
+            return [r]
+        found, level = [], [r]
+        for _ in range(3):
+            nxt = []
+            for d in level:
+                try:
+                    subs = [e for e in os.scandir(d) if e.is_dir(follow_symlinks=False)
+                            and e.name not in PRUNE and not os.path.lexists(os.path.join(e.path, ".git"))]
+                except OSError:
+                    continue
+                for e in subs:
+                    if os.path.isfile(os.path.join(e.path, CONFIG_NAME)):
+                        found.append(Path(e.path))
+                    else:
+                        nxt.append(Path(e.path))
+            level = nxt
+        return found
     # de-dup by prefix
     out: list[Path] = []
-    for r in sorted({r.resolve() for r in roots if r.exists() and _designed(r.resolve())},
+    for r in sorted({d for r in roots if r.exists() for d in _design_roots(r.resolve())},
                     key=lambda p: len(str(p))):
         if not any(str(r).startswith(str(o) + os.sep) or r == o for o in out):
             out.append(r)
@@ -2686,9 +2706,10 @@ def newer_pages(roots: list[Path], since: float) -> list[str]:
     found = []
     for root in roots:
         for dirpath, dirnames, filenames in os.walk(root):
-            # nested worktrees are other checkouts, not this instance's pages (dc-17)
-            dirnames[:] = [d for d in dirnames if d not in PRUNE and not d.startswith(".wt-")
-                           and not (d == "worktrees" and os.path.basename(dirpath) == ".claude")]
+            # a subfolder with its own .git is another checkout (a worktree's .git is a file), not
+            # this instance's pages; a folder only NAMED like a worktree is still scanned (dc-17 std-2)
+            dirnames[:] = [d for d in dirnames if d not in PRUNE
+                           and not os.path.lexists(os.path.join(dirpath, d, ".git"))]
             for fn in filenames:
                 if Path(fn).suffix.lower() in PAGE_EXTS:
                     fp = os.path.join(dirpath, fn)

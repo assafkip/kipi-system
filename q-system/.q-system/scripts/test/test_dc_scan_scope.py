@@ -75,13 +75,27 @@ class ScanScope(unittest.TestCase):
 
     def test_nested_worktrees_are_pruned(self):
         since = time.time() - 60
-        for rel in (".wt-feature/site/p.html", ".claude/worktrees/w1/site/p.html", "site/p.html"):
+        for rel in (".wt-feature/site/p.html", ".claude/worktrees/w1/site/p.html", "site/p.html",
+                    ".wt-shadow/p.html"):
             f = self.design / rel
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text("<html><body><p>x</p></body></html>")
+        # a nested checkout carries its own .git (a worktree's is a file); a folder that is only NAMED
+        # like one does not, and its pages belong to this instance (dc-17 std-2)
+        (self.design / ".wt-feature" / ".git").write_text("gitdir: elsewhere\n")
+        (self.design / ".claude" / "worktrees" / "w1" / ".git").write_text("gitdir: elsewhere\n")
         found = [Path(p).resolve() for p in self.gate.newer_pages([self.design], since)]
         self.assertIn(self.design / "site" / "p.html", found)
+        self.assertIn(self.design / ".wt-shadow" / "p.html", found)
         self.assertFalse(any(".wt-feature" in str(p) or "worktrees" in str(p) for p in found), found)
+
+    def test_a_config_below_the_registered_root_is_scanned(self):
+        # std-1: root/frontend/design-chain.json governs root/frontend/, so that folder is scanned
+        nested = self.tmp / "nested-inst"
+        (nested / "frontend").mkdir(parents=True)
+        (nested / "frontend" / "design-chain.json").write_text("{}")
+        (self.hub / "instance-registry.json").write_text(json.dumps({"instances": [{"path": str(nested)}]}))
+        self.assertEqual(self.gate.scan_roots({"cwd": str(self.hub)}), [nested / "frontend"])
 
 
 if __name__ == "__main__":
