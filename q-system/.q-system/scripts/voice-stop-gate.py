@@ -93,6 +93,57 @@ def _route_draft(text):
     return text.split(marker, 1)[1].strip()
 
 
+#: The producer prints this above the reason when a route REFUSED (ASK-1744,
+#: consulting's `pipeline.social.REFUSAL_MARKER`). Same role `=== DRAFT ===` plays for
+#: a draft, and hardcoded for the same reason: these three markers are the wire
+#: protocol between a lane and this gate, not a per-instance setting.
+_REFUSAL_MARKER = "=== WHY THERE IS NO DRAFT ==="
+
+
+def _refusal_text(text):
+    """The reason the producer refused with, or None when the turn carries none."""
+    if _REFUSAL_MARKER not in text:
+        return None
+    body = text.split(_REFUSAL_MARKER, 1)[1]
+    # Stop at the receipt block, which is printed after the reason and is not part of
+    # it. Without this the receipt JSON hashes into the reason and every refusal
+    # mismatches, which reads as a forged reason rather than as a parsing bug.
+    for marker in ("=== ROUTE RECEIPT ===", "=== DRAFT ==="):
+        if marker in body:
+            body = body.split(marker, 1)[0]
+    return body.strip()
+
+
+def _consume_refusal(contract, receipt, identity, assistant_text, result):
+    """Spend a REFUSED receipt for a turn that reports the refusal (ASK-1744).
+
+    A refused row can never authorize a turn that carries a draft, and that is
+    enforced HERE rather than in the store: the producer's refusal is the only text
+    this turn may deliver, so a `=== DRAFT ===` marker or any inline publishable body
+    refuses. Otherwise a lane could mint a refusal and ship a draft under it.
+
+    Why the gate needed this at all: the lane prints the reason and its refusal
+    receipt, but the gate only understood `complete`. So the turn saying "here is why
+    there is no draft" was held for having no receipt, and the session could not report
+    the refusal it had just produced (measured 2026-09-15, three linkedin reply runs in
+    one evening).
+    """
+    reason = _refusal_text(assistant_text)
+    if not reason:
+        raise RouteBoundaryError(
+            "a refusal receipt needs the refusal text the producer printed")
+    if "=== DRAFT ===" in assistant_text or extract_publishable(assistant_text):
+        raise RouteBoundaryError(
+            "a refused route may not deliver a draft; this turn carries one")
+    if contract.output_hash(reason, result.surface,
+                            result.channel) != receipt["output_hash"]:
+        raise RouteBoundaryError("refusal receipt does not match the stated reason")
+    try:
+        return contract.verify_and_consume_refusal(identity)
+    except Exception as exc:
+        raise RouteBoundaryError(f"refusal receipt was not accepted: {exc}") from exc
+
+
 def _receipt_block(text):
     marker = "=== ROUTE RECEIPT ==="
     if marker not in text:
@@ -163,10 +214,16 @@ def _verify_route_receipt(context, request, assistant_text):
         raise RouteBoundaryError("route receipt does not match the requested surface")
     if contract.request_hash(request, result.surface, result.channel) != receipt["request_hash"]:
         raise RouteBoundaryError("route receipt does not match the user request")
+    identity = {key: receipt[key] for key in required}
+    # A REFUSED row takes the other door (ASK-1744). It is checked before the draft
+    # hash because a refusal turn has no draft by construction, so the hash below
+    # would compare the reason against an empty extraction and hold the turn. A lane
+    # that never mints a refusal never has this key and is unaffected.
+    if receipt.get("status") == "refused":
+        return _consume_refusal(contract, receipt, identity, assistant_text, result)
     draft = _route_draft(assistant_text)
     if contract.output_hash(draft, result.surface, result.channel) != receipt["output_hash"]:
         raise RouteBoundaryError("route receipt does not match the assistant output")
-    identity = {key: receipt[key] for key in required}
     try:
         # R9: the contract recomputes the receipt's loop evidence against THIS
         # draft and the corpus on disk before the row is consumed.
