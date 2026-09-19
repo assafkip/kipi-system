@@ -109,18 +109,22 @@ class HeldRound:
 
     def __init__(self, files: dict[str, bytes]):
         self.files, self.served, self.missed = files, {}, []
+        self.lock = threading.Lock()
         held = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
                 rel = posixpath.normpath(urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)).lstrip("/")
                 data = held.files.get(rel)
+                with held.lock:
+                    if data is None:
+                        if rel not in held.missed:
+                            held.missed.append(rel)
+                    else:
+                        held.served[rel] = sha(data)
                 if data is None:
-                    if rel not in held.missed:
-                        held.missed.append(rel)
                     self.send_error(404)
                     return
-                held.served[rel] = sha(data)
                 self.send_response(200)
                 ctype = {".html": "text/html", ".htm": "text/html", ".css": "text/css",
                          ".js": "application/javascript", ".svg": "image/svg+xml"}.get(
@@ -145,21 +149,58 @@ class HeldRound:
         self.srv.server_close()
 
 
-def shoot(url: str, viewports: list, dest: Path) -> list[tuple[list, Path]]:
-    """One first-screen screenshot per viewport, taken by this run into `dest`."""
+def origin(url: str) -> tuple:
+    u = urllib.parse.urlsplit(url)
+    return (u.scheme, u.hostname, u.port)
+
+
+def shoot(url: str, viewports: list, dest: Path, refused: list | None = None,
+          held=None) -> list[tuple[list, Path, dict, list]]:
+    """One first-screen screenshot per viewport, taken by this run into `dest`.
+
+    Every request the page makes is routed: one to the held round's origin (scheme, host AND port,
+    compared parsed, never as a string prefix) goes through; anything else is aborted and recorded
+    in `refused`, and so is every WebSocket. Service workers are blocked. An iframe, an @import or
+    a late stylesheet from another origin rendered in the screenshot without reaching the held
+    server, so the row described a page the readers did not see (adversarial review of c38d2bf9).
+    data: and blob: URLs never reach the network; they live in bytes that are hashed."""
     from playwright.sync_api import sync_playwright
+    allowed = origin(url)
+    refused = refused if refused is not None else []
+
+    def gate(route):
+        if origin(route.request.url) == allowed:
+            route.continue_()
+        else:
+            if route.request.url not in refused:
+                refused.append(route.request.url)
+            route.abort()
+
+    def no_socket(ws):
+        # recorded and left unconnected: a routed WebSocket that is never connect_to_server()ed
+        # reaches no server. ws.close() inside this handler hangs the sync API (measured 2026-09-19:
+        # a probe page never finished; the no-op returned in 1.1 s with the URL recorded).
+        if ws.url not in refused:
+            refused.append(ws.url)
     out = []
     with sync_playwright() as pw:
         b = pw.chromium.launch()
         try:
             for w, h in viewports:
-                pg = b.new_page(viewport={"width": int(w), "height": int(h)})
+                if held is not None:
+                    held.reset()                  # what THIS render fetched, not the page's union
+                ctx = b.new_context(viewport={"width": int(w), "height": int(h)}, service_workers="block")
+                ctx.route("**/*", gate)
+                ctx.route_web_socket("**/*", no_socket)
+                pg = ctx.new_page()
                 pg.goto(url, wait_until="networkidle")
                 pg.wait_for_timeout(600)
                 f = dest / f"{Path(url).stem}-{w}x{h}.png"
                 pg.screenshot(path=str(f))
-                pg.close()
-                out.append(([int(w), int(h)], f))
+                ctx.close()
+                served = dict(sorted(held.served.items())) if held is not None else {}
+                missed = list(held.missed) if held is not None else []
+                out.append(([int(w), int(h)], f, served, missed))
         finally:
             b.close()
     return out
@@ -309,19 +350,23 @@ def main(argv: list[str]) -> int:
         for name in names:
             url = f"{held.base}/{urllib.parse.quote(name)}"
             html_sha = sha(files[name])
-            held.reset()
+            outside: list[str] = []
             try:
-                taken = shoot(url, viewports, Path(shots))
+                taken = shoot(url, viewports, Path(shots), outside, held)
             except Exception as e:           # no browser, a crash: never a row
                 return refuse(f"could not render {name}: {type(e).__name__}: {e}")
-            unserved = sorted(m for m in held.missed if m not in BROWSER_ASKS_UNPROMPTED)
+            if outside:
+                return refuse(f"{name} reached outside the round for {outside[:5]}; readers would be shown "
+                              f"something the row does not record. Put the file in the round.")
+            unserved = sorted({m for _, _, _, missed in taken for m in missed
+                               if m not in BROWSER_ASKS_UNPROMPTED})
             if unserved:
                 return refuse(f"{name} asked for {unserved}, which the round does not hold (a missing "
                               f"file, a name whose case differs, or a symlink out of the round); readers "
                               f"would be shown a page missing it")
-            served = dict(sorted(held.served.items()))
-            round_digest = sha(json.dumps(served, sort_keys=True).encode())
-            for vp, png in taken:
+            for vp, png, served, _ in taken:
+                # per render: a row names only what its own viewport's screenshot was built from
+                round_digest = sha(json.dumps(served, sort_keys=True).encode())
                 png_sha = sha(png.read_bytes())
                 if a.keep_screens:
                     keep = Path(a.keep_screens)

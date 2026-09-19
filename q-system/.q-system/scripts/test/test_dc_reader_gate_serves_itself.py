@@ -43,7 +43,7 @@ def load_script(name):
     return mod
 
 
-class ServesItself(unittest.TestCase):
+class Held(unittest.TestCase):
     def setUp(self):
         try:
             import playwright  # noqa: F401
@@ -87,6 +87,8 @@ class ServesItself(unittest.TestCase):
         png = next(self.keep.glob("*.png"))
         return Image.open(png).convert("RGB").getpixel((5, 5))
 
+
+class ServesItself(Held):
     def test_a_stylesheet_changed_on_disk_after_the_read_changes_nothing_readers_see(self):
         mod = load_script("drg_a")
         real_shoot = mod.shoot
@@ -131,6 +133,100 @@ class ServesItself(unittest.TestCase):
         rc, err = self.run_in_process(load_script("drg_e"))
         self.assertEqual(rc, 2, err)
         self.assertIn("shared.css", err)
+
+
+class WhatTheBrowserWasGivenPerRender(Held):
+    """Standard review of c38d2bf9: images were served as application/octet-stream, which chromium
+    will not render; and `served` was recorded per page, so a row named files only the other
+    viewport fetched."""
+
+    def png(self, rgb):
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (40, 40), rgb).save(buf, format="PNG")
+        return buf.getvalue()
+
+    def test_an_image_in_the_round_is_rendered(self):
+        (self.rd / "dot.png").write_bytes(self.png((0, 255, 0)))
+        (self.rd / "Home-laptop.html").write_text(
+            "<!doctype html><html><body style='margin:0'><img src='dot.png' "
+            "style='width:100vw;height:100vh;display:block'></body></html>")
+        rc, err = self.run_in_process(load_script("drg_g"))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.pixel()[:3], (0, 255, 0), "the round's image did not render")
+
+    def test_each_row_names_only_what_its_own_viewport_fetched(self):
+        (self.rd / "wide.png").write_bytes(self.png((0, 0, 255)))
+        (self.rd / "narrow.png").write_bytes(self.png((255, 0, 255)))
+        (self.rd / "Home-laptop.html").write_text(
+            "<!doctype html><html><head><style>body{margin:0;height:100vh;background:url(wide.png)}"
+            "@media (max-width:600px){body{background:url(narrow.png)}}</style></head><body></body></html>")
+        cfg = json.loads((self.inst / "design-chain.json").read_text())
+        cfg["readers"]["viewports"] = [[1440, 900], [390, 844]]
+        (self.inst / "design-chain.json").write_text(json.dumps(cfg))
+        rc, err = self.run_in_process(load_script("drg_h"))
+        self.assertEqual(rc, 0, err)
+        by_vp = {tuple(r["viewport"]): r for r in self.rows()}
+        self.assertIn("wide.png", by_vp[(1440, 900)]["served"])
+        self.assertNotIn("narrow.png", by_vp[(1440, 900)]["served"])
+        self.assertIn("narrow.png", by_vp[(390, 844)]["served"])
+        self.assertNotIn("wide.png", by_vp[(390, 844)]["served"])
+        self.assertNotEqual(by_vp[(1440, 900)]["round_digest"], by_vp[(390, 844)]["round_digest"])
+
+
+class NothingOutsideTheRoundReachesTheScreenshot(Held):
+    """Adversarial review of c38d2bf9: Chromium had no request routing, so an iframe, an @import or a
+    late stylesheet from another origin rendered in the screenshot without reaching the held server;
+    the row's served map and round_digest described a page the readers did not see."""
+
+    def foreign(self):
+        import http.server
+        import threading
+
+        class Red(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = (b"html,body{background:#ff0000}" if self.path.endswith(".css")
+                        else b"<html><body style='background:#ff0000;margin:0;height:100vh'></body></html>")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/css" if self.path.endswith(".css") else "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Red)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_address[1]}"
+
+    def refused_with(self, page_html):
+        host = self.foreign()
+        (self.rd / "Home-laptop.html").write_text(page_html.replace("HOST", host))
+        rc, err = self.run_in_process(load_script("drg_f"))
+        self.assertEqual(rc, 2, err)
+        self.assertIn("outside the round", err)
+        self.assertIn(host.split("//", 1)[1], err)       # host:port, whatever the scheme (http or ws)
+        self.assertFalse((self.rd / "gate" / "reader-runs.jsonl").exists())
+
+    def test_an_iframe_to_another_origin_refuses(self):
+        self.refused_with("<!doctype html><html><body style='margin:0'>"
+                          "<iframe src='HOST/x' style='border:0;width:100vw;height:100vh'></iframe></body></html>")
+
+    def test_an_import_from_another_origin_refuses(self):
+        self.refused_with("<!doctype html><html><head><style>@import url(HOST/late.css);</style></head>"
+                          "<body><h1>Two records</h1></body></html>")
+
+    def test_a_websocket_to_another_origin_refuses(self):
+        # page.route does not see WebSockets; they are routed on their own (Sana)
+        self.refused_with("<!doctype html><html><head><script>new WebSocket('HOST'.replace('http','ws')"
+                          "+'/live')</script></head><body><h1>Two records</h1></body></html>")
+
+    def test_a_stylesheet_added_late_from_another_origin_refuses(self):
+        self.refused_with("<!doctype html><html><head><script>setTimeout(function(){var l=document."
+                          "createElement('link');l.rel='stylesheet';l.href='HOST/late2.css';document.head."
+                          "appendChild(l)},100)</script></head><body><h1>Two records</h1></body></html>")
 
 
 if __name__ == "__main__":
