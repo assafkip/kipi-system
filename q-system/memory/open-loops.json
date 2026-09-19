@@ -36,6 +36,15 @@
       "added": "2026-08-19",
       "github_url": "https://github.com/ayghri/i-have-adhd/pull/124",
       "linear": "ASK-924"
+    },
+    {
+      "id": "kipi-system-divergence",
+      "title": "sana/bake-in-and-cleanup has diverged from origin/main",
+      "next_action": "CLOSED 2026-09-19 (ASK-537): merged into main with the ours strategy, so main's tree wins and the branch's 27 commits become ancestors of main (right side of the left-right count goes to 0, no history rewritten). Measured: 12 of 27 are patch-equivalent in main; the 8 ASK-363 prd-os commits, ASK-526 and ASK-527 landed via squash PRs #110 and #131 (_scope_is_live and test_active_scope_liveness.py on main); ASK-505 budgets survived the #263 manifest split at equal or larger timeout_s. Abandoned with reason: 3ca577ee, b6cbe2aa, a2f492ed (2026-08-09 session handoffs, superseded by later handoffs), 85b2ac7c (loop Linear links; those loops were since closed or re-linked on main), plugin.json version bumps (main is past them).",
+      "needs_founder": false,
+      "status": "closed",
+      "added": "2026-08-08",
+      "linear": "https://linear.app/ask-consulting/issue/ASK-537"
     }
   ]
 }
