@@ -168,6 +168,15 @@ IMPECCABLE_PRODUCER = "design-impeccable-check.py"
 # bio_gate and voice-lint join when each can say "skipped" apart from "pass" (follow-ups).
 TRIPWIRE = str((HERE.parent.parent.parent / "plugins" / "kipi-design" / "hooks" / "dogfood_gate.py").resolve())
 CHECKS = {"tripwire": {"script": TRIPWIRE, "pass": {0}, "skip": {3}}}
+
+
+def _tripwire_brand_files() -> tuple:
+    """The brand-kit names the tripwire reads, from the tripwire itself (one list, not a copy)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("dogfood_gate_for_seal", TRIPWIRE)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return tuple(mod.BRAND_FILES)
 PRODUCER_TIMEOUT_S = 600
 # The most a config may ask for: one day. subprocess waits in poll's int milliseconds and crashes
 # above ~2147483 s, and json.loads accepts NaN and Infinity (review of fb7d91f3).
@@ -414,6 +423,11 @@ def _outside_inputs(root: Path, rd: Path, files: dict[str, bytes], cfg: dict, cf
     declared = doc(SOURCES).get("sources")
     for rel in (declared if isinstance(declared, dict) else {}):
         _take(inputs, _within(root, base, rel, f"{SOURCES} entry"))
+    if "checks" in cfg:
+        # the tripwire reads the brand kit from the config's directory only (--brand-from), so it is
+        # held with the rest: read live, a kit dropped mid-seal flipped a FAIL (dc-11 std-1)
+        for rel in _tripwire_brand_files():
+            _take(inputs, _within(root, base, rel, "brand kit"))
     readers = cfg.get("readers")
     if isinstance(readers, dict) and isinstance(readers.get("persona_file"), str) and readers["persona_file"].strip():
         # seal checks every reader row's persona sha against this file (dc-07 adv-2), so it is held
@@ -625,6 +639,9 @@ def declared_checks(cfg: dict) -> tuple[list[str], str | None]:
     decl = cfg["checks"]
     if not isinstance(decl, list) or not all(isinstance(d, dict) and isinstance(d.get("name"), str) for d in decl):
         return [], f"{CONFIG_NAME} checks is {decl!r}; a list of {{\"name\": ...}} from {sorted(CHECKS)}"
+    names = [d["name"] for d in decl]
+    if len(names) != len(set(names)):
+        return [], f"{CONFIG_NAME} checks names {sorted({n for n in names if names.count(n) > 1})} more than once"
     unknown = sorted({d["name"] for d in decl} - set(CHECKS))
     if unknown:
         return [], f"{CONFIG_NAME} checks names {unknown}, which the gate does not run; known: {sorted(CHECKS)}"
@@ -724,8 +741,9 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
         spec = CHECKS[name]
         for p in pages:
             # the held bytes are scanned; the live path decides scope and the brand kit
+            brand = ["--brand-from", str(cfg_path.parent)] if cfg_path else []
             rc, tail = timed(f"check:{name}", p.name, spec["script"],
-                             ["--check", str(snap.dir / p.name), "--as", str(rd / p.name)])
+                             ["--check", str(snap.dir / p.name), "--as", str(rd / p.name), *brand])
             snap.stages.setdefault(p.name, []).append(stage_record(f"check:{name}", spec["script"], rd, rc))
             if rc in spec["skip"]:
                 bad.append((p.name, [f"the {name} check did not run on this page (exit {rc}): {tail}. A check "
@@ -1306,6 +1324,17 @@ def _blob_shas(rd: Path, rel: str) -> list[tuple[str, str]]:
 STAGE_PRODUCERS = {"standard": STANDARD_PRODUCER, "gap": GAP_PRODUCER}
 
 
+def _stage_script(stage) -> Path | None:
+    """The script a receipt stage names, or None for a stage this gate does not run. A check:<name>
+    stage is the registry's script: missing here, a page sealed with checks read OPEN on every
+    passive read afterwards (dc-11 std-2)."""
+    if stage in STAGE_PRODUCERS:
+        return HERE / STAGE_PRODUCERS[stage]
+    if isinstance(stage, str) and stage.startswith("check:") and stage[6:] in CHECKS:
+        return Path(CHECKS[stage[6:]]["script"])
+    return None
+
+
 def _believed(record, rd: Path, top: Path | None, expected: Path | None) -> bool:
     """A recorded file is believed only at the path THIS gate expects for it (its own file, or
     the producer it runs for that stage), and only when that file has those bytes now or, for a
@@ -1374,7 +1403,7 @@ def _fingerprint(rd: Path, rec: dict) -> str:
         if p.is_file() and "__pycache__" not in p.parts:
             st = p.stat()
             h.update(f"{p.relative_to(rd).as_posix()}\0{_stat_key(st)}\n".encode())
-    for p in _named_files(rd, rec) + [HERE / n for n in STAGE_PRODUCERS.values()]:
+    for p in _named_files(rd, rec) + [HERE / n for n in STAGE_PRODUCERS.values()] + [Path(c["script"]) for c in CHECKS.values()]:
         try:
             st = p.stat()
             h.update(f"{p}\0{_stat_key(st)}\n".encode())
@@ -1404,7 +1433,7 @@ def _round_facts(rd: Path, rec: dict) -> dict:
            "gate": _believed(rec.get("__gate__"), rd, top, GATE_FILE) if staged else None,
            "stages": {} if not staged else {
                f"{r.get('stage')}:{r.get('sha256')}": _believed(
-                   r, rd, top, (HERE / STAGE_PRODUCERS[r["stage"]]) if r.get("stage") in STAGE_PRODUCERS else None)
+                   r, rd, top, _stage_script(r.get("stage")))
                for k, v in rec.items() if not k.startswith("__") and isinstance(v, dict)
                for r in v.get("stages", []) if isinstance(r, dict)},
            "grandfathered": None if staged else _grandfathered(rd, top)}

@@ -75,6 +75,60 @@ class TheRegistryIsClosed(Registry):
         self.assertIn("eyeball-gate-skip", out)
 
 
+VIOLET = CLEAN.replace("<form action='#book'><button>", "<form action='#book'><button style='background:#7c3aed;color:#fff'>")
+
+
+class ReviewOfD2cd4b63(Registry):
+    def test_a_brand_kit_inside_the_round_exempts_nothing(self):
+        # adv-1: the walk from the page found a kit the builder dropped in the round
+        self.declare([{"name": "tripwire"}])
+        (self.rd / ".kipi-brand.json").write_text(json.dumps({"colors": ["#7c3aed"]}))
+        self.page(VIOLET)
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("the tripwire check FAILED this page", out)
+
+    def test_the_instance_brand_kit_still_exempts_its_own_colour(self):
+        # control for the above, and for the kit being held: read from the held config dir
+        self.declare([{"name": "tripwire"}])
+        (self.inst / ".kipi-brand.json").write_text(json.dumps({"colors": ["#7c3aed"]}))
+        self.page(VIOLET)
+        rc, out = self.seal()
+        self.assertEqual(rc, 0, out)
+
+    def test_slop_in_a_linked_stylesheet_fails(self):
+        # adv-3: the scan read the page HTML only
+        self.declare([{"name": "tripwire"}])
+        (self.rd / "shared.css").write_text("h1{font-family:Inter,sans-serif}")
+        self.page(CLEAN.replace("</style>", "</style><link rel='stylesheet' href='shared.css'>"))
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("Inter", out)
+
+    def test_a_page_sealed_with_checks_reads_sealed_afterwards(self):
+        # std-2: the check stage had no producer on record, so the receipt was never believed
+        self.declare([{"name": "tripwire"}])
+        self.page(CLEAN)
+        rc, out = self.seal()
+        self.assertEqual(rc, 0, out)
+        import os, subprocess, sys
+        env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_PROJECT_DIR", "DESIGN_CHAIN_ALLOW")}
+        env["DESIGN_CHAIN_STATE"] = str(self.tmp / "state")
+        from test_dc_reader_verdicts import GATE
+        r = subprocess.run([sys.executable, str(GATE), "status-page", str(self.rd / "Home-laptop.html")],
+                           capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("neither at its path now nor in this repo's history", r.stdout + r.stderr)
+
+    def test_a_check_named_twice_refuses(self):
+        # std-3
+        self.declare([{"name": "tripwire"}, {"name": "tripwire"}])
+        self.page(CLEAN)
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("more than once", out)
+
+
 class TheFolderNoLongerCounts(Registry):
     def test_with_declared_checks_an_empty_checks_folder_is_fine(self):
         for f in (self.rd / "checks").iterdir():
