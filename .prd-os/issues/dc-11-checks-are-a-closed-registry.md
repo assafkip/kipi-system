@@ -1,20 +1,21 @@
 ---
 id: dc-11-checks-are-a-closed-registry
 title: Outside checks run from a closed registry in the gate, and the tripwire says when it skipped
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
   - plugins/kipi-design/.claude-plugin/plugin.json
   - plugins/kipi-design/hooks/dogfood_gate.py
   - plugins/kipi-design/hooks/test_dogfood_gate.py
+  - plugins/kipi-design/hooks/test_dogfood_check_cli.py
   - q-system/.q-system/capability/expected_tests/*
   - q-system/.q-system/scripts/design-chain-gate.py
   - q-system/.q-system/scripts/test/test_dc_check_registry.py
 disallowed_files: []
 required_checks:
   - python3 q-system/.q-system/scripts/test/test_dc_check_registry.py
-  - python3 plugins/kipi-design/hooks/test_dogfood_gate.py
+  - python3 plugins/kipi-design/hooks/test_dogfood_check_cli.py
 required_reviews: []
 bypass_check: "python3 q-system/.q-system/scripts/test/test_dc_check_registry.py"
 gate_lifecycle: historical-receipt
@@ -38,4 +39,4 @@ The RED FIRST test is A-checks: round A with every reader STAY and tripwire FAIL
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Outside checks run from a closed registry in the gate, and the tripwire says when it skipped
+- [x] Outside checks run from a closed registry in the gate, and the tripwire says when it skipped

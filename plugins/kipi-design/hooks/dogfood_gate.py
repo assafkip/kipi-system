@@ -439,5 +439,52 @@ def main():
     sys.exit(0)
 
 
+SKIPPED = 3
+
+
+def check_cli(argv):
+    """`dogfood_gate.py --check FILE [--as PATH]`: 0 clean, 2 tells or an error (fail closed),
+    3 SKIPPED with the reason on stderr. PATH is where the page lives; it decides scope and the
+    brand kit, and FILE is the bytes scanned (seal passes its held copy).
+
+    why (ASK-1746, dc-11): the hook exits 0 for a clean page AND for one it did not look at
+    (an internal path, not HTML, the eyeball-gate-skip marker), so a caller reading the exit code
+    could not tell a pass from a skip. Here a skip is its own code, and design-chain seal reads it
+    as not run. The hook's own main() keeps its contract."""
+    try:
+        file = argv[argv.index("--check") + 1]
+    except (ValueError, IndexError):
+        sys.stderr.write("usage: dogfood_gate.py --check FILE [--as PATH]\n")
+        return 2
+    path = argv[argv.index("--as") + 1] if "--as" in argv[:-1] else file
+    if not is_public_facing_page(path):
+        sys.stderr.write("skipped: %s is not a public page (internal path, or not .html)\n" % path)
+        return SKIPPED
+    try:
+        with open(file, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+    except Exception as e:
+        sys.stderr.write("dogfood gate could not read %s (%s)\n" % (file, e))
+        return 2
+    cl = content.lower()
+    if "<html" not in cl and "<body" not in cl:
+        sys.stderr.write("skipped: %s is not an HTML document\n" % path)
+        return SKIPPED
+    if "eyeball-gate-skip" in cl:
+        sys.stderr.write("skipped: %s carries the eyeball-gate-skip marker\n" % path)
+        return SKIPPED
+    try:
+        findings = scan_html(content, load_fingerprint(), brand=brand_colors_for(path))
+    except Exception as e:
+        sys.stderr.write("dogfood gate errored on %s (%s)\n" % (path, e))
+        return 2
+    if findings:
+        sys.stderr.write("tells: " + "; ".join(f["label"] for f in findings) + "\n")
+        return 2
+    return 0
+
+
 if __name__ == "__main__":
+    if "--check" in sys.argv[1:]:
+        sys.exit(check_cli(sys.argv[1:]))
     main()

@@ -161,6 +161,13 @@ HERE = Path(__file__).resolve().parent
 STANDARD_PRODUCER = "design-standard-check.py"
 GAP_PRODUCER = "design-gap-check.py"
 IMPECCABLE_PRODUCER = "design-impeccable-check.py"
+# dc-11: the outside checks seal runs, a CLOSED registry. design-chain.json names which to run
+# ("checks": [{"name": "tripwire"}]); the command and what its exit codes mean live here, so a
+# config cannot point a check at a script that always passes. Before this, checks/ only had to
+# be non-empty, and round A-checks sealed with the tripwire's FAIL written in it (RCA 2026-09-18).
+# bio_gate and voice-lint join when each can say "skipped" apart from "pass" (follow-ups).
+TRIPWIRE = str((HERE.parent.parent.parent / "plugins" / "kipi-design" / "hooks" / "dogfood_gate.py").resolve())
+CHECKS = {"tripwire": {"script": TRIPWIRE, "pass": {0}, "skip": {3}}}
 PRODUCER_TIMEOUT_S = 600
 # The most a config may ask for: one day. subprocess waits in poll's int milliseconds and crashes
 # above ~2147483 s, and json.loads accepts NaN and Infinity (review of fb7d91f3).
@@ -609,6 +616,21 @@ def _copy_back(snap: RoundSnapshot, rel: str) -> None:
         dest.unlink(missing_ok=True)
 
 
+def declared_checks(cfg: dict) -> tuple[list[str], str | None]:
+    """(check names design-chain.json declares, a refusal or None). No `checks` key: none run, and
+    the old non-empty checks/ rule stays (the same opt-in as `readers`). An unknown name refuses:
+    the registry is closed."""
+    if "checks" not in cfg:
+        return [], None
+    decl = cfg["checks"]
+    if not isinstance(decl, list) or not all(isinstance(d, dict) and isinstance(d.get("name"), str) for d in decl):
+        return [], f"{CONFIG_NAME} checks is {decl!r}; a list of {{\"name\": ...}} from {sorted(CHECKS)}"
+    unknown = sorted({d["name"] for d in decl} - set(CHECKS))
+    if unknown:
+        return [], f"{CONFIG_NAME} checks names {unknown}, which the gate does not run; known: {sorted(CHECKS)}"
+    return sorted({d["name"] for d in decl}), None
+
+
 def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tuple[str, list[str]]]:
     bad: list[tuple[str, list[str]]] = []
     rd = snap.live
@@ -695,6 +717,21 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
                 bad.append((IMPECCABLE_PRODUCER, [f"a page raised an anti-pattern ({IMPECCABLE_PRODUCER} exit 3): {tail}"]))
             elif rc != 0:
                 bad.append((IMPECCABLE_PRODUCER, [f"could not measure ({IMPECCABLE_PRODUCER} exit {rc}): {tail}"]))
+    names, why = declared_checks(cfg)
+    if why:
+        bad.append(("seal", [why]))
+    for name in names:
+        spec = CHECKS[name]
+        for p in pages:
+            # the held bytes are scanned; the live path decides scope and the brand kit
+            rc, tail = timed(f"check:{name}", p.name, spec["script"],
+                             ["--check", str(snap.dir / p.name), "--as", str(rd / p.name)])
+            snap.stages.setdefault(p.name, []).append(stage_record(f"check:{name}", spec["script"], rd, rc))
+            if rc in spec["skip"]:
+                bad.append((p.name, [f"the {name} check did not run on this page (exit {rc}): {tail}. A check "
+                                     f"that skipped is not a pass."]))
+            elif rc not in spec["pass"]:
+                bad.append((p.name, [f"the {name} check FAILED this page (exit {rc}): {tail}"]))
     unserved = sorted(m for m in snap.missed if m not in BROWSER_ASKS_UNPROMPTED)
     if unserved:
         bad.append(("seal", [f"the page asked for {unserved} and this round does not serve it, so the "
@@ -2292,6 +2329,8 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
         if not (rd / name).is_file():
             probs.append(f"missing {rd / name}")
     for name in CHAIN_DIRS:
+        if name == "checks" and "checks" in cfg:
+            continue            # declared checks are RUN at seal (dc-11); a full folder proves nothing
         d = rd / name
         if not d.is_dir() or not any(d.iterdir()):
             probs.append(f"missing or empty {d}/")
