@@ -1,7 +1,7 @@
 ---
 id: dc-24-wiring-ships-last
 title: Hook entries and the plugin command ship only after round A refuses
-status: in-progress
+status: closed
 priority: p2
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
