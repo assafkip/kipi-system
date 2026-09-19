@@ -1,7 +1,7 @@
 ---
 id: dc-25-rollout-proof
 title: A script proves the fleet load path end to end
-status: in-progress
+status: closed
 priority: p2
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -34,3 +34,18 @@ The script checks: the marketplace clone holds the command; an instance root pas
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
 - [x] A script proves the fleet load path end to end
+
+## Amendments
+
+### 2026-09-19T22:32:53Z
+Reason: dc-25 acceptance names .github/workflows/validate.yml (the playwright install and DC_REQUIRE_REAL_PRODUCERS=1 before the capability-gate step); the spec says to amend allowed_files for it at issue-start
+
+Before:
+- allowed_files: ['.github/workflows/validate.yml', 'q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-rollout-proof.sh']
+- required_checks: ['bash q-system/.q-system/scripts/design-chain-rollout-proof.sh --selftest']
+- disallowed_files: []
+
+After:
+- allowed_files: ['.github/workflows/validate.yml', 'q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-rollout-proof.sh']
+- required_checks: ['bash q-system/.q-system/scripts/design-chain-rollout-proof.sh --selftest']
+- disallowed_files: []
