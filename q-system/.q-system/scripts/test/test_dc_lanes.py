@@ -3,11 +3,16 @@
 
 WHY. The chain measured every round as a web page: the standard, gap, impeccable and tripwire
 producers are web-only, and the tripwire refuses any page with no interactive element, which is every
-deck. Sana 2026-09-19: craft-manifest.json declares lane in {site, brand, deck, motion} (default and
-unknown: site). A non-site lane skips those four stages and records each as
-{exit: null, not_applicable: "lane: <lane>"}, never as a pass. The receipt believes such a row only
-when the digest-bound manifest names that non-site lane and the stage is web-only. The page is still
-HTML in every lane, so the readers still read it. The receipt carries __lane__ for audit.
+deck. A non-site lane skips those four stages and records each as {exit: null, not_applicable:
+"lane: <lane>"}, never as a pass (Sana 2026-09-19).
+
+WHO SAYS WHICH LANE (Sana, after the adversarial review): the lane is where the round lives, in the
+INSTANCE config, never the round's word. The first design put it in the round's manifest, and a
+builder whose landing page failed the standard wrote {"lane": "deck"} and sealed it. Now
+design-chain.json `lanes` maps a lane to its rounds folder; the site rounds folder (rounds_dir, or
+the exemplars folder's parent) is always site, and so is any round the map does not name. A manifest
+`lane` is optional and refuses when it disagrees. A non-site lane needs exactly one design-chain.json
+above the round, and its receipt binds the config's bytes.
 
 Runs the gate COPY beside the stub producers, as test_design_chain_gate.py does (its Base).
 """
@@ -21,7 +26,20 @@ import test_design_chain_gate as dcg  # noqa: E402  (module setup copies the gat
 
 
 class Lanes(dcg.Base):
+    def cfg(self, **over):
+        p = self.inst / "design-chain.json"
+        c = json.loads(p.read_text())
+        c.update(over)
+        p.write_text(json.dumps(c))
+
     def lane(self, lane):
+        """Make this round's folder (site/design) the given lane's rounds folder in the instance config."""
+        if lane == "site":
+            self.cfg(rounds_dir=None, lanes={})
+        else:
+            self.cfg(rounds_dir="site/pages", lanes={lane: "site/design"})
+
+    def manifest_lane(self, lane):
         (self.round / "craft-manifest.json").write_text(json.dumps({"lane": lane}))
 
     def seal(self):
@@ -60,12 +78,63 @@ class Lanes(dcg.Base):
         rc, out = self.status()
         self.assertEqual(rc, 0, out)
 
-    def test_an_unknown_lane_is_a_site(self):
+    def test_the_rounds_own_word_is_not_a_lane(self):
+        # adv-1: the builder's manifest cannot make a site round a deck
         self.complete_chain()
-        self.lane("video")
+        self.manifest_lane("deck")
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("lane", out)
+
+    def test_a_manifest_lane_that_agrees_with_the_location_seals(self):
+        self.complete_chain()
+        (self.round / "standard.json").unlink()
+        self.lane("deck")
+        self.manifest_lane("deck")
+        self.assertEqual(self.seal()[0], 0)
+
+    def test_a_config_that_names_the_site_lane_or_overlaps_refuses(self):
+        self.complete_chain()
+        self.cfg(lanes={"site": "site/design"})
+        self.assertEqual(self.seal()[0], 2)
+        self.cfg(lanes={"site": "site/elsewhere"})       # the site lane is never named, wherever it points
+        self.assertEqual(self.seal()[0], 2)
+        self.cfg(lanes={"deck": "site/design"})           # the site rounds folder itself
+        self.assertEqual(self.seal()[0], 2)
+        self.cfg(rounds_dir="site/pages", lanes={"deck": "site/design", "brand": "site/design"})
+        self.assertEqual(self.seal()[0], 2)
+
+    def test_a_config_written_beside_the_round_does_not_make_a_lane(self):
+        # Sana: find_config takes the nearest config; a second one cannot claim a lane
+        self.complete_chain()
+        (self.round / "standard.json").unlink()
+        near = json.loads((self.inst / "design-chain.json").read_text())
+        near["lanes"] = {"deck": "."}                    # beside the round, claiming its folder as deck
+        near["rounds_dir"] = "../pages"
+        (self.round.parent / "design-chain.json").write_text(json.dumps(near))
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("two design-chain.json files above", out)
+
+    def test_a_config_edit_after_a_deck_seal_opens_the_round(self):
+        self.complete_chain()
+        (self.round / "standard.json").unlink()
+        self.lane("deck")
+        self.assertEqual(self.seal()[0], 0)
+        self.cfg(note="changed")
+        self.assertEqual(self.status()[0], 2)
+
+    def test_a_deck_with_the_craft_web_checks_on_seals_without_their_files(self):
+        # adv-5: gap and impeccable are web-only, so their files are not a deck's to produce
+        self.complete_chain()
+        (self.round / "standard.json").unlink()
+        self.lane("deck")
+        self.cfg(craft={"tier": "craft", "require_gap_check": True, "require_impeccable": True})
         rc, out = self.seal()
         self.assertEqual(rc, 0, out)
-        self.assertEqual(self.standard_row()["exit"], 0)
+        stages = {r["stage"]: r for r in self.receipt()["__assets__"] and self.receipt()[self.page.name]["stages"]}
+        self.assertEqual(stages["gap"]["not_applicable"], "lane: deck")
+        self.assertEqual(stages["impeccable"]["not_applicable"], "lane: deck")
 
     def test_flipping_the_lane_after_the_seal_opens_the_round(self):
         self.complete_chain()
@@ -140,25 +209,27 @@ class RealGateLaneRules(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import importlib.util
-        import shutil
-        import tempfile
         spec = importlib.util.spec_from_file_location("dc20_real_gate", Path(dcg.REAL_GATE))
         cls.gate = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.gate)
-        cls.tmp = Path(tempfile.mkdtemp(prefix="dc20-real-"))
-        cls.addClassCleanup(shutil.rmtree, cls.tmp, True)
 
-    def lane_of(self, text):
-        rd = Path(__import__("tempfile").mkdtemp(dir=self.tmp))
-        if text is not None:
-            (rd / "craft-manifest.json").write_text(text)
-        return self.gate.round_lane(rd)
+    def setUp(self):
+        import shutil
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp(prefix="dc20-real-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        (self.tmp / "decks" / "r1").mkdir(parents=True)
+        (self.tmp / "site" / "design" / "r2").mkdir(parents=True)
 
-    def test_the_lane_comes_from_the_manifest(self):
-        self.assertEqual(self.lane_of(None), "site")
-        self.assertEqual(self.lane_of(json.dumps({"lane": "motion"})), "motion")
-        self.assertEqual(self.lane_of(json.dumps({"lane": "video"})), "site")
-        self.assertEqual(self.lane_of("{not json"), "site")
+    def lane_of(self, rd, cfg):
+        (self.tmp / "design-chain.json").write_text(json.dumps(cfg))
+        return self.gate.round_lane(self.tmp / rd)
+
+    def test_the_lane_comes_from_where_the_round_lives(self):
+        cfg = {"owners": [], "lanes": {"deck": "decks"}}
+        self.assertEqual(self.lane_of("decks/r1", cfg), ("deck", None))
+        self.assertEqual(self.lane_of("site/design/r2", cfg), ("site", None))
+        self.assertEqual(self.lane_of("decks/r1", {"owners": []}), ("site", None))
 
     def test_a_not_applicable_row_is_believed_only_for_its_non_site_lane(self):
         row = self.gate.na_record("gap", "brand")
