@@ -52,7 +52,7 @@ class Served:
         self.srv.server_close()
 
 
-class ReaderGate(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self):
         try:
             import playwright  # noqa: F401
@@ -96,6 +96,8 @@ class ReaderGate(unittest.TestCase):
     def rows(self):
         return [json.loads(l) for l in (self.rd / "gate" / "reader-runs.jsonl").read_text().splitlines()]
 
+
+class ReaderGate(Base):
     def test_every_row_carries_the_page_sha_the_screenshot_sha_and_provenance(self):
         rc, out = self.run_gate()
         self.assertEqual(rc, 0, out)
@@ -153,6 +155,101 @@ class ReaderGate(unittest.TestCase):
         rc, out = self.run_gate()
         self.assertEqual(rc, 2, out)
         self.assertIn("persona", out)
+
+
+FAKE_CLAUDE = r"""#!/usr/bin/env python3
+import json, os, sys
+open(os.environ["FAKE_LOG"], "a").write(json.dumps(sys.argv[1:]) + "\n")
+answers = json.loads(os.environ.get("FAKE_ANSWERS", "[]"))
+print(json.dumps({"result": json.dumps({"answers": answers}),
+                  "modelUsage": {os.environ.get("FAKE_MODEL", "claude-haiku-4-5"): {}}}))
+"""
+
+
+class ReviewOfC911e33f(Base):
+    """Sana's triage of dc-06's reviews (adv-2..5, std-7, std-8). No real model: a fake `claude`
+    on PATH records every call, so even the pre-fix script cannot spend one here."""
+
+    def fake(self, answers=ANSWERS, model="claude-haiku-4-5"):
+        bin_ = self.tmp / "bin"
+        bin_.mkdir(exist_ok=True)
+        f = bin_ / "claude"
+        f.write_text(FAKE_CLAUDE)
+        f.chmod(0o755)
+        self.log = self.tmp / "fake.log"
+        return {"PATH": f"{bin_}:{os.environ['PATH']}", "FAKE_LOG": str(self.log),
+                "FAKE_ANSWERS": json.dumps(answers), "FAKE_MODEL": model}
+
+    def run_bare(self, *args, env=None):
+        e = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_PROJECT_DIR", "PYTEST_CURRENT_TEST")}
+        e.update(env or {})
+        base = [sys.executable, str(SCRIPT), str(self.rd), "--url-base", self.srv.base,
+                "--config", str(self.inst / "design-chain.json")]
+        r = subprocess.run(base + list(args), capture_output=True, text=True, env=e, timeout=300)
+        return r.returncode, r.stdout + r.stderr
+
+    def calls(self):
+        return self.log.read_text().splitlines() if self.log.is_file() else []
+
+    def test_a_reader_with_the_wrong_number_of_answers_refuses(self):
+        self.answers.write_text(json.dumps(["unknown"]))
+        rc, out = self.run_gate()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("answers", out)
+
+    def test_the_control_passes_only_when_the_answer_starts_with_unknown(self):
+        for control, contaminated in (("Unknown. Not on the page.", False),
+                                      ("Stanford, though his school is not unknown to me", True)):
+            with self.subTest(control=control):
+                self.answers.write_text(json.dumps(ANSWERS[:-1] + [control]))
+                rc, out = self.run_gate()
+                self.assertEqual(rc, 0, out)
+                self.assertIs(self.rows()[0]["contaminated"], contaminated)
+
+    def test_no_runner_named_is_refused_before_any_model_call(self):
+        rc, out = self.run_bare(env=self.fake())
+        self.assertEqual(rc, 2, out)
+        self.assertIn("--runner", out)
+        self.assertEqual(self.calls(), [], "a model was called with no runner named")
+
+    def test_the_row_names_the_model_that_answered_and_a_different_one_refuses(self):
+        rc, out = self.run_bare("--runner", "claude", env=self.fake())
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.rows()[0]["_provenance"]["model_reported"], ["claude-haiku-4-5"])
+        rc, out = self.run_bare("--runner", "claude", env=self.fake(model="some-other-model"))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("some-other-model", out)
+
+    def test_a_page_outside_the_round_is_refused(self):
+        (self.rd.parent / "outside.html").write_text(PAGE)
+        for page in ("../outside.html", str(self.rd.parent / "outside.html")):
+            with self.subTest(page=page):
+                rc, out = self.run_gate("--page", page)
+                self.assertEqual(rc, 2, out)
+                self.assertIn("not a page in the round", out)
+
+    def test_a_persona_file_outside_the_config_dir_is_refused(self):
+        (self.tmp / "elsewhere.md").write_text("persona\n")
+        for pf in ("../elsewhere.md", str(self.tmp / "elsewhere.md")):
+            with self.subTest(persona_file=pf):
+                self.config(persona_file=pf)
+                rc, out = self.run_gate()
+                self.assertEqual(rc, 2, out)
+                self.assertIn("persona_file", out)
+
+    def test_questions_come_from_config_and_the_default_is_not_personal(self):
+        qs = ["What is this page for?", "Would you stay or leave?", "CONTROL: What year was it founded?"]
+        self.config(questions=qs)
+        self.answers.write_text(json.dumps(["a tool", "STAY", "unknown"]))
+        rc, out = self.run_gate()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.rows()[0]["_provenance"]["questions_sha256"], sha(json.dumps(qs).encode()))
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("drg", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        words = " ".join(mod.QUESTIONS).lower().replace("?", " ").replace(",", " ").split()
+        self.assertFalse({"he", "him", "his", "she", "her"} & set(words), mod.QUESTIONS)
 
 
 if __name__ == "__main__":

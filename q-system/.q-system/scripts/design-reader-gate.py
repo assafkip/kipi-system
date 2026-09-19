@@ -47,16 +47,20 @@ from pathlib import Path
 DEFAULT_MODEL = "claude-haiku-4-5"
 DEFAULT_VIEWPORTS = [[1440, 900]]
 DEFAULT_N = 3
+# The default questions. An instance sets its own in design-chain.json readers.questions; the
+# LAST question is always the control, a fact the page does not state, whose honest answer is
+# "unknown". Written for any page, not one consultant: the first version asked what "he" sells
+# and was consulting's own list (standard review of c911e33f, std-7).
 QUESTIONS = [
     "Is this page about a problem you actually have? Which one, in your words?",
-    "What does this person sell?",
-    "What would happen if you hired him?",
-    "Why would you believe him, or not?",
-    "What do you think the first engagement buys?",
-    "In three words or fewer, what kind of consultant is he?",
+    "What is being offered here?",
+    "What would happen if you took it up?",
+    "Why would you believe it, or not?",
+    "What would the first step cost you, in time or money?",
+    "In three words or fewer, who is this for?",
     "Would you keep reading, or leave? Why?",
     "What, if anything, confused you or put you off?",
-    "CONTROL: Where did he go to school?",
+    "CONTROL: In what year was the organisation behind this page founded?",
 ]
 FRAME = ("You have just landed on this page. You know nothing about the person beyond what is in the "
          "screenshot. Answer only from what you can see; if the page does not tell you, say 'unknown'.")
@@ -103,24 +107,31 @@ def shoot(url: str, viewports: list, dest: Path) -> list[tuple[list, Path]]:
     return out
 
 
-def ask_claude(png: Path, system: str, model: str) -> dict:
+def ask_claude(png: Path, system: str, model: str, questions: list[str]) -> dict:
     """One fresh reader: a clean temp dir holding only the screenshot, --safe-mode, Read only."""
     prompt = ("Use the Read tool to open the image file 'screen.png' in the current directory. It is a "
               "screenshot of the first screen of a website. Then answer each question in one or two plain "
               "sentences, as JSON: {\"answers\": [\"...\", ...]} in the same order.\n\n"
-              + "\n".join(f"{i + 1}. {q}" for i, q in enumerate(QUESTIONS)))
+              + "\n".join(f"{i + 1}. {q}" for i, q in enumerate(questions)))
     with tempfile.TemporaryDirectory(prefix="reader-") as wd:
         shutil.copy(png, Path(wd) / "screen.png")
         r = subprocess.run(["claude", "-p", "--safe-mode", "--model", model, "--system-prompt", system,
                             "--allowedTools", "Read", "--output-format", "json", prompt],
                            cwd=wd, capture_output=True, text=True, timeout=300)
     try:
-        text = json.loads(r.stdout).get("result", "")
+        doc = json.loads(r.stdout)
+        text = doc.get("result", "")
         s, e = text.find("{"), text.rfind("}")
         answers = json.loads(text[s:e + 1]).get("answers")
     except (ValueError, AttributeError):
         return {"error": (r.stdout + r.stderr)[-600:]}
-    return {"answers": answers} if isinstance(answers, list) else {"error": text[-600:]}
+    # the model that ANSWERED, as the CLI reports it: the row used to carry the configured name,
+    # so any `claude` on PATH produced rows labelled with the real model (review of c911e33f, adv-4)
+    usage = doc.get("modelUsage")
+    reported = sorted(usage) if isinstance(usage, dict) else []
+    if not isinstance(answers, list):
+        return {"error": text[-600:]}
+    return {"answers": answers, "model_reported": reported}
 
 
 def main(argv: list[str]) -> int:
@@ -129,7 +140,9 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--url-base", required=True)
     ap.add_argument("--config", required=True)
     ap.add_argument("--page", action="append", default=[])
-    ap.add_argument("--runner", choices=("claude", "injected"), default="claude")
+    # required: with a default of claude, a test that forgot to inject spent a model call, and the
+    # PYTEST_CURRENT_TEST guard never fires under a unittest run (review of c911e33f, adv-3)
+    ap.add_argument("--runner", choices=("claude", "injected"), required=True)
     ap.add_argument("--answers", help="for --runner injected: a JSON list of answers")
     ap.add_argument("--keep-screens", help="copy every screenshot this run took into DIR")
     a = ap.parse_args(argv)
@@ -145,6 +158,9 @@ def main(argv: list[str]) -> int:
     if not isinstance(pf, str) or not pf.strip():
         return refuse("design-chain.json names no readers.persona_file: a reader with no persona is "
                       "a reader of nobody")
+    if os.path.isabs(pf) or cfg_path.parent.resolve() not in (cfg_path.parent / pf).resolve().parents:
+        return refuse(f"readers.persona_file {pf!r} is not a file inside {cfg_path.parent}; name it "
+                      f"relative to the config")
     persona_path = cfg_path.parent / pf
     try:
         persona = persona_path.read_bytes()
@@ -153,6 +169,11 @@ def main(argv: list[str]) -> int:
     viewports = readers.get("viewports", DEFAULT_VIEWPORTS)
     n = readers.get("n", DEFAULT_N)
     model = readers.get("model", DEFAULT_MODEL)
+    questions = readers.get("questions", QUESTIONS)
+    if (not isinstance(questions, list) or len(questions) < 2
+            or not all(isinstance(q, str) and q.strip() for q in questions)):
+        return refuse("readers.questions must be a list of at least two questions, the last of them "
+                      "the control")
     if (not isinstance(viewports, list) or not viewports
             or not all(isinstance(v, list) and len(v) == 2 and all(isinstance(x, int) and 0 < x <= 10000 for x in v)
                        for v in viewports)):
@@ -166,7 +187,12 @@ def main(argv: list[str]) -> int:
                           "pass --runner injected")
         if not shutil.which("claude"):
             return refuse("the claude CLI is not on PATH")
-        answer = lambda png: ask_claude(png, persona.decode("utf-8", "replace") + "\n\n" + FRAME, model)
+        def answer(png):
+            res = ask_claude(png, persona.decode("utf-8", "replace") + "\n\n" + FRAME, model, questions)
+            if "answers" in res and res.get("model_reported") != [model]:
+                return {"error": f"the answering model was {res.get('model_reported')}, not the "
+                                 f"configured {model!r}; name the exact model id in readers.model"}
+            return res
         model_used = model
     else:
         try:
@@ -180,12 +206,15 @@ def main(argv: list[str]) -> int:
 
     html = sorted(p.name for p in rd.iterdir() if p.is_file() and p.suffix.lower() in HTML_SUFFIXES)
     names = a.page or html
+    outside = [x for x in names if Path(x).name != x]
+    if outside:
+        return refuse(f"{outside} is not a page in the round: name a page file in {rd} by its name")
     bad = [x for x in names if Path(x).suffix.lower() not in HTML_SUFFIXES or not (rd / x).is_file()]
     if not names or bad:
         return refuse(f"no readable HTML page to show readers{': ' + str(bad) if bad else ''}")
 
     prov = {"runner": a.runner, "model": model_used, "persona_file": pf,
-            "persona_sha256": sha(persona), "questions_sha256": sha(json.dumps(QUESTIONS).encode()),
+            "persona_sha256": sha(persona), "questions_sha256": sha(json.dumps(questions).encode()),
             "at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")}
     rows = []
     with tempfile.TemporaryDirectory(prefix="reader-shots-") as shots:
@@ -211,11 +240,18 @@ def main(argv: list[str]) -> int:
                     if "answers" not in res:
                         return refuse(f"reader {i + 1} on {name} {vp}: {res.get('error', 'no answers')}")
                     ans = [str(x) for x in res["answers"]]
-                    control = ans[-1] if ans else ""
+                    if len(ans) != len(questions):
+                        # a skipped question shifts every answer after it, and the control would be
+                        # read off another question's answer (review of c911e33f, adv-2/std-8)
+                        return refuse(f"reader {i + 1} on {name} {vp} gave {len(ans)} answers to "
+                                      f"{len(questions)} questions")
+                    row_prov = dict(prov, model_reported=res.get("model_reported", ["injected"]))
                     rows.append({"page": name, "viewport": vp, "instance": i + 1,
                                  "html_sha256": html_sha, "png_sha256": png_sha, "answers": ans,
-                                 "contaminated": "unknown" not in control.lower(),
-                                 "_provenance": prov})
+                                 # the control's honest answer IS "unknown"; containing the word
+                                 # anywhere passed "his school is not unknown to me" (adv-2)
+                                 "contaminated": not ans[-1].strip().lower().startswith("unknown"),
+                                 "_provenance": row_prov})
     out = rd / "gate" / "reader-runs.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("".join(json.dumps(r) + "\n" for r in rows))

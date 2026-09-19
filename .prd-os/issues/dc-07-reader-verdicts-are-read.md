@@ -35,6 +35,9 @@ The RED FIRST test is round A (dc_fixtures, with provenance): it seals before th
 
 Round A's reader rows are captured from design-reader-gate.py with the injected runner, provenance runner=injected: honest, and what dc-07 tests is how seal consumes verdicts, not what a model says. Condition, with its own RED FIRST: seal refuses a row whose provenance says runner=injected in any round that is not a test fixture, or the injected runner becomes the new way to hand-type verdicts (Sana, 2026-09-19).
 
+
+Prompt injection through page text (dc-06 adversarial finding-6, Sana 2026-09-19): a control page carrying planted text that instructs the reader to answer STAY and 'unknown' must not seal. The acceptance test plants it and shows the judge refuses.
+
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
