@@ -85,6 +85,18 @@ class Budget(unittest.TestCase):
                 self.assertEqual(rc, 2, out)
                 self.assertIn("producer_timeout_s", out)
 
+    def test_a_timeout_no_subprocess_can_use_refuses_instead_of_crashing(self):
+        # review of fb7d91f3: json.loads accepts NaN and Infinity, and subprocess cannot wait
+        # past poll's int milliseconds; each crashed seal with a traceback and exit 1
+        for raw in ("NaN", "Infinity", "1e308", "2147484", "1" + "0" * 400):
+            with self.subTest(value=raw[:12]):
+                (self.inst / "design-chain.json").write_text(
+                    '{"project": "dc05", "owners": [], "seal": {"producer_timeout_s": %s}}' % raw)
+                rc, out = self.seal()
+                self.assertEqual(rc, 2, out)
+                self.assertIn("producer_timeout_s", out)
+                self.assertNotIn("Traceback", out)
+
     def test_no_config_value_keeps_the_coded_default(self):
         # the default is the coded constant; a round that names none seals as before
         self.config(seal={})

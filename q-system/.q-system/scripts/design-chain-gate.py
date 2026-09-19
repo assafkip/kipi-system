@@ -51,6 +51,7 @@ import contextlib
 import hashlib
 import http.server
 import json
+import math
 import mimetypes
 import os
 import posixpath
@@ -161,6 +162,9 @@ STANDARD_PRODUCER = "design-standard-check.py"
 GAP_PRODUCER = "design-gap-check.py"
 IMPECCABLE_PRODUCER = "design-impeccable-check.py"
 PRODUCER_TIMEOUT_S = 600
+# The most a config may ask for: one day. subprocess waits in poll's int milliseconds and crashes
+# above ~2147483 s, and json.loads accepts NaN and Infinity (review of fb7d91f3).
+PRODUCER_TIMEOUT_MAX_S = 86400
 
 
 def clean_env() -> dict:
@@ -197,10 +201,16 @@ def producer_timeout(cfg: dict) -> tuple[float | None, str | None]:
     if "producer_timeout_s" not in block:
         return PRODUCER_TIMEOUT_S, None
     v = block["producer_timeout_s"]
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
-        return None, (f"{CONFIG_NAME} seal.producer_timeout_s is {v!r}; it must be a positive number "
-                      f"of seconds, or absent for the default {PRODUCER_TIMEOUT_S}")
-    return float(v), None
+    try:
+        f = float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    except OverflowError:
+        f = None
+    if f is None or not math.isfinite(f) or not 0 < f <= PRODUCER_TIMEOUT_MAX_S:
+        shown = repr(v) if len(repr(v)) < 40 else repr(v)[:37] + "..."
+        return None, (f"{CONFIG_NAME} seal.producer_timeout_s is {shown}; it must be a number of "
+                      f"seconds above 0 and at most {PRODUCER_TIMEOUT_MAX_S}, or absent for the "
+                      f"default {PRODUCER_TIMEOUT_S}")
+    return f, None
 
 
 def run_producer(name: str, args: list[str], timeout: float = PRODUCER_TIMEOUT_S,
