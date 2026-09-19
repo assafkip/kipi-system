@@ -33,13 +33,28 @@ proof() {
   done
   check "$([ -z "$missing" ] && echo 0 || echo 1)" "design scripts in the instance" "missing:$missing"
 
-  # 2. the hooks are wired in the instance's own settings (the template merge)
-  local wired=0
-  if [ -f "$inst/.claude/settings.json" ]; then
-    wired=$(grep -c "design-chain-gate.py\|design-engine-door.py" "$inst/.claude/settings.json" || true)
-  fi
-  check "$([ "$wired" -ge 5 ] && echo 0 || echo 1)" "gate and door hooks wired in the instance" \
-        "found $wired hook references, want 5"
+  # 2. the hooks are wired in the instance's own settings (the template merge). Parsed, not grepped:
+  # a settings.json with the hooks stripped and five decorative mentions of the script names read as
+  # wired (dc-25 review), which is the one thing this check exists to refuse.
+  local wired
+  wired=$(python3 - "$inst/.claude/settings.json" <<'PY' 2>/dev/null || echo 0
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    print(0); raise SystemExit
+n = 0
+for ev, arr in (d.get("hooks") or {}).items():
+    for m in arr if isinstance(arr, list) else []:
+        for h in m.get("hooks", []) if isinstance(m, dict) else []:
+            c = h.get("command", "") if isinstance(h, dict) else ""
+            if "design-chain-gate.py" in c or "design-engine-door.py" in c:
+                n += 1
+print(n)
+PY
+)
+  check "$([ "${wired:-0}" -ge 5 ] && echo 0 || echo 1)" "gate and door hooks wired in the instance" \
+        "found ${wired:-0} hook command(s) inside hooks arrays, want 5"
 
   # 3. the wired gate REFUSES an unsealed page when run as the harness runs it. A round is built in
   #    a temp dir, never in the instance: the proof must not write into a live instance.
@@ -60,15 +75,22 @@ proof() {
   check "$([ "$rc" = 2 ] && echo 0 || echo 1)" "the instance's gate refuses an unsealed page" \
         "exit $rc, want 2 with the gate's own words"
 
-  # 4. the command is in the marketplace clone, which is what the running session loads
-  # resolved HERE, not at load: the selftest points it at its own clone, and a value fixed at load
-  # ignored that override (caught by the selftest's own first run)
+  # 4. the command a session really loads: the marketplace clone, matched BY CONTENT against the
+  # instance's own copy. Any clone holding a file at that path satisfied a bare existence check, so
+  # a stale fork or another checkout passed for every instance (dc-25 review). The marketplaces dir
+  # is machine-global and per user, which is why the instance's copy is what it is compared to.
+  # Resolved here, not at load: the selftest points it at its own clone.
   local marketplaces="${KIPI_MARKETPLACES:-$HOME/.claude/plugins/marketplaces}"
-  local cmd_found=1
-  if [ -d "$marketplaces" ]; then
-    find "$marketplaces" -path "*/$COMMAND_REL" -print -quit 2>/dev/null | grep -q . && cmd_found=0
+  local want="$inst/$COMMAND_REL" clone cmd_found=1 why="no $COMMAND_REL under $marketplaces"
+  if [ ! -f "$want" ]; then
+    why="the instance has no $COMMAND_REL to compare the clone against"
+  elif [ -d "$marketplaces" ]; then
+    while IFS= read -r clone; do
+      if cmp -s "$clone" "$want"; then cmd_found=0; break; fi
+      why="a clone holds $COMMAND_REL but its bytes differ from the instance's ($clone)"
+    done < <(find "$marketplaces" -path "*/$COMMAND_REL" 2>/dev/null)
   fi
-  check "$cmd_found" "the command in the marketplace clone" "no $COMMAND_REL under $marketplaces"
+  check "$cmd_found" "the command in the marketplace clone, same bytes" "$why"
 
   [ "$fails" = 0 ] && echo "ROLLOUT PROOF: every check passed for $inst" \
                    || echo "ROLLOUT PROOF: $fails check(s) failed for $inst"
@@ -85,6 +107,8 @@ selftest() {
   for s in "${SCRIPTS[@]}"; do cp "$repo/q-system/.q-system/scripts/$s" "$tmp/inst/q-system/.q-system/scripts/"; done
   cp "$repo/q-system/.q-system/scripts/read-first-gate.py" "$tmp/inst/q-system/.q-system/scripts/" 2>/dev/null
   cp "$repo/.claude/settings.json" "$tmp/inst/.claude/settings.json"
+  mkdir -p "$tmp/inst/plugins/kipi-core/commands"
+  cp "$repo/$COMMAND_REL" "$tmp/inst/$COMMAND_REL"
   cp "$repo/$COMMAND_REL" "$tmp/mp/kipi/plugins/kipi-core/commands/design-chain.md"
   KIPI_MARKETPLACES="$tmp/mp" proof "$tmp/inst"
   local rc=$?
