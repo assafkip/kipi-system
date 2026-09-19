@@ -159,6 +159,7 @@ def sha(path: Path) -> str:
 HERE = Path(__file__).resolve().parent
 STANDARD_PRODUCER = "design-standard-check.py"
 GAP_PRODUCER = "design-gap-check.py"
+IMPECCABLE_PRODUCER = "design-impeccable-check.py"
 PRODUCER_TIMEOUT_S = 600
 
 
@@ -627,6 +628,26 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
                 bad.append((GAP_PRODUCER, [f"below the exemplar floor ({GAP_PRODUCER} exit 2): {tail}"]))
             elif rc != 0:
                 bad.append((GAP_PRODUCER, [f"could not measure ({GAP_PRODUCER} exit {rc}): {tail}"]))
+        # dc-04: seal RUNS the anti-pattern producer and reads its exit code. The gate used to
+        # read only that checks/impeccable.txt was non-empty, so any text sealed ("ran" did),
+        # and the producer exited 0 on a flagged page whenever its control fired.
+        if (craft.get("require_impeccable") and craft.get("tier", "craft") != "wireframe"
+                and not round_is_wireframe):
+            imp_rel = f"checks/{IMPECCABLE_CHECK}"
+            imp_path = snap.dir / imp_rel
+            imp_path.unlink(missing_ok=True)          # only this run may write it
+            imp_path.parent.mkdir(parents=True, exist_ok=True)
+            rc, tail = run_producer(IMPECCABLE_PRODUCER, [str(snap.dir), "--url-base", base])
+            snap.stages.setdefault("", []).append(stage_record("impeccable", IMPECCABLE_PRODUCER, rd, rc))
+            _copy_back(snap, imp_rel)
+            if rc == 0 and not imp_path.is_file():
+                bad.append((IMPECCABLE_PRODUCER, [f"could not measure ({IMPECCABLE_PRODUCER} exit 0 and wrote no {IMPECCABLE_CHECK}): {tail}"]))
+            elif rc == 1:
+                bad.append((IMPECCABLE_PRODUCER, [f"its negative control did not fire ({IMPECCABLE_PRODUCER} exit 1), so a clean result proves nothing: {tail}"]))
+            elif rc == 3:
+                bad.append((IMPECCABLE_PRODUCER, [f"a page raised an anti-pattern ({IMPECCABLE_PRODUCER} exit 3): {tail}"]))
+            elif rc != 0:
+                bad.append((IMPECCABLE_PRODUCER, [f"could not measure ({IMPECCABLE_PRODUCER} exit {rc}): {tail}"]))
     unserved = sorted(m for m in snap.missed if m not in BROWSER_ASKS_UNPROMPTED)
     if unserved:
         bad.append(("seal", [f"the page asked for {unserved} and this round does not serve it, so the "
@@ -680,7 +701,7 @@ def round_asset_digest(rd: Path) -> str:
 # those, plus what the gate writes after a seal. They are kept apart on purpose (Sana,
 # 2026-09-19): the compare once borrowed the digest's list, so brief.md could be swapped under
 # a running seal and left swapped.
-_SEAL_WRITES = frozenset({"standard.json", f"checks/{GAP_CHECK}", "receipts.json"})
+_SEAL_WRITES = frozenset({"standard.json", f"checks/{GAP_CHECK}", f"checks/{IMPECCABLE_CHECK}", "receipts.json"})
 _DIGEST_SKIP = _SEAL_WRITES | {"corrections.jsonl"}
 
 

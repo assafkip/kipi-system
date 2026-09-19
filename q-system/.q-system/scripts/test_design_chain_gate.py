@@ -230,14 +230,21 @@ class TestCraftBar(Base):
         self.assertIn("declares no techniques", out)
 
     def test_impeccable_check_required_when_config_asks(self):
+        # dc-04: seal RUNS the anti-pattern producer and refuses on each exit it did not pass,
+        # by the producer branch's own words. A receipt left in the round is never what it reads.
         self.complete_chain()
         self.craft_cfg()
         (self.round / "craft-manifest.json").write_text(json.dumps(
             {"techniques": [{"id": "t", "technique": "x", "role": "hero",
                              "import": ["gsap"], "applied": ["gsap.to"]}]}))
-        rc, out = run(["seal", str(self.round)], env=self.env)
-        self.assertEqual(rc, 2, out)
-        self.assertIn("impeccable", out)
+        for mode, words in (("silent", "exit 0 and wrote no impeccable.txt"),
+                            ("dead", "negative control did not fire"),
+                            ("flag", "a page raised an anti-pattern"),
+                            ("cannot", "could not measure (design-impeccable-check.py exit 2)")):
+            (self.round / "checks" / "impeccable.txt").write_text(IMPECCABLE_RECEIPT)
+            rc, out = run(["seal", str(self.round)], env={**self.env, "STUB_IMPECCABLE": mode})
+            self.assertEqual(rc, 2, out)
+            self.assertIn(words, out, mode)
 
     def test_declared_technique_absent_from_the_page_blocks(self):
         """The TZOREF failure: a technique named in the manifest and used nowhere."""

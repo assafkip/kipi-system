@@ -34,9 +34,14 @@ Usage:
   design-impeccable-check.py <round-dir> [--url-base http://127.0.0.1:8793]
                                         [--detector <path to detect-antipatterns.mjs>]
                                         [--control <path to a known-slop html>]
-Exit 0 = receipt written and the control fired.
+Exit 0 = receipt written, the control fired, and every page is clean.
 Exit 1 = the control did not fire, so the page results are unproven.
-Exit 2 = could not run at all (no detector, no node).
+Exit 2 = could not run: no detector, no node, a detector that crashed on a page, or a served
+         page whose bytes are not the local file.
+Exit 3 = at least one page raised an anti-pattern.
+It used to exit 0 whenever the control fired: `worst` was computed over the pages and never
+used, so a flagged page sealed on a receipt that said so (dc-04). --url-base has no default: a
+fixed port measured whatever round a leftover server was serving (dc-03 finding-4).
 """
 from __future__ import annotations
 
@@ -44,8 +49,14 @@ import argparse
 import json
 import os
 import shutil
+import contextlib
+import hashlib
+import http.server
 import subprocess
 import sys
+import tempfile
+import threading
+import urllib.request
 from pathlib import Path
 
 DETECTOR_CANDIDATES = (
@@ -86,6 +97,49 @@ def run_detector(detector: Path, target: str) -> tuple[int, str]:
     return r.returncode, (r.stdout + r.stderr).strip()
 
 
+# The detector's own contract (cli/main.mjs): exit 2 when it found anything, 0 when it found
+# nothing. Anything else is a crash. The control used to be read off the TEXT ("anti-patterns
+# found" and not " 0 anti-patterns"), which read "0 anti-patterns found." at the start of the
+# output as a control that fired (dc-04 test, red on the old script).
+DETECTOR_FOUND = 2
+
+
+@contextlib.contextmanager
+def control_server(html: str):
+    """The negative control on a loopback port of its own, so it goes through the same URL
+    engine as the pages without being written into the round: under seal the round is served
+    from memory, and a control written beside the pages would be a 404 there (dc-04)."""
+    d = Path(tempfile.mkdtemp(prefix="impeccable-control-"))
+    (d / ".impeccable-control.html").write_text(html)
+    handler = lambda *a, **k: _Quiet(*a, directory=str(d), **k)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{srv.server_address[1]}/.impeccable-control.html"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        shutil.rmtree(d, ignore_errors=True)
+
+
+class _Quiet(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+
+def served_bytes_differ(url: str, local: Path) -> str | None:
+    """None when the URL serves exactly the local file's bytes, else why not. A verdict about
+    a page the browser was not given is not a verdict about that page (the dc-03 rule)."""
+    try:
+        with urllib.request.urlopen(url, timeout=30) as r:
+            got = r.read()
+    except OSError as e:
+        return f"could not fetch {url}: {e}"
+    if hashlib.sha256(got).digest() != hashlib.sha256(local.read_bytes()).digest():
+        return f"served bytes differ from {local.name} at {url}"
+    return None
+
+
 def engine_of(output: str, target: str) -> str:
     """Which engine actually ran. The detector does not say, and it exits 0 when the
     browser engine is unavailable, so this is read off the error text rather than
@@ -98,7 +152,8 @@ def engine_of(output: str, target: str) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("round")
-    ap.add_argument("--url-base", default="http://127.0.0.1:8793")
+    ap.add_argument("--url-base", required=True,
+                    help="the served round; no default, so a leftover server is never measured")
     ap.add_argument("--detector")
     ap.add_argument("--control")
     a = ap.parse_args()
@@ -124,9 +179,6 @@ def main() -> int:
     w("")
 
     # --- the control, first, so a dead detector cannot look like a clean report
-    ctrl_path = Path(a.control).expanduser() if a.control else rd / ".impeccable-control.html"
-    if not a.control:
-        ctrl_path.write_text(CONTROL_HTML)
     w("=== NEGATIVE CONTROL (a deliberately slop page; these results are only worth")
     w("    reading because this one trips) ===")
     # The control must go through the SAME engine as the pages. Running it statically
@@ -134,12 +186,15 @@ def main() -> int:
     # the browser engine's zeros unproven -- a control that cannot fail for the engine
     # you care about is decoration (2026-09-15, caught the first time puppeteer was
     # present). URL first, falling back only if the browser engine is unavailable.
-    ctrl_target = f"{a.url_base.rstrip('/')}/{ctrl_path.name}" if ctrl_path.parent == rd else str(ctrl_path)
-    crc, cout = run_detector(detector, ctrl_target)
-    if "unavailable" in engine_of(cout, ctrl_target):
-        ctrl_target = str(ctrl_path)
+    html = Path(a.control).expanduser().read_text() if a.control else CONTROL_HTML
+    with control_server(html) as ctrl_target:
         crc, cout = run_detector(detector, ctrl_target)
-    ctrl_fired = "anti-patterns found" in cout and " 0 anti-patterns" not in cout
+        if "unavailable" in engine_of(cout, ctrl_target):
+            fallback = Path(tempfile.mkdtemp(prefix="impeccable-control-")) / ".impeccable-control.html"
+            fallback.write_text(html)
+            crc, cout = run_detector(detector, str(fallback))
+            ctrl_target = str(fallback)
+    ctrl_fired = crc == DETECTOR_FOUND
     w(f"control: {ctrl_target}")
     w(f"engine: {engine_of(cout, ctrl_target)}")
     for ln in cout.splitlines():
@@ -150,9 +205,13 @@ def main() -> int:
     # --- the pages, browser engine asked for first
     w("=== THE PAGES ===")
     browser_ok = None
-    worst = 0
+    flagged, broken = [], []
     for p in pages:
         url = f"{a.url_base.rstrip('/')}/{p.name}"
+        why = served_bytes_differ(url, p)
+        if why:
+            print(f"could not measure: {why}", file=sys.stderr)
+            return 2
         rc, out = run_detector(detector, url)
         eng = engine_of(out, url)
         if browser_ok is None:
@@ -164,7 +223,10 @@ def main() -> int:
         w(f"    engine: {eng}")
         for ln in (out or "(no output)").splitlines():
             w("    " + ln)
-        worst = max(worst, rc)
+        if rc == DETECTOR_FOUND:
+            flagged.append(p.name)
+        elif rc != 0:
+            broken.append(f"{p.name} (detector exit {rc})")
     w("")
 
     w("=== WHAT THIS RUN COULD NOT SEE ===")
@@ -178,15 +240,21 @@ def main() -> int:
         w("script applies at runtime, or the type-hierarchy ratio as rendered. To close")
         w("it: npm install puppeteer beside the detector. Founder decision, because it")
         w("pulls a Chromium download.")
-    if not a.control:
-        ctrl_path.unlink(missing_ok=True)
+    w("")
+    w(f"pages flagged: {flagged or 'none'}")
+    w(f"control fired: {'YES' if ctrl_fired else 'NO'}")
 
     out_path = rd / "checks" / "impeccable.txt"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n")
     print(f"wrote {out_path}")
-    print(f"control fired: {ctrl_fired}; browser engine: {bool(browser_ok)}")
-    return 0 if ctrl_fired else 1
+    print(f"control fired: {ctrl_fired}; browser engine: {bool(browser_ok)}; flagged: {flagged}")
+    if broken:
+        print(f"could not measure: the detector crashed on {broken}", file=sys.stderr)
+        return 2
+    if not ctrl_fired:
+        return 1
+    return 3 if flagged else 0
 
 
 if __name__ == "__main__":
