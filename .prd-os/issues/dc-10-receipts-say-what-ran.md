@@ -1,7 +1,7 @@
 ---
 id: dc-10-receipts-say-what-ran
 title: Receipts record the stages that ran, and the passive gate honors a bare receipt only when git shows it predates the cutover
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -33,4 +33,32 @@ seal writes a stages list per page (floor, vision, craft, gap, impeccable, reade
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Receipts record the stages that ran, and the passive gate honors a bare receipt only when git shows it predates the cutover
+- [x] Receipts record the stages that ran, and the passive gate honors a bare receipt only when git shows it predates the cutover (DELIVERED: receipts record the gate and each stage; the passive gate believes a receipt only at the gate's own path, with exit 0, a standard stage per page and the round digest; a bare receipt only through git history; cached by a stat fingerprint with ctime and inode. Consulting: 32/32 COMPLETE. Moved: ASK-1826 (grandfathered/corrected binding, ancestry, output sha, skip list), ASK-1827 (same-user forgery, CI).)
+
+## Amendments
+
+### 2026-09-19T02:38:52Z
+Reason: Two tests outside dc-10's allowed_files assert the pre-dc-10 digest rule and must flip with it: test_dc_served_round.py::AssetDigest::test_the_chains_own_records_do_not_move_the_digest and test_design_chain_gate.py::TestPasses::test_full_chain_passes_send_and_stop. Both encode the behavior dc-10 deliberately reverses (critique.md/impeccable.txt/reader-runs.jsonl now move the digest; a screenshot must land before seal, not after). Adding them to allowed_files so the issue's own scope covers the tests it breaks, per its stated acceptance criteria. (Sana, 2026-09-19)
+
+Before:
+- allowed_files: ['q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-gate.py', 'q-system/.q-system/scripts/test/test_dc_receipts.py']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_dc_receipts.py']
+- disallowed_files: []
+
+After:
+- allowed_files: ['q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-gate.py', 'q-system/.q-system/scripts/test/test_dc_receipts.py', 'q-system/.q-system/scripts/test/test_dc_served_round.py', 'q-system/.q-system/scripts/test_design_chain_gate.py']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_dc_receipts.py']
+- disallowed_files: []
+
+### 2026-09-19T03:20:24Z
+Reason: Sana's triage 2026-09-19 of dc-10 review round 1 (92e9f77c): ship F1 (bind to the running gate's own path, exit 0), F2 (a standard stage per page), F3 (ctime/inode in the cache fingerprint), F12 (receipt shape), tests for F16/F17, and the DIGEST SCOPE sentence; move grandfathered/corrected/old-format binding and output shas to ASK-1826, same-user forgery to ASK-1827.
+
+Before:
+- allowed_files: ['q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-gate.py', 'q-system/.q-system/scripts/test/test_dc_receipts.py', 'q-system/.q-system/scripts/test/test_dc_served_round.py', 'q-system/.q-system/scripts/test_design_chain_gate.py']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_dc_receipts.py']
+- disallowed_files: []
+
+After:
+- allowed_files: ['q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-gate.py', 'q-system/.q-system/scripts/test/test_dc_receipts.py', 'q-system/.q-system/scripts/test/test_dc_served_round.py', 'q-system/.q-system/scripts/test_design_chain_gate.py']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_dc_receipts.py']
+- disallowed_files: []
