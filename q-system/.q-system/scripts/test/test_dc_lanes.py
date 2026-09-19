@@ -134,5 +134,39 @@ class Lanes(dcg.Base):
         self.assertEqual(self.status()[0], 2)
 
 
+class RealGateLaneRules(unittest.TestCase):
+    """The lane rules at the gate's tracked path, not the copy beside the stubs."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        import shutil
+        import tempfile
+        spec = importlib.util.spec_from_file_location("dc20_real_gate", Path(dcg.REAL_GATE))
+        cls.gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.gate)
+        cls.tmp = Path(tempfile.mkdtemp(prefix="dc20-real-"))
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, True)
+
+    def lane_of(self, text):
+        rd = Path(__import__("tempfile").mkdtemp(dir=self.tmp))
+        if text is not None:
+            (rd / "craft-manifest.json").write_text(text)
+        return self.gate.round_lane(rd)
+
+    def test_the_lane_comes_from_the_manifest(self):
+        self.assertEqual(self.lane_of(None), "site")
+        self.assertEqual(self.lane_of(json.dumps({"lane": "motion"})), "motion")
+        self.assertEqual(self.lane_of(json.dumps({"lane": "video"})), "site")
+        self.assertEqual(self.lane_of("{not json"), "site")
+
+    def test_a_not_applicable_row_is_believed_only_for_its_non_site_lane(self):
+        row = self.gate.na_record("gap", "brand")
+        self.assertTrue(self.gate._believed_na(row, "brand"))
+        self.assertFalse(self.gate._believed_na(row, "site"))
+        self.assertFalse(self.gate._believed_na(row, "deck"))
+        self.assertFalse(self.gate._believed_na(self.gate.na_record("readers", "brand"), "brand"))
+
+
 if __name__ == "__main__":
     unittest.main()
