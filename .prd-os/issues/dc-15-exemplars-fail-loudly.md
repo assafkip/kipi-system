@@ -1,7 +1,7 @@
 ---
 id: dc-15-exemplars-fail-loudly
 title: A malformed exemplars.json refuses, and exemplar citation has a floor
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -31,4 +31,4 @@ The except ValueError: named = [] branch becomes a refusal. directions.md must c
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] A malformed exemplars.json refuses, and exemplar citation has a floor
+- [x] A malformed exemplars.json refuses, and exemplar citation has a floor
