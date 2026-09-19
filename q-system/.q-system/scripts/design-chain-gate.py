@@ -186,7 +186,25 @@ def clean_env() -> dict:
     return {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
 
 
-def run_producer(name: str, args: list[str]) -> tuple[int, str]:
+def producer_timeout(cfg: dict) -> tuple[float | None, str | None]:
+    """(seconds, None), or (None, why) when the config names a value that is not a positive
+    number. Read from the design-chain.json seal holds, `seal.producer_timeout_s`; absent means
+    the coded default. dc-05: the timeout was a constant nobody could lower, so a round that
+    should fail fast waited ten minutes per producer."""
+    block = cfg.get("seal", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(block, dict):
+        return None, f"{CONFIG_NAME} `seal` is not an object"
+    if "producer_timeout_s" not in block:
+        return PRODUCER_TIMEOUT_S, None
+    v = block["producer_timeout_s"]
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
+        return None, (f"{CONFIG_NAME} seal.producer_timeout_s is {v!r}; it must be a positive number "
+                      f"of seconds, or absent for the default {PRODUCER_TIMEOUT_S}")
+    return float(v), None
+
+
+def run_producer(name: str, args: list[str], timeout: float = PRODUCER_TIMEOUT_S,
+                 stage: str | None = None) -> tuple[int, str]:
     """(exit code, tail of output). A producer that is missing, hangs or cannot start is
     exit 2: it could not measure, and could-not-measure is never a pass."""
     script = HERE / name
@@ -194,9 +212,9 @@ def run_producer(name: str, args: list[str]) -> tuple[int, str]:
         return 2, f"could not measure: producer missing at {script}"
     try:
         r = subprocess.run([sys.executable, "-E", "-s", str(script), *args], capture_output=True,
-                           text=True, timeout=PRODUCER_TIMEOUT_S, env=clean_env())
+                           text=True, timeout=timeout, env=clean_env())
     except subprocess.TimeoutExpired:
-        return 2, f"could not measure: {name} timed out after {PRODUCER_TIMEOUT_S}s"
+        return 2, f"could not measure: stage '{stage or name}' ({name}) timed out after {timeout:g}s"
     except OSError as e:
         return 2, f"could not measure: {name} did not start: {e}"
     tail = " | ".join((r.stdout + r.stderr).strip().splitlines()[-4:])
@@ -580,6 +598,16 @@ def _copy_back(snap: RoundSnapshot, rel: str) -> None:
 def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tuple[str, list[str]]]:
     bad: list[tuple[str, list[str]]] = []
     rd = snap.live
+    timeout, why = producer_timeout(cfg)
+    if why:
+        return [("seal", [why])]
+
+    def timed(stage: str, label: str, name: str, args: list[str]) -> tuple[int, str]:
+        # one line per stage run, so a slow seal says where its time went (dc-05)
+        t0 = time.monotonic()
+        rc, tail = run_producer(name, args, timeout, stage)
+        print(f"stage {stage} {label}: {time.monotonic() - t0:.2f}s (exit {rc})")
+        return rc, tail
     std_path = snap.dir / "standard.json"
     # The producers find design-chain.json and references/ by walking up from the round, so
     # both are handed over by path: the HELD copies (ASK-1831), the bytes the chain reads too.
@@ -593,7 +621,7 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
             args = [str(sp), "--url", f"{base}/{urllib.parse.quote(p.name)}"]
             if cfg_path:
                 args += ["--config", str(cfg_path)]
-            rc, tail = run_producer(STANDARD_PRODUCER, args)
+            rc, tail = timed("standard", p.name, STANDARD_PRODUCER, args)
             snap.stages.setdefault(p.name, []).append(stage_record("standard", STANDARD_PRODUCER, rd, rc))
             entry = _fresh_standard_entry(std_path, sp, snap.sha(p.name))
             _copy_back(snap, "standard.json")
@@ -616,7 +644,7 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
             gap_path = snap.dir / gap_rel
             gap_path.unlink(missing_ok=True)          # same rule: only this run may write it
             gap_path.parent.mkdir(parents=True, exist_ok=True)
-            rc, tail = run_producer(GAP_PRODUCER, [str(snap.dir), "--write", "--url-base", base,
+            rc, tail = timed("gap", rd.name, GAP_PRODUCER, [str(snap.dir), "--write", "--url-base", base,
                                                    "--refs", str(_held_path(snap.root, rd.parent / "references"))])
             snap.stages.setdefault("", []).append(stage_record("gap", GAP_PRODUCER, rd, rc))
             _copy_back(snap, gap_rel)
@@ -639,7 +667,7 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
             imp_path.parent.mkdir(parents=True, exist_ok=True)
             # every page this seal seals, by name: the producer refuses one it cannot scan and
             # one it was not handed (review of d0492b36, finding-2)
-            rc, tail = run_producer(IMPECCABLE_PRODUCER, [str(snap.dir), "--url-base", base,
+            rc, tail = timed("impeccable", rd.name, IMPECCABLE_PRODUCER, [str(snap.dir), "--url-base", base,
                                                           *[x for p in pages for x in ("--page", p.name)]])
             snap.stages.setdefault("", []).append(stage_record("impeccable", IMPECCABLE_PRODUCER, rd, rc))
             _copy_back(snap, imp_rel)
