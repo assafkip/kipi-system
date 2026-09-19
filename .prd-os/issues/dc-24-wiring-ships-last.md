@@ -1,7 +1,7 @@
 ---
 id: dc-24-wiring-ships-last
 title: Hook entries and the plugin command ship only after round A refuses
-status: open
+status: in-progress
 priority: p2
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -39,4 +39,4 @@ Adds the gate's three hook entries and the door's two to settings-template.json 
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Hook entries and the plugin command ship only after round A refuses
+- [x] Hook entries and the plugin command ship only after round A refuses
