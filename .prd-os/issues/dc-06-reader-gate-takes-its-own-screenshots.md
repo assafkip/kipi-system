@@ -1,7 +1,7 @@
 ---
 id: dc-06-reader-gate-takes-its-own-screenshots
 title: design-reader-gate.py lives in the skeleton, shoots the served page itself, and rows carry the HTML and PNG shas
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -30,6 +30,9 @@ New script in the skeleton. It renders each page at the configured viewports wit
 
 
 One real model run on one page (a few cents) proves the render, hash and model path end to end; its row, with real provenance, is recorded in the closeout (Sana, 2026-09-19).
+
+
+Answers are keyed by question number and a reader counts only with exactly keys 1..N; a wrong key set is retried up to 2 more times (never on what an answer says), provenance.attempts on every row, all-or-nothing after that. Measured on the real path 2026-09-19 before the change: 4 direct calls returned 9, 8, 9, 9 answers to 9 questions (Sana).
 
 ## Deliverables
 

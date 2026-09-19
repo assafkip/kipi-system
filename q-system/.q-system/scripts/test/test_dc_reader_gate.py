@@ -33,6 +33,10 @@ ANSWERS = ["yes, retyping", "workflow fixes", "fewer errors", "the example", "a 
            "ops consultant", "STAY: clear", "nothing", "unknown"]
 
 
+def keyed(answers):
+    return {str(i + 1): a for i, a in enumerate(answers)}
+
+
 def sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
@@ -73,7 +77,7 @@ class Base(unittest.TestCase):
         self.persona.write_text("You run a small tax practice. You are paid to be accurate.\n")
         self.config()
         self.answers = self.tmp / "answers.json"
-        self.answers.write_text(json.dumps(ANSWERS))
+        self.answers.write_text(json.dumps(keyed(ANSWERS)))
         self.srv = Served(self.rd)
         self.addCleanup(self.srv.close)
         self.keep = self.tmp / "screens"
@@ -161,6 +165,7 @@ FAKE_CLAUDE = r"""#!/usr/bin/env python3
 import json, os, sys
 open(os.environ["FAKE_LOG"], "a").write(json.dumps(sys.argv[1:]) + "\n")
 answers = json.loads(os.environ.get("FAKE_ANSWERS", "[]"))
+answers = {str(i + 1): a for i, a in enumerate(answers)}
 print(json.dumps({"result": json.dumps({"answers": answers}),
                   "modelUsage": {os.environ.get("FAKE_MODEL", "claude-haiku-4-5"): {}}}))
 """
@@ -192,16 +197,16 @@ class ReviewOfC911e33f(Base):
         return self.log.read_text().splitlines() if self.log.is_file() else []
 
     def test_a_reader_with_the_wrong_number_of_answers_refuses(self):
-        self.answers.write_text(json.dumps(["unknown"]))
+        self.answers.write_text(json.dumps({"1": "unknown"}))
         rc, out = self.run_gate()
         self.assertEqual(rc, 2, out)
-        self.assertIn("answers", out)
+        self.assertIn("answers not keyed exactly 1..9", out)
 
     def test_the_control_passes_only_when_the_answer_starts_with_unknown(self):
         for control, contaminated in (("Unknown. Not on the page.", False),
                                       ("Stanford, though his school is not unknown to me", True)):
             with self.subTest(control=control):
-                self.answers.write_text(json.dumps(ANSWERS[:-1] + [control]))
+                self.answers.write_text(json.dumps(keyed(ANSWERS[:-1] + [control])))
                 rc, out = self.run_gate()
                 self.assertEqual(rc, 0, out)
                 self.assertIs(self.rows()[0]["contaminated"], contaminated)
@@ -240,7 +245,7 @@ class ReviewOfC911e33f(Base):
     def test_questions_come_from_config_and_the_default_is_not_personal(self):
         qs = ["What is this page for?", "Would you stay or leave?", "CONTROL: What year was it founded?"]
         self.config(questions=qs)
-        self.answers.write_text(json.dumps(["a tool", "STAY", "unknown"]))
+        self.answers.write_text(json.dumps(keyed(["a tool", "STAY", "unknown"])))
         rc, out = self.run_gate()
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.rows()[0]["_provenance"]["questions_sha256"], sha(json.dumps(qs).encode()))
@@ -250,6 +255,50 @@ class ReviewOfC911e33f(Base):
         spec.loader.exec_module(mod)
         words = " ".join(mod.QUESTIONS).lower().replace("?", " ").replace(",", " ").split()
         self.assertFalse({"he", "him", "his", "she", "her"} & set(words), mod.QUESTIONS)
+
+
+class KeyedAnswersAndRetries(Base):
+    """A real reader skipped or merged a question in 2 of 5 real calls on 2026-09-19. Answers are
+    keyed by question number, a wrong key set is retried, and nothing else is (Sana)."""
+
+    def responses(self, *resps):
+        self.answers.write_text(json.dumps({"responses": list(resps)}))
+
+    def test_a_missing_key_is_retried_and_the_retry_is_recorded(self):
+        short = keyed(ANSWERS)
+        del short["5"]
+        self.responses(short, keyed(ANSWERS))
+        rc, out = self.run_gate()
+        self.assertEqual(rc, 0, out)
+        r = self.rows()[0]
+        self.assertEqual(r["_provenance"]["attempts"], 2)
+        self.assertEqual(r["answers"], ANSWERS)
+
+    def test_a_missing_key_on_every_attempt_refuses(self):
+        short = keyed(ANSWERS)
+        del short["9"]
+        self.responses(short, short, short, keyed(ANSWERS))
+        rc, out = self.run_gate()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("3 attempts", out)
+
+    def test_the_right_number_of_answers_under_the_wrong_keys_refuses(self):
+        # nine answers keyed 0..8: a count check passes it, the key check must not
+        shifted = {str(i): a for i, a in enumerate(ANSWERS)}
+        self.responses(shifted)
+        rc, out = self.run_gate()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("answers not keyed exactly 1..9", out)
+
+    def test_an_answer_the_run_dislikes_is_never_retried(self):
+        leave = keyed(ANSWERS[:6] + ["LEAVE: generic", "everything", "Stanford"])
+        self.responses(leave, keyed(ANSWERS))
+        rc, out = self.run_gate()
+        self.assertEqual(rc, 0, out)
+        r = self.rows()[0]
+        self.assertEqual(r["_provenance"]["attempts"], 1)
+        self.assertTrue(r["contaminated"])
+        self.assertEqual(r["answers"][6], "LEAVE: generic")
 
 
 if __name__ == "__main__":

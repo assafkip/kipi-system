@@ -111,7 +111,8 @@ def ask_claude(png: Path, system: str, model: str, questions: list[str]) -> dict
     """One fresh reader: a clean temp dir holding only the screenshot, --safe-mode, Read only."""
     prompt = ("Use the Read tool to open the image file 'screen.png' in the current directory. It is a "
               "screenshot of the first screen of a website. Then answer each question in one or two plain "
-              "sentences, as JSON: {\"answers\": [\"...\", ...]} in the same order.\n\n"
+              "sentences, as JSON keyed by question number: {\"answers\": {\"1\": \"...\", \"2\": \"...\"}}, "
+              "one key for every question below and no other keys.\n\n"
               + "\n".join(f"{i + 1}. {q}" for i, q in enumerate(questions)))
     with tempfile.TemporaryDirectory(prefix="reader-") as wd:
         shutil.copy(png, Path(wd) / "screen.png")
@@ -129,9 +130,20 @@ def ask_claude(png: Path, system: str, model: str, questions: list[str]) -> dict
     # so any `claude` on PATH produced rows labelled with the real model (review of c911e33f, adv-4)
     usage = doc.get("modelUsage")
     reported = sorted(usage) if isinstance(usage, dict) else []
-    if not isinstance(answers, list):
-        return {"error": text[-600:]}
     return {"answers": answers, "model_reported": reported}
+
+
+MAX_ATTEMPTS = 3
+
+
+def keyed_answers(obj, n: int) -> list[str] | None:
+    """The answers as a list in question order, or None when the shape is wrong: a dict keyed
+    exactly "1".."n". Positional answers let a skipped or merged question shift every answer after
+    it, so the control was read off another question (4 real calls on 2026-09-19 returned 9, 8, 9, 9
+    answers to 9 questions); a key cannot shift."""
+    if not isinstance(obj, dict) or set(obj) != {str(i) for i in range(1, n + 1)}:
+        return None
+    return [str(obj[str(i)]) for i in range(1, n + 1)]
 
 
 def main(argv: list[str]) -> int:
@@ -143,7 +155,8 @@ def main(argv: list[str]) -> int:
     # required: with a default of claude, a test that forgot to inject spent a model call, and the
     # PYTEST_CURRENT_TEST guard never fires under a unittest run (review of c911e33f, adv-3)
     ap.add_argument("--runner", choices=("claude", "injected"), required=True)
-    ap.add_argument("--answers", help="for --runner injected: a JSON list of answers")
+    ap.add_argument("--answers", help="for --runner injected: a JSON object keyed '1'..'N' used for every "
+                                      "reader, or {\"responses\": [...]} consumed one per model call")
     ap.add_argument("--keep-screens", help="copy every screenshot this run took into DIR")
     a = ap.parse_args(argv)
 
@@ -198,10 +211,18 @@ def main(argv: list[str]) -> int:
         try:
             canned = json.loads(Path(a.answers or "").read_text())
         except (OSError, ValueError) as e:
-            return refuse(f"--runner injected needs --answers FILE (a JSON list): {e}")
-        if not isinstance(canned, list):
-            return refuse("--answers must hold a JSON list of answers")
-        answer = lambda png: {"answers": canned}
+            return refuse(f"--runner injected needs --answers FILE (JSON): {e}")
+        seq = canned.get("responses") if isinstance(canned, dict) and "responses" in canned else None
+        if seq is not None and (not isinstance(seq, list) or not seq):
+            return refuse("--answers responses must be a non-empty list")
+        calls = {"n": 0}
+
+        def answer(png):
+            if seq is None:
+                return {"answers": canned}
+            got = seq[min(calls["n"], len(seq) - 1)]
+            calls["n"] += 1
+            return {"answers": got}
         model_used = "injected"
 
     html = sorted(p.name for p in rd.iterdir() if p.is_file() and p.suffix.lower() in HTML_SUFFIXES)
@@ -236,16 +257,25 @@ def main(argv: list[str]) -> int:
                     keep.mkdir(parents=True, exist_ok=True)
                     shutil.copy(png, keep / png.name)
                 for i in range(n):
-                    res = answer(png)
-                    if "answers" not in res:
-                        return refuse(f"reader {i + 1} on {name} {vp}: {res.get('error', 'no answers')}")
-                    ans = [str(x) for x in res["answers"]]
-                    if len(ans) != len(questions):
-                        # a skipped question shifts every answer after it, and the control would be
-                        # read off another question's answer (review of c911e33f, adv-2/std-8)
-                        return refuse(f"reader {i + 1} on {name} {vp} gave {len(ans)} answers to "
-                                      f"{len(questions)} questions")
-                    row_prov = dict(prov, model_reported=res.get("model_reported", ["injected"]))
+                    # Retried ONLY on a structural failure (no answers, the wrong key set), never on
+                    # what an answer says: retrying on content would let a run pick the answers it
+                    # likes (Sana, 2026-09-19). Still all-or-nothing after MAX_ATTEMPTS.
+                    ans, why = None, ""
+                    for attempt in range(1, MAX_ATTEMPTS + 1):
+                        res = answer(png)
+                        if "answers" not in res:
+                            why = res.get("error", "no answers")
+                            if "answering model" in why:
+                                return refuse(f"reader {i + 1} on {name} {vp}: {why}")
+                            continue
+                        ans = keyed_answers(res["answers"], len(questions))
+                        if ans is not None:
+                            break
+                        why = (f"answers not keyed exactly 1..{len(questions)}: got "
+                               f"{sorted(res['answers']) if isinstance(res['answers'], dict) else type(res['answers']).__name__}")
+                    if ans is None:
+                        return refuse(f"reader {i + 1} on {name} {vp}, {MAX_ATTEMPTS} attempts: {why}")
+                    row_prov = dict(prov, model_reported=res.get("model_reported", ["injected"]), attempts=attempt)
                     rows.append({"page": name, "viewport": vp, "instance": i + 1,
                                  "html_sha256": html_sha, "png_sha256": png_sha, "answers": ans,
                                  # the control's honest answer IS "unknown"; containing the word
