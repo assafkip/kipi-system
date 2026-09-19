@@ -111,20 +111,59 @@ JS = """
 """
 
 
+def _stay_in_the_round(ctx, url: str, refused: list) -> None:
+    """Route every request of this browser context: the served round's origin (scheme, host AND
+    port, compared parsed) goes through; anything else is aborted and recorded, and so is every
+    WebSocket (recorded and left unconnected: ws.close() inside the handler hangs the sync API).
+    ASK-1837: a stylesheet from another origin made a 9px page measure 18px and the round sealed
+    on bytes that fail, while seal's byte compare saw only round files. The reader gate carries the
+    same guard (ASK-1836)."""
+    import urllib.parse as _up
+
+    def origin(u):
+        s = _up.urlsplit(u)
+        return (s.scheme, s.hostname, s.port)
+    allowed = origin(url)
+
+    def gate(route):
+        if origin(route.request.url) == allowed:
+            route.continue_()
+        else:
+            if route.request.url not in refused:
+                refused.append(route.request.url)
+            route.abort()
+
+    def no_socket(ws):
+        if ws.url not in refused:
+            refused.append(ws.url)
+    ctx.route("**/*", gate)
+    ctx.route_web_socket("**/*", no_socket)
+
+
+def _refuse_outside(refused: list) -> None:
+    if refused:
+        raise RuntimeError(f"the page reached outside the served round for {refused[:5]}; the "
+                           f"measurement would be of something the seal never hashed")
+
+
 def measure(url: str, cfg: dict) -> list[dict]:
     from playwright.sync_api import sync_playwright
     out = []
+    refused: list[str] = []
     with sync_playwright() as p:
         b = p.chromium.launch()
         for w, h in cfg["viewports"]:
-            pg = b.new_page(viewport={"width": w, "height": h})
+            ctx = b.new_context(viewport={"width": w, "height": h}, service_workers="block")
+            _stay_in_the_round(ctx, url, refused)
+            pg = ctx.new_page()
             pg.goto(url, wait_until="networkidle")
             pg.wait_for_timeout(300)
             m = pg.evaluate(JS.replace("LARGE", str(cfg["large_px"])), cfg["signal"])
             m["viewport"] = f"{w}x{h}"
-            pg.close()
+            ctx.close()
             out.append(m)
         b.close()
+    _refuse_outside(refused)
     return out
 
 

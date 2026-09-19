@@ -299,6 +299,41 @@ def floors(ex: dict) -> dict:
     return out
 
 
+def _stay_in_the_round(ctx, url: str, refused: list) -> None:
+    """Route every request of this browser context: the served round's origin (scheme, host AND
+    port, compared parsed) goes through; anything else is aborted and recorded, and so is every
+    WebSocket (recorded and left unconnected: ws.close() inside the handler hangs the sync API).
+    ASK-1837: a stylesheet from another origin made a 9px page measure 18px and the round sealed
+    on bytes that fail, while seal's byte compare saw only round files. The reader gate carries the
+    same guard (ASK-1836)."""
+    import urllib.parse as _up
+
+    def origin(u):
+        s = _up.urlsplit(u)
+        return (s.scheme, s.hostname, s.port)
+    allowed = origin(url)
+
+    def gate(route):
+        if origin(route.request.url) == allowed:
+            route.continue_()
+        else:
+            if route.request.url not in refused:
+                refused.append(route.request.url)
+            route.abort()
+
+    def no_socket(ws):
+        if ws.url not in refused:
+            refused.append(ws.url)
+    ctx.route("**/*", gate)
+    ctx.route_web_socket("**/*", no_socket)
+
+
+def _refuse_outside(refused: list) -> None:
+    if refused:
+        raise RuntimeError(f"the page reached outside the served round for {refused[:5]}; the "
+                           f"measurement would be of something the seal never hashed")
+
+
 def probe_pages(round_dir: Path, url_base: str, names: list[str]) -> dict:
     import importlib.util
     cap_path = Path(__file__).resolve().parent / "design-exemplar-capture.py"
@@ -307,17 +342,21 @@ def probe_pages(round_dir: Path, url_base: str, names: list[str]) -> dict:
     spec.loader.exec_module(cap)
     from playwright.sync_api import sync_playwright
     out = {}
+    refused: list[str] = []
     with sync_playwright() as pw:
         b = pw.chromium.launch()
         for name in names:
-            pg = b.new_page(viewport={"width": 1440, "height": 900})
+            ctx = b.new_context(viewport={"width": 1440, "height": 900}, service_workers="block")
+            _stay_in_the_round(ctx, f"{url_base}/{name}", refused)
+            pg = ctx.new_page()
             pg.goto(f"{url_base}/{name}", wait_until="networkidle")
             pg.wait_for_timeout(1200)
             measured = pg.evaluate(cap.PROBE)
             measured["ink"] = ink_for(round_dir / (Path(name).stem + ".png"))
             out[name] = measured
-            pg.close()
+            ctx.close()
         b.close()
+    _refuse_outside(refused)
     return out
 
 
