@@ -24,7 +24,9 @@ def frontmatter(p: Path) -> dict:
     for line in (m.group(1).splitlines() if m else []):
         k, sep, v = line.partition(":")
         if sep and not line.startswith(" "):
-            out[k.strip()] = v.strip().strip('"')
+            # YAML says False, 'false' and a trailing comment are the same value
+            v = v.split("#")[0].strip().strip("'\"").casefold()
+            out[k.strip()] = v
     return out
 
 
@@ -52,10 +54,16 @@ class OneDoorMenu(unittest.TestCase):
                  if frontmatter(p).get("user-invocable") != "false"]
         self.assertEqual(shown, [], "a design engine is still a slash command of its own")
 
-    def test_every_skill_in_the_design_plugin_is_a_listed_engine(self):
-        design = {n for n, p in repo_skills().items() if p.parts[-4] == "kipi-design"}
-        self.assertTrue(design)
-        self.assertEqual(design - engines(), set(), "a design skill the door does not know")
+    def test_every_design_shaped_skill_in_the_repo_is_a_listed_engine(self):
+        # not only kipi-design: deck-ai lives in kipi-core and is an engine. A skill whose name reads
+        # as design work must be in the registry, or the door does not know it (review of 566ca38d)
+        # unambiguous design-OUTPUT words only: "brand" alone reads as content (linkedin-brand is a
+        # writing skill), and the kipi-design clause already covers the brand engine
+        words = ("design", "deck", "slide", "motion", "video", "ui", "ux", "logo", "art")
+        shaped = {n for n, p in repo_skills().items()
+                  if p.parts[-4] == "kipi-design" or any(w in n.casefold().split("-") for w in words)}
+        self.assertTrue(shaped)
+        self.assertEqual(shaped - engines(), set(), "a design-shaped skill the door does not know")
 
     def test_both_routing_rules_name_the_door_and_its_test(self):
         for rule in RULES:
