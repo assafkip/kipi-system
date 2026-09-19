@@ -1259,13 +1259,21 @@ def craft_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None) -> li
             # a site and not re-reading the GROUP is the forgettable step, so it is a
             # blocked state instead of a promise.
             roster = tpath.parent / "exemplars.json"
-            if roster.is_file():
-                # a roster that does not parse used to read as empty, which turned the whole-set
-                # check off (dc-15, RCA 2026-09-18 C8); it refuses instead
+            named = []
+            if roster.exists() or roster.is_symlink():
+                # a roster that does not parse, or parses to the wrong shape, used to read as empty,
+                # which turned the whole-set check off (dc-15, RCA 2026-09-18 C8); it refuses instead
                 try:
                     data = json.loads(roster.read_text())
-                    named = [str(e.get("url", "")) for e in data.get("exemplars", [])]
-                except (OSError, ValueError, AttributeError, TypeError) as e:
+                    items = data["exemplars"]
+                    if not isinstance(items, list):
+                        raise TypeError("'exemplars' is not a list")
+                    for e in items:
+                        u = e.get("url") if isinstance(e, dict) else None
+                        if not isinstance(u, str) or not u.strip():
+                            raise TypeError(f"entry {e!r} has no url")
+                        named.append(u)
+                except (OSError, ValueError, KeyError, AttributeError, TypeError) as e:
                     named = []
                     probs.append(f"{roster} cannot be read as {{\"exemplars\": [{{\"url\": ...}}]}}: {e}. "
                                  f"Fix it; a broken roster is not an empty one.")
@@ -2461,17 +2469,22 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
                      f"{'one is' if need_dirs == 1 else 'three are'} required")
     ex_dir = (cfg_path.parent / cfg.get("exemplars_dir", "design/exemplars")) if cfg_path else None
     if ex_dir and ex_dir.is_dir():
-        ex = sorted(p.name for p in ex_dir.iterdir() if p.is_file() and not p.name.startswith("."))
+        # every exemplar counts, nested or dot-named: hiding one must not lower the floor (dc-15 adv-3);
+        # only OS litter is skipped
+        ex = sorted({p.name for p in ex_dir.rglob("*") if p.is_file()
+                     and p.name != ".DS_Store" and not p.name.startswith("._")})
         # a floor, not "any one" (dc-15): default all of them up to 3; a name is cited whole, so
-        # "data.png" does not cite "a.png" (the substring class dc-13's review found)
-        floor = cfg.get("exemplar_floor", min(len(ex), 3))
-        if not isinstance(floor, int) or isinstance(floor, bool) or floor < 1:
-            probs.append(f"{CONFIG_NAME} exemplar_floor {floor!r} is not a positive integer")
-        elif ex:
-            cited = [n for n in ex if re.search(r"(?<![\w.-])" + re.escape(n) + r"(?![\w.-])", dirs_txt)]
-            if len(cited) < min(floor, len(ex)):
-                probs.append(f"directions.md cites {len(cited)} of the exemplars in {ex_dir}; the floor is "
-                             f"{min(floor, len(ex))}. Not cited: {[n for n in ex if n not in cited]}")
+        # "data.png" does not cite "a.png" (the substring class dc-13's review found), and a sentence's
+        # closing period still cites it (adv-5)
+        if ex:
+            floor = cfg.get("exemplar_floor", min(len(ex), 3))
+            if not isinstance(floor, int) or isinstance(floor, bool) or floor < 1:
+                probs.append(f"{CONFIG_NAME} exemplar_floor {floor!r} is not a positive integer")
+            else:
+                cited = [n for n in ex if re.search(r"(?<![\w.-])" + re.escape(n) + r"(?![\w-]|\.\w)", dirs_txt)]
+                if len(cited) < min(floor, len(ex)):
+                    probs.append(f"directions.md cites {len(cited)} of the exemplars in {ex_dir}; the floor is "
+                                 f"{min(floor, len(ex))}. Not cited: {[n for n in ex if n not in cited]}")
 
     # critique: nine questions per direction (count of numbered answers)
     crit = (rd / "critique.md").read_text() if (rd / "critique.md").is_file() else ""

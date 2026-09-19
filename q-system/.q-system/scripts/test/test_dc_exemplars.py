@@ -85,6 +85,25 @@ class Exemplars(unittest.TestCase):
         self.exemplars("stripe.png", ".DS_Store")
         self.assertEqual(self.direction_probs("# A\nstripe.png\n# B\n# C\n"), [])
 
+    def test_an_empty_exemplars_dir_needs_no_citation(self):
+        # std-1, adv-4: no exemplars, no floor; the message must not blame an unset config key
+        self.assertEqual(self.direction_probs("# A\n# B\n# C\n"), [])
+        (self.ex / ".DS_Store").write_text("x")
+        self.assertEqual(self.direction_probs("# A\n# B\n# C\n"), [])
+
+    def test_hidden_or_nested_exemplars_still_count(self):
+        # adv-3: hiding or nesting exemplars must not lower the default floor
+        self.exemplars("a.png", ".b.png")
+        (self.ex / "set").mkdir()
+        (self.ex / "set" / "c.png").write_text("shot")
+        probs = self.direction_probs("# A\na.png\n# B\n# C\n")
+        self.assertTrue(any(".b.png" in p and "c.png" in p for p in probs), probs)
+
+    def test_a_name_at_the_end_of_a_sentence_is_cited(self):
+        # adv-5
+        self.exemplars("a.png", "b.png")
+        self.assertEqual(self.direction_probs("# A\nBuilt from a.png and b.png.\n# B\n# C\n"), [])
+
     # -- roster
     def roster_probs(self, roster_text):
         (self.inst / "design" / "teardown.md").write_text("stripe.com is dense\n")
@@ -103,6 +122,28 @@ class Exemplars(unittest.TestCase):
     def test_a_roster_of_the_wrong_shape_refuses(self):
         probs = self.roster_probs(json.dumps(["https://stripe.com"]))
         self.assertTrue(any("cannot be read" in p for p in probs), probs)
+
+    def test_a_roster_missing_its_list_or_urls_refuses(self):
+        # std-2, adv-1
+        for bad in ({}, {"exemplar": [{"url": "https://stripe.com"}]}, {"exemplars": {}},
+                    {"exemplars": [{"href": "https://stripe.com"}]}, {"exemplars": [{"url": ""}]}):
+            probs = self.roster_probs(json.dumps(bad))
+            self.assertTrue(any("cannot be read" in p for p in probs), (bad, probs))
+
+    def test_a_roster_that_is_not_a_file_refuses(self):
+        # adv-2
+        (self.inst / "design").mkdir(parents=True, exist_ok=True)
+        (self.inst / "design" / "exemplars.json").mkdir()
+        (self.inst / "design" / "teardown.md").write_text("stripe.com\n")
+        (self.rd / "craft-manifest.json").write_text(json.dumps({"techniques": []}))
+        self.cfg["craft"] = {"require_grounding": "design/teardown.md"}
+        self.write_cfg()
+        probs = [p for p in load_gate().craft_problems(self.rd, self.page, self.cfg, self.cfg_path)
+                 if "exemplars.json" in p]
+        self.assertTrue(any("cannot be read" in p for p in probs), probs)
+
+    def test_an_empty_roster_is_a_roster(self):
+        self.assertEqual(self.roster_probs(json.dumps({"exemplars": []})), [])
 
     def test_a_good_roster_still_checks_the_whole_set(self):
         probs = self.roster_probs(json.dumps({"exemplars": [{"url": "https://stripe.com"},
