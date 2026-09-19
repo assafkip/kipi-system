@@ -85,15 +85,26 @@ BROWSER_ASKS_UNPROMPTED = frozenset({"favicon.ico", "apple-touch-icon.png",
                                      "apple-touch-icon-precomposed.png", "robots.txt"})
 
 
+def _seal_skips() -> frozenset:
+    """The files the seal writes or skips, from the gate itself (one list, not a copy): the reader
+    gate must not show a browser what the seal does not bind (ASK-1838). Missing gate: refuse."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("design_chain_gate", Path(__file__).resolve().parent / "design-chain-gate.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return frozenset(mod._DIGEST_SKIP)
+
+
 def round_files(rd: Path) -> dict[str, bytes]:
     """Every file the readers can be shown, read ONCE. A symlink that resolves out of the round is
     not a round file (it is simply absent, so a page that needs it refuses as unserved), nor is
     this script's own output or a __pycache__."""
     root = rd.resolve()
+    skips = _seal_skips()
     out: dict[str, bytes] = {}
     for p in sorted(rd.rglob("*")):
         rel = p.relative_to(rd).as_posix()
-        if rel == OUTPUT or "__pycache__" in p.parts or not p.is_file():
+        if rel == OUTPUT or rel in skips or "__pycache__" in p.parts or not p.is_file():
             continue
         if root not in p.resolve().parents:
             continue

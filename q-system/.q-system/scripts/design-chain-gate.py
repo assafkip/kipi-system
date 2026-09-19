@@ -624,7 +624,9 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
     # Resolving the config a second time here reached a DIFFERENT file through a symlinked
     # parent (canon 30 by the typed path, 5 by the resolved one).
     cfg_path = snap.cfg_path
-    with served_round(rd, snap.files, snap.missed) as base:
+    # only what the compare AND the digest bind: a page fetched CSS it had hidden in standard.json,
+    # which seal overwrites and both skip, and a 9px page sealed COMPLETE (ASK-1838)
+    with served_round(rd, served_files(snap.files), snap.missed) as base:
         for p in pages:
             sp = snap.dir / p.name
             _drop_prior_verdict(std_path, sp)
@@ -744,6 +746,30 @@ def round_asset_digest(rd: Path) -> str:
 # a running seal and left swapped.
 _SEAL_WRITES = frozenset({"standard.json", f"checks/{GAP_CHECK}", f"checks/{IMPECCABLE_CHECK}", "receipts.json"})
 _DIGEST_SKIP = _SEAL_WRITES | {"corrections.jsonl"}
+# Files a browser may be shown by a seal, and file types a built site hands a browser.
+WEB_SUFFIXES = {".html", ".htm", ".css", ".js", ".mjs", ".svg"}
+
+
+def served_files(files: dict[str, bytes]) -> dict[str, bytes]:
+    """The round a browser is shown: every file except the ones the seal writes or skips, so a 404
+    for them lands in seal's unserved refusal. The reader gate loads this list from here."""
+    return {rel: b for rel, b in files.items() if rel not in _DIGEST_SKIP}
+
+
+def unbound_references(files: dict[str, bytes]) -> dict[str, list[str]]:
+    """{web file: [skipped paths its bytes name]}. A 404 at seal time is not enough: the built
+    site ships the round, so a visitor's fetch of standard.json would succeed (Sana, ASK-1838)."""
+    out = {}
+    for rel, data in files.items():
+        if Path(rel).suffix.lower() in WEB_SUFFIXES:
+            # comments are not references: 8 real consulting stylesheets explain a choice with
+            # "(checks/gap.json)" inside /* */ (measured 2026-09-19 over 6660 web files)
+            code = re.sub(rb"/\*.*?\*/|<!--.*?-->", b" ", data, flags=re.S)
+            code = re.sub(rb"(?m)(^|[\s;{}])//[^\n]*", rb"\1", code)
+            named = sorted(p for p in _DIGEST_SKIP if p.encode() in code)
+            if named:
+                out[rel] = named
+    return out
 
 
 def files_that_differ(a: dict[str, bytes], b: dict[str, bytes]) -> list[str]:
@@ -2096,6 +2122,9 @@ def _seal_snapshot(rd: Path, pages: list[Path], seal_cfg: dict, snap: RoundSnaps
             probs = [x for x in probs if not x.startswith("standard.json for")]
         if probs:
             bad.append((p.name, probs))
+    for rel, named in sorted(unbound_references(snap.files).items()):
+        bad.append((rel, [f"names {named}, which the seal writes or skips and does not bind; a built "
+                          f"site would serve them to visitors. Keep page resources out of those files."]))
     # The declared sources are read from the held round and the held tree, like the chain: seal
     # read them live after the chain, so a source present only inside the window sealed
     # (review of f091da79, finding-3).
