@@ -40,7 +40,9 @@ def _run(repo: Path, script: Path, *args: str, env_extra=None, stdin=None):
     env = dict(os.environ)
     for leak in ("CLAUDE_PROJECT_DIR", "KIPI_HOME", "QROOT"):
         env.pop(leak, None)
-    env.setdefault("PYTHONPATH", str(PRDOS))
+    # prepend, never setdefault: under verify contract 2 the observer is already on
+    # PYTHONPATH, and setdefault then dropped PRDOS ("No module named 'prd_runner'", ASK-1810)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (str(PRDOS), env.get("PYTHONPATH")) if p)
     if env_extra:
         env.update(env_extra)
     return subprocess.run([sys.executable, str(script), *args], input=stdin,

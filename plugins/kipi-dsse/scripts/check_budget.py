@@ -42,11 +42,11 @@ def is_full_suite(cmd: str) -> bool:
         toks = shlex.split(cmd)
     except ValueError:
         toks = cmd.split()
-    if any(t.endswith("verify.sh") for t in toks) and "--full" in toks:
+    if any(t.endswith("verify.sh") for t in toks) and any(t == "--full" or t.startswith("--full=") for t in toks):
         return True
     if "kipi" in [Path(t).name for t in toks] and "check" in toks:
         return True
-    names = [Path(t).name for t in toks]
+    names = ["pytest" if Path(t).name == "py.test" else Path(t).name for t in toks]
     if "pytest" not in names:
         return False
     after = toks[names.index("pytest") + 1:]

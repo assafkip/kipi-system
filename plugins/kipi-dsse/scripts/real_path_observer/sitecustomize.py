@@ -22,7 +22,9 @@ issue's allowed files at their tracked location. A copy in a temp dir logs the t
 LIMITS, stated where the refusal quotes them: Python processes only (a bash script calling a
 bash script is invisible); a child started with PYTHON* variables scrubbed does not load this
 file (its parent's spawn argv still counts); it proves a file was executed at its production
-path, not that any assertion depended on it.
+path, not that any assertion depended on it. It is loaded through PYTHONPATH, so a check that
+treats a non-empty PYTHONPATH as its own (os.environ.setdefault) runs differently when observed:
+test_computed_receipts.py did, and lost its own path (ASK-1810). Prepend, never setdefault.
 
 It shadows the interpreter's own sitecustomize (Homebrew ships one), so it runs that one
 afterwards, found on sys.path without this directory.
@@ -30,6 +32,7 @@ afterwards, found on sys.path without this directory.
 import atexit
 import json
 import os
+import re
 import sys
 
 _LOG = os.environ.get("KIPI_REAL_PATH_LOG")
@@ -50,18 +53,45 @@ def _write(kind, paths):
         pass        # an observer that breaks the observed run would change what it measures
 
 
+_PYTHON = re.compile(r"^python(\d+(\.\d+)?)?$", re.I)
+_TAKES_VALUE = {"-W", "-X", "-Q"}
+
+
+def _str(a):
+    try:
+        a = os.fspath(a)
+    except TypeError:
+        return None
+    return a.decode(errors="replace") if isinstance(a, bytes) else a
+
+
 def _files_in(argv):
-    out = []
-    for a in argv or ():
-        try:
-            a = os.fspath(a)
-        except TypeError:
+    """The script a spawn RUNS, never every .py argument: `cp tool.py tmp` then running the
+    copy counted as driving tool.py (ASK-1810 review, finding-7a, the ASK-1796 copy shape).
+    Counts argv[0] when it is itself a .py file; when argv[0] is a Python interpreter, the
+    first non-option argument, skipping -W/-X values; nothing after -c or -m."""
+    argv = [x for x in (_str(a) for a in (argv or ())) if isinstance(x, str)]
+    if not argv:
+        return []
+    prog = argv[0]
+    if prog.endswith(".py") and os.path.isfile(prog):
+        return [os.path.abspath(prog)]
+    name = os.path.basename(prog)
+    if not (_PYTHON.match(name) or os.path.realpath(prog) == os.path.realpath(sys.executable)):
+        return []
+    skip = False
+    for a in argv[1:]:
+        if skip:
+            skip = False
+        elif a in ("-c", "-m", "-"):
+            return []
+        elif a in _TAKES_VALUE:
+            skip = True
+        elif a.startswith("-"):
             continue
-        if isinstance(a, bytes):
-            a = a.decode(errors="replace")
-        if isinstance(a, str) and a.endswith(".py") and os.path.isfile(a):
-            out.append(os.path.abspath(a))
-    return out
+        else:
+            return [os.path.abspath(a)] if a.endswith(".py") and os.path.isfile(a) else []
+    return []
 
 
 def _hook(event, args):
@@ -122,5 +152,7 @@ def _chain():
 
 try:
     _chain()
-except Exception:
-    pass
+except Exception as e:
+    # what CPython prints when sitecustomize raises; swallowing it made the observed run
+    # differ from production with nothing said (ASK-1810 review, finding-10)
+    sys.stderr.write(f"Error in sitecustomize; set PYTHONVERBOSE for traceback:\n{type(e).__name__}: {e}\n")

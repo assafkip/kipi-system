@@ -764,15 +764,26 @@ def _count_defined(path: Path) -> int:
     """Test functions and methods a runner could collect: `def test*` at module level or in
     any class body. The AST, so a mid-file unittest.main() cannot hide what comes after it."""
     import ast
-    tree = ast.parse(path.read_text())
-    n = 0
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
-            n += 1
-        elif isinstance(node, ast.ClassDef):
-            n += sum(1 for m in node.body
-                     if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name.startswith("test"))
-    return n
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+
+    # Class bodies at any depth and if/try/with blocks, never a function body: a nested
+    # TestCase and an if-guarded test were both missed, so a nested class that never ran
+    # passed (ASK-1810 review, finding-12). Counting too many refuses loudly and names both
+    # numbers; counting too few passes silently, so recursion is the safe direction.
+    def count(stmts) -> int:
+        n = 0
+        for node in stmts:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                n += node.name.startswith("test")
+            elif isinstance(node, ast.ClassDef):
+                n += count(node.body)
+            elif isinstance(node, (ast.If, ast.Try, ast.With, ast.AsyncWith)) or type(node).__name__ == "TryStar":
+                for field in ("body", "orelse", "finalbody"):
+                    n += count(getattr(node, field, []) or [])
+                for h in getattr(node, "handlers", []) or []:
+                    n += count(h.body)
+        return n
+    return count(tree.body)
 
 
 _UNITTEST_RAN = re.compile(r"^Ran (\d+) tests? in ", re.M)
@@ -780,34 +791,72 @@ _UNITTEST_SKIPPED = re.compile(r"skipped=(\d+)")
 _PYTEST_SUMMARY = re.compile(r"^(?:=+ )?((?:\d+ [a-z]+(?:, )?)+) in [\d.]+s", re.M)
 
 
-def _count_ran(output: str) -> tuple[int, int] | None:
-    """(ran, skipped) from the runner's own summary, or None when there is none to read."""
-    m = _PYTEST_SUMMARY.findall(output)
+def _count_ran(stdout: str, stderr: str) -> tuple[int, int] | None:
+    """(ran, skipped) from the runner's own summary, or None when there is none to read.
+
+    unittest writes `Ran N tests in` to STDERR; a test's print() goes to stdout. Reading both
+    let a test print "Ran 5 tests in 0.001s" and cover two hidden failing tests (ASK-1810
+    review, finding-4). Lines are still summed, because one check can chain two unittest runs.
+    pytest writes its summary to stdout; the last one counts."""
+    runs = _UNITTEST_RAN.findall(stderr)
+    if runs:
+        skipped = sum(int(s) for s in _UNITTEST_SKIPPED.findall(stderr))
+        ran = sum(int(r) for r in runs)
+        return ran - skipped, skipped
+    m = _PYTEST_SUMMARY.findall(stdout)
     if m:
         parts = dict((w, int(n)) for n, w in re.findall(r"(\d+) ([a-z]+)", m[-1]))
         ran = sum(parts.get(k, 0) for k in ("passed", "failed", "error", "errors", "xfailed", "xpassed"))
         return ran, parts.get("skipped", 0)
-    runs = _UNITTEST_RAN.findall(output)
-    if runs:
-        skipped = sum(int(s) for s in _UNITTEST_SKIPPED.findall(output))
-        ran = sum(int(r) for r in runs)
-        return ran - skipped, skipped
     return None
 
 
-def _defined_vs_ran(paths: Paths, command: str, output: str) -> dict:
-    toks = _check_tokens(command)
+def _runs_a_test_runner(toks: list[str]) -> bool:
+    names = [Path(t).name for t in toks]
+    if "pytest" in names or "py.test" in names:
+        return True
+    return any(a == "-m" and b in ("pytest", "unittest") for a, b in zip(toks, toks[1:]))
+
+
+def _test_files(paths: Paths, toks: list[str]) -> list[str]:
+    """The Python test files a check names, as repo-relative paths. A dotted unittest module
+    (`tests.test_tool`) counts as its file when that file resolves from the repo root."""
     files = []
     for t in toks:
         base = t.split("::", 1)[0]
-        p = paths.repo_root / base
-        if base.endswith(".py") and _is_test_path(base) and p.is_file():
+        if not base.endswith(".py") and "." in base and "/" not in base and not base.startswith("-"):
+            dotted = base.replace(".", "/") + ".py"
+            if (paths.repo_root / dotted).is_file() and _is_test_path(dotted):
+                base = dotted
+        if base.endswith(".py") and _is_test_path(base) and (paths.repo_root / base).is_file() \
+                and base not in files:
             files.append(base)
+    return files
+
+
+def _unnamed_test_runs(paths: Paths, checks: list[str]) -> list[str]:
+    """Checks that start pytest or unittest without naming a test file that resolves from the
+    repo root: a directory, `.`, `discover`, a path relative to a `cd`. Their count cannot be
+    read, and 'not counted' was the way past defined-vs-ran (ASK-1810 review, finding-5)."""
+    return [c for c in checks
+            if _runs_a_test_runner(_check_tokens(c)) and not _test_files(paths, _check_tokens(c))]
+
+
+def _defined_vs_ran(paths: Paths, command: str, stdout: str, stderr: str) -> dict:
+    toks = _check_tokens(command)
+    files = _test_files(paths, toks)
     if not files:
         return {"command": command, "status": "not counted", "reason": "names no Python test file"}
     narrowed = "-k" in toks or any("::" in t for t in toks)
-    defined = sum(_count_defined(paths.repo_root / f) for f in files)
-    counted = _count_ran(output)
+    defined = 0
+    for f in files:
+        try:
+            defined += _count_defined(paths.repo_root / f)
+        except (SyntaxError, ValueError, UnicodeDecodeError, OSError) as e:
+            return {"command": command, "files": files, "status": "refused",
+                    "reason": f"{f} does not parse, so its tests cannot be counted: "
+                              f"{type(e).__name__}: {e}"}
+    counted = _count_ran(stdout, stderr)
     row = {"command": command, "files": files, "defined": defined, "narrowed": narrowed}
     if counted is None:
         row.update(status="refused", reason="the runner printed no count this could read")
@@ -890,6 +939,24 @@ def _verify_v2(paths: Paths, state: dict, checks: list[str]) -> int:
             "2026-09-18: not 6000 tests for every single thing).\n")
         return 2
 
+    unnamed = _unnamed_test_runs(paths, checks)
+    if unnamed:
+        sys.stderr.write(
+            f"verify refused before running anything: {unnamed[0]!r} starts a test runner "
+            "without naming a test file, so the tests it ran cannot be counted against the tests "
+            "that exist. name the test files this issue changes.\n")
+        return 2
+    try:
+        raw = os.environ.get(REPEAT_BUDGET_ENV)
+        budget = REPEAT_BUDGET_S if raw is None else float(raw)
+        if not (0 < budget < float("inf")):
+            raise ValueError
+    except ValueError:
+        sys.stderr.write(f"verify refused before running anything: {REPEAT_BUDGET_ENV}={raw!r} is "
+                         "not a finite positive number of seconds.\n")
+        return 2
+    budget = min(REPEAT_BUDGET_S, budget)
+
     evidence, seen, seconds, outputs = [], {}, {}, {}
     for command in checks:
         result, took, observed = _run_observed(paths, command)
@@ -897,7 +964,8 @@ def _verify_v2(paths: Paths, state: dict, checks: list[str]) -> int:
         evidence.append({"command": command, "returncode": result.returncode,
                          "output_sha256": hashlib.sha256(blob.encode("utf-8")).hexdigest(),
                          "ran_at": _now_iso()})
-        seen[command], seconds[command], outputs[command] = observed, took, blob
+        seen[command], seconds[command] = observed, took
+        outputs[command] = (result.stdout or "", result.stderr or "")
     state["verified_evidence"] = evidence
     failed = [e for e in evidence if e["returncode"] != 0]
     if failed:
@@ -914,13 +982,12 @@ def _verify_v2(paths: Paths, state: dict, checks: list[str]) -> int:
         refusals.append(
             f"no required check ran any of {real['targets']} at its tracked path. A test that "
             f"runs a copy proves the copy. Limits of this check: {REAL_PATH_LIMITS}.")
-    counts = [_defined_vs_ran(paths, c, outputs[c]) for c in checks]
+    counts = [_defined_vs_ran(paths, c, *outputs[c]) for c in checks]
     for row in counts:
         if row["status"] == "refused":
             refusals.append(f"{row['command']}: {row['reason']} ({', '.join(row.get('files', []))})")
 
     first = sum(seconds.values())
-    budget = min(REPEAT_BUDGET_S, float(os.environ.get(REPEAT_BUDGET_ENV) or REPEAT_BUDGET_S))
     n = min(REPEAT_MAX, int(budget // first)) if first > 0 else REPEAT_MAX
     if n < REPEAT_MIN:
         slowest = max(seconds, key=seconds.get)
@@ -1137,6 +1204,11 @@ def cmd_amend(paths: Paths, args: argparse.Namespace) -> int:
     state["required_checks_snapshot"] = new_snapshot["required_checks"]
     state["disallowed_files_snapshot"] = new_snapshot["disallowed_files"]
     state["deliverables_count_snapshot"] = amended_count
+    # ASK-1810: up only. An issue loaded before contract 2 existed reaches it through amend
+    # (a reload would reset its review cap); anything that is not the integer 2 counts as 1.
+    held = state.get("verify_contract")
+    state["verify_contract"] = max(held if isinstance(held, int) and not isinstance(held, bool) else 1,
+                                   VERIFY_CONTRACT)
     receipts = state.setdefault("receipts", {k: None for k in RECEIPT_FIELDS})
     receipts["verified"] = None
     receipts["reviewed"] = None

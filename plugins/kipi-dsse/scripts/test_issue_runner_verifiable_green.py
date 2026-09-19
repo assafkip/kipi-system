@@ -244,6 +244,134 @@ def test_an_issue_loaded_before_contract_2_keeps_the_old_verify(tmp_path):
     assert (repo / "counter").read_text() == "1", "a grandfathered issue ran the new repeats"
 
 
+
+# --- ASK-1810 review round 1, Sana's triage 2026-09-19 -------------------------------
+
+def test_a_check_that_copies_the_script_with_cp_and_runs_the_copy_is_refused(tmp_path):
+    # finding-7a: any .py argument of ANY program counted as driven, so `cp tool.py tmp`
+    # then running the copy passed -- the ASK-1796 copy-the-gate shape, not an evasion
+    cp_test = REAL_TEST.replace(
+        "tool = importlib.util.module_from_spec(s); s.loader.exec_module(tool)\n",
+        "import subprocess, tempfile\nd = Path(tempfile.mkdtemp())\n"
+        "subprocess.run(['cp', str(HERE / 'scripts' / 'tool.py'), str(d / 'tool.py')], check=True)\n"
+        "s = importlib.util.spec_from_file_location('tool', d / 'tool.py')\n"
+        "tool = importlib.util.module_from_spec(s); s.loader.exec_module(tool)\n")
+    repo = _tool_repo(tmp_path, cp_test)
+    r = _issue(repo, "verify")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "tracked path" in r.stderr
+
+
+PRINTS_A_FAKE_COUNT = HIDDEN_TEST.replace(
+    "        self.assertEqual(tool.answer(), 42)\n",
+    "        print('Ran 5 tests in 0.001s')\n        self.assertEqual(tool.answer(), 42)\n", 1).replace(
+    "if __name__ == '__main__':\n    unittest.main()\n\nclass Hidden",
+    "if __name__ == '__main__':\n    unittest.main(exit=False)\n    raise SystemExit(0)\n\nclass Hidden")
+
+
+def test_a_ran_line_printed_by_a_test_does_not_count(tmp_path):
+    # finding-4: unittest writes its summary to stderr; a test's print goes to stdout
+    repo = _tool_repo(tmp_path, PRINTS_A_FAKE_COUNT)
+    r = _issue(repo, "verify")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "2 defined, 1 ran" in r.stderr
+
+
+@pytest.mark.parametrize("check", ["python3 -m pytest tests -q", "python3 -m pytest . -q",
+                                   "cd tests && python3 -m pytest test_tool.py -q",
+                                   "python3 -m unittest discover"])
+def test_a_test_runner_given_no_test_file_is_refused_before_anything_runs(tmp_path, check):
+    # finding-5 and finding-8: a directory, '.', a cd or discover skipped the count entirely
+    repo = _tool_repo(tmp_path, REAL_TEST, check=check + " && touch ran-it")
+    r = _issue(repo, "verify")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "name the test files this issue changes" in r.stderr
+    assert not (repo / "ran-it").exists(), "the check ran before the refusal"
+
+
+def test_a_dotted_unittest_module_is_counted_as_its_file(tmp_path):
+    files = {"scripts/tool.py": TOOL, "tests/test_tool.py": REAL_TEST, "tests/__init__.py": ""}
+    repo = _repo(tmp_path, files, ["scripts/tool.py", "tests/test_tool.py"], "python3 -m unittest tests.test_tool")
+    r = _issue(repo, "verify")
+    assert r.returncode == 0, r.stderr
+    row = json.loads(r.stdout)["defined_vs_ran"][0]
+    assert (row["status"], row["defined"], row["ran"]) == ("ok", 1, 1), row
+
+
+@pytest.mark.parametrize("check", ["py.test -q", "bash verify.sh --full=1"])
+def test_more_spellings_of_the_full_suite_are_refused(tmp_path, check):
+    repo = _repo(tmp_path, {"verify.sh": "touch ran-it\n"}, ["verify.sh"], check)
+    r = _issue(repo, "verify")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "full suite" in r.stderr
+
+
+def test_a_test_file_that_does_not_parse_is_a_refusal_not_a_traceback(tmp_path):
+    # finding-11
+    repo = _repo(tmp_path, {"scripts/tool.py": TOOL, "tests/test_tool.py": "def test_ok(: pass\n"},
+                 ["scripts/tool.py", "tests/test_tool.py"],
+                 "python3 scripts/tool.py && python3 -c \"print('ok')\" tests/test_tool.py")
+    r = _issue(repo, "verify")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "Traceback" not in r.stderr
+    assert "tests/test_tool.py" in r.stderr and "does not parse" in r.stderr
+
+
+NESTED = (
+    "import unittest\nimport importlib.util\nfrom pathlib import Path\n"
+    "HERE = Path(__file__).resolve().parents[1]\n"
+    "s = importlib.util.spec_from_file_location('tool', HERE / 'scripts' / 'tool.py')\n"
+    "tool = importlib.util.module_from_spec(s); s.loader.exec_module(tool)\n\n"
+    "class T(unittest.TestCase):\n    def test_answer(self):\n        self.assertEqual(tool.answer(), 42)\n\n"
+    "    class Inner(unittest.TestCase):\n        def test_nested_never_runs(self):\n            self.fail('hidden')\n\n"
+    "if True:\n    class Guarded(unittest.TestCase):\n        def test_guarded(self):\n            pass\n\n"
+    "if __name__ == '__main__':\n    unittest.main()\n")
+
+
+def test_tests_in_a_nested_class_or_under_an_if_are_counted(tmp_path):
+    # finding-12: the count missed both, so a nested TestCase that never runs passed
+    repo = _tool_repo(tmp_path, NESTED)
+    r = _issue(repo, "verify")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "3 defined, 2 ran" in r.stderr
+
+
+@pytest.mark.parametrize("value", ["abc", "-inf", "0", "-1", "nan"])
+def test_a_bad_budget_value_is_refused_before_anything_runs(tmp_path, value):
+    # finding-9: 'abc' and '-inf' were tracebacks after the checks had run
+    repo = _repo(tmp_path, {}, ["README.md"], "touch ran-it")
+    r = _issue(repo, "verify", env_extra={"KIPI_VERIFY_BUDGET_S": value})
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "Traceback" not in r.stderr
+    assert "KIPI_VERIFY_BUDGET_S" in r.stderr
+    assert not (repo / "ran-it").exists()
+
+
+def test_amend_lifts_an_issue_onto_the_current_contract_and_never_lowers_it(tmp_path):
+    # ASK-1810 itself was loaded before contract 2 existed; reloading would reset the review
+    # cap, so amend is the one way up (Sana, 2026-09-19)
+    repo = _repo(tmp_path, {}, ["README.md"], "python3 -c \"print('ok')\"")
+    state_path = repo / ".claude/state/active-issue.json"
+    for before in (None, 1, "2"):
+        state = json.loads(state_path.read_text())
+        state.pop("verify_contract", None)
+        if before is not None:
+            state["verify_contract"] = before
+        state_path.write_text(json.dumps(state))
+        assert _issue(repo, "amend", "--reason", "probe").returncode == 0
+        assert json.loads(state_path.read_text())["verify_contract"] == 2, before
+
+
+def test_the_observer_reports_an_error_in_the_chained_sitecustomize(tmp_path):
+    # finding-10: swallowed silently, so the observed run differed from production unseen
+    nxt = tmp_path / "next"
+    nxt.mkdir()
+    (nxt / "sitecustomize.py").write_text("raise RuntimeError('boom')\n")
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(DSSE / "real_path_observer"), str(nxt)]),
+               KIPI_REAL_PATH_LOG=str(tmp_path / "log"))
+    r = subprocess.run([sys.executable, "-c", "pass"], capture_output=True, text=True, env=env)
+    assert "Error in sitecustomize" in r.stderr and "boom" in r.stderr
+
 # --- the observer leaves the interpreter as it found it -----------------------------
 
 def test_the_observer_still_runs_the_interpreters_own_sitecustomize(tmp_path):
