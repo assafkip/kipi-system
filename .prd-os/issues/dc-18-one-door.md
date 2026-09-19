@@ -1,11 +1,12 @@
 ---
 id: dc-18-one-door
 title: design-engine-door.py refuses a design engine outside an active round
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
   - q-system/.q-system/capability/expected_tests/*
+  - q-system/.q-system/scripts/design-chain-gate.py
   - q-system/.q-system/scripts/design-engine-door.py
   - q-system/.q-system/scripts/design-engines.json
   - q-system/.q-system/scripts/test/test_design_engine_door.py
@@ -32,4 +33,4 @@ PreToolUse on the Skill tool. Reads design-engines.json (skill, lane, stage). A 
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] design-engine-door.py refuses a design engine outside an active round
+- [x] design-engine-door.py refuses a design engine outside an active round

@@ -3061,6 +3061,12 @@ def hook(payload: dict) -> int:
             record_citations(Path(fp).resolve().parent, payload.get("transcript_path", ""), sid)
         if fp and Path(fp).name == "brief.md":
             record_brief_reads(Path(fp).resolve().parent, payload.get("transcript_path", ""), sid)
+        # the session's open round, read by design-engine-door.py (dc-18, Sana option A): a write in a
+        # folder that holds brief.md under an instance's design-chain.json
+        rd = Path(fp).resolve().parent if fp else None
+        if rd is not None and (rd / "brief.md").is_file() and find_config(rd / "_") is not None:
+            led["round"] = str(rd)
+            save_ledger(sid, led)
         return 0
 
     if ev == "PreToolUse" and tool == "Bash":
