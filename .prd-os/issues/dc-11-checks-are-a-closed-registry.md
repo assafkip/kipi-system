@@ -1,7 +1,7 @@
 ---
 id: dc-11-checks-are-a-closed-registry
 title: Outside checks run from a closed registry in the gate, and the tripwire says when it skipped
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -40,3 +40,18 @@ The RED FIRST test is A-checks: round A with every reader STAY and tripwire FAIL
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
 - [x] Outside checks run from a closed registry in the gate, and the tripwire says when it skipped
+
+## Amendments
+
+### 2026-09-19T13:52:18Z
+Reason: verify contract 2 cannot count test_dogfood_gate.py (a script with its own counter, no unittest/pytest tests), so it refused; the --check tests move into a unittest file test_dogfood_check_cli.py, which becomes the required check; test_dogfood_gate.py is unchanged and still runs as a neighbour
+
+Before:
+- allowed_files: ['plugins/kipi-design/.claude-plugin/plugin.json', 'plugins/kipi-design/hooks/dogfood_gate.py', 'plugins/kipi-design/hooks/test_dogfood_gate.py', 'q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-gate.py', 'q-system/.q-system/scripts/test/test_dc_check_registry.py']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_dc_check_registry.py', 'python3 plugins/kipi-design/hooks/test_dogfood_gate.py']
+- disallowed_files: []
+
+After:
+- allowed_files: ['plugins/kipi-design/.claude-plugin/plugin.json', 'plugins/kipi-design/hooks/dogfood_gate.py', 'plugins/kipi-design/hooks/test_dogfood_gate.py', 'plugins/kipi-design/hooks/test_dogfood_check_cli.py', 'q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-gate.py', 'q-system/.q-system/scripts/test/test_dc_check_registry.py']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_dc_check_registry.py', 'python3 plugins/kipi-design/hooks/test_dogfood_check_cli.py']
+- disallowed_files: []
