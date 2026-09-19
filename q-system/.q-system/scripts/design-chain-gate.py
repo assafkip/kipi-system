@@ -423,6 +423,10 @@ def _outside_inputs(root: Path, rd: Path, files: dict[str, bytes], cfg: dict, cf
     declared = doc(SOURCES).get("sources")
     for rel in (declared if isinstance(declared, dict) else {}):
         _take(inputs, _within(root, base, rel, f"{SOURCES} entry"))
+    proof = cfg.get("proof")
+    if isinstance(proof, dict) and isinstance(proof.get("index"), str) and proof["index"].strip():
+        # seal reads the proof index (dc-13), so it is held with the other outside inputs
+        _take(inputs, _within(root, base, proof["index"], "proof.index"))
     if "checks" in cfg:
         # the tripwire reads the brand kit from the config's directory only (--brand-from), so it is
         # held with the rest: read live, a kit dropped mid-seal flipped a FAIL (dc-11 std-1)
@@ -2367,6 +2371,7 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
             probs.append(f"missing or empty {d}/")
     probs += reader_problems(rd, page, cfg, cfg_path)
     probs += citation_problems(rd)
+    probs += proof_problems(rd, cfg, cfg_path)
 
     # brief: verbatim anchors, read live
     brief = (rd / "brief.md").read_text() if (rd / "brief.md").is_file() else ""
@@ -2785,6 +2790,58 @@ def citation_problems(rd: Path) -> list[str]:
         return [f"{c} is cited but was never opened in the session that wrote the citation; read it, "
                 f"then write the citation again" for c in (unopened if isinstance(unopened, list) else cited)]
     return []
+
+
+# ---------------------------------------------------------------- proof shape (dc-13)
+
+PROOF_KINDS = ("problem", "capability", "reliability", "outcome", "pedigree")
+_PROOF_KIND_RE = re.compile(r"Proof kind:\s*\**\s*([A-Za-z-]+)", re.I)
+_INDEX_RECORD_RE = re.compile(r"(?m)^\s*-\s*\*\*(.+?)\.?\*\*")
+
+
+def proof_problems(rd: Path, cfg: dict, cfg_path: Path | None) -> list[str]:
+    """dc-13: with a `proof` block in design-chain.json, proof.md is read, not only found. Round A
+    sealed with a one-character proof.md (RCA 2026-09-18). An artifact block is a `##` block with a
+    "Proof kind:" line; each names a kind from PROOF_KINDS and at least one record id that the index
+    file the config names actually holds ("- **Client A, Record 7.** ..."), and proof.md holds at
+    least one such block. Blocks without a kind are commentary. Opt-in like readers and checks."""
+    block = cfg.get("proof") if isinstance(cfg, dict) else None
+    if not isinstance(block, dict):
+        return []
+    idx = block.get("index")
+    if cfg_path is None or not isinstance(idx, str) or not idx.strip():
+        return [f"{CONFIG_NAME} proof.index names no index file"]
+    index_path = cfg_path.parent / idx
+    real, round_real = os.path.realpath(index_path), os.path.realpath(rd)
+    if real == round_real or real.startswith(round_real + os.sep):
+        return [f"{CONFIG_NAME} proof.index {idx!r} is inside the round; the proof index is kept outside it"]
+    try:
+        records = {m.strip().rstrip(".").casefold() for m in _INDEX_RECORD_RE.findall(index_path.read_text())}
+    except OSError as e:
+        return [f"proof index {idx!r} cannot be read: {e}"]
+    try:
+        text = (rd / "proof.md").read_text()
+    except OSError:
+        return []                       # a missing proof.md is CHAIN_FILES' refusal
+    probs, artifacts = [], 0
+    for chunk in re.split(r"(?m)^##\s+", text)[1:]:
+        title = chunk.splitlines()[0].strip() if chunk.strip() else "?"
+        kinds = _PROOF_KIND_RE.findall(chunk)
+        if not kinds:
+            continue
+        artifacts += 1
+        for k in kinds:
+            if k.casefold() not in PROOF_KINDS:
+                probs.append(f"proof.md block {title!r} names proof kind {k!r}, not one of the closed list "
+                             f"{list(PROOF_KINDS)}")
+        low = chunk.casefold()
+        if not any(r and r in low for r in records):
+            probs.append(f"proof.md block {title!r} cites no record that {idx} holds; name one as the index "
+                         f"writes it (e.g. 'Client, Record N')")
+    if not artifacts:
+        probs.append(f"proof.md has no artifact block: a '## ' block with a 'Proof kind:' line naming one of "
+                     f"{list(PROOF_KINDS)} and a record from {idx}")
+    return probs
 
 
 # ---------------------------------------------------------------- hook dispatch

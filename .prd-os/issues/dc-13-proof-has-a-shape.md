@@ -1,7 +1,7 @@
 ---
 id: dc-13-proof-has-a-shape
 title: proof.md is parsed against a minimal schema
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -31,4 +31,4 @@ Each artifact block names a proof kind from the closed list (problem, capability
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] proof.md is parsed against a minimal schema
+- [x] proof.md is parsed against a minimal schema
