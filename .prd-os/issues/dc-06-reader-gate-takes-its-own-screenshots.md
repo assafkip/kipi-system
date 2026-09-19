@@ -1,7 +1,7 @@
 ---
 id: dc-06-reader-gate-takes-its-own-screenshots
 title: design-reader-gate.py lives in the skeleton, shoots the served page itself, and rows carry the HTML and PNG shas
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -37,4 +37,19 @@ Answers are keyed by question number and a reader counts only with exactly keys 
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] design-reader-gate.py lives in the skeleton, shoots the served page itself, and rows carry the HTML and PNG shas
+- [x] design-reader-gate.py lives in the skeleton, shoots the served page itself, and rows carry the HTML and PNG shas (DELIVERED: design-reader-gate.py renders each page itself at the configured viewports, never reads a round PNG, rows carry html_sha256, png_sha256, keyed answers, contaminated, and provenance {runner, model, model_reported, persona_sha256, questions_sha256, attempts, at}; runner required, injected runner for tests. Real run: 6 rows, claude-haiku-4-5, 1 attempt each. Moved: served-round binding to ASK-1836, prompt injection to dc-07.)
+
+## Amendments
+
+### 2026-09-19T08:11:39Z
+Reason: Production-path finding after round 2: the real model skipped or merged a question (9/8/9/9 answers over 4 calls), so the count check refused real runs. Sana: keyed answers + structural-only retries, in dc-06.
+
+Before:
+- allowed_files: ['q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-reader-gate.py', 'q-system/.q-system/scripts/test/test_dc_reader_gate.py']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_dc_reader_gate.py']
+- disallowed_files: []
+
+After:
+- allowed_files: ['q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-reader-gate.py', 'q-system/.q-system/scripts/test/test_dc_reader_gate.py']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_dc_reader_gate.py']
+- disallowed_files: []
