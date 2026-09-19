@@ -15,6 +15,18 @@ What each control pins, as measured on the gate at c1c2f83d (Sana's split, 2026-
     exemplar captures refuses on a design axis, not on a missing input.
 Round A itself still seals today (nothing reads reader verdicts or check results): it is
 dc-07's RED FIRST test, and A-checks is dc-11's.
+
+MUTATION RUN (recorded here, not only in a commit message; each mutation applied to a copy of
+the named file, this suite run, the file restored sha-identical):
+  N1 dc_fixtures.load returns before any provenance check -> killed by the loader tests
+     (no block, missing field, edited content; null fields and non-text content added after
+     review).
+  N2 the standard producer's FAIL branch in _run_producers does nothing -> killed by control C,
+     by its MESSAGE: chain_problems' standard.json reader refuses the same page independently,
+     so C still exits 2 and only "FAILS the standard" goes missing. Two refusers, one pinned by
+     rc and the producer's own one by its words.
+  N3 craft_problems stops reporting a page below the exemplar floor -> killed by the bland control.
+  N4 the passive gate believes any receipts.json file -> killed by round B.
 """
 import hashlib
 import json
@@ -94,6 +106,24 @@ class TheLoaderRefusesATypedFixture(unittest.TestCase):
         self.put("half", doc)
         with self.assertRaisesRegex(dc_fixtures.NotCaptured, "command"):
             dc_fixtures.load("half")
+
+    def test_a_null_empty_or_blank_field(self):
+        # str(None) is the non-empty "None": each field, each empty shape (review of 3bdda338)
+        for field in dc_fixtures.REQUIRED:
+            for bad in (None, "", "  "):
+                with self.subTest(field=field, value=bad):
+                    doc = dc_fixtures.wrap("ran\n", "p.py", "python3 p.py", "2026-09-19")
+                    doc["_provenance"][field] = bad
+                    self.put("bad", doc)
+                    with self.assertRaisesRegex(dc_fixtures.NotCaptured, field):
+                        dc_fixtures.load("bad")
+
+    def test_content_that_is_not_text(self):
+        doc = dc_fixtures.wrap("x", "p.py", "python3 p.py", "2026-09-19")
+        doc["content"] = {"a": 1}
+        self.put("dict", doc)
+        with self.assertRaisesRegex(dc_fixtures.NotCaptured, "no text content"):
+            dc_fixtures.load("dict")
 
     def test_content_edited_after_capture(self):
         doc = dc_fixtures.wrap("real output\n", "p.py", "python3 p.py", "2026-09-19")

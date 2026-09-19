@@ -43,11 +43,13 @@ def load(name: str) -> dict:
     if not isinstance(prov, dict):
         raise NotCaptured(f"{path.name} has no {PROVENANCE_KEY} block: a hand-typed fixture proves "
                           f"only that the reader matches it. Capture it: dc_fixtures.py capture ...")
-    missing = [k for k in REQUIRED if not str(prov.get(k, "")).strip()]
+    # a string with words in it: str(None) is the non-empty "None", which let a fixture whose
+    # every field was null load (dc-21 adversarial review, finding-1)
+    missing = [k for k in REQUIRED if not (isinstance(prov.get(k), str) and prov[k].strip())]
     if missing:
         raise NotCaptured(f"{path.name} {PROVENANCE_KEY} is missing {missing}")
-    if "content" not in doc:
-        raise NotCaptured(f"{path.name} carries no content")
+    if not isinstance(doc.get("content"), str):
+        raise NotCaptured(f"{path.name} carries no text content")
     got = hashlib.sha256(doc["content"].encode()).hexdigest()
     if prov.get("content_sha256") != got:
         raise NotCaptured(f"{path.name} content was edited after capture (sha {got[:12]} is not the "

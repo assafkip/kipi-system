@@ -1,7 +1,7 @@
 ---
 id: dc-21-fixtures-come-from-producers
 title: Test fixtures carry provenance and the negative controls are permanent
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -29,7 +29,7 @@ Parent PRD: `.prd-os/prds/prd-design-chain-seal-reads-verdicts-2026-09-18.md`
 
 ## Acceptance
 
-dc_fixtures.load() refuses a fixture with no _provenance block (producer, command, captured_at). The ten hand-typed verdict lines are replaced by producer captures. Round B never reaches COMPLETE. Control C is redefined: round A with a page that fails the real standard producer must refuse; removing that refusal from the gate turns C red (mutation run recorded). The bland control (no colour, no motion, four lines of text) sealed at the craft tier against the exemplar captures (captured with provenance) and a real screenshot must refuse, naming at least one design axis below the exemplar floor (measured 2026-09-19: background colours, transitions, corner radii, fold controls, type sizes). Round A moves to dc-07 and A-checks to dc-11 as their RED FIRST tests (Sana, 2026-09-19): round A still seals today because nothing reads reader verdicts or check results.
+dc_fixtures.load() refuses a fixture with no _provenance block (producer, command, captured_at). The eight hand-typed checks/impeccable.txt receipts are replaced by producer captures. checks/bio_gate.txt capture moves to dc-11 and gate/icp.md capture to dc-07 (Sana, 2026-09-19): the gate reads neither file's content until those issues land. The mutation run (N1-N4, mutation and killing test each) is recorded in the negative-controls test docstring. Round B never reaches COMPLETE. Control C is redefined: round A with a page that fails the real standard producer must refuse; removing that refusal from the gate turns C red (mutation run recorded). The bland control (no colour, no motion, four lines of text) sealed at the craft tier against the exemplar captures (captured with provenance) and a real screenshot must refuse, naming at least one design axis below the exemplar floor (measured 2026-09-19: background colours, transitions, corner radii, fold controls, type sizes). Round A moves to dc-07 and A-checks to dc-11 as their RED FIRST tests (Sana, 2026-09-19): round A still seals today because nothing reads reader verdicts or check results.
 
 ## Deliverables
 
