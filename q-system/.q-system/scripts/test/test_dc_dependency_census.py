@@ -23,6 +23,8 @@ EXPECTED = {
     "design-impeccable-check.py", "design-exemplar-capture.py",
     "design-standard-from-exemplars.py", "design-ink-coverage.py", "design-axis-coverage.py",
     "check_technique_parity.py",
+    "design-reader-gate.py",       # dc-06: the reader gate
+    "design-engine-door.py",       # dc-18: the one door on the Skill tool
 }
 # A sibling reference is ANY string constant naming a design script, with or without ".py".
 # Scar, same day, caught by both reviewers of this file's first version: it matched
@@ -34,7 +36,7 @@ EXPECTED = {
 SIBLING_NAME = re.compile(r"^(design-[a-z0-9-]+|check_technique_parity)(\.py)?$")
 # Executables and out-of-repo paths the scripts shell out to. The only hard non-Python
 # dependency in the set is here: node plus a detector that lives in another repo.
-DECLARED_EXECUTABLES = {"node", "git"}
+DECLARED_EXECUTABLES = {"node", "git", "claude"}   # claude: the reader gate's model runner (dc-06)
 DECLARED_EXTERNAL_PATHS = {
     "~/projects/cole-gtm/.agents/skills/impeccable/scripts/detector/detect-antipatterns.mjs",
     "~/.config/kipi/design-chain",      # the gate's per-session ledger directory
@@ -62,9 +64,22 @@ def string_constants(path: Path) -> list[str]:
             if isinstance(n, ast.Constant) and isinstance(n.value, str)]
 
 
+def engine_names() -> set[str]:
+    """Design ENGINE names (skills, not files) from the registry that owns them. The door names
+    'design-room' as an engine, and the sibling scan read it as a missing design-room.py (dc-18)."""
+    import json
+    reg = json.loads((SCRIPTS / "design-engines.json").read_text())
+    names = {e["skill"] for e in reg["engines"]}
+    assert names, "design-engines.json lists no engines"
+    return names
+
+
 def sibling_loads(path: Path) -> set[str]:
     names = set()
+    engines = engine_names()
     for value in string_constants(path):
+        if value.strip() in engines:
+            continue
         m = SIBLING_NAME.match(value.strip())
         if m and f"{m.group(1)}.py" != path.name:
             names.add(f"{m.group(1)}.py")

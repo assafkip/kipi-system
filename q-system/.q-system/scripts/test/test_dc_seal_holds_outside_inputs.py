@@ -122,14 +122,8 @@ class AnInputSwappedOnlyInsideTheWindowIsNotWhatSealReads(Base):
         self.window(gate, put(src / "receipts.json", "{}\n"), put(src / "receipts.json", None))
         self.assert_refused(*self.seal_in_process(gate), "not sealed")
 
-    def test_5_a_sibling_brief(self):
-        self.enable(require_fresh_brief=True)
-        sib = self.round.parent / "r0" / "brief.md"
-        copied = (self.round / "brief.md").read_text()
-        put(sib, copied)()
-        gate = load_gate("dco_5")
-        self.window(gate, put(sib, "# r0's own brief\n"), put(sib, copied))
-        self.assert_refused(*self.seal_in_process(gate), "byte-identical to r0/brief.md")
+    # test_5_a_sibling_brief removed with the byte-copy check (dc-16): a sibling round's brief is
+    # no longer a seal input, so there is nothing of it for the window to swap.
 
     def test_6_the_exemplars(self):
         self.config(exemplars_dir="exemplars")
@@ -137,7 +131,7 @@ class AnInputSwappedOnlyInsideTheWindowIsNotWhatSealReads(Base):
         put(ex, "png")()
         gate = load_gate("dco_6")
         self.window(gate, put(ex, None), put(ex, "png"))
-        self.assert_refused(*self.seal_in_process(gate), "cites none of the exemplars")
+        self.assert_refused(*self.seal_in_process(gate), "cites 0 of the exemplars")
 
     def test_7_the_vision_file(self):
         vf = self.inst / "design" / "VISION.md"

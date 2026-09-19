@@ -74,6 +74,21 @@ class Base(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def record_brief_reads(self):
+        """brief-reads.json as the gate's hook writes it (dc-16): a session transcript that Read every
+        owner the config names, handed to the REAL recorder. Needed wherever require_fresh_brief is on."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("snap_recorder", REAL_GATE)
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+        cfgp = self.round.parents[2] / "design-chain.json"
+        owners = [o["file"] for o in json.loads(cfgp.read_text())["owners"]]
+        t = self.tmp / "brief-session.jsonl"
+        t.write_text("".join(json.dumps({"message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": str(cfgp.parent / o)}}]}}) + "\n"
+            for o in owners))
+        gate.record_brief_reads(self.round, str(t), "s-fixture")
+
     def env(self):
         e = {k: v for k, v in os.environ.items() if k not in ("DESIGN_CHAIN_ALLOW", "CLAUDE_PROJECT_DIR")}
         e["DESIGN_CHAIN_STATE"] = str(self.tmp / "state")
@@ -248,7 +263,9 @@ class TheSnapshotOnDisk(Base):
 
         def during(proc):
             while proc.poll() is None:
-                for f in Path(tempfile.gettempdir()).glob("dc-seal-*/r1/shared.css"):
+                # the held tree mirrors each file at its own absolute path (ASK-1831), so the round
+                # sits deep under the snapshot root
+                for f in Path(tempfile.gettempdir()).glob("dc-seal-*/**/r1/shared.css"):
                     try:
                         f.write_text(PASSING_CSS)
                         hits.append(str(f))
@@ -380,7 +397,7 @@ class OneSnapshotPerSeal(Base):
         gate = load_real_gate()
         self.css.write_text(PASSING_CSS)
 
-        def forged(name, args):
+        def forged(name, args, *rest):
             if name != gate.STANDARD_PRODUCER:
                 return 0, ""
             page = Path(args[0])
@@ -569,7 +586,7 @@ class CleanRefusals(Base):
         self.css.write_text(PASSING_CSS)
         (self.round / "standard.json").write_text(json.dumps([{
             "page": self.page.name, "sha256": hashlib.sha256(self.page.read_bytes()).hexdigest(), "pass": True}]))
-        gate.run_producer = lambda name, args: (0, "")
+        gate.run_producer = lambda name, args, *rest: (0, "")     # timeout, stage (dc-05)
         rc, err = self.run_seal(gate)
         self.assertEqual(rc, 2)
         self.assertIn("no fresh verdict for this page", err)

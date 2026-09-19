@@ -418,11 +418,14 @@ class AssetDigest(Base):
         before = dcg.round_asset_digest(self.round)
         (self.round / "standard.json").write_text("[]")
         (self.round / "checks" / "gap.json").write_text("{}")
+        # seal RUNS the impeccable producer and writes this file since dc-04, like gap.json; the
+        # receipt carries its exit code, so a later edit changes no verdict
+        (self.round / "checks" / "impeccable.txt").write_text("rewritten after the seal" + chr(10))
         (self.round / "receipts.json").write_text("{}")
         (self.round / "corrections.jsonl").write_text("{}" + chr(10))
         self.page.write_text(self.page.read_text() + chr(10))
         self.assertEqual(before, dcg.round_asset_digest(self.round))
-        for rel in ("critique.md", "checks/impeccable.txt", "gate/reader-runs.jsonl"):
+        for rel in ("critique.md", "gate/reader-runs.jsonl"):
             f = self.round / rel
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text("rewritten after the seal" + chr(10))

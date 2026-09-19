@@ -101,13 +101,14 @@ class TheReceiptSaysWhatRan(Base):
 
 class AnEditAfterTheSealOpensTheRound(Base):
     CHAIN_RECORDS = ("brief.md", "craft-manifest.json", "directions.md", "critique.md", "proof.md",
-                     "sources.json", "gate/reader-runs.jsonl", "shared.css")
+                     "sources.json", "gate/icp.md", "shared.css")
 
     def test_every_chain_record_and_asset_edited_after_the_seal_opens_the_round(self):
         # seeded before the seal, so each one below is EDITED, not created (review of 92e9f77c)
         (self.round / "craft-manifest.json").write_text('{"note": "seeded"}\n')
         (self.round / "sources.json").write_text("{}\n")
-        (self.round / "gate" / "reader-runs.jsonl").write_text('{"reader": "seeded"}\n')
+        # gate/ is covered through gate/icp.md: a reader row with no readers block in the config
+        # refuses the seal on its own since dc-08, so it cannot be the seeded file here
         self.seal_ok()
         rc, out = self.status()
         self.assertEqual(rc, 0, out)

@@ -672,7 +672,7 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
     cfg_path = snap.cfg_path
     # only what the compare AND the digest bind: a page fetched CSS it had hidden in standard.json,
     # which seal overwrites and both skip, and a 9px page sealed COMPLETE (ASK-1838)
-    lane = round_lane(_live(snap.dir))[0]        # a lane problem is the chain check's refusal
+    lane = round_lane(snap.dir)[0]               # a lane problem is the chain check's refusal
     with served_round(rd, served_files(snap.files), snap.missed) as base:
         for p in pages:
             if lane != "site":
@@ -1295,7 +1295,7 @@ def craft_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None) -> li
     # design-gap-check.py is the missing instrument: not "is anything wrong" but "how far
     # is this from the exemplars the founder actually named", with floors derived from
     # their captures rather than chosen. This is the half that makes its verdict block.
-    web = round_lane(_live(rd))[0] == "site"     # gap and impeccable are web-only (dc-20)
+    web = round_lane(rd)[0] == "site"     # gap and impeccable are web-only (dc-20)
     if craft.get("require_gap_check") and web:
         gp = rd / "checks" / GAP_CHECK
         if not gp.is_file():
@@ -1358,11 +1358,16 @@ def round_lane(rd: Path) -> tuple[str, str | None]:
     checks. A manifest `lane` is optional and refuses when it disagrees. A non-site lane needs exactly
     one design-chain.json above the round: find_config takes the nearest, and a second one written
     beside the round could otherwise claim a lane. A problem comes back with lane "site"."""
-    configs = [d / CONFIG_NAME for d in rd.parents if (d / CONFIG_NAME).is_file()]
+    # inside a seal the CONTENT comes from the held tree (config copy, snapshot manifest) and only the
+    # location and the config count come from the live path, by stat: a live read after the snapshot
+    # is what ASK-1811 closed (caught by the full run for ASK-1870)
+    held = _held_snapshot(rd / "_")
+    live = _live(rd) if held is not None else rd
+    configs = [d / CONFIG_NAME for d in live.parents if (d / CONFIG_NAME).is_file()]
     lane, why = "site", None
     if configs:
         try:
-            cfg = json.loads(configs[0].read_text())
+            cfg = json.loads((held.cfg_path if held is not None and held.cfg_path else configs[0]).read_text())
         except (OSError, ValueError):
             cfg = {}
         lanes = cfg.get("lanes") if isinstance(cfg, dict) else None
@@ -1380,11 +1385,11 @@ def round_lane(rd: Path) -> tuple[str, str | None]:
                 for kb, db in every[i + 1:]:
                     if da == db or da in db.parents or db in da.parents:
                         return "site", f"{configs[0]} lanes {ka} and {kb} share or nest a rounds folder"
-            parent = Path(os.path.realpath(rd)).parent
+            parent = Path(os.path.realpath(live)).parent
             hit = [k for k, d in dirs.items() if d == parent]
             if hit:
                 if len(configs) > 1:
-                    return "site", (f"two {CONFIG_NAME} files above {rd} ({configs[0]}, {configs[1]}); a lane comes "
+                    return "site", (f"two {CONFIG_NAME} files above {live} ({configs[0]}, {configs[1]}); a lane comes "
                                     f"from one instance config, never one written beside the round")
                 lane = hit[0]
     try:
@@ -2517,7 +2522,7 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     if not cfg:
         probs.append(f"no {CONFIG_NAME} found above {page} (the instance has no owner anchors configured)")
 
-    lane, lane_why = round_lane(_live(rd))
+    lane, lane_why = round_lane(rd)
     if lane_why:
         probs.append(lane_why)
     for name in CHAIN_FILES:
@@ -2743,7 +2748,7 @@ def _seal_snapshot(rd: Path, pages: list[Path], seal_cfg: dict, snap: RoundSnaps
             rec[p.name]["readers"] = dict(reader_history(snap.dir, snap.dir / p.name),
                                           reader_runs_max=seal_cfg["readers"].get("reader_runs_max",
                                                                                   _reader_gate().DEFAULT_RUNS_MAX))
-    rec["__lane__"] = round_lane(_live(snap.dir))[0]
+    rec["__lane__"] = round_lane(snap.dir)[0]
     if rec["__lane__"] != "site" and snap.cfg_path:
         # the lane is the config's word, so a non-site seal binds the config's bytes (Sana, dc-20)
         rec["__config__"] = {"sha256": sha(snap.cfg_path)}

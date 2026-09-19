@@ -116,7 +116,7 @@ class AnInputChangedJustBeforeTheSnapshotIsCaughtAtTheEnd(Binding):
         # control: the end compare must not refuse a round whose inputs did not move
         self.enable(require_fresh_brief=True, require_dispositions=True)
         self.config(exemplars_dir="exemplars")
-        put(self.round.parent / "r0" / "brief.md", "# r0's own brief\n")()
+        self.record_brief_reads()
         put(self.round.parent / "OPEN-DECISIONS.md", "- nothing open\n")()
         put(self.inst / "exemplars" / "Pair-laptop.png", "png")()
         (self.round / "directions.md").write_text("# A\nPair-laptop.png\n# B\nx\n# C\nx\n")

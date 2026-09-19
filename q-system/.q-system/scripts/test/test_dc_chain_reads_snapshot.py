@@ -80,13 +80,11 @@ class Controls(Base):
         self.assertIn("brief.md does not quote verbatim", err)
 
     def test_an_honest_round_still_seals(self):
-        # regression guard: the copied-brief check reads the LIVE siblings; the live round must
-        # not be mistaken for a sibling of its own snapshot. require_fresh_brief switches the
-        # check on: without it this test could not fail for its reason (review of 40e6cd3d)
+        # regression guard: the brief-reads record names the LIVE round (dc-16); a seal reads a
+        # snapshot, and must not read its own record as another round's. require_fresh_brief
+        # switches the check on: without it this test could not fail for its reason
         self.enable(require_fresh_brief=True)
-        other = self.round.parent / "r0"
-        other.mkdir()
-        (other / "brief.md").write_text("# an older round's brief\n")
+        self.record_brief_reads()
         rc, err = self.seal_in_process(load_gate("dcg_c2"))
         self.assertEqual(rc, 0, err)
         self.assertTrue((self.round / "receipts.json").is_file())
@@ -106,16 +104,18 @@ class SwapAndRestoreInsideTheWindow(Base):
         self.assertIn("brief.md does not quote verbatim", err)
         self.assertFalse((self.round / "receipts.json").exists())
 
-    def test_a_short_critique_swapped_long_for_the_chain_check_only_is_refused(self):
+    def test_an_unanswered_critique_swapped_answered_for_the_chain_check_only_is_refused(self):
+        # the lever was the critique line count until dc-16 deleted it; an unanswered founder
+        # finding (dc-14, unconditional) in the same file proves the same thing
         crit = self.round / "critique.md"
         good = crit.read_text()
-        bad = "## A\n1. a\n"
+        bad = good + "FOUNDER-FINDING[hero] the hero sells the tool\n"
         crit.write_text(bad)
         gate = load_gate("dcg_s2")
         self.swap_and_restore(gate, "critique.md", good, bad)
         rc, err = self.seal_in_process(gate)
         self.assertEqual(rc, 2, err)
-        self.assertIn("critique.md", err)
+        self.assertIn("FOUNDER-FINDING[hero]", err)
         self.assertFalse((self.round / "receipts.json").exists())
 
 
@@ -143,19 +143,16 @@ class ReadsThatLeaveTheRoundResolveLive(Base):
     def test_fresh_brief_and_a_founder_question_already_in_the_live_ledger_seal(self):
         # require_dispositions switches on the ledger read (K6 survived without it)
         self.enable(require_fresh_brief=True, require_dispositions=True)
-        self.sibling("r0", "# an older round's own brief\n")
+        self.record_brief_reads()
         crit = self.round / "critique.md"
         crit.write_text("FOUNDER[pick-colour] which palette?\n" + crit.read_text())
         (self.round.parent / "OPEN-DECISIONS.md").write_text("- pick-colour: open\n")
         rc, err = self.seal_in_process(load_gate("dcg_l1"))
         self.assertEqual(rc, 0, err)
 
-    def test_a_byte_copied_sibling_brief_is_still_caught(self):
-        self.enable(require_fresh_brief=True)
-        self.sibling("r0", (self.round / "brief.md").read_text())
-        rc, err = self.seal_in_process(load_gate("dcg_l2"))
-        self.assertEqual(rc, 2, err)
-        self.assertIn("byte-identical to r0/brief.md", err)
+    # test_a_byte_copied_sibling_brief_is_still_caught removed with the check (dc-16): a sibling
+    # round's brief is no longer a seal input. The brief-reads record replaced it, and
+    # test_an_honest_round_still_seals holds its live-round binding.
 
     def test_the_round_an_implements_names_is_found_beside_the_round(self):
         # Only that it RESOLVES. Whether it counts as sealed is ASK-1831's: a '{}' receipt no
@@ -260,10 +257,10 @@ class ACorrectedPageMeetsTheFullBarAtSeal(Base):
         self.page.write_text(snap.PAGE.replace("every week", "every single week"))
         with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(gate.correct(self.page, "wording"), 0)
-        (self.round / "critique.md").write_text("## A\n1. a\n")
+        (self.round / "critique.md").write_text("FOUNDER-FINDING[hero] still open\n")
         rc, err = self.seal_in_process(gate)
         self.assertEqual(rc, 2, err)
-        self.assertIn("critique.md", err)
+        self.assertIn("FOUNDER-FINDING[hero]", err)
         self.assertEqual(gate.chain_problems(self.page), [])
 
 if __name__ == "__main__":
