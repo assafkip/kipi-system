@@ -1,7 +1,7 @@
 ---
 id: dc-18-one-door
 title: design-engine-door.py refuses a design engine outside an active round
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -34,3 +34,18 @@ PreToolUse on the Skill tool. Reads design-engines.json (skill, lane, stage). A 
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
 - [x] design-engine-door.py refuses a design engine outside an active round
+
+## Amendments
+
+### 2026-09-19T20:14:16Z
+Reason: Sana 2026-09-19 (option A): the gate's session ledger has no active-round key; design-chain-gate.py's PostToolUse on a write inside a round dir sets led['round'], the door reads it. Adds design-chain-gate.py to allowed_files.
+
+Before:
+- allowed_files: ['q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-engine-door.py', 'q-system/.q-system/scripts/design-engines.json', 'q-system/.q-system/scripts/test/test_design_engine_door.py']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_design_engine_door.py']
+- disallowed_files: []
+
+After:
+- allowed_files: ['q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-gate.py', 'q-system/.q-system/scripts/design-engine-door.py', 'q-system/.q-system/scripts/design-engines.json', 'q-system/.q-system/scripts/test/test_design_engine_door.py']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_design_engine_door.py']
+- disallowed_files: []
