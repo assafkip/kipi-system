@@ -1,7 +1,7 @@
 ---
 id: dc-14-founder-findings-close
 title: A FOUNDER-FINDING[tag] line needs a disposition before seal
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -31,4 +31,4 @@ Reuses WEAK_RE and DISPOSITION_RE machinery. An undisposed FOUNDER-FINDING[tag] 
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] A FOUNDER-FINDING[tag] line needs a disposition before seal
+- [x] A FOUNDER-FINDING[tag] line needs a disposition before seal

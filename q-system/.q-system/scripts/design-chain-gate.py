@@ -1090,6 +1090,34 @@ def disposition_problems(rd: Path) -> list[str]:
     return probs
 
 
+FOUNDER_FINDING_RE = re.compile(r"\bFOUNDER-FINDING\[([a-z0-9][a-z0-9-]*)\]")
+
+
+def founder_finding_problems(rd: Path) -> list[str]:
+    """dc-14: a finding the founder raised on a round is answered before the round seals. Only
+    WEAK[tag] in critique.md had to be (RCA 2026-09-18, S1). Every FOUNDER-FINDING[tag] in any .md
+    file under the round needs a DISPOSITION_RE line '- tag: FIXED|DEFERRED|CARRIED <reason>' in any
+    .md file under the round. Unconditional: a founder finding is not an opt-in. Like WEAK[tag],
+    this sees the marker and nothing else; a finding written as prose is invisible to it."""
+    texts = []
+    for f in sorted(rd.rglob("*.md")):
+        try:
+            texts.append(f.read_text())
+        except (OSError, UnicodeDecodeError):
+            continue
+    text = "\n".join(texts)
+    tags = sorted({m.group(1) for m in FOUNDER_FINDING_RE.finditer(text)})
+    disposed = {m.group(1): (m.group(2), m.group(3).strip()) for m in DISPOSITION_RE.finditer(text)}
+    probs = []
+    for t in tags:
+        if t not in disposed:
+            probs.append(f"FOUNDER-FINDING[{t}] has no disposition. Add a line "
+                         f"'- {t}: FIXED <what changed> | DEFERRED <why> | CARRIED <where>' to the round.")
+        elif not disposed[t][1]:
+            probs.append(f"FOUNDER-FINDING[{t}] is marked {disposed[t][0]} with no reason; say what happened.")
+    return probs
+
+
 def craft_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None) -> list[str]:
     """The bar-check. Silent unless the instance declares a `craft` block, so an
     instance that has not opted in keeps exactly the behaviour it had.
@@ -2372,6 +2400,7 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     probs += reader_problems(rd, page, cfg, cfg_path)
     probs += citation_problems(rd)
     probs += proof_problems(rd, cfg, cfg_path)
+    probs += founder_finding_problems(rd)
 
     # brief: verbatim anchors, read live
     brief = (rd / "brief.md").read_text() if (rd / "brief.md").is_file() else ""
