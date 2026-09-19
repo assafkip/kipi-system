@@ -25,7 +25,7 @@ THE CHAIN, per page, in the round directory that holds the page:
   brief.md        verbatim anchors from the owner files + the three-line brief
   directions.md   three directions; cites an exemplar when exemplars/ is non-empty
   standard.json   written by design-standard-check.py: pass true, sha256 of the page
-  critique.md     the nine DNA questions answered per direction
+  critique.md     the nine DNA questions answered per direction (read by people; the gate reads only WEAK[tag])
   proof.md        each artifact's proof kind and its INDEX record
   checks/         bio_gate + voice-lint outputs
   gate/           ICP-persona comprehension answers
@@ -130,7 +130,6 @@ BASH_SHOW_RE = re.compile(
     r"|vercel\s+deploy\b)", re.I)
 SHOW_TOOLS_PREFIX = ("mcp__playwright__", "mcp__claude-in-chrome__", "mcp__plugin_chrome-devtools")
 PUBLISH_TOOLS = ("SendUserFile", "Artifact")
-NINE_QUESTIONS = 9
 STATE_DIR = Path(os.environ.get("DESIGN_CHAIN_STATE", os.path.expanduser("~/.config/kipi/design-chain")))
 CONFIG_NAME = "design-chain.json"
 
@@ -1003,34 +1002,6 @@ def round_dir_for(page: Path) -> Path:
 
 # ---------------------------------------------------------------- the chain check
 
-def copied_brief_problems(rd: Path) -> list[str]:
-    """A brief that is a byte-copy of an earlier round's brief is a round that never read
-    the owners.
-
-    Step 1 of the command is "read the owners, in full, this session", and step 2 is to
-    write a brief quoting them. The anchor check proves the brief CONTAINS the quotes; it
-    cannot tell a brief that was written from one that was `cp`'d. Measured 2026-09-15:
-    five consecutive rounds carried the identical brief, sha c3b247f7b6, so four of them
-    did step 1 by copying a file.
-
-    Writing the brief IS the act of reading. Copying it is the act of not reading, and it
-    is the one part of that a checksum can see.
-    """
-    bp = rd / "brief.md"
-    if not bp.is_file():
-        return []
-    mine = sha(bp)
-    here = rd.resolve()
-    for other in sorted(p for p in here.parent.iterdir() if p.is_dir() and p.resolve() != here):
-        ob = other / "brief.md"
-        if ob.is_file() and sha(ob) == mine:
-            return [f"brief.md is byte-identical to {other.name}/brief.md. Step 1 is to read "
-                    f"the owners in full THIS round; writing the brief is how that happens "
-                    f"and copying it is how it does not. Re-read them and write this "
-                    f"round's brief, even if much of it lands the same."]
-    return []
-
-
 def disposition_problems(rd: Path) -> list[str]:
     """Every weakness the critique names must carry an answer before the round seals.
 
@@ -1332,7 +1303,7 @@ def craft_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None) -> li
                 for axis in ent.get("below_floor") or []:
                     probs.append(f"{page.name} is below the exemplar floor. {axis}")
     if craft.get("require_fresh_brief"):
-        probs += copied_brief_problems(rd)
+        probs += brief_read_problems(rd, cfg, cfg_path)
     if craft.get("require_dispositions"):
         probs += disposition_problems(rd)
     if craft.get("require_impeccable"):
@@ -2486,15 +2457,6 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
                     probs.append(f"directions.md cites {len(cited)} of the exemplars in {ex_dir}; the floor is "
                                  f"{min(floor, len(ex))}. Not cited: {[n for n in ex if n not in cited]}")
 
-    # critique: nine questions per direction (count of numbered answers)
-    crit = (rd / "critique.md").read_text() if (rd / "critique.md").is_file() else ""
-    n_q = len(re.findall(r"^\s*(?:\d\.|\*\*\d\.|Q\d)", crit, re.M))
-    # An implementing round answers the nine for the one direction it builds. The other two were
-    # answered in the round it names, which this gate has already checked and sealed.
-    n_crit = 1 if impl else max(n_dir, 1)
-    if n_q < NINE_QUESTIONS * n_crit:
-        probs.append(f"critique.md has {n_q} numbered answers; {NINE_QUESTIONS} per direction x {n_crit} = {NINE_QUESTIONS*n_crit} required")
-
     # standard: pass true and hash matches THIS page
     std_path = rd / "standard.json"
     if std_path.is_file():
@@ -2879,6 +2841,72 @@ def citation_problems(rd: Path) -> list[str]:
     return []
 
 
+# ---------------------------------------------------------------- brief reads (dc-16)
+
+BRIEF_READS = "brief-reads.json"
+
+
+def _owner_paths(cfg: dict) -> list[str]:
+    owners = cfg.get("owners") if isinstance(cfg, dict) else None
+    return sorted({o["file"] for o in owners if isinstance(o, dict) and isinstance(o.get("file"), str)}
+                  if isinstance(owners, list) else set())
+
+
+def record_brief_reads(rd: Path, transcript_path: str, session_id: str) -> None:
+    """Write <round>/brief-reads.json when brief.md is written: which owner files the session that
+    wrote it READ. The byte-copy check this replaces compared brief.md with sibling rounds, a file the
+    builder writes, so one changed byte beat it (dc-16, measured 2026-09-19: 4 real catches, 0 after a
+    one-byte edit). The transcript is the input the builder did not write. No readable transcript
+    removes the record, so seal refuses: an unknown is never a pass."""
+    rec_path = rd / BRIEF_READS
+    cfg_path = find_config(rd / "_")
+    try:
+        rfg = _read_first_gate() if transcript_path else None
+        records = rfg._records(transcript_path) if rfg else []
+    except (OSError, ImportError, AttributeError):
+        records = []                  # the reader could not load: no record, and seal refuses
+    if not records or cfg_path is None or not (rd / "brief.md").is_file():
+        rec_path.unlink(missing_ok=True)
+        return
+    try:
+        cfg = json.loads(cfg_path.read_text())
+    except (OSError, ValueError):
+        rec_path.unlink(missing_ok=True)
+        return
+    read = _opened_files(rfg._tool_uses(records))
+    owners = _owner_paths(cfg)
+    rec_path.write_text(json.dumps({"session_id": session_id, "brief_sha256": sha(rd / "brief.md"),
+                                    "owners": owners,
+                                    "unread": [o for o in owners
+                                               if os.path.realpath(cfg_path.parent / o) not in read]},
+                                   indent=2) + "\n")
+
+
+def brief_read_problems(rd: Path, cfg: dict, cfg_path: Path | None) -> list[str]:
+    """dc-16: with require_fresh_brief, every owner file in the config was Read in the session that
+    wrote THESE brief bytes. Step 1 of the command is "read the owners, in full, this session"; the
+    record, written by the hook from the session's own transcript, is how the gate sees it. The record
+    is builder-writable like every round file; forging it is ASK-1834's."""
+    owners = _owner_paths(cfg)
+    if not owners:
+        return []
+    try:
+        rec = json.loads((rd / BRIEF_READS).read_text())
+    except (OSError, ValueError):
+        return [f"no brief-reads record: {BRIEF_READS} is written when brief.md is written in a session "
+                f"whose transcript the hook can read. Read the owners, then write the brief."]
+    bp = rd / "brief.md"
+    if (not isinstance(rec, dict) or not bp.is_file() or rec.get("brief_sha256") != sha(bp)
+            or rec.get("owners") != owners):
+        return [f"{BRIEF_READS} is stale: brief.md or the owner list changed after it was written. Read the "
+                f"owners and write the brief again."]
+    unread = rec.get("unread")
+    if not isinstance(unread, list):
+        return [f"{BRIEF_READS} carries no unread list"]
+    return [f"owner {o} was never read in the session that wrote brief.md; read it, then write the brief"
+            for o in unread]
+
+
 # ---------------------------------------------------------------- proof shape (dc-13)
 
 PROOF_KINDS = ("problem", "capability", "reliability", "outcome", "pedigree")
@@ -2959,6 +2987,8 @@ def hook(payload: dict) -> int:
             save_ledger(sid, led)
         if fp and Path(fp).name in (CRAFT_MANIFEST, "proof.md") and (Path(fp).parent / "brief.md").is_file():
             record_citations(Path(fp).resolve().parent, payload.get("transcript_path", ""), sid)
+        if fp and Path(fp).name == "brief.md":
+            record_brief_reads(Path(fp).resolve().parent, payload.get("transcript_path", ""), sid)
         return 0
 
     if ev == "PreToolUse" and tool == "Bash":

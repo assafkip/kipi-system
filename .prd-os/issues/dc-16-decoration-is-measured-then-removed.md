@@ -1,7 +1,7 @@
 ---
 id: dc-16-decoration-is-measured-then-removed
 title: The critique line count and byte-copy brief checks are measured, then deleted or re-bound
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -35,4 +35,4 @@ First a script counts, across the sealed rounds on disk, what each check would h
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] The critique line count and byte-copy brief checks are measured, then deleted or re-bound
+- [x] The critique line count and byte-copy brief checks are measured, then deleted or re-bound

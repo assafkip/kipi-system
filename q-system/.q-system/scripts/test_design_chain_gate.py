@@ -25,6 +25,8 @@ REAL_GATE = HERE / "design-chain-gate.py"
 # test/test_dc_seal_runs_producers.py holds one run against the REAL producer.
 _BIN = Path(tempfile.mkdtemp(prefix="dcg-bin-"))
 shutil.copy(REAL_GATE, _BIN / REAL_GATE.name)
+# the gate reads session transcripts through its sibling read-first-gate.py (dc-12, dc-16)
+shutil.copy(HERE / "read-first-gate.py", _BIN / "read-first-gate.py")
 for _stub in (HERE / "test" / "stub_producers").glob("*.py"):
     shutil.copy(_stub, _BIN / _stub.name)
 import atexit
@@ -455,26 +457,36 @@ class TestCraftBar(Base):
         rc, out = run(["seal", str(self.round)], env=self.env)
         self.assertEqual(rc, 0, out)
 
-    def test_copied_brief_blocks(self):
-        """Measured 2026-09-15: five consecutive rounds carried the identical brief (sha
-        c3b247f7b6), so four of them did the read-the-owners step by copying a file. The
-        anchor check proves the brief CONTAINS the quotes and cannot tell a written brief
-        from a copied one."""
+    def brief_written_after_reading(self, *owners):
+        """The hook's record of which owners the session that wrote brief.md Read (dc-16)."""
+        t = self.tmp / "brief-session.jsonl"
+        t.write_text("".join(json.dumps({"message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": str(self.inst / o)}}]}}) + "\n"
+            for o in owners))
+        payload = {"hook_event_name": "PostToolUse", "tool_name": "Write", "session_id": self.sid,
+                   "transcript_path": str(t), "tool_input": {"file_path": str(self.round / "brief.md")}}
+        r = subprocess.run([sys.executable, str(GATE)], input=json.dumps(payload), capture_output=True,
+                           text=True, env=self.env, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_brief_with_an_unread_owner_blocks(self):
+        """dc-16: the byte-copy check (five rounds carried one brief, 2026-09-15) read a file the
+        builder writes, so one changed byte beat it. The session transcript is what says the owners
+        were read before the brief was written."""
         self.complete_chain()
         self.craft_cfg(require_fresh_brief=True, require_craft_manifest=False,
                        require_impeccable=False)
-        prev = self.round.parent / "r0"; prev.mkdir()
-        (prev / "brief.md").write_text((self.round / "brief.md").read_text())
+        self.brief_written_after_reading("canonical/the-business.md", "canonical/design-dna.md")
         rc, out = run(["seal", str(self.round)], env=self.env)
         self.assertEqual(rc, 2, out)
-        self.assertIn("byte-identical", out)
+        self.assertIn("canonical/decisions.md was never read", out)
 
-    def test_brief_written_this_round_seals(self):
+    def test_brief_written_after_reading_every_owner_seals(self):
         self.complete_chain()
         self.craft_cfg(require_fresh_brief=True, require_craft_manifest=False,
                        require_impeccable=False)
-        prev = self.round.parent / "r0"; prev.mkdir()
-        (prev / "brief.md").write_text("# an earlier round's brief\n")
+        self.brief_written_after_reading("canonical/the-business.md", "canonical/design-dna.md",
+                                         "canonical/decisions.md")
         rc, out = run(["seal", str(self.round)], env=self.env)
         self.assertEqual(rc, 0, out)
 
