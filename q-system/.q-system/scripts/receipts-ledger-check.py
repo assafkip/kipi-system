@@ -69,7 +69,9 @@ SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 # `prd=linear:ASK-n` and close copies it here. Refused as "not a plain slug" until ASK-1814,
 # so every Linear-split issue closed locally and could not commit its receipt (ASK-1808 was
 # the first to try). prd_id only, anchored, a Linear key and a number and nothing else.
-LINEAR_PRD_RE = re.compile(r"^linear:[A-Z][A-Z0-9]*-[0-9]+$")
+# The key is bounded exactly as the producer bounds it (prd_split.py LINEAR_ISSUE_ID_RE,
+# 1 to 10 characters): unbounded, `linear:ACMECORPPRICINGDEAL-1` passed (review of 0801a08f).
+LINEAR_PRD_RE = re.compile(r"^linear:[A-Z][A-Z0-9]{0,9}-[0-9]+$")
 ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
 SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 MAX_VALUE_LEN = 120

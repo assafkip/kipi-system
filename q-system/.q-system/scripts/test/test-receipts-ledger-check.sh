@@ -80,6 +80,8 @@ linear: with no number|{"issue_id":"x","prd_id":"linear:ASK-"}
 linear: form on a key other than prd_id|{"issue_id":"linear:ASK-1","prd_id":"p"}
 a different scheme|{"issue_id":"x","prd_id":"jira:ASK-1"}
 linear: with a trailing suffix|{"issue_id":"x","prd_id":"linear:ASK-1-acme"}
+linear: with a team key longer than the producer allows|{"issue_id":"x","prd_id":"linear:ACMECORPPRICINGDEAL-1"}
+a Linear URL instead of the id|{"issue_id":"x","prd_id":"https://linear.app/ask-consulting/issue/ASK-1"}
 an over-long value|{"issue_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 CASES
 ok "$i leak shapes all blocked"
