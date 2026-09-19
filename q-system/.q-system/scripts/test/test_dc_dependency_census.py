@@ -76,7 +76,8 @@ def engine_names() -> set[str]:
 
 def sibling_loads(path: Path) -> set[str]:
     names = set()
-    engines = engine_names()
+    # only the door names engines; anywhere else a design-* string is a file (review of 1ab27d24)
+    engines = engine_names() if path.name == "design-engine-door.py" else set()
     for value in string_constants(path):
         if value.strip() in engines:
             continue

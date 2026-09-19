@@ -411,7 +411,7 @@ class AssetDigest(Base):
 
     def test_only_what_the_gate_writes_leaves_the_digest_unmoved(self):
         # dc-10 reversed the dc-03 rule: the chain's records (critique, craft manifest, reader
-        # runs, impeccable output) are INPUTS a reviewer relies on, so an edit to any of them after
+        # runs) are INPUTS a reviewer relies on, so an edit to any of them after
         # the seal must open the round. Only the files the gate itself writes, and the pages
         # (each with its own sha in the receipt), leave the digest where it was. By exact name.
         dcg = _load_gate("dcg_digest2")
