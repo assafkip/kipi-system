@@ -556,8 +556,14 @@ def _live(p: Path) -> Path:
 
 
 def find_config(start: Path) -> Path | None:
-    """Nearest design-chain.json walking up from the page, then the project dir."""
-    start = _live(start)
+    """Nearest design-chain.json walking up from the page, then the project dir. Inside a held
+    snapshot: the ONE config this seal loaded and gave the producers, never a second walk. The
+    chain used to walk the resolved live path and found a config the producers never got: none
+    for a relative path (so they measured against their defaults), a looser one through a
+    symlink (ASK-1811 review, findings 2 and 3)."""
+    held = _held_snapshot(start)
+    if held is not None:
+        return held.cfg_path
     for d in [start] + list(start.parents):
         c = d / CONFIG_NAME
         if c.is_file():
@@ -605,9 +611,26 @@ def anchors_from_owners(cfg: dict, cfg_path: Path | None) -> list[tuple[str, str
     return out
 
 
+def _held_snapshot(p: Path):
+    """The snapshot this process holds whose directory contains `p`, or None. Keyed on the
+    snapshot's own directory, never on the live round: producer_problems registers a snapshot
+    and then loads the config from the LIVE page, which must still walk the disk."""
+    rp = p.resolve()
+    for held in _SNAPSHOTS.values():
+        sd = held.dir.resolve()
+        if rp == sd or sd in rp.parents:
+            return held
+    return None
+
+
 def round_dir_for(page: Path) -> Path:
     """The round directory is the nearest ancestor (up to 3 levels) holding brief.md,
-    else the page's own directory."""
+    else the page's own directory. Inside a held snapshot it is the snapshot's directory and
+    never above it: a round with no brief.md walked out of the snapshot into $TMPDIR, and a
+    complete fake round sitting there was what the chain checked (ASK-1811 review, finding-1)."""
+    held = _held_snapshot(page)
+    if held is not None:
+        return held.dir
     for d in [page.parent, page.parent.parent, page.parent.parent.parent]:
         if (d / "brief.md").is_file():
             return d

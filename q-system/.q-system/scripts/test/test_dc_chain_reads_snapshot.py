@@ -41,6 +41,13 @@ class Base(snap.Base):
         os.environ["DESIGN_CHAIN_STATE"] = str(self.tmp / "state")
         self.addCleanup(os.environ.pop, "DESIGN_CHAIN_STATE", None)
 
+    def enable(self, **craft):
+        import json
+        cfgp = self.round.parents[2] / "design-chain.json"
+        cfg = json.loads(cfgp.read_text())
+        cfg["craft"] = {"tier": "craft", **craft}
+        cfgp.write_text(json.dumps(cfg))
+
     def seal_in_process(self, gate):
         err = io.StringIO()
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
@@ -74,7 +81,9 @@ class Controls(Base):
 
     def test_an_honest_round_still_seals(self):
         # regression guard: the copied-brief check reads the LIVE siblings; the live round must
-        # not be mistaken for a sibling of its own snapshot
+        # not be mistaken for a sibling of its own snapshot. require_fresh_brief switches the
+        # check on: without it this test could not fail for its reason (review of 40e6cd3d)
+        self.enable(require_fresh_brief=True)
         other = self.round.parent / "r0"
         other.mkdir()
         (other / "brief.md").write_text("# an older round's brief\n")
@@ -125,13 +134,6 @@ class ReadsThatLeaveTheRoundResolveLive(Base):
     leaves the round (sibling rounds, the decisions ledger, the round an `implements` names)
     must resolve from the live tree, or it silently checks against nothing."""
 
-    def enable(self, **craft):
-        import json
-        cfgp = self.round.parents[2] / "design-chain.json"
-        cfg = json.loads(cfgp.read_text())
-        cfg["craft"] = {"tier": "craft", **craft}
-        cfgp.write_text(json.dumps(cfg))
-
     def sibling(self, name, brief):
         d = self.round.parent / name
         d.mkdir()
@@ -176,6 +178,91 @@ class ReadsThatLeaveTheRoundResolveLive(Base):
         cache = Path(os.environ["DESIGN_CHAIN_STATE"]) / "round-cache.json"
         keys = json.loads(cache.read_text()).keys() if cache.is_file() else []
         self.assertEqual([k for k in keys if "dc-seal-" in k], [])
+
+
+class OneRoundOneConfig(Base):
+    """ASK-1811 review round 1 (40e6cd3d), Sana's triage 2026-09-19."""
+
+    def test_the_round_lookup_never_climbs_above_the_snapshot(self):
+        # finding-1: with no brief.md, round_dir_for walked from the snapshot up into $TMPDIR,
+        # and a complete fake round sitting there was what the chain checked
+        import shutil
+        import tempfile
+        fake = Path(tempfile.mkdtemp(prefix="dc1811-fake-"))
+        self.addCleanup(shutil.rmtree, fake, True)
+        for rel in ("brief.md", "directions.md", "critique.md", "proof.md", "checks/bio_gate.txt", "gate/icp.md"):
+            src, dst = self.round / rel, fake / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(src.read_bytes())
+        # a COMPLETE fake round: without a passing standard entry for the page the chain refuses
+        # the fake for that instead, and the test passes for the wrong reason (first version did)
+        import hashlib
+        import json
+        (fake / "standard.json").write_text(json.dumps([{
+            "page": self.page.name, "sha256": hashlib.sha256(self.page.read_bytes()).hexdigest(),
+            "pass": True, "measurements": [], "failures": {}}]))
+        (self.round / "brief.md").unlink()
+        old = tempfile.tempdir
+        tempfile.tempdir = str(fake)
+        self.addCleanup(setattr, tempfile, "tempdir", old)
+        rc, err = self.seal_in_process(load_gate("dcg_o1"))
+        self.assertEqual(rc, 2, err)
+        self.assertFalse((self.round / "receipts.json").exists())
+
+    def test_a_relative_round_path_does_not_seal_against_the_producer_defaults(self):
+        # finding-2: the producers got no config (defaults, 15px) while the chain found one
+        self.css.write_text("p,a{font-size:16px}")            # fails the canon's 17, passes 15
+        old = os.getcwd()
+        os.chdir(self.round.parent)
+        self.addCleanup(os.chdir, old)
+        gate = load_gate("dcg_o2")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = gate.seal(Path("r1"))
+        self.assertEqual(rc, 2, err.getvalue())
+        self.assertFalse((self.round / "receipts.json").exists())
+
+    def test_a_symlinked_round_is_checked_against_the_config_its_typed_path_finds(self):
+        # finding-3: the chain walked the RESOLVED ancestors (a permissive config) while the
+        # producers and the passive gate walk the typed ones (a strict config)
+        import json
+        import shutil
+        strict = self.tmp / "strict"
+        strict.mkdir()
+        inst_cfg = self.round.parents[2] / "design-chain.json"
+        shutil.copy(inst_cfg, strict / "design-chain.json")
+        shutil.copytree(self.round.parents[2] / "canonical", strict / "canonical")
+        cfg = json.loads(inst_cfg.read_text())
+        cfg["owners"] = []
+        inst_cfg.write_text(json.dumps(cfg))
+        (strict / "r1").symlink_to(self.round)
+        (self.round / "brief.md").write_text(BAD_BRIEF)
+        gate = load_gate("dcg_o3")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = gate.seal(strict / "r1")
+        self.assertEqual(rc, 2, err.getvalue())
+        self.assertIn("brief.md does not quote verbatim", err.getvalue())
+
+
+class ACorrectedPageMeetsTheFullBarAtSeal(Base):
+    def test_seal_holds_a_corrected_page_to_the_chain_and_the_passive_gate_still_exempts_it(self):
+        # finding-7, kept on purpose (Sana): a seal writes a receipt, a receipt says the chain was
+        # measured; the correction exemption is the passive gate's alone
+        import subprocess
+        repo = self.tmp
+        for cmd in (["init", "-q"], ["config", "user.email", "t@t.co"], ["config", "user.name", "t"],
+                    ["add", "-A"], ["commit", "-qm", "round"]):
+            subprocess.run(["git", "-C", str(repo), *cmd], capture_output=True, check=True)
+        gate = load_gate("dcg_p4")
+        self.page.write_text(snap.PAGE.replace("every week", "every single week"))
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(gate.correct(self.page, "wording"), 0)
+        (self.round / "critique.md").write_text("## A\n1. a\n")
+        rc, err = self.seal_in_process(gate)
+        self.assertEqual(rc, 2, err)
+        self.assertIn("critique.md", err)
+        self.assertEqual(gate.chain_problems(self.page), [])
 
 if __name__ == "__main__":
     unittest.main()
