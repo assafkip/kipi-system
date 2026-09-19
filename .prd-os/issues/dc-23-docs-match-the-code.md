@@ -1,7 +1,7 @@
 ---
 id: dc-23-docs-match-the-code
 title: The command doc matches the code and every RCA box is closed or voided
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
