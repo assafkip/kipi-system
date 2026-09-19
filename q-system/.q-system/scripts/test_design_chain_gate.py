@@ -563,8 +563,9 @@ class TestPasses(Base):
         self.assertEqual(r.returncode, 0)
 
 
-if __name__ == "__main__":
-    unittest.main()
+# ASK-1824: the only main() call is at the END of this file. One sat here, mid-module, and
+# `python3 <file>` exited before the 38 tests below it existed: every ASK-1796 closeout said
+# "38 OK" over 76 defined, and 3 of the hidden ones were failing.
 
 
 class TestSealedRoundsAreHistory(Base):
@@ -629,25 +630,36 @@ class TestGapCheck(Base):
                                        "axes": {}, "below_floor": list(below)}},
         }))
 
-    def test_missing_gap_receipt_blocks(self):
+    # ASK-1824: seal RUNS the gap producer (dc-02) and removes any prior gap.json first (dc-03),
+    # so these drive the stand-in producer's own modes. They used to type gap.json by hand and
+    # expect seal to read it, which is exactly what seal no longer does.
+
+    def seal_with_producer(self, mode):
+        return run(["seal", str(self.round)], env={**self.env, "STUB_GAP": mode})
+
+    def test_a_producer_that_writes_no_receipt_blocks(self):
         self.enable(); self.complete_chain()
-        rc, out = run(["seal", str(self.round)], env=self.env)
-        self.assertEqual(rc, 2)
+        rc, out = self.seal_with_producer("silent")
+        self.assertEqual(rc, 2, out)
         self.assertIn("gap.json", out)
 
     def test_an_axis_below_floor_blocks_and_names_it(self):
         self.enable(); self.complete_chain()
-        self.gap(below=["distinct background colours: 0, and the least any exemplar reaches is 3"])
-        rc, out = run(["seal", str(self.round)], env=self.env)
-        self.assertEqual(rc, 2)
-        self.assertIn("background colours", out)
+        rc, out = self.seal_with_producer("below")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("below", out.lower())
 
-    def test_a_stale_gap_receipt_blocks(self):
-        self.enable(); self.complete_chain()
-        self.gap(sha="0" * 64)
-        rc, out = run(["seal", str(self.round)], env=self.env)
-        self.assertEqual(rc, 2)
-        self.assertIn("stale", out.lower())
+    def test_a_typed_gap_receipt_is_never_what_seal_reads(self):
+        # a passing receipt typed into the round, and a stale one. The producer writes NOTHING
+        # (silent), so the only way this round seals is if seal read the typed file. It must not:
+        # seal removes any prior gap.json before the run and refuses when none comes back.
+        for sha in (None, "0" * 64):
+            self.enable(); self.complete_chain()
+            self.gap(sha=sha)
+            rc, out = self.seal_with_producer("silent")
+            self.assertEqual(rc, 2, out)
+            self.assertIn("wrote no", out)
+            self.assertFalse((self.round / "receipts.json").exists())
 
     def test_every_floor_met_and_fresh_seals(self):
         self.enable(); self.complete_chain()
