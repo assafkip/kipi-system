@@ -246,6 +246,8 @@ class RoundSnapshot:
         self.cfg_path: Path | None = None      # the held copy of the ONE design-chain.json
         self.cfg: dict = {}                    # ...parsed from the held bytes
         self.sources: dict[str, list[str]] = {}  # implements round -> receipt problems at snapshot
+        self.inputs: dict[str, bytes | None] = {}  # the outside census the held tree was built from
+        self.cfg_live: Path | None = None
         self.missed: list[str] = []            # paths the browser asked for and got a 404
         self.stages: dict[str, list] = {}      # page name -> stage records; "" -> round-wide
 
@@ -262,61 +264,120 @@ def _held_path(root: Path, p: Path) -> Path:
     return root / os.path.normpath(os.path.abspath(p)).lstrip(os.sep)
 
 
-def _hold(root: Path, p: Path) -> None:
-    """Copy one outside input into the held tree. An unreadable input raises, and seal turns
-    that into "could not measure": skipping it would make the check it feeds go quiet."""
-    dest = _held_path(root, p)
+class EscapingPath(OSError):
+    """A config or manifest path a seal cannot hold. An OSError, so seal refuses with "could not
+    measure" like every other input it cannot read."""
+
+
+def _within(root: Path, base: Path, value, what: str) -> Path:
+    """`base / value`, refused when it is absolute or climbs out of the held tree. The held
+    tree mirrors each input at its absolute path, so a relative path lands on held bytes; an
+    absolute one joined straight past it and read the LIVE file, and so did enough `..` to
+    reach `/` (adversarial review of f091da79, finding-2)."""
+    v = str(value)
+    held = os.path.normpath(os.path.join(str(_held_path(root, base)), v))
+    if os.path.isabs(v) or not held.startswith(str(root) + os.sep):
+        raise EscapingPath(f"{what} '{v}' is absolute or climbs out of the tree this seal holds. "
+                           f"A seal reads only bytes it holds, so it cannot measure that path. "
+                           f"Name it relative to {base}.")
+    return base / v
+
+
+def _key(p: Path) -> str:
+    return os.path.normpath(os.path.abspath(p))
+
+
+def _take(inputs: dict, p: Path) -> None:
+    """One input into the census: a file's bytes, every file under a directory plus a marker
+    that the directory existed, or None when it is absent (absent is a state the chain reads:
+    no vision file means no vision check)."""
     if p.is_dir():
-        shutil.copytree(p, dest, dirs_exist_ok=True, ignore_dangling_symlinks=True)
+        inputs[_key(p) + os.sep] = b""
+        for f in sorted(p.rglob("*")):
+            if f.is_file():
+                inputs[_key(f)] = f.read_bytes()
     elif p.is_file():
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(p.read_bytes())
+        inputs[_key(p)] = p.read_bytes()
+    else:
+        inputs[_key(p)] = None
 
 
-def _hold_outside_inputs(root: Path, rd: Path, files: dict[str, bytes], cfg: dict,
-                         cfg_path: Path | None) -> dict[str, list[str]]:
-    """Every input the chain reads outside the round, held (ASK-1831). The list is the chain's
-    own reads, one line each; test_dc_seal_holds_outside_inputs.py traces every read the chain
-    makes during a seal and fails on one that leaves the held tree, so a read added to the chain
-    without a line here is caught, not trusted. Returns the implements source's receipt
-    problems, judged NOW: a source counts as sealed when its pages' receipts are believed,
-    never because a receipts.json exists ('{}' sealed a pick, review of 40e6cd3d)."""
+def _outside_inputs(root: Path, rd: Path, files: dict[str, bytes], cfg: dict, cfg_path: Path | None,
+                    cfg_raw: bytes | None, judge: bool = True) -> tuple[dict[str, bytes | None], dict[str, list[str]]]:
+    """The census of every input the chain and seal read outside the round: {live path: bytes,
+    or None when absent}. ONE function, run twice: at the snapshot, where its answer is written
+    into the held tree, and at the final compare, where a second answer that differs refuses
+    the seal (ASK-1833; holding without binding let a file swapped just before seal() and
+    restored after the snapshot seal, review of f091da79 finding-1). The two runs cannot
+    enumerate different inputs, because they are the same code on the same held config and
+    round bytes. test_dc_seal_binds_outside_inputs.py traces every live read from the snapshot
+    to the final compare, so a read added without a line here is caught, not trusted.
+
+    With `judge`, also returns the implements source's receipt problems, judged at the
+    snapshot: a source counts as sealed when its pages' receipts are believed, never because a
+    receipts.json exists ('{}' sealed a pick, review of 40e6cd3d)."""
+    inputs: dict[str, bytes | None] = {}
     parent = rd.parent
-    _hold(root, parent / OPEN_DECISIONS)
-    _hold(root, parent / "references")
+    _take(inputs, parent / OPEN_DECISIONS)
+    _take(inputs, parent / "references")
     here = rd.resolve()
-    for other in (parent.iterdir() if parent.is_dir() else []):
+    for other in (sorted(parent.iterdir()) if parent.is_dir() else []):
         if other.is_dir() and other.resolve() != here:
-            _hold(root, other / "brief.md")
+            _take(inputs, other / "brief.md")
     sources: dict[str, list[str]] = {}
-    try:
-        man = json.loads(files.get(CRAFT_MANIFEST, b"{}").decode("utf-8", "replace"))
-    except ValueError:
-        man = {}
-    impl = man.get("implements") if isinstance(man, dict) else None
+
+    def doc(name):
+        try:
+            d = json.loads(files.get(name, b"{}").decode("utf-8", "replace"))
+        except ValueError:
+            return {}
+        return d if isinstance(d, dict) else {}
+    man = doc(CRAFT_MANIFEST)
+    impl = man.get("implements")
     named = str(impl.get("round", "")).strip() if isinstance(impl, dict) else ""
-    if named and (parent / named).is_dir():
-        src = parent / named
-        _held_path(root, src).mkdir(parents=True, exist_ok=True)
-        for f in ("directions.md", "receipts.json"):
-            _hold(root, src / f)
-        pages = [p for p in src.iterdir() if p.is_file() and is_page(str(p))]
-        sources[named] = [x for p in pages for x in receipt_problems(p)] if pages else ["no page"]
+    if named:
+        src = _within(root, parent, named, f"{CRAFT_MANIFEST} implements.round")
+        if src.is_dir():
+            inputs[_key(src) + os.sep] = b""
+            for f in ("directions.md", "receipts.json"):
+                _take(inputs, src / f)
+            pages = [p for p in sorted(src.iterdir()) if p.is_file() and is_page(str(p))]
+            for p in pages:
+                _take(inputs, p)
+            if judge:
+                sources[named] = [x for p in pages for x in receipt_problems(p)] if pages else ["no page"]
     if cfg_path is None:
-        return sources
+        return inputs, sources
+    inputs[_key(cfg_path)] = cfg_raw
     base = cfg_path.parent
     for own in cfg.get("owners", []) if isinstance(cfg.get("owners"), list) else []:
         if isinstance(own, dict) and own.get("file"):
-            _hold(root, base / own["file"])
-    _hold(root, base / cfg.get("exemplars_dir", "design/exemplars"))
+            _take(inputs, _within(root, base, own["file"], "owner file"))
+    _take(inputs, _within(root, base, cfg.get("exemplars_dir", "design/exemplars"), "exemplars_dir"))
     vc = vision_cfg(cfg)
-    _hold(root, base / vc["file"])
-    _hold(root, base / vc["specs_dir"])
+    _take(inputs, _within(root, base, vc["file"], "vision.file"))
+    specs = _within(root, base, vc["specs_dir"], "vision.specs_dir")
+    _take(inputs, specs)
+    if man.get("component"):
+        _within(root, specs, f"{man['component']}.md", f"{CRAFT_MANIFEST} component")
     ground = (cfg.get("craft") or {}).get("require_grounding")
     if ground:
-        _hold(root, base / ground)
-        _hold(root, (base / ground).parent / "exemplars.json")
-    return sources
+        g = _within(root, base, ground, "craft.require_grounding")
+        _take(inputs, g)
+        _take(inputs, g.parent / "exemplars.json")
+    declared = doc(SOURCES).get("sources")
+    for rel in (declared if isinstance(declared, dict) else {}):
+        _take(inputs, _within(root, base, rel, f"{SOURCES} entry"))
+    return inputs, sources
+
+
+def outside_inputs_that_differ(snap) -> list[str]:
+    """The census again, against the live tree now: what differs from what this seal held."""
+    raw = None
+    if snap.cfg_live is not None and snap.cfg_live.is_file():
+        raw = snap.cfg_live.read_bytes()
+    now, _ = _outside_inputs(snap.root, snap.live, snap.files, snap.cfg, snap.cfg_live, raw, judge=False)
+    return sorted(k for k in set(snap.inputs) | set(now) if snap.inputs.get(k) != now.get(k))
 
 
 @contextlib.contextmanager
@@ -331,18 +392,22 @@ def snapshot_round(rd: Path, cfg_path: Path | None = None):
     try:
         root = tmp / "held"
         cfg: dict = {}
-        held_cfg = None
+        raw = None
         if cfg_path is not None:
             raw = cfg_path.read_bytes()                      # read ONCE: producers and chain share it
-            held_cfg = _held_path(root, cfg_path)
-            held_cfg.parent.mkdir(parents=True, exist_ok=True)
-            held_cfg.write_bytes(raw)
             try:
                 cfg = json.loads(raw)
             except ValueError:
                 cfg = {}
             cfg = cfg if isinstance(cfg, dict) else {}
-        sources = _hold_outside_inputs(root, rd, files, cfg, cfg_path)
+        inputs, sources = _outside_inputs(root, rd, files, cfg, cfg_path, raw)
+        for key, data in inputs.items():
+            dest = _held_path(root, Path(key.rstrip(os.sep) or os.sep))
+            if key.endswith(os.sep):
+                dest.mkdir(parents=True, exist_ok=True)
+            elif data is not None:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
         snap_dir = _held_path(root, rd)
         for rel, data in files.items():                      # last, so the round's own bytes win
             dest = snap_dir / rel
@@ -350,7 +415,8 @@ def snapshot_round(rd: Path, cfg_path: Path | None = None):
             dest.write_bytes(data)
         snap_dir.mkdir(parents=True, exist_ok=True)
         snap = RoundSnapshot(rd, files, snap_dir, root)
-        snap.cfg_path, snap.cfg, snap.sources = held_cfg, cfg, sources
+        snap.cfg_path = _held_path(root, cfg_path) if cfg_path is not None else None
+        snap.cfg, snap.sources, snap.inputs, snap.cfg_live = cfg, sources, inputs, cfg_path
         _SNAPSHOTS[rd.resolve()] = snap
         yield snap
     finally:
@@ -1955,9 +2021,11 @@ def _seal_snapshot(rd: Path, pages: list[Path], seal_cfg: dict, snap: RoundSnaps
             probs = [x for x in probs if not x.startswith("standard.json for")]
         if probs:
             bad.append((p.name, probs))
-    cfg, cfg_path = load_config(pages[0])
-    root = cfg_path.parent if cfg_path else rd
-    sprobs = source_problems(rd, root)
+    # The declared sources are read from the held round and the held tree, like the chain: seal
+    # read them live after the chain, so a source present only inside the window sealed
+    # (review of f091da79, finding-3).
+    root = (snap.cfg_path.parent if snap.cfg_path else snap.dir).resolve()
+    sprobs = source_problems(snap.dir, root)
     if sprobs:
         bad.append((SOURCES, sprobs))
     if bad:
@@ -1974,11 +2042,17 @@ def _seal_snapshot(rd: Path, pages: list[Path], seal_cfg: dict, snap: RoundSnaps
         print(f"  {moved} differ from what this seal measured, so what was measured is not what "
               f"would be sealed. Seal again.", file=sys.stderr)
         return 2
+    moved_out = outside_inputs_that_differ(snap)
+    if moved_out:
+        print("seal REFUSED:", file=sys.stderr)
+        print(f"  {moved_out} (outside the round) changed while this seal held them, so the chain "
+              f"was checked against inputs that are not the ones on disk. Seal again.", file=sys.stderr)
+        return 2
     rec = {p.name: {"sha256": snap.sha(p.name), "sealed": time.strftime("%Y-%m-%dT%H:%M:%S"),
                     "stages": snap.stages.get(p.name, []) + snap.stages.get("", [])} for p in pages}
     rec["__gate__"] = {"path": repo_path(GATE_FILE, rd), "sha256": sha(GATE_FILE)}
     rec["__assets__"] = {"sha256": asset_digest(snap.files), "measured": "snapshot", "residual": SEAL_RESIDUAL}
-    srcs = declared_sources(rd, root)
+    srcs = declared_sources(snap.dir, root)
     if srcs:
         rec["__sources__"] = {str(s.relative_to(root)): sha(s) for s in srcs}
     rc.write_text(json.dumps(rec, indent=2) + "\n")
