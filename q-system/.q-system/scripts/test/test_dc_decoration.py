@@ -60,7 +60,8 @@ class BriefReads(unittest.TestCase):
     def transcript(self, *read_paths):
         t = self.tmp / "session.jsonl"
         rows = [{"message": {"role": "assistant", "content": [
-            {"type": "tool_use", "name": "Read", "input": {"file_path": str(p)}}]}} for p in read_paths]
+            {"type": "tool_use", "name": "Read",
+             "input": p if isinstance(p, dict) else {"file_path": str(p)}}]}} for p in read_paths]
         t.write_text("".join(json.dumps(r) + "\n" for r in rows))
         return t
 
@@ -124,6 +125,43 @@ class BriefReads(unittest.TestCase):
         page.write_text("<html><body><p>x</p></body></html>")
         probs = load_gate().chain_problems(page, honor_seal=False)
         self.assertFalse(any("critique.md has" in p for p in probs), probs)
+
+    def test_a_record_copied_from_another_round_refuses(self):
+        # adv-1: the 2026-09-15 copy attack, with the record copied too
+        self.hook(self.transcript(self.inst / "canon" / "pain.md", self.inst / "canon" / "voice.md"))
+        r2 = self.rd.parent / "r2"
+        r2.mkdir()
+        for name in ("brief.md", "brief-reads.json"):
+            shutil.copy(self.rd / name, r2 / name)
+        probs = load_gate().brief_read_problems(r2, self.cfg, self.cfg_path)
+        self.assertTrue(any("another round" in p for p in probs), probs)
+
+    def test_a_partial_read_is_not_reading_in_full(self):
+        # adv-4
+        (self.inst / "canon" / "voice.md").write_text("line\n" * 50)
+        self.hook(self.transcript(self.inst / "canon" / "pain.md",
+                                  {"file_path": str(self.inst / "canon" / "voice.md"), "limit": 1}))
+        self.assertTrue(any("canon/voice.md" in p for p in self.problems()), self.problems())
+
+    def test_chunked_reads_that_cover_the_file_count(self):
+        (self.inst / "canon" / "voice.md").write_text("line\n" * 50)
+        v = str(self.inst / "canon" / "voice.md")
+        self.hook(self.transcript(self.inst / "canon" / "pain.md",
+                                  {"file_path": v, "offset": 1, "limit": 30}, {"file_path": v, "offset": 31, "limit": 30}))
+        self.assertEqual(self.problems(), [])
+
+    def test_chunked_reads_with_a_gap_do_not_count(self):
+        (self.inst / "canon" / "voice.md").write_text("line\n" * 50)
+        v = str(self.inst / "canon" / "voice.md")
+        self.hook(self.transcript(self.inst / "canon" / "pain.md",
+                                  {"file_path": v, "offset": 1, "limit": 10}, {"file_path": v, "offset": 20, "limit": 100}))
+        self.assertTrue(any("canon/voice.md" in p for p in self.problems()), self.problems())
+
+    def test_an_owner_entry_with_no_file_refuses(self):
+        # adv-7
+        self.cfg["owners"] = [{"path": "canon/pain.md"}]
+        self.write_cfg()
+        self.assertTrue(any("owner" in p and "file" in p for p in self.problems()), self.problems())
 
     def test_seal_refuses_a_brief_with_no_read_record(self):
         # RED FIRST: seal only compared the brief's bytes with sibling rounds

@@ -2852,12 +2852,47 @@ def _owner_paths(cfg: dict) -> list[str]:
                   if isinstance(owners, list) else set())
 
 
+def _read_in_full(uses, real: str) -> bool:
+    """True when this session's Reads of `real` together cover every line of it as it is now. A Read
+    with limit=1 counted as reading the owner (dc-16 adv-4); chunked Reads that cover the file count.
+    Offset is the 1-based first line, limit defaults to the Read tool's 2000."""
+    try:
+        n = len(Path(real).read_text().splitlines())
+    except (OSError, UnicodeDecodeError):
+        return False
+    spans = []
+    for name, blob in uses:
+        if name != "Read":
+            continue
+        try:
+            ti = json.loads(blob)
+        except ValueError:
+            continue
+        if not isinstance(ti.get("file_path"), str) or os.path.realpath(ti["file_path"]) != real:
+            continue
+        try:
+            start = max(int(ti.get("offset") or 1), 1)
+            limit = int(ti.get("limit") or 2000)
+        except (TypeError, ValueError):
+            continue
+        spans.append((start, start + limit - 1))
+    if not spans:
+        return False
+    reached = 0
+    for a, b in sorted(spans):
+        if a > reached + 1:
+            break
+        reached = max(reached, b)
+    return reached >= n
+
+
 def record_brief_reads(rd: Path, transcript_path: str, session_id: str) -> None:
     """Write <round>/brief-reads.json when brief.md is written: which owner files the session that
     wrote it READ. The byte-copy check this replaces compared brief.md with sibling rounds, a file the
     builder writes, so one changed byte beat it (dc-16, measured 2026-09-19: 4 real catches, 0 after a
-    one-byte edit). The transcript is the input the builder did not write. No readable transcript
-    removes the record, so seal refuses: an unknown is never a pass."""
+    one-byte edit). The transcript is written by the harness, not composed as a round file; a shell can
+    still append to it or feed the hook by hand, which is ASK-1834's (the CI reader run is the verdict
+    of record). No readable transcript removes the record, so seal refuses: an unknown is never a pass."""
     rec_path = rd / BRIEF_READS
     cfg_path = find_config(rd / "_")
     try:
@@ -2873,12 +2908,13 @@ def record_brief_reads(rd: Path, transcript_path: str, session_id: str) -> None:
     except (OSError, ValueError):
         rec_path.unlink(missing_ok=True)
         return
-    read = _opened_files(rfg._tool_uses(records))
+    uses = rfg._tool_uses(records)
     owners = _owner_paths(cfg)
-    rec_path.write_text(json.dumps({"session_id": session_id, "brief_sha256": sha(rd / "brief.md"),
-                                    "owners": owners,
+    # the round's own path goes in: a brief AND its record copied from another round passed (adv-1)
+    rec_path.write_text(json.dumps({"session_id": session_id, "round": os.path.realpath(_live(rd)),
+                                    "brief_sha256": sha(rd / "brief.md"), "owners": owners,
                                     "unread": [o for o in owners
-                                               if os.path.realpath(cfg_path.parent / o) not in read]},
+                                               if not _read_in_full(uses, os.path.realpath(cfg_path.parent / o))]},
                                    indent=2) + "\n")
 
 
@@ -2887,6 +2923,11 @@ def brief_read_problems(rd: Path, cfg: dict, cfg_path: Path | None) -> list[str]
     wrote THESE brief bytes. Step 1 of the command is "read the owners, in full, this session"; the
     record, written by the hook from the session's own transcript, is how the gate sees it. The record
     is builder-writable like every round file; forging it is ASK-1834's."""
+    raw = cfg.get("owners") if isinstance(cfg, dict) else None
+    bad = [o for o in raw if not (isinstance(o, dict) and isinstance(o.get("file"), str))] if isinstance(raw, list) else []
+    if bad:
+        return [f"{CONFIG_NAME} owner entr(ies) {bad} carry no 'file'; an owner the gate cannot name is an owner "
+                f"nobody has to read"]
     owners = _owner_paths(cfg)
     if not owners:
         return []
@@ -2900,6 +2941,9 @@ def brief_read_problems(rd: Path, cfg: dict, cfg_path: Path | None) -> list[str]
             or rec.get("owners") != owners):
         return [f"{BRIEF_READS} is stale: brief.md or the owner list changed after it was written. Read the "
                 f"owners and write the brief again."]
+    if rec.get("round") != os.path.realpath(_live(rd)):     # seal reads a held snapshot of the round
+        return [f"{BRIEF_READS} was written for another round ({rec.get('round')!r}); copying a brief and its "
+                f"record is not reading the owners. Read them and write this round's brief."]
     unread = rec.get("unread")
     if not isinstance(unread, list):
         return [f"{BRIEF_READS} carries no unread list"]
