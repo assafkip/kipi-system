@@ -1,7 +1,7 @@
 ---
 id: dc-12-citations-are-checked-where-the-transcript-is
 title: A hook verifies cited repo files were opened this session and seal requires that record
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -31,4 +31,4 @@ The PostToolUse branch on a write of craft-manifest.json or proof.md imports ope
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] A hook verifies cited repo files were opened this session and seal requires that record
+- [x] A hook verifies cited repo files were opened this session and seal requires that record

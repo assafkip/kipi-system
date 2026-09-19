@@ -2366,6 +2366,7 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
         if not d.is_dir() or not any(d.iterdir()):
             probs.append(f"missing or empty {d}/")
     probs += reader_problems(rd, page, cfg, cfg_path)
+    probs += citation_problems(rd)
 
     # brief: verbatim anchors, read live
     brief = (rd / "brief.md").read_text() if (rd / "brief.md").is_file() else ""
@@ -2658,6 +2659,92 @@ def block(msg_lines: list[str]) -> int:
     return 2
 
 
+# ---------------------------------------------------------------- citations (dc-12)
+
+CITATIONS = "citations.json"
+_PATH_TOKEN_RE = re.compile(r"[A-Za-z0-9_.\-/]+\.[A-Za-z0-9]+")
+
+
+def _read_first_gate():
+    """read-first-gate.py, loaded once: its transcript reader and opened() decide whether a file was
+    opened this session, for both gates (one definition of 'opened', not a copy)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("read_first_gate_for_dc", HERE / "read-first-gate.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def cited_repo_paths(rd: Path) -> list[str]:
+    """Repo files the round cites: technique references in the craft manifest and path tokens in
+    proof.md that name an existing file in the round's own repo. A host name or a round file is not
+    a repo citation. No repo, no citations."""
+    top = _toplevel(_live(rd))
+    if top is None:
+        return []
+    tokens: list[str] = []
+    try:
+        man = json.loads((rd / CRAFT_MANIFEST).read_text())
+        for t in man.get("techniques") or [] if isinstance(man, dict) else []:
+            if isinstance(t, dict):
+                tokens += re.split(r"[+,\s]+", str(t.get("reference", "")))
+    except (OSError, ValueError):
+        pass
+    try:
+        tokens += _PATH_TOKEN_RE.findall((rd / "proof.md").read_text())
+    except OSError:
+        pass
+    out = set()
+    for tok in tokens:
+        tok = tok.strip().strip("`'\".,;:()")
+        if tok and not tok.startswith("/") and ".." not in tok.split("/") and (top / tok).is_file():
+            out.add(tok)
+    return sorted(out)
+
+
+def _cited_bytes_sha(rd: Path) -> dict:
+    return {name: (sha(rd / name) if (rd / name).is_file() else None) for name in (CRAFT_MANIFEST, "proof.md")}
+
+
+def record_citations(rd: Path, transcript_path: str, session_id: str) -> None:
+    """Write <round>/citations.json from this session's transcript: which cited repo files the
+    session opened. No readable transcript removes the record, so seal refuses: an unknown is never
+    a pass (the read-first gate fails OPEN on a missing transcript; this one must not)."""
+    rec_path = rd / CITATIONS
+    rfg = _read_first_gate()
+    records = rfg._records(transcript_path) if transcript_path else []
+    if not records:
+        rec_path.unlink(missing_ok=True)
+        return
+    uses = rfg._tool_uses(records)
+    cited = cited_repo_paths(rd)
+    rec_path.write_text(json.dumps({"session_id": session_id, "bytes": _cited_bytes_sha(rd), "cited": cited,
+                                    "unopened": [c for c in cited if not rfg.opened(uses, c)]}, indent=2) + "\n")
+
+
+def citation_problems(rd: Path) -> list[str]:
+    """dc-12: a round that cites repo files has a record, written by the hook from the session's own
+    transcript, for THESE manifest and proof bytes, with every cited file opened. A craft manifest or
+    proof.md could name any repo file as its source with nothing checking it was ever read (RCA
+    2026-09-18). The record is builder-writable like every round file; forging it is ASK-1834's."""
+    cited = cited_repo_paths(rd)
+    if not cited:
+        return []
+    try:
+        rec = json.loads((rd / CITATIONS).read_text())
+    except (OSError, ValueError):
+        return [f"no citation record for {cited}: {CITATIONS} is written when {CRAFT_MANIFEST} or "
+                f"proof.md is written in a session whose transcript the hook can read"]
+    if not isinstance(rec, dict) or rec.get("bytes") != _cited_bytes_sha(rd) or rec.get("cited") != cited:
+        return [f"{CITATIONS} is stale: {CRAFT_MANIFEST} or proof.md changed after it was written. "
+                f"Write them again in a session that opens what they cite."]
+    unopened = rec.get("unopened")
+    if not isinstance(unopened, list) or unopened:
+        return [f"{c} is cited but was never opened in the session that wrote the citation; read it, "
+                f"then write the citation again" for c in (unopened if isinstance(unopened, list) else cited)]
+    return []
+
+
 # ---------------------------------------------------------------- hook dispatch
 
 def hook(payload: dict) -> int:
@@ -2674,6 +2761,8 @@ def hook(payload: dict) -> int:
         if is_page(fp):
             led["pages"][str(Path(fp).resolve())] = {"first_seen": time.time(), "via": tool}
             save_ledger(sid, led)
+        if fp and Path(fp).name in (CRAFT_MANIFEST, "proof.md") and (Path(fp).parent / "brief.md").is_file():
+            record_citations(Path(fp).resolve().parent, payload.get("transcript_path", ""), sid)
         return 0
 
     if ev == "PreToolUse" and tool == "Bash":
