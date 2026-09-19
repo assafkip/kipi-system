@@ -372,6 +372,32 @@ def test_the_observer_reports_an_error_in_the_chained_sitecustomize(tmp_path):
     r = subprocess.run([sys.executable, "-c", "pass"], capture_output=True, text=True, env=env)
     assert "Error in sitecustomize" in r.stderr and "boom" in r.stderr
 
+
+# --- ASK-1810 final review round (standard r2 on 64d4b38d) ----------------------------
+
+def test_a_script_launched_through_env_at_its_real_path_counts(tmp_path):
+    # the 7a fix read `env` as a non-Python program and stopped looking; with the child's
+    # environment scrubbed, nothing else could see the real script run
+    launch = REAL_TEST.replace(
+        "tool = importlib.util.module_from_spec(s); s.loader.exec_module(tool)\n",
+        "import subprocess\nsubprocess.run(['/usr/bin/env', 'python3', str(HERE / 'scripts' / 'tool.py')], check=True, env={'PATH': '/usr/bin:/bin:/opt/homebrew/bin'})\n"
+        "tool = type('t', (), {'answer': staticmethod(lambda: 42)})\n")
+    repo = _tool_repo(tmp_path, launch)
+    r = _issue(repo, "verify")
+    assert r.returncode == 0, r.stderr
+
+
+def test_a_test_def_under_the_main_guard_is_not_counted(tmp_path):
+    # no runner collects a def inside `if __name__ == "__main__":`; counting it refused an
+    # honest, fully green check
+    guarded = REAL_TEST.replace("if __name__ == '__main__':\n    unittest.main()\n",
+                                "if __name__ == '__main__':\n    def test_helper():\n        pass\n    unittest.main()\n")
+    repo = _tool_repo(tmp_path, guarded)
+    r = _issue(repo, "verify")
+    assert r.returncode == 0, r.stderr
+    row = json.loads(r.stdout)["defined_vs_ran"][0]
+    assert (row["defined"], row["ran"]) == (1, 1), row
+
 # --- the observer leaves the interpreter as it found it -----------------------------
 
 def test_the_observer_still_runs_the_interpreters_own_sitecustomize(tmp_path):

@@ -77,6 +77,8 @@ def _files_in(argv):
     if prog.endswith(".py") and os.path.isfile(prog):
         return [os.path.abspath(prog)]
     name = os.path.basename(prog)
+    if name == "env":  # `env [VAR=x] [-opts] python3 script.py`: look at what env runs (final review of 64d4b38d)
+        return _files_in([a for a in argv[1:] if "=" not in a and not a.startswith("-")])
     if not (_PYTHON.match(name) or os.path.realpath(prog) == os.path.realpath(sys.executable)):
         return []
     skip = False

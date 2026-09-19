@@ -777,6 +777,8 @@ def _count_defined(path: Path) -> int:
                 n += node.name.startswith("test")
             elif isinstance(node, ast.ClassDef):
                 n += count(node.body)
+            elif isinstance(node, ast.If) and "__main__" in ast.unparse(node.test):
+                continue  # nothing under the main guard is ever collected (final review of 64d4b38d)
             elif isinstance(node, (ast.If, ast.Try, ast.With, ast.AsyncWith)) or type(node).__name__ == "TryStar":
                 for field in ("body", "orelse", "finalbody"):
                     n += count(getattr(node, field, []) or [])
