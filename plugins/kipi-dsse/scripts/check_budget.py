@@ -1,48 +1,40 @@
 #!/usr/bin/env python3
-"""issue-check-budget: an issue's required_checks are sized to what the issue touches.
+"""check_budget: an issue's required_checks are sized to what the issue touches.
 
 WHY (founder, 2026-09-18, ASK-1796): "only issues that need the 6000 plus tests should
 have them. Small issues like changing a line do not need 6000 plus checks. You need to
-continuously verify that." required_checks is a free per-issue list (prd_split.py refuses
-an empty one and injects nothing), so right-sizing was an authoring habit with no
-executable. This is the executable. Run it after /prd-split, at /issue-start and at
-/issue-verify.
+continuously verify that." And the same day: "Ensure that you're not running the 6000
+tests that take over ten minutes for every single thing."
 
-Two rules, each exit 2 naming the issue:
+Lives beside its only caller since ASK-1810. It was q-system/.q-system/scripts/
+issue-check-budget.py, which imported issue_runner from this directory while issue_runner
+was about to call it back, and the plugin runs in repos that have no q-system tree.
+`issue_runner.py verify` calls `judge()` on the spec snapshot before any check runs and
+refuses on rule 1. The CLI below runs both rules over spec files, for /prd-split.
+
+Two rules:
   1. No spec carries a full-suite check. CI runs `verify.sh --full` on every PR
      (.github/workflows/verify.yml), so the whole suite already runs once at merge for
-     every issue. A spec that names it runs it twice.
-  2. At least one check targets the issue's own allowed_files tree (no unrelated green).
+     every issue. A spec that names it runs it twice. ENFORCED by verify.
+  2. At least one check targets the issue's own allowed_files tree. CLI only: nobody has
+     measured it against the spec population, and an unmeasured rule gets no blocking door.
 
 RETIRED before it shipped (founder, 2026-09-18, "1"): a rule forcing the full suite onto
-issues touching fleet-wide files (kipi-update.sh, settings-template.json). Measured on
-the 230 specs on main: 0 carried the full suite, and that rule was red on 23 closed
-issues that shipped fine, because CI already covered them.
+issues touching fleet-wide files. Measured on the 230 specs on main: 0 carried the full
+suite, and that rule was red on 23 closed issues that shipped fine.
 
 HONEST BOUNDARY: rule 2 compares path prefixes, so inside one large directory any test
-"targets" any file. It catches a check from another subsystem, never a wrong test next
-door. It reads the spec, never what /issue-verify actually ran.
+"targets" any file. It reads the spec, never what verify actually ran.
 
-stdlib only. Test: test/test_issue_check_budget.py.
+stdlib only. Test: test_check_budget.py.
 """
 from __future__ import annotations
 
-import importlib.util
 import shlex
 import sys
 from pathlib import Path
 
 PYTEST_VALUE_OPTS = {"-k", "-m", "-p", "-c", "-o", "-n", "--rootdir", "--maxfail"}
-
-
-def _spec_parser():
-    """issue_runner's own frontmatter parser, so this reads a spec the way /issue-start does."""
-    here = Path(__file__).resolve()
-    runner = here.parents[3] / "plugins" / "kipi-dsse" / "scripts" / "issue_runner.py"
-    mod_spec = importlib.util.spec_from_file_location("issue_runner", runner)
-    mod = importlib.util.module_from_spec(mod_spec)
-    mod_spec.loader.exec_module(mod)
-    return mod._parse_frontmatter
 
 
 def is_full_suite(cmd: str) -> bool:
@@ -89,12 +81,17 @@ def _targets(cmd: str, allowed: list[str]) -> bool:
     return False
 
 
+def full_suite_checks(checks: list[str]) -> list[str]:
+    """Rule 1 alone: the checks that run the whole suite. What verify refuses on."""
+    return [str(c) for c in checks if is_full_suite(str(c))]
+
+
 def judge(front: dict) -> tuple[str, list[str]]:
     issue = str(front.get("id", "?"))
     allowed = [str(a) for a in (front.get("allowed_files") or [])]
     checks = [str(c) for c in (front.get("required_checks") or [])]
-    full = [c for c in checks if is_full_suite(c)]
-    narrow = [c for c in checks if not is_full_suite(c)]
+    full = full_suite_checks(checks)
+    narrow = [c for c in checks if c not in full]
     probs = []
     if full:
         probs.append(f"{issue}: carries the full suite ({full[0]!r}). CI runs it once per PR for "
@@ -107,13 +104,16 @@ def judge(front: dict) -> tuple[str, list[str]]:
 
 def main(argv: list[str]) -> int:
     if not argv:
-        print("issue-check-budget: no issue specs given; nothing checked is not a pass", file=sys.stderr)
+        print("check_budget: no issue specs given; nothing checked is not a pass", file=sys.stderr)
         return 2
-    parse = _spec_parser()
+    # Lazy: the only import of issue_runner, and only on the CLI path, so issue_runner can
+    # import this module without a cycle.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from issue_runner import _parse_frontmatter
     bad: list[str] = []
     for arg in argv:
         try:
-            front = parse(Path(arg).read_text())
+            front = _parse_frontmatter(Path(arg).read_text())
         except (OSError, ValueError) as e:
             bad.append(f"{arg}: unreadable spec: {e}")
             continue

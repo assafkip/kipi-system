@@ -15,7 +15,10 @@ Subcommands:
   mark <receipt>           REFUSES (exit 2). A receipt is written only by the code
                            that computed it; the error names the verb to run.
   verify                   Run every required_check from the snapshot, store the
-                           evidence, write the `verified` receipt if all pass
+                           evidence, write the `verified` receipt if all pass. An
+                           issue loaded under contract 2 (ASK-1810) also gets the
+                           real path, tests defined vs ran and k-of-N repeats
+                           computed and sealed, and a full-suite check refused
   triage                   Recompute in-scope pending/invalid findings, write the
                            `findings_triaged` receipt only when both are zero
   approve                  Flip spec status open -> in-progress; reset stale receipts
@@ -50,6 +53,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -462,6 +466,8 @@ def cmd_load(paths: Paths, args: argparse.Namespace) -> int:
         "disallowed_files_snapshot": list(disallowed),
         "deliverables_count_snapshot": deliverables_count,
         "amendments": [],
+        # ASK-1810: an issue is held to the contract in force when it was LOADED.
+        "verify_contract": VERIFY_CONTRACT,
     }
     _write_state(paths, state)
     print(json.dumps({
@@ -642,7 +648,7 @@ def cmd_mark(paths: Paths, args: argparse.Namespace) -> int:
     return 2
 
 
-def _evidence_seal(issue_id: str, evidence: list) -> str:
+def _evidence_seal(issue_id: str, evidence: list, green: dict | None = None) -> str:
     """A hash binding the `verified` receipt to the evidence that produced it.
 
     The write path was made honest first (`mark` refuses; verify/triage/
@@ -659,13 +665,17 @@ def _evidence_seal(issue_id: str, evidence: list) -> str:
     It raises forgery from "edit one field" to "recompute the seal too", and
     pairs with the append-only judgment ledger for the tamper-evident story.
     """
-    payload = json.dumps(
-        {"issue_id": issue_id,
-         "evidence": [{"command": e.get("command"),
-                       "returncode": e.get("returncode"),
-                       "output_sha256": e.get("output_sha256")}
-                      for e in evidence]},
-        sort_keys=True, separators=(",", ":"))
+    body = {"issue_id": issue_id,
+            "evidence": [{"command": e.get("command"),
+                          "returncode": e.get("returncode"),
+                          "output_sha256": e.get("output_sha256")}
+                         for e in evidence]}
+    if green is not None:
+        # ASK-1810: the computed green is sealed with the evidence, so an edited count,
+        # repeat or real-path list fails close. Absent (contract 1), the payload is
+        # byte-identical to before, so every existing seal still verifies.
+        body["green"] = green
+    payload = json.dumps(body, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -703,6 +713,274 @@ def _review_seal(issue_id: str, completions: dict) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# Verify contract 2 (ASK-1810): the green is computed, not typed
+# ---------------------------------------------------------------------------
+#
+# Founder, 2026-09-18: "If the test passes, that's not the answer. The answer is: did the
+# test pass, and could you then run it on production and it would pass again every time."
+# And: "Ensure that you're not running the 6000 tests that take over ten minutes for every
+# single thing." Until this, both were held by habit, and the numbers pasted at closeout
+# were typed by hand -- wrong three times in one session on ASK-1796: 66 tests ran a COPY
+# of the gate while a reviewer sealed a failing page with the real one; a mid-file
+# unittest.main() hid 38 tests, 3 of them failing, behind every "38 OK".
+#
+# An issue LOADED under contract 2 gets, from verify itself and sealed into the receipt:
+#   full suite  -- refused before anything runs (check_budget.full_suite_checks)
+#   real path   -- which allowed non-test .py files ran at their tracked path (observer)
+#   defined/ran -- AST count of test functions vs the runner's own count
+#   repeats     -- k of N, N sized from the first pass against a 20-minute budget
+# An issue loaded before contract 2 keeps the old verify (grandfathered by LOAD time, not
+# spec date: a date cutoff would have exempted the 25 dc-* specs that produced the scar).
+
+VERIFY_CONTRACT = 2
+REPEAT_MAX = 10
+REPEAT_MIN = 5
+REPEAT_BUDGET_S = 1200.0
+# Lower-only test seam: min(REPEAT_BUDGET_S, this). Raising it cannot skip the N < 5 refusal.
+REPEAT_BUDGET_ENV = "KIPI_VERIFY_BUDGET_S"
+OBSERVER_DIR = Path(__file__).resolve().parent / "real_path_observer"
+REAL_PATH_LIMITS = ("it sees Python processes only; a child started with PYTHON* variables "
+                    "scrubbed is invisible (its parent's spawn argv still counts); it proves a "
+                    "file ran at its production path, not that an assertion depended on it")
+GREEN_SHAPE_TEXT = ("presence and shape are checked; a recomputed seal proves verify wrote "
+                    "them, not that the runner's own count is true")
+
+
+def _is_test_path(rel: str) -> bool:
+    p = Path(rel)
+    return (p.name.startswith(("test_", "test-")) or p.name == "conftest.py"
+            or any(part in ("test", "tests") for part in p.parts[:-1]))
+
+
+def _check_tokens(command: str) -> list[str]:
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return command.split()
+
+
+def _count_defined(path: Path) -> int:
+    """Test functions and methods a runner could collect: `def test*` at module level or in
+    any class body. The AST, so a mid-file unittest.main() cannot hide what comes after it."""
+    import ast
+    tree = ast.parse(path.read_text())
+    n = 0
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
+            n += 1
+        elif isinstance(node, ast.ClassDef):
+            n += sum(1 for m in node.body
+                     if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name.startswith("test"))
+    return n
+
+
+_UNITTEST_RAN = re.compile(r"^Ran (\d+) tests? in ", re.M)
+_UNITTEST_SKIPPED = re.compile(r"skipped=(\d+)")
+_PYTEST_SUMMARY = re.compile(r"^(?:=+ )?((?:\d+ [a-z]+(?:, )?)+) in [\d.]+s", re.M)
+
+
+def _count_ran(output: str) -> tuple[int, int] | None:
+    """(ran, skipped) from the runner's own summary, or None when there is none to read."""
+    m = _PYTEST_SUMMARY.findall(output)
+    if m:
+        parts = dict((w, int(n)) for n, w in re.findall(r"(\d+) ([a-z]+)", m[-1]))
+        ran = sum(parts.get(k, 0) for k in ("passed", "failed", "error", "errors", "xfailed", "xpassed"))
+        return ran, parts.get("skipped", 0)
+    runs = _UNITTEST_RAN.findall(output)
+    if runs:
+        skipped = sum(int(s) for s in _UNITTEST_SKIPPED.findall(output))
+        ran = sum(int(r) for r in runs)
+        return ran - skipped, skipped
+    return None
+
+
+def _defined_vs_ran(paths: Paths, command: str, output: str) -> dict:
+    toks = _check_tokens(command)
+    files = []
+    for t in toks:
+        base = t.split("::", 1)[0]
+        p = paths.repo_root / base
+        if base.endswith(".py") and _is_test_path(base) and p.is_file():
+            files.append(base)
+    if not files:
+        return {"command": command, "status": "not counted", "reason": "names no Python test file"}
+    narrowed = "-k" in toks or any("::" in t for t in toks)
+    defined = sum(_count_defined(paths.repo_root / f) for f in files)
+    counted = _count_ran(output)
+    row = {"command": command, "files": files, "defined": defined, "narrowed": narrowed}
+    if counted is None:
+        row.update(status="refused", reason="the runner printed no count this could read")
+        return row
+    ran, skipped = counted
+    row.update(ran=ran, skipped=skipped)
+    if narrowed:
+        row["status"] = "ok" if ran > 0 else "refused"
+        if ran == 0:
+            row["reason"] = "a narrowed check ran nothing"
+    elif ran + skipped < defined:
+        row.update(status="refused", reason=f"{defined} defined, {ran} ran, {skipped} skipped: "
+                                            f"{defined - ran - skipped} never ran")
+    else:
+        row["status"] = "ok"
+    return row
+
+
+def _run_observed(paths: Paths, command: str) -> tuple[subprocess.CompletedProcess, float, set[str]]:
+    import tempfile
+    import time
+    fd, log = tempfile.mkstemp(prefix="kipi-real-path-", suffix=".jsonl")
+    os.close(fd)
+    env = dict(os.environ)
+    env["KIPI_REAL_PATH_LOG"] = log
+    env["PYTHONPATH"] = os.pathsep.join([str(OBSERVER_DIR)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+    t0 = time.monotonic()
+    try:
+        result = subprocess.run(command, shell=True, cwd=paths.repo_root,
+                                capture_output=True, text=True, env=env)
+        took = time.monotonic() - t0
+        seen: set[str] = set()
+        for line in Path(log).read_text(errors="replace").splitlines():
+            try:
+                seen.update(json.loads(line).get("paths", []))
+            except ValueError:
+                continue
+    finally:
+        Path(log).unlink(missing_ok=True)
+    return result, took, seen
+
+
+def _real_path(paths: Paths, allowed: list[str], seen_per_check: dict[str, set[str]]) -> dict:
+    root = paths.repo_root.resolve()
+    targets, not_observed = [], []
+    for a in allowed:
+        if "*" in a or _is_test_path(a) or not (paths.repo_root / a).is_file():
+            continue
+        if a.endswith(".py"):
+            targets.append(a)
+        elif Path(a).suffix in (".sh", ".js", ".mjs", ".ts"):
+            not_observed.append(a)
+    per_check = {}
+    driven: set[str] = set()
+    for command, seen in seen_per_check.items():
+        hits = set()
+        for s in seen:
+            try:
+                rel = Path(s).resolve().relative_to(root).as_posix()
+            except (ValueError, OSError):
+                continue          # outside the repo: a copy in a temp dir lands here
+            if rel in targets:
+                hits.add(rel)
+        per_check[command] = sorted(hits)
+        driven |= hits
+    status = "ok" if (driven or not targets) else "refused"
+    return {"targets": targets, "driven": sorted(driven), "per_check": per_check,
+            "not_observed": not_observed, "status": status}
+
+
+def _verify_v2(paths: Paths, state: dict, checks: list[str]) -> int:
+    from check_budget import full_suite_checks
+    issue_id = state["issue_id"]
+    full = full_suite_checks(checks)
+    if full:
+        sys.stderr.write(
+            f"verify refused before running anything: {full[0]!r} runs the full suite. CI runs it "
+            "once per PR for every issue; a spec that names it runs it twice and costs every "
+            "issue ten minutes. Name the tests for the files this issue changes (founder, "
+            "2026-09-18: not 6000 tests for every single thing).\n")
+        return 2
+
+    evidence, seen, seconds, outputs = [], {}, {}, {}
+    for command in checks:
+        result, took, observed = _run_observed(paths, command)
+        blob = (result.stdout or "") + (result.stderr or "")
+        evidence.append({"command": command, "returncode": result.returncode,
+                         "output_sha256": hashlib.sha256(blob.encode("utf-8")).hexdigest(),
+                         "ran_at": _now_iso()})
+        seen[command], seconds[command], outputs[command] = observed, took, blob
+    state["verified_evidence"] = evidence
+    failed = [e for e in evidence if e["returncode"] != 0]
+    if failed:
+        _write_state(paths, state)
+        for e in failed:
+            sys.stderr.write(f"check FAILED (rc={e['returncode']}): {e['command']}\n")
+        sys.stderr.write(f"{len(failed)} of {len(evidence)} required_check(s) failed; "
+                         "no verified receipt written.\n")
+        return 2
+
+    refusals = []
+    real = _real_path(paths, list(state.get("allowed_files_snapshot") or []), seen)
+    if real["status"] == "refused":
+        refusals.append(
+            f"no required check ran any of {real['targets']} at its tracked path. A test that "
+            f"runs a copy proves the copy. Limits of this check: {REAL_PATH_LIMITS}.")
+    counts = [_defined_vs_ran(paths, c, outputs[c]) for c in checks]
+    for row in counts:
+        if row["status"] == "refused":
+            refusals.append(f"{row['command']}: {row['reason']} ({', '.join(row.get('files', []))})")
+
+    first = sum(seconds.values())
+    budget = min(REPEAT_BUDGET_S, float(os.environ.get(REPEAT_BUDGET_ENV) or REPEAT_BUDGET_S))
+    n = min(REPEAT_MAX, int(budget // first)) if first > 0 else REPEAT_MAX
+    if n < REPEAT_MIN:
+        slowest = max(seconds, key=seconds.get)
+        refusals.append(
+            f"the required checks take {first:.0f}s a pass, so only {n} run(s) fit the "
+            f"{budget:.0f}s evidence budget and at least {REPEAT_MIN} are needed. Slowest: "
+            f"{slowest!r} at {seconds[slowest]:.0f}s. Narrow it to the files this issue changes.")
+        green = 0
+    else:
+        green = 1
+        for _ in range(n - 1):
+            ok = all(subprocess.run(c, shell=True, cwd=paths.repo_root, capture_output=True,
+                                    text=True).returncode == 0 for c in checks)
+            green += ok
+        if green < n:
+            refusals.append(f"green {green} of {n} runs: a check that fails some of the time "
+                            "is not a green.")
+    result_green = {
+        "real_path": real,
+        "defined_vs_ran": counts,
+        "repeats": {"green": green, "n": n, "first_pass_seconds": round(first, 2),
+                    "budget_seconds": budget},
+    }
+    state["verified_green"] = result_green
+    if refusals:
+        _write_state(paths, state)
+        for r in refusals:
+            sys.stderr.write(f"verify refused: {r}\n")
+        return 2
+    state["verified_seal"] = _evidence_seal(issue_id, evidence, result_green)
+    stamp = _write_receipt(paths, state, "verified")
+    print(json.dumps({"verified": issue_id, "at": stamp, "checks_run": len(evidence),
+                      "checks": [e["command"] for e in evidence],
+                      "real_path": {c: f for c, f in real["per_check"].items()},
+                      "not_observed": real["not_observed"],
+                      "defined_vs_ran": [{k: r[k] for k in ("command", "defined", "ran", "skipped", "status")
+                                          if k in r} for r in counts],
+                      "repeats": f"{green} of {n}"}))
+    return 0
+
+
+def _green_shape_problems(green) -> list[str]:
+    """What close checks on a contract-2 issue: presence and shape, never truth."""
+    if not isinstance(green, dict):
+        return ["no computed green recorded"]
+    probs = []
+    real = green.get("real_path")
+    if not isinstance(real, dict) or real.get("status") != "ok":
+        probs.append("real_path missing or not ok")
+    counts = green.get("defined_vs_ran")
+    if not isinstance(counts, list) or any(not isinstance(r, dict) or r.get("status") not in ("ok", "not counted")
+                                           for r in counts):
+        probs.append("defined_vs_ran missing or refused")
+    rep = green.get("repeats")
+    if (not isinstance(rep, dict) or not isinstance(rep.get("n"), int) or rep.get("n", 0) < REPEAT_MIN
+            or rep.get("green") != rep.get("n")):
+        probs.append("repeats missing, under the minimum, or not all green")
+    return probs
+
+
 def cmd_verify(paths: Paths, args: argparse.Namespace) -> int:
     """Run every required_check, record rc + output hash, write the receipt.
 
@@ -716,6 +994,13 @@ def cmd_verify(paths: Paths, args: argparse.Namespace) -> int:
         sys.stderr.write("no active issue\n")
         return 2
     checks = state.get("required_checks_snapshot") or []
+    if state.get("verify_contract") == VERIFY_CONTRACT:
+        if not checks:
+            sys.stderr.write(
+                "no required_checks in the spec snapshot; nothing to verify. "
+                "Add a check to the issue spec, or amend the spec if it is wrong.\n")
+            return 2
+        return _verify_v2(paths, state, list(checks))
     evidence = []
     for command in checks:
         result = subprocess.run(command, shell=True, cwd=paths.repo_root,
@@ -885,6 +1170,20 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
     if not issue_id:
         sys.stderr.write("no active issue\n")
         return 2
+    if state.get("verify_contract") == VERIFY_CONTRACT and state["receipts"].get("verified"):
+        # ASK-1810. First, so an edited green is named for what it is rather than hidden
+        # behind a missing-receipt message.
+        green = state.get("verified_green")
+        probs = _green_shape_problems(green)
+        if probs:
+            sys.stderr.write(f"cannot close {issue_id}: the verified receipt's computed evidence is not whole "
+                             f"({'; '.join(probs)}). {GREEN_SHAPE_TEXT}. Re-run "
+                             "`issue_runner.py verify`.\n")
+            return 2
+        if state.get("verified_seal") != _evidence_seal(issue_id, state.get("verified_evidence") or [], green):
+            sys.stderr.write(f"cannot close {issue_id}: the verified receipt does not match its "
+                             f"evidence. {GREEN_SHAPE_TEXT}. Re-run `issue_runner.py verify`.\n")
+            return 2
     missing = [k for k in RECEIPT_FIELDS if not state["receipts"].get(k)]
     if missing:
         sys.stderr.write(
@@ -956,7 +1255,7 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
 
     # The `verified` receipt must still match the evidence that produced it.
     # Without this, close trusts a field anyone with filesystem access can type.
-    if state["receipts"].get("verified"):
+    if state["receipts"].get("verified") and state.get("verify_contract") != VERIFY_CONTRACT:
         expected = _evidence_seal(issue_id, state.get("verified_evidence") or [])
         if state.get("verified_seal") != expected:
             sys.stderr.write(

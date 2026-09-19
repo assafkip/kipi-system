@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Test for issue-check-budget.py. Temp specs only; never reads .prd-os/."""
+"""Test for check_budget.py (moved from q-system/.q-system/scripts/issue-check-budget.py by ASK-1810).
+Temp specs only; never reads .prd-os/."""
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parents[1] / "issue-check-budget.py"
+SCRIPT = Path(__file__).resolve().parent / "check_budget.py"
 MARKER = "<!-- generated-by: prd_split.py prd=p finding=f at=2026-09-18T00:00:00Z -->"
 
 
