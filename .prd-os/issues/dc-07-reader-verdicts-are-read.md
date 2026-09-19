@@ -1,7 +1,7 @@
 ---
 id: dc-07-reader-verdicts-are-read
 title: Reader rows carry a forced-choice verdict and seal refuses on LEAVE without a founder disposition
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -47,4 +47,32 @@ Design (Sana, 2026-09-19): the reader gate appends two fixed questions before th
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Reader rows carry a forced-choice verdict and seal refuses on LEAVE without a founder disposition
+- [x] Reader rows carry a forced-choice verdict and seal refuses on LEAVE without a founder disposition
+
+## Amendments
+
+### 2026-09-19T09:48:38Z
+Reason: Sana 2026-09-19: add test/fixtures/design-chain/* for captured reader-row fixtures; record D1-D8 design picks
+
+Before:
+- allowed_files: ['q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-gate.py', 'q-system/.q-system/scripts/design-reader-gate.py', 'q-system/.q-system/scripts/test/test_dc_reader_verdicts.py']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_dc_reader_verdicts.py']
+- disallowed_files: []
+
+After:
+- allowed_files: ['q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-gate.py', 'q-system/.q-system/scripts/design-reader-gate.py', 'q-system/.q-system/scripts/test/test_dc_reader_verdicts.py', 'q-system/.q-system/scripts/test/fixtures/design-chain/*']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_dc_reader_verdicts.py']
+- disallowed_files: []
+
+### 2026-09-19T09:50:28Z
+Reason: the reader gate now asks two forced-choice questions (11 answers, readers.labels required), which legitimately breaks the three existing reader-gate tests; Sana's standing rule approves amends for tests a change legitimately breaks
+
+Before:
+- allowed_files: ['q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-gate.py', 'q-system/.q-system/scripts/design-reader-gate.py', 'q-system/.q-system/scripts/test/test_dc_reader_verdicts.py', 'q-system/.q-system/scripts/test/fixtures/design-chain/*']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_dc_reader_verdicts.py']
+- disallowed_files: []
+
+After:
+- allowed_files: ['q-system/.q-system/capability/expected_tests/*', 'q-system/.q-system/scripts/design-chain-gate.py', 'q-system/.q-system/scripts/design-reader-gate.py', 'q-system/.q-system/scripts/test/test_dc_reader_verdicts.py', 'q-system/.q-system/scripts/test/fixtures/design-chain/*', 'q-system/.q-system/scripts/test/test_dc_reader_gate.py', 'q-system/.q-system/scripts/test/test_dc_reader_gate_serves_itself.py', 'q-system/.q-system/scripts/test/test_dc_served_round_binds_what_it_serves.py']
+- required_checks: ['python3 q-system/.q-system/scripts/test/test_dc_reader_verdicts.py']
+- disallowed_files: []
