@@ -863,7 +863,13 @@ def find_config(start: Path) -> Path | None:
     held = _held_snapshot(start)
     if held is not None:
         return held.cfg_path
+    # never a config at or inside the round: the builder writes the round, and a design-chain.json
+    # there chose its own owners and persona while the instance config never changed (dc-09 adv-1)
+    rd = os.path.realpath(round_dir_for(start / "_"))
     for d in [start] + list(start.parents):
+        real = os.path.realpath(d)
+        if real == rd or real.startswith(rd + os.sep):
+            continue
         c = d / CONFIG_NAME
         if c.is_file():
             return c
@@ -2045,14 +2051,15 @@ def reader_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None = Non
         return [f"{_live(rd / READER_ROWS)} holds reader rows, and {CONFIG_NAME} has no readers block; put "
                 f"the block back"] if held else []
     rg = _reader_gate()
+    # the persona first, as the reader gate does, so both name the same problem first (dc-09 std-1)
+    why = rg.persona_owner_problem(cfg, cfg_path.parent, rd) if cfg_path is not None else "no config path"
+    if why:
+        return [f"{CONFIG_NAME} {why}"]
     try:
         questions = rg.full_questions(readers)
         rg.check_readers(readers)
     except ValueError as e:
         return [f"{CONFIG_NAME} readers: {e}"]
-    why = rg.persona_owner_problem(cfg)
-    if why:
-        return [f"{CONFIG_NAME} {why}"]
     # rows for a page the round no longer holds: renaming the page reset its run count and left its
     # LEAVE rows unread (ASK-1840 adv-1). Said once, by the first page of the round.
     held = sorted(p.name for p in rd.iterdir() if p.is_file() and p.suffix.lower() in PAGE_EXTS)
