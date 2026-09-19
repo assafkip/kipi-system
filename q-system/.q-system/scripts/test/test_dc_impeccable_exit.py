@@ -179,6 +179,26 @@ class ThePageListAndTheDetectorsOwnConfig(TheScript):
         self.assertEqual(after - before, set())
 
 
+class EveryRecordedStageIsBelievable(unittest.TestCase):
+    """ASK-1845 happened because dc-04 recorded a stage the receipt check (dc-10) had no script for.
+    The census is taken from the gate's own source, not from a list typed here."""
+
+    def test_every_stage_seal_records_has_a_script_the_receipt_check_believes(self):
+        import importlib.util
+        import re
+        src = REAL_GATE.read_text()
+        names = sorted(set(re.findall(r'stage_record\("([a-z]+)"', src)))
+        self.assertGreaterEqual(len(names), 3, names)          # the parse found the stages at all
+        spec = importlib.util.spec_from_file_location("dc1845_gate", REAL_GATE)
+        g = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(g)
+        for n in names:
+            with self.subTest(stage=n):
+                self.assertIsNotNone(g._stage_script(n), f"seal records a {n!r} stage no receipt can believe")
+        for c in g.CHECKS:
+            self.assertIsNotNone(g._stage_script(f"check:{c}"))
+
+
 class SealRunsIt(unittest.TestCase):
     """The real gate, real producers, the real detector."""
 
@@ -222,6 +242,19 @@ class SealRunsIt(unittest.TestCase):
         rc, out = self.seal()
         self.assertEqual(rc, 0, out)
         self.assertIn("control fired: YES", (self.rd / "checks" / "impeccable.txt").read_text())
+
+    def test_a_round_sealed_with_impeccable_reads_sealed_afterwards(self):
+        # ASK-1845: the impeccable stage had no producer on record for dc-10's receipt check, so a
+        # round sealed with require_impeccable read OPEN on every passive read afterwards
+        (self.rd / "Home-laptop.html").write_text(CLEAN)
+        rc, out = self.seal()
+        self.assertEqual(rc, 0, out)
+        env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_PROJECT_DIR", "DESIGN_CHAIN_ALLOW")}
+        env["DESIGN_CHAIN_STATE"] = str(self.tmp / "state")
+        r = subprocess.run([sys.executable, str(REAL_GATE), "status-page", str(self.rd / "Home-laptop.html")],
+                           capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("impeccable producer that is neither", r.stdout + r.stderr)
 
     def test_a_slop_page_named_htm_beside_a_clean_one_is_refused(self):
         # finding-2: the producer scanned *.html only, and seal seals every page

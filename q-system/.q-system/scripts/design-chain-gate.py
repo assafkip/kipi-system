@@ -1321,7 +1321,9 @@ def _blob_shas(rd: Path, rel: str) -> list[tuple[str, str]]:
     return out
 
 
-STAGE_PRODUCERS = {"standard": STANDARD_PRODUCER, "gap": GAP_PRODUCER}
+# every producer seal runs and records as a stage: a stage missing here is never believed, so an
+# impeccable-sealed round read OPEN on every passive read after dc-04 added the stage (ASK-1845)
+STAGE_PRODUCERS = {"standard": STANDARD_PRODUCER, "gap": GAP_PRODUCER, "impeccable": IMPECCABLE_PRODUCER}
 
 
 def _stage_script(stage) -> Path | None:
