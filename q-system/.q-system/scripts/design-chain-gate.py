@@ -3325,7 +3325,9 @@ def hook(payload: dict) -> int:
             return block([f"{p}: {x}" for p, probs in opens for x in probs[:3]])
         return 0
 
-    if ev == "Stop":
+    # SubagentStop is the same end of turn for a subagent, and dc-24 wired it in both settings files
+    # while this branch read only "Stop", so the hook was inert (PR #374 review, major)
+    if ev in ("Stop", "SubagentStop"):
         if payload.get("stop_hook_active"):
             return 0
         opens = open_pages(led)

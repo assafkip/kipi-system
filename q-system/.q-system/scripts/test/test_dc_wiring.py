@@ -30,7 +30,9 @@ def wired(path: Path) -> dict:
             for h in m.get("hooks", []):
                 cmd = h.get("command", "")
                 if GATE in cmd or DOOR in cmd:
-                    out[(ev, m.get("matcher"))] = cmd
+                    # keyed by command too: the live file carries a bare and an isolated Stop entry,
+                    # and collapsing them hid one from every assertion (PR #374 review, nit)
+                    out[(ev, m.get("matcher"), cmd)] = cmd
     return out
 
 
@@ -62,12 +64,12 @@ class Wiring(unittest.TestCase):
         # by ROLE, not by count: a proposal may only ADD to the live file, so the template replaces
         # its narrow matcher while the live file carries the narrow one plus the wider block
         for name, got in (("live", live), ("template", template)):
-            roles = {(ev, matcher == "Skill") for (ev, matcher) in got}
+            roles = {(ev, matcher == "Skill") for (ev, matcher, _c) in got}
             for ev, is_door in (("PreToolUse", False), ("PreToolUse", True), ("PostToolUse", False),
                                 ("PostToolUse", True), ("Stop", False), ("SubagentStop", False)):
                 self.assertIn((ev, is_door), roles,
                               f"{name}: no {'door' if is_door else 'gate'} hook on {ev}: {sorted(got)}")
-            wide = [m for (ev, m) in got if ev == "PreToolUse" and m and "chrome-devtools" in m]
+            wide = [m for (ev, m, _c) in got if ev == "PreToolUse" and m and "chrome-devtools" in m]
             self.assertTrue(any(m.endswith("mcp__plugin_chrome-devtools.*") for m in wide),
                             f"{name}: the chrome-devtools surface is narrower than the gate's own prefix")
         # the same scripts in both, which is what settings-template-sync-check compares
@@ -76,15 +78,25 @@ class Wiring(unittest.TestCase):
     def test_the_template_the_fleet_gets_runs_the_hooks_isolated(self):
         # `python3 <script>` runs sitecustomize.py from PYTHONPATH before the gate's first line, so a
         # session could no-op every hook. The gate already gives its own producers -I (dc-24 review)
-        for (ev, matcher), cmd in sorted(wired(TEMPLATE).items()):
+        for (ev, matcher, _c), cmd in sorted(wired(TEMPLATE).items()):
             self.assertIn("python3 -I ", cmd, f"{ev}/{matcher} is not isolated")
+
+    def test_every_live_surface_has_an_isolated_command(self):
+        # a proposal may only ADD, so the bare copies stay; what matters is that each surface also
+        # has an isolated one, which still refuses when the bare copy is silenced (PR #374 review)
+        by_surface = {}
+        for (ev, matcher, _c), cmd in wired(LIVE).items():
+            by_surface.setdefault((ev, matcher == "Skill"), []).append(cmd)
+        for surface, cmds in sorted(by_surface.items()):
+            self.assertTrue(any("python3 -I " in c for c in cmds),
+                            f"{surface}: no isolated command, a sitecustomize silences this surface")
 
     def test_a_sitecustomize_cannot_silence_the_isolated_command(self):
         site = self.tmp / "pypath"
         site.mkdir()
         (site / "sitecustomize.py").write_text("import os\nos._exit(0)\n")
-        cmd = next(c for (ev, m), c in wired(TEMPLATE).items() if ev == "PreToolUse" and GATE in c)
-        self.run_hook(next(c for (ev, m), c in wired(TEMPLATE).items() if ev == "PostToolUse" and GATE in c),
+        cmd = next(c for (ev, m, _c), c in wired(TEMPLATE).items() if ev == "PreToolUse" and GATE in c)
+        self.run_hook(next(c for (ev, m, _c), c in wired(TEMPLATE).items() if ev == "PostToolUse" and GATE in c),
                       {"hook_event_name": "PostToolUse", "tool_name": "Write", "session_id": "s-site",
                        "tool_input": {"file_path": str(self.page)}})
         env_before = os.environ.get("PYTHONPATH")
@@ -101,7 +113,7 @@ class Wiring(unittest.TestCase):
     def test_a_missing_script_is_a_silent_no_op_which_is_the_fleet_convention(self):
         # measured, not assumed (dc-24 review): the Pre/Post form exits 1 with no output and the tool
         # proceeds; the Stop form exits 0. An instance that got the switch without the script is open.
-        for (ev, matcher), cmd in sorted(wired(TEMPLATE).items()):
+        for (ev, matcher, _c), cmd in sorted(wired(TEMPLATE).items()):
             broken = cmd.replace("design-chain-gate.py", "design-chain-gate-absent.py").replace(
                 "design-engine-door.py", "design-engine-door-absent.py")
             rc, out = self.run_hook(broken, {"hook_event_name": ev, "tool_name": "Read", "session_id": "s-gone",
@@ -110,14 +122,14 @@ class Wiring(unittest.TestCase):
             self.assertIn(rc, (0, 1), f"{ev}/{matcher} exited {rc} with its script missing")
 
     def test_every_wired_command_runs_and_passes_a_benign_payload(self):
-        for (ev, matcher), cmd in sorted(wired(LIVE).items()):
+        for (ev, matcher, _c), cmd in sorted(wired(LIVE).items()):
             rc, out = self.run_hook(cmd, {"hook_event_name": ev, "tool_name": "Read", "session_id": "s-dc24",
                                           "tool_input": {"file_path": str(self.inst / "design-chain.json")}})
             self.assertEqual(rc, 0, f"{ev}/{matcher}: {out}")
 
     def test_the_wired_gate_blocks_showing_an_unsealed_page(self):
-        cmd = next(c for (ev, m), c in wired(LIVE).items() if ev == "PreToolUse" and GATE in c)
-        self.run_hook(next(c for (ev, m), c in wired(LIVE).items() if ev == "PostToolUse" and GATE in c),
+        cmd = next(c for (ev, m, _c), c in wired(LIVE).items() if ev == "PreToolUse" and GATE in c)
+        self.run_hook(next(c for (ev, m, _c), c in wired(LIVE).items() if ev == "PostToolUse" and GATE in c),
                       {"hook_event_name": "PostToolUse", "tool_name": "Write", "session_id": "s-dc24",
                        "tool_input": {"file_path": str(self.page)}})
         rc, out = self.run_hook(cmd, {"hook_event_name": "PreToolUse", "tool_name": "SendUserFile",
@@ -126,11 +138,23 @@ class Wiring(unittest.TestCase):
         self.assertIn("design chain", out.lower())
 
     def test_the_wired_door_refuses_an_engine_outside_a_round(self):
-        cmd = next(c for (ev, m), c in wired(LIVE).items() if ev == "PreToolUse" and DOOR in c)
+        cmd = next(c for (ev, m, _c), c in wired(LIVE).items() if ev == "PreToolUse" and DOOR in c)
         rc, out = self.run_hook(cmd, {"hook_event_name": "PreToolUse", "tool_name": "Skill",
                                       "session_id": "s-dc24", "tool_input": {"skill": "frontend-design"}})
         self.assertEqual(rc, 2, out)
         self.assertIn("/design-chain", out)
+
+    def test_the_wired_subagent_stop_refuses_the_same_page_stop_refuses(self):
+        # the event was wired and the gate had no branch for it, so it returned 0 on the page Stop
+        # refuses at 2 (PR #374 review): a string in a settings file is not a hook that runs
+        for ev in ("Stop", "SubagentStop"):
+            cmd = next(c for (e, m, _c), c in wired(TEMPLATE).items() if e == ev)
+            self.run_hook(next(c for (e, m, _c), c in wired(TEMPLATE).items() if e == "PostToolUse" and GATE in c),
+                          {"hook_event_name": "PostToolUse", "tool_name": "Write", "session_id": f"s-{ev}",
+                           "tool_input": {"file_path": str(self.page)}})
+            rc, out = self.run_hook(cmd, {"hook_event_name": ev, "session_id": f"s-{ev}",
+                                          "stop_hook_active": False})
+            self.assertEqual(rc, 2, f"{ev} let an unsealed page end the turn: {out}")
 
     def test_no_claude_commands_copy_of_the_command(self):
         self.assertFalse((ROOT / ".claude" / "commands" / "design-chain.md").exists(),
