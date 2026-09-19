@@ -380,7 +380,9 @@ class OneReadOfTheBytes(Base):
         dcg.producer_problems = lambda rd, pages, cfg: []
 
         def chain_then_swap(page, honor_seal=True):
-            page.write_text(PAGE.replace("bill", "invoice"))     # the window after the last check
+            # the LIVE page: since ASK-1811 the chain check is handed the snapshot's copy, and the
+            # final compare is what refuses a live page changed after the last check
+            (self.round / page.name).write_text(PAGE.replace("bill", "invoice"))
             return []
         dcg.chain_problems = chain_then_swap
         rc = dcg.seal(self.round)

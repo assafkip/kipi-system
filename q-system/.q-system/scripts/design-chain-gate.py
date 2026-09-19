@@ -541,8 +541,23 @@ def is_page(path: str) -> bool:
     return not any(m in low for m in INTERNAL_MARKERS)
 
 
+def _live(p: Path) -> Path:
+    """A path inside a snapshot this process holds, as the same path in the live round; any
+    other path unchanged. Seal checks the chain against the SNAPSHOT (ASK-1811), so every read
+    inside the round gets the bytes that were measured; the few reads that leave the round
+    (config, owner files, sibling rounds, the decisions ledger) resolve from the live tree
+    through this, one place."""
+    rp = p.resolve()
+    for live, held in _SNAPSHOTS.items():
+        sd = held.dir.resolve()
+        if rp == sd or sd in rp.parents:
+            return live / rp.relative_to(sd)
+    return p
+
+
 def find_config(start: Path) -> Path | None:
     """Nearest design-chain.json walking up from the page, then the project dir."""
+    start = _live(start)
     for d in [start] + list(start.parents):
         c = d / CONFIG_NAME
         if c.is_file():
@@ -618,7 +633,8 @@ def copied_brief_problems(rd: Path) -> list[str]:
     if not bp.is_file():
         return []
     mine = sha(bp)
-    for other in sorted(p for p in rd.parent.iterdir() if p.is_dir() and p != rd):
+    here = _live(rd).resolve()
+    for other in sorted(p for p in here.parent.iterdir() if p.is_dir() and p.resolve() != here):
         ob = other / "brief.md"
         if ob.is_file() and sha(ob) == mine:
             return [f"brief.md is byte-identical to {other.name}/brief.md. Step 1 is to read "
@@ -663,7 +679,7 @@ def disposition_problems(rd: Path) -> list[str]:
     # founder questions: raised in a round, registered in ONE ledger he can read
     asks = sorted({m.group(1) for m in FOUNDER_RE.finditer(head)})
     if asks:
-        ledger = rd.parent / OPEN_DECISIONS
+        ledger = _live(rd).parent / OPEN_DECISIONS
         have = ledger.read_text() if ledger.is_file() else ""
         missing = [t for t in asks if t not in have]
         if missing:
@@ -1062,6 +1078,10 @@ def receipt_problems(page: Path) -> list[str]:
     left the round COMPLETE, because the digest seal wrote had no reader (ASK-1808 finding-7).
     Every message says "receipt", so an explicit re-seal can set them aside."""
     rd = round_dir_for(page)
+    if _live(rd) != rd:
+        # the chain check a seal runs against its own snapshot: the receipt is what this seal is
+        # about to write, so there is nothing to believe yet (and nothing to cache for a temp dir)
+        return ["not sealed: this seal is checking it"]
     rc = rd / "receipts.json"
     if not rc.is_file():
         return [f"not sealed: run `design-chain-gate.py seal {rd}`"]
@@ -1492,10 +1512,10 @@ def implemented_direction(rd: Path, cfg_path: Path | None) -> tuple[dict | None,
     if not reason:
         return None, [f"{CRAFT_MANIFEST} `implements` carries no reason. A round that builds a pick "
                       f"says in writing why that one won, in the words it was picked in."]
-    src = rd.parent / named
+    src = _live(rd).parent / named
     if not src.is_dir():
         return None, [f"{CRAFT_MANIFEST} `implements` names round '{named}', which does not exist "
-                      f"in {rd.parent}."]
+                      f"in {_live(rd).parent}."]
     if not (src / "receipts.json").is_file():
         return None, [f"{CRAFT_MANIFEST} `implements` names round '{named}', which is not sealed. A "
                       f"pick can only be made from a round that was measured."]
@@ -1794,12 +1814,20 @@ def _seal_snapshot(rd: Path, pages: list[Path], seal_cfg: dict, snap: RoundSnaps
     measured = producer_problems(rd, pages, seal_cfg)
     bad += measured
     reported = {name for name, _ in measured}
+    held = {str(snap.dir.resolve()), str(snap.dir)}
     for p in pages:
+        # ASK-1811: the chain is checked against the SNAPSHOT's copy of the page, so every record
+        # it reads is the one that was measured. It read the disk, and a brief swapped good for
+        # the chain check and back before the final compare sealed (ASK-1808 finding-10, NOT MET
+        # there, reproduced in-process by test_dc_chain_reads_snapshot.py).
+        raw = chain_problems(snap.dir / p.name, honor_seal=False)
+        for h in held:
+            raw = [x.replace(h, str(rd)) for x in raw]
         if rc.is_file():
             # ignore the existing receipt so a re-seal re-validates everything else
-            probs = [x for x in chain_problems(p, honor_seal=False) if "receipt" not in x and "not sealed" not in x]
+            probs = [x for x in raw if "receipt" not in x and "not sealed" not in x]
         else:
-            probs = [x for x in chain_problems(p, honor_seal=False) if "not sealed" not in x]
+            probs = [x for x in raw if "not sealed" not in x]
         if p.name in reported:
             probs = [x for x in probs if not x.startswith("standard.json for")]
         if probs:
