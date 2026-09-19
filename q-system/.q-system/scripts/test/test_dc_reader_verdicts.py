@@ -96,6 +96,11 @@ class Round(unittest.TestCase):
                            capture_output=True, text=True, env=env, timeout=300)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def run8(self, k=-1):
+        """The run id a FOUNDER line names (dc-08 adv-3: a waiver answers one reader in one run)."""
+        rows = [json.loads(x) for x in (self.rd / "gate" / "reader-runs.jsonl").read_text().splitlines() if x.strip()]
+        return rows[k]["_provenance"]["run_id"][:8]
+
     def seal(self):
         env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_PROJECT_DIR", "DESIGN_CHAIN_ALLOW")}
         env["DESIGN_CHAIN_STATE"] = str(self.tmp / "state")
@@ -132,11 +137,11 @@ class Verdicts(Round):
         rc, out = self.seal()
         self.assertEqual(rc, 2, out)
         (self.rd / "gate" / "dispositions.md").write_text(
-            f"- reader {IDS[0]}: FOUNDER wrong reader\n")
+            f"- reader {IDS[0]} run {self.run8()}: FOUNDER wrong reader\n")
         rc, out = self.seal()
         self.assertEqual(rc, 2, out)
         (self.rd / "gate" / "dispositions.md").write_text(
-            f"- reader {IDS[1]}: FOUNDER a real buyer read it on 2026-09-19 and booked\n")
+            f"- reader {IDS[1]} run {self.run8()}: FOUNDER a real buyer read it on 2026-09-19 and booked\n")
         rc, out = self.seal()
         self.assertEqual(rc, 0, out)
 
@@ -166,7 +171,7 @@ class WhatTheReaderWasShown(Round):
         # dc-07 std-2
         self.read(answers("STAY", "ops consulting"), answers("LEAVE", "ops consulting"), answers("STAY", "ops consulting"))
         (self.rd / "gate" / "dispositions.md").write_text(
-            f"Format:\n```\n- reader {IDS[1]}: FOUNDER example only\n```\n")
+            f"Format:\n```\n- reader {IDS[1]} run {self.run8()}: FOUNDER example only\n```\n")
         rc, out = self.seal()
         self.assertEqual(rc, 2, out)
         self.assertIn(f"reader {IDS[1]} said LEAVE", out)

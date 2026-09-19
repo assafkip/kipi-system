@@ -54,6 +54,37 @@ class AppendOnly(Runs):
         self.assertEqual(rc, 0, out)
 
 
+class Waivers(Runs):
+    def test_a_founder_line_answers_one_run_not_the_next(self):
+        # dc-08 adv-3: a waiver keyed by slot exempted that slot in every later run and page version
+        self.read_page(answers("LEAVE", "ops consulting"), *[answers("STAY", "ops consulting")] * 2)
+        first = self.rows()[0]["_provenance"]["run_id"][:8]
+        (self.rd / "gate" / "dispositions.md").write_text(f"- reader {IDS[0]} run {first}: FOUNDER waived that run\n")
+        rc, out = self.seal()
+        self.assertEqual(rc, 0, out)
+        (self.rd / "receipts.json").unlink()
+        (self.rd / "Home-laptop.html").write_text(PAGE.replace("Two records", "Two ledgers"))
+        self.read_page(answers("LEAVE", "ops consulting"), *[answers("STAY", "ops consulting")] * 2)
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"reader {IDS[0]} said LEAVE", out)
+
+
+class TornLines(Runs):
+    def test_a_run_after_a_torn_line_starts_on_a_line_of_its_own(self):
+        # dc-08 adv-4: the next append glued its first row onto the fragment
+        self.read_page(*self.STAY)
+        p = self.rd / "gate" / "reader-runs.jsonl"
+        p.write_bytes(p.read_bytes()[:-40])
+        self.read_page(*self.STAY)
+        lines = p.read_text().splitlines()
+        for ln in lines[-3:]:
+            json.loads(ln)                      # the new run's rows are whole lines
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)            # the torn line still refuses: it could hide a LEAVE
+        self.assertIn("is not JSON", out)
+
+
 class WholeRuns(Runs):
     def test_rows_spliced_from_two_runs_are_not_a_run(self):
         self.read_page(*self.STAY)
@@ -131,6 +162,54 @@ class TheConfigCannotBeLoweredAfterTheReadersRan(Runs):
         rc, out = self.seal()
         self.assertEqual(rc, 2, out)
         self.assertIn("readers is weaker than the config run", out)
+        self.assertEqual(out.count("readers is weaker than the config run"), 1, out)   # once per run (std-2)
+
+    def test_a_row_with_short_answers_still_carries_its_config(self):
+        # dc-08 std-1: the weakening check sat behind the answers-shape guard
+        self.read_page(*self.STAY)
+        rows = self.rows()
+        for r in rows:
+            r["answers"] = r["answers"][:1]
+        (self.rd / "gate" / "reader-runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        self.config(floor=0.6)
+        self.read_page(*self.STAY)
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("readers is weaker than the config run", out)
+
+    def test_a_recorded_config_seal_cannot_read_counts_as_weaker(self):
+        # the reader gate no longer records a bad floor; a row edited to carry one must fail closed,
+        # never read as 0 (mutant Mg survived without this, 2026-09-19)
+        self.read_page(*self.STAY)
+        rows = self.rows()
+        for r in rows:
+            r["_provenance"]["readers_config"]["floor"] = "1"
+        (self.rd / "gate" / "reader-runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("readers is weaker than the config run", out)
+
+    def test_a_floor_that_is_not_a_number_refuses_before_any_run(self):
+        # dc-08 adv-5: a string floor was recorded raw and read as 0 by the weakening check
+        self.config(floor="1")
+        f = self.tmp / "answers.json"
+        f.write_text(json.dumps({"responses": self.STAY}))
+        r = subprocess.run([sys.executable, str(READER), str(self.rd), "--config", str(self.inst / "design-chain.json"),
+                            "--runner", "injected", "--answers", str(f)], capture_output=True, text=True, timeout=300)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("readers.floor", r.stderr)
+        self.assertFalse((self.rd / "gate" / "reader-runs.jsonl").exists())
+
+    def test_renaming_the_page_and_deleting_the_block_refuses(self):
+        # dc-08 adv-1: the guard matched rows for the CURRENT page name only
+        self.read_page(*[answers("LEAVE", "data cleanup")] * 3)
+        (self.rd / "Home-laptop.html").rename(self.rd / "Home-laptop.htm")
+        (self.rd / "proof.md").write_text("Home-laptop.htm: proof\n")
+        (self.inst / "design-chain.json").write_text(json.dumps(
+            {"project": "dc07", "owners": [], "standard": {"min_body_px": 15}}))
+        rc, out = self.seal()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("holds reader rows, and design-chain.json has no readers block", out)
 
     def test_deleting_the_readers_block_refuses_while_rows_exist(self):
         # dc-07 adv-4

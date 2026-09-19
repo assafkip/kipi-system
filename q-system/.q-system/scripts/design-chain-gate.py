@@ -1957,7 +1957,7 @@ def vision_problems(rd: Path, cfg: dict, cfg_path: Path | None) -> list[str]:
 
 READER_ROWS = "gate/reader-runs.jsonl"
 DISPOSITIONS = "gate/dispositions.md"
-READER_DISPOSITION_RE = re.compile(r"(?m)^- reader (\S+): FOUNDER \S")
+READER_DISPOSITION_RE = re.compile(r"(?m)^- reader (\S+) run ([0-9a-f]{8}): FOUNDER \S")
 
 
 def _temp_roots() -> tuple[str, ...]:
@@ -2003,35 +2003,26 @@ def reader_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None = Non
     LEAVE row lowers the count. Refuses on any LEAVE or narrow label no FOUNDER line answers."""
     readers = cfg.get("readers") if isinstance(cfg, dict) else None
     if not isinstance(readers, dict):
-        # rows for this page with no readers block: the block was deleted to escape a LEAVE
-        # (dc-07 adv-4). An instance that never configured readers has no rows and is untouched.
+        # ANY reader row in the round with no readers block: the block was deleted to escape a LEAVE
+        # (dc-07 adv-4), and matching only this page's name let a renamed page escape it (dc-08
+        # adv-1). Any non-blank line counts, parsed or not (std-3). An instance that never
+        # configured readers has no rows file and is untouched.
         try:
-            mine = [ln for ln in (rd / READER_ROWS).read_text().splitlines()
-                    if f'"page": {json.dumps(page.name)}' in ln]
+            held = any(ln.strip() for ln in (rd / READER_ROWS).read_text().splitlines())
         except OSError:
-            mine = []
-        return [f"{_live(rd / READER_ROWS)} holds reader rows for {page.name}, and {CONFIG_NAME} has no readers "
-                f"block; put the block back"] if mine else []
+            held = False
+        return [f"{_live(rd / READER_ROWS)} holds reader rows, and {CONFIG_NAME} has no readers block; put "
+                f"the block back"] if held else []
     rg = _reader_gate()
     try:
         questions = rg.full_questions(readers)
+        rg.check_readers(readers)
     except ValueError as e:
         return [f"{CONFIG_NAME} readers: {e}"]
-    labels = {x.strip().casefold() for x in readers["labels"]}
-    narrow = readers.get("narrow", [])
-    if not isinstance(narrow, list) or not all(isinstance(x, str) and x.strip().casefold() in labels for x in narrow):
-        return [f"{CONFIG_NAME} readers.narrow is {narrow!r}; a list of labels taken from readers.labels"]
-    narrow = {x.strip().casefold() for x in narrow}
+    narrow = {x.strip().casefold() for x in readers.get("narrow", [])}
     floor = readers.get("floor", 1.0)
-    if isinstance(floor, bool) or not isinstance(floor, (int, float)) or not 0 < floor <= 1:
-        return [f"{CONFIG_NAME} readers.floor is {floor!r}; the share of readers who must answer, above 0 "
-                f"and at most 1"]
     n = readers.get("n", rg.DEFAULT_N)
     vps = readers.get("viewports", rg.DEFAULT_VIEWPORTS)
-    if (isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= 20 or not isinstance(vps, list) or not vps
-            or not all(isinstance(v, list) and len(v) == 2 and all(isinstance(x, int) and not isinstance(x, bool)
-                                                                  for x in v) for v in vps)):
-        return [f"{CONFIG_NAME} readers.n or readers.viewports is not a count and a list of [width, height]"]
     expected = {f"{page.name}@{w}x{h}#{i}" for w, h in vps for i in range(1, n + 1)}
     qsha = hashlib.sha256(json.dumps(questions).encode()).hexdigest()
     # the persona and the model are part of what the readers were; a steered persona or a more
@@ -2111,9 +2102,27 @@ def reader_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None = Non
     # dc-08: EVERY row about these bytes is read. A LEAVE or a narrow label in any of them refuses,
     # whichever run it came from and whatever config that run had: re-running until a run says STAY
     # was free when only one run counted (dc-07 adv-5). A typed LEAVE only hurts whoever typed it.
+    weakened = set()
     for r in about:
         rid, prov = rid_of(r), (r.get("_provenance") if isinstance(r.get("_provenance"), dict) else {})
         rc_ = prov.get("readers_config") if isinstance(prov.get("readers_config"), dict) else {}
+        run8 = str(prov.get("run_id"))[:8]
+        # a floor, n, viewport list or narrow list made weaker after a run ran under the stronger one:
+        # lowering the bar after the readers answered is not a new bar (dc-07 adv-3). Checked BEFORE
+        # the answers are read, so a row whose answers are short still counts here (dc-08 std-1),
+        # and a recorded value that is not the right type refuses rather than reading as 0 (adv-5).
+        if rc_ and run8 not in weakened:
+            try:
+                rg.check_readers(rc_)
+                was_vps, was_nar = rc_["viewports"], rc_["narrow"]
+                weaker = (today["floor"] < rc_["floor"] or today["n"] < rc_["n"]
+                          or len(today["viewports"]) < len(was_vps) or not set(was_nar) <= set(today["narrow"]))
+            except (ValueError, KeyError, TypeError):
+                weaker = True
+            if weaker:
+                weakened.add(run8)
+                probs.append(f"{CONFIG_NAME} readers is weaker than the config run {run8} ran under (floor, n, "
+                             f"viewports or narrow); put it back or change the page")
         ans = r.get("answers")
         if not (isinstance(ans, list) and len(ans) >= 3 and all(isinstance(a, str) for a in ans)):
             continue
@@ -2121,21 +2130,13 @@ def reader_problems(rd: Path, page: Path, cfg: dict, cfg_path: Path | None = Non
         if not (isinstance(was_labels, list) and was_labels and all(isinstance(x, str) for x in was_labels)):
             was_labels = readers["labels"]
         got = rg.read_answers(ans, {"labels": was_labels})
+        # a waiver answers ONE reader in ONE run: keyed by slot alone, one line exempted that slot in
+        # every later run and on every later version of the page (dc-08 adv-3)
         if ((got["verdict"] == "LEAVE" or (got["label"] or "").casefold() in narrow)
-                and rid not in disposed and not got["contaminated"]):
+                and (rid, run8) not in disposed and not got["contaminated"]):
             probs.append(f"reader {rid} said {got['verdict']}, and that it sells {got['label']!r}. Change "
-                         f"the page, or answer it with '- reader {rid}: FOUNDER <reason>' in {DISPOSITIONS}.")
-        # a floor, n, viewport list or narrow list made weaker after a run ran under the stronger one:
-        # lowering the bar after the readers answered is not a new bar (dc-07 adv-3)
-        def num(x):
-            return x if isinstance(x, (int, float)) and not isinstance(x, bool) else 0
-        was_vps, was_nar = rc_.get("viewports"), rc_.get("narrow")
-        if rc_ and (today["floor"] < num(rc_.get("floor")) or today["n"] < num(rc_.get("n"))
-                    or len(today["viewports"]) < (len(was_vps) if isinstance(was_vps, list) else 0)
-                    or not {x for x in (was_nar if isinstance(was_nar, list) else []) if isinstance(x, str)}
-                    <= set(today["narrow"])):
-            probs.append(f"{CONFIG_NAME} readers is weaker than the config run {str(prov.get('run_id'))[:8]} "
-                         f"ran under (floor, n, viewports or narrow); put it back or change the page")
+                         f"the page, or answer it with '- reader {rid} run {run8}: FOUNDER <reason>' in "
+                         f"{DISPOSITIONS}.")
     # runs: a run counts whole or not at all, only under today's config, and only if every one of its
     # rows is a reader this seal trusts (dc-08; rows spliced from several runs formed a set, adv-5)
     runs: dict[str, list] = {}

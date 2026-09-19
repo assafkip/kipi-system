@@ -94,6 +94,34 @@ def full_questions(readers: dict) -> list[str]:
     return qs[:-1] + [VERDICT_Q, LABEL_Q + "; ".join(x.strip() for x in labels)] + [qs[-1]]
 
 
+def check_readers(readers: dict) -> None:
+    """ValueError naming what is wrong with a readers block: labels, narrow, floor, n, viewports.
+    ONE validator for the reader gate (before any run) and seal (today's block and every run's
+    recorded copy): the gate recorded floor raw, so a string floor read as 0 in seal's weakening
+    check and a floor lowered after the run passed (dc-08 adv-5)."""
+    labels = readers.get("labels")
+    if (not isinstance(labels, list) or len(labels) < 2
+            or not all(isinstance(x, str) and x.strip() and ";" not in x for x in labels)
+            or len({x.strip().casefold() for x in labels}) != len(labels)):
+        raise ValueError(f"readers.labels is {labels!r}; a list of at least two distinct labels for what "
+                         f"a page sells (no ';' in a label), one of which every reader must pick")
+    folded = {x.strip().casefold() for x in labels}
+    narrow = readers.get("narrow", [])
+    if not isinstance(narrow, list) or not all(isinstance(x, str) and x.strip().casefold() in folded for x in narrow):
+        raise ValueError(f"readers.narrow is {narrow!r}; a list of labels taken from readers.labels")
+    floor = readers.get("floor", 1.0)
+    if isinstance(floor, bool) or not isinstance(floor, (int, float)) or not 0 < floor <= 1:
+        raise ValueError(f"readers.floor is {floor!r}; the share of readers who must answer, above 0 and at most 1")
+    n = readers.get("n", DEFAULT_N)
+    if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= 20:
+        raise ValueError(f"readers.n is {n!r}; a whole number of readers from 1 to 20")
+    vps = readers.get("viewports", DEFAULT_VIEWPORTS)
+    if (not isinstance(vps, list) or not vps
+            or not all(isinstance(v, list) and len(v) == 2
+                       and all(type(x) is int and 0 < x <= 10000 for x in v) for v in vps)):
+        raise ValueError(f"readers.viewports is {vps!r}; a list of [width, height] in pixels")
+
+
 def run_config(readers: dict, persona_sha: str, model: str) -> dict:
     """The readers config one run ran under, in one normal form. Seal compares a run's recorded
     copy with today's, so both sides are built here."""
@@ -363,14 +391,9 @@ def main(argv: list[str]) -> int:
     model = readers.get("model", DEFAULT_MODEL)
     try:
         questions = full_questions(readers)
+        check_readers(readers)
     except ValueError as e:
         return refuse(str(e))
-    if (not isinstance(viewports, list) or not viewports
-            or not all(isinstance(v, list) and len(v) == 2 and all(isinstance(x, int) and 0 < x <= 10000 for x in v)
-                       for v in viewports)):
-        return refuse(f"readers.viewports is {viewports!r}; a list of [width, height] in pixels")
-    if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= 20:
-        return refuse(f"readers.n is {n!r}; a whole number of readers from 1 to 20")
 
     if a.runner == "claude":
         if os.environ.get("PYTEST_CURRENT_TEST"):
@@ -482,8 +505,19 @@ def main(argv: list[str]) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     # APPEND, never overwrite: an overwrite let an all-STAY run erase an earlier LEAVE, and a run for
     # one page wiped every other page's rows (dc-08; dc-07 std-1)
-    with open(out, "a") as fh:
-        fh.write("".join(json.dumps(r) + "\n" for r in rows))
+    # A run killed mid-write left a torn last line, and the next append glued its first row onto it
+    # (dc-08 adv-4). Start on a line of our own, write the run in one call, and fsync. Seal still
+    # refuses a torn line: skipping lines would let one be torn on purpose to hide a LEAVE.
+    body = "".join(json.dumps(r) + "\n" for r in rows)
+    with open(out, "a+b") as fh:
+        fh.seek(0, os.SEEK_END)
+        if fh.tell():
+            fh.seek(-1, os.SEEK_END)
+            if fh.read(1) != b"\n":
+                body = "\n" + body
+        fh.write(body.encode())
+        fh.flush()
+        os.fsync(fh.fileno())
     print(f"wrote {len(rows)} reader row(s) to {out} (runner {a.runner})")
     return 0
 
