@@ -1,7 +1,7 @@
 ---
 id: dc-07-reader-verdicts-are-read
 title: Reader rows carry a forced-choice verdict and seal refuses on LEAVE without a founder disposition
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-design-chain-seal-reads-verdicts-2026-09-18
 allowed_files:
@@ -9,6 +9,10 @@ allowed_files:
   - q-system/.q-system/scripts/design-chain-gate.py
   - q-system/.q-system/scripts/design-reader-gate.py
   - q-system/.q-system/scripts/test/test_dc_reader_verdicts.py
+  - q-system/.q-system/scripts/test/fixtures/design-chain/*
+  - q-system/.q-system/scripts/test/test_dc_reader_gate.py
+  - q-system/.q-system/scripts/test/test_dc_reader_gate_serves_itself.py
+  - q-system/.q-system/scripts/test/test_dc_served_round_binds_what_it_serves.py
 disallowed_files: []
 required_checks:
   - python3 q-system/.q-system/scripts/test/test_dc_reader_verdicts.py
@@ -37,6 +41,8 @@ Round A's reader rows are captured from design-reader-gate.py with the injected 
 
 
 Prompt injection through page text (dc-06 adversarial finding-6, Sana 2026-09-19): a control page carrying planted text that instructs the reader to answer STAY and 'unknown' must not seal. The acceptance test plants it and shows the judge refuses.
+
+Design (Sana, 2026-09-19): the reader gate appends two fixed questions before the control, "VERDICT: answer exactly STAY or LEAVE" and "LABEL: pick exactly one of: <readers.labels>"; exact-match parse, anything else is not answered. Config: readers.labels required when readers is present, readers.narrow optional, readers.floor default 1.0. Seal requires reader rows only when design-chain.json has a readers block. Rows count only when page matches and html_sha256 equals the snapshot's page sha; none = refuse; a contaminated row is not answered. Reader id `<page>@<W>x<H>#<n>`; dispositions in gate/dispositions.md (forgeable by the builder; ASK-1834 is the backstop). runner=injected rows are honored only for a round under tempfile.gettempdir(). The prompt-injection control is one real run captured as a provenanced fixture that refuses at seal, plus an assertion on the FRAME text.
 
 ## Deliverables
 

@@ -29,7 +29,7 @@ GREEN_PAGE = ("<!doctype html><html><head><meta charset='utf-8'><link rel='style
 GREEN_CSS = "html,body{background:#00ff00;margin:0;min-height:100vh}"
 RED_CSS = "html,body{background:#ff0000;margin:0;min-height:100vh}"
 ANSWERS = {str(i): a for i, a in enumerate(
-    ["yes", "fixes", "fewer errors", "example", "a week", "ops", "STAY", "nothing", "unknown"], 1)}
+    ["yes", "fixes", "fewer errors", "example", "a week", "ops", "STAY", "nothing", "STAY", "ops", "unknown"], 1)}
 
 
 def sha(b: bytes) -> str:
@@ -61,7 +61,7 @@ class Held(unittest.TestCase):
         (self.rd / "shared.css").write_text(GREEN_CSS)
         (self.inst / "persona.md").write_text("You run a small tax practice.\n")
         (self.inst / "design-chain.json").write_text(json.dumps(
-            {"project": "dc06b", "owners": [], "readers": {"persona_file": "persona.md", "n": 1}}))
+            {"project": "dc06b", "owners": [], "readers": {"persona_file": "persona.md", "n": 1, "labels": ["ops", "other"]}}))
         self.answers = self.tmp / "answers.json"
         self.answers.write_text(json.dumps(ANSWERS))
         self.keep = self.tmp / "screens"

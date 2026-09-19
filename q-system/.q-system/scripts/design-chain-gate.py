@@ -1949,6 +1949,133 @@ def vision_problems(rd: Path, cfg: dict, cfg_path: Path | None) -> list[str]:
     return probs
 
 
+READER_ROWS = "gate/reader-runs.jsonl"
+DISPOSITIONS = "gate/dispositions.md"
+READER_DISPOSITION_RE = re.compile(r"(?m)^- reader (\S+): FOUNDER \S")
+
+
+def _temp_roots() -> tuple[str, ...]:
+    """Where a TEST round lives. Read from the OS, never from TMPDIR: tempfile.gettempdir() follows
+    the environment, so TMPDIR=/ would make every round a test round and the injected runner the
+    new way to type verdicts by hand (Sana, 2026-09-19). 65537 is _CS_DARWIN_USER_TEMP_DIR."""
+    roots = {"/tmp", "/var/tmp"}
+    if sys.platform == "darwin":
+        try:
+            roots.add(os.confstr(65537) or "")
+        except (ValueError, OSError):
+            pass
+    return tuple(sorted({os.path.realpath(r) for r in roots if r}))
+
+
+TEST_ROUND_ROOTS = _temp_roots()
+_READER_GATE = None
+
+
+def _reader_gate():
+    """design-reader-gate.py, loaded once: its question list and its parser are the ones seal
+    reads rows with, so the two cannot drift."""
+    global _READER_GATE
+    if _READER_GATE is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("design_reader_gate", HERE / "design-reader-gate.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _READER_GATE = mod
+    return _READER_GATE
+
+
+def reader_problems(rd: Path, page: Path, cfg: dict) -> list[str]:
+    """dc-07: seal READS the readers. Round A sealed with three readers who all said they would
+    leave, because the gate checked only that gate/ was not empty (RCA 2026-09-18).
+
+    Only when design-chain.json has a readers block (Sana: the other instances keep the non-empty
+    gate/ check until they configure a persona). Counts only rows for THIS page's bytes, asked
+    THESE questions. The denominator is the configured readers, not the rows on disk, so deleting a
+    LEAVE row lowers the count. Refuses on any LEAVE or narrow label no FOUNDER line answers."""
+    readers = cfg.get("readers") if isinstance(cfg, dict) else None
+    if not isinstance(readers, dict):
+        return []
+    rg = _reader_gate()
+    try:
+        questions = rg.full_questions(readers)
+    except ValueError as e:
+        return [f"{CONFIG_NAME} readers: {e}"]
+    labels = {x.strip().casefold() for x in readers["labels"]}
+    narrow = readers.get("narrow", [])
+    if not isinstance(narrow, list) or not all(isinstance(x, str) and x.strip().casefold() in labels for x in narrow):
+        return [f"{CONFIG_NAME} readers.narrow is {narrow!r}; a list of labels taken from readers.labels"]
+    narrow = {x.strip().casefold() for x in narrow}
+    floor = readers.get("floor", 1.0)
+    if isinstance(floor, bool) or not isinstance(floor, (int, float)) or not 0 < floor <= 1:
+        return [f"{CONFIG_NAME} readers.floor is {floor!r}; the share of readers who must answer, above 0 "
+                f"and at most 1"]
+    n = readers.get("n", rg.DEFAULT_N)
+    vps = readers.get("viewports", rg.DEFAULT_VIEWPORTS)
+    if (isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= 20 or not isinstance(vps, list) or not vps
+            or not all(isinstance(v, list) and len(v) == 2 and all(isinstance(x, int) and not isinstance(x, bool)
+                                                                  for x in v) for v in vps)):
+        return [f"{CONFIG_NAME} readers.n or readers.viewports is not a count and a list of [width, height]"]
+    expected = {f"{page.name}@{w}x{h}#{i}" for w, h in vps for i in range(1, n + 1)}
+    qsha = hashlib.sha256(json.dumps(questions).encode()).hexdigest()
+    page_sha = sha(page)
+    path = rd / READER_ROWS
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return [f"no reader rows: {_live(path)} is missing. Run design-reader-gate.py on the round."]
+    rows = []
+    for k, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except ValueError:
+            return [f"{_live(path)} line {k} is not JSON"]
+        if isinstance(r, dict) and r.get("page") == page.name and r.get("html_sha256") == page_sha:
+            rows.append(r)
+    if not rows:
+        return [f"no reader rows for these bytes of {page.name}: every row in {_live(path)} is about "
+                f"another page or an earlier version. Run design-reader-gate.py on the page as it is."]
+    try:
+        disposed = set(READER_DISPOSITION_RE.findall((rd / DISPOSITIONS).read_text()))
+    except OSError:
+        disposed = set()
+    live = os.path.realpath(_live(rd))
+    test_round = any(live == t or live.startswith(t + os.sep) for t in TEST_ROUND_ROOTS)
+    probs, answered = [], set()
+    for r in rows:
+        vp, inst = r.get("viewport"), r.get("instance")
+        ok_id = (isinstance(vp, list) and len(vp) == 2 and all(type(x) is int for x in vp) and type(inst) is int)
+        rid = f"{page.name}@{vp[0]}x{vp[1]}#{inst}" if ok_id else "?"
+        if rid not in expected:
+            probs.append(f"reader row {rid} is not one of the {len(expected)} readers {CONFIG_NAME} configures")
+            continue
+        prov = r.get("_provenance") if isinstance(r.get("_provenance"), dict) else {}
+        if prov.get("runner") != "claude" and not test_round:
+            probs.append(f"reader {rid} was answered by runner {prov.get('runner')!r}; outside a test round "
+                         f"only a model reader counts")
+            continue
+        if prov.get("questions_sha256") != qsha:
+            probs.append(f"reader {rid} was asked other questions than {CONFIG_NAME} sets now; run the "
+                         f"readers again")
+            continue
+        ans = r.get("answers")
+        if not (isinstance(ans, list) and len(ans) == len(questions) and all(isinstance(a, str) for a in ans)):
+            continue
+        got = rg.read_answers(ans, readers)
+        if got["verdict"] is None or got["label"] is None or got["contaminated"]:
+            continue
+        answered.add(rid)
+        if (got["verdict"] == "LEAVE" or got["label"].casefold() in narrow) and rid not in disposed:
+            probs.append(f"reader {rid} said {got['verdict']}, and that it sells {got['label']!r}. Change "
+                         f"the page, or answer it with '- reader {rid}: FOUNDER <reason>' in {DISPOSITIONS}.")
+    if len(answered) < floor * len(expected):
+        probs.append(f"readers answered {len(answered)} of {len(expected)} for {page.name}, under the floor "
+                     f"of {floor}. A reader who did not give exactly one of the choices, or failed the "
+                     f"control, did not answer.")
+    return probs
+
+
 def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     """Everything missing or stale for one page. Empty list = chain complete.
 
@@ -1998,6 +2125,7 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
         d = rd / name
         if not d.is_dir() or not any(d.iterdir()):
             probs.append(f"missing or empty {d}/")
+    probs += reader_problems(rd, page, cfg)
 
     # brief: verbatim anchors, read live
     brief = (rd / "brief.md").read_text() if (rd / "brief.md").is_file() else ""

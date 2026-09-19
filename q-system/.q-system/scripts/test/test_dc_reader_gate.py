@@ -28,7 +28,10 @@ PAGE = ("<!doctype html><html><head><meta charset='utf-8'><style>body{font:18px/
         "<p>A small firm retypes the same client data into three systems.</p>"
         "<p><a href='#book'>Book a 30-minute call</a></p></body></html>")
 ANSWERS = ["yes, retyping", "workflow fixes", "fewer errors", "the example", "a week of fixes",
-           "ops consultant", "STAY: clear", "nothing", "unknown"]
+           "ops consultant", "STAY: clear", "nothing", "STAY", "ops consulting", "unknown"]
+
+
+LABELS = ["ops consulting", "data cleanup"]
 
 
 def keyed(answers):
@@ -65,7 +68,7 @@ class Base(unittest.TestCase):
 
     def config(self, **readers):
         (self.inst / "design-chain.json").write_text(json.dumps({"project": "dc06", "owners": [], "readers": {
-            "persona_file": "canonical/persona.md", "n": 1, **readers}}))
+            "persona_file": "canonical/persona.md", "n": 1, "labels": LABELS, **readers}}))
 
     def run_gate(self, *extra, env=None, runner="injected"):
         e = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
@@ -174,7 +177,7 @@ class ReviewOfC911e33f(Base):
         self.answers.write_text(json.dumps({"1": "unknown"}))
         rc, out = self.run_gate()
         self.assertEqual(rc, 2, out)
-        self.assertIn("answers not keyed exactly 1..9", out)
+        self.assertIn("answers not keyed exactly 1..11", out)
 
     def test_the_control_passes_only_when_the_answer_starts_with_unknown(self):
         for control, contaminated in (("Unknown. Not on the page.", False),
@@ -219,14 +222,16 @@ class ReviewOfC911e33f(Base):
     def test_questions_come_from_config_and_the_default_is_not_personal(self):
         qs = ["What is this page for?", "Would you stay or leave?", "CONTROL: What year was it founded?"]
         self.config(questions=qs)
-        self.answers.write_text(json.dumps(keyed(["a tool", "STAY", "unknown"])))
-        rc, out = self.run_gate()
-        self.assertEqual(rc, 0, out)
-        self.assertEqual(self.rows()[0]["_provenance"]["questions_sha256"], sha(json.dumps(qs).encode()))
         import importlib.util
         spec = importlib.util.spec_from_file_location("drg", SCRIPT)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+        FULL = mod.full_questions({"questions": qs, "labels": LABELS})
+        self.assertEqual(len(FULL), 5)
+        self.answers.write_text(json.dumps(keyed(["a tool", "STAY", "STAY", "ops consulting", "unknown"])))
+        rc, out = self.run_gate()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.rows()[0]["_provenance"]["questions_sha256"], sha(json.dumps(FULL).encode()))
         words = " ".join(mod.QUESTIONS).lower().replace("?", " ").replace(",", " ").split()
         self.assertFalse({"he", "him", "his", "she", "her"} & set(words), mod.QUESTIONS)
 
@@ -257,12 +262,12 @@ class KeyedAnswersAndRetries(Base):
         self.assertIn("3 attempts", out)
 
     def test_the_right_number_of_answers_under_the_wrong_keys_refuses(self):
-        # nine answers keyed 0..8: a count check passes it, the key check must not
+        # eleven answers keyed 0..10: a count check passes it, the key check must not
         shifted = {str(i): a for i, a in enumerate(ANSWERS)}
         self.responses(shifted)
         rc, out = self.run_gate()
         self.assertEqual(rc, 2, out)
-        self.assertIn("answers not keyed exactly 1..9", out)
+        self.assertIn("answers not keyed exactly 1..11", out)
 
     def test_an_answer_that_is_not_text_is_a_wrong_shape(self):
         # review of 2d342634: {"9": null} passed the key check and was stored as the text "None"
@@ -276,7 +281,7 @@ class KeyedAnswersAndRetries(Base):
                 self.assertIn("3 attempts", out)
 
     def test_an_answer_the_run_dislikes_is_never_retried(self):
-        leave = keyed(ANSWERS[:6] + ["LEAVE: generic", "everything", "Stanford"])
+        leave = keyed(ANSWERS[:6] + ["LEAVE: generic", "everything", "LEAVE", "data cleanup", "Stanford"])
         self.responses(leave, keyed(ANSWERS))
         rc, out = self.run_gate()
         self.assertEqual(rc, 0, out)

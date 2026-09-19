@@ -193,10 +193,10 @@ class TheReaderGateFollowsTheSameList(Round):
         (self.rd / "Home-laptop.html").write_text(fetching_page("standard.json"))
         (self.inst / "persona.md").write_text("You run a small tax practice.\n")
         cfg = json.loads((self.inst / "design-chain.json").read_text())
-        cfg["readers"] = {"persona_file": "persona.md", "n": 1}
+        cfg["readers"] = {"persona_file": "persona.md", "n": 1, "labels": ["ops", "other"]}
         (self.inst / "design-chain.json").write_text(json.dumps(cfg))
         answers = self.tmp / "answers.json"
-        answers.write_text(json.dumps({str(i): ("unknown" if i == 9 else "x") for i in range(1, 10)}))
+        answers.write_text(json.dumps({str(i): ("unknown" if i == 11 else "x") for i in range(1, 12)}))
         r = subprocess.run([sys.executable, str(READER), str(self.rd), "--config", str(self.inst / "design-chain.json"),
                             "--runner", "injected", "--answers", str(answers)],
                            capture_output=True, text=True, timeout=600)
