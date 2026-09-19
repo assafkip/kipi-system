@@ -28,7 +28,10 @@ class CommandDoc(unittest.TestCase):
     def setUpClass(cls):
         cls.gate = gate()
         cls.text = DOC.read_text()
-        cls.steps = re.split(r"(?m)^## ", cls.text)[1:]
+        # fenced blocks are examples, not the doc's own words: a stage name surviving in the bash
+        # fence at the top let a whole step be deleted and still pass (review of 24d907c5)
+        cls.prose = re.sub(r"(?ms)^```.*?^```", "", cls.text)
+        cls.steps = re.split(r"(?m)^## ", cls.prose)[1:]
 
     def test_every_script_the_doc_names_exists(self):
         named = set(re.findall(r"`([A-Za-z0-9_./-]+\.(?:py|sh))`", self.text))
@@ -41,8 +44,16 @@ class CommandDoc(unittest.TestCase):
         stages = set(self.gate.STAGE_PRODUCERS) | {f"check:{n}" for n in self.gate.CHECKS}
         self.assertTrue(stages)
         # as its own token: "impeccable" inside design-impeccable-check.py is not the stage
-        self.assertEqual(sorted(s for s in stages if f"`{s}`" not in self.text), [],
+        self.assertEqual(sorted(s for s in stages if f"`{s}`" not in self.prose), [],
                          "the gate records a stage the doc never names")
+
+    def test_the_step_that_names_a_stage_names_its_producer(self):
+        # a step may otherwise name a real script belonging to another step (review of 24d907c5)
+        for stage, producer in self.gate.STAGE_PRODUCERS.items():
+            holder = [s for s in self.steps if f"`{stage}`" in s]
+            self.assertTrue(holder, f"no step names the {stage} stage")
+            self.assertTrue(any(producer in s for s in holder),
+                            f"the step naming the {stage} stage does not name {producer}")
 
     def test_every_chain_file_and_dir_is_in_the_doc(self):
         want = set(self.gate.CHAIN_FILES) | {f"{d}/" for d in self.gate.CHAIN_DIRS} | {self.gate.CRAFT_MANIFEST}
