@@ -7,6 +7,40 @@ on:
     branches: [main]
 
 jobs:
+  # TEMPORARY, ASK-1914, REMOVED BEFORE MERGE. This branch changes the classifier
+  # and the gate, so by its own rule it earns the FULL suite, and its own CI
+  # therefore cannot show what a selected run costs. This job times the SHIPPED
+  # gate against an ordinary one-file diff. Nothing about the gate is synthetic;
+  # only the base ref is. It checks out the PR HEAD, not the merge ref, so HEAD~1
+  # is the probe commit's own parent and the diff is exactly one file. Compare
+  # against 822s, the full-gate step on run 35486006414.
+  ask1914_probe:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - run: |
+          git config --global user.name "kipi-ci"
+          git config --global user.email "ci@kipi.invalid"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: pip install pytest
+      - name: Seconds for the selected path
+        run: |
+          git log --oneline -1
+          git diff --stat HEAD~1...HEAD
+          start=$(date +%s)
+          rc=0
+          python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --diff-base HEAD~1 || rc=$?
+          echo "ASK-1914-PROBE seconds=$(( $(date +%s) - start )) exit=$rc"
+        env:
+          CI: true
+
   validate:
     runs-on: ubuntu-latest
     steps:
