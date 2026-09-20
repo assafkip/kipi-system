@@ -28,10 +28,15 @@ ONLY=""
 # consulting run script passes it, because there "ahead" has meant real work
 # every time (2026-09-06, three times in one day).
 REFUSE_INSTANCE_AHEAD=0
+# --skip-reach-preflight: run without first asking fleet-reach-audit.py which
+# instances would refuse. See reach_preflight. The hatch exists so a genuinely
+# unblockable instance cannot wedge the whole fleet, and it says so out loud.
+SKIP_REACH_PREFLIGHT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN="--dry-run"; shift ;;
     --refuse-instance-ahead) REFUSE_INSTANCE_AHEAD=1; shift ;;
+    --skip-reach-preflight) SKIP_REACH_PREFLIGHT=1; shift ;;
     --only)
       ONLY="${2:-}"
       if [ -z "$ONLY" ]; then
@@ -1618,6 +1623,96 @@ reject_untracked_config_collisions() {
 }
 
 trap cleanup_updater_temps EXIT
+
+# THE 2026-09-20 SCAR, and the reason this runs before a single instance is
+# touched rather than being a line in a runbook.
+#
+# A full run costs 20-25 minutes and reports only the FIRST refusal per
+# instance. So an operator diagnosing "why will the fleet not sync" by running
+# it learns exactly one blocker per 25 minutes. Measured: FIVE runs across two
+# days (2026-09-19 and 2026-09-20), each surfacing one new blocker -- a dirty
+# tree, then a skeleton one commit behind origin/main, then four dangling
+# symlinks -- and the fleet was not synced at the end of either day.
+#
+# fleet-reach-audit.py answers the same question for every instance at once,
+# read-only, in about a second. It existed the whole time. It was written on
+# 2026-08-14 (ASK-797/ASK-803) after the same pattern burned that rollout, and
+# neither 2026-09 session opened it.
+#
+# A memory file, a rule, or a comment would not have changed that: the previous
+# sessions had all three and still reached for the 25-minute tool. So the audit
+# is not documented here, it is INVOKED here, and the long path cannot start
+# without the short answer being printed first.
+#
+# Three deliberate choices:
+#
+#   IT PRINTS EVERY TIME, including on a clean fleet. "REACH: 24 of 24" costs
+#   one line and is the liveness signal -- a preflight that only speaks when
+#   unhappy is indistinguishable from one that did not run (the zero-vs-never
+#   rule this repo already applies to its counters).
+#
+#   IT REFUSES WHEN BLOCKERS EXIST, in BOTH modes. A run that proceeds past a
+#   known blocker spends 25 minutes to re-report what was just printed. The
+#   hatch is --skip-reach-preflight, named in the refusal, because a single
+#   permanently-stuck instance must not be able to wedge the other 24.
+#
+#   A MISSING OR MUTE AUDIT ABORTS, matching the propagation leak gate above.
+#   A preflight that silently passes when its own tool is broken is the
+#   "gate that cannot run must not pass" defect, and this file already refuses
+#   that way for the leak gate. The ONE exception is a skeleton with no
+#   instance-registry.json -- every kipi-update test fixture is exactly that --
+#   and the disarm is announced rather than silent.
+#
+# Pinned by test-kipi-update-reach-preflight.sh.
+reach_preflight() {
+  local audit="$SCRIPT_DIR/fleet-reach-audit.py" out rc
+  if [ "$SKIP_REACH_PREFLIGHT" = "1" ]; then
+    echo "reach preflight: SKIPPED (--skip-reach-preflight); blockers will be"
+    echo "  discovered one instance at a time, which is what this flag costs."
+    return 0
+  fi
+  if [ ! -f "$SCRIPT_DIR/instance-registry.json" ]; then
+    echo "reach preflight: disarmed (no instance-registry.json at $SCRIPT_DIR)"
+    return 0
+  fi
+  if [ ! -f "$audit" ]; then
+    echo ""
+    echo "ABORT: reach preflight missing at $audit"
+    echo "It is the one-second answer to 'why will the fleet not sync'."
+    echo "Restore it, or pass --skip-reach-preflight to proceed blind."
+    exit 1
+  fi
+  out="$(python3 "$audit" 2>&1)" && rc=0 || rc=$?
+  printf '%s\n' "$out"
+  if ! printf '%s' "$out" | grep -q "^REACH: "; then
+    echo ""
+    echo "ABORT: the reach preflight did not report a verdict (exit $rc)."
+    echo "A preflight that cannot run must not pass. Fix it, or pass"
+    echo "--skip-reach-preflight to proceed without it."
+    exit 1
+  fi
+  # "REACH: N of M would sync now". Blockers exist when N != M.
+  local got want
+  got="$(printf '%s' "$out" | sed -n 's/^REACH: \([0-9]*\) of \([0-9]*\) .*/\1/p' | tail -1)"
+  want="$(printf '%s' "$out" | sed -n 's/^REACH: \([0-9]*\) of \([0-9]*\) .*/\2/p' | tail -1)"
+  if [ -z "$got" ] || [ -z "$want" ]; then
+    echo ""
+    echo "ABORT: could not parse the reach verdict above."
+    exit 1
+  fi
+  if [ "$got" != "$want" ]; then
+    echo ""
+    echo "ABORT: $((want - got)) of $want instance(s) would refuse this update."
+    echo "They are named above WITH THE REASON, which is the whole point: you"
+    echo "have every blocker now, not one per 25-minute run."
+    echo ""
+    echo "  clear what is attributable:  python3 $SCRIPT_DIR/fleet-unblock.py --apply"
+    echo "  re-measure:                  python3 $audit"
+    echo "  proceed anyway:              $0 $* --skip-reach-preflight"
+    exit 1
+  fi
+}
+reach_preflight
 
 while IFS='|' read -r name path prefix itype declared; do
   # Filter INSIDE the loop, not in the feed, so an --only name that matches
