@@ -2,8 +2,9 @@
 """PR #374 review round 3: what counts as internal, and what counts as shipping.
 
 WHY. INTERNAL_MARKERS is documented as "a path segment match" and was a bare substring test, so
-/testimonials/ matched "/test", /schedule-a-call/ matched "/schedule" and /reports/ matched
-"/report": three ordinary marketing pages skipped the whole chain at every surface. BASH_SHOW_RE
+/testimonials/ matched "/test" and /schedule-a-call/ matched "/schedule": two ordinary marketing
+pages skipped the whole chain at every surface. A literal /reports/ segment stays internal on
+purpose, measured (round 5); test_the_internal_folders_are_still_internal pins that. BASH_SHOW_RE
 knew one deploy verb, `vercel deploy`, so `netlify deploy`, `npx vercel --prod` and `aws s3 sync`
 put an unsealed page in front of the world before Stop could refuse it.
 """

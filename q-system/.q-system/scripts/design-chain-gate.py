@@ -72,8 +72,17 @@ from pathlib import Path
 PAGE_EXTS = {".html", ".htm", ".astro", ".jsx", ".tsx", ".vue", ".svelte"}
 # Internal HTML the founder alone sees. A path SEGMENT, or a file whose name starts with one of the
 # known internal prefixes. It was a bare substring test against the whole path, so /testimonials/
-# matched "/test", /schedule-a-call/ matched "/schedule" and /reports/ matched "/report": three
-# ordinary marketing pages skipped the entire chain (PR #374 review, major).
+# matched "/test" and /schedule-a-call/ matched "/schedule": two ordinary marketing pages skipped
+# the entire chain (PR #374 review, major).
+#
+# A literal /reports/ SEGMENT is still internal, and that is deliberate rather than a leftover of
+# the substring bug. Measured across the fleet 2026-09-19 (PR #374 round 5, minor): every directory
+# actually named report or reports holds founder-only output -- ai-builder-reports and
+# pipeline-reports under the consulting instance's output/, q-system/output/architecture-report,
+# and a report-status-dashboard in a client instance. Freeing the word would put the chain in
+# front of real
+# internal pages, which is the false block design-auto-invoke.md records as the way a gate gets
+# switched off (the GTM cockpit, ASK-134). schedule and dashboard stay for the same measured reason.
 INTERNAL_DIRS = frozenset({
     "node_modules", ".git", "dist", "build", ".next", "coverage", "logs", "log", "test", "tests",
     "fixtures", "vendor", "site-packages", ".playwright-mcp", "exemplars", "schedule", "schedules",
