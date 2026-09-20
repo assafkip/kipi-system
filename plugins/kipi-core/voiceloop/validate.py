@@ -308,7 +308,7 @@ def check_fingerprint_fresh(voice):
     return problems
 
 
-def _targets_for(channel, base, targets):
+def _targets_for(channel, base, targets, extreme=min):
     """The lengths this channel's prompts are really assembled at.
 
     `targets` is a {channel: [words, ...]} DECLARATION supplied by the deployment,
@@ -325,14 +325,34 @@ def _targets_for(channel, base, targets):
     shape no caller can build is not strictness, it is a false red, and a check
     red on shapes its own system cannot produce is one someone switches off.
 
-    The declaration is not self-serving, because it is PINNED against the real
-    call sites: `test_voice_reach.py` parses them and fails if the declaration and
-    the code disagree. A number here that no caller uses is a failing test.
+    `extreme` IS THE WHOLE REASON THIS TAKES A PARAMETER (PR #386 round 2,
+    major). The two callers want OPPOSITE ENDS of the length distribution and
+    they shared one fallback, so one of them was always graded at the wrong end:
+
+      check_budget           a CEILING  -> the target drawing the LONGEST rows
+      check_correction_share a  FLOOR   -> the target collapsing the pool hardest
+
+    Measured on the live ASK corpus, linkedin/post, worst assembly by target:
+    None 20944, corpus-min 47 -> 15348, 200 -> 19438, corpus-max 479 -> 23915.
+    `check_budget` enumerated (None, corpus-min) and reported 20944 as the worst
+    while the reachable worst was 23915, eighty-five characters under a 24000
+    ceiling. A gate that grades the wrong end of the distribution is not strict
+    or lax, it is measuring something else.
+
+    THE DECLARATION IS PINNED INSTANCE-SIDE, NOT HERE, and this sentence says so
+    rather than implying a guard this package ships. The consuming repo's
+    `test_voice_reach.py::TestTheDeclarationIsCOMPLETE` parses its own call sites
+    and fails when a lane assembles at a length the declaration omits. That test
+    cannot live in this package: it resolves INSTANCE modules this engine has
+    never heard of. What travels with the engine is
+    `tests/test_engine_surface.py::test_a_declaration_that_omits_a_channel_is_not_graded`,
+    which pins the consequence -- an undeclared channel falls back rather than
+    going ungraded -- in terms the engine can state alone.
     """
     declared = (targets or {}).get(channel)
     if declared:
         return list(declared)
-    return (None, min(selector._words(r) for r in base))
+    return (None, extreme(selector._words(r) for r in base))
 
 
 def check_budget(voice, channels=None, targets=None):
@@ -358,7 +378,10 @@ def check_budget(voice, channels=None, targets=None):
                                           selector.DEFAULT_K)
             if not base:
                 continue
-            for target in _targets_for(channel, base, targets):
+            # max: this is a CEILING check, so the fallback must reach for the
+            # target that draws the LONGEST rows. It used to share the floor
+            # fallback and understated the worst by ~3000 chars.
+            for target in _targets_for(channel, base, targets, extreme=max):
                 pool = selector.resolved_pool(rows, channel, slot_kind,
                                               selector.DEFAULT_K, target)
                 for counter in range(len(pool) or 1):
