@@ -42,35 +42,45 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 CLAUDE_MD="$ROOT/CLAUDE.md"
+README_MD="$ROOT/README.md"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
 [ -f "$CLAUDE_MD" ] || fail "CLAUDE.md missing at $CLAUDE_MD"
+[ -f "$README_MD" ] || fail "README.md missing at $README_MD"
 
-# Commands known to have no file in a synced path as of 2026-09-20. Each is a real
-# gap, captured as spillover under ASK-1925; none is a decision that it is fine.
-#   q-morning    -- the launchd job com.kipi.morning-brief is the live path; the
-#                   slash command that "runs it early" has no file.
-#   q-calibrate  -- no file, no skill.
-#   q-create     -- no file, no skill.
-#   q-plan       -- no file, no skill.
-#   q-engage     -- no file, no skill.
-#   q-draft      -- no file, no skill.
-#   q-wrap       -- no file, no skill.
-#   q-handoff    -- no file, no skill.
-#   q-research   -- file exists at plugins/kipi-core/skills/research-mode/commands/
-#                   q-research.md, which is NOT a load path; the research-mode SKILL
-#                   is what actually loads.
-#   improve      -- listed with a leading slash but is the kipi-core `improve` skill,
-#                   not a command. Either the listing or the shape is wrong.
-GRANDFATHERED="q-morning q-calibrate q-create q-plan q-engage q-draft q-wrap q-handoff q-research improve"
+# ASK-1927 emptied this list. Every name on either menu now ships a file at
+# plugins/<plugin>/commands/<name>.md, so there is nothing left to exempt. The
+# array stays (rather than being deleted) because the rot check below reads it:
+# an empty list makes that loop a no-op, which is the correct shape for "no
+# exemptions", and re-adding one re-arms the check without touching this test.
+#
+# `improve` was on this list and was never load-bearing: the extractor matches a
+# name at the START of a list item, and /improve sits mid-line inside the
+# /q-draft row of CLAUDE.md, so it was never extracted and its exemption never
+# fired. It is the kipi-core `improve` SKILL, not a command; CLAUDE.md no longer
+# writes it with a leading slash.
+GRANDFATHERED=""
 
 # Derive the menu from CLAUDE.md rather than restating it here: the list is owned by
 # CLAUDE.md, and a copy would agree on the day it was written and silently stop
 # describing the menu the first time a command is added. Glob entries (/q-market-*)
 # name a family, not a file, and are skipped.
+# Two menu SHAPES, because the two files write their menus differently and a
+# parser that knows only one grades the other as empty -- which reads as green.
+#   CLAUDE.md : - `/name` - description
+#   README.md : | `/name` | description |   (ASK-1927; the public menu an outside
+#                                            reader trusts, and it listed six
+#                                            names with no file behind them)
+# Glob entries (/q-market-*) name a family, not a file, and are skipped by the
+# character class. A namespaced name (/kipi-core:say) is skipped for the same
+# reason: the colon is outside the class, and those rows already name the plugin
+# that owns the file.
 extract_commands() {
-  grep -oE '^- `/[a-z0-9-]+`' "$1" | sed -e 's/^- `\///' -e 's/`$//'
+  {
+    grep -oE '^- `/[a-z0-9-]+`' "$1" || true
+    grep -oE '^\| `/[a-z0-9-]+`' "$1" || true
+  } | sed -e 's/^- `\///' -e 's/^| `\///' -e 's/`$//' | sort -u
 }
 
 # A command is wired only at plugins/<plugin>/commands/<name>.md. Exactly that depth.
@@ -103,10 +113,12 @@ check_menu() {
 }
 
 # --- (a)+(b) the real menu ---------------------------------------------------
-if ! out="$(check_menu "$CLAUDE_MD")"; then
-  echo "$out" >&2
-  fail "CLAUDE.md names commands that ship no file in a path kipi-update.sh syncs"
-fi
+for md in "$CLAUDE_MD" "$README_MD"; do
+  if ! out="$(check_menu "$md")"; then
+    echo "$out" >&2
+    fail "${md#"$ROOT"/} names commands that ship no file in a path kipi-update.sh syncs"
+  fi
+done
 
 # --- (c) the grandfather list cannot rot -------------------------------------
 for name in $GRANDFATHERED; do
@@ -124,10 +136,19 @@ if check_menu "$TMP/CLAUDE.md" >/dev/null; then
   fail "negative self-test: an invented command name passed the check, so the check is decoration"
 fi
 
+# The README shape gets its own injection. Sharing one fixture would prove only
+# that the list shape can go red, and the table shape -- the half added by
+# ASK-1927 -- would be untested while reading as covered.
+cp "$README_MD" "$TMP/README.md"
+printf '%s\n' '| `/q-also-does-not-exist` | synthetic entry for the negative self-test |' >> "$TMP/README.md"
+if check_menu "$TMP/README.md" >/dev/null; then
+  fail "negative self-test: an invented command name passed in the README table shape"
+fi
+
 # and the parse floor itself must be able to fire
 : > "$TMP/empty.md"
 if check_menu "$TMP/empty.md" >/dev/null; then
   fail "negative self-test: a CLAUDE.md with zero commands passed, so the parse floor is dead"
 fi
 
-echo "PASS: every command on the CLAUDE.md menu ships a file in a synced path"
+echo "PASS: every command on the CLAUDE.md and README.md menus ships a file in a synced path"
