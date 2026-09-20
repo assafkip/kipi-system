@@ -7,14 +7,22 @@ on:
     branches: [main]
 
 jobs:
-  # TEMPORARY, ASK-1914, REMOVED BEFORE MERGE. This branch changes the classifier
-  # and the gate, so by its own rule it earns the FULL suite, and its own CI
-  # therefore cannot show what a selected run costs. This job times the SHIPPED
-  # gate against an ordinary one-file diff. Nothing about the gate is synthetic;
-  # only the base ref is. It checks out the PR HEAD, not the merge ref, so HEAD~1
-  # is the probe commit's own parent and the diff is exactly one file. Compare
-  # against 822s, the full-gate step on run 35486006414.
-  ask1914_probe:
+  # TEMPORARY, ASK-1918, REMOVED BEFORE MERGE. The 379s this branch claims was
+  # computed by summing a per-artifact table and subtracting, and ASK-1914's
+  # whole lesson is that a derived number is not the measurement: earlier the
+  # same night, "163 artifacts cost 123s" by subtraction turned out to be 328s
+  # when timed directly, off by 2.7x. So this job runs the SHIPPED gate with the
+  # declarations in place and reads a stopwatch.
+  #
+  # This branch changes the classifier, so by its own rule it earns the FULL
+  # suite and its own validate job cannot show a selected run. This one checks
+  # out the PR HEAD, not the merge ref (whose HEAD~1 is main), so HEAD~1 is the
+  # probe commit's own parent and the diff is exactly one ordinary file.
+  #
+  # Compare: 822s full gate (run 35486006414), 699s selected with no declarations
+  # (run 35488448685). This number is the same shape as that 699s, and the only
+  # thing that changed between them is eight `covers` lines.
+  ask1918_probe:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -31,17 +39,17 @@ jobs:
           python-version: '3.12'
       - run: pip install pytest
       - run: pip install playwright pillow && python -m playwright install --with-deps chromium
-      - name: Cost per declared artifact
-        run: python3 ask1914-scanner-cost.py
+      - name: Seconds for the selected path, with the declarations
+        run: |
+          git log --oneline -1
+          git diff --stat HEAD~1...HEAD
+          python3 q-system/.q-system/scripts/covers-lint.py --repo-root .
+          start=$(date +%s)
+          rc=0
+          python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --diff-base HEAD~1 || rc=$?
+          echo "ASK-1918-PROBE seconds=$(( $(date +%s) - start )) exit=$rc"
         env:
           CI: true
-          REPO_ROOT: .
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ask1914-scanner-cost
-          path: ask1914-scanner-cost.json
-          if-no-files-found: warn
 
   validate:
     runs-on: ubuntu-latest
