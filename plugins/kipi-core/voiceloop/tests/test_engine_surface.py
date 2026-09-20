@@ -495,3 +495,323 @@ def test_an_OLD_injected_provenance_writer_does_not_take_the_lane_down():
         pass          # any OTHER failure is this fixture's thinness, not the defect
 
     assert seen.get("got"), "the fixture never reached the provenance writer"
+
+
+# ---------------------------------------------------------------------------
+# THE INJECTION BOUNDARY, DRIVEN RATHER THAN RECOGNISED
+# (ASK-1915, PR #386 round 7 / rca-injection-boundary-2026-09-20)
+#
+# Rounds 3, 4, 5 and 6 each patched one instance of one class: an optional kwarg
+# passed to a callable the ENGINE DOES NOT OWN, which TypeErrors on any instance
+# whose injected copy predates it. Every fix was correct. Every fix was too
+# narrow, INCLUDING the two written explicitly to cover the class:
+#
+#   r4 read the decide call sites out of the AST, then asserted only that
+#      `recent_openers` was absent and `**optional` present. A site that unpacks
+#      **optional AND ALSO passes a NEW kwarg directly satisfies both.
+#   r5 derived the injected NAMES from the entry point's signature, then graded
+#      them against `{"recent_openers", "path"}` -- a literal set, which cannot
+#      contain a kwarg nobody has written yet.
+#
+# Measured 2026-09-20 by planting a new kwarg `xnew=1` at each injected call
+# site: 5 of 6 were caught by nothing at all.
+#
+# Both failed the same way, and it is not carelessness. "Is this kwarg optional
+# at the boundary?" CANNOT BE ANSWERED FROM THE AST. A name list is the cheap
+# proxy for a question the static reading cannot reach, so each round reached for
+# the nearest observable thing and each round got a guard that recognises the
+# defects already known.
+#
+# So this does not read the code. It RUNS it, against callees pinned to the older
+# contract, and lets Python raise. A kwarg nobody has written yet is discovered
+# because the pairs are read out of the engine, and its consequence is proven
+# because the lane is actually driven.
+# ---------------------------------------------------------------------------
+
+# The ONE declaration here, and it FAILS CLOSED, which is the whole difference
+# from the r5 set. That set listed what was DANGEROUS, so anything unlisted was
+# silently fine. This lists what is known to PREDATE the package extraction -- the
+# `old_decide_candidate` fixture above is its provenance -- so anything unlisted
+# is an offender until someone either routes it through `_gated` or adds it here
+# on purpose, in a line a reviewer can argue with.
+_BASE_CONTRACT = {
+    ("decide", "decide_candidate"): {
+        "regenerate", "channel", "source_text", "prompt_carried", "handles"},
+    ("revise", "reviser"): {"runner"},
+    ("revise", "revise"): {"runner"},
+}
+
+# Every injected callee the engine may call, and what a fixture must hand back.
+# Checked against the AST below, so a NEW injected dependency fails here loudly
+# instead of going undriven and reading as covered.
+_RETURNS = {
+    ("decide", "decide_candidate"): "verdict",
+    ("revise", "reviser"): "callable",
+    ("revise", "revise"): "text",
+    ("voicefp_gate", "style_review"): "review",
+    ("voicefp_gate", "style_feedback"): "feedback",
+    ("voicefp_gate", "drift_report"): "report",
+    ("prompt_carried_for", None): "list",
+    ("_append_voice_provenance", None): "none",
+}
+
+
+def _engine_boundary():
+    """Read every (injected callee, kwarg) pair out of the engine itself.
+
+    Returns (sites, direct, gated): how many AST call sites each callee has,
+    which kwargs reach it DIRECTLY, and which ride through `_gated`.
+    """
+    import ast
+    import pathlib
+
+    mod = pathlib.Path(__file__).resolve().parent.parent / "gate_and_judge.py"
+    run = next(n for n in ast.walk(ast.parse(mod.read_text()))
+               if isinstance(n, ast.FunctionDef)
+               and "_append_voice_provenance" in
+               {a.arg for a in n.args.args + n.args.kwonlyargs})
+    params = {a.arg for a in run.args.args + run.args.kwonlyargs}
+
+    def callee(node):
+        """The injected callee a Call names, or None if it names something else."""
+        f = node.func
+        if (isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name)
+                and f.value.id in params):
+            return (f.value.id, f.attr)
+        if isinstance(f, ast.Name) and f.id in params:
+            return (f.id, None)
+        return None
+
+    sites, direct, gated = {}, {}, {}
+    for n in ast.walk(run):
+        if not isinstance(n, ast.Call):
+            continue
+        # `_gated(<callee>, kw=...)` is the engine ASKING before it sends.
+        if isinstance(n.func, ast.Name) and n.func.id == "_gated" and n.args:
+            k = callee(ast.Call(func=n.args[0], args=[], keywords=[]))
+            if k is not None:
+                gated.setdefault(k, set()).update(
+                    kw.arg for kw in n.keywords if kw.arg)
+            continue
+        k = callee(n)
+        if k is None:
+            continue
+        sites[k] = sites.get(k, 0) + 1
+        direct.setdefault(k, set()).update(kw.arg for kw in n.keywords if kw.arg)
+    return sites, direct, gated
+
+
+class _Verdict:
+    status = "SHIPPABLE"
+    reasons = []
+
+    def __init__(self, text):
+        self.text = text
+
+
+def _returns(key, state):
+    kind = _RETURNS[key]
+    if kind == "verdict":
+        return _Verdict("a drafted body")
+    if kind == "callable":
+        return lambda *a, **k: "a regenerated body"
+    if kind == "text":
+        return "a revised body"
+    if kind == "review":
+        # HOLD first so the style-revision branch is entered, then WATCH so the
+        # loop terminates. Without the hold, the second decide call site is never
+        # reached and an undefended site there reads as safe -- which is exactly
+        # how the r4 guard passed over it.
+        state["review"] = state.get("review", 0) + 1
+        return ({"level": "hold", "distance": 10.0} if state["review"] == 1
+                else {"level": "watch", "distance": 1.0})
+    if kind == "feedback":
+        return "tighten the opening"
+    if kind == "report":
+        return {"authorship": 0.6}
+    if kind == "list":
+        return []
+    return None
+
+
+def _fixture(key, accepted, omit, calls, state):
+    """A callee on the OLDER contract: its signature truthfully lacks `omit`.
+
+    The truthful `__signature__` is load-bearing. `_accepts` inspects it, so a
+    fixture wearing `**kwargs` would make `_accepts` return True for everything
+    and the driver would prove nothing.
+    """
+    import inspect
+
+    def fn(*args, **kw):
+        calls.append(key)
+        if omit is not None and omit in kw:
+            raise TypeError(
+                f"{key[1] or key[0]}() got an unexpected keyword argument "
+                f"'{omit}'")
+        return _returns(key, state)
+
+    fn.__signature__ = inspect.Signature(
+        [inspect.Parameter("args", inspect.Parameter.VAR_POSITIONAL)]
+        + [inspect.Parameter(a, inspect.Parameter.KEYWORD_ONLY, default=None)
+           for a in sorted(accepted)])
+    return fn
+
+
+def _drive(omit_key=None, omit_kwarg=None):
+    """Run the real `gate_and_judge` end to end against pinned-older callees."""
+    import types
+    from voiceloop import gate_and_judge as gj
+
+    sites, direct, gated = _engine_boundary()
+    calls, state, built = [], {}, {}
+    for key in sites:
+        accepted = set(direct.get(key, ())) | set(gated.get(key, ()))
+        omit = omit_kwarg if key == omit_key else None
+        if omit is not None:
+            accepted.discard(omit)
+        built[key] = _fixture(key, accepted, omit, calls, state)
+
+    ns = {}
+    for (name, attr), fn in built.items():
+        if attr is None:
+            ns[name] = fn
+        else:
+            ns.setdefault(name, types.SimpleNamespace()).__dict__[attr] = fn
+    ns["decide"].SHIPPABLE = "SHIPPABLE"
+
+    trail = {"stages": []}
+    gj.gate_and_judge(
+        "a drafted body", channel="linkedin", idea_text="an idea",
+        voice_prov={}, arch_id=None, arch_entry=None, runner=None,
+        trail=trail, at="2026-09-20T00:00:00Z",
+        decide=ns["decide"], revise=ns["revise"],
+        voicefp_gate=ns["voicefp_gate"],
+        prompt_carried_for=ns["prompt_carried_for"],
+        _append_voice_provenance=ns["_append_voice_provenance"],
+        claude_bin="/bin/true", model="a-model", author="an author",
+        recent_openers=["an opener"], provenance_path="/dev/null")
+    return calls, sites
+
+
+def test_every_injected_callee_is_driven_and_every_call_site_is_reached():
+    """THE REACHABILITY HALF, and it is the half that matters.
+
+    A driver that cannot reach a call site reports that site as safe. The r4
+    guard passed over an undefended decide site for exactly that reason, and its
+    docstring claimed coverage it did not have. So before any conclusion is drawn
+    from the drives below, this proves each AST call site actually executed.
+    """
+    sites, _direct, _gated = _engine_boundary()
+    assert set(_RETURNS) == set(sites), (
+        "an injected callee has no fixture, so the driver would skip it and the "
+        "table below would read as full coverage:\n"
+        f"  undriven: {sorted(set(sites) - set(_RETURNS))}\n"
+        f"  stale   : {sorted(set(_RETURNS) - set(sites))}")
+
+    calls, sites = _drive()
+    unreached = {k: (n, calls.count(k)) for k, n in sites.items()
+                 if calls.count(k) < n}
+    assert not unreached, (
+        "the drive did not reach every call site, so an unguarded kwarg there "
+        f"would read as safe: {unreached} (callee -> (sites, calls))")
+
+
+def test_no_engine_added_kwarg_reaches_an_INJECTED_callable_unguarded():
+    """THE CLASS. Every direct kwarg is either base contract or an offender.
+
+    FAILS CLOSED, which is the difference from the round-5 check this replaces.
+    That one graded against `{"recent_openers", "path"}`, so a kwarg nobody had
+    written yet was unlisted and therefore fine. Here, unlisted is an offender.
+    """
+    _sites, direct, _gated = _engine_boundary()
+    offenders = []
+    for key, kwargs in sorted(direct.items()):
+        extra = sorted(set(kwargs) - _BASE_CONTRACT.get(key, set()))
+        if extra:
+            offenders.append(f"{key[0]}.{key[1] or ''}: {extra}")
+    assert not offenders, (
+        "these kwargs reach an INJECTED callable directly. The callee lives in "
+        "the instance and upgrades independently, so one that predates the "
+        "kwarg raises TypeError and takes the whole lane down:\n  "
+        + "\n  ".join(offenders)
+        + "\nRoute it through `_gated(<callee>, name=value)`, or add it to "
+          "_BASE_CONTRACT if every instance provably already takes it.")
+
+
+def test_each_gated_kwarg_really_degrades_on_an_older_callee():
+    """LEAVE ONE OUT, then RUN. The proof that `_gated` does its job.
+
+    For each gated kwarg, the lane is driven against a callee whose signature
+    truthfully lacks it. `_accepts` must answer False and the engine must skip
+    it. If the engine sends it anyway, the fixture raises the real TypeError and
+    this fails NAMING the kwarg and the callee.
+    """
+    _sites, _direct, gated = _engine_boundary()
+    assert gated, (
+        "no gated kwarg was discovered. Either the engine stopped using `_gated` "
+        "or this reader has gone blind; both make the drives below vacuous.")
+    for key, kwargs in sorted(gated.items()):
+        for kwarg in sorted(kwargs):
+            try:
+                calls, _ = _drive(omit_key=key, omit_kwarg=kwarg)
+            except TypeError as exc:
+                raise AssertionError(
+                    f"{key[0]}.{key[1] or ''} was handed `{kwarg}=` by the "
+                    f"engine although its signature does not take it: {exc}. "
+                    f"On a real instance still on that contract this is the "
+                    f"whole lane down, not a degraded feature.") from None
+            assert calls, f"the drive for {key}/{kwarg} never called anything"
+
+
+def test_the_older_contract_fixture_is_not_a_no_op():
+    """THE NEGATIVE SELF-TEST. An instrument that cannot fail proves nothing.
+
+    Three bad instruments were used across this PR's six rounds and every one
+    failed in the REASSURING direction: stale bytecode measuring unmutated bytes,
+    a shell loop reporting a non-zero rc for commands that returned 0, a grep
+    counting a tombstone comment as a live emit. So this asserts the fixture
+    really refuses before any green above is believed.
+    """
+    import pytest
+    from voiceloop import gate_and_judge as gj
+
+    fn = _fixture(("decide", "decide_candidate"), {"channel"},
+                  "recent_openers", [], {})
+    assert not gj._accepts(fn, "recent_openers"), (
+        "the fixture advertises a kwarg it is pinned NOT to take, so every "
+        "leave-one-out drive would be vacuous")
+    assert gj._accepts(fn, "channel"), (
+        "the fixture hides a kwarg it does take, so the drives would fail for "
+        "the wrong reason")
+    with pytest.raises(TypeError):
+        fn(recent_openers=["an opener"])
+
+
+def test_the_fail_open_branch_is_recorded_as_unmeasured():
+    """HONEST BOUNDARY, not a coverage claim.
+
+    `_accepts` returns True for a callee `inspect` cannot read, deliberately:
+    assuming the older contract there would silently DROP a real do-not-repeat
+    list rather than crash. Every fixture above carries a truthful
+    `__signature__`, so `inspect` always succeeds and NO drive in this file
+    exercises that branch.
+
+    Measured 2026-09-20 on the operator instance: 7 of 7 injected callees are
+    inspectable, so nothing in production reaches the fail-open path today. That
+    is a fact about today, not a property of the design, and it inverts the first
+    time an instance injects a C callable or a signature-less wrapper. Recorded
+    here so the table above is not read as covering it.
+    """
+    import inspect
+
+    from voiceloop import gate_and_judge as gj
+
+    # `min` is a builtin CPython refuses to describe. Checked here rather than
+    # assumed: `print` looks like the same kind of object and IS inspectable on
+    # 3.12, so picking it made this probe pass for the wrong reason.
+    with pytest.raises(ValueError):
+        inspect.signature(min)
+    assert gj._accepts(min, "recent_openers"), (
+        "the fail-open branch changed behaviour. It is unexercised by the "
+        "leave-one-out drives, so this is the only check on it.")

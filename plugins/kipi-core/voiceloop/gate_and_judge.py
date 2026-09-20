@@ -70,6 +70,24 @@ def _accepts(fn, name):
     return name in sig.parameters
 
 
+def _gated(fn, **maybe):
+    """Keep only the kwargs this INJECTED callable actually takes.
+
+    THE CHOKEPOINT (RCA 2026-09-20, after PR #386 rounds 3 through 6 patched the
+    same class four times). Rounds 3, 4 and 5 each guarded one kwarg at one site
+    with its own `if _accepts(...)` block, and round 6 found the round-5 TEST
+    restating `{"recent_openers", "path"}` -- a set that cannot name a kwarg
+    nobody has written yet. Measured the same day: a NEW kwarg planted at five of
+    the six injected call sites was caught by nothing, including the site round 4
+    was written for.
+
+    One door instead of five blocks. Everything optional that crosses the
+    injection boundary goes through here, so the suite has one thing to watch and
+    a new kwarg cannot arrive by a route the guard does not cover.
+    """
+    return {k: v for k, v in maybe.items() if _accepts(fn, k)}
+
+
 def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
                    runner, trail, at,
                    decide, revise, voicefp_gate,
@@ -134,12 +152,13 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
     # instead of dying, and `_accepts` is used for every optional kwarg crossing
     # this boundary rather than this one, so the next one added cannot
     # reintroduce the same defect by being written the old way.
-    optional = {}
-    if _accepts(decide.decide_candidate, "recent_openers"):
-        optional["recent_openers"] = recent_openers
+    optional = _gated(decide.decide_candidate, recent_openers=recent_openers)
     verdict = decide.decide_candidate(
-        post, regenerate=revise.reviser(runner=runner, claude_bin=claude_bin,
-                                        model=model, author=author), channel=channel,
+        post, regenerate=revise.reviser(runner=runner,
+                                        **_gated(revise.reviser,
+                                                 claude_bin=claude_bin,
+                                                 model=model, author=author)),
+        channel=channel,
         source_text=idea_text, prompt_carried=prompt_carried_for(voice_prov),
         handles=False, **optional)
     trail["stages"].append({"stage": "gates", "status": verdict.status,
@@ -189,7 +208,8 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
         if not feedback:
             break
         revised = revise.revise(verdict.text, feedback, runner=runner,
-                                claude_bin=claude_bin, model=model, author=author)
+                                **_gated(revise.revise, claude_bin=claude_bin,
+                                         model=model, author=author))
         if not revised:
             break
         # THE RE-CHECK DETECTS; ONLY THE FIRST PASS REJECTS. A style revision is the
@@ -256,8 +276,8 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
     # prd-voice-authorship-scoring-2026-08-17, resolved eleven minutes after it was
     # raised, by an agent; `decisions.md` has no entry and he was never asked. Read
     # off the FINAL body, so a repaired draft reports the score of what he will see.
-    style_stage["fingerprint"] = voicefp_gate.drift_report(verdict.text,
-                                                           authorship=True)
+    style_stage["fingerprint"] = voicefp_gate.drift_report(
+        verdict.text, **_gated(voicefp_gate.drift_report, authorship=True))
     trail["style"] = style_stage
 
     # The drift sidecar finally accumulates real rows on this lane (RC2): the
@@ -271,9 +291,7 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
     # third time is what the founder's five-rounds-is-a-loop scar is about, so the
     # test below now derives the injected names from THIS function's own signature
     # instead of naming `decide_candidate`.
-    prov_optional = {}
-    if _accepts(_append_voice_provenance, "path"):
-        prov_optional["path"] = provenance_path
+    prov_optional = _gated(_append_voice_provenance, path=provenance_path)
     _append_voice_provenance(channel, at, dict(
         voice_prov or {},
         # THE JOIN KEY (2026-09-08). Without it this lane's rows carry a style
