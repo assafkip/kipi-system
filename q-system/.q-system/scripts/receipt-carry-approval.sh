@@ -44,6 +44,9 @@ RECEIPT_LEDGER=".prd-os/receipts.jsonl"
 # floor wrote this" means. test-receipt-carry-approval.sh feeds a real floor row
 # through live_verdict, so a drift between the two strings turns that test red.
 FLOOR_DESC="no reviewer verdict at this head (floor: absent is not approved)"
+# How this script recognises its own success rows. A literal, written only by
+# main below, so "starts with this" is exactly "the carry wrote it".
+CARRY_PREFIX="carried from "
 
 # Command-prefix seam, same reason as REVIEWER_FLOOR_GH: a stub that replaces
 # `gh` sees exactly the argv production sends.
@@ -75,10 +78,24 @@ read_statuses() {  # read_statuses <repo-path> <sha>
   "${gh_cmd[@]}" api "repos/$1/commits/$2/statuses"
 }
 
-carry_post() {  # carry_post <repo-path> <head-sha> <description>
+# Pure. Same list on stdin. The newest entry in the reviewer's context that is
+# neither the floor's nor this script's own, as `<state>`, or `none`. This is
+# "did somebody who actually read the head speak", and it is what the post-write
+# race check asks.
+foreign_verdict() {
+  jq -r --arg ctx "$REVIEWER_CONTEXT" --arg fd "$FLOOR_DESC" --arg cp "$CARRY_PREFIX" '
+    [.[]? | select(.context == $ctx) | select(.description != $fd)
+          | select(((.description // "") | startswith($cp) or startswith("carry withdrawn")) | not)]
+    | if length == 0 then "none" else .[0].state end' 2>/dev/null || echo "unreadable"
+}
+
+# carry_post <repo-path> <head-sha> <success|failure> <description>
+# `success` is written from exactly one call site in main, after all three
+# guards; `failure` only ever withdraws a success this script just wrote.
+carry_post() {
   local gh_cmd; read -r -a gh_cmd <<< "$RECEIPT_CARRY_GH"
   "${gh_cmd[@]}" api -X POST "repos/$1/statuses/$2" \
-    -f "state=success" -f "context=$REVIEWER_CONTEXT" -f "description=$3"
+    -f "state=$3" -f "context=$REVIEWER_CONTEXT" -f "description=$4"
 }
 
 main() {
@@ -117,13 +134,34 @@ main() {
     exit 0
   fi
 
-  desc="$(printf '%.140s' "carried from $(printf '%.12s' "$reviewed") (receipt-only delta): $desc")"
-  if carry_post "$repo" "$head" "$desc" >/dev/null; then
-    echo "carry: $REVIEWER_CONTEXT=success carried from $reviewed to $head"
-  else
+  desc="$(printf '%.140s' "$CARRY_PREFIX$(printf '%.12s' "$reviewed") (receipt-only delta): $desc")"
+  if ! carry_post "$repo" "$head" success "$desc" >/dev/null; then
     echo "carry: the status post on $head FAILED; the approval is still only on $reviewed" >&2
     exit 1
   fi
+
+  # THE RACE (codex major, PR #376 round 1). The head read and the post are two
+  # API calls and GitHub has no compare-and-swap, so the reviewer can land a
+  # verdict on this head between them. The floor has the same window and only
+  # OBSERVES it, because its write is red. This write is GREEN, so a buried
+  # REQUEST CHANGES here would make a refused head mergeable -- the dangerous
+  # direction. So it is steered instead: if anything that is neither the floor's
+  # nor ours is in the list after the post, withdraw with a red on top. That can
+  # bury a real approval too, which is wrongly BLOCKED and loud, never wrongly
+  # MERGED. Red is answerable; a phantom green is not.
+  local after foreign
+  if ! after="$(read_statuses "$repo" "$head")"; then
+    carry_post "$repo" "$head" failure "carry withdrawn: could not confirm no reviewer verdict raced it" >/dev/null || true
+    echo "carry: posted, then could NOT re-read $head to check for a raced verdict; withdrew with a red. Re-run the reviewer on $head." >&2
+    exit 3
+  fi
+  foreign="$(printf '%s' "$after" | foreign_verdict)"
+  if ! [ "$foreign" = "none" ]; then
+    carry_post "$repo" "$head" failure "carry withdrawn: a reviewer verdict ($foreign) landed on this head" >/dev/null || true
+    echo "carry: a real reviewer verdict ($foreign) landed on $head during the carry; withdrew with a red so it cannot merge on the copy. Re-run the reviewer on $head." >&2
+    exit 3
+  fi
+  echo "carry: $REVIEWER_CONTEXT=success carried from $reviewed to $head"
 }
 
 # `:-` is load-bearing under `set -u` when sourced from `bash -c` (see the same

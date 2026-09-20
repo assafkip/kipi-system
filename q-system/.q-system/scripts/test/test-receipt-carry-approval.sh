@@ -77,7 +77,11 @@ echo "\$*" >> "$CALLS"
 case "\$*" in
   *"-X POST"*) exit 0 ;;
   *"/commits/\$STUB_REVIEWED/statuses"*) cat "\$STUB_REVIEWED_PAYLOAD" ;;
-  *"/commits/"*"/statuses"*) cat "\$STUB_HEAD_PAYLOAD" ;;
+  *"/commits/"*"/statuses"*)
+    # After a POST the head is read AGAIN (the race check). STUB_HEAD_AFTER is
+    # what that second read sees; unset means nothing raced.
+    if grep -q -- "-X POST" "$CALLS" && [ -n "\${STUB_HEAD_AFTER:-}" ]; then cat "\$STUB_HEAD_AFTER"
+    else cat "\$STUB_HEAD_PAYLOAD"; fi ;;
 esac
 EOF
 chmod +x "$STUB"
@@ -104,6 +108,21 @@ check_eq "a head the reviewer already judged is never overwritten" \
   "0" "$(run "$FX/reviewed-approved.json" "$FX/reviewed-request-changes.json" "$RECEIPT")"
 check_eq "an unreadable reviewed payload posts NOTHING" \
   "0" "$(run "$TMP/does-not-exist.json" "$FX/head-absent.json" "$RECEIPT")"
+
+# THE RACE (codex major, PR #376 round 1): a real REQUEST CHANGES lands on the
+# head between the read and the post. The second read sees it, so the carry must
+# put a RED on top of its own green. reviewed-request-changes.json is that real
+# reviewer row.
+echo "race (a reviewer verdict lands on the head mid-carry)"
+export STUB_HEAD_AFTER="$FX/reviewed-request-changes.json"
+check_eq "a raced rejection is answered with a second post" \
+  "2" "$(run "$FX/reviewed-approved.json" "$FX/head-absent.json" "$RECEIPT")"
+check_eq "and the LAST word on that head is a failure, not the copied success" \
+  "state=failure" "$(grep -- "-X POST" "$CALLS" | tail -1 | grep -o 'state=[a-z]*')"
+check_eq "which says it withdrew" "1" "$(grep -- "-X POST" "$CALLS" | tail -1 | grep -c 'carry withdrawn')"
+unset STUB_HEAD_AFTER
+check_eq "foreign_verdict ignores the floor and the carry's own rows" "none" \
+  "$(jq '. + [{"context":"kipi/reviewer-approved","state":"success","description":"carried from 45e0445f5656 (receipt-only delta): APPROVE"}]' "$FX/head-floor-only.json" | foreign_verdict)"
 
 # ------------------------------------------------------------------ wiring
 # A script nothing calls fixes nothing. approval_carry is CUT FROM THE SHIPPED
@@ -164,6 +183,7 @@ if [ -z "${RECEIPT_CARRY_SCRIPT:-}" ] && [ -z "${RECEIPT_CARRY_CONVERGE:-}" ]; t
   mutate "delta guard removed"        's/\[ "\$kind" = "receipt-only" \]/true/'
   mutate "approval guard removed"     's/\[ "\$state" = "success" \]/true/'
   mutate "no-overwrite guard removed" 's/\[ "\$head_state" = "none" \]/true/'
+  mutate "race withdrawal removed"    's/\[ "\$foreign" = "none" \]/true/'
 fi
 
 echo
