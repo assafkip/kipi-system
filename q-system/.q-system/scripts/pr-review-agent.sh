@@ -1194,6 +1194,31 @@ if [ "$VERDICT" = "APPROVE WITH NITS" ] && [ -n "$ISSUE" ]; then
 $(extract_minor_findings "$REVIEW")
 EOF
   echo "  minors captured as spillover: $CAPTURED of $MINOR_COUNT"
+  # FOUND BUT NOT CAPTURED IS A LOSS, AND A LOSS HAS TO BE AUDIBLE (ASK-1921,
+  # claude review of PR #377, item 4).
+  #
+  # The soft capture above is the right call and this does not change it: an LLM
+  # that drifts from the FINDINGS format yields zero lines and the run logs a zero,
+  # never an invented finding. The missing half was that NOTHING NOTICED THE ZERO.
+  # Measured on PR #377: `0 of 2` printed, the verdict was APPROVE WITH NITS, which
+  # is terminal -- the rework loop stops -- so both findings existed only in a PR
+  # comment. Downstream that run is byte-identical to one that found no minors at
+  # all. This is the silent drop no-orphan-findings.md exists to prevent.
+  #
+  # FOUND > 0 IS THE TRIGGER, not captured == 0 on its own. Zero of zero is a review
+  # with no minors, which is the ordinary healthy case and pages nobody.
+  #
+  # IT REPORTS, IT DOES NOT REFUSE. Flipping the verdict away from APPROVE WITH NITS
+  # here would put the merge path of every PR behind the ledger's availability, and
+  # a capture that cannot file is not evidence the code is bad. So the loop keeps its
+  # verdict and the loss goes to Sana's queue, which is the one sink
+  # (founder-notifications.md). slack-notify.sh is a silent no-op when nothing is
+  # configured, so the local line is printed either way and is never traded for the
+  # page.
+  if [ "$MINOR_COUNT" -gt 0 ] && [ "$CAPTURED" -eq 0 ]; then
+    echo "  LOST: $MINOR_COUNT minor finding(s) were extracted from this review and NONE reached the spillover ledger. APPROVE WITH NITS is terminal, so they live only in the PR comment unless someone files them." >&2
+    bash "$NOTIFY" "reviewer: PR #$PR ($ISSUE) verdict APPROVE WITH NITS with $MINOR_COUNT minor finding(s) extracted and 0 captured as spillover. The loop stops here, so those findings are dropped. Do: read the review on PR #$PR and file what is real." 2>/dev/null || true
+  fi
 fi
 
 # The verdict as a COMMIT STATUS on the sha the reviewer read (ASK-217).
