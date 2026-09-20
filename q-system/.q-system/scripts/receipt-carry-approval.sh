@@ -43,6 +43,8 @@
 # always comes first. Run by hand against a live head, this script IS racy; do
 # that only when no reviewer is running.
 #
+# `--head-state <owner/repo> <sha>` is a READ-ONLY mode; see head_state.
+#
 # EXIT: 0 carried, 10 declined (a guard said no), 1 could not read or post,
 # 2 usage. The caller tells "did nothing, by design" from "tried and failed".
 #
@@ -103,7 +105,22 @@ carry_post() {
     -f "state=success" -f "context=$REVIEWER_CONTEXT" -f "description=$3"
 }
 
+# head_state <owner/repo> <sha>: READ ONLY. Prints the state of the live reviewer
+# verdict at <sha> (`success`, `failure`, `none`). Exit 1 when GitHub could not
+# be read, so "could not ask" is never printed as `none`. converge uses it to let
+# origin, not this run, decide whether the head is approved.
+head_state() {
+  local payload state
+  payload="$(read_statuses "$1" "$2")" || { echo "carry: could not read statuses at $2" >&2; return 1; }
+  state="$(printf '%s' "$payload" | live_verdict)"
+  printf '%s\n' "${state%% *}"
+}
+
 main() {
+  if [ "${1:-}" = "--head-state" ]; then
+    [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "usage: receipt-carry-approval.sh --head-state <owner/repo> <sha>" >&2; exit 2; }
+    head_state "$2" "$3"; exit $?
+  fi
   local tree="${1:-}" reviewed="${2:-}" head="${3:-}" repo="${4:-}"
   if [ -z "$tree" ] || [ -z "$reviewed" ] || [ -z "$head" ] || [ -z "$repo" ]; then
     echo "usage: receipt-carry-approval.sh <tree> <reviewed-sha> <head-sha> <owner/repo>" >&2

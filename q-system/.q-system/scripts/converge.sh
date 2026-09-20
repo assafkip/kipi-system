@@ -564,7 +564,7 @@ receipt_lock_drop() {
 # CARRY_MISS is this function's channel to the terminal page, same reason
 # RECEIPT_MISS exists: `say` reaches the log, the page reaches a human, and a page
 # that says "no human merge needed" over a red head is the lie this issue is about.
-CARRY_MISS=""
+CARRY_MISS=""; CARRY_FIX=""
 CARRY_STAGING_PREFIX="refs/kipi/receipt-staging"
 approval_carry() {
   local tree="$1" reviewed="$2" head staging out rc
@@ -572,8 +572,12 @@ approval_carry() {
   if [ -z "$TARGET_SLUG" ]; then
     # `gh api` takes no -R and resolves {owner}/{repo} from cwd, which is the
     # dispatcher's home checkout (the ASK-738 scar). No slug, no post.
-    CARRY_MISS="no owner/repo slug for $TARGET_REPO, so the approval was not carried onto the receipt commit"
-    say "carry: $CARRY_MISS"
+    #
+    # NOT A MISS. No slug means converge has no GitHub repo it can name, so there
+    # is no status context it could read or write and nothing it can claim either
+    # way. The page says what it said before this function existed. A miss is for
+    # a carry that was POSSIBLE and did not happen.
+    say "carry: no owner/repo slug for $TARGET_REPO, so there is no status API to carry an approval through"
     return 0
   fi
   head="$(git -C "$tree" rev-parse HEAD 2>/dev/null)" || head=""
@@ -595,6 +599,38 @@ approval_carry() {
   fi
   # Best-effort tidy. A leftover staging ref is clutter, never a gate input.
   git -C "$tree" push -q origin ":$staging" 2>>"$LOG" || true
+  return 0
+}
+
+# approval_confirm <tree> <reviewed-sha>   (origin has the last word)
+#
+# A RETRY MUST NOT LAUNDER A RED HEAD (codex, PR #376 round 3). approval_carry runs
+# only on the path that pushes a receipt. On a retry the receipt is already on
+# origin, that path returns early, CARRY_MISS was reset to empty, and the page
+# went back to "no human merge needed" over a head the carry never reached. Same
+# mistake the receipt itself made once: success decided from what THIS run did,
+# instead of from what origin has (see receipt_confirm_origin below).
+#
+# So this asks GitHub, every run, after the receipt is confirmed: does the head
+# origin actually has carry a live reviewer approval? It never posts. Carrying
+# onto a head that is already live is the racy case approval_carry exists to
+# avoid, so the remedy it names is a real review of that head.
+approval_confirm() {
+  local tree="$1" reviewed="$2" head state
+  [ -n "$TARGET_SLUG" ] || return 0          # no status API to ask; see approval_carry
+  head="$(git -C "$tree" rev-parse FETCH_HEAD 2>/dev/null)" || head=""
+  if [ -z "$head" ] || [ "$head" = "$reviewed" ]; then
+    return 0                                  # the reviewed sha IS the head: the reviewer's own status is on it
+  fi
+  state="$(bash "$SCRIPT_DIR/receipt-carry-approval.sh" --head-state "$TARGET_SLUG" "$head" 2>>"$LOG")" || state="unreadable"
+  if [ "$state" = "success" ]; then
+    CARRY_MISS=""
+    say "carry: CONFIRMED -- origin's head $(printf '%.12s' "$head") carries a live reviewer approval"
+    return 0
+  fi
+  CARRY_MISS="origin's head $(printf '%.12s' "$head") carries no live reviewer approval (state: $state), and converge will not copy one onto a head that is already live"
+  CARRY_FIX="bash $SCRIPT_DIR/pr-review-agent.sh <pr> --issue $ISSUE --post"
+  say "carry: $CARRY_MISS"
   return 0
 }
 
@@ -632,6 +668,7 @@ receipt_confirm_origin() {
   if [ "$rc" = "3" ]; then
     RECEIPT_MISS=""; RECEIPT_FIX=""
     say "receipt: CONFIRMED on origin/$BRANCH -- validate reads a receipt for $ISSUE at $(printf '%.12s' "$sha")"
+    approval_confirm "$tree" "$sha"
     return 0
   fi
   say "receipt: origin/$BRANCH carries NO receipt for $ISSUE at $(printf '%.12s' "$sha"). Whatever happened in the worktree, the head CI reads has nothing on it."
@@ -1016,7 +1053,7 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # miss already replaced the sentence and names the bigger problem.
     if [ -z "$RECEIPT_MISS" ] && [ -n "$CARRY_MISS" ]; then
       MERGE_LOG="$MERGE_LOG -- BUT $CARRY_MISS. The head is red until the reviewer reads it."
-      MERGE_PAGE="PR #$PR approved and its receipt landed, but $CARRY_MISS. kipi/reviewer-approved is not green on the head, so it will NOT merge by itself. Needs a re-review of the head: kipi converge --issue $ISSUE"
+      MERGE_PAGE="PR #$PR approved and its receipt landed, but $CARRY_MISS. kipi/reviewer-approved is not green on the head, so it will NOT merge by itself. Needs a review of that head: ${CARRY_FIX:-bash $SCRIPT_DIR/pr-review-agent.sh $PR --issue $ISSUE --post}"
     fi
     say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). $MERGE_LOG"
     bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), $MERGE_PAGE" 2>/dev/null || true

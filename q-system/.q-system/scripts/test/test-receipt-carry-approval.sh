@@ -175,8 +175,42 @@ if [ -z "${RECEIPT_CARRY_SCRIPT:-}" ]; then
     "$(git -C "$ORIGIN" for-each-ref --format='%(refname)' refs/kipi/receipt-staging)"
   check_eq "a declined carry is a MISS the page will carry" "yes" \
     "$(wire o/r "$FX/reviewed-request-changes.json" | grep -q 'NOT carried' && echo yes || echo no)"
-  check_eq "with no owner/repo slug: a miss, and NOTHING posted (ASK-738)" "yes 0" \
-    "$(wire "" "$FX/reviewed-approved.json" | grep -q 'no owner/repo slug' && echo yes || echo no) $(grep -c -- "-X POST" "$CALLS" || true)"
+  check_eq "with no owner/repo slug: NOTHING posted, and not a miss (there is no status API to miss)" " 0" \
+    "$(wire "" "$FX/reviewed-approved.json") $(grep -c -- "-X POST" "$CALLS" || true)"
+
+  # ORIGIN HAS THE LAST WORD (codex, PR #376 round 3). On a retry the receipt is
+  # already on origin, approval_carry never runs, and the page went back to "no
+  # human merge needed" over a red head. approval_confirm asks GitHub what the
+  # head origin has actually carries, every run, and never posts.
+  echo "confirm (approval_confirm cut from the shipped converge.sh)"
+  FN2="$TMP/fn2.sh"
+  sed -n '/^approval_confirm() {/,/^}$/p' "$CONVERGE" > "$FN2"
+  check_eq "converge.sh defines approval_confirm" "1" "$(grep -c '^approval_confirm() {' "$FN2")"
+  check_eq "the receipt-confirmed branch calls it" "1" \
+    "$(sed -n '/^receipt_confirm_origin() {/,/^}$/p' "$CONVERGE" | grep -c '^    approval_confirm "\$tree" "\$sha"$')"
+  # Origin's branch now IS the receipt commit, which is the retry's world.
+  g push -q "$ORIGIN" "$RECEIPT:refs/heads/sana/ask-1"
+  git -C "$CLONE" fetch -q origin sana/ask-1
+  CARRIED="$TMP/head-carried.json"
+  jq '[{"context":"kipi/reviewer-approved","state":"success","description":"carried from 45e0445f5656 (receipt-only delta): APPROVE","target_url":null,"created_at":"2026-09-19T00:00:00Z"}] + .' \
+    "$FX/head-floor-only.json" > "$CARRIED"
+  confirm() {  # confirm <slug> <head-payload> <starting CARRY_MISS>  -> prints CARRY_MISS afterwards
+    : > "$CALLS"
+    STUB_REVIEWED="$REVIEWED" STUB_REVIEWED_PAYLOAD="$FX/reviewed-approved.json" STUB_HEAD_PAYLOAD="$2" \
+    RECEIPT_CARRY_GH="$STUB" SCRIPT_DIR="$(dirname "$SCRIPT")" LOG="$TMP/converge.log" \
+    TARGET_SLUG="$1" TARGET_REPO="$CLONE" BRANCH="sana/ask-1" ISSUE="ASK-1" START_MISS="$3" \
+      bash -c "say() { :; }; CARRY_MISS=\"\$START_MISS\"; CARRY_FIX=''; . '$FN2'; approval_confirm '$CLONE' '$REVIEWED'; printf '%s' \"\$CARRY_MISS\"" 2>/dev/null
+  }
+  check_eq "THE ROUND-3 REPRODUCER: a retry over a red head is a MISS, though this run carried nothing" "yes" \
+    "$(confirm o/r "$FX/head-floor-only.json" "" | grep -q 'carries no live reviewer approval (state: none)' && echo yes || echo no)"
+  check_eq "a head GitHub shows as approved clears a stale miss" "" "$(confirm o/r "$CARRIED" "stale miss from an earlier step")"
+  check_eq "a head the reviewer REFUSED is a miss too" "yes" \
+    "$(confirm o/r "$FX/reviewed-request-changes.json" "" | grep -q '(state: failure)' && echo yes || echo no)"
+  check_eq "GitHub unreadable is a miss, never a silent pass" "yes" \
+    "$(confirm o/r "$TMP/does-not-exist.json" "" | grep -q '(state: unreadable)' && echo yes || echo no)"
+  check_eq "confirming never posts" "0" "$(grep -c -- "-X POST" "$CALLS" || true)"
+  check_eq "--head-state is read-only and says what GitHub shows" "success 0" \
+    "$(STUB_REVIEWED=x STUB_REVIEWED_PAYLOAD=/dev/null STUB_HEAD_PAYLOAD="$CARRIED" RECEIPT_CARRY_GH="$STUB" bash "$SCRIPT" --head-state o/r "$RECEIPT") $(grep -c -- "-X POST" "$CALLS" || true)"
 fi
 
 # ------------------------------------------------------------------ mutation
@@ -199,6 +233,8 @@ PY
   }
   # The shipped defect: a receipt lands and nobody carries the approval.
   cmutate "converge never calls the carry" 's.replace(CALL, "", 1)'
+  # Round 3's defect: nobody asks origin, so a retry reports a red head as landing.
+  cmutate "converge never confirms the head with origin" 's.replace("    approval_confirm \"$tree\" \"$sha\"\n", "", 1)'
   # The defect two review rounds were about: the carry runs AFTER the branch moved.
   cmutate "converge carries after the branch moved" \
     's.replace(CALL, "", 1).replace("    say \"receipt: pushed --", "    approval_carry \"$tree\" \"$sha\"\n    say \"receipt: pushed --", 1)'
