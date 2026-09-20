@@ -1729,8 +1729,15 @@ if only:
 fleet = [r for r in rows if r.get("verdict") == "BLOCKED-FLEET"]
 founder = [r for r in rows if r.get("verdict") == "BLOCKED-FOUNDER"]
 ok = [r for r in rows if r.get("verdict") == "WOULD-SYNC"]
+# MISSING and NOT-A-REPO count against the denominator, so they are NAMED.
+# Unnamed, they read as an unexplained shortfall -- "23 of 24" with nothing
+# accounting for the 24th (PR #396 review round 2, minor).
+other = [r for r in rows
+         if r.get("verdict") not in ("WOULD-SYNC", "BLOCKED-FLEET", "BLOCKED-FOUNDER")]
 scope = f" (scoped to --only {only})" if only else ""
 print(f"reach preflight: {len(ok)} of {len(rows)} would sync now{scope}")
+for r in other:
+    print(f"  {r['name']}: {r.get('verdict')} (counted in the total, not syncable)")
 for r in founder:
     print(f"  {r['name']}: founder work, correctly refused until committed "
           f"(not a fleet blocker, not counted against this run)")
@@ -1752,6 +1759,12 @@ PYEOF
     echo "  clear what is attributable:  python3 $SCRIPT_DIR/fleet-unblock.py --apply"
     echo "  re-measure:                  python3 $audit"
     echo "  proceed anyway:              $0 $UPDATE_ARGV --skip-reach-preflight"
+    echo ""
+    echo "  fleet-unblock clears only what it can ATTRIBUTE, and it exits 0 even"
+    echo "  when it refuses a path -- so a clean-looking run can change nothing."
+    echo "  Read its 'refused' count. If the re-measure above still names the same"
+    echo "  instance, that path needs a decision, not another --apply: commit it,"
+    echo "  or scope this run with --only, or proceed with --skip-reach-preflight."
     exit 1
   fi
   if [ "$rc" -ne 0 ]; then
