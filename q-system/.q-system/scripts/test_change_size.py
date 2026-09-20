@@ -191,8 +191,14 @@ SCAN_FORMS = ("for p in d.iterdir(): check(p)", "for root,_,fs in os.walk(d): pa
               # detector did not know, so the two declared tests below sat OFF the
               # always-run floor -- a scanner being skipped silently, which is the one
               # thing the floor exists to prevent. Both forms come from this repo.
+              # Both forms are COPIED from declared tests in this repo, not invented:
+              # test-zero-safe-count-idiom.sh:69 and test_token_guard_commit_forms.py:207.
+              # Every recursive grep in the declared corpus is the shell spelling, in a
+              # shell file or inside a python string; a subprocess LIST form
+              # (["grep", "-rIl", ...]) occurs nowhere, so it is not a form this
+              # pattern claims to see.
               'residual="$(grep -rn \'pattern\' "$TESTDIR"/*.sh 2>/dev/null)"',
-              'out = run(["grep", "-rIl", "git commit", root])')
+              'check_blocks(11, "grep for the words", \'grep -r "git commit" .\')')
 
 
 # The two REAL declared tests this gap hid, named so the case is about the repo and
@@ -463,6 +469,49 @@ def test_an_unreadable_diff_or_a_change_to_the_gate_runs_everything(gate, repo):
     case_gate_falls_back_to_everything(gate, repo)
 
 
+class _EmptySelector:
+    """A classifier that selects nothing. No producer in the repo emits this today --
+    the scanner floor guarantees at least 72 -- which is the whole reason the case
+    needs a stand-in: it is unreachable until ASK-1918's declarations shrink the floor,
+    and it would be invisible on the day it becomes reachable."""
+    @staticmethod
+    def plan_for_repo(root, base):
+        return {"tier": "S", "full_suite": False, "selected_tests": [],
+                "declared_tests": 2, "app_lines": 1, "reasons": []}
+
+
+def case_an_empty_selection_is_not_green(gate, repo, monkeypatch):
+    # claude review of PR #377, nit 3. select_for_diff accepted set() and run_tests
+    # then executed nothing and exited 0 -- a green gate over zero evidence.
+    monkeypatch.setattr(gate.importlib.util, "module_from_spec", lambda spec: _EmptySelector)
+    monkeypatch.setattr(gate.importlib.util, "spec_from_file_location",
+                        lambda *a, **k: type("S", (), {"loader": type("L", (), {
+                            "exec_module": staticmethod(lambda mod: None)})()})())
+    notes = []
+    assert gate.select_for_diff(repo, "base", notes) is None
+    assert "selected ZERO" in notes[-1] and "FULL suite" in notes[-1]
+
+
+def test_a_selection_that_runs_nothing_falls_back_to_everything(gate, repo, monkeypatch):
+    case_an_empty_selection_is_not_green(gate, repo, monkeypatch)
+
+
+def case_zero_executed_is_an_error(gate, repo):
+    # The backstop, one layer below the guard above: whatever road leads to nothing,
+    # a gate that executed no test never reports green in silence.
+    notes, errors = [], []
+    gate.run_tests(repo, manifest_of(repo), "skeleton", errors, notes, set())
+    assert errors and "zero tests executed" in errors[0], (errors, notes)
+    # A run that DID execute is untouched, and so is one that accounts for its silence.
+    notes, errors = [], []
+    gate.run_tests(repo, manifest_of(repo), "skeleton", errors, notes)
+    assert not errors, errors
+
+
+def test_a_run_that_executes_nothing_is_never_silently_green(gate, repo):
+    case_zero_executed_is_an_error(gate, repo)
+
+
 # --------------------------------------------------------------- the mutants
 CS_MUTANTS = [
     ("the machinery escalator", "        if why:\n            escalators.append(why)", "        if False:\n            escalators.append(why)", case_escalator_beats_line_count),
@@ -495,8 +544,20 @@ def test_classifier_mutants_are_killed(label, old, new, case, tmp_path):
 
 GATE_MUTANTS = [
     ("the gate skips what was not selected", "if only is not None and path not in only:", "if False:", case_gate_runs_only_the_selection),
+    ("zero executed is never green", "    if ran == 0 and quarantined == 0 and skipped == 0:", "    if False:", case_zero_executed_is_an_error),
     ("a failed classification means everything", "        return None\n    notes.append(f\"change-size vs {base}: tier", "        return set()\n    notes.append(f\"change-size vs {base}: tier", case_gate_falls_back_to_everything),
 ]
+
+
+def test_the_empty_selection_guard_is_killed_by_its_mutant(tmp_path, repo, monkeypatch):
+    # Its own test because the case needs monkeypatch, which the parametrized harness
+    # below does not pass. Same contract: delete the guard, the case must fail.
+    old = "        if not selected:"
+    assert old in GATE_SRC, "the mutant for 'an empty selection is not green' no longer matches the source"
+    (tmp_path / "change-size.py").write_text(CS_SRC)
+    mutant = load(GATE_SRC.replace(old, "        if False:", 1), "gate_mutant_empty", tmp_path)
+    with pytest.raises(AssertionError):
+        case_an_empty_selection_is_not_green(mutant, repo, monkeypatch)
 
 
 @pytest.mark.parametrize("label,old,new,case", GATE_MUTANTS, ids=[m[0] for m in GATE_MUTANTS])
