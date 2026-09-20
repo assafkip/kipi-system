@@ -17,7 +17,9 @@ an agent's opinion of its own change:
         M   at most 150
         L   anything larger, or ANY escalator below
         The tier is the HUMAN ceremony: how much review the change earns.
-  tests the declared test artifacts that name a changed file, or name a script
+  tests every declared test that SCANS the tree (63 of 236 today: it reads files
+        nobody named, so no selection can be trusted to include it); plus the
+        declared test artifacts that name a changed file, or name a script
         that uses it, one step out (an edge is a mention on a line that executes;
         a comment that talks about a script does not run it); the tests whose own glob / find / ls-files
         pattern ENUMERATES a changed file; for a fixture, the tests that name its
@@ -31,7 +33,9 @@ and it becomes a full run through the last escalator when it truly is suite-wide
   * a file CI installs from (requirements*.txt, pyproject.toml)
   * a capability declaration other than an expected_tests entry
   * a new third-party import in app code (a test importing pytest is not one)
-  * a selection so wide that it is the suite anyway (more than MAX_SELECTED)
+  * a selection so wide that it is the suite anyway (more than MAX_SELECTED,
+    counted WITHOUT the always-run scanners: a fixed floor is not evidence that
+    this diff is suite-wide)
 
 NOT AN ESCALATOR: a changed file no declared test OWNS -- an executable nothing
 names, a fixture nothing names or enumerates. "The full suite" means the declared
@@ -148,6 +152,23 @@ _ENUM_RE = re.compile(
 # fixture in the repo, so matching on it would select every test that has one.
 _GENERIC_DIRS = frozenset({"test", "tests", "fixtures", "fixture", "scripts", "data", "lib", "src",
                            "q-system", ".q-system", "plugins", "templates", "hooks", "."})
+
+
+# ANY filesystem walk, by any spelling. This is deliberately NOT a pattern parser.
+# Four review rounds on this PR were one class -- "the selection can miss a test
+# that matters" -- and each round named another text form the parser did not know:
+# a fixture reached by directory, a `rglob`, a caller's test, then iterdir /
+# os.walk / os.listdir / a shell glob. A parser that must recognise every spelling
+# has a fifth gap waiting. So the question changes from WHICH FILES does this test
+# scan, which needs the spelling, to DOES THIS TEST SCAN AT ALL, which does not.
+_SCAN_RE = re.compile(
+    r"\b(?:r?glob|iterdir|listdir|scandir|walk|fnmatch)\b"
+    r"|\bfind\s+[\"\'$./]|\bls\s+[-\"\'$./]|git\s+ls-files"
+    r"|\bfor\s+\w+\s+in\s+[^\n]*\*")
+
+
+def scans_the_tree(text: str) -> bool:
+    return _SCAN_RE.search(text) is not None
 
 
 def enumeration_patterns(text: str) -> list[str]:
@@ -283,6 +304,11 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
         escalators.append(f"new third-party import: {mod}")
 
     patterns = {t: enumeration_patterns(text) for t, text in declared.items()}
+    # A SCANNER ALWAYS RUNS. It reads files nobody named, so no selection can be
+    # trusted to include it. Measured 2026-09-19: 63 of 236 declared tests scan.
+    # They are excluded from the width cap below -- a fixed floor is not evidence
+    # that THIS diff is suite-wide.
+    always = {t for t, text in declared.items() if scans_the_tree(text)}
     live = name_index({c: executable_text(text) for c, text in code_texts.items()}) if code_texts else ({}, {})
     test_index = name_index(declared) if declared else ({}, {})
     for path, _ in changed:
@@ -304,8 +330,9 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
         # type (`*`, `*.*`, `*.json`) still SELECTS its test, because a repo-wide
         # scanner really may read the file. Only a pattern with a name in it
         # (`com.kipi.*.plist`, `prd-*.md`) is evidence that the test OWNS the file.
-        selected |= {t for t, pats in patterns.items()
-                     if any(pattern_matches(p, path) for p in pats)}
+        # A naming pattern (`com.kipi.*.plist`) is still OWNERSHIP: it says this
+        # test is the one that covers the file, so the file is not reported
+        # unowned. Selection no longer depends on it -- every scanner runs anyway.
         direct |= {t for t, pats in patterns.items()
                    if any(pattern_matches(p, path) for p in pats if names_something(p))}
         if is_test_path(path) or not is_code(path):
@@ -355,9 +382,13 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
             unowned.append(path)
         selected |= direct | hop
 
-    selected = {t for t in selected if t in declared}
-    if len(selected) > MAX_SELECTED:
-        escalators.append(f"{len(selected)} tests name the changed files, more than {MAX_SELECTED}: that is the suite")
+    selected = {t for t in selected if t in declared} | always
+    # THE CAP COUNTS WHAT THE DIFF PULLED IN, NOT THE FLOOR. The always-run
+    # scanners are the same set on every PR, so counting them would push every
+    # change over the cap and back to a full run.
+    pulled = selected - always
+    if len(pulled) > MAX_SELECTED:
+        escalators.append(f"{len(pulled)} tests name the changed files, more than {MAX_SELECTED}: that is the suite")
 
     # TWO ANSWERS, NOT ONE. Size decides the human ceremony (how much review a
     # change earns). ESCALATORS decide whether the whole suite runs. The first cut

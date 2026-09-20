@@ -181,6 +181,41 @@ def test_a_changed_input_runs_the_test_whose_pattern_enumerates_it(cs):
     case_enumerated_input_reaches_its_scanner(cs)
 
 
+SCANNER = "t/test-scans.py"
+SCAN_FORMS = ("for p in d.iterdir(): check(p)", "for root,_,fs in os.walk(d): pass",
+              "for n in os.listdir(d): pass", 'for f in "$DIR"/*.sh; do bash "$f"; done',
+              "git ls-files | while read f; do :; done", 'find "$ROOT" -type f')
+
+
+def case_every_scanner_always_runs(cs):
+    # THE CLASS, KILLED BY CONSTRUCTION (codex, PR #377 rounds 1-4). Four rounds
+    # each named another spelling the pattern parser did not know. A test that
+    # walks the tree reads files nobody named, so it runs on every diff, whatever
+    # the spelling and whatever changed.
+    for form in SCAN_FORMS:
+        declared = dict(DECLARED, **{SCANNER: form})
+        v = cs.plan([(SCRIPT, 1)], declared, CODE)
+        assert SCANNER in v["selected_tests"], form
+    # A test that walks nothing is not dragged in.
+    declared = dict(DECLARED, **{SCANNER: "assert compute(2) == 4"})
+    assert SCANNER not in cs.plan([(SCRIPT, 1)], declared, CODE)["selected_tests"]
+
+
+def test_a_test_that_walks_the_tree_runs_on_every_diff(cs):
+    case_every_scanner_always_runs(cs)
+
+
+def case_scanners_do_not_trip_the_width_cap(cs):
+    # A fixed floor is not evidence that THIS diff is suite-wide.
+    declared = dict(DECLARED, **{f"t/test-scan-{i}.py": "d.iterdir()" for i in range(cs.MAX_SELECTED + 5)})
+    v = cs.plan([(SCRIPT, 1)], declared, CODE)
+    assert not v["full_suite"] and len(v["selected_tests"]) > cs.MAX_SELECTED
+
+
+def test_the_always_run_floor_does_not_force_a_full_suite(cs):
+    case_scanners_do_not_trip_the_width_cap(cs)
+
+
 def case_a_naming_pattern_is_ownership(cs):
     # A pattern with a NAME in it means that test owns the file, so the file is
     # not reported as unowned. A type-only pattern selects but does not own.
@@ -207,7 +242,7 @@ def test_a_file_no_declared_test_owns_is_named_not_swept(cs):
     case_unowned_data_is_reported_not_swept(cs)
 
 
-def case_a_bare_wildcard_owns_nothing(cs):
+def case_a_bare_wildcard_owns_nothing(cs):  # noqa: D401 -- ownership, not selection
     # codex, PR #377 round 3: a test that globs `*` in its own tmp dir claimed every
     # changed file, so the unowned-data fallback and UNTESTED BY NAME both went dead.
     declared = dict(DECLARED, **{"t/test-tmp.py": 'for p in tmp.glob("*"): p.unlink()',
@@ -239,7 +274,7 @@ git ls-files 'plugins/*/hooks/hooks.json'"""
 
 
 def case_too_wide(cs):
-    declared = {f"t/test-{i}.sh": "bash widget.sh" for i in range(cs.MAX_SELECTED + 1)}
+    declared = {f"t/test-{i}.sh": "bash widget.sh" for i in range(cs.MAX_SELECTED + 2)}
     v = cs.plan([(SCRIPT, 1)], declared, CODE)
     assert v["full_suite"] and "that is the suite" in v["reasons"][-1]
 
@@ -357,10 +392,11 @@ CS_MUTANTS = [
     ("the callers' tests run", "        for dep in dependents(path, live):", "        for dep in []:", None),
     ("a fixture is matched before it is skipped", "            if is_test_path(path):\n                direct |=", "            if False:\n                direct |=", case_fixture_reaches_its_owner),
     ("an enumerating test owns what it globs", "                   if any(pattern_matches(p, path) for p in pats if names_something(p))}", "                   if False}", case_a_naming_pattern_is_ownership),
-    ("a type-only scanner still runs", "                     if any(pattern_matches(p, path) for p in pats)}", "                     if False}", case_a_bare_wildcard_owns_nothing),
+    ("every scanner always runs", "    always = {t for t, text in declared.items() if scans_the_tree(text)}", "    always = set()", case_every_scanner_always_runs),
+    ("the floor is outside the width cap", "    pulled = selected - always", "    pulled = selected", case_scanners_do_not_trip_the_width_cap),
     ("a type-only pattern owns nothing", "for p in pats if names_something(p))}", "for p in pats)}", case_a_bare_wildcard_owns_nothing),
     ("unowned data is reported", "if not direct and not path.endswith(DOC_SUFFIXES):", "if False:", case_unowned_data_is_reported_not_swept),
-    ("the width cap", "if len(selected) > MAX_SELECTED:", "if False:", case_too_wide),
+    ("the width cap", "if len(pulled) > MAX_SELECTED:", "if False:", case_too_wide),
     ("size is not a full run", "full_suite = bool(escalators)", "full_suite = bool(escalators) or app_lines > M_MAX_LINES", case_size_is_not_a_full_run),
 ]
 
