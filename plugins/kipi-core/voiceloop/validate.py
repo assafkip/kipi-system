@@ -313,9 +313,22 @@ def _targets_for(channel, base, targets, extreme=min):
 
     `targets` is a {channel: [words, ...]} DECLARATION supplied by the deployment,
     because the engine cannot know an instance's producer table. When a channel
-    declares nothing, the fallback is the pre-2026-09-19 enumeration -- None plus
-    the corpus's own shortest register -- so a fleet instance that declares
-    nothing is graded exactly as before.
+    declares nothing, the fallback is the pre-2026-09-19 enumeration: None plus
+    the corpus's own shortest register.
+
+    AN UNDECLARED INSTANCE IS NOT GRADED IDENTICALLY, AND AN EARLIER VERSION OF
+    THIS DOCSTRING SAID IT WAS (claude review of PR #386 round 4, confirmed by
+    measurement). The FALLBACK TARGETS are unchanged, but `check_budget` now also
+    enumerates every slot kind and the `len(pool)` counters, and grades the
+    longest end rather than the shortest, so the set of assemblies it reaches is
+    strictly larger. Measured on a corpus with a fat comment slot and a thin post
+    slot: the old shape graded one post-only assembly at 602 chars and reported
+    CLEAN; the new one reaches 24122 against a 24000 ceiling and reports RED.
+
+    That direction is correct -- the old green was the gate failing to look --
+    but it means a fleet instance can go RED on a corpus its own suite passed
+    yesterday, with no change to its own code. It is a behaviour change on
+    every undeclared channel, not a no-op, and it belongs in the release note.
 
     WHY A DECLARATION AND NOT A GUESS (2026-09-19). Until `target_words` became
     required, these two checks synthesized `None` and the corpus minimum and
