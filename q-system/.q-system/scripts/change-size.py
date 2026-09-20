@@ -17,7 +17,7 @@ an agent's opinion of its own change:
         M   at most 150
         L   anything larger, or ANY escalator below
         The tier is the HUMAN ceremony: how much review the change earns.
-  tests every declared test that SCANS the tree (63 of 236 today: it reads files
+  tests every declared test that SCANS the tree (72 of 236 today: it reads files
         nobody named, so no selection can be trusted to include it); plus the
         declared test artifacts that name a changed file, or name a script
         that uses it, one step out (an edge is a mention on a line that executes;
@@ -30,7 +30,8 @@ count alone never does: a large diff names more files, so it selects more tests,
 and it becomes a full run through the last escalator when it truly is suite-wide.
   * the machinery that decides what runs (this file, the gate, the manifest
     assembler, CI workflows, lefthook, verify.sh, any conftest.py)
-  * a file CI installs from (requirements*.txt, pyproject.toml)
+  * a file CI installs from or every test loads (requirements*.txt,
+    pyproject.toml, pytest.ini, tox.ini, setup.cfg, any conftest.py)
   * a capability declaration other than an expected_tests entry
   * a new third-party import in app code (a test importing pytest is not one)
   * a selection so wide that it is the suite anyway (more than MAX_SELECTED,
@@ -90,7 +91,13 @@ FULL_RUN_PATHS = (
     "lefthook.yml",
 )
 FULL_RUN_PREFIXES = (".github/workflows/",)
-FULL_RUN_BASENAMES = ("conftest.py", "pyproject.toml")
+# Files that configure or are installed into EVERY test run. pytest.ini was the
+# one this list missed (codex, PR #377 round 5): it sets the options for every
+# pytest invocation in the repo, so a PR editing it ran 72 of 236 and went green.
+# tox.ini and setup.cfg are here because pytest reads its config from whichever
+# of the four it finds first, so which file is authoritative can change without
+# this list changing.
+FULL_RUN_BASENAMES = ("conftest.py", "pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg")
 FULL_RUN_BASENAME_RE = re.compile(r"^requirements[\w.-]*\.txt$")
 
 CODE_SUFFIXES = (".py", ".sh")
@@ -305,7 +312,7 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
 
     patterns = {t: enumeration_patterns(text) for t, text in declared.items()}
     # A SCANNER ALWAYS RUNS. It reads files nobody named, so no selection can be
-    # trusted to include it. Measured 2026-09-19: 63 of 236 declared tests scan.
+    # trusted to include it. Measured 2026-09-19: 72 of 236 declared tests scan.
     # They are excluded from the width cap below -- a fixed floor is not evidence
     # that THIS diff is suite-wide.
     always = {t for t, text in declared.items() if scans_the_tree(text)}

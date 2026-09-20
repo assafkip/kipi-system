@@ -61,6 +61,7 @@ def case_escalator_beats_line_count(cs):
                  ".github/workflows/validate.yml", "lefthook.yml",
                  "plugins/kipi-core/voiceloop/requirements-authorship.txt",
                  "plugins/prd-os/tests/conftest.py", "pyproject.toml",
+                 "pytest.ini", "tox.ini", "setup.cfg",
                  "q-system/.q-system/capability/declared_inert/x.json"):
         v = cs.plan([(path, 1)], DECLARED, CODE)
         assert v["full_suite"] and v["tier"] == "L", path
