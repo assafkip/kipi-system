@@ -182,10 +182,22 @@ def covers_matches(pattern: str, path: str) -> bool:
     fnmatch's `*` crosses `/`, which is what makes `**/*.plist` and
     `q-system/.q-system/launchd/**` both behave the way a person writing them
     expects. A pattern with no slash matches the basename, the way `find -name`
-    and a bare pathspec do."""
+    and a bare pathspec do.
+
+    `**/` MEANS "AT ANY DEPTH, INCLUDING NONE", and that needs its own branch
+    (claude review of PR #385, major). fnmatch's `*` crosses a `/` only when
+    there is one to cross, so `**/*.sh` matched every nested script and MISSED
+    all 39 of this repo's root-level ones. covers-lint printed PASS on it,
+    because such a glob does match the nested files -- so the declaration would
+    have been blessed while silently dropping the root. Anchoring the leading
+    `**/` away is the whole fix."""
     import fnmatch
     if "/" in pattern:
-        return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, "*/" + pattern.lstrip("*/"))
+        if fnmatch.fnmatch(path, pattern):
+            return True
+        if pattern.startswith("**/") and fnmatch.fnmatch(path, pattern[3:]):
+            return True
+        return fnmatch.fnmatch(path, "*/" + pattern.lstrip("*/"))
     return fnmatch.fnmatch(Path(path).name, pattern)
 
 

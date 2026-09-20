@@ -262,6 +262,28 @@ def test_covers_on_a_non_scanner_grants_nothing(cs):
     case_covers_on_a_non_scanner_grants_nothing(cs)
 
 
+def case_a_double_star_reaches_the_repo_root(cs):
+    # codex/claude review of PR #385, MAJOR. `**/` conventionally means "at any
+    # depth, INCLUDING none", but fnmatch's `*` only crosses `/` when a `/` is
+    # there to cross, so `**/*.sh` missed every one of this repo's 39 root-level
+    # scripts. covers-lint printed PASS on it, because the glob does match the
+    # non-root files -- so a blessed declaration would have silently dropped
+    # coverage for the root. The first cut of the test below used a non-root
+    # fixture path and could not see it.
+    for pat, path, want in (("**/*.sh", "kipi-promote.sh", True),
+                            ("**/*.sh", "q-system/.q-system/scripts/x.sh", True),
+                            ("**/*.py", "fix-voice-style.py", True),
+                            ("**/*.py", "a/b/c.py", True),
+                            # ...and it does not become a match-anything.
+                            ("**/*.sh", "kipi-promote.py", False),
+                            ("q-system/**/*.sh", "plugins/x.sh", False)):
+        assert cs.covers_matches(pat, path) is want, (pat, path)
+
+
+def test_a_double_star_glob_matches_a_root_level_file(cs):
+    case_a_double_star_reaches_the_repo_root(cs)
+
+
 def test_read_declared_drops_a_malformed_covers(cs, tmp_path):
     # THE ASYMMETRY: everything uncertain resolves upward. A declaration that is
     # not a list of non-empty strings is DROPPED, which leaves the test on the
@@ -423,6 +445,7 @@ CS_MUTANTS = [
     ("every scanner always runs", "    always = {t for t in scanners if t not in declared_covers}", "    always = set()", case_every_scanner_always_runs),
     ("a declaration takes a scanner off the floor", "    always = {t for t in scanners if t not in declared_covers}", "    always = set(scanners)", case_a_declared_scanner_leaves_the_floor),
     ("covers never selects a non-scanner", "                   if t in scanners and any(covers_matches(p, path) for p in pats)}", "                   if any(covers_matches(p, path) for p in pats)}", case_covers_on_a_non_scanner_grants_nothing),
+    ("**/ reaches the repo root", '        if pattern.startswith("**/") and fnmatch.fnmatch(path, pattern[3:]):\n            return True', '        if False:\n            return True', case_a_double_star_reaches_the_repo_root),
     ("the floor is outside the width cap", "    pulled = selected - always", "    pulled = selected", case_scanners_do_not_trip_the_width_cap),
     ("the width cap", "if len(pulled) > MAX_SELECTED:", "if False:", case_too_wide),
     ("size is not a full run", "full_suite = bool(escalators)", "full_suite = bool(escalators) or app_lines > M_MAX_LINES", case_size_is_not_a_full_run),

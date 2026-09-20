@@ -5,7 +5,17 @@ PAIRS WITH: the `covers` key on a `q-system/.q-system/capability/expected_tests/
 fragment, read by change-size.py's read_declared(). No skill; this is the
 deterministic half of a declaration, per skill-hook-pairing.md's decision rule
 (a glob either matches a tracked path or it does not -- that is a file
-inspection, so it gets a hook rather than a judgement).
+inspection, so it gets a gate rather than a judgement).
+
+WHERE IT IS WIRED, EXACTLY (claude review of PR #385, minor): the `covers-declaration`
+command in lefthook.yml's pre-commit, and the "Coverage declarations are real" step in
+.github/workflows/validate.yml, which runs BEFORE the capability gate because a check
+on the declarations cannot be downstream of the thing they steer. It is NOT a
+PostToolUse hook and an earlier draft of this header wrongly implied one. The `paths`
+argument below is a hook-shaped entry point with no production caller today; it exists
+because both gates above sweep, and a future per-file caller should not have to add it
+under time pressure. Read the sweep as the enforcement and this paragraph as the whole
+claim.
 
 WHY IT HAS TO EXIST. `covers` takes a test OFF the always-run floor. That is the
 whole point and it is also the whole danger: a scanner that declared
@@ -22,7 +32,7 @@ What it checks, per fragment that declares `covers`:
      non-scanner is inert (change-size.py ignores it), so a fragment carrying
      one is a misunderstanding worth naming rather than silently dropping.
 
-EXIT: 0 clean, 2 a declaration is wrong (blocks, per the PostToolUse contract).
+EXIT: 0 clean, 2 a declaration is wrong. Both callers above block on 2.
 
 Usage:  covers-lint.py [--repo-root .] [paths...]
         With paths, only fragments among them are checked (hook mode). With
