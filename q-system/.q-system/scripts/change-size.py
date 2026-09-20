@@ -31,12 +31,14 @@ and it becomes a full run through the last escalator when it truly is suite-wide
   * a file CI installs from (requirements*.txt, pyproject.toml)
   * a capability declaration other than an expected_tests entry
   * a new third-party import in app code (a test importing pytest is not one)
-  * a changed fixture or data file that no declared test names or enumerates
   * a selection so wide that it is the suite anyway (more than MAX_SELECTED)
 
-NOT AN ESCALATOR: a changed executable that no declared test names. The suite
-does not exercise it by name, so running all of it proves little. The verdict
-lists every such file and floors the tier at M instead.
+NOT AN ESCALATOR: a changed file no declared test OWNS -- an executable nothing
+names, a fixture nothing names or enumerates. "The full suite" means the declared
+tests, so when none of them can see the file, running all of them exercises it
+exactly as much as running none. The verdict lists every such file by name and
+floors the tier at M. The missing owner is the finding; a 17-minute run that
+covers the file no better is not the fix.
 
 THE ASYMMETRY. Everything uncertain resolves UPWARD. An unreadable diff, a
 missing base ref, a crash in here: the caller runs the FULL suite. This script can
@@ -152,6 +154,14 @@ def enumeration_patterns(text: str) -> list[str]:
     return sorted({p for hit in _ENUM_RE.findall(text) for p in hit if p})
 
 
+def names_something(pattern: str) -> bool:
+    """True when the pattern carries a literal NAME, not just a file type. Drop the
+    wildcards and one trailing extension; what is left has to hold two or more
+    letters or digits. `*`, `*.*`, `*.json`, `**/*.py` name nothing."""
+    body = re.sub(r"\.[A-Za-z0-9]{1,6}$", "", pattern.rsplit("/", 1)[-1])
+    return len(re.sub(r"[^A-Za-z0-9]", "", body)) >= 2
+
+
 def pattern_matches(pattern: str, path: str) -> bool:
     """A pattern with a slash is a path pattern; one without matches the basename,
     which is how rglob, `find -name` and a bare pathspec all behave."""
@@ -254,7 +264,7 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
     """PURE. changed = [(path, changed_line_count)] (both sides of a rename listed);
     declared = {declared test path: its text}; code_texts = {non-test code path:
     its text}, used for the one-hop dependents. Returns the whole verdict."""
-    reasons, escalators, selected, untested = [], [], set(), []
+    reasons, escalators, selected, unowned = [], [], set(), []
     app_lines = sum(n for p, n in changed if is_code(p))
 
     for path, _ in changed:
@@ -285,7 +295,19 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
         # match alone let it through PR CI with install coverage red. The pattern
         # is read out of the test's own text, so the test stays the one owner of
         # what it covers and there is no second list to drift.
-        direct |= {t for t, pats in patterns.items() if any(pattern_matches(p, path) for p in pats)}
+        #
+        # RUNNING A TEST AND BEING OWNED BY IT ARE TWO CLAIMS (codex, same PR, round
+        # 3). A test that globs `*` inside its own tmp dir "matched" every changed
+        # file in the repo, so `direct` was never empty, and the two things that
+        # key on it being empty went dead: the full-suite fallback for unowned data
+        # and the UNTESTED BY NAME report. A pattern that says nothing but a file
+        # type (`*`, `*.*`, `*.json`) still SELECTS its test, because a repo-wide
+        # scanner really may read the file. Only a pattern with a name in it
+        # (`com.kipi.*.plist`, `prd-*.md`) is evidence that the test OWNS the file.
+        selected |= {t for t, pats in patterns.items()
+                     if any(pattern_matches(p, path) for p in pats)}
+        direct |= {t for t, pats in patterns.items()
+                   if any(pattern_matches(p, path) for p in pats if names_something(p))}
         if is_test_path(path) or not is_code(path):
             # A FIXTURE, A HELPER, OR A DATA FILE (same review, major 1). The first
             # cut skipped everything under test/ and fixtures/ before matching, so
@@ -299,10 +321,23 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
                 direct |= {t for t, text in declared.items()
                            if any(mentions_dir(text, d) for d in owning_dirs(path))}
             if not direct and not path.endswith(DOC_SUFFIXES):
-                # Nothing owns it and it is not prose: there is no targeted run to
-                # fall back on, and unlike an unnamed script this is an INPUT some
-                # repo-wide test may read. Unknown resolves upward.
-                escalators.append(f"{path} is a fixture or data file no declared test names or enumerates")
+                # NOT AN ESCALATOR, AND THIS IS THE THIRD ROUND OF ONE CLASS (codex,
+                # PR #377 rounds 1-3: "the selection can miss a test that matters").
+                # Round 1 added the full-suite fallback here. Measured against the
+                # last 80 commits of main it fired on 34 of them, and the files it
+                # fired on were mostly TEST FILES THAT ARE NOT DECLARED
+                # (q-system/.q-system/tests/test_auto_commit.py, test_verify_adversarial.sh
+                # -- CI runs those in their own steps, never through this gate) plus
+                # q-system/.q-system/capability-manifest.json.
+                #
+                # "The full suite" here means the DECLARED tests. When nothing
+                # declared names the file, enumerates it, or names a directory on
+                # its path, running all 236 exercises it exactly as much as running
+                # none: the coverage is absent either way. Escalating buys no
+                # safety, it buys 17 minutes and hides the real finding, which is
+                # that the file has no owner. So it is REPORTED, by name, and the
+                # tier floors at M. The absence is the thing to fix.
+                unowned.append(path)
             selected |= direct
             continue
         # THE CALLERS' TESTS RUN TOO, WHETHER OR NOT THE FILE HAS ITS OWN (codex, PR
@@ -317,7 +352,7 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
         for dep in dependents(path, live):
             hop |= files_naming(dep, test_index)
         if not direct and not hop:
-            untested.append(path)
+            unowned.append(path)
         selected |= direct | hop
 
     selected = {t for t in selected if t in declared}
@@ -353,12 +388,12 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
     # Only where a declared suite exists. In a repo that declares no tests EVERY
     # file is "untested by name", so the floor said nothing and cost the ticket's
     # own first acceptance row: the 2-line read-site registration came out M.
-    if untested and declared and tier == "S":
+    if unowned and declared and tier == "S":
         tier = "M"
-        reasons = reasons + [f"{len(untested)} changed executable(s) no declared test names"]
+        reasons = reasons + [f"{len(unowned)} changed file(s) no declared test owns"]
 
     return {"tier": tier, "full_suite": full_suite, "reasons": reasons, "app_lines": app_lines,
-            "untested_by_name": sorted(untested),
+            "untested_by_name": sorted(unowned),
             "changed_files": len({p for p, _ in changed}), "declared_tests": len(declared),
             "selected_tests": sorted(selected)}
 

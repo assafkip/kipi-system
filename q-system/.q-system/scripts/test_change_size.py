@@ -181,16 +181,50 @@ def test_a_changed_input_runs_the_test_whose_pattern_enumerates_it(cs):
     case_enumerated_input_reaches_its_scanner(cs)
 
 
-def case_unowned_data_runs_everything(cs):
+def case_a_naming_pattern_is_ownership(cs):
+    # A pattern with a NAME in it means that test owns the file, so the file is
+    # not reported as unowned. A type-only pattern selects but does not own.
+    declared = dict(DECLARED, **{"t/test-install.py": 'root.rglob("com.kipi.*.plist")'})
+    assert cs.plan([(PLIST, 2)], declared, CODE)["untested_by_name"] == []
+
+
+def test_a_pattern_that_names_something_is_ownership(cs):
+    case_a_naming_pattern_is_ownership(cs)
+
+
+def case_unowned_data_is_reported_not_swept(cs):
+    # Rounds 1-3 were one class. The full suite = the DECLARED tests, so a file
+    # none of them can see is not covered by running all of them.
     for path in (PLIST, FIXTURE, "config/routes.json"):
         v = cs.plan([(path, 1)], DECLARED, CODE)
-        assert v["full_suite"] and "no declared test names or enumerates" in v["reasons"][0], path
-    # Prose nothing names is not an input to anything.
-    assert not cs.plan([("docs/notes.md", 40)], DECLARED, CODE)["full_suite"]
+        assert not v["full_suite"] and v["untested_by_name"] == [path] and v["tier"] == "M", path
+    # Prose is not an input to anything.
+    v = cs.plan([("docs/notes.md", 40)], DECLARED, CODE)
+    assert not v["full_suite"] and v["untested_by_name"] == []
 
 
-def test_a_fixture_or_data_file_nothing_owns_runs_the_full_suite(cs):
-    case_unowned_data_runs_everything(cs)
+def test_a_file_no_declared_test_owns_is_named_not_swept(cs):
+    case_unowned_data_is_reported_not_swept(cs)
+
+
+def case_a_bare_wildcard_owns_nothing(cs):
+    # codex, PR #377 round 3: a test that globs `*` in its own tmp dir claimed every
+    # changed file, so the unowned-data fallback and UNTESTED BY NAME both went dead.
+    declared = dict(DECLARED, **{"t/test-tmp.py": 'for p in tmp.glob("*"): p.unlink()',
+                                 "t/test-json.py": 'for p in d.rglob("*.json"): load(p)'})
+    v = cs.plan([("config/routes.json", 1)], declared, CODE)
+    assert v["untested_by_name"] == ["config/routes.json"] and not v["full_suite"]
+    v = cs.plan([("tools/orphan.py", 2)], declared, CODE)
+    assert v["untested_by_name"] == ["tools/orphan.py"] and not v["full_suite"]
+    # ...and the scanners still RUN: selecting a test is not the same as owning.
+    assert "t/test-tmp.py" in v["selected_tests"]
+
+
+def test_a_type_only_pattern_runs_its_test_but_owns_nothing(cs):
+    case_a_bare_wildcard_owns_nothing(cs)
+    for p, want in (("*", False), ("*.*", False), ("*.json", False), ("**/*.py", False),
+                    ("com.kipi.*.plist", True), ("prd-*.md", True), ("*.verdict.json", True)):
+        assert cs.names_something(p) is want, p
 
 
 def test_patterns_are_read_from_the_tests_own_text(cs):
@@ -322,8 +356,10 @@ CS_MUTANTS = [
     ("a comment is not an edge", 'if not l.lstrip().startswith("#"))', "if True)", case_comment_is_not_a_caller),
     ("the callers' tests run", "        for dep in dependents(path, live):", "        for dep in []:", None),
     ("a fixture is matched before it is skipped", "            if is_test_path(path):\n                direct |=", "            if False:\n                direct |=", case_fixture_reaches_its_owner),
-    ("an enumerating test owns what it globs", "direct |= {t for t, pats in patterns.items() if any(pattern_matches(p, path) for p in pats)}", "pass", case_enumerated_input_reaches_its_scanner),
-    ("unowned data resolves upward", "if not direct and not path.endswith(DOC_SUFFIXES):", "if False:", case_unowned_data_runs_everything),
+    ("an enumerating test owns what it globs", "                   if any(pattern_matches(p, path) for p in pats if names_something(p))}", "                   if False}", case_a_naming_pattern_is_ownership),
+    ("a type-only scanner still runs", "                     if any(pattern_matches(p, path) for p in pats)}", "                     if False}", case_a_bare_wildcard_owns_nothing),
+    ("a type-only pattern owns nothing", "for p in pats if names_something(p))}", "for p in pats)}", case_a_bare_wildcard_owns_nothing),
+    ("unowned data is reported", "if not direct and not path.endswith(DOC_SUFFIXES):", "if False:", case_unowned_data_is_reported_not_swept),
     ("the width cap", "if len(selected) > MAX_SELECTED:", "if False:", case_too_wide),
     ("size is not a full run", "full_suite = bool(escalators)", "full_suite = bool(escalators) or app_lines > M_MAX_LINES", case_size_is_not_a_full_run),
 ]
