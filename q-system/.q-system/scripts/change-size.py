@@ -169,6 +169,26 @@ def scans_the_tree(text: str) -> bool:
     return _SCAN_RE.search(text) is not None
 
 
+def covers_matches(pattern: str, path: str) -> bool:
+    """Does a DECLARED coverage glob claim this path? (ASK-1918)
+
+    NOT THE PARSER THAT WAS REJECTED. Rounds 1-4 of PR #377 tried to INFER what a
+    test covers by reading globs out of its own source, and each round named
+    another spelling the parser did not know, until round 4 gave up and made
+    every scanner always-run. That rejection stands and this does not reopen it:
+    the pattern here is WRITTEN DOWN by someone who knows the test, in its own
+    capability fragment, so there is no source to mis-read and no fifth spelling.
+
+    fnmatch's `*` crosses `/`, which is what makes `**/*.plist` and
+    `q-system/.q-system/launchd/**` both behave the way a person writing them
+    expects. A pattern with no slash matches the basename, the way `find -name`
+    and a bare pathspec do."""
+    import fnmatch
+    if "/" in pattern:
+        return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, "*/" + pattern.lstrip("*/"))
+    return fnmatch.fnmatch(Path(path).name, pattern)
+
+
 def owning_dirs(path: str) -> list[str]:
     """The directory names that identify whose fixture this is: every ancestor
     that is not a generic container name."""
@@ -258,10 +278,12 @@ def third_party_imports(diff_text: str, local_stems: set[str]) -> list[str]:
 
 def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: dict[str, str],
          diff_text: str = "", local_stems: set[str] | None = None,
-         fragments: dict[str, str] | None = None) -> dict:
+         fragments: dict[str, str] | None = None,
+         covers: dict[str, list[str]] | None = None) -> dict:
     """PURE. changed = [(path, changed_line_count)] (both sides of a rename listed);
     declared = {declared test path: its text}; code_texts = {non-test code path:
-    its text}, used for the one-hop dependents. Returns the whole verdict."""
+    its text}, used for the one-hop dependents; covers = {declared test path: the
+    path globs its fragment says it covers}. Returns the whole verdict."""
     reasons, escalators, selected = [], [], set()
     app_lines = sum(n for p, n in changed if is_code(p))
 
@@ -280,11 +302,21 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
     for mod in third_party_imports(diff_text, local_stems or set()):
         escalators.append(f"new third-party import: {mod}")
 
-    # A SCANNER ALWAYS RUNS. It reads files nobody named, so no selection can be
-    # trusted to include it. Measured 2026-09-19: 72 of 236 declared tests scan.
-    # They are excluded from the width cap below -- a fixed floor is not evidence
-    # that THIS diff is suite-wide.
-    always = {t for t, text in declared.items() if scans_the_tree(text)}
+    # A SCANNER ALWAYS RUNS, UNLESS IT HAS SAID WHAT IT COVERS (ASK-1918). It
+    # reads files nobody named, so absent a declaration no selection can be
+    # trusted to include it. Measured 2026-09-19: 72 of 236 declared tests scan,
+    # and they cost 699s of the full suite's 822s (runs 35488448685 /
+    # 35486006414) -- 31% of the artifacts carrying 85% of the time, which is why
+    # no SELECTOR alone ever got under 15%.
+    #
+    # A fragment that declares a non-empty `covers` list takes that test OFF the
+    # floor and puts it on ordinary selection. The default stays the floor, so
+    # zero declarations reproduce the old behaviour exactly and this lands one
+    # fragment at a time. They are excluded from the width cap below -- a fixed
+    # floor is not evidence that THIS diff is suite-wide.
+    declared_covers = {t: pats for t, pats in (covers or {}).items() if pats}
+    scanners = {t for t, text in declared.items() if scans_the_tree(text)}
+    always = {t for t in scanners if t not in declared_covers}
     live = name_index({c: executable_text(text) for c, text in code_texts.items()}) if code_texts else ({}, {})
     test_index = name_index(declared) if declared else ({}, {})
     for path, _ in changed:
@@ -299,6 +331,13 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
         # because a test that enumerates ALSO walks the tree, so `always` below
         # already covers every one of them. The parser was 40 lines that chose
         # nothing. `scans_the_tree` is the whole answer to that class.
+        #
+        # A DECLARED COVERAGE GLOB SELECTS (ASK-1918), and only for a test that
+        # actually scans. `covers` may take a test OFF the always-run floor; it
+        # may never put one ON, or a declaration would be a second way to select
+        # and a typo could aim it anywhere.
+        direct |= {t for t, pats in declared_covers.items()
+                   if t in scanners and any(covers_matches(p, path) for p in pats)}
         if is_test_path(path) or not is_code(path):
             # A FIXTURE, A HELPER, OR A DATA FILE (same review, major 1). The first
             # cut skipped everything under test/ and fixtures/ before matching, so
@@ -390,19 +429,30 @@ def read_changed(root: Path, base: str, head: str) -> tuple[list[tuple[str, int]
     return changed, _git(root, "diff", "-U0", "--no-renames", rng, "--", "*.py")
 
 
-def read_declared(root: Path) -> tuple[dict[str, str], dict[str, str]]:
-    """({declared test path: text}, {fragment file: the test path it declares})."""
-    out, fragments = {}, {}
+def read_declared(root: Path) -> tuple[dict[str, str], dict[str, str], dict[str, list[str]]]:
+    """({declared test path: text}, {fragment file: the test path it declares},
+    {declared test path: its `covers` globs}).
+
+    A malformed `covers` (not a list, or holding non-strings) is DROPPED rather
+    than repaired: the asymmetry says an unreadable declaration leaves the test
+    on the always-run floor, which is the expensive answer and the safe one."""
+    out, fragments, covers = {}, {}, {}
     for frag in sorted((root / EXPECTED_TESTS_DIR).glob("*.json")):
         try:
-            path = json.loads(frag.read_text()).get("path", "")
+            entry = json.loads(frag.read_text())
+            path = entry.get("path", "")
         except (OSError, ValueError):
             continue
         full = root / path
         if path and full.is_file():
             out[path] = full.read_text(errors="ignore")
             fragments[EXPECTED_TESTS_DIR + frag.name] = path
-    return out, fragments
+            pats = entry.get("covers")
+            if isinstance(pats, list):
+                good = [p for p in pats if isinstance(p, str) and p]
+                if good:
+                    covers[path] = good
+    return out, fragments, covers
 
 
 def read_code(root: Path) -> tuple[dict[str, str], set[str]]:
@@ -424,8 +474,8 @@ def read_code(root: Path) -> tuple[dict[str, str], set[str]]:
 def plan_for_repo(root: Path, base: str, head: str = "HEAD") -> dict:
     changed, diff_text = read_changed(root, base, head)
     code_texts, stems = read_code(root)
-    declared, fragments = read_declared(root)
-    return plan(changed, declared, code_texts, diff_text, stems, fragments)
+    declared, fragments, covers = read_declared(root)
+    return plan(changed, declared, code_texts, diff_text, stems, fragments, covers)
 
 
 def main(argv=None) -> int:
