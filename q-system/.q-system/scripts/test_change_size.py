@@ -207,6 +207,103 @@ def test_a_test_that_walks_the_tree_runs_on_every_diff(cs):
     case_every_scanner_always_runs(cs)
 
 
+PLIST_SCANNER = "t/test-install-plist.sh"
+SCANNER_TEXT = 'for p in "$ROOT"/launchd/*.plist; do check "$p"; done'
+
+
+def case_a_declared_scanner_leaves_the_floor(cs):
+    # ASK-1918. A scanner runs on EVERY diff because nobody wrote down what it
+    # covers. Measured 2026-09-19: the 73-artifact selected path cost 699s of the
+    # full suite's 822s (runs 35488448685 / 35486006414), so 31% of the artifacts
+    # carry 85% of the cost and no SELECTOR can get under that floor.
+    #
+    # Rounds 1-4 of PR #377 tried to INFER coverage by parsing globs out of the
+    # test's own source. Each round named another spelling the parser did not
+    # know; round 4 gave up and made every scanner always-run. The declaration
+    # below is the same question asked of a human instead of a regex, so there is
+    # no fifth spelling.
+    declared = dict(DECLARED, **{PLIST_SCANNER: SCANNER_TEXT})
+    covers = {PLIST_SCANNER: ["**/*.plist"]}
+    # A python-only diff: the scanner cannot be affected, so it does not run.
+    v = cs.plan([(SCRIPT, 1)], declared, CODE, covers=covers)
+    assert PLIST_SCANNER not in v["selected_tests"], v["selected_tests"]
+    # A plist diff: it runs.
+    v = cs.plan([(PLIST, 1)], declared, CODE, covers=covers)
+    assert PLIST_SCANNER in v["selected_tests"], v["selected_tests"]
+
+
+def test_a_scanner_that_declares_its_coverage_runs_only_when_it_matches(cs):
+    case_a_declared_scanner_leaves_the_floor(cs)
+
+
+def case_an_undeclared_scanner_keeps_the_floor(cs):
+    # THE NEGATIVE SELF-TEST. Zero declarations must reproduce today's behaviour
+    # exactly, so this lands one fragment at a time with no flag day.
+    declared = dict(DECLARED, **{PLIST_SCANNER: SCANNER_TEXT})
+    for covers in ({}, {PLIST_SCANNER: []}, None):
+        v = cs.plan([(SCRIPT, 1)], declared, CODE, covers=covers)
+        assert PLIST_SCANNER in v["selected_tests"], covers
+
+
+def test_a_scanner_with_no_declaration_still_runs_on_every_diff(cs):
+    case_an_undeclared_scanner_keeps_the_floor(cs)
+
+
+def case_covers_on_a_non_scanner_grants_nothing(cs):
+    # `covers` may only take a test OFF the floor. It can never put one ON, or a
+    # declaration would become a second way to select, which is new power a typo
+    # could aim anywhere.
+    declared = dict(DECLARED, **{"t/test-quiet.sh": "assert compute(2) == 4"})
+    v = cs.plan([(PLIST, 1)], declared, CODE, covers={"t/test-quiet.sh": ["**/*.plist"]})
+    assert "t/test-quiet.sh" not in v["selected_tests"]
+
+
+def test_covers_on_a_non_scanner_grants_nothing(cs):
+    case_covers_on_a_non_scanner_grants_nothing(cs)
+
+
+def case_a_double_star_reaches_the_repo_root(cs):
+    # codex/claude review of PR #385, MAJOR. `**/` conventionally means "at any
+    # depth, INCLUDING none", but fnmatch's `*` only crosses `/` when a `/` is
+    # there to cross, so `**/*.sh` missed every one of this repo's 39 root-level
+    # scripts. covers-lint printed PASS on it, because the glob does match the
+    # non-root files -- so a blessed declaration would have silently dropped
+    # coverage for the root. The first cut of the test below used a non-root
+    # fixture path and could not see it.
+    for pat, path, want in (("**/*.sh", "kipi-promote.sh", True),
+                            ("**/*.sh", "q-system/.q-system/scripts/x.sh", True),
+                            ("**/*.py", "fix-voice-style.py", True),
+                            ("**/*.py", "a/b/c.py", True),
+                            # ...and it does not become a match-anything.
+                            ("**/*.sh", "kipi-promote.py", False),
+                            ("q-system/**/*.sh", "plugins/x.sh", False)):
+        assert cs.covers_matches(pat, path) is want, (pat, path)
+
+
+def test_a_double_star_glob_matches_a_root_level_file(cs):
+    case_a_double_star_reaches_the_repo_root(cs)
+
+
+def test_read_declared_drops_a_malformed_covers(cs, tmp_path):
+    # THE ASYMMETRY: everything uncertain resolves upward. A declaration that is
+    # not a list of non-empty strings is DROPPED, which leaves the test on the
+    # always-run floor -- the expensive answer, and the safe one.
+    root = tmp_path / "r"
+    frags = root / cs.EXPECTED_TESTS_DIR
+    frags.mkdir(parents=True)
+    (root / "t").mkdir()
+    for name, covers in (("good", ["**/*.plist"]), ("str", "**/*.plist"),
+                         ("empty", []), ("junk", [None, ""]), ("absent", "OMIT")):
+        rel = f"t/test-{name}.sh"
+        (root / rel).write_text("echo hi\n")
+        entry = {"path": rel, "runner": "bash"}
+        if covers != "OMIT":
+            entry["covers"] = covers
+        (frags / f"{name}.json").write_text(json.dumps(entry))
+    _declared, _frags, got = cs.read_declared(root)
+    assert got == {"t/test-good.sh": ["**/*.plist"]}, got
+
+
 def case_scanners_do_not_trip_the_width_cap(cs):
     # A fixed floor is not evidence that THIS diff is suite-wide.
     declared = dict(DECLARED, **{f"t/test-scan-{i}.py": "d.iterdir()" for i in range(cs.MAX_SELECTED + 5)})
@@ -345,7 +442,10 @@ CS_MUTANTS = [
     ("a comment is not an edge", 'if not l.lstrip().startswith("#"))', "if True)", case_comment_is_not_a_caller),
     ("the callers' tests run", "        for dep in dependents(path, live):", "        for dep in []:", None),
     ("a fixture is matched before it is skipped", "            if is_test_path(path):\n                direct |=", "            if False:\n                direct |=", case_fixture_reaches_its_owner),
-    ("every scanner always runs", "    always = {t for t, text in declared.items() if scans_the_tree(text)}", "    always = set()", case_every_scanner_always_runs),
+    ("every scanner always runs", "    always = {t for t in scanners if t not in declared_covers}", "    always = set()", case_every_scanner_always_runs),
+    ("a declaration takes a scanner off the floor", "    always = {t for t in scanners if t not in declared_covers}", "    always = set(scanners)", case_a_declared_scanner_leaves_the_floor),
+    ("covers never selects a non-scanner", "                   if t in scanners and any(covers_matches(p, path) for p in pats)}", "                   if any(covers_matches(p, path) for p in pats)}", case_covers_on_a_non_scanner_grants_nothing),
+    ("**/ reaches the repo root", '        if pattern.startswith("**/") and fnmatch.fnmatch(path, pattern[3:]):\n            return True', '        if False:\n            return True', case_a_double_star_reaches_the_repo_root),
     ("the floor is outside the width cap", "    pulled = selected - always", "    pulled = selected", case_scanners_do_not_trip_the_width_cap),
     ("the width cap", "if len(pulled) > MAX_SELECTED:", "if False:", case_too_wide),
     ("size is not a full run", "full_suite = bool(escalators)", "full_suite = bool(escalators) or app_lines > M_MAX_LINES", case_size_is_not_a_full_run),
