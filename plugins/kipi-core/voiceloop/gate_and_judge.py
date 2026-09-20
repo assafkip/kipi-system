@@ -263,6 +263,17 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
     # The drift sidecar finally accumulates real rows on this lane (RC2): the
     # validation window sp-9aff1e67 has been waiting on since 2026-08-07 gets its
     # data from here. A record about the prompt, never a gate on it.
+    # THE THIRD INSTANCE OF ONE CLASS (claude review of PR #386 round 5). Round 3
+    # guarded `recent_openers` at one decide call site, round 4 at the second, and
+    # this was the same TypeError again with a different kwarg on a different
+    # INJECTED callable: `_append_voice_provenance` arrives keyword-only at line 76,
+    # so an instance whose copy predates `path` died here. Patching the instance a
+    # third time is what the founder's five-rounds-is-a-loop scar is about, so the
+    # test below now derives the injected names from THIS function's own signature
+    # instead of naming `decide_candidate`.
+    prov_optional = {}
+    if _accepts(_append_voice_provenance, "path"):
+        prov_optional["path"] = provenance_path
     _append_voice_provenance(channel, at, dict(
         voice_prov or {},
         # THE JOIN KEY (2026-09-08). Without it this lane's rows carry a style
@@ -297,5 +308,5 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
         # The same derivation the corpus capture already gets, for the reason recorded
         # there: a caller that isolates its ledger to a temp dir and still reads the
         # PRODUCTION corpus is a defect this package has paid for before.
-        path=provenance_path)
+        **prov_optional)
     return verdict.text

@@ -377,3 +377,56 @@ def test_every_decide_call_site_is_guarded():
             f"line {call.lineno}: does not unpack **optional, so a future optional "
             "kwarg would reach an older injected decide unguarded."
         )
+
+
+def test_no_optional_kwarg_reaches_an_INJECTED_callable_unguarded():
+    """The class, not the instance (ASK-1915, PR #386 round 5).
+
+    Three rounds patched three instances of one defect: an optional kwarg passed
+    to a callable the ENGINE DOES NOT OWN, which TypeErrors on any instance whose
+    injected copy predates the kwarg. r3 `recent_openers` at one decide site, r4
+    the same kwarg at the second site, r5 `path` on `_append_voice_provenance`.
+    Each fix was correct and too narrow, including the AST test written at r4,
+    which named `decide_candidate` and therefore could not see r5.
+
+    So the injected names are DERIVED from `run`'s own signature rather than
+    listed here. Add a fourth injected dependency and pass it an optional kwarg
+    directly, and this fails without anyone remembering to update a list.
+    """
+    import ast
+    import pathlib
+
+    mod = pathlib.Path(__file__).resolve().parent.parent / "gate_and_judge.py"
+    tree = ast.parse(mod.read_text())
+    # Find the entry point by what it TAKES, not by its name. Guessing the name
+    # was this test's own first bug, which is the mistake it exists to prevent.
+    run = next(n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef)
+               and "_append_voice_provenance" in
+               {a.arg for a in n.args.args + n.args.kwonlyargs})
+
+    # Everything the entry point is HANDED is owned by the instance, not us.
+    injected = {a.arg for a in run.args.args + run.args.kwonlyargs}
+    injected -= {"channel", "post", "idea_text", "trail", "at", "revised"}
+    assert {"decide", "_append_voice_provenance"} <= injected, injected
+
+    offenders = []
+    for n in ast.walk(run):
+        if not isinstance(n, ast.Call):
+            continue
+        name = (n.func.value.id if isinstance(n.func, ast.Attribute)
+                and isinstance(n.func.value, ast.Name) else
+                n.func.id if isinstance(n.func, ast.Name) else None)
+        if name not in injected:
+            continue
+        direct = [k.arg for k in n.keywords if k.arg]
+        # A kwarg the ENGINE added is optional at the boundary; the callee may
+        # predate it. Anything routed through ** has already met `_accepts`.
+        risky = [k for k in direct if k in {"recent_openers", "path"}]
+        if risky:
+            offenders.append(f"line {n.lineno}: {name}(... {', '.join(risky)}=)")
+
+    assert not offenders, (
+        "an optional kwarg reaches an injected callable directly instead of "
+        "through the **optional dict that _accepts() fills:\n  "
+        + "\n  ".join(offenders))
