@@ -7,42 +7,6 @@ on:
     branches: [main]
 
 jobs:
-  # TEMPORARY, ASK-1914, REMOVED BEFORE MERGE. This branch changes the classifier
-  # and the gate, so by its own rule it earns the FULL suite, and its own CI
-  # therefore cannot show what a selected run costs. This job times the SHIPPED
-  # gate against an ordinary one-file diff. Nothing about the gate is synthetic;
-  # only the base ref is. It checks out the PR HEAD, not the merge ref, so HEAD~1
-  # is the probe commit's own parent and the diff is exactly one file. Compare
-  # against 822s, the full-gate step on run 35486006414.
-  ask1914_probe:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-      - run: |
-          git config --global user.name "kipi-ci"
-          git config --global user.email "ci@kipi.invalid"
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - run: pip install pytest
-      - run: pip install playwright pillow && python -m playwright install --with-deps chromium
-      - name: Cost per declared artifact
-        run: python3 ask1914-scanner-cost.py
-        env:
-          CI: true
-          REPO_ROOT: .
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ask1914-scanner-cost
-          path: ask1914-scanner-cost.json
-          if-no-files-found: warn
-
   validate:
     runs-on: ubuntu-latest
     steps:
