@@ -320,6 +320,37 @@ class TestAFencedDraftUnderARefusalIsStillADraft:
         with pytest.raises(gate.RouteBoundaryError, match="may not deliver a draft"):
             gate._verify_route_receipt(_context(_Contract()), REQUEST, turn)
 
+    def test_a_fenced_draft_BELOW_the_receipt_block_is_held(self):
+        """PR #375 round 2, major. The first fix removed the receipt by TRUNCATING at
+        its marker, so the guard saw only what was above it and a fence one line lower
+        rode through and spent the refusal. The reason and the receipt have to come out
+        as SPANS, leaving everything else, above and below, to be graded."""
+        row = _receipt("refused", REASON)
+        turn = (f"=== WHY THERE IS NO DRAFT ===\n{REASON}\n"
+                f"\n=== ROUTE RECEIPT ===\n{json.dumps(row, sort_keys=True)}\n"
+                "\n```\nnobody reads the dashboard, they read the alert\n```\n")
+        with pytest.raises(gate.RouteBoundaryError, match="may not deliver a draft"):
+            gate._verify_route_receipt(_context(_Contract()), REQUEST, turn)
+
+    def test_a_blockquoted_draft_BELOW_the_receipt_block_is_held(self):
+        row = _receipt("refused", REASON)
+        turn = (f"=== WHY THERE IS NO DRAFT ===\n{REASON}\n"
+                f"\n=== ROUTE RECEIPT ===\n{json.dumps(row, sort_keys=True)}\n"
+                "\n> nobody reads the dashboard, they read the alert\n")
+        with pytest.raises(gate.RouteBoundaryError, match="may not deliver a draft"):
+            gate._verify_route_receipt(_context(_Contract()), REQUEST, turn)
+
+    def test_ordinary_prose_below_the_receipt_still_passes(self):
+        """The negative control on the fix above. Trailing chat is the common shape;
+        only DRAFT-shaped trailing content may hold the turn."""
+        contract = _Contract()
+        row = _receipt("refused", REASON)
+        turn = (f"=== WHY THERE IS NO DRAFT ===\n{REASON}\n"
+                f"\n=== ROUTE RECEIPT ===\n{json.dumps(row, sort_keys=True)}\n"
+                "\nTell me if you want me to retry with a lower word target.\n")
+        assert gate._verify_route_receipt(_context(contract), REQUEST,
+                                          turn)["status"] == "refusal-consumed"
+
     def test_the_detector_is_the_one_main_trusts(self):
         """Not a third detector. `reply_carries_a_draft` is what `main()` asks, and its
         draft test is `=== DRAFT ===` or `extract_setoff_draft`; its third clause is
