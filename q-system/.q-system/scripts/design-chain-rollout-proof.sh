@@ -17,6 +17,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SCRIPTS=(design-chain-gate.py design-engine-door.py design-engines.json design-standard-check.py
          design-gap-check.py design-impeccable-check.py design-reader-gate.py)
 COMMAND_REL="plugins/kipi-core/commands/design-chain.md"
+CONFIG_NAME="design-chain.json"
 fails=0
 
 say() { printf '%-58s %s\n' "$1" "$2"; }
@@ -25,6 +26,15 @@ check() { if [ "$1" = 0 ]; then say "$2" "ok"; else say "$2" "FAILED: $3"; fails
 proof() {
   local inst="$1"
   [ -d "$inst" ] || { echo "not a directory: $inst" >&2; exit 2; }
+
+  # 0. has this instance opted in? Most have not, and that is the designed state: with no
+  # design-chain.json the gate and the door are silent there. Saying "rollout complete" without
+  # saying which of the two states the instance is in reads as "the chain runs here" (PR #374 review).
+  if [ -f "$inst/$CONFIG_NAME" ]; then
+    say "this instance opted in ($CONFIG_NAME)" "yes"
+  else
+    say "this instance opted in ($CONFIG_NAME)" "no -- the chain is installed and inert here, by design"
+  fi
 
   # 1. the scripts arrived (the fleet sync's rsync of q-system/)
   local missing=""
@@ -57,7 +67,9 @@ PY
         "found ${wired:-0} hook command(s) inside hooks arrays, want 5"
 
   # 3. the wired gate REFUSES an unsealed page when run as the harness runs it. A round is built in
-  #    a temp dir, never in the instance: the proof must not write into a live instance.
+  #    a temp dir, never in the instance: the proof must not write into a live instance. That temp
+  #    round carries its own design-chain.json, so this proves the GATE works, never that this
+  #    instance opted in -- check 0 above is what says that (PR #374 review, major).
   local tmp page rc out
   tmp=$(mktemp -d)
   mkdir -p "$tmp/site/design/r1"
@@ -92,8 +104,9 @@ PY
   fi
   check "$cmd_found" "the command in the marketplace clone, same bytes" "$why"
 
-  [ "$fails" = 0 ] && echo "ROLLOUT PROOF: every check passed for $inst" \
-                   || echo "ROLLOUT PROOF: $fails check(s) failed for $inst"
+  local opted="opted in"; [ -f "$inst/$CONFIG_NAME" ] || opted="INERT here: no $CONFIG_NAME, so the gate and the door stay silent"
+  [ "$fails" = 0 ] && echo "ROLLOUT PROOF: every check passed for $inst ($opted)" \
+                   || echo "ROLLOUT PROOF: $fails check(s) failed for $inst ($opted)"
   return $([ "$fails" = 0 ] && echo 0 || echo 1)
 }
 

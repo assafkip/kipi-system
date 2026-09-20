@@ -47,7 +47,7 @@ jobs:
       # capability gate reports green. test_9 sat red that way since dc-05. A browser here plus
       # DC_REQUIRE_REAL_PRODUCERS below turns a skip into a failure.
       - name: Install a browser for the design-chain producers
-        run: pip install playwright && python -m playwright install --with-deps chromium
+        run: pip install playwright pillow && python -m playwright install --with-deps chromium
 
       # The capability gate replaces the old hardcoded 4-test loop: it
       # discovers every test artifact by convention, diffs declared-vs-actual

@@ -208,16 +208,22 @@ class SealRunsIt(unittest.TestCase):
     """The real gate, real producers, the real detector."""
 
     def setUp(self):
+        # Three dependencies wore one flag's name, so CI could not say which one it lacked (PR #374
+        # review). DC_REQUIRE_REAL_PRODUCERS governs the BROWSER only; the detector lives outside
+        # this repo and node is not installed in CI, so each skips under its own name.
         try:
             import playwright  # noqa: F401
-            ok = REAL_DETECTOR.is_file() and shutil.which("node")
         except ImportError:
-            ok = False
-        if not ok:
-            msg = "playwright, node or the impeccable detector is missing: the PRODUCTION path was NOT exercised"
+            msg = "playwright is not installed: the PRODUCTION path was NOT exercised"
             if os.environ.get("DC_REQUIRE_REAL_PRODUCERS") == "1":
                 self.fail(msg)
             self.skipTest(msg)
+        if not REAL_DETECTOR.is_file():
+            self.skipTest(f"the impeccable detector is not on this machine ({REAL_DETECTOR}); it lives "
+                          f"outside this repo, so this run proves nothing about the detector path")
+        if not shutil.which("node"):
+            self.skipTest("node is not installed, and the impeccable detector needs it; this run proves "
+                          "nothing about the detector path")
         self.tmp = Path(tempfile.mkdtemp(prefix="dc04s-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         inst = self.tmp / "inst"
