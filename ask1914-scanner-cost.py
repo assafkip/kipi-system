@@ -28,7 +28,15 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get("REPO_ROOT", ".")).resolve()
 FRAGS = ROOT / "q-system/.q-system/capability/expected_tests"
-PER_TEST_TIMEOUT_S = 420
+# THE SAME CAP THE GATE USES, and this is the whole reason the first run was
+# thrown away. capability-gate.py caps each artifact at its fragment's
+# `timeout_s` or DEFAULT_TIMEOUT_S = 60. The first cut of this script used a flat
+# 420s, so a test the gate KILLS at 60s ran here for 420 and would have topped
+# the "most expensive" table with 360 seconds the gate never pays. That does not
+# just inflate the total, which is easy to discount: it ranks the wrong files
+# first, which is the one thing this table exists to get right. Cancelled run
+# 35489169103 at 16m04s against the gate's 822s, and fixed here.
+DEFAULT_TIMEOUT_S = 60
 # LIMIT exists so this can be smoke-tested on a handful of artifacts without
 # running the sweep it is built to measure. Unset in CI, where the whole point
 # is the full 236.
@@ -71,19 +79,21 @@ def main() -> int:
         text = full.read_text(errors="ignore")
         is_scanner = cs.scans_the_tree(text)
         cmd = command_for(entry, full)
+        timeout = entry.get("timeout_s", DEFAULT_TIMEOUT_S)
         start = time.time()
         timed_out = False
         try:
             r = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True,
-                               text=True, timeout=PER_TEST_TIMEOUT_S)
+                               text=True, timeout=timeout)
             rc = r.returncode
         except subprocess.TimeoutExpired:
             rc, timed_out = -1, True
         secs = time.time() - start
         rows.append({"path": rel, "secs": round(secs, 2), "rc": rc,
                      "scanner": is_scanner, "timed_out": timed_out,
-                     "runner": entry.get("runner", "")})
-        print(f"{secs:7.2f}s  rc={rc:<4} {'SCAN' if is_scanner else '    '}  {rel}", flush=True)
+                     "timeout_s": timeout, "runner": entry.get("runner", "")})
+        print(f"{secs:7.2f}s  rc={rc:<4} {'SCAN' if is_scanner else '    '}  "
+              f"{'TIMEOUT ' if timed_out else ''}{rel}", flush=True)
         if LIMIT and len(rows) >= LIMIT:
             print(f"(LIMIT={LIMIT} reached, stopping early -- smoke run, not a measurement)")
             break
@@ -118,10 +128,21 @@ def main() -> int:
             cutoff = i
     print(f"\n{cutoff} of {len(rows)} artifacts carry 80% of the total.")
 
-    failing = [r for r in rows if r["rc"] != 0]
-    print(f"\nnon-zero exits (not the point here, but recorded): {len(failing)}")
+    # A TIMED-OUT ROW IS A FLOOR, NOT A COST. It was killed at its cap, so its
+    # real duration is unknown and unknowable from this run. Said out loud
+    # because the gate pays exactly the cap, which is what the table is for, but
+    # "this test would be 9s if it worked" is a different and unanswered question.
+    tmo = [r for r in rows if r["timed_out"]]
+    if tmo:
+        print(f"\nTIMED OUT at their cap ({len(tmo)}); each cost the gate its cap, "
+              "and its true duration is not measured here")
+        for r in sorted(tmo, key=lambda r: -r["secs"]):
+            print(f"  capped at {r['timeout_s']:>4}s  {r['path']}")
+
+    failing = [r for r in rows if r["rc"] != 0 and not r["timed_out"]]
+    print(f"\nnon-zero exits, excluding timeouts (not the point here, but recorded): {len(failing)}")
     for r in failing[:15]:
-        print(f"  rc={r['rc']:<4} {'TIMEOUT' if r['timed_out'] else '       '} {r['path']}")
+        print(f"  rc={r['rc']:<4} {r['path']}")
 
     out = ROOT / "ask1914-scanner-cost.json"
     out.write_text(json.dumps(rows, indent=1))
