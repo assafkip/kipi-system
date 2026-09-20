@@ -43,6 +43,12 @@ jobs:
       - name: Install test dependencies
         run: pip install pytest
 
+      # dc-25: without a browser every design-chain test calls skipTest, the file exits 0 and the
+      # capability gate reports green. test_9 sat red that way since dc-05. A browser here plus
+      # DC_REQUIRE_REAL_PRODUCERS below turns a skip into a failure.
+      - name: Install a browser for the design-chain producers
+        run: pip install playwright pillow && python -m playwright install --with-deps chromium
+
       # The capability gate replaces the old hardcoded 4-test loop: it
       # discovers every test artifact by convention, diffs declared-vs-actual
       # BOTH directions, and runs the full declared suite. The hardcoded loop
@@ -52,6 +58,9 @@ jobs:
         run: python3 q-system/.q-system/scripts/capability-gate.py --repo-root .
         env:
           CI: true
+          # dc-25: a design-chain test with no browser SKIPS and the file exits 0, so the gate read
+          # green over tests that never ran. With this set they fail instead.
+          DC_REQUIRE_REAL_PRODUCERS: "1"
 
       # CAPABILITY_GATE_SKIP: the gate just ran as its own step above; running
       # it again inside validate-separation would execute the suite twice per

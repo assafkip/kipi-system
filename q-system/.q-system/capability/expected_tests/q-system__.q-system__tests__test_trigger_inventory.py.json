@@ -1,5 +1,6 @@
 {
-  "path": "q-system/.q-system/tests/test_trigger_inventory.py",
-  "runner": "python3",
-  "timeout_s": 180
+ "path": "q-system/.q-system/tests/test_trigger_inventory.py",
+ "runner": "python3",
+ "timeout_s": 420,
+ "_why_timeout": "it walks every wired hook command; dc-24 added five design-chain entries, and it took 84s locally against the 180s default, which CI (about half this speed) exceeded (PR #374)"
 }

@@ -9,8 +9,6 @@
 - `q-system/` - Core OS (canonical/, marketing/, methodology/, output/, my-project/, memory/)
 
 ## Conventions
-- All written output goes through the founder voice skill
-- All actionable output follows AUDHD executive function rules (if enabled)
 - No filler phrases ("leverage," "innovative," "cutting-edge," "game-changing")
 - When something fails because an LLM misinterpreted instructions, the fix must be a deterministic script or code change
 - For any task involving more than a single file edit, state the planned approach and wait for OK. When fixing identified issues, fix exactly what was flagged. No scope expansion.
