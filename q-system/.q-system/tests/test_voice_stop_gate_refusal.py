@@ -202,13 +202,31 @@ class TestWhatARefusalMayNotDo:
                                   _turn(extra="=== DRAFT ===\nhere is the post"),
                                   _Result())
 
-    def test_a_turn_with_an_inline_publishable_body_is_refused(self):
+    def test_an_inline_unfenced_body_is_NOT_caught_and_that_is_measured(self):
+        """THE KNOWN LIMIT, written down rather than left as a surprise.
+
+        An inline draft with no fence and no blockquote passes. This test asserted the
+        opposite until PR #375 review, when the guard stopped using
+        `extract_publishable`: that function falls back to the whole message once any
+        publish framing appears, and a refusal reason naming a platform IS framing, so
+        it held 4 of 6 real refusal wordings. Catching this shape again means bringing
+        that fallback back, which re-creates the deadlock the file exists to end.
+
+        This is not a carve-out invented here. `reply_carries_a_draft`, which `main()`
+        asks the same question, does not treat an inline sentence as a draft either, so
+        the refusal path is exactly as strong as the path beside it and no weaker.
+        Captured as sp-5262a341 / ASK-1889; the fix is a set-off-independent draft
+        detector shared with `reply_carries_a_draft`, which is its own piece of work
+        and not a side effect of this port.
+        """
+        inline = "Here's the LinkedIn post: nobody reads the dashboard."
+        assert bool(gate.extract_setoff_draft(inline)) is False
+        assert gate.reply_carries_a_draft(inline) is False, (
+            "if this flips, main()'s own detector caught it and this guard should too")
         row = _receipt("refused", REASON)
-        with pytest.raises(gate.RouteBoundaryError, match="may not deliver a draft"):
-            gate._consume_refusal(
-                _Contract(), row, _identity(row),
-                _turn(extra="Here's the LinkedIn post: nobody reads the dashboard."),
-                _Result())
+        spent = gate._consume_refusal(_Contract(), row, _identity(row),
+                                      _turn(extra=inline), _Result())
+        assert spent["status"] == "refusal-consumed"
 
     def test_a_reason_that_does_not_match_the_receipt_is_refused(self):
         """The mutation that matters: the receipt binds ONE reason, so a turn cannot
@@ -226,6 +244,140 @@ class TestWhatARefusalMayNotDo:
 
 
 # ------------------------------------------------------------ the wiring, end to end ----
+
+#: The six plausible refusal wordings the PR #375 reviewer measured. Four of them
+#: named a platform, tripped `extract_publishable`'s whole-message fallback, and were
+#: held as carrying a draft they did not carry, which is the deadlock this whole file
+#: exists to end. These are NEGATIVE CONTROLS: every one must PASS.
+PLATFORM_REASONS = [
+    "300 words, above the 200-word ceiling",
+    "the draft for this reply ran 300 words, over the ceiling",
+    "drafting the comment hit the corpus-similarity floor",
+    "no source in the corpus supports the claim, so there is no reply to X",
+    "the reply ran long for LinkedIn",
+    "the poster's claims were not extracted, so I am not writing the comment",
+]
+
+
+class TestARefusalIsNotADraft:
+    """The over-fire controls. Every test in `TestWhatARefusalMayNotDo` proves the
+    guard FIRES; without these, nothing proves it stays quiet on a real refusal, and a
+    guard that holds every refusal looks identical to one that works (PR #375 major 1).
+    """
+
+    @pytest.mark.parametrize("reason", PLATFORM_REASONS)
+    def test_a_refusal_reason_that_names_a_platform_still_passes(self, reason):
+        contract = _Contract()
+        row = _receipt("refused", reason)
+        spent = gate._verify_route_receipt(_context(contract), REQUEST,
+                                           _turn(reason=reason, receipt=row))
+        assert spent["status"] == "refusal-consumed"
+
+    def test_a_reason_that_QUOTES_the_draft_it_rejected_still_passes(self):
+        """A refusal that shows its work. The quoted text is inside the BOUND reason,
+        so it is already graded by the hash and must not be re-read as a draft the
+        turn is delivering. This is what makes `_unbound_text` load-bearing rather
+        than decorative: scan the whole turn instead and this refusal is held."""
+        contract = _Contract()
+        reason = ("it ran 300 words, over the ceiling:\n"
+                  "> nobody reads the dashboard, they read the alert")
+        row = _receipt("refused", reason)
+        assert gate._verify_route_receipt(_context(contract), REQUEST,
+                                          _turn(reason=reason, receipt=row))[
+                                              "status"] == "refusal-consumed"
+
+    def test_prose_around_the_reason_that_names_a_platform_still_passes(self):
+        """The platform word in the turn's own chat, not in the bound reason."""
+        contract = _Contract()
+        row = _receipt("refused", REASON)
+        turn = ("I could not write the LinkedIn reply for you.\n\n"
+                f"=== WHY THERE IS NO DRAFT ===\n{REASON}\n"
+                f"\n=== ROUTE RECEIPT ===\n{json.dumps(row, sort_keys=True)}")
+        assert gate._verify_route_receipt(_context(contract), REQUEST,
+                                          turn)["status"] == "refusal-consumed"
+
+
+class TestAFencedDraftUnderARefusalIsStillADraft:
+    """PR #375 major 2. `extract_publishable` returns '' with no framing sentence, and
+    this file's own `main()` says a fenced post with no "here's the post" line is the
+    founder's MOST COMMON turn shape. So a fenced draft rode through under a no-draft
+    receipt and nothing graded it. The complete path binds its draft by `output_hash`;
+    the refusal path has to be no weaker."""
+
+    def test_a_fenced_draft_above_the_refusal_block_is_held(self):
+        row = _receipt("refused", REASON)
+        turn = ("```\nnobody reads the dashboard, they read the alert\n```\n\n"
+                f"=== WHY THERE IS NO DRAFT ===\n{REASON}\n"
+                f"\n=== ROUTE RECEIPT ===\n{json.dumps(row, sort_keys=True)}")
+        with pytest.raises(gate.RouteBoundaryError, match="may not deliver a draft"):
+            gate._verify_route_receipt(_context(_Contract()), REQUEST, turn)
+
+    def test_a_blockquoted_draft_above_the_refusal_block_is_held(self):
+        row = _receipt("refused", REASON)
+        turn = ("> nobody reads the dashboard, they read the alert\n\n"
+                f"=== WHY THERE IS NO DRAFT ===\n{REASON}\n"
+                f"\n=== ROUTE RECEIPT ===\n{json.dumps(row, sort_keys=True)}")
+        with pytest.raises(gate.RouteBoundaryError, match="may not deliver a draft"):
+            gate._verify_route_receipt(_context(_Contract()), REQUEST, turn)
+
+    def test_the_detector_is_the_one_main_trusts(self):
+        """Not a third detector. `reply_carries_a_draft` is what `main()` asks, and its
+        draft test is `=== DRAFT ===` or `extract_setoff_draft`; its third clause is
+        the route receipt, which every refusal turn carries by construction and so
+        cannot be reused here. Pinned so a later edit cannot quietly swap in a
+        looser or stricter rule."""
+        fenced = "```\nnobody reads the dashboard\n```"
+        assert gate.reply_carries_a_draft(fenced) is True
+        assert bool(gate.extract_setoff_draft(fenced)) is True
+        # the shape that must NOT read as a draft: plain refusal prose naming a platform
+        plain = "I could not write the LinkedIn reply for you."
+        assert bool(gate.extract_setoff_draft(plain)) is False
+        assert bool(gate.extract_publishable(plain)) is True, (
+            "extract_publishable is the loose one; this is why the guard stopped using it")
+
+
+class TestAnAddedSentenceIsNotAForgedReason:
+    """PR #375 minor 3. The producer's contract is that everything between the marker
+    and the receipt is the bound reason, and that stays true. But the model writes the
+    turn, and a closing line after the reason joined the hash, holding the turn with
+    "does not match the stated reason", which reads as tampering rather than as an
+    extra sentence."""
+
+    def test_a_follow_up_line_after_the_reason_does_not_break_the_hash(self):
+        contract = _Contract()
+        row = _receipt("refused", REASON)
+        turn = _turn(reason=f"{REASON}\n\nWant me to try a shorter one?", receipt=row)
+        assert gate._verify_route_receipt(_context(contract), REQUEST,
+                                          turn)["status"] == "refusal-consumed"
+
+    def test_the_whole_region_still_binds_when_it_matches(self):
+        """The producer's own contract, unchanged: a multi-line reason is hashed
+        whole. Tried FIRST, so this keeps working exactly as it did."""
+        contract = _Contract()
+        multi = "300 words, above the ceiling\n\nand the corpus floor was missed too"
+        row = _receipt("refused", multi)
+        assert gate._verify_route_receipt(_context(contract), REQUEST,
+                                          _turn(reason=multi, receipt=row))[
+                                              "status"] == "refusal-consumed"
+
+    def test_a_follow_up_line_cannot_smuggle_a_draft(self):
+        """The trailing line is UNBOUND text, so it gets the draft check the reason
+        does not need. Otherwise this fix would open the hole major 2 just closed."""
+        row = _receipt("refused", REASON)
+        turn = _turn(reason=f"{REASON}\n\n```\nnobody reads the dashboard\n```",
+                     receipt=row)
+        with pytest.raises(gate.RouteBoundaryError, match="may not deliver a draft"):
+            gate._verify_route_receipt(_context(_Contract()), REQUEST, turn)
+
+    def test_a_wholly_different_reason_is_still_refused(self):
+        """The control on the control. Relaxing the trailing-line case must not let a
+        turn report a friendlier verdict than the one the receipt bound."""
+        row = _receipt("refused", REASON)
+        with pytest.raises(gate.RouteBoundaryError, match="stated reason"):
+            gate._verify_route_receipt(
+                _context(_Contract()), REQUEST,
+                _turn(reason="it just needed a tweak", receipt=row))
+
 
 class TestTheRefusedBranchIsReached:
     """Delete the call site in `_verify_route_receipt` and these go red. The unit

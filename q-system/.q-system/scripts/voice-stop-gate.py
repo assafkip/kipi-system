@@ -114,6 +114,46 @@ def _refusal_text(text):
     return body.strip()
 
 
+def _reason_candidates(region):
+    """The strings that may be the bound reason, WIDEST FIRST.
+
+    The producer's contract is that everything between the marker and the next marker
+    is the reason, and that is tried first and is unchanged. But the producer does not
+    write the turn: the model does, and a closing line after the reason ("want a
+    shorter one?") joined the hash and held the turn with "does not match the stated
+    reason", which reads as tampering rather than as an extra sentence (PR #375 minor).
+
+    So the first paragraph is offered as a fallback. This cannot weaken the binding:
+    every candidate is checked against the receipt's own hash, so a reason the receipt
+    never bound still fails. What it costs is that the trailing line is UNBOUND, which
+    is why `_unbound_text` hands it to the draft check below.
+    """
+    region = region.strip()
+    candidates = [region]
+    first = region.split("\n\n", 1)[0].strip()
+    if first and first != region:
+        candidates.append(first)
+    return candidates
+
+
+def _unbound_text(assistant_text, reason):
+    """The turn with its bound reason and its receipt removed.
+
+    What is left is text the receipt never hashed, so it is the only part that can
+    smuggle a draft. Checking the WHOLE turn instead is what produced PR #375 major 1:
+    the reason itself says things like "the reply ran long for LinkedIn", and a
+    detector run over the whole message read the refusal as its own draft.
+    """
+    head, _, body = assistant_text.partition(_REFUSAL_MARKER)
+    for marker in ("=== ROUTE RECEIPT ===", "=== DRAFT ==="):
+        if marker in body:
+            body = body.split(marker, 1)[0]
+    rest = body.strip()
+    if rest.startswith(reason):
+        rest = rest[len(reason):]
+    return head + "\n" + rest
+
+
 def _consume_refusal(contract, receipt, identity, assistant_text, result):
     """Spend a REFUSED receipt for a turn that reports the refusal (ASK-1744).
 
@@ -128,16 +168,34 @@ def _consume_refusal(contract, receipt, identity, assistant_text, result):
     the refusal it had just produced (measured 2026-09-15, three linkedin reply runs in
     one evening).
     """
-    reason = _refusal_text(assistant_text)
-    if not reason:
+    region = _refusal_text(assistant_text)
+    if not region:
         raise RouteBoundaryError(
             "a refusal receipt needs the refusal text the producer printed")
-    if "=== DRAFT ===" in assistant_text or extract_publishable(assistant_text):
+    # The reason is settled FIRST, because it decides which part of the turn the
+    # receipt bound and therefore which part still has to be graded.
+    reason = next(
+        (candidate for candidate in _reason_candidates(region)
+         if contract.output_hash(candidate, result.surface,
+                                 result.channel) == receipt["output_hash"]),
+        None)
+    if reason is None:
+        raise RouteBoundaryError("refusal receipt does not match the stated reason")
+    # THE DRAFT TEST IS THE ONE `main()` TRUSTS, not a second weaker one. `main()`
+    # asks `reply_carries_a_draft`, whose draft test is `=== DRAFT ===` or
+    # `extract_setoff_draft`; its third clause is the route receipt, which every
+    # refusal turn carries by construction, so reusing the function whole would hold
+    # every refusal. It deliberately does NOT use `extract_publishable`: that one
+    # falls back to the ENTIRE message once any publish framing appears, and a
+    # refusal reason naming a platform ("the reply ran long for LinkedIn") is framing,
+    # so 4 of 6 real refusal wordings were held as carrying a draft they did not
+    # carry (PR #375 major 1). Run over the UNBOUND text, so a fenced post written
+    # above the refusal block is still caught (major 2) while the bound reason is not
+    # mistaken for its own draft.
+    if "=== DRAFT ===" in assistant_text or extract_setoff_draft(
+            _unbound_text(assistant_text, reason)):
         raise RouteBoundaryError(
             "a refused route may not deliver a draft; this turn carries one")
-    if contract.output_hash(reason, result.surface,
-                            result.channel) != receipt["output_hash"]:
-        raise RouteBoundaryError("refusal receipt does not match the stated reason")
     try:
         return contract.verify_and_consume_refusal(identity)
     except Exception as exc:
