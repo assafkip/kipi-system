@@ -10,6 +10,8 @@ import importlib.util
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -49,7 +51,7 @@ class ScanScope(unittest.TestCase):
         self.gate = load_gate()
 
     def test_a_root_without_a_config_is_dropped(self):
-        roots = self.gate.scan_roots({"cwd": str(self.hub)})
+        roots = self.gate.scan_roots({"cwd": str(self.tmp)})
         self.assertIn(self.design, roots)
         self.assertNotIn(self.plain, roots)
         self.assertNotIn(self.hub, roots)
@@ -62,13 +64,12 @@ class ScanScope(unittest.TestCase):
             walked.append(Path(top).resolve())
             return real_walk(top, *a, **k)
         with mock.patch.object(self.gate.os, "walk", spy):
-            self.gate.newer_pages(self.gate.scan_roots({"cwd": str(self.hub)}), 0)
+            self.gate.newer_pages(self.gate.scan_roots({"cwd": str(self.tmp)}), 0)
         self.assertTrue(walked, "nothing was walked at all")
         self.assertFalse(any(w == self.plain or self.plain in w.parents for w in walked), walked)
 
     def test_a_cwd_inside_a_design_instance_is_kept(self):
-        # the registry does not list it: the cwd is the only way in, and its config is in a parent
-        (self.hub / "instance-registry.json").write_text(json.dumps({"instances": [{"path": str(self.plain)}]}))
+        # the cwd is the only way in, and its config is in a parent
         sub = self.design / "site"
         sub.mkdir()
         self.assertEqual(self.gate.scan_roots({"cwd": str(sub)}), [sub])
@@ -89,13 +90,61 @@ class ScanScope(unittest.TestCase):
         self.assertIn(self.design / ".wt-shadow" / "p.html", found)
         self.assertFalse(any(".wt-feature" in str(p) or "worktrees" in str(p) for p in found), found)
 
-    def test_a_config_below_the_registered_root_is_scanned(self):
-        # std-1: root/frontend/design-chain.json governs root/frontend/, so that folder is scanned
+    def test_a_config_below_the_root_is_scanned(self):
+        # std-1: root/frontend/design-chain.json governs root/frontend/, so that folder is scanned.
+        # The descent is dc-17's decision and is unchanged by round 7; only which top-level roots
+        # feed it narrowed, so the fixture reaches it by cwd rather than by a registry entry.
         nested = self.tmp / "nested-inst"
         (nested / "frontend").mkdir(parents=True)
         (nested / "frontend" / "design-chain.json").write_text("{}")
-        (self.hub / "instance-registry.json").write_text(json.dumps({"instances": [{"path": str(nested)}]}))
-        self.assertEqual(self.gate.scan_roots({"cwd": str(self.hub)}), [nested / "frontend"])
+        self.assertEqual(self.gate.scan_roots({"cwd": str(nested)}), [nested / "frontend"])
+
+    def test_the_instance_registry_is_not_a_way_in(self):
+        # a session working in one project enrolled another project's round pages, and Stop refused
+        # the end of the turn with a remediation only that other project could perform (round 7)
+        (self.hub / "instance-registry.json").write_text(json.dumps(
+            {"instances": [{"path": str(self.design)}]}))
+        self.assertEqual(self.gate.scan_roots({"cwd": str(self.hub)}), [])
+
+
+class BashEnrolsOnlyRoundPages(unittest.TestCase):
+    """mtime was the whole filter on the post-Bash scan, so a checkout or an install that touched
+    src/components/*.tsx enrolled ordinary application source and Stop refused the end of the turn
+    over files that were never design pages (PR #374 review round 7, major)."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="dc17b-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.inst = self.tmp / "inst"
+        self.state = self.tmp / "state"
+        self.state.mkdir(parents=True)
+        (self.inst).mkdir()
+        (self.inst / "design-chain.json").write_text(json.dumps({"project": "dc17b", "owners": []}))
+        self.round = self.inst / "site" / "design" / "r1"
+        self.round.mkdir(parents=True)
+        (self.round / "brief.md").write_text("brief\n")
+        self.page = self.round / "Home-laptop.html"
+        self.src = self.inst / "src" / "components" / "Button.tsx"
+        self.src.parent.mkdir(parents=True)
+
+    def run_bash_scan(self):
+        env = {k: v for k, v in os.environ.items() if k not in ("DESIGN_CHAIN_ALLOW",)}
+        env.update({"CLAUDE_PROJECT_DIR": str(self.inst), "DESIGN_CHAIN_STATE": str(self.state)})
+        payload = {"hook_event_name": "PostToolUse", "tool_name": "Bash", "session_id": "s-scan",
+                   "cwd": str(self.inst), "tool_input": {"command": "true"}}
+        r = subprocess.run([sys.executable, str(GATE)], input=json.dumps(payload),
+                           capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        led = json.loads((self.state / "s-scan.json").read_text())
+        return set(led.get("pages", {}))
+
+    def test_application_source_a_command_touched_does_not_enrol(self):
+        self.src.write_text("export const Button = () => null\n")
+        self.assertEqual(self.run_bash_scan(), set())
+
+    def test_a_page_inside_a_round_still_enrols(self):
+        self.page.write_text("<html><body><p>x</p></body></html>")
+        self.assertIn(str(self.page.resolve()), self.run_bash_scan())
 
 
 if __name__ == "__main__":

@@ -2898,14 +2898,13 @@ def scan_roots(payload: dict) -> list[Path]:
     for cand in (payload.get("cwd"), os.environ.get("CLAUDE_PROJECT_DIR"), os.environ.get("DESIGN_CHAIN_EXTRA_ROOT")):
         if cand:
             roots.append(Path(cand))
-    reg = Path(os.environ.get("CLAUDE_PROJECT_DIR", "")) / "instance-registry.json"
-    if reg.is_file():
-        try:
-            for inst in json.loads(reg.read_text()).get("instances", []):
-                if inst.get("path"):
-                    roots.append(Path(inst["path"]))
-        except ValueError:
-            pass
+    # The instance registry is NOT consulted. It was, and it made a session working in one project
+    # enrol another project's round pages, so Stop refused the end of the turn with a remediation
+    # only the other project could perform (PR #374 review round 7, major). The registry is a
+    # fleet-ops inventory; it says nothing about what THIS session can write, which is cwd and the
+    # project dir. Dropping it also removes the 130-180ms walk every Bash call paid for it
+    # (ASK-1874). dc-17's decision is untouched: the 3-level descent below still finds a config
+    # nested under these roots, it is only the set of top-level roots that narrowed.
     # only roots under a design-chain.json: every Bash call walked all 26 registered instances,
     # 25 of them with no config (dc-17, measured 2026-09-19)
     # A config at or above the root keeps the root; a config up to 3 levels BELOW it makes that
@@ -3420,7 +3419,14 @@ def _hook(payload: dict) -> int:
     if ev == "PostToolUse" and tool == "Bash":
         since = float(led.get("bash_marker") or (time.time() - 60))
         for fp in newer_pages(scan_roots(payload), since):
-            led["pages"].setdefault(str(Path(fp).resolve()), {"first_seen": time.time(), "via": "Bash"})
+            # only a file inside a ROUND. mtime was the whole filter, so `git checkout` or an
+            # install touching src/components/*.tsx enrolled ordinary application source and Stop
+            # refused the end of the turn over files that were never design pages (PR #374 review
+            # round 7, major). Same 3-parent walk the round key two branches down already uses.
+            here = Path(fp).resolve()
+            if not any(_is_round(d) for d in here.parents[:3]):
+                continue
+            led["pages"].setdefault(str(here), {"first_seen": time.time(), "via": "Bash"})
         save_ledger(sid, led)
         return 0
 
