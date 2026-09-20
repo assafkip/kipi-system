@@ -60,6 +60,37 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# "IT NEVER RAN" IS A DIFFERENT CLAIM THAN "IT RAN AND FAILED", and this repo
+# already had a caller that conflated them (ASK-1907).
+#
+# The --staged setup below (mktemp, write-tree, commit-tree, worktree add)
+# used to fail in two ways that both looked, to a caller reading only the
+# exit code, exactly like a check failing on the staged content: write-tree
+# and commit-tree fell through bare `set -e` (no message at all -- just
+# whatever git printed to stderr), and worktree add hit a bare `exit 1` with
+# a message but the SAME exit code every check failure below also uses.
+#
+# Measured 2026-09-19: a `git worktree add` refused after 0.10s while a
+# second worktree of this same repo was busy (a real --staged run takes
+# ~23s once it actually gets to the checks). lefthook's fail_text then told
+# the operator "verify.sh failed on the STAGED snapshot... this will not
+# pass later" -- both halves false, because no check had started. A bare
+# retry with no change to the tree succeeded at the normal ~23s.
+#
+# setup_fail() gives every failure in the snapshot-setup block its own exit
+# code (SETUP_FAIL_CODE, distinct from the 1 a real check failure uses) and
+# its own wording, so a human -- or a caller's fail_text -- can tell "the
+# code is broken" from "the tool never got to look at it".
+SETUP_FAIL_CODE=3
+setup_fail() {
+  echo "verify.sh --staged: SETUP FAILED, no checks ran -- $1" >&2
+  echo "This is NOT a verdict on the staged snapshot. Re-running unchanged" >&2
+  echo "may succeed on its own (git lock contention from a second worktree" >&2
+  echo "of this repo is the known cause, ASK-1907). The underlying git error:" >&2
+  [ -n "${2:-}" ] && printf '%s\n' "$2" | sed 's/^/  /' >&2
+  exit "$SETUP_FAIL_CODE"
+}
+
 case "$MODE" in
   --staged|--full) ;;
   *) echo "usage: verify.sh [--staged|--full]" >&2; exit 2 ;;
@@ -110,13 +141,22 @@ if [ "$MODE" = "--staged" ]; then
   # at that commit is a genuine git repository holding exactly what the commit
   # would contain, so a repo-aware test is answered about the STAGED state
   # rather than about a directory that is not a repo.
-  TMP="$(mktemp -d)"
-  TREE="$(git -C "$REPO" write-tree)"
+  TMP="$(mktemp -d)" || setup_fail "could not create a scratch directory (mktemp -d failed)."
+  if ! TREE="$(git -C "$REPO" write-tree 2>"$TMP/.setup-err")"; then
+    setup_fail "could not read the staged index (git write-tree failed)." \
+               "$(cat "$TMP/.setup-err" 2>/dev/null)"
+  fi
   # An empty repo has no HEAD to parent from; the adversarial suite covers it.
   if git -C "$REPO" rev-parse --verify -q HEAD >/dev/null 2>&1; then
-    SNAP="$(git -C "$REPO" commit-tree "$TREE" -p HEAD -m 'verify.sh staged snapshot')"
+    if ! SNAP="$(git -C "$REPO" commit-tree "$TREE" -p HEAD -m 'verify.sh staged snapshot' 2>"$TMP/.setup-err")"; then
+      setup_fail "could not create the staged snapshot commit (git commit-tree failed)." \
+                 "$(cat "$TMP/.setup-err" 2>/dev/null)"
+    fi
   else
-    SNAP="$(git -C "$REPO" commit-tree "$TREE" -m 'verify.sh staged snapshot')"
+    if ! SNAP="$(git -C "$REPO" commit-tree "$TREE" -m 'verify.sh staged snapshot' 2>"$TMP/.setup-err")"; then
+      setup_fail "could not create the staged snapshot commit (git commit-tree failed)." \
+                 "$(cat "$TMP/.setup-err" 2>/dev/null)"
+    fi
   fi
   # FAIL, never fall through. A failed `worktree add` leaves $TMP/wt absent, and
   # a TARGET that does not exist would send every check at the MAIN CHECKOUT,
@@ -131,14 +171,21 @@ if [ "$MODE" = "--staged" ]; then
   # because the by-hand run is the one you use to convince yourself it works.
   # write-tree above deliberately KEEPS the inherited environment: it has to
   # read the index the commit is actually being built from.
+  # NO AUTO-RETRY HERE (decided, ASK-1907, comment posted on the issue).
+  # self-healing-retry.md rule 5 already classes lock/worktree contention as
+  # environmental-trigger, not latent-defect: retrying logic cannot fix
+  # another process holding the repo, and this fleet's contract is to stop on
+  # attempt 1 and surface it, not loop silently inside the gate. A retry HERE
+  # also risks compounding a half-registered worktree admin dir under
+  # .git/worktrees -- the cleanup trap prunes by directory, and a second
+  # `worktree add` racing the first attempt's partial state is a new failure
+  # mode, not a safer one. The human retry already works and costs nothing
+  # extra: the founder's own retry with no change to the tree succeeded at
+  # the normal ~23s.
   if ! WT_ERR="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
                      -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR \
                      git -C "$REPO" worktree add --detach "$TMP/wt" "$SNAP" 2>&1)"; then
-    # Print what git said. The first version threw stderr away and the refusal
-    # was untraceable: a gate that cannot say why it refused gets bypassed.
-    echo "verify.sh: could not create the staged worktree. Refusing." >&2
-    echo "$WT_ERR" | sed 's/^/  /' >&2
-    exit 1
+    setup_fail "could not create the staged worktree (git worktree add failed)." "$WT_ERR"
   fi
   TARGET="$TMP/wt"
   # AND NOW DROP THEM FOR THE REST OF THE RUN. Sanitizing only the `worktree
