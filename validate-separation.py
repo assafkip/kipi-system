@@ -115,6 +115,101 @@ def model_allocation_violations(claude_agents_dir):
     return violations
 
 
+# A model-ID literal, in either generation's naming. The tier word is required,
+# so `claude-code` and `claude-dev` are not matches and the scan does not have to
+# guess what a bare `claude-<word>` means.
+MODEL_ID_RE = re.compile(
+    r"claude-(?:opus|sonnet|haiku|fable)-[0-9][a-z0-9.-]*"
+    r"|claude-[0-9](?:-[0-9])?-(?:opus|sonnet|haiku)[a-z0-9.-]*"
+)
+
+# Surfaces where a model ID actually SHIPS a call. Markdown is out on purpose: a
+# skill doc naming an ID is prose, and including it would make the gate red on
+# documentation rather than on a pin.
+MODEL_PIN_SUFFIXES = (".py", ".sh", ".bash", ".js", ".mjs", ".ts", ".json")
+
+MODEL_PIN_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv"}
+
+# Pin sites in plugins/ that are known non-compliant, each registered as a
+# (path, id) PAIR rather than excluded by path. Any OTHER id at these paths, and
+# any pin anywhere else under plugins/, is still a violation.
+#
+# Why registered and not fixed here: `claude-opus-5` is the ID 8 production call
+# sites in q-system/ already export (kipi-dispatch.sh:62, morning-brief.py:80,
+# pr-review-agent.sh:144 and others), while MODEL_TIERS["opus"] still reads
+# `claude-opus-4-8`. Reconciling that is the three-way change model-allocation.md
+# mandates -- rule doc, this table, and every agent frontmatter, together -- whose
+# blast radius is the whole fleet. It earns its own issue (sp-1353b2c8 / ASK-1942)
+# instead of arriving as a side effect of adding a scanner. A gate red on its own population
+# on day one gets switched off, and a gate that is off protects nothing.
+PLUGIN_PIN_EXCEPTIONS = {
+    ("plugins/prd-os/scripts/judgment_compiler.py", "claude-opus-5"),
+    ("plugins/prd-os/tests/test_judgment_compiler.py", "claude-opus-5"),
+}
+
+
+def plugin_model_id_pins(repo_root):
+    """Every model-ID pin under `repo_root/plugins/`, as (relpath, id) pairs.
+
+    A pin is a literal in a shipping surface. Two things that LOOK like pins and
+    are not: an ID inside a URL (the kipi-mcp tests use
+    `https://example.com/claude-sonnet-5` as fixture data) and an ID named in a
+    prose comment (`voiceloop/revise.py:292` cites one while explaining why it is
+    not hardcoded). Both are skipped structurally, not by a path allowlist.
+
+    Separate from the violation check so a test can assert the derivation found
+    something. An empty parse turns every check built on it into a no-op that
+    reads green (the restated-value lesson: give every derivation a floor).
+    """
+    pins = []
+    plugins_dir = os.path.join(repo_root, "plugins")
+    if not os.path.isdir(plugins_dir):
+        return pins
+    for dirpath, dirnames, filenames in os.walk(plugins_dir):
+        dirnames[:] = [d for d in dirnames if d not in MODEL_PIN_SKIP_DIRS]
+        for fname in sorted(filenames):
+            if not fname.endswith(MODEL_PIN_SUFFIXES):
+                continue
+            full = os.path.join(dirpath, fname)
+            rel = os.path.relpath(full, repo_root)
+            try:
+                with open(full, encoding="utf-8", errors="replace") as fh:
+                    lines = fh.readlines()
+            except OSError:
+                continue
+            for line in lines:
+                if line.lstrip().startswith(("#", "//", "*")):
+                    continue
+                for m in MODEL_ID_RE.finditer(line):
+                    if m.start() > 0 and line[m.start() - 1] == "/":
+                        continue
+                    pins.append((rel, m.group(0)))
+    return pins
+
+
+def plugin_model_id_violations(repo_root):
+    """Model-ID pins under plugins/ carrying an ID outside the MODEL_TIERS allowlist.
+
+    Returns a list of violation strings (empty = compliant). Root-parameterized so
+    tests run it against a temp tree instead of the live one.
+
+    Why this exists: Gate 1.1b reads `.claude/agents/*.md` frontmatter only, so
+    `voiceloop/critic.py:115-116` pinned two IDs where no check could see them and
+    a retired one would have shipped fleet-wide green (sp-e86a9a9f, ASK-1904).
+    """
+    allowed_ids = set().union(*MODEL_TIERS.values())
+    violations = []
+    for rel, model_id in plugin_model_id_pins(repo_root):
+        if model_id in allowed_ids:
+            continue
+        if (rel, model_id) in PLUGIN_PIN_EXCEPTIONS:
+            continue
+        violations.append(
+            f"{rel}: model '{model_id}' not in allowlist (deprecated or unknown)"
+        )
+    return violations
+
+
 def dir_exists(path):
     return os.path.isdir(path)
 
@@ -745,11 +840,22 @@ def phase_1():
 
     # --- Gate 1.1b: Claude agent model allocation ---
     print()
-    print("  --- Gate 1.1b: Model allocation (.claude/agents) ---")
+    print("  --- Gate 1.1b: Model allocation (.claude/agents + plugins) ---")
     ma_violations = model_allocation_violations(os.path.join(SCRIPT_DIR, ".claude", "agents"))
     for v in ma_violations:
         warn(v)
     check(f"Agent model IDs match the allocation policy ({len(ma_violations)} violations)", not ma_violations)
+
+    # The agents-only half above cannot see a literal in plugins/, which is where
+    # voiceloop/critic.py pinned two (sp-e86a9a9f, ASK-1904).
+    pin_violations = plugin_model_id_violations(SCRIPT_DIR)
+    for v in pin_violations:
+        warn(v)
+    check(
+        f"Plugin model IDs are in the allowlist ({len(pin_violations)} violations, "
+        f"{len(plugin_model_id_pins(SCRIPT_DIR))} pins scanned)",
+        not pin_violations,
+    )
 
     # --- GATE 1.2: Scripts ---
     print()

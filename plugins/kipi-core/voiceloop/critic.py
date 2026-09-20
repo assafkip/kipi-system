@@ -107,6 +107,13 @@ CRITIC_WORKERS = 5
 # WHICH MODEL JUDGES, by tier (2026-08-13, founder-directed: the token spend is the
 # problem, not the wall clock). Ids come from `.claude/rules/model-allocation.md`.
 #
+# These two literals are CHECKED, not merely documented. Gate 1.1b in
+# `validate-separation.py` read `.claude/agents/*.md` frontmatter only, so from
+# 2026-08-13 until 2026-09-20 nothing could see an ID here and a retired one would
+# have shipped fleet-wide green (sp-e86a9a9f, ASK-1904). Its `plugin_model_id_pins`
+# scan now covers plugins/ too and fails on an ID outside the MODEL_TIERS allowlist,
+# so changing either line to a retired ID turns `kipi check` red.
+#
 # The asymmetry is the point. A QUALITY row decides whether a draft lives, and its three
 # questions are the ones the founder's read keeps failing on, so it gets the analysis
 # tier. A STYLE row is a comparison against a stated rule, which is exactly the
