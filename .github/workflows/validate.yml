@@ -30,16 +30,18 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install pytest
-      - name: Seconds for the selected path
-        run: |
-          git log --oneline -1
-          git diff --stat HEAD~1...HEAD
-          start=$(date +%s)
-          rc=0
-          python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --diff-base HEAD~1 || rc=$?
-          echo "ASK-1914-PROBE seconds=$(( $(date +%s) - start )) exit=$rc"
+      - run: pip install playwright pillow && python -m playwright install --with-deps chromium
+      - name: Cost per declared artifact
+        run: python3 ask1914-scanner-cost.py
         env:
           CI: true
+          REPO_ROOT: .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ask1914-scanner-cost
+          path: ask1914-scanner-cost.json
+          if-no-files-found: warn
 
   validate:
     runs-on: ubuntu-latest
