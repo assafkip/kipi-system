@@ -103,6 +103,28 @@ def test_a_covers_on_a_non_scanner_is_refused_as_inert(repo):
     assert "INERT" in r.stderr
 
 
+@pytest.mark.parametrize("glob", ["**.plist", "launchd/**.plist", "la**nchd/*.plist"])
+def test_a_double_star_inside_a_segment_is_refused(repo, glob):
+    # ASK-1922, the decidable half of "this glob cannot match what its author
+    # meant". `**` is zero-or-more DIRECTORIES only when it is the whole segment;
+    # written inside one it silently degrades to `*` and stops at a `/`. Two
+    # rounds of PR #385 were that same silent narrowing at other positions, so
+    # the one position the matcher still cannot honour gets refused at the door.
+    declare(repo, "scan", {"path": SCANNER, "runner": "bash", "covers": [glob]})
+    r = run(repo)
+    assert r.returncode == 2, r.stdout
+    assert "inside the segment" in r.stderr
+
+
+def test_a_double_star_as_a_whole_segment_is_accepted(repo):
+    # THE NEGATIVE SELF-TEST for the refusal above: the legal spellings still pass,
+    # or the check would be an outage wearing a gate's name.
+    for glob in ("**/*.plist", "launchd/**", "**/launchd/**/*.plist"):
+        declare(repo, "scan", {"path": SCANNER, "runner": "bash", "covers": [glob]})
+        r = run(repo)
+        assert r.returncode == 0, (glob, r.stderr)
+
+
 def test_a_covers_whose_path_is_missing_is_refused(repo):
     declare(repo, "gone", {"path": "t/absent.sh", "runner": "bash", "covers": ["**/*.plist"]})
     r = run(repo)

@@ -262,38 +262,101 @@ def test_covers_on_a_non_scanner_grants_nothing(cs):
     case_covers_on_a_non_scanner_grants_nothing(cs)
 
 
-def case_a_double_star_reaches_the_repo_root(cs):
-    # codex/claude review of PR #385, MAJOR. `**/` conventionally means "at any
-    # depth, INCLUDING none", but fnmatch's `*` only crosses `/` when a `/` is
-    # there to cross, so `**/*.sh` missed every one of this repo's 39 root-level
-    # scripts. covers-lint printed PASS on it, because the glob does match the
-    # non-root files -- so a blessed declaration would have silently dropped
-    # coverage for the root. The first cut of the test below used a non-root
-    # fixture path and could not see it.
-    for pat, path, want in (("**/*.sh", "kipi-promote.sh", True),
-                            ("**/*.sh", "q-system/.q-system/scripts/x.sh", True),
-                            ("**/*.py", "fix-voice-style.py", True),
-                            ("**/*.py", "a/b/c.py", True),
-                            # ...and it does not become a match-anything.
-                            ("**/*.sh", "kipi-promote.py", False),
-                            ("q-system/**/*.sh", "plugins/x.sh", False)):
-        assert cs.covers_matches(pat, path) is want, (pat, path)
+# EVERY `**` POSITION, BOTH DIRECTIONS (ASK-1922). PR #385 found the same defect
+# twice: round 1 that a LEADING `**/` missed all 39 root-level scripts, round 2
+# that an INTERIOR `**/` missed depth zero the same way. Two rounds of one class
+# means the fix SHAPE was wrong, so the third answer is not a third branch --
+# `covers_matches` is one translator now, and this table is what holds it. A row
+# per position, and a False row beside every True one, because a matcher that
+# says yes to everything passes any table made only of matches.
+DOUBLE_STAR_CASES = (
+    # leading: at any depth, INCLUDING none (round 1, major)
+    ("**/*.sh", "kipi-promote.sh", True),
+    ("**/*.sh", "q-system/.q-system/scripts/x.sh", True),
+    ("**/*.sh", "kipi-promote.py", False),
+    ("**/*.py", "fix-voice-style.py", True),
+    ("**/*.py", "a/b/c.py", True),
+    # interior: the same defect one position over (round 2, minor)
+    ("q-system/**/*.sh", "q-system/x.sh", True),
+    ("q-system/**/*.sh", "q-system/a/b/x.sh", True),
+    ("q-system/**/*.sh", "plugins/x.sh", False),
+    ("q-system/**/*.sh", "q-system/x.py", False),
+    # trailing: everything BELOW the directory, and nothing beside it
+    ("launchd/**", "launchd/a.plist", True),
+    ("launchd/**", "launchd/deep/a.plist", True),
+    ("launchd/**", "other/a.plist", False),
+    # doubled: still zero-or-more, not two-or-more
+    ("**/**/*.py", "a.py", True),
+    ("**/**/*.py", "a/b/c.py", True),
+    ("**/**/*.py", "a/b/c.sh", False),
+    # `*` IS ONE SEGMENT. That is what leaves `**` something to mean. fnmatch's
+    # `*` crossed `/`, so the two spellings were synonyms and `**` was decoration.
+    ("q-system/*/x.sh", "q-system/a/x.sh", True),
+    ("q-system/*/x.sh", "q-system/a/b/x.sh", False),
+    ("q-system/*/x.sh", "q-system/x.sh", False),
+    # a slash-less pattern matches the BASENAME, the way `find -name` does
+    ("kipi", "kipi", True),
+    ("kipi", "sub/kipi", True),
+    ("kipi", "kipi-promote.sh", False),
+    ("*.plist", "launchd/a.plist", True),
+    ("*.plist", "launchd/a.plst", False),
+)
 
 
-def test_a_double_star_glob_matches_a_root_level_file(cs):
-    case_a_double_star_reaches_the_repo_root(cs)
+def case_double_star_matches_at_every_position(cs):
+    for pat, path, want in DOUBLE_STAR_CASES:
+        assert cs.covers_matches(pat, path) is want, (pat, path, want)
+
+
+def test_a_double_star_glob_matches_at_every_position(cs):
+    case_double_star_matches_at_every_position(cs)
+
+
+def case_covers_is_read_even_when_the_changed_file_is_itself_a_test(cs):
+    # claude review of PR #385, minor 2. The per-path loop `continue`d as soon as
+    # the changed path was itself a declared test (it selects itself, correctly),
+    # and that skip happened BEFORE `covers` was consulted -- so a scanner whose
+    # declaration named another declared test's path never ran for it. Silent:
+    # covers-lint could not see it either, because the glob does match a tracked
+    # file. Both tests run here, the one that owns the file and the one that
+    # declared it covered.
+    scanner, other = PLIST_SCANNER, T_OTHER
+    declared = dict(DECLARED, **{scanner: SCANNER_TEXT})
+    v = cs.plan([(other, 1)], declared, CODE, covers={scanner: [other]})
+    assert other in v["selected_tests"], v["selected_tests"]
+    assert scanner in v["selected_tests"], v["selected_tests"]
+
+
+def test_a_covers_glob_naming_another_declared_test_is_honoured(cs):
+    case_covers_is_read_even_when_the_changed_file_is_itself_a_test(cs)
+
+
+def case_a_malformed_covers_voids_the_whole_list(cs):
+    import tempfile
+    _read_declared_cases(cs, Path(tempfile.mkdtemp()))
 
 
 def test_read_declared_drops_a_malformed_covers(cs, tmp_path):
+    _read_declared_cases(cs, tmp_path)
+
+
+def _read_declared_cases(cs, tmp_path):
     # THE ASYMMETRY: everything uncertain resolves upward. A declaration that is
     # not a list of non-empty strings is DROPPED, which leaves the test on the
     # always-run floor -- the expensive answer, and the safe one.
+    #
+    # `mixed` is the row the docstring always claimed and the code did not do
+    # (claude review of PR #385, minor 3): the first cut kept the good entries
+    # and dropped only the bad ones, so `["**/*.plist", None]` still took the
+    # test OFF the floor on a declaration nobody could read. One bad entry now
+    # voids the whole list, which is what the safe-by-default posture means.
     root = tmp_path / "r"
     frags = root / cs.EXPECTED_TESTS_DIR
     frags.mkdir(parents=True)
     (root / "t").mkdir()
     for name, covers in (("good", ["**/*.plist"]), ("str", "**/*.plist"),
-                         ("empty", []), ("junk", [None, ""]), ("absent", "OMIT")):
+                         ("empty", []), ("junk", [None, ""]),
+                         ("mixed", ["**/*.plist", None]), ("absent", "OMIT")):
         rel = f"t/test-{name}.sh"
         (root / rel).write_text("echo hi\n")
         entry = {"path": rel, "runner": "bash"}
@@ -444,8 +507,11 @@ CS_MUTANTS = [
     ("a fixture is matched before it is skipped", "            if is_test_path(path):\n                direct |=", "            if False:\n                direct |=", case_fixture_reaches_its_owner),
     ("every scanner always runs", "    always = {t for t in scanners if t not in declared_covers}", "    always = set()", case_every_scanner_always_runs),
     ("a declaration takes a scanner off the floor", "    always = {t for t in scanners if t not in declared_covers}", "    always = set(scanners)", case_a_declared_scanner_leaves_the_floor),
-    ("covers never selects a non-scanner", "                   if t in scanners and any(covers_matches(p, path) for p in pats)}", "                   if any(covers_matches(p, path) for p in pats)}", case_covers_on_a_non_scanner_grants_nothing),
-    ("**/ reaches the repo root", '        if pattern.startswith("**/") and fnmatch.fnmatch(path, pattern[3:]):\n            return True', '        if False:\n            return True', case_a_double_star_reaches_the_repo_root),
+    ("covers never selects a non-scanner", "                     if t in scanners and any(covers_matches(p, path) for p in pats)}", "                     if any(covers_matches(p, path) for p in pats)}", case_covers_on_a_non_scanner_grants_nothing),
+    ("a malformed covers voids the whole list", " and all(isinstance(p, str) and p for p in pats)", "", case_a_malformed_covers_voids_the_whole_list),
+    ("** spans zero segments", 'out.append(".*" if last else "(?:[^/]+/)*")', 'out.append(".*" if last else "[^/]+/")', case_double_star_matches_at_every_position),
+    ("* stops at a separator", 'out.append("[^/]*")', 'out.append(".*")', case_double_star_matches_at_every_position),
+    ("covers is read for every changed path", "    for path, _ in changed:\n        selected |= {t for t, pats in declared_covers.items()", "    for path, _ in []:\n        selected |= {t for t, pats in declared_covers.items()", case_covers_is_read_even_when_the_changed_file_is_itself_a_test),
     ("the floor is outside the width cap", "    pulled = selected - always", "    pulled = selected", case_scanners_do_not_trip_the_width_cap),
     ("the width cap", "if len(pulled) > MAX_SELECTED:", "if False:", case_too_wide),
     ("size is not a full run", "full_suite = bool(escalators)", "full_suite = bool(escalators) or app_lines > M_MAX_LINES", case_size_is_not_a_full_run),
