@@ -69,13 +69,16 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 PAGE_EXTS = {".html", ".htm", ".astro", ".jsx", ".tsx", ".vue", ".svelte"}
-# Internal HTML the founder alone sees. A path segment match, not a marker in the file.
-INTERNAL_MARKERS = (
-    "/node_modules/", "/.git/", "/dist/", "/build/", "/.next/", "/coverage/",
-    "daily-schedule", "morning-log", "/logs/", "/log/", "/test", "/tests/", "/fixtures/",
-    "/schedule", "/dashboard", "/report", "/vendor/", "/site-packages/", "/.playwright-mcp/",
-    "/exemplars/",
-)
+# Internal HTML the founder alone sees. A path SEGMENT, or a file whose name starts with one of the
+# known internal prefixes. It was a bare substring test against the whole path, so /testimonials/
+# matched "/test", /schedule-a-call/ matched "/schedule" and /reports/ matched "/report": three
+# ordinary marketing pages skipped the entire chain (PR #374 review, major).
+INTERNAL_DIRS = frozenset({
+    "node_modules", ".git", "dist", "build", ".next", "coverage", "logs", "log", "test", "tests",
+    "fixtures", "vendor", "site-packages", ".playwright-mcp", "exemplars", "schedule", "schedules",
+    "dashboard", "dashboards", "report", "reports",
+})
+INTERNAL_FILE_PREFIXES = ("daily-schedule", "morning-log")
 CHAIN_FILES = ("brief.md", "directions.md", "standard.json", "critique.md", "proof.md")
 CHAIN_DIRS = ("checks", "gate")
 # The BAR half, switched on per instance by a `craft` block in design-chain.json.
@@ -125,9 +128,14 @@ IMPECCABLE_CHECK = "impeccable.txt"
 #      newline. Blocked a craft-manifest write that showed nothing (2026-09-15)
 # So the verb now has to sit where a command sits (start of the string, or after a pipe,
 # semicolon, ampersand or newline) and the filename has to be on the SAME line as it.
+# The deploy verbs put the page in front of the WORLD, which is a stronger show than a browser. Only
+# `vercel deploy` was known, so netlify, `npx vercel --prod`, an s3 sync and an rsync to a host all
+# shipped an unsealed page (PR #374 review, major). `git push` is deliberately NOT here: it is the
+# most common command in this repo and pushing a branch is not publishing a page.
 BASH_SHOW_RE = re.compile(
     r"(?:^|[|;&\n]\s*)(?:open\s+-a\b|open\s+[^|;&\n]*\.(?:html?|png|jpe?g|pdf)\b"
-    r"|vercel\s+deploy\b)", re.I)
+    r"|(?:npx\s+)?vercel\b|netlify\s+deploy\b|aws\s+s3\s+sync\b"
+    r"|rsync\b[^|;&\n]*\s[^|;&\n\s]+@[^|;&\n\s]+:)", re.I)
 SHOW_TOOLS_PREFIX = ("mcp__playwright__", "mcp__claude-in-chrome__", "mcp__plugin_chrome-devtools")
 PUBLISH_TOOLS = ("SendUserFile", "Artifact")
 STATE_DIR = Path(os.environ.get("DESIGN_CHAIN_STATE", os.path.expanduser("~/.config/kipi/design-chain")))
@@ -901,8 +909,10 @@ def is_page(path: str) -> bool:
     p = str(Path(path).resolve()) if path else ""
     if not p or Path(p).suffix.lower() not in PAGE_EXTS:
         return False
-    low = p.lower() + "/"
-    return not any(m in low for m in INTERNAL_MARKERS)
+    parts = [seg.lower() for seg in Path(p).parts]
+    if any(seg in INTERNAL_DIRS for seg in parts[:-1]):
+        return False
+    return not parts[-1].startswith(INTERNAL_FILE_PREFIXES)
 
 
 def _live(p: Path) -> Path:
