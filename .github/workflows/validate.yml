@@ -96,6 +96,12 @@ jobs:
       # wider than 60, or any error reading the diff. Structure, declared-vs-actual
       # and wiring checks are not tests and run in full either way. The checkout
       # above uses fetch-depth 0, so origin/<base> resolves.
+      # ASK-1918, and it runs BEFORE the gate on purpose: a wrong `covers`
+      # declaration would make the gate below select fewer tests, so the check on
+      # the declarations cannot be downstream of the thing they steer.
+      - name: Coverage declarations are real
+        run: python3 q-system/.q-system/scripts/covers-lint.py --repo-root .
+
       - name: Capability gate (declared-vs-actual + the tests this change earns)
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
