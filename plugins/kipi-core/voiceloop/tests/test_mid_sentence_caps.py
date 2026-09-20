@@ -197,10 +197,15 @@ def test_a_sentence_start_capital_is_never_touched(linter):
 
 
 def test_the_constraint_2_predecessors_that_DO_qualify(linter):
-    """Negative self-test for the case above: the three predecessors constraint 2 names
-    each produce a hit. Without this, deleting the predecessor check entirely would
-    leave the test above passing, because every one of its cases would still be skipped
-    for some other reason only if the check exists."""
+    """The named true positives of constraint 2: each of the three predecessors it
+    admits produces a hit.
+
+    The rationale here was WRONG when first written (PR #395 review, nit). It claimed
+    deleting the lookbehind would leave the skip-list test above green. It does not:
+    widening the predecessor turns that test red on "It broke. The chart rebuilt
+    itself." What this case actually holds is the other direction -- that constraint 2
+    is an ADMIT list and not a blanket refusal. Narrow the lookbehind to nothing and
+    the rule stops firing entirely while every skip case stays green."""
     for text, expected in (("the labels move The chart rebuilds", ["The"]),
                            ("it rebuilt 3 The chart came back mixed", ["The"]),
                            ("it rebuilt, The chart came back mixed", ["The"])):
@@ -272,11 +277,18 @@ def test_it_repairs_and_never_blocks(linter):
     rather than killing the draft, because killing a whole post over capitalization
     narrows the usable set for no gain. So a mid-sentence capital must not appear in the
     violation surface, before or after the repair."""
-    text = "The reason The labels move is the rebuild."
-    surface = post_repair.capitalization_violations(text, linter)
-    assert not [v for v in surface if "mid-sentence" in (v.get("detail") or "")], surface
-    repaired, _ = _repair(text, linter)
-    assert post_repair.capitalization_violations(repaired, linter) == []
+    text = "It treats The chart as disposable."
+    # The detector SEES it ...
+    assert _words(post_repair.mid_sentence_cap_hits(text, linter)) == ["The"]
+    # ... and neither violation surface reports it, before the repair.
+    assert post_repair.capitalization_violations(text, linter) == []
+    assert post_repair.violations(text, linter, phrases_path="") == []
+    # The repair fixes it in place, so the text that reaches the gate is clean AND
+    # changed. Stub the feature to identity and the last assertion goes red.
+    repaired, changes = _repair(text, linter)
+    assert repaired != text and "treats the chart" in repaired, repaired
+    assert any(line.startswith("lowercased mid-sentence capital") for line in changes), \
+        changes
 
 
 def test_the_word_set_carries_no_product_or_proper_noun(linter):
@@ -285,6 +297,71 @@ def test_the_word_set_carries_no_product_or_proper_noun(linter):
     every member is lowercase, alphabetic, and at least two characters."""
     for word in post_repair.MID_SENTENCE_LOWERCASE_WORDS:
         assert word == word.lower() and word.isalpha() and len(word) >= 2, word
-    assert {"and", "as", "have", "it"}.isdisjoint(
+    assert {"and", "as", "have", "it", "your", "its"}.isdisjoint(
         post_repair.MID_SENTENCE_LOWERCASE_WORDS), \
-        "these four hit the operator's own corpus on 2026-09-10 and were removed"
+        "all six are the unterminated-sentence-start class and were removed on purpose"
+
+
+SALUTATIONS = [
+    "Hey man, Your invoice is attached and the deck is done",
+    "Hey man, Its the same problem as last week",
+]
+
+
+@pytest.mark.parametrize("text", SALUTATIONS)
+def test_a_salutation_is_not_a_mid_clause(text, linter):
+    """The reproducer that took `your` and `its` out of the set (PR #395 review).
+
+    A salutation has no terminator, so the word after the comma IS a sentence start and
+    the linter's offsets cannot see it. `dm` and `email` are default channel scopes, so
+    this shape is in range. The corpus scan could not refute these words because the
+    corpus holds posts, not one-line DMs. That is the limit of any corpus gate: it can
+    only refute a word with text somebody already wrote."""
+    assert post_repair.mid_sentence_cap_hits(text, linter) == []
+    assert post_repair.repair_mid_sentence_caps(text, linter) == (text, [])
+
+
+def test_the_pass_runs_after_the_sentence_start_pass(linter):
+    """FINDING 1 (PR #395 review, major), as a regression test.
+
+    This pass used to run in group 0, before step 2. Step 2 rewrites with
+    `subn(..., count=1)` against the raw text, so it hits the FIRST standalone lowercase
+    occurrence of its target word rather than the sentence-start one. A draft opening a
+    later sentence with that same word got the capital put straight back, while
+    `changes` still reported the repair. A false receipt is worse than the silence this
+    layer exists to end.
+
+    Every other `repair()`-level fixture in this file opens with a capital, so step 2
+    finds no lowercase sentence start and the shape never arises. This one opens
+    lowercase on purpose."""
+    text = "it treats The chart as disposable. the fix is simple."
+    repaired, changes = _repair(text, linter)
+    assert repaired == "It treats the chart as disposable. The fix is simple.", repaired
+    assert any(line.startswith("lowercased mid-sentence capital") for line in changes), \
+        changes
+    # The receipt has to be TRUE: nothing the change log claims may survive in the text.
+    assert post_repair.mid_sentence_cap_hits(repaired, linter) == []
+
+
+def test_the_sentence_start_pass_cannot_plant_a_capital_this_layer_owns(linter):
+    """The same ordering, seen from the other side (PR #395 review, finding 2).
+
+    Step 2 is itself a PRODUCER of mid-sentence capitals on ordinary lowercase-start
+    prose, with no model involved. Running this layer after it means step 2's own
+    injections get cleaned up for every word in the set. That is a consequence of the
+    finding-1 fix, not an independent guarantee: step 2 can still plant a capital this
+    layer's closed set does not cover, which is tracked separately."""
+    for text in ("the agent keeps the chart open all day. the fix is a plugin.",
+                 "nobody reads the summaries. the leftovers are what break you."):
+        repaired, _ = _repair(text, linter)
+        assert post_repair.mid_sentence_cap_hits(repaired, linter) == [], repaired
+
+
+def test_a_none_body_is_answered_and_never_raises(linter):
+    """The `text or ""` guard stated an intent the function did not have (PR #395
+    review, minor): `_protected_spans` ran first and raised TypeError on None, so the
+    guard was unreachable. Now the empty cases return before anything touches the
+    linter."""
+    for empty in (None, ""):
+        assert post_repair.mid_sentence_cap_hits(empty, linter) == []
+        assert post_repair.repair_mid_sentence_caps(empty, linter) == (empty, [])

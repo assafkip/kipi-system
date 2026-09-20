@@ -127,7 +127,15 @@ _TRANSITION_OPENER_RE = re.compile(
 # hit his approved writing, and the re-measurement reproduced that: adding back `as`,
 # `have`, `and` or `it` puts exactly one corpus hit on the board per word. All four are
 # the same class, a sentence started without terminating the one before it, or a capital
-# he meant. Two of the twelve defects are MISSES and stay missed on purpose: both
+# he meant.
+#
+# `your` and `its` left the set for that SAME class on 2026-09-20 (PR #395 review,
+# minor), found by a reproducer rather than by the corpus: "Hey man, Your invoice is
+# attached" is a salutation with no terminator, so "Your" is a sentence start the
+# linter's offsets cannot see and this rule then read as mid-clause. `dm` and `email`
+# are default channel scopes, so that shape is in range. The corpus scan did not refute
+# these two because the corpus holds posts, not one-line DMs. That is the honest limit
+# of any corpus gate: it can only refute a word with text somebody already wrote. Two of the twelve defects are MISSES and stay missed on purpose: both
 # capitalize a common noun, and no closed function-word set reaches a common noun
 # without reaching product names too.
 #
@@ -143,7 +151,6 @@ every each another
 which whose whom
 because when while whether
 but
-your its
 """.split())
 
 # The gap is same-line whitespace ON PURPOSE: a newline before the word puts it at a
@@ -315,9 +322,14 @@ def mid_sentence_cap_hits(text, linter):
     than a one-off script. A detector that is only ever exercised through its repair is
     a detector nobody can point a counterexample at.
     """
+    # An empty body returns BEFORE `_protected_spans`, which raises TypeError on None
+    # (PR #395 review, minor). The old `text or ""` sat after that call, so it stated an
+    # intent the function did not have.
+    if not text:
+        return []
     spans = _protected_spans(text, linter)
     hits = []
-    for match in _MID_SENTENCE_CAP_RE.finditer(text or ""):
+    for match in _MID_SENTENCE_CAP_RE.finditer(text):
         word = match.group(2)
         if word.lower() not in MID_SENTENCE_LOWERCASE_WORDS:
             continue
@@ -366,16 +378,9 @@ def repair(text, allowlist, linter, mapping):
     # loop keeps its one uniform call shape. Reordering these is not free: each has
     # exactly one correct output, but all of them must precede the sentence-start
     # pass, because deleting a transition opener moves sentence starts.
-    # `repair_mid_sentence_caps` is LAST in this group and that position is load-bearing
-    # in both directions. The emdash and contraction passes CREATE the shape it looks
-    # for -- "chart—Every cycle" becomes "chart, Every cycle" and "is not That" becomes
-    # "isn't That" -- so it has to see their output. And it must precede step 3, whose
-    # proper-noun pass is the safety net: if this layer ever lowercases the first word of
-    # a multi-word proper noun the instance has declared, step 3 restores the canonical
-    # spelling in the same call.
     banned_words = functools.partial(repair_banned_words, mapping=mapping)
     for fix in (repair_emdash, repair_slash_commands, repair_transition_openers,
-                banned_words, repair_contractions, repair_mid_sentence_caps):
+                banned_words, repair_contractions):
         text, made = fix(text, linter)
         changes.extend(made)
 
@@ -412,6 +417,35 @@ def repair(text, allowlist, linter, mapping):
             if not n:
                 break
             changes.append(f"capitalized sentence start '{target}'")
+
+    # 2b. Mid-sentence capitals, AFTER step 2 and before step 3.
+    #
+    # THIS POSITION IS THE WHOLE FIX AND IT WAS WRONG ONCE (PR #395 review, major).
+    # The first version ran this in group 0, which reads correctly and is not: step 2
+    # rewrites with `subn(..., count=1)` against the RAW text, so it hits the first
+    # standalone lowercase occurrence of its target word, not necessarily the
+    # sentence-start one. A draft that opens a later sentence with the same word gets
+    # the capital put straight back. Measured on this layer's own defect fixture:
+    #
+    #     in   it treats The chart as disposable. the fix is simple.
+    #     out  It treats The chart as disposable. The fix is simple.
+    #     changes  ['lowercased mid-sentence capital (The) x1', ...]
+    #
+    # The defect shipped while the trail claimed it was repaired, which is worse than
+    # the `repairs: null` silence this layer exists to end: a false receipt.
+    #
+    # Running here keeps both properties the group-0 position was chosen for. The
+    # emdash and contraction passes still run FIRST and still create the shape this
+    # looks for ("chart\u2014Every cycle" -> "chart, Every cycle", "is not That" ->
+    # "isn\'t That"). Step 3's proper-noun pass still runs AFTER, so it remains the
+    # safety net if this layer ever lowercases the first word of a declared multi-word
+    # proper noun.
+    #
+    # It also means step 2's OWN injections get cleaned up. Step 2 is a producer of this
+    # defect class on ordinary lowercase-start prose, with no model involved. That is
+    # tracked separately; this position mitigates it only for words in the closed set.
+    repaired, made = repair_mid_sentence_caps(repaired, linter)
+    changes.extend(made)
 
     # 3. Proper nouns miscased against the linter's own list, in its canonical spelling.
     for noun in linter.load_proper_nouns(""):
