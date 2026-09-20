@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
-# Pairs with the capture half of pr-review-agent.sh (ASK-1921, claude review of
-# PR #377, item 4).
+# Pairs with the minors half of pr-review-agent.sh (ASK-1921).
 #
-# THE DEFECT. `minors captured as spillover: 0 of 2` was printed on PR #377 and
-# nothing else happened. Downstream, a run that extracted 2 minors and captured
-# none is indistinguishable from a run that found none: same terminal verdict,
-# same status, same silence. APPROVE WITH NITS stops the rework loop, so those
-# two findings existed only in a PR comment -- the silent drop
-# `no-orphan-findings.md` exists to prevent.
+# THE DEFECT THIS NOW PINS. The block used to call `prd_runner.py spillover add`
+# with no --severity. That defaults to `minor`, which sits in
+# SPILLOVER_REFUSED_SEVERITIES ("a minor is fixed in this change or rejected with
+# a reason; it is never queued", founder 2026-09-12), so the call returned 2 on
+# EVERY run. The captured count was 0 by construction, and the alarm built on that
+# zero paged Sana on every approved PR carrying a nit -- an alert with nothing down
+# and nothing to act on (claude review of PR #392, finding 1).
 #
-# IT DRIVES THE SHIPPED BLOCK, NOT A COPY. The capture half is inline in
+# An earlier version of this file drove that call through a stub returning 0, an
+# exit code the real producer cannot return for those arguments, so its two
+# negative cases asserted over a state production never reaches (same review,
+# finding 2). The exit-code axis is gone with the call: the cases below assert the
+# door is not knocked on at all, and that assertion is DERIVED from the shipped
+# source rather than restated here.
+#
+# IT DRIVES THE SHIPPED BLOCK, NOT A COPY. The minors half is inline in
 # pr-review-agent.sh, so this extracts it by awk range (anchored on the `if` line
 # and the first `^fi$` after it) and executes it in a bare subshell with stubs for
-# its three outside edges: the minor extractor, prd_runner.py and the notifier. A
-# rewritten copy here would test this file's idea of the block.
+# its two outside edges: the minor extractor and the notifier. A rewritten copy
+# here would test this file's idea of the block.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -29,85 +36,112 @@ ok()   { echo "PASS: $*"; }
 [ -f "$REVIEWER" ] || { echo "FAIL: $REVIEWER is missing"; exit 1; }
 
 # --- extract the shipped block ----------------------------------------------
-awk '/^if \[ "\$VERDICT" = "APPROVE WITH NITS" \] && \[ -n "\$ISSUE" \]; then$/,/^fi$/' \
-  "$REVIEWER" > "$WORK/block.sh"
-[ -s "$WORK/block.sh" ] || fail "could not extract the capture block -- its anchors moved"
-grep -q 'spillover add' "$WORK/block.sh" \
-  || fail "the extracted range is not the capture block (no 'spillover add' in it)"
+extract_block() {
+  awk '/^if \[ "\$VERDICT" = "APPROVE WITH NITS" \] && \[ -n "\$ISSUE" \]; then$/,/^fi$/' \
+    "$1"
+}
+extract_block "$REVIEWER" > "$WORK/block.sh"
+[ -s "$WORK/block.sh" ] || fail "could not extract the minors block -- its anchors moved"
+grep -q 'extract_minor_findings' "$WORK/block.sh" \
+  || fail "the extracted range is not the minors block (no 'extract_minor_findings' in it)"
 
 # --- the harness the block runs inside ---------------------------------------
-# $1 = the exit code the stub prd_runner.py returns (0 captures, 2 refuses).
+# $1 = the minor findings the extractor yields. There is deliberately no exit-code
+# argument: the block calls no external producer any more, and a knob for one would
+# reintroduce the unreachable fixture this file was rewritten to remove.
 run_block() {
-  local runner_rc="$1" minors="$2"
+  local minors="$1" block="${2:-$WORK/block.sh}"
   local sandbox="$WORK/run"
   rm -rf "$sandbox"; mkdir -p "$sandbox/plugins/prd-os/scripts"
-  printf '#!/usr/bin/env bash\nexit %s\n' "$runner_rc" > "$sandbox/plugins/prd-os/scripts/prd_runner.py"
+  # A prd_runner that ABORTS if anything calls it. The behavioural half of "the
+  # refusing door is not knocked on": a reintroduced capture call fails loudly
+  # here rather than passing through a friendly stub.
+  printf '#!/usr/bin/env bash\nprintf "prd_runner was called: %%s\\n" "$*" >> "%s/runner-calls.txt"\nexit 2\n' \
+    "$sandbox" > "$sandbox/plugins/prd-os/scripts/prd_runner.py"
   chmod +x "$sandbox/plugins/prd-os/scripts/prd_runner.py"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$1" >> "%s/notified.txt"\n' "$sandbox" > "$sandbox/notify.sh"
   chmod +x "$sandbox/notify.sh"
   : > "$sandbox/notified.txt"
+  : > "$sandbox/runner-calls.txt"
 
   {
-    echo 'python3() { "$1"; }'                      # the stub runner IS the exit code
+    echo 'python3() { "$1" "${@:2}"; }'   # route the block's python3 at the stub runner
     echo "extract_minor_findings() { printf '%s' \"\$MINORS_FIXTURE\"; }"
-    cat "$WORK/block.sh"
+    cat "$block"
   } > "$sandbox/harness.sh"
 
-  # The output and the page both land in FILES, never in shell variables: every
-  # caller below reads run_block through a command substitution, which is a
+  # The page and the runner calls both land in FILES, never in shell variables:
+  # every caller below reads run_block through a command substitution, which is a
   # subshell, so an assignment made in here would be discarded and every "paged
   # nobody" assertion would pass without measuring anything.
-  VERDICT="APPROVE WITH NITS" ISSUE="ASK-9999" PR="377" REVIEW="$WORK/review.md" \
+  VERDICT="APPROVE WITH NITS" ISSUE="ASK-9999" PR="392" REVIEW="$WORK/review.md" \
   MINOR_TAG="" SKEL="$sandbox" NOTIFY="$sandbox/notify.sh" MINORS_FIXTURE="$minors" \
     bash "$sandbox/harness.sh" 2>&1
 }
 
-notified() { cat "$WORK/run/notified.txt" 2>/dev/null; }
+notified()     { cat "$WORK/run/notified.txt" 2>/dev/null; }
+runner_calls() { cat "$WORK/run/runner-calls.txt" 2>/dev/null; }
 
 TWO_MINORS='minor|the help text omits --repo-root|a.py:10
 minor|the comment misstates the code|b.yml:72'
 
-# --- the case this issue is about --------------------------------------------
-OUT="$(run_block 2 "$TWO_MINORS")"
-case "$OUT" in
-  *"0 of 2"*) ok "the count itself is still printed (0 of 2)" ;;
-  *) fail "expected the '0 of 2' count in the output, got: $OUT" ;;
-esac
-case "$OUT" in
-  *LOST*|*"captured NONE"*|*"went nowhere"*)
-     ok "2 found + 0 captured says so loudly, not only as a count" ;;
-  *) fail "2 minors found and 0 captured produced no loud signal. Output was: $OUT" ;;
-esac
-[ -n "$(notified)" ] \
-  && ok "2 found + 0 captured reaches the alert path (Sana's queue)" \
-  || fail "2 minors found and 0 captured paged nobody: the notifier was never called"
+# --- the refusing door is not knocked on --------------------------------------
+# Structural: read off the SHIPPED source, so re-adding the call anywhere in the
+# block fails this whether or not the harness happens to execute that branch.
+if grep -q 'spillover add' "$WORK/block.sh"; then
+  fail "the block calls 'spillover add' again. prd_runner refuses a minor by policy (rc=2), so the capture cannot succeed and any count built on it reads as an outage."
+else
+  ok "the shipped block does not call 'spillover add' (the door that refuses a minor by policy)"
+fi
 
-# --- the negative: a healthy capture stays quiet ------------------------------
-OUT="$(run_block 0 "$TWO_MINORS")"
+# --- two minors: named, counted, and nobody paged ------------------------------
+OUT="$(run_block "$TWO_MINORS")"
 case "$OUT" in
-  *"2 of 2"*) ok "a healthy run still reports its count (2 of 2)" ;;
-  *) fail "expected '2 of 2' on the healthy path, got: $OUT" ;;
+  *": 2"*) ok "the count is printed (2 minors)" ;;
+  *) fail "expected a count of 2 in the output, got: $OUT" ;;
 esac
+MISSING=""
+for claim in "the help text omits --repo-root" "a.py:10" "the comment misstates the code" "b.yml:72"; do
+  case "$OUT" in *"$claim"*) : ;; *) MISSING="$MISSING [$claim]" ;; esac
+done
+[ -z "$MISSING" ] \
+  && ok "each minor is NAMED with its location, not only tallied" \
+  || fail "the output tallies the minors without naming them; absent:$MISSING"
 case "$OUT" in
-  *LOST*|*"captured NONE"*|*"went nowhere"*)
-     fail "a run that captured everything raised the loss signal anyway: $OUT" ;;
-  *) ok "a run that captured everything raises nothing" ;;
+  *UNROUTED*) ok "a terminal verdict with minors says so out loud (UNROUTED)" ;;
+  *) fail "2 minors on a terminal APPROVE WITH NITS produced no loud signal. Output was: $OUT" ;;
 esac
+[ -z "$(runner_calls)" ] \
+  && ok "no external producer was invoked at all" \
+  || fail "the block called prd_runner: $(runner_calls)"
 [ -z "$(notified)" ] \
-  && ok "a healthy capture pages nobody" \
-  || fail "a healthy capture paged the alert path: $(notified)"
+  && ok "a policy refusal pages nobody (no 100%-rate alert)" \
+  || fail "an ordinary APPROVE WITH NITS with minors paged the alert path: $(notified)"
 
-# --- the other negative: zero found is not a loss -----------------------------
-# An LLM that drifts from the FINDINGS format yields zero lines, and zero of zero
-# is a review with no minors. The signal is about findings that were EXTRACTED and
-# then lost, never about a reviewer that reported none.
-OUT="$(run_block 2 "")"
+# --- the negative: zero minors is quiet ----------------------------------------
+# An LLM that drifts from the FINDINGS format yields zero lines, and zero minors is
+# a review with no nits -- the ordinary healthy case.
+OUT="$(run_block "")"
 case "$OUT" in
-  *LOST*|*"captured NONE"*|*"went nowhere"*)
-     fail "zero minors extracted was reported as a loss: $OUT" ;;
-  *) ok "zero found is zero lost (0 of 0 raises nothing)" ;;
+  *UNROUTED*) fail "zero minors extracted was reported as unrouted: $OUT" ;;
+  *) ok "zero minors raises nothing" ;;
 esac
-[ -z "$(notified)" ] || fail "0 of 0 paged the alert path: $(notified)"
+[ -z "$(notified)" ] || fail "zero minors paged the alert path: $(notified)"
+
+# --- mutant: the assertion above can actually go red ---------------------------
+# Put the capture call back into a COPY of the block and confirm both halves fail.
+# A check that cannot be made to fail is decoration.
+sed 's#^  done <<EOF#    python3 "$SKEL/plugins/prd-os/scripts/prd_runner.py" spillover add --source "$ISSUE" --desc "x"\n  done <<EOF#' \
+  "$WORK/block.sh" > "$WORK/mutant.sh"
+if grep -q 'spillover add' "$WORK/mutant.sh"; then
+  ok "mutant built (capture call re-added to a copy)"
+  run_block "$TWO_MINORS" "$WORK/mutant.sh" >/dev/null
+  [ -n "$(runner_calls)" ] \
+    && ok "mutant killed: the runner-call check sees the re-added capture" \
+    || fail "mutant SURVIVED: the capture call was re-added and nothing noticed"
+else
+  fail "could not build the mutant -- the block's shape moved, so the check above is unproven"
+fi
 
 [ "$FAILED" = "0" ] && echo "ALL PASS" || echo "SOME FAILED"
 exit "$FAILED"
