@@ -183,10 +183,21 @@ def build_context_from_corpus():
         "[voice-dna-loader] Writing request detected. The voice corpus is "
         f"{voice_dir}. This hook reads that corpus only; the "
         "founder-voice/references copies are retired and are no longer loaded.\n\n"
-        "Before drafting anything another person reads, run the selector so the "
-        "exemplars match the CHANNEL and the LENGTH of the piece:\n\n"
-        f"    KIPI_VOICE_DIR={voice_dir} python3 "
-        f"{root}/plugins/kipi-core/voiceloop/voice_ref.py --channel x --words <target>\n\n"
+        # NO COMMAND LINE HERE (ASK-1400, founder-directed 2026-09-10: "There
+        # should not be any command line only tools - I dont put commands in the
+        # command line"). This block used to hand the model
+        # `voice_ref.py --channel x --words <target>`, which carries no
+        # --slot-kind and so defaults to "post". That was a SECOND door to
+        # ASK-1399: a reply drafted by following this instruction was taught by
+        # his POSTS, bypassing the lanes entirely. It fired on every writing
+        # request. `voice_ref.py` has zero production callers; this hook was its
+        # only invoker, so removing the suggestion removes the trap rather than
+        # relocating it. The LANES now derive slot_kind from their surface, which
+        # is where the decision belongs: nobody has to remember a flag.
+        "The lane picks the exemplars. A reply or comment draws on his own "
+        "replies and comments, a post draws on his posts, and the lane derives "
+        "that from the surface it is writing for. You do not select them by "
+        "hand.\n\n"
         "Length is a real axis: the x corpus runs 5 to 55 words with one 479-word "
         "row, so a long piece written against short rows comes out formal. "
         "Substance over cadence: with no scar, named thing, test or evidence, the "
