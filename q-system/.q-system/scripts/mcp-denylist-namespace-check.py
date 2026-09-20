@@ -91,6 +91,19 @@ CASES = [
     {"tool": "mcp__claude_ai_Google_Drive__trash_file", "expect": "deny", "source": "session"},
     {"tool": "mcp__claude_ai_Resend__remove-domain", "expect": "deny", "source": "session"},
 
+    # ---- mutating, on a server where EVERY non-read op is denied -------------
+    # The founder's global CLAUDE.md names "Vercel mutating ops". The registered
+    # Vercel connector is `mcp__claude_ai_Vercel__`, with a CAPITAL V, so a
+    # server matcher that is case-sensitive misses it -- the same server-name
+    # miss this issue exists to fix (PR #390 review, minor).
+    {"tool": "mcp__claude_ai_Vercel__update_project", "expect": "deny",
+     "source": "synthetic-op-real-server",
+     "why": "the SERVER segment is real (the claude.ai Vercel connector, seen "
+            "unauthenticated in this session's server list); the op name is "
+            "synthetic because an unauthenticated connector exposes no tool "
+            "list to read one from. The assertion here is about the server "
+            "segment, which the op name does not affect"},
+
     # ---- read-only, and the namespace really is loaded ----------------------
     {"tool": "mcp__linear__list_issues", "expect": "allow", "source": "session"},
     {"tool": "mcp__linear__get_issue", "expect": "allow", "source": "session"},
@@ -103,6 +116,16 @@ CASES = [
      "source": "session"},
     {"tool": "mcp__claude_ai_Resend__list-domains", "expect": "allow", "source": "session"},
     {"tool": "mcp__plugin_kipi-core_kipi__kipi_query", "expect": "allow", "source": "session"},
+    # A drag-and-drop GESTURE. `drop` reads as a destructive SQL verb and is not
+    # one here; it was on the destructive list and denied a mouse move with a
+    # message about vendor-side deletion (PR #390 review, minor).
+    {"tool": "mcp__playwright__browser_drop", "expect": "allow", "source": "session"},
+    {"tool": "mcp__playwright__browser_drag", "expect": "allow", "source": "session"},
+    # On the read list, and it WRITES: it resolves a review thread at the vendor
+    # side. Not destructive, so `allow` is the right decision either way -- the
+    # defect the reviewer named was the claim that the read list opens nothing
+    # that writes. Kept as a case so the claim stays checkable.
+    {"tool": "mcp__linear__resolve_diff_thread", "expect": "allow", "source": "session"},
 
     # ---- read-only on the namespaces the denylist DOES wildcard -------------
     # These are the over-broad half, verbatim from ASK-1923. They are reads, so
@@ -195,6 +218,70 @@ def decide(hook, tool_name, home):
     return json.loads(out)["hookSpecificOutput"]["permissionDecision"]
 
 
+def deny_hash(hook, tool_name, home):
+    """The `kipi-approve <hash>` grant scope the guard offers for `tool_name`.
+
+    None when the guard allowed the call (no grant is offered for an allow).
+    """
+    copy = pathlib.Path(home) / "under-test.sh"
+    shutil.copy(hook, copy)
+    payload = json.dumps({"tool_name": tool_name, "tool_input": {}, "cwd": str(home)})
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env.pop("ALLOW_DESTRUCTIVE", None)
+    proc = subprocess.run(["bash", str(copy)], input=payload,
+                          capture_output=True, text=True, env=env)
+    out = proc.stdout.strip()
+    if not out:
+        return None
+    reason = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
+    found = re.search(r"kipi-approve\s+(\S+)", reason)
+    return found.group(1) if found else None
+
+
+def token_home(home):
+    """A throwaway HOME carrying the REAL capability-token.sh, or None.
+
+    The token script is copied, never stubbed: a stub would encode this file's
+    idea of how grants are scoped, and the thing being measured IS how they are
+    scoped. Returns None when the machine has no token script to copy.
+    """
+    source = pathlib.Path(os.environ.get(
+        "KIPI_CAPABILITY_TOKEN",
+        str(pathlib.Path(os.environ.get("HOME", "")) / ".claude/bin/capability-token.sh")))
+    if not source.is_file():
+        return None
+    home = pathlib.Path(home)
+    (home / ".claude/bin").mkdir(parents=True, exist_ok=True)
+    installed = home / ".claude/bin/capability-token.sh"
+    shutil.copy(source, installed)
+    installed.chmod(0o755)
+    return installed
+
+
+def grant_leak(hook, home, tool_a="mcp__claude_ai_Gmail__delete_label",
+               tool_b="mcp__claude_ai_Google_Calendar__delete_event"):
+    """Does one approved MCP denial unlock a DIFFERENT MCP destructive op?
+
+    emit_deny scopes its grant to `$COMMAND` + `$CWD`, and an MCP payload has no
+    `.tool_input.command`, so every MCP denial in one cwd hashed the EMPTY
+    STRING. Returns one of: 'no-token-script', 'not-both-denied',
+    'LEAK' (a grant minted for A was consumed by B), 'scoped'.
+    """
+    token = token_home(home)
+    if token is None:
+        return "no-token-script"
+    hash_a = deny_hash(hook, tool_a, home)
+    hash_b = deny_hash(hook, tool_b, home)
+    if hash_a is None or hash_b is None:
+        return "not-both-denied"
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    subprocess.run(["bash", str(token), "mint", hash_a],
+                   capture_output=True, text=True, env=env)
+    return "LEAK" if decide(hook, tool_b, home) == "allow" else "scoped"
+
+
 def measure(hook, cases=None):
     """[(case, decision)] for every case, each in its own throwaway HOME."""
     results = []
@@ -254,10 +341,29 @@ def main(argv=None):
         print("  %-6s %-52s [%s]%s"
               % (decision.upper(), case["tool"], case["source"], mark))
 
+    with tempfile.TemporaryDirectory() as home:
+        leak = grant_leak(hook, home)
+    print("\nDIRECTION 3 -- how wide is one approval token:")
+    print({
+        "LEAK": "  LEAK   a grant minted for one MCP denial was consumed by a "
+                "DIFFERENT one\n         (emit_deny hashes $COMMAND, and an MCP "
+                "payload carries none)",
+        "scoped": "  scoped  a grant for one MCP denial does not unlock another",
+        "not-both-denied": "  n/a    the two probe tools are not both denied on "
+                           "this guard",
+        "no-token-script": "  n/a    no capability-token.sh on this machine to "
+                           "measure with",
+    }[leak])
+
     if args.report:
         print("\n%d case(s) disagree with the oracle. --report never fails."
               % len(bad))
         return 0
+
+    if leak == "LEAK":
+        print("\nFAIL: one MCP approval token unlocks any other MCP destructive "
+              "operation in the same cwd.")
+        return 1
 
     if bad:
         print("\nFAIL: %d case(s) wrong." % len(bad))

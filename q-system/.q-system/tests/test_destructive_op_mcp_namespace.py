@@ -114,6 +114,27 @@ class TestTheGuardIsWrongInBothDirectionsToday:
             "no read-only MCP query is denied any more; the over-broad half of "
             "ASK-1923 is fixed and this case has outlived it")
 
+    def test_one_mcp_approval_token_unlocks_a_different_destructive_op(self, tmp_path):
+        """The widest of the four, and invisible to every case above.
+
+        `emit_deny` scopes its capability-token grant to `$COMMAND` + `$CWD`. An
+        MCP payload has no `.tool_input.command`, so every MCP denial in one cwd
+        hashes the EMPTY STRING and they all share one grant: approving a Gmail
+        `delete_label` once hands over the next Calendar `delete_event`. That is
+        the ambient authority the token exists to remove (PocketOS 2026-05-17).
+
+        The REAL capability-token.sh is copied into the throwaway HOME. A stub
+        would encode this test's idea of how a grant is scoped, and how a grant
+        is scoped is the thing under measurement.
+        """
+        current, _ = variants(tmp_path)
+        verdict = checker.grant_leak(current, tmp_path)
+        if verdict == "no-token-script":
+            pytest.skip("no capability-token.sh on this machine to measure with")
+        assert verdict == "LEAK", (
+            "one MCP approval no longer unlocks another; that half of ASK-1923 "
+            "is fixed and this case has outlived it")
+
     def test_the_denylist_wildcards_name_namespaces_nothing_registers(self, tmp_path):
         """The mechanism behind the under-broad half, not just its symptom."""
         current, _ = variants(tmp_path)
@@ -143,6 +164,37 @@ class TestTheOperationKeyedSplitFixesBothDirections:
             "the patch blocks a read: %s. A gate that blocks reads is a gate "
             "someone switches off." % case["tool"])
 
+    def test_an_approval_token_is_scoped_to_the_call_that_earned_it(self, tmp_path):
+        _, candidate = variants(tmp_path)
+        verdict = checker.grant_leak(candidate, tmp_path)
+        if verdict == "no-token-script":
+            pytest.skip("no capability-token.sh on this machine to measure with")
+        assert verdict == "scoped", (
+            "a grant minted for one MCP denial was consumed by a different one; "
+            "the patch scopes $COMMAND to the tool name plus its tool_input, so "
+            "either that assignment is gone or it lands after the first deny")
+
+    def test_a_read_verb_does_not_let_a_write_past_the_wildcard(self, tmp_path):
+        """The inserted comment claims the read list reaches no write on the
+        namespaces the block below wildcards. `resolve` was on it, and
+        `resolve_diff_thread` WRITES -- it resolves a review thread at the vendor
+        side (PR #390 review). The probe composes a real wildcarded namespace
+        with that real operation; it is a probe of the matcher, not a claim that
+        this exact tool is registered."""
+        _, candidate = variants(tmp_path)
+        probe = "mcp__plugin_linear_linear__resolve_diff_thread"
+        assert checker.decide(candidate, probe, tmp_path) == "deny", (
+            "a write on a wildcarded namespace took the read-only exit")
+
+    def test_the_proposal_json_is_what_its_generator_builds(self):
+        """The insert is shell inside a JSON string; a hand edit there is how a
+        quoting defect reaches a security gate. One writer: build-mcp-proposal.py."""
+        import subprocess
+        builder = SCRIPTS / "build-mcp-proposal.py"
+        proc = subprocess.run([sys.executable, str(builder), "--check"],
+                              capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr or proc.stdout
+
     def test_the_checker_agrees_end_to_end(self, tmp_path):
         """The script the founder will run, run the way they will run it."""
         _, candidate = variants(tmp_path)
@@ -153,6 +205,52 @@ class TestTheOperationKeyedSplitFixesBothDirections:
         be measuring nothing -- this is the mutation that proves it can go red."""
         current, _ = variants(tmp_path)
         assert checker.failures(current) != []
+
+
+class TestEachFixCanGoRed:
+    """One mutant per decision point the PR #390 review added.
+
+    A check that has never been seen failing is decoration. Each case below
+    breaks exactly one clause of the insert and watches the corresponding
+    decision flip back to what the reviewer found.
+    """
+
+    def mutant(self, tmp_path, old, new):
+        edit = proposal_edit()
+        assert edit["insert"].count(old) == 1, (
+            "the mutation target moved; this mutant is no longer breaking what "
+            "it claims to break: %r" % old)
+        text = HOOK.read_text(encoding="utf-8")
+        insert = edit["insert"].replace(old, new, 1)
+        broken = tmp_path / "mutant.sh"
+        broken.write_text(
+            text.replace(edit["anchor"], insert + edit["anchor"], 1),
+            encoding="utf-8")
+        return broken
+
+    def test_without_the_command_scoping_the_token_leaks_again(self, tmp_path):
+        broken = self.mutant(tmp_path,
+                             'COMMAND="$TOOL_NAME ${TOOL_INPUT:-}"',
+                             '_mcp_scoping_removed_by_mutation=1')
+        if checker.grant_leak(broken, tmp_path) == "no-token-script":
+            pytest.skip("no capability-token.sh on this machine to measure with")
+        assert checker.grant_leak(broken, tmp_path) == "LEAK"
+
+    def test_with_resolve_back_on_the_read_list_a_write_walks_through(self, tmp_path):
+        broken = self.mutant(tmp_path, "|show|count|suggest)", "|show|count|resolve|suggest)")
+        probe = "mcp__plugin_linear_linear__resolve_diff_thread"
+        assert checker.decide(broken, probe, tmp_path) == "allow"
+
+    def test_with_drop_back_on_the_destructive_list_a_mouse_gesture_is_denied(self, tmp_path):
+        broken = self.mutant(tmp_path, "(delete|destroy|purge", "(delete|destroy|drop|purge")
+        assert checker.decide(broken, "mcp__playwright__browser_drop", tmp_path) == "deny"
+
+    def test_a_case_sensitive_server_match_misses_the_capital_v_connector(self, tmp_path):
+        broken = self.mutant(tmp_path,
+                             'grep -Eqi "$MCP_MUTATION_SCOPED_SERVER"',
+                             'grep -Eq "$MCP_MUTATION_SCOPED_SERVER"')
+        assert checker.decide(broken, "mcp__claude_ai_Vercel__update_project",
+                              tmp_path) == "allow"
 
 
 class TestThePatchDoesNotReachOutsideTheMcpBlock:
