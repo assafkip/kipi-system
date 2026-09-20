@@ -29,6 +29,23 @@
 # things able to write `success` into this context is exactly two and greppable:
 # pr-review-agent.sh's post_reviewer_status, and carry_post here.
 #
+# WHEN IT MAY RUN: BEFORE THE SHA IS ANYBODY'S HEAD (codex, PR #376 rounds 1+2).
+# GitHub's status API has no compare-and-swap. Run against a commit that is
+# already a PR head, a reviewer can land a REQUEST CHANGES between guard 3 and
+# the post, and the copied green buries it. Round 1's answer was a compensating
+# red after the fact; round 2 showed three ways that still loses (auto-merge can
+# fire in the gap, the red can fail to post, the caller can swallow both). Same
+# class twice, so the fix is the ORDER, not a fourth patch: converge pushes the
+# receipt commit to a staging ref first, carries onto that sha while no branch
+# points at it and nobody can be reviewing it, and only then moves the branch.
+# Any reviewer verdict on that sha is therefore NEWER than the copy, and GitHub
+# shows the newest status per context. The copy cannot bury a verdict because it
+# always comes first. Run by hand against a live head, this script IS racy; do
+# that only when no reviewer is running.
+#
+# EXIT: 0 carried, 10 declined (a guard said no), 1 could not read or post,
+# 2 usage. The caller tells "did nothing, by design" from "tried and failed".
+#
 # Decided by code on purpose. No model is asked whether the delta is safe: a gate
 # has to give the same answer when it is re-run.
 #
@@ -44,13 +61,12 @@ RECEIPT_LEDGER=".prd-os/receipts.jsonl"
 # floor wrote this" means. test-receipt-carry-approval.sh feeds a real floor row
 # through live_verdict, so a drift between the two strings turns that test red.
 FLOOR_DESC="no reviewer verdict at this head (floor: absent is not approved)"
-# How this script recognises its own success rows. A literal, written only by
-# main below, so "starts with this" is exactly "the carry wrote it".
 CARRY_PREFIX="carried from "
 
 # Command-prefix seam, same reason as REVIEWER_FLOOR_GH: a stub that replaces
 # `gh` sees exactly the argv production sends.
 RECEIPT_CARRY_GH="${RECEIPT_CARRY_GH:-gh}"
+EXIT_DECLINED=10
 
 # Pure. Plural statuses list (newest first) on stdin. Prints
 # `<state> <description>` of the newest entry in the reviewer's context that the
@@ -78,24 +94,13 @@ read_statuses() {  # read_statuses <repo-path> <sha>
   "${gh_cmd[@]}" api "repos/$1/commits/$2/statuses"
 }
 
-# Pure. Same list on stdin. The newest entry in the reviewer's context that is
-# neither the floor's nor this script's own, as `<state>`, or `none`. This is
-# "did somebody who actually read the head speak", and it is what the post-write
-# race check asks.
-foreign_verdict() {
-  jq -r --arg ctx "$REVIEWER_CONTEXT" --arg fd "$FLOOR_DESC" --arg cp "$CARRY_PREFIX" '
-    [.[]? | select(.context == $ctx) | select(.description != $fd)
-          | select(((.description // "") | startswith($cp) or startswith("carry withdrawn")) | not)]
-    | if length == 0 then "none" else .[0].state end' 2>/dev/null || echo "unreadable"
-}
-
-# carry_post <repo-path> <head-sha> <success|failure> <description>
-# `success` is written from exactly one call site in main, after all three
-# guards; `failure` only ever withdraws a success this script just wrote.
+# carry_post <repo-path> <head-sha> <description>
+# `state=success` is a literal, written from exactly one call site in main, after
+# all three guards. This script has no way to write anything else.
 carry_post() {
   local gh_cmd; read -r -a gh_cmd <<< "$RECEIPT_CARRY_GH"
   "${gh_cmd[@]}" api -X POST "repos/$1/statuses/$2" \
-    -f "state=$3" -f "context=$REVIEWER_CONTEXT" -f "description=$4"
+    -f "state=success" -f "context=$REVIEWER_CONTEXT" -f "description=$3"
 }
 
 main() {
@@ -109,7 +114,7 @@ main() {
   kind="$(delta_kind "$tree" "$reviewed" "$head")"
   if ! [ "$kind" = "receipt-only" ]; then
     echo "carry: not carrying to $head -- beyond $reviewed it is '$kind', and only a receipt-only delta carries"
-    exit 0
+    exit "$EXIT_DECLINED"
   fi
 
   # A failed read is NOT an empty list. Post nothing rather than guess.
@@ -121,7 +126,7 @@ main() {
   state="${verdict%% *}"; desc="${verdict#* }"
   if ! [ "$state" = "success" ]; then
     echo "carry: the live reviewer verdict at $reviewed is '$state', not an approval; posting nothing"
-    exit 0
+    exit "$EXIT_DECLINED"
   fi
 
   if ! head_payload="$(read_statuses "$repo" "$head")"; then
@@ -131,36 +136,15 @@ main() {
   head_state="$(printf '%s' "$head_payload" | live_verdict)"; head_state="${head_state%% *}"
   if ! [ "$head_state" = "none" ]; then
     echo "carry: $head already carries a real reviewer verdict ($head_state); leaving it alone"
-    exit 0
+    exit "$EXIT_DECLINED"
   fi
 
   desc="$(printf '%.140s' "$CARRY_PREFIX$(printf '%.12s' "$reviewed") (receipt-only delta): $desc")"
-  if ! carry_post "$repo" "$head" success "$desc" >/dev/null; then
+  if ! carry_post "$repo" "$head" "$desc" >/dev/null; then
     echo "carry: the status post on $head FAILED; the approval is still only on $reviewed" >&2
     exit 1
   fi
 
-  # THE RACE (codex major, PR #376 round 1). The head read and the post are two
-  # API calls and GitHub has no compare-and-swap, so the reviewer can land a
-  # verdict on this head between them. The floor has the same window and only
-  # OBSERVES it, because its write is red. This write is GREEN, so a buried
-  # REQUEST CHANGES here would make a refused head mergeable -- the dangerous
-  # direction. So it is steered instead: if anything that is neither the floor's
-  # nor ours is in the list after the post, withdraw with a red on top. That can
-  # bury a real approval too, which is wrongly BLOCKED and loud, never wrongly
-  # MERGED. Red is answerable; a phantom green is not.
-  local after foreign
-  if ! after="$(read_statuses "$repo" "$head")"; then
-    carry_post "$repo" "$head" failure "carry withdrawn: could not confirm no reviewer verdict raced it" >/dev/null || true
-    echo "carry: posted, then could NOT re-read $head to check for a raced verdict; withdrew with a red. Re-run the reviewer on $head." >&2
-    exit 3
-  fi
-  foreign="$(printf '%s' "$after" | foreign_verdict)"
-  if ! [ "$foreign" = "none" ]; then
-    carry_post "$repo" "$head" failure "carry withdrawn: a reviewer verdict ($foreign) landed on this head" >/dev/null || true
-    echo "carry: a real reviewer verdict ($foreign) landed on $head during the carry; withdrew with a red so it cannot merge on the copy. Re-run the reviewer on $head." >&2
-    exit 3
-  fi
   echo "carry: $REVIEWER_CONTEXT=success carried from $reviewed to $head"
 }
 

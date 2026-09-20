@@ -75,13 +75,17 @@ cat > "$STUB" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$CALLS"
 case "\$*" in
-  *"-X POST"*) exit 0 ;;
+  *"-X POST"*)
+    # WHERE WAS THE BRANCH WHEN THE GREEN WAS WRITTEN? The whole safety of the
+    # carry is its order, so the stub records what origin's branch pointed at, and
+    # whether the staging ref existed, at the instant of the POST.
+    if [ -n "\${STUB_ORIGIN:-}" ]; then
+      echo "AT-POST branch=\$(git -C "\$STUB_ORIGIN" rev-parse -q --verify "refs/heads/\$STUB_BRANCH" 2>/dev/null)" >> "$CALLS"
+      echo "AT-POST staging=\$(git -C "\$STUB_ORIGIN" for-each-ref --format='%(objectname)' refs/kipi/receipt-staging | tr '\n' ' ')" >> "$CALLS"
+    fi
+    exit "\${STUB_POST_RC:-0}" ;;
   *"/commits/\$STUB_REVIEWED/statuses"*) cat "\$STUB_REVIEWED_PAYLOAD" ;;
-  *"/commits/"*"/statuses"*)
-    # After a POST the head is read AGAIN (the race check). STUB_HEAD_AFTER is
-    # what that second read sees; unset means nothing raced.
-    if grep -q -- "-X POST" "$CALLS" && [ -n "\${STUB_HEAD_AFTER:-}" ]; then cat "\$STUB_HEAD_AFTER"
-    else cat "\$STUB_HEAD_PAYLOAD"; fi ;;
+  *"/commits/"*"/statuses"*) cat "\$STUB_HEAD_PAYLOAD" ;;
 esac
 EOF
 chmod +x "$STUB"
@@ -109,53 +113,70 @@ check_eq "a head the reviewer already judged is never overwritten" \
 check_eq "an unreadable reviewed payload posts NOTHING" \
   "0" "$(run "$TMP/does-not-exist.json" "$FX/head-absent.json" "$RECEIPT")"
 
-# THE RACE (codex major, PR #376 round 1): a real REQUEST CHANGES lands on the
-# head between the read and the post. The second read sees it, so the carry must
-# put a RED on top of its own green. reviewed-request-changes.json is that real
-# reviewer row.
-echo "race (a reviewer verdict lands on the head mid-carry)"
-export STUB_HEAD_AFTER="$FX/reviewed-request-changes.json"
-check_eq "a raced rejection is answered with a second post" \
-  "2" "$(run "$FX/reviewed-approved.json" "$FX/head-absent.json" "$RECEIPT")"
-check_eq "and the LAST word on that head is a failure, not the copied success" \
-  "state=failure" "$(grep -- "-X POST" "$CALLS" | tail -1 | grep -o 'state=[a-z]*')"
-check_eq "which says it withdrew" "1" "$(grep -- "-X POST" "$CALLS" | tail -1 | grep -c 'carry withdrawn')"
-unset STUB_HEAD_AFTER
-check_eq "foreign_verdict ignores the floor and the carry's own rows" "none" \
-  "$(jq '. + [{"context":"kipi/reviewer-approved","state":"success","description":"carried from 45e0445f5656 (receipt-only delta): APPROVE"}]' "$FX/head-floor-only.json" | foreign_verdict)"
+check_eq "a guard saying no exits 10, so the caller can tell it from a failure" "10" \
+  "$(STUB_REVIEWED="$REVIEWED" STUB_REVIEWED_PAYLOAD="$FX/reviewed-request-changes.json" STUB_HEAD_PAYLOAD="$FX/head-absent.json" \
+     RECEIPT_CARRY_GH="$STUB" bash "$SCRIPT" "$REPO" "$REVIEWED" "$RECEIPT" "o/r" >/dev/null 2>&1; echo $?)"
+check_eq "a post GitHub refuses exits 1, not 0" "1" \
+  "$(STUB_POST_RC=1 STUB_REVIEWED="$REVIEWED" STUB_REVIEWED_PAYLOAD="$FX/reviewed-approved.json" STUB_HEAD_PAYLOAD="$FX/head-absent.json" \
+     RECEIPT_CARRY_GH="$STUB" bash "$SCRIPT" "$REPO" "$REVIEWED" "$RECEIPT" "o/r" >/dev/null 2>&1; echo $?)"
 
 # ------------------------------------------------------------------ wiring
-# A script nothing calls fixes nothing. approval_carry is CUT FROM THE SHIPPED
-# converge.sh (same move as test-converge-crossrepo-receipt.sh), and driven
-# against a real origin + clone so FETCH_HEAD is what git actually wrote.
+# A script nothing calls fixes nothing, and THIS one is only safe in one order.
+# approval_carry is CUT FROM THE SHIPPED converge.sh (same move as
+# test-converge-crossrepo-receipt.sh) and driven against a real bare origin, so
+# "the branch had not moved yet" is read from git, not asserted in a comment.
 CONVERGE="${RECEIPT_CARRY_CONVERGE:-$HERE/../converge.sh}"
 echo "wiring (approval_carry cut from the shipped converge.sh)"
 FN="$TMP/fn.sh"
 sed -n '/^approval_carry() {/,/^}$/p' "$CONVERGE" > "$FN"
 check_eq "converge.sh defines approval_carry" "1" "$(grep -c '^approval_carry() {' "$FN")"
-check_eq "the receipt-confirmed branch calls it with the reviewed sha" "1" \
-  "$(sed -n '/^receipt_confirm_origin() {/,/^}$/p' "$CONVERGE" | grep -c '^    approval_carry "\$tree" "\$sha"$')"
+
+# THE ORDER, read from the shipped function body: the carry call sits ABOVE the
+# line that moves the branch, inside receipt_transaction, and nowhere else.
+TX="$(sed -n '/^receipt_transaction() {/,/^}$/p' "$CONVERGE")"
+CALL_LINE="$(printf '%s\n' "$TX" | grep -n '^  approval_carry "\$tree" "\$sha"$' | cut -d: -f1 | head -1)"
+MOVE_LINE="$(printf '%s\n' "$TX" | grep -n 'HEAD:refs/heads/\$BRANCH' | cut -d: -f1 | head -1)"
+check_eq "receipt_transaction calls the carry" "yes" "$([ -n "$CALL_LINE" ] && echo yes || echo no)"
+check_eq "and calls it BEFORE the line that moves the branch" "yes" \
+  "$([ -n "$CALL_LINE" ] && [ -n "$MOVE_LINE" ] && [ "$CALL_LINE" -lt "$MOVE_LINE" ] && echo yes || echo no)"
+check_eq "nothing carries onto a head that is already live (receipt_confirm_origin)" "0" \
+  "$(sed -n '/^receipt_confirm_origin() {/,/^}$/p' "$CONVERGE" | grep -c 'approval_carry')"
+check_eq "a missed carry reaches the terminal page, not just the log" "1" \
+  "$(grep -c 'if \[ -z "\$RECEIPT_MISS" \] && \[ -n "\$CARRY_MISS" \]; then' "$CONVERGE")"
 
 ORIGIN="$TMP/origin.git"; CLONE="$TMP/clone"
 git init -q --bare "$ORIGIN"
-g push -q "$ORIGIN" "$RECEIPT:refs/heads/sana/ask-1"
-git clone -q "$ORIGIN" "$CLONE" 2>/dev/null
-git -C "$CLONE" fetch -q origin sana/ask-1
-wire() {  # wire <slug>  -> number of POSTs
+g push -q "$ORIGIN" "$REVIEWED:refs/heads/sana/ask-1"
+git clone -q -b sana/ask-1 "$ORIGIN" "$CLONE" 2>/dev/null
+# The clone now stands where converge's tree stands: the receipt is committed
+# locally and origin's branch is still at the reviewed sha.
+git -C "$CLONE" -c user.name=t -c user.email=t@t.invalid pull -q "$REPO" "$RECEIPT" 2>/dev/null \
+  || git -C "$CLONE" fetch -q "$REPO" "$RECEIPT" && git -C "$CLONE" reset -q --hard "$RECEIPT"
+wire() {  # wire <slug> <reviewed-payload>  -> prints CARRY_MISS (empty when carried)
   : > "$CALLS"
-  STUB_REVIEWED="$REVIEWED" STUB_REVIEWED_PAYLOAD="$FX/reviewed-approved.json" \
-  STUB_HEAD_PAYLOAD="$FX/head-floor-only.json" RECEIPT_CARRY_GH="$STUB" \
-  SCRIPT_DIR="$(dirname "$SCRIPT")" CARRY_UNDER_TEST="$SCRIPT" \
+  STUB_ORIGIN="$ORIGIN" STUB_BRANCH="sana/ask-1" \
+  STUB_REVIEWED="$REVIEWED" STUB_REVIEWED_PAYLOAD="$2" \
+  STUB_HEAD_PAYLOAD="$FX/head-absent.json" RECEIPT_CARRY_GH="$STUB" \
+  SCRIPT_DIR="$(dirname "$SCRIPT")" LOG="$TMP/converge.log" \
   TARGET_SLUG="$1" TARGET_REPO="$CLONE" BRANCH="sana/ask-1" \
-    bash -c "say() { :; }; . '$FN'; approval_carry '$CLONE' '$REVIEWED'" >/dev/null 2>&1
-  grep -c -- "-X POST" "$CALLS" || true
+    bash -c "say() { :; }; CARRY_STAGING_PREFIX=refs/kipi/receipt-staging; . '$FN'; approval_carry '$CLONE' '$REVIEWED'; printf '%s' \"\$CARRY_MISS\"" 2>/dev/null
 }
 # SCRIPT_DIR is the real scripts dir, so this runs the shipped carry script. Under
-# the mutation harness SCRIPT is a mutant in $TMP with no sibling, so skip there.
+# the script-mutation harness SCRIPT is a mutant in $TMP with no sibling: skip.
 if [ -z "${RECEIPT_CARRY_SCRIPT:-}" ]; then
-  check_eq "converge carries the approval onto origin's receipt head" "1" "$(wire o/r)"
-  check_eq "and it lands on the sha origin has" "1" "$(grep -c -- "statuses/$RECEIPT " "$CALLS")"
-  check_eq "with no owner/repo slug it posts NOTHING (ASK-738: gh api resolves from cwd)" "0" "$(wire "")"
+  MISS="$(wire o/r "$FX/reviewed-approved.json")"
+  check_eq "converge carries the approval, and reports no miss" "" "$MISS"
+  check_eq "onto the receipt commit" "1" "$(grep -c -- "-X POST repos/o/r/statuses/$RECEIPT " "$CALLS")"
+  check_eq "WHILE origin's branch still pointed at the reviewed sha" \
+    "AT-POST branch=$REVIEWED" "$(grep '^AT-POST branch=' "$CALLS")"
+  check_eq "and the receipt commit was already on GitHub, under its staging ref" \
+    "AT-POST staging=$RECEIPT " "$(grep '^AT-POST staging=' "$CALLS")"
+  check_eq "the staging ref is tidied afterwards" "" \
+    "$(git -C "$ORIGIN" for-each-ref --format='%(refname)' refs/kipi/receipt-staging)"
+  check_eq "a declined carry is a MISS the page will carry" "yes" \
+    "$(wire o/r "$FX/reviewed-request-changes.json" | grep -q 'NOT carried' && echo yes || echo no)"
+  check_eq "with no owner/repo slug: a miss, and NOTHING posted (ASK-738)" "yes 0" \
+    "$(wire "" "$FX/reviewed-approved.json" | grep -q 'no owner/repo slug' && echo yes || echo no) $(grep -c -- "-X POST" "$CALLS" || true)"
 fi
 
 # ------------------------------------------------------------------ mutation
@@ -163,13 +184,24 @@ fi
 # targets is decoration. Skipped when already running against a mutant.
 if [ -z "${RECEIPT_CARRY_SCRIPT:-}" ] && [ -z "${RECEIPT_CARRY_CONVERGE:-}" ]; then
   echo "mutation (each mutant must fail this file)"
-  # The wiring mutant: converge.sh with the call deleted. This is the shipped
-  # defect -- a receipt confirmed on origin and nobody carrying the approval.
-  CM="$TMP/converge-mutant.sh"
-  grep -v '^    approval_carry "\$tree" "\$sha"$' "$CONVERGE" > "$CM"
-  if cmp -s "$CM" "$CONVERGE"; then fail "the converge mutant changed nothing"
-  elif RECEIPT_CARRY_CONVERGE="$CM" bash "${BASH_SOURCE[0]}" >/dev/null 2>&1; then fail "mutant 'converge never calls the carry' SURVIVED"
-  else pass "mutant 'converge never calls the carry' killed"; fi
+  cmutate() {  # cmutate <label> <python-expr over s>
+    local cm="$TMP/converge-mutant.sh"
+    python3 - "$CONVERGE" "$cm" "$2" <<'PY'
+import sys
+src, dst, expr = sys.argv[1:4]
+s = open(src).read()
+CALL = '  approval_carry "$tree" "$sha"\n'
+open(dst, "w").write(eval(expr))
+PY
+    if cmp -s "$cm" "$CONVERGE"; then fail "converge mutant '$1' changed nothing"
+    elif RECEIPT_CARRY_CONVERGE="$cm" bash "${BASH_SOURCE[0]}" >/dev/null 2>&1; then fail "mutant '$1' SURVIVED"
+    else pass "mutant '$1' killed"; fi
+  }
+  # The shipped defect: a receipt lands and nobody carries the approval.
+  cmutate "converge never calls the carry" 's.replace(CALL, "", 1)'
+  # The defect two review rounds were about: the carry runs AFTER the branch moved.
+  cmutate "converge carries after the branch moved" \
+    's.replace(CALL, "", 1).replace("    say \"receipt: pushed --", "    approval_carry \"$tree\" \"$sha\"\n    say \"receipt: pushed --", 1)'
   mutate() {  # mutate <label> <sed-expr>
     local m="$TMP/mutant.sh"
     sed "$2" "$SCRIPT" > "$m"
@@ -183,7 +215,6 @@ if [ -z "${RECEIPT_CARRY_SCRIPT:-}" ] && [ -z "${RECEIPT_CARRY_CONVERGE:-}" ]; t
   mutate "delta guard removed"        's/\[ "\$kind" = "receipt-only" \]/true/'
   mutate "approval guard removed"     's/\[ "\$state" = "success" \]/true/'
   mutate "no-overwrite guard removed" 's/\[ "\$head_state" = "none" \]/true/'
-  mutate "race withdrawal removed"    's/\[ "\$foreign" = "none" \]/true/'
 fi
 
 echo

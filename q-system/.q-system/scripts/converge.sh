@@ -534,38 +534,67 @@ receipt_lock_drop() {
   RECEIPT_LOCK_HELD=""
 }
 
-# approval_carry <tree> <reviewed-sha>
+# approval_carry <tree> <reviewed-sha>   (called BEFORE the branch moves)
 #
 # THE RECEIPT COMMIT CANCELLED THE APPROVAL IT RECORDS (ASK-1888). A commit status
 # is per-sha, and the receipt is a commit, so every approved PR ended its run
 # with `kipi/reviewer-approved=success` on the reviewed sha and nothing on the
 # head GitHub merges. Measured 2026-09-19: 31 approved PRs red on their current
-# head, 25 of them behind this file's own receipt commit, and the terminal page
-# below told the founder "GitHub lands it, no human merge needed" every time.
+# head, 25 of them behind this file's own receipt commit, while the terminal page
+# told the founder "GitHub lands it, no human merge needed" every time.
 #
-# Called from the ONE place origin is known to carry the receipt, so it covers
-# both a fresh push and a re-run that finds the receipt already there. It reads
-# the head from FETCH_HEAD -- what origin has, which is what GitHub gates -- never
-# from the worktree.
+# THE ORDER IS THE SAFETY (codex, PR #376 rounds 1 and 2). GitHub's status API has
+# no compare-and-swap, so copying a green onto a commit that is already a PR head
+# can bury a REQUEST CHANGES that lands in the gap. Two rounds of patching that
+# gap each found another way to lose, so the gap is removed instead:
 #
-# All the judgment lives in receipt-carry-approval.sh, which copies an approval
-# only across a receipt-only delta and only when GitHub still shows the reviewer's
-# success on the reviewed sha. Best-effort like everything else in the receipt
-# path: a carry that cannot run leaves the PR red, which is where it was.
+#   1. push the receipt commit to a STAGING ref named after its own sha. It
+#      exists on GitHub, no branch points at it, no PR shows it, and nobody can
+#      be reviewing it. A ref per sha is always new, so the push never rewrites
+#      anything and needs no force.
+#   2. carry the approval onto that sha.
+#   3. only then does the caller move the branch to it.
+#
+# Every reviewer verdict on that sha is therefore NEWER than the copy, and GitHub
+# shows the newest status per context. The copy always comes first, so it cannot
+# bury anything. Whatever happens here the caller still moves the branch: the
+# receipt has to land either way, and a head with no carried approval is exactly
+# where this PR was before this function existed.
+#
+# CARRY_MISS is this function's channel to the terminal page, same reason
+# RECEIPT_MISS exists: `say` reaches the log, the page reaches a human, and a page
+# that says "no human merge needed" over a red head is the lie this issue is about.
+CARRY_MISS=""
+CARRY_STAGING_PREFIX="refs/kipi/receipt-staging"
 approval_carry() {
-  local tree="$1" reviewed="$2" head
+  local tree="$1" reviewed="$2" head staging out rc
+  CARRY_MISS=""
   if [ -z "$TARGET_SLUG" ]; then
     # `gh api` takes no -R and resolves {owner}/{repo} from cwd, which is the
     # dispatcher's home checkout (the ASK-738 scar). No slug, no post.
-    say "carry: no owner/repo slug for $TARGET_REPO, so the approval was NOT carried onto the receipt head. It will sit red until the reviewer reads that head."
+    CARRY_MISS="no owner/repo slug for $TARGET_REPO, so the approval was not carried onto the receipt commit"
+    say "carry: $CARRY_MISS"
     return 0
   fi
-  head="$(git -C "$tree" rev-parse FETCH_HEAD 2>/dev/null)" || head=""
+  head="$(git -C "$tree" rev-parse HEAD 2>/dev/null)" || head=""
   if [ -z "$head" ]; then
-    say "carry: could not read origin's head for $BRANCH, so the approval was NOT carried"
+    CARRY_MISS="could not read the receipt commit in $tree, so the approval was not carried"
+    say "carry: $CARRY_MISS"
     return 0
   fi
-  say "$(bash "$SCRIPT_DIR/receipt-carry-approval.sh" "$tree" "$reviewed" "$head" "$TARGET_SLUG" 2>&1 | tail -1)"
+  staging="$CARRY_STAGING_PREFIX/$head"
+  if ! git -C "$tree" push -q origin "HEAD:$staging" 2>>"$LOG"; then
+    CARRY_MISS="could not push the receipt commit to $staging (see $LOG), so the approval was not carried"
+    say "carry: $CARRY_MISS"
+    return 0
+  fi
+  out="$(bash "$SCRIPT_DIR/receipt-carry-approval.sh" "$tree" "$reviewed" "$head" "$TARGET_SLUG" 2>&1)"; rc=$?
+  say "$(printf '%s' "$out" | tail -1)"
+  if [ "$rc" != "0" ]; then
+    CARRY_MISS="the approval was NOT carried onto the receipt commit (rc=$rc: $(printf '%s' "$out" | tail -1))"
+  fi
+  # Best-effort tidy. A leftover staging ref is clutter, never a gate input.
+  git -C "$tree" push -q origin ":$staging" 2>>"$LOG" || true
   return 0
 }
 
@@ -603,7 +632,6 @@ receipt_confirm_origin() {
   if [ "$rc" = "3" ]; then
     RECEIPT_MISS=""; RECEIPT_FIX=""
     say "receipt: CONFIRMED on origin/$BRANCH -- validate reads a receipt for $ISSUE at $(printf '%.12s' "$sha")"
-    approval_carry "$tree" "$sha"
     return 0
   fi
   say "receipt: origin/$BRANCH carries NO receipt for $ISSUE at $(printf '%.12s' "$sha"). Whatever happened in the worktree, the head CI reads has nothing on it."
@@ -812,6 +840,9 @@ receipt_transaction() {
     return 0
   fi
 
+  # BEFORE the branch moves, never after. See approval_carry.
+  approval_carry "$tree" "$sha"
+
   if git -C "$tree" push -q origin "HEAD:refs/heads/$BRANCH" 2>>"$LOG"; then
     say "receipt: pushed -- origin/$BRANCH now carries it, so validate reads it"
   else
@@ -977,6 +1008,15 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
         armed) MERGE_PAGE="PR #$PR approved and auto-merge armed, but NO prd-os receipt covers the head ($RECEIPT_MISS). Nothing proves it was reviewed: if the receipt gate in validate is live this sits red, and if it is not GitHub lands it anyway. Needs a human: $RECEIPT_FIX" ;;
         *)     MERGE_PAGE="$MERGE_PAGE. AND no prd-os receipt covers the head ($RECEIPT_MISS), so nothing proves it was reviewed: $RECEIPT_FIX" ;;
       esac
+    fi
+    # A RECEIPT WITH NO CARRIED APPROVAL IS A RED HEAD (codex, PR #376 round 2,
+    # finding 3). approval_carry never fails the run, so without this the armed
+    # sentence above still said "no human merge needed" over a head whose
+    # required context is absent. Only when the receipt itself landed: a receipt
+    # miss already replaced the sentence and names the bigger problem.
+    if [ -z "$RECEIPT_MISS" ] && [ -n "$CARRY_MISS" ]; then
+      MERGE_LOG="$MERGE_LOG -- BUT $CARRY_MISS. The head is red until the reviewer reads it."
+      MERGE_PAGE="PR #$PR approved and its receipt landed, but $CARRY_MISS. kipi/reviewer-approved is not green on the head, so it will NOT merge by itself. Needs a re-review of the head: kipi converge --issue $ISSUE"
     fi
     say "DONE exit-1: PR #$PR verdict '$VERDICT' after $ROUND round(s). $MERGE_LOG"
     bash "$NOTIFY" "converge $ISSUE: $VERDICT after $ROUND round(s), $MERGE_PAGE" 2>/dev/null || true
