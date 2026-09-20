@@ -32,6 +32,12 @@ REFUSE_INSTANCE_AHEAD=0
 # instances would refuse. See reach_preflight. The hatch exists so a genuinely
 # unblockable instance cannot wedge the whole fleet, and it says so out loud.
 SKIP_REACH_PREFLIGHT=0
+# The operator's own arguments, captured BEFORE the parse loop shifts them
+# away. reach_preflight prints a "proceed anyway" line, and inside a function
+# $* is the FUNCTION's arguments -- which are none -- so the printed remedy
+# silently dropped --dry-run and --only and pasted as a full real fleet sync
+# (PR #396 review, major). Never use $* for that line.
+UPDATE_ARGV="$*"
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN="--dry-run"; shift ;;
@@ -47,7 +53,7 @@ while [ $# -gt 0 ]; do
       ;;
     *)
       echo "ERROR: unknown argument: $1" >&2
-      echo "Usage: kipi-update.sh [--dry-run] [--only <instance-name>] [--refuse-instance-ahead]" >&2
+      echo "Usage: kipi-update.sh [--dry-run] [--only <instance-name>] [--refuse-instance-ahead] [--skip-reach-preflight]" >&2
       exit 1
       ;;
   esac
@@ -1671,44 +1677,86 @@ reach_preflight() {
     echo "  discovered one instance at a time, which is what this flag costs."
     return 0
   fi
+  # DISARMED, not aborted, when the skeleton carries no registry OR no audit.
+  # Every kipi-update fixture builds a partial skeleton: a registry but no
+  # fleet-*.py. Aborting there made three separation tests red (PR #396 review),
+  # which is this gate going red on its own population -- the shape that gets a
+  # gate switched off. A PRESENT-BUT-BROKEN audit still aborts below; that is
+  # the "cannot run must not pass" case. Absent in a synthetic skeleton is not.
   if [ ! -f "$SCRIPT_DIR/instance-registry.json" ]; then
     echo "reach preflight: disarmed (no instance-registry.json at $SCRIPT_DIR)"
     return 0
   fi
   if [ ! -f "$audit" ]; then
-    echo ""
-    echo "ABORT: reach preflight missing at $audit"
-    echo "It is the one-second answer to 'why will the fleet not sync'."
-    echo "Restore it, or pass --skip-reach-preflight to proceed blind."
-    exit 1
+    echo "reach preflight: disarmed (no fleet-reach-audit.py at $SCRIPT_DIR)"
+    return 0
   fi
-  out="$(python3 "$audit" 2>&1)" && rc=0 || rc=$?
-  printf '%s\n' "$out"
-  if ! printf '%s' "$out" | grep -q "^REACH: "; then
+  out="$(python3 "$audit" --json 2>/dev/null)" && rc=0 || rc=$?
+  if [ -z "$out" ]; then
     echo ""
-    echo "ABORT: the reach preflight did not report a verdict (exit $rc)."
+    echo "ABORT: the reach preflight produced no verdict (exit $rc)."
     echo "A preflight that cannot run must not pass. Fix it, or pass"
     echo "--skip-reach-preflight to proceed without it."
     exit 1
   fi
-  # "REACH: N of M would sync now". Blockers exist when N != M.
-  local got want
-  got="$(printf '%s' "$out" | sed -n 's/^REACH: \([0-9]*\) of \([0-9]*\) .*/\1/p' | tail -1)"
-  want="$(printf '%s' "$out" | sed -n 's/^REACH: \([0-9]*\) of \([0-9]*\) .*/\2/p' | tail -1)"
-  if [ -z "$got" ] || [ -z "$want" ]; then
+  # SCOPED TO WHAT THIS RUN WOULD TOUCH, and refusing only on FLEET-caused
+  # blockers. Both halves are the same review finding (PR #396, major):
+  #
+  #   * counting every instance meant one repo holding founder work refused a
+  #     run scoped to a DIFFERENT, clean instance. On the live fleet that is
+  #     every invocation, and the only escape is --skip-reach-preflight, i.e.
+  #     the gate off.
+  #   * BLOCKED-FOUNDER is a CORRECT refusal that stands until the founder
+  #     commits. It is theirs to clear, it is not a defect, and it must never
+  #     stop an unrelated instance from syncing. It prints as information.
+  #
+  # BLOCKED-FLEET is the updater's own exhaust, `fleet-unblock.py --apply`
+  # clears it with a proof per path, and THAT is worth refusing over.
+  # `|| rc=$?`, and neither a bare call nor `if !`. Two traps, both hit:
+  #   * this file runs under `set -e` (line 2), so a BARE python3 exiting
+  #     non-zero kills the script before rc is read and the remedy never prints;
+  #   * `if ! python3 ...; then rc=$?; fi` looks like the fix and is not -- `!`
+  #     inverts the status, so $? inside the branch is 0 and the refusal is
+  #     skipped entirely, which let the run ENTER a blocked instance.
+  # Only `|| rc=$?` both suppresses set -e and preserves python's real status.
+  rc=0
+  python3 - "$out" "${ONLY:-}" <<'PYEOF' || rc=$?
+import json, sys
+rows = json.loads(sys.argv[1])
+only = sys.argv[2]
+if only:
+    rows = [r for r in rows if r.get("name") == only]
+fleet = [r for r in rows if r.get("verdict") == "BLOCKED-FLEET"]
+founder = [r for r in rows if r.get("verdict") == "BLOCKED-FOUNDER"]
+ok = [r for r in rows if r.get("verdict") == "WOULD-SYNC"]
+scope = f" (scoped to --only {only})" if only else ""
+print(f"reach preflight: {len(ok)} of {len(rows)} would sync now{scope}")
+for r in founder:
+    print(f"  {r['name']}: founder work, correctly refused until committed "
+          f"(not a fleet blocker, not counted against this run)")
+    for b in (r.get("blocked_by") or [])[:5]:
+        print(f"      {b.get('status','?')}  {b.get('path')}")
+for r in fleet:
+    print(f"  {r['name']}: BLOCKED by updater exhaust")
+    for b in (r.get("blocked_by") or [])[:5]:
+        print(f"      {b.get('status','?')}  {b.get('path')}")
+sys.exit(2 if fleet else 0)
+PYEOF
+  if [ "$rc" -eq 2 ]; then
     echo ""
-    echo "ABORT: could not parse the reach verdict above."
-    exit 1
-  fi
-  if [ "$got" != "$want" ]; then
-    echo ""
-    echo "ABORT: $((want - got)) of $want instance(s) would refuse this update."
-    echo "They are named above WITH THE REASON, which is the whole point: you"
-    echo "have every blocker now, not one per 25-minute run."
+    echo "ABORT: instance(s) named above carry the updater's own exhaust."
+    echo "This is what the audit CAN see -- a dirty tree inside the synced"
+    echo "pathspec. It does NOT cover a stale skeleton or a dangling symlink;"
+    echo "those are separate gates, above and inside the loop."
     echo ""
     echo "  clear what is attributable:  python3 $SCRIPT_DIR/fleet-unblock.py --apply"
     echo "  re-measure:                  python3 $audit"
-    echo "  proceed anyway:              $0 $* --skip-reach-preflight"
+    echo "  proceed anyway:              $0 $UPDATE_ARGV --skip-reach-preflight"
+    exit 1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    echo ""
+    echo "ABORT: could not read the reach verdict (exit $rc)."
     exit 1
   fi
 }
