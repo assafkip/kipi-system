@@ -2,10 +2,20 @@
 # ASK-1925 (spillover sp-4daf4890): /q-debrief is the only documented writer of
 # memory/graph.jsonl (debrief-template.md steps 6 and 10) and had no command file
 # anywhere in the skeleton. Its file was deleted 2026-03-23 (commit 69bf969d) from
-# .claude/commands/, and kipi-update.sh does not sync .claude/commands -- it ships
-# only .claude/agents, .claude/output-styles, .claude/rules and plugins/. So the
+# .claude/commands/, and kipi-update.sh does not sync .claude/commands. So the
 # deletion could never propagate: instances kept stale pre-2026-03-23 copies, new
 # instances got nothing, and CLAUDE.md went on advertising the command.
+#
+# ASK-1927 corrects one line that stood here: "it ships only .claude/agents,
+# .claude/output-styles, .claude/rules and plugins/". That understates the sync and
+# the understatement mattered, because it makes the nine names this test used to
+# grandfather look unreachable when they are not. q-system/ IS copied into every
+# instance -- kipi-update.sh:2468,2592, `git archive HEAD -- q-system/` extracted
+# and rsync'd with --delete -- and .q-system is not in INSTANCE_OWNED_SUBTREES
+# (kipi-update.sh:71-79). So q-system/.q-system/commands.md, which carries the full
+# spec for every /q-* mode, already reaches the fleet. What .claude/commands and
+# plugins/ decide is narrower and is exactly what this test checks: whether the
+# NAME loads as a slash command, not whether its instruction reached the instance.
 #
 # CLAUDE.md is the founder-facing command menu. A name on that menu with no file
 # behind it in a path the updater ships is a promise the fleet cannot keep, and it
