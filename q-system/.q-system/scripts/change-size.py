@@ -152,16 +152,35 @@ _GENERIC_DIRS = frozenset({"test", "tests", "fixtures", "fixture", "scripts", "d
                            "q-system", ".q-system", "plugins", "templates", "hooks", "."})
 
 
-# ANY filesystem walk, by any spelling. This is deliberately NOT a pattern parser.
-# Four review rounds on this PR were one class -- "the selection can miss a test
-# that matters" -- and each round named another text form the parser did not know:
-# a fixture reached by directory, a `rglob`, a caller's test, then iterdir /
-# os.walk / os.listdir / a shell glob. A parser that must recognise every spelling
-# has a fifth gap waiting. So the question changes from WHICH FILES does this test
-# scan, which needs the spelling, to DOES THIS TEST SCAN AT ALL, which does not.
+# A filesystem walk, in the spellings this repo's declared tests actually use.
+# This is deliberately NOT a pattern parser. Four review rounds on PR #377 were one
+# class -- "the selection can miss a test that matters" -- and each round named
+# another text form the parser did not know: a fixture reached by directory, a
+# `rglob`, a caller's test, then iterdir / os.walk / os.listdir / a shell glob. A
+# parser that must recognise every spelling has a fifth gap waiting. So the question
+# changes from WHICH FILES does this test scan, which needs the spelling per pattern,
+# to DOES THIS TEST SCAN AT ALL, which needs one spelling per WALKING TOOL.
+#
+# FEWER SPELLINGS, NOT ZERO, and the difference is the whole honest claim (claude
+# review of PR #377, minor 1). The earlier wording here said the detector "does not
+# need the spelling", which is what made `grep -r` invisible: two declared tests walk
+# the tree with recursive grep and sat off the always-run floor, silently, for exactly
+# the reason a missing spelling always does. A tool this misses is a scanner being
+# skipped, and ASK-1918's `covers` mechanism is built on this function, so the gap
+# propagates -- a test the detector cannot see can never be taken off a floor it was
+# never on, and never gets the floor's protection either.
+#
+# WIDENED AGAINST THE CORPUS, NEVER SPECULATIVELY
+# (count-the-shape-in-the-corpus-before-you-widen-a-pattern-for-it). Measured over
+# the 278 declared tests, 2026-09-20: `grep -r` appears in 5, of which 2 were
+# invisible here. An `rg` INVOCATION appears in 0 -- the only `rg` token in the
+# corpus is a local variable in test_dc_reader_verdicts.py -- so ripgrep is
+# deliberately NOT in this pattern. Add it the day a declared test runs it, with the
+# count that says so.
 _SCAN_RE = re.compile(
     r"\b(?:r?glob|iterdir|listdir|scandir|walk|fnmatch)\b"
     r"|\bfind\s+[\"\'$./]|\bls\s+[-\"\'$./]|git\s+ls-files"
+    r"|\bgrep\s+(?:-\w+\s+)*-[A-Za-z]*r"
     r"|\bfor\s+\w+\s+in\s+[^\n]*\*")
 
 
@@ -342,7 +361,9 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
         # did not know, and round 4 deleted the line that made it select anything,
         # because a test that enumerates ALSO walks the tree, so `always` below
         # already covers every one of them. The parser was 40 lines that chose
-        # nothing. `scans_the_tree` is the whole answer to that class.
+        # nothing. `scans_the_tree` is the answer to that class, at ONE spelling per
+        # walking tool instead of one per pattern -- see its comment for what that
+        # does and does not buy.
         #
         # A DECLARED COVERAGE GLOB SELECTS (ASK-1918), and only for a test that
         # actually scans. `covers` may take a test OFF the always-run floor; it

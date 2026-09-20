@@ -186,7 +186,35 @@ def test_an_enumerated_input_reaches_its_test_through_the_scanner_floor(cs):
 SCANNER = "t/test-scans.py"
 SCAN_FORMS = ("for p in d.iterdir(): check(p)", "for root,_,fs in os.walk(d): pass",
               "for n in os.listdir(d): pass", 'for f in "$DIR"/*.sh; do bash "$f"; done',
-              "git ls-files | while read f; do :; done", 'find "$ROOT" -type f')
+              "git ls-files | while read f; do :; done", 'find "$ROOT" -type f',
+              # claude review of PR #377, minor 1: recursive grep is a tree-walker the
+              # detector did not know, so the two declared tests below sat OFF the
+              # always-run floor -- a scanner being skipped silently, which is the one
+              # thing the floor exists to prevent. Both forms come from this repo.
+              'residual="$(grep -rn \'pattern\' "$TESTDIR"/*.sh 2>/dev/null)"',
+              'out = run(["grep", "-rIl", "git commit", root])')
+
+
+# The two REAL declared tests this gap hid, named so the case is about the repo and
+# not about a fixture: an invented fixture tests my assumption, the corpus does not.
+REAL_GREP_R_SCANNERS = ("q-system/.q-system/scripts/test/test-zero-safe-count-idiom.sh",
+                        "q-system/.q-system/scripts/test/test-token-guard-hook-behavior.sh")
+
+
+def case_recursive_grep_is_a_tree_walk(cs):
+    repo_root = Path(__file__).resolve().parents[3]
+    for rel in REAL_GREP_R_SCANNERS:
+        text = (repo_root / rel).read_text(errors="ignore")
+        assert cs.scans_the_tree(text), rel
+    # THE BOUNDARY, STATED AS A TEST. `rg` is NOT recognised, on purpose: zero
+    # declared tests invoke it (measured 2026-09-20 over 278 fragments), and the
+    # Not-doing line on ASK-1921 forbids widening a pattern for a shape the corpus
+    # does not carry. When one does, this assertion is the thing to flip.
+    assert not cs.scans_the_tree('out = run(["rg", "-l", "pattern", root])')
+
+
+def test_a_test_that_walks_the_tree_with_recursive_grep_is_on_the_floor(cs):
+    case_recursive_grep_is_a_tree_walk(cs)
 
 
 def case_every_scanner_always_runs(cs):
@@ -443,6 +471,7 @@ CS_MUTANTS = [
     ("the callers' tests run", "        for dep in dependents(path, live):", "        for dep in []:", None),
     ("a fixture is matched before it is skipped", "            if is_test_path(path):\n                direct |=", "            if False:\n                direct |=", case_fixture_reaches_its_owner),
     ("every scanner always runs", "    always = {t for t in scanners if t not in declared_covers}", "    always = set()", case_every_scanner_always_runs),
+    ("recursive grep is a tree walk", r'    r"|\bgrep\s+(?:-\w+\s+)*-[A-Za-z]*r"' + "\n", "", case_recursive_grep_is_a_tree_walk),
     ("a declaration takes a scanner off the floor", "    always = {t for t in scanners if t not in declared_covers}", "    always = set(scanners)", case_a_declared_scanner_leaves_the_floor),
     ("covers never selects a non-scanner", "                   if t in scanners and any(covers_matches(p, path) for p in pats)}", "                   if any(covers_matches(p, path) for p in pats)}", case_covers_on_a_non_scanner_grants_nothing),
     ("**/ reaches the repo root", '        if pattern.startswith("**/") and fnmatch.fnmatch(path, pattern[3:]):\n            return True', '        if False:\n            return True', case_a_double_star_reaches_the_repo_root),
