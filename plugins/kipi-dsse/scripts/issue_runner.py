@@ -865,13 +865,28 @@ def _defined_vs_ran(paths: Paths, command: str, stdout: str, stderr: str) -> dic
         return row
     ran, skipped = counted
     row.update(ran=ran, skipped=skipped)
+    never_ran = defined - ran - skipped
     if narrowed:
         row["status"] = "ok" if ran > 0 else "refused"
         if ran == 0:
             row["reason"] = "a narrowed check ran nothing"
-    elif ran + skipped < defined:
+    elif ran == 0:
+        # ASK-1908: an all-skip check has skipped == defined, so "ran + skipped < defined" is
+        # False and used to fall through to the "ok" branch below -- a green receipt over a
+        # check that executed zero tests. ran == 0 refuses on its own, before that arithmetic
+        # ever runs, no matter how the skipped/defined counts line up.
         row.update(status="refused", reason=f"{defined} defined, {ran} ran, {skipped} skipped: "
-                                            f"{defined - ran - skipped} never ran")
+                                            "every test skipped, nothing was verified")
+    elif never_ran > 0:
+        row.update(status="refused", reason=f"{defined} defined, {ran} ran, {skipped} skipped: "
+                                            f"{never_ran} never ran")
+    elif skipped > 0:
+        # the partial case, named rather than left to fall out of the arithmetic: some tests
+        # ran, some skipped, and none are missing (ran + skipped == defined). At least one real
+        # execution happened, so this is accepted -- but the skip stays on the record instead of
+        # disappearing into a bare "ok" the way the all-skip case above used to.
+        row.update(status="ok", reason=f"{ran} ran, {skipped} skipped: accepted, not every "
+                                       "defined test executed")
     else:
         row["status"] = "ok"
     return row

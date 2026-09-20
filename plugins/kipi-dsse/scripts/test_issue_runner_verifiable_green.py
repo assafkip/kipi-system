@@ -165,6 +165,55 @@ def test_the_count_is_read_from_pytest_as_well(tmp_path):
     assert (row["defined"], row["ran"]) == (2, 2)
 
 
+# --- ASK-1908: an all-skip check satisfies ran+skipped>=defined by arithmetic alone ---------
+
+ALL_SKIPPED = (
+    "import unittest\n\n"
+    "class T(unittest.TestCase):\n"
+    "    def test_one(self):\n"
+    "        self.skipTest('no dependency')\n\n"
+    "    def test_two(self):\n"
+    "        self.skipTest('no dependency')\n\n"
+    "if __name__ == '__main__':\n    unittest.main()\n"
+)
+
+
+def test_a_check_whose_every_test_skips_is_refused_not_ok(tmp_path):
+    # ran=0, skipped=defined=2 used to satisfy "ran + skipped < defined" being False and fall
+    # through to the "ok" else-branch: a green receipt over a check that executed zero tests.
+    # Written asserting the CORRECT behaviour (refused), so this is RED against the pre-fix
+    # code (which returns "ok" here) and GREEN after.
+    repo = _repo(tmp_path, {"tests/test_all_skip.py": ALL_SKIPPED},
+                 ["tests/test_all_skip.py"], "python3 tests/test_all_skip.py")
+    r = _issue(repo, "verify")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "2 defined, 0 ran, 2 skipped" in r.stderr
+    assert not _state(repo)["receipts"]["verified"]
+
+
+SOME_SKIPPED = (
+    "import unittest\n\n"
+    "class T(unittest.TestCase):\n"
+    "    def test_one(self):\n"
+    "        pass\n\n"
+    "    def test_two(self):\n"
+    "        self.skipTest('optional dependency')\n\n"
+    "if __name__ == '__main__':\n    unittest.main()\n"
+)
+
+
+def test_a_check_with_one_real_run_and_one_skip_is_accepted_and_recorded(tmp_path):
+    # the partial case, decided explicitly rather than left to the arithmetic: some ran, some
+    # skipped, nothing missing (ran + skipped == defined). At least one test actually executed,
+    # so this stays "ok" -- but ran==0 above is refused regardless of this same arithmetic.
+    repo = _repo(tmp_path, {"tests/test_some_skip.py": SOME_SKIPPED},
+                 ["tests/test_some_skip.py"], "python3 tests/test_some_skip.py")
+    r = _issue(repo, "verify")
+    assert r.returncode == 0, r.stderr
+    row = json.loads(r.stdout)["defined_vs_ran"][0]
+    assert (row["status"], row["defined"], row["ran"], row["skipped"]) == ("ok", 2, 1, 1)
+
+
 # --- rule 4: repeats ----------------------------------------------------------------
 
 FLAKY = ("import os, sys\nfrom pathlib import Path\n"
