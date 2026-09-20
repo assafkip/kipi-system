@@ -230,3 +230,4 @@
 {"closed_at": "2026-09-19T22:49:05Z", "commit_sha": "e4d1b61c52d410e0d554a3963e2eafc03aa1a815", "finding_id": "finding-10", "findings_triaged_at": "2026-09-19T22:49:04Z", "issue_id": "dc-24-wiring-ships-last", "prd_id": "prd-design-chain-seal-reads-verdicts-2026-09-18", "reviewed_at": "2026-09-19T22:49:04Z", "verified_at": "2026-09-19T22:49:04Z"}
 {"commit_sha": "424f38c49778b24af2962ee6e9f7497c6e5c96c1", "issue_id": "ASK-1924", "receipts": {"reviewed": "2026-09-20T14:52:13Z"}, "reviewed_at": "2026-09-20T14:52:13Z"}
 {"commit_sha": "e9679c45a0d3ebb714ffec57ac79f83fece9c823", "issue_id": "ASK-1924", "receipts": {"reviewed": "2026-09-20T15:19:04Z"}, "reviewed_at": "2026-09-20T15:19:04Z"}
+{"commit_sha": "39e19132e684005d946a3fd3fda342359c160950", "issue_id": "ASK-1922", "receipts": {"reviewed": "2026-09-20T16:53:14Z"}, "reviewed_at": "2026-09-20T16:53:14Z"}

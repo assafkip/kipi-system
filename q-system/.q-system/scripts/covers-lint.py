@@ -58,6 +58,22 @@ def load_classifier(root: Path):
     return mod
 
 
+def _bad_double_star(pattern: str) -> str | None:
+    """A `**` that is not a WHOLE path segment, or None (ASK-1922).
+
+    The decidable half of "this glob cannot match what its author meant". In
+    `covers_matches`, `**` means zero-or-more segments only when it IS the
+    segment; inside one (`**.py`, `a**b`) it degrades to a plain `*`, which is
+    almost never what someone typing a second star wanted. That is guessable, so
+    the lint refuses it rather than letting the matcher guess quietly -- the same
+    silent-narrowing class the leading and interior `**` bugs both belonged to
+    (PR #385 rounds 1 and 2)."""
+    for seg in pattern.split("/"):
+        if "**" in seg and seg != "**":
+            return seg
+    return None
+
+
 def tracked_paths(root: Path) -> list[str]:
     r = subprocess.run(["git", "-C", str(root), "ls-files"],
                        capture_output=True, text=True)
@@ -98,6 +114,14 @@ def check(root: Path, frags: list[Path]) -> list[str]:
         for p in pats:
             if not isinstance(p, str) or not p:
                 problems.append(f"{rel_frag}: glob {p!r} is not a non-empty string")
+                continue
+            seg = _bad_double_star(p)
+            if seg:
+                problems.append(
+                    f"{rel_frag}: glob {p!r} has a `**` inside the segment {seg!r}. `**` means "
+                    "zero-or-more DIRECTORIES and only when it is the whole segment; here it is "
+                    f"just `*`, which stops at a `/`. Write `**/` as its own segment, or a single "
+                    "`*` if one level is what you meant.")
                 continue
             if not any(cs.covers_matches(p, path) for path in paths):
                 problems.append(

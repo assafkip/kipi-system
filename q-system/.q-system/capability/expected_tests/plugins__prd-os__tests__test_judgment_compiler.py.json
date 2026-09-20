@@ -3,7 +3,7 @@
  "runner": "python3",
  "timeout_s": 240,
  "covers": [
-  "plugins/prd-os/scripts/*.py",
+  "plugins/prd-os/scripts/**/*.py",
   "plugins/prd-os/commands/*.md",
   "kipi"
  ]
