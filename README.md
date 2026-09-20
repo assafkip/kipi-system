@@ -340,9 +340,9 @@ The pages above are the knowledge half. The rest of the repo, with the command t
 
 Optional. Most usage is just talking to the system in Claude Code.
 
-Two kinds, and the difference matters when you type one.
+Two kinds. Both are real commands now; the split is which file carries the instruction.
 
-The `/q-*` names are **conventions**, not registered slash commands. No file under a `commands/` directory backs them. They are documented in `q-system/.q-system/commands.md`, the model reads that file, and saying one puts the session in that mode.
+The `/q-*` names used to be **conventions**: documented in `q-system/.q-system/commands.md`, read by the model, backed by no file. As of ASK-1927 each one ships a file at `plugins/kipi-core/commands/<name>.md`, so they are registered commands and appear in the slash menu like any other. The spec still lives in `commands.md` and each command file points at it rather than restating it. `test_q_debrief_command_wired.sh` is what keeps every name on this page and on `CLAUDE.md` backed by a file.
 
 | Convention | What it does |
 |---|---|
