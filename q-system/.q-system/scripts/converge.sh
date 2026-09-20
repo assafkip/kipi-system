@@ -534,6 +534,41 @@ receipt_lock_drop() {
   RECEIPT_LOCK_HELD=""
 }
 
+# approval_carry <tree> <reviewed-sha>
+#
+# THE RECEIPT COMMIT CANCELLED THE APPROVAL IT RECORDS (ASK-1888). A commit status
+# is per-sha, and the receipt is a commit, so every approved PR ended its run
+# with `kipi/reviewer-approved=success` on the reviewed sha and nothing on the
+# head GitHub merges. Measured 2026-09-19: 31 approved PRs red on their current
+# head, 25 of them behind this file's own receipt commit, and the terminal page
+# below told the founder "GitHub lands it, no human merge needed" every time.
+#
+# Called from the ONE place origin is known to carry the receipt, so it covers
+# both a fresh push and a re-run that finds the receipt already there. It reads
+# the head from FETCH_HEAD -- what origin has, which is what GitHub gates -- never
+# from the worktree.
+#
+# All the judgment lives in receipt-carry-approval.sh, which copies an approval
+# only across a receipt-only delta and only when GitHub still shows the reviewer's
+# success on the reviewed sha. Best-effort like everything else in the receipt
+# path: a carry that cannot run leaves the PR red, which is where it was.
+approval_carry() {
+  local tree="$1" reviewed="$2" head
+  if [ -z "$TARGET_SLUG" ]; then
+    # `gh api` takes no -R and resolves {owner}/{repo} from cwd, which is the
+    # dispatcher's home checkout (the ASK-738 scar). No slug, no post.
+    say "carry: no owner/repo slug for $TARGET_REPO, so the approval was NOT carried onto the receipt head. It will sit red until the reviewer reads that head."
+    return 0
+  fi
+  head="$(git -C "$tree" rev-parse FETCH_HEAD 2>/dev/null)" || head=""
+  if [ -z "$head" ]; then
+    say "carry: could not read origin's head for $BRANCH, so the approval was NOT carried"
+    return 0
+  fi
+  say "$(bash "$SCRIPT_DIR/receipt-carry-approval.sh" "$tree" "$reviewed" "$head" "$TARGET_SLUG" 2>&1 | tail -1)"
+  return 0
+}
+
 # receipt_confirm_origin <tree> <sha> <record>
 #
 # A LOCAL COMMIT IS NOT DELIVERY (round 2, finding 1 -- major). Success used to
@@ -568,6 +603,7 @@ receipt_confirm_origin() {
   if [ "$rc" = "3" ]; then
     RECEIPT_MISS=""; RECEIPT_FIX=""
     say "receipt: CONFIRMED on origin/$BRANCH -- validate reads a receipt for $ISSUE at $(printf '%.12s' "$sha")"
+    approval_carry "$tree" "$sha"
     return 0
   fi
   say "receipt: origin/$BRANCH carries NO receipt for $ISSUE at $(printf '%.12s' "$sha"). Whatever happened in the worktree, the head CI reads has nothing on it."
