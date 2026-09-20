@@ -48,8 +48,25 @@ jobs:
       # BOTH directions, and runs the full declared suite. The hardcoded loop
       # ran 4 of 41 declared artifacts — 90.2% never executed anywhere
       # (prd-silent-absence-capability-gate-2026-07-23).
-      - name: Capability gate (declared-vs-actual + full test suite)
-        run: python3 q-system/.q-system/scripts/capability-gate.py --repo-root .
+      #
+      # A PULL REQUEST RUNS THE TESTS ITS DIFF EARNS; A PUSH TO MAIN RUNS THEM ALL
+      # (ASK-1749). Measured on run 35478270323: this step was 17m41s of a 19m36s
+      # job because it ran every declared artifact on every push of every PR, so a
+      # three-line review round waited that long before it could merge.
+      # change-size.py picks the declared tests that name the changed files. It
+      # falls back to the FULL suite on anything it cannot vouch for: a change to
+      # the gate, the classifier, a workflow, lefthook or verify.sh, a dependency
+      # manifest, a capability declaration, a new third-party import, a selection
+      # wider than 60, or any error reading the diff. Structure, declared-vs-actual
+      # and wiring checks are not tests and run in full either way. The checkout
+      # above uses fetch-depth 0, so origin/<base> resolves.
+      - name: Capability gate (declared-vs-actual + the tests this change earns)
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --diff-base "origin/${{ github.base_ref }}"
+          else
+            python3 q-system/.q-system/scripts/capability-gate.py --repo-root .
+          fi
         env:
           CI: true
 

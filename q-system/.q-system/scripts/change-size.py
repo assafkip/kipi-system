@@ -1,0 +1,327 @@
+#!/usr/bin/env python3
+"""change-size.py -- reads a diff, prints the ceremony that diff earns (ASK-1749).
+
+WHY THIS EXISTS. Every change paid the same price. Measured 2026-09-19 on CI run
+35478270323: the capability gate step ran every declared test artifact, serially,
+and took 17m41s of a 19m36s job, on every push of every PR. A
+review round that changes three lines waits that long for `validate` before it
+can merge, and a converge run has up to four rounds. The founder's words the same
+night: "make sure you dont run full sweeps on small issues like line changes.
+They should not run 6000+ tests." An earlier scar, same shape: 18 full sweeps in
+one day. A written rule about this is one people drift from, so this is a script.
+
+WHAT IT DECIDES, from the diff alone. Never from a description, a commit body or
+an agent's opinion of its own change:
+
+  tier  S   at most 20 changed lines of app code
+        M   at most 150
+        L   anything larger, or ANY escalator below
+        The tier is the HUMAN ceremony: how much review the change earns.
+  tests the declared test artifacts that name a changed file, or name a file that
+        names it (one hop, so a change to a sourced lib reaches the tests of the
+        scripts that source it), plus any changed or newly declared test.
+
+ESCALATORS force the FULL SUITE (and tier L) whatever the line count says. Line
+count alone never does: a large diff names more files, so it selects more tests,
+and it becomes a full run through the last escalator when it truly is suite-wide.
+  * the machinery that decides what runs (this file, the gate, the manifest
+    assembler, CI workflows, lefthook, verify.sh, any conftest.py)
+  * a file CI installs from (requirements*.txt, pyproject.toml)
+  * a capability declaration other than an expected_tests entry
+  * a new third-party import in app code (a test importing pytest is not one)
+  * a selection so wide that it is the suite anyway (more than MAX_SELECTED)
+
+NOT AN ESCALATOR: a changed executable that no declared test names. The suite
+does not exercise it by name, so running all of it proves little. The verdict
+lists every such file and floors the tier at M instead.
+
+THE ASYMMETRY. Everything uncertain resolves UPWARD. An unreadable diff, a
+missing base ref, a crash in here: the caller runs the FULL suite. This script can
+make a run cheaper only when it can name exactly why that is safe. And the full
+suite still runs on every push to main, so a selection that was too narrow is
+caught at merge, by the same gate, not never.
+
+It prints and exits 0 (2 on an unreadable diff). It enforces nothing by itself:
+capability-gate.py --diff-base is the caller that acts on it, and CI passes that
+flag on pull requests only.
+
+NO --head FLAG, ON PURPOSE. The declared tests are read from the checkout on
+disk, so the diff has to end at that same checkout. Pointed at another ref it
+diffed one tree and searched another: it called a new script UNTESTED BY NAME
+while the test that names it sat on the ref it was not reading (tried on the
+ASK-1888 branch, 2026-09-19).
+
+Usage:  change-size.py --base origin/main [--repo-root .] [--json]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+S_MAX_LINES = 20
+M_MAX_LINES = 150
+# Above this the "selection" is most of the suite, and the honest name for that
+# is a full run. A change that many tests name is a shared-lib change.
+MAX_SELECTED = 60
+
+CAPABILITY_DIR = "q-system/.q-system/capability/"
+EXPECTED_TESTS_DIR = CAPABILITY_DIR + "expected_tests/"
+
+# The machinery that decides what runs. A change here can make every OTHER
+# selection wrong, so it never gets to vouch for itself with a narrow run.
+FULL_RUN_PATHS = (
+    "q-system/.q-system/scripts/change-size.py",
+    "q-system/.q-system/scripts/capability-gate.py",
+    "q-system/.q-system/scripts/capability_manifest.py",
+    "q-system/.q-system/verify.sh",
+    "lefthook.yml",
+)
+FULL_RUN_PREFIXES = (".github/workflows/",)
+FULL_RUN_BASENAMES = ("conftest.py", "pyproject.toml")
+FULL_RUN_BASENAME_RE = re.compile(r"^requirements[\w.-]*\.txt$")
+
+CODE_SUFFIXES = (".py", ".sh")
+# A real import STATEMENT, not a sentence that starts with "from". The first cut
+# matched `+    from that point on...` inside a docstring and called `that` a new
+# dependency (measured on the last 40 commits of main, 2026-09-19).
+# `import THIS file into the fixture` is prose too, so the WHOLE line has to parse
+# as an import statement, and every module on it is read (`import json, torch`).
+_MODULE = r"[A-Za-z_][\w.]*(?:\s+as\s+\w+)?"
+_IMPORT_LINE_RE = re.compile(r"^\+\s*import\s+(" + _MODULE + r"(?:\s*,\s*" + _MODULE + r")*)\s*(?:#.*)?$")
+_FROM_LINE_RE = re.compile(r"^\+\s*from\s+([A-Za-z_]\w*)(?:\.\w+)*\s+import\s+[\w*(]")
+_DIFF_FILE_RE = re.compile(r"^\+\+\+ b/(.+)$")
+
+
+def is_test_path(path: str) -> bool:
+    p = Path(path)
+    return (p.name.startswith(("test_", "test-")) or p.name.endswith("_test.py")
+            or any(part in ("test", "tests", "fixtures") for part in p.parts[:-1]))
+
+
+def is_code(path: str) -> bool:
+    return path.endswith(CODE_SUFFIXES) and not is_test_path(path)
+
+
+def machinery_reason(path: str) -> str | None:
+    name = Path(path).name
+    if path in FULL_RUN_PATHS or path.startswith(FULL_RUN_PREFIXES):
+        return f"{path} decides what runs"
+    if name in FULL_RUN_BASENAMES or FULL_RUN_BASENAME_RE.match(name):
+        return f"{path} is a file CI installs from or every test loads"
+    if path.startswith(CAPABILITY_DIR) and not path.startswith(EXPECTED_TESTS_DIR):
+        return f"{path} is a capability declaration other than an expected_tests entry"
+    return None
+
+
+def names(path: str) -> list[str]:
+    """The strings that count as 'this text names that file'. The basename always.
+    For a .py file also its stem, because Python imports by stem (the ASK-517
+    scar: a module wired only by `import` was invisible to a basename match)."""
+    p = Path(path)
+    out = [p.name]
+    if p.suffix == ".py" and len(p.stem) >= 5:
+        out.append(p.stem)
+    return out
+
+
+def mentions(text: str, path: str) -> bool:
+    return any(re.search(r"(?<![\w.-])" + re.escape(n) + r"(?![\w-]|\.\w)", text) for n in names(path))
+
+
+def third_party_imports(diff_text: str, local_stems: set[str]) -> list[str]:
+    """New imports in APP code only. A test file importing pytest is not a new
+    dependency of the product: CI already installs it, and 9 of the last 40
+    commits on main were called L for exactly that before this was scoped."""
+    std = set(getattr(sys, "stdlib_module_names", ()))
+    found, current = [], ""
+    for line in diff_text.splitlines():
+        f = _DIFF_FILE_RE.match(line)
+        if f:
+            current = f.group(1)
+            continue
+        if line.startswith("+++") or is_test_path(current):
+            continue
+        m, f2 = _IMPORT_LINE_RE.match(line), _FROM_LINE_RE.match(line)
+        mods = [part.split()[0].split(".")[0] for part in m.group(1).split(",")] if m else []
+        if f2:
+            mods.append(f2.group(1))
+        for mod in mods:
+            if mod not in std and mod not in local_stems and mod not in found:
+                found.append(mod)
+    return found
+
+
+def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: dict[str, str],
+         diff_text: str = "", local_stems: set[str] | None = None,
+         fragments: dict[str, str] | None = None) -> dict:
+    """PURE. changed = [(path, changed_line_count)] (both sides of a rename listed);
+    declared = {declared test path: its text}; code_texts = {non-test code path:
+    its text}, used for the one-hop dependents. Returns the whole verdict."""
+    reasons, escalators, selected, untested = [], [], set(), []
+    app_lines = sum(n for p, n in changed if is_code(p))
+
+    for path, _ in changed:
+        why = machinery_reason(path)
+        if why:
+            escalators.append(why)
+        if path in (fragments or {}):
+            # A newly declared test has to run on the PR that declares it. The
+            # path comes from the fragment's own `path` key, never from its
+            # filename, so the declaration has one reader.
+            selected.add(fragments[path])
+        if path in declared:
+            selected.add(path)
+
+    for mod in third_party_imports(diff_text, local_stems or set()):
+        escalators.append(f"new third-party import: {mod}")
+
+    for path, _ in changed:
+        if is_test_path(path) or machinery_reason(path):
+            continue
+        direct = {t for t, text in declared.items() if mentions(text, path)}
+        hop = set()
+        # ONE HOP, AND ONLY WHEN NOTHING NAMES THE FILE DIRECTLY. It exists for a
+        # sourced lib whose only tests are the tests of the scripts that source
+        # it. Taken unconditionally it walked through linear-worker.sh and
+        # friends and selected 100+ tests for a 30-line change, which is the
+        # suite under another name (measured, same 40 commits).
+        if is_code(path) and not direct:
+            for dep in (c for c, text in code_texts.items() if c != path and mentions(text, path)):
+                hop |= {t for t, text in declared.items() if mentions(text, dep)}
+            if not hop:
+                untested.append(path)
+        selected |= direct | hop
+
+    selected = {t for t in selected if t in declared}
+    if len(selected) > MAX_SELECTED:
+        escalators.append(f"{len(selected)} tests name the changed files, more than {MAX_SELECTED}: that is the suite")
+
+    # TWO ANSWERS, NOT ONE. Size decides the human ceremony (how much review a
+    # change earns). ESCALATORS decide whether the whole suite runs. The first cut
+    # welded them, so a 304-line change that exactly 2 declared tests name ran all
+    # 235 -- and because CI diffs the whole PR against main, it ran them again on
+    # every 3-line review round. A bigger diff touches more files, names more
+    # tests, and reaches MAX_SELECTED by itself when it really is suite-wide.
+    full_suite = bool(escalators)
+    if escalators:
+        tier = "L"
+        reasons = escalators
+    elif app_lines > M_MAX_LINES:
+        tier = "L"
+        reasons = [f"{app_lines} changed lines of app code, more than {M_MAX_LINES}"]
+    elif app_lines > S_MAX_LINES:
+        tier = "M"
+        reasons = [f"{app_lines} changed lines of app code, at most {M_MAX_LINES}"]
+    else:
+        tier = "S"
+        reasons = [f"{app_lines} changed lines of app code, at most {S_MAX_LINES}"]
+
+    # NOT AN ESCALATOR, AND SAID OUT LOUD INSTEAD. A file no declared test names,
+    # even at one hop, is a file the declared suite most likely never executes, so
+    # a 17-minute full run buys almost nothing for it. 21 of the last 40 commits
+    # on main carried one. It floors the tier at M so the human ceremony notices,
+    # and the verdict names every such file, because "nothing tests this" is the
+    # finding -- not a reason to run everything else.
+    if untested and tier == "S":
+        tier = "M"
+        reasons = reasons + [f"{len(untested)} changed executable(s) no declared test names"]
+
+    return {"tier": tier, "full_suite": full_suite, "reasons": reasons, "app_lines": app_lines,
+            "untested_by_name": sorted(untested),
+            "changed_files": len({p for p, _ in changed}), "declared_tests": len(declared),
+            "selected_tests": sorted(selected)}
+
+
+# ------------------------------------------------------------------ git + disk
+def _git(root: Path, *args: str) -> str:
+    r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)}: {r.stderr.strip()[:300]}")
+    return r.stdout
+
+
+def read_changed(root: Path, base: str, head: str) -> tuple[list[tuple[str, int]], str]:
+    """Three-dot: what the branch changed since it left base, which is what a PR
+    is. --no-renames so a rename is a delete plus an add and BOTH names are
+    searched for; a moved file's tests still name the old path."""
+    rng = f"{base}...{head}"
+    changed = []
+    for line in _git(root, "diff", "--numstat", "--no-renames", rng).splitlines():
+        a, d, path = line.split("\t", 2)
+        n = (0 if a == "-" else int(a)) + (0 if d == "-" else int(d))   # "-" = binary
+        changed.append((path, n))
+    return changed, _git(root, "diff", "-U0", "--no-renames", rng, "--", "*.py")
+
+
+def read_declared(root: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """({declared test path: text}, {fragment file: the test path it declares})."""
+    out, fragments = {}, {}
+    for frag in sorted((root / EXPECTED_TESTS_DIR).glob("*.json")):
+        try:
+            path = json.loads(frag.read_text()).get("path", "")
+        except (OSError, ValueError):
+            continue
+        full = root / path
+        if path and full.is_file():
+            out[path] = full.read_text(errors="ignore")
+            fragments[EXPECTED_TESTS_DIR + frag.name] = path
+    return out, fragments
+
+
+def read_code(root: Path) -> tuple[dict[str, str], set[str]]:
+    texts, stems = {}, set()
+    for path in _git(root, "ls-files", "*.py", "*.sh").splitlines():
+        stems.add(Path(path).stem)
+        if is_code(path):
+            try:
+                texts[path] = (root / path).read_text(errors="ignore")
+            except OSError:
+                pass
+    # Every directory name is local too: `from pipeline import x` inside a
+    # package resolves to a sibling folder, not to PyPI.
+    for path in texts:
+        stems |= set(Path(path).parts[:-1])
+    return texts, stems
+
+
+def plan_for_repo(root: Path, base: str, head: str = "HEAD") -> dict:
+    changed, diff_text = read_changed(root, base, head)
+    code_texts, stems = read_code(root)
+    declared, fragments = read_declared(root)
+    return plan(changed, declared, code_texts, diff_text, stems, fragments)
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--base", required=True)
+    ap.add_argument("--repo-root", default=".")
+    ap.add_argument("--json", action="store_true")
+    args = ap.parse_args(argv)
+    try:
+        verdict = plan_for_repo(Path(args.repo_root).resolve(), args.base)
+    except (RuntimeError, ValueError, OSError) as exc:
+        print(f"change-size: could not read the diff ({exc}). Treat as L: run the full suite.", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(verdict, indent=1))
+        return 0
+    print(f"change-size: tier {verdict['tier']} ({verdict['changed_files']} files, {verdict['app_lines']} app-code lines)")
+    for r in verdict["reasons"]:
+        print(f"  because: {r}")
+    if verdict["full_suite"]:
+        print(f"  tests: the FULL suite ({verdict['declared_tests']} declared)")
+    else:
+        for u in verdict["untested_by_name"]:
+            print(f"  UNTESTED BY NAME: {u} -- no declared test mentions it, directly or one hop out")
+        print(f"  tests: {len(verdict['selected_tests'])} of {verdict['declared_tests']} declared")
+        for t in verdict["selected_tests"]:
+            print(f"    {t}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
