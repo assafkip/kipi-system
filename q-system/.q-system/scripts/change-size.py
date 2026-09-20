@@ -226,7 +226,10 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
     # on main carried one. It floors the tier at M so the human ceremony notices,
     # and the verdict names every such file, because "nothing tests this" is the
     # finding -- not a reason to run everything else.
-    if untested and tier == "S":
+    # Only where a declared suite exists. In a repo that declares no tests EVERY
+    # file is "untested by name", so the floor said nothing and cost the ticket's
+    # own first acceptance row: the 2-line read-site registration came out M.
+    if untested and declared and tier == "S":
         tier = "M"
         reasons = reasons + [f"{len(untested)} changed executable(s) no declared test names"]
 

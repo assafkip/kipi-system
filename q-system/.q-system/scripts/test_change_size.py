@@ -130,6 +130,12 @@ def test_an_executable_nothing_names_is_said_out_loud_not_run_as_the_suite(cs):
     assert not v["full_suite"] and v["tier"] == "M" and v["untested_by_name"] == ["tools/orphan.py"]
 
 
+def test_a_repo_that_declares_no_tests_gets_no_untested_floor(cs):
+    # ASK-1749 acceptance row 1, from the corpus the issue names: a 2-line
+    # read-site registration is S.
+    assert cs.plan([("app/read_sites.py", 2)], {}, {})["tier"] == "S"
+
+
 def case_too_wide(cs):
     declared = {f"t/test-{i}.sh": "bash widget.sh" for i in range(cs.MAX_SELECTED + 1)}
     v = cs.plan([(SCRIPT, 1)], declared, CODE)
