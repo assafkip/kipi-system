@@ -449,10 +449,14 @@ def check_correction_share(voice, channels=None, targets=None):
                                           selector.DEFAULT_K)
             if not base:
                 continue
-            # target_words: the corpus's own shortest register, which is the target
-            # that collapses the pool hardest -- `length_band` ranks by distance, so
-            # no other target draws shorter rows. None is kept because pre-2026
-            # callers still pass it.
+            # target_words: supplied by `_targets_for`, which prefers the
+            # deployment's DECLARED lengths and falls back to the corpus's own
+            # shortest register plus None when a channel declares nothing. The
+            # shortest register is the target that collapses the pool hardest,
+            # since `length_band` ranks by distance. The line here used to say
+            # "None is kept because pre-2026 callers still pass it"; that stopped
+            # being the reason on 2026-09-19 when `target_words` became required,
+            # and `_targets_for`'s own docstring is the authority now.
             for target in _targets_for(channel, base, targets):
                 pool = selector.resolved_pool(rows, channel, slot_kind,
                                               selector.DEFAULT_K, target)

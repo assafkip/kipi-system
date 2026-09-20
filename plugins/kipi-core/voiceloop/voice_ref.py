@@ -13,10 +13,10 @@ Both are the same shape as two voice corpora, which took a night to kill
 (ASK-699, 2026-08-13). A duplicate that agrees today is still a duplicate.
 
 Usage:
-    python3 scripts/voice_ref.py --channel x --words 480   # long-form register
-    python3 scripts/voice_ref.py --channel x --words 25    # DM / comment register
-    python3 scripts/voice_ref.py --channel linkedin --words 200
-    python3 scripts/voice_ref.py --channel x --words 480 --ids-only
+    python3 scripts/voice_ref.py --channel x --words 480 --slot-kind post    # long-form
+    python3 scripts/voice_ref.py --channel x --words 25 --slot-kind comment  # reply register
+    python3 scripts/voice_ref.py --channel linkedin --words 200 --slot-kind post
+    python3 scripts/voice_ref.py --channel x --words 480 --slot-kind post --ids-only
 """
 from __future__ import annotations
 

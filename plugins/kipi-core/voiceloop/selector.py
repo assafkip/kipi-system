@@ -18,14 +18,19 @@ Three properties, each load-bearing and each tested:
 from __future__ import annotations
 
 DEFAULT_K = 4
-#: How many multiples of k the length window holds before rotation picks from it.
-#: A JUDGMENT CALL, NOT A MEASUREMENT, and labelled that way on purpose rather than
-#: dressed in a false n. What IS checkable, and what picked 3: it is the smallest
-#: multiplier that gives every live slot more than one distinct exemplar set across
-#: 31 counters, while keeping the window to the nearest rows so the length scar
-#: (prd-content-engine-sameness-2026-08-09) stays closed. Raising it trades length
-#: discipline for variety; lowering it to 1 restores the defect this fixes.
-ROTATION_WINDOW_MULT = 3
+#: RETIRED 2026-09-19, and DELETED rather than left at a value nobody reads.
+#: `ROTATION_WINDOW_MULT = 3` capped the rotation window at k*3 rows on top of the
+#: distance bound below, which already expresses "near the target". Two bounds for
+#: one job, and the count one did not grow with the corpus: reach stayed at 12
+#: whether the pool held 13 rows or 1300. Measured on the live ASK corpus, 13 of
+#: 106 reachable with 61 inside the band. `selector.select` carries the full record.
+#:
+#: Its docstring also claimed "lowering it to 1 restores the defect this fixes",
+#: which stopped being true the moment the constant stopped being read. A dead
+#: constant is clutter; a dead constant that still asserts a behaviour is a trap
+#: for the next reader, which is why this is a deletion and not a rename.
+#: `tests/test_length_axis.py::test_every_row_inside_the_band_is_reachable` is the
+#: guard that goes RED if the cap is reintroduced.
 #: How far from the target a row may sit and still enter the rotation window, as a
 #: fraction of the target with a floor for very short targets. BOTH ARE JUDGMENT
 #: CALLS, not measurements, and are labelled so rather than given a false n. The

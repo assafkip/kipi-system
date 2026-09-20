@@ -164,3 +164,77 @@ def test_the_window_is_wider_than_k_but_not_the_whole_pool():
                     selector.select(r, "x", c, k=4, target_words=50))
     assert len(seen) > 4, "the window is no wider than k; rotation is dead"
     assert max(seen) < 400, f"the window reached rows far from the target: {sorted(seen)}"
+
+
+# --- REACH: the window must not be capped below the band ---------------------------
+#
+# THIS TEST EXISTS BECAUSE THE SUITE COULD NOT TELL THE TWO STATES APART.
+# Review of the 2026-09-19 change (kipi-system PR #386) ran the mutation that
+# matters -- restoring `window = near[:max(k * ROTATION_WINDOW_MULT, k + 1)]` --
+# and all 231 engine tests stayed green. The headline behaviour reverts and
+# nothing here notices, so the next person to "simplify" that line ships the
+# regression with a green suite.
+#
+# The consuming repo DID have a guard (`test_voice_reach.py`), and it goes red on
+# that mutation. It is in the wrong repo: this engine ships to every instance and
+# the consumer's test does not travel with it. A guard that lives downstream of
+# the code it guards protects one deployment, not the fleet.
+
+def _band_rows(n, words, channel="linkedin", prefix="row"):
+    """n post rows of identical length, so DISTANCE cannot be what excludes any."""
+    return [{"id": f"{prefix}-{i:03d}", "channel": channel, "kind": "post",
+             "words": words, "text": " ".join(["w"] * words)}
+            for i in range(n)]
+
+
+def _reach(rows, channel, target, k=selector.DEFAULT_K):
+    pool = selector.resolved_pool(rows, channel, "post", k, target)
+    seen = set()
+    for counter in range(max(len(pool), 40)):
+        for r in selector.select(rows, channel, counter, k=k,
+                                 slot_kind="post", target_words=target):
+            seen.add(str(r.get("id")))
+    return seen
+
+
+def test_every_row_inside_the_band_is_reachable():
+    """A NUMBER, not a smoke test. Goes RED with the count cap restored.
+
+    40 rows sit exactly ON the target, so all 40 are inside `span` by
+    construction. Anything short of 40 means a bound other than distance is
+    excluding rows, which is the defect: the cap did not grow with the corpus,
+    so reach was pinned at k*3 whether the pool held 13 rows or 1300. Measured on
+    the live ASK corpus before the fix: 13 of 106 reachable with 61 in the band.
+    """
+    reached = _reach(_band_rows(40, words=200), "linkedin", target=200)
+    assert len(reached) == 40, (
+        f"reached {len(reached)} of 40 rows that all sit exactly on the target. "
+        f"Every one is inside the distance band, so a count bound is excluding "
+        f"them. See selector.select: the distance bound IS the window.")
+
+
+def test_reach_grows_with_the_corpus():
+    """The property a corpus is curated FOR.
+
+    Under the count cap both of these return the same number, which is the
+    clearest statement of the defect: adding real writing bought nothing.
+    """
+    small = _reach(_band_rows(20, words=200), "linkedin", target=200)
+    large = _reach(_band_rows(60, words=200), "linkedin", target=200)
+    assert len(large) > len(small), (
+        f"tripling the corpus inside the band moved reach {len(small)} -> "
+        f"{len(large)}. Rows a slot can never select are rows that were curated "
+        f"for nothing.")
+
+
+def test_widening_the_window_did_not_reopen_the_length_scar():
+    """The 2026-08-09 scar, asserted from the other side.
+
+    Removing the count bound must not let a short slot reach a long row. That is
+    `span`'s job, and this is the negative control proving distance still does it
+    with the count gone.
+    """
+    rows = _band_rows(30, words=100) + _band_rows(5, words=300, prefix="far")
+    reached = _reach(rows, "linkedin", target=100)
+    assert not [r for r in reached if r.startswith("far-")], (
+        f"rows 200 words outside the band were reached: {sorted(reached)}")
