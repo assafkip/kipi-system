@@ -1,5 +1,9 @@
 {
  "path": "q-system/.q-system/scripts/test/test-repo-preflight.sh",
  "runner": "bash",
- "timeout_s": 600
+ "timeout_s": 600,
+ "covers": [
+  "q-system/.q-system/scripts/repo-preflight.sh",
+  "q-system/.q-system/scripts/linear-worker.sh"
+ ]
 }
