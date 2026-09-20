@@ -80,6 +80,23 @@ class WhatCountsAsShipping(unittest.TestCase):
         for cmd in ("vercel promote dpl_abc", "vercel redeploy", "vercel --prod"):
             self.assertTrue(self.shows(cmd), f"{cmd!r} slipped past the gate")
 
+    def test_aliasing_a_deployment_onto_a_domain_is_publishing(self):
+        # alias READS like a read-only verb and is not one: `vercel alias set` points a production
+        # domain at a deployment. Exempting it let an unsealed page reach the world through a gate
+        # that refused it before (PR #378 review, major)
+        for cmd in ("vercel alias set dpl_abc example.com", "vercel alias ls"):
+            self.assertTrue(self.shows(cmd), f"{cmd!r} slipped past the gate")
+
+    def test_a_local_build_is_not_a_deploy(self):
+        # renders locally, publishes nothing: the same false-block class this file exists to remove
+        self.assertFalse(self.shows("vercel build"))
+
+    def test_a_runner_prefix_does_not_hide_the_verb(self):
+        for cmd in ("npx -y vercel --prod", "bunx vercel --prod", "npx netlify deploy --prod",
+                    "pnpm dlx wrangler pages deploy site", "npx --yes surge site/ example.com",
+                    "npx firebase deploy --only hosting"):
+            self.assertTrue(self.shows(cmd), f"{cmd!r} walked past the runner prefix")
+
     def test_ordinary_commands_are_not_deploys(self):
         for cmd in ("git push", "git push origin main", "npm run build", "python3 build.py",
                     "rsync -av site/ ../backup/", "aws s3 ls s3://bucket",
