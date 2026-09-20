@@ -150,22 +150,36 @@ IMPECCABLE_CHECK = "impeccable.txt"
 #     a subcommand nobody has thought of, still counts. Fail-closed on the unknown.
 #   - The verb list caught an rsync to a host but not its neighbours. scp, firebase, wrangler,
 #     surge and a `deploy` script run through a package manager publish just as hard.
-#   - `alias` is NOT on the read-only list, though it reads like one. `vercel alias set` points a
-#     production domain at a deployment, which is the act of publishing, and exempting it let an
-#     unsealed page reach the world through a gate that refused it before (PR #378 review, major:
-#     my own regression, caught before it merged). `build` IS exempt: it renders locally and
-#     publishes nothing.
 #   - One runner prefix for every tool, because `npx -y vercel --prod` and `bunx vercel --prod`
-#     walked past a prefix that only knew bare `npx` and only on some of the verbs.
-_RUNNER = r"(?:(?:npx|bunx)\s+(?:-y\s+|--yes\s+)?|(?:pnpm|yarn)\s+dlx\s+)?"
-_VERCEL_READ_ONLY = (r"ls|list|logs|log|inspect|whoami|teams|projects|domains|certs|secrets|build"
+#     walked past a prefix that only knew bare `npx` and only on some of the verbs. Environment
+#     assignments are consumed too: `VERCEL_TOKEN=x vercel --prod` is still a command at the start
+#     of a command (PR #378 review round 2).
+#
+# THE RULE FOR _VERCEL_READ_ONLY, because guessing it twice put a hole in the gate twice.
+# Round 1 of PR #378 caught `alias`: `vercel alias set` points a production domain at a
+# deployment. Round 2 caught `domains`: `vercel domains add <domain> <project>` does the same.
+# Both READ like read-only verbs. Both publish. Two rounds, one class, so the list gets a stated
+# predicate instead of another entry removed:
+#
+#   A verb belongs here only if NO subcommand of it can route traffic to a deployment.
+#
+# Audited against that rule, which excludes: alias, domains, dns, promote, redeploy, rollback,
+# target, rolling-release, git (connecting a repo makes future pushes deploy), and deploy itself.
+# What remains cannot put a page in front of anyone: listing, logs, local build, local dev, auth,
+# project/team metadata, env and secrets. When a new verb appears, apply the predicate; when in
+# doubt leave it off, because the cost of omitting one is a refused command with a named escape
+# and the cost of adding one wrongly is an unsealed page in front of the world.
+_RUNNER = r"(?:\w+=\S+\s+)*(?:(?:npx|bunx)\s+(?:-y\s+|--yes\s+)?|(?:pnpm|yarn)\s+dlx\s+)?"
+_VERCEL_READ_ONLY = (r"ls|list|logs|log|inspect|whoami|teams|projects|certs|secrets|build"
                      r"|env|link|pull|dev|login|logout|help|--help|-h|--version")
 BASH_SHOW_RE = re.compile(
     r"(?:^|[|;&\n]\s*)(?:open\s+-a\b|open\s+[^|;&\n]*\.(?:html?|png|jpe?g|pdf)\b"
     rf"|{_RUNNER}vercel\b(?!\s+(?:{_VERCEL_READ_ONLY})\b)"
     rf"|{_RUNNER}netlify\s+deploy\b|aws\s+s3\s+sync\b|{_RUNNER}firebase\s+deploy\b|{_RUNNER}surge\b"
     rf"|{_RUNNER}wrangler\s+(?:pages\s+)?(?:deploy|publish)\b"
-    r"|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?deploy\b"
+    # pnpm needs the explicit `run`: bare `pnpm deploy <dir>` is pnpm's own workspace-copy
+    # builtin and publishes nothing (PR #378 review round 2, nit)
+    r"|(?:npm|yarn|bun)\s+(?:run\s+)?deploy\b|pnpm\s+run\s+deploy\b"
     r"|(?:rsync|scp)\b[^|;&\n]*\s[^|;&\n\s]+@[^|;&\n\s]+:)", re.I)
 SHOW_TOOLS_PREFIX = ("mcp__playwright__", "mcp__claude-in-chrome__", "mcp__plugin_chrome-devtools")
 PUBLISH_TOOLS = ("SendUserFile", "Artifact")

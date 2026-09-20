@@ -65,7 +65,7 @@ class WhatCountsAsShipping(unittest.TestCase):
         # (PR #374 review round 5, minor)
         for cmd in ("scp -r site/ deploy@host:/var/www/", "firebase deploy --only hosting",
                     "npx wrangler pages deploy site", "wrangler deploy", "surge site/ example.com",
-                    "npm run deploy", "pnpm deploy", "yarn deploy", "npm run deploy:prod"):
+                    "npm run deploy", "pnpm run deploy", "yarn deploy", "npm run deploy:prod"):
             self.assertTrue(self.shows(cmd), f"{cmd!r} shipped without the gate seeing it")
 
     def test_a_read_only_vercel_subcommand_is_not_a_deploy(self):
@@ -84,7 +84,9 @@ class WhatCountsAsShipping(unittest.TestCase):
         # alias READS like a read-only verb and is not one: `vercel alias set` points a production
         # domain at a deployment. Exempting it let an unsealed page reach the world through a gate
         # that refused it before (PR #378 review, major)
-        for cmd in ("vercel alias set dpl_abc example.com", "vercel alias ls"):
+        for cmd in ("vercel alias set dpl_abc example.com", "vercel alias ls",
+                    "vercel domains add example.com my-project", "vercel dns add example.com",
+                    "vercel promote dpl_abc", "vercel rollback", "vercel target add"):
             self.assertTrue(self.shows(cmd), f"{cmd!r} slipped past the gate")
 
     def test_a_local_build_is_not_a_deploy(self):
@@ -96,6 +98,16 @@ class WhatCountsAsShipping(unittest.TestCase):
                     "pnpm dlx wrangler pages deploy site", "npx --yes surge site/ example.com",
                     "npx firebase deploy --only hosting"):
             self.assertTrue(self.shows(cmd), f"{cmd!r} walked past the runner prefix")
+
+    def test_an_env_assignment_does_not_hide_the_command(self):
+        # `VERCEL_TOKEN=x vercel --prod` is still a command at the start of a command
+        for cmd in ("VERCEL_TOKEN=x vercel --prod", "CI=1 NODE_ENV=production npx vercel --prod"):
+            self.assertTrue(self.shows(cmd), f"{cmd!r} hid behind an env assignment")
+
+    def test_pnpms_own_deploy_builtin_is_not_publishing(self):
+        # bare `pnpm deploy <dir>` copies a workspace locally; `pnpm run deploy` is the script
+        self.assertFalse(self.shows("pnpm deploy ./dist"))
+        self.assertTrue(self.shows("pnpm run deploy"))
 
     def test_ordinary_commands_are_not_deploys(self):
         for cmd in ("git push", "git push origin main", "npm run build", "python3 build.py",
