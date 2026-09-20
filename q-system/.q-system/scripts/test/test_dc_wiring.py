@@ -156,6 +156,27 @@ class Wiring(unittest.TestCase):
                                           "stop_hook_active": False})
             self.assertEqual(rc, 2, f"{ev} let an unsealed page end the turn: {out}")
 
+    def test_an_instance_with_no_config_is_never_blocked(self):
+        # the hooks ship to 25 instances that have no design-chain.json. A page written there must
+        # not enter the ledger, or Stop refuses it with a remediation nobody can follow, and the
+        # chain is opt-in (PR #374 review, major)
+        (self.inst / "design-chain.json").unlink()
+        plain = self.inst / "notes" / "page.html"
+        plain.parent.mkdir(parents=True, exist_ok=True)
+        plain.write_text("<html><body><p>x</p></body></html>")
+        post = next(c for (e, m, _c), c in wired(TEMPLATE).items() if e == "PostToolUse" and GATE in c)
+        self.run_hook(post, {"hook_event_name": "PostToolUse", "tool_name": "Write", "session_id": "s-plain",
+                             "tool_input": {"file_path": str(plain)}})
+        for ev in ("Stop", "SubagentStop"):
+            cmd = next(c for (e, m, _c), c in wired(TEMPLATE).items() if e == ev)
+            rc, out = self.run_hook(cmd, {"hook_event_name": ev, "session_id": "s-plain",
+                                          "stop_hook_active": False})
+            self.assertEqual(rc, 0, f"{ev} blocked an instance that never opted in: {out}")
+        show = next(c for (e, m, _c), c in wired(TEMPLATE).items() if e == "PreToolUse" and GATE in c)
+        rc, out = self.run_hook(show, {"hook_event_name": "PreToolUse", "tool_name": "SendUserFile",
+                                       "session_id": "s-plain", "tool_input": {"files": [str(plain)]}})
+        self.assertEqual(rc, 0, out)
+
     def test_no_claude_commands_copy_of_the_command(self):
         self.assertFalse((ROOT / ".claude" / "commands" / "design-chain.md").exists(),
                          "the command has one home: plugins/kipi-core/commands/design-chain.md")

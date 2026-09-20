@@ -29,11 +29,14 @@ class Door(unittest.TestCase):
         self.state.mkdir()
         self.rd = self.tmp / "inst" / "site" / "design" / "r1"
         self.rd.mkdir(parents=True)
+        self.inst = self.tmp / "inst"
+        # the chain is opt-in: the door only speaks where a design-chain.json governs the session
+        (self.inst / "design-chain.json").write_text(json.dumps({"project": "dc18", "owners": []}))
 
     def run_door(self, skill, session="s-dc18", door=DOOR):
         env = {**os.environ, "DESIGN_CHAIN_STATE": str(self.state)}
         payload = {"hook_event_name": "PreToolUse", "tool_name": "Skill", "session_id": session,
-                   "tool_input": {"skill": skill}}
+                   "cwd": str(self.inst), "tool_input": {"skill": skill}}
         r = subprocess.run([sys.executable, str(door)], input=json.dumps(payload), capture_output=True,
                            text=True, env=env, timeout=60)
         return r.returncode, r.stderr
@@ -59,6 +62,12 @@ class Door(unittest.TestCase):
         r = subprocess.run([sys.executable, str(DOOR)], input=json.dumps(payload), capture_output=True,
                            text=True, env=env, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_an_instance_with_no_config_never_hears_from_the_door(self):
+        # an instance that got the hooks and no design-chain.json cannot open a round, so refusing
+        # would ban every engine there forever (PR #374 review, major)
+        (self.inst / "design-chain.json").unlink()
+        self.assertEqual(self.run_door("frontend-design")[0], 0)
 
     def test_an_unlisted_skill_passes(self):
         self.assertEqual(self.run_door("q-debrief")[0], 0)
@@ -87,14 +96,12 @@ class Door(unittest.TestCase):
 
     def test_writing_in_a_round_opens_it_for_the_door(self):
         # the real producer of the ledger key: the gate's PostToolUse on a write inside a round
-        (self.tmp / "inst" / "design-chain.json").write_text(json.dumps({"project": "dc18", "owners": []}))
         (self.rd / "brief.md").write_text("brief\n")
         self.gate_write(self.rd / "brief.md")
         self.assertEqual(self.run_door("frontend-design")[0], 0)
 
     def test_a_write_in_a_round_subfolder_opens_the_round(self):
         # std-1: build output lives below the round folder
-        (self.tmp / "inst" / "design-chain.json").write_text(json.dumps({"project": "dc18", "owners": []}))
         (self.rd / "brief.md").write_text("brief\n")
         cand = self.rd / "directions" / "candidate-a"
         cand.mkdir(parents=True)
@@ -103,13 +110,16 @@ class Door(unittest.TestCase):
         self.assertEqual(self.run_door("frontend-design")[0], 0)
 
     def test_a_folder_with_a_brief_but_no_config_is_not_a_round(self):
+        # the round dir alone does not open a round: without the instance config there is no chain,
+        # and the door stays out of that instance entirely (PR #374 review)
+        (self.inst / "design-chain.json").unlink()
         (self.rd / "brief.md").write_text("brief\n")
         self.gate_write(self.rd / "brief.md")
-        self.assertEqual(self.run_door("frontend-design")[0], 2)
+        state = json.loads((self.state / "s-dc18.json").read_text()) if (self.state / "s-dc18.json").is_file() else {}
+        self.assertNotIn("round", state, "a folder with no config above it opened a round")
 
     def test_a_brief_folder_outside_the_rounds_dir_is_not_a_round(self):
         # adv-1: a template folder holding brief.md under the instance is not a design round
-        (self.tmp / "inst" / "design-chain.json").write_text(json.dumps({"project": "dc18", "owners": []}))
         tpl = self.tmp / "inst" / "q-consult" / "templates" / "content"
         tpl.mkdir(parents=True)
         (tpl / "brief.md").write_text("template\n")

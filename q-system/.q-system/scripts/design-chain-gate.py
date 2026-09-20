@@ -2781,6 +2781,18 @@ def save_ledger(session_id: str, led: dict) -> None:
     ledger_path(session_id).write_text(json.dumps(led, indent=2))
 
 
+def governed(path: Path) -> bool:
+    """True when a design-chain.json governs this path: the instance opted in. An instance that got
+    the hooks and no config could never open a round, so every page it wrote entered the ledger and
+    Stop refused it with a remediation nobody could follow (PR #374 review, major). The plan's own
+    promise was the opposite: silent in an instance that has not opted in."""
+    try:
+        real = Path(os.path.realpath(path))
+    except OSError:
+        return False
+    return any((d / CONFIG_NAME).is_file() for d in (real, *real.parents))
+
+
 def scan_roots(payload: dict) -> list[Path]:
     roots = []
     for cand in (payload.get("cwd"), os.environ.get("CLAUDE_PROJECT_DIR"), os.environ.get("DESIGN_CHAIN_EXTRA_ROOT")):
@@ -3267,7 +3279,8 @@ def hook(payload: dict) -> int:
     if ev == "PostToolUse" and tool in ("Write", "Edit", "MultiEdit"):
         fp = ti.get("file_path", "")
         if is_page(fp):
-            led["pages"][str(Path(fp).resolve())] = {"first_seen": time.time(), "via": tool}
+            if governed(Path(fp).parent):
+                led["pages"][str(Path(fp).resolve())] = {"first_seen": time.time(), "via": tool}
             save_ledger(sid, led)
         if fp and Path(fp).name in (CRAFT_MANIFEST, "proof.md") and (Path(fp).parent / "brief.md").is_file():
             record_citations(Path(fp).resolve().parent, payload.get("transcript_path", ""), sid)
@@ -3318,6 +3331,8 @@ def hook(payload: dict) -> int:
                         if is_page(str(sib)):
                             carried.append(sib)
             for c in carried:
+                if not governed(c.parent):
+                    continue        # the chain is opt-in; an instance with no config is not ours
                 probs = chain_problems(c)
                 if probs:
                     opens.append((str(c), probs))

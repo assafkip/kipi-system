@@ -90,6 +90,13 @@ def decide(payload: dict) -> tuple[int, str]:
         return 0, ""
     if active_round(payload.get("session_id", "")) is not None:
         return 0, ""
+    # an instance with no design-chain.json can never open a round, so refusing there would ban all
+    # 27 engines forever with no override that applies (PR #374 review, major). The chain is opt-in.
+    where = payload.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or "."
+    real = os.path.realpath(where)
+    parts = [real] + [str(p) for p in Path(real).parents]
+    if not any(os.path.isfile(os.path.join(d, "design-chain.json")) for d in parts):
+        return 0, ""
     return 2, (f"'{raw}' is a design engine, and this session has no open design-chain round. Start with "
                f"/design-chain; it calls {name} at its stage and records it.")
 
