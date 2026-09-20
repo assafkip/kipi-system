@@ -430,3 +430,68 @@ def test_no_optional_kwarg_reaches_an_INJECTED_callable_unguarded():
         "an optional kwarg reaches an injected callable directly instead of "
         "through the **optional dict that _accepts() fills:\n  "
         + "\n  ".join(offenders))
+
+
+def test_an_OLD_injected_provenance_writer_does_not_take_the_lane_down():
+    """The second injected callee gets the same old-contract fixture (ASK-1915,
+    PR #386 round 6).
+
+    `decide` had one and `_append_voice_provenance` did not, and that asymmetry
+    was the whole gap: a new optional kwarg planted at the decide site is caught
+    by execution, the same kwarg at the provenance site was not. Measured on this
+    branch before the fixture existed: 1 failed / 241 versus 242 green.
+
+    NO KWARG NAME APPEARS IN THIS TEST. The r5 attempt restated
+    {recent_openers, path} and therefore could not see a fourth; this one injects
+    a callee on a STRICT older signature and lets Python raise. Whatever the
+    engine adds next, an unguarded pass raises TypeError here and fails by
+    execution rather than by recognition.
+    """
+    import types
+    from voiceloop import gate_and_judge as gj
+
+    class _V:
+        status = "SHIPPABLE"
+        text = "the drafted post"
+        reasons = []
+
+    seen = {}
+
+    def old_append_voice_provenance(channel, at, row):
+        # THE OLDER CONTRACT: positional only, and no `path`. A strict signature
+        # is the point -- **kwargs here would accept anything and prove nothing.
+        seen["got"] = True
+
+    decide = types.SimpleNamespace(
+        decide_candidate=lambda *a, **k: _V(), SHIPPABLE="SHIPPABLE")
+    revise = types.SimpleNamespace(reviser=lambda **_k: None,
+                                   revise=lambda *a, **k: None)
+    voicefp = types.SimpleNamespace(
+        style_review=lambda *a, **k: {"verdict": "pass"},
+        style_feedback=lambda *a, **k: "",
+        drift_report=lambda *a, **k: {})
+    trail = {"stages": []}
+
+    try:
+        gj.gate_and_judge(
+            "the drafted post", channel="linkedin", idea_text="an idea",
+            voice_prov={}, arch_id=None, arch_entry=None, runner=None,
+            trail=trail, at=None,
+            decide=decide, revise=revise, voicefp_gate=voicefp,
+            prompt_carried_for=lambda _p: [],
+            _append_voice_provenance=old_append_voice_provenance,
+            provenance_path="/tmp/ignored")
+    except TypeError as exc:
+        if "unexpected keyword argument" in str(exc):
+            raise AssertionError(
+                f"gate_and_judge passed a keyword to an injected provenance "
+                f"writer that does not take it: {exc}. That callee lives in the "
+                f"INSTANCE and upgrades independently, so an unguarded kwarg "
+                f"takes the lane down on every instance still on the older "
+                f"contract. Route it through _accepts() like the decide site."
+            ) from None
+        raise
+    except Exception:
+        pass          # any OTHER failure is this fixture's thinness, not the defect
+
+    assert seen.get("got"), "the fixture never reached the provenance writer"
