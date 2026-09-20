@@ -207,7 +207,6 @@ def test_the_constraint_2_predecessors_that_DO_qualify(linter):
     is an ADMIT list and not a blanket refusal. Narrow the lookbehind to nothing and
     the rule stops firing entirely while every skip case stays green."""
     for text, expected in (("the labels move The chart rebuilds", ["The"]),
-                           ("it rebuilt 3 The chart came back mixed", ["The"]),
                            ("it rebuilt, The chart came back mixed", ["The"])):
         assert _words(post_repair.mid_sentence_cap_hits(text, linter)) == expected, text
 
@@ -365,3 +364,34 @@ def test_a_none_body_is_answered_and_never_raises(linter):
     for empty in (None, ""):
         assert post_repair.mid_sentence_cap_hits(empty, linter) == []
         assert post_repair.repair_mid_sentence_caps(empty, linter) == (empty, [])
+
+
+DOTTED_AND_NUMBERED = [
+    # A dotted brand name. Found in this repo's own prose, not constructed.
+    "he reads it on Every.to most mornings",
+    "the writeup went up on Which.co.uk last week",
+    # A numbered section prefix. The digit predecessor used to admit these.
+    "## 2.1 The dedup key",
+    "see 3.4 That table for the numbers",
+]
+
+
+@pytest.mark.parametrize("text", DOTTED_AND_NUMBERED)
+def test_a_dotted_name_or_a_numbered_heading_is_left_alone(text, linter):
+    """PR #395 round 2, minor. `Every.to` -> `every.to` is exactly the failure this
+    module's header calls worse than the bug: it cleared all three constraints because
+    the dot is not a word character, so the trailing-boundary lookahead let it through.
+    `## 2.1 The dedup key` cleared them because a digit was an admitted predecessor.
+
+    Both were fixed by NARROWING, which is the only safe direction here: a rule whose
+    worst case is eating a name he meant never gets widened to catch more."""
+    assert post_repair.mid_sentence_cap_hits(text, linter) == [], text
+    assert post_repair.repair_mid_sentence_caps(text, linter) == (text, [])
+
+
+def test_a_trailing_period_still_matches(linter):
+    """Negative self-test on the dotted-name narrowing: `(?!\\.\\w)` excludes a dot
+    followed by a word character, NOT a sentence-ending period. If this goes green as a
+    no-hit, the narrowing has eaten a real case."""
+    assert _words(post_repair.mid_sentence_cap_hits(
+        "the labels move and then rebuild, and so does The.", linter)) == ["The"]

@@ -112,8 +112,8 @@ _TRANSITION_OPENER_RE = re.compile(
 #
 #   1. The word must be in `MID_SENTENCE_LOWERCASE_WORDS` below -- determiners,
 #      pronouns and relatives whose capitalized mid-clause form is always wrong.
-#   2. The character before the gap must be a lowercase letter, a digit or a comma,
-#      on the SAME line. That is a purely local test, so it needs no offset mapping
+#   2. The character before the gap must be a lowercase letter or a comma, on the
+#      SAME line (a digit used to qualify and no longer does, see the regex below). That is a purely local test, so it needs no offset mapping
 #      between the raw text and the linter's prose view, and every ambiguous
 #      predecessor (a period, a colon, a quote, a dash, a newline, a list marker, an
 #      uppercase letter) falls outside it and is skipped.
@@ -157,7 +157,23 @@ but
 # line or block start, which is the sentence-start pass's territory and not this one's.
 # `[a-z']+` after the leading capital is what keeps every acronym out -- "FX", "SKU",
 # "AI", and bare "I", which is one character and so cannot match at all.
-_MID_SENTENCE_CAP_RE = re.compile(r"(?<=[a-z0-9,])([ \t]+)([A-Z][a-z']+)(?![\w'])")
+#
+# TWO NARROWINGS ADDED 2026-09-20 (PR #395 round 2), each from a reproducer on real
+# text rather than a constructed one, and each a narrowing because that is the only
+# safe direction for a rule whose worst case is eating a name he meant:
+#
+#   `(?!\.\w)` -- A DOTTED BRAND NAME cleared all three constraints. "Every.to" became
+#   "every.to", which is precisely the failure this module's own header calls worse
+#   than the bug. A trailing period still matches (a sentence can end on an in-set
+#   word); only a dot followed by a word character is excluded, which is the domain
+#   and dotted-name shape.
+#
+#   the digit predecessor is GONE -- it admitted a numbered section prefix, so
+#   "## 2.1 The dedup key" lost its capital. No digit predecessor appears in any of
+#   the twelve recorded live defects, so dropping it costs nothing measured and
+#   removes a whole class of heading and list false positives.
+_MID_SENTENCE_CAP_RE = re.compile(
+    r"(?<=[a-z,])([ \t]+)([A-Z][a-z']+)(?![\w'])(?!\.\w)")
 _FOLLOWED_BY_CAPITAL_RE = re.compile(r"[ \t]+[A-Z]")
 
 
