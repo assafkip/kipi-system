@@ -178,15 +178,16 @@ def test_bare_I_and_acronyms_cannot_match(linter):
 
 
 # --------------------------------------------------------------------------------------
-# CONSTRAINT 2: the preceding character must be a lowercase letter, a digit or a comma,
-# on the SAME line.
+# CONSTRAINT 2: the preceding character must be a lowercase letter or a comma, on the
+# SAME line. (A digit qualified until PR #395 round 2; it admitted "## 2.1 The key".)
 # --------------------------------------------------------------------------------------
 
 def test_a_sentence_start_capital_is_never_touched(linter):
     """The true positive of constraint 2, and the layer's own boundary. Sentence starts
     belong to the existing pass, and a capital after a terminator, a colon, a quote, a
     dash, a newline or a list marker is skipped because the preceding character is not a
-    lowercase letter, a digit or a comma."""
+    lowercase letter or a comma. (A digit was an admitted predecessor until PR #395
+    round 2 removed it; see the regex.)"""
     for text in ("It broke. The chart rebuilt itself.",
                  "the problem: The labels move",
                  'he said, "That is the whole bug"',
@@ -197,8 +198,9 @@ def test_a_sentence_start_capital_is_never_touched(linter):
 
 
 def test_the_constraint_2_predecessors_that_DO_qualify(linter):
-    """The named true positives of constraint 2: each of the three predecessors it
-    admits produces a hit.
+    """The named true positives of constraint 2: each of the two predecessors it still
+    admits produces a hit. There were three until PR #395 round 2 dropped the digit,
+    which had been admitting numbered section prefixes.
 
     The rationale here was WRONG when first written (PR #395 review, nit). It claimed
     deleting the lookbehind would leave the skip-list test above green. It does not:
@@ -252,9 +254,12 @@ def test_code_spans_and_fences_are_never_rewritten(linter):
 
 
 def test_the_full_repair_pass_reaches_the_new_layer(linter):
-    """The wiring proof. Everything above tests the function; this tests the CALL. Delete
-    `repair_mid_sentence_caps` from the tuple in `repair()` and this is the test that
-    goes red."""
+    """The wiring proof. Everything above tests the function; this tests the CALL.
+
+    The call is a standalone statement between step 2 and step 3, NOT an entry in
+    `repair()`\'s group-0 tuple, which is where it wrongly lived until PR #395 finding 1.
+    (This docstring said "the tuple" after that move, round 3 nit.) Delete the call and
+    this test goes red, measured."""
     repaired, changes = _repair("The reason The labels move is the rebuild.", linter)
     assert "the labels move" in repaired
     assert any(line.startswith("lowercased mid-sentence capital") for line in changes), \
@@ -262,9 +267,17 @@ def test_the_full_repair_pass_reaches_the_new_layer(linter):
 
 
 def test_the_layer_runs_after_the_passes_that_CREATE_its_shape(linter):
-    """Position in the tuple, asserted rather than commented. The contraction pass turns
-    "is not That" into "isn't That", which is the shape this layer looks for, so a
-    reorder that puts this layer first leaves the capital standing."""
+    """The contraction pass turns "is not That" into "isn\'t That", which is the shape
+    this layer looks for, so this case only passes if this layer sees that output.
+
+    ITS ORIGINAL DOCSTRING WAS FALSE (PR #395 round 3, minor). It claimed a reorder
+    putting this layer first "leaves the capital standing", so this test would go red.
+    Measured: moving the call ahead of `repair_contractions` turns
+    `test_the_pass_runs_after_the_sentence_start_pass` and
+    `test_the_sentence_start_pass_cannot_plant_a_capital_this_layer_owns` red, and
+    leaves THIS one green. Those two are what hold the ordering; this one holds only
+    that the contracted shape is reachable, which is worth having and is not the same
+    claim. A test whose stated reason nobody checked is how a suite grows decoration."""
     repaired, changes = _repair("The chart is not That reliable in practice.", linter)
     assert "isn't that reliable" in repaired, repaired
     assert any(line.startswith("lowercased mid-sentence capital") for line in changes), \
