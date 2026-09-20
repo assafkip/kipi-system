@@ -17,7 +17,7 @@
 
 ## Commands
 - `/q-morning` - The day brief: one Slack message with today's calendar, the mail needing an answer, and his consulting board. What is owed today and which overnight jobs failed are still COLLECTED and no longer reach him: they are engineering signal and route to Sana's Linear triage (`founder-notifications.md`, 2026-08-10). Runs itself at 07:40 (`com.kipi.morning-brief`); the command just runs it early. A section that could not be read says COULD NOT READ, never "nothing". If no brief lands by 09:00 a separate job (`com.kipi.morning-brief-deadman`) says so. The 9-phase agent pipeline it replaced is RETIRED (decisions.md RULE-2026-08-30-A)
-- `/q-debrief` - Post-conversation extraction (highest priority)
+- `/q-debrief` - Post-conversation extraction, the highest-priority workflow. Ships as `plugins/kipi-core/commands/q-debrief.md` — the only fleet-wide path a command loads through, since `kipi update` does not sync `.claude/commands` (its old file was deleted 2026-03-23 and instances kept stale copies for six months, ASK-1925). Runs the canonical template at `q-system/methodology/debrief-template.md`, whose step 6 is the only documented writer of `memory/graph.jsonl`. A pasted transcript fires the same workflow without the command (`auto-detection.md`)
 - `/q-calibrate` - Update canonical files
 - `/q-create` - Generate specific output (talk tracks, emails, slides, decks)
 - `/q-plan` - Review and prioritize actions
