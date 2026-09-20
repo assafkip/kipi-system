@@ -18,6 +18,24 @@ Three properties, each load-bearing and each tested:
 from __future__ import annotations
 
 DEFAULT_K = 4
+#: How many multiples of k the length window holds before rotation picks from it.
+#: A JUDGMENT CALL, NOT A MEASUREMENT, and labelled that way on purpose rather than
+#: dressed in a false n. What IS checkable, and what picked 3: it is the smallest
+#: multiplier that gives every live slot more than one distinct exemplar set across
+#: 31 counters, while keeping the window to the nearest rows so the length scar
+#: (prd-content-engine-sameness-2026-08-09) stays closed. Raising it trades length
+#: discipline for variety; lowering it to 1 restores the defect this fixes.
+ROTATION_WINDOW_MULT = 3
+#: How far from the target a row may sit and still enter the rotation window, as a
+#: fraction of the target with a floor for very short targets. BOTH ARE JUDGMENT
+#: CALLS, not measurements, and are labelled so rather than given a false n. The
+#: floor exists because a 20-word target with a pure fraction admits almost nothing.
+#: What is checkable: at these values every live slot rotates through more than one
+#: exemplar set across 31 counters, and the thin-corpus scar test
+#: (`test_short_target_never_returns_the_long_row`) stays green -- a count-only
+#: window failed it immediately, which is why distance is here at all.
+ROTATION_SPAN_FRACTION = 0.6
+ROTATION_MIN_SPAN_WORDS = 25
 
 # The long/short break, measured on the live corpus 2026-08-13 rather than chosen:
 # x exemplars run 5..55 words with a single outlier at 479, so any cut inside that
@@ -168,14 +186,77 @@ def select(rows, channel, counter, slot_index=0, k=DEFAULT_K, slot_kind="post",
     # rather than starving -- exhaustion must not become starvation.
     if target_words is not None:
         ranked = length_band(pool, target_words)
-        near = ranked[:max(k, 1)]
+        # THE WINDOW IS WIDER THAN k, AND THAT IS THE WHOLE FIX (2026-09-10).
+        #
+        # This line read `ranked[:max(k, 1)]`, which cut the pool to EXACTLY k while
+        # the rotation below picks k of it. Choosing k of k is the same SET at every
+        # counter; `offset` only permuted the order. Measured on the live corpus over
+        # 31 consecutive counters: linkedin/post at target 200 gave 1 distinct set
+        # (4 via the anchor rescue below, which is incidental, not rotation), x/post
+        # at 40 gave 1, reddit/comment at 95 gave 1. With `target_words=None` the
+        # same call gave 31 of 31, which is the negative control proving the
+        # rotation machinery itself was fine and only the pool was starved.
+        #
+        # That made the module's stated defense inert. The docstring at the top of
+        # this file calls rotation "the structural defense against the engine's
+        # measured uniformity failure" (finding-5,
+        # prd-content-engine-sameness-2026-08-09), and every production caller
+        # passes a target: `social.py` defaults to 200 on linkedin and 40 on x even
+        # with no `--words`, and `voice_ref.py` makes `--words` required. So there
+        # was no untargeted path and the defense never ran.
+        #
+        # Widening to the whole pool is the WRONG fix and would reopen the 2026-08-09
+        # scar from the other side: rotating over all 45 linkedin rows means a high
+        # counter selects the rows FURTHEST from the target, which is how article
+        # rhythm taught post slots and the engine published essays on a 280-char
+        # channel. The window keeps the nearest rows and rotates inside them.
+        # THE WINDOW IS BOUNDED BY DISTANCE AS WELL AS COUNT, and the count-only
+        # version was caught by `test_short_target_never_returns_the_long_row`
+        # within minutes of being written. On the thin fixture corpus (ten 20-word
+        # posts and one 400-word post) a window of k*3 simply swallowed the long
+        # row, which is the 2026-08-09 scar reopening from the other side. Size
+        # alone cannot express "near"; distance can.
+        span = max(target_words * ROTATION_SPAN_FRACTION, ROTATION_MIN_SPAN_WORDS)
+        near = [r for r in ranked if abs(_words(r) - target_words) <= span]
+        # THE DISTANCE BOUND IS THE WINDOW, and the count cap that used to sit here
+        # was a second threshold doing the same job worse (sp-1d33d5f9, 2026-09-19).
+        #
+        # This line read `near[:max(k * ROTATION_WINDOW_MULT, k + 1)]`. That cut the
+        # band to 12 rows no matter how large it was, so reach did not grow with the
+        # corpus. Measured on the live ASK corpus the day 51 approved LinkedIn posts
+        # were banked: linkedin/post at the production target of 200 had 61 rows
+        # INSIDE the band and the rotation reached 13 of 106. Banking 51 posts moved
+        # reach from 13 to 13 -- the corpus doubled and what the model sees did not.
+        # 93 of 106 rows were unreachable; one row appeared in 24 of 24 counters.
+        #
+        # WHY REMOVING IT DOES NOT REOPEN THE 2026-08-09 SCAR. That scar is about a
+        # short slot being taught article rhythm, and `span` is what prevents it:
+        # every row in `near` is already within ROTATION_SPAN_FRACTION of the target.
+        # The count cap was added in the same 2026-09-10 edit that added `span`,
+        # against a count-ONLY version that had no distance bound at all -- the
+        # comment below records that history. Once distance arrived the count became
+        # redundant, and nobody removed it. `test_short_target_never_returns_the_long
+        # _row` is the guard that proves distance is doing the work; it stays green
+        # with this line gone, and `test_voice_reach.py` in the consuming repo pins
+        # both halves against each other.
+        #
+        # Raising ROTATION_WINDOW_MULT instead was rejected: that is moving a
+        # threshold to fit the data, which is the failure mode this file's own
+        # comments exist to document.
+        window = near
+        # EXHAUSTION MUST NOT BECOME STARVATION, the rule `resolved_pool` states and
+        # this branch inherits. A tight band on a thin corpus can hold fewer than k
+        # rows; falling back to the nearest k is the pre-2026-09-10 behaviour, so a
+        # starved slot is no worse off than before rather than empty.
+        if len(window) < k:
+            window = ranked[:max(k, 1)]
         # ANCHORS SURVIVE THE TRUNCATION (Codex review of #147, minor). Truncating to
         # the nearest k could drop every anchor, and the rotation below promises one
         # anchor is always included when any exists. A guarantee the step above can
         # silently delete is not a guarantee.
-        if not any(r.get("anchor") for r in near):
-            near = near + [r for r in ranked if r.get("anchor")][:1]
-        pool = near or pool
+        if not any(r.get("anchor") for r in window):
+            window = window + [r for r in ranked if r.get("anchor")][:1]
+        pool = window or pool
     if not pool:
         return []
     offset = (int(counter) + int(slot_index)) % len(pool)

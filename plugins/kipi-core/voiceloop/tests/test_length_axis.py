@@ -121,3 +121,46 @@ def test_a_starved_band_widens_rather_than_returning_nothing():
                    "text": "word " * 10, "words": 10} for i in range(6)]
     picked = selector.select(short_only, "x", 0, k=4, target_words=480)
     assert len(picked) == 4, ids(picked)
+
+
+def _sets(r, counters=31, **kw):
+    return {tuple(x["id"] for x in selector.select(r, "x", c, **kw))
+            for c in range(counters)}
+
+
+def test_a_target_still_ROTATES_across_counters():
+    """THE TEST THIS FILE DID NOT HAVE, and its absence is the whole 2026-09-10
+    defect.
+
+    Nine tests here pass `target_words`; not one of them asserted that consecutive
+    counters see DIFFERENT rows. `test_selection_stays_deterministic_with_a_target`
+    asserts the opposite property and would pass more confidently with rotation
+    removed entirely. Meanwhile `test_selector_form_match.py:180` already knew the
+    failure ("Choosing k of k is the same set forever") but reached the cliff by
+    shrinking the corpus, never by the one argument production always passes.
+
+    Measured on the live corpus before the fix: 1 distinct set across 31 counters
+    at every targeted slot, against 31 with target_words=None.
+    """
+    r = [{"id": f"p-{i:02d}", "kind": "post", "channel": "x",
+          "text": "word " * (18 + i), "words": 18 + i} for i in range(20)]
+    assert len(_sets(r, k=4, target_words=None)) > 1, "control: untargeted must rotate"
+    assert len(_sets(r, k=4, target_words=25)) > 1, (
+        "a targeted slot returned the same exemplar set at every counter")
+
+
+def test_the_window_is_wider_than_k_but_not_the_whole_pool():
+    """Both failure directions in one assertion.
+
+    Window == k is the dead rotation this fixes. Window == the whole pool is the
+    2026-08-09 scar from the other side: a high counter would select the rows
+    FURTHEST from the target, which is how article rhythm taught post slots.
+    """
+    r = [{"id": f"p-{i:02d}", "kind": "post", "channel": "x",
+          "text": "word " * (10 + 10 * i), "words": 10 + 10 * i} for i in range(40)]
+    seen = set()
+    for c in range(31):
+        seen.update(x["words"] for x in
+                    selector.select(r, "x", c, k=4, target_words=50))
+    assert len(seen) > 4, "the window is no wider than k; rotation is dead"
+    assert max(seen) < 400, f"the window reached rows far from the target: {sorted(seen)}"
