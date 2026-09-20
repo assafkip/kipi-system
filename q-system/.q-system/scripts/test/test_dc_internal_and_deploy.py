@@ -57,9 +57,32 @@ class WhatCountsAsShipping(unittest.TestCase):
                     "rsync -av site/ deploy@host:/var/www/"):
             self.assertTrue(self.shows(cmd), f"{cmd!r} shipped without the gate seeing it")
 
+    def test_the_neighbours_of_rsync_ship_too(self):
+        # the verb list caught an rsync to a host and missed everything beside it. A script whose name
+        # STARTS with deploy counts, deploy:prod included: a missed deploy ships an unsealed page,
+        # while a blocked deploy:check costs one named escape. Fail closed on publishing.
+        # (PR #374 review round 5, minor)
+        for cmd in ("scp -r site/ deploy@host:/var/www/", "firebase deploy --only hosting",
+                    "npx wrangler pages deploy site", "wrangler deploy", "surge site/ example.com",
+                    "npm run deploy", "pnpm deploy", "yarn deploy", "npm run deploy:prod"):
+            self.assertTrue(self.shows(cmd), f"{cmd!r} shipped without the gate seeing it")
+
+    def test_a_read_only_vercel_subcommand_is_not_a_deploy(self):
+        # every vercel subcommand counted, so `vercel ls` was refused mid-round and the only escape
+        # offered was DESIGN_CHAIN_ALLOW=1, which disarms the whole gate (round 5, minor)
+        for cmd in ("vercel ls", "vercel logs my-app", "vercel whoami", "vercel inspect url",
+                    "npx vercel env pull", "vercel --version"):
+            self.assertFalse(self.shows(cmd), f"{cmd!r} was read as a deploy")
+
+    def test_an_unknown_vercel_subcommand_still_counts(self):
+        # fail closed: only the named read-only subcommands are exempt
+        for cmd in ("vercel promote dpl_abc", "vercel redeploy", "vercel --prod"):
+            self.assertTrue(self.shows(cmd), f"{cmd!r} slipped past the gate")
+
     def test_ordinary_commands_are_not_deploys(self):
         for cmd in ("git push", "git push origin main", "npm run build", "python3 build.py",
-                    "rsync -av site/ ../backup/", "aws s3 ls s3://bucket"):
+                    "rsync -av site/ ../backup/", "aws s3 ls s3://bucket",
+                    "scp -r site/ ../backup/", "npm run predeploy"):
             self.assertFalse(self.shows(cmd), f"{cmd!r} was read as a deploy")
 
 

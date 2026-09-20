@@ -133,10 +133,23 @@ IMPECCABLE_CHECK = "impeccable.txt"
 # `vercel deploy` was known, so netlify, `npx vercel --prod`, an s3 sync and an rsync to a host all
 # shipped an unsealed page (PR #374 review, major). `git push` is deliberately NOT here: it is the
 # most common command in this repo and pushing a branch is not publishing a page.
+# Two corrections from PR #374 review round 5 (both minor), and one rule that follows from them:
+#   - ANY `vercel` subcommand counted as a deploy, so read-only `vercel ls`, `vercel logs` and
+#     `vercel whoami` were refused mid-round. The only escape on offer is DESIGN_CHAIN_ALLOW=1,
+#     which disarms the whole gate, so a harmless command taught the operator to switch it off.
+#     The read-only subcommands are now named and exempt; anything else after `vercel`, including
+#     a subcommand nobody has thought of, still counts. Fail-closed on the unknown.
+#   - The verb list caught an rsync to a host but not its neighbours. scp, firebase, wrangler,
+#     surge and a `deploy` script run through a package manager publish just as hard.
+_VERCEL_READ_ONLY = (r"ls|list|logs|log|inspect|whoami|teams|projects|domains|certs|secrets|alias"
+                     r"|env|link|pull|dev|login|logout|help|--help|-h|--version")
 BASH_SHOW_RE = re.compile(
     r"(?:^|[|;&\n]\s*)(?:open\s+-a\b|open\s+[^|;&\n]*\.(?:html?|png|jpe?g|pdf)\b"
-    r"|(?:npx\s+)?vercel\b|netlify\s+deploy\b|aws\s+s3\s+sync\b"
-    r"|rsync\b[^|;&\n]*\s[^|;&\n\s]+@[^|;&\n\s]+:)", re.I)
+    rf"|(?:npx\s+)?vercel\b(?!\s+(?:{_VERCEL_READ_ONLY})\b)"
+    r"|netlify\s+deploy\b|aws\s+s3\s+sync\b|firebase\s+deploy\b|(?:npx\s+)?surge\b"
+    r"|(?:npx\s+)?wrangler\s+(?:pages\s+)?(?:deploy|publish)\b"
+    r"|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?deploy\b"
+    r"|(?:rsync|scp)\b[^|;&\n]*\s[^|;&\n\s]+@[^|;&\n\s]+:)", re.I)
 SHOW_TOOLS_PREFIX = ("mcp__playwright__", "mcp__claude-in-chrome__", "mcp__plugin_chrome-devtools")
 PUBLISH_TOOLS = ("SendUserFile", "Artifact")
 STATE_DIR = Path(os.environ.get("DESIGN_CHAIN_STATE", os.path.expanduser("~/.config/kipi/design-chain")))
