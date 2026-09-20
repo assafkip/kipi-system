@@ -175,7 +175,36 @@ IMPECCABLE_PRODUCER = "design-impeccable-check.py"
 # be non-empty, and round A-checks sealed with the tripwire's FAIL written in it (RCA 2026-09-18).
 # bio_gate and voice-lint join when each can say "skipped" apart from "pass" (follow-ups).
 TRIPWIRE = str((HERE.parent.parent.parent / "plugins" / "kipi-design" / "hooks" / "dogfood_gate.py").resolve())
-CHECKS = {"tripwire": {"script": TRIPWIRE, "pass": {0}, "skip": {3}}}
+def _tripwire_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("dogfood_gate_for_seal", TRIPWIRE)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _tripwire_na_holds(page: Path, reason: str) -> bool:
+    """Re-derive the tripwire's NOT_APPLICABLE (exit 4) from the page as it is NOW, rather than
+    believing the word in the receipt. Both of its NA reasons are cheap to re-ask: whether the
+    checker calls the path public, and whether the page still carries the operator's exemption
+    marker. A page that stops being exempt stops being believed, which is the whole point of the
+    rebuild (RCA 2026-09-18)."""
+    if "eyeball-gate-skip" in reason:
+        try:
+            return "eyeball-gate-skip" in page.read_text(errors="ignore").lower()
+        except OSError:
+            return False
+    try:
+        return not _tripwire_module().is_public_facing_page(str(page))
+    except Exception:
+        return False        # cannot re-derive it, so it is not believed
+
+
+# "na" is exit 4 from check_cli: the page is outside THAT checker's scope, or the operator
+# exempted it. Distinct from "skip" (3), which stays a refusal: a check that could not run on a
+# page the chain calls a page is a hole (PR #374 review round 6, major).
+CHECKS = {"tripwire": {"script": TRIPWIRE, "pass": {0}, "skip": {3}, "na": {4},
+                       "na_holds": _tripwire_na_holds}}
 
 
 def _tripwire_brand_files() -> tuple:
@@ -770,6 +799,14 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
             brand = ["--brand-from", str(cfg_path.parent)] if cfg_path else []
             rc, tail = timed(f"check:{name}", p.name, spec["script"],
                              ["--check", str(snap.dir / p.name), "--as", str(rd / p.name), *brand])
+            if rc in spec.get("na", ()):
+                # the checker says this page is outside its scope, or the operator exempted it.
+                # Recorded as not applicable WITH the checker's own sentence, so the receipt says
+                # which of its reasons applied rather than a bare "n/a".
+                snap.stages.setdefault(p.name, []).append(
+                    scope_na_record(f"check:{name}", tail.strip().splitlines()[-1][:200] if tail.strip()
+                                    else "the checker reported not applicable and said nothing"))
+                continue
             snap.stages.setdefault(p.name, []).append(stage_record(f"check:{name}", spec["script"], rd, rc))
             if rc in spec["skip"]:
                 bad.append((p.name, [f"the {name} check did not run on this page (exit {rc}): {tail}. A check "
@@ -1419,7 +1456,27 @@ def na_record(stage: str, lane: str) -> dict:
     return {"stage": stage, "path": "", "sha256": "", "exit": None, "not_applicable": f"lane: {lane}"}
 
 
-def _believed_na(r: dict, lane: str) -> bool:
+SCOPE_NA = "checker scope: "
+
+
+def scope_na_record(stage: str, reason: str) -> dict:
+    """A declared check that reported NOT_APPLICABLE: this page is outside that checker's scope, or
+    the operator exempted it. Not a pass (exit stays null, so nothing reads it as one) and not a
+    refusal. Before this, such a page could never seal, the documented eyeball-gate-skip bypass
+    included (PR #374 review round 6, major)."""
+    return {"stage": stage, "path": "", "sha256": "", "exit": None, "not_applicable": SCOPE_NA + reason}
+
+
+def _believed_na(r: dict, lane: str, page: Path | None = None) -> bool:
+    na = r.get("not_applicable") or ""
+    if na.startswith(SCOPE_NA):
+        # NEVER believed on its word: re-derived from the page as it is now, by the checker's own
+        # scope function. A receipt that says "not applicable" and cannot show it is the exact
+        # shape this rebuild exists to refuse.
+        spec = CHECKS.get(str(r.get("stage") or "")[len("check:"):]) or {}
+        holds = spec.get("na_holds")
+        return bool(page is not None and holds and r.get("exit") is None and r.get("path") == ""
+                    and r.get("sha256") == "" and holds(page, na[len(SCOPE_NA):]))
     return (lane != "site" and r.get("exit") is None and r.get("not_applicable") == f"lane: {lane}"
             and r.get("stage") in WEB_ONLY and r.get("path") == "" and r.get("sha256") == "")
 
@@ -1659,9 +1716,10 @@ def receipt_problems(page: Path) -> list[str]:
                          f"page was measured: seal again")
         for r in ent["stages"]:
             if "not_applicable" in r or r.get("exit") is None:
-                if not _believed_na(r, lane):
-                    probs.append(f"the receipt calls the {r.get('stage')} stage not applicable, and the "
-                                 f"round's lane ({lane}) does not skip it: seal again")
+                if not _believed_na(r, lane, page):
+                    probs.append(f"the receipt calls the {r.get('stage')} stage not applicable, and that does "
+                                 f"not hold now: the round's lane ({lane}) does not skip it, or the checker "
+                                 f"that called this page out of its scope no longer does: seal again")
                 continue
             if r["exit"] != 0:
                 probs.append(f"the receipt records the {r['stage']} producer exiting {r['exit']}, so the "

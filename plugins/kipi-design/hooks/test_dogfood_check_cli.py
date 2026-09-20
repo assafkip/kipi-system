@@ -49,17 +49,22 @@ class CheckMode(unittest.TestCase):
         self.assertEqual(rc, 2, err)
         self.assertIn("Gradient", err)
 
-    def test_the_skip_marker_exits_3_not_0(self):
+    def test_the_skip_marker_exits_4_not_0(self):
+        # 4 is NOT_APPLICABLE: an operator exemption is a scope decision, not a checker that could
+        # not run. On 3 the seal read it as "did not run" and refused the round forever, so the
+        # documented bypass made a page unsealable (PR #374 review round 6, major)
         rc, err = self.check(CLEAN.replace("<head>", "<head><!-- eyeball-gate-skip -->"))
-        self.assertEqual(rc, 3, err)
+        self.assertEqual(rc, 4, err)
         self.assertIn("eyeball-gate-skip", err)
 
-    def test_an_internal_path_by_as_exits_3_not_0(self):
+    def test_an_internal_path_by_as_exits_4_not_0(self):
         rc, err = self.check(CLEAN, as_path="/repo/q-system/output/view.html")
-        self.assertEqual(rc, 3, err)
+        self.assertEqual(rc, 4, err)
         self.assertIn("not a public page", err)
 
-    def test_a_file_that_is_not_html_exits_3(self):
+    def test_a_file_that_is_not_html_still_exits_3(self):
+        # deliberately NOT 4: is_page() already called this a page, so markup missing from it is a
+        # real problem rather than a scope question, and a refusal is right
         rc, err = self.check("just text, no markup")
         self.assertEqual(rc, 3, err)
         self.assertIn("not an HTML document", err)

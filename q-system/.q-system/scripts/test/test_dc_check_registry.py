@@ -66,13 +66,30 @@ class TheRegistryIsClosed(Registry):
         self.assertEqual(rc, 2, out)
         self.assertIn("checks names ['always-pass'], which the gate does not run", out)
 
-    def test_a_skipped_check_is_not_a_pass(self):
+    def test_an_operator_exemption_is_recorded_not_refused(self):
+        # this test used to assert the opposite, and in asserting it pinned the trap: the
+        # DOCUMENTED per-file bypass returned the same exit as "the check could not run", so a page
+        # carrying it could never seal and the operator had no way out (round 6, major). The
+        # exemption is a scope decision; it is recorded as not applicable, with the reason, and the
+        # exit stays null so nothing reads it as a pass.
         self.declare([{"name": "tripwire"}])
         self.page(CLEAN.replace("<head>", "<head><!-- eyeball-gate-skip -->"))
         rc, out = self.seal()
+        self.assertEqual(rc, 0, out)
+        stages = json.loads((self.rd / "receipts.json").read_text())["Home-laptop.html"]["stages"]
+        na = [s for s in stages if s["stage"] == "check:tripwire"]
+        self.assertEqual(len(na), 1, stages)
+        self.assertIsNone(na[0]["exit"])
+        self.assertIn("eyeball-gate-skip", na[0]["not_applicable"])
+
+    def test_a_check_that_could_not_run_is_still_not_a_pass(self):
+        # the other half: exit 3 keeps refusing. A page with no markup is a real problem on a file
+        # the chain already called a page, not a scope question.
+        self.declare([{"name": "tripwire"}])
+        self.page("plain text, no markup at all")
+        rc, out = self.seal()
         self.assertEqual(rc, 2, out)
-        self.assertIn("the tripwire check did not run on this page (exit 3)", out)
-        self.assertIn("eyeball-gate-skip", out)
+        self.assertIn("did not run on this page (exit 3)", out)
 
 
 VIOLET = CLEAN.replace("<form action='#book'><button>", "<form action='#book'><button style='background:#7c3aed;color:#fff'>")
@@ -145,6 +162,56 @@ class TheFolderNoLongerCounts(Registry):
         rc, out = self.seal()
         self.assertEqual(rc, 2, out)
         self.assertIn("missing or empty", out)
+
+
+class TheNotApplicableIsReDerived(unittest.TestCase):
+    """A receipt that SAYS not applicable and cannot show it is the shape this rebuild refuses.
+    _believed_na re-asks the checker about the page as it is now, so the word in the file is never
+    the evidence (PR #374 review round 6)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        from pathlib import Path as _P
+        gate = _P(__file__).resolve().parent.parent / "design-chain-gate.py"
+        spec = importlib.util.spec_from_file_location("dc_na_gate", gate)
+        cls.gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.gate)
+
+    def setUp(self):
+        import shutil, tempfile
+        from pathlib import Path as _P
+        self.tmp = _P(tempfile.mkdtemp(prefix="dcna-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def rec(self, reason):
+        return self.gate.scope_na_record("check:tripwire", reason)
+
+    def test_an_exemption_that_is_still_on_the_page_is_believed(self):
+        page = self.tmp / "Home-laptop.html"
+        page.write_text("<html><body><!-- eyeball-gate-skip --><p>x</p></body></html>")
+        self.assertTrue(self.gate._believed_na(self.rec("carries the eyeball-gate-skip marker"),
+                                               "site", page))
+
+    def test_an_exemption_the_page_no_longer_carries_is_not_believed(self):
+        page = self.tmp / "Home-laptop.html"
+        page.write_text("<html><body><p>x</p></body></html>")
+        self.assertFalse(self.gate._believed_na(self.rec("carries the eyeball-gate-skip marker"),
+                                                "site", page))
+
+    def test_an_internal_path_claim_is_checked_against_the_path(self):
+        internal = self.tmp / "q-system" / "output" / "view.html"
+        internal.parent.mkdir(parents=True)
+        internal.write_text("<html><body><p>x</p></body></html>")
+        public = self.tmp / "site" / "pricing" / "index.html"
+        public.parent.mkdir(parents=True)
+        public.write_text("<html><body><p>x</p></body></html>")
+        claim = self.rec("is not a public page (internal path, or not .html)")
+        self.assertTrue(self.gate._believed_na(claim, "site", internal))
+        self.assertFalse(self.gate._believed_na(claim, "site", public))
+
+    def test_a_scope_claim_with_no_page_to_check_is_not_believed(self):
+        self.assertFalse(self.gate._believed_na(self.rec("is not a public page"), "site", None))
 
 
 if __name__ == "__main__":

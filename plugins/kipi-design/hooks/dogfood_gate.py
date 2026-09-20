@@ -440,6 +440,15 @@ def main():
 
 
 SKIPPED = 3
+# check_cli only (the PostToolUse main() is untouched and still exits 0 on every skip). SKIPPED
+# meant three different things, and design-chain-gate's seal reads a declared check's skip as
+# "the check did not run", which refuses the seal. Two of the three are not failures: a path this
+# checker considers out of its scope, and a page the operator deliberately exempted with
+# eyeball-gate-skip. Both used to make a round unsealable forever, the documented bypass included
+# (PR #374 review round 6, major). They report NOT_APPLICABLE and the seal records them as such,
+# with the reason. A page with no <html>/<body> keeps SKIPPED: is_page() already called it a page,
+# so that is a real problem, not a scope question.
+NOT_APPLICABLE = 4
 _LINK_RE = re.compile(r"<link\b[^>]*>", re.I)
 
 
@@ -497,8 +506,8 @@ def check_cli(argv):
     path = argv[argv.index("--as") + 1] if "--as" in argv[:-1] else file
     brand_from = argv[argv.index("--brand-from") + 1] if "--brand-from" in argv[:-1] else None
     if not is_public_facing_page(path):
-        sys.stderr.write("skipped: %s is not a public page (internal path, or not .html)\n" % path)
-        return SKIPPED
+        sys.stderr.write("not applicable: %s is not a public page (internal path, or not .html)\n" % path)
+        return NOT_APPLICABLE
     try:
         with open(file, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
@@ -510,8 +519,8 @@ def check_cli(argv):
         sys.stderr.write("skipped: %s is not an HTML document\n" % path)
         return SKIPPED
     if "eyeball-gate-skip" in cl:
-        sys.stderr.write("skipped: %s carries the eyeball-gate-skip marker\n" % path)
-        return SKIPPED
+        sys.stderr.write("not applicable: %s carries the eyeball-gate-skip marker\n" % path)
+        return NOT_APPLICABLE
     try:
         content += linked_local_css(content, file)
         brand = brand_colors_in(brand_from) if brand_from else brand_colors_for(path)
