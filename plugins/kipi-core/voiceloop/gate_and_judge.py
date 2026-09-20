@@ -203,11 +203,17 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
         # REVISION and keeps the already-SHIPPABLE `verdict` from the first pass. So
         # this site can stop a bad rewrite from replacing a good body; it cannot
         # reject the draft. The site above is the only one that can.
+        # THE SECOND CALL SITE, and it was missed once (claude review of PR #386
+        # round 4). Round 3 guarded the site above and left this one passing
+        # `recent_openers=` unconditionally, so an instance on the older injected
+        # contract still died -- on the style-revision path instead of the first
+        # one. Same TypeError, one branch over. `test_every_decide_call_site_is_
+        # guarded` now reads the call sites out of this module's AST rather than
+        # naming them, so a third site cannot be added unguarded.
         recheck = decide.decide_candidate(
             revised, regenerate=None, channel=channel,
             source_text=idea_text, prompt_carried=prompt_carried_for(voice_prov),
-            recent_openers=recent_openers,
-            handles=False)
+            handles=False, **optional)
         revisions += 1
         if recheck.status != decide.SHIPPABLE:
             style_stage[f"attempt{revisions}"] = "refused-by-gates"

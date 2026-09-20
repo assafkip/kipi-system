@@ -334,3 +334,46 @@ def test_gate_and_judge_survives_an_OLD_injected_decide():
         pass          # any OTHER failure is this fixture's thinness, not the defect
 
     assert calls.get("got"), "the fixture never reached decide_candidate"
+
+
+def test_every_decide_call_site_is_guarded():
+    """Read the call sites out of the module, never restate them here (ASK-1915,
+    PR #386 round 4).
+
+    Round 3 guarded ONE of the two `decide.decide_candidate` calls and left the
+    style-revision one passing `recent_openers=` unconditionally, so the same
+    TypeError still took the lane down on an instance with an older injected
+    decide -- one branch over. The regression test written for it could not reach
+    that branch, so 240 stayed green.
+
+    A test that names the two sites would have the same blind spot the fix did.
+    This one enumerates them from the AST, so adding a third unguarded site fails
+    here without anyone remembering to update a list.
+    """
+    import ast
+    import pathlib
+
+    src = (pathlib.Path(__file__).resolve().parent.parent / "gate_and_judge.py").read_text()
+    sites = [
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "decide_candidate"
+    ]
+    assert len(sites) >= 2, f"expected the known call sites, found {len(sites)}"
+    for call in sites:
+        named = {kw.arg for kw in call.keywords}
+        # `None` is the arg name argparse-style **kwargs unpacking carries.
+        unpacks_optional = any(
+            kw.arg is None and isinstance(kw.value, ast.Name) and kw.value.id == "optional"
+            for kw in call.keywords
+        )
+        assert "recent_openers" not in named, (
+            f"line {call.lineno}: passes recent_openers= directly. It must travel "
+            "in **optional, which _accepts() fills only when the injected callee "
+            "takes it."
+        )
+        assert unpacks_optional, (
+            f"line {call.lineno}: does not unpack **optional, so a future optional "
+            "kwarg would reach an older injected decide unguarded."
+        )
