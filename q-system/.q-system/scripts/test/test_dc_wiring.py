@@ -91,6 +91,39 @@ class Wiring(unittest.TestCase):
             self.assertTrue(any("python3 -I " in c for c in cmds),
                             f"{surface}: no isolated command, a sitecustomize silences this surface")
 
+    def test_the_gate_will_not_touch_a_ledger_another_process_holds(self):
+        """Two gate processes on one event each read the ledger and the second write erases the
+        first, so a page one of them registered never reaches Stop. This repo's live settings really
+        do carry duplicate entries per surface, which is what made a latency note a correctness one
+        (PR #374 review round 4, major). Deterministic in both directions: the test itself holds the
+        lock, so an unlocked gate writes immediately and a locked one waits."""
+        import fcntl
+        import time
+        state = self.tmp / "state"
+        state.mkdir(exist_ok=True)
+        held = open(state / "slock.lock", "a+")
+        self.addCleanup(held.close)
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+
+        cmd = next(c for (ev, _m, _c), c in wired(TEMPLATE).items() if ev == "PostToolUse" and GATE in c)
+        env = {k: v for k, v in os.environ.items() if k != "DESIGN_CHAIN_ALLOW"}
+        env.update({"CLAUDE_PROJECT_DIR": str(self.inst), "DESIGN_CHAIN_STATE": str(state)})
+        payload = {"hook_event_name": "PostToolUse", "tool_name": "Write", "session_id": "slock",
+                   "tool_input": {"file_path": str(self.page)}}
+        proc = subprocess.Popen(["bash", "-c", cmd], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, env=env)
+        proc.stdin.write(json.dumps(payload))
+        proc.stdin.close()
+        led = state / "slock.json"
+        time.sleep(1.5)
+        wrote_while_locked = led.is_file() and self.page.name in led.read_text()
+        fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+        proc.wait(timeout=120)
+        self.assertFalse(wrote_while_locked,
+                         "the gate read-modify-wrote the ledger while another process held the lock")
+        self.assertTrue(led.is_file() and self.page.name in led.read_text(),
+                        "the gate never registered the page after the lock was released")
+
     def test_a_sitecustomize_cannot_silence_the_isolated_command(self):
         site = self.tmp / "pypath"
         site.mkdir()

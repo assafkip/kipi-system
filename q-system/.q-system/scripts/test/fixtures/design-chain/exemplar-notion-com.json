@@ -1,10 +1,10 @@
 {
  "_provenance": {
   "producer": "design-exemplar-capture.py",
-  "command": "copied from /Users/assafkipnis/projects/consulting/site/design/references/notion-com.json (written by design-exemplar-capture.py)",
+  "command": "copied from ~/projects/consulting/site/design/references/notion-com.json (written by design-exemplar-capture.py)",
   "captured_at": "2026-09-16T13:49:16+00:00",
   "content_sha256": "47315d2599320acaba50d0cfc748c25d25610533c2cd1418df2faf4aaa3de43a",
-  "source": "/Users/assafkipnis/projects/consulting/site/design/references/notion-com.json",
+  "source": "~/projects/consulting/site/design/references/notion-com.json",
   "source_sha256": "47315d2599320acaba50d0cfc748c25d25610533c2cd1418df2faf4aaa3de43a",
   "frozen_at": "2026-09-19T06:23:00+00:00"
  },

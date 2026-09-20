@@ -29,6 +29,24 @@ def load_gate():
     return mod
 
 
+class RefusalNamesWhatItCut(unittest.TestCase):
+    def test_a_refusal_longer_than_the_cap_says_how_much_it_cut(self):
+        # block() printed the first 40 lines and stopped, which reads as "those 40 are all of it",
+        # so with many open pages some were never named to the operator (PR #374 round 4, minor)
+        gate = load_gate()
+        import io
+        from contextlib import redirect_stderr
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            rc = gate.block([f"page-{i}.html: no brief.md" for i in range(46)])
+        self.assertEqual(rc, 2)
+        self.assertIn("6 more line(s) not shown", buf.getvalue())
+        short = io.StringIO()
+        with redirect_stderr(short):
+            gate.block(["page-0.html: no brief.md"])
+        self.assertNotIn("not shown", short.getvalue())
+
+
 class RemovedNamesStayGone(unittest.TestCase):
     def test_the_deleted_checks_are_gone(self):
         src = GATE.read_text()

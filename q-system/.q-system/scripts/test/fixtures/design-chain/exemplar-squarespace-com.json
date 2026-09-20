@@ -1,10 +1,10 @@
 {
  "_provenance": {
   "producer": "design-exemplar-capture.py",
-  "command": "copied from /Users/assafkipnis/projects/consulting/site/design/references/squarespace-com.json (written by design-exemplar-capture.py)",
+  "command": "copied from ~/projects/consulting/site/design/references/squarespace-com.json (written by design-exemplar-capture.py)",
   "captured_at": "2026-09-16T13:48:25+00:00",
   "content_sha256": "1ab054c2ed022650da5e70cae3cccc4412eafecc4d6514568ac0a7cbaa31f6c2",
-  "source": "/Users/assafkipnis/projects/consulting/site/design/references/squarespace-com.json",
+  "source": "~/projects/consulting/site/design/references/squarespace-com.json",
   "source_sha256": "1ab054c2ed022650da5e70cae3cccc4412eafecc4d6514568ac0a7cbaa31f6c2",
   "frozen_at": "2026-09-19T06:23:00+00:00"
  },

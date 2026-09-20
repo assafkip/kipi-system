@@ -33,8 +33,11 @@ class Door(unittest.TestCase):
         # the chain is opt-in: the door only speaks where a design-chain.json governs the session
         (self.inst / "design-chain.json").write_text(json.dumps({"project": "dc18", "owners": []}))
 
-    def run_door(self, skill, session="s-dc18", door=DOOR):
-        env = {**os.environ, "DESIGN_CHAIN_STATE": str(self.state)}
+    def run_door(self, skill, session="s-dc18", door=DOOR, allow=False):
+        env = {k: v for k, v in os.environ.items() if k != "DESIGN_CHAIN_ALLOW"}
+        env["DESIGN_CHAIN_STATE"] = str(self.state)
+        if allow:
+            env["DESIGN_CHAIN_ALLOW"] = "1"
         payload = {"hook_event_name": "PreToolUse", "tool_name": "Skill", "session_id": session,
                    "cwd": str(self.inst), "tool_input": {"skill": skill}}
         r = subprocess.run([sys.executable, str(door)], input=json.dumps(payload), capture_output=True,
@@ -68,6 +71,26 @@ class Door(unittest.TestCase):
         # would ban every engine there forever (PR #374 review, major)
         (self.inst / "design-chain.json").unlink()
         self.assertEqual(self.run_door("frontend-design")[0], 0)
+
+    def test_the_founder_override_opens_the_door(self):
+        # the gate's refusal advertises DESIGN_CHAIN_ALLOW=1; the door honored no override at all,
+        # so an opted-in instance hard-refused every listed engine outside a round with no escape
+        # (PR #374 review round 4, major)
+        self.assertEqual(self.run_door("frontend-design")[0], 2)          # the control: still refused
+        self.assertEqual(self.run_door("frontend-design", allow=True)[0], 0)
+
+    def test_the_override_does_not_disarm_the_recorder(self):
+        # an engine the override let through inside an open round is still recorded, or seal would
+        # refuse a credit the operator legitimately earned
+        self.open_round()
+        env = {k: v for k, v in os.environ.items() if k != "DESIGN_CHAIN_ALLOW"}
+        env.update({"DESIGN_CHAIN_STATE": str(self.state), "DESIGN_CHAIN_ALLOW": "1"})
+        payload = {"hook_event_name": "PostToolUse", "tool_name": "Skill", "session_id": "s-dc18",
+                   "cwd": str(self.inst), "tool_input": {"skill": "frontend-design"}}
+        r = subprocess.run([sys.executable, str(DOOR)], input=json.dumps(payload), capture_output=True,
+                           text=True, env=env, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("frontend-design", (self.rd / "engines.jsonl").read_text())
 
     def test_an_unlisted_skill_passes(self):
         self.assertEqual(self.run_door("q-debrief")[0], 0)

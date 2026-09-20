@@ -1,10 +1,10 @@
 {
  "_provenance": {
   "producer": "design-exemplar-capture.py",
-  "command": "copied from /Users/assafkipnis/projects/consulting/site/design/references/figma-com.json (written by design-exemplar-capture.py)",
+  "command": "copied from ~/projects/consulting/site/design/references/figma-com.json (written by design-exemplar-capture.py)",
   "captured_at": "2026-09-16T13:50:51+00:00",
   "content_sha256": "270d2e5c6dd0a8c6fa12c6bb9724e3342bbb0d05bc6f0d6b74182868fa3c9da0",
-  "source": "/Users/assafkipnis/projects/consulting/site/design/references/figma-com.json",
+  "source": "~/projects/consulting/site/design/references/figma-com.json",
   "source_sha256": "270d2e5c6dd0a8c6fa12c6bb9724e3342bbb0d05bc6f0d6b74182868fa3c9da0",
   "frozen_at": "2026-09-19T06:23:00+00:00"
  },

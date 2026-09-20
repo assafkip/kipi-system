@@ -1,10 +1,10 @@
 {
  "_provenance": {
   "producer": "design-exemplar-capture.py",
-  "command": "copied from /Users/assafkipnis/projects/consulting/site/design/references/calendly-com.json (written by design-exemplar-capture.py)",
+  "command": "copied from ~/projects/consulting/site/design/references/calendly-com.json (written by design-exemplar-capture.py)",
   "captured_at": "2026-09-16T13:48:39+00:00",
   "content_sha256": "be75718b51c2d33407862611a0c6fac63d974f0d2cd864567b5085f617774bf7",
-  "source": "/Users/assafkipnis/projects/consulting/site/design/references/calendly-com.json",
+  "source": "~/projects/consulting/site/design/references/calendly-com.json",
   "source_sha256": "be75718b51c2d33407862611a0c6fac63d974f0d2cd864567b5085f617774bf7",
   "frozen_at": "2026-09-19T06:23:00+00:00"
  },

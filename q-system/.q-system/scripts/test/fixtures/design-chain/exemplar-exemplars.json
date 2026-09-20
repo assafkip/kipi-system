@@ -1,10 +1,10 @@
 {
  "_provenance": {
   "producer": "founder-named exemplar roster",
-  "command": "copied from /Users/assafkipnis/projects/consulting/site/design/references/exemplars.json (written by founder-named exemplar roster)",
+  "command": "copied from ~/projects/consulting/site/design/references/exemplars.json (written by founder-named exemplar roster)",
   "captured_at": "2026-09-16T13:46:48+00:00",
   "content_sha256": "30e8b03088999afebafd0d762873a65e369d0d020b5e1b93f77b8c80ea778c2b",
-  "source": "/Users/assafkipnis/projects/consulting/site/design/references/exemplars.json",
+  "source": "~/projects/consulting/site/design/references/exemplars.json",
   "source_sha256": "30e8b03088999afebafd0d762873a65e369d0d020b5e1b93f77b8c80ea778c2b",
   "frozen_at": "2026-09-19T06:23:00+00:00"
  },

@@ -1,10 +1,10 @@
 {
  "_provenance": {
   "producer": "design-exemplar-capture.py",
-  "command": "copied from /Users/assafkipnis/projects/consulting/site/design/references/stripe-com.json (written by design-exemplar-capture.py)",
+  "command": "copied from ~/projects/consulting/site/design/references/stripe-com.json (written by design-exemplar-capture.py)",
   "captured_at": "2026-09-16T13:48:48+00:00",
   "content_sha256": "2073e0c7c856c9f27569fc3e2d7183e695e167e8fb863ae4adb8e14c06a24e0d",
-  "source": "/Users/assafkipnis/projects/consulting/site/design/references/stripe-com.json",
+  "source": "~/projects/consulting/site/design/references/stripe-com.json",
   "source_sha256": "2073e0c7c856c9f27569fc3e2d7183e695e167e8fb863ae4adb8e14c06a24e0d",
   "frozen_at": "2026-09-19T06:23:00+00:00"
  },

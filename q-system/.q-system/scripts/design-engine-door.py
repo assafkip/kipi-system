@@ -84,6 +84,16 @@ def decide(payload: dict) -> tuple[int, str]:
     if payload.get("hook_event_name") == "PostToolUse":
         record(payload)
         return 0, ""
+    # The same escape the gate honors, and for the same reason: in an opted-in instance this door
+    # refuses every listed engine outside a round, so with no override an operator who needs
+    # deck-ai or a brand pass for work that is not a design round has nowhere to go. The gate
+    # advertises DESIGN_CHAIN_ALLOW=1 in its own refusal; the door read it nowhere (PR #374 review
+    # round 4, major). Founder's shell only -- an agent does not set it for itself. Deliberately
+    # BELOW the PostToolUse branch: the override lets an engine run, and an engine that ran inside
+    # an open round is still recorded, or seal would refuse a credit the operator legitimately
+    # earned.
+    if os.environ.get("DESIGN_CHAIN_ALLOW") == "1":
+        return 0, ""
     raw = str((payload.get("tool_input") or {}).get("skill") or "").strip()
     name = canonical(raw)                  # "kipi-design:brand" is the brand engine
     if not name or name not in listed():

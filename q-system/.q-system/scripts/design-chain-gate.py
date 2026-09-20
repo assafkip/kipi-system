@@ -48,6 +48,7 @@ stdlib only. Self-test: test_design_chain_gate.py.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import http.server
 import json
@@ -2791,6 +2792,37 @@ def save_ledger(session_id: str, led: dict) -> None:
     ledger_path(session_id).write_text(json.dumps(led, indent=2))
 
 
+@contextlib.contextmanager
+def ledger_lock(session_id: str):
+    """Serializes one hook's whole read-modify-write of the session ledger.
+
+    `hook()` reads the ledger once at entry and writes it back from several branches. Two gate
+    processes handling the same event both read that dict and the second write erases the first,
+    so a page one of them registered never reaches Stop and is never refused. This repo's
+    `.claude/settings.json` really does carry duplicate entries per surface (apply_claude_changes
+    is additive only and cannot replace the bare ones), which is what turned a latency note into a
+    correctness one (PR #374 review round 4, major). Parallel tool calls make the same race
+    without any duplicate.
+
+    The lock is a sidecar file, not the ledger: `save_ledger` replaces the ledger's contents
+    through its own open file, so a lock held on our handle of it would not cover that write.
+    An unwritable state dir yields unlocked rather than raising -- a gate that cannot lock still
+    has to judge the page."""
+    try:
+        lk = ledger_path(session_id).with_suffix(".lock")
+        fh = open(lk, "a+")
+    except OSError:
+        yield
+        return
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        fh.close()
+
+
 def governed(path: Path) -> bool:
     """True when a design-chain.json governs this path: the instance opted in. An instance that got
     the hooks and no config could never open a round, so every page it wrote entered the ledger and
@@ -2886,6 +2918,11 @@ def block(msg_lines: list[str]) -> int:
     print("DESIGN CHAIN GATE (blocked): a page was made this session and its design chain is not complete.", file=sys.stderr)
     for ln in msg_lines[:40]:
         print("  " + ln, file=sys.stderr)
+    # silent truncation read as "those 40 are all of it", so pages nobody was told about kept the
+    # gate red with no way to find them (PR #374 review round 4, minor)
+    if len(msg_lines) > 40:
+        print(f"  ... and {len(msg_lines) - 40} more line(s) not shown. All of them: "
+              f"`design-chain-gate.py status <round>`.", file=sys.stderr)
     print("  Steps: brief.md (verbatim owner anchors) -> directions.md (3) -> design-standard-check.py -> critique.md (9 per direction) -> proof.md -> checks/ -> gate/ -> `design-chain-gate.py seal <round>`.", file=sys.stderr)
     print("  Override is DESIGN_CHAIN_ALLOW=1 in the founder's shell only.", file=sys.stderr)
     return 2
@@ -3280,6 +3317,12 @@ def proof_problems(rd: Path, cfg: dict, cfg_path: Path | None) -> list[str]:
 def hook(payload: dict) -> int:
     if os.environ.get("DESIGN_CHAIN_ALLOW") == "1":
         return 0
+    # every ledger read and write of this event happens inside one lock, never straddling it
+    with ledger_lock(payload.get("session_id", "")):
+        return _hook(payload)
+
+
+def _hook(payload: dict) -> int:
     ev = payload.get("hook_event_name", "")
     tool = payload.get("tool_name", "")
     ti = payload.get("tool_input") or {}
