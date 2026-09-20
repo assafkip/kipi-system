@@ -95,6 +95,64 @@ _TRANSITION_OPENER_RE = re.compile(
     r"(^|(?<=[.!?] ))[ \t]*(?:furthermore|moreover|additionally),\s+([a-zA-Z])",
     re.I | re.M)
 
+# A CAPITAL IN THE MIDDLE OF A SENTENCE (sp-b970c388, measured 2026-09-10).
+#
+# why this is its own rule and not part of the sentence-start pass: the linter's
+# `check_capitalization` and the step-2 loop below both walk `_sentence_start_offsets`,
+# so they can only ever see the FIRST word of a sentence. A model-introduced capital in
+# the middle of one is invisible to every layer in the stack. Four consecutive reddit
+# reply runs shipped eleven of them past a clean gate -- "the part That would worry me",
+# "treats The chart", "which is why They came back mixed" -- with `repairs: null` and
+# `revisions: 0` in the trail, and the founder caught all four by eye.
+#
+# THE RULE IS A CLOSED WORD SET, NOT A GRAMMAR. The hard half is never touching a
+# legitimate capital: his own approved copy carries "Etsy and Square", "Google Sheet",
+# "PowerPoint", "FX", "SKU". A repair that lowercases one of those is worse than the bug.
+# So three narrowing constraints, each measured rather than argued:
+#
+#   1. The word must be in `MID_SENTENCE_LOWERCASE_WORDS` below -- determiners,
+#      pronouns and relatives whose capitalized mid-clause form is always wrong.
+#   2. The character before the gap must be a lowercase letter, a digit or a comma,
+#      on the SAME line. That is a purely local test, so it needs no offset mapping
+#      between the raw text and the linter's prose view, and every ambiguous
+#      predecessor (a period, a colon, a quote, a dash, a newline, a list marker, an
+#      uppercase letter) falls outside it and is skipped.
+#   3. A following capitalized word means a title-case run, so the whole run is left
+#      alone: "a note in The New York Times" stays, and so does "The Garden".
+#
+# MEASURED BEFORE WIRING, per the word-list scar, and RE-MEASURED against this tree's
+# copy on 2026-09-20 before the carry: 162 active items of the operator's approved
+# corpus, 149,558 characters, ZERO detector hits and ZERO repair edits, and 10 of the 12
+# recorded live defects caught. Four words were REMOVED from the set because each one
+# hit his approved writing, and the re-measurement reproduced that: adding back `as`,
+# `have`, `and` or `it` puts exactly one corpus hit on the board per word. All four are
+# the same class, a sentence started without terminating the one before it, or a capital
+# he meant. Two of the twelve defects are MISSES and stay missed on purpose: both
+# capitalize a common noun, and no closed function-word set reaches a common noun
+# without reaching product names too.
+#
+# THE CORPUS SCAN ITSELF CANNOT LIVE IN THIS TREE. kipi-system is public and the
+# corpus is the operator's, so the counterexample gate runs instance-side against the
+# instance's own voice corpus, where the data is. What this tree holds is the mechanism
+# and its fixtures (`tests/test_mid_sentence_caps.py`). Read the zero above narrowly:
+# it was true of one operator's corpus on one date. Widening the word set is a change
+# that has to face a corpus scan, and that scan is not in this repo.
+MID_SENTENCE_LOWERCASE_WORDS = frozenset("""
+the that this these those then there they them their
+every each another
+which whose whom
+because when while whether
+but
+your its
+""".split())
+
+# The gap is same-line whitespace ON PURPOSE: a newline before the word puts it at a
+# line or block start, which is the sentence-start pass's territory and not this one's.
+# `[a-z']+` after the leading capital is what keeps every acronym out -- "FX", "SKU",
+# "AI", and bare "I", which is one character and so cannot match at all.
+_MID_SENTENCE_CAP_RE = re.compile(r"(?<=[a-z0-9,])([ \t]+)([A-Z][a-z']+)(?![\w'])")
+_FOLLOWED_BY_CAPITAL_RE = re.compile(r"[ \t]+[A-Z]")
+
 
 def _load_linter(linter_path):
     """Import voice-lint.py by path. It is a script, not a package."""
@@ -250,6 +308,48 @@ def repair_transition_openers(text, linter):
     return text, changes
 
 
+def mid_sentence_cap_hits(text, linter):
+    """Every mid-sentence capital this layer will lowercase, as (offset, word).
+
+    Separated from the repair so the corpus false-positive scan can be a TEST rather
+    than a one-off script. A detector that is only ever exercised through its repair is
+    a detector nobody can point a counterexample at.
+    """
+    spans = _protected_spans(text, linter)
+    hits = []
+    for match in _MID_SENTENCE_CAP_RE.finditer(text or ""):
+        word = match.group(2)
+        if word.lower() not in MID_SENTENCE_LOWERCASE_WORDS:
+            continue
+        at = match.start(2)
+        if any(start <= at < end for start, end in spans):
+            continue
+        if _FOLLOWED_BY_CAPITAL_RE.match(text, match.end(2)):
+            continue          # a title-case run: "in The New York Times" stays
+        hits.append((at, word))
+    return hits
+
+
+def repair_mid_sentence_caps(text, linter):
+    """A capitalized function word mid-clause -> lowercase. REPAIR, never a violation.
+
+    The founder's rule for this whole layer, verbatim: "you dont need to kill posts that
+    have a fail, just fix the fail if possible. you are narrowing your own set by killing
+    a full post over capitalization." So this returns a change line and nothing here ever
+    reaches `violations()`: a mid-sentence capital costs a lowercase letter, never a draft.
+    """
+    hits = mid_sentence_cap_hits(text, linter)
+    if not hits:
+        return text, []
+    # Rewrite from the END so an earlier offset cannot be invalidated by a later splice.
+    # Every hit is the same length as its replacement today, but relying on that would
+    # make a future widening of the rule silently corrupt offsets.
+    for at, word in reversed(hits):
+        text = text[:at] + word[0].lower() + text[at + 1:]
+    words = ", ".join(sorted({w for _, w in hits}))
+    return text, [f"lowercased mid-sentence capital ({words}) x{len(hits)}"]
+
+
 def repair(text, allowlist, linter, mapping):
     """Return (repaired_text, [what changed]). Pure: never touches disk.
 
@@ -266,9 +366,16 @@ def repair(text, allowlist, linter, mapping):
     # loop keeps its one uniform call shape. Reordering these is not free: each has
     # exactly one correct output, but all of them must precede the sentence-start
     # pass, because deleting a transition opener moves sentence starts.
+    # `repair_mid_sentence_caps` is LAST in this group and that position is load-bearing
+    # in both directions. The emdash and contraction passes CREATE the shape it looks
+    # for -- "chart—Every cycle" becomes "chart, Every cycle" and "is not That" becomes
+    # "isn't That" -- so it has to see their output. And it must precede step 3, whose
+    # proper-noun pass is the safety net: if this layer ever lowercases the first word of
+    # a multi-word proper noun the instance has declared, step 3 restores the canonical
+    # spelling in the same call.
     banned_words = functools.partial(repair_banned_words, mapping=mapping)
     for fix in (repair_emdash, repair_slash_commands, repair_transition_openers,
-                banned_words, repair_contractions):
+                banned_words, repair_contractions, repair_mid_sentence_caps):
         text, made = fix(text, linter)
         changes.extend(made)
 
