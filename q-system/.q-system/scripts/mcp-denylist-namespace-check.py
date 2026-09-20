@@ -78,6 +78,30 @@ CASES = [
     {"tool": "mcp__supabase__delete_branch", "expect": "deny", "source": "issue",
      "why": "on no list at all; measured ALLOW in ASK-1923"},
     {"tool": "mcp__supabase__reset_branch", "expect": "deny", "source": "session"},
+
+    # ---- destruction carried in the PAYLOAD, invisible in the name ----------
+    # The operation name reads as ordinary and the statement is not. Both
+    # measured ALLOW while this checker printed OK, because the oracle had no
+    # case for them: a clean run was reporting coverage it did not have (PR #390
+    # review round 3, major).
+    {"tool": "mcp__supabase__execute_sql", "expect": "deny", "source": "session",
+     "input": {"query": "DROP TABLE users;"},
+     "why": "`execute_sql` matches no destructive verb; the DROP is in the payload"},
+    {"tool": "mcp__supabase__apply_migration", "expect": "deny", "source": "session",
+     "input": {"name": "drop_email",
+               "query": "ALTER TABLE users DROP COLUMN email;"},
+     "why": "a migration that drops a column is a schema deletion"},
+
+    # ---- a destructive verb the gate cannot place ---------------------------
+    # Local plugin state, not vendor state. Denied ON PURPOSE and fail-closed:
+    # the gate cannot tell local from remote, the miss costs production data and
+    # the false positive costs one approval. What the review found was the
+    # MESSAGE claiming vendor-side deletion, which it no longer does (PR #390
+    # review round 3, minor).
+    {"tool": "mcp__plugin_kipi-core_kipi__loop_force_close", "expect": "deny",
+     "source": "session",
+     "why": "force-closing a tracked loop destroys tracking state; the deny "
+            "message now says only that a destructive verb matched"},
     {"tool": "mcp__claude_ai_Gmail__delete_label", "expect": "deny",
      "source": "founder-claude-md"},
     {"tool": "mcp__claude_ai_Gmail__delete_draft", "expect": "deny", "source": "session"},
@@ -116,6 +140,14 @@ CASES = [
      "source": "session"},
     {"tool": "mcp__claude_ai_Resend__list-domains", "expect": "allow", "source": "session"},
     {"tool": "mcp__plugin_kipi-core_kipi__kipi_query", "expect": "allow", "source": "session"},
+    # The other side of the payload rule. Keyed on the STATEMENT, so the same
+    # two operations that deny a DROP still run a SELECT and an additive
+    # migration -- a gate that refuses every query is a gate someone switches off.
+    {"tool": "mcp__supabase__execute_sql", "expect": "allow", "source": "session",
+     "input": {"query": "SELECT id FROM users LIMIT 5"}},
+    {"tool": "mcp__supabase__apply_migration", "expect": "allow", "source": "session",
+     "input": {"name": "add_nickname",
+               "query": "ALTER TABLE users ADD COLUMN nickname text"}},
     # A drag-and-drop GESTURE. `drop` reads as a destructive SQL verb and is not
     # one here; it was on the destructive list and denied a mouse move with a
     # message about vendor-side deletion (PR #390 review, minor).
@@ -202,41 +234,92 @@ def dead_wildcards(hook_text, registered):
 
 
 # --- running the matcher ----------------------------------------------------
-def decide(hook, tool_name, home):
-    """Run a COPY of the hook on an MCP payload; return 'deny' or 'allow'."""
+def run_hook(hook, tool_name, home, tool_input=None):
+    """Drive a COPY of the guard with one MCP payload; return its parsed reply.
+
+    None when the guard said nothing, which is how it signals allow. `tool_input`
+    is the verbatim payload: some operations carry their destruction there and
+    nowhere in the name, so a checker that always sent `{}` could not see them.
+    """
     copy = pathlib.Path(home) / "under-test.sh"
     shutil.copy(hook, copy)
-    payload = json.dumps({"tool_name": tool_name, "tool_input": {}, "cwd": str(home)})
+    payload = json.dumps({"tool_name": tool_name,
+                          "tool_input": tool_input if tool_input is not None else {},
+                          "cwd": str(home)})
     env = dict(os.environ)
     env["HOME"] = str(home)
     env.pop("ALLOW_DESTRUCTIVE", None)
     proc = subprocess.run(["bash", str(copy)], input=payload,
                           capture_output=True, text=True, env=env)
     out = proc.stdout.strip()
-    if not out:
+    return json.loads(out) if out else None
+
+
+def decide(hook, tool_name, home, tool_input=None):
+    """'deny' or 'allow' for one MCP call."""
+    reply = run_hook(hook, tool_name, home, tool_input)
+    if reply is None:
         return "allow"
-    return json.loads(out)["hookSpecificOutput"]["permissionDecision"]
+    return reply["hookSpecificOutput"]["permissionDecision"]
 
 
-def deny_hash(hook, tool_name, home):
+def deny_reason(hook, tool_name, home, tool_input=None):
+    """The guard's stated reason, or None when it allowed the call."""
+    reply = run_hook(hook, tool_name, home, tool_input)
+    if reply is None:
+        return None
+    return reply["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def deny_hash(hook, tool_name, home, tool_input=None):
     """The `kipi-approve <hash>` grant scope the guard offers for `tool_name`.
 
     None when the guard allowed the call (no grant is offered for an allow).
     """
-    copy = pathlib.Path(home) / "under-test.sh"
-    shutil.copy(hook, copy)
-    payload = json.dumps({"tool_name": tool_name, "tool_input": {}, "cwd": str(home)})
-    env = dict(os.environ)
-    env["HOME"] = str(home)
-    env.pop("ALLOW_DESTRUCTIVE", None)
-    proc = subprocess.run(["bash", str(copy)], input=payload,
-                          capture_output=True, text=True, env=env)
-    out = proc.stdout.strip()
-    if not out:
+    reason = deny_reason(hook, tool_name, home, tool_input)
+    if reason is None:
         return None
-    reason = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]
-    found = re.search(r"kipi-approve\s+(\S+)", reason)
-    return found.group(1) if found else None
+    # One literal space, then a possibly-EMPTY token. `\s+(\S+)` walked past the
+    # blank the guard emits when no capability-token.sh is reachable and
+    # captured the next word ("(or"), so two different calls both "hashed" to
+    # the same fixed string and a binding test passed on a guard that binds
+    # nothing (PR #390 review round 3, found while writing its reproducer).
+    found = re.search(r"kipi-approve (\S*)", reason)
+    return (found.group(1) or None) if found else None
+
+
+# A payload whose values are unmistakable in a log line. The guard's
+# log_decision writes "$COMMAND" verbatim into
+# $HOME/.claude/audit/destructive-op-deny.log, so binding the approval grant to
+# the raw tool_input put every MCP argument on disk in plaintext.
+PAYLOAD_PROBE = {"labelId": "SECRET-LABEL-42", "token": "hunter2"}
+
+
+def logged_command(hook, tool_name, home, tool_input=None):
+    """The `cmd` field the guard wrote into its audit log for this call."""
+    run_hook(hook, tool_name, home, tool_input)
+    log = pathlib.Path(home) / ".claude/audit/destructive-op-deny.log"
+    if not log.is_file():
+        return None
+    rows = [r for r in log.read_text(encoding="utf-8").splitlines() if r.strip()]
+    if not rows:
+        return None
+    return json.loads(rows[-1])["cmd"]
+
+
+def payload_in_audit_log(hook, home, tool="mcp__claude_ai_Gmail__delete_label"):
+    """Does the plaintext audit log carry the MCP payload verbatim?
+
+    'LEAK', 'digest' (bound but unreadable), 'unbound' (nothing about the call
+    reached the log, which is what an UNPATCHED guard does -- reporting that as
+    'digest' would read as protection), or 'no-log'.
+    """
+    cmd = logged_command(hook, tool, home, PAYLOAD_PROBE)
+    if cmd is None:
+        return "no-log"
+    if any(v in cmd for v in PAYLOAD_PROBE.values()):
+        return "LEAK"
+    return "digest" if tool in cmd else "unbound"
 
 
 def token_home(home):
@@ -287,7 +370,8 @@ def measure(hook, cases=None):
     results = []
     for case in (cases if cases is not None else CASES):
         with tempfile.TemporaryDirectory() as home:
-            results.append((case, decide(hook, case["tool"], home)))
+            results.append(
+                (case, decide(hook, case["tool"], home, case.get("input"))))
     return results
 
 
@@ -338,11 +422,18 @@ def main(argv=None):
         mark = "" if decision == case["expect"] else "   <- must %s" % case["expect"]
         if mark:
             bad.append((case, decision))
-        print("  %-6s %-52s [%s]%s"
-              % (decision.upper(), case["tool"], case["source"], mark))
+        # Two cases can share a tool name and differ only in the payload, which
+        # is the whole point of the SQL rows: print enough to tell them apart.
+        label = case["tool"]
+        if case.get("input"):
+            label += "  " + json.dumps(case["input"])[:44]
+        print("  %-6s %-72s [%s]%s"
+              % (decision.upper(), label, case["source"], mark))
 
     with tempfile.TemporaryDirectory() as home:
         leak = grant_leak(hook, home)
+    with tempfile.TemporaryDirectory() as home:
+        logged = payload_in_audit_log(hook, home)
     print("\nDIRECTION 3 -- how wide is one approval token:")
     print({
         "LEAK": "  LEAK   a grant minted for one MCP denial was consumed by a "
@@ -355,6 +446,18 @@ def main(argv=None):
                            "measure with",
     }[leak])
 
+    print("\nDIRECTION 4 -- what the plaintext audit log keeps:")
+    print({
+        "LEAK": "  LEAK   the MCP payload is written verbatim into\n"
+                "         $HOME/.claude/audit/destructive-op-deny.log",
+        "digest": "  digest  the log records a hash of the payload, not the "
+                  "payload",
+        "unbound": "  n/a    the log row carries nothing about the call at all "
+                   "(an MCP payload\n         has no .tool_input.command), so "
+                   "there is no payload to keep yet",
+        "no-log": "  n/a    the guard wrote no audit row for the probe call",
+    }[logged])
+
     if args.report:
         print("\n%d case(s) disagree with the oracle. --report never fails."
               % len(bad))
@@ -365,6 +468,11 @@ def main(argv=None):
               "operation in the same cwd.")
         return 1
 
+    if logged == "LEAK":
+        print("\nFAIL: the guard writes MCP tool_input payloads into its "
+              "plaintext audit log.")
+        return 1
+
     if bad:
         print("\nFAIL: %d case(s) wrong." % len(bad))
         for case, decision in bad:
@@ -372,7 +480,14 @@ def main(argv=None):
                   % (case["tool"], decision, case["expect"],
                      " -- " + case["why"] if case.get("why") else ""))
         return 1
-    print("\nOK: every case agrees with the oracle.")
+    # Say what a pass covers. This script exited 0 and printed OK on a guard
+    # that allowed `execute_sql` running DROP TABLE, because the oracle held no
+    # case for it (PR #390 review round 3). A clean run means the cases below
+    # agree, never that the guard is complete.
+    print("\nOK: all %d oracle case(s) agree, the approval token is scoped, and "
+          "the audit log keeps no payload.\n"
+          "    This is the coverage of the case list above, not a proof that "
+          "every destructive MCP operation is denied." % len(CASES))
     return 0
 
 

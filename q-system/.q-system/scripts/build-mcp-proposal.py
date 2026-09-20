@@ -58,8 +58,27 @@ INSERT = r'''# ---- MCP read/write split, keyed on the OPERATION (ASK-1923, 2026
 # partner -- a mouse gesture, denied with a message about vendor-side deletion
 # (PR #390 review). A gate that blocks a mouse move is a gate someone switches
 # off. If a server ever exposes a real DROP, add that operation by name.
+#
+# AND IT IS FAIL-CLOSED ON A VERB IT CANNOT PLACE. `loop_force_close` on the
+# local kipi plugin matches `force_close` and is refused, with a message that
+# now says only what the gate knows: an operation verb matched, and this gate
+# cannot see whether the state removed sits at a vendor or on this machine (PR
+# #390 review round 3). That asymmetry is the same one emit_deny already
+# argues below -- the miss costs production data, the false positive costs one
+# approval. `drop` is different and stays OFF the list: browser_drop moves a
+# mouse and removes no state at all, so refusing it buys nothing.
 MCP_DESTRUCTIVE_OP='(^|[_-])(delete|destroy|purge|wipe|erase|remove|trash|truncate|revoke|unlabel|reset|move[_-]pages|force[_-]close)([_-]|$)'
 MCP_READ_OP='(^|[_-])(list|get|read|search|query|fetch|describe|status|check|find|show|count|suggest)([_-]|$)'
+# Some operations carry their destruction in the PAYLOAD and not in the name.
+# mcp__supabase__execute_sql reads as ordinary and runs `DROP TABLE`;
+# apply_migration reads as routine and drops a column. Both measured ALLOW while
+# the checker printed OK, because the oracle had no case for them (PR #390 review
+# round 3, major). Keyed on the STATEMENT, so a SELECT and an additive migration
+# still run -- a gate that refuses every query is a gate someone switches off.
+# The separator alternation includes `\\n` because TOOL_INPUT is compact JSON,
+# where a newline is the two characters backslash and n.
+MCP_SQL_OP='(^|[_-])(execute[_-]?sql|apply[_-]?migration|run[_-]?sql|sql)([_-]|$)'
+MCP_DESTRUCTIVE_SQL='(drop|truncate)([[:space:]]|\\n)+(table|database|schema|view|index|type|function|sequence|column|policy|role|extension|publication)|delete([[:space:]]|\\n)+from'
 # Servers where EVERY non-read op is denied, not only a destructive verb
 # (founder CLAUDE.md: "Vercel mutating ops"). Matched case-INSENSITIVELY against
 # the server segment: the registered connector is mcp__claude_ai_Vercel__, with
@@ -72,16 +91,28 @@ case "$TOOL_NAME" in
     _mcp_rest="${TOOL_NAME#mcp__}"
     _mcp_server="${_mcp_rest%%__*}"
     _mcp_op="${_mcp_rest#*__}"
-    # SCOPE THE APPROVAL TOKEN TO THIS CALL. emit_deny hashes "$COMMAND" plus
-    # "$CWD", and an MCP payload has no .tool_input.command -- so every MCP
-    # denial in one cwd hashed the EMPTY STRING, and one `kipi-approve` for a
-    # Gmail delete_label was consumed by the next Calendar delete_event. That is
-    # exactly the ambient authority the token exists to remove (PocketOS
-    # 2026-05-17; PR #390 review, major). Binding the grant to the tool name AND
-    # the verbatim tool_input makes it per-call, the way a Bash grant is bound to
-    # the command string. Assigned before either block can deny, so the
-    # SERVER-NAME block below inherits the scoping too.
-    COMMAND="$TOOL_NAME ${TOOL_INPUT:-}"
+    # SCOPE THE APPROVAL TOKEN TO THIS CALL, AND KEEP THE PAYLOAD OUT OF THE LOG.
+    # emit_deny hashes "$COMMAND" plus "$CWD", and an MCP payload has no
+    # .tool_input.command -- so every MCP denial in one cwd hashed the EMPTY
+    # STRING, and one `kipi-approve` for a Gmail delete_label was consumed by the
+    # next Calendar delete_event. That is exactly the ambient authority the token
+    # exists to remove (PocketOS 2026-05-17; PR #390 review, major).
+    #
+    # Binding to the VERBATIM tool_input fixed that and opened a second hole:
+    # log_decision writes "$COMMAND" into $HOME/.claude/audit/destructive-op-deny.log
+    # in plaintext, so every MCP argument -- label ids, message bodies, tokens --
+    # was written to disk on both the deny and the allow path (PR #390 review
+    # round 3, minor). A DIGEST binds the grant exactly as tightly (a different
+    # payload is a different hash) and logs nothing readable. Assigned before any
+    # block can deny, so the SERVER-NAME block below inherits the scoping too.
+    #
+    # If neither digest tool resolves, the raw payload is used rather than
+    # nothing: the per-call binding is the security property, log hygiene is not
+    # worth trading for it.
+    _mcp_scope="$(printf '%s' "${TOOL_INPUT:-}" | shasum -a 256 2>/dev/null | cut -d' ' -f1)"
+    [ -n "$_mcp_scope" ] || _mcp_scope="$(printf '%s' "${TOOL_INPUT:-}" | sha256sum 2>/dev/null | cut -d' ' -f1)"
+    [ -n "$_mcp_scope" ] || _mcp_scope="${TOOL_INPUT:-}"
+    COMMAND="$TOOL_NAME $_mcp_scope"
     # Auth is how you EARN the connection, so it is never blocked. Kept from the
     # block below so a fix cannot quietly drop it.
     case "$TOOL_NAME" in
@@ -90,7 +121,11 @@ case "$TOOL_NAME" in
         exit 0 ;;
     esac
     if echo "$_mcp_op" | grep -Eqi "$MCP_DESTRUCTIVE_OP"; then
-      emit_deny "MCP operation '$_mcp_op' on server '$_mcp_server' deletes or unlinks state at the vendor side. Keyed on the operation, not the server name (ASK-1923)"
+      emit_deny "MCP operation '$_mcp_op' on server '$_mcp_server' matches a destructive-operation verb. This gate cannot see whether the state it removes is at the vendor or on this machine, so it refuses either way: the miss costs production data, the false positive costs one approval. Keyed on the operation, not the server name (ASK-1923)"
+    fi
+    if echo "$_mcp_op" | grep -Eqi "$MCP_SQL_OP" \
+       && echo "${TOOL_INPUT:-}" | grep -Eqi "$MCP_DESTRUCTIVE_SQL"; then
+      emit_deny "MCP operation '$_mcp_op' on server '$_mcp_server' carries a destructive SQL statement in its payload (DROP / TRUNCATE / DELETE FROM). Keyed on the statement, so a SELECT and an additive migration still run (ASK-1923)"
     fi
     if echo "$_mcp_server" | grep -Eqi "$MCP_MUTATION_SCOPED_SERVER" \
        && ! echo "$_mcp_op" | grep -Eqi "$MCP_READ_OP"; then
@@ -113,7 +148,10 @@ REASON = (
     "against the founder's global CLAUDE.md. This inserts an OPERATION-keyed "
     "read/write split ahead of the wildcards, and scopes the capability-token "
     "grant to the call (emit_deny hashed an empty $COMMAND for every MCP denial, "
-    "so one approval unlocked any other). THIS EDIT LOOSENS AS WELL AS TIGHTENS, "
+    "so one approval unlocked any other) as a DIGEST, because the guard's audit "
+    "log records $COMMAND in plaintext. It also denies a destructive SQL "
+    "statement carried in an MCP payload (mcp__supabase__execute_sql running "
+    "DROP TABLE), which no operation name reveals. THIS EDIT LOOSENS AS WELL AS TIGHTENS, "
     "which additive-only ops normally cannot express: its read-verb branch exits 0 "
     "before the wildcards below can fire. That is stated in the inserted comment "
     "rather than smuggled. Measured before and after by "
