@@ -19,7 +19,9 @@ an agent's opinion of its own change:
         The tier is the HUMAN ceremony: how much review the change earns.
   tests the declared test artifacts that name a changed file, or name a file that
         names it (one hop, so a change to a sourced lib reaches the tests of the
-        scripts that source it), plus any changed or newly declared test.
+        scripts that source it); the tests whose own glob / find / ls-files
+        pattern ENUMERATES a changed file; for a fixture, the tests that name its
+        directory; plus any changed or newly declared test.
 
 ESCALATORS force the FULL SUITE (and tier L) whatever the line count says. Line
 count alone never does: a large diff names more files, so it selects more tests,
@@ -29,6 +31,7 @@ and it becomes a full run through the last escalator when it truly is suite-wide
   * a file CI installs from (requirements*.txt, pyproject.toml)
   * a capability declaration other than an expected_tests entry
   * a new third-party import in app code (a test importing pytest is not one)
+  * a changed fixture or data file that no declared test names or enumerates
   * a selection so wide that it is the suite anyway (more than MAX_SELECTED)
 
 NOT AN ESCALATOR: a changed executable that no declared test names. The suite
@@ -132,6 +135,42 @@ def mentions(text: str, path: str) -> bool:
     return any(re.search(r"(?<![\w.-])" + re.escape(n) + r"(?![\w-]|\.\w)", text) for n in names(path))
 
 
+DOC_SUFFIXES = (".md", ".txt", ".rst")
+# How a test says "every file shaped like this": a Python glob, a `find -name`,
+# or a `git ls-files` pathspec. Read from the test, never listed beside it.
+_ENUM_RE = re.compile(
+    r"""(?:r?glob|fnmatch)\(\s*[^,)]*?['"]([^'"]*\*[^'"]*)['"]"""
+    r"""|-i?name\s+['"]([^'"]*\*[^'"]*)['"]"""
+    r"""|ls-files\s+(?:--\s+)?['"]?([^\s'"|)]*\*[^\s'"|)]*)""")
+# Directory names too generic to identify an owner. `fixtures/` names every
+# fixture in the repo, so matching on it would select every test that has one.
+_GENERIC_DIRS = frozenset({"test", "tests", "fixtures", "fixture", "scripts", "data", "lib", "src",
+                           "q-system", ".q-system", "plugins", "templates", "hooks", "."})
+
+
+def enumeration_patterns(text: str) -> list[str]:
+    return sorted({p for hit in _ENUM_RE.findall(text) for p in hit if p})
+
+
+def pattern_matches(pattern: str, path: str) -> bool:
+    """A pattern with a slash is a path pattern; one without matches the basename,
+    which is how rglob, `find -name` and a bare pathspec all behave."""
+    import fnmatch
+    if "/" in pattern:
+        return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, "*/" + pattern.lstrip("*/"))
+    return fnmatch.fnmatch(Path(path).name, pattern)
+
+
+def owning_dirs(path: str) -> list[str]:
+    """The directory names that identify whose fixture this is: every ancestor
+    that is not a generic container name."""
+    return [d for d in Path(path).parts[:-1] if d not in _GENERIC_DIRS and len(d) >= 4]
+
+
+def mentions_dir(text: str, name: str) -> bool:
+    return re.search(r"(?<![\w.-])" + re.escape(name) + r"(?![\w.-])", text) is not None
+
+
 def third_party_imports(diff_text: str, local_stems: set[str]) -> list[str]:
     """New imports in APP code only. A test file importing pytest is not a new
     dependency of the product: CI already installs it, and 9 of the last 40
@@ -179,10 +218,37 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
     for mod in third_party_imports(diff_text, local_stems or set()):
         escalators.append(f"new third-party import: {mod}")
 
+    patterns = {t: enumeration_patterns(text) for t, text in declared.items()}
     for path, _ in changed:
-        if is_test_path(path) or machinery_reason(path):
-            continue
+        if path in declared or path in (fragments or {}) or machinery_reason(path):
+            continue        # handled above: a test runs itself, a fragment runs its test
         direct = {t for t, text in declared.items() if mentions(text, path)}
+        # A TEST THAT ENUMERATES ITS INPUTS NEVER NAMES THEM (codex, PR #377 round
+        # 1, major 2). test-install-jobs-coverage.py globs `com.kipi.*.plist`; a
+        # broken committed plist names no test and no test names it, so a name
+        # match alone let it through PR CI with install coverage red. The pattern
+        # is read out of the test's own text, so the test stays the one owner of
+        # what it covers and there is no second list to drift.
+        direct |= {t for t, pats in patterns.items() if any(pattern_matches(p, path) for p in pats)}
+        if is_test_path(path) or not is_code(path):
+            # A FIXTURE, A HELPER, OR A DATA FILE (same review, major 1). The first
+            # cut skipped everything under test/ and fixtures/ before matching, so
+            # a PR that broke only a tracked fixture ran ZERO tests while the test
+            # that owns the fixture was red. A fixture is usually reached by its
+            # DIRECTORY (`$HERE/fixtures/receipt-carry`), so that counts as a name.
+            # Only for files that live under a test tree. Applied to every data
+            # file it matched `.claude/rules/x.md` against every test that says
+            # "rules", which is most of them.
+            if is_test_path(path):
+                direct |= {t for t, text in declared.items()
+                           if any(mentions_dir(text, d) for d in owning_dirs(path))}
+            if not direct and not path.endswith(DOC_SUFFIXES):
+                # Nothing owns it and it is not prose: there is no targeted run to
+                # fall back on, and unlike an unnamed script this is an INPUT some
+                # repo-wide test may read. Unknown resolves upward.
+                escalators.append(f"{path} is a fixture or data file no declared test names or enumerates")
+            selected |= direct
+            continue
         hop = set()
         # ONE HOP, AND ONLY WHEN NOTHING NAMES THE FILE DIRECTLY. It exists for a
         # sourced lib whose only tests are the tests of the scripts that source

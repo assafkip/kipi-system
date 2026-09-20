@@ -136,6 +136,56 @@ def test_a_repo_that_declares_no_tests_gets_no_untested_floor(cs):
     assert cs.plan([("app/read_sites.py", 2)], {}, {})["tier"] == "S"
 
 
+FIXTURE = "q-system/.q-system/scripts/test/fixtures/widget-cases/absent.json"
+PLIST = "q-system/.q-system/launchd/com.kipi.widget.plist"
+
+
+def case_fixture_reaches_its_owner(cs):
+    # codex, PR #377 round 1, major 1: a PR that breaks only a tracked fixture ran
+    # ZERO tests, because everything under fixtures/ was skipped before matching.
+    declared = dict(DECLARED, **{T_WIDGET: 'FX="$HERE/fixtures/widget-cases"; bash widget.sh < "$FX/x"'})
+    v = cs.plan([(FIXTURE, 3)], declared, CODE)
+    assert v["selected_tests"] == [T_WIDGET] and not v["full_suite"]
+
+
+def test_a_changed_fixture_runs_the_test_that_owns_its_directory(cs):
+    case_fixture_reaches_its_owner(cs)
+
+
+def case_enumerated_input_reaches_its_scanner(cs):
+    # Same review, major 2: a test that globs its inputs never names them.
+    declared = dict(DECLARED, **{"t/test-install-jobs-coverage.py": 'for p in root.rglob("com.kipi.*.plist"): check(p)'})
+    v = cs.plan([(PLIST, 2)], declared, CODE)
+    assert v["selected_tests"] == ["t/test-install-jobs-coverage.py"] and not v["full_suite"]
+
+
+def test_a_changed_input_runs_the_test_whose_pattern_enumerates_it(cs):
+    case_enumerated_input_reaches_its_scanner(cs)
+
+
+def case_unowned_data_runs_everything(cs):
+    for path in (PLIST, FIXTURE, "config/routes.json"):
+        v = cs.plan([(path, 1)], DECLARED, CODE)
+        assert v["full_suite"] and "no declared test names or enumerates" in v["reasons"][0], path
+    # Prose nothing names is not an input to anything.
+    assert not cs.plan([("docs/notes.md", 40)], DECLARED, CODE)["full_suite"]
+
+
+def test_a_fixture_or_data_file_nothing_owns_runs_the_full_suite(cs):
+    case_unowned_data_runs_everything(cs)
+
+
+def test_patterns_are_read_from_the_tests_own_text(cs):
+    text = """for p in d.glob("*.verdict.json"): pass
+find "$ROOT" -name 'com.kipi.*.plist'
+git ls-files 'plugins/*/hooks/hooks.json'"""
+    assert cs.enumeration_patterns(text) == ["*.verdict.json", "com.kipi.*.plist", "plugins/*/hooks/hooks.json"]
+    assert cs.pattern_matches("com.kipi.*.plist", PLIST)
+    assert cs.pattern_matches("plugins/*/hooks/hooks.json", "plugins/prd-os/hooks/hooks.json")
+    assert not cs.pattern_matches("com.kipi.*.plist", "q-system/x/com.cole.widget.plist")
+    assert cs.owning_dirs(FIXTURE) == ["widget-cases"]          # not `fixtures`, not `test`
+
+
 def case_too_wide(cs):
     declared = {f"t/test-{i}.sh": "bash widget.sh" for i in range(cs.MAX_SELECTED + 1)}
     v = cs.plan([(SCRIPT, 1)], declared, CODE)
@@ -252,6 +302,9 @@ CS_MUTANTS = [
     ("the machinery escalator", "        if why:\n            escalators.append(why)", "        if False:\n            escalators.append(why)", case_escalator_beats_line_count),
     ("imports scoped to app code", 'if line.startswith("+++") or is_test_path(current):', 'if line.startswith("+++"):', case_import_scoping),
     ("the hop only when nothing names the file", "if is_code(path) and not direct:", "if is_code(path):", None),
+    ("a fixture is matched before it is skipped", "            if is_test_path(path):\n                direct |=", "            if False:\n                direct |=", case_fixture_reaches_its_owner),
+    ("an enumerating test owns what it globs", "direct |= {t for t, pats in patterns.items() if any(pattern_matches(p, path) for p in pats)}", "pass", case_enumerated_input_reaches_its_scanner),
+    ("unowned data resolves upward", "if not direct and not path.endswith(DOC_SUFFIXES):", "if False:", case_unowned_data_runs_everything),
     ("the width cap", "if len(selected) > MAX_SELECTED:", "if False:", case_too_wide),
     ("size is not a full run", "full_suite = bool(escalators)", "full_suite = bool(escalators) or app_lines > M_MAX_LINES", case_size_is_not_a_full_run),
 ]
