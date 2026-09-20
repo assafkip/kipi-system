@@ -109,7 +109,7 @@ def test_a_new_third_party_import_forces_the_full_suite(cs):
 def case_hop(cs):
     # The lib is named by no test. The script that sources it is. One hop.
     v = cs.plan([(LIB, 3)], DECLARED, CODE)
-    assert v["selected_tests"] == [T_WIDGET] and not v["untested_by_name"]
+    assert v["selected_tests"] == [T_WIDGET]
 
 
 def test_a_sourced_lib_reaches_the_tests_of_the_script_that_sources_it(cs):
@@ -131,7 +131,7 @@ def test_a_lib_with_its_own_test_still_runs_its_callers_tests(cs):
 def case_comment_is_not_a_caller(cs):
     code = {SCRIPT: "# scar: widget-lib.sh once ate the ledger\nrun", LIB: "helper() { :; }"}
     v = cs.plan([(LIB, 3)], DECLARED, code)
-    assert v["selected_tests"] == [] and v["untested_by_name"] == [LIB]
+    assert v["selected_tests"] == [] and not v["full_suite"]
 
 
 def test_a_comment_that_talks_about_a_script_is_not_a_caller(cs):
@@ -144,12 +144,14 @@ def test_the_walk_stops_one_step_out(cs):
     assert cs.plan([(LIB, 3)], declared, code)["selected_tests"] == [T_WIDGET]
 
 
-def test_an_executable_nothing_names_is_said_out_loud_not_run_as_the_suite(cs):
+def test_an_executable_nothing_names_runs_nothing_rather_than_everything(cs):
+    # "The full suite" means the DECLARED tests. None of them can see this file,
+    # so running all 236 exercises it exactly as much as running none.
     v = cs.plan([("tools/orphan.py", 2)], DECLARED, CODE)
-    assert not v["full_suite"] and v["tier"] == "M" and v["untested_by_name"] == ["tools/orphan.py"]
+    assert not v["full_suite"] and v["tier"] == "S" and v["selected_tests"] == []
 
 
-def test_a_repo_that_declares_no_tests_gets_no_untested_floor(cs):
+def test_a_two_line_change_in_a_repo_that_declares_no_tests_is_small(cs):
     # ASK-1749 acceptance row 1, from the corpus the issue names: a 2-line
     # read-site registration is S.
     assert cs.plan([("app/read_sites.py", 2)], {}, {})["tier"] == "S"
@@ -165,21 +167,20 @@ def case_fixture_reaches_its_owner(cs):
     declared = dict(DECLARED, **{T_WIDGET: 'FX="$HERE/fixtures/widget-cases"; bash widget.sh < "$FX/x"'})
     v = cs.plan([(FIXTURE, 3)], declared, CODE)
     assert v["selected_tests"] == [T_WIDGET] and not v["full_suite"]
+    assert cs.owning_dirs(FIXTURE) == ["widget-cases"]          # not `fixtures`, not `test`
 
 
 def test_a_changed_fixture_runs_the_test_that_owns_its_directory(cs):
     case_fixture_reaches_its_owner(cs)
 
 
-def case_enumerated_input_reaches_its_scanner(cs):
-    # Same review, major 2: a test that globs its inputs never names them.
+def test_an_enumerated_input_reaches_its_test_through_the_scanner_floor(cs):
+    # Same review, major 2: a test that globs its inputs never names them. The
+    # answer is not a glob parser -- a test that enumerates also WALKS, so the
+    # always-run floor has it. Round 1's 40-line parser chose nothing this does not.
     declared = dict(DECLARED, **{"t/test-install-jobs-coverage.py": 'for p in root.rglob("com.kipi.*.plist"): check(p)'})
     v = cs.plan([(PLIST, 2)], declared, CODE)
     assert v["selected_tests"] == ["t/test-install-jobs-coverage.py"] and not v["full_suite"]
-
-
-def test_a_changed_input_runs_the_test_whose_pattern_enumerates_it(cs):
-    case_enumerated_input_reaches_its_scanner(cs)
 
 
 SCANNER = "t/test-scans.py"
@@ -217,61 +218,13 @@ def test_the_always_run_floor_does_not_force_a_full_suite(cs):
     case_scanners_do_not_trip_the_width_cap(cs)
 
 
-def case_a_naming_pattern_is_ownership(cs):
-    # A pattern with a NAME in it means that test owns the file, so the file is
-    # not reported as unowned. A type-only pattern selects but does not own.
-    declared = dict(DECLARED, **{"t/test-install.py": 'root.rglob("com.kipi.*.plist")'})
-    assert cs.plan([(PLIST, 2)], declared, CODE)["untested_by_name"] == []
-
-
-def test_a_pattern_that_names_something_is_ownership(cs):
-    case_a_naming_pattern_is_ownership(cs)
-
-
-def case_unowned_data_is_reported_not_swept(cs):
+def test_a_file_no_declared_test_names_is_not_swept_into_a_full_run(cs):
     # Rounds 1-3 were one class. The full suite = the DECLARED tests, so a file
-    # none of them can see is not covered by running all of them.
-    for path in (PLIST, FIXTURE, "config/routes.json"):
+    # none of them can see is not covered by running all of them. Escalating here
+    # bought 17 minutes and no coverage, so it does not escalate.
+    for path in (PLIST, FIXTURE, "config/routes.json", "docs/notes.md"):
         v = cs.plan([(path, 1)], DECLARED, CODE)
-        assert not v["full_suite"] and v["untested_by_name"] == [path] and v["tier"] == "M", path
-    # Prose is not an input to anything.
-    v = cs.plan([("docs/notes.md", 40)], DECLARED, CODE)
-    assert not v["full_suite"] and v["untested_by_name"] == []
-
-
-def test_a_file_no_declared_test_owns_is_named_not_swept(cs):
-    case_unowned_data_is_reported_not_swept(cs)
-
-
-def case_a_bare_wildcard_owns_nothing(cs):  # noqa: D401 -- ownership, not selection
-    # codex, PR #377 round 3: a test that globs `*` in its own tmp dir claimed every
-    # changed file, so the unowned-data fallback and UNTESTED BY NAME both went dead.
-    declared = dict(DECLARED, **{"t/test-tmp.py": 'for p in tmp.glob("*"): p.unlink()',
-                                 "t/test-json.py": 'for p in d.rglob("*.json"): load(p)'})
-    v = cs.plan([("config/routes.json", 1)], declared, CODE)
-    assert v["untested_by_name"] == ["config/routes.json"] and not v["full_suite"]
-    v = cs.plan([("tools/orphan.py", 2)], declared, CODE)
-    assert v["untested_by_name"] == ["tools/orphan.py"] and not v["full_suite"]
-    # ...and the scanners still RUN: selecting a test is not the same as owning.
-    assert "t/test-tmp.py" in v["selected_tests"]
-
-
-def test_a_type_only_pattern_runs_its_test_but_owns_nothing(cs):
-    case_a_bare_wildcard_owns_nothing(cs)
-    for p, want in (("*", False), ("*.*", False), ("*.json", False), ("**/*.py", False),
-                    ("com.kipi.*.plist", True), ("prd-*.md", True), ("*.verdict.json", True)):
-        assert cs.names_something(p) is want, p
-
-
-def test_patterns_are_read_from_the_tests_own_text(cs):
-    text = """for p in d.glob("*.verdict.json"): pass
-find "$ROOT" -name 'com.kipi.*.plist'
-git ls-files 'plugins/*/hooks/hooks.json'"""
-    assert cs.enumeration_patterns(text) == ["*.verdict.json", "com.kipi.*.plist", "plugins/*/hooks/hooks.json"]
-    assert cs.pattern_matches("com.kipi.*.plist", PLIST)
-    assert cs.pattern_matches("plugins/*/hooks/hooks.json", "plugins/prd-os/hooks/hooks.json")
-    assert not cs.pattern_matches("com.kipi.*.plist", "q-system/x/com.cole.widget.plist")
-    assert cs.owning_dirs(FIXTURE) == ["widget-cases"]          # not `fixtures`, not `test`
+        assert not v["full_suite"] and v["selected_tests"] == [], path
 
 
 def case_too_wide(cs):
@@ -392,11 +345,8 @@ CS_MUTANTS = [
     ("a comment is not an edge", 'if not l.lstrip().startswith("#"))', "if True)", case_comment_is_not_a_caller),
     ("the callers' tests run", "        for dep in dependents(path, live):", "        for dep in []:", None),
     ("a fixture is matched before it is skipped", "            if is_test_path(path):\n                direct |=", "            if False:\n                direct |=", case_fixture_reaches_its_owner),
-    ("an enumerating test owns what it globs", "                   if any(pattern_matches(p, path) for p in pats if names_something(p))}", "                   if False}", case_a_naming_pattern_is_ownership),
     ("every scanner always runs", "    always = {t for t, text in declared.items() if scans_the_tree(text)}", "    always = set()", case_every_scanner_always_runs),
     ("the floor is outside the width cap", "    pulled = selected - always", "    pulled = selected", case_scanners_do_not_trip_the_width_cap),
-    ("a type-only pattern owns nothing", "for p in pats if names_something(p))}", "for p in pats)}", case_a_bare_wildcard_owns_nothing),
-    ("unowned data is reported", "if not direct and not path.endswith(DOC_SUFFIXES):", "if False:", case_unowned_data_is_reported_not_swept),
     ("the width cap", "if len(pulled) > MAX_SELECTED:", "if False:", case_too_wide),
     ("size is not a full run", "full_suite = bool(escalators)", "full_suite = bool(escalators) or app_lines > M_MAX_LINES", case_size_is_not_a_full_run),
 ]

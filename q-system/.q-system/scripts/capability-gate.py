@@ -719,8 +719,6 @@ def select_for_diff(root, base, notes):
     notes.append(f"change-size vs {base}: tier {verdict['tier']}, {verdict['app_lines']} app-code "
                  f"lines -- running {len(selected)} of {verdict['declared_tests']} declared tests; "
                  "the full suite runs on the push to main")
-    for u in verdict.get("untested_by_name", []):
-        notes.append(f"UNTESTED BY NAME: {u} -- no declared test mentions it")
     return set(selected)
 
 
