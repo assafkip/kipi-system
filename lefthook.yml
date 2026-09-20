@@ -17,8 +17,17 @@ pre-commit:
       # --staged checks the INDEX, materialised as a real throwaway worktree, so
       # what is verified is what the commit will contain and not what happens to
       # be lying in the working tree.
+      #
+      # fail_text is ONE static string lefthook shows on ANY non-zero exit, so it
+      # used to claim the same thing for two different failures (ASK-1907): a
+      # check that ran on the staged snapshot and failed (exit 1, ~23s, CI WILL
+      # fail too) vs. the snapshot setup itself never getting to run at all
+      # (worktree add refused by lock contention, exit 3 -- see verify.sh's
+      # setup_fail() -- observed at 0.10s). The wording below reads the exit
+      # code lefthook already prints above this line instead of asserting one
+      # claim for both.
       run: bash q-system/.q-system/verify.sh --staged
-      fail_text: "verify.sh failed on the STAGED snapshot. The same script runs in CI, so this will not pass later."
+      fail_text: "verify.sh did not pass on the STAGED snapshot. Exit 1 above means a check RAN and failed -- the same script runs in CI, so this will not pass there either. Exit 3 means SETUP FAILED (ASK-1907): no check ran, this is not a verdict on your change, and a bare retry of the commit is the fix (git lock contention from another worktree is the known cause)."
 
     gitleaks:
       # ~/.gitleaks.toml extends the defaults with kipi-specific rules (ntn_ etc.).

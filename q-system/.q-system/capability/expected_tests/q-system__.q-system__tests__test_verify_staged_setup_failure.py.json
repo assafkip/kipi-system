@@ -1,0 +1,5 @@
+{
+  "path": "q-system/.q-system/tests/test_verify_staged_setup_failure.py",
+  "runner": "pytest",
+  "timeout_s": 120
+}
