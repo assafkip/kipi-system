@@ -115,6 +115,102 @@ def model_allocation_violations(claude_agents_dir):
     return violations
 
 
+# ASK-1904: Gate 1.1b above only reads .claude/agents/*.md, so a plugin script
+# can restate a model ID directly in code (plugins/kipi-core/voiceloop/critic.py:
+# 115-116 hardcoded claude-sonnet-5 and claude-haiku-4-5) and ship a retired ID
+# fleet-wide, green, because the agents-only scan cannot see plugins/ at all.
+MODEL_ID_LITERAL_RE = re.compile(r"\bclaude-(?:haiku|sonnet|opus)-[0-9][0-9a-zA-Z.\-]*")
+
+
+def plugin_model_id_violations(plugins_dir):
+    """Scan plugins/ for model-ID literals outside the MODEL_TIERS allowlist.
+
+    Narrower than "IDs live only in agent frontmatter" -- a literal that still
+    matches the allowlist reads as compliant here, same as critic.py's two
+    today. What this surfaces is only a literal that has drifted OUTSIDE the
+    allowlist, the silent-fleet-ship failure mode this gate exists for.
+    Dir-parameterized so a test can run it against a temp copy instead of the
+    live tree (fable-discipline: verify against a copy, not the real plugins/).
+    """
+    violations = []
+    if not os.path.isdir(plugins_dir):
+        return violations
+    allowed_ids = set().union(*MODEL_TIERS.values())
+    for dirpath, dirnames, filenames in os.walk(plugins_dir):
+        dirnames[:] = [d for d in dirnames if d not in ("test", "tests", "node_modules", ".git")]
+        for fname in sorted(filenames):
+            if not fname.endswith((".py", ".md", ".json", ".sh")):
+                continue
+            fpath = os.path.join(dirpath, fname)
+            try:
+                with open(fpath, errors="ignore") as fh:
+                    text = fh.read()
+            except (IOError, OSError):
+                continue
+            for match in MODEL_ID_LITERAL_RE.finditer(text):
+                model_id = match.group(0)
+                if model_id not in allowed_ids:
+                    rel = os.path.relpath(fpath, plugins_dir)
+                    violations.append(f"{rel}: model literal '{model_id}' not in MODEL_TIERS allowlist")
+    return violations
+
+
+def run_capability_gate_phase(gate_script, repo_root, max_named_lines=10):
+    """Run the capability gate and return (passed, lines_to_print_on_failure).
+
+    ASK-1902: on failure the old caller printed the LAST 15 raw lines of
+    combined stdout+stderr. capability-gate.py's own report() prints one
+    "RED: test-failed rc=... <path>" line per failure followed by up to 20
+    lines of that test's tail (report() at capability-gate.py, and run_tests()
+    builds that tail) -- so with more than one failure, or one long tail, the
+    line naming the failing artifact scrolled out of the last-15 window and the
+    FAIL printed named nothing (reproduced 2026-09-19 on
+    feat/design-chain-on-main: "FAIL: 2" with only one line saying what broke).
+    Pulling the gate's own "RED:" lines out of the FULL stdout, instead of
+    tailing the raw combination, keeps the failing-artifact name regardless of
+    how long its traceback tail is.
+    """
+    gate_run = subprocess.run([sys.executable, gate_script, "--repo-root", repo_root],
+                              capture_output=True, text=True)
+    if gate_run.returncode == 0:
+        return True, []
+    red_lines = [l for l in gate_run.stdout.splitlines() if l.strip().startswith("RED:")]
+    if red_lines:
+        lines = [f"    {len(red_lines)} failing artifact(s):"]
+        lines += [f"    {l.strip()}" for l in red_lines[:max_named_lines]]
+        if len(red_lines) > max_named_lines:
+            lines.append(f"    ... and {len(red_lines) - max_named_lines} more")
+        return False, lines
+    # The gate exited non-zero before producing its own RED lines (e.g. it
+    # crashed on argument parsing or a missing manifest) -- fall back to a raw
+    # tail so a genuine crash still says something, rather than nothing.
+    return False, [("    " + l) for l in
+                    (gate_run.stdout + gate_run.stderr).splitlines()[-15:]]
+
+
+def evaluate_memory_lint_output(returncode, stdout):
+    """Classify a memory-lint.py run into ("skip"|"clean"|"dirty"|"broken", message).
+
+    ASK-1903: memory-lint.py itself prints "memory-lint: no memory directory at
+    <path> (nothing to sweep)" and exits 0 when the auto-memory corpus does not
+    exist -- a healthy state on any checkout that has never written an
+    auto-memory. The old caller only looked for a "structural: N" summary line,
+    which that no-op path never prints either, so a missing directory and a
+    genuinely crashed linter produced the identical "no summary" warn. Reading
+    memory-lint's own no-directory line tells the two apart without guessing.
+    """
+    no_dir_line = next((l for l in stdout.splitlines()
+                        if l.startswith("memory-lint: no memory directory at")), None)
+    if no_dir_line is not None and returncode == 0:
+        return "skip", no_dir_line.strip()
+    summary = next((l for l in stdout.splitlines() if l.startswith("structural:")), None)
+    if summary is None:
+        return "broken", f"memory-lint produced no summary (exit {returncode})"
+    if summary.split()[1] != "0":
+        return "dirty", summary
+    return "clean", summary
+
+
 def dir_exists(path):
     return os.path.isdir(path)
 
@@ -751,6 +847,15 @@ def phase_1():
         warn(v)
     check(f"Agent model IDs match the allocation policy ({len(ma_violations)} violations)", not ma_violations)
 
+    # --- Gate 1.1c: model-ID literals in plugins/ (ASK-1904) ---
+    print()
+    print("  --- Gate 1.1c: Model allocation (plugins/) ---")
+    plugin_ma_violations = plugin_model_id_violations(os.path.join(SCRIPT_DIR, "plugins"))
+    for v in plugin_ma_violations:
+        warn(v)
+    check(f"No retired/unknown model-ID literals in plugins/ ({len(plugin_ma_violations)} violations)",
+          not plugin_ma_violations)
+
     # --- GATE 1.2: Scripts ---
     print()
     print("  --- Gate 1.2: Scripts ---")
@@ -771,13 +876,11 @@ def phase_1():
         print("  --- Gate 1.2a: capability gate SKIPPED (CAPABILITY_GATE_SKIP=1; caller runs it directly) ---")
     else:
         gate_script = os.path.join(SCRIPT_DIR, "q-system", ".q-system", "scripts", "capability-gate.py")
-        gate_run = subprocess.run([sys.executable, gate_script, "--repo-root", SCRIPT_DIR],
-                                  capture_output=True, text=True)
+        gate_passed, gate_lines = run_capability_gate_phase(gate_script, SCRIPT_DIR)
         check("capability gate: declared-vs-actual diff + full test run exits 0",
-              gate_run.returncode == 0)
-        if gate_run.returncode != 0:
-            print("\n".join(("    " + l) for l in
-                            (gate_run.stdout + gate_run.stderr).splitlines()[-15:]))
+              gate_passed)
+        for l in gate_lines:
+            print(l)
 
     # --- Gate 1.2b: Memory hygiene sweep (ADVISORY, can never fail this gate) ---
     # memory-lint.py reads the auto-memory corpus, which lives OUTSIDE the repo
@@ -798,15 +901,16 @@ def phase_1():
         lint_env = dict(os.environ, CLAUDE_PROJECT_DIR=SCRIPT_DIR)
         lint_run = subprocess.run([sys.executable, memory_lint],
                                   capture_output=True, text=True, env=lint_env)
-        summary = next((l for l in lint_run.stdout.splitlines()
-                        if l.startswith("structural:")), None)
-        if summary is None:
-            warn(f"Gate 1.2b: memory-lint produced no summary (exit {lint_run.returncode})")
-        elif summary.split()[1] != "0":
-            warn(f"Gate 1.2b: memory hygiene -- {summary}. Run: "
+        status, message = evaluate_memory_lint_output(lint_run.returncode, lint_run.stdout)
+        if status == "skip":
+            check(f"memory hygiene sweep skipped ({message})", True)
+        elif status == "broken":
+            warn(f"Gate 1.2b: {message}")
+        elif status == "dirty":
+            warn(f"Gate 1.2b: memory hygiene -- {message}. Run: "
                  f"python3 q-system/.q-system/scripts/memory-lint.py")
         else:
-            check(f"memory hygiene sweep clean ({summary})", True)
+            check(f"memory hygiene sweep clean ({message})", True)
 
     for script in ["audit-morning.py", "verify-schedule.py", "token-guard.py"]:
         check(f"{script} exists", file_exists(os.path.join(scripts_dir, script)))
