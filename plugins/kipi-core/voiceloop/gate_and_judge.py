@@ -46,6 +46,30 @@ from __future__ import annotations
 from . import content_key
 
 
+
+def _accepts(fn, name):
+    """Does this INJECTED callable take `name`?
+
+    The injection boundary is the reason this exists. Every symbol this module
+    receives as an argument (`decide`, `revise`, `voicefp_gate`) is the
+    instance's, and instances upgrade independently of this package. A keyword
+    that is optional HERE is mandatory at the call site, so sending one the
+    other side has never heard of is a TypeError on a live lane.
+
+    Returns True for a callable that takes **kwargs, because such a callee
+    accepts anything and inspecting further would refuse a lane that works.
+    """
+    import inspect
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return True            # un-inspectable: assume the newer contract
+    for param in sig.parameters.values():
+        if param.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+    return name in sig.parameters
+
+
 def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
                    runner, trail, at,
                    decide, revise, voicefp_gate,
@@ -90,12 +114,34 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
     # reader inherits a false premise. NO COUNTS ARE QUOTED HERE ON PURPOSE: a census
     # of copies inverts on the first fleet sync and would then be a second false
     # premise wearing a measurement's clothes.
+    # FEATURE-DETECTED, NOT ASSUMED (PR #386 round 3, major). `decide` is
+    # INJECTED: it lives in the instance, not in this package, so this module
+    # cannot know which version it is calling. Passing `recent_openers=`
+    # unconditionally raises TypeError on every draft in any instance whose
+    # `decide_candidate` predates that parameter -- the whole lane down, not a
+    # degraded feature.
+    #
+    # The comment above already recorded (2026-09-09) that fleet copies did NOT
+    # carry `recent_openers` and only this repo's did, so the hazard was known
+    # and the call site still assumed. Measured 2026-09-20: all 15 decide.py
+    # copies on the author's machine accept it and all 15 are one instance's, so
+    # the blast radius is zero TODAY. That is a fact about today, not a property
+    # of the design, and it inverts the first time another instance grows the
+    # lane. A kwarg passed across an injection boundary needs a check, not a
+    # census.
+    #
+    # Asking the signature is the check. It degrades to the older contract
+    # instead of dying, and `_accepts` is used for every optional kwarg crossing
+    # this boundary rather than this one, so the next one added cannot
+    # reintroduce the same defect by being written the old way.
+    optional = {}
+    if _accepts(decide.decide_candidate, "recent_openers"):
+        optional["recent_openers"] = recent_openers
     verdict = decide.decide_candidate(
         post, regenerate=revise.reviser(runner=runner, claude_bin=claude_bin,
                                         model=model, author=author), channel=channel,
         source_text=idea_text, prompt_carried=prompt_carried_for(voice_prov),
-        recent_openers=recent_openers,
-        handles=False)
+        handles=False, **optional)
     trail["stages"].append({"stage": "gates", "status": verdict.status,
                             "reasons": list(verdict.reasons or [])})
     if verdict.status != decide.SHIPPABLE:

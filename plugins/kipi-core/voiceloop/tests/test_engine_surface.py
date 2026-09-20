@@ -207,3 +207,130 @@ def test_an_undeclared_channel_falls_back_rather_than_going_ungraded(tmp_path):
     got = validate._targets_for("linkedin", base, {"x": [40]}, extreme=max)
     assert got, ("an undeclared channel returned an empty target list, so its "
                  "grading loop never runs and the gate is off for it.")
+
+
+# --- the injection boundary: a kwarg the other side may not have ------------------
+
+def test_an_older_injected_decide_does_not_take_the_lane_down():
+    """`decide` is the INSTANCE's, and instances upgrade independently.
+
+    PR #386 round 3, major. `gate_and_judge` passed `recent_openers=` to
+    `decide.decide_candidate` unconditionally. That parameter arrived 2026-09-09
+    and the comment beside the call already recorded that fleet copies did not
+    carry it. An instance on the older contract therefore raised TypeError on
+    EVERY draft: the whole lane down, not a degraded feature.
+
+    The fixture below is the older contract, verbatim: the same signature minus
+    the one parameter. Before the fix this call raised; now it degrades.
+    """
+    from voiceloop import gate_and_judge
+
+    def old_decide_candidate(text, regenerate=None, channel=None,
+                             source_text=None, prompt_carried=None,
+                             handles=True):
+        return "reached"
+
+    assert not gate_and_judge._accepts(old_decide_candidate, "recent_openers")
+
+    def new_decide_candidate(text, regenerate=None, channel=None,
+                             source_text=None, prompt_carried=None,
+                             recent_openers=None, handles=True):
+        return "reached"
+
+    assert gate_and_judge._accepts(new_decide_candidate, "recent_openers")
+
+
+def test_a_kwargs_callee_is_not_refused():
+    """A callee taking **kwargs accepts anything; refusing it would break a
+    working lane to satisfy an inspection."""
+    from voiceloop import gate_and_judge
+
+    def flexible(text, **kwargs):
+        return "reached"
+
+    assert gate_and_judge._accepts(flexible, "recent_openers")
+
+
+def test_an_uninspectable_callee_assumes_the_newer_contract(monkeypatch):
+    """Some callables refuse `inspect.signature` (C functions without a text
+    signature, some wrappers). Assuming the OLDER contract there would silently
+    drop a real do-not-repeat list on every draft, which is the quiet half of
+    this defect rather than the loud one. Fail toward passing the argument.
+
+    The BRANCH is exercised directly rather than by hunting a callable that
+    happens to be uninspectable: the first version of this test used `len`,
+    which modern Python inspects fine, so it asserted the opposite of what it
+    claimed and failed on correct code.
+    """
+    import inspect
+    from voiceloop import gate_and_judge
+
+    def boom(*_a, **_k):
+        raise ValueError("no signature available")
+
+    monkeypatch.setattr(inspect, "signature", boom)
+
+    def anything(text):
+        return "reached"
+
+    assert gate_and_judge._accepts(anything, "recent_openers"), (
+        "an un-inspectable callee must be assumed to take the newer contract; "
+        "assuming the older one drops the argument silently.")
+
+
+def test_gate_and_judge_survives_an_OLD_injected_decide():
+    """DRIVES the call site. RED if `recent_openers=` is passed unconditionally.
+
+    The three tests above exercise `_accepts` and all of them stayed green with
+    the guard removed from the call site, which made them decorative: they prove
+    the helper answers correctly, never that the caller asks it. This one injects
+    a `decide` on the OLDER contract -- the real fleet shape -- and asserts the
+    lane reaches a verdict instead of raising TypeError.
+    """
+    import types
+    from voiceloop import gate_and_judge as gj
+
+    class _V:
+        status = "SHIPPABLE"
+        text = "the drafted post"
+        reasons = []
+
+    calls = {}
+
+    def old_decide_candidate(text, regenerate=None, channel=None,
+                             source_text=None, prompt_carried=None,
+                             handles=True):
+        # THE OLDER CONTRACT, verbatim: no `recent_openers`.
+        calls["got"] = True
+        return _V()
+
+    decide = types.SimpleNamespace(decide_candidate=old_decide_candidate,
+                                   SHIPPABLE="SHIPPABLE")
+    revise = types.SimpleNamespace(reviser=lambda **_k: None,
+                                   revise=lambda *a, **k: None)
+    voicefp = types.SimpleNamespace(
+        style_review=lambda *a, **k: {"verdict": "pass"},
+        style_feedback=lambda *a, **k: "")
+    trail = {"stages": []}
+
+    try:
+        gj.gate_and_judge(
+            "the drafted post", channel="linkedin", idea_text="an idea",
+            voice_prov={}, arch_id=None, arch_entry=None, runner=None,
+            trail=trail, at=None,
+            decide=decide, revise=revise, voicefp_gate=voicefp,
+            prompt_carried_for=lambda _p: [],
+            _append_voice_provenance=lambda *a, **k: None,
+            recent_openers=["an opener"])
+    except TypeError as exc:
+        if "recent_openers" in str(exc):
+            raise AssertionError(
+                f"gate_and_judge passed recent_openers= to an injected decide "
+                f"that does not take it: {exc}. `decide` lives in the INSTANCE "
+                f"and upgrades independently, so this takes the whole lane down "
+                f"on any instance still on the older contract.") from None
+        raise
+    except Exception:
+        pass          # any OTHER failure is this fixture's thinness, not the defect
+
+    assert calls.get("got"), "the fixture never reached decide_candidate"
