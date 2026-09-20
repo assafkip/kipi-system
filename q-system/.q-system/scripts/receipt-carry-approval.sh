@@ -38,10 +38,19 @@
 # class twice, so the fix is the ORDER, not a fourth patch: converge pushes the
 # receipt commit to a staging ref first, carries onto that sha while no branch
 # points at it and nobody can be reviewing it, and only then moves the branch.
-# Any reviewer verdict on that sha is therefore NEWER than the copy, and GitHub
-# shows the newest status per context. The copy cannot bury a verdict because it
-# always comes first. Run by hand against a live head, this script IS racy; do
-# that only when no reviewer is running.
+#
+# WHAT THE ORDER ACTUALLY GUARANTEES, AND WHAT IT DOES NOT (ASK-1905 nit 3). It
+# guarantees exactly one thing, on the NEW sha: every reviewer verdict there is
+# NEWER than the copy, GitHub shows the newest status per context, so no verdict
+# on that sha can predate the copy and be hidden under it. That is the whole of
+# it. It does NOT close the window on the REVIEWED sha. A refusal landing on the reviewed sha
+# after guard 1 read it is invisible to this script, and converge's branch move
+# then puts a different sha in front of the PR, so that refusal stops being the
+# head's verdict. This script never buries that refusal -- the branch
+# move does, exactly as any push would -- but the gap is not gone, it is moved to
+# a place where the reviewer's next run sees the new head and posts on it. Run by
+# hand against a live head, this script IS racy; do that only when no reviewer is
+# running.
 #
 # `--head-state <owner/repo> <sha>` is a READ-ONLY mode; see head_state.
 #

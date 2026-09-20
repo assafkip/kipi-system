@@ -21,6 +21,13 @@
 
 set -uo pipefail
 
+# THE NOTIFIER IS STUBBED FOR EVERY CHILD OF THIS FILE. The mutation harness at
+# the bottom re-invokes this file with a MUTATED converge.sh, and a mutant is by
+# construction a path nobody reasoned about. converge resolves its pager through
+# KIPI_NOTIFY, so binding it here once means no mutant can reach the real one.
+# Scar: 2026-08-01, a suite reporting 14/14 green paged the founder twice.
+export KIPI_NOTIFY=/usr/bin/true
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FX="$HERE/fixtures/receipt-carry"
 # REF HATCH: the mutation harness at the bottom re-invokes this file at a mutant.
@@ -48,6 +55,22 @@ check_eq "an empty list is not a verdict" \
 check_eq "an approval the reviewer later withdrew does not carry" \
   "failure REQUEST CHANGES" \
   "$(jq -s '.[0] + .[1]' "$FX/reviewed-request-changes.json" "$FX/reviewed-approved.json" | live_verdict)"
+
+# ------------------------------------------------- what the header may claim
+# ASK-1905 nit 3. The ORDER guarantees exactly one thing: nothing on the NEW sha
+# can predate the copy. It does NOT close the window on the REVIEWED sha -- a
+# REQUEST CHANGES landing there between guard 1's read and converge's branch move
+# is buried by the move, not by this script. The header claimed the gap was gone
+# entirely, which is a wider claim than the code keeps. Prose is all there is to
+# check here, so this greps the shipped header rather than pretending otherwise.
+echo "header (the claim the order actually earns)"
+HDR="$(sed -n '1,60p' "$SCRIPT")"
+check_eq "the header does not claim the copy can never bury a verdict" "0" \
+  "$(printf '%s' "$HDR" | grep -c 'cannot bury a verdict' || true)"
+check_eq "it names what the order guarantees: no verdict on the NEW sha predates the copy" "yes" \
+  "$(printf '%s' "$HDR" | grep -q 'predate the copy' && echo yes || echo no)"
+check_eq "and it names the window that stays open: a refusal on the reviewed sha" "yes" \
+  "$(printf '%s' "$HDR" | grep -q 'refusal landing on the reviewed sha' && echo yes || echo no)"
 
 # ------------------------------------------------------------------ git half
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/receipt-carry.XXXXXX")"
@@ -186,8 +209,10 @@ if [ -z "${RECEIPT_CARRY_SCRIPT:-}" ]; then
   FN2="$TMP/fn2.sh"
   sed -n '/^approval_confirm() {/,/^}$/p' "$CONVERGE" > "$FN2"
   check_eq "converge.sh defines approval_confirm" "1" "$(grep -c '^approval_confirm() {' "$FN2")"
-  check_eq "the receipt-confirmed branch calls it" "1" \
-    "$(sed -n '/^receipt_confirm_origin() {/,/^}$/p' "$CONVERGE" | grep -c '^    approval_confirm "\$tree" "\$sha"$')"
+  check_eq "the receipt-confirmed branch calls it, with the PR number threaded in" "1" \
+    "$(sed -n '/^receipt_confirm_origin() {/,/^}$/p' "$CONVERGE" | grep -c '^    approval_confirm "\$tree" "\$sha" "\$pr"$')"
+  check_eq "and receipt_ensure is where that PR number comes from" "1" \
+    "$(sed -n '/^receipt_ensure() {/,/^}$/p' "$CONVERGE" | grep -c '^  receipt_confirm_origin "\$tree" "\$sha" "\$record" "\$pr"$')"
   # Origin's branch now IS the receipt commit, which is the retry's world.
   g push -q "$ORIGIN" "$RECEIPT:refs/heads/sana/ask-1"
   git -C "$CLONE" fetch -q origin sana/ask-1
@@ -209,6 +234,33 @@ if [ -z "${RECEIPT_CARRY_SCRIPT:-}" ]; then
   check_eq "GitHub unreadable is a miss, never a silent pass" "yes" \
     "$(confirm o/r "$TMP/does-not-exist.json" "" | grep -q '(state: unreadable)' && echo yes || echo no)"
   check_eq "confirming never posts" "0" "$(grep -c -- "-X POST" "$CALLS" || true)"
+
+  # ASK-1905 nits 1 and 2, both about the PAGE rather than the decision. A page
+  # the operator has to edit before running, or one that prescribes a re-review
+  # for an expired token, spends the 3am it just bought. Same helper as confirm,
+  # reading CARRY_FIX instead of CARRY_MISS.
+  confirm_fix() {  # confirm_fix <slug> <head-payload> <pr>  -> prints CARRY_FIX
+    : > "$CALLS"
+    STUB_REVIEWED="$REVIEWED" STUB_REVIEWED_PAYLOAD="$FX/reviewed-approved.json" STUB_HEAD_PAYLOAD="$2" \
+    RECEIPT_CARRY_GH="$STUB" SCRIPT_DIR="$(dirname "$SCRIPT")" LOG="$TMP/converge.log" \
+    TARGET_SLUG="$1" TARGET_REPO="$CLONE" BRANCH="sana/ask-1" ISSUE="ASK-1" PRNUM="$3" \
+      bash -c "say() { :; }; CARRY_MISS=''; CARRY_FIX=''; . '$FN2'; approval_confirm '$CLONE' '$REVIEWED' \"\$PRNUM\"; printf '%s' \"\$CARRY_FIX\"" 2>/dev/null
+  }
+  # nit 1: $PR is in scope at the page, so the remedy is pasteable or it is not a remedy.
+  check_eq "the red-head remedy names the PR number, so it can be pasted" "yes" \
+    "$(confirm_fix o/r "$FX/head-floor-only.json" 376 | grep -q 'pr-review-agent.sh 376 --issue ASK-1 --post' && echo yes || echo no)"
+  check_eq "and carries no literal <pr> placeholder" "0" \
+    "$(confirm_fix o/r "$FX/head-floor-only.json" 376 | grep -c '<pr>' || true)"
+  # nit 2: `unreadable` means converge could not ASK. It is not "the head is red",
+  # and no amount of re-reviewing fixes an expired token or a dead network.
+  check_eq "an unreadable GitHub is NOT paged as a head carrying no approval" "0" \
+    "$(confirm o/r "$TMP/does-not-exist.json" "" | grep -c 'carries no live reviewer approval' || true)"
+  check_eq "it says converge could not read the verdict, which is a different claim" "yes" \
+    "$(confirm o/r "$TMP/does-not-exist.json" "" | grep -q 'could not read' && echo yes || echo no)"
+  check_eq "and its remedy is auth plus network, never a re-review" "yes" \
+    "$(confirm_fix o/r "$TMP/does-not-exist.json" 376 | grep -q 'gh auth status' && echo yes || echo no)"
+  check_eq "a genuinely red head still gets the re-review remedy" "yes" \
+    "$(confirm_fix o/r "$FX/head-floor-only.json" 376 | grep -q 'pr-review-agent.sh' && echo yes || echo no)"
   check_eq "--head-state is read-only and says what GitHub shows" "success 0" \
     "$(STUB_REVIEWED=x STUB_REVIEWED_PAYLOAD=/dev/null STUB_HEAD_PAYLOAD="$CARRIED" RECEIPT_CARRY_GH="$STUB" bash "$SCRIPT" --head-state o/r "$RECEIPT") $(grep -c -- "-X POST" "$CALLS" || true)"
 fi
@@ -234,7 +286,14 @@ PY
   # The shipped defect: a receipt lands and nobody carries the approval.
   cmutate "converge never calls the carry" 's.replace(CALL, "", 1)'
   # Round 3's defect: nobody asks origin, so a retry reports a red head as landing.
-  cmutate "converge never confirms the head with origin" 's.replace("    approval_confirm \"$tree\" \"$sha\"\n", "", 1)'
+  cmutate "converge never confirms the head with origin" 's.replace("    approval_confirm \"$tree\" \"$sha\" \"$pr\"\n", "", 1)'
+  # ASK-1905 nit 1: drop the PR number on the way down and the page goes back to
+  # a command the operator cannot paste.
+  cmutate "the PR number never reaches the page" \
+    's.replace("  receipt_confirm_origin \"$tree\" \"$sha\" \"$record\" \"$pr\"\n", "  receipt_confirm_origin \"$tree\" \"$sha\" \"$record\"\n", 1)'
+  # ASK-1905 nit 2: collapse unreadable back into the red-head sentence.
+  cmutate "an unreadable GitHub is paged as a red head again" \
+    's.replace("  if [ \"$state\" = \"unreadable\" ]; then\n", "  if false; then\n", 1)'
   # The defect two review rounds were about: the carry runs AFTER the branch moved.
   cmutate "converge carries after the branch moved" \
     's.replace(CALL, "", 1).replace("    say \"receipt: pushed --", "    approval_carry \"$tree\" \"$sha\"\n    say \"receipt: pushed --", 1)'
