@@ -17,9 +17,9 @@ an agent's opinion of its own change:
         M   at most 150
         L   anything larger, or ANY escalator below
         The tier is the HUMAN ceremony: how much review the change earns.
-  tests the declared test artifacts that name a changed file, or name a file that
-        names it (one hop, so a change to a sourced lib reaches the tests of the
-        scripts that source it); the tests whose own glob / find / ls-files
+  tests the declared test artifacts that name a changed file, or name a script
+        that uses it, one step out (an edge is a mention on a line that executes;
+        a comment that talks about a script does not run it); the tests whose own glob / find / ls-files
         pattern ENUMERATES a changed file; for a fixture, the tests that name its
         directory; plus any changed or newly declared test.
 
@@ -171,6 +171,60 @@ def mentions_dir(text: str, name: str) -> bool:
     return re.search(r"(?<![\w.-])" + re.escape(name) + r"(?![\w.-])", text) is not None
 
 
+def executable_text(text: str) -> str:
+    """The lines that RUN: whole-line `#` comments dropped. Docstrings and inline
+    comments stay, so this errs toward keeping an edge, never toward losing one."""
+    return "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
+
+
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_][\w.-]*")
+
+
+def name_index(texts: dict[str, str]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """ONE PASS PER FILE, then set lookups. The first closure ran the `mentions`
+    regex for every (file, frontier) pair and took over ten minutes to classify 80
+    commits, which is not a thing CI can afford on every pull request.
+
+    Two maps from a name to the files that carry it: whole tokens (`converge.sh`,
+    never `test-converge.sh` or `converge.sh.bak`, which are different tokens) and
+    dot-pieces (`loops_path` out of `loops_path.resolve`), because Python reaches
+    a module by its stem."""
+    whole, pieces = {}, {}
+    for path, text in texts.items():
+        for tok in set(_TOKEN_RE.findall(text)):
+            tok = tok.rstrip(".-")
+            whole.setdefault(tok, set()).add(path)
+            for piece in tok.split("."):
+                pieces.setdefault(piece, set()).add(path)
+    return whole, pieces
+
+
+def files_naming(path: str, index: tuple[dict, dict]) -> set[str]:
+    whole, pieces = index
+    p = Path(path)
+    found = set(whole.get(p.name, ()))
+    if p.suffix == ".py" and len(p.stem) >= 5:
+        found |= pieces.get(p.stem, set())
+    return found
+
+
+def dependents(path: str, index: tuple[dict, dict]) -> list[str]:
+    """The code files that use <path>: ONE step out, always.
+
+    Depth is a measured choice, not a default. On the last 80 commits of main
+    (classifier only, 2026-09-19), against 236 declared tests:
+      one step, only when nothing names the file   57 selected runs   <- round 1, and
+                                                    it skipped a real downstream test
+      one step, always                             45 selected runs   <- this
+      the full transitive walk                     30 selected runs
+    A few hub scripts (the worker, the dispatcher, converge) use almost everything
+    and are used by almost everything, so the transitive walk reaches the width cap
+    on most changes and IS the full suite. One step closes the case the review
+    named, a lib with its own test plus a caller whose test breaks with it. A break
+    two steps out is caught by the full run on the push to main."""
+    return sorted(c for c in files_naming(path, index) if c != path)
+
+
 def third_party_imports(diff_text: str, local_stems: set[str]) -> list[str]:
     """New imports in APP code only. A test file importing pytest is not a new
     dependency of the product: CI already installs it, and 9 of the last 40
@@ -219,6 +273,8 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
         escalators.append(f"new third-party import: {mod}")
 
     patterns = {t: enumeration_patterns(text) for t, text in declared.items()}
+    live = name_index({c: executable_text(text) for c, text in code_texts.items()}) if code_texts else ({}, {})
+    test_index = name_index(declared) if declared else ({}, {})
     for path, _ in changed:
         if path in declared or path in (fragments or {}) or machinery_reason(path):
             continue        # handled above: a test runs itself, a fragment runs its test
@@ -249,17 +305,19 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
                 escalators.append(f"{path} is a fixture or data file no declared test names or enumerates")
             selected |= direct
             continue
+        # THE CALLERS' TESTS RUN TOO, WHETHER OR NOT THE FILE HAS ITS OWN (codex, PR
+        # #377 round 2). The second cut looked one step out only when nothing named
+        # the file directly, so a lib with its own unit test never reached the test
+        # of the script that sources it. See `dependents` for why one step.
+        #
+        # An edge is a mention on a line that EXECUTES. This repo's scripts carry
+        # long why-comments naming other scripts by their scars; a script that
+        # only talks about another script does not run it.
         hop = set()
-        # ONE HOP, AND ONLY WHEN NOTHING NAMES THE FILE DIRECTLY. It exists for a
-        # sourced lib whose only tests are the tests of the scripts that source
-        # it. Taken unconditionally it walked through linear-worker.sh and
-        # friends and selected 100+ tests for a 30-line change, which is the
-        # suite under another name (measured, same 40 commits).
-        if is_code(path) and not direct:
-            for dep in (c for c, text in code_texts.items() if c != path and mentions(text, path)):
-                hop |= {t for t, text in declared.items() if mentions(text, dep)}
-            if not hop:
-                untested.append(path)
+        for dep in dependents(path, live):
+            hop |= files_naming(dep, test_index)
+        if not direct and not hop:
+            untested.append(path)
         selected |= direct | hop
 
     selected = {t for t in selected if t in declared}

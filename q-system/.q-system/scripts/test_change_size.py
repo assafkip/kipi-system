@@ -115,14 +115,32 @@ def test_a_sourced_lib_reaches_the_tests_of_the_script_that_sources_it(cs):
     case_hop(cs)
 
 
-def case_hop_only_when_nothing_names_it(cs):
+def case_callers_tests_run_even_when_the_file_has_its_own(cs):
+    # codex, PR #377 round 2: a lib with its OWN unit test, and a caller whose test
+    # breaks when the lib changes. Both run.
     declared = dict(DECLARED, **{"t/test-lib.sh": "source widget-lib.sh"})
     v = cs.plan([(LIB, 3)], declared, CODE)
-    assert v["selected_tests"] == ["t/test-lib.sh"]
+    assert v["selected_tests"] == sorted(["t/test-lib.sh", T_WIDGET])
 
 
-def test_the_hop_is_not_taken_when_a_test_names_the_file_directly(cs):
-    case_hop_only_when_nothing_names_it(cs)
+def test_a_lib_with_its_own_test_still_runs_its_callers_tests(cs):
+    case_callers_tests_run_even_when_the_file_has_its_own(cs)
+
+
+def case_comment_is_not_a_caller(cs):
+    code = {SCRIPT: "# scar: widget-lib.sh once ate the ledger\nrun", LIB: "helper() { :; }"}
+    v = cs.plan([(LIB, 3)], DECLARED, code)
+    assert v["selected_tests"] == [] and v["untested_by_name"] == [LIB]
+
+
+def test_a_comment_that_talks_about_a_script_is_not_a_caller(cs):
+    case_comment_is_not_a_caller(cs)
+
+
+def test_the_walk_stops_one_step_out(cs):
+    code = dict(CODE, **{"x/outer.sh": "bash widget.sh"})
+    declared = dict(DECLARED, **{"t/test-outer.sh": "bash outer.sh"})
+    assert cs.plan([(LIB, 3)], declared, code)["selected_tests"] == [T_WIDGET]
 
 
 def test_an_executable_nothing_names_is_said_out_loud_not_run_as_the_suite(cs):
@@ -301,7 +319,8 @@ def test_an_unreadable_diff_or_a_change_to_the_gate_runs_everything(gate, repo):
 CS_MUTANTS = [
     ("the machinery escalator", "        if why:\n            escalators.append(why)", "        if False:\n            escalators.append(why)", case_escalator_beats_line_count),
     ("imports scoped to app code", 'if line.startswith("+++") or is_test_path(current):', 'if line.startswith("+++"):', case_import_scoping),
-    ("the hop only when nothing names the file", "if is_code(path) and not direct:", "if is_code(path):", None),
+    ("a comment is not an edge", 'if not l.lstrip().startswith("#"))', "if True)", case_comment_is_not_a_caller),
+    ("the callers' tests run", "        for dep in dependents(path, live):", "        for dep in []:", None),
     ("a fixture is matched before it is skipped", "            if is_test_path(path):\n                direct |=", "            if False:\n                direct |=", case_fixture_reaches_its_owner),
     ("an enumerating test owns what it globs", "direct |= {t for t, pats in patterns.items() if any(pattern_matches(p, path) for p in pats)}", "pass", case_enumerated_input_reaches_its_scanner),
     ("unowned data resolves upward", "if not direct and not path.endswith(DOC_SUFFIXES):", "if False:", case_unowned_data_runs_everything),
@@ -311,10 +330,7 @@ CS_MUTANTS = [
 
 
 def case_hop_mutant(cs):
-    # With the hop taken unconditionally a directly-named lib ALSO drags in the
-    # tests of everything that sources it.
-    declared = dict(DECLARED, **{"t/test-lib.sh": "source widget-lib.sh"})
-    assert cs.plan([(LIB, 3)], declared, CODE)["selected_tests"] == ["t/test-lib.sh"]
+    case_callers_tests_run_even_when_the_file_has_its_own(cs)
 
 
 @pytest.mark.parametrize("label,old,new,case", CS_MUTANTS, ids=[m[0] for m in CS_MUTANTS])
