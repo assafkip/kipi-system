@@ -994,15 +994,12 @@ def phase_1():
     # instance-registry): ai-index-2026-comparison (fleet analysis), fleet-map
     # (fleet inventory), decisions (decision log).
     exclude_files = {"PHASE-0-AUDIT", "EXECUTION-PLAN", "validate-separation", "instance-registry", "lessons-validator", "lessons_scrub", "lessons-scrub", "ai-index-2026-comparison", "fleet-map", "decisions",
-                     "tripwire-terms",  # the push tripwire's roster holds the terms it blocks, by design (kipi-push-upstream.sh, PRD B)
-                     # One CAPTURED fixture, not a live path. dc_fixtures.load() refuses any
-                     # fixture whose content sha differs from the one recorded at capture, so
-                     # rewriting the detector's own output header is exactly what the capture
-                     # contract exists to prevent. The six sibling exemplar fixtures carry the
-                     # path in the MUTABLE provenance fields instead, and those were relativized
-                     # to ~/ rather than excluded. Narrow by filename on purpose: a future
-                     # fixture is swept unless it is named here with its own reason.
-                     "impeccable-receipt"}
+                     "tripwire-terms"}  # the push tripwire's roster holds the terms it blocks, by design (kipi-push-upstream.sh, PRD B)
+    # impeccable-receipt.json was excluded here for one round, on the argument that the capture
+    # contract forbids editing a frozen fixture. That was the wrong trade: the exclusion shipped an
+    # absolute home path to a PUBLIC repo and to every instance via kipi update (PR #374 review
+    # round 6). dc_fixtures now carries an explicit redaction instead -- the fixture records what
+    # was changed and the pre-redaction sha, so the sweep stays armed over it.
     exclude_dirs = {"output", ".obsidian", "memory"}
     for root, dirs, files in os.walk(q_system_dir):
         dirs[:] = [d for d in dirs if d not in exclude_dirs]

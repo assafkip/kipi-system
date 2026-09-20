@@ -54,6 +54,20 @@ def load(name: str) -> dict:
     if prov.get("content_sha256") != got:
         raise NotCaptured(f"{path.name} content was edited after capture (sha {got[:12]} is not the "
                           f"recorded {str(prov.get('content_sha256'))[:12]})")
+    # A REDACTED fixture is one whose captured bytes could not ship as captured: this repo is
+    # public and one producer writes its own absolute path into its output, which the skeleton
+    # sweep refuses. Redacting is allowed and excluding the file from the sweep is not (PR #374
+    # review round 6, minor), but a redaction must not become a way to launder an ordinary edit.
+    # So it has to say what it changed AND keep the pre-redaction sha, or it is not a redaction,
+    # it is an edit with a nicer word on it.
+    if prov.get("redactions") is not None:
+        if not (isinstance(prov["redactions"], list) and prov["redactions"]
+                and all(isinstance(r, str) and r.strip() for r in prov["redactions"])):
+            raise NotCaptured(f"{path.name} claims redactions but does not say what they were")
+        if not (isinstance(prov.get("captured_content_sha256"), str)
+                and prov["captured_content_sha256"].strip()):
+            raise NotCaptured(f"{path.name} was redacted without recording captured_content_sha256, "
+                              f"so what the producer actually wrote can no longer be checked")
     return doc
 
 
