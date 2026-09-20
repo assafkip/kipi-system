@@ -408,3 +408,49 @@ def test_a_trailing_period_still_matches(linter):
     no-hit, the narrowing has eaten a real case."""
     assert _words(post_repair.mid_sentence_cap_hits(
         "the labels move and then rebuild, and so does The.", linter)) == ["The"]
+
+
+TITLE_CASE_TAILS = [
+    # The FINAL in-set word of a title-case heading. Nothing capitalized follows it, so
+    # the forward half of constraint 3 sees nothing, and constraint 2 is satisfied
+    # because the previous word ENDS in a lowercase letter.
+    "## The Dedup Key The Rest",
+    "## Recon Before Edit The Rule",
+    "| Column | The Value |",
+]
+
+
+@pytest.mark.parametrize("text", TITLE_CASE_TAILS)
+def test_the_tail_of_a_title_case_run_is_left_alone(text, linter):
+    """PR #395 round 4, major. Constraint 3 only looked FORWARD, so the last in-set word
+    of a title-case heading was lowercased, and it fires on this repo's own prose. A
+    capital immediately before is the same title-case evidence as a capital after."""
+    assert post_repair.mid_sentence_cap_hits(text, linter) == [], text
+    assert post_repair.repair_mid_sentence_caps(text, linter) == (text, [])
+
+
+def test_the_backward_guard_does_not_eat_a_sentence_start(linter):
+    """The narrowing that keeps the backward guard from costing a real defect.
+
+    The round-4 review asserted a preceding-capital test "excludes none of the ten
+    caught defects". It does not: run3-b is "It's That the agent cannot tell the two
+    apart", and "It's" is capitalized, so the naive guard suppressed it and the rate
+    went 10 -> 9. A capital that OPENS a sentence is a sentence start, not title-case
+    evidence. Measured before believing the claim, which is the whole point.
+
+    This is the negative self-test for the guard above: if it ever reads as a no-hit,
+    the backward half has stopped being a narrowing and started eating real defects."""
+    assert _words(post_repair.mid_sentence_cap_hits(
+        "It's That the agent cannot tell the two apart.", linter)) == ["That"]
+    assert _words(post_repair.mid_sentence_cap_hits(
+        "It broke badly. That was the whole problem, and The chart moved.",
+        linter)) == ["The"]
+
+
+def test_the_backward_guard_is_load_bearing(linter):
+    """The paired positive: the SAME heading with a lowercase preceding word IS caught,
+    so the guard is a narrowing rather than a blanket refusal of every heading."""
+    assert _words(post_repair.mid_sentence_cap_hits(
+        "## the dedup key The Rest", linter)) == []      # forward half catches this one
+    assert _words(post_repair.mid_sentence_cap_hits(
+        "## the dedup key The rest", linter)) == ["The"]

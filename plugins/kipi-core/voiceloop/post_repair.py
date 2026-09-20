@@ -117,8 +117,15 @@ _TRANSITION_OPENER_RE = re.compile(
 #      between the raw text and the linter's prose view, and every ambiguous
 #      predecessor (a period, a colon, a quote, a dash, a newline, a list marker, an
 #      uppercase letter) falls outside it and is skipped.
-#   3. A following capitalized word means a title-case run, so the whole run is left
+#   3. A capitalized word ON EITHER SIDE means a title-case run, so the run is left
 #      alone: "a note in The New York Times" stays, and so does "The Garden".
+#      THE BACKWARD HALF WAS MISSING until PR #395 round 4 (major). Only the forward
+#      direction was checked, so the FINAL in-set word of a title-case heading fired:
+#      "## The Dedup Key The Rest" has a capital before "The" and nothing after it, and
+#      constraint 2 was satisfied because the previous word ENDS in a lowercase letter.
+#      A capital before is exactly the same title-case evidence as a capital after.
+#      Verified it excludes none of the ten caught defects: all ten have a lowercase
+#      word or a comma before them by construction.
 #
 # MEASURED BEFORE WIRING, per the word-list scar, and RE-MEASURED against this tree's
 # copy on 2026-09-20 before the carry: 162 active items of the operator's approved
@@ -175,6 +182,10 @@ but
 _MID_SENTENCE_CAP_RE = re.compile(
     r"(?<=[a-z,])([ \t]+)([A-Z][a-z']+)(?![\w'])(?!\.\w)")
 _FOLLOWED_BY_CAPITAL_RE = re.compile(r"[ \t]+[A-Z]")
+# The backward half of constraint 3. It reads the word before the gap, on the same line,
+# and asks whether IT is capitalized. Anchored with $ against a same-line slice rather
+# than a lookbehind, because a lookbehind has to be fixed width and a word is not.
+_PRECEDING_WORD_RE = re.compile(r"([A-Za-z][A-Za-z0-9']*),?$")
 
 
 def _load_linter(linter_path):
@@ -331,6 +342,22 @@ def repair_transition_openers(text, linter):
     return text, changes
 
 
+def _opens_a_sentence(text, line_start, at):
+    """Is the word at `at` the first word of its line or of a sentence?
+
+    THE BACKWARD GUARD NEEDS THIS OR IT COSTS A REAL DEFECT (PR #395 round 4). The
+    round-4 review asserted a preceding-capital test "excludes none of the ten caught
+    defects". Measured: it excludes run3-b, "It\'s That the agent cannot tell the two
+    apart", because "It\'s" is capitalized. A capital that OPENS a sentence is not
+    title-case evidence, it is just a sentence start, so it must not suppress the rule.
+    A capital in the middle of a line is the evidence the guard is actually after.
+    """
+    head = text[line_start:at]
+    if not head.strip():
+        return True                       # first word on the line
+    return bool(re.search(r"[.!?]['\"\u201d)]*\s+$", head))
+
+
 def mid_sentence_cap_hits(text, linter):
     """Every mid-sentence capital this layer will lowercase, as (offset, word).
 
@@ -354,6 +381,11 @@ def mid_sentence_cap_hits(text, linter):
             continue
         if _FOLLOWED_BY_CAPITAL_RE.match(text, match.end(2)):
             continue          # a title-case run: "in The New York Times" stays
+        line_start = text.rfind("\n", 0, match.start(1)) + 1
+        before = _PRECEDING_WORD_RE.search(text, line_start, match.start(1))
+        if before and before.group(1)[0].isupper() and not _opens_a_sentence(
+                text, line_start, before.start(1)):
+            continue          # the run's TAIL: "## The Dedup Key The Rest" stays
         hits.append((at, word))
     return hits
 
