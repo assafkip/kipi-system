@@ -410,21 +410,30 @@ def test_a_trailing_period_still_matches(linter):
         "the labels move and then rebuild, and so does The.", linter)) == ["The"]
 
 
+# EVERY ENTRY HERE IS VERIFIED TO NEED THE BACKWARD HALF, and the first draft of this
+# list was not. It read "## The Dedup Key The Rest", "## Recon Before Edit The Rule" and
+# "| Column | The Value |" -- and all three have a CAPITALIZED word after the in-set
+# word too, so the forward half already caught them. Deleting the whole backward guard
+# left the suite green (mutation M10 SURVIVED). A guard whose fixtures are all covered
+# by a different guard is decoration, and a mutation run is what said so.
+#
+# Each line below is followed by a LOWERCASE word or nothing, so the forward half is
+# blind and only the backward half can hold it.
 TITLE_CASE_TAILS = [
-    # The FINAL in-set word of a title-case heading. Nothing capitalized follows it, so
-    # the forward half of constraint 3 sees nothing, and constraint 2 is satisfied
-    # because the previous word ENDS in a lowercase letter.
-    "## The Dedup Key The Rest",
-    "## Recon Before Edit The Rule",
-    "| Column | The Value |",
+    "## The Dedup Key The rest",
+    "## The Dedup Key The",
+    "## Recon Before Edit The rule",
+    "the Single Writer Chokepoint The rule",
 ]
 
 
 @pytest.mark.parametrize("text", TITLE_CASE_TAILS)
 def test_the_tail_of_a_title_case_run_is_left_alone(text, linter):
     """PR #395 round 4, major. Constraint 3 only looked FORWARD, so the last in-set word
-    of a title-case heading was lowercased, and it fires on this repo's own prose. A
-    capital immediately before is the same title-case evidence as a capital after."""
+    of a title-case run was lowercased, and it fires on this repo's own prose. A capital
+    immediately before is the same title-case evidence as a capital after.
+
+    Verified load-bearing: delete the backward guard and all four of these go red."""
     assert post_repair.mid_sentence_cap_hits(text, linter) == [], text
     assert post_repair.repair_mid_sentence_caps(text, linter) == (text, [])
 
