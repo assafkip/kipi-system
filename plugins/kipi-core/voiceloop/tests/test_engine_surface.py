@@ -582,7 +582,24 @@ def _engine_boundary():
             return (f.id, None)
         return None
 
-    sites, direct, gated = {}, {}, {}
+    # WHICH NAMES HOLD A CHECKED DICT. `optional = _gated(...)` and
+    # `prov_optional = _gated(...)`. Anything else unpacked at a call site has
+    # NOT met `_accepts`, so it is a route around the guard.
+    #
+    # This reader saw only NAMED kwargs until round 7 (reviewer minor, 2026-09-20):
+    # `callee(..., **some_other_dict)` contributed nothing to `direct`, reached the
+    # injected callee unchecked, and left the suite green while the docstring
+    # claimed no route was uncovered. That is this PR's own defect class relocated
+    # into its replacement, which is precisely the move the RCA is about, so it is
+    # closed here rather than captured.
+    checked = {t.id for a_ in ast.walk(run) if isinstance(a_, ast.Assign)
+               for t in a_.targets
+               if isinstance(t, ast.Name)
+               and isinstance(a_.value, ast.Call)
+               and isinstance(a_.value.func, ast.Name)
+               and a_.value.func.id == "_gated"}
+
+    sites, direct, gated, unpacks = {}, {}, {}, {}
     for n in ast.walk(run):
         if not isinstance(n, ast.Call):
             continue
@@ -598,7 +615,22 @@ def _engine_boundary():
             continue
         sites[k] = sites.get(k, 0) + 1
         direct.setdefault(k, set()).update(kw.arg for kw in n.keywords if kw.arg)
-    return sites, direct, gated
+        for kw in n.keywords:
+            if kw.arg is not None:
+                continue
+            # A `**` unpack. Safe ONLY if it is a dict `_gated` built, or a
+            # direct `_gated(...)` call. Anything else is unchecked.
+            v = kw.value
+            direct_gated_call = (isinstance(v, ast.Call)
+                                 and isinstance(v.func, ast.Name)
+                                 and v.func.id == "_gated")
+            if isinstance(v, ast.Name) and v.id in checked:
+                continue
+            if direct_gated_call:
+                continue
+            unpacks.setdefault(k, set()).add(
+                f"line {n.lineno}: **{ast.unparse(v)}")
+    return sites, direct, gated, unpacks
 
 
 class _Verdict:
@@ -663,7 +695,7 @@ def _drive(omit_key=None, omit_kwarg=None):
     import types
     from voiceloop import gate_and_judge as gj
 
-    sites, direct, gated = _engine_boundary()
+    sites, direct, gated, _unpacks = _engine_boundary()
     calls, state, built = [], {}, {}
     for key in sites:
         accepted = set(direct.get(key, ())) | set(gated.get(key, ()))
@@ -702,7 +734,7 @@ def test_every_injected_callee_is_driven_and_every_call_site_is_reached():
     docstring claimed coverage it did not have. So before any conclusion is drawn
     from the drives below, this proves each AST call site actually executed.
     """
-    sites, _direct, _gated = _engine_boundary()
+    sites, _direct, _gated, _unpacks = _engine_boundary()
     assert set(_RETURNS) == set(sites), (
         "an injected callee has no fixture, so the driver would skip it and the "
         "table below would read as full coverage:\n"
@@ -724,12 +756,15 @@ def test_no_engine_added_kwarg_reaches_an_INJECTED_callable_unguarded():
     That one graded against `{"recent_openers", "path"}`, so a kwarg nobody had
     written yet was unlisted and therefore fine. Here, unlisted is an offender.
     """
-    _sites, direct, _gated = _engine_boundary()
+    _sites, direct, _gated, unpacks = _engine_boundary()
     offenders = []
     for key, kwargs in sorted(direct.items()):
         extra = sorted(set(kwargs) - _BASE_CONTRACT.get(key, set()))
         if extra:
             offenders.append(f"{key[0]}.{key[1] or ''}: {extra}")
+    for key, where in sorted(unpacks.items()):
+        for site in sorted(where):
+            offenders.append(f"{key[0]}.{key[1] or ''}: {site} (unchecked dict)")
     assert not offenders, (
         "these kwargs reach an INJECTED callable directly. The callee lives in "
         "the instance and upgrades independently, so one that predates the "
@@ -747,7 +782,7 @@ def test_each_gated_kwarg_really_degrades_on_an_older_callee():
     it. If the engine sends it anyway, the fixture raises the real TypeError and
     this fails NAMING the kwarg and the callee.
     """
-    _sites, _direct, gated = _engine_boundary()
+    _sites, _direct, gated, _unpacks = _engine_boundary()
     assert gated, (
         "no gated kwarg was discovered. Either the engine stopped using `_gated` "
         "or this reader has gone blind; both make the drives below vacuous.")
