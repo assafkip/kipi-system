@@ -51,8 +51,9 @@ it yet.
 
 `q-system/.q-system/scripts/instrument-lint.py`, PostToolUse on Write/Edit in
 BOTH `.claude/settings.json` and `settings-template.json`, so the fleet sync
-ships the switch and not only the script. Scope: `**/investigation/findings/*.md`
-and `**/output/analyses/**/*.md`; every other path exits 0 on the first check.
+ships the switch and not only the script. Scope, WIDENED 2026-09-21: any `.md`
+under `/investigation/findings/`, `/output/analyses/`, or any `/output/`
+directory. Every other path still exits 0 on the first check.
 
 It blocks a file that reports a NULL-SHAPED claim (`0 of`, `Zero of`, `none
 found`, `no evidence of`, `returned nothing`, `zero matches`) and carries no
@@ -61,13 +62,58 @@ control`, `Known-answer case` or `Calibration`. A label, never bare prose, and
 anchored, so `## Command and control (C2)` does not satisfy it. A zero in a
 table cell is a value, not a claim, and is not matched.
 
-A file is exempt when a date anywhere in its path is before 2026-09-04, else
-when git first saw it before that date. Measured over every path in
+A file is exempt when the date in its BASENAME is before ITS SCOPE's cutoff,
+else when git most recently added it before that date. A directory date never
+counts. Each scope carries its own cutoff, set on the day that scope was added,
+and where two scopes overlap the EARLIEST wins, so a widening can only add files
+and can never quietly exempt one the older scope already covered. Original two
+scopes, cutoff 2026-09-04, measured over every path in
 `instance-registry.json` before it shipped: 246 in-scope files, 36 with an
 uncontrolled null claim, 0 red after the exemption. The first measurement ran
 over a directory that does not exist and reported zero in-scope files, which
 was read as clean: scar shape 5, committed while building this. Bypass per
 file: `instrument-lint-skip`. Engine test: `test_instrument_lint.py`.
+## Why it guards `/output/` now, and what it refused (measured 2026-09-21)
+
+The first cut guarded two directories. That is this rule's own failure wearing
+this rule's clothes: the mechanism was scoped to the room it was built in. Three
+wrong numbers reported on 2026-09-20 were every one null-shaped and every one
+written outside those two directories. Blast radius measured with the CURRENT
+logic BEFORE the tuple moved, over every path in `instance-registry.json`:
+
+| candidate | `.md` files | uncontrolled null claim | red under a 2026-09-21 cutoff |
+|---|---|---|---|
+| `/output/` (picked) | 7697 | 522 | 3 |
+| `/output/rca/` | 381 | 68 | 0 |
+| `/output/plans/` | 2775 | 96 | 0 |
+| `/investigation/` | 5287 | 149 | 37 (refused) |
+| `/memory/` | 614 | 10 here, 12 in auto-memory | 12 (refused) |
+
+`/output/` is the widest candidate that is nearly green, so it took the whole
+directory rather than the two subdirectories that were proposed. The three still
+red are dated after the cutoff or are untracked AND undated, so no exemption can
+reach them; they block on their next edit and that is the gate working.
+
+**Refused, with the number as the reason, not an opinion.** `/investigation/`
+keeps 37 red under any cutoff: they are scraped evidence `content.md` files
+("OCR ... returned 0 characters"), undated and untracked, so the exemption
+structurally cannot fire and they stay red forever. `/investigation/findings/`
+remains in scope, which is the half of investigation that reports rather than
+captures. `/memory/` is refused because the path fragment cannot tell an
+instance `memory/` (0 red) from `~/.claude/projects/*/memory/` (12 red, also
+undated and untracked), and that is the highest-traffic write path in the
+system. A gate red on its own population on day one gets switched off, and a
+gate that is off protects nothing.
+
+**One half of the widening did not land and is not pretended to have.** This
+file's `paths:` frontmatter still names `**/output/analyses/**`, not `**/output/**`,
+because `apply_claude_changes.py` refuses ANY frontmatter change by ANY op: the
+keys that decide whether a rule loads are out of that tool's reach by design. So
+the GATE fires on every `/output/` write fleet-wide while this INSTRUCTION still
+loads only on the older paths. The gate's stderr carries the full fix, so a
+blocked write teaches without the rule in context. Widening the frontmatter is a
+separate change through a different door.
+
 
 ## What is NOT enforced (say it, do not hide it)
 
@@ -81,9 +127,21 @@ file: `instrument-lint-skip`. Engine test: `test_instrument_lint.py`.
   paths-scoped rule never loads there, so the fixture measured the un-ruled
   model. Captured as spillover; until the harness can seed a matching path, the
   judgment half is stated, not measured.
-- A null result reported in chat and never written to a file is invisible to a
-  PostToolUse hook, the same blindness `plan-lint.py` states for a plan that was
-  skipped.
+- **A null result reported in chat and never written to a file is invisible, and
+  a wider scope does not narrow that hole by one inch.** Read the 2026-09-21
+  widening exactly as narrow as it is: it covers more FILES, never more CLAIMS.
+  This is where most of 2026-09-20's wrong numbers lived. "6 gates wired, 100%
+  have a red case" (a regex that could not resolve 60 of 62 paths), "0 of 0
+  known-need files ranked" (a control set that resolved empty while the script
+  printed a ranking header and exited 0), and a Jev run whose 61 calls all
+  returned HTTP 422 while the script printed clean empty results and exited 0
+  were every one SAID OUT LOUD, and two of the three never reached a file at
+  all. A PostToolUse hook sees the file that was written, never the claim that
+  was spoken, the same blindness `plan-lint.py` states for a plan that was
+  skipped. What catches a spoken zero is the one move above, and it is judgment.
+- **An undated AND untracked file can never be exempt.** That is the price of a
+  self-maintaining exemption over a hand-kept list, and it is why the widened
+  scope left 3 files red rather than 0.
 
 ## The tell
 
@@ -107,8 +165,8 @@ believing the aggregate.
     "exec": "q-system/.q-system/scripts/instrument-lint.py",
     "config": ".claude/settings.json",
     "test": "q-system/.q-system/scripts/test_instrument_lint.py",
-    "note": "ENFORCED covers the null-claim label check only (shapes 2 and 5). Shapes 1, 3, 4 are judgment with no measurement today: skill-trigger-eval.py cannot load a paths-scoped rule (spillover captured).",
-    "directives": 9
+    "note": "ENFORCED covers the null-claim label check only (shapes 2 and 5), and only on FILES. Shapes 1, 3, 4 are judgment with no measurement today: skill-trigger-eval.py cannot load a paths-scoped rule (spillover captured). Scope widened 2026-09-21 from two directories to any /output/ directory, measured at 3 of 7697 red before the change; /investigation/ (37 red, unexemptable) and /memory/ (12 red in auto-memory) were refused on their own numbers. The paths: frontmatter was NOT widened, because apply_claude_changes.py refuses every frontmatter change by design. A claim spoken and never written stays invisible at any scope.",
+    "directives": 15
   }
 ]
 ```

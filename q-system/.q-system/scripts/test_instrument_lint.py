@@ -11,6 +11,13 @@ decoration. Second red-making input: the same file with the word "control" in a
 prose sentence and no label. That one MUST still block, or the label rule is
 theater.
 
+Third red-making input, added with the 2026-09-21 widening: the same
+uncontrolled body written into `output/rca/`, `output/plans/` and a bare
+`output/`, each dated after that scope's cutoff. Each must BLOCK, the labelled
+twin must pass, and reverting SCOPES to the pre-widening pair must take all
+three out of scope -- the mutation is what proves the new cases are bound to the
+tuple rather than passing for some unrelated reason.
+
 Run: python3 q-system/.q-system/scripts/test_instrument_lint.py
 """
 from __future__ import annotations
@@ -215,10 +222,55 @@ def main() -> int:
           True)
     check("analyses path in scope",
           IL.in_scope("/a/output/analyses/premortem-2026-09-05/X.md"), True)
-    check("plans path is refused by the scope test",
-          IL.in_scope("/a/q-system/output/plans/x-2026-09-05.md"), False)
     check("non-md in findings is refused by the scope test",
           IL.in_scope("/a/investigation/findings/data.json"), False)
+
+    # --- the 2026-09-21 widening -------------------------------------------
+    # Every directory added, and every candidate the measurement refused. The
+    # numbers behind each refusal are in SCOPES; these are the contract.
+    check("plans path is IN scope (widened 2026-09-21)",
+          IL.in_scope("/a/q-system/output/plans/x-2026-09-25.md"), True)
+    check("rca path is IN scope",
+          IL.in_scope("/a/q-system/output/rca/rca-x-2026-09-25.md"), True)
+    check("a bare output/ file is IN scope",
+          IL.in_scope("/a/q-consult/output/HANDOFF-x-2026-09-25.md"), True)
+    check("memory/ is OUT of scope (12 red in auto-memory, unexemptable)",
+          IL.in_scope("/a/q-system/memory/last-handoff.md"), False)
+    check("investigation evidence is OUT of scope (37 red, unexemptable)",
+          IL.in_scope("/a/investigation/evidence/items/EV-0001-x/content.md"), False)
+
+    # The widening must ADD, never RELAX. An analyses file sits under /output/
+    # too; if the widest scope's later cutoff won, every analyses file written
+    # between 2026-09-04 and 2026-09-21 would have gone quietly exempt.
+    check("strictest cutoff wins where scopes overlap",
+          IL.scope_cutoff("/a/output/analyses/x-2026-09-10.md"), "2026-09-04")
+    check("an analyses file after the OLD cutoff still blocks",
+          bool(IL.violations("/a/output/analyses/x-2026-09-10.md", NULL_NO_CONTROL,
+                             None, IL.scope_cutoff("/a/output/analyses/x-2026-09-10.md"))),
+          True)
+    check("a new scope grandfathers its own inherited population",
+          bool(IL.violations("/a/output/rca/rca-x-2026-09-15.md", NULL_NO_CONTROL,
+                             None, IL.scope_cutoff("/a/output/rca/rca-x-2026-09-15.md"))),
+          False)
+
+    # BOUND to SCOPES, not passing for some other reason. Mutate the tuple back
+    # to the pre-widening pair and every new case above must fall out of scope
+    # (lesson derive-a-value-from-its-owner: verify the derivation is bound by
+    # mutating the source of truth, never by reading agreement).
+    WIDE = IL.SCOPES
+    try:
+        IL.SCOPES = (("/investigation/findings/", "2026-09-04"),
+                     ("/output/analyses/", "2026-09-04"))
+        for pathspec in ("/a/q-system/output/plans/x-2026-09-25.md",
+                         "/a/q-system/output/rca/rca-x-2026-09-25.md",
+                         "/a/q-consult/output/HANDOFF-x-2026-09-25.md"):
+            check(f"mutation: out of scope with the old tuple: {pathspec}",
+                  IL.in_scope(pathspec), False)
+        check("mutation: the two original scopes survive the revert",
+              IL.in_scope("/a/investigation/findings/F-2026-09-05.md"), True)
+    finally:
+        IL.SCOPES = WIDE
+    check("SCOPES restored after the mutation", IL.SCOPES, WIDE)
 
     # --- end-to-end through the hook contract ---------------------------------
     with tempfile.TemporaryDirectory() as td:
@@ -254,6 +306,50 @@ def main() -> int:
         outside = Path(td) / "notes-2026-09-06.md"
         outside.write_text(NULL_NO_CONTROL, encoding="utf-8")
         check("hook ignores a path the scope test refuses", run_hook(outside)[0], 0)
+
+    # --- end to end through the hook, per newly covered directory -------------
+    # red first: the uncontrolled body must BLOCK in each new directory before
+    # the same body with a label is allowed to prove anything.
+    with tempfile.TemporaryDirectory() as td:
+        for sub in ("output/rca", "output/plans", "output", "output/analyses"):
+            d = Path(td) / sub
+            d.mkdir(parents=True, exist_ok=True)
+
+            bad = d / "x-2026-09-25.md"
+            bad.write_text(NULL_NO_CONTROL, encoding="utf-8")
+            rc, err = run_hook(bad)
+            check(f"hook blocks an uncontrolled null claim in {sub}/", rc, 2)
+            check(f"stderr quotes the line in {sub}/", "0 of 40" in err, True)
+
+            good = d / "y-2026-09-25.md"
+            good.write_text(NULL_WITH_LABEL, encoding="utf-8")
+            check(f"hook passes the controlled claim in {sub}/", run_hook(good)[0], 0)
+
+        # the exemptions, per scope, at the boundary
+        pre = Path(td) / "output" / "rca" / "rca-old-2026-09-20.md"
+        pre.write_text(NULL_NO_CONTROL, encoding="utf-8")
+        check("hook passes an output/ file dated before the widened cutoff",
+              run_hook(pre)[0], 0)
+        onday = Path(td) / "output" / "rca" / "rca-onday-2026-09-21.md"
+        onday.write_text(NULL_NO_CONTROL, encoding="utf-8")
+        check("hook blocks an output/ file dated ON the widened cutoff",
+              run_hook(onday)[0], 2)
+        # an analyses file between the two cutoffs must NOT be relaxed by the
+        # widening it is now nested inside
+        mid = Path(td) / "output" / "analyses" / "z-2026-09-10.md"
+        mid.write_text(NULL_NO_CONTROL, encoding="utf-8")
+        check("hook still blocks an analyses file dated between the cutoffs",
+              run_hook(mid)[0], 2)
+
+        # the refused candidates, end to end
+        for sub, name in (("memory", "last-handoff.md"),
+                          ("investigation/evidence/items/EV-0001-x", "content.md")):
+            d = Path(td) / sub
+            d.mkdir(parents=True, exist_ok=True)
+            f = d / name
+            f.write_text(NULL_NO_CONTROL, encoding="utf-8")
+            check(f"hook fast-exits on {sub}/{name} (refused candidate)",
+                  run_hook(f)[0], 0)
 
     # A missing / unreadable file and a malformed payload must never block.
     proc = subprocess.run([sys.executable, str(LINT)], input="not json",
