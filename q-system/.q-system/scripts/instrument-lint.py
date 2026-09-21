@@ -80,7 +80,11 @@ from pathlib import Path
 # WIDENED 2026-09-21. The first cut guarded two directories, which is the failure
 # this gate exists for wearing the gate's own clothes: the mechanism was scoped to
 # the room it was built in. Three wrong numbers reported on 2026-09-20 were every
-# one null-shaped and every one written outside those two directories.
+# one null-shaped, and the ONE of the three that reached a file landed outside
+# those two directories. The other two were spoken and never written, which no
+# file scope reaches; boundary 3 below is where that lives. Say it at that size:
+# the scope moved because a written null claim could land in a directory nobody
+# watched, never because widening a file scope could catch a spoken number.
 # Measured before the tuple moved, current logic, every path in
 # instance-registry.json (7697 .md files under an `/output/` anywhere):
 #   /output/           7697 files  522 uncontrolled   3 red under a 2026-09-21 cutoff
