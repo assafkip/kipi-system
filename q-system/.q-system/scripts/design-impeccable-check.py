@@ -180,12 +180,19 @@ def engine_of(output: str, target: str) -> str:
 # 2. DECIDED BY CANON. A rule that is a taste call, never a defect, can be answered by a
 #    canon decision, through design-chain.json `impeccable.canon`. Only rules in CANON_RULES
 #    qualify; each entry names the EXACT finding text (so a different single font still
-#    flags), an owner file the config already lists (so the seal holds and binds it), and an
-#    anchor that must match a live line of that owner. The anchor stops matching, the finding
-#    stands. Contrast, gradient text and the AI palette are defects and can never be here.
+#    flags), an owner file the config already lists (so the seal holds and binds it), and a
+#    `decision`: LITERAL text that must appear on one line of that owner AND must itself read
+#    as the decision (a dated AGREED/DECIDED or RULE-id marker, the rule's subject word, and
+#    the very value the finding names). It was a caller-supplied regex until review of PR #403:
+#    `^#` matched a heading in a file with no typeface decision and the finding sealed. The
+#    text stops matching, the finding stands. Contrast, gradient text and the AI palette are
+#    defects and can never be here.
 # ---------------------------------------------------------------------------------------------
 REFUTABLE_METHOD = "analytic-gradient"
-CANON_RULES = frozenset({"single-font"})
+# rule -> (the finding's fixed prefix, whose remainder is the VALUE the decision must name;
+#          words one of which the decision must contain, so it is about this rule's subject)
+CANON_RULES = {"single-font": ("only font used is ", ("typeface", "font"))}
+DECISION_MARKER = re.compile(r"\b(?:AGREED|DECIDED) \d{4}-\d{2}-\d{2}\b|\bRULE-\d{4}-\d{2}-\d{2}-[A-Z]\b")
 FINDING_LINE = re.compile(r"^\s*\[([a-z0-9-]+)\]\s+(.*\S)\s*$")
 CONTRAST_DETAIL = re.compile(
     r'^browser contrast [\d.]+:1 median [\d.]+:1 \(need ([\d.]+):1\) via ([a-z, -]+?) "(.*)"$')
@@ -339,28 +346,36 @@ def canon_entries(cfg_path: Path | None) -> tuple[list[dict], list[str], str | N
     ok, not_ok = [], []
     for i, e in enumerate(entries):
         if not isinstance(e, dict) or not all(isinstance(e.get(k), str) and e[k].strip()
-                                             for k in ("rule", "finding", "owner", "anchor")):
-            return [], [], f"impeccable.canon[{i}] needs rule, finding, owner and anchor, each a string"
+                                             for k in ("rule", "finding", "owner", "decision")):
+            return [], [], f"impeccable.canon[{i}] needs rule, finding, owner and decision, each a string"
+        if "anchor" in e:
+            return [], [], (f"impeccable.canon[{i}] carries 'anchor'; a regex proved nothing (PR #403 "
+                            f"review), so the entry names its canon line as literal 'decision' text")
         if e["rule"] not in CANON_RULES:
             return [], [], (f"impeccable.canon[{i}] names rule {e['rule']!r}; only {sorted(CANON_RULES)} "
                             f"are taste calls a canon decision can answer")
         if e["owner"] not in owners:
             return [], [], (f"impeccable.canon[{i}] owner {e['owner']!r} is not one of the config's "
                             f"owners, so the seal would not hold it")
-        try:
-            anchor = re.compile(e["anchor"], re.M)
-        except re.error as err:
-            return [], [], f"impeccable.canon[{i}] anchor does not compile: {err}"
+        prefix, subject = CANON_RULES[e["rule"]]
+        value = e["finding"][len(prefix):].strip().lower() if e["finding"].startswith(prefix) else ""
+        dec = e["decision"].strip()
+        low = dec.lower()
+        why = ("its finding does not have the rule's shape" if not value else
+               "its decision has no dated AGREED/DECIDED or RULE-id marker" if not DECISION_MARKER.search(dec) else
+               f"its decision names none of {list(subject)}" if not any(w in low for w in subject) else
+               f"its decision does not name {value!r}, the value the finding reports" if value not in low else None)
+        if why:
+            return [], [], f"impeccable.canon[{i}]: {why}"
         try:
             src = (cfg_path.parent / e["owner"]).read_text()
         except OSError as err:
             not_ok.append(f"canon[{i}] {e['rule']}: owner unreadable ({err})")
             continue
-        m = anchor.search(src)
-        if not m:
-            not_ok.append(f"canon[{i}] {e['rule']}: anchor no longer matches {e['owner']}")
+        line_no = next((n for n, ln in enumerate(src.splitlines(), 1) if dec in ln), None)
+        if line_no is None:
+            not_ok.append(f"canon[{i}] {e['rule']}: its decision text is no longer in {e['owner']}")
             continue
-        line_no = src.count("\n", 0, m.start()) + 1
         ok.append({**e, "line": line_no, "quote": src.splitlines()[line_no - 1].strip()[:160]})
     return ok, not_ok, None
 

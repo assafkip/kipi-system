@@ -34,7 +34,7 @@ console.error(out + '\n1 anti-pattern found.'); process.exit(2);
 """
 FONT = "only font used is general sans"
 CANON_LINE = "**AGREED 2026-09-15: the typeface is General Sans** (free for commercial use)"
-ANCHOR = r"^\*\*AGREED 2026-09-15: the typeface is General Sans\*\*"
+DECISION = "AGREED 2026-09-15: the typeface is General Sans"
 
 
 def page(css_top: str) -> str:
@@ -67,7 +67,7 @@ class Base(unittest.TestCase):
         self.addCleanup(self.srv.close)
 
     def cfg(self, **entry):
-        e = {"rule": "single-font", "finding": FONT, "owner": "canon/site-design.md", "anchor": ANCHOR, **entry}
+        e = {"rule": "single-font", "finding": FONT, "owner": "canon/site-design.md", "decision": DECISION, **entry}
         p = self.tmp / "design-chain.json"
         p.write_text(json.dumps({"project": "t", "owners": [{"file": "canon/site-design.md", "anchors": []}],
                                  "impeccable": {"canon": [e]}}))
@@ -105,6 +105,27 @@ class TheCanonDoor(Base):
         rc, out, rec = self.run_script(f"[single-font] {FONT}", self.cfg())
         self.assertEqual(rc, 3, out)
         self.assertIn("NOT honoured", rec)
+
+    def test_an_unrelated_owner_line_cannot_answer_the_finding(self):
+        # PR #403 review (major): the regex '^#' matched a heading in a file with no typeface
+        # decision and the finding sealed. A line that exists but is not the decision refuses.
+        (self.tmp / "canon" / "site-design.md").write_text("# Deployment notes only\nNo typeface decision exists.\n")
+        for dec in ("# Deployment notes only", "No typeface decision exists."):
+            with self.subTest(decision=dec):
+                rc, out, _ = self.run_script(f"[single-font] {FONT}", self.cfg(decision=dec))
+                self.assertEqual(rc, 2, out)
+
+    def test_a_decision_about_another_typeface_cannot_answer_this_one(self):
+        (self.tmp / "canon" / "site-design.md").write_text("AGREED 2026-09-15: the typeface is Inter\n")
+        rc, out, _ = self.run_script(f"[single-font] {FONT}",
+                                     self.cfg(decision="AGREED 2026-09-15: the typeface is Inter"))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("general sans", out)
+
+    def test_a_regex_anchor_is_refused_outright(self):
+        rc, out, _ = self.run_script(f"[single-font] {FONT}", self.cfg(anchor="^#"))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("anchor", out)
 
     def test_a_defect_rule_can_never_be_answered_by_canon(self):
         for rule in ("low-contrast", "gradient-text", "ai-color-palette"):
