@@ -258,7 +258,14 @@ def main() -> int:
     except Exception:
         return 0
 
-    bad = violations(fp, body, path, scope_cutoff(fp))
+    # Resolved ONCE and reused, because the refusal QUOTES it. Printing the
+    # module CUTOFF here told an /output/ author to date the file before
+    # 2026-09-04 when 2026-09-21 is the date that would have exempted it: a
+    # refusal that names the wrong escape is worse than a terse one, and this
+    # gate's rule claims its stderr carries the whole fix (Codex reviewer,
+    # skeleton PR #398, sp-6c0496a4).
+    cutoff = scope_cutoff(fp) or CUTOFF
+    bad = violations(fp, body, path, cutoff)
     if not bad:
         return 0
 
@@ -273,7 +280,7 @@ def main() -> int:
         "    **Negative control:**      the input that MUST return zero, and did\n"
         "    **Known-answer case:**     the input that MUST hit, and did\n"
         "  The label is what this checks. Whether the control is real is on you.\n"
-        f"  Files dated before {CUTOFF} predate this gate and are exempt.\n"
+        f"  Files dated before {cutoff} predate THIS scope and are exempt.\n"
         f"  Deliberate exception: add `{SKIP_MARKER}` to the file.\n")
     return 2
 

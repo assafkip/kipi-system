@@ -311,6 +311,8 @@ def main() -> int:
     # red first: the uncontrolled body must BLOCK in each new directory before
     # the same body with a label is allowed to prove anything.
     with tempfile.TemporaryDirectory() as td:
+        findings = Path(td) / "investigation" / "findings"
+        findings.mkdir(parents=True, exist_ok=True)
         for sub in ("output/rca", "output/plans", "output", "output/analyses"):
             d = Path(td) / sub
             d.mkdir(parents=True, exist_ok=True)
@@ -324,6 +326,25 @@ def main() -> int:
             good = d / "y-2026-09-25.md"
             good.write_text(NULL_WITH_LABEL, encoding="utf-8")
             check(f"hook passes the controlled claim in {sub}/", run_hook(good)[0], 0)
+
+        # The refusal must name THIS scope's cutoff. Red-first input, named before
+        # the fix: an output/ file caught under the 2026-09-21 scope whose stderr
+        # quotes 2026-09-04 tells its author to beat a date that is not the one
+        # that would have exempted it (Codex reviewer, skeleton PR #398,
+        # sp-6c0496a4). Cosmetic in effect, misleading in practice, and the rule
+        # claims this stderr carries the whole fix.
+        scoped = Path(td) / "output" / "rca" / "rca-cutoff-2026-09-25.md"
+        scoped.write_text(NULL_NO_CONTROL, encoding="utf-8")
+        rc_s, err_s = run_hook(scoped)
+        check("output/ refusal blocks", rc_s, 2)
+        check("output/ refusal names the WIDENED cutoff", "2026-09-21" in err_s, True)
+        check("output/ refusal does NOT name the original cutoff",
+              "2026-09-04" in err_s, False)
+        findings_old = findings / "FINDING-cutoff-2026-09-25.md"
+        findings_old.write_text(NULL_NO_CONTROL, encoding="utf-8")
+        err_f = run_hook(findings_old)[1]
+        check("findings/ refusal still names the ORIGINAL cutoff",
+              "2026-09-04" in err_f, True)
 
         # the exemptions, per scope, at the boundary
         pre = Path(td) / "output" / "rca" / "rca-old-2026-09-20.md"

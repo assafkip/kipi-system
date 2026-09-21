@@ -77,8 +77,13 @@ file: `instrument-lint-skip`. Engine test: `test_instrument_lint.py`.
 
 The first cut guarded two directories. That is this rule's own failure wearing
 this rule's clothes: the mechanism was scoped to the room it was built in. Three
-wrong numbers reported on 2026-09-20 were every one null-shaped and every one
-written outside those two directories. Blast radius measured with the CURRENT
+wrong numbers reported on 2026-09-20 were every one null-shaped, and the one of
+the three that reached a FILE landed outside those two directories. The other two
+were spoken and never written, which this widening does not touch and the boundary
+section below states plainly. Read the claim at that size: the scope moved because
+a written null claim could land in a directory nobody was watching, not because
+widening a file scope could have caught a number said out loud. Blast radius
+measured with the CURRENT
 logic BEFORE the tuple moved, over every path in `instance-registry.json`:
 
 | candidate | `.md` files | uncontrolled null claim | red under a 2026-09-21 cutoff |
@@ -166,7 +171,7 @@ believing the aggregate.
     "config": ".claude/settings.json",
     "test": "q-system/.q-system/scripts/test_instrument_lint.py",
     "note": "ENFORCED covers the null-claim label check only (shapes 2 and 5), and only on FILES. Shapes 1, 3, 4 are judgment with no measurement today: skill-trigger-eval.py cannot load a paths-scoped rule (spillover captured). Scope widened 2026-09-21 from two directories to any /output/ directory, measured at 3 of 7697 red before the change; /investigation/ (37 red, unexemptable) and /memory/ (12 red in auto-memory) were refused on their own numbers. The paths: frontmatter was NOT widened, because apply_claude_changes.py refuses every frontmatter change by design. A claim spoken and never written stays invisible at any scope.",
-    "directives": 15
+    "directives": 16
   }
 ]
 ```
