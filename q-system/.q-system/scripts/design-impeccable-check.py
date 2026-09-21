@@ -215,8 +215,14 @@ _PROBE = r"""(want) => {
     if (norm(direct) !== want) continue;
     const r = el.getBoundingClientRect();
     if (r.width < 4 || r.height < 4) continue;
+    // a photo or icon inside the line is content, not what the words sit on (round 2026-09-21:
+    // the author photo in the signature read as a 1.48:1 background); only REPLACED content is
+    // skipped, a child's own background still counts
+    const skip = [...el.querySelectorAll('img,svg,video,canvas,picture,iframe')].map(k => {
+      const b = k.getBoundingClientRect();
+      return [b.left + scrollX - 1, b.top + scrollY - 1, b.right + scrollX + 1, b.bottom + scrollY + 1]; });
     out.push({x: r.left + scrollX, y: r.top + scrollY, w: r.width, h: r.height,
-              color: getComputedStyle(el).color});
+              color: getComputedStyle(el).color, skip});
   }
   return out;
 }"""
@@ -273,7 +279,9 @@ def pixel_contrast(url: str, text: str) -> tuple[list[tuple[str, float, int]], s
                         x0, y0 = int(bx["x"]) + 1, int(bx["y"]) + 1
                         x1 = min(shot.width, int(bx["x"] + bx["w"]) - 1)
                         y1 = min(shot.height, int(bx["y"] + bx["h"]) - 1)
-                        px = [shot.getpixel((x, y)) for x in range(max(0, x0), x1, 2) for y in range(max(0, y0), y1, 2)]
+                        inside = lambda x, y: any(k[0] <= x <= k[2] and k[1] <= y <= k[3] for k in bx["skip"])
+                        px = [shot.getpixel((x, y)) for x in range(max(0, x0), x1, 2)
+                              for y in range(max(0, y0), y1, 2) if not inside(x, y)]
                         if not px:
                             continue
                         n += 1
