@@ -1,9 +1,9 @@
 ---
 id: prd-morning-board-consulting-not-builds-2026-09-03
 title: Morning Board Consulting Not Builds
-status: idea
+status: archived
 created_at: 2026-09-03T21:11:34Z
-updated_at: 2026-09-03T21:11:34Z
+updated_at: 2026-09-18T19:53:01Z
 owner: assafkipnis
 reviewers: []
 findings_path: .prd-os/findings/prd-morning-board-consulting-not-builds-2026-09-03-findings.jsonl
