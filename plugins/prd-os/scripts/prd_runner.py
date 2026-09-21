@@ -1249,6 +1249,22 @@ def _reject_unrunnable_gate(command: str) -> None:
             f"  command: {cmd[:160]}")
 
 
+def _gate_protects(cfg: Config, issue_id: str) -> str:
+    """The property a gate defends, read from its owning issue spec's `title`.
+
+    Scar 2026-09-20 (ASK-1969): a gate row carried a command and ids only. Given
+    the ids, a judge could not say what the gate defends on 50 of 100 rows; the
+    spec title already says it, so it travels with the row. Empty when the spec
+    is absent or unreadable: the gate still registers, and readers print
+    "(not recorded)" rather than guessing."""
+    path = cfg.issues_dir / f"{issue_id}.md"
+    try:
+        title = _parse_frontmatter(path.read_text()).get("title", "")
+    except (OSError, ValueError):
+        return ""
+    return title.strip().strip("\"'").strip()
+
+
 def gate_register(
     cfg: Config,
     *,
@@ -1256,6 +1272,7 @@ def gate_register(
     issue_id: str,
     command: str,
     lifecycle: str = LEGACY_GATE_LIFECYCLE,
+    protects: str | None = None,
 ) -> dict:
     """Idempotent append: gate_id = <issue_id>-<sha256(command)[:8]>; an
     existing gate_id is a no-op. Single-line write + flush (atomic at line
@@ -1291,6 +1308,11 @@ def gate_register(
               "command": command,
               "lifecycle": lifecycle,
               "registered_at": _now_iso()}
+    # Not part of gate_id: the id stays issue_id + sha256(command), so adding this
+    # field re-registers nothing. Old rows lack it and every reader tolerates that.
+    protects = (protects if protects is not None else _gate_protects(cfg, issue_id)).strip()
+    if protects:
+        record["protects"] = protects
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as fh:
         fh.write(json.dumps(record) + "\n")
@@ -3055,8 +3077,12 @@ def cmd_gates(cfg: Config, args) -> int:
         status = "green" if result.returncode == 0 else "RED"
         print(f"[{status}] {rec['gate_id']}: {command[:90]}")
         if result.returncode != 0:
+            # A red gate says what is at risk, not only which shell line failed
+            # (ASK-1969). Rows registered before the field existed print a marker.
+            at_risk = f"  protects: {rec.get('protects') or '(not recorded)'}"
+            print(at_risk)
             tail = (result.stdout + result.stderr).strip().splitlines()[-5:]
-            failures.append((rec["gate_id"], "\n".join(tail)))
+            failures.append((rec["gate_id"], "\n".join([at_risk, *tail])))
     # Spillover verdict, scoped by ATTRIBUTION and never by the clock (ASK-526).
     #
     # WHY ATTRIBUTION AND NOT SEVERITY ALONE. The severity filter that shipped
