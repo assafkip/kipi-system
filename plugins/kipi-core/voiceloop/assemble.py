@@ -69,11 +69,30 @@ def _lexicon_positive(lexicon):
 
 
 def voice_section(voice, channel, counter, slot_index=0, k=selector.DEFAULT_K,
-                  slot_kind="post", target_words=None):
+                  slot_kind="post", *, target_words):
     """(text, provenance) for one slot. Pure; empty Voice -> ('', empty provenance).
 
     `target_words` threads the length axis (selector.length_band) to the one place
-    that assembles a prompt. Default None is the pre-2026-08-13 answer byte for byte.
+    that assembles a prompt.
+
+    IT IS KEYWORD-ONLY AND REQUIRED, founder-directed 2026-09-19. It used to
+    default to None, and that default was the whole 2026-09-19 defect class: three
+    separate callers took it by accident (`cycle.supply_for_slot`,
+    `comment.build_prompt`, `generate.build_prompt`), and with no target `select`
+    skips its length window entirely -- `length_band(rows, None)` returns the pool
+    unranked -- so each of them could draw the four LONGEST rows in the corpus. On
+    the live ASK corpus that assembled 24,701 chars against a 24,000 budget once
+    three 300-plus-word posts were approved together.
+
+    None is still a legal ANSWER, meaning "this lane has no length axis". What is
+    no longer legal is not answering. The lesson this encodes is the instance's
+    own: a shared entry point serving more than one lane takes a required lane
+    argument, and a caller that does not know its lane is a defect surfaced at the
+    call site rather than a wrong verdict downstream
+    (q-system/lessons/calibrate-a-gate-against-the-corpus-it-claims-to-encode.md).
+
+    A caller that omits it now raises TypeError, which is a failing import and a
+    failing test rather than a quiet wrong prompt.
     """
     picked = selector.select(voice.active_exemplars(), channel, counter,
                              slot_index=slot_index, k=k, slot_kind=slot_kind,
