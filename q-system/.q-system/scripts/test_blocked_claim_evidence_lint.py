@@ -81,8 +81,13 @@ SETTLED = [
 
 
 # --- subprocess harness (the real hook path) ---------------------------------
-def run_hook(answer: str, mode: str = "advisory") -> tuple[int, str]:
-    """Feed `answer` as the final assistant text through the Stop hook. -> (rc, stderr)"""
+def run_hook_in_root(answer: str, mode: str = "advisory") -> tuple[int, str, Path]:
+    """Same as `run_hook`, but also hands back the throwaway project root.
+
+    The root is what the hook writes its log under, so a test that asserts the log
+    needs it. `run_hook` keeps its two-value shape so the existing cases are
+    untouched.
+    """
     tmp = Path(tempfile.mkdtemp())
     transcript = tmp / "transcript.jsonl"
     rows = [
@@ -99,7 +104,21 @@ def run_hook(answer: str, mode: str = "advisory") -> tuple[int, str]:
         env={"CLAUDE_PROJECT_DIR": str(tmp), "PATH": "/usr/bin:/bin",
              "KIPI_BLOCKED_CLAIM_LINT_MODE": mode},
         check=False)
-    return proc.returncode, proc.stderr
+    return proc.returncode, proc.stderr, tmp
+
+
+def run_hook(answer: str, mode: str = "advisory") -> tuple[int, str]:
+    """Feed `answer` as the final assistant text through the Stop hook. -> (rc, stderr)"""
+    rc, err, _ = run_hook_in_root(answer, mode)
+    return rc, err
+
+
+def log_rows(root: Path) -> list[dict]:
+    """Every row the hook appended to its own log. [] when the file is absent."""
+    log = root / "q-system" / "output" / "blocked-claim-lint.jsonl"
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
 
 
 def main() -> int:
@@ -248,6 +267,39 @@ def main() -> int:
     cases.append(("clean answer exits 0 in blocking mode", rc_clean == 0))
     rc_loop, _ = run_hook_loop_guard()
     cases.append(("stop_hook_active short-circuits (no block loop)", rc_loop == 0))
+
+    # === ASK-1958: a blocking stop leaves a firing record ====================
+    # RCA rca-fleet-sync-two-day-spin-2026-09-20, row T6. Advisory mode logged every
+    # finding; the blocking branch returned 2 and wrote NOTHING. So the mode that
+    # actually stops a turn was the one mode with no artifact -- exactly backwards,
+    # because a block is the event worth counting. Nobody could answer "has this ever
+    # blocked, and on what" from the repo.
+    rc_blk, _, root_blk = run_hook_in_root(CLAIMS[0][1], mode="blocking")
+    rows_blk = [r for r in log_rows(root_blk) if r.get("event") == "blocked"]
+    cases.append(("blocking mode appends a firing row",
+                  rc_blk == 2 and len(rows_blk) == 1))
+    row = rows_blk[-1] if rows_blk else {}
+    cases.append(("the firing row names the hook",
+                  row.get("hook") == "blocked-claim-evidence-lint.py"))
+    cases.append(("the firing row names the reason (the sub-shapes that fired)",
+                  row.get("reason") == "rollup-as-config"))
+    cases.append(("the firing row carries a timestamp", bool(row.get("ts"))))
+
+    # Advisory mode still logs, and is distinguishable from a block. Losing that
+    # separation would make the calibration corpus and the firing record the same
+    # undifferentiated pile.
+    rc_adv2, _, root_adv = run_hook_in_root(CLAIMS[0][1], mode="advisory")
+    rows_adv = log_rows(root_adv)
+    cases.append(("advisory mode still logs its finding",
+                  rc_adv2 == 0 and len(rows_adv) == 1))
+    cases.append(("an advisory row is not marked as a block",
+                  bool(rows_adv) and rows_adv[0].get("event") == "advisory"))
+
+    # NEGATIVE CONTROL. This hook runs on every turn. A row on the pass path would
+    # grow an unbounded log in every instance and bury the firings it exists to show.
+    _, _, root_clean = run_hook_in_root("- Picked the branch-protection read.",
+                                        mode="blocking")
+    cases.append(("a clean answer writes no row at all", log_rows(root_clean) == []))
 
     failures = 0
     for name, ok in cases:

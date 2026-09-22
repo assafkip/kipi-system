@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/design-impeccable-check.py",
+ "reason": "design-chain engine carried onto main unwired on purpose: hook wiring is issue dc-24 and ships last, so the fleet never receives the gate before seal reads verdicts (ASK-1796)",
+ "spillover_id": "sp-dfc910e9"
+}

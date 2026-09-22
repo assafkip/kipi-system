@@ -62,6 +62,9 @@ trail rather than pretending otherwise.
 """
 from __future__ import annotations
 
+import json
+import os
+
 MIN_WORDS = 35
 # 200, founder-directed 2026-09-03, verbatim: "youre trying to cut it down too much.
 # a comment with 200 words is fine." It was 185, derived from the nine LinkedIn
@@ -89,11 +92,99 @@ X_BAND_IS_BORROWED = True
 CHANNELS = ("linkedin", "x")
 
 
-def band(channel):
-    """(min, max, default) for a reply on this channel."""
+def _usable(row):
+    """The same rows the WRITER is shown. Kept in step with `form._usable` on purpose:
+    a target derived from rows the prompt never displays is a number about a different
+    population than the examples beside it."""
+    if row.get("generated") is True:
+        return False
+    if row.get("eligible_for_voice_reference") is False:
+        return False
+    if row.get("status") == "retired":
+        return False
+    return bool((row.get("text") or "").strip())
+
+
+def corpus_words(channel, path):
+    """Word counts of his usable comment rows on one channel, ascending.
+
+    Read at call time from the corpus that owns them, the same posture
+    `reddit_reply_format.corpus_words` takes. A copy of these numbers would agree on
+    the day it is written and silently become the old contract the next time he banks
+    a comment -- which is exactly what happened to `APPROVED_COMMENT_WORDS`.
+    """
+    if not path or not os.path.exists(path):
+        return []
+    counts = []
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            if row.get("channel") != channel or row.get("kind") != "comment":
+                continue
+            if not _usable(row):
+                continue
+            words = row.get("words") or len((row.get("text") or "").split())
+            if words:
+                counts.append(int(words))
+    return sorted(counts)
+
+
+def corpus_target(channel, path):
+    """His median comment length on this channel, or None when the corpus is silent.
+
+    NONE IS A REAL ANSWER AND NEVER A DEFAULT INVENTED HERE. x carries zero comment
+    rows, and a median manufactured from nothing would be indistinguishable from a
+    measured one downstream. The caller falls back to `DEFAULT_WORDS` and the borrowed
+    -band declaration (`X_BAND_IS_BORROWED`) keeps saying so.
+
+    The floor is 3 rows, the three-observation rule: below it this is an observation
+    and must not be shipped as his practice.
+    """
+    counts = corpus_words(channel, path)
+    if len(counts) < 3:
+        return None
+    return counts[len(counts) // 2]
+
+
+def band(channel, path=None):
+    """(min, max, target) for a reply on this channel.
+
+    The floor and the ceiling are the FOUNDER'S (35, and 200 set 2026-09-03). The
+    target is measured from his own comments when the corpus can speak, because the
+    target is what the writer aims at and it has to describe the rows the prompt
+    shows it. `DEFAULT_WORDS` stays the fallback and the record of the 2026-08-31
+    measurement.
+    """
     if channel not in CHANNELS:
         raise ValueError(f"no reply band for channel {channel!r}")
-    return MIN_WORDS, MAX_WORDS, DEFAULT_WORDS
+    target = corpus_target(channel, path) if path else None
+    return MIN_WORDS, MAX_WORDS, target or DEFAULT_WORDS
+
+
+def length_rule(channel, path=None):
+    """The one sentence the WRITER is given about length.
+
+    why this exists (ASK-1744, measured 2026-09-15): the reply prompt carried no
+    length rule at all while the refusal that judged it used this band. Four live
+    runs came back at 300, 300, 286 and 255 words against the 200-word ceiling, every
+    other gate clean, and no draft reached the founder. A ceiling the writer is never
+    told is a refusal loop, not a contract.
+
+    Numbers are SUBSTITUTED, never typed, the same shape
+    `reddit_reply_format.build_prompt` uses for its own length line.
+    """
+    low, high, target = band(channel, path)
+    counts = corpus_words(channel, path) if path else []
+    if counts:
+        corpus_note = (f" His own approved comments on this channel run from "
+                       f"{counts[0]} to {counts[-1]} words.")
+    else:
+        corpus_note = ""
+    return (f"Length: aim for about {target} words.{corpus_note} Under {low} words or "
+            f"over {high} words is refused, so say the thing and stop.")
 
 
 def length_violations(text, channel):
