@@ -128,13 +128,40 @@ printf '%s\n' "${RECORDS:-  <none>}" | sed 's/^/        /'
       run A tail: $(tail -5 "$WORK/run-a.out")
       run B tail: $(tail -5 "$WORK/run-b.out")"
 
-# --- 1. both repos' records survive ----------------------------------------
+# --- 1. both repos' records survive, AND under their own repo's key ---------
+# THE COUNT IS NO LONGER THE DISCRIMINATOR, SO IT IS NO LONGER THE ASSERTION.
+# Before ASK-1956 the writer had one path per (repo, PR), so a count of 1 was
+# exactly the collision and >= 2 was exactly its absence. Reservation now hands
+# back a distinct path per RUN, so two runs leave two records whether or not the
+# key carries the repo: >= 2 passes by construction and proves nothing (PR #414
+# round 1, finding 3). What still has teeth is the KEY. A writer that dropped
+# repo keying would leave two records both filed under one repo's key, and a
+# gate globbing that key would read the other repo's verdict as its own.
+# THE EXPECTED KEY IS DERIVED, NEVER RETYPED. `artifact_key` owns the sanitizing
+# (`assafkip/repo-alpha` becomes `assafkip_repo-alpha`); restating that rule here
+# is a second source of truth that goes green on the day it is written and stops
+# describing the system the next time the key shape moves. The copy sourced is the
+# one the reviewer under test drove.
+. "$WORK/skel/q-system/.q-system/scripts/repo-slug-lib.sh"
+KEY_A="$(artifact_key "$SLUG_A" 42)"
+KEY_B="$(artifact_key "$SLUG_B" 42)"
+[ -n "$KEY_A" ] && [ -n "$KEY_B" ] && [ "$KEY_A" != "$KEY_B" ] \
+  || fail "the key derivation returned nothing or one value for both repos (A='$KEY_A' B='$KEY_B'); every check below it would be a no-op"
 COUNT="$(printf '%s\n' "$RECORDS" | grep -c .)"
-[ "$COUNT" -ge 2 ] \
-  || fail "ARTIFACT COLLISION: two reviews of PR #42 in two different repositories left $COUNT verdict record(s).
-      The second overwrote the first. A gate reading this record cannot tell whose code earned the verdict.
+KEYED_A=0; KEYED_B=0
+while IFS= read -r rec; do
+  [ -n "$rec" ] || continue
+  case "$(basename "$rec")" in
+    "$KEY_A"__*) KEYED_A=1 ;;
+    "$KEY_B"__*) KEYED_B=1 ;;
+  esac
+done <<< "$RECORDS"
+[ "$KEYED_A" = "1" ] && [ "$KEYED_B" = "1" ] \
+  || fail "ARTIFACT COLLISION: two reviews of PR #42 in two different repositories are not each filed under their own repo's key
+      (repo-alpha key '$KEY_A' present: $KEYED_A, repo-beta key '$KEY_B' present: $KEYED_B).
+      A gate globbing one repo's key cannot tell whose code earned the verdict.
       records: $(printf '%s' "$RECORDS" | tr '\n' ' ')"
-ok "two repos' PR #42 records both survive ($COUNT records)"
+ok "each repo's PR #42 record is filed under its own repo key ($COUNT records, both keys present)"
 
 # --- 2. each record carries ITS OWN repo's commit ---------------------------
 # Count alone would pass on a writer that kept two files with swapped contents.

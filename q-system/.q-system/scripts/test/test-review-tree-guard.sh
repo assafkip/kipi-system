@@ -157,7 +157,31 @@ EOF
   CASE_DIR="$d"
 }
 
-record() { echo "$1/home/.config/kipi/pr-reviews/pr-901.verdict.json"; }
+# record <case-dir> -> the verdict record the driven reviewer left for PR 901,
+# or a path that does not exist when it left none.
+#
+# ASK-1956 made records PER-SHA and append-only, so `pr-901.verdict.json` stopped
+# naming the file the reviewer writes. This resolves through the SHIPPED resolver
+# instead of retyping the new naming rule, which would make this test a second
+# source of truth for the key shape: one that agrees the day it is written and
+# then silently stops describing the system.
+#
+# IT SOURCES THE COPIES UNDER TEST ($S), not the live checkout, so a $REF run
+# resolves with that ref's own resolver. A ref older than ASK-1956 has no
+# resolver, and the fallback names the legacy path that ref actually wrote.
+#
+# Empty slug, empty head: $REPO is a sandbox repo with no remote so the
+# reviewer's REVIEW_SLUG comes back empty, and these cases assert "a record
+# exists for this run", not "for this commit", so the any-sha tier is correct.
+record() {
+  ( . "$S/repo-slug-lib.sh"
+    . "$S/pr-verdict-lib.sh"
+    if declare -F verdict_record_for_head >/dev/null 2>&1; then
+      verdict_record_for_head "$1/home/.config/kipi/pr-reviews" "" 901 ""
+    else
+      printf '%s' "$1/home/.config/kipi/pr-reviews/pr-901.verdict.json"
+    fi )
+}
 
 # --- case 1: the defect. A real object that is not in this tree's history. -----
 run_case refuse "$ORPHAN"

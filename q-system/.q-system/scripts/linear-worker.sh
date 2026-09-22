@@ -1554,7 +1554,14 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
   CONFLICT_ROUND=""
   DRIFT_ROUND=""
   if [ -n "$EXISTING_PR" ]; then
-    PR_VERDICT="$(verdict_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$EXISTING_PR")")"
+    # PER-SHA RECORDS (ASK-1956): the head is read HERE, above the verdict,
+    # because the record is now resolved BY it. CURRENT_SHA is reused unchanged
+    # by the rework_gate call below -- one `gh pr view`, one resolution, one
+    # reader. The resolver still returns an other-sha record when nothing
+    # matches the head, so the gate can still reach exit 40.
+    CURRENT_SHA="$(pr_head_sha "$EXISTING_PR")"
+    PR_RECORD="$(verdict_record_for_head "$REVIEWS_DIR" "$TARGET_SLUG" "$EXISTING_PR" "$CURRENT_SHA")"
+    PR_VERDICT="$(verdict_from_record "$PR_RECORD")"
     if [ -z "$PR_VERDICT" ]; then
       # Fallback for PRs reviewed before the verdict record existed: extract
       # from the newest review .md with the SAME extractor the reviewer uses.
@@ -1579,8 +1586,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     #
     # APPENDED, NEVER INSERTED: $MERGE_STATE keeps argument 2. Reordering it would
     # silently stop ASK-212's rebase rounds from ever firing again.
-    REVIEWED_SHA="$(head_sha_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$EXISTING_PR")")"
-    CURRENT_SHA="$(pr_head_sha "$EXISTING_PR")"
+    REVIEWED_SHA="$(head_sha_from_record "$PR_RECORD")"
     GATE_NOTE="$(rework_gate "$PR_VERDICT" "$MERGE_STATE" "$REVIEWED_SHA" "$CURRENT_SHA")"; GATE=$?
     [ -n "$GATE_NOTE" ] && say "$GATE_NOTE"
     # THE DRIFT STREAK ENDS ON A STATED NON-DRIFT, and nothing less. Two halves,
@@ -2482,7 +2488,12 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # Read back the verdict RECORD the reviewer just wrote (never re-grep the
     # review prose) and state what happens next in plain terms. Rework itself
     # fires on the NEXT run, through the severity-floor gate above.
-    FINAL_VERDICT="$(verdict_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR_NUM")")"
+    # PER-SHA RECORDS (ASK-1956): the head moves the record, so it is read first
+    # and the record resolved from it. Both values are still re-read rather than
+    # reused from the top of the loop, for the reason stated below.
+    FINAL_CURRENT_SHA="$(pr_head_sha "$PR_NUM")"
+    FINAL_RECORD="$(verdict_record_for_head "$REVIEWS_DIR" "$TARGET_SLUG" "$PR_NUM" "$FINAL_CURRENT_SHA")"
+    FINAL_VERDICT="$(verdict_from_record "$FINAL_RECORD")"
     # RE-GATE THE RECORD BEFORE REPORTING ON IT (PR #30 review round 2, major 3).
     # The reviewer above can fail -- it is a `|| say WARN` line, not a hard stop --
     # and when it does, this read returns the SAME record the gate at the top of
@@ -2496,8 +2507,7 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # so the values from the top of the loop describe a state that no longer
     # exists. The gate is the ONE reader of the comparison -- deriving it here
     # would be a second reader with drifting semantics.
-    FINAL_REVIEWED_SHA="$(head_sha_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR_NUM")")"
-    FINAL_CURRENT_SHA="$(pr_head_sha "$PR_NUM")"
+    FINAL_REVIEWED_SHA="$(head_sha_from_record "$FINAL_RECORD")"
     # AND THE GATE'S NOTE IS SAID, NOT SWALLOWED (PR #30 review round 3, minor 2).
     # converge.sh's own call site states the rule this line broke: "Swallowing it
     # would silently grandfather the blind spot it announces." The reviewer always

@@ -162,7 +162,35 @@ run_agent() {   # run_agent <fixture> <pr-number>
       REVIEW_FIXTURE="$fixture" \
       KIPI_NOTIFY="/usr/bin/true" \
       bash "$AGENT" "$pr" --issue "ASK-TEST" >"$WORK/out-$pr.log" 2>&1
-  echo "$home/.config/kipi/pr-reviews/pr-$pr.verdict.json"
+  rec_for "$home/.config/kipi/pr-reviews" "$pr"
+}
+
+# rec_for <pr-reviews-dir> <pr> -> the record the driven agent left, or a path
+# that does not exist.
+#
+# ASK-1956 made records PER-SHA and append-only, so `pr-<N>.verdict.json` stopped
+# naming the file the reviewer writes. Resolving through the SHIPPED resolver
+# rather than retyping the new naming rule keeps this test from becoming a second
+# source of truth for the key shape -- one that agrees on the day it is written
+# and then silently stops describing the system.
+#
+# IT SOURCES THE COPY THE AGENT DROVE, not the live checkout, so a REPRO_REF run
+# resolves with that ref's own resolver. On a pre-ASK-1956 ref the resolver does
+# not exist, so the fallback names the legacy path that ref actually wrote.
+#
+# The slug is empty and the head is empty on purpose. $REPO_FIXTURE is a local
+# repo with no remote, so the agent's own REVIEW_SLUG comes back empty; and these
+# cases assert "a record exists for this PR", never "for this commit", so an
+# empty head takes the resolver's any-sha tier.
+rec_for() {
+  local dir="$1" pr="$2" scripts="$REPO_FIXTURE/q-system/.q-system/scripts"
+  ( . "$scripts/repo-slug-lib.sh"
+    . "$scripts/pr-verdict-lib.sh"
+    if declare -F verdict_record_for_head >/dev/null 2>&1; then
+      verdict_record_for_head "$dir" "" "$pr" ""
+    else
+      printf '%s' "$dir/pr-$pr.verdict.json"
+    fi )
 }
 
 field() {   # field <record> <key>

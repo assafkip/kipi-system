@@ -195,7 +195,8 @@ done
 #
 # THE NOTE SAYS WHAT IS AND IS NOT TRUE, and the first draft got the second half
 # wrong: it read "no gate moved". A dry run DOES move a gate. The verdict record
-# is written below at the `verdict_record_write_path` call, ~100 lines ABOVE the
+# is written below at the `verdict_record_reserve` call (ASK-1956; it was
+# `verdict_record_write_path` until records became per-sha), ~100 lines ABOVE the
 # `if [ "$POST" = "1" ]` block -- so it is written on every run -- and that
 # record is the one converge.sh:748 and linear-worker.sh:1054 read to decide
 # approve-vs-rework. Telling a reader no gate moved is the same silent-dry-run
@@ -1161,10 +1162,43 @@ REVIEWED_BY="$CODEX_MODEL"
 # no record would be written, and the suite would report a break in the test
 # rather than the defect. Keep the derivation adjacent to the python3 call.
 
-# The record path comes from the ONE resolver (repo-slug-lib.sh), passed in as
-# argv 16 rather than rebuilt in python -- a second place that knows the naming
-# rule is a second writer, which is the defect class this repo keeps finding.
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" "$REVIEWED_BY" "$DEGRADED" "$(verdict_record_write_path "$VERDICT_DIR" "$REVIEW_SLUG" "$PR")" <<'PY'
+# The record path comes from the ONE resolver (pr-verdict-lib.sh, keyed through
+# repo-slug-lib.sh's artifact_key), passed in as argv 16 rather than rebuilt in
+# python -- a second place that knows the naming rule is a second writer, which
+# is the defect class this repo keeps finding.
+#
+# RESERVED, NOT NAMED (ASK-1956). This used to be verdict_record_write_path,
+# which returned ONE path per (repo, PR) that python then opened with "w" --
+# truncating whatever the previous review of this PR had recorded. The store
+# could say what a PR says NOW and could never say what was said about a given
+# COMMIT. verdict_record_reserve creates a fresh file per run under noclobber,
+# so two runs on one sha leave two records and a second run cannot land on the
+# first's path. The record it hands back exists and is empty; the python below
+# fills it.
+#
+# A FAILED RESERVATION IS FATAL TO THE RECORD, NEVER SILENT. Falling back to a
+# fixed path here would reintroduce the clobber on exactly the runs where two
+# reviewers are racing, which is when the lost record matters most. The review
+# prose is already on disk and the PR stands; what is missing is the machine
+# receipt, so this says so and skips the write rather than faking one.
+# $HEAD_SHA IS ARGUMENT 4 AND IT IS THE POINT. It is the sha the reviewer
+# actually read, written into the record below and now also into the record's
+# NAME. Dropping it makes every record a `nosha` one, which resolves by
+# fallback forever and quietly re-creates the one-record-per-PR world this
+# change removes.
+RECORD_PATH="$(verdict_record_reserve "$VERDICT_DIR" "$REVIEW_SLUG" "$PR" "$HEAD_SHA")"
+if [ -z "$RECORD_PATH" ]; then
+  # THE WARN NAMES THE STATE THE GATES WILL ACTUALLY BE IN. It used to say
+  # "unreviewed", which is the one thing that cannot happen here:
+  # verdict_record_for_head tier 2 returns the newest record at any sha and
+  # tier 3 returns the pre-change path, and both are reachable exactly when
+  # this run wrote nothing. A prior APPROVE therefore reaches rework_gate exit
+  # 40 (stale, re-review), never exit 20 (unreviewed). At 3am an operator
+  # reading "unreviewed" while the loop is on the drift branch learns to skim
+  # the warnings, which costs more than the warning buys (PR #414 round 1).
+  echo "  WARN: could not reserve a verdict record path under $VERDICT_DIR -- no record written for PR #$PR (the review prose stands; gates will read the PREVIOUS record for this PR, not this run's verdict, and a first-ever review leaves nothing to read)"
+else
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" "$REVIEWED_BY" "$DEGRADED" "$RECORD_PATH" <<'PY'
 import json, sys
 (pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir,
  engine, invoker, usable, reviewed_by, degraded) = sys.argv[1:16]
@@ -1187,6 +1221,7 @@ json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "round": int(rnd), "review": review, "head_sha": head_sha,
            "ts": ts}, open(out, "w"), indent=2)
 PY
+fi
 
 # Severity floor, capture half: APPROVE WITH NITS is a TERMINAL state -- the
 # loop stops reworking -- so each minor must land in the spillover ledger or it

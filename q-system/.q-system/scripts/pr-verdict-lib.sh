@@ -687,6 +687,107 @@ try: print(json.load(open(sys.argv[1])).get("verdict",""))
 except Exception: pass' "$f" 2>/dev/null || true
 }
 
+# --- per-sha, append-only records (ASK-1956, fleet-sync RCA row T4) ----------
+# BEFORE THIS, ONE PATH PER (repo, PR). `verdict_record_write_path` returned
+# `<key>.verdict.json` and the reviewer wrote it with `open(out, "w")`, which
+# truncates. So the second review of a PR DESTROYED the first: round 1's BLOCK
+# was gone the moment round 2 ran, and an approval pinned to sha A was replaced
+# by one pinned to sha B with nothing left to compare against. The verdict store
+# could answer "what does this PR say now" and could never answer "what was said
+# about this commit", which is the question ASK-216's drift exit is built on.
+#
+# THE CREATE IS THE CHECK, NOT A CHECK BEFORE A WRITE. `test -f` then write is
+# the validate-then-copy race (q-system/lessons/validate-then-copy-is-a-race-the-
+# copy-must-be-the-check.md): two reviewers of the same PR in the same second
+# both see "absent" and both write. bash `noclobber` makes `> "$p"` fail when the
+# path exists, atomically, so the loop below hands back a path no other run can
+# already hold. The file is created EMPTY and its writer fills it; an empty
+# record reads as unreviewed in every consumer, which fails closed.
+#
+# THE COUNTER IS BOUNDED at 1000. A dir already holding 1000 records for one
+# (repo, PR, sha, second) is not a naming problem, it is a runaway reviewer, and
+# returning nonzero lets the caller say so instead of spinning.
+#
+# NOT A SECOND OWNER OF THE NAMING RULE: the stem comes from `artifact_key` in
+# repo-slug-lib.sh, exactly as verdict_record_write_path does, and the suffix
+# stays `.verdict.json` so review-redrive.py and verify-codex-review-live.sh keep
+# globbing records they are not being changed to know about.
+verdict_record_reserve() {
+  local dir="${1:-}" slug="${2:-}" pr="${3:-}" sha="${4:-}" stem shaseg ts n p
+  [ -n "$dir" ] || return 1
+  # An unreadable head is recorded as `nosha` rather than as an empty segment:
+  # an empty segment would collide with the repo-keyed pre-change basename and
+  # make a per-sha record indistinguishable from a legacy one.
+  shaseg="$(printf '%s' "$sha" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '_')"
+  [ -n "$shaseg" ] || shaseg="nosha"
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  # BRACES ARE LOAD-BEARING: `$shaseg__$ts` parses the trailing underscores as
+  # part of the NAME, so bash reads an unset `shaseg__` and dies under `set -u`.
+  stem="$dir/$(artifact_key "$slug" "$pr")__sha-${shaseg}__${ts}"
+  n=0
+  while [ "$n" -lt 1000 ]; do
+    p="$stem-$n.verdict.json"
+    if ( set -o noclobber; : > "$p" ) 2>/dev/null; then
+      printf '%s' "$p"
+      return 0
+    fi
+    n=$((n + 1))
+  done
+  return 1
+}
+
+# verdict_record_for_head <dir> <slug> <pr> <current-head-sha>
+# THE ONE READER-SIDE RESOLVER. Three tiers, in order:
+#
+#   1. the newest per-sha record whose `head_sha` IS the current head -- the
+#      verdict that was actually earned by the code sitting at the head;
+#   2. failing that, the newest per-sha record for this (repo, PR) at ANY sha;
+#   3. failing that, `verdict_record_path` unchanged (repo-keyed, then the ~90
+#      legacy un-slugged records that predate repo keying).
+#
+# TIER 2 IS LOAD-BEARING AND IS NOT A SHORTCUT. Returning nothing when no record
+# matches the head would send `rework_gate` to exit 20 (unreviewed: "there is no
+# spec, refuse and point at kipi review") on every PR that was approved and then
+# pushed to. That population belongs to exit 40 (stale: re-review at the new
+# sha), which ASK-216 and ASK-219 built and armed. Collapsing 40 into 20 is a
+# different terminal branch on every drifted PR in the fleet, so the resolver
+# hands back the other-sha record and lets the GATE decide, which keeps the
+# comparison in exactly one place.
+#
+# TIER 3 IS WHY NOTHING NEEDS BACKFILLING. Every record written before this
+# change still resolves through the path resolver that wrote it, so no open PR
+# suddenly reads as unreviewed and no re-review round fires from the migration.
+#
+# NEWEST IS BY `ts` WITH mtime AS THE TIEBREAK. `ts` is what the writer records
+# about itself; mtime is what the filesystem observed. Preferring the record's
+# own field keeps a `cp -p`, a restore, or a rsync from reordering history.
+# Empty on any failure -- an unreadable store reads as unreviewed, fails closed.
+verdict_record_for_head() {
+  local dir="${1:-}" slug="${2:-}" pr="${3:-}" head="${4:-}" key picked
+  [ -n "$dir" ] || return 0
+  key="$(artifact_key "$slug" "$pr")"
+  picked="$(python3 - "$dir" "$key" "$head" <<'PY' 2>/dev/null
+import glob, json, os, sys
+d, key, head = sys.argv[1], sys.argv[2], sys.argv[3]
+head = "".join(head.split()).lower()
+rows = []
+for p in glob.glob(os.path.join(d, key + "__sha-*.verdict.json")):
+    try:
+        r = json.load(open(p))
+    except Exception:
+        continue          # a corrupt record is not a verdict
+    rows.append((str(r.get("ts") or ""), os.path.getmtime(p), p,
+                 "".join(str(r.get("head_sha") or "").split()).lower()))
+if rows:
+    matching = [r for r in rows if head and r[3] == head]
+    best = max(matching or rows, key=lambda r: (r[0], r[1]))
+    print(best[2])
+PY
+)"
+  if [ -n "$picked" ]; then printf '%s' "$picked"; return 0; fi
+  verdict_record_path "$dir" "$slug" "$pr"
+}
+
 # head_sha_from_record <verdict-json>
 # Reads the `head_sha` field: the commit the review actually examined. EMPTY for
 # every record written before ASK-216, for a corrupt record, and for a run where
