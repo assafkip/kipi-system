@@ -27,6 +27,8 @@ import os
 import re
 import subprocess
 
+from . import usage_ledger
+
 #: Where the instruction ends and the INPUTS begin. Everything after it is the voice
 #: corpus and the source material, neither of which is a constraint.
 VOICE_MARKER = "VOICE REFERENCE:"
@@ -156,11 +158,20 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
     try:
         # `--model` only when a caller asked for one, so every existing caller keeps the
         # CLI's own default and this stays additive.
-        argv = [binary, "-p", prompt]
+        argv = [binary, "-p", prompt, *usage_ledger.JSON_FLAGS]
         if model:
             argv[1:1] = ["--model", model]
         result = subprocess.run(argv, capture_output=True,
                                 text=True, timeout=timeout)
     except (subprocess.SubprocessError, OSError):
         return None
-    return result.stdout if result.returncode == 0 else None
+    if result.returncode != 0:
+        return None
+    # ASK-2008: the call is metered. `finish` hands back the same bytes a plain call
+    # printed (result + newline) and one ledger row; the row is appended and can never
+    # fail this call (usage_ledger.append swallows its own errors by design).
+    text, row = usage_ledger.finish(
+        result.stdout, bot=os.environ.get("CHIEF_BOT") or "voiceloop",
+        job=os.environ.get("CHIEF_JOB") or caller, model=model)
+    usage_ledger.append(row)
+    return text
