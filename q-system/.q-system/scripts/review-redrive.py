@@ -273,9 +273,22 @@ def reviewer_slot_failing(pr_obj):
 # and requires "the live status must win over the record". Those two cannot both
 # hold, and picking between them is a scope call about which question this
 # predicate answers ("did SOME review land" vs "has the GATE spoken"), not a
-# detail of making absence visible. Unreachable today regardless:
-# KIPI_REVIEW_PRIMARY_ENGINE defaults to codex, so `kipi/codex-approved` needs a
-# hand-run with a non-default primary. Captured rather than decided here.
+# detail of making absence visible. Captured rather than decided here.
+#
+# THE REACHABILITY SENTENCE THAT USED TO SIT HERE IS NOW WRONG, and it was the
+# only thing making this note feel safe to leave open. It read: "Unreachable
+# today regardless: KIPI_REVIEW_PRIMARY_ENGINE defaults to codex, so
+# `kipi/codex-approved` needs a hand-run with a non-default primary." The
+# 2026-09-06 flip made claude PRIMARY, so `kipi/codex-approved` is exactly what
+# an ordinary `--engine codex` run posts now.
+#
+# THE EXPOSURE DID NOT CHANGE, only the engine name in it: before the flip the
+# reachable advisory slot was `kipi/claude-approved` and this predicate matched
+# that one just as broadly. Nothing scheduled dispatches the advisory engine in
+# either direction (linear-worker.sh names the primary explicitly), so an
+# advisory slot still only exists after a hand-run. The decision above stays
+# open on the same terms; what is corrected is a claim about WHY, because a
+# stale safety argument is how an open note stops being re-examined.
 GATING_SLOT = "kipi/reviewer-approved"  # named for the pending decision above
 
 

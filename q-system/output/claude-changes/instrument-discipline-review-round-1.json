@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "slug": "instrument-discipline-review-round-1",
+  "reason": "Codex review of PR #298, round 1. Four text corrections to the rule so it describes the lint as it now is: (1) the population number was measured on one instance with a wrong path for the others; fleet measurement via instance-registry.json is 246 in-scope, 36 uncontrolled, 0 still red. (2) Table-cell zeros were dropped from the regex (values, not claims). (3) The exemption reads a date anywhere in the path, else git history. (4) The advisory-lane claim was false: skill-trigger-eval.py runs a bare prompt from the repo root and a paths-scoped rule never loads there, so the fixture measured the un-ruled model. The fixture is removed and the rule says the judgment half has no measurement today.",
+  "requires": {
+    "files_present": [
+      ".claude/rules/instrument-discipline.md",
+      "q-system/.q-system/scripts/instrument-lint.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/rules/instrument-discipline.md",
+      "op": "replace",
+      "anchor": "It blocks a file that reports a NULL-SHAPED claim (`0 of`, `Zero of`, `none\nfound`, `no evidence of`, `returned nothing`, `zero matches`, a bare `0` in a\ntable cell) and carries no CONTROL LABEL: a heading or bold label reading\n`Control`, `Negative control`, `Known-answer case` or `Calibration`. A label,\nnever bare prose, so the word \"control\" inside a sentence cannot satisfy it.",
+      "insert": "It blocks a file that reports a NULL-SHAPED claim (`0 of`, `Zero of`, `none\nfound`, `no evidence of`, `returned nothing`, `zero matches`) and carries no\nCONTROL LABEL: a heading or bold label that STARTS with `Control`, `Negative\ncontrol`, `Known-answer case` or `Calibration`. A label, never bare prose, and\nanchored, so `## Command and control (C2)` does not satisfy it. A zero in a\ntable cell is a value, not a claim, and is not matched.",
+      "reason": "Match the rule to the regex after round 1: no table cells, anchored labels."
+    },
+    {
+      "file": ".claude/rules/instrument-discipline.md",
+      "op": "replace",
+      "anchor": "Files whose filename date is before 2026-09-04 are exempt. Measured before it\nshipped: 16 of 61 in-scope files fleet-wide carried an uncontrolled null claim,\nand a gate red on its own population gets switched off. Bypass per file:\n`instrument-lint-skip`. Engine test: `test_instrument_lint.py`.",
+      "insert": "A file is exempt when a date anywhere in its path is before 2026-09-04, else\nwhen git first saw it before that date. Measured over every path in\n`instance-registry.json` before it shipped: 246 in-scope files, 36 with an\nuncontrolled null claim, 0 red after the exemption. The first measurement ran\nover a directory that does not exist and reported zero in-scope files, which\nwas read as clean: scar shape 5, committed while building this. Bypass per\nfile: `instrument-lint-skip`. Engine test: `test_instrument_lint.py`.",
+      "reason": "Replace the one-instance number with the registry measurement and record the measurement defect."
+    },
+    {
+      "file": ".claude/rules/instrument-discipline.md",
+      "op": "replace",
+      "anchor": "- Shapes 1, 3 and 4 above are not null-shaped sentences. An unchecked control\n  group, an unexercised membership test and a seed-shaped corpus pass this gate\n  untouched. They are judgment, and they get the advisory lane:\n  `q-system/.q-system/skill-evals/instrument-discipline.json`, run on demand by\n  `skill-trigger-eval.py`. A signal, never a pass/fail check.",
+      "insert": "- Shapes 1, 3 and 4 above are not null-shaped sentences. An unchecked control\n  group, an unexercised membership test and a seed-shaped corpus pass this gate\n  untouched. They are judgment, and today NOTHING measures them: a trigger-eval\n  fixture shipped in the first cut and was removed, because\n  `skill-trigger-eval.py` runs a bare prompt from the repo root and a\n  paths-scoped rule never loads there, so the fixture measured the un-ruled\n  model. Captured as spillover; until the harness can seed a matching path, the\n  judgment half is stated, not measured.",
+      "reason": "The advisory lane was a claim the harness cannot back. Say so instead."
+    },
+    {
+      "file": ".claude/rules/instrument-discipline.md",
+      "op": "replace",
+      "anchor": "\"note\": \"ENFORCED covers the null-claim label check only (shapes 2 and 5). Shapes 1, 3, 4 are judgment, measured by skill-evals/instrument-discipline.json through skill-trigger-eval.py, advisory and on demand.\"",
+      "insert": "\"note\": \"ENFORCED covers the null-claim label check only (shapes 2 and 5). Shapes 1, 3, 4 are judgment with no measurement today: skill-trigger-eval.py cannot load a paths-scoped rule (spillover captured).\"",
+      "reason": "Same correction in the enforcement entry."
+    }
+  ]
+}

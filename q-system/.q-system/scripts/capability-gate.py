@@ -19,6 +19,7 @@ Exit codes: 0 green, 1 red, 3 refused (worktree copy).
 
 import argparse
 import datetime
+import importlib.util
 import json
 import os
 import re
@@ -68,12 +69,33 @@ WIRING_SURFACE_GLOBS = (
     "kipi*",
     "*.sh",
     "q-system/.q-system/scripts/*.sh",
+    # A launchd plist template IS wiring, and for a SCHEDULED job it is the only
+    # wiring there is. Measured 2026-08-30 (ASK-1178): morning-brief.py and
+    # morning-brief-deadman.py were reported inert while both had a committed
+    # plist naming them and both were loaded and firing on this Mac. The gate was
+    # telling a scheduled job to justify itself as dead code. install-plist.sh
+    # renders these into ~/Library/LaunchAgents, so a name appearing here is a
+    # job that actually runs.
+    "q-system/.q-system/scripts/*.plist",
     "q-system/hooks/*",
     ".claude/**/*.md",
     "plugins/**/*.md",
     "q-system/.q-system/**/*.md",
     "q-system/.q-system/**/*.py",
     "q-system/.q-system/*.py",
+    # verify.sh and its siblings live HERE, not under scripts/, and `*.sh` above
+    # is a Path.glob pattern that never crosses a directory separator. So the
+    # repo's floor -- the script lefthook runs at pre-commit and CI runs at
+    # --full -- was not a wiring surface at all. Measured 2026-09-18 (ASK-1795):
+    # verify_select.py, called from verify.sh and from nowhere else, was reported
+    # inert. A commit-blocking script is the strongest wiring there is, which is
+    # the same argument that put lefthook.yml on the list above.
+    "q-system/.q-system/*.sh",
+    # The MCP server's source tree is where an agent-facing tool gets wired
+    # (wiring-check.md: "any new MCP tool is registered in the server"). Without
+    # it reddit_read.py, called only from kipi-mcp's web_read.py, was reported
+    # inert on CI (PR #294, 2026-09-02).
+    "plugins/*/kipi-mcp/src/**/*.py",
 )
 
 
@@ -663,12 +685,52 @@ def reap_group(proc, pgid):
         pass
 
 
-def run_tests(root, manifest, mode, errors, notes):
+def select_for_diff(root, base, notes):
+    """The set of declared test paths a diff against <base> earns, or None for
+    "run everything" (ASK-1749).
+
+    NONE IS THE ONLY SAFE FAILURE. Measured 2026-09-19 on CI run 35478270323: this
+    gate's test step took 17m41s of a 19m36s job, on every push of every PR,
+    because it always ran every declared artifact. change-size.py decides what a
+    diff earns; this function only ever turns its answer into FEWER tests when the
+    verdict says, by name, that it is safe. A missing classifier, a base ref git
+    cannot resolve, a crash, a verdict with no `selected_tests` list: every one of
+    them returns None and the full suite runs. The note says which, so a full run
+    is never mistaken for a decision.
+
+    The full suite still runs on every push to main (validate.yml passes no
+    --diff-base there), so a selection that was too narrow is caught at merge.
+    """
+    try:
+        path = Path(__file__).resolve().parent / "change-size.py"
+        spec = importlib.util.spec_from_file_location("kipi_change_size", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        verdict = mod.plan_for_repo(root, base)
+        selected = verdict["selected_tests"]
+        if verdict["full_suite"] or not isinstance(selected, list):
+            notes.append(f"change-size vs {base}: tier {verdict['tier']}, FULL suite -- "
+                         + "; ".join(verdict["reasons"][:3]))
+            return None
+    except Exception as exc:  # noqa: BLE001 -- any failure here must mean "run everything"
+        notes.append(f"change-size vs {base}: could not classify ({type(exc).__name__}: "
+                     f"{str(exc)[:160]}), so the FULL suite runs")
+        return None
+    notes.append(f"change-size vs {base}: tier {verdict['tier']}, {verdict['app_lines']} app-code "
+                 f"lines -- running {len(selected)} of {verdict['declared_tests']} declared tests; "
+                 "the full suite runs on the push to main")
+    return set(selected)
+
+
+def run_tests(root, manifest, mode, errors, notes, only=None):
     skeleton_only = set(manifest.get("skeleton_only", []))
     env = dict(os.environ, QROOT=str(root / "q-system"))
-    ran = quarantined = skipped = 0
+    ran = quarantined = skipped = not_selected = 0
     for entry in manifest.get("expected_tests", []):
         path = entry.get("path", "")
+        if only is not None and path not in only:
+            not_selected += 1
+            continue
         if mode == "instance" and path in skeleton_only:
             skipped += 1
             continue
@@ -712,7 +774,8 @@ def run_tests(root, manifest, mode, errors, notes):
             tail = "\n".join((r.stdout + r.stderr).splitlines()[-20:])
             errors.append(f"test-failed rc={r.returncode}: {path}\n{tail}")
     notes.append(f"tests: ran={ran} quarantined={quarantined} "
-                 f"skipped-skeleton-only={skipped}")
+                 f"skipped-skeleton-only={skipped}"
+                 + (f" not-selected-for-this-diff={not_selected}" if only is not None else ""))
 
 
 def gather_wiring_text(root, exclude_names):
@@ -856,7 +919,24 @@ def check_inert_engines(root, manifest, errors, notes):
         # One authority for that question -- see is_runnable_engine.
         if is_runnable_engine(p, p.read_text(errors="ignore")):
             candidates.add(p)
+    # Plugin closure FIRST: a plugin engine that proves wired (a skill script its
+    # SKILL.md names, a hook its hooks.json names) is real wiring for the skeleton
+    # engines it calls, so its text joins the skeleton surface. An UNWIRED plugin
+    # engine still wires nothing (the closure principle is unchanged). Before this
+    # ordering lessons_recall.py, imported only by the improve skill's
+    # improve_ground.py, was reported inert on CI (PR #294, 2026-09-02).
+    plugin_surface = gather_wiring_text(root, {p.name for p in plugin_candidates})
+    p_wired, changed = set(), True
+    while changed:
+        changed = False
+        for p in sorted(plugin_candidates - p_wired):
+            if references_engine(p.name, plugin_surface):
+                p_wired.add(p)
+                plugin_surface += "\n" + p.read_text(errors="ignore")
+                changed = True
     surface = gather_wiring_text(root, {p.name for p in candidates})
+    for p in sorted(p_wired):
+        surface += "\n" + p.read_text(errors="ignore")
     wired = set()
     changed = True
     while changed:
@@ -876,15 +956,6 @@ def check_inert_engines(root, manifest, errors, notes):
                       "and no declared_inert entry")
 
     # Same walk over plugins/, reported not enforced (see the note above).
-    plugin_surface = gather_wiring_text(root, {p.name for p in plugin_candidates})
-    p_wired, changed = set(), True
-    while changed:
-        changed = False
-        for p in sorted(plugin_candidates - p_wired):
-            if references_engine(p.name, plugin_surface):
-                p_wired.add(p)
-                plugin_surface += "\n" + p.read_text(errors="ignore")
-                changed = True
     for p in sorted(plugin_candidates - p_wired):
         rel = str(p.relative_to(root))
         if rel in declared:
@@ -898,6 +969,9 @@ def main():
     ap.add_argument("--repo-root", default=".", help="repo root (default: cwd)")
     ap.add_argument("--check-only", action="store_true",
                     help="structure/diff/wiring/data checks only; skip test execution")
+    ap.add_argument("--diff-base", default="",
+                    help="run only the declared tests a diff against this ref earns "
+                         "(change-size.py decides; anything it cannot decide runs the full suite)")
     args = ap.parse_args()
     root = Path(args.repo_root).resolve()
     refuse_if_worktree(root)
@@ -955,7 +1029,8 @@ def main():
         notes.append("inert-engine check: skeleton-only (instance wiring is "
                      "declared and gated in the skeleton)")
     if not args.check_only:
-        run_tests(root, manifest, mode, errors, notes)
+        only = select_for_diff(root, args.diff_base, notes) if args.diff_base else None
+        run_tests(root, manifest, mode, errors, notes, only)
     report(mode, errors, notes)
     sys.exit(1 if errors else 0)
 

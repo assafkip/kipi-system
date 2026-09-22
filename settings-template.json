@@ -162,6 +162,16 @@
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-dna-loader.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-dna-loader.py\" || true",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/lessons-inject.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/lessons-inject.py\" || true",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/knowledge-inject.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/knowledge-inject.py\" || true",
+            "timeout": 5
           }
         ]
       }
@@ -211,6 +221,24 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Bash|SendUserFile|Artifact|mcp__playwright__.*|mcp__claude-in-chrome__.*|mcp__plugin_chrome-devtools.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\" && python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-engine-door.py\" && python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-engine-door.py\""
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -231,6 +259,10 @@
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-integrity-tripwire.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/claude-integrity-tripwire.py\" --enforce --quiet",
             "timeout": 20
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\" && python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\""
           }
         ]
       },
@@ -259,7 +291,17 @@
           },
           {
             "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voiceloop-band-lint.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voiceloop-band-lint.py\"; fi",
+            "timeout": 35
+          },
+          {
+            "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-confidence-validator.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-confidence-validator.py\""
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\"",
+            "timeout": 10
           },
           {
             "type": "command",
@@ -307,6 +349,10 @@
           },
           {
             "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instrument-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instrument-lint.py\""
+          },
+          {
+            "type": "command",
             "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instance-automation-guard.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instance-automation-guard.py\"; fi",
             "timeout": 5
           },
@@ -319,6 +365,11 @@
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/handoff-provenance-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/handoff-provenance-lint.py\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/hook_envelope_audit.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/hook_envelope_audit.py\" --hook",
+            "timeout": 10
           }
         ]
       },
@@ -328,6 +379,15 @@
           {
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/portability-lint-hook.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/portability-lint-hook.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-engine-door.py\" && python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-engine-door.py\""
           }
         ]
       }
@@ -380,6 +440,20 @@
             "type": "command",
             "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/kb-graph-guard.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/kb-graph-guard.py\"; fi",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; then python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; fi"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; then python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; fi"
           }
         ]
       }

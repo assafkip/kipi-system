@@ -21,9 +21,28 @@ SKELETON_BRANCH="main"
 # staged rollout is the only safe way to ship anything with this blast radius.
 DRY_RUN=""
 ONLY=""
+# --refuse-instance-ahead: abandon an instance BEFORE its pre-sync commit when
+# the run would overwrite a file whose instance copy the skeleton never shipped
+# (see instance_ahead_scan). Off by default: fleet-wide the hit is usually
+# hook churn, and a refusal that fires on 24 instances gets switched off. The
+# consulting run script passes it, because there "ahead" has meant real work
+# every time (2026-09-06, three times in one day).
+REFUSE_INSTANCE_AHEAD=0
+# --skip-reach-preflight: run without first asking fleet-reach-audit.py which
+# instances would refuse. See reach_preflight. The hatch exists so a genuinely
+# unblockable instance cannot wedge the whole fleet, and it says so out loud.
+SKIP_REACH_PREFLIGHT=0
+# The operator's own arguments, captured BEFORE the parse loop shifts them
+# away. reach_preflight prints a "proceed anyway" line, and inside a function
+# $* is the FUNCTION's arguments -- which are none -- so the printed remedy
+# silently dropped --dry-run and --only and pasted as a full real fleet sync
+# (PR #396 review, major). Never use $* for that line.
+UPDATE_ARGV="$*"
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN="--dry-run"; shift ;;
+    --refuse-instance-ahead) REFUSE_INSTANCE_AHEAD=1; shift ;;
+    --skip-reach-preflight) SKIP_REACH_PREFLIGHT=1; shift ;;
     --only)
       ONLY="${2:-}"
       if [ -z "$ONLY" ]; then
@@ -34,7 +53,7 @@ while [ $# -gt 0 ]; do
       ;;
     *)
       echo "ERROR: unknown argument: $1" >&2
-      echo "Usage: kipi-update.sh [--dry-run] [--only <instance-name>]" >&2
+      echo "Usage: kipi-update.sh [--dry-run] [--only <instance-name>] [--refuse-instance-ahead] [--skip-reach-preflight]" >&2
       exit 1
       ;;
   esac
@@ -291,6 +310,101 @@ plugin_copy_rsync_flags() {
   local entry
   for entry in "${PLUGIN_COPY_EXCLUDES[@]}"; do
     printf -- '--exclude=%s\n' "${entry%%::*}"
+  done
+}
+
+# "Instance ahead of the skeleton" (sp-1ad08728): a file this run would
+# OVERWRITE whose instance copy is content the skeleton never shipped for that
+# path. Three times on 2026-09-06 the sync replaced exactly that and the
+# instance's own gates went red only after the rsync had landed: the voiceloop
+# engine (extra modules), voice-stop-gate.py (five extra defs, founder_typed_text
+# among them, port still on an open PR) and voice-lint's BANNED_WORDS (two
+# entries removed after measuring the founder's own corpus). Nothing in the
+# updater said so beforehand; the dry run listed the files as changes like any
+# other and the refusal came from a downstream gate with the damage done.
+#
+# The question is answered by fleet_authored_blob, the shipped-blob check the
+# updater already uses for authorship: bytes equal to ANY skeleton version of
+# the path are never "ahead" (a stale instance is behind, not ahead; a hook
+# that committed the updater's own bytes is neither). Only content the skeleton
+# never shipped counts, which is what makes this language-agnostic: a list, a
+# rule, a script all read the same way. The candidate set comes from the same
+# itemized rsync previews the real run uses, with the same excludes, so it
+# cannot drift from what the run would change.
+#
+# Report by default, one line per file, and again in the run summary next to
+# Updated/Failed, because a 1,100-line dry log hid rewritten=8 for a morning.
+# --refuse-instance-ahead turns a hit into an abandon BEFORE the pre-sync
+# commit: nothing staged, nothing deleted.
+INSTANCE_AHEAD_REPORT=""
+INSTANCE_AHEAD_TOTAL=0
+INSTANCE_AHEAD_HITS=0
+
+# $1 skeleton source dir for one scope, $2 the instance dir it lands in,
+# $3 the scope's skeleton-relative prefix (for fleet_authored_blob),
+# $4 the scope's instance-relative prefix ("" at the instance root),
+# $5 the instance root (for git ls-files), $6 the instance name,
+# $7.. the rsync flags the real run uses for this scope.
+instance_ahead_scan() {
+  local src="$1" dest="$2" skel_rel="$3" inst_rel="$4" root="$5" name="$6"
+  shift 6
+  [ -d "$src" ] && [ -d "$dest" ] || return 0
+  local line rel inst_file skel_file shown detail
+  while IFS= read -r line; do
+    case "$line" in
+      '>f+++++++++'*) continue ;;
+      '>f'*) ;;
+      *) continue ;;
+    esac
+    rel="${line#* }"
+    inst_file="$dest/$rel"
+    skel_file="$src/$rel"
+    [ -f "$inst_file" ] && [ -f "$skel_file" ] || continue
+    shown="$rel"
+    [ -n "$inst_rel" ] && shown="$inst_rel/$rel"
+    # Tracked only: an untracked or unstaged local edit is the dirty guard's
+    # business further down, and it refuses the whole instance.
+    git -C "$root" ls-files --error-unmatch -- "$shown" >/dev/null 2>&1 || continue
+    fleet_authored_blob "$skel_rel/$rel" "$inst_file" && continue
+    detail="$(python3 "$SCRIPT_DIR/kipi-update-instance-ahead.py" "$inst_file" "$skel_file" 2>/dev/null)" \
+      || detail="differs"
+    echo "  instance ahead: $shown ($detail)"
+    INSTANCE_AHEAD_HITS=$((INSTANCE_AHEAD_HITS + 1))
+    INSTANCE_AHEAD_TOTAL=$((INSTANCE_AHEAD_TOTAL + 1))
+    INSTANCE_AHEAD_REPORT="$INSTANCE_AHEAD_REPORT
+    - $name: $shown ($detail)"
+  done < <(rsync -ain "$src/" "$dest/" "$@" 2>/dev/null || true)
+}
+
+# Every scope the run writes, from the same sources: the skeleton's committed
+# q-system/ (git archive HEAD, as the real sync uses), each managed plugin from
+# the working tree (as the plugins rsync uses), and the three .claude/ md dirs
+# (copied per file). $1 instance path, $2 subtree prefix, $3 instance name.
+instance_ahead_preflight() {
+  local path="$1" prefix="$2" name="$3" src_tmp dest kind
+  INSTANCE_AHEAD_HITS=0
+  src_tmp="$(mktemp -d)"
+  if git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ 2>/dev/null \
+      | tar -x -C "$src_tmp" 2>/dev/null; then
+    dest="$path"
+    [ -n "$prefix" ] && dest="$path/$prefix"
+    # shellcheck disable=SC2046
+    instance_ahead_scan "$src_tmp/q-system" "$dest" "q-system" "$prefix" "$path" "$name" \
+      $(rsync_owned_excludes)
+  else
+    echo "  WARN: instance-ahead scan skipped for q-system (archive export failed)"
+  fi
+  rm -r -- "$src_tmp"
+  if [ -d "$SKELETON_PLUGIN_ROOT" ]; then
+    while IFS= read -r -d '' plugin_name; do
+      # shellcheck disable=SC2046
+      instance_ahead_scan "$SKELETON_PLUGIN_ROOT/$plugin_name" "$path/plugins/$plugin_name" \
+        "plugins/$plugin_name" "plugins/$plugin_name" "$path" "$name" $(plugin_copy_rsync_flags)
+    done < <(managed_plugin_names)
+  fi
+  for kind in agents output-styles rules; do
+    instance_ahead_scan "$SCRIPT_DIR/.claude/$kind" "$path/.claude/$kind" ".claude/$kind" \
+      ".claude/$kind" "$path" "$name" --include='*.md' --exclude='*'
   done
 }
 
@@ -721,6 +835,7 @@ cleanup_updater_temps() {
     rm -r -- "$CHECKPOINT_DIR"
     CHECKPOINT_DIR=""
   fi
+  clear_run_marker
   cleanup_dry_model
 }
 
@@ -869,6 +984,18 @@ restore_instance() {
   # passes it legitimately -- and an unscoped checkout here would then delete
   # exactly the work the scoping was meant to stop blocking on. The two must
   # move together; the pathspec below is the same one the guard uses.
+  # The restore itself takes index.lock (reset, checkout). An abandon caused
+  # by a lock held past the bound would otherwise run these two silently into
+  # the same lock, restore nothing, and leave this run's writes uncommitted:
+  # dirty forever, refused by every later run (PR #314 review, round 1).
+  # Wait the same bound again; if the writer is still there, say exactly what
+  # was left behind instead of pretending the checkpoint was restored.
+  if ! wait_for_index_lock "$target" "restore"; then
+    echo "  ERROR: restore could NOT run: index.lock still held after ${LOCK_WAIT_S}s;" \
+      "this instance keeps this run's uncommitted writes under $CHECKPOINT_PREFIX/, .claude/ and plugins/" \
+      "until the lock clears and the tree is restored by hand" >&2
+    return 1
+  fi
   git -C "$target" reset -q HEAD -- "$CHECKPOINT_PREFIX/" .claude/ plugins/ \
     $(pathspec_owned_excludes "$CHECKPOINT_PREFIX") 2>/dev/null || true
   # `git checkout -- A B C` is ALL-OR-NOTHING. If ANY pathspec matches nothing
@@ -948,6 +1075,7 @@ abandon_instance() {
   local message="${1:-}"
   [ -n "$message" ] && echo "$message"
   restore_instance
+  clear_run_marker
   if [ -n "${ARCHIVE_TMP:-}" ] && [ -d "$ARCHIVE_TMP" ]; then
     rm -r -- "$ARCHIVE_TMP"
     ARCHIVE_TMP=""
@@ -1193,6 +1321,152 @@ SH
   return "$rc"
 }
 
+# A LIVE index.lock is another writer, not debris, and the answer is to wait.
+#
+# 2026-09-06 14:30, consulting: the q-system commit landed, then the config
+# commit died seconds later on "Unable to create '.git/index.lock': File
+# exists" and the whole instance was abandoned half-delivered (q-system
+# committed, .claude/ written but uncommitted, plugins/ copied but never
+# added or deleted). The holder was a peer session's `git status`, which
+# refreshes the index under that lock for a fraction of a second. The stale
+# lock deletion at the top of the instance loop covers a crashed writer that
+# left a lock behind; it cannot cover a writer that is alive right now, and
+# deleting THAT lock is how two writers corrupt one index. Captured as
+# sp-523c1a25. So: every git command this run makes that takes the index
+# lock (add, commit) first waits for the lock to be absent, bounded, and a
+# commit that still dies on that exact error is retried a bounded number of
+# times. Any other failure is returned unchanged on the first attempt.
+# The default has to outlast the LONGEST known instance hold, not a typical
+# one. On the same 2026-09-06 run the consulting instance's own Stop-hook
+# auto-commit held the index lock through its 445 s pre-commit verify. A 120 s
+# bound refuses that instance and leaves its tree half-delivered for manual
+# repair, which is the failure this whole change exists to remove. 600 s
+# clears 445 s with room. The tests set their own bound through the env var.
+LOCK_WAIT_S="${KIPI_UPDATE_LOCK_WAIT_S:-600}"
+LOCK_RETRY_MAX=3
+
+index_lock_path() {
+  local target="$1" lock
+  lock="$(git -C "$target" rev-parse --path-format=absolute --git-path index.lock 2>/dev/null)" \
+    || lock="$target/.git/index.lock"
+  printf '%s\n' "$lock"
+}
+
+# $1 = instance path, $2 = the step name the log and the failure carry.
+# Returns 1 only when the lock outlived the bound; a missing lock returns 0
+# at once, so calling this before every index write costs nothing when the
+# checkout is quiet.
+wait_for_index_lock() {
+  local target="$1" step="$2" lock waited=0
+  lock="$(index_lock_path "$target")"
+  while [ -e "$lock" ]; do
+    if [ "$waited" -ge "$LOCK_WAIT_S" ]; then
+      echo "  ERROR: index.lock held past ${LOCK_WAIT_S}s at $step; another git writer owns this checkout" >&2
+      return 1
+    fi
+    if [ "$waited" -eq 0 ] || [ $((waited % 10)) -eq 0 ]; then
+      echo "  waiting for index.lock at $step (${waited}s of ${LOCK_WAIT_S}s)"
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 0
+}
+
+# $1 = instance path, $2 = step name, $3.. = the commit command to run.
+# Retries ONLY on the live-lock error text; every other failure returns on
+# attempt 1 with its stderr intact, because a pre-commit refusal or a bad
+# pathspec is not something waiting fixes (self-healing-retry.md rule 5).
+retry_on_index_lock() {
+  local target="$1" step="$2"
+  shift 2
+  local attempt=1 rc errf
+  errf="$(mktemp)"
+  while :; do
+    if ! wait_for_index_lock "$target" "$step"; then
+      rm -- "$errf"
+      return 1
+    fi
+    if "$@" 2>"$errf"; then
+      rc=0
+    else
+      rc=$?
+    fi
+    if [ "$rc" -eq 0 ]; then
+      cat "$errf" >&2
+      rm -- "$errf"
+      return 0
+    fi
+    if [ "$attempt" -lt "$LOCK_RETRY_MAX" ] &&
+        grep -qE "index\.lock': File exists|Unable to create .*index\.lock" "$errf"; then
+      echo "  commit at $step hit a live index.lock (attempt $attempt of $LOCK_RETRY_MAX); waiting and retrying"
+      attempt=$((attempt + 1))
+      sleep 1
+      continue
+    fi
+    cat "$errf" >&2
+    rm -- "$errf"
+    return "$rc"
+  done
+}
+
+# The run marker: while one instance apply is in flight, <git-common-dir>/
+# kipi-update.run holds this pid and the start time. The instance's own
+# Stop-hook auto-commit (q-system/hooks/auto-commit.py) refuses to commit
+# while a LIVE marker exists, so the updater's half-delivered files are not
+# swept into the hook's generic commits mid-run (2026-09-06 14:33, consulting:
+# "chore: update rules (10 files)" was the skeleton's rules, committed by the
+# hook under its own name while the updater was still delivering; sp-9306036e).
+# The common dir, not the worktree's git dir, so a linked worktree of the
+# same checkout reads the same marker. Cleared on every exit path.
+RUN_MARKER=""
+RUN_MARKER_MAX_AGE_S="${KIPI_UPDATE_RUN_MARKER_MAX_AGE_S:-7200}"
+
+# The marker is also the one-run-per-instance lock. A marker whose pid is
+# alive and whose stamp is younger than the bound belongs to ANOTHER updater
+# still applying this instance; writing over it would let two runs interleave
+# on one index and let the first run's clear_run_marker strip the second's
+# protection (PR #314 review, round 1). Returns 1 in that case; the caller
+# abandons the instance. A dead pid or an old stamp is a crashed run's
+# leftover and is replaced.
+run_marker_is_live_foreign() {
+  local marker="$1" pid stamp age
+  [ -f "$marker" ] || return 1
+  read -r pid stamp < "$marker" || return 1
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$pid" != "$$" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  age="$(python3 -c 'import calendar,sys,time
+try:
+    print(int(time.time() - calendar.timegm(time.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ"))))
+except Exception:
+    print(-1)' "${stamp:-}" 2>/dev/null)" || age=-1
+  [ "$age" -ge 0 ] && [ "$age" -le "$RUN_MARKER_MAX_AGE_S" ]
+}
+write_run_marker() {
+  local target="$1" common
+  common="$(git -C "$target" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+    || return 0
+  if run_marker_is_live_foreign "$common/kipi-update.run"; then
+    echo "  ERROR: another fleet update is applying this instance right now (pid $(cut -d' ' -f1 "$common/kipi-update.run")); refusing to run two at once" >&2
+    return 1
+  fi
+  RUN_MARKER="$common/kipi-update.run"
+  printf '%s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RUN_MARKER"
+}
+# Only this run's own marker is ever removed: the first field is the pid that
+# wrote it, and a marker carrying any other pid is left for its owner.
+clear_run_marker() {
+  local owner
+  if [ -n "${RUN_MARKER:-}" ] && [ -f "$RUN_MARKER" ]; then
+    owner="$(cut -d' ' -f1 "$RUN_MARKER" 2>/dev/null || true)"
+    if [ "$owner" = "$$" ]; then
+      rm -- "$RUN_MARKER"
+    fi
+  fi
+  RUN_MARKER=""
+}
+
 # One answer to "is this untracked file the founder's work, or this sync's own
 # debris?". Two guards ask it -- the .claude/+plugins/ collision scan and the
 # q-system collision scan -- and each used to answer with its own carve-out,
@@ -1356,6 +1630,151 @@ reject_untracked_config_collisions() {
 
 trap cleanup_updater_temps EXIT
 
+# THE 2026-09-20 SCAR, and the reason this runs before a single instance is
+# touched rather than being a line in a runbook.
+#
+# A full run costs 20-25 minutes and reports only the FIRST refusal per
+# instance. So an operator diagnosing "why will the fleet not sync" by running
+# it learns exactly one blocker per 25 minutes. Measured: FIVE runs across two
+# days (2026-09-19 and 2026-09-20), each surfacing one new blocker -- a dirty
+# tree, then a skeleton one commit behind origin/main, then four dangling
+# symlinks -- and the fleet was not synced at the end of either day.
+#
+# fleet-reach-audit.py answers the same question for every instance at once,
+# read-only, in about a second. It existed the whole time. It was written on
+# 2026-08-14 (ASK-797/ASK-803) after the same pattern burned that rollout, and
+# neither 2026-09 session opened it.
+#
+# A memory file, a rule, or a comment would not have changed that: the previous
+# sessions had all three and still reached for the 25-minute tool. So the audit
+# is not documented here, it is INVOKED here, and the long path cannot start
+# without the short answer being printed first.
+#
+# Three deliberate choices:
+#
+#   IT PRINTS EVERY TIME, including on a clean fleet. "REACH: 24 of 24" costs
+#   one line and is the liveness signal -- a preflight that only speaks when
+#   unhappy is indistinguishable from one that did not run (the zero-vs-never
+#   rule this repo already applies to its counters).
+#
+#   IT REFUSES WHEN BLOCKERS EXIST, in BOTH modes. A run that proceeds past a
+#   known blocker spends 25 minutes to re-report what was just printed. The
+#   hatch is --skip-reach-preflight, named in the refusal, because a single
+#   permanently-stuck instance must not be able to wedge the other 24.
+#
+#   A MISSING OR MUTE AUDIT ABORTS, matching the propagation leak gate above.
+#   A preflight that silently passes when its own tool is broken is the
+#   "gate that cannot run must not pass" defect, and this file already refuses
+#   that way for the leak gate. The ONE exception is a skeleton with no
+#   instance-registry.json -- every kipi-update test fixture is exactly that --
+#   and the disarm is announced rather than silent.
+#
+# Pinned by test-kipi-update-reach-preflight.sh.
+reach_preflight() {
+  local audit="$SCRIPT_DIR/fleet-reach-audit.py" out rc
+  if [ "$SKIP_REACH_PREFLIGHT" = "1" ]; then
+    echo "reach preflight: SKIPPED (--skip-reach-preflight); blockers will be"
+    echo "  discovered one instance at a time, which is what this flag costs."
+    return 0
+  fi
+  # DISARMED, not aborted, when the skeleton carries no registry OR no audit.
+  # Every kipi-update fixture builds a partial skeleton: a registry but no
+  # fleet-*.py. Aborting there made three separation tests red (PR #396 review),
+  # which is this gate going red on its own population -- the shape that gets a
+  # gate switched off. A PRESENT-BUT-BROKEN audit still aborts below; that is
+  # the "cannot run must not pass" case. Absent in a synthetic skeleton is not.
+  if [ ! -f "$SCRIPT_DIR/instance-registry.json" ]; then
+    echo "reach preflight: disarmed (no instance-registry.json at $SCRIPT_DIR)"
+    return 0
+  fi
+  if [ ! -f "$audit" ]; then
+    echo "reach preflight: disarmed (no fleet-reach-audit.py at $SCRIPT_DIR)"
+    return 0
+  fi
+  out="$(python3 "$audit" --json 2>/dev/null)" && rc=0 || rc=$?
+  if [ -z "$out" ]; then
+    echo ""
+    echo "ABORT: the reach preflight produced no verdict (exit $rc)."
+    echo "A preflight that cannot run must not pass. Fix it, or pass"
+    echo "--skip-reach-preflight to proceed without it."
+    exit 1
+  fi
+  # SCOPED TO WHAT THIS RUN WOULD TOUCH, and refusing only on FLEET-caused
+  # blockers. Both halves are the same review finding (PR #396, major):
+  #
+  #   * counting every instance meant one repo holding founder work refused a
+  #     run scoped to a DIFFERENT, clean instance. On the live fleet that is
+  #     every invocation, and the only escape is --skip-reach-preflight, i.e.
+  #     the gate off.
+  #   * BLOCKED-FOUNDER is a CORRECT refusal that stands until the founder
+  #     commits. It is theirs to clear, it is not a defect, and it must never
+  #     stop an unrelated instance from syncing. It prints as information.
+  #
+  # BLOCKED-FLEET is the updater's own exhaust, `fleet-unblock.py --apply`
+  # clears it with a proof per path, and THAT is worth refusing over.
+  # `|| rc=$?`, and neither a bare call nor `if !`. Two traps, both hit:
+  #   * this file runs under `set -e` (line 2), so a BARE python3 exiting
+  #     non-zero kills the script before rc is read and the remedy never prints;
+  #   * `if ! python3 ...; then rc=$?; fi` looks like the fix and is not -- `!`
+  #     inverts the status, so $? inside the branch is 0 and the refusal is
+  #     skipped entirely, which let the run ENTER a blocked instance.
+  # Only `|| rc=$?` both suppresses set -e and preserves python's real status.
+  rc=0
+  python3 - "$out" "${ONLY:-}" <<'PYEOF' || rc=$?
+import json, sys
+rows = json.loads(sys.argv[1])
+only = sys.argv[2]
+if only:
+    rows = [r for r in rows if r.get("name") == only]
+fleet = [r for r in rows if r.get("verdict") == "BLOCKED-FLEET"]
+founder = [r for r in rows if r.get("verdict") == "BLOCKED-FOUNDER"]
+ok = [r for r in rows if r.get("verdict") == "WOULD-SYNC"]
+# MISSING and NOT-A-REPO count against the denominator, so they are NAMED.
+# Unnamed, they read as an unexplained shortfall -- "23 of 24" with nothing
+# accounting for the 24th (PR #396 review round 2, minor).
+other = [r for r in rows
+         if r.get("verdict") not in ("WOULD-SYNC", "BLOCKED-FLEET", "BLOCKED-FOUNDER")]
+scope = f" (scoped to --only {only})" if only else ""
+print(f"reach preflight: {len(ok)} of {len(rows)} would sync now{scope}")
+for r in other:
+    print(f"  {r['name']}: {r.get('verdict')} (counted in the total, not syncable)")
+for r in founder:
+    print(f"  {r['name']}: founder work, correctly refused until committed "
+          f"(not a fleet blocker, not counted against this run)")
+    for b in (r.get("blocked_by") or [])[:5]:
+        print(f"      {b.get('status','?')}  {b.get('path')}")
+for r in fleet:
+    print(f"  {r['name']}: BLOCKED by updater exhaust")
+    for b in (r.get("blocked_by") or [])[:5]:
+        print(f"      {b.get('status','?')}  {b.get('path')}")
+sys.exit(2 if fleet else 0)
+PYEOF
+  if [ "$rc" -eq 2 ]; then
+    echo ""
+    echo "ABORT: instance(s) named above carry the updater's own exhaust."
+    echo "This is what the audit CAN see -- a dirty tree inside the synced"
+    echo "pathspec. It does NOT cover a stale skeleton or a dangling symlink;"
+    echo "those are separate gates, above and inside the loop."
+    echo ""
+    echo "  clear what is attributable:  python3 $SCRIPT_DIR/fleet-unblock.py --apply"
+    echo "  re-measure:                  python3 $audit"
+    echo "  proceed anyway:              $0 $UPDATE_ARGV --skip-reach-preflight"
+    echo ""
+    echo "  fleet-unblock clears only what it can ATTRIBUTE, and it exits 0 even"
+    echo "  when it refuses a path -- so a clean-looking run can change nothing."
+    echo "  Read its 'refused' count. If the re-measure above still names the same"
+    echo "  instance, that path needs a decision, not another --apply: commit it,"
+    echo "  or scope this run with --only, or proceed with --skip-reach-preflight."
+    exit 1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    echo ""
+    echo "ABORT: could not read the reach verdict (exit $rc)."
+    exit 1
+  fi
+}
+reach_preflight
+
 while IFS='|' read -r name path prefix itype declared; do
   # Filter INSIDE the loop, not in the feed, so an --only name that matches
   # nothing is caught by the post-loop check rather than reading as an empty
@@ -1406,6 +1825,15 @@ while IFS='|' read -r name path prefix itype declared; do
   # SNAP would point restore at a torn-down directory.
   CHECKPOINT_TARGET=""
   CHECKPOINT_PREFIX=""
+  # The checkpoint DIRECTORY too, not only the target. restore_instance returns
+  # early on an empty target, so a bail before this instance's checkpoint
+  # already restored nothing; clearing the directory as well makes that
+  # structural rather than dependent on one guard line, and stops the
+  # previous instance's snapshot outliving its iteration (PR #314 round 3).
+  if [ -n "${CHECKPOINT_DIR:-}" ] && [ -d "$CHECKPOINT_DIR" ]; then
+    rm -r -- "$CHECKPOINT_DIR"
+  fi
+  CHECKPOINT_DIR=""
   SNAP=""
   ORIGINAL_PATH="$path"
   ORIGINAL_HEAD=""
@@ -1646,6 +2074,9 @@ PY
         rm -f "$lockfile"
       fi
     done
+    if ! write_run_marker "$path"; then
+      abandon_instance "  ERROR: refusing to overlap another fleet update on this instance" && continue
+    fi
 
     # Abort any zombie rebase/merge/cherry-pick
     if [ -d "$path/.git/rebase-merge" ] || [ -d "$path/.git/rebase-apply" ]; then
@@ -1748,6 +2179,10 @@ PY
         say "           Leaving it. It will be deleted by this sync until it is untracked."
         continue
       fi
+      # This untrack and its reset backouts are index writes too (PR #314
+      # round 3); a lock held past the bound skips this path, with the error
+      # printed, rather than failing the whole instance.
+      wait_for_index_lock "$path" "untrack $sys_path" || continue
       if ! git rm --cached --quiet -- "$sys_path" 2>/dev/null; then
         say "  WARNING: could not untrack $sys_path"
         continue
@@ -1758,7 +2193,7 @@ PY
         git reset --quiet -q -- "$sys_path" >/dev/null 2>&1 || true
         continue
       fi
-      if git commit -q -m "chore: untrack instance-local $sys_path [no-issue: fleet updater instance-local untrack]
+      if wait_for_index_lock "$path" "untrack commit" && git commit -q -m "chore: untrack instance-local $sys_path [no-issue: fleet updater instance-local untrack]
 
 This file is instance-local (ASK-282) and gitignored by policy. While it was
 tracked, the skeleton sync deleted it -- the skeleton once tracked the path and
@@ -1782,6 +2217,15 @@ The file itself is untouched on disk." 2>/dev/null; then
         sys_owned_dirty+=("$sys_path")
       fi
     done < <(system_owned_paths_for_run)
+
+    # Before anything is committed or written: which files this run would
+    # overwrite carry content the skeleton never shipped (sp-1ad08728). Runs in
+    # every mode, so the plain dry run, the fleet dry sweep's model run and the
+    # apply all print the same lines.
+    instance_ahead_preflight "$path" "$prefix" "$name"
+    if [ "$REFUSE_INSTANCE_AHEAD" = "1" ] && [ "$INSTANCE_AHEAD_HITS" -gt 0 ]; then
+      abandon_instance "  ERROR: instance is ahead of the skeleton on $INSTANCE_AHEAD_HITS file(s); refusing (--refuse-instance-ahead), nothing staged, nothing written" && continue
+    fi
 
     # ASK-605. The list above is hand-maintained and names 3 paths. auto-commit.py's
     # classifier answers the SAME question -- "is this the system's own exhaust?" --
@@ -2050,15 +2494,24 @@ The file itself is untouched on disk." 2>/dev/null; then
       # judged a local edit, i.e. the case where sweeping would be worst.
       if [ "${#sys_add_paths[@]}" -eq 0 ]; then
         say "  nothing to commit: every dirty system-owned path is a local edit"
-      elif ! sys_commit_err="$(git commit -q -m "chore: commit system-written state before skeleton sync [no-issue: fleet updater system-state commit]
+      else
+        # No command substitution around the commit. Inside one, the lock
+        # wait's progress lines (the first wait AND every retry's) were
+        # captured with the commit's stderr and printed only on failure, so a
+        # two-minute wait was silent (PR #314 rounds 2 and 3). stdout reaches
+        # the terminal as it happens; only stderr is kept for the warning.
+        sys_errf="$(mktemp)"
+        if ! retry_on_index_lock "$path" "system-state commit" git commit -q -m "chore: commit system-written state before skeleton sync [no-issue: fleet updater system-state commit]
 
 These files are written by the fleet itself (sycophancy stamp, integrity
 baseline, hook state, skeleton-shipped plugins). Committing them here keeps the
 updater from being blocked by its own exhaust; founder work is never included
-because this commit is pathspec-limited." -- "${sys_add_paths[@]}" 2>&1)"; then
-        echo "  WARNING: the system-state commit FAILED; this instance will very"
-        echo "  likely be refused below over dirt that is not founder work:"
-        printf '%s\n' "$sys_commit_err" | sed 's/^/    /'
+because this commit is pathspec-limited." -- "${sys_add_paths[@]}" 2>"$sys_errf"; then
+          echo "  WARNING: the system-state commit FAILED; this instance will very"
+          echo "  likely be refused below over dirt that is not founder work:"
+          sed 's/^/    /' "$sys_errf"
+        fi
+        rm -- "$sys_errf"
       fi
     fi
 
@@ -2099,6 +2552,44 @@ because this commit is pathspec-limited." -- "${sys_add_paths[@]}" 2>&1)"; then
     # founder's unstaged edits, which is the opposite of the point.
     if ! checkpoint_instance "$path" "$prefix"; then
       abandon_instance "  ERROR: could not checkpoint the instance; refusing to write" && continue
+    fi
+  fi
+
+  # voicekit -> voiceloop, BEFORE the rsync that would strand the imports.
+  #
+  # sp-8d55455a. The skeleton renamed the voice package in cf6acdb4. plugins/
+  # rsyncs with --delete, so the sync alone lands voiceloop/, removes voicekit/,
+  # and cannot touch the code that imports it -- that code is instance-owned and
+  # lives OUTSIDE plugins/ (consulting's q-consult/pipeline/voice.py puts
+  # <repo>/plugins/kipi-core on sys.path and imports the package by name).
+  # Measured 2026-08-30: 24 of 25 registered instances still carried the old
+  # name, so this sync was armed to break the voice pipeline in every one.
+  #
+  # It runs HERE and the placement is the safety argument, the same one
+  # checkpoint_instance makes directly above:
+  #   * AFTER the dirty-tree guard, so the tree is proven clean and every change
+  #     below is one THIS run made;
+  #   * AFTER the checkpoint, so a later failure restores through the normal path;
+  #   * BEFORE the rsync, so the package already answers to the new name when the
+  #     skeleton's copy lands on top of it and --delete has nothing to strand.
+  #
+  # A migration is not a one-time script somebody remembers to run. An instance
+  # that syncs next month without this step breaks in exactly the same way, so
+  # it belongs in the update path or it does not exist.
+  #
+  # The helper commits its own work: it writes outside $prefix/, which the sync
+  # commit below is pathspec-limited away from, and an uncommitted rewrite would
+  # leave the instance permanently dirty and refused at this very guard forever.
+  # Non-zero means it could not finish; abandoning is correct, because the
+  # alternative is running the --delete rsync against imports it did not fix.
+  VOICELOOP_MIGRATE="$SCRIPT_DIR/kipi-update-voiceloop-migrate.py"
+  if [ -f "$VOICELOOP_MIGRATE" ] && [ -d "$path/plugins/kipi-core" ]; then
+    if [ "$DRY_RUN" != "--dry-run" ] || [ "$MODEL_RUN" = "1" ]; then
+      if ! python3 "$VOICELOOP_MIGRATE" --repo "$path" --apply; then
+        abandon_instance "  ERROR: voiceloop migration failed; rsync not started" && continue
+      fi
+    else
+      python3 "$VOICELOOP_MIGRATE" --repo "$path" | sed 's/^/  voiceloop: /' || true
     fi
   fi
 
@@ -2269,13 +2760,14 @@ PY
         rm -r -- "$ARCHIVE_TMP"
         ARCHIVE_TMP=""
         cd "$path"
-        if ! stage_q_system_sync "$path" "$prefix" 2>/dev/null; then
+        if ! wait_for_index_lock "$path" "q-system sync staging" ||
+            ! stage_q_system_sync "$path" "$prefix" 2>/dev/null; then
           unstage_scope "$path" "$prefix/"
           abandon_instance "  ERROR: could not stage q-system sync" && continue
         fi
         CHANGES=$(git diff --cached --name-only 2>/dev/null | wc -l | tr -d ' ')
         if [ "$CHANGES" != "0" ]; then
-          if ! guarded_commit "$path" \
+          if ! retry_on_index_lock "$path" "q-system sync commit" guarded_commit "$path" \
               "chore: sync q-system from skeleton $(date +%Y-%m-%d) [no-issue: fleet updater skeleton sync]"; then
             abandon_instance "  ERROR: could not commit q-system sync" && continue
           fi
@@ -2470,11 +2962,15 @@ print("\n".join(mod.EXTRA_WATCHED))
     # .claude/ and plugins/ permanently dirty in every instance repo.
     if git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
       if ! ( cd "$path" &&
+        # The untrack below is this block's FIRST index write, so the wait sits
+        # before it, not before the staging that follows (PR #314 round 2).
+        wait_for_index_lock "$path" "config sync staging" &&
         if git ls-files --error-unmatch plugins/memory-lifecycle \
             >/dev/null 2>&1; then
           git rm -r -q --cached plugins/memory-lifecycle
         fi &&
-        { stage_config_sync "$path" || { unstage_scope "$path" .claude/ plugins/; false; }; } &&
+        { stage_config_sync "$path" ||
+            { unstage_scope "$path" .claude/ plugins/; false; }; } &&
         # THE COMMIT HALF NEEDS THE SAME UNWIND AS THE STAGING HALF (ASK-797).
         # unstage_scope was wired to stage_config_sync's failure only, so a
         # staging error unwound cleanly and a COMMIT error did not -- it left the
@@ -2489,7 +2985,7 @@ print("\n".join(mod.EXTRA_WATCHED))
         # shape, and no later run could clear it -- a worktree checkout does not
         # touch the index, so it looked like founder work forever.
         { if ! git diff --cached --quiet 2>/dev/null; then
-            guarded_commit "$path" \
+            retry_on_index_lock "$path" "config sync commit" guarded_commit "$path" \
               "chore: sync .claude config + plugins from skeleton $(date +%Y-%m-%d) [no-issue: fleet updater skeleton sync]" ||
               { unstage_scope "$path" .claude/ plugins/; false; }
           fi; }
@@ -2505,6 +3001,7 @@ print("\n".join(mod.EXTRA_WATCHED))
     fi
 
     echo "  Config synced"
+    clear_run_marker
   fi
 
   # Post-sync capability gate (structure/wiring/data diff, no test execution —
@@ -2581,6 +3078,11 @@ fi
 echo "  Skipped: $SKIP"
 if [ -n "${GATE_FAIL:-}" ]; then
   echo "  CAPABILITY GATE RED in:$GATE_FAIL"
+fi
+# Repeated here on purpose: the per-instance line sits inside a section a
+# reader scrolls past, and the summary is what gets read.
+if [ "$INSTANCE_AHEAD_TOTAL" -gt 0 ]; then
+  echo "  INSTANCE AHEAD OF SKELETON ($INSTANCE_AHEAD_TOTAL file(s) whose instance content the skeleton never shipped; a sync overwrites them):$INSTANCE_AHEAD_REPORT"
 fi
 # In the summary, not only inline: a real run prints ~40 lines per instance and
 # the summary is what gets read. An ungoverned instance that only appears on
