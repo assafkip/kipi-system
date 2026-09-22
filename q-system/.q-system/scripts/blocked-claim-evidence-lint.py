@@ -27,8 +27,12 @@ THE THREE SUB-SHAPES, each with its own remediation (generic stderr teaches noth
                                LIVE" -- neither had ever been executed.
 
 MODE (this ships ADVISORY on purpose). `KIPI_BLOCKED_CLAIM_LINT_MODE`:
-  advisory (default)  exit 0, findings appended to output/blocked-claim-lint.jsonl
-  blocking            exit 2, per-sub-shape remediation on stderr
+  advisory (default)  exit 0, row tagged `event: advisory`
+  blocking            exit 2, per-sub-shape remediation on stderr,
+                      row tagged `event: blocked`
+BOTH modes append to output/blocked-claim-lint.jsonl (ASK-1958): a firing that stops
+a turn is the event most worth counting, so it cannot be the one that leaves no
+artifact. A turn with no findings writes nothing at all.
 A Stop hook that fires noisily trains the operator to skim, which costs the real alert
 later. So the false-positive rate gets measured on real session output from the
 advisory log FIRST, and `blocking` is turned on against that evidence, not against a
@@ -346,14 +350,30 @@ def _load_records(transcript_path: str) -> list[dict]:
     return out
 
 
-def _log_calibration(findings: list[Finding]) -> None:
-    """Advisory-mode output. This log IS the calibration evidence the promotion to
-    blocking has to be argued from, so a failure to write it must be visible, not
-    silently swallowed -- but it must never take down the turn either."""
+def _log_firing(findings: list[Finding], event: str) -> None:
+    """Append one row per firing, in BOTH modes. The single writer of this log.
+
+    Advisory rows are the calibration evidence the promotion to blocking has to be
+    argued from. Blocked rows are the firing record: which hook stopped a turn, for
+    what reason, and when. Until ASK-1958 (RCA rca-fleet-sync-two-day-spin-2026-09-20
+    row T6) only advisory wrote anything, so the mode that actually stops a turn was
+    the one mode leaving no artifact -- backwards, because a block is the event worth
+    counting. `event` keeps the two apart so the calibration corpus does not get
+    mixed in with the firings.
+
+    A failure to write must be visible, not silently swallowed, and must never take
+    down the turn either. Never called when there are no findings: this hook runs on
+    every turn, and a row per turn would bury the firings it exists to surface.
+    """
     root = Path(os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
     target = root / CALIBRATION_LOG
     row = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "hook": Path(__file__).name,
+        "event": event,
+        # The sub-shapes that fired, in first-seen order. Groupable without parsing
+        # the finding list, which is what a firing record has to be good for.
+        "reason": ", ".join(dict.fromkeys(f.pattern for f in findings)),
         "mode": MODE,
         "findings": [{"pattern": f.pattern, "line": f.line, "text": f.text[:300]}
                      for f in findings],
@@ -363,7 +383,7 @@ def _log_calibration(findings: list[Finding]) -> None:
         with target.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row) + "\n")
     except Exception as exc:
-        sys.stderr.write(f"blocked-claim-evidence-lint: calibration log unwritable "
+        sys.stderr.write(f"blocked-claim-evidence-lint: firing log unwritable "
                          f"({type(exc).__name__}: {exc})\n")
 
 
@@ -392,7 +412,7 @@ def main() -> int:
         return 0
 
     if MODE != "blocking":
-        _log_calibration(findings)
+        _log_firing(findings, "advisory")
         counts = ", ".join(
             f"{p} x{sum(1 for f in findings if f.pattern == p)}"
             for p in dict.fromkeys(f.pattern for f in findings))
@@ -400,6 +420,7 @@ def main() -> int:
               f"state claim(s) [{counts}] -> {CALIBRATION_LOG}")
         return 0
 
+    _log_firing(findings, "blocked")
     sys.stderr.write(
         "BLOCKED-CLAIM EVIDENCE (blocked): your answer asserts a blocked, denied, "
         "unavailable, or non-existent state with no command output next to it.\n\n"
