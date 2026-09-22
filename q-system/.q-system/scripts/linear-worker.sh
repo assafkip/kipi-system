@@ -2477,8 +2477,20 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # (sp-53aad86f). This is what makes a dispatcher-driven review distinguishable
     # from a hand run in the verdict record. It is set on the call rather than
     # exported once, so it cannot leak into an unrelated reviewer invocation.
-    KIPI_REVIEW_INVOKER=worker $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post --engine claude >>"$LOG" 2>&1 \
-      || say "WARN: the claude reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
+    KIPI_REVIEW_INVOKER=worker $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post --engine claude >>"$LOG" 2>&1
+    REVIEWER_RC=$?
+    # EXIT 4 IS A COMPLETED REVIEW, NOT A FAILURE (sp-46726f79, 2026-09-07). The
+    # reviewer returns it AFTER posting its comment and its commit status, to say
+    # that this round's findings repeat a file from the previous REQUEST CHANGES
+    # round -- the wrong-fix-shape signal. Folding it into the `|| say WARN` line
+    # would log "the PR stands, unreviewed" about a review that fully landed and
+    # set the gate, which is a false statement in the one log an operator scans.
+    # Anything else non-zero keeps the original meaning.
+    if [ "$REVIEWER_RC" = "4" ]; then
+      say "NOTE: the reviewer posted its verdict on PR #$PR_NUM and flagged it STRUCTURAL -- this round repeats a file from the previous REQUEST CHANGES round. Sweep the whole class in one pass or park the PR; a third patch on the same file is the loop that warning exists to stop."
+    elif [ "$REVIEWER_RC" != "0" ]; then
+      say "WARN: the claude reviewer failed on PR #$PR_NUM (rc=$REVIEWER_RC; the PR stands, unreviewed)"
+    fi
     # Read back the verdict RECORD the reviewer just wrote (never re-grep the
     # review prose) and state what happens next in plain terms. Rework itself
     # fires on the NEXT run, through the severity-floor gate above.
