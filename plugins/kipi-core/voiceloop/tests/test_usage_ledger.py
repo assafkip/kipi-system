@@ -158,3 +158,82 @@ def test_run_model_adds_the_json_flags_and_hands_back_plain_bytes(captured, tmp_
     rows = usage_ledger.read()
     assert len(rows) == 1 and rows[0]["bot"] == "cole" and rows[0]["job"] == "test_caller"
     assert rows[0]["total_cost_usd"] == captured["json_stdout"]["total_cost_usd"]
+
+
+# ---- PR #410 round 2 --------------------------------------------------------------
+
+_RATE_LIMIT_POST = ("Codex went dark mid-review again. Not a bug, a rate limit. "
+                    "The weekly counter resets at midnight, so the graph lies on Mondays.")
+
+
+def test_a_timed_out_call_whose_post_mentions_rate_limits_is_not_a_refusal():
+    # failure_row must keep limit_text()'s guard: a SUCCESS document is a post.
+    doc = {"type": "result", "subtype": "success", "is_error": False, "modelUsage": {},
+           "result": _RATE_LIMIT_POST}
+    row = usage_ledger.failure_row("timeout", bot="t", stdout=json.dumps(doc))
+    assert row["limit_text"] is None
+
+
+def test_every_row_shape_carries_schema_producer_and_kind(captured):
+    ok = json.dumps(captured["json_stdout"])
+    rows = [usage_ledger.finish(ok, bot="t")[1],
+            usage_ledger.failure_row("timeout", bot="t"),
+            usage_ledger.finish("not json", bot="t")[1]]
+    assert [r["kind"] for r in rows] == ["run", "failure", "parse_error"]
+    assert all(r["schema"] == 1 and r["producer"] == "voiceloop.usage_ledger" for r in rows)
+    # a consumer summing tokens never hits KeyError, whatever the kind
+    assert all("tokens_in" in r or r["kind"] == "parse_error" for r in rows)
+
+
+def test_a_refusal_with_no_usage_records_unknown_not_zero():
+    doc = {"type": "result", "subtype": "error_during_execution", "is_error": True,
+           "result": "You've hit your usage limit.", "modelUsage": {}}
+    row = usage_ledger.row_from(doc, bot="t")
+    assert row["tokens_in"] is None and row["tokens_out"] is None
+
+
+def test_an_init_event_before_the_result_still_yields_prose(captured):
+    stdout = json.dumps({"type": "system", "subtype": "init"}) + "\n" + json.dumps(captured["json_stdout"])
+    text, row = usage_ledger.finish(stdout, bot="t")
+    assert text == captured["plain_stdout"] and row["kind"] == "run"
+
+
+def test_the_opencode_branch_leaves_a_row(tmp_path, monkeypatch):
+    import subprocess
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv(usage_ledger.LEDGER_ENV, str(tmp_path / "l.jsonl"))
+    monkeypatch.setenv("OPENCODE", "1")
+    monkeypatch.setattr(prompt_render.shutil, "which", lambda name: "/fake/opencode")
+
+    class Done:
+        returncode, stderr = 0, ""
+        stdout = json.dumps({"type": "text", "part": {"text": "generated"}})
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done())
+    fake_bin = tmp_path / "claude"; fake_bin.write_text("")
+    assert prompt_render.run_model("p", claude_bin=str(fake_bin), caller="c") == "generated"
+    rows = usage_ledger.read()
+    assert len(rows) == 1 and rows[0]["subtype"] == "failed:opencode:unmetered"
+
+
+def test_a_cli_that_rejects_the_flag_falls_back_to_a_plain_call(tmp_path, monkeypatch):
+    import subprocess
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("OPENCODE", raising=False)
+    monkeypatch.setenv(usage_ledger.LEDGER_ENV, str(tmp_path / "l.jsonl"))
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        class R:
+            pass
+        r = R()
+        if "--output-format" in argv:
+            r.returncode, r.stdout, r.stderr = 1, "", "error: unknown option '--output-format'"
+        else:
+            r.returncode, r.stdout, r.stderr = 0, "plain prose\n", ""
+        return r
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    fake_bin = tmp_path / "claude"; fake_bin.write_text("")
+    assert prompt_render.run_model("p", claude_bin=str(fake_bin), caller="c") == "plain prose\n"
+    assert len(calls) == 2 and "--output-format" not in calls[1]
+    assert usage_ledger.read()[-1]["subtype"] == "failed:cli:no-json-flag"

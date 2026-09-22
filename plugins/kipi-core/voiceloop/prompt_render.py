@@ -151,6 +151,11 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
                         continue
                     if event.get("type") == "text":
                         parts.append(event.get("part", {}).get("text", ""))
+                # ASK-2008: this provider reports no usage, so the row says so
+                # (tokens None) rather than leaving the run invisible.
+                usage_ledger.append(usage_ledger.failure_row(
+                    "opencode:unmetered", bot=os.environ.get("CHIEF_BOT") or "voiceloop",
+                    job=os.environ.get("CHIEF_JOB") or caller, model=active_model))
                 return "".join(parts).strip() or None
         except (subprocess.SubprocessError, OSError):
             return None
@@ -178,6 +183,17 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
     except (subprocess.SubprocessError, OSError) as exc:
         usage_ledger.append(usage_ledger.failure_row(type(exc).__name__, stderr=str(exc), **who))
         return None
+    if result.returncode != 0 and usage_ledger.rejected_flag(result.stderr):
+        # An older CLI that does not know --output-format json: fall back to the
+        # plain call so the fleet keeps working, and record an unmetered row.
+        try:
+            result = subprocess.run([a for a in argv if a not in usage_ledger.JSON_FLAGS],
+                                    capture_output=True, text=True, timeout=timeout)
+        except (subprocess.SubprocessError, OSError) as exc:
+            usage_ledger.append(usage_ledger.failure_row(type(exc).__name__, stderr=str(exc), **who))
+            return None
+        usage_ledger.append(usage_ledger.failure_row("cli:no-json-flag", stderr="plain call", **who))
+        return result.stdout if result.returncode == 0 else None
     if result.returncode != 0:
         usage_ledger.append(usage_ledger.failure_row(
             f"exit {result.returncode}", stdout=result.stdout, stderr=result.stderr, **who))

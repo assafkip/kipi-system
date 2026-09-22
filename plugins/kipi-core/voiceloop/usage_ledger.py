@@ -32,6 +32,10 @@ import os
 import re
 
 LEDGER_ENV = "KIPI_USAGE_LEDGER"
+#: Every row carries these two, whatever its shape, so a consumer can tell a
+#: charged row from a failure row from a parse error without guessing keys.
+SCHEMA = 1
+PRODUCER = "voiceloop.usage_ledger"
 DEFAULT_LEDGER = os.path.join(os.path.expanduser("~"), ".config", "kipi", "usage-ledger.jsonl")
 
 #: Appended to the argv by both wrappers. The tests PIN the literal rather than
@@ -93,10 +97,13 @@ def row_from(doc: dict, *, bot: str, job: str | None = None, model: str | None =
     for name, m in (doc.get("modelUsage") or {}).items():
         if isinstance(m, dict):
             per_model[name] = {k: m.get(k, 0) for k in _PER_MODEL_KEYS}
+    # Empty modelUsage means the CLI reported nothing, not that nothing was spent:
+    # a limit refusal still costs the request. Unknown is None, never 0.
     tokens_in = sum(m["inputTokens"] + m["cacheReadInputTokens"] + m["cacheCreationInputTokens"]
-                    for m in per_model.values())
-    tokens_out = sum(m["outputTokens"] for m in per_model.values())
+                    for m in per_model.values()) if per_model else None
+    tokens_out = sum(m["outputTokens"] for m in per_model.values()) if per_model else None
     return {
+        "schema": SCHEMA, "producer": PRODUCER, "kind": "run",
         "ts": _now_iso(),
         "bot": bot,
         "job": job,
@@ -123,15 +130,19 @@ def failure_row(kind: str, *, bot: str, job: str | None = None, model: str | Non
     print a result document before failing, its usage is kept; otherwise tokens are
     None (unknown), never 0 (known to be nothing).
     """
-    row = {"ts": _now_iso(), "bot": bot, "job": job, "model": model,
+    row = {"schema": SCHEMA, "producer": PRODUCER, "kind": "failure",
+           "ts": _now_iso(), "bot": bot, "job": job, "model": model,
            "subtype": f"failed:{kind}", "is_error": True, "num_turns": None,
            "total_cost_usd": None, "duration_ms": None, "tokens_in": None,
            "tokens_out": None, "model_usage": {}, "limit_text": None, "session_id": None}
     doc = _result_document(stdout)
     if doc is not None:
         row.update({k: v for k, v in row_from(doc, bot=bot, job=job, model=model).items()
-                    if k not in ("ts", "subtype", "is_error")})
-        row["limit_text"] = _limit_in(doc.get("result"), doc.get("error"), stderr)
+                    if k not in ("ts", "subtype", "is_error", "kind")})
+        # limit_text() keeps its guard: a document the CLI called a success is a
+        # generated post, never a refusal, even when the call then timed out
+        # (PR #410 round 2). Only stderr is read unguarded, and stderr is never prose.
+        row["limit_text"] = limit_text(doc) or _limit_in(stderr)
     else:
         row["limit_text"] = _limit_in(stdout, stderr)
     return row
@@ -141,11 +152,14 @@ def _result_document(stdout: str | None) -> dict | None:
     """The CLI's result document, whole or embedded after stray leading text."""
     if not stdout:
         return None
-    for start in (0, stdout.find("{")):
-        if start < 0:
-            continue
+    # The CLI may print other JSON objects (an init event) or stray lines before the
+    # result. Every line is tried on its own, then the whole text from each `{`.
+    decoder = json.JSONDecoder()
+    candidates = [ln for ln in stdout.splitlines() if ln.lstrip().startswith("{")]
+    candidates += [stdout[i:] for i, ch in enumerate(stdout) if ch == "{"][:50]
+    for text in candidates:
         try:
-            doc = json.loads(stdout[start:])
+            doc, _ = decoder.raw_decode(text.lstrip())
         except ValueError:
             continue
         if isinstance(doc, dict) and doc.get("type") == "result":
@@ -166,7 +180,8 @@ def finish(stdout: str, *, bot: str, job: str | None = None, model: str | None =
     """
     doc = _result_document(stdout)
     if doc is None:
-        return stdout, {"ts": _now_iso(), "bot": bot, "job": job, "model": model,
+        return stdout, {"schema": SCHEMA, "producer": PRODUCER, "kind": "parse_error",
+                        "ts": _now_iso(), "bot": bot, "job": job, "model": model,
                         "parse_error": "no result document in stdout",
                         "stdout_bytes": len(stdout or "")}
     text = doc.get("result")
@@ -203,3 +218,10 @@ def read(path: str | None = None) -> list[dict]:
     except OSError:
         return rows
     return rows
+
+
+def rejected_flag(stderr: str | None) -> bool:
+    """True when the CLI refused `--output-format` itself (an older binary)."""
+    s = stderr or ""
+    return "--output-format" in s and ("unknown" in s.lower() or "unrecognized" in s.lower()
+                                       or "error:" in s.lower())
