@@ -90,6 +90,11 @@ EXEMPT = {
     "and destination are both synthetic fixtures under mktemp -d",
     "test-kipi-update-preserve-scan.sh": "a test harness for the same scanner; "
     "its copies are inside a throwaway temp fixture, not a real instance",
+    "test-kipi-update-reach-preflight.sh": "a test harness for the reach "
+    "preflight; the match first_match() returns is the `cp -R` in build_fleet, "
+    "whose source and destination are both synthetic fixtures under mktemp -d. "
+    "Same class as the two preserve harnesses above, and it only ever invokes "
+    "the updater with --dry-run",
     # --- ASK-1145 -------------------------------------------------------
     # These eleven were always undeclared. Nobody added them since: this test
     # was declared `runner: python3` on a pytest module, so the capability gate
@@ -104,6 +109,16 @@ EXEMPT = {
     "kipi-update-gitignore-block.py": "the match is os.replace(tmp, path), an "
     "atomic in-place rewrite of one file in the repo it runs in, never an "
     "outward copy into an instance",
+    # --- PR #292 --------------------------------------------------------
+    "kipi-update-voiceloop-migrate.py": "the match first_match() returns is the "
+    "shutil.copy2(path, keep) at line 397, which writes a .pre-voiceloop.bak "
+    "beside an UNTRACKED file in the instance being migrated, right before that "
+    "file is rewritten in place. It is a same-directory backup so the rewrite is "
+    "reversible for content version control never held, not an outward copy: "
+    "this script only ever reads and writes inside the ONE instance it is "
+    "pointed at, and has no skeleton source and no second destination. Same "
+    "class as kipi-update-gitignore-block.py above, whose os.replace this file "
+    "also carries",
     "test-kipi-update-bash32-empty-array.sh": "test harness; its cp -R source "
     "and destination are both synthetic fixtures under mktemp -d",
     "test-kipi-update-cache-exclusion.sh": "test harness; its cp -R source and "

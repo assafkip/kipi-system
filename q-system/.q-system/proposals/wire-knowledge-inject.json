@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "slug": "wire-knowledge-inject",
+  "reason": "knowledge-inject.py is the read side of kb-graph-guard.py: a UserPromptSubmit hook that puts the instance's own facts about what the prompt names (graph.jsonl, relationships.md, canonical, decisions, commitments, meetings, open loops, handoff) into context as verbatim excerpts with path:line, a status label and a FULL/PARTIAL coverage line. Additive, never blocks, zero bytes when nothing matches. Plan: q-system/output/plans/knowledge-supply-2026-09-04.md. Tests: q-system/.q-system/scripts/test_knowledge_supply.py (27 cases, 8 mutations killed). The settings-template.json line is already in place so kipi update ships the switch with the script.",
+  "requires": {
+    "files_present": [
+      "q-system/.q-system/scripts/knowledge-inject.py",
+      "q-system/.q-system/scripts/knowledge_supply.py",
+      "q-system/.q-system/knowledge-sources.json",
+      "q-system/.q-system/scripts/test_knowledge_supply.py"
+    ],
+    "template_pairs": [
+      "knowledge-inject.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/settings.json",
+      "op": "insert_after",
+      "anchor": "            \"command\": \"python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/lessons-inject.py\\\"\",\n            \"timeout\": 5\n          }",
+      "reason": "Beside lessons-inject: same event, same additive posture, the other half of prompt-conditioned supply (fleet lessons there, instance facts here).",
+      "insert": ",\n          {\n            \"type\": \"command\",\n            \"command\": \"python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/knowledge-inject.py\\\"\",\n            \"timeout\": 5\n          }"
+    },
+    {
+      "file": ".claude/rules/skill-hook-pairing.md",
+      "op": "insert_after",
+      "anchor": "skeleton self-detects via instance-registry.json and no-ops; fleet-only, wired in settings-template.json + FLEET_ONLY).",
+      "reason": "Record the pairing where every other wired hook is recorded, so the read side of the graph guard is discoverable next to the write side.",
+      "insert": " · knowledge supply (read side of kb-graph-guard) → knowledge-inject hook script (UserPromptSubmit in BOTH settings files: resolves the entities and task class a prompt names, injects verbatim excerpts from graph.jsonl, relationships, canonical, decisions, commitments, meetings, loops and handoff with path:line and a status label, first line FULL/PARTIAL naming any declared source that was absent; additive, exit 0 always, zero bytes when nothing matches; receipts in memory/.knowledge-supply-receipts.jsonl; test_knowledge_supply.py; whether the model USES the bundle stays interpretive)."
+    }
+  ]
+}

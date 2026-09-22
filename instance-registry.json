@@ -128,7 +128,7 @@
       "name": "travel-agent",
       "path": "/Users/assafkipnis/projects/personal/projects/travel-agent",
       "subtree_prefix": "q-system",
-      "instance_q_dir": null,
+      "instance_q_dir": "q-travel",
       "type": "subtree",
       "has_git": true
     },
@@ -144,7 +144,7 @@
       "name": "interview-coach",
       "path": "/Users/assafkipnis/projects/micro-saas/projects/interview-coach",
       "subtree_prefix": "q-system",
-      "instance_q_dir": null,
+      "instance_q_dir": "q-coach",
       "type": "subtree",
       "has_git": true,
       "dispatch": {
@@ -156,7 +156,7 @@
       "name": "negotiator",
       "path": "/Users/assafkipnis/projects/micro-saas/projects/negotiator",
       "subtree_prefix": "q-system",
-      "instance_q_dir": null,
+      "instance_q_dir": "q-coach",
       "type": "subtree",
       "has_git": true
     },
@@ -196,7 +196,7 @@
       "name": "Prodigy_Gold",
       "path": "/Users/assafkipnis/projects/consulting/projects/Prodigy_Gold",
       "subtree_prefix": "q-system",
-      "instance_q_dir": null,
+      "instance_q_dir": "q-prodigy",
       "type": "subtree",
       "has_git": true
     },
@@ -220,7 +220,7 @@
       "name": "the_garden",
       "path": "/Users/assafkipnis/projects/consulting/projects/the_garden",
       "subtree_prefix": "q-system",
-      "instance_q_dir": null,
+      "instance_q_dir": "q-garden",
       "type": "subtree",
       "has_git": true
     },

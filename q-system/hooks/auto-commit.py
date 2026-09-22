@@ -4,6 +4,7 @@
 Runs on Stop (async). Creates one commit per area with conventional commit messages.
 Never pushes. Skips if no uncommitted changes.
 """
+import calendar
 import hashlib
 import json
 import subprocess
@@ -110,10 +111,35 @@ def get_changed_files():
     if r.stdout.strip():
         files.update(r.stdout.strip().splitlines())
 
-    # Staged but not yet diffed against HEAD (new files)
-    r = run(["git", "diff", "--cached", "--name-only"])
-    if r.stdout.strip():
-        files.update(r.stdout.strip().splitlines())
+    # THE `--cached` READ IS GONE AS REDUNDANCY, FOR THE SHAPE THAT MOTIVATED IT.
+    #
+    # MEASURED 2026-09-06 before removing it, because the obvious story was wrong.
+    # It was believed to be the line that swept another session's staged work into
+    # this hook's commit (sp-78728ff1). It is not. `git diff --name-only HEAD` on the
+    # line above ALREADY reports a staged-but-uncommitted new file: in a scratch repo,
+    # `git add b` on a new file makes `git diff --name-only HEAD` print `b`. That is
+    # sp-78728ff1's shape, so deleting this line fixes nothing.
+    #
+    # IT IS NOT UNIVERSALLY REDUNDANT, and the first draft of this comment claimed it
+    # was ("added nothing any other probe missed"). Re-measured 2026-09-07 across six
+    # staging shapes: `--cached` names two paths that `diff --name-only HEAD` and
+    # `ls-files --others` both miss -- a file staged and then DELETED from the
+    # worktree, and a file staged and then edited back to its HEAD content.
+    #
+    # Removing it is still right, and that reason is measured too, not reasoned:
+    # commit_group runs a PATHSPEC commit, and `git commit -m x -- <path>` in BOTH of
+    # those shapes exits 1 with "nothing to commit" and writes no commit. (The first
+    # guess written here was that the delete shape would commit a DELETION of another
+    # writer's staged file. It does not; the staged entry survives untouched.) So the
+    # two extra paths only ever bought a spurious `skipped:` line. What this removal
+    # gets is a narrower changed-file set, not a bug fix. Do not re-add it expecting
+    # one, and do not cite it as coverage for sp-78728ff1.
+    #
+    # sp-78728ff1 IS THEREFORE STILL OPEN and needs a different fix than deleting a
+    # line. Git cannot tell WHO staged a path, so the only honest lever is to treat
+    # "staged" as "a writer has claimed this" and skip it, reporting it as skipped.
+    # That trades away part of the safety net (work staged at session death would no
+    # longer be committed for you) and is a deliberate design call, not a cleanup.
 
     # Filter out empty strings and gitignored patterns
     return {f for f in files if f and not f.startswith("q-system/output/")}
@@ -398,10 +424,182 @@ def commit_group(commit_type, message, files):
         print(f"  skipped: {header} - {r.stderr.strip()[:80]}")
 
 
+# One instance apply runs minutes, never hours; a marker older than this is a
+# crashed run whatever its pid says (pids get recycled).
+RUN_MARKER_MAX_AGE_S = int(os.environ.get("KIPI_UPDATE_RUN_MARKER_MAX_AGE_S", "7200"))
+
+
+def fleet_update_in_progress():
+    """The fleet updater's run marker, or None when no live run owns this checkout.
+
+    kipi-update.sh writes <git-common-dir>/kipi-update.run ("<pid> <start>") for
+    the duration of one instance apply. This hook fires at every turn end of
+    every session sitting in the checkout, so on 2026-09-06 it committed the
+    updater's half-delivered rules, settings and plugins under its own generic
+    messages while the sync was still running, and its pre-commit held
+    index.lock for the whole verify (sp-9306036e). A live marker means the
+    updater owns the index right now: commit nothing. A marker whose pid is
+    dead is a crashed run's leftover: remove it and proceed, so a crash cannot
+    silence this safety net forever. The common dir, not the worktree git dir,
+    so a linked worktree of the same checkout reads the same marker.
+    """
+    r = run(["git", "rev-parse", "--git-common-dir"])
+    if r.returncode != 0:
+        return None
+    # `git rev-parse --git-common-dir` answers RELATIVE to the cwd it ran in,
+    # and run() executes in PROJ_DIR (CLAUDE_PROJECT_DIR), not in this
+    # process's cwd. Resolving against os.getcwd() pointed at the wrong repo
+    # whenever the two differed, and a missing marker there reads as "no run
+    # in progress": the guard failed open (PR #314 round 2).
+    common = r.stdout.strip()
+    if not os.path.isabs(common):
+        common = os.path.abspath(os.path.join(PROJ_DIR, common))
+    marker = os.path.join(common, "kipi-update.run")
+    if not os.path.exists(marker):
+        return None
+    # Two facts have to agree before the marker counts as live: the pid is
+    # alive AND the start stamp is younger than RUN_MARKER_MAX_AGE_S. Pid
+    # liveness alone is not enough: a marker that survived SIGKILL or a reboot
+    # can point at a recycled pid that is some unrelated process, and this
+    # hook would then commit nothing on that checkout forever (PR #314
+    # review, round 1). A fleet apply of one instance runs minutes, never
+    # hours, so an old stamp is a crashed run whatever the pid says.
+    try:
+        with open(marker, encoding="utf-8") as fh:
+            fields = fh.read().split()
+        pid = int(fields[0])
+        started = time.strptime(fields[1], "%Y-%m-%dT%H:%M:%SZ")
+        age_s = time.time() - calendar.timegm(started)
+        if age_s > RUN_MARKER_MAX_AGE_S:
+            raise ProcessLookupError("marker older than the run bound")
+        os.kill(pid, 0)
+    except (ValueError, IndexError, ProcessLookupError, FileNotFoundError, OverflowError):
+        try:
+            os.remove(marker)
+        except OSError:
+            pass
+        return None
+    except PermissionError:
+        # Alive, owned by another user: still a live writer.
+        return f"pid {pid}"
+    return f"pid {pid}"
+
+
+def another_commit_in_flight():
+    """A reason string if git's own locks say someone is mid-commit, else None.
+
+    THE THIRD WRITER (sp-4bff1b91, sp-d0ce1966, sp-e06433b8, measured 2026-09-06).
+    `fleet_update_in_progress` above coordinates with the ONE writer that agreed to
+    leave a marker. This hook is the writer nobody can negotiate with: it fires at
+    every turn end in every session on the checkout, and it took no lock at all. Two
+    sessions can hold a ref window perfectly and still lose a commit to it.
+
+    Measured that night in one session: three of five git operations died on
+    `Unable to create '.git/index.lock'`, and EVERY ONE EXITED 0. A commit that
+    reports success while landing nothing is worse than one that refuses.
+
+    WE READ THE LOCKS, WE DO NOT REMOVE THEM. Deleting a lock that a live 8-minute
+    pre-commit still owns corrupts that commit's index. kipi-update.sh still sweeps
+    HEAD.lock/index.lock/AUTO_MERGE.lock with an unconditional force-delete at the
+    top of its instance loop, no pid, mtime or age test at all (~L1915, sp-50119dec;
+    an earlier draft of this docstring cited L1714, which is unrelated env-var code).
+    Read that citation narrowly: the SAME file is also the one that already solved
+    this properly, at ~L1313-1400, where every index write it makes waits for the
+    lock to clear, bounded at 600s, with bounded retry and a loud error
+    (sp-523c1a25). A Stop hook cannot spend 600s at turn end, so it takes the other
+    half of that answer: refuse now, and the next turn end picks the work up.
+
+    NO AGE BOUND ON PURPOSE, unlike the run marker. A commit here holds index.lock
+    for the length of its pre-commit, measured at 447-497 seconds here and
+    independently at 445s in kipi-update.sh's own note from the same night. Review
+    round 2 called that figure false, having measured ~12ms and no lock at all
+    during a pre-commit. RE-MEASURED 2026-09-07 over three command shapes against
+    a 5s pre-commit hook, and the figure stands: `git commit -m x -- <path>`,
+    which is exactly what commit_group runs, holds index.lock (plus a next-index
+    lock) for the WHOLE hook; `git commit -a` does too; only `git add` followed by
+    a bare `git commit` holds nothing, and that is the one shape this hook never
+    uses. Measure the pathspec form, or the number will look invented again. So a
+    bound low enough to be useful against a crashed lock would fire constantly
+    against healthy ones. A truly orphaned lock is rare, visible, and a human's
+    call: "no process holds it AND every live hook's cwd is a worktree" is the test
+    that settled it by hand, and it needs `lsof`, which a Stop hook must not spend.
+
+    AND THAT BOUND COSTS LESS THAN THE FIRST DRAFT OF THIS DOCSTRING CHARGED IT.
+    Measured 2026-09-07: git itself exits 128 on a held index.lock, and commit_group
+    turns ANY non-zero into a `skipped:` line while this hook exits 0. So an orphaned
+    lock ALREADY stopped this hook from committing, silently, before this guard
+    existed. It replaces a failure found after a 450s pre-commit with a refusal
+    that costs nothing. An earlier draft went further and said the guard adds NO
+    new silent-outage mode; review round 2 proved that false, and it is true now
+    only because of the fix it forced -- the refusal prints on stdout, because the
+    fleet wiring discards stderr. See the comment in main(). The genuinely new
+    behaviour is the opposite one, and it is frequent rather than rare: a peer
+    session's `git status` holds index.lock for a fraction of a second, so some turn
+    ends now skip a commit they would have won. Work stays on disk either way.
+
+    --git-dir, NOT --git-common-dir, AND THE TWO GUARDS HERE DISAGREE ON PURPOSE.
+    fleet_update_in_progress above reads the COMMON dir because a run marker is a
+    claim on the whole checkout. A lock is not: index.lock and HEAD.lock are
+    per-worktree. Measured 2026-09-07 -- holding <main>/.git/index.lock does not
+    block a `git add` run from a linked worktree, and holding that worktree's own
+    lock does (rc=128). So this spelling names exactly the lock that can stop THIS
+    checkout. Harmonizing the two would silence the safety net in every linked
+    worktree for the eight minutes the main checkout spends inside a pre-commit,
+    over a lock none of them would ever contend. Pinned by
+    test_a_worktree_does_not_refuse_on_the_main_checkouts_lock, the only test in the
+    file that can tell the two spellings apart.
+    """
+    r = run(["git", "rev-parse", "--git-dir"])
+    if r.returncode != 0:
+        return None
+    git_dir = r.stdout.strip()
+    if not os.path.isabs(git_dir):
+        git_dir = os.path.abspath(os.path.join(PROJ_DIR, git_dir))
+    for name in ("index.lock", "HEAD.lock"):
+        path = os.path.join(git_dir, name)
+        if os.path.exists(path):
+            try:
+                age = int(time.time() - os.path.getmtime(path))
+                return f"{name} held {age}s"
+            except OSError:
+                return name
+    return None
+
+
 def main():
     # Check we're in a git repo
     r = run(["git", "rev-parse", "--is-inside-work-tree"])
     if r.returncode != 0:
+        return
+
+    # STDOUT, NOT STDERR, AND THAT IS THE WHOLE POINT (review round 2, major).
+    # settings-template.json wires this hook as `... auto-commit.py 2>/dev/null
+    # || true` at line 395, the single wiring of it, and that is the copy the fleet
+    # updater installs on every instance. So stderr is DISCARDED on 22+ checkouts.
+    # (An earlier draft of this comment said "lines 380 and 406". Those came from
+    # a checkout with local edits to that file and point at unrelated hooks. A
+    # scar comment with a wrong pointer reads as coverage, which is the exact
+    # defect this PR was reviewed for; re-derive line numbers from the tree you
+    # are actually shipping.)
+    # The behaviour these guards replaced reported a lock collision on STDOUT,
+    # as commit_group's `skipped:` line naming the file and git's own error, and
+    # that line survived the redirect. Returning early with a stderr-only
+    # message made the safety net go quiet with literally zero output: an
+    # orphaned index.lock (no age bound, by design) would switch this hook off
+    # on that checkout forever and print nothing anywhere. The message is the
+    # only thing that tells a human to go look, so it has to reach the channel
+    # that survives. Pinned by
+    # test_a_refusal_reaches_the_channel_the_fleet_wiring_keeps.
+    live_run = fleet_update_in_progress()
+    if live_run is not None:
+        print(f"auto-commit: fleet updater run in progress ({live_run}); "
+              "committing nothing")
+        return
+
+    held = another_commit_in_flight()
+    if held is not None:
+        print(f"auto-commit: another commit is in flight ({held}); "
+              "committing nothing. The next turn end picks this work up.")
         return
 
     files = get_changed_files()

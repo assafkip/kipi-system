@@ -21,6 +21,27 @@
 # machine-wide, and it was found only because a canary file got deleted after
 # the fix was already in this file. That tool now restores the bit on every
 # write. If you ever see this file at 0644, the guard is OFF, not merely edited.
+#
+# WHAT THIS GUARD COVERS: DIRECT INVOCATION ONLY (ASK-1247, 2026-09-13).
+# It reads the command STRING and denies the programs it knows by name. It
+# does not see effects, so the same delete performed by an interpreter walks
+# through at exit 0. Measured by q-system/.q-system/tests/probe_hook.py:
+#
+#   ALLOW  python3 -c "import shutil; shutil.rmtree(...)"
+#   ALLOW  python3 -c "import os; os.unlink(...)"
+#   ALLOW  node -e "require('fs').rmSync(..., {recursive: true})"
+#   ALLOW  perl -e 'unlink(...)'
+#   ALLOW  bash /path/to/script.sh   (the script body is never read)
+#
+# Read this hook as "an agent cannot TYPE the named command", never as "an
+# agent cannot delete a directory". Adding interpreter patterns here is
+# decided against: the payload can be built at runtime, read from a file or
+# base64'd, and a parser that decides a string is harmless is a new bypass
+# surface. Closing the gap means moving the boundary to the filesystem or
+# syscall layer, which is a PRD, not a pattern. Decision: RULE-2026-09-13-A
+# in q-system/canonical/decisions.md. test_destructive_guard_interpreter_bound.py
+# pins this paragraph to the probe: if a row above starts being denied, the
+# test goes red and this paragraph gets rewritten, not left standing.
 
 set -uo pipefail
 

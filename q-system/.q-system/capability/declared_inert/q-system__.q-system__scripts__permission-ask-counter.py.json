@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/permission-ask-counter.py",
+ "reason": "hand-run measurement tool (prd-morning-brief-learns issue 14, two-measurements): counts permission-ask turns in transcripts. Run by hand once on 2026-09-01; no caller on any wiring surface. Wire into the weekly-improve runner or retire once the plan section carries the figure.",
+ "spillover_id": "sp-90116488"
+}

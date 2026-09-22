@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_voice_stop_gate_not_checked.py",
+ "runner": "python3",
+ "timeout_s": 60
+}

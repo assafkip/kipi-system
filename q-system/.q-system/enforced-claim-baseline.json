@@ -21,7 +21,6 @@
     ".claude/rules/model-allocation.md::model allocation policy",
     ".claude/rules/morning-pipeline.md::preflight fail fast and audit harness",
     ".claude/rules/morning-pipeline.md::self healing loop",
-    ".claude/rules/no-orphan-findings.md::no orphan findings",
     ".claude/rules/quick-plan.md::quick plan mode",
     ".claude/rules/rca-mode.md::rca mode",
     ".claude/rules/remote-coverage.md::remote coverage",

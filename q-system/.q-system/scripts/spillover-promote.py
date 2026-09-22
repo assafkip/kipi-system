@@ -381,7 +381,8 @@ def promote_locked(args, root: Path, ledger: Path, rec: dict) -> int:
             f"{rec['id']} already has issue {ident}; a previous run created it "
             "and did not record it.\nRecording it now, creating nothing.\n")
     else:
-        ident = create_issue(ls, args, root, build_body(rec, args._dor, root.name))
+        ident = create_issue(ls, args, root, build_body(rec, args._dor, root.name),
+                             adopt=capture_ticket(rec))
         if not isinstance(ident, str):
             return ident      # a refusal/failure code from the create path
 
@@ -485,8 +486,28 @@ def registry_project(root: Path) -> str:
     return ""
 
 
-def create_issue(ls, args, root: Path, body: str):
-    """The issue, or an int exit code when a required name does not resolve."""
+ISSUE_ADOPT = ('mutation($id:String!,$input:IssueUpdateInput!){issueUpdate(id:$id,'
+               'input:$input){success issue{identifier}}}')
+
+
+def capture_ticket(rec: dict):
+    """The Linear issue filed for this row at capture (ASK-1552), or None."""
+    link = rec.get("linear")
+    if isinstance(link, dict) and link.get("state") == "filed" and link.get("identifier"):
+        return str(link["identifier"])
+    return None
+
+
+def create_issue(ls, args, root: Path, body: str, adopt=None):
+    """The issue, or an int exit code when a required name does not resolve.
+
+    ADOPT (review F1, PR #344): a row captured since ASK-1552 already has a Linear
+    issue, filed at capture for visibility. Creating another here made two
+    permanent issues for one finding, and the marker search in existing_issue()
+    could not see the first because its body never carried the marker. So the
+    capture ticket is promoted IN PLACE: same routing and body as a create,
+    written onto the existing issue, whose body then opens with the marker.
+    """
     tid = ls.graphql('query{teams(filter:{key:{eq:"%s"}}){nodes{id}}}' % TEAM_KEY,
                      {})["teams"]["nodes"][0]["id"]
     # Resolved BEFORE the create, so a bad name costs nothing. Resolving after
@@ -526,6 +547,15 @@ def create_issue(ls, args, root: Path, body: str):
             "set KIPI_LINEAR_PROJECT.\n")
         return 2
 
+    if adopt:
+        res = ls.graphql(ISSUE_ADOPT, {"id": adopt, "input": {
+            "title": args.title, "description": body, "priority": args.priority,
+            "labelIds": label_ids, "projectId": pid}})
+        upd = (res or {}).get("issueUpdate") or {}
+        if not upd.get("success"):
+            sys.stderr.write(f"Linear adopt of {adopt} failed: {json.dumps(res)[:300]}\n")
+            return 1
+        return (upd.get("issue") or {}).get("identifier") or adopt
     res = ls.graphql(ls.ISSUE_CREATE, {"input": {
         "teamId": tid, "title": args.title, "description": body,
         "priority": args.priority,

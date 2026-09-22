@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-kipi-update-instance-ahead.sh",
+ "runner": "bash"
+}

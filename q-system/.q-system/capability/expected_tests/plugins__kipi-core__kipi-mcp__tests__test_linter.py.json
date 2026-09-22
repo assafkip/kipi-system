@@ -1,0 +1,5 @@
+{
+  "path": "plugins/kipi-core/kipi-mcp/tests/test_linter.py",
+  "runner": "pytest",
+  "timeout_s": 120
+}

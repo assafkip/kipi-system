@@ -57,6 +57,7 @@ Order, most rigorous first:
 - `batch-uniformity-lint` catches pattern repetition
 - `decision-origin-tag-lint` enforces origin tags on decisions
 - `memory-freshness-check` flags stale handoffs at session start
+- `knowledge-inject` (UserPromptSubmit hook) supplies the instance's own facts about what the prompt names: verbatim excerpts from `graph.jsonl`, `relationships.md`, canonical, decisions, commitments, meetings, open loops and the handoff, each with path:line and a KNOWN / STALE / CONFLICTING / UNVALIDATED label, under a first line that says FULL or PARTIAL and names any declared source that was absent. It proves the facts entered context, never that they were used; the receipt is `memory/.knowledge-supply-receipts.jsonl`
 - `token-guard` prevents runaway loops
 - `sycophancy-harness` checks debriefs for rubber-stamping
 - `auto-commit` logs every change

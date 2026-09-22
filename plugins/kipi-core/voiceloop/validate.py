@@ -14,7 +14,7 @@ import json
 import os
 import re
 
-from . import assemble, corpus, fingerprint, selector
+from . import assemble, channel_registry, corpus, fingerprint, selector
 
 MIN_ROWS_PER_POOL = 3      # below this, selection silently narrows to repetition;
                            # the fix is curation, so the message says so.
@@ -77,9 +77,10 @@ CORRECTION_CLASSES = ("deterministic", "interpretive")
 CORRECTION_STATUSES = ("active", "promoted", "retired")
 
 
-def check_corrections(path):
+def check_corrections(path, channels=None):
     """corrections.jsonl schema health (voice-2 review: the ledger had no
     validator at all, so a malformed or duplicate row passed the gate green)."""
+    channels = channels or channel_registry.DEFAULT
     if not os.path.exists(path):
         return []                      # an absent ledger is a valid empty ledger
     problems = []
@@ -107,17 +108,20 @@ def check_corrections(path):
             if row.get("status") not in CORRECTION_STATUSES:
                 problems.append(f"{rid}: status {row.get('status')!r}")
             for ch in row.get("scope") or []:
-                if ch not in ("linkedin", "x", "substack", "medium", "dm",
-                              "email", "comment"):
-                    problems.append(f"{rid}: unknown scope {ch!r}")
+                if ch not in channels.scopes:
+                    problems.append(
+                        f"{rid}: unknown scope {ch!r}; the channel vocabulary is "
+                        f"{list(channels.scopes)} (from "
+                        f"{channels.source or 'the built-in default, no registry'})")
     return problems
 
 
-def check_pools(voice):
+def check_pools(voice, channels=None):
     """Selection starvation check: every (channel, kind) pool a slot can ask for."""
+    channels = channels or channel_registry.DEFAULT
     problems = []
     rows = voice.active_exemplars()
-    for channel in ("linkedin", "x"):
+    for channel in channels.assembled:
         for kind in ("post",):
             n = sum(1 for r in rows if r.get("kind") == kind
                     and r.get("channel", "any") in (channel, "any"))
@@ -134,12 +138,26 @@ def check_pools(voice):
 # zero anchors while all three checks stayed silent: ELIGIBLE_KINDS maps
 # comment/dm to a ('comment','dm') primary tier that most corpora have no rows
 # for, so it is the slot most likely to be thin and the one nobody looks at.
-CHECKED_SLOTS = tuple((channel, slot_kind)
-                      for channel in ("linkedin", "x")
-                      for slot_kind in ("post", "comment"))
+SLOT_KINDS = ("post", "comment")
 
 
-def _resolved_slots(voice, k):
+def checked_slots(channels=None):
+    """(channel, slot_kind) for every slot a caller can ask for, channels from
+    the registry. The slot KINDS are a property of this engine's selector, not of
+    an instance, so they stay here; the channels are not, so they do not."""
+    channels = channels or channel_registry.DEFAULT
+    return tuple((channel, slot_kind)
+                 for channel in channels.assembled
+                 for slot_kind in SLOT_KINDS)
+
+
+# Kept as a module attribute because reviews and docs reference it by name. It is
+# DERIVED from the one authority, so it is a view of the default vocabulary and
+# not a fifth copy of the channel list.
+CHECKED_SLOTS = checked_slots()
+
+
+def _resolved_slots(voice, k, channels=None):
     """(channel, slot_kind, primary, pool) for each slot, POOL FROM THE SELECTOR.
 
     Both checks below used to count primary-kind rows by hand, which equals the
@@ -150,13 +168,13 @@ def _resolved_slots(voice, k):
     A checker that re-derives the rule it checks is testing its own copy.
     """
     rows = voice.active_exemplars()
-    for channel, slot_kind in CHECKED_SLOTS:
+    for channel, slot_kind in checked_slots(channels):
         primary, _ = selector.eligible(rows, channel, slot_kind)
         yield (channel, slot_kind, primary,
                selector.resolved_pool(rows, channel, slot_kind, k))
 
 
-def check_anchor_diversity(voice, k=selector.DEFAULT_K):
+def check_anchor_diversity(voice, k=selector.DEFAULT_K, channels=None):
     """Anchors must ROTATE within the pool a slot actually draws from.
 
     The pairing this exists for (finding-5, prd-content-engine-sameness-2026-08-09):
@@ -192,7 +210,7 @@ def check_anchor_diversity(voice, k=selector.DEFAULT_K):
     corpus_has_anchors = any(r.get("anchor") for r in voice.active_exemplars())
     if not corpus_has_anchors:
         return problems
-    for channel, slot_kind, _primary, pool in _resolved_slots(voice, k):
+    for channel, slot_kind, _primary, pool in _resolved_slots(voice, k, channels):
         reachable = [r for r in pool if r.get("anchor")]
         if len(reachable) < MIN_ANCHORS_PER_KIND:
             problems.append(
@@ -204,7 +222,7 @@ def check_anchor_diversity(voice, k=selector.DEFAULT_K):
     return problems
 
 
-def check_rotation_headroom(voice, k=selector.DEFAULT_K):
+def check_rotation_headroom(voice, k=selector.DEFAULT_K, channels=None):
     """A pool no larger than k cannot rotate: `select` takes min(k, len(pool)).
 
     Found by adversarial review 2026-08-09, measured over counters 0-29 with k=4
@@ -236,7 +254,7 @@ def check_rotation_headroom(voice, k=selector.DEFAULT_K):
     """
     problems = []
     floor = k + 1
-    for channel, slot_kind, primary, pool in _resolved_slots(voice, k):
+    for channel, slot_kind, primary, pool in _resolved_slots(voice, k, channels):
         if not pool:
             continue                    # an empty pool is check_pools' story
         if len(pool) <= k:
@@ -290,32 +308,254 @@ def check_fingerprint_fresh(voice):
     return problems
 
 
-def check_budget(voice, channels=("linkedin", "x")):
+def _targets_for(channel, base, targets, extreme=min):
+    """The lengths this channel's prompts are really assembled at.
+
+    `targets` is a {channel: [words, ...]} DECLARATION supplied by the deployment,
+    because the engine cannot know an instance's producer table. When a channel
+    declares nothing, the fallback is the pre-2026-09-19 enumeration: None plus
+    the corpus's own shortest register.
+
+    AN UNDECLARED INSTANCE IS NOT GRADED IDENTICALLY, AND AN EARLIER VERSION OF
+    THIS DOCSTRING SAID IT WAS (claude review of PR #386 round 4, confirmed by
+    measurement). The FALLBACK TARGETS are unchanged, but `check_budget` now also
+    enumerates every slot kind and the `len(pool)` counters, and grades the
+    longest end rather than the shortest, so the set of assemblies it reaches is
+    strictly larger. Measured on a corpus with a fat comment slot and a thin post
+    slot: the old shape graded one post-only assembly at 602 chars and reported
+    CLEAN; the new one reaches 24122 against a 24000 ceiling and reports RED.
+
+    That direction is correct -- the old green was the gate failing to look --
+    but it means a fleet instance can go RED on a corpus its own suite passed
+    yesterday, with no change to its own code. It is a behaviour change on
+    every undeclared channel, not a no-op, and it belongs in the release note.
+
+    WHY A DECLARATION AND NOT A GUESS (2026-09-19). Until `target_words` became
+    required, these two checks synthesized `None` and the corpus minimum and
+    graded both. After the sweep neither is reachable on a checked channel: an
+    AST scan of every production call site finds only two passing None, both on
+    channels this validator does not assemble (substack, host-note). Grading a
+    shape no caller can build is not strictness, it is a false red, and a check
+    red on shapes its own system cannot produce is one someone switches off.
+
+    `extreme` IS THE WHOLE REASON THIS TAKES A PARAMETER (PR #386 round 2,
+    major). The two callers want OPPOSITE ENDS of the length distribution and
+    they shared one fallback, so one of them was always graded at the wrong end:
+
+      check_budget           a CEILING  -> the target drawing the LONGEST rows
+      check_correction_share a  FLOOR   -> the target collapsing the pool hardest
+
+    Measured on the live ASK corpus, linkedin/post, worst assembly by target:
+    None 20944, corpus-min 47 -> 15348, 200 -> 19438, corpus-max 479 -> 23915.
+    `check_budget` enumerated (None, corpus-min) and reported 20944 as the worst
+    while the reachable worst was 23915, eighty-five characters under a 24000
+    ceiling. A gate that grades the wrong end of the distribution is not strict
+    or lax, it is measuring something else.
+
+    THE DECLARATION IS PINNED INSTANCE-SIDE, NOT HERE, and this sentence says so
+    rather than implying a guard this package ships. The consuming repo's
+    `test_voice_reach.py::TestTheDeclarationIsCOMPLETE` parses its own call sites
+    and fails when a lane assembles at a length the declaration omits. That test
+    cannot live in this package: it resolves INSTANCE modules this engine has
+    never heard of. What travels with the engine is
+    `tests/test_engine_surface.py::test_a_declaration_that_omits_a_channel_is_not_graded`,
+    which pins the consequence -- an undeclared channel falls back rather than
+    going ungraded -- in terms the engine can state alone.
+    """
+    declared = (targets or {}).get(channel)
+    if declared:
+        return list(declared)
+    return (None, extreme(selector._words(r) for r in base))
+
+
+def check_budget(voice, channels=None, targets=None):
     """The largest legal assembly must fit the budget. Suite-time, so the daily
     job never needs a runtime cap -- the cap that failed loudly here cannot slice
     silently there."""
+    channels = channels or channel_registry.DEFAULT
     problems = []
-    for channel in channels:
+    rows = voice.active_exemplars()
+    for channel in channels.assembled:
         worst = 0
-        for counter in range(12):        # one rotation lap is enough to find the max
-            text, _ = assemble.voice_section(voice, channel, counter)
-            worst = max(worst, len(text))
+        # EVERY AXIS THE PRODUCER VARIES, the same enumeration
+        # `check_correction_share` below already performs. This loop used to call
+        # `voice_section(voice, channel, counter)` for 12 counters, taking the
+        # assembler's old `target_words=None` default -- so it graded ONE shape,
+        # and after 2026-09-19 that shape is not one any caller can build: the
+        # parameter is keyword-only and required now. The 2026-09-19 defect was a
+        # sibling of this: `check_correction_share` was widened on PR #301 for
+        # exactly this reason and `check_budget`, one function above it, was left
+        # sampling the single unlaned shape.
+        for slot_kind in SLOT_KINDS:
+            base = selector.resolved_pool(rows, channel, slot_kind,
+                                          selector.DEFAULT_K)
+            if not base:
+                continue
+            # max: this is a CEILING check, so the fallback must reach for the
+            # target that draws the LONGEST rows. It used to share the floor
+            # fallback and understated the worst by ~3000 chars.
+            for target in _targets_for(channel, base, targets, extreme=max):
+                pool = selector.resolved_pool(rows, channel, slot_kind,
+                                              selector.DEFAULT_K, target)
+                for counter in range(len(pool) or 1):
+                    text, _ = assemble.voice_section(
+                        voice, channel, counter, slot_kind=slot_kind,
+                        target_words=target)
+                    worst = max(worst, len(text))
         if worst > assemble.BUDGET_CHARS:
             problems.append(f"{channel}: largest assembly {worst} chars exceeds "
                             f"budget {assemble.BUDGET_CHARS}")
     return problems
 
 
-def check_all(voice_dir):
-    """Every check, one list. [] is a healthy corpus."""
+#: The share of an assembled prompt that may be CORRECTIONS rather than his own
+#: writing. A headroom alarm in the same posture as `assemble.BUDGET_CHARS`:
+#: suite-time only, never a runtime slice.
+#:
+#: why a share and not just a size: the founder-directed premise of this corpus is
+#: that posts are written FROM his examples, never from a model's impression of
+#: him. Corrections are RULES ABOUT him. When the rules outweigh the examples, that
+#: premise has quietly inverted while every size check still passes, because the
+#: total can sit inside budget with the mix completely wrong.
+#:
+#: MEASURED 2026-08-31 against the LARGEST assembly of 12 counters: linkedin 11618
+#: of 20552 chars (57%), x 10154 of 16994 (60%). Set at 0.70 to sit above that and
+#: bite within a few additions -- a guard set below the current reading is a guard
+#: someone switches off.
+#:
+#: THAT DENOMINATOR WAS THE WRONG END, so the two numbers above are the best case
+#: rather than the reading that matters (found in review on PR #301). Rules crowd
+#: his writing out worst at the THINNEST prompt a rotation produces, not the
+#: fattest. Re-measured 2026-09-04 on the live ASK corpus, same rows, dividing by
+#: the minimum: linkedin 11618 of 17995 (65%), x 10154 of 14293 (71%), reddit 527
+#: of 7541 (7%).
+#:
+#: 0.70 IS DELIBERATELY LEFT ALONE, so x trips the moment an instance picks this
+#: up. Moving the ceiling to clear a reading the corrected arithmetic has just
+#: exposed would be switching the alarm off in the same edit that made it work.
+#: How much of his prompt may be rules is the voice owner's number. The
+#: arithmetic under it is the engine's.
+#:
+#: The remedy when it fires is RETIREMENT, never rotation and never a quiet drop.
+#: `status` already gates this (`corpus.active_corrections` renders only "active";
+#: verified 2026-08-31 that promoted/retired rows really are absent from the
+#: prompt), so retiring a superseded rule is a one-field edit. Two rules that
+#: genuinely say one thing get MERGED into one loud statement, never dropped.
+CORRECTION_SHARE_CEILING = 0.70
+
+
+def check_correction_share(voice, channels=None, targets=None):
+    """Corrections must not crowd his own writing out of the prompt."""
+    channels = channels or channel_registry.DEFAULT
+    problems = []
+    for channel in channels.assembled:
+        # THE MINIMUM, not the maximum. `check_budget` right above this uses `max`
+        # and is correct to -- largest assembly against a size cap -- and this loop
+        # was written from that one, which is how the wrong extremum arrived. Here
+        # the max reports the BEST case of the very thing being graded: a rotation's
+        # prompts differ by thousands of characters, so the fattest one always
+        # flatters the share. Measured on the live ASK corpus 2026-09-04, the x
+        # channel read 60% against the max and 71% against the min, with the ceiling
+        # at 70%. The guard returned [] on a corpus already over its own line.
+        # EVERY AXIS THE PRODUCER VARIES, all DERIVED, none written as a literal.
+        # This loop arrived as a copy of `check_budget` and each parameter it failed
+        # to reproduce was a blind spot: three review rounds on PR #301 found three,
+        # one per round, all the same class. `validate._resolved_slots` already
+        # states the rule they break -- a checker that re-derives the rule it checks
+        # is testing its own copy.
+        #
+        # counter: `selector.select` offsets by `counter % len(pool)`, so the period
+        # is the pool size, not the 12 this loop inherited. Live pools are 45/31/10.
+        #
+        # target_words: `voice_ref.py` declares `--words` required, so a prompt
+        # assembled with None is a shape production never builds, and it was the
+        # only shape sampled. A target REPLACES the pool with the nearest k rows
+        # (`selector.select`), so the thinnest prompt reachable is the one whose
+        # target sits at the corpus's own shortest register -- `length_band` ranks
+        # by distance, so no other target draws shorter rows. Taking that minimum
+        # from the corpus keeps this derived; a list of example word counts would be
+        # the same guess in a new costume.
+        rows = voice.active_exemplars()
+        lengths = []
+        # slot_kind: taken from SLOT_KINDS, the vocabulary this module already
+        # DECLARES and `voice_ref.py --slot-kind` already offers. It was pinned to
+        # "post", so a corpus whose comment prompts are 97% rules read clean.
+        for slot_kind in SLOT_KINDS:
+            base = selector.resolved_pool(rows, channel, slot_kind,
+                                          selector.DEFAULT_K)
+            if not base:
+                continue
+            # target_words: supplied by `_targets_for`, which prefers the
+            # deployment's DECLARED lengths and falls back to the corpus's own
+            # shortest register plus None when a channel declares nothing. The
+            # shortest register is the target that collapses the pool hardest,
+            # since `length_band` ranks by distance. The line here used to say
+            # "None is kept because pre-2026 callers still pass it"; that stopped
+            # being the reason on 2026-09-19 when `target_words` became required,
+            # and `_targets_for`'s own docstring is the authority now.
+            for target in _targets_for(channel, base, targets):
+                pool = selector.resolved_pool(rows, channel, slot_kind,
+                                              selector.DEFAULT_K, target)
+                # counter: the period is the pool size, not a literal.
+                # len(pool) is an upper bound once a target narrows it, so this
+                # covers the full rotation. Over-sampling a pure string build is
+                # free; the live corpus measures 0.01s.
+                lengths += [len(assemble.voice_section(voice, channel, counter,
+                                                       slot_kind=slot_kind,
+                                                       target_words=target)[0])
+                            for counter in range(len(pool) or 1)]
+        # A counter that assembles to nothing has no share to measure, and taking a
+        # minimum over it divides by zero. Drop the empties so the channel is graded
+        # on the prompts it really produces; a channel with no prompt at all is
+        # skipped, which is what the old `if not worst_len` meant.
+        lengths = [n for n in lengths if n]
+        if not lengths:
+            continue
+        thinnest = min(lengths)
+        applied = [r for r in voice.active_corrections()
+                   if not r.get("scope") or channel in r["scope"]]
+        rules = sum(len(r.get("instruction") or "") for r in applied)
+        share = rules / thinnest
+        if share > CORRECTION_SHARE_CEILING:
+            problems.append(
+                f"{channel}: corrections are {rules} of {thinnest} chars "
+                f"({share:.0%}) of the thinnest assembly, over the "
+                f"{CORRECTION_SHARE_CEILING:.0%} ceiling. Retire a superseded "
+                f"correction (set its status off 'active'), or merge two that say "
+                f"one thing into one statement. Do not rotate them: a correction "
+                f"dropped from a prompt is a rule the model never sees.")
+    return problems
+
+
+def check_all(voice_dir, channels=None, targets=None):
+    """Every check, one list. [] is a healthy corpus.
+
+    `channels` is a `channel_registry.Channels`. None LOADS the registry that owns
+    `voice_dir`, and falls back to the built-in default when nothing does -- which
+    is what every instance without a registry gets and is byte-identical to the
+    behavior before the registry existed.
+
+    THIS IS THE LOAD PATH AND IT USED TO BE A SENTENCE. The line above said "an
+    instance seam that owns a registry passes for_instance(<repo root>)" and no
+    caller in this repo ever did: measured on PR #291, `for_instance` had one
+    definition and zero non-test callers, so every corpus was graded against the
+    built-in vocabulary no matter what its instance declared. The one instance
+    that owns a registry today declares a scope the built-in default does not
+    carry, so its first correction in that scope would have been refused by its
+    own suite as unknown. Documenting a seam is not wiring one.
+    """
+    if channels is None:
+        channels = channel_registry.for_path(voice_dir)
     voice = corpus.load(voice_dir)
     problems = check_exemplars(os.path.join(voice_dir, corpus.EXEMPLARS))
-    problems += check_corrections(os.path.join(voice_dir, corpus.CORRECTIONS))
-    problems += check_pools(voice)
-    problems += check_anchor_diversity(voice)
-    problems += check_rotation_headroom(voice)
+    problems += check_corrections(os.path.join(voice_dir, corpus.CORRECTIONS),
+                                  channels)
+    problems += check_pools(voice, channels)
+    problems += check_anchor_diversity(voice, channels=channels)
+    problems += check_rotation_headroom(voice, channels=channels)
     problems += check_fingerprint_fresh(voice)
-    problems += check_budget(voice)
+    problems += check_budget(voice, channels, targets)
+    problems += check_correction_share(voice, channels, targets)
     if voice.skipped_rows:
         problems.append(f"{voice.skipped_rows} corrupt JSONL row(s) skipped by the "
                         f"loader -- fix or remove them")

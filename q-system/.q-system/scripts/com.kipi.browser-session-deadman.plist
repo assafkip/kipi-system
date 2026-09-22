@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Freshness deadman for com.kipi.browser-session-health.
+     See browser_session_deadman.py.
+
+     WHY A SEPARATE AGENT: the thing watched is a checker that did not run, and
+     a checker that did not run is silent. Silence is also what a fleet of
+     healthy sessions looks like, so from outside, "all fine" and "the watchman
+     is dead" are the same observation. A check inside the health job cannot see
+     that case. Same lesson com.kipi.morning-brief-deadman records.
+
+     WHY StartInterval: same as the job it watches. A calendar watcher shares
+     its suspect's failure mode.
+
+     This one reads a single JSON receipt and exits, so /usr/bin/python3 is
+     correct here and deliberately different from the health job's interpreter.
+     It never opens a browser.
+
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.browser-session-deadman
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.browser-session-deadman</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>__HOME__</string>
+    <key>USER</key><string>__USER__</string>
+    <key>LOGNAME</key><string>__USER__</string>
+    <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>__KIPI_REPO__/q-system/.q-system/scripts/browser_session_deadman.py</string>
+  </array>
+  <key>StartInterval</key><integer>1800</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/browser-session-deadman.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/browser-session-deadman.err.log</string>
+</dict>
+</plist>
