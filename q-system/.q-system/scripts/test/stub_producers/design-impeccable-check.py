@@ -22,6 +22,7 @@ ap.add_argument("--url-base", required=True)
 ap.add_argument("--detector")
 ap.add_argument("--control")
 ap.add_argument("--page", action="append", default=[])
+ap.add_argument("--config")
 a = ap.parse_args()
 mode = os.environ.get("STUB_IMPECCABLE", "pass")
 if mode == "silent":

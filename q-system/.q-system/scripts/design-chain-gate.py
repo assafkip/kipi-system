@@ -773,8 +773,11 @@ def _run_producers(snap: RoundSnapshot, pages: list[Path], cfg: dict) -> list[tu
             imp_path.parent.mkdir(parents=True, exist_ok=True)
             # every page this seal seals, by name: the producer refuses one it cannot scan and
             # one it was not handed (review of d0492b36, finding-2)
+            # --config is the HELD copy: impeccable.canon answers a taste rule only through an owner
+            # file the census already holds and binds (round 2026-09-21, ASK-1743)
             rc, tail = timed("impeccable", rd.name, IMPECCABLE_PRODUCER, [str(snap.dir), "--url-base", base,
-                                                          *[x for p in pages for x in ("--page", p.name)]])
+                                                          *[x for p in pages for x in ("--page", p.name)],
+                                                          *(["--config", str(cfg_path)] if cfg_path else [])])
             snap.stages.setdefault("", []).append(stage_record("impeccable", IMPECCABLE_PRODUCER, rd, rc))
             _copy_back(snap, imp_rel)
             if rc == 0 and not imp_path.is_file():

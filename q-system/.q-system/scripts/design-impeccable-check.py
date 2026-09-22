@@ -38,7 +38,9 @@ Exit 0 = receipt written, the control fired, and every page is clean.
 Exit 1 = the control did not fire, so the page results are unproven.
 Exit 2 = could not run: no detector, no node, a detector that crashed on a page, or a served
          page whose bytes are not the local file.
-Exit 3 = at least one page raised an anti-pattern.
+Exit 3 = at least one page raised an anti-pattern that STANDS. A finding stops counting only
+         when this script refutes it by pixel measurement (low-contrast via analytic-gradient)
+         or a canon entry answers it (CANON_RULES only); see the block above main().
 It used to exit 0 whenever the control fired: `worst` was computed over the pages and never
 used, so a flagged page sealed on a receipt that said so (dc-04). --url-base has no default: a
 fixed port measured whatever round a leftover server was serving (dc-03 finding-4).
@@ -48,6 +50,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import contextlib
 import hashlib
@@ -156,6 +159,227 @@ def engine_of(output: str, target: str) -> str:
     return "browser (URL, computed styles resolved)" if target.startswith("http") else "static HTML parse"
 
 
+# ---------------------------------------------------------------------------------------------
+# THE ONLY TWO WAYS A FINDING STOPS COUNTING (round 2026-09-21, ASK-1743). Both are decided
+# here, by this script, on every run. Neither reads anything the round's author writes, so
+# neither is a place to type "accepted". The gate's history is a run of bypasses found in
+# exactly that shape (a caller-dir config switched gradient-text off, "ran" in the receipt
+# sealed), so the narrowness is in the code, not in a promise:
+#
+# 1. REFUTED BY MEASUREMENT. The browser engine scores text on a CSS gradient against the
+#    gradient's worst STOP, wherever that stop sits. A panel that fades in from the page colour
+#    and holds dark behind the words scored white-on-white, 1.0:1, on all six pages of round
+#    2026-09-21, while a pixel read of the same render measured 4.71:1 and up. Only a finding
+#    whose method is exactly `analytic-gradient` is re-measured. The re-measure renders the
+#    page with its text made transparent and reads the pixels inside the element's box, at the
+#    detector's viewport and both standard ones, and refutes only when the WORST pixel clears
+#    the detector's own threshold at every viewport. It runs its own two-sided control first
+#    (one text that must fail, one that must pass); a refuter that cannot tell them apart
+#    makes the run exit 2, never 0.
+#
+# 2. DECIDED BY CANON. A rule that is a taste call, never a defect, can be answered by a
+#    canon decision, through design-chain.json `impeccable.canon`. Only rules in CANON_RULES
+#    qualify; each entry names the EXACT finding text (so a different single font still
+#    flags), an owner file the config already lists (so the seal holds and binds it), and a
+#    `decision`: LITERAL text that must appear on one line of that owner AND must itself read
+#    as the decision (a dated AGREED/DECIDED or RULE-id marker, the rule's subject word, and
+#    the very value the finding names). It was a caller-supplied regex until review of PR #403:
+#    `^#` matched a heading in a file with no typeface decision and the finding sealed. The
+#    text stops matching, the finding stands. Contrast, gradient text and the AI palette are
+#    defects and can never be here.
+# ---------------------------------------------------------------------------------------------
+REFUTABLE_METHOD = "analytic-gradient"
+# rule -> (the finding's fixed prefix, whose remainder is the VALUE the decision must name;
+#          words one of which the decision must contain, so it is about this rule's subject)
+CANON_RULES = {"single-font": ("only font used is ", ("typeface", "font"))}
+DECISION_MARKER = re.compile(r"\b(?:AGREED|DECIDED) \d{4}-\d{2}-\d{2}\b|\bRULE-\d{4}-\d{2}-\d{2}-[A-Z]\b")
+FINDING_LINE = re.compile(r"^\s*\[([a-z0-9-]+)\]\s+(.*\S)\s*$")
+CONTRAST_DETAIL = re.compile(
+    r'^browser contrast [\d.]+:1 median [\d.]+:1 \(need ([\d.]+):1\) via ([a-z, -]+?) "(.*)"$')
+# the detector's default viewport (detect-url.mjs) plus the two the standard check renders at
+REFUTE_VIEWPORTS = ((1280, 800), (1440, 900), (390, 844))
+
+# Two texts on one gradient panel: the one at the light end MUST read as failing and the one
+# at the dark end MUST read as passing. A refuter that passes everything, or fails everything,
+# trips one of the two.
+REFUTER_CONTROL_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>refuter control</title>
+<style>body{margin:0;background:#fcfbf8;font:18px/1.4 sans-serif}
+.p{position:relative;height:600px;margin:40px;
+background:linear-gradient(to bottom,#1b3d66 0%,#1b3d66 45%,#fcfbf8 100%);background-color:#1b3d66}
+.p span{position:absolute;left:24px;color:#ffffff}
+.dark{top:40px}.light{bottom:12px}</style></head><body>
+<div class="p"><span class="dark">refuter control reads on dark</span>
+<span class="light">refuter control reads on light</span></div></body></html>
+"""
+REFUTER_CONTROL_PASS = "refuter control reads on dark"
+REFUTER_CONTROL_FAIL = "refuter control reads on light"
+
+_PROBE = r"""(want) => {
+  const norm = s => s.trim().replace(/\s+/g, ' ').slice(0, 80);
+  const out = [];
+  for (const el of document.querySelectorAll('*')) {
+    const direct = [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent || '').join('');
+    if (norm(direct) !== want) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) continue;
+    // a photo or icon inside the line is content, not what the words sit on (round 2026-09-21:
+    // the author photo in the signature read as a 1.48:1 background); only REPLACED content is
+    // skipped, a child's own background still counts
+    const skip = [...el.querySelectorAll('img,svg,video,canvas,picture,iframe')].map(k => {
+      const b = k.getBoundingClientRect();
+      return [b.left + scrollX - 1, b.top + scrollY - 1, b.right + scrollX + 1, b.bottom + scrollY + 1]; });
+    out.push({x: r.left + scrollX, y: r.top + scrollY, w: r.width, h: r.height,
+              color: getComputedStyle(el).color, skip});
+  }
+  return out;
+}"""
+# text and anything painted in currentColor go transparent, so only what is BEHIND is read
+_HIDE_TEXT = ("*{color:transparent!important;-webkit-text-fill-color:transparent!important;"
+              "text-shadow:none!important;caret-color:transparent!important}")
+_SETTLE = """() => Promise.race([
+  Promise.all([document.fonts.ready, ...document.getAnimations().map(a => a.finished.catch(() => 0))]),
+  new Promise(r => setTimeout(r, 5000))])"""
+
+
+def _lum(rgb) -> float:
+    def f(c):
+        c /= 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = rgb[:3]
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+
+
+def _ratio(a, b) -> float:
+    la, lb = sorted((_lum(a), _lum(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def pixel_contrast(url: str, text: str) -> tuple[list[tuple[str, float, int]], str | None]:
+    """The worst pixel contrast behind every element whose direct text is `text`, per viewport.
+    Returns ([(viewport, worst ratio, elements measured)], None) or ([], why it could not)."""
+    try:
+        import io
+        from PIL import Image
+        from playwright.sync_api import sync_playwright
+    except ImportError as e:
+        return [], f"the pixel re-measure needs playwright and Pillow ({e})"
+    rows = []
+    try:
+        with sync_playwright() as pw:
+            b = pw.chromium.launch()
+            try:
+                for w, h in REFUTE_VIEWPORTS:
+                    pg = b.new_page(viewport={"width": w, "height": h}, device_scale_factor=1)
+                    pg.goto(url, wait_until="load", timeout=30000)
+                    pg.evaluate(_SETTLE)
+                    boxes = pg.evaluate(_PROBE, text)
+                    pg.add_style_tag(content=_HIDE_TEXT)
+                    pg.wait_for_timeout(150)
+                    shot = Image.open(io.BytesIO(pg.screenshot(full_page=True))).convert("RGB")
+                    pg.close()
+                    worst, n = None, 0
+                    for bx in boxes:
+                        m = re.match(r"rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\)", bx["color"])
+                        if not m or (m.group(4) is not None and float(m.group(4)) < 0.99):
+                            return [], f"text colour {bx['color']!r} is not opaque rgb; cannot re-measure"
+                        fg = tuple(float(m.group(i)) for i in (1, 2, 3))
+                        x0, y0 = int(bx["x"]) + 1, int(bx["y"]) + 1
+                        x1 = min(shot.width, int(bx["x"] + bx["w"]) - 1)
+                        y1 = min(shot.height, int(bx["y"] + bx["h"]) - 1)
+                        inside = lambda x, y: any(k[0] <= x <= k[2] and k[1] <= y <= k[3] for k in bx["skip"])
+                        px = [shot.getpixel((x, y)) for x in range(max(0, x0), x1, 2)
+                              for y in range(max(0, y0), y1, 2) if not inside(x, y)]
+                        if not px:
+                            continue
+                        n += 1
+                        r = min(_ratio(fg, p) for p in px)
+                        worst = r if worst is None else min(worst, r)
+                    rows.append((f"{w}x{h}", worst if worst is not None else 0.0, n))
+            finally:
+                b.close()
+    except Exception as e:                      # a browser that will not start is could-not-measure
+        return [], f"the pixel re-measure crashed: {type(e).__name__}: {e}"
+    return rows, None
+
+
+def refuted(rows, need: float) -> bool:
+    """Refuted only when EVERY viewport found the element and its worst pixel clears `need`."""
+    return bool(rows) and all(n >= 1 and worst >= need for _, worst, n in rows)
+
+
+def refuter_control() -> str | None:
+    """None when the re-measure tells a failing text from a passing one, else why not."""
+    with control_server(REFUTER_CONTROL_HTML) as url:
+        ok_rows, why = pixel_contrast(url, REFUTER_CONTROL_PASS)
+        if why:
+            return why
+        bad_rows, why = pixel_contrast(url, REFUTER_CONTROL_FAIL)
+        if why:
+            return why
+    if not refuted(ok_rows, 4.5):
+        return f"its control text on the dark end did not pass ({ok_rows})"
+    if refuted(bad_rows, 4.5):
+        return f"its control text on the light end did not fail ({bad_rows})"
+    return None
+
+
+def parse_findings(output: str) -> list[tuple[str, str]]:
+    return [(m.group(1), m.group(2)) for m in map(FINDING_LINE.match, output.splitlines()) if m]
+
+
+def canon_entries(cfg_path: Path | None) -> tuple[list[dict], list[str], str | None]:
+    """(honoured entries, entries NOT honoured with why, a config error that refuses the run).
+    Owner files resolve against the config's directory, the same base the gate's owners use."""
+    if cfg_path is None:
+        return [], [], None
+    try:
+        cfg = json.loads(cfg_path.read_text())
+    except (OSError, ValueError) as e:
+        return [], [], f"cannot read --config {cfg_path}: {e}"
+    block = cfg.get("impeccable")
+    if block is None:
+        return [], [], None
+    entries = block.get("canon") if isinstance(block, dict) else None
+    if not isinstance(entries, list):
+        return [], [], "design-chain.json impeccable.canon must be a list"
+    owners = {o.get("file") for o in cfg.get("owners", []) if isinstance(o, dict)}
+    ok, not_ok = [], []
+    for i, e in enumerate(entries):
+        if not isinstance(e, dict) or not all(isinstance(e.get(k), str) and e[k].strip()
+                                             for k in ("rule", "finding", "owner", "decision")):
+            return [], [], f"impeccable.canon[{i}] needs rule, finding, owner and decision, each a string"
+        if "anchor" in e:
+            return [], [], (f"impeccable.canon[{i}] carries 'anchor'; a regex proved nothing (PR #403 "
+                            f"review), so the entry names its canon line as literal 'decision' text")
+        if e["rule"] not in CANON_RULES:
+            return [], [], (f"impeccable.canon[{i}] names rule {e['rule']!r}; only {sorted(CANON_RULES)} "
+                            f"are taste calls a canon decision can answer")
+        if e["owner"] not in owners:
+            return [], [], (f"impeccable.canon[{i}] owner {e['owner']!r} is not one of the config's "
+                            f"owners, so the seal would not hold it")
+        prefix, subject = CANON_RULES[e["rule"]]
+        value = e["finding"][len(prefix):].strip().lower() if e["finding"].startswith(prefix) else ""
+        dec = e["decision"].strip()
+        low = dec.lower()
+        why = ("its finding does not have the rule's shape" if not value else
+               "its decision has no dated AGREED/DECIDED or RULE-id marker" if not DECISION_MARKER.search(dec) else
+               f"its decision names none of {list(subject)}" if not any(w in low for w in subject) else
+               f"its decision does not name {value!r}, the value the finding reports" if value not in low else None)
+        if why:
+            return [], [], f"impeccable.canon[{i}]: {why}"
+        try:
+            src = (cfg_path.parent / e["owner"]).read_text()
+        except OSError as err:
+            not_ok.append(f"canon[{i}] {e['rule']}: owner unreadable ({err})")
+            continue
+        line_no = next((n for n, ln in enumerate(src.splitlines(), 1) if dec in ln), None)
+        if line_no is None:
+            not_ok.append(f"canon[{i}] {e['rule']}: its decision text is no longer in {e['owner']}")
+            continue
+        ok.append({**e, "line": line_no, "quote": src.splitlines()[line_no - 1].strip()[:160]})
+    return ok, not_ok, None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("round")
@@ -165,7 +389,13 @@ def main() -> int:
     ap.add_argument("--control")
     ap.add_argument("--page", action="append", default=[],
                     help="a page to scan, by name; seal passes every page it seals")
+    ap.add_argument("--config", help="design-chain.json (the seal passes its HELD copy); read only for "
+                                     "impeccable.canon")
     a = ap.parse_args()
+    canon_ok, canon_not, canon_err = canon_entries(Path(a.config) if a.config else None)
+    if canon_err:
+        print(f"could not measure: {canon_err}", file=sys.stderr)
+        return 2
 
     rd = Path(a.round).resolve()
     # The pages are the ones the CALLER seals, not a glob of our own: this scanned *.html and
@@ -232,7 +462,7 @@ def main() -> int:
     # --- the pages, browser engine asked for first
     w("=== THE PAGES ===")
     browser_ok = None
-    flagged, broken = [], []
+    flagged, broken, raised = [], [], []
     for p in pages:
         url = f"{a.url_base.rstrip('/')}/{p.name}"
         why = served_bytes_differ(url, p)
@@ -251,9 +481,49 @@ def main() -> int:
         for ln in (out or "(no output)").splitlines():
             w("    " + ln)
         if rc == DETECTOR_FOUND:
-            flagged.append(p.name)
+            raised.append((p.name, url if browser_ok else None, out))
         elif rc != 0:
             broken.append(f"{p.name} (detector exit {rc})")
+    w("")
+
+    # --- what each raised finding comes to. A finding this cannot parse STANDS: fail closed.
+    w("=== DISPOSITIONS (decided by this script; see REFUTABLE_METHOD and CANON_RULES) ===")
+    for line in canon_not:
+        w(f"canon entry NOT honoured, its findings stand: {line}")
+    control_why = "not needed"
+    n_refuted = n_canon = 0
+    for name, url, out in raised:
+        found = parse_findings(out)
+        standing = [] if found else [("unparsed", "the detector exited 'found' and no finding line parsed")]
+        for rule, detail in found:
+            m = CONTRAST_DETAIL.match(detail) if rule == "low-contrast" else None
+            if m and m.group(2) == REFUTABLE_METHOD and url:
+                if control_why == "not needed":
+                    control_why = refuter_control()
+                    w(f"pixel re-measure control: {'FIRED both ways' if control_why is None else 'BROKEN: ' + control_why}")
+                if control_why is not None:
+                    print(f"could not measure: the pixel re-measure {control_why}", file=sys.stderr)
+                    return 2
+                need = float(m.group(1))
+                rows, why = pixel_contrast(url, m.group(3))
+                shown = ", ".join(f"{vp} {r:.2f}:1 over {n} element(s)" for vp, r, n in rows) or why
+                if not why and refuted(rows, need):
+                    n_refuted += 1
+                    w(f"{name}: REFUTED [{rule}] \"{m.group(3)}\": worst pixel {shown} (need {need}:1)")
+                    continue
+                standing.append((rule, f"{detail} | pixel re-measure did not refute: {shown}"))
+                continue
+            hit = next((c for c in canon_ok if c["rule"] == rule and c["finding"] == detail), None)
+            if hit:
+                n_canon += 1
+                w(f"{name}: CANON [{rule}] {detail}: {hit['owner']}:{hit['line']} \"{hit['quote']}\"")
+                continue
+            standing.append((rule, detail))
+        for rule, detail in standing:
+            w(f"{name}: STANDS [{rule}] {detail}")
+        if standing:
+            flagged.append(name)
+    w(f"refuted by measurement: {n_refuted}; decided by canon: {n_canon}")
     w("")
 
     w("=== WHAT THIS RUN COULD NOT SEE ===")
