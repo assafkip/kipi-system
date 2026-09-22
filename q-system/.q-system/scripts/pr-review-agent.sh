@@ -1176,7 +1176,15 @@ REVIEWED_BY="$CODEX_MODEL"
 # change removes.
 RECORD_PATH="$(verdict_record_reserve "$VERDICT_DIR" "$REVIEW_SLUG" "$PR" "$HEAD_SHA")"
 if [ -z "$RECORD_PATH" ]; then
-  echo "  WARN: could not reserve a verdict record path under $VERDICT_DIR -- no record written for PR #$PR (the review prose stands; gates will read this PR as unreviewed)"
+  # THE WARN NAMES THE STATE THE GATES WILL ACTUALLY BE IN. It used to say
+  # "unreviewed", which is the one thing that cannot happen here:
+  # verdict_record_for_head tier 2 returns the newest record at any sha and
+  # tier 3 returns the pre-change path, and both are reachable exactly when
+  # this run wrote nothing. A prior APPROVE therefore reaches rework_gate exit
+  # 40 (stale, re-review), never exit 20 (unreviewed). At 3am an operator
+  # reading "unreviewed" while the loop is on the drift branch learns to skim
+  # the warnings, which costs more than the warning buys (PR #414 round 1).
+  echo "  WARN: could not reserve a verdict record path under $VERDICT_DIR -- no record written for PR #$PR (the review prose stands; gates will read the PREVIOUS record for this PR, not this run's verdict, and a first-ever review leaves nothing to read)"
 else
 python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" "$REVIEWED_BY" "$DEGRADED" "$RECORD_PATH" <<'PY'
 import json, sys
