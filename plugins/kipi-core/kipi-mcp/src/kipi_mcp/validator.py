@@ -154,7 +154,7 @@ class Validator:
                 detail=", ".join(ktlyst_hits) if ktlyst_hits else None,
             )
 
-            hardcoded_hits = self._grep_dir(agents_dir, HARDCODED_PATH_PATTERNS)
+            hardcoded_hits = self._grep_dir(agents_dir, self._leak_patterns()[1])
             self._check(
                 checks,
                 "No hardcoded paths in agents",

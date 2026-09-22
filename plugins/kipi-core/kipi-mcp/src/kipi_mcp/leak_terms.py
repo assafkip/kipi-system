@@ -62,7 +62,10 @@ def load_scoped(repo_dir: Path | None) -> dict[str, list[str]]:
 
 
 def load_terms(repo_dir: Path | None) -> list[str]:
-    """Every term, all scopes, in file order: what the shell consumers see."""
+    """Every term in the scopes the Python gates read (instance, content, path), in file order.
+    NOT what the shell consumers see: they take every non-comment line, including a `shell`
+    section this module skips on purpose (a bare home-path term the skeleton's own sweeps
+    must not apply to skeleton scripts). Read the file directly for the shell view."""
     scoped = load_scoped(repo_dir)
     return [t for s in SCOPES for t in scoped[s]]
 

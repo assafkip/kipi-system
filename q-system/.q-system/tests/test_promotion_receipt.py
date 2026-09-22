@@ -291,7 +291,12 @@ def test_push_tripwire_is_single_sourced():
     sys.path.insert(0, str(ROOT / "q-system" / ".q-system" / "scripts"))
     import lessons_scrub
     terms = lessons_scrub.tripwire_terms(ROOT / "q-system" / ".q-system" / "scripts" / "tripwire-terms.txt")
-    assert terms == [org, org.lower(), "CISO", "re-breach", "As" + "saf", "/Users/"], "the same six terms the inline grep carried"
+    # The roster the file carries, in file order, every scope (the shell consumers take all of
+    # them). Grew from the inline grep's six on GitHub issue #2 PR B: the instance slug's path
+    # form, the dotted incident spelling, and the author's home path under `path`, which the
+    # skeleton sweeps read; the bare /Users/ stays for the push tripwire under `shell`.
+    assert terms == [org, org.lower(), "q-" + org.lower(), "CISO", "re-breach", "re.breach", "As" + "saf",
+                     "/Users/" + "as" + "safkip", "/Users/"], "the roster changed; change it here on purpose"
 
 
 def test_push_script_fails_closed_without_the_term_list(tmp_path):
