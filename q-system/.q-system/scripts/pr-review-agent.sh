@@ -228,7 +228,9 @@ STATUS_REPO_PATH="{owner}/{repo}"
 # what made codex non-gating before the founder directive, and naively swapping
 # the pair would have introduced a fresh defect in the other direction:
 #
-#   ENGINE_DIR (reviews + ROUND COUNTER). review_round() globs `pr-<N>-*.md`, so
+#   ENGINE_DIR (reviews + ROUND COUNTER). review_round() globs this repo's own
+#   `<owner>_<repo>__pr-<N>-*.md` (ASK-1957; it globbed the legacy `pr-<N>-*.md`
+#   and therefore counted nothing at all until then), so
 #   an engine reading another engine's review files counts their rounds as its own
 #   and arms the anti-re-litigation rule early. Each engine therefore KEEPS its
 #   historical directory across this change -- claude's rounds stay in $OUT_DIR,
@@ -244,9 +246,12 @@ STATUS_REPO_PATH="{owner}/{repo}"
 #   read to understand the contract, so it flips with the defaults rather than
 #   being left as an artifact of the previous direction. Note the asymmetry it
 #   creates: for the PRIMARY engine ENGINE_DIR and VERDICT_DIR are now the SAME
-#   directory ($OUT_DIR). That is safe because review_round globs `pr-<N>-*.md`
-#   and the record is `..._pr-<N>.verdict.json`, so neither ever counts the other
-#   -- measured on the live store, 88 .md at the root and 993 under codex/.
+#   directory ($OUT_DIR). That is safe because the round counter matches
+#   `<key>-*.md` and the record is `<key>.verdict.json` -- the `-` after the key
+#   is required, so the record's name can never satisfy the counter's pattern.
+#   (Before ASK-1957 the counter's pattern was the legacy `pr-<N>-*.md`, which
+#   could not match either, for the different and much worse reason that it
+#   matched none of the repo-keyed files the writer has produced since ASK-738.)
 PRIMARY_ENGINE="${KIPI_REVIEW_PRIMARY_ENGINE:-claude}"
 
 # WHO ASKED FOR THIS REVIEW (sp-53aad86f). The verdict record proved that A CODEX
@@ -298,7 +303,10 @@ REVIEW_UNUSABLE=0
 
 mkdir -p "$ENGINE_DIR" "$VERDICT_DIR"
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-REVIEW="$ENGINE_DIR/$(artifact_key "$REVIEW_SLUG" "$PR")-$(date +%Y%m%d-%H%M%S).md"
+# Through the shared convention (repo-slug-lib.sh), never assembled here: the
+# round counter reads these files back with review_md_name_glob, and the last
+# time this line spelled the shape itself the two drifted for good (ASK-1957).
+REVIEW="$(review_md_path "$ENGINE_DIR" "$REVIEW_SLUG" "$PR" "$(date +%Y%m%d-%H%M%S)")"
 
 # Same bash wall clock as the worker: macOS ships no `timeout` without coreutils,
 # and a review that never returns is worse than one that fails.
@@ -706,7 +714,11 @@ fi
 # $REVIEW is only a variable at this point -- the file is not created until the
 # reviewer's stdout redirect at the bottom -- so review_round's "existing + 1" is
 # exactly this run's round number. (Counting after the redirect would double it.)
-ROUND="$(review_round "$ENGINE_DIR" "$PR")"
+# The SLUG is passed because the counter keys on it exactly as this script's
+# writer does. Without it the counter globs the legacy `pr-<N>-*.md`, matches
+# none of the repo-keyed files written since ASK-738, and reports round 1 on
+# every run -- which is how ROUND_RULE below sat unarmed (ASK-1957).
+ROUND="$(review_round "$ENGINE_DIR" "$PR" "$REVIEW_SLUG")"
 echo "  round: $ROUND (engine: $ENGINE)"
 
 # A repeat review must not re-litigate. Fresh eyes on the CODE is the point;
