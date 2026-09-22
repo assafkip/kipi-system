@@ -33,10 +33,25 @@ Classification per (hook command, script path) site:
             this repo's UserPromptSubmit hooks are additive-only -- so it is
             REPORTED and never fatal. A gate that goes red on its own
             population gets switched off.
-  DEAD      the path does not resolve to an existing file. The one fatal state.
-  UNKNOWN   no script path could be extracted from the command. Reported, never
-            fatal: a check that cannot see must not report dead. Same posture as
-            hook_envelope_audit.py.
+  DEAD      a SCRIPT path (.py/.sh) that does not resolve to an existing file.
+            The one fatal state.
+  UNKNOWN   this tool cannot judge the reference. Three ways in: no path could
+            be extracted from the command at all; the path resolves to a
+            directory rather than a script; the path is not script-shaped and
+            nothing is there. Reported, never fatal: a check that cannot see
+            must not report dead. Same posture as hook_envelope_audit.py.
+
+A third false-DEAD source, found after the two above and fixed the same way:
+NOT EVERY REFERENCE IS A SCRIPT. `cd "$CLAUDE_PROJECT_DIR/q-consult"` is a live
+SessionStart hook in the consulting instance, and os.path.isfile() on a
+directory is False, so the reference read DEAD and this tool advised removing
+working wiring -- the exact verdict it exists to stop. BARE_REL was already
+anchored on .py/.sh; PROJECT_DIR_REF was not, so the two extractors disagreed
+about what counts as a judgeable path. They agree now: anything that is not a
+resolvable script is UNKNOWN, never DEAD. A missing extensionless path (the
+`kipi` CLI, say) is therefore reported and not flagged, which is the deliberate
+direction: a false UNKNOWN costs a reader one look, a false DEAD costs a live
+gate.
 
 Exit 0 when nothing is DEAD, 2 when anything is.
 
@@ -88,6 +103,10 @@ PROJECT_DIR_REF = re.compile(
 BARE_REL = re.compile(
     r"(?<![\w/$.-])((?:q-system|plugins|\.claude|automation)/[\w./-]+\.(?:py|sh))"
 )
+
+# The suffixes BARE_REL already requires. check_site applies the same test to
+# references pulled out by PROJECT_DIR_REF, which matches any path shape.
+SCRIPT_EXT = (".py", ".sh")
 
 # Terminating non-zero is one way to block. These are the others, all of which
 # ride out on exit 0.
@@ -178,11 +197,24 @@ def check_site(project_dir: str, rel: str) -> dict:
     candidate = os.path.join(project_dir, rel)
     resolved = os.path.realpath(candidate)
     site = {"script": rel, "candidate": candidate, "resolved": resolved}
+    # A reference to a directory. `cd "$CLAUDE_PROJECT_DIR/q-consult"` is the
+    # live case; isfile() says False and the old code called that DEAD.
+    if os.path.isdir(resolved):
+        site["status"] = UNKNOWN
+        site["note"] = "resolves to a directory, not a script"
+        return site
     # isfile() on the realpath, so a symlink chain whose target was deleted is
     # DEAD and the fix for the symlink incident does not become "assume it is
     # there".
     if not os.path.isfile(resolved):
-        site["status"] = DEAD
+        if rel.endswith(SCRIPT_EXT):
+            site["status"] = DEAD
+            return site
+        # Not script-shaped and not there. It may be a directory this hook
+        # creates, an output file, or an extensionless binary; this tool cannot
+        # tell which, so it reports and does not condemn.
+        site["status"] = UNKNOWN
+        site["note"] = "not a script path, and nothing at the resolved location"
         return site
     try:
         with open(resolved, "r", encoding="utf-8", errors="replace") as fh:
@@ -257,6 +289,8 @@ def print_human(report: dict) -> None:
             continue
         label = site["script"] or site["command"][:60]
         print(f"{site['status']:9} {site['event']:16} {label}")
+        if site.get("note"):
+            print(f"{'':9} {site['note']}")
         if site["status"] == DEAD:
             print(f"{'':9} wired at : {site['candidate']}")
             print(f"{'':9} resolved : {site['resolved']}  (no such file)")

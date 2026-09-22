@@ -154,6 +154,53 @@ def test_missing_path_is_dead():
         assert code == 2, (code, report)
 
 
+def test_directory_reference_is_not_dead():
+    """The third false-DEAD source (codex, PR #409 round 3).
+
+    `cd "$CLAUDE_PROJECT_DIR/q-consult"` is a live SessionStart hook in the
+    consulting instance. isfile() on a directory is False, so the checker called
+    the reference DEAD, exited 2, and told the reader to remove working wiring
+    -- the exact verdict it was built to stop somebody acting on.
+
+    The directory EXISTS in this fixture, which is the whole point: the
+    reference resolves, so nothing here is dead.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        os.makedirs(os.path.join(tmp, "q-consult"))
+
+        settings = os.path.join(tmp, ".claude", "settings.json")
+        cmd = 'cd "$CLAUDE_PROJECT_DIR/q-consult" && echo hi'
+        _write(settings, json.dumps(_settings([cmd])))
+
+        code, report = _run(tmp, settings)
+
+        site = _by_script(report)["q-consult"]
+        assert site["status"] == "UNKNOWN", report
+        assert report["dead"] == 0, report
+        assert code == 0, (code, report)
+
+
+def test_missing_non_script_path_is_unknown_not_dead():
+    """The same rule where the path is NOT there either.
+
+    An extensionless or non-script reference may be a directory the hook itself
+    creates, an output file, or a binary. This tool cannot tell which, so it
+    reports and does not condemn. A missing .py/.sh is still DEAD -- pinned by
+    test_missing_path_is_dead -- so this is a narrowing, not an amnesty.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        settings = os.path.join(tmp, ".claude", "settings.json")
+        cmd = 'cd "$CLAUDE_PROJECT_DIR/not-created-yet" && echo hi'
+        _write(settings, json.dumps(_settings([cmd])))
+
+        code, report = _run(tmp, settings)
+
+        site = _by_script(report)["not-created-yet"]
+        assert site["status"] == "UNKNOWN", report
+        assert report["dead"] == 0, report
+        assert code == 0, (code, report)
+
+
 def test_dangling_symlink_is_dead():
     """Case 2, the harder half. Resolving through symlinks must not become
     'assume it is there'. A link whose target was deleted is genuinely dead and
