@@ -45,6 +45,7 @@ Nothing here shells gh: CI.list_prs is replaced with a fixture list.
 Run: python3 test-review-redrive-absent.py   (exit 0 = pass, 1 = fail)
 """
 import importlib.util
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -247,5 +248,71 @@ if failures:
     for f in failures:
         print("  " + f)
     sys.exit(1)
+
+# ---- ASK-2029: the floor's red is the absent state, not a broken producer ----------
+# A REAL capture: PR #338, one of 63 armed PRs whose head carries
+# kipi/reviewer-approved=FAILURE posted by the reviewer floor (github-actions[bot],
+# FLOOR_DESC), reviewer-floor green, no local record. Before this change every
+# one of them was "Left alone" on every dispatch cycle.
+import json as _json
+_FX = Path(__file__).parent / "fixtures" / "review-redrive" / "pr-338-floor-marked-2026-09-22.json"
+_doc = _json.loads(_FX.read_text())
+assert (_doc.get("_provenance") or {}).get("captured_at"), "fixture must be a real capture"
+_floor_pr = dict(_doc["payload"]["pr"], isDraft=False,
+                 title="The PR reviewer floor-marked head (ASK-338)")
+_floor_pr["headRefName"] = "sana/ask-338"
+_statuses = _doc["payload"]["statuses"]
+check("CAPTURE: the failing verdict slot on PR #338 was posted by the floor, in its own words",
+      [s["creator"] for s in _statuses if s["context"] == "kipi/reviewer-approved"
+       and s["state"] == "failure" and "floor: absent is not approved" in (s["description"] or "")],
+      ["github-actions[bot]"])
+got = offered([_floor_pr])
+check("ASK-2029: a floor-marked head with no record is offered", len(got), 1)
+if got:
+    check("ASK-2029: and offered as re-review, the action dispatch routes to pr-review-agent",
+          got[0]["action"], "re-review")
+    check("ASK-2029: the reason names the floor", "floor" in got[0]["reason"], True)
+_no_floor = dict(_floor_pr, statusCheckRollup=[c for c in _floor_pr["statusCheckRollup"]
+                                               if (c.get("name") or "") != "reviewer-floor"])
+check("CONTROL: the same head with NO floor run stays refused (ASK-318's case)",
+      offered([_no_floor]), [])
+_floor_cancelled = dict(_floor_pr, statusCheckRollup=[
+    (dict(c, conclusion="CANCELLED") if (c.get("name") or "") == "reviewer-floor" else c)
+    for c in _floor_pr["statusCheckRollup"]])
+check("CONTROL: a floor run that did not conclude SUCCESS marked nothing (round 1 minor)",
+      offered([_floor_cancelled]), [])
+# A REAL refusal at this head under the repo-keyed record name (the shape every
+# write has used since ASK-738) must NOT be read as absent (round 1 major): the
+# record is found through the slug lib, and the floor branch never fires.
+import subprocess as _sp
+with tempfile.TemporaryDirectory() as _repo, tempfile.TemporaryDirectory() as _records:
+    _sp.run(["git", "-C", _repo, "init", "-q"], check=True)
+    _sp.run(["git", "-C", _repo, "remote", "add", "origin", "https://github.com/assafkip/kipi-system.git"], check=True)
+    _slug = rr.slug_for_repo(_repo)
+    check("SLUG: the lib resolves the temp repo", _slug, "assafkip/kipi-system")
+    _rec = {"pr": 338, "verdict": "REQUEST CHANGES", "usable": True, "engine": "claude",
+            "head_sha": _floor_pr["headRefOid"], "review": "/nonexistent", "round": 1}
+    Path(_records, "assafkip_kipi-system__pr-338.verdict.json").write_text(_json.dumps(_rec))
+    rr.CI.list_prs = lambda repo_dir: [_floor_pr]
+    _got = rr.candidates(_repo, Path(_records))
+    check("MAJOR: a repo-keyed refusal record at head is read, so the floor branch does not fire",
+          [g for g in _got if "floor" in g["reason"]], [])
+    Path(_records, "assafkip_kipi-system__pr-338.verdict.json").unlink()
+    _got2 = rr.candidates(_repo, Path(_records))
+    check("and with that record gone the same head is the floor's absent case again",
+          [g["action"] for g in _got2 if "floor" in g["reason"]], ["re-review"])
+# the floor's PUBLISHED check-run name is read from the workflow: the job's
+# `name:` when it has one, else the job id (round 1 minor).
+_wf = (Path(__file__).resolve().parents[4] / ".github" / "workflows" / "reviewer-floor.yml").read_text()
+_m = re.search(r"^  ([A-Za-z0-9_-]+):\n((?:    .*\n)+)", _wf[_wf.index("\njobs:\n"):], re.M)
+_job_id, _job_body = _m.group(1), _m.group(2)
+_name = re.search(r"^    name:\s*(\S.*)$", _job_body, re.M)
+check("WIRING: FLOOR_CHECK is the check-run name the workflow publishes",
+      rr.FLOOR_CHECK, (_name.group(1).strip().strip("'\"") if _name else _job_id))
+if failures:
+    for f in failures:
+        print("  FAIL - " + f)
+    sys.exit(1)
+print("PASS: a floor-marked head is a first re-review (ASK-2029)")
 print("PASS: review-redrive sees a never-posted reviewer slot")
 sys.exit(0)
