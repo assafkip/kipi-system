@@ -285,6 +285,13 @@ PLUGIN_COPY_EXCLUDES=(
 # fixtures and clones with no origin, where there is no remote to disagree with.
 fleet_ship_ref() {
   local ref
+  # Once skeleton-provenance.sh has proven HEAD equals the CONFIGURED remote's branch, HEAD
+  # is the ref with the proven meaning; origin/<branch> is only that when origin happens to be
+  # the configured remote, which a fork with KIPI_SKELETON_REMOTE set is not (issue #2, PR A).
+  if [ "${PROVENANCE_OK:-}" = "1" ]; then
+    printf 'HEAD\n'
+    return 0
+  fi
   for ref in "refs/remotes/origin/$SKELETON_BRANCH" "refs/heads/$SKELETON_BRANCH" HEAD; do
     if git -C "$SCRIPT_DIR" rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
       printf '%s\n' "$ref"
@@ -766,38 +773,22 @@ if git -C "$SCRIPT_DIR" remote get-url origin >/dev/null 2>&1; then
   # exported at the top of this script, so an unreachable origin errors out
   # rather than hanging on credentials. Fanning to 23 repos on an unproven
   # source is worse than not fanning at all.
-  if ! git -C "$SCRIPT_DIR" fetch origin "$SKELETON_BRANCH" --quiet 2>/dev/null; then
+  # The proof itself lives in skeleton-provenance.sh so a test can drive it with two bare
+  # repositories. It fetches the CONFIGURED remote ($SKELETON_REMOTE, overridable through
+  # KIPI_SKELETON_REMOTE) and compares HEAD with FETCH_HEAD, never with origin/<branch>:
+  # a fork with the override set used to be compared against whatever `origin` was, so the
+  # override was printed above and ignored here (GitHub issue #2, PR A, review round 1).
+  PROVENANCE="$SCRIPT_DIR/q-system/.q-system/scripts/skeleton-provenance.sh"
+  if [ ! -f "$PROVENANCE" ]; then
     echo ""
-    echo "ABORT: could not fetch origin/$SKELETON_BRANCH."
-    echo "Without it there is no way to prove this working tree matches what was"
-    echo "reviewed. Fix connectivity, or propagate later; do not fan 23 repos"
-    echo "from an unverified source."
+    echo "ABORT: skeleton-provenance.sh is missing at $PROVENANCE; nothing can prove this"
+    echo "working tree matches what was reviewed."
     exit 1
   fi
-  SKELETON_LOCAL_SHA="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
-  SKELETON_REMOTE_SHA="$(
-    git -C "$SCRIPT_DIR" rev-parse "refs/remotes/origin/$SKELETON_BRANCH" 2>/dev/null || true
-  )"
-  if [ -z "$SKELETON_LOCAL_SHA" ] || [ -z "$SKELETON_REMOTE_SHA" ]; then
-    echo ""
-    echo "ABORT: could not resolve HEAD or origin/$SKELETON_BRANCH to a commit."
+  if ! bash "$PROVENANCE" "$SCRIPT_DIR" "$SKELETON_REMOTE" "$SKELETON_BRANCH"; then
     exit 1
   fi
-  if [ "$SKELETON_LOCAL_SHA" != "$SKELETON_REMOTE_SHA" ]; then
-    SKELETON_DRIFT="$(
-      git -C "$SCRIPT_DIR" rev-list --left-right --count \
-        "HEAD...refs/remotes/origin/$SKELETON_BRANCH" 2>/dev/null || printf '? ?'
-    )"
-    echo ""
-    echo "ABORT: the skeleton is on $SKELETON_BRANCH but not AT origin/$SKELETON_BRANCH."
-    echo "  local:  $SKELETON_LOCAL_SHA"
-    echo "  origin: $SKELETON_REMOTE_SHA"
-    echo "  ahead/behind: $SKELETON_DRIFT"
-    echo "Ahead means bytes nobody reviewed; behind means bytes that were"
-    echo "superseded. Either way the fleet would get something other than"
-    echo "$SKELETON_BRANCH. Push or pull before propagating."
-    exit 1
-  fi
+  PROVENANCE_OK=1     # fleet_ship_ref ships HEAD from here on: it is the proven ref
 else
   echo "skeleton branch check: DISARMED (no origin remote; nothing to be stale against)"
 fi
