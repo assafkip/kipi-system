@@ -38,6 +38,12 @@ stage "$NESTED"
 allows || fail "the nested receipts shape was refused"
 ok "the nested receipts shape passes"
 
+# --- ASK-1814: the prd_id prd_split.py --from-linear writes, and close copies ---
+LINEAR='{"issue_id":"ASK-1808","prd_id":"linear:ASK-1808","finding_id":"linear-dor","closed_at":"2026-09-19T00:01:20Z","commit_sha":"3ff7154ab315eeecf864428f03ec01d474251cc5"}'
+stage "$LINEAR"
+allows || fail "a Linear-split issue's receipt was refused (prd_id linear:ASK-n)"
+ok "a Linear-split receipt passes"
+
 # --- and the real committed ledger must pass, or the gate is unshippable ---
 if [ -f "$ROOT/$LEDGER" ]; then
   cp "$ROOT/$LEDGER" "$LEDGER"
@@ -67,6 +73,15 @@ a non-hex commit sha|{"issue_id":"x","commit_sha":"not-a-sha-at-all"}
 a non-string value|{"issue_id":"x","closed_at":12345}
 a JSON array instead of an object|["issue_id","x"]
 a merge conflict marker|<<<<<<< HEAD
+linear: with free text after it|{"issue_id":"x","prd_id":"linear:call-acme-about-pricing"}
+linear: with a lowercase key|{"issue_id":"x","prd_id":"linear:ask-1"}
+linear: with no key|{"issue_id":"x","prd_id":"linear:-1"}
+linear: with no number|{"issue_id":"x","prd_id":"linear:ASK-"}
+linear: form on a key other than prd_id|{"issue_id":"linear:ASK-1","prd_id":"p"}
+a different scheme|{"issue_id":"x","prd_id":"jira:ASK-1"}
+linear: with a trailing suffix|{"issue_id":"x","prd_id":"linear:ASK-1-acme"}
+linear: with a team key longer than the producer allows|{"issue_id":"x","prd_id":"linear:ACMECORPPRICINGDEAL-1"}
+a Linear URL instead of the id|{"issue_id":"x","prd_id":"https://linear.app/ask-consulting/issue/ASK-1"}
 an over-long value|{"issue_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 CASES
 ok "$i leak shapes all blocked"

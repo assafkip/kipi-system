@@ -1,4 +1,7 @@
 {
  "path": "q-system/.q-system/scripts/test/test-worker-refusal.sh",
- "runner": "bash"
+ "runner": "bash",
+ "covers": [
+  "q-system/.q-system/scripts/linear-worker.sh"
+ ]
 }
