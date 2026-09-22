@@ -1,0 +1,81 @@
+{
+  "_": "Every file that shells the headless model on its own. Read by q-system/.q-system/tests/test_model_call_sites.py; print the candidate rows with `python3 q-system/.q-system/tests/test_model_call_sites.py --print`. Rows only leave this file; a new row is a review question. Instance sections are keyed by sha256(registry name)[:12] and their rows by sha256(path)[:12], never the names: this repo is public, some instances are client engagements, and the skeleton sweep refuses an instance's own directory names. `--print` on the machine prints the real paths beside the hashes. `skeleton` rows are this repo's own root files, which do not propagate.",
+  "wrapper": [
+    "plugins/kipi-core/voiceloop/prompt_render.py"
+  ],
+  "shared": {
+    "plugins/prd-os/scripts/judgment_compiler.py": "builds argv for prd-os judgments; runs under linear-worker, unmetered",
+    "q-system/.q-system/scripts/audhd-output-eval.py": "on-demand eval, founder-launched, never scheduled",
+    "q-system/.q-system/scripts/design-reader-gate.py": "hook-time reader with --safe-mode, its own argv shape",
+    "q-system/.q-system/scripts/fable-escalate.py": "the fable escalation caller, Popen with a stdin prompt, unmetered",
+    "q-system/.q-system/scripts/granola-voice-synthesize.py": "on-demand synthesis, founder-launched",
+    "q-system/.q-system/scripts/lessons-distill.py": "scheduled distiller, two direct calls, unmetered",
+    "q-system/.q-system/scripts/linear-dor-drafter.py": "scheduled drafter with --tools '', unmetered",
+    "q-system/.q-system/scripts/linear-triage.py": "unwired per the capability manifest; runs by hand, unmetered",
+    "q-system/.q-system/scripts/linear-worker.sh": "the worker itself; bash -c string, the biggest unmetered spender",
+    "q-system/.q-system/scripts/morning-brief.py": "scheduled brief with --allowedTools, unmetered",
+    "q-system/.q-system/scripts/open-loops-heartbeat.sh": "headless call per instance (sp-c2dcebad), unmetered",
+    "q-system/.q-system/scripts/pr-review-agent.sh": "the 2400s reviewer (sp-3bcc9e16), unmetered",
+    "q-system/.q-system/scripts/probe_hook_envelope.py": "one-shot probe, founder-launched",
+    "q-system/.q-system/scripts/skill-trigger-eval.py": "on-demand eval, founder-launched, never scheduled"
+  },
+  "skeleton": {},
+  "instances": {
+    "3a66182781ae": {
+      "6d8524c2bbd4": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "814b90900b76": "instance-local shell caller found by the token scanner (PR #413 round 4): unmetered"
+    },
+    "e3d0688ea958": {
+      "05f5be89efdb": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "0c682b4e1a1e": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "11355110eea2": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "2e46fd9261ef": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "542f7cd57911": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "5aa63160d6c7": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "5f32377b50e5": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "74ac984df3ab": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "820b5b6dab62": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "bc244955b003": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "c9714e16f1dc": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "d9ac88cb6936": "instance-local direct call, unmetered; inventoried 2026-09-22"
+    },
+    "426fe9d3d8bb": {
+      "23e00a41de39": "instance-local direct call, unmetered; inventoried 2026-09-22"
+    },
+    "d180b942f629": {
+      "3787970899a8": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "81d513d989d3": "instance-local direct call, unmetered; inventoried 2026-09-22"
+    },
+    "99d7c06e0194": {
+      "00adb20aa54d": "instance-local shell caller found by the token scanner (PR #413 round 4): unmetered",
+      "030a05160150": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "089262120009": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "0d02bbef84ca": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "381af23f4c18": "instance-local shell caller found by the token scanner (PR #413 round 4): unmetered",
+      "46a37cf4ec4b": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "490e6871bee6": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "66410000dd46": "the cron-env auth arbiter, a json-mode probe; unmetered (PR #413 round 1 major)",
+      "6c2d963fe18d": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "6e1fd8920fa0": "instance-local shell caller found by the token scanner (PR #413 round 4): unmetered",
+      "749352f180b5": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "86c306167de5": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "a0d27779997c": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "a5e820c3d2c1": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "b8f9b3b516f0": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "d2841d428595": "instance-local shell caller found by the token scanner (PR #413 round 4): unmetered",
+      "de19a82e0453": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "fdbfca004275": "instance-local direct call, unmetered; inventoried 2026-09-22"
+    },
+    "0e7f29b71bdc": {
+      "4d73e074592b": "instance-local direct call, unmetered; inventoried 2026-09-22"
+    },
+    "f27c666d069e": {
+      "61c7ab811ae6": "headless agent executor, -p first with the binary prepended; unmetered (PR #413 round 1 major)",
+      "953a34d4044a": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "c4574a98cd4d": "instance-local direct call, unmetered; inventoried 2026-09-22"
+    },
+    "3bc51062973c": {
+      "fb50e36b6001": "instance-local direct call, unmetered; inventoried 2026-09-22"
+    }
+  }
+}
