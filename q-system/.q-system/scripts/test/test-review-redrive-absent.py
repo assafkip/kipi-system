@@ -45,6 +45,7 @@ Nothing here shells gh: CI.list_prs is replaced with a fixture list.
 Run: python3 test-review-redrive-absent.py   (exit 0 = pass, 1 = fail)
 """
 import importlib.util
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -275,10 +276,39 @@ _no_floor = dict(_floor_pr, statusCheckRollup=[c for c in _floor_pr["statusCheck
                                                if (c.get("name") or "") != "reviewer-floor"])
 check("CONTROL: the same head with NO floor run stays refused (ASK-318's case)",
       offered([_no_floor]), [])
-# the floor's check-run name is read from the workflow, never assumed
+_floor_cancelled = dict(_floor_pr, statusCheckRollup=[
+    (dict(c, conclusion="CANCELLED") if (c.get("name") or "") == "reviewer-floor" else c)
+    for c in _floor_pr["statusCheckRollup"]])
+check("CONTROL: a floor run that did not conclude SUCCESS marked nothing (round 1 minor)",
+      offered([_floor_cancelled]), [])
+# A REAL refusal at this head under the repo-keyed record name (the shape every
+# write has used since ASK-738) must NOT be read as absent (round 1 major): the
+# record is found through the slug lib, and the floor branch never fires.
+import subprocess as _sp
+with tempfile.TemporaryDirectory() as _repo, tempfile.TemporaryDirectory() as _records:
+    _sp.run(["git", "-C", _repo, "init", "-q"], check=True)
+    _sp.run(["git", "-C", _repo, "remote", "add", "origin", "https://github.com/assafkip/kipi-system.git"], check=True)
+    _slug = rr.slug_for_repo(_repo)
+    check("SLUG: the lib resolves the temp repo", _slug, "assafkip/kipi-system")
+    _rec = {"pr": 338, "verdict": "REQUEST CHANGES", "usable": True, "engine": "claude",
+            "head_sha": _floor_pr["headRefOid"], "review": "/nonexistent", "round": 1}
+    Path(_records, "assafkip_kipi-system__pr-338.verdict.json").write_text(_json.dumps(_rec))
+    rr.CI.list_prs = lambda repo_dir: [_floor_pr]
+    _got = rr.candidates(_repo, Path(_records))
+    check("MAJOR: a repo-keyed refusal record at head is read, so the floor branch does not fire",
+          [g for g in _got if "floor" in g["reason"]], [])
+    Path(_records, "assafkip_kipi-system__pr-338.verdict.json").unlink()
+    _got2 = rr.candidates(_repo, Path(_records))
+    check("and with that record gone the same head is the floor's absent case again",
+          [g["action"] for g in _got2 if "floor" in g["reason"]], ["re-review"])
+# the floor's PUBLISHED check-run name is read from the workflow: the job's
+# `name:` when it has one, else the job id (round 1 minor).
 _wf = (Path(__file__).resolve().parents[4] / ".github" / "workflows" / "reviewer-floor.yml").read_text()
-check("WIRING: FLOOR_CHECK is the job name the workflow actually declares",
-      ("\n  %s:\n" % rr.FLOOR_CHECK) in _wf, True)
+_m = re.search(r"^  ([A-Za-z0-9_-]+):\n((?:    .*\n)+)", _wf[_wf.index("\njobs:\n"):], re.M)
+_job_id, _job_body = _m.group(1), _m.group(2)
+_name = re.search(r"^    name:\s*(\S.*)$", _job_body, re.M)
+check("WIRING: FLOOR_CHECK is the check-run name the workflow publishes",
+      rr.FLOOR_CHECK, (_name.group(1).strip().strip("'\"") if _name else _job_id))
 if failures:
     for f in failures:
         print("  FAIL - " + f)

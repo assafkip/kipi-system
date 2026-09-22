@@ -168,7 +168,37 @@ FORK = CI.FORK
 UNSTATED = CI.UNSTATED
 
 
-def record_path(records_dir, pr):
+SLUG_LIB = os.path.join(HERE, "repo-slug-lib.sh")
+
+
+def slug_for_repo(repo_dir):
+    """owner/repo for this checkout from repo-slug-lib.sh, the ONE derivation; '' if none."""
+    if not os.path.exists(SLUG_LIB):
+        return ""
+    proc = subprocess.run(
+        ["bash", "-c", '. "$1" >/dev/null 2>&1 || exit 2; slug_for_repo "$2"', "_", SLUG_LIB, repo_dir],
+        capture_output=True, text=True)
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def record_path(records_dir, pr, slug=""):
+    """The record to READ: the repo-keyed name, legacy fallback, as the lib defines it.
+
+    WHY THE LIB AND NOT A FORMAT STRING (PR #415 round 1, major). Writes have
+    been repo-keyed (`<owner>_<repo>__pr-N.verdict.json`) since ASK-738; this
+    function knew only the legacy `pr-N.verdict.json`, so 250 of the 371
+    records on disk were invisible to it and every PR with a real refusal at
+    head read as "no record". `verdict_record_path` in repo-slug-lib.sh is the
+    one read rule, with its own legacy fallback; asking it is what keeps the
+    two from drifting apart again.
+    """
+    if slug and os.path.exists(SLUG_LIB):
+        proc = subprocess.run(
+            ["bash", "-c", '. "$1" >/dev/null 2>&1 || exit 2; verdict_record_path "$2" "$3" "$4"',
+             "_", SLUG_LIB, records_dir, slug, str(pr)],
+            capture_output=True, text=True)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
     return os.path.join(records_dir, "pr-%s.verdict.json" % pr)
 
 
@@ -182,10 +212,10 @@ def record_path(records_dir, pr):
 CORRUPT_RECORD = object()
 
 
-def read_record(records_dir, pr):
+def read_record(records_dir, pr, slug=""):
     """The verdict record, None if absent, CORRUPT_RECORD if unreadable."""
     try:
-        with open(record_path(records_dir, pr)) as fh:
+        with open(record_path(records_dir, pr, slug)) as fh:
             return json.load(fh)
     except FileNotFoundError:
         return None
@@ -342,8 +372,11 @@ def floor_ran(pr_obj):
     for check in pr_obj.get("statusCheckRollup") or []:
         if not isinstance(check, dict) or check.get("__typename") == "StatusContext":
             continue
+        # COMPLETED and SUCCESS: a cancelled, skipped or failed floor run posted
+        # nothing, so it marked nothing (PR #415 round 1, minor).
         if (check.get("name") or "") == FLOOR_CHECK and \
-                (check.get("status") or "").upper() == "COMPLETED":
+                (check.get("status") or "").upper() == "COMPLETED" and \
+                (check.get("conclusion") or "").upper() == "SUCCESS":
             return True
     return False
 
@@ -387,6 +420,7 @@ head_provenance = CI.head_provenance
 
 
 def candidates(repo_dir, records_dir):
+    slug = slug_for_repo(repo_dir)
     out = []
     for pr_obj in CI.list_prs(repo_dir):
         # A FORK IS NEVER A CANDIDATE (PR #211 round 2, MAJOR 1; captured first
@@ -435,7 +469,7 @@ def candidates(repo_dir, records_dir):
         issue, agent, source = attributed
         slots = reviewer_slot_failing(pr_obj)
         pr = pr_obj.get("number")
-        record = read_record(records_dir, pr)
+        record = read_record(records_dir, pr, slug)
         if not slots:
             if reviewer_slot_posted(pr_obj):
                 # A gating verdict exists and is not failing. Nothing to redrive.
@@ -523,8 +557,7 @@ def candidates(repo_dir, records_dir):
             out.append({
                 "action": REREVIEW,
                 "reason": "the reviewer floor marked this head unreviewed "
-                          "(no verdict at head, no record: the approval was on "
-                          "an earlier sha)",
+                          "(no verdict at head and no record for this PR)",
                 "issue": issue, "agent": agent, "issue_source": source,
                 "pr": pr, "url": pr_obj.get("url"),
                 "branch": head_branch,
