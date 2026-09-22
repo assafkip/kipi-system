@@ -46,7 +46,14 @@ AGENT="$SCRIPTS/pr-review-agent.sh"
 # ---------------------------------------------------------------------------
 # Pull the shipped derivation + record writer out of the real script.
 # ---------------------------------------------------------------------------
-extract_writer() { awk '/^REVIEWED_BY="\$CODEX_MODEL"$/,/^PY$/' "$AGENT"; }
+# THE END ANCHOR IS THE CLOSING `fi`, NOT THE HEREDOC'S `PY` (ASK-1956). The
+# reservation wrapped the json writer in `if [ -z "$RECORD_PATH" ] ... else
+# <heredoc> fi`, so a range ending at `^PY$` stops one line short of the `fi`
+# and the extracted block is an unterminated `if`. Sourcing it then fails with a
+# bash syntax error, no record is written, and every case below reports "no
+# record written at all" -- a broken harness wearing the costume of a real
+# defect. The first `^fi$` after the derivation anchor IS the writer's own.
+extract_writer() { awk '/^REVIEWED_BY="\$CODEX_MODEL"$/,/^fi$/' "$AGENT"; }
 
 WRITER="$WORK/writer.sh"
 extract_writer > "$WRITER"
@@ -66,6 +73,20 @@ else
   bad "extracted block is missing the derivation or the json writer -- anchors are wrong"
   echo; echo "-------- $PASS passed, $FAIL failed --------"; exit 1
 fi
+# THE SECOND NEGATIVE SELF-TEST, and the one that would have caught ASK-1956's
+# first pass. A non-empty extraction can still be an unterminated compound
+# command: the reservation added an `if/else/fi` around the writer and the old
+# end anchor cut it before the `fi`. `. "$writer"` then dies on a syntax error,
+# which every case below reports as "no record written at all" -- indistinguishable
+# from the real defect this file exists to detect. A range that matched SOME
+# lines is not a range that matched the RIGHT lines.
+if bash -n "$WRITER" 2>/dev/null; then
+  ok "the extracted block PARSES -- the awk range closed every compound command it opened"
+else
+  bad "extracted block does not parse (bash -n): the end anchor cuts a compound command short, so every case below would report a phantom 'no record written'"
+  bash -n "$WRITER" 2>&1 | sed 's/^/        /'
+  echo; echo "-------- $PASS passed, $FAIL failed --------"; exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Run the extracted writer with a controlled environment.
@@ -81,7 +102,7 @@ run_writer() {  # run_writer <engine> <degraded> <verdict-dir> [writer-file]
     PR=900; ISSUE="ASK-900"; VERDICT="REQUEST CHANGES"
     REVIEW="$vdir/pr-900-review.md"; STATED_VERDICT="REQUEST CHANGES"
     DERIVED_VERDICT="REQUEST CHANGES"; ROUND=1
-    HEAD_SHA="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    HEAD_SHA="$CASE_HEAD"
     VERDICT_DIR="$vdir"; INVOKER="worker"
     # Set by the `if review_is_usable` line that sits just ABOVE the extraction
     # anchor, so the extracted block reads it but never computes it. Supplied
@@ -96,8 +117,30 @@ run_writer() {  # run_writer <engine> <degraded> <verdict-dir> [writer-file]
     # legacy pr-<N> key -- repo keying has its own suite.
     REVIEW_SLUG=""
     . "$_SD/repo-slug-lib.sh"
+    # ASK-1956: the writer block now reserves its path through
+    # verdict_record_reserve, which lives in pr-verdict-lib.sh, not in
+    # repo-slug-lib.sh. Without this the reservation is an undefined command,
+    # RECORD_PATH comes back empty, and the writer takes its own WARN branch.
+    . "$_SD/pr-verdict-lib.sh"
     . "$writer"
   ) >/dev/null 2>&1
+}
+
+# rec900 <verdict-dir> -> the record the writer left for PR 900 in that dir, or
+# a path that does not exist when there is none.
+#
+# ASK-1956 made records PER-SHA and append-only, so there is no longer one fixed
+# basename per (repo, PR) for a test to name. This resolves through the SHIPPED
+# resolver rather than retyping the new naming rule here: a test that restates a
+# value the library owns is a second source of truth that agrees on the day it
+# is written and silently stops describing the system afterwards.
+#
+# The head is the same HEAD_SHA run_writer feeds the writer, so this asks tier 1
+# ("the record for this commit") rather than falling through to the any-sha tier.
+CASE_HEAD="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+rec900() {
+  ( . "$_SD/repo-slug-lib.sh"; . "$_SD/pr-verdict-lib.sh"
+    verdict_record_for_head "$1" "" 900 "$CASE_HEAD" )
 }
 
 # THE CONSUMER. This is the point of the whole fix: something downstream reads
@@ -119,7 +162,7 @@ PY
 echo
 echo "== 1. THE DEFECT: a fallback review must name Opus and mark degraded =="
 D1="$WORK/case1"; run_writer codex 1 "$D1"
-REC1="$D1/pr-900.verdict.json"
+REC1="$(rec900 "$D1")"
 if [ ! -f "$REC1" ]; then
   bad "no record written at all for the degraded case"
 else
@@ -138,7 +181,7 @@ fi
 echo
 echo "== 2. a real codex review does NOT carry the degraded flag =="
 D2="$WORK/case2"; run_writer codex 0 "$D2"
-REC2="$D2/pr-900.verdict.json"
+REC2="$(rec900 "$D2")"
 if [ ! -f "$REC2" ]; then
   bad "no record written for the healthy codex case"
 else
@@ -168,7 +211,7 @@ echo "== 2b. a DELIBERATE claude run names Opus (the ENGINE=claude branch) =="
 # recorded as authored by the codex model -- the exact defect this file exists
 # to kill, surviving inside it.
 D2B="$WORK/case2b"; run_writer claude 0 "$D2B"
-REC2B="$D2B/pr-900.verdict.json"
+REC2B="$(rec900 "$D2B")"
 if [ ! -f "$REC2B" ]; then
   bad "no record written for the deliberate claude-engine case"
 else
@@ -205,7 +248,7 @@ sed '/"degraded": degraded == "1",/d' "$WRITER" > "$MUT"
 if ! diff -q "$WRITER" "$MUT" >/dev/null 2>&1 && [ -s "$MUT" ]; then
   ok "mutant differs from the shipped writer (the degraded key was actually removed)"
   D4="$WORK/case4"; run_writer codex 1 "$D4" "$MUT"
-  REC4="$D4/pr-900.verdict.json"
+  REC4="$(rec900 "$D4")"
   if [ ! -f "$REC4" ]; then
     bad "mutant wrote no record at all -- that is a syntax break, not a live mutation test"
   elif [ "$(consumer_says "$REC4")" = "degraded" ]; then
