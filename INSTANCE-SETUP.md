@@ -86,6 +86,10 @@ git init
 
 # 3. Add kipi-system as a subtree
 git subtree add --prefix=q-system https://github.com/assafkip/kipi-system.git main --squash
+#    Running a fork? Every script that names the skeleton remote (kipi-new-instance.sh,
+#    kipi-update.sh, kipi-push-upstream.sh, kipi-migrate.py, q-system/hooks/auto-update.sh)
+#    reads KIPI_SKELETON_REMOTE first, so export it once in your shell and no local patch is
+#    needed:  export KIPI_SKELETON_REMOTE=https://github.com/<you>/kipi-system.git
 
 # 4. Create your CLAUDE.md (see template below)
 

@@ -14,7 +14,8 @@ export GIT_TERMINAL_PROMPT=0
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REGISTRY="$SCRIPT_DIR/instance-registry.json"
-SKELETON_REMOTE="https://github.com/assafkip/kipi-system.git"
+# KIPI_SKELETON_REMOTE lets a fork point at itself (GitHub issue #2); default is upstream
+SKELETON_REMOTE="${KIPI_SKELETON_REMOTE:-https://github.com/assafkip/kipi-system.git}"
 SKELETON_BRANCH="main"
 # Args in any order: --dry-run and/or --only <name>. Without --only there is no
 # way to verify a risky change against ONE repo before the other 22, and a
