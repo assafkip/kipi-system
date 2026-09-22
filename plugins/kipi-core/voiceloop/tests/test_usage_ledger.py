@@ -216,6 +216,10 @@ def test_the_opencode_branch_leaves_a_row(tmp_path, monkeypatch):
     assert prompt_render.run_model("p", claude_bin=str(fake_bin), caller="c") == "generated"
     rows = usage_ledger.read()
     assert len(rows) == 1 and rows[0]["subtype"] == "unmetered:opencode" and rows[0]["kind"] == "unmetered" and rows[0]["is_error"] is False
+    # a dead opencode run (no text events) is a failure row, not a clean one (round 6)
+    Done.stdout = json.dumps({"type": "step"})
+    assert prompt_render.run_model("p", claude_bin=str(fake_bin), caller="c") is None
+    assert usage_ledger.read()[-1]["is_error"] is True
 
 
 def test_a_cli_that_rejects_the_flag_falls_back_to_a_plain_call(tmp_path, monkeypatch):
@@ -337,3 +341,61 @@ def test_a_bare_relative_ledger_path_still_writes(tmp_path, monkeypatch):
     monkeypatch.setenv(usage_ledger.LEDGER_ENV, "ledger.jsonl")
     assert usage_ledger.append({"a": 1}) is True
     assert usage_ledger.read() == [{"a": 1}]
+
+
+# ---- PR #410 round 6 --------------------------------------------------------------
+
+def test_a_ledger_that_raises_never_fails_the_call_on_any_path(captured, tmp_path, monkeypatch):
+    # The guard test round 6 asked for: the ledger itself blows up (not a value the
+    # row builder tolerates), on the timeout, exit and success arms. Delete _meter's
+    # try/except and every one of these raises.
+    import subprocess
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("OPENCODE", raising=False)
+    monkeypatch.setenv(usage_ledger.LEDGER_ENV, str(tmp_path / "l.jsonl"))
+    fake_bin = tmp_path / "claude"; fake_bin.write_text("")
+
+    def boom(*a, **k):
+        raise RuntimeError("ledger exploded")
+    monkeypatch.setattr(usage_ledger, "failure_row", boom)
+    monkeypatch.setattr(usage_ledger, "append", boom)
+
+    def timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="claude", timeout=1, output=None)
+    monkeypatch.setattr(subprocess, "run", timeout)
+    assert prompt_render.run_model("p", claude_bin=str(fake_bin), caller="c") is None
+
+    class Exit1:
+        returncode, stdout, stderr = 1, "", ""
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Exit1())
+    assert prompt_render.run_model("p", claude_bin=str(fake_bin), caller="c") is None
+
+    class Done:
+        returncode, stderr = 0, ""
+        stdout = json.dumps(captured["json_stdout"])
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done())
+    assert prompt_render.run_model("p", claude_bin=str(fake_bin), caller="c") == captured["plain_stdout"]
+
+
+def test_a_none_token_value_on_the_failure_arms_leaves_a_row(captured, tmp_path, monkeypatch):
+    import subprocess
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("OPENCODE", raising=False)
+    monkeypatch.setenv(usage_ledger.LEDGER_ENV, str(tmp_path / "l.jsonl"))
+    fake_bin = tmp_path / "claude"; fake_bin.write_text("")
+    doc = json.loads(json.dumps(captured["json_stdout"]))
+    next(iter(doc["modelUsage"].values()))["inputTokens"] = None  # the reviewer's constructed value
+
+    class Exit1:
+        returncode, stderr = 1, ""
+        stdout = json.dumps(doc)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Exit1())
+    assert prompt_render.run_model("p", claude_bin=str(fake_bin), caller="c") is None
+    assert usage_ledger.read(), "the failure left a row"
+
+
+def test_json_mode_output_with_no_result_is_a_failed_call_not_prose():
+    text, row = usage_ledger.finish(json.dumps({"type": "system", "subtype": "init"}), bot="t")
+    assert text is None and row["kind"] == "parse_error"
+    text, row = usage_ledger.finish("plain prose the CLI printed\n", bot="t")
+    assert text == "plain prose the CLI printed\n"

@@ -164,6 +164,24 @@ def failure_row(kind: str, *, bot: str, job: str | None = None, model: str | Non
     return row
 
 
+def _is_json(stdout: str | None) -> bool:
+    """True when the whole stdout is one or more JSON objects (json mode output)."""
+    if not stdout or not stdout.lstrip().startswith("{"):
+        return False
+    decoder = json.JSONDecoder()
+    pos, n = 0, len(stdout)
+    while pos < n:
+        while pos < n and stdout[pos].isspace():
+            pos += 1
+        if pos >= n:
+            return True
+        try:
+            _, pos = decoder.raw_decode(stdout, pos)
+        except ValueError:
+            return False
+    return True
+
+
 def _result_document(stdout: str | None) -> dict | None:
     """The CLI's result document, whole or embedded after stray leading text."""
     if not stdout:
@@ -227,7 +245,10 @@ def finish(stdout: str, *, bot: str, job: str | None = None,
         row.update({"kind": "parse_error", "subtype": "parse_error", "is_error": False,
                     "parse_error": "no result document in stdout",
                     "stdout_bytes": len(stdout or "")})
-        return stdout, row
+        # JSON that is not a result document means the CLI ran in json mode and
+        # produced no result: a failed call, not prose (round 6). Only stdout that
+        # is not JSON at all is handed back as text, the way a plain call prints it.
+        return (None if _is_json(stdout) else stdout), row
     row = row_from(doc, bot=bot, job=job, model=model)
     if _failed(doc):
         # The CLI answered with an error document (a usage-limit refusal, most

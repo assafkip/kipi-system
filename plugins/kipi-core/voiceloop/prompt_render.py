@@ -89,6 +89,25 @@ def count_constraints(prompt):
     return len(CONSTRAINT_LINE.findall(instruction_section(prompt)))
 
 
+def _meter(row_fn, *args, **kwargs):
+    """Build and append one ledger row, swallowing anything the ledger raises.
+
+    THE METER CAN NEVER FAIL THE CALL, on any path. Round 5 guarded only the
+    success arm; round 6 showed the timeout and non-zero-exit arms raising out
+    of failure_row on a malformed usage value. Every ledger write goes through
+    here now, so there is no unguarded arm left.
+    """
+    try:
+        usage_ledger.append(row_fn(*args, **kwargs))
+    except Exception as exc:  # noqa: BLE001
+        try:
+            usage_ledger.append(usage_ledger.failure_row(
+                "meter:" + type(exc).__name__, stderr=str(exc)[:200],
+                bot=kwargs.get("bot") or "voiceloop", job=kwargs.get("job"), model=kwargs.get("model")))
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
               caller="run_model()", under_test="raise", model=None, allow_opencode=True):
     """THE model call. One implementation, so every caller gets the same guarantees.
@@ -152,28 +171,28 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
                     if event.get("type") == "text":
                         parts.append(event.get("part", {}).get("text", ""))
                 # ASK-2008: this provider reports no usage, so the row says so
-                # (tokens None) rather than leaving the run invisible.
-                usage_ledger.append(usage_ledger.failure_row(
-                    "opencode", ok=True, bot=os.environ.get("CHIEF_BOT") or "voiceloop",
-                    job=os.environ.get("CHIEF_JOB") or caller, model=active_model))
-                return "".join(parts).strip() or None
+                # (tokens None) rather than leaving the run invisible. `ok` is
+                # whether the CALLER got text: a dead run is not a clean one.
+                text = "".join(parts).strip() or None
+                _meter(usage_ledger.failure_row, "opencode", ok=text is not None,
+                       bot=os.environ.get("CHIEF_BOT") or "voiceloop",
+                       job=os.environ.get("CHIEF_JOB") or caller, model=active_model)
+                return text
         except (subprocess.SubprocessError, OSError) as exc:
-            usage_ledger.append(usage_ledger.failure_row(
-                f"opencode:{type(exc).__name__}", stderr=str(exc),
-                bot=os.environ.get("CHIEF_BOT") or "voiceloop",
-                job=os.environ.get("CHIEF_JOB") or caller, model=active_model))
+            _meter(usage_ledger.failure_row, f"opencode:{type(exc).__name__}", stderr=str(exc),
+                   bot=os.environ.get("CHIEF_BOT") or "voiceloop",
+                   job=os.environ.get("CHIEF_JOB") or caller, model=active_model)
             return None
     if not os.path.exists(binary):
-        usage_ledger.append(usage_ledger.failure_row(
-            "no-binary", stderr=f"claude_bin not found: {binary}",
-            bot=os.environ.get("CHIEF_BOT") or "voiceloop",
-            job=os.environ.get("CHIEF_JOB") or caller, model=model))
+        _meter(usage_ledger.failure_row, "no-binary", stderr=f"claude_bin not found: {binary}",
+               bot=os.environ.get("CHIEF_BOT") or "voiceloop",
+               job=os.environ.get("CHIEF_JOB") or caller, model=model)
         return None
     # ASK-2008: the call is metered. Every path below leaves one row, the failures
     # included: a limit refusal, a timeout that burned tokens before the kill, a
     # non-zero exit. On 2026-09-12 the fleet went dark for a day and a ledger that
     # skipped failed calls would have looked identical to an idle fleet (PR #410
-    # review). The row can never fail the call: append swallows its own errors.
+    # review). Every row goes through _meter, so no arm can raise out of here.
     who = dict(bot=os.environ.get("CHIEF_BOT") or "voiceloop",
                job=os.environ.get("CHIEF_JOB") or caller, model=model)
     try:
@@ -185,11 +204,10 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
         result = subprocess.run(argv, capture_output=True,
                                 text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        usage_ledger.append(usage_ledger.failure_row(
-            "timeout", stdout=exc.stdout, stderr=exc.stderr, **who))
+        _meter(usage_ledger.failure_row, "timeout", stdout=exc.stdout, stderr=exc.stderr, **who)
         return None
     except (subprocess.SubprocessError, OSError) as exc:
-        usage_ledger.append(usage_ledger.failure_row(type(exc).__name__, stderr=str(exc), **who))
+        _meter(usage_ledger.failure_row, type(exc).__name__, stderr=str(exc), **who)
         return None
     if result.returncode != 0 and usage_ledger.rejected_flag(result.stderr):
         # An older CLI that does not know --output-format json: fall back to the
@@ -198,23 +216,22 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
             result = subprocess.run([a for a in argv if a not in usage_ledger.JSON_FLAGS],
                                     capture_output=True, text=True, timeout=timeout)
         except (subprocess.SubprocessError, OSError) as exc:
-            usage_ledger.append(usage_ledger.failure_row(type(exc).__name__, stderr=str(exc), **who))
+            _meter(usage_ledger.failure_row, type(exc).__name__, stderr=str(exc), **who)
             return None
         ok = result.returncode == 0
-        usage_ledger.append(usage_ledger.failure_row("cli:no-json-flag", ok=ok, stderr=result.stderr, **who))
+        _meter(usage_ledger.failure_row, "cli:no-json-flag", ok=ok, stderr=result.stderr, **who)
         return result.stdout if ok else None
     if result.returncode != 0:
-        usage_ledger.append(usage_ledger.failure_row(
-            f"exit {result.returncode}", stdout=result.stdout, stderr=result.stderr, **who))
+        _meter(usage_ledger.failure_row, f"exit {result.returncode}",
+               stdout=result.stdout, stderr=result.stderr, **who)
         return None
     # `finish` hands back the same bytes a plain call printed (result + newline).
     try:
         text, row = usage_ledger.finish(result.stdout, **who)
-        usage_ledger.append(row)
     except Exception as exc:  # noqa: BLE001
-        # THE METER CAN NEVER FAIL THE CALL. A malformed document (a non-dict
-        # modelUsage, say) is the ledger's problem, not the caller's: the plain
-        # text is handed back exactly as an unmetered call would have (round 5).
-        usage_ledger.append(usage_ledger.failure_row("meter:" + type(exc).__name__, stderr=str(exc), **who))
+        # A malformed document is the ledger's problem, not the caller's: the
+        # plain text is handed back exactly as an unmetered call would have.
+        _meter(usage_ledger.failure_row, "meter:" + type(exc).__name__, stderr=str(exc), **who)
         return usage_ledger.plain_text(result.stdout)
+    _meter(lambda: row)
     return text  # None when the CLI answered with an error document
