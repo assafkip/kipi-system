@@ -19,16 +19,19 @@ WHAT IT SEES, and what it does not, stated so its silence reads right:
        which is the right side to err on. A caller that assembles `claude -p`
        inside a shell string is NOT seen. A file this Python cannot parse
        falls back to the text shape of the argv element.
-  .sh  a non-comment line with a command segment (split at pipes and list
-       operators) whose binary token is `claude`, a path ending in `/claude`,
-       or a `$CLAUDE*` variable, followed later in that segment by a token
-       that is exactly -p or --print, options in between allowed
-       (`claude --model X -p`). Read as tokens, linear time. A `bash -c`
-       string is seen through its quotes, which is how a worker loop calls
-       it. An `echo`/`printf` line skips only its first segment, so
-       `echo "$p" | claude --print` counts and `echo "claude -p x"` does
-       not. A heredoc body that quotes the pattern IS counted: this scanner
-       does not parse heredocs, and it errs toward a row a reason explains.
+  .sh  a logical line (backslash continuations joined) split at pipes and
+       list operators outside quotes; a segment counts when the token in
+       command position (past `NAME=value` and known wrappers such as env,
+       nohup, timeout, sudo with its -u value, xargs with its -I value) is
+       `claude`, a path ending in `/claude`, or a `$CLAUDE*` variable, and a
+       later token in the segment is exactly -p or --print. A shell's -c
+       string is scanned the same way, which is how a worker loop calls it
+       through a wrapper function of its own. An `echo`/`printf` line skips
+       only its first segment, so `echo "$p" | claude --print` counts and
+       `echo 'a; claude -p x'` does not; `sudo -u claude run.sh -p` is a
+       service account, not a call. Linear time. A heredoc body that quotes
+       the pattern IS counted: this scanner does not parse heredocs, and it
+       errs toward a row a reason explains.
 Test directories are skipped: a test that spends a real call is a token
 problem, not a metering one, and their fixtures quote the pattern in prose.
 Review scratch trees (`.review-*`) hold copies of the scripts and are not
@@ -38,6 +41,7 @@ from __future__ import annotations
 
 import ast
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -52,10 +56,28 @@ _CLAUDE_WORD = re.compile(r"\bclaude\b", re.I)
 # in `/claude`, or a `$CLAUDE*` variable, and the call flag is any later token
 # that is exactly -p or --print. Quotes around the tokens are stripped, which is
 # how a `bash -c "... claude -p \"$1\""` string is seen.
-_SEGMENT_SPLIT = re.compile(r"\|\|?|&&|;|\|&")
 _BINARY_TOKEN = re.compile(r"""^["'`(]*((\S*/)?claude|\$\{?CLAUDE[A-Z_]*\}?)["'`)]*$""")
 _FLAG_TOKEN = re.compile(r"""^["'`]*(-p|--print)["'`\\]*$""")
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+# Tokens that stand in front of a command without being one, and the flags of
+# theirs that take a separate value (`sudo -u claude run.sh` is a service account,
+# not an invocation: PR #413 round 5). A subset of fleet-health-daily.py's table;
+# the skeleton test holds the two scanners against each other on every shared
+# shell site so the subset cannot drift silently.
+_WRAPPERS = {"env", "nohup", "nice", "time", "timeout", "caffeinate", "sudo", "exec",
+             "stdbuf", "flock", "command", "xargs", "if", "then", "else", "elif",
+             "while", "until", "do", "!", "{", "("}
+_WRAPPER_VALUE_FLAGS = {
+    "sudo": {"-u", "--user", "-g", "--group", "-C", "-D", "-p", "-r", "-t", "-R"},
+    "env": {"-u", "--unset", "-C", "--chdir", "-S"},
+    "nice": {"-n"}, "timeout": {"-s", "-k"}, "caffeinate": {"-t", "-w"},
+    "stdbuf": {"-i", "-o", "-e"}, "time": {"-f", "-o"}, "exec": {"-a"},
+    "flock": {"-w", "--timeout", "-E"}, "xargs": {"-I", "-n", "-P", "-s", "-L", "-d", "-a"},
+}
+_WRAPPER_OPERANDS = {"flock": 1, "timeout": 1}   # a lock file, a duration
 _SH_PRINTS = re.compile(r"^\s*(echo|printf)\b")
+_MAX_DEPTH = 4
 
 
 def _binary_like(node) -> bool:
@@ -94,29 +116,169 @@ def py_calls(text: str) -> bool:
     return False
 
 
-def _segment_calls(segment: str) -> bool:
-    tokens = segment.split()
-    for i, tok in enumerate(tokens):
-        if _BINARY_TOKEN.match(tok):
-            return any(_FLAG_TOKEN.match(t) for t in tokens[i + 1:])
+def _segments(command: str) -> list[str]:
+    """Split a command line at pipes and list operators, OUTSIDE quotes.
+
+    `echo 'a; claude -p x'` is one segment, an echo (PR #413 round 5); the
+    old split cut it at the `;` and counted the tail.
+    """
+    out, buf, quote, i = [], [], None, 0
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            elif ch == "\\" and quote == '"' and i + 1 < len(command):
+                buf.append(command[i + 1]); i += 1
+        elif ch in ("'", '"'):
+            quote = ch; buf.append(ch)
+        elif command.startswith(("||", "&&", "|&"), i):
+            out.append("".join(buf)); buf = []; i += 1
+        elif ch in ("|", ";"):
+            out.append("".join(buf)); buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    out.append("".join(buf))
+    return [seg for seg in out if seg.strip()]
+
+
+def _tokens(segment: str) -> list[str]:
+    try:
+        return shlex.split(segment, posix=True)
+    except ValueError:
+        return segment.split()
+
+
+def _command_index(tokens: list[str]) -> int:
+    """Index of the token in command position, past assignments and wrappers."""
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if _ASSIGNMENT.match(tok):
+            i += 1; continue
+        base = tok.rsplit("/", 1)[-1]
+        if tok.startswith("$") and not _BINARY_TOKEN.match(tok):
+            # `$TO claude -p` (open-loops-heartbeat.sh) and `$NO_SUPABASE -u X
+            # "$CLAUDE_BIN" -p` (a producer job): a wrapper held in a variable,
+            # unknowable here; step past it and its flags like `env`.
+            i += 1
+            flags = _WRAPPER_VALUE_FLAGS["env"]
+            while i < len(tokens) and tokens[i].startswith("-"):
+                i += 2 if tokens[i] in flags else 1
+            continue
+        if base not in _WRAPPERS:
+            return i
+        i += 1
+        flags = _WRAPPER_VALUE_FLAGS.get(base, set())
+        while i < len(tokens) and tokens[i].startswith("-"):
+            i += 2 if tokens[i] in flags else 1
+        i += _WRAPPER_OPERANDS.get(base, 0)
+    return -1
+
+
+def _segment_calls(segment: str, depth: int = 0) -> bool:
+    if depth > _MAX_DEPTH:
+        return False
+    tokens = _tokens(segment)
+    ci = _command_index(tokens)
+    if ci < 0:
+        return False
+    cmd = tokens[ci]
+    if _BINARY_TOKEN.match(cmd) and any(_FLAG_TOKEN.match(t) for t in tokens[ci + 1:]):
+        return True
+    # No early False: a `case` arm such as `claude) run_bounded ... bash -c "..."`
+    # puts a claude-shaped PATTERN in command position, and the call is in the
+    # -c string behind it (pr-review-agent.sh:876).
+    # A quoted command STRING as an argument (`case` arms that continue a
+    # `bash -c` from the line above, pr-review-agent.sh:876) is scanned as a
+    # line of its own. This is also where a logged mention such as
+    # `log "claude -p x failed"` gets counted: the same erring-toward-a-row
+    # the heredoc rule states, and no worse than the regex it replaced.
+    for tok in tokens:
+        if " " in tok and _CLAUDE_WORD.search(tok) and _line_calls(tok, depth + 1):
+            return True
+    # A shell with a -c string anywhere in the segment runs that string: this is
+    # how a worker loop calls the model (`run_bounded "$T" bash -c "cd ... &&
+    # claude -p \"$1\""`), through a wrapper function of its own.
+    for j, tok in enumerate(tokens):
+        if tok.rsplit("/", 1)[-1] in _SHELLS and j + 2 < len(tokens) + 1:
+            k = j + 1
+            while k < len(tokens) and tokens[k].startswith("-"):
+                if "c" in tokens[k].lstrip("-") and k + 1 < len(tokens):
+                    return _line_calls(tokens[k + 1], depth + 1)
+                k += 1
     return False
+
+
+def _substitutions(line: str) -> list[str]:
+    """The inner text of every `$( ... )` and backtick substitution, balanced.
+
+    `out="$(env -u X "$CLAUDE_BIN" -p "$@" 2>&1)"` is an assignment whose
+    value RUNS the model; the assignment is skipped in command position, so
+    the substitution has to be scanned as a command of its own.
+    """
+    out, i = [], 0
+    while i < len(line):
+        if line.startswith("$(", i):
+            depth, j = 1, i + 2
+            while j < len(line) and depth:
+                if line.startswith("$(", j):
+                    depth += 1; j += 2; continue
+                if line[j] == "(":
+                    depth += 1
+                elif line[j] == ")":
+                    depth -= 1
+                j += 1
+            out.append(line[i + 2:j - 1]); i = j
+        elif line[i] == "`":
+            j = line.find("`", i + 1)
+            if j < 0:
+                break
+            out.append(line[i + 1:j]); i = j + 1
+        else:
+            i += 1
+    return out
+
+
+def _line_calls(line: str, depth: int = 0) -> bool:
+    if depth > _MAX_DEPTH:
+        return False
+    segments = _segments(line)
+    if _SH_PRINTS.match(line):
+        segments = segments[1:]
+    if any(_segment_calls(seg, depth) for seg in segments):
+        return True
+    return any(_line_calls(sub, depth + 1) for sub in _substitutions(line))
+
+
+def _logical_lines(text: str):
+    """Physical lines joined at a trailing backslash (PR #413 round 5)."""
+    buf = []
+    for line in text.splitlines():
+        if line.rstrip().endswith("\\"):
+            buf.append(line.rstrip()[:-1]); continue
+        buf.append(line)
+        yield " ".join(buf); buf = []
+    if buf:
+        yield " ".join(buf)
 
 
 def sh_calls(text: str) -> bool:
     """Does this shell source run the model headless on a non-comment line?
 
-    An `echo`/`printf` line is a mention, not a call, UNLESS something after
-    a pipe runs the model: `echo "$prompt" | claude --model sonnet --print` is
-    a real caller (PR #413 round 4, major), and the first segment is the only
-    one the print guard may skip.
+    Read as commands: a logical line (backslash continuations joined) is split
+    at pipes and list operators outside quotes; in each segment the token in
+    COMMAND POSITION (past `NAME=value` and the wrappers above) must be the
+    binary, followed by a -p/--print token; a shell's -c string is scanned the
+    same way. An `echo`/`printf` line is a mention, not a call, unless a later
+    segment runs the model (`echo "$p" | claude --print`, round 4).
     """
-    for line in text.splitlines():
+    for line in _logical_lines(text):
         if line.lstrip().startswith("#"):
             continue
-        segments = _SEGMENT_SPLIT.split(line)
-        if _SH_PRINTS.match(line):
-            segments = segments[1:]
-        if any(_segment_calls(seg) for seg in segments):
+        if _line_calls(line):
             return True
     return False
 

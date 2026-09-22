@@ -281,6 +281,24 @@ _floor_cancelled = dict(_floor_pr, statusCheckRollup=[
     for c in _floor_pr["statusCheckRollup"]])
 check("CONTROL: a floor run that did not conclude SUCCESS marked nothing (round 1 minor)",
       offered([_floor_cancelled]), [])
+# An AMBIGUOUS floor run (completed, not SUCCESS): the head's statuses decide,
+# and the captured statuses carry the floor's own text on the verdict slot
+# (round 2 minor). The API is stubbed with the capture; a stub that answers
+# with another description is refused.
+_floor_failed = dict(_floor_pr, statusCheckRollup=[
+    (dict(c, conclusion="FAILURE") if (c.get("name") or "") == "reviewer-floor" else c)
+    for c in _floor_pr["statusCheckRollup"]])
+_asked = []
+rr._statuses = lambda slug, sha: (_asked.append((slug, sha)) or _statuses)
+check("AMBIGUOUS floor run + the floor's text on the slot: offered",
+      [g["action"] for g in offered([_floor_failed]) if "floor" in g["reason"]], ["re-review"])
+check("and the statuses were asked for exactly that head", _asked[-1][1], _floor_pr["headRefOid"])
+rr._statuses = lambda slug, sha: [dict(s, description="a reviewer's own refusal text") for s in _statuses]
+check("AMBIGUOUS floor run + another text on the slot: refused", offered([_floor_failed]), [])
+rr._statuses = lambda slug, sha: []
+check("AMBIGUOUS floor run + statuses unreachable: refused (fail closed)", offered([_floor_failed]), [])
+check("FLOOR_DESC is read from reviewer-floor.sh, never retyped",
+      rr._floor_desc(), "no reviewer verdict at this head (floor: absent is not approved)")
 # A REAL refusal at this head under the repo-keyed record name (the shape every
 # write has used since ASK-738) must NOT be read as absent (round 1 major): the
 # record is found through the slug lib, and the floor branch never fires.
@@ -301,6 +319,16 @@ with tempfile.TemporaryDirectory() as _repo, tempfile.TemporaryDirectory() as _r
     _got2 = rr.candidates(_repo, Path(_records))
     check("and with that record gone the same head is the floor's absent case again",
           [g["action"] for g in _got2 if "floor" in g["reason"]], ["re-review"])
+# A slug-lib failure is LOUD (round 2 minor): the legacy-only fallback says so.
+import io as _io, contextlib as _ctx
+_real_lib = rr.SLUG_LIB
+rr.SLUG_LIB = "/nonexistent/repo-slug-lib.sh"
+_err = _io.StringIO()
+with _ctx.redirect_stderr(_err):
+    _s = rr.slug_for_repo("/nonexistent-repo")
+rr.SLUG_LIB = _real_lib
+check("slug lib missing: empty slug", _s, "")
+check("slug lib missing: says so on stderr", "LEGACY" in _err.getvalue(), True)
 # the floor's PUBLISHED check-run name is read from the workflow: the job's
 # `name:` when it has one, else the job id (round 1 minor).
 _wf = (Path(__file__).resolve().parents[4] / ".github" / "workflows" / "reviewer-floor.yml").read_text()
