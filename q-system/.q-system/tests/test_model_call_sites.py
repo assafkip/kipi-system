@@ -77,7 +77,9 @@ def test_the_wrapper_is_a_call_site():
 
 def test_this_tree_has_no_unlisted_model_call():
     s = spec()
-    new, stale = cs.check(ROOT, s["shared"], s["wrapper"])
+    # shared rows propagate; skeleton rows are this repo's root files, which do
+    # not (PR #413 round 1 minor 3: a root caller had nowhere to be listed).
+    new, stale = cs.check(ROOT, {**s["shared"], **s.get("skeleton", {})}, s["wrapper"])
     assert not new, f"direct claude -p call with no row: {sorted(new)}"
     assert not stale, f"row whose file no longer calls the model (remove it): {sorted(stale)}"
 
@@ -101,6 +103,8 @@ def test_shared_rows_live_in_the_shared_trees_and_instance_rows_outside_them():
     s = spec()
     for row in s["shared"]:
         assert row.startswith(SHARED_PREFIXES), row
+    for row in s.get("skeleton", {}):
+        assert not row.startswith(SHARED_PREFIXES), row
     for name, rows in s["instances"].items():
         for row in rows:
             assert not row.startswith(SHARED_PREFIXES), (name, row)
@@ -110,7 +114,10 @@ if __name__ == "__main__":
     # Print the candidate rows for every tree, in the JSON's shape, so a new row
     # is copied from here and never typed.
     s = spec()
-    out = {"shared": sorted(cs.call_sites(ROOT) - set(s["wrapper"])), "instances": {}}
+    here = cs.call_sites(ROOT) - set(s["wrapper"])
+    out = {"shared": sorted(r for r in here if r.startswith(SHARED_PREFIXES)),
+           "skeleton": sorted(r for r in here if not r.startswith(SHARED_PREFIXES)),
+           "instances": {}}
     for name, path in registered():
         local = sorted(r for r in cs.call_sites(path) - set(s["wrapper"])
                        if not r.startswith(SHARED_PREFIXES))

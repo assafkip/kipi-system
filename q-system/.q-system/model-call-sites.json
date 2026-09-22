@@ -1,5 +1,5 @@
 {
-  "_": "Every file that shells the headless model on its own. Read by q-system/.q-system/tests/test_model_call_sites.py; print the candidate rows with `python3 q-system/.q-system/tests/test_model_call_sites.py --print`. Rows only leave this file; a new row is a review question. Instance sections are keyed by sha256(registry name)[:12], never the name: this repo is public and some instances are client engagements.",
+  "_": "Every file that shells the headless model on its own. Read by q-system/.q-system/tests/test_model_call_sites.py; print the candidate rows with `python3 q-system/.q-system/tests/test_model_call_sites.py --print`. Rows only leave this file; a new row is a review question. Instance sections are keyed by sha256(registry name)[:12], never the name: this repo is public and some instances are client engagements. `skeleton` rows are this repo's own root files, which do not propagate.",
   "wrapper": [
     "plugins/kipi-core/voiceloop/prompt_render.py"
   ],
@@ -19,6 +19,7 @@
     "q-system/.q-system/scripts/probe_hook_envelope.py": "one-shot probe, founder-launched",
     "q-system/.q-system/scripts/skill-trigger-eval.py": "on-demand eval, founder-launched, never scheduled"
   },
+  "skeleton": {},
   "instances": {
     "3a66182781ae": {
       "q-ktlyst/.q-system/scripts/generate-security-summaries.py": "instance-local direct call, unmetered; inventoried 2026-09-22"
@@ -48,6 +49,7 @@
       "gtm/cloud-brain/core/voice_judge.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
       "gtm/cloud-brain/x_daily/publish_x_work.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
       "gtm/scripts/auto_build/code_writer.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "gtm/scripts/claude_auth_probe.py": "the cron-env auth arbiter, a json-mode probe; unmetered (PR #413 round 1 major)",
       "gtm/scripts/lib/smoke_claude_cron_env.sh": "instance-local direct call, unmetered; inventoried 2026-09-22",
       "gtm/scripts/linkedin_dm/draft.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
       "gtm/scripts/podcast/daily_video.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
@@ -64,6 +66,7 @@
     },
     "f27c666d069e": {
       "scripts/autobuild/identity_gen.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "src/need_to_product/executor.py": "headless agent executor, -p first with the binary prepended; unmetered (PR #413 round 1 major)",
       "src/reddit_build_radar/classify.py": "instance-local direct call, unmetered; inventoried 2026-09-22"
     },
     "3bc51062973c": {

@@ -14,10 +14,16 @@ if PKG_PARENT not in sys.path:
 from voiceloop import call_sites as cs  # noqa: E402
 
 # Real lines, copied from the scripts they came from, not typed for the test.
-PY_LINE = 'res = subprocess.run([binary, "-p", prompt],\n                     capture_output=True)\n'  # linear-triage.py:388
+# The real files name the binary a few lines up; the detector needs that word.
+BIN_LINE = 'binary = shutil.which("claude") or "claude"\n'  # linear-triage.py:380
+PY_LINE = BIN_LINE + 'res = subprocess.run([binary, "-p", prompt],\n                     capture_output=True)\n'  # linear-triage.py:388
 SH_LINE = ('  if run_bounded "$T" bash -c "cd \'$TREE\' && KIPI_AGENT=\'$A\' claude -p '
            '\\"\\$1\\" </dev/null >>\'$LOG\' 2>&1" _ "$PROMPT"; then\n    :\n  fi\n')  # linear-worker.sh:2074
-POPEN_LINE = 'proc = subprocess.Popen(\n    [command, "-p", "--model", FABLE_MODEL],\n    stdin=subprocess.PIPE)\n'  # fable-escalate.py:313
+POPEN_LINE = BIN_LINE + 'proc = subprocess.Popen(\n    [command, "-p", "--model", FABLE_MODEL],\n    stdin=subprocess.PIPE)\n'  # fable-escalate.py:313
+# The two PR #413 round 1 misses, as they are written in the wild:
+IFEXP_LINE = ('r = subprocess.run(\n    [CLAUDE_BIN if os.access(CLAUDE_BIN, os.X_OK) else "claude",\n'
+              '     "-p", "--output-format", "json", "--model", MODEL, PROMPT])\n')  # claude_auth_probe.py:96
+FIRST_LINE = 'CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")\nDEFAULT_ARGS = ["-p", "--permission-mode", "acceptEdits"]\n'  # executor.py:22
 
 
 def repo(tmp_path: Path, files: dict) -> Path:
@@ -40,10 +46,17 @@ def test_real_call_shapes_are_seen_and_mentions_are_not(tmp_path):
         "e.py": 'MSG = "we run claude -p here"\n',
         # pytest's own -p flag, the false positive a bare grep buys
         "g.py": 'argv = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]\n',
+        # a variable before "-p" in a file that never names claude (round 1 minor 2)
+        "h.py": 'argv = [ssh_bin, "-p", str(port), host]\n',
+        "i.py": "import os, subprocess\n" + IFEXP_LINE,
+        "j.py": "import os\n" + FIRST_LINE,
+        # options between claude and -p, and a printed mention (round 1 minor 4)
+        "k.sh": '#!/bin/bash\nclaude --model "$M" -p "$PROMPT" </dev/null\n',
+        "l.sh": '#!/bin/bash\necho "run: claude -p x"\nprintf "%s" "claude -p y"\n',
         "tests/t.py": "import subprocess\n" + PY_LINE,
         ".review-scratch/x.sh": "#!/bin/bash\n" + SH_LINE,
     })
-    assert cs.call_sites(root) == {"a.py", "b.sh", "c.py", "f.py"}
+    assert cs.call_sites(root) == {"a.py", "b.sh", "c.py", "f.py", "i.py", "j.py", "k.sh"}
 
 
 def test_an_untracked_file_is_not_a_site_yet(tmp_path):

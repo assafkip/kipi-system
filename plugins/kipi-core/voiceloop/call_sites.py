@@ -8,14 +8,22 @@ detector an inventory test holds a tree against; the inventory itself (which
 sites are tolerated, and why) belongs to the deployment, never to the engine.
 
 WHAT IT SEES, and what it does not, stated so its silence reads right:
-  .py  an argv list or tuple literal holding the string "-p" right after a
-       string ending in `claude` or a variable (the binary). A caller that
-       assembles `claude -p` inside a shell string is NOT seen. A file this
-       Python cannot parse falls back to the text shape of that argv element,
-       so a caller cannot hide behind syntax the AST rejects.
-  .sh  a non-comment line running `claude -p` / `claude --print`, or a
-       `$CLAUDE*` variable with `-p`, anywhere on the line (inside a `bash -c`
-       string included, which is how a worker loop calls it).
+  .py  a file that names `claude` somewhere AND holds an argv list or tuple
+       literal with the string "-p" either first (`DEFAULT_ARGS = ["-p", ...]`,
+       the binary prepended elsewhere) or right after an expression standing
+       for the binary: a string ending in `claude`, a variable, an attribute,
+       a call, or a conditional such as `CLAUDE_BIN if ... else "claude"`.
+       The `claude` mention is what keeps `[ssh_bin, "-p", port]` out (PR #413
+       round 1 minor 2); a file that shells both ssh and the model is counted,
+       which is the right side to err on. A caller that assembles `claude -p`
+       inside a shell string is NOT seen. A file this Python cannot parse
+       falls back to the text shape of the argv element.
+  .sh  a non-comment line, not an `echo`/`printf`, running `claude -p` /
+       `claude --print` with any options between the two (`claude --model X
+       -p`), or a `$CLAUDE*` variable with `-p`, anywhere on the line (inside
+       a `bash -c` string included, which is how a worker loop calls it). A
+       heredoc body that quotes the pattern IS counted: this scanner does not
+       parse heredocs, and it errs toward a row that a reason then explains.
 Test directories are skipped: a test that spends a real call is a token
 problem, not a metering one, and their fixtures quote the pattern in prose.
 Review scratch trees (`.review-*`) hold copies of the scripts and are not
@@ -30,19 +38,30 @@ from pathlib import Path
 
 _TEST_DIR = re.compile(r"(^|/)(tests?|test)/|(^|/)test[_-]")
 _SCRATCH = re.compile(r"^\.review-")
-_PY_TEXT = re.compile(r""",\s*["']-p["']""")
+_PY_TEXT = re.compile(r"""(,|\[|\()\s*["']-p["']""")
+_CLAUDE_WORD = re.compile(r"\bclaude\b", re.I)
+# `claude`, then any run of options (with or without a value), then -p/--print.
 _SH_CALL = re.compile(
-    r"""(^|[\s"'(;&|`])(claude|\$\{?CLAUDE[A-Z_]*\}?)\s+(-p|--print)(\s|"|'|\\|$)""")
+    r"""(^|[\s"'(;&|`])(claude|\$\{?CLAUDE[A-Z_]*\}?)"""
+    r"""(\s+--?[\w-]+(=\S+)?(\s+[^-\s]\S*)?)*\s+(-p|--print)(\s|"|'|\\|$)""")
+_SH_PRINTS = re.compile(r"^\s*(echo|printf)\b")
 
 
 def _binary_like(node) -> bool:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value.endswith("claude")
-    return isinstance(node, (ast.Name, ast.Attribute, ast.Subscript))
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str) and node.value.endswith("claude")
+    return isinstance(node, (ast.Name, ast.Attribute, ast.Subscript, ast.Call,
+                             ast.IfExp, ast.BoolOp, ast.BinOp))
+
+
+def _is_dash_p(node) -> bool:
+    return isinstance(node, ast.Constant) and node.value == "-p"
 
 
 def py_calls(text: str) -> bool:
     """Does this Python source build an argv that runs the model headless?"""
+    if not _CLAUDE_WORD.search(text):
+        return False
     try:
         tree = ast.parse(text)
     except SyntaxError:
@@ -51,10 +70,10 @@ def py_calls(text: str) -> bool:
         if not isinstance(node, (ast.List, ast.Tuple)):
             continue
         elts = node.elts
+        if elts and _is_dash_p(elts[0]):
+            return True
         for i in range(1, len(elts)):
-            e = elts[i]
-            if (isinstance(e, ast.Constant) and e.value == "-p"
-                    and _binary_like(elts[i - 1])):
+            if _is_dash_p(elts[i]) and _binary_like(elts[i - 1]):
                 return True
     return False
 
@@ -62,7 +81,7 @@ def py_calls(text: str) -> bool:
 def sh_calls(text: str) -> bool:
     """Does this shell source run the model headless on a non-comment line?"""
     for line in text.splitlines():
-        if line.lstrip().startswith("#"):
+        if line.lstrip().startswith("#") or _SH_PRINTS.match(line):
             continue
         if _SH_CALL.search(line):
             return True
