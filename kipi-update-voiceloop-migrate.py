@@ -333,6 +333,38 @@ def has_token(text: str) -> bool:
     return any(before in text for before, _ in CASE_FORMS)
 
 
+# A DIRECTORY IS A PACKAGE ONLY IF IT HOLDS SOURCE (ASK-1239, sp-273637ee).
+# `os.path.isdir` read consulting's voiceloop/ shell -- __pycache__ and
+# .pytest_cache, zero .py files -- as the package, so plan() said both_present,
+# skipped the move, rewrote every import to a package with no code, and the
+# instance's pre-commit verify.sh failed on ModuleNotFoundError on two apply
+# runs (2026-09-03, 2026-09-04). The cache dirs are pruned by the same
+# _skip_dirname the source walk uses, so bytecode can never count as source.
+def _is_package(path: str) -> bool:
+    for dirpath, dirnames, filenames in os.walk(path):
+        dirnames[:] = [d for d in dirnames if not _skip_dirname(d)]
+        if any(fn.endswith(".py") for fn in filenames):
+            return True
+    return False
+
+
+# A FILE THAT DEFINES THE MAPPING IS NOT A CALLER OF IT (ASK-1239). The swap
+# rewrote consulting's automation/export_voice_loop.py RENAMES entry from the
+# pair (voicekit, voiceloop) to (voiceloop, voiceloop), an identity rename, and
+# the public-mirror transform stopped renaming anything. That file's token is
+# the definition, the same reason SELF_PATH is exempt. Matched as the quoted
+# bare pair only: a path pair such as ("voicekit/validate.py", ...) is a path
+# literal that migrates (test_prose_in_an_instance_file_survives_and_its_code_
+# migrates pins that), and prose naming the pair is already left alone.
+MAPPING_PAIRS = tuple(
+    re.compile(r"""(["'])%s\1\s*[,:]\s*(["'])%s\2""" % (re.escape(a), re.escape(b)))
+    for a, b in CASE_FORMS)
+
+
+def defines_mapping(text: str) -> bool:
+    return any(p.search(text) for p in MAPPING_PAIRS)
+
+
 # PROSE IS NEVER REWRITTEN. A why-comment that documents the rename has to name
 # the old package, or it documents nothing: the engine's own module docstring
 # says "this package was called `voicekit` here and the exporter renamed it to
@@ -454,8 +486,8 @@ def plan(repo: str, skeleton: str | None = None, prefix: str | None = None) -> d
         sub_prefix = DEFAULT_PREFIX
     old_pkg = os.path.join(repo, PLUGIN_PARENT, OLD)
     new_pkg = os.path.join(repo, PLUGIN_PARENT, NEW)
-    has_old = os.path.isdir(old_pkg)
-    has_new = os.path.isdir(new_pkg)
+    has_old = _is_package(old_pkg)
+    has_new = _is_package(new_pkg)
 
     if has_old and has_new:
         package_action = "both_present"
@@ -466,7 +498,7 @@ def plan(repo: str, skeleton: str | None = None, prefix: str | None = None) -> d
     else:
         package_action = "absent"
 
-    rewrite, renames, history, shipped, unparseable = [], [], [], [], []
+    rewrite, renames, history, shipped, unparseable, mapping = [], [], [], [], [], []
     for path in iter_source_files(repo):
         if _exempt(path):
             continue
@@ -499,6 +531,9 @@ def plan(repo: str, skeleton: str | None = None, prefix: str | None = None) -> d
         except (OSError, UnicodeError):
             continue
         if not has_token(text):
+            continue
+        if defines_mapping(text):
+            mapping.append(rel)
             continue
         # The same function apply() writes with decides whether there is
         # anything to write, so plan and apply cannot disagree about prose.
@@ -564,6 +599,7 @@ def plan(repo: str, skeleton: str | None = None, prefix: str | None = None) -> d
         "renames": sorted(renames),
         "delivered_by_sync": sorted(shipped),
         "unparseable": sorted(unparseable),
+        "defines_mapping": sorted(mapping),
         "history_left": sorted(history),
         "staged_migration": staged_migration,
         "staged_rewrites": staged_rewrites,
@@ -621,7 +657,7 @@ def apply(repo: str, commit: bool = True, skeleton: str | None = None,
     repo = os.path.abspath(repo)
     p = plan(repo, skeleton, prefix)
     result = {**p, "moved": False, "rewritten": [], "renamed": [], "committed": False,
-              "errors": [], "left_untracked": [], "backed_up": []}
+              "errors": [], "left_untracked": [], "backed_up": [], "set_aside": None}
     # Snapshot tracked-ness BEFORE any write, because `git mv` and the rewrites
     # change it. Empty set when this is not a git repo, which makes every path
     # "untracked" and the commit step a no-op -- correct for a scratch copy.
@@ -662,6 +698,20 @@ def apply(repo: str, commit: bool = True, skeleton: str | None = None,
     if p["package_action"] == "move":
         old_rel = os.path.join(PLUGIN_PARENT, OLD)
         new_rel = os.path.join(PLUGIN_PARENT, NEW)
+        # `move` with the new name on disk means a non-package shell (ASK-1239:
+        # caches, no source). `git mv` onto an existing directory moves the
+        # package INTO it and os.rename refuses a non-empty one, so the shell is
+        # set aside first. Set aside, never deleted: see "Never a delete".
+        shell = os.path.join(repo, new_rel)
+        if os.path.lexists(shell):
+            aside = shell + BACKUP_SUFFIX
+            if os.path.lexists(aside):
+                result["errors"].append(f"{new_rel} is not a package but {aside} "
+                                        "already exists; nothing moved")
+                result["verified"] = False
+                return result
+            os.rename(shell, aside)
+            result["set_aside"] = new_rel + BACKUP_SUFFIX
         if _tracked(repo, old_rel):
             # `git mv` so the rename is recorded rather than showing as a mass
             # delete+add, which is what the updater's own dirty guards read.
