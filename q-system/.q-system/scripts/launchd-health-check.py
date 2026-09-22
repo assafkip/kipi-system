@@ -695,6 +695,29 @@ def run_intent_check(dry_run):
     commit(delivered=bool(everyone_told or delivered))
 
 
+def run_deploy_gap_check(dry_run):
+    """Which tree each loaded job runs from, vs its default branch (ASK-1135).
+
+    Files ONE rollup issue through the fleet filer and pages nobody -- the same
+    posture as intent coverage. Merged is not deployed for a job whose tree is on
+    another branch, and this is the scheduled path that puts that on the board.
+    Never raises: a watchdog that dies over git stops watching launchd.
+    """
+    import importlib.util
+
+    try:
+        spec = importlib.util.spec_from_file_location("dg", HERE / "launchd-deploy-gap.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        outcome = module.run_check(load_watched_prefixes(), _fleet_health(), dry_run)
+    except Exception as exc:  # noqa: BLE001
+        print(f"deploy gap check COULD NOT RUN: {exc}", file=sys.stderr)
+        return
+    print(f"deploy gap rollup {'would be ' if dry_run else ''}filed: "
+          f"{sum(outcome.get(b, 0) for b in LANDED_BUCKETS)} on the board, "
+          f"unfiled={unfiled_count(outcome)}")
+
+
 def problems_to_ping(problems, state, now):
     """Problems whose kind changed since the last ping, or whose last ping is
     older than the TTL (dedupe spam, but re-ping when failing -> not_loaded)."""
@@ -759,6 +782,7 @@ def run(dry_run):
     # the `if not problems: return` would make it dead on the only fleet state it
     # exists to judge.
     run_intent_check(dry_run)
+    run_deploy_gap_check(dry_run)  # before the early return too: a healthy fleet can still be off-default
 
     problems = discover_problems()
 
