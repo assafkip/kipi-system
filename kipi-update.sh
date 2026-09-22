@@ -16,6 +16,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REGISTRY="$SCRIPT_DIR/instance-registry.json"
 # KIPI_SKELETON_REMOTE lets a fork point at itself (GitHub issue #2); default is upstream
 SKELETON_REMOTE="${KIPI_SKELETON_REMOTE:-https://github.com/assafkip/kipi-system.git}"
+# With no override, the provenance proof compares this checkout with ITS OWN origin, which is
+# what it always did: a fork whose origin is itself, and a test fixture whose origin is a bare
+# repo on disk, both prove against the remote they actually came from. The override wins when
+# set. (Review round 2 of PR A: fetching the upstream URL by default broke the fixture that
+# has no network and no override.)
+if [ -z "${KIPI_SKELETON_REMOTE:-}" ]; then
+  ORIGIN_URL="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || true)"
+  [ -n "$ORIGIN_URL" ] && SKELETON_REMOTE="$ORIGIN_URL"
+fi
 SKELETON_BRANCH="main"
 # Args in any order: --dry-run and/or --only <name>. Without --only there is no
 # way to verify a risky change against ONE repo before the other 22, and a
