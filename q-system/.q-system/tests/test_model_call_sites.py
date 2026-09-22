@@ -13,7 +13,10 @@ THE LIST ONLY SHRINKS. A new direct call site fails until it goes through the
 wrapper or gets a row (a review question, made in this file's diff). A row
 whose file is here and no longer calls the model fails too, so the row leaves.
 In an INSTANCE only its own paths are checked (everything outside `q-system/`
-and `plugins/`): the shared trees are this skeleton's business and are checked
+and `plugins/`), and those rows are stored as sha256(path)[:12]: the skeleton
+sweep (validate-separation.py) refuses an instance's directory names in this
+repo, which is right, and the failure message here prints the real path from
+the tree being checked, so nothing is lost on the machine that matters: the shared trees are this skeleton's business and are checked
 here, and an instance carrying an older copy of them is sync lag, which
 `fleet-health-daily.py` already watches. Without that split a site wrapped in
 the skeleton could never leave the list until every instance had synced (the
@@ -25,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -65,9 +69,17 @@ def local_only(sites: set) -> set:
 
 
 def instance_check(path: Path, rows: dict, wrappers) -> tuple[set, set]:
-    """cs.check narrowed to the instance's own paths."""
-    new, stale = cs.check(path, rows, wrappers)
-    return local_only(new), local_only(stale)
+    """(new local sites, stale local rows), both as REAL paths, against hashed rows.
+
+    A row whose hash matches no tracked file is an older copy of the tree and
+    is neither new nor stale; one whose file is tracked but no longer calls
+    the model is stale and has to leave.
+    """
+    sites = local_only(cs.call_sites(path) - set(wrappers))
+    by_hash = {key(rel): rel for rel in cs.tracked(path) if not rel.startswith(SHARED_PREFIXES)}
+    new = {s for s in sites if key(s) not in rows}
+    stale = {by_hash[h] for h in rows if h in by_hash and by_hash[h] not in sites}
+    return new, stale
 
 
 def test_the_wrapper_is_a_call_site():
@@ -107,7 +119,7 @@ def test_shared_rows_live_in_the_shared_trees_and_instance_rows_outside_them():
         assert not row.startswith(SHARED_PREFIXES), row
     for name, rows in s["instances"].items():
         for row in rows:
-            assert not row.startswith(SHARED_PREFIXES), (name, row)
+            assert re.fullmatch(r"[0-9a-f]{12}", row), (name, row)  # a hash, never a path
 
 
 if __name__ == "__main__":
@@ -122,5 +134,5 @@ if __name__ == "__main__":
         local = sorted(r for r in cs.call_sites(path) - set(s["wrapper"])
                        if not r.startswith(SHARED_PREFIXES))
         if local:
-            out["instances"][key(name)] = local
+            out["instances"][key(name)] = {key(r): r for r in local}
     print(json.dumps(out, indent=2))

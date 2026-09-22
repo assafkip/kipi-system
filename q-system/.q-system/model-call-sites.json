@@ -1,5 +1,5 @@
 {
-  "_": "Every file that shells the headless model on its own. Read by q-system/.q-system/tests/test_model_call_sites.py; print the candidate rows with `python3 q-system/.q-system/tests/test_model_call_sites.py --print`. Rows only leave this file; a new row is a review question. Instance sections are keyed by sha256(registry name)[:12], never the name: this repo is public and some instances are client engagements. `skeleton` rows are this repo's own root files, which do not propagate.",
+  "_": "Every file that shells the headless model on its own. Read by q-system/.q-system/tests/test_model_call_sites.py; print the candidate rows with `python3 q-system/.q-system/tests/test_model_call_sites.py --print`. Rows only leave this file; a new row is a review question. Instance sections are keyed by sha256(registry name)[:12] and their rows by sha256(path)[:12], never the names: this repo is public, some instances are client engagements, and the skeleton sweep refuses an instance's own directory names. `--print` on the machine prints the real paths beside the hashes. `skeleton` rows are this repo's own root files, which do not propagate.",
   "wrapper": [
     "plugins/kipi-core/voiceloop/prompt_render.py"
   ],
@@ -22,55 +22,55 @@
   "skeleton": {},
   "instances": {
     "3a66182781ae": {
-      "q-ktlyst/.q-system/scripts/generate-security-summaries.py": "instance-local direct call, unmetered; inventoried 2026-09-22"
+      "6d8524c2bbd4": "instance-local direct call, unmetered; inventoried 2026-09-22"
     },
     "e3d0688ea958": {
-      "q-consult/email-watch/meeting_loop.sh": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "q-consult/output/comprehension/gate.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "q-consult/output/comprehension/gate_icp.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "q-consult/output/comprehension/gate_round2.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "q-consult/output/comprehension/gate_text.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "q-consult/pipeline/authorship_stop_report.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "q-consult/pipeline/commitments.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "q-consult/pipeline/draft_email.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "q-consult/pipeline/granola_refresh.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "q-consult/pipeline/gtm_worker.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "q-consult/pipeline/inbox.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "q-consult/pipeline/substack.py": "instance-local direct call, unmetered; inventoried 2026-09-22"
+      "542f7cd57911": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "c9714e16f1dc": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "2e46fd9261ef": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "74ac984df3ab": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "5aa63160d6c7": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "0c682b4e1a1e": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "820b5b6dab62": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "d9ac88cb6936": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "05f5be89efdb": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "11355110eea2": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "bc244955b003": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "5f32377b50e5": "instance-local direct call, unmetered; inventoried 2026-09-22"
     },
     "426fe9d3d8bb": {
-      "q-pure/automation/ps-slack-sync.sh": "instance-local direct call, unmetered; inventoried 2026-09-22"
+      "23e00a41de39": "instance-local direct call, unmetered; inventoried 2026-09-22"
     },
     "d180b942f629": {
-      "investigations/agent/investigator.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "investigations/llm/client.py": "instance-local direct call, unmetered; inventoried 2026-09-22"
+      "81d513d989d3": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "3787970899a8": "instance-local direct call, unmetered; inventoried 2026-09-22"
     },
     "99d7c06e0194": {
-      "gtm/cloud-brain/core/voice_judge.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "gtm/cloud-brain/x_daily/publish_x_work.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "gtm/scripts/auto_build/code_writer.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "gtm/scripts/claude_auth_probe.py": "the cron-env auth arbiter, a json-mode probe; unmetered (PR #413 round 1 major)",
-      "gtm/scripts/lib/smoke_claude_cron_env.sh": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "gtm/scripts/linkedin_dm/draft.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "gtm/scripts/podcast/daily_video.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "gtm/scripts/podcast/make_social.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "gtm/scripts/podcast/regenerate_newsletter.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "gtm/scripts/podcast/story_dedup.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "gtm/scripts/prospect_feed/feed.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "gtm/scripts/reddit_worker/draft.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "gtm/scripts/slack_listener/respond.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "gtm/scripts/tool_radar/score.py": "instance-local direct call, unmetered; inventoried 2026-09-22"
+      "46a37cf4ec4b": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "de19a82e0453": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "a5e820c3d2c1": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "66410000dd46": "the cron-env auth arbiter, a json-mode probe; unmetered (PR #413 round 1 major)",
+      "490e6871bee6": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "b8f9b3b516f0": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "a0d27779997c": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "6c2d963fe18d": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "0d02bbef84ca": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "749352f180b5": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "030a05160150": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "86c306167de5": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "089262120009": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "fdbfca004275": "instance-local direct call, unmetered; inventoried 2026-09-22"
     },
     "0e7f29b71bdc": {
-      "automation/.q-system/scripts/discover_bolt_on_companies.py": "instance-local direct call, unmetered; inventoried 2026-09-22"
+      "4d73e074592b": "instance-local direct call, unmetered; inventoried 2026-09-22"
     },
     "f27c666d069e": {
-      "scripts/autobuild/identity_gen.py": "instance-local direct call, unmetered; inventoried 2026-09-22",
-      "src/need_to_product/executor.py": "headless agent executor, -p first with the binary prepended; unmetered (PR #413 round 1 major)",
-      "src/reddit_build_radar/classify.py": "instance-local direct call, unmetered; inventoried 2026-09-22"
+      "953a34d4044a": "instance-local direct call, unmetered; inventoried 2026-09-22",
+      "61c7ab811ae6": "headless agent executor, -p first with the binary prepended; unmetered (PR #413 round 1 major)",
+      "c4574a98cd4d": "instance-local direct call, unmetered; inventoried 2026-09-22"
     },
     "3bc51062973c": {
-      "scripts/daily-sweep/run-sweep.sh": "instance-local direct call, unmetered; inventoried 2026-09-22"
+      "fb50e36b6001": "instance-local direct call, unmetered; inventoried 2026-09-22"
     }
   }
 }
