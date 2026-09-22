@@ -111,6 +111,92 @@ def find_divergence(repo_root):
     return (stranded, skeleton_gap)
 
 
+# GUARD DRIFT (ASK-1166): the same (event, script) wired in both files, guarded
+# with an existence test in the template and bare in .claude/settings.json. A bare
+# `python3 missing.py` exits 2, which a hook reads as BLOCK, so a script absent
+# from a checkout blocks every tool call on that event instead of no-opping.
+GUARD_RE = re.compile(r"(?:\btest -f |\[ -f )")
+
+# Recorded divergences, "Event:script". Measured 2026-09-15: 22 wirings, all the
+# skeleton runtime's older bare shape. They are recorded, not fixed, because the
+# only sanctioned writer of .claude/settings.json (apply-claude-changes.sh)
+# refuses the fix: its census keys a hook on the exact command string, so adding
+# a guard reads as a hook removal ("enforcement ratchet: 1 hooks entr(ies) would
+# disappear", exit 2, ASK-1166). Exit: guard the line in settings.json, then
+# delete its entry here. A recorded entry that is no longer drifting FAILS the
+# check, so this list can only shrink and never goes stale silently.
+_RECORDED_REASON = "ASK-1166: apply-claude-changes ratchet refuses a rewritten hook command"
+GUARD_DRIFT_RECORDED = {key: _RECORDED_REASON for key in (
+    "PostToolUse:audhd-lint.py",
+    "PostToolUse:batch-uniformity-lint.py",
+    "PostToolUse:decision-origin-tag-lint.py",
+    "PostToolUse:enforced-claim-lint.py",
+    "PostToolUse:format-lint.py",
+    "PostToolUse:headline-lint.py",
+    "PostToolUse:hook_envelope_audit.py",
+    "PostToolUse:lessons-validator.py",
+    "PostToolUse:linear-filer-label-lint.py",
+    "PostToolUse:linkedin-format-lint.py",
+    "PostToolUse:memory-confidence-validator.py",
+    "PostToolUse:prompt-only-enforcement-guard.py",
+    "PostToolUse:voice-lint.py",
+    "PostToolUse:voice-substance-lint.py",
+    "PostToolUse:voiceloop-band-lint.py",
+    "PostToolUse:wiring-check.py",
+    "SessionStart:memory-scores-surface.py",
+    "SessionStart:sycophancy-monthly-check.py",
+    "Stop:voice-stop-gate.py",
+    "UserPromptSubmit:knowledge-inject.py",
+    "UserPromptSubmit:lessons-inject.py",
+    "UserPromptSubmit:voice-dna-loader.py",
+)}
+
+
+def guard_states(settings):
+    """{"Event:script": is_guarded}; False when ANY command for it is bare."""
+    states = {}
+    for event, groups in settings.get("hooks", {}).items():
+        for grp in groups:
+            for h in grp.get("hooks", []):
+                cmd = h.get("command", "")
+                is_guarded = bool(GUARD_RE.search(cmd))
+                for name in SCRIPT_RE.findall(cmd):
+                    key = f"{event}:{name}"
+                    states[key] = states.get(key, True) and is_guarded
+    return states
+
+
+def find_guard_drift(repo_root):
+    """Returns (unrecorded_drift, stale_records) or None for no-op."""
+    sj = os.path.join(repo_root, ".claude", "settings.json")
+    st = os.path.join(repo_root, "settings-template.json")
+    if not os.path.isfile(st) or not os.path.isfile(sj):
+        return None
+    try:
+        runtime = guard_states(json.load(open(sj)))
+        template = guard_states(json.load(open(st)))
+    except (json.JSONDecodeError, OSError):
+        return None
+    shared = runtime.keys() & template.keys()
+    drift = {k for k in shared if template[k] and not runtime[k]}
+    unrecorded = sorted(drift - GUARD_DRIFT_RECORDED.keys())
+    stale = sorted(k for k in GUARD_DRIFT_RECORDED if k in shared and k not in drift)
+    return (unrecorded, stale)
+
+
+def report_guard_drift(unrecorded, stale):
+    for k in unrecorded:
+        sys.stderr.write(
+            f"settings-template-sync-check: {k} is guarded (test -f) in "
+            "settings-template.json but bare in .claude/settings.json; a missing "
+            "script then exits 2 and BLOCKS instead of no-opping. Fix: add the "
+            "template's guard to the settings.json line.\n")
+    for k in stale:
+        sys.stderr.write(
+            f"settings-template-sync-check: {k} is recorded in GUARD_DRIFT_RECORDED "
+            "but is no longer drifting. Fix: delete its entry.\n")
+
+
 def repo_root_from(path):
     d = os.path.dirname(os.path.abspath(path))
     while d != "/":
@@ -143,8 +229,10 @@ def main():
     if not result:
         sys.exit(0)
     stranded, skeleton_gap = result
+    unrecorded, stale = find_guard_drift(root) or ([], [])
+    report_guard_drift(unrecorded, stale)
     if not stranded and not skeleton_gap:
-        sys.exit(0)
+        sys.exit(2 if unrecorded or stale else 0)
 
     if stranded:
         sys.stderr.write(
