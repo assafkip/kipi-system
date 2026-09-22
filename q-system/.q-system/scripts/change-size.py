@@ -64,6 +64,7 @@ Usage:  change-size.py --base origin/main [--repo-root .] [--json]
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import re
 import subprocess
@@ -188,8 +189,59 @@ def scans_the_tree(text: str) -> bool:
     return _SCAN_RE.search(text) is not None
 
 
+def _segment_re(seg: str) -> str:
+    """One path segment's glob, as regex. `*` and `?` STOP AT A SEPARATOR, which
+    is the whole reason `**` has something left to mean."""
+    out, i, n = [], 0, len(seg)
+    while i < n:
+        c = seg[i]
+        if c == "*":
+            out.append("[^/]*")
+        elif c == "?":
+            out.append("[^/]")
+        elif c == "[":
+            j = i + 1
+            if j < n and seg[j] in "!^":
+                j += 1
+            if j < n and seg[j] == "]":
+                j += 1
+            while j < n and seg[j] != "]":
+                j += 1
+            if j >= n:
+                out.append(r"\[")                  # unclosed: a literal bracket
+            else:
+                body = seg[i + 1:j].replace("\\", r"\\")
+                out.append("[" + ("^" + body[1:] if body[:1] in "!^" else body) + "]")
+                i = j + 1
+                continue
+        else:
+            out.append(re.escape(c))
+        i += 1
+    return "".join(out)
+
+
+@functools.lru_cache(maxsize=512)
+def _covers_re(pattern: str) -> re.Pattern:
+    """A coverage glob compiled ONCE. covers-lint runs every declared glob against
+    every tracked path, so this is O(globs x files) calls on one small set."""
+    segs = pattern.split("/")
+    out = []
+    for i, seg in enumerate(segs):
+        last = i == len(segs) - 1
+        if seg == "**":
+            # ZERO OR MORE SEGMENTS. The `+` inside and the `*` outside are the
+            # bug: `[^/]+/` alone is "at least one", which is exactly what
+            # fnmatch did and exactly what missed depth zero, twice.
+            out.append(".*" if last else "(?:[^/]+/)*")
+        else:
+            out.append(_segment_re(seg))
+            if not last:
+                out.append("/")
+    return re.compile("".join(out))
+
+
 def covers_matches(pattern: str, path: str) -> bool:
-    """Does a DECLARED coverage glob claim this path? (ASK-1918)
+    """Does a DECLARED coverage glob claim this path? (ASK-1918, ASK-1922)
 
     NOT THE PARSER THAT WAS REJECTED. Rounds 1-4 of PR #377 tried to INFER what a
     test covers by reading globs out of its own source, and each round named
@@ -198,26 +250,30 @@ def covers_matches(pattern: str, path: str) -> bool:
     the pattern here is WRITTEN DOWN by someone who knows the test, in its own
     capability fragment, so there is no source to mis-read and no fifth spelling.
 
-    fnmatch's `*` crosses `/`, which is what makes `**/*.plist` and
-    `q-system/.q-system/launchd/**` both behave the way a person writing them
-    expects. A pattern with no slash matches the basename, the way `find -name`
-    and a bare pathspec do.
+    ONE MATCHER, NOT A PILE OF BRANCHES (ASK-1922). The first cut was `fnmatch`
+    with special cases bolted on, and `fnmatch` has no concept of `**` at all --
+    it only appeared to work because its `*` crosses `/`. PR #385 round 1 found
+    that a LEADING `**/` missed all 39 root-level scripts; round 2 found the same
+    defect one position over, on an INTERIOR `**/`. Same finding class twice
+    means the fix SHAPE was wrong, so every position is handled by one translate
+    rather than by a third branch waiting for a fourth.
 
-    `**/` MEANS "AT ANY DEPTH, INCLUDING NONE", and that needs its own branch
-    (claude review of PR #385, major). fnmatch's `*` crosses a `/` only when
-    there is one to cross, so `**/*.sh` matched every nested script and MISSED
-    all 39 of this repo's root-level ones. covers-lint printed PASS on it,
-    because such a glob does match the nested files -- so the declaration would
-    have been blessed while silently dropping the root. Anchoring the leading
-    `**/` away is the whole fix."""
-    import fnmatch
-    if "/" in pattern:
-        if fnmatch.fnmatch(path, pattern):
-            return True
-        if pattern.startswith("**/") and fnmatch.fnmatch(path, pattern[3:]):
-            return True
-        return fnmatch.fnmatch(path, "*/" + pattern.lstrip("*/"))
-    return fnmatch.fnmatch(Path(path).name, pattern)
+    The semantics, all pinned by `DOUBLE_STAR_CASES` in the paired test:
+      * `**` as a whole segment is ZERO OR MORE segments, at any position.
+      * `*` and `?` stop at `/`. Under fnmatch they did not, which made `*` and
+        `**` synonyms and left `**` as decoration. `a/*/b` is now one level.
+      * a trailing `**` is everything BELOW that directory.
+      * a pattern with no `/` matches the BASENAME, the way `find -name` and a
+        bare pathspec do.
+      * the match is ANCHORED at the repo root. The old third branch also tried
+        `*/<pattern>`, so `scripts/*.py` silently claimed any `scripts/` in the
+        tree; write the leading `**/` when that is what you mean.
+
+    A `**` that is NOT a whole segment (`**.py`, `a**b`) is not a `**` here; it
+    degrades to `*`. covers-lint refuses such a glob rather than let the matcher
+    guess -- see its `_bad_double_star`."""
+    subject = path if "/" in pattern else Path(path).name
+    return _covers_re(pattern).fullmatch(subject) is not None
 
 
 def owning_dirs(path: str) -> list[str]:
@@ -350,6 +406,21 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
     always = {t for t in scanners if t not in declared_covers}
     live = name_index({c: executable_text(text) for c, text in code_texts.items()}) if code_texts else ({}, {})
     test_index = name_index(declared) if declared else ({}, {})
+
+    # A DECLARED COVERAGE GLOB SELECTS (ASK-1918), and only for a test that
+    # actually scans. `covers` may take a test OFF the always-run floor; it may
+    # never put one ON, or a declaration would be a second way to select and a
+    # typo could aim it anywhere.
+    #
+    # ITS OWN PASS OVER EVERY CHANGED PATH (claude review of PR #385, minor 2).
+    # It used to live inside the loop below, AFTER that loop's `continue` for a
+    # path that is itself a declared test -- so a glob naming another declared
+    # test's path was silently not honoured, and covers-lint could not see it
+    # either, because such a glob does match a tracked file.
+    for path, _ in changed:
+        selected |= {t for t, pats in declared_covers.items()
+                     if t in scanners and any(covers_matches(p, path) for p in pats)}
+
     for path, _ in changed:
         if path in declared or path in (fragments or {}) or machinery_reason(path):
             continue        # handled above: a test runs itself, a fragment runs its test
@@ -365,12 +436,7 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
         # walking tool instead of one per pattern -- see its comment for what that
         # does and does not buy.
         #
-        # A DECLARED COVERAGE GLOB SELECTS (ASK-1918), and only for a test that
-        # actually scans. `covers` may take a test OFF the always-run floor; it
-        # may never put one ON, or a declaration would be a second way to select
-        # and a typo could aim it anywhere.
-        direct |= {t for t, pats in declared_covers.items()
-                   if t in scanners and any(covers_matches(p, path) for p in pats)}
+        # (`covers` is handled in its own pass above, over every changed path.)
         if is_test_path(path) or not is_code(path):
             # A FIXTURE, A HELPER, OR A DATA FILE (same review, major 1). The first
             # cut skipped everything under test/ and fixtures/ before matching, so
@@ -466,9 +532,17 @@ def read_declared(root: Path) -> tuple[dict[str, str], dict[str, str], dict[str,
     """({declared test path: text}, {fragment file: the test path it declares},
     {declared test path: its `covers` globs}).
 
-    A malformed `covers` (not a list, or holding non-strings) is DROPPED rather
-    than repaired: the asymmetry says an unreadable declaration leaves the test
-    on the always-run floor, which is the expensive answer and the safe one."""
+    A malformed `covers` (not a list, or holding non-strings) is DROPPED WHOLE
+    rather than repaired: the asymmetry says an unreadable declaration leaves the
+    test on the always-run floor, which is the expensive answer and the safe one.
+
+    WHOLE is the word the first cut did not honour (claude review of PR #385,
+    minor 3). It kept the good entries and dropped only the bad ones, so
+    `["**/*.plist", null]` still took the test OFF the floor on a declaration
+    nobody could read -- the docstring claimed the safe posture and the code did
+    the unsafe one. One bad entry now voids the list. covers-lint refuses such a
+    fragment at commit time, so this is the second line of defence, not the
+    first."""
     out, fragments, covers = {}, {}, {}
     for frag in sorted((root / EXPECTED_TESTS_DIR).glob("*.json")):
         try:
@@ -481,10 +555,8 @@ def read_declared(root: Path) -> tuple[dict[str, str], dict[str, str], dict[str,
             out[path] = full.read_text(errors="ignore")
             fragments[EXPECTED_TESTS_DIR + frag.name] = path
             pats = entry.get("covers")
-            if isinstance(pats, list):
-                good = [p for p in pats if isinstance(p, str) and p]
-                if good:
-                    covers[path] = good
+            if isinstance(pats, list) and pats and all(isinstance(p, str) and p for p in pats):
+                covers[path] = list(pats)
     return out, fragments, covers
 
 

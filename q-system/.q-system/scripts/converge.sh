@@ -602,7 +602,7 @@ approval_carry() {
   return 0
 }
 
-# approval_confirm <tree> <reviewed-sha>   (origin has the last word)
+# approval_confirm <tree> <reviewed-sha> <pr>   (origin has the last word)
 #
 # A RETRY MUST NOT LAUNDER A RED HEAD (codex, PR #376 round 3). approval_carry runs
 # only on the path that pushes a receipt. On a retry the receipt is already on
@@ -616,7 +616,7 @@ approval_carry() {
 # onto a head that is already live is the racy case approval_carry exists to
 # avoid, so the remedy it names is a real review of that head.
 approval_confirm() {
-  local tree="$1" reviewed="$2" head state
+  local tree="$1" reviewed="$2" pr="${3:-}" head state
   [ -n "$TARGET_SLUG" ] || return 0          # no status API to ask; see approval_carry
   head="$(git -C "$tree" rev-parse FETCH_HEAD 2>/dev/null)" || head=""
   if [ -z "$head" ] || [ "$head" = "$reviewed" ]; then
@@ -628,13 +628,30 @@ approval_confirm() {
     say "carry: CONFIRMED -- origin's head $(printf '%.12s' "$head") carries a live reviewer approval"
     return 0
   fi
+  # "COULD NOT ASK" IS NOT "THE ANSWER WAS NO" (ASK-1905 nit 2). head_state exits
+  # 1 rather than printing `none` precisely so the two stay distinguishable, and
+  # then this function collapsed them back into one sentence prescribing a full
+  # re-review. Re-reviewing a PR fixes nothing about an expired token or a dead
+  # network, so an unreadable GitHub gets its own claim and its own remedy.
+  if [ "$state" = "unreadable" ]; then
+    CARRY_MISS="converge could not read GitHub's verdict for origin's head $(printf '%.12s' "$head") (state: unreadable), so nothing here says whether it is approved or not"
+    CARRY_FIX="gh auth status, then check the network, then re-run: kipi converge --issue $ISSUE"
+    say "carry: $CARRY_MISS"
+    return 0
+  fi
   CARRY_MISS="origin's head $(printf '%.12s' "$head") carries no live reviewer approval (state: $state), and converge will not copy one onto a head that is already live"
-  CARRY_FIX="bash $SCRIPT_DIR/pr-review-agent.sh <pr> --issue $ISSUE --post"
+  # THE REMEDY IS PASTEABLE OR IT IS NOT A REMEDY (ASK-1905 nit 1). This line
+  # carried a literal `<pr>` while the PR number was in scope two frames up, so
+  # the operator had to go find it before running the command the page handed
+  # them. The number is threaded down from receipt_ensure rather than read off
+  # the $PR global: a page that is right only because a caller happened to leave
+  # a global set is right by accident.
+  CARRY_FIX="bash $SCRIPT_DIR/pr-review-agent.sh ${pr:-<pr>} --issue $ISSUE --post"
   say "carry: $CARRY_MISS"
   return 0
 }
 
-# receipt_confirm_origin <tree> <sha> <record>
+# receipt_confirm_origin <tree> <sha> <record> <pr>
 #
 # A LOCAL COMMIT IS NOT DELIVERY (round 2, finding 1 -- major). Success used to
 # be decided from the working tree: a line in the ledger FILE set receipted=1,
@@ -654,7 +671,7 @@ approval_confirm() {
 # The probe is a throwaway copy of ORIGIN's ledger, so an append lands in a
 # tempfile and changes nothing.
 receipt_confirm_origin() {
-  local tree="$1" sha="$2" record="$3" probe rc
+  local tree="$1" sha="$2" record="$3" pr="${4:-}" probe rc
   if ! git -C "$tree" fetch -q origin "$BRANCH" 2>>"$LOG"; then
     say "receipt: could not reach origin/$BRANCH to confirm the receipt landed (see $LOG), so this run claims nothing about it"
     RECEIPT_MISS="${RECEIPT_MISS:-converge could not reach origin/$BRANCH to confirm a receipt landed, so nothing here proves one did}"
@@ -668,7 +685,7 @@ receipt_confirm_origin() {
   if [ "$rc" = "3" ]; then
     RECEIPT_MISS=""; RECEIPT_FIX=""
     say "receipt: CONFIRMED on origin/$BRANCH -- validate reads a receipt for $ISSUE at $(printf '%.12s' "$sha")"
-    approval_confirm "$tree" "$sha"
+    approval_confirm "$tree" "$sha" "$pr"
     return 0
   fi
   say "receipt: origin/$BRANCH carries NO receipt for $ISSUE at $(printf '%.12s' "$sha"). Whatever happened in the worktree, the head CI reads has nothing on it."
@@ -742,7 +759,7 @@ receipt_ensure() {
     RECEIPT_MISS="another converge run held the receipt lock for $BRANCH, so this run wrote none"
     RECEIPT_FIX="let the other run finish, then re-run: kipi converge --issue $ISSUE"
   fi
-  receipt_confirm_origin "$tree" "$sha" "$record"
+  receipt_confirm_origin "$tree" "$sha" "$record" "$pr"
   return 0
 }
 

@@ -63,6 +63,9 @@ except Exception as exc:  # pragma: no cover - exercised via the env seam above
 
 MANIFEST_UNREADABLE = "unreadable"
 HEALTH_LOG = "q-system/output/grounding-manifest-health.jsonl"
+# Written into every row. A second hook appending here later would otherwise produce
+# rows nobody can attribute, and attribution is the whole point of a firing record.
+HOOK_NAME = Path(__file__).name
 
 REPO = Path(os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
 SKIP_MARKER = "grounding-guard-skip"
@@ -199,25 +202,39 @@ def manifest_health(repo=REPO):
                 f"system_manifest.health() raised {type(exc).__name__}: {exc}")
 
 
-def _record_health(status, detail, enforced):
-    """Append one row so the warn-phase rate is MEASURABLE against real runs.
+def _record(event, reason, detail, **extra):
+    """Append one firing record. The SINGLE writer of HEALTH_LOG.
 
-    The whole point of shipping warn-first is to learn how often this fires before
-    deciding fail-closed is safe on a hook that runs every turn. A warning nobody
-    counts is just noise that trains the operator to ignore the line.
+    Two things are measured here, and they are the same fact from the operator's
+    seat: how often the warn phase sees a broken manifest, and how often this hook
+    actually STOPS a turn. A warning nobody counts is noise that trains the operator
+    to ignore the line; a block nobody counts is worse, because a gate whose firings
+    leave no artifact cannot be told apart from a gate that is dead (ASK-1958, RCA
+    rca-fleet-sync-two-day-spin-2026-09-20 row T6: the three exit-2 paths wrote
+    nothing, so "has this ever fired" had no answer in the repo).
+
+    `event` is "blocked" for a turn that was stopped, "warning" for one that was not.
+    `reason` names WHICH path fired, so rows can be grouped without parsing prose.
 
     Never raises: a telemetry failure must not take down the Stop hook it observes.
+    Deliberately NOT called on the pass path -- this hook runs on every turn in every
+    instance, and a row per turn would bury the firings it exists to surface.
     """
     try:
         import datetime
         p = REPO / HEALTH_LOG
         p.parent.mkdir(parents=True, exist_ok=True)
+        row = {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "hook": HOOK_NAME,
+            "event": event,
+            "reason": reason,
+            "detail": detail[:400],
+            "repo": str(REPO),
+        }
+        row.update(extra)
         with p.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({
-                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "status": status, "detail": detail[:400], "enforced": bool(enforced),
-                "repo": str(REPO),
-            }) + "\n")
+            fh.write(json.dumps(row) + "\n")
     except Exception:
         pass
 
@@ -237,7 +254,8 @@ def main():
     status, detail = manifest_health()
     if status == MANIFEST_UNREADABLE:
         enforce = os.environ.get("KIPI_GROUNDING_MANIFEST_ENFORCE") == "1"
-        _record_health(status, detail, enforce)
+        _record("blocked" if enforce else "warning", "manifest-unreadable", detail,
+                status=status, enforced=bool(enforce))
         # AND reach the AGENT, through the one channel the docs actually define for a
         # non-blocking Stop message: exit 0 plus hookSpecificOutput.additionalContext
         # (Claude Code hooks reference, Stop event). Deliberately NOT `systemMessage`
@@ -277,6 +295,10 @@ def main():
 
     uncovered = evaluate_subsystems(final_text, evidence)
     if uncovered:
+        _record("blocked", "subsystem-coverage",
+                "; ".join(f"{sid}: {len(refs)} member(s) unread"
+                          for sid, refs in uncovered),
+                subsystems=[sid for sid, _ in uncovered])
         detail = "\n".join(
             f"  {sid}: {len(refs)} declared member(s) never opened this session\n" +
             "\n".join(f"    - {r}" for r in refs[:10])
@@ -294,6 +316,8 @@ def main():
 
     ungrounded = evaluate(final_text, evidence)
     if ungrounded:
+        _record("blocked", "ungrounded-file-refs", ", ".join(ungrounded[:20]),
+                refs=ungrounded[:20])
         listed = "\n".join(f"  - {u}" for u in ungrounded[:20])
         sys.stderr.write(
             "GROUNDING GUARD (blocked): your answer asserts about repo files that "
