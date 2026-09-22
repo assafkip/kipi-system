@@ -9,20 +9,23 @@ class RegistryManager:
     # so a registry written before a key existed crashed every read. The live
     # file drifted to a shape without 'excluded' and took kipi://instances down
     # with it; found only once the test suite could COLLECT (sp-dcd84af1).
-    _REQUIRED_KEYS = {"instances": [], "excluded": [], "eliminated": []}
+    # A tuple, not a dict of lists: load() builds a fresh list per key, because
+    # handing out shared default lists let add_instance on one missing registry
+    # leak into every other manager in the process (Codex, PR #243).
+    _REQUIRED_KEYS = ("instances", "excluded", "eliminated")
 
     def __init__(self, registry_path: Path):
         self.registry_path = registry_path
 
     def load(self) -> dict:
-        if not self.registry_path.exists():
-            return dict(self._REQUIRED_KEYS)
-        with open(self.registry_path) as f:
-            data = json.load(f)
+        data = {}
+        if self.registry_path.exists():
+            with open(self.registry_path) as f:
+                data = json.load(f)
         # Persisted external input: tolerate schema drift on read instead of
         # crashing every consumer (fable-discipline: validating loader).
-        for key, default in self._REQUIRED_KEYS.items():
-            data.setdefault(key, default)
+        for key in self._REQUIRED_KEYS:
+            data.setdefault(key, [])
         return data
 
     def save(self, data: dict) -> None:

@@ -70,6 +70,24 @@ class TestPartialRegistryShape:
         assert mgr.list_excluded() == []
         assert mgr.list_eliminated() == []
 
+    def test_defaults_are_not_shared_between_managers(self, tmp_path):
+        # scar: load() handed out the class-level default lists themselves,
+        # so add_instance on one missing registry appended into the shared
+        # constant and a second, unrelated manager listed that instance
+        # (Codex finding on PR #243, registry.py:10).
+        first = RegistryManager(tmp_path / "a" / "instance-registry.json")
+        (tmp_path / "a").mkdir()
+        first.add_instance("leaked", "/tmp/leaked")
+        second = RegistryManager(tmp_path / "missing.json")
+        assert second.list_instances() == []
+
+    def test_setdefault_values_are_fresh_per_load(self, tmp_path):
+        registry_path = tmp_path / "instance-registry.json"
+        registry_path.write_text(json.dumps({"instances": []}))
+        mgr = RegistryManager(registry_path)
+        mgr.load()["excluded"].append({"name": "x"})
+        assert mgr.list_excluded() == []
+
 
 class TestGetSkeleton:
     def test_get_skeleton_returns_config(self, tmp_registry):
