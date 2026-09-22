@@ -1,0 +1,4 @@
+{
+ "path": "plugins/kipi-dsse/scripts/test_check_budget.py",
+ "runner": "pytest"
+}

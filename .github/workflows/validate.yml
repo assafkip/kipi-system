@@ -43,15 +43,47 @@ jobs:
       - name: Install test dependencies
         run: pip install pytest
 
+      # dc-25: without a browser every design-chain test calls skipTest, the file exits 0 and the
+      # capability gate reports green. test_9 sat red that way since dc-05. A browser here plus
+      # DC_REQUIRE_REAL_PRODUCERS below turns a skip into a failure.
+      - name: Install a browser for the design-chain producers
+        run: pip install playwright pillow && python -m playwright install --with-deps chromium
+
       # The capability gate replaces the old hardcoded 4-test loop: it
       # discovers every test artifact by convention, diffs declared-vs-actual
       # BOTH directions, and runs the full declared suite. The hardcoded loop
       # ran 4 of 41 declared artifacts — 90.2% never executed anywhere
       # (prd-silent-absence-capability-gate-2026-07-23).
-      - name: Capability gate (declared-vs-actual + full test suite)
-        run: python3 q-system/.q-system/scripts/capability-gate.py --repo-root .
+      #
+      # A PULL REQUEST RUNS THE TESTS ITS DIFF EARNS; A PUSH TO MAIN RUNS THEM ALL
+      # (ASK-1749). Measured on run 35478270323: this step was 17m41s of a 19m36s
+      # job because it ran every declared artifact on every push of every PR, so a
+      # three-line review round waited that long before it could merge.
+      # change-size.py picks the declared tests that name the changed files. It
+      # falls back to the FULL suite on anything it cannot vouch for: a change to
+      # the gate, the classifier, a workflow, lefthook or verify.sh, a dependency
+      # manifest, a capability declaration, a new third-party import, a selection
+      # wider than 60, or any error reading the diff. Structure, declared-vs-actual
+      # and wiring checks are not tests and run in full either way. The checkout
+      # above uses fetch-depth 0, so origin/<base> resolves.
+      # ASK-1918, and it runs BEFORE the gate on purpose: a wrong `covers`
+      # declaration would make the gate below select fewer tests, so the check on
+      # the declarations cannot be downstream of the thing they steer.
+      - name: Coverage declarations are real
+        run: python3 q-system/.q-system/scripts/covers-lint.py --repo-root .
+
+      - name: Capability gate (declared-vs-actual + the tests this change earns)
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --diff-base "origin/${{ github.base_ref }}"
+          else
+            python3 q-system/.q-system/scripts/capability-gate.py --repo-root .
+          fi
         env:
           CI: true
+          # dc-25: a design-chain test with no browser SKIPS and the file exits 0, so the gate read
+          # green over tests that never ran. With this set they fail instead.
+          DC_REQUIRE_REAL_PRODUCERS: "1"
 
       # CAPABILITY_GATE_SKIP: the gate just ran as its own step above; running
       # it again inside validate-separation would execute the suite twice per
