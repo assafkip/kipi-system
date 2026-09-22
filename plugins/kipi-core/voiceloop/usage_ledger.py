@@ -30,12 +30,14 @@ import datetime as _dt
 import json
 import os
 import re
+import sys
 
 LEDGER_ENV = "KIPI_USAGE_LEDGER"
 #: Every row carries these two, whatever its shape, so a consumer can tell a
 #: charged row from a failure row from a parse error without guessing keys.
 SCHEMA = 1
 PRODUCER = "voiceloop.usage_ledger"
+_WARNED: list[str] = []
 DEFAULT_LEDGER = os.path.join(os.path.expanduser("~"), ".config", "kipi", "usage-ledger.jsonl")
 
 #: Appended to the argv by both wrappers. The tests PIN the literal rather than
@@ -205,13 +207,20 @@ def finish(stdout: str, *, bot: str, job: str | None = None, model: str | None =
     """
     doc = _result_document(stdout)
     if doc is None:
-        return stdout, {"schema": SCHEMA, "producer": PRODUCER, "kind": "parse_error",
-                        "ts": _now_iso(), "bot": bot, "job": job, "model": model,
-                        "parse_error": "no result document in stdout",
-                        "stdout_bytes": len(stdout or "")}
+        row = failure_row("parse_error", bot=bot, job=job, model=model)
+        row.update({"kind": "parse_error", "subtype": "parse_error", "is_error": False,
+                    "parse_error": "no result document in stdout",
+                    "stdout_bytes": len(stdout or "")})
+        return stdout, row
+    row = row_from(doc, bot=bot, job=job, model=model)
+    if _failed(doc):
+        # The CLI answered with an error document (a usage-limit refusal, most
+        # often) and exit 0. Its text is not a post; the caller gets None, the
+        # same as any other failed call (PR #410 round 4).
+        return None, row
     text = doc.get("result")
     text = (text if isinstance(text, str) else "") + "\n"
-    return text, row_from(doc, bot=bot, job=job, model=model)
+    return text, row
 
 
 def append(row: dict, path: str | None = None) -> bool:
@@ -222,7 +231,12 @@ def append(row: dict, path: str | None = None) -> bool:
         with open(target, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, sort_keys=True) + "\n")
         return True
-    except (OSError, TypeError, ValueError):
+    except (OSError, TypeError, ValueError) as exc:
+        # Never raise, but never silent either: one line per process on stderr, so
+        # a meter that has stopped metering is visible in the job's err log.
+        if target not in _WARNED:
+            _WARNED.append(target)
+            sys.stderr.write(f"usage_ledger: cannot append to {target}: {exc}\n")
         return False
 
 

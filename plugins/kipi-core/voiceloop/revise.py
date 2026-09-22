@@ -308,8 +308,11 @@ def _run_prompt(prompt, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
     # this call is the expensive one, up to two per draft at the writer's tier, and
     # its own `claude -p` wrote no usage row, so a per-bot spend report charged the
     # repair loop to nobody. run_model meters it and hands back the same bytes.
+    # allow_opencode=False: the reviser REQUIRES an explicit writer tier (the two
+    # ValueErrors above), and the opencode branch would drop it for OPENCODE_MODEL.
+    # Before PR #410 this call never touched opencode; it still does not.
     return prompt_render.run_model(prompt, claude_bin, timeout=timeout, model=model,
-                                   caller="revise", under_test="none")
+                                   caller="revise", under_test="none", allow_opencode=False)
 
 
 def revise(text, violations, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,

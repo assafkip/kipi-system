@@ -90,7 +90,7 @@ def count_constraints(prompt):
 
 
 def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
-              caller="run_model()", under_test="raise", model=None):
+              caller="run_model()", under_test="raise", model=None, allow_opencode=True):
     """THE model call. One implementation, so every caller gets the same guarantees.
 
     why one (2026-08-06, founder-directed): "you shouldn't invent a new mechanism. we
@@ -129,7 +129,7 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
             "run_model needs an explicit claude_bin; the engine has no default binary "
             "because a default would be one machine's path shipped fleet-wide")
     binary = claude_bin
-    if os.environ.get("OPENCODE") and shutil.which("opencode"):
+    if allow_opencode and os.environ.get("OPENCODE") and shutil.which("opencode"):
         try:
             # The writer is already inside the voice loop. Reloading the global
             # voice-loop plugin here recurses on the prompt and can fail before
@@ -202,4 +202,4 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
     # `finish` hands back the same bytes a plain call printed (result + newline).
     text, row = usage_ledger.finish(result.stdout, **who)
     usage_ledger.append(row)
-    return text
+    return text  # None when the CLI answered with an error document

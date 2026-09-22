@@ -50,7 +50,10 @@ def test_row_carries_cost_tokens_and_turns_from_the_real_result(captured):
 def test_a_non_json_stdout_passes_through_untouched():
     text, row = usage_ledger.finish("plain words\n", bot="t")
     assert text == "plain words\n"
-    assert "parse_error" in row and row["stdout_bytes"] == 12
+    assert row["kind"] == "parse_error" and row["stdout_bytes"] == 12
+    # the same key set as every other row: a consumer summing the ledger never KeyErrors
+    for k in ("tokens_in", "tokens_out", "total_cost_usd", "is_error", "limit_text"):
+        assert k in row
 
 
 def test_a_limit_refusal_is_named_on_the_row():
@@ -84,8 +87,9 @@ def test_a_failed_call_still_leaves_a_row(captured, tmp_path, monkeypatch):
     assert prompt_render.run_model("hi", claude_bin=str(fake_bin), caller="c") is None
 
     def timeout(*a, **k):
-        # a REAL TimeoutExpired carries bytes even under text=True (round 3)
-        raise subprocess.TimeoutExpired(cmd="claude", timeout=1, output=json.dumps(captured["json_stdout"]).encode())
+        # the shape subprocess.run raises on POSIX: output None (round 4 measured it),
+        # and when it is present it is bytes even under text=True (round 3)
+        raise subprocess.TimeoutExpired(cmd="claude", timeout=1, output=None)
     monkeypatch.setattr(subprocess, "run", timeout)
     assert prompt_render.run_model("hi", claude_bin=str(fake_bin), caller="c") is None
 
@@ -97,9 +101,7 @@ def test_a_failed_call_still_leaves_a_row(captured, tmp_path, monkeypatch):
     rows = usage_ledger.read()
     assert [r["subtype"] for r in rows] == ["failed:exit 1", "failed:timeout", "failed:OSError"]
     assert rows[0]["limit_text"].startswith("You've hit your usage limit")
-    # the timeout arm keeps the tokens the CLI managed to report before the kill
-    assert rows[1]["total_cost_usd"] == captured["json_stdout"]["total_cost_usd"]
-    assert rows[2]["tokens_in"] is None  # unknown, never zero
+    assert rows[1]["tokens_in"] is None and rows[2]["tokens_in"] is None  # unknown, never zero
 
 
 def test_a_stray_line_before_the_document_still_yields_plain_prose(captured):
@@ -257,3 +259,47 @@ def test_a_large_stdout_is_scanned_without_suffix_copies(captured):
     tracemalloc.stop()
     assert text == captured["plain_stdout"]
     assert peak < 8 * len(stdout)  # linear in the input, not quadratic
+
+
+# ---- PR #410 round 4 --------------------------------------------------------------
+
+def test_a_refusal_document_with_exit_zero_is_not_handed_to_the_caller_as_a_post():
+    doc = {"type": "result", "subtype": "error_during_execution", "is_error": True,
+           "result": "You've hit your usage limit.", "modelUsage": {}}
+    text, row = usage_ledger.finish(json.dumps(doc), bot="t")
+    assert text is None and row["limit_text"].startswith("You've hit")
+
+
+def test_bytes_in_a_timeout_are_decoded_and_kept(captured):
+    row = usage_ledger.failure_row("timeout", bot="t", stdout=json.dumps(captured["json_stdout"]).encode())
+    assert row["total_cost_usd"] == captured["json_stdout"]["total_cost_usd"]
+
+
+def test_an_unwritable_ledger_announces_itself_once(tmp_path, capsys):
+    bad = str(tmp_path / "no" / "\0bad")
+    assert usage_ledger.append({"a": 1}, path=bad) is False
+    assert usage_ledger.append({"a": 2}, path=bad) is False
+    err = capsys.readouterr().err
+    assert err.count("usage_ledger: cannot append") == 1
+
+
+def test_the_reviser_never_takes_the_opencode_branch(captured, tmp_path, monkeypatch):
+    import subprocess
+    from voiceloop import revise
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("OPENCODE", "1")
+    monkeypatch.setattr(prompt_render.shutil, "which", lambda name: "/fake/opencode")
+    monkeypatch.setenv(usage_ledger.LEDGER_ENV, str(tmp_path / "l.jsonl"))
+    seen = {}
+
+    class Done:
+        returncode, stderr = 0, ""
+        stdout = json.dumps(captured["json_stdout"])
+
+    def fake_run(argv, **kw):
+        seen["argv"] = argv
+        return Done()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    fake_bin = tmp_path / "claude"; fake_bin.write_text("")
+    revise._run_prompt("p", claude_bin=str(fake_bin), model="writer-tier")
+    assert seen["argv"][0] == str(fake_bin) and "writer-tier" in seen["argv"]
