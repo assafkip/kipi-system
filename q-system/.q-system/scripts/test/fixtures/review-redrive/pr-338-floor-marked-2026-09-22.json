@@ -1,0 +1,96 @@
+{
+ "_provenance": {
+  "connector": "gh",
+  "call": "gh pr view 338 --json number,headRefOid,headRefName,statusCheckRollup,autoMergeRequest,url; gh api repos/<slug>/commits/<head>/statuses",
+  "captured_at": "2026-09-22T20:00:00Z",
+  "redaction": "none",
+  "note": "A real capture, verbatim. PR #338 is one of the 63 armed PRs whose head carries kipi/reviewer-approved=FAILURE posted by the reviewer floor (github-actions[bot], the FLOOR_DESC text), with reviewer-floor green and no local verdict record (ASK-2029)."
+ },
+ "payload": {
+  "pr": {
+   "autoMergeRequest": null,
+   "headRefName": "sana/ask-1144",
+   "headRefOid": "b6016ab2a57cafe47ef3576cee61f3b998379318",
+   "number": 338,
+   "statusCheckRollup": [
+    {
+     "__typename": "CheckRun",
+     "completedAt": "2026-08-30T19:46:42Z",
+     "conclusion": "FAILURE",
+     "detailsUrl": "https://github.com/assafkip/kipi-system/actions/runs/33331217489/job/99309981354",
+     "name": "validate",
+     "startedAt": "2026-08-30T19:33:58Z",
+     "status": "COMPLETED",
+     "workflowName": "Skeleton Validation"
+    },
+    {
+     "__typename": "CheckRun",
+     "completedAt": "2026-09-12T05:07:51Z",
+     "conclusion": "FAILURE",
+     "detailsUrl": "https://github.com/assafkip/kipi-system/actions/runs/34674009892/job/103500484276",
+     "name": "validate",
+     "startedAt": "2026-09-12T04:49:28Z",
+     "status": "COMPLETED",
+     "workflowName": "Skeleton Validation"
+    },
+    {
+     "__typename": "CheckRun",
+     "completedAt": "2026-08-30T19:34:08Z",
+     "conclusion": "SUCCESS",
+     "detailsUrl": "https://github.com/assafkip/kipi-system/actions/runs/33331217461/job/99309981179",
+     "name": "reviewer-floor",
+     "startedAt": "2026-08-30T19:33:58Z",
+     "status": "COMPLETED",
+     "workflowName": "Reviewer Floor"
+    },
+    {
+     "__typename": "CheckRun",
+     "completedAt": "2026-09-12T04:49:34Z",
+     "conclusion": "SUCCESS",
+     "detailsUrl": "https://github.com/assafkip/kipi-system/actions/runs/34674009926/job/103500484226",
+     "name": "reviewer-floor",
+     "startedAt": "2026-09-12T04:49:28Z",
+     "status": "COMPLETED",
+     "workflowName": "Reviewer Floor"
+    },
+    {
+     "__typename": "CheckRun",
+     "completedAt": "2026-08-30T19:38:36Z",
+     "conclusion": "SUCCESS",
+     "detailsUrl": "https://github.com/assafkip/kipi-system/actions/runs/33331217488/job/99309981263",
+     "name": "verify",
+     "startedAt": "2026-08-30T19:33:57Z",
+     "status": "COMPLETED",
+     "workflowName": "verify"
+    },
+    {
+     "__typename": "CheckRun",
+     "completedAt": "2026-09-12T04:58:29Z",
+     "conclusion": "SUCCESS",
+     "detailsUrl": "https://github.com/assafkip/kipi-system/actions/runs/34674009909/job/103500484334",
+     "name": "verify",
+     "startedAt": "2026-09-12T04:49:28Z",
+     "status": "COMPLETED",
+     "workflowName": "verify"
+    },
+    {
+     "__typename": "StatusContext",
+     "context": "kipi/reviewer-approved",
+     "startedAt": "2026-08-30T19:34:05Z",
+     "state": "FAILURE",
+     "targetUrl": ""
+    }
+   ],
+   "url": "https://github.com/assafkip/kipi-system/pull/338"
+  },
+  "statuses": [
+   {
+    "context": "kipi/reviewer-approved",
+    "state": "failure",
+    "description": "no reviewer verdict at this head (floor: absent is not approved)",
+    "created_at": "2026-08-30T19:34:05Z",
+    "creator": "github-actions[bot]"
+   }
+  ]
+ }
+}

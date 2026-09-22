@@ -247,5 +247,42 @@ if failures:
     for f in failures:
         print("  " + f)
     sys.exit(1)
+
+# ---- ASK-2029: the floor's red is the absent state, not a broken producer ----------
+# A REAL capture: PR #338, one of 63 armed PRs whose head carries
+# kipi/reviewer-approved=FAILURE posted by the reviewer floor (github-actions[bot],
+# FLOOR_DESC), reviewer-floor green, no local record. Before this change every
+# one of them was "Left alone" on every dispatch cycle.
+import json as _json
+_FX = Path(__file__).parent / "fixtures" / "review-redrive" / "pr-338-floor-marked-2026-09-22.json"
+_doc = _json.loads(_FX.read_text())
+assert (_doc.get("_provenance") or {}).get("captured_at"), "fixture must be a real capture"
+_floor_pr = dict(_doc["payload"]["pr"], isDraft=False,
+                 title="The PR reviewer floor-marked head (ASK-338)")
+_floor_pr["headRefName"] = "sana/ask-338"
+_statuses = _doc["payload"]["statuses"]
+check("CAPTURE: the failing verdict slot on PR #338 was posted by the floor, in its own words",
+      [s["creator"] for s in _statuses if s["context"] == "kipi/reviewer-approved"
+       and s["state"] == "failure" and "floor: absent is not approved" in (s["description"] or "")],
+      ["github-actions[bot]"])
+got = offered([_floor_pr])
+check("ASK-2029: a floor-marked head with no record is offered", len(got), 1)
+if got:
+    check("ASK-2029: and offered as re-review, the action dispatch routes to pr-review-agent",
+          got[0]["action"], "re-review")
+    check("ASK-2029: the reason names the floor", "floor" in got[0]["reason"], True)
+_no_floor = dict(_floor_pr, statusCheckRollup=[c for c in _floor_pr["statusCheckRollup"]
+                                               if (c.get("name") or "") != "reviewer-floor"])
+check("CONTROL: the same head with NO floor run stays refused (ASK-318's case)",
+      offered([_no_floor]), [])
+# the floor's check-run name is read from the workflow, never assumed
+_wf = (Path(__file__).resolve().parents[4] / ".github" / "workflows" / "reviewer-floor.yml").read_text()
+check("WIRING: FLOOR_CHECK is the job name the workflow actually declares",
+      ("\n  %s:\n" % rr.FLOOR_CHECK) in _wf, True)
+if failures:
+    for f in failures:
+        print("  FAIL - " + f)
+    sys.exit(1)
+print("PASS: a floor-marked head is a first re-review (ASK-2029)")
 print("PASS: review-redrive sees a never-posted reviewer slot")
 sys.exit(0)
