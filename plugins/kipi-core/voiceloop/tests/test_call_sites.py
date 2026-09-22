@@ -60,10 +60,23 @@ def test_real_call_shapes_are_seen_and_mentions_are_not(tmp_path):
         "o.sh": '#!/bin/bash\necho "$prompt" | claude --model sonnet --print > out.txt\n',
         # the line that took 16.8 s to reject under the old regex (round 4 minor)
         "p.sh": '#!/bin/bash\nclaude ' + " ".join("--flag%d value%d" % (i, i) for i in range(24)) + ' --model x\n',
+        # round 5: a continued line IS a call; a quoted `;` and a sudo user are NOT
+        "q.sh": '#!/bin/bash\nclaude \\\n  --model "$M" \\\n  -p "$PROMPT"\n',
+        "r.sh": "#!/bin/bash\necho 'a; claude -p x'\nsudo -u claude /opt/svc/run.sh -p x\n",
+        "s.sh": '#!/bin/bash\nxargs -I {} claude -p {} < prompts.txt\n',
+        # a substitution inside an assignment runs the model (run_daily.sh:89 shape)
+        "t.sh": '#!/bin/bash\nout="$(env -u ANTHROPIC_API_KEY "$CLAUDE_BIN" -p "$@" 2>&1)"; rc=$?\n',
+        # a variable-held wrapper with flags (run_producer_job.sh:63), and a case
+        # arm whose pattern looks like the binary (pr-review-agent.sh:876)
+        "u.sh": '#!/bin/bash\nout="$($NO_SUPABASE -u ANTHROPIC_API_KEY "$CLAUDE_BIN" -p "$@" 2>&1)"\n',
+        "v.sh": ('#!/bin/bash\ncase "$E" in\n  claude) run_bounded "$T" bash -c \\\n'
+                 '     "cd \'$R\' && claude -p --model \'$M\' \\"\\$1\\" </dev/null > \'$2\' 2>&1" _ "$PROMPT" ;;\nesac\n'),
+        # a case arm alone is a pattern, not a call
+        "w.sh": '#!/bin/bash\ncase "$E" in\n  claude) echo yes ;;\nesac\n',
         "tests/t.py": "import subprocess\n" + PY_LINE,
         ".review-scratch/x.sh": "#!/bin/bash\n" + SH_LINE,
     })
-    assert cs.call_sites(root) == {"a.py", "b.sh", "c.py", "f.py", "i.py", "j.py", "k.sh", "m.sh", "n.py", "o.sh"}
+    assert cs.call_sites(root) == {"a.py", "b.sh", "c.py", "f.py", "i.py", "j.py", "k.sh", "m.sh", "n.py", "o.sh", "q.sh", "s.sh", "t.sh", "u.sh", "v.sh"}
 
 
 def test_a_long_flag_line_is_rejected_in_linear_time():

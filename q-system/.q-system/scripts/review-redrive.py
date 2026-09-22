@@ -27,6 +27,12 @@ THE THREE STATES A REQUIRED CONTEXT CAN BE IN, AND WHO OWNS EACH
     ABSENT  (never posted)            -> HERE, as a first re-review (sp-d87c5416).
                                          ASK-318/ASK-313 still own the PRODUCER
                                          question of why it never posted.
+    ABSENT, painted red by the floor  -> HERE too (ASK-2029): the reviewer floor
+                                         turns an absent verdict into a FAILING
+                                         slot with no record. Read as absent when
+                                         the floor ran on that head; a failing
+                                         slot with no record and NO floor run is
+                                         still the absent-producer case below.
     SUCCESS (but nothing merges)      -> ASK-310, pr-land-if-green.sh
     FAILURE (the reviewer refused)    -> here
 
@@ -156,6 +162,30 @@ REREVIEW = "re-review"
 #: absent state wearing the failure state's colour, and it is the NORMAL state of
 #: every head that moved after an approval (ASK-2029: 63 armed PRs sat there).
 FLOOR_CHECK = "reviewer-floor"
+FLOOR_SH = os.path.join(HERE, "reviewer-floor.sh")
+
+
+def _floor_desc():
+    """The floor's own status text, read from reviewer-floor.sh, never retyped."""
+    try:
+        m = re.search(r'^FLOOR_DESC="([^"]+)"', open(FLOOR_SH).read(), re.M)
+        return m.group(1) if m else ""
+    except OSError:
+        return ""
+
+
+def _statuses(slug, sha):
+    """The commit statuses GitHub holds for `sha`; [] when it cannot be asked."""
+    if not slug or not sha:
+        return []
+    proc = subprocess.run(["gh", "api", "repos/%s/commits/%s/statuses" % (slug, sha)],
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        return []
+    try:
+        return json.loads(proc.stdout)
+    except ValueError:
+        return []
 
 # Where a PR's head lives, as the board answered it. ALIASED, NOT REDEFINED
 # (PR #211 round 3, MAJOR 1). Round 2 put this predicate here, and the finding
@@ -174,11 +204,20 @@ SLUG_LIB = os.path.join(HERE, "repo-slug-lib.sh")
 def slug_for_repo(repo_dir):
     """owner/repo for this checkout from repo-slug-lib.sh, the ONE derivation; '' if none."""
     if not os.path.exists(SLUG_LIB):
+        sys.stderr.write("review-redrive: %s is missing; records are read by their LEGACY "
+                         "name only, so a repo-keyed refusal can be misread as absent\n" % SLUG_LIB)
         return ""
     proc = subprocess.run(
         ["bash", "-c", '. "$1" >/dev/null 2>&1 || exit 2; slug_for_repo "$2"', "_", SLUG_LIB, repo_dir],
         capture_output=True, text=True)
-    return proc.stdout.strip() if proc.returncode == 0 else ""
+    if proc.returncode != 0 or not proc.stdout.strip():
+        # Loud, not silent (PR #415 round 2): with no slug every read falls back
+        # to the legacy name and a real REQUEST CHANGES at head reads as absent.
+        sys.stderr.write("review-redrive: slug_for_repo failed for %s (rc %s: %s); records are "
+                         "read by their LEGACY name only\n"
+                         % (repo_dir, proc.returncode, (proc.stderr or "").strip()[:120]))
+        return ""
+    return proc.stdout.strip()
 
 
 def record_path(records_dir, pr, slug=""):
@@ -360,23 +399,37 @@ def reviewer_slot_posted(pr_obj):
     return False
 
 
-def floor_ran(pr_obj):
-    """Did the reviewer floor run on this head, so an absent verdict reads red?
+def floor_ran(pr_obj, slug=""):
+    """Did the reviewer floor mark this head, so an absent verdict reads red?
 
-    Rollup only: `gh pr view` does not carry a status's description, and the
-    floor's text lives there. The rule is therefore inferential and errs one
-    way, stated: a REAL refusal posted by a reviewer on another machine (no
-    local record) is read as absent and re-reviewed, which re-refuses it. One
-    bounded round wasted, against 63 PRs parked forever (ASK-2029).
+    From the rollup when it can be: a floor run that COMPLETED with SUCCESS
+    posted its red. A run that completed any other way is ambiguous
+    (reviewer-floor.sh posts the red and can still exit 3 or 4 afterwards,
+    PR #415 round 2), so that one case asks GitHub for the head's statuses
+    and looks for the floor's own text on the verdict slot; one API call,
+    only on that path. A run that never completed marked nothing. The rule
+    still errs one stated way: a REAL refusal recorded on another machine is
+    read as absent and re-reviewed, which re-refuses it, one bounded round.
     """
+    ambiguous = False
     for check in pr_obj.get("statusCheckRollup") or []:
         if not isinstance(check, dict) or check.get("__typename") == "StatusContext":
             continue
-        # COMPLETED and SUCCESS: a cancelled, skipped or failed floor run posted
-        # nothing, so it marked nothing (PR #415 round 1, minor).
-        if (check.get("name") or "") == FLOOR_CHECK and \
-                (check.get("status") or "").upper() == "COMPLETED" and \
-                (check.get("conclusion") or "").upper() == "SUCCESS":
+        if (check.get("name") or "") != FLOOR_CHECK or \
+                (check.get("status") or "").upper() != "COMPLETED":
+            continue
+        if (check.get("conclusion") or "").upper() == "SUCCESS":
+            return True
+        ambiguous = True
+    if not ambiguous:
+        return False
+    desc = _floor_desc()
+    if not desc:
+        return False
+    for st in _statuses(slug, pr_obj.get("headRefOid") or ""):
+        if isinstance(st, dict) and CI.is_reviewer_slot(st.get("context") or "") \
+                and (st.get("state") or "").lower() == "failure" \
+                and (st.get("description") or "") == desc:
             return True
     return False
 
@@ -547,7 +600,7 @@ def candidates(repo_dir, records_dir):
                 "review-redrive: PR #%s has %s failing and an unreadable verdict "
                 "record -- refusing to guess. Left alone.\n" % (pr, ",".join(slots)))
             continue
-        elif record is None and floor_ran(pr_obj):
+        elif record is None and floor_ran(pr_obj, slug):
             # THE FLOOR'S RED, not a reviewer's (ASK-2029). The floor ran on this
             # head and no verdict was there to protect, so it posted FAILURE; the
             # producer that "recorded nothing" is the floor, which records
