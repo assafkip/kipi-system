@@ -78,11 +78,19 @@ def _write(path, body):
 
 
 def _run(project_dir, settings_path):
-    """Invoke the checker exactly as the hook wiring does."""
+    """Invoke the checker exactly as the hook wiring does.
+
+    `settings_path=None` passes no path argument, which is what the wired hook
+    command does: the checker then resolves its own targets and the test cannot
+    drift from that set.
+    """
     env = dict(os.environ)
     env["CLAUDE_PROJECT_DIR"] = project_dir
+    argv = [sys.executable, CHECK, "--json"]
+    if settings_path is not None:
+        argv.append(settings_path)
     proc = subprocess.run(
-        [sys.executable, CHECK, "--json", settings_path],
+        argv,
         capture_output=True,
         text=True,
         env=env,
@@ -256,19 +264,35 @@ def test_unextractable_command_is_unknown_not_dead():
 
 
 def test_repo_settings_have_no_dead_hooks():
-    """The live control. Run the checker against this repo's own two settings
-    files. This is the assertion the incident needed and nobody made."""
-    repo = os.path.realpath(os.path.join(HERE, "..", "..", "..", ".."))
-    settings = os.path.join(repo, ".claude", "settings.json")
-    assert os.path.isfile(settings), settings
+    """The live control. Run the checker against this repo's own settings files.
+    This is the assertion the incident needed and nobody made.
 
-    code, report = _run(repo, settings)
+    No path argument is passed, so the checker picks its own targets through
+    `default_targets()` -- the identical set the wired PostToolUse hook scans,
+    because the hook passes no paths either. An earlier version of this control
+    named `.claude/settings.json` by hand and scanned that file alone, so a dead
+    path in `settings-template.json` sailed through a green suite while the
+    wired hook would have blocked on it (codex, PR #409 round 1). Restating the
+    target set in the test made the test a second source of truth for it;
+    deriving it from the code that owns it is the fix.
+    """
+    repo = os.path.realpath(os.path.join(HERE, "..", "..", "..", ".."))
+    code, report = _run(repo, None)
 
     dead = [s for s in report["sites"] if s["status"] == "DEAD"]
     assert dead == [], dead
     # A parse that found nothing would report zero dead and read as green.
     assert len(report["sites"]) > 20, report["sites"]
     assert code == 0, (code, report)
+
+    # Both halves of the "wire it in BOTH files" contract are covered. That
+    # contract is what settings-template-sync-check.py exists to hold, so a
+    # control that only ever saw one of the two files could not see half of it.
+    scanned = {os.path.relpath(p, repo) for p in report["files"]}
+    assert scanned == {
+        os.path.join(".claude", "settings.json"),
+        "settings-template.json",
+    }, scanned
 
 
 def _main():
