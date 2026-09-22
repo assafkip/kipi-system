@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -1248,6 +1249,22 @@ def _reject_unrunnable_gate(command: str) -> None:
             f"  command: {cmd[:160]}")
 
 
+def _gate_protects(cfg: Config, issue_id: str) -> str:
+    """The property a gate defends, read from its owning issue spec's `title`.
+
+    Scar 2026-09-20 (ASK-1969): a gate row carried a command and ids only. Given
+    the ids, a judge could not say what the gate defends on 50 of 100 rows; the
+    spec title already says it, so it travels with the row. Empty when the spec
+    is absent or unreadable: the gate still registers, and readers print
+    "(not recorded)" rather than guessing."""
+    path = cfg.issues_dir / f"{issue_id}.md"
+    try:
+        title = _parse_frontmatter(path.read_text()).get("title", "")
+    except (OSError, ValueError):
+        return ""
+    return title.strip().strip("\"'").strip()
+
+
 def gate_register(
     cfg: Config,
     *,
@@ -1255,6 +1272,7 @@ def gate_register(
     issue_id: str,
     command: str,
     lifecycle: str = LEGACY_GATE_LIFECYCLE,
+    protects: str | None = None,
 ) -> dict:
     """Idempotent append: gate_id = <issue_id>-<sha256(command)[:8]>; an
     existing gate_id is a no-op. Single-line write + flush (atomic at line
@@ -1290,6 +1308,11 @@ def gate_register(
               "command": command,
               "lifecycle": lifecycle,
               "registered_at": _now_iso()}
+    # Not part of gate_id: the id stays issue_id + sha256(command), so adding this
+    # field re-registers nothing. Old rows lack it and every reader tolerates that.
+    protects = (protects if protects is not None else _gate_protects(cfg, issue_id)).strip()
+    if protects:
+        record["protects"] = protects
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as fh:
         fh.write(json.dumps(record) + "\n")
@@ -1462,6 +1485,94 @@ def _spillover_append(cfg: Config, record: dict) -> None:
     with path.open("a") as fh:
         fh.write(json.dumps(record) + "\n")
         fh.flush()
+
+
+def _spillover_linear_filer(cfg: Config):
+    """The shared capture-time filer (ASK-1552), or None when absent.
+
+    Loaded from the repo's q-system/.q-system/scripts/spillover-linear-check.py,
+    the same place `_spillover_autopromote` finds its promoter. One definition of
+    the Linear message and of how alert-to-linear's answer is read, shared with
+    kipi-dsse's deferred path and the daily check.
+    """
+    path = Path(cfg.repo_root) / "q-system" / ".q-system" / "scripts" / "spillover-linear-check.py"
+    if not path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("spillover_linear_check", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _spillover_record_link(cfg: Config, sid: str, link: dict) -> bool:
+    """Append the row's Linear link through the ledger's one write path.
+
+    Under the lock, re-read the CURRENT row and append a full copy with `linear`
+    set -- never a patch, and never a copy formed before the lock (the resurrect
+    race `_spillover_lock` documents). A row that is no longer open is left
+    alone, and a link that already names an issue is never downgraded by a later
+    failed retry.
+    """
+    with _spillover_lock(cfg):
+        current = _read_spillover(cfg).get(sid)
+        if current is None or current.get("status") != "open":
+            return False
+        prior = current.get("linear")
+        if (isinstance(prior, dict) and prior.get("state") in ("filed", "captured")
+                and link.get("state") not in ("filed", "captured")):
+            return False
+        out = dict(current)
+        out["linear"] = link
+        _spillover_append(cfg, out)
+    return True
+
+
+def _spillover_record_close(cfg: Config, sid: str, close: dict) -> bool:
+    """Record that a resolved row's capture ticket was closed (review F2, PR #344).
+
+    Same chokepoint shape as `_spillover_record_link`: under the lock, re-read the
+    CURRENT row and append a full copy. Only a row that is still `resolved` and
+    still carries a capture link is touched, so a reopen in between is never
+    overwritten with a stale resolved copy.
+    """
+    with _spillover_lock(cfg):
+        current = _read_spillover(cfg).get(sid)
+        if current is None or current.get("status") != "resolved":
+            return False
+        link = current.get("linear")
+        if not isinstance(link, dict) or link.get("closed_at"):
+            return False
+        out = dict(current)
+        out["linear"] = {**link, **close}
+        _spillover_append(cfg, out)
+    return True
+
+
+def _spillover_file_and_link(cfg: Config, record: dict) -> dict | None:
+    """File one new row to Linear, then record the link. Never raises.
+
+    why (founder, 2026-09-12): "Backlog where? In linear or is it going to
+    disappear". The ledger is untracked in git, so a row that exists only there
+    is invisible to Sana's queue. The ROW IS ALREADY WRITTEN before this runs:
+    a filer failure records `failed` + the exit code for the daily check
+    (spillover-linear-check.py) to retry, and can never lose the finding.
+    Returns the link, or None when no filer exists in this repo (the daily
+    check files it once the repo has one).
+    """
+    try:
+        filer = _spillover_linear_filer(cfg)
+        if filer is None:
+            return None
+        link = filer.file_record(record, Path(cfg.repo_root))
+        _spillover_record_link(cfg, record["id"], link)
+        return link
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"WARNING: spillover Linear filing failed ({exc!r}); the row "
+                         "is recorded and spillover-linear-check.py retries it\n")
+        return None
 
 
 def _issue_is_closed(cfg: Config, issue_id: str) -> bool:
@@ -2356,6 +2467,11 @@ def cmd_spillover(cfg: Config, args) -> int:
     if sub == "ack":
         return _spillover_ack(cfg, args)
     if sub == "add":
+        if (args.severity or "minor").strip().lower() in SPILLOVER_REFUSED_SEVERITIES:
+            sys.stderr.write(f"refused: {MINOR_REFUSAL}\n"
+                             "A real finding at medium or above: pass --severity "
+                             "medium|high|major|blocker.\n")
+            return 2
         sid = args.id or f"sp-{_hashlib.sha256((args.source + args.desc).encode()).hexdigest()[:8]}"
         dor = _spillover_read_dor(args)
         blocking = args.severity in SPILLOVER_BLOCKING_SEVERITIES
@@ -2403,6 +2519,14 @@ def cmd_spillover(cfg: Config, args) -> int:
         # this whole mechanism was built to stop, committed inside it.
         if dor:
             record["dor"] = dor
+        # Re-adding a row that is already open and linked carries its link
+        # forward, so a repeated `add` never files a second Linear issue.
+        prior = _read_spillover(cfg).get(sid) or {}
+        prior_link = prior.get("linear")
+        already_linked = (prior.get("status") == "open" and isinstance(prior_link, dict)
+                          and prior_link.get("state") in ("filed", "captured"))
+        if already_linked:
+            record["linear"] = prior_link
         _spillover_append(cfg, record)
         out = {"id": sid, "status": "open"}
         if dor and not getattr(args, "no_promote", False):
@@ -2417,9 +2541,20 @@ def cmd_spillover(cfg: Config, args) -> int:
         elif blocking:
             out["promotion"] = {
                 "status": "needs_dor", "owner": "sana",
-                "note": ("blocking severity with no DoR: no Linear issue was created. "
-                         "Drain with `prd_runner.py spillover needs-dor`."),
+                "note": ("blocking severity with no DoR: not promoted, so the worker "
+                         "cannot pick it up yet (the capture ticket in `linear` is for "
+                         "visibility; promotion adopts it). Drain with "
+                         "`prd_runner.py spillover needs-dor`."),
             }
+        # ASK-1552: capture = ledger row + Linear issue. After promotion, so a
+        # row spillover-promote.py already filed (status promoted, no longer
+        # open) is not filed a second time; `_spillover_record_link` skips it.
+        if already_linked:
+            out["linear"] = prior_link
+        elif (_read_spillover(cfg).get(sid) or {}).get("status") == "open":
+            link = _spillover_file_and_link(cfg, record)
+            if link is not None:
+                out["linear"] = link
         print(json.dumps(out))
         return 0
     if sub == "needs-dor":
@@ -2430,7 +2565,7 @@ def cmd_spillover(cfg: Config, args) -> int:
         pending = [r for r in rows
                    if r.get("status") == "open"
                    and r.get("severity") in SPILLOVER_BLOCKING_SEVERITIES
-                   and not r.get("linear")]
+                   and not _promotion_linear(r)]
         for r in pending:
             print(f"{r['id']} [{r.get('severity')}] src={r.get('source')}")
             print(f"    {(r.get('description') or '')[:200]}")
@@ -2656,6 +2791,18 @@ SPILLOVER_BLOCKING_SEVERITIES = ("blocker", "major", "high")
 # CLI: an unknown severity is a triage failure, never a silent pass (ASK-402).
 SPILLOVER_NONBLOCKING_SEVERITIES = ("minor", "low", "medium")
 
+# NEW MINORS ARE NEVER QUEUED. Founder, 2026-09-12, verbatim: "New minor findings:
+# fix or reject, never queue." Recorded in canonical/decisions.md as
+# RULE-2026-09-12-A [CLAUDE-RECOMMENDED -> APPROVED]. A minor is fixed in the change
+# that found it or rejected with a reason; `spillover add` and a `deferred`
+# disposition both refuse it at the door, so the ledger only receives work that
+# files a Linear issue for Sana (medium and up). kipi-dsse's issue_findings.py
+# carries the same tuple and message: that plugin stays import-independent of
+# prd-os, and test_spillover_files_linear.py pins the two copies equal.
+SPILLOVER_REFUSED_SEVERITIES = ("minor", "low", "nit")
+MINOR_REFUSAL = ("a minor is fixed in this change or rejected with a reason; "
+                 "it is never queued (founder 2026-09-12)")
+
 # RULE-2026-08-24-B [USER-DIRECTED 2026-08-24]: "Everything should be owned
 # by Sana." One constant so the default cannot drift between the add door,
 # the backfill verb and the tests that pin them.
@@ -2670,6 +2817,21 @@ SPILLOVER_SEVERITY_ORDER = ("low", "minor", "medium", "high", "major", "blocker"
 SPILLOVER_SEVERITY_ORDER = ("low", "minor", "medium", "high", "major", "blocker")
 SPILLOVER_KNOWN_SEVERITIES = (
     SPILLOVER_BLOCKING_SEVERITIES + SPILLOVER_NONBLOCKING_SEVERITIES)
+# THE MINOR TIER IS NOT A QUEUE (ASK-1961, RULE-2026-09-12-A applied to the rows
+# written before it). Measured 2026-09-22: 618 open minor/low after last-row-wins, zero
+# inflow since the add door started refusing them, and no drain. `gates run`
+# listed them in its triage report anyway, so a 618-row "queue" nobody could
+# empty printed on every run. It is a closed tier: `gates run` counts it neither
+# in the verdict nor in the report, and states its size on one line so the
+# number never goes quiet. A row still leaves only by resolve or void.
+SPILLOVER_CLOSED_TIER = tuple(
+    s for s in SPILLOVER_REFUSED_SEVERITIES if s in SPILLOVER_KNOWN_SEVERITIES)
+
+
+def _in_closed_tier(record: dict) -> bool:
+    # Absent severity is the documented `minor` default (see _is_blocking_severity).
+    sev = (record.get("severity") or "minor").strip().lower()
+    return sev in SPILLOVER_CLOSED_TIER
 
 
 def _spillover_blocks(record: dict, scope: str | None) -> bool:
@@ -2792,8 +2954,22 @@ def _spillover_has_tracker_ref(record):
     audit reads. Both count -- keying on one would silently un-address every item
     filed through the other door.
     """
-    return bool(str(record.get("linear") or "").strip()
+    return bool(_promotion_linear(record)
                 or str(record.get("linear_ref") or "").strip())
+
+
+def _promotion_linear(record) -> str:
+    """The string `linear` a promotion wrote, or "".
+
+    ASK-1552 made `linear` a DICT on every new row: the capture-time alert
+    ticket (`_spillover_file_and_link`). That ticket makes the row VISIBLE to
+    Sana; it is not the promotion receipt above. `str(dict)` is truthy, so
+    without this every new blocking row would have minted its own address by
+    default -- the "check its own default satisfies" the comment above refuses.
+    Gate semantics stay exactly as they were before capture filing existed.
+    """
+    value = record.get("linear")
+    return value.strip() if isinstance(value, str) else ""
 
 
 
@@ -2916,8 +3092,12 @@ def cmd_gates(cfg: Config, args) -> int:
         status = "green" if result.returncode == 0 else "RED"
         print(f"[{status}] {rec['gate_id']}: {command[:90]}")
         if result.returncode != 0:
+            # A red gate says what is at risk, not only which shell line failed
+            # (ASK-1969). Rows registered before the field existed print a marker.
+            at_risk = f"  protects: {rec.get('protects') or '(not recorded)'}"
+            print(at_risk)
             tail = (result.stdout + result.stderr).strip().splitlines()[-5:]
-            failures.append((rec["gate_id"], "\n".join(tail)))
+            failures.append((rec["gate_id"], "\n".join([at_risk, *tail])))
     # Spillover verdict, scoped by ATTRIBUTION and never by the clock (ASK-526).
     #
     # WHY ATTRIBUTION AND NOT SEVERITY ALONE. The severity filter that shipped
@@ -2948,7 +3128,8 @@ def cmd_gates(cfg: Config, args) -> int:
     # record-a-void.
     openv = _spillover_open(cfg)
     blocking = [r for r in openv if _spillover_blocks(r, scope)]
-    reported = [r for r in openv if r not in blocking]
+    closed_tier = [r for r in openv if r not in blocking and _in_closed_tier(r)]
+    reported = [r for r in openv if r not in blocking and r not in closed_tier]
     inherited = [r for r in openv if scope and r.get("source") != scope]
     if blocking:
         names = ", ".join(r["id"] for r in blocking)
@@ -2970,6 +3151,11 @@ def cmd_gates(cfg: Config, args) -> int:
               f"item(s), not blocking: {ids}{more}")
         print("  Triage with `prd_runner.py spillover triage`; raise one with "
               "`spillover add --severity major|blocker`.")
+    if closed_tier:
+        print(f"[closed-tier] spillover: {len(closed_tier)} open "
+              f"{'/'.join(SPILLOVER_CLOSED_TIER)}-or-untriaged row(s) written before "
+              f"2026-09-12: not a queue, not counted (ASK-1961). A row leaves by "
+              f"resolve or void; raise a real one with `spillover reclassify`.")
     # The census prints on EVERY run, red or green, passing or failing. An
     # inherited backlog that stops being PRINTED is functionally deleted for an
     # operator with ADHD, so the number leaving the blocking set must never mean

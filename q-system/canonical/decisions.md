@@ -340,3 +340,62 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Date:** 2026-08-30
 - **Revisit:** When the `owner:` labels are complete (21 issues carry none) this
   gets sharper. Re-measure then, do not assume.
+
+## Spillover capture reaches Linear; new minors are never queued (ASK-1552, 2026-09-12)
+
+### RULE-2026-09-12-A: New minors are fixed or rejected; medium and up file a Linear issue at capture
+- **Origin:** [CLAUDE-RECOMMENDED -> APPROVED]
+- **Decision:** A NEW minor finding (severity minor, low or nit) is fixed in the
+  change that found it or rejected with a reason. It is never queued:
+  `prd_runner.py spillover add` refuses it (exit 2), and a `deferred` disposition
+  on it is refused in both findings systems (findings_writer.py and
+  issue_findings.py). Findings at medium, high, major or blocker are captured as a
+  ledger row AND one Linear issue for Sana, filed at capture through
+  alert-to-linear.py, with the identifier recorded on the row.
+  `q-system/.q-system/scripts/spillover-linear-check.py` (launchd
+  `com.kipi.spillover-linear-check`, daily) retries rows whose filing failed and
+  alerts Sana once when any stay unlinked. The existing ledger is cleaned once:
+  majors to Linear, minors older than 30 days voided with a reason, recent minors
+  get one triage pass.
+- **Reason:** Founder, 2026-09-12, verbatim: "Backlog where? In linear or is it
+  going to disappear", then "You told me you saved this exact thing to memory many
+  times. Is not true." and "New minor findings: fix or reject, never queue."
+  Measured by script that day: `.prd-os/spillover.jsonl` is untracked in git in
+  chief, consulting and kipi-system, nothing carried it to Linear, and the open
+  rows were kipi-system 1,318, consulting 529, chief 3. Memory notes are not
+  enforcement; the refusal and the filing are code, pinned by
+  test_spillover_files_linear.py, test_deferred_spillover_files_linear.py and
+  test_spillover_linear_check.py.
+- **Date:** 2026-09-12
+- **Revisit:** After the one-time cleanup of the pre-existing rows (the daily check
+  skips rows created before its CREATED_AT_CUTOFF and prints their count). The
+  review agent's APPROVE WITH NITS path still tries to capture minors as spillover
+  and is now refused; that path is the follow-up.
+
+## The destructive-op guard covers direct invocation only, and says so (ASK-1247, 2026-09-13)
+
+### RULE-2026-09-13-A: Accept and state the interpreter bound; no interpreter patterns
+- **Origin:** [SYSTEM-INFERRED]
+- **Decision:** Of the three options in ASK-1247, option 3 ships: the guard
+  `~/.claude/hooks/destructive-op-deny.sh` states in its header that it covers
+  direct invocation only, and lists the interpreter forms that walk through it
+  (python3 -c, node -e, perl -e, bash <script>). No interpreter pattern is added
+  to the deny list. Option 1 (move the boundary to the filesystem or syscall
+  layer) and option 2 (a Bash allowlist inside autonomous runs) are not taken
+  here; each is a PRD with fleet-wide blast radius.
+- **Reason:** Measured by `q-system/.q-system/tests/probe_hook.py` against the
+  reference fixture: both controls DENY, all five interpreter forms ALLOW. A
+  pattern for `python3 -c` loses to a payload built at runtime, read from a file
+  or base64'd, and a parser that decides a string is harmless is a new bypass
+  surface in the one hook between an agent and a production volume; the hook's
+  own 2026-08-07 comment already rejects that class. Stating the bound costs
+  nothing and stops the header being read as coverage it does not have.
+  `test_destructive_guard_interpreter_bound.py` pins the ALLOW rows and the
+  header sentence to each other, so a change to either goes red.
+- **Date:** 2026-09-13
+- **Revisit:** When a PRD for option 1 or 2 is approved. The live hook carries
+  the header only after
+  `q-system/.q-system/proposals/destructive-guard-state-interpreter-bound.json`
+  is applied with `apply-claude-changes.sh --root $HOME`; until then the drift
+  test in `test_destructive_op_deny_anchor.py` is red on any machine with the
+  live hook, which is the signal that it has not been applied.

@@ -12,6 +12,10 @@ roster, including a commercial price rule and a two-brand separation rule. Impor
 it here would drag one practice's rules into the fleet package, which is the thing
 this extraction exists to stop. So `decide`, `revise`, `voicefp_gate`,
 `prompt_carried_for` and `_append_voice_provenance` arrive as keyword-only arguments.
+`recent_openers` (2026-09-09) is the do-not-repeat list handed to BOTH
+`decide_candidate` sites; `provenance_path` isolates the provenance sidecar the way
+the ledger path already isolates the corpus. Both default to None and both are
+documented here rather than only in the body, matching the slice-6b paragraph above.
 
 `claude_bin`, `model` and `author` joined them on 2026-09-06 (slice 6b), when `revise`
 moved into the package. The reviser shells a binary, names a tier and tells the model
@@ -35,12 +39,61 @@ The deployment's `cycle._gate_and_judge` binds the five and calls through, so
 """
 from __future__ import annotations
 
+# The only import in this module, and it is a PACKAGE one: the five
+# operator-specific dependencies stay injected (see the docstring). A sha
+# function carries no operator's rules, and the alternative was making the
+# caller pass the same one-line call as a sixth keyword argument.
+from . import content_key
+
+
+
+def _accepts(fn, name):
+    """Does this INJECTED callable take `name`?
+
+    The injection boundary is the reason this exists. Every symbol this module
+    receives as an argument (`decide`, `revise`, `voicefp_gate`) is the
+    instance's, and instances upgrade independently of this package. A keyword
+    that is optional HERE is mandatory at the call site, so sending one the
+    other side has never heard of is a TypeError on a live lane.
+
+    Returns True for a callable that takes **kwargs, because such a callee
+    accepts anything and inspecting further would refuse a lane that works.
+    """
+    import inspect
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return True            # un-inspectable: assume the newer contract
+    for param in sig.parameters.values():
+        if param.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+    return name in sig.parameters
+
+
+def _gated(fn, **maybe):
+    """Keep only the kwargs this INJECTED callable actually takes.
+
+    THE CHOKEPOINT (RCA 2026-09-20, after PR #386 rounds 3 through 6 patched the
+    same class four times). Rounds 3, 4 and 5 each guarded one kwarg at one site
+    with its own `if _accepts(...)` block, and round 6 found the round-5 TEST
+    restating `{"recent_openers", "path"}` -- a set that cannot name a kwarg
+    nobody has written yet. Measured the same day: a NEW kwarg planted at five of
+    the six injected call sites was caught by nothing, including the site round 4
+    was written for.
+
+    One door instead of five blocks. Everything optional that crosses the
+    injection boundary goes through here, so the suite has one thing to watch and
+    a new kwarg cannot arrive by a route the guard does not cover.
+    """
+    return {k: v for k, v in maybe.items() if _accepts(fn, k)}
+
 
 def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
                    runner, trail, at,
                    decide, revise, voicefp_gate,
                    prompt_carried_for, _append_voice_provenance,
-                   claude_bin=None, model=None, author=None):
+                   claude_bin=None, model=None, author=None,
+                   recent_openers=None, provenance_path=None):
     """The deterministic stack plus the style judge, on ONE body. Returns the final
     text or None, and writes the `gates` stage, the `style` block and the provenance
     row into `trail`.
@@ -59,11 +112,55 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
     off x, `substance_gate` reads its floor per channel. Nothing here is skipped by
     channel; the stack skips itself where a rule does not apply.
     """
+    # BOTH DECISION SITES GET THE REPEAT LIST, and the second one is the point
+    # (2026-09-09). `decide` runs an opener-echo check whose whole
+    # input is this list, so until it was threaded here the check ran against []
+    # and could never fire on any lane. It was green the entire time, because the
+    # only test of it built the list by hand and called the checker directly.
+    #
+    # KEYWORD WITH A None DEFAULT, deliberately: this module serves more than one
+    # lane, so a required argument would break a caller with no list to give. None
+    # means no repeat check, which is exactly today's behaviour for anyone who does
+    # not pass one. Measured in this repo: two callers, and the reddit one passes
+    # nothing, so the default is load-bearing rather than theoretical.
+    #
+    # AN EARLIER VERSION OF THIS COMMENT SAID "ships fleet-wide to every instance"
+    # and used that as the reason. Measured 2026-09-09: the fleet copies did not
+    # carry `recent_openers` at all and only this repo's copy had the fix, so
+    # propagation ran the other way from what the comment claimed. The design choice
+    # stands; the justification did not, and a reason nobody checked is how the next
+    # reader inherits a false premise. NO COUNTS ARE QUOTED HERE ON PURPOSE: a census
+    # of copies inverts on the first fleet sync and would then be a second false
+    # premise wearing a measurement's clothes.
+    # FEATURE-DETECTED, NOT ASSUMED (PR #386 round 3, major). `decide` is
+    # INJECTED: it lives in the instance, not in this package, so this module
+    # cannot know which version it is calling. Passing `recent_openers=`
+    # unconditionally raises TypeError on every draft in any instance whose
+    # `decide_candidate` predates that parameter -- the whole lane down, not a
+    # degraded feature.
+    #
+    # The comment above already recorded (2026-09-09) that fleet copies did NOT
+    # carry `recent_openers` and only this repo's did, so the hazard was known
+    # and the call site still assumed. Measured 2026-09-20: all 15 decide.py
+    # copies on the author's machine accept it and all 15 are one instance's, so
+    # the blast radius is zero TODAY. That is a fact about today, not a property
+    # of the design, and it inverts the first time another instance grows the
+    # lane. A kwarg passed across an injection boundary needs a check, not a
+    # census.
+    #
+    # Asking the signature is the check. It degrades to the older contract
+    # instead of dying, and `_accepts` is used for every optional kwarg crossing
+    # this boundary rather than this one, so the next one added cannot
+    # reintroduce the same defect by being written the old way.
+    optional = _gated(decide.decide_candidate, recent_openers=recent_openers)
     verdict = decide.decide_candidate(
-        post, regenerate=revise.reviser(runner=runner, claude_bin=claude_bin,
-                                        model=model, author=author), channel=channel,
+        post, regenerate=revise.reviser(runner=runner,
+                                        **_gated(revise.reviser,
+                                                 claude_bin=claude_bin,
+                                                 model=model, author=author)),
+        channel=channel,
         source_text=idea_text, prompt_carried=prompt_carried_for(voice_prov),
-        handles=False)
+        handles=False, **optional)
     trail["stages"].append({"stage": "gates", "status": verdict.status,
                             "reasons": list(verdict.reasons or [])})
     if verdict.status != decide.SHIPPABLE:
@@ -111,13 +208,32 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
         if not feedback:
             break
         revised = revise.revise(verdict.text, feedback, runner=runner,
-                                claude_bin=claude_bin, model=model, author=author)
+                                **_gated(revise.revise, claude_bin=claude_bin,
+                                         model=model, author=author))
         if not revised:
             break
+        # THE RE-CHECK DETECTS; ONLY THE FIRST PASS REJECTS. A style revision is the
+        # moment the writer is most likely to reproduce an opening it has already
+        # used, so wiring only the call above would leave the revision path blind.
+        #
+        # Say the consequence exactly, because an earlier version of this comment
+        # said the re-check "needs it more" and that overstated what happens here
+        # (adversarial review 2026-09-09). A refusal below lands on
+        # `style_stage[...] = "refused-by-gates"` and `continue`, which discards the
+        # REVISION and keeps the already-SHIPPABLE `verdict` from the first pass. So
+        # this site can stop a bad rewrite from replacing a good body; it cannot
+        # reject the draft. The site above is the only one that can.
+        # THE SECOND CALL SITE, and it was missed once (claude review of PR #386
+        # round 4). Round 3 guarded the site above and left this one passing
+        # `recent_openers=` unconditionally, so an instance on the older injected
+        # contract still died -- on the style-revision path instead of the first
+        # one. Same TypeError, one branch over. `test_every_decide_call_site_is_
+        # guarded` now reads the call sites out of this module's AST rather than
+        # naming them, so a third site cannot be added unguarded.
         recheck = decide.decide_candidate(
             revised, regenerate=None, channel=channel,
             source_text=idea_text, prompt_carried=prompt_carried_for(voice_prov),
-            handles=False)
+            handles=False, **optional)
         revisions += 1
         if recheck.status != decide.SHIPPABLE:
             style_stage[f"attempt{revisions}"] = "refused-by-gates"
@@ -160,15 +276,31 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
     # prd-voice-authorship-scoring-2026-08-17, resolved eleven minutes after it was
     # raised, by an agent; `decisions.md` has no entry and he was never asked. Read
     # off the FINAL body, so a repaired draft reports the score of what he will see.
-    style_stage["fingerprint"] = voicefp_gate.drift_report(verdict.text,
-                                                           authorship=True)
+    style_stage["fingerprint"] = voicefp_gate.drift_report(
+        verdict.text, **_gated(voicefp_gate.drift_report, authorship=True))
     trail["style"] = style_stage
 
     # The drift sidecar finally accumulates real rows on this lane (RC2): the
     # validation window sp-9aff1e67 has been waiting on since 2026-08-07 gets its
     # data from here. A record about the prompt, never a gate on it.
+    # THE THIRD INSTANCE OF ONE CLASS (claude review of PR #386 round 5). Round 3
+    # guarded `recent_openers` at one decide call site, round 4 at the second, and
+    # this was the same TypeError again with a different kwarg on a different
+    # INJECTED callable: `_append_voice_provenance` arrives keyword-only at line 76,
+    # so an instance whose copy predates `path` died here. Patching the instance a
+    # third time is what the founder's five-rounds-is-a-loop scar is about, so the
+    # test below now derives the injected names from THIS function's own signature
+    # instead of naming `decide_candidate`.
+    prov_optional = _gated(_append_voice_provenance, path=provenance_path)
     _append_voice_provenance(channel, at, dict(
         voice_prov or {},
+        # THE JOIN KEY (2026-09-08). Without it this lane's rows carry a style
+        # distance and an authorship score attributable to no draft, which is what
+        # made 1,085 accumulated rows unjoinable to any outcome. Computed on the
+        # text that actually won, with the same `content_key.text_sha` the critic
+        # writes, so the two artifacts meet on one key.
+        draft_sha=(content_key.text_sha(verdict.text)
+                   if isinstance(verdict.text, str) else None),
         # The fingerprint was computed eleven lines up and then thrown away here:
         # this lane's `advisory_drift` is hand-built from the STYLE review, which
         # has no authorship in it. Naming the fingerprint is what puts the score on
@@ -180,5 +312,19 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
                         "zscores": review.get("zscores") or {},
                         "archetype": arch_id,
                         "style_claims": arch_claims,
-                        "repaired": bool(revisions)}))
+                        "repaired": bool(revisions)}),
+        # ISOLABLE, and it was not (standard review 2026-09-09, finding 3). The
+        # instance's writer already derives a sidecar beside a caller-supplied
+        # ledger and falls back to the production path otherwise; this call passed
+        # nothing, so EVERY test that reaches this line appended a fixture body's
+        # provenance to the live 3MB `voice-provenance.jsonl`. Measured before the
+        # fix: 8 rows per run of one test file. That file is the corpus the operator's
+        # style-drift analysis is measured from, so fixture rows with fabricated
+        # `draft_sha` values join straight into it, and gitignore keeps them out of
+        # version control rather than out of the number.
+        #
+        # The same derivation the corpus capture already gets, for the reason recorded
+        # there: a caller that isolates its ledger to a temp dir and still reads the
+        # PRODUCTION corpus is a defect this package has paid for before.
+        **prov_optional)
     return verdict.text

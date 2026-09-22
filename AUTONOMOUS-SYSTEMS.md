@@ -24,6 +24,7 @@ launchd jobs are:
 | `com.kipi.fractional-cxo.bolt-on-discovery` | 07:00 | daily consulting-lead discovery |
 | `com.kipi.launchd-health` | 09:30, 21:30 | **watchdog** — Slack-ping on any silent job death |
 | `com.kipi.lessons-daily` | 06:00 | **auto-learn** — distill → publish → propagate → Slack |
+| `com.kipi.spillover-linear-check` | 08:10 | retry the Linear issue for new spillover rows (kipi-system, consulting, chief); one summary alert to Sana if any stay unlinked (ASK-1552) |
 
 Every job is auto-monitored by the watchdog and (for the ones we own) rebuildable from a committed
 installer, so the layer survives a lost `~/Library/LaunchAgents`.
