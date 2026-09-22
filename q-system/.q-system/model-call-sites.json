@@ -1,5 +1,5 @@
 {
-  "_": "Every file that shells the headless model on its own. Read by q-system/.q-system/tests/test_model_call_sites.py; print the candidate rows with `python3 q-system/.q-system/tests/test_model_call_sites.py --print`. Rows only leave this file; a new row is a review question. Instance sections are keyed by sha256(registry name)[:12] and their rows by sha256(path)[:12], never the names: this repo is public, some instances are client engagements, and the skeleton sweep refuses an instance's own directory names. `--print` on the machine prints the real paths beside the hashes. `skeleton` rows are this repo's own root files, which do not propagate.",
+  "_": "Every file that shells the headless model on its own. Read by q-system/.q-system/tests/test_model_call_sites.py; print the candidate rows with `python3 q-system/.q-system/tests/test_model_call_sites.py` (no flags; it prints hash beside path). Rows only leave this file; a new row is a review question. Instance sections are keyed by sha256(registry name)[:12] and their rows by sha256(path)[:12], never the names: this repo is public, some instances are client engagements, and the skeleton sweep refuses an instance's own directory names. `--print` on the machine prints the real paths beside the hashes. `skeleton` rows are this repo's own root files, which do not propagate.",
   "wrapper": [
     "plugins/kipi-core/voiceloop/prompt_render.py"
   ],
@@ -22,6 +22,7 @@
   "skeleton": {},
   "instances": {
     "3a66182781ae": {
+      "5d722a52a6cb": "instance-local shell caller: -p on a continued line, seen once continuations are joined (PR #413 round 5); unmetered",
       "6d8524c2bbd4": "instance-local direct call, unmetered; inventoried 2026-09-22",
       "814b90900b76": "instance-local shell caller found by the token scanner (PR #413 round 4): unmetered"
     },

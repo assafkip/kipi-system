@@ -122,6 +122,55 @@ def test_shared_rows_live_in_the_shared_trees_and_instance_rows_outside_them():
             assert re.fullmatch(r"[0-9a-f]{12}", row), (name, row)  # a hash, never a path
 
 
+def _shell_oracle():
+    """fleet-health-daily.py's own `_shells_claude`, the fleet's crontab scanner."""
+    import importlib.util
+    path = ROOT / "q-system" / ".q-system" / "scripts" / "fleet-health-daily.py"
+    spec_ = importlib.util.spec_from_file_location("fleet_health_daily", path)
+    mod = importlib.util.module_from_spec(spec_)
+    spec_.loader.exec_module(mod)
+    return mod._shells_claude
+
+
+def test_the_engine_scanner_agrees_with_fleet_health_on_every_shared_shell_site():
+    """Every shell line the engine counts, fleet-health-daily's scanner must count too,
+    with ONE documented exception.
+
+    The engine's command-position rule is a subset of fleet-health-daily's
+    (PR #413 round 5): holding the two against each other on the real shared
+    sites keeps the subset from drifting into `sudo -u claude` or a quoted
+    mention. Two exceptions, both the engine seeing MORE, both named:
+      1. a shell's -c string wherever it sits in the segment, so
+         `run_bounded "$T" bash -c "... claude -p ..."`, the worker's own
+         call behind a wrapper function fleet-health does not know;
+      2. a wrapper held in a variable, `$TO claude -p` (the heartbeat),
+         which fleet-health reads as an unknown command.
+    The worker and the heartbeat are the two biggest spenders in the fleet;
+    an inventory that missed them would be the wrong inventory. Any other
+    disagreement fails. The reverse direction is not asserted: fleet-health
+    answers "runs claude", the engine answers "with -p".
+    """
+    oracle = _shell_oracle()
+    shell_c = re.compile(r"\b(bash|sh|zsh|dash|ksh)\s+-\w*c\w*\s")
+    var_wrapper = re.compile(r"(^|[\s(;&|])\$\{?[A-Z_]+\}?\s+(\S*/)?claude\s")
+    checked, excepted = 0, 0
+    for row in spec()["shared"]:
+        if not row.endswith(".sh"):
+            continue
+        text = (ROOT / row).read_text(errors="replace")
+        for line in cs._logical_lines(text):
+            if line.lstrip().startswith("#") or not cs._line_calls(line):
+                continue
+            if not oracle(line):
+                assert shell_c.search(line) or var_wrapper.search(line), \
+                    f"{row}: engine counts it, fleet-health does not, and it is neither named exception: {line.strip()[:120]}"
+                excepted += 1
+            checked += 1
+            break
+    assert checked >= 3, checked      # linear-worker, open-loops-heartbeat, pr-review-agent at least
+    assert excepted <= 3, excepted    # worker, reviewer, heartbeat; a fourth is a new exception to name
+
+
 if __name__ == "__main__":
     # Print the candidate rows for every tree, in the JSON's shape, so a new row
     # is copied from here and never typed.
