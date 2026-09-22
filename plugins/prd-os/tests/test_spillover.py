@@ -140,13 +140,15 @@ def test_gates_run_is_green_but_reports_a_minor_item(repo):
     reached 550 open and stayed red for months, which teaches everyone to step
     over it -- worse than no gate, because it launders "we have enforcement".
 
-    A minor item is now REPORTED and does not block."""
+    A minor item is now REPORTED and does not block. Since ASK-1961 the report is
+    the one `[closed-tier]` count line: the minor tier is not a queue, so its ids
+    are no longer listed as triage work, but its size still prints."""
     run(repo, "spillover", "add", "--source", "s", "--desc", "nit", "--id", "sp-n",
         "--severity", "minor")
     g = run(repo, "gates", "run")
     assert g.returncode == 0, (
         f"a minor item still blocks the gate: {g.stdout}{g.stderr}")
-    assert "sp-n" in (g.stdout + g.stderr), (
+    assert "[closed-tier] spillover: 1 open" in g.stdout, (
         "the minor item is not blocking AND not reported -- that is silent, "
         "which is how 533 of them accumulated unnoticed")
 
