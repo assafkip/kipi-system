@@ -19,13 +19,16 @@ WHAT IT SEES, and what it does not, stated so its silence reads right:
        which is the right side to err on. A caller that assembles `claude -p`
        inside a shell string is NOT seen. A file this Python cannot parse
        falls back to the text shape of the argv element.
-  .sh  a non-comment line, not an `echo`/`printf`, running `claude -p` /
-       `claude --print`, bare or path-qualified (`~/.local/bin/claude -p`),
-       with any options between the two (`claude --model X -p`), or a
-       `$CLAUDE*` variable with `-p`, anywhere on the line (inside
-       a `bash -c` string included, which is how a worker loop calls it). A
-       heredoc body that quotes the pattern IS counted: this scanner does not
-       parse heredocs, and it errs toward a row that a reason then explains.
+  .sh  a non-comment line with a command segment (split at pipes and list
+       operators) whose binary token is `claude`, a path ending in `/claude`,
+       or a `$CLAUDE*` variable, followed later in that segment by a token
+       that is exactly -p or --print, options in between allowed
+       (`claude --model X -p`). Read as tokens, linear time. A `bash -c`
+       string is seen through its quotes, which is how a worker loop calls
+       it. An `echo`/`printf` line skips only its first segment, so
+       `echo "$p" | claude --print` counts and `echo "claude -p x"` does
+       not. A heredoc body that quotes the pattern IS counted: this scanner
+       does not parse heredocs, and it errs toward a row a reason explains.
 Test directories are skipped: a test that spends a real call is a token
 problem, not a metering one, and their fixtures quote the pattern in prose.
 Review scratch trees (`.review-*`) hold copies of the scripts and are not
@@ -42,10 +45,16 @@ _TEST_DIR = re.compile(r"(^|/)(tests?|test)/|(^|/)test[_-]")
 _SCRATCH = re.compile(r"^\.review-")
 _PY_TEXT = re.compile(r"""(,|\[|\()\s*["'](-p|--print)["']""")
 _CLAUDE_WORD = re.compile(r"\bclaude\b", re.I)
-# `claude`, then any run of options (with or without a value), then -p/--print.
-_SH_CALL = re.compile(
-    r"""(^|[\s"'(;&|`])((\S*/)?claude|\$\{?CLAUDE[A-Z_]*\}?)"""
-    r"""(\s+--?[\w-]+(=\S+)?(\s+[^-\s]\S*)?)*\s+(-p|--print)(\s|"|'|\\|$)""")
+# Shell is read as TOKENS, not as one regex over the line (PR #413 round 4: the
+# nested-optional pattern backtracked exponentially, 16.8 s on a 24-flag line,
+# inside a pre-push gate with no timeout). A command segment ends at a pipe or
+# a list operator; inside a segment the binary token is `claude`, a path ending
+# in `/claude`, or a `$CLAUDE*` variable, and the call flag is any later token
+# that is exactly -p or --print. Quotes around the tokens are stripped, which is
+# how a `bash -c "... claude -p \"$1\""` string is seen.
+_SEGMENT_SPLIT = re.compile(r"\|\|?|&&|;|\|&")
+_BINARY_TOKEN = re.compile(r"""^["'`(]*((\S*/)?claude|\$\{?CLAUDE[A-Z_]*\}?)["'`)]*$""")
+_FLAG_TOKEN = re.compile(r"""^["'`]*(-p|--print)["'`\\]*$""")
 _SH_PRINTS = re.compile(r"^\s*(echo|printf)\b")
 
 
@@ -85,12 +94,29 @@ def py_calls(text: str) -> bool:
     return False
 
 
+def _segment_calls(segment: str) -> bool:
+    tokens = segment.split()
+    for i, tok in enumerate(tokens):
+        if _BINARY_TOKEN.match(tok):
+            return any(_FLAG_TOKEN.match(t) for t in tokens[i + 1:])
+    return False
+
+
 def sh_calls(text: str) -> bool:
-    """Does this shell source run the model headless on a non-comment line?"""
+    """Does this shell source run the model headless on a non-comment line?
+
+    An `echo`/`printf` line is a mention, not a call, UNLESS something after
+    a pipe runs the model: `echo "$prompt" | claude --model sonnet --print` is
+    a real caller (PR #413 round 4, major), and the first segment is the only
+    one the print guard may skip.
+    """
     for line in text.splitlines():
-        if line.lstrip().startswith("#") or _SH_PRINTS.match(line):
+        if line.lstrip().startswith("#"):
             continue
-        if _SH_CALL.search(line):
+        segments = _SEGMENT_SPLIT.split(line)
+        if _SH_PRINTS.match(line):
+            segments = segments[1:]
+        if any(_segment_calls(seg) for seg in segments):
             return True
     return False
 

@@ -56,10 +56,22 @@ def test_real_call_shapes_are_seen_and_mentions_are_not(tmp_path):
         "m.sh": '#!/bin/bash\n~/.local/bin/claude -p "$PROMPT" </dev/null\n',
         "n.py": 'import subprocess\nsubprocess.run(["claude", "--print", prompt])\n',
         "l.sh": '#!/bin/bash\necho "run: claude -p x"\nprintf "%s" "claude -p y"\n',
+        # a real caller behind a pipe on an echo line (round 4 major)
+        "o.sh": '#!/bin/bash\necho "$prompt" | claude --model sonnet --print > out.txt\n',
+        # the line that took 16.8 s to reject under the old regex (round 4 minor)
+        "p.sh": '#!/bin/bash\nclaude ' + " ".join("--flag%d value%d" % (i, i) for i in range(24)) + ' --model x\n',
         "tests/t.py": "import subprocess\n" + PY_LINE,
         ".review-scratch/x.sh": "#!/bin/bash\n" + SH_LINE,
     })
-    assert cs.call_sites(root) == {"a.py", "b.sh", "c.py", "f.py", "i.py", "j.py", "k.sh", "m.sh", "n.py"}
+    assert cs.call_sites(root) == {"a.py", "b.sh", "c.py", "f.py", "i.py", "j.py", "k.sh", "m.sh", "n.py", "o.sh"}
+
+
+def test_a_long_flag_line_is_rejected_in_linear_time():
+    import time
+    line = "claude " + " ".join("--flag%d value%d" % (i, i) for i in range(40)) + " --model x\n"
+    t = time.perf_counter()
+    assert cs.sh_calls(line) is False
+    assert time.perf_counter() - t < 0.05
 
 
 def test_a_broken_repo_says_so(tmp_path):

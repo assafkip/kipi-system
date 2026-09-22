@@ -462,10 +462,12 @@ def verbose():
     return doc["payload"]
 
 
-def test_the_verbose_array_form_yields_the_post_and_the_row(verbose):
-    # The real capture: the result document sits past the 50th brace, behind the
-    # init event, so neither scan reaches it. The whole-text parse does.
-    assert verbose["braces_before_result"] > 50
+def test_the_verbose_array_form_yields_the_post_and_the_row(verbose, monkeypatch):
+    # The real capture had 68 braces before its result; redaction of the init
+    # event cut that to 30, under the scan cap, so the cap is set to 0 here:
+    # only the whole-text array parse can find the result (round 4 minor).
+    assert verbose["braces_before_result"] > 50  # what the CLI printed
+    monkeypatch.setattr(usage_ledger, "BRACE_SCAN_CAP", 0)
     stdout = json.dumps(verbose["verbose_stdout"]) + "\n"
     text, row = usage_ledger.finish(stdout, bot="t")
     assert text == verbose["plain_stdout"]

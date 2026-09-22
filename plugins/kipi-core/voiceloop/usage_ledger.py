@@ -195,6 +195,13 @@ def _is_json(stdout: str | None) -> bool:
     return bool(stdout) and (stdout.lstrip().startswith("{") or _ARRAY_OPEN.match(stdout) is not None)
 
 
+#: How many `{` the in-place scan tries before giving up. A module constant so a
+#: test can set it to 0 and prove the array branch is the one finding a result
+#: (PR #413 round 4: redaction cut the fixture under the cap and the mutant
+#: went green).
+BRACE_SCAN_CAP = 50
+
+
 def _result_document(stdout: str | None) -> dict | None:
     """The CLI's result document, whole or embedded after stray leading text."""
     if not stdout:
@@ -230,7 +237,7 @@ def _result_document(stdout: str | None) -> dict | None:
     # A pretty-printed document spans lines: decode from each brace IN PLACE
     # (raw_decode takes an index; no suffix copies, round 3 measured 548 MB of them).
     pos, tries = stdout.find("{"), 0
-    while pos >= 0 and tries < 50:
+    while pos >= 0 and tries < BRACE_SCAN_CAP:
         try:
             doc, _ = decoder.raw_decode(stdout, pos)
         except ValueError:
