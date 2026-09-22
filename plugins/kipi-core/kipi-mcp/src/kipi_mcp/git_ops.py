@@ -66,7 +66,14 @@ class GitOps:
         self, prefix_path: Path, patterns: list[str] | None = None
     ) -> list[str]:
         if patterns is None:
-            patterns = ["KTLYST", "ktlyst", "CISO", "re-breach", "/Users/"]
+            # the instance's own tripwire list when the subtree carries one, else the terms this
+            # method always used (GitHub issue #2, PR B: one list, not three)
+            tripwire = Path(prefix_path) / ".q-system" / "scripts" / "tripwire-terms.txt"
+            if tripwire.is_file():
+                patterns = [ln.strip() for ln in tripwire.read_text().splitlines()
+                            if ln.strip() and not ln.lstrip().startswith("#")]
+            if not patterns:
+                patterns = ["KTLYST", "ktlyst", "CISO", "re-breach", "/Users/"]
 
         matched_files: set[str] = set()
         for pattern in patterns:

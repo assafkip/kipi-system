@@ -2,10 +2,33 @@
 # leaves an instance (kipi-push-upstream.sh pre-push grep, case-insensitive) and
 # never gets promoted (kipi-promote.sh scrub). ONE source for both, issue
 # lr-promote-scrub-source; before it the push script carried this list inline.
-# One term per line. Blank lines and # comments are ignored.
+# Since GitHub issue #2 (PR B) the skeleton's own validators read it too:
+# validate-separation.py, kipi-mcp validator.py and git_ops.py. A fork edits this
+# file and every gate follows.
+# One term per line. Blank lines and # comments are ignored. A `# scope:` line opens
+# a section; the shell consumers ignore it and take every term, the Python ones read
+# the scopes each gate always read and skip any scope they do not know (see
+# kipi_mcp/leak_terms.py).
+
+# scope: instance
+# the instance's name, in the forms it appears in paths and prose; a skeleton carries none
 KTLYST
 ktlyst
+q-ktlyst
+
+# scope: content
+# instance-specific content that must not be promoted into templates or the voice framework
 CISO
 re-breach
+re.breach
 Assaf
+
+# scope: path
+# a path on one machine; a skeleton sweep refuses it (a fork writes its own home path here)
+/Users/assafkip
+
+# scope: shell
+# read only by the push and promote scripts: any home path at all is instance content there.
+# The skeleton's own sweeps skip this section, because skeleton scripts legitimately name
+# /Users/ in their detectors and examples.
 /Users/
