@@ -412,6 +412,11 @@
           },
           {
             "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/hook-path-resolve-check.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/hook-path-resolve-check.py\" --hook",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/consumer-parity-check.py\"",
             "timeout": 10
           }
