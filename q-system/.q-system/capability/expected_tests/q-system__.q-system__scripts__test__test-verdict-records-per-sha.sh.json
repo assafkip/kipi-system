@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-verdict-records-per-sha.sh",
+ "runner": "bash",
+ "timeout_s": 300
+}

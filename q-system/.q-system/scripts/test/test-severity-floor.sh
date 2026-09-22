@@ -33,6 +33,21 @@ LIB="$ROOT/q-system/.q-system/scripts/pr-verdict-lib.sh"
 . "$ROOT/q-system/.q-system/scripts/repo-slug-lib.sh"
 # The basename the reviewer will write for PR 901 in THIS repo.
 REC901="$(artifact_key "$(slug_for_repo "$ROOT")" 901).verdict.json"
+# rec901 <pr-reviews-dir> -> the verdict record for PR 901 in that dir, or a
+# path that does not exist when there is none.
+#
+# ASK-1956 made records PER-SHA and append-only, so the reviewer no longer
+# writes one fixed basename per (repo, PR) and `$REC901` stopped naming the file
+# it writes. This resolves through the SHIPPED resolver rather than restating
+# the new naming rule here: a test that retypes a value the library owns is a
+# second source of truth that agrees on the day it is written and silently stops
+# describing the system afterwards.
+#
+# THE EMPTY HEAD IS DELIBERATE. These fixtures assert "a record was written for
+# this PR", not "a record was written for this commit", so an empty current head
+# takes the resolver's any-sha tier. $REC901 itself stays: the review PROSE
+# files still use the un-sha'd stem.
+rec901() { verdict_record_for_head "$1" "$(slug_for_repo "$ROOT")" 901 ""; }
 WORKER="$ROOT/q-system/.q-system/scripts/linear-worker.sh"
 REVIEWER="$ROOT/q-system/.q-system/scripts/pr-review-agent.sh"
 
@@ -885,7 +900,7 @@ chmod +x "$SW/python3" "$SW/gh" "$SW/claude"
 # "codex is not producing an independent review (PR #901)" to a capture endpoint.
 ( PATH="$SW:$PATH" HOME="$W2/home-writer" KIPI_NOTIFY="/usr/bin/true" \
   bash "$REVIEWER" 901 ) >"$W2/writer.out" 2>&1
-REC="$W2/home-writer/.config/kipi/pr-reviews/$REC901"
+REC="$(rec901 "$W2/home-writer/.config/kipi/pr-reviews")"
 [ -s "$REC" ] \
   || fail "the reviewer wrote no verdict record at all. It said:
 $(sed 's/^/        /' "$W2/writer.out")"
@@ -1060,7 +1075,7 @@ run_status_reviewer "$N4" --post
 [ "$RC" = "0" ] \
   || fail "a failed status POST took the whole review down (exit $RC). The verdict record is the
       loop's hand-off; losing it to a transient GitHub error costs a full re-review."
-[ -s "$N4/home/.config/kipi/pr-reviews/$REC901" ] \
+[ -s "$(rec901 "$N4/home/.config/kipi/pr-reviews")" ] \
   || fail "a failed status POST cost the verdict record, which converge.sh and linear-worker.sh
       both read"
 grep -q "$SHA_A" "$N4/err.txt" \
@@ -2385,15 +2400,15 @@ ok "the engines keep separate review directories (round counters do not cross-co
 # THE PAIR IS THE POINT, not either assertion alone: the primary must write it and
 # the advisory must not. Asserting only the first would pass on the day both engines
 # write it, which is the two-writers defect this repo keeps finding.
-[ -s "$Q7/home/.config/kipi/pr-reviews/$REC901" ] \
+[ -s "$(rec901 "$Q7/home/.config/kipi/pr-reviews")" ] \
   || fail "THE DEFECT: the claude engine wrote no verdict record at the pr-reviews ROOT, so the
       file converge.sh:36 and linear-worker.sh:76 gate the loop on is never written by the
       engine that actually reviewed. The loop would read a stale or absent verdict."
-[ ! -f "$Q1/home/.config/kipi/pr-reviews/$REC901" ] \
+[ ! -f "$(rec901 "$Q1/home/.config/kipi/pr-reviews")" ] \
   || fail "the ADVISORY codex engine wrote the loop's verdict record (pr-901.verdict.json).
       Two engines answering for one gate is the single-writer defect this repo keeps finding,
       and an advisory verdict would drive the loop it was never meant to gate."
-[ -s "$Q1/home/.config/kipi/pr-reviews/codex/$REC901" ] \
+[ -s "$(rec901 "$Q1/home/.config/kipi/pr-reviews/codex")" ] \
   || fail "the codex engine wrote no verdict record of its own, so its advisory opinion is not
       recorded anywhere a later run can read"
 ok "claude writes the loop's verdict record; codex records its advisory one beside its reviews"

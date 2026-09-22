@@ -130,7 +130,11 @@ pr_for_branch() { gh pr list $KIPI_GH_REPO_ARGS --head "$BRANCH" --json number -
 
 if [ "$DRY" = "1" ]; then
   PR="$(pr_for_branch)"
-  V=""; [ -n "$PR" ] && V="$(verdict_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR")")"
+  # THE DRY RUN RESOLVES THE SAME WAY THE LIVE RUN DOES (ASK-1956). Records are
+  # per-sha now, so reading the un-head-aware path here would print a verdict the
+  # real round will not see -- a dry run whose report does not describe the run
+  # it previews is worse than no preview.
+  V=""; [ -n "$PR" ] && V="$(verdict_from_record "$(verdict_record_for_head "$REVIEWS_DIR" "$TARGET_SLUG" "$PR" "$(pr_head_sha "$PR")")")"
   say "[dry] branch=$BRANCH pr=${PR:-none} verdict=${V:-none} would run up to $MAX_ROUNDS round(s)"
   exit 0
 fi
@@ -972,9 +976,20 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     exit 7
   fi
 
-  VERDICT="$(verdict_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR")")"
+  # THE HEAD IS READ FIRST because the record is now resolved BY it (ASK-1956).
+  # Verdict records are per-sha and append-only, so "the record for this PR" is
+  # no longer one file: it is the record pinned to the commit sitting at the
+  # head, and `verdict_record_for_head` is the ONE resolver that answers that.
+  # Resolved ONCE into RECORD and reused by every reader below -- three separate
+  # resolutions of one path is three readers of one input, the defect class
+  # pr-verdict-lib.sh exists to close.
+  #
+  # IT STILL RETURNS AN OTHER-SHA RECORD when nothing matches the head, which is
+  # what keeps exit 40 reachable: the GATE decides drift, never this line.
   SHA="$(pr_head_sha "$PR")"
-  REVIEWED_SHA="$(head_sha_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR")")"
+  RECORD="$(verdict_record_for_head "$REVIEWS_DIR" "$TARGET_SLUG" "$PR" "$SHA")"
+  VERDICT="$(verdict_from_record "$RECORD")"
+  REVIEWED_SHA="$(head_sha_from_record "$RECORD")"
 
   # ARGUMENT 2 IS THE MERGE STATE, and this driver still does not read it: ASK-212
   # scoped mergeability to the worker, which runs first inside every round here.
@@ -1026,7 +1041,7 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # It runs before the auto-merge report because auto-merge lands the PR the
     # moment `validate` goes green, and `validate` is the job that reads this
     # receipt.
-    receipt_ensure "$SHA" "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR")" "$REVIEWED_SHA" "$PR"
+    receipt_ensure "$SHA" "$RECORD" "$REVIEWED_SHA" "$PR"
 
     AUTOMERGE="$(automerge_from_record "$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$PR").automerge")"
     case "$AUTOMERGE" in
