@@ -36,14 +36,16 @@ DSSE = Path(__file__).resolve().parent
 PRDOS = DSSE.parents[1] / "prd-os/scripts"  # plugins/prd-os/scripts
 
 
-def _run(repo: Path, script: Path, *args: str, env_extra=None):
+def _run(repo: Path, script: Path, *args: str, env_extra=None, stdin=None):
     env = dict(os.environ)
     for leak in ("CLAUDE_PROJECT_DIR", "KIPI_HOME", "QROOT"):
         env.pop(leak, None)
-    env.setdefault("PYTHONPATH", str(PRDOS))
+    # prepend, never setdefault: under verify contract 2 the observer is already on
+    # PYTHONPATH, and setdefault then dropped PRDOS ("No module named 'prd_runner'", ASK-1810)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (str(PRDOS), env.get("PYTHONPATH")) if p)
     if env_extra:
         env.update(env_extra)
-    return subprocess.run([sys.executable, str(script), *args],
+    return subprocess.run([sys.executable, str(script), *args], input=stdin,
                           cwd=repo, capture_output=True, text=True, env=env)
 
 
@@ -89,11 +91,11 @@ def _make_repo(tmp_path: Path, check: str) -> Path:
     spec.write_text(body[:at] + "\n\n```json\n" + manifest + "\n```\n" + body[at:])
 
     assert _run(repo, PRDOS / "prd_runner.py", "advance", "draft").returncode == 0
-    add = subprocess.run(
-        [sys.executable, str(PRDOS / "findings_writer.py"), "add", prd_id,
-         "--source", "claude-review"],
-        cwd=repo, capture_output=True, text=True,
-        input='[{"severity":"major","body":"probe"}]')
+    # Through _run, which strips CLAUDE_PROJECT_DIR. A bare subprocess.run here inherited it,
+    # so under `issue_runner.py verify` (which always runs with it set) this child wrote to the
+    # REAL repo's .prd-os and every fixture below failed: 44 pass unset, 31 errors set (ASK-1810).
+    add = _run(repo, PRDOS / "findings_writer.py", "add", prd_id, "--source", "claude-review",
+               stdin='[{"severity":"major","body":"probe"}]')
     assert add.returncode == 0, add.stderr
     assert _run(repo, PRDOS / "findings_writer.py", "set-disposition", prd_id,
                 "finding-1", "accepted", "--reason-code", "valid-fix-now",

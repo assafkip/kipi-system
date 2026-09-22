@@ -340,7 +340,8 @@ def test_approve_allowed_when_all_dispositioned(fake_repo, write_config, run_prd
                 "prd_id": prd_id,
                 "source": "manual",
                 "severity": "nit",
-                "disposition": "deferred",
+                # rejected, not deferred: a nit may not be queued (founder 2026-09-12)
+                "disposition": "rejected",
                 "rationale": "later",
                 "body": "tweak wording",
                 "created_at": "2026-04-16T00:00:00Z",
@@ -349,7 +350,7 @@ def test_approve_allowed_when_all_dispositioned(fake_repo, write_config, run_prd
     )
     _capture_receipts(run_findings_writer, fake_repo, prd_id,
                       [("finding-1", "accepted", None),
-                       ("finding-2", "deferred", "later")])
+                       ("finding-2", "rejected", "later")])
     r = run_prd_runner(fake_repo, "advance", "approved")
     assert r.returncode == 0, r.stderr
 
@@ -732,3 +733,112 @@ def test_advance_emits_the_decision_disagreement_warning_at_rc_zero(
     assert r.returncode == 0, r.stderr
     assert "WARNING" in r.stderr, r.stderr
     assert "finding-1" in r.stderr, r.stderr
+
+
+# ---------------------------------------------------------------------------
+# ASK-1969: a gate row states the property it protects.
+#
+# Measured 2026-09-20: with only the ids, a judge could not say what a gate
+# defends on 50 of 100 rows. The issue spec's `title` already states the
+# property ("design-engine-door.py refuses a design engine outside an active
+# round"), so the registrar records it instead of leaving it in a file nobody
+# opens when the gate goes red.
+# ---------------------------------------------------------------------------
+
+
+def _gate_repo(tmp_path: Path) -> Path:
+    root = tmp_path / "gate-repo"
+    (root / ".prd-os" / "issues").mkdir(parents=True)
+    (root / ".git").mkdir()
+    (root / ".prd-os" / "config.json").write_text(json.dumps({
+        "config_schema_version": 1,
+        "prds_dir": ".prd-os/prds",
+        "issues_dir": ".prd-os/issues",
+        "findings_dir": ".prd-os/findings",
+        "state_dir": ".claude/state",
+    }))
+    return root
+
+
+def _load_runner():
+    import importlib.util
+    import sys
+    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    sys.path.insert(0, str(scripts))
+    spec = importlib.util.spec_from_file_location("prd_runner_protects", scripts / "prd_runner.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _write_issue_spec(repo: Path, issue_id: str, title_line: str) -> None:
+    (repo / ".prd-os" / "issues" / f"{issue_id}.md").write_text(
+        f"---\nid: {issue_id}\n{title_line}\nstatus: closed\n---\n\n# body\n")
+
+
+def _gate_rows(repo: Path) -> list[dict]:
+    path = repo / ".prd-os" / "gates.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def test_gate_register_records_the_property_from_the_issue_spec_title(tmp_path):
+    repo = _gate_repo(tmp_path)
+    _write_issue_spec(repo, "ask-1", 'title: "door.py refuses an engine outside a round"')
+    runner = _load_runner()
+    runner.gate_register(runner.load_config(repo), prd_id="prd-x", issue_id="ask-1",
+                         command="true", lifecycle="regression")
+    (row,) = _gate_rows(repo)
+    assert row["protects"] == "door.py refuses an engine outside a round"
+
+
+def test_gate_register_explicit_protects_wins_over_the_spec(tmp_path):
+    repo = _gate_repo(tmp_path)
+    _write_issue_spec(repo, "ask-2", "title: spec title")
+    runner = _load_runner()
+    runner.gate_register(runner.load_config(repo), prd_id="prd-x", issue_id="ask-2",
+                         command="true", lifecycle="regression",
+                         protects="explicit property")
+    (row,) = _gate_rows(repo)
+    assert row["protects"] == "explicit property"
+
+
+def test_gate_register_protects_leaves_gate_id_unchanged(tmp_path):
+    # gate_id stability: every consumer keys on it, and a changed id would
+    # re-register every gate on the next close.
+    import hashlib
+    repo = _gate_repo(tmp_path)
+    _write_issue_spec(repo, "ask-3", "title: anything")
+    runner = _load_runner()
+    out = runner.gate_register(runner.load_config(repo), prd_id="prd-x", issue_id="ask-3",
+                               command="true", lifecycle="regression")
+    assert out["gate_id"] == "ask-3-" + hashlib.sha256(b"true").hexdigest()[:8]
+
+
+def test_gate_register_without_a_spec_omits_protects_and_still_registers(tmp_path):
+    repo = _gate_repo(tmp_path)
+    runner = _load_runner()
+    out = runner.gate_register(runner.load_config(repo), prd_id="prd-x", issue_id="ask-none",
+                               command="true", lifecycle="regression")
+    assert out["registered"] is True
+    (row,) = _gate_rows(repo)
+    assert "protects" not in row
+
+
+def test_gates_run_red_gate_reports_what_is_at_risk(tmp_path):
+    import subprocess
+    import sys
+    repo = _gate_repo(tmp_path)
+    rich = {"gate_id": "g-rich", "command": "false", "lifecycle": "regression",
+            "protects": "the door refuses engines outside a round"}
+    old = {"gate_id": "g-old", "command": "false", "lifecycle": "regression"}
+    (repo / ".prd-os" / "gates.jsonl").write_text(
+        json.dumps(rich) + "\n" + json.dumps(old) + "\n")
+    runner_py = Path(__file__).resolve().parents[1] / "scripts" / "prd_runner.py"
+    r = subprocess.run([sys.executable, str(runner_py), "--repo-root", str(repo), "gates", "run"],
+                       capture_output=True, text=True)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "protects: the door refuses engines outside a round" in r.stdout
+    assert "protects: the door refuses engines outside a round" in r.stderr
+    # An old row without the field is read, not refused.
+    assert "g-old" in r.stdout
+    assert "protects: (not recorded)" in r.stdout
