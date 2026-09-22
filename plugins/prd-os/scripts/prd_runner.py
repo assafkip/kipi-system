@@ -2818,9 +2818,9 @@ SPILLOVER_SEVERITY_ORDER = ("low", "minor", "medium", "high", "major", "blocker"
 SPILLOVER_KNOWN_SEVERITIES = (
     SPILLOVER_BLOCKING_SEVERITIES + SPILLOVER_NONBLOCKING_SEVERITIES)
 # THE MINOR TIER IS NOT A QUEUE (ASK-1961, RULE-2026-09-12-A applied to the rows
-# written before it). Measured 2026-09-22: 1,545 open minor + 4 open low, zero
+# written before it). Measured 2026-09-22: 618 open minor/low after last-row-wins, zero
 # inflow since the add door started refusing them, and no drain. `gates run`
-# listed them in its triage report anyway, so a 1,549-row "queue" nobody could
+# listed them in its triage report anyway, so a 618-row "queue" nobody could
 # empty printed on every run. It is a closed tier: `gates run` counts it neither
 # in the verdict nor in the report, and states its size on one line so the
 # number never goes quiet. A row still leaves only by resolve or void.

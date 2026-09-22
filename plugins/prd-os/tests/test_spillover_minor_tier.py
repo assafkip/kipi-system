@@ -1,9 +1,9 @@
 """ASK-1961: the minor tier is not a queue, and the rule file says what the code does.
 
-Measured 2026-09-22 on kipi-system: 1,545 open minor rows and 4 open low rows,
+Measured 2026-09-22 on kipi-system: 618 open minor/low rows (last row per id wins),
 zero inflow since 2026-09-12 (`spillover add` refuses minor, low and nit), and
 no outflow built for them. `gates run` already never let them block, yet its
-`[REPORT]` line listed them as items to triage, so a 1,549-row "queue" with no
+`[REPORT]` line listed them as items to triage, so a 618-row "queue" with no
 drain printed on every run. And no-orphan-findings.md still said "`gates run`
 fails while any item is open", which the code stopped doing at ASK-526.
 
