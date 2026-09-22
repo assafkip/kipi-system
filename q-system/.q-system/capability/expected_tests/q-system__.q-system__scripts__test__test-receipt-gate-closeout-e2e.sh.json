@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-receipt-gate-closeout-e2e.sh",
+ "runner": "bash"
+}
