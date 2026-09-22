@@ -68,7 +68,7 @@ def _write_spec(repo, issue_id, count=None, deliverables_md=""):
         "disallowed_files: []\n"
         # `verify` refuses an empty check list (a receipt cannot attest that
         # nothing ran), so the fixture carries a real passing check.
-        "required_checks:\n  - python3 -c \"print('ok')\"\n"
+        "required_checks:\n  - python3 src/tracked.py\n"   # runs the allowed script: verify contract 2 (ASK-1810)
         "required_reviews: []\n"
         f"{count_line}"
         "---\n\n"
