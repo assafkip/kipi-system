@@ -1,5 +1,5 @@
 {
  "path": "q-system/.q-system/scripts/verify-codex-review-live.sh",
- "reason": "live-environment receipt check: asserts against the launchd plist and the live checkout, so it fails by design on any unmerged branch and cannot be an expected_test. Operator-invoked at PR landing.",
- "spillover_id": "sp-b249b1b1"
+ "reason": "live-environment receipt check: asserts against the launchd plist and the live checkout, so it fails by design on any unmerged branch and cannot be an expected_test. Operator-invoked at PR landing. [repointed from sp-b249b1b1, voided 2026-09-12, to the open wire-or-retire item sp-6eab75c6 / ASK-2028 (ASK-1960)]",
+ "spillover_id": "sp-6eab75c6"
 }
