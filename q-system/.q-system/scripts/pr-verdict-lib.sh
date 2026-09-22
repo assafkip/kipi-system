@@ -12,6 +12,17 @@
 # The worker only falls back to re-extracting from the review .md for PRs
 # reviewed before the record existed.
 
+# review_round below counts review-prose files, and the name of those files is
+# owned by repo-slug-lib.sh -- the same file the WRITER builds its path from.
+# Importing it here rather than trusting the caller to have sourced it first is
+# what makes the two sides one convention instead of two that happen to agree:
+# a caller that sourced only this lib would otherwise fall back to a stale glob.
+# Guarded so a caller that already sourced it is not re-sourced.
+if ! declare -F artifact_key >/dev/null 2>&1; then
+  # shellcheck source=repo-slug-lib.sh
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/repo-slug-lib.sh"
+fi
+
 # extract_verdict <review-file>
 # Prints APPROVE | APPROVE WITH NITS | REQUEST CHANGES | BLOCK, or nothing if
 # the file states no verdict (empty file, killed run, freeform prose).
@@ -630,14 +641,38 @@ review_comment_body() {
 # narrative, while under-reserving overruns the limit and loses the whole comment.
 review_comment_body_header_size() { printf '%s' 5000; }
 
-# review_round <reviews-dir> <pr-number>
+# review_round <reviews-dir> <pr-number> [repo-slug]
 # Which round the NEXT review of this PR will be: existing review files + 1.
 # Derived from disk, not from the worker's attempts json, because the reviewer
 # also runs standalone (`kipi review 11`) where that counter is never bumped --
 # it would report round 1 forever and the anti-re-litigation rule would never arm.
+#
+# IT COUNTS WHAT THE WRITER WRITES, AND IT NO LONGER SPELLS THE NAME (ASK-1957).
+# This used to glob a literal `pr-<N>-*.md`. ASK-738 re-keyed every review
+# artifact by repo and the writer followed; this counter did not, so for any repo
+# that resolves a slug -- which is every repo, since slug_for_repo falls back to
+# the target's own origin url -- the glob matched nothing. It returned 1 on every
+# run and ROUND_RULE never armed once, exactly the failure the round rule exists
+# to prevent. The pattern now comes from repo-slug-lib.sh's single convention, so
+# the next move of that shape takes both sides with it.
+#
+# THE SLUG IS OPTIONAL, AND AN ABSENT ONE IS THE LEGACY SHAPE BY CONSTRUCTION:
+# artifact_key with an empty slug is `pr-<N>`, so the two-argument form every
+# pre-ASK-738 caller and fixture uses keeps its exact previous behaviour.
+#
+# IT DOES NOT ALSO COUNT THE LEGACY SHAPE for a slugged repo. A union looks like
+# the kind thing to do for the ~88 pre-ASK-738 files at the root of the live
+# store, and it would reopen the collision ASK-738 closed: those files are the
+# HOME repo's, and counting them toward a client repo's PR #42 inflates that PR's
+# rounds with reviews of another repository's code. Their own PRs are long merged;
+# the counter has been answering 1 for them since ASK-738 either way.
+#
+# `find -name`, not a glob against the directory: the pattern arrives as one
+# quoted argument, so a reviews directory containing a space or a trailing slash
+# cannot split it or silently stop matching.
 review_round() {
-  local dir="$1" pr="$2" n
-  n="$(ls "$dir/pr-$pr-"*.md 2>/dev/null | wc -l | tr -d ' ')"
+  local dir="$1" pr="$2" slug="${3:-}" n
+  n="$(find "$dir" -maxdepth 1 -type f -name "$(review_md_name_glob "$slug" "$pr")" 2>/dev/null | wc -l | tr -d ' ')"
   printf '%s' $(( ${n:-0} + 1 ))
 }
 

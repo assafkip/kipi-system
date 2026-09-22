@@ -169,7 +169,7 @@ def test_the_window_is_wider_than_k_but_not_the_whole_pool():
 # --- REACH: the window must not be capped below the band ---------------------------
 #
 # THIS TEST EXISTS BECAUSE THE SUITE COULD NOT TELL THE TWO STATES APART.
-# Review of the 2026-09-19 change (kipi-system PR #386) ran the mutation that
+# Review of the 2026-09-19 change that carried this engine upstream ran the
 # matters -- restoring `window = near[:max(k * ROTATION_WINDOW_MULT, k + 1)]` --
 # and all 231 engine tests stayed green. The headline behaviour reverts and
 # nothing here notices, so the next person to "simplify" that line ships the
