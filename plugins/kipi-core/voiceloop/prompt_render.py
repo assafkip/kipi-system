@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 
 from . import usage_ledger
@@ -155,6 +156,13 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
             return None
     if not os.path.exists(binary):
         return None
+    # ASK-2008: the call is metered. Every path below leaves one row, the failures
+    # included: a limit refusal, a timeout that burned tokens before the kill, a
+    # non-zero exit. On 2026-09-12 the fleet went dark for a day and a ledger that
+    # skipped failed calls would have looked identical to an idle fleet (PR #410
+    # review). The row can never fail the call: append swallows its own errors.
+    who = dict(bot=os.environ.get("CHIEF_BOT") or "voiceloop",
+               job=os.environ.get("CHIEF_JOB") or caller, model=model)
     try:
         # `--model` only when a caller asked for one, so every existing caller keeps the
         # CLI's own default and this stays additive.
@@ -163,15 +171,18 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
             argv[1:1] = ["--model", model]
         result = subprocess.run(argv, capture_output=True,
                                 text=True, timeout=timeout)
-    except (subprocess.SubprocessError, OSError):
+    except subprocess.TimeoutExpired as exc:
+        usage_ledger.append(usage_ledger.failure_row(
+            "timeout", stdout=exc.stdout, stderr=exc.stderr, **who))
+        return None
+    except (subprocess.SubprocessError, OSError) as exc:
+        usage_ledger.append(usage_ledger.failure_row(type(exc).__name__, stderr=str(exc), **who))
         return None
     if result.returncode != 0:
+        usage_ledger.append(usage_ledger.failure_row(
+            f"exit {result.returncode}", stdout=result.stdout, stderr=result.stderr, **who))
         return None
-    # ASK-2008: the call is metered. `finish` hands back the same bytes a plain call
-    # printed (result + newline) and one ledger row; the row is appended and can never
-    # fail this call (usage_ledger.append swallows its own errors by design).
-    text, row = usage_ledger.finish(
-        result.stdout, bot=os.environ.get("CHIEF_BOT") or "voiceloop",
-        job=os.environ.get("CHIEF_JOB") or caller, model=model)
+    # `finish` hands back the same bytes a plain call printed (result + newline).
+    text, row = usage_ledger.finish(result.stdout, **who)
     usage_ledger.append(row)
     return text

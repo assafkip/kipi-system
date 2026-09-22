@@ -59,6 +59,72 @@ def test_a_limit_refusal_is_named_on_the_row():
     assert usage_ledger.row_from(doc, bot="t")["limit_text"].startswith("You've hit your usage limit")
 
 
+def test_a_successful_post_about_rate_limits_is_not_a_refusal():
+    # PR #410 review: the result IS the generated post, and he writes about this.
+    doc = {"type": "result", "subtype": "success", "is_error": False, "modelUsage": {},
+           "result": "Codex went dark mid-review again. Not a bug, a rate limit. "
+                     "The weekly counter resets at midnight, so the graph lies on Mondays."}
+    assert usage_ledger.row_from(doc, bot="t")["limit_text"] is None
+
+
+def test_a_failed_call_still_leaves_a_row(captured, tmp_path, monkeypatch):
+    # The 2026-09-12 shape: the fleet went dark and the caller got nothing back. The
+    # ledger must not read as an idle fleet. Three arms: exit code, timeout, OSError.
+    import subprocess
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("OPENCODE", raising=False)
+    monkeypatch.setenv(usage_ledger.LEDGER_ENV, str(tmp_path / "l.jsonl"))
+    fake_bin = tmp_path / "claude"; fake_bin.write_text("")
+    refusal = json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                          "result": "You've hit your usage limit.", "modelUsage": {}})
+
+    class Exit1:
+        returncode, stdout, stderr = 1, refusal, ""
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Exit1())
+    assert prompt_render.run_model("hi", claude_bin=str(fake_bin), caller="c") is None
+
+    def timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="claude", timeout=1, output=json.dumps(captured["json_stdout"]))
+    monkeypatch.setattr(subprocess, "run", timeout)
+    assert prompt_render.run_model("hi", claude_bin=str(fake_bin), caller="c") is None
+
+    def oserr(*a, **k):
+        raise OSError("boom")
+    monkeypatch.setattr(subprocess, "run", oserr)
+    assert prompt_render.run_model("hi", claude_bin=str(fake_bin), caller="c") is None
+
+    rows = usage_ledger.read()
+    assert [r["subtype"] for r in rows] == ["failed:exit 1", "failed:timeout", "failed:OSError"]
+    assert rows[0]["limit_text"].startswith("You've hit your usage limit")
+    # the timeout arm keeps the tokens the CLI managed to report before the kill
+    assert rows[1]["total_cost_usd"] == captured["json_stdout"]["total_cost_usd"]
+    assert rows[2]["tokens_in"] is None  # unknown, never zero
+
+
+def test_a_stray_line_before_the_document_still_yields_plain_prose(captured):
+    stdout = "warning: something\n" + json.dumps(captured["json_stdout"])
+    text, row = usage_ledger.finish(stdout, bot="t")
+    assert text == captured["plain_stdout"] and "parse_error" not in row
+
+
+def test_the_reviser_goes_through_the_metered_chokepoint(captured, tmp_path, monkeypatch):
+    # PR #410 review: revise shelled its own writer-tier claude -p and wrote no row.
+    import subprocess
+    from voiceloop import revise
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("OPENCODE", raising=False)
+    monkeypatch.setenv(usage_ledger.LEDGER_ENV, str(tmp_path / "l.jsonl"))
+    fake_bin = tmp_path / "claude"; fake_bin.write_text("")
+
+    class Done:
+        returncode, stderr = 0, ""
+        stdout = json.dumps(captured["json_stdout"])
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done())
+    assert revise._run_prompt("p", claude_bin=str(fake_bin), model="m") == captured["plain_stdout"]
+    rows = usage_ledger.read()
+    assert len(rows) == 1 and rows[0]["job"] == "revise" and rows[0]["model"] == "m"
+
+
 def test_append_never_raises_and_read_returns_what_was_written(tmp_path, monkeypatch):
     p = tmp_path / "ledger.jsonl"
     monkeypatch.setenv(usage_ledger.LEDGER_ENV, str(p))
@@ -88,7 +154,7 @@ def test_run_model_adds_the_json_flags_and_hands_back_plain_bytes(captured, tmp_
     fake_bin.write_text("")
     out = prompt_render.run_model("hi", claude_bin=str(fake_bin), caller="test_caller")
     assert out == captured["plain_stdout"]
-    assert tuple(seen["argv"][-2:]) == usage_ledger.JSON_FLAGS
+    assert seen["argv"][-2:] == ["--output-format", "json"]  # pinned, not read from the module
     rows = usage_ledger.read()
     assert len(rows) == 1 and rows[0]["bot"] == "cole" and rows[0]["job"] == "test_caller"
     assert rows[0]["total_cost_usd"] == captured["json_stdout"]["total_cost_usd"]
