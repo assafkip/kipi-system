@@ -484,3 +484,11 @@ def test_read_skips_a_torn_line_and_keeps_the_rest(tmp_path, monkeypatch):
     path.write_text(good + "\n" + good[:20] + "\n\n" + good + "\n")
     rows = usage_ledger.read(str(path))
     assert len(rows) == 2 and all(r["bot"] == "t" for r in rows)
+
+
+def test_prose_opening_with_a_bracket_is_still_prose():
+    # PR #413 round 2: "[Draft] ..." is a post, not a truncated --verbose array
+    text, row = usage_ledger.finish("[Draft] the post starts here\n", bot="t")
+    assert text == "[Draft] the post starts here\n" and row["is_error"] is False
+    text, row = usage_ledger.finish('[{"type":"system","subtype":"init"}', bot="t")
+    assert text is None and row["is_error"] is True

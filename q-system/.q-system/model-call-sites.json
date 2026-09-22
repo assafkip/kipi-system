@@ -11,7 +11,7 @@
     "q-system/.q-system/scripts/granola-voice-synthesize.py": "on-demand synthesis, founder-launched",
     "q-system/.q-system/scripts/lessons-distill.py": "scheduled distiller, two direct calls, unmetered",
     "q-system/.q-system/scripts/linear-dor-drafter.py": "scheduled drafter with --tools '', unmetered",
-    "q-system/.q-system/scripts/linear-triage.py": "scheduled triage, unmetered",
+    "q-system/.q-system/scripts/linear-triage.py": "unwired per the capability manifest; runs by hand, unmetered",
     "q-system/.q-system/scripts/linear-worker.sh": "the worker itself; bash -c string, the biggest unmetered spender",
     "q-system/.q-system/scripts/morning-brief.py": "scheduled brief with --allowedTools, unmetered",
     "q-system/.q-system/scripts/open-loops-heartbeat.sh": "headless call per instance (sp-c2dcebad), unmetered",

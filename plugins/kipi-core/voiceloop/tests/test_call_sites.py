@@ -52,11 +52,20 @@ def test_real_call_shapes_are_seen_and_mentions_are_not(tmp_path):
         "j.py": "import os\n" + FIRST_LINE,
         # options between claude and -p, and a printed mention (round 1 minor 4)
         "k.sh": '#!/bin/bash\nclaude --model "$M" -p "$PROMPT" </dev/null\n',
+        # path-qualified binary, and the long flag in Python (round 2 minors)
+        "m.sh": '#!/bin/bash\n~/.local/bin/claude -p "$PROMPT" </dev/null\n',
+        "n.py": 'import subprocess\nsubprocess.run(["claude", "--print", prompt])\n',
         "l.sh": '#!/bin/bash\necho "run: claude -p x"\nprintf "%s" "claude -p y"\n',
         "tests/t.py": "import subprocess\n" + PY_LINE,
         ".review-scratch/x.sh": "#!/bin/bash\n" + SH_LINE,
     })
-    assert cs.call_sites(root) == {"a.py", "b.sh", "c.py", "f.py", "i.py", "j.py", "k.sh"}
+    assert cs.call_sites(root) == {"a.py", "b.sh", "c.py", "f.py", "i.py", "j.py", "k.sh", "m.sh", "n.py"}
+
+
+def test_a_broken_repo_says_so(tmp_path):
+    import pytest
+    with pytest.raises(RuntimeError, match="git ls-files failed"):
+        cs.tracked(tmp_path)  # not a git repo
 
 
 def test_an_untracked_file_is_not_a_site_yet(tmp_path):

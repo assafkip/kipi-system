@@ -178,6 +178,9 @@ def failure_row(kind: str, *, bot: str, job: str | None = None, model: str | Non
     return row
 
 
+_ARRAY_OPEN = re.compile(r"^\s*\[\s*\{")
+
+
 def _is_json(stdout: str | None) -> bool:
     """True when stdout is json-mode output, whole or truncated.
 
@@ -186,8 +189,10 @@ def _is_json(stdout: str | None) -> bool:
     json-mode call, never prose (round 7: a truncated document with exit 0 was
     being handed back as the post).
     """
-    # `[` is the --verbose array form (round 9): json mode all the same.
-    return bool(stdout) and stdout.lstrip().startswith(("{", "["))
+    # `[{` is the --verbose array form (round 9): json mode all the same. A bare
+    # `[` is not: a degraded-path post may open with one ("[Draft] ...", PR #413
+    # round 2), and prose must never be dropped and charged as an error.
+    return bool(stdout) and (stdout.lstrip().startswith("{") or _ARRAY_OPEN.match(stdout) is not None)
 
 
 def _result_document(stdout: str | None) -> dict | None:

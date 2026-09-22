@@ -13,14 +13,16 @@ WHAT IT SEES, and what it does not, stated so its silence reads right:
        the binary prepended elsewhere) or right after an expression standing
        for the binary: a string ending in `claude`, a variable, an attribute,
        a call, or a conditional such as `CLAUDE_BIN if ... else "claude"`.
+       `--print`, the long spelling, counts the same as `-p`.
        The `claude` mention is what keeps `[ssh_bin, "-p", port]` out (PR #413
        round 1 minor 2); a file that shells both ssh and the model is counted,
        which is the right side to err on. A caller that assembles `claude -p`
        inside a shell string is NOT seen. A file this Python cannot parse
        falls back to the text shape of the argv element.
   .sh  a non-comment line, not an `echo`/`printf`, running `claude -p` /
-       `claude --print` with any options between the two (`claude --model X
-       -p`), or a `$CLAUDE*` variable with `-p`, anywhere on the line (inside
+       `claude --print`, bare or path-qualified (`~/.local/bin/claude -p`),
+       with any options between the two (`claude --model X -p`), or a
+       `$CLAUDE*` variable with `-p`, anywhere on the line (inside
        a `bash -c` string included, which is how a worker loop calls it). A
        heredoc body that quotes the pattern IS counted: this scanner does not
        parse heredocs, and it errs toward a row that a reason then explains.
@@ -38,11 +40,11 @@ from pathlib import Path
 
 _TEST_DIR = re.compile(r"(^|/)(tests?|test)/|(^|/)test[_-]")
 _SCRATCH = re.compile(r"^\.review-")
-_PY_TEXT = re.compile(r"""(,|\[|\()\s*["']-p["']""")
+_PY_TEXT = re.compile(r"""(,|\[|\()\s*["'](-p|--print)["']""")
 _CLAUDE_WORD = re.compile(r"\bclaude\b", re.I)
 # `claude`, then any run of options (with or without a value), then -p/--print.
 _SH_CALL = re.compile(
-    r"""(^|[\s"'(;&|`])(claude|\$\{?CLAUDE[A-Z_]*\}?)"""
+    r"""(^|[\s"'(;&|`])((\S*/)?claude|\$\{?CLAUDE[A-Z_]*\}?)"""
     r"""(\s+--?[\w-]+(=\S+)?(\s+[^-\s]\S*)?)*\s+(-p|--print)(\s|"|'|\\|$)""")
 _SH_PRINTS = re.compile(r"^\s*(echo|printf)\b")
 
@@ -55,7 +57,7 @@ def _binary_like(node) -> bool:
 
 
 def _is_dash_p(node) -> bool:
-    return isinstance(node, ast.Constant) and node.value == "-p"
+    return isinstance(node, ast.Constant) and node.value in ("-p", "--print")
 
 
 def py_calls(text: str) -> bool:
@@ -70,7 +72,12 @@ def py_calls(text: str) -> bool:
         if not isinstance(node, (ast.List, ast.Tuple)):
             continue
         elts = node.elts
-        if elts and _is_dash_p(elts[0]):
+        # -p first, the binary prepended elsewhere: counts when something after
+        # it is not itself a flag (a prompt, a value). A flags-only tuple such as
+        # this module's own ("-p", "--print") is a vocabulary, not an argv.
+        if elts and _is_dash_p(elts[0]) and any(
+                not (isinstance(e, ast.Constant) and isinstance(e.value, str) and e.value.startswith("-"))
+                for e in elts[1:]):
             return True
         for i in range(1, len(elts)):
             if _is_dash_p(elts[i]) and _binary_like(elts[i - 1]):
@@ -90,9 +97,13 @@ def sh_calls(text: str) -> bool:
 
 def tracked(root: Path) -> list[str]:
     """Tracked .py and .sh paths, relative to `root`. Untracked files are not a call site yet."""
-    out = subprocess.run(["git", "-C", str(root), "ls-files", "--", "*.py", "*.sh"],
-                         capture_output=True, text=True, check=True).stdout
-    return [p for p in out.splitlines() if p]
+    r = subprocess.run(["git", "-C", str(root), "ls-files", "--", "*.py", "*.sh"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        # A registered instance with a broken .git must say so, not raise a bare
+        # CalledProcessError with its stderr thrown away (PR #413 round 2).
+        raise RuntimeError("git ls-files failed in %s: %s" % (root, (r.stderr or "").strip()[:200]))
+    return [p for p in r.stdout.splitlines() if p]
 
 
 def call_sites(root: Path) -> set[str]:
