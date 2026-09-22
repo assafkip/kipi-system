@@ -91,9 +91,11 @@ def limit_text(doc: dict) -> str | None:
 def row_from(doc: dict, *, bot: str, job: str | None = None, model: str | None = None) -> dict:
     """One ledger row from a `--output-format json` result document.
 
-    Token totals are summed across `modelUsage` (which includes subagents; the
-    top-level `usage` block does not, per the CLI docs), so a run that spawned
-    subagents is charged in full to the bot that started it.
+    Token totals are summed across `modelUsage`, every model the run reports,
+    so a run is charged in full to the bot that started it. Whether that block
+    folds subagent tokens in is NOT pinned here (round 9 minor 2): no captured
+    run spawned one. The verbose capture reports `subagent_stats` as its own
+    key, which is the fixture to extend when a subagent run is captured.
     """
     per_model: dict[str, dict] = {}
     usage = doc.get("modelUsage")
@@ -184,12 +186,28 @@ def _is_json(stdout: str | None) -> bool:
     json-mode call, never prose (round 7: a truncated document with exit 0 was
     being handed back as the post).
     """
-    return bool(stdout) and stdout.lstrip().startswith("{")
+    # `[` is the --verbose array form (round 9): json mode all the same.
+    return bool(stdout) and stdout.lstrip().startswith(("{", "["))
 
 
 def _result_document(stdout: str | None) -> dict | None:
     """The CLI's result document, whole or embedded after stray leading text."""
     if not stdout:
+        return None
+    # Whole-text first: the plain document, or the --verbose ARRAY of events whose
+    # last element is the result. The array form was invisible to the scans below
+    # (round 9 minor 1): its result sits past the 50th brace, behind the init
+    # event, so a --verbose call's post came back as prose.
+    try:
+        whole = json.loads(stdout)
+    except ValueError:
+        whole = None
+    if isinstance(whole, dict) and whole.get("type") == "result":
+        return whole
+    if isinstance(whole, list):
+        for item in reversed(whole):
+            if isinstance(item, dict) and item.get("type") == "result":
+                return item
         return None
     # The CLI may print other JSON objects (an init event) or stray lines before the
     # result. Every line is tried on its own, then the whole text from each `{`.

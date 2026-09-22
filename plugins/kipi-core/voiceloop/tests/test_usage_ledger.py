@@ -445,3 +445,42 @@ def test_a_truncated_json_document_is_never_the_post(captured):
     cut = json.dumps(captured["json_stdout"])[:200]
     text, row = usage_ledger.finish(cut, bot="t")
     assert text is None and row["kind"] == "parse_error"
+
+
+# ---- PR #410 round 9 --------------------------------------------------------------
+
+VERBOSE_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures",
+                               "claude-p-verbose-capture-2026-09-22.json")
+
+
+@pytest.fixture
+def verbose():
+    with open(VERBOSE_FIXTURE) as fh:
+        doc = json.load(fh)
+    prov = doc.get("_provenance") or {}
+    assert prov.get("connector") == "claude-code-cli" and prov.get("captured_at")
+    return doc["payload"]
+
+
+def test_the_verbose_array_form_yields_the_post_and_the_row(verbose):
+    # The real capture: the result document sits past the 50th brace, behind the
+    # init event, so neither scan reaches it. The whole-text parse does.
+    assert verbose["braces_before_result"] > 50
+    stdout = json.dumps(verbose["verbose_stdout"]) + "\n"
+    text, row = usage_ledger.finish(stdout, bot="t")
+    assert text == verbose["plain_stdout"]
+    assert row["kind"] == "run" and row["tokens_out"] > 0 and row["is_error"] is False
+
+
+def test_a_truncated_verbose_array_is_a_dead_json_call_not_prose(verbose):
+    stdout = json.dumps(verbose["verbose_stdout"])[:2000]
+    text, row = usage_ledger.finish(stdout, bot="t")
+    assert text is None and row["kind"] == "parse_error" and row["is_error"] is True
+
+
+def test_read_skips_a_torn_line_and_keeps_the_rest(tmp_path, monkeypatch):
+    path = tmp_path / "usage.jsonl"
+    good = json.dumps({"ts": "2026-09-22T00:00:00Z", "bot": "t", "kind": "call"})
+    path.write_text(good + "\n" + good[:20] + "\n\n" + good + "\n")
+    rows = usage_ledger.read(str(path))
+    assert len(rows) == 2 and all(r["bot"] == "t" for r in rows)
