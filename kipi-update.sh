@@ -28,10 +28,21 @@ ONLY=""
 # consulting run script passes it, because there "ahead" has meant real work
 # every time (2026-09-06, three times in one day).
 REFUSE_INSTANCE_AHEAD=0
+# --skip-reach-preflight: run without first asking fleet-reach-audit.py which
+# instances would refuse. See reach_preflight. The hatch exists so a genuinely
+# unblockable instance cannot wedge the whole fleet, and it says so out loud.
+SKIP_REACH_PREFLIGHT=0
+# The operator's own arguments, captured BEFORE the parse loop shifts them
+# away. reach_preflight prints a "proceed anyway" line, and inside a function
+# $* is the FUNCTION's arguments -- which are none -- so the printed remedy
+# silently dropped --dry-run and --only and pasted as a full real fleet sync
+# (PR #396 review, major). Never use $* for that line.
+UPDATE_ARGV="$*"
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN="--dry-run"; shift ;;
     --refuse-instance-ahead) REFUSE_INSTANCE_AHEAD=1; shift ;;
+    --skip-reach-preflight) SKIP_REACH_PREFLIGHT=1; shift ;;
     --only)
       ONLY="${2:-}"
       if [ -z "$ONLY" ]; then
@@ -42,7 +53,7 @@ while [ $# -gt 0 ]; do
       ;;
     *)
       echo "ERROR: unknown argument: $1" >&2
-      echo "Usage: kipi-update.sh [--dry-run] [--only <instance-name>] [--refuse-instance-ahead]" >&2
+      echo "Usage: kipi-update.sh [--dry-run] [--only <instance-name>] [--refuse-instance-ahead] [--skip-reach-preflight]" >&2
       exit 1
       ;;
   esac
@@ -1618,6 +1629,151 @@ reject_untracked_config_collisions() {
 }
 
 trap cleanup_updater_temps EXIT
+
+# THE 2026-09-20 SCAR, and the reason this runs before a single instance is
+# touched rather than being a line in a runbook.
+#
+# A full run costs 20-25 minutes and reports only the FIRST refusal per
+# instance. So an operator diagnosing "why will the fleet not sync" by running
+# it learns exactly one blocker per 25 minutes. Measured: FIVE runs across two
+# days (2026-09-19 and 2026-09-20), each surfacing one new blocker -- a dirty
+# tree, then a skeleton one commit behind origin/main, then four dangling
+# symlinks -- and the fleet was not synced at the end of either day.
+#
+# fleet-reach-audit.py answers the same question for every instance at once,
+# read-only, in about a second. It existed the whole time. It was written on
+# 2026-08-14 (ASK-797/ASK-803) after the same pattern burned that rollout, and
+# neither 2026-09 session opened it.
+#
+# A memory file, a rule, or a comment would not have changed that: the previous
+# sessions had all three and still reached for the 25-minute tool. So the audit
+# is not documented here, it is INVOKED here, and the long path cannot start
+# without the short answer being printed first.
+#
+# Three deliberate choices:
+#
+#   IT PRINTS EVERY TIME, including on a clean fleet. "REACH: 24 of 24" costs
+#   one line and is the liveness signal -- a preflight that only speaks when
+#   unhappy is indistinguishable from one that did not run (the zero-vs-never
+#   rule this repo already applies to its counters).
+#
+#   IT REFUSES WHEN BLOCKERS EXIST, in BOTH modes. A run that proceeds past a
+#   known blocker spends 25 minutes to re-report what was just printed. The
+#   hatch is --skip-reach-preflight, named in the refusal, because a single
+#   permanently-stuck instance must not be able to wedge the other 24.
+#
+#   A MISSING OR MUTE AUDIT ABORTS, matching the propagation leak gate above.
+#   A preflight that silently passes when its own tool is broken is the
+#   "gate that cannot run must not pass" defect, and this file already refuses
+#   that way for the leak gate. The ONE exception is a skeleton with no
+#   instance-registry.json -- every kipi-update test fixture is exactly that --
+#   and the disarm is announced rather than silent.
+#
+# Pinned by test-kipi-update-reach-preflight.sh.
+reach_preflight() {
+  local audit="$SCRIPT_DIR/fleet-reach-audit.py" out rc
+  if [ "$SKIP_REACH_PREFLIGHT" = "1" ]; then
+    echo "reach preflight: SKIPPED (--skip-reach-preflight); blockers will be"
+    echo "  discovered one instance at a time, which is what this flag costs."
+    return 0
+  fi
+  # DISARMED, not aborted, when the skeleton carries no registry OR no audit.
+  # Every kipi-update fixture builds a partial skeleton: a registry but no
+  # fleet-*.py. Aborting there made three separation tests red (PR #396 review),
+  # which is this gate going red on its own population -- the shape that gets a
+  # gate switched off. A PRESENT-BUT-BROKEN audit still aborts below; that is
+  # the "cannot run must not pass" case. Absent in a synthetic skeleton is not.
+  if [ ! -f "$SCRIPT_DIR/instance-registry.json" ]; then
+    echo "reach preflight: disarmed (no instance-registry.json at $SCRIPT_DIR)"
+    return 0
+  fi
+  if [ ! -f "$audit" ]; then
+    echo "reach preflight: disarmed (no fleet-reach-audit.py at $SCRIPT_DIR)"
+    return 0
+  fi
+  out="$(python3 "$audit" --json 2>/dev/null)" && rc=0 || rc=$?
+  if [ -z "$out" ]; then
+    echo ""
+    echo "ABORT: the reach preflight produced no verdict (exit $rc)."
+    echo "A preflight that cannot run must not pass. Fix it, or pass"
+    echo "--skip-reach-preflight to proceed without it."
+    exit 1
+  fi
+  # SCOPED TO WHAT THIS RUN WOULD TOUCH, and refusing only on FLEET-caused
+  # blockers. Both halves are the same review finding (PR #396, major):
+  #
+  #   * counting every instance meant one repo holding founder work refused a
+  #     run scoped to a DIFFERENT, clean instance. On the live fleet that is
+  #     every invocation, and the only escape is --skip-reach-preflight, i.e.
+  #     the gate off.
+  #   * BLOCKED-FOUNDER is a CORRECT refusal that stands until the founder
+  #     commits. It is theirs to clear, it is not a defect, and it must never
+  #     stop an unrelated instance from syncing. It prints as information.
+  #
+  # BLOCKED-FLEET is the updater's own exhaust, `fleet-unblock.py --apply`
+  # clears it with a proof per path, and THAT is worth refusing over.
+  # `|| rc=$?`, and neither a bare call nor `if !`. Two traps, both hit:
+  #   * this file runs under `set -e` (line 2), so a BARE python3 exiting
+  #     non-zero kills the script before rc is read and the remedy never prints;
+  #   * `if ! python3 ...; then rc=$?; fi` looks like the fix and is not -- `!`
+  #     inverts the status, so $? inside the branch is 0 and the refusal is
+  #     skipped entirely, which let the run ENTER a blocked instance.
+  # Only `|| rc=$?` both suppresses set -e and preserves python's real status.
+  rc=0
+  python3 - "$out" "${ONLY:-}" <<'PYEOF' || rc=$?
+import json, sys
+rows = json.loads(sys.argv[1])
+only = sys.argv[2]
+if only:
+    rows = [r for r in rows if r.get("name") == only]
+fleet = [r for r in rows if r.get("verdict") == "BLOCKED-FLEET"]
+founder = [r for r in rows if r.get("verdict") == "BLOCKED-FOUNDER"]
+ok = [r for r in rows if r.get("verdict") == "WOULD-SYNC"]
+# MISSING and NOT-A-REPO count against the denominator, so they are NAMED.
+# Unnamed, they read as an unexplained shortfall -- "23 of 24" with nothing
+# accounting for the 24th (PR #396 review round 2, minor).
+other = [r for r in rows
+         if r.get("verdict") not in ("WOULD-SYNC", "BLOCKED-FLEET", "BLOCKED-FOUNDER")]
+scope = f" (scoped to --only {only})" if only else ""
+print(f"reach preflight: {len(ok)} of {len(rows)} would sync now{scope}")
+for r in other:
+    print(f"  {r['name']}: {r.get('verdict')} (counted in the total, not syncable)")
+for r in founder:
+    print(f"  {r['name']}: founder work, correctly refused until committed "
+          f"(not a fleet blocker, not counted against this run)")
+    for b in (r.get("blocked_by") or [])[:5]:
+        print(f"      {b.get('status','?')}  {b.get('path')}")
+for r in fleet:
+    print(f"  {r['name']}: BLOCKED by updater exhaust")
+    for b in (r.get("blocked_by") or [])[:5]:
+        print(f"      {b.get('status','?')}  {b.get('path')}")
+sys.exit(2 if fleet else 0)
+PYEOF
+  if [ "$rc" -eq 2 ]; then
+    echo ""
+    echo "ABORT: instance(s) named above carry the updater's own exhaust."
+    echo "This is what the audit CAN see -- a dirty tree inside the synced"
+    echo "pathspec. It does NOT cover a stale skeleton or a dangling symlink;"
+    echo "those are separate gates, above and inside the loop."
+    echo ""
+    echo "  clear what is attributable:  python3 $SCRIPT_DIR/fleet-unblock.py --apply"
+    echo "  re-measure:                  python3 $audit"
+    echo "  proceed anyway:              $0 $UPDATE_ARGV --skip-reach-preflight"
+    echo ""
+    echo "  fleet-unblock clears only what it can ATTRIBUTE, and it exits 0 even"
+    echo "  when it refuses a path -- so a clean-looking run can change nothing."
+    echo "  Read its 'refused' count. If the re-measure above still names the same"
+    echo "  instance, that path needs a decision, not another --apply: commit it,"
+    echo "  or scope this run with --only, or proceed with --skip-reach-preflight."
+    exit 1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    echo ""
+    echo "ABORT: could not read the reach verdict (exit $rc)."
+    exit 1
+  fi
+}
+reach_preflight
 
 while IFS='|' read -r name path prefix itype declared; do
   # Filter INSIDE the loop, not in the feed, so an --only name that matches

@@ -1,0 +1,12 @@
+{
+ "_provenance": {
+  "producer": "founder-named exemplar roster",
+  "command": "copied from ~/projects/consulting/site/design/references/exemplars.json (written by founder-named exemplar roster)",
+  "captured_at": "2026-09-16T13:46:48+00:00",
+  "content_sha256": "30e8b03088999afebafd0d762873a65e369d0d020b5e1b93f77b8c80ea778c2b",
+  "source": "~/projects/consulting/site/design/references/exemplars.json",
+  "source_sha256": "30e8b03088999afebafd0d762873a65e369d0d020b5e1b93f77b8c80ea778c2b",
+  "frozen_at": "2026-09-19T06:23:00+00:00"
+ },
+ "content": "{\n  \"exemplars\": [\n    {\n      \"url\": \"https://squarespace.com\",\n      \"added\": \"2026-09-15\"\n    },\n    {\n      \"url\": \"https://calendly.com\",\n      \"added\": \"2026-09-15\"\n    },\n    {\n      \"url\": \"https://stripe.com\",\n      \"added\": \"2026-09-15\"\n    },\n    {\n      \"url\": \"https://notion.com\",\n      \"added\": \"2026-09-15\"\n    },\n    {\n      \"url\": \"https://figma.com\",\n      \"added\": \"2026-09-15\"\n    }\n  ],\n  \"_dropped\": [\n    {\n      \"url\": \"https://canva.com\",\n      \"dropped\": \"2026-09-15\",\n      \"why\": \"Founder-directed: 'Just drop canva.' Every capture returned canva.com's bot-wall page ('We'll have you designing again soon', one SVG, zero buttons, two type sizes), never its design. Its numbers described an error page and, left in the set, they pulled the derived floors in design-gap-check.py down toward zero: the background-colour floor read 1 instead of 3. Capture and screenshots moved to _dropped/, not deleted.\"\n    }\n  ]\n}\n"
+}
