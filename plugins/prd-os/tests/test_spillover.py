@@ -203,6 +203,34 @@ def test_void_resolves_with_recorded_reason(repo):
     assert last["status"] == "resolved" and last.get("void_reason") == "duplicate of sp0"
 
 
+def _declare_inert(repo: Path, script: str, sid: str) -> None:
+    d = repo / "q-system" / ".q-system" / "capability" / "declared_inert"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / (script.replace("/", "__") + ".json")).write_text(json.dumps(
+        {"path": script, "reason": "hand-run tool", "spillover_id": sid}))
+
+
+def test_resolve_warns_and_names_scripts_citing_the_row(repo):
+    # ASK-1960: the 2026-09-12 bulk void closed 7 rows that 12 declared_inert
+    # entries cited, and capability-gate went RED with nothing said at resolve.
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1", "--severity", "medium")
+    _declare_inert(repo, "q-system/.q-system/scripts/cited-a.py", "sp1")
+    _declare_inert(repo, "q-system/.q-system/scripts/cited-b.py", "sp1")
+    _declare_inert(repo, "q-system/.q-system/scripts/other.py", "sp9")
+    r = run(repo, "spillover", "resolve", "sp1", "--void", "not real")
+    assert r.returncode == 0, r.stderr  # warns, never refuses
+    assert "WARNING" in r.stderr and "declared_inert" in r.stderr
+    assert "cited-a.py" in r.stderr and "cited-b.py" in r.stderr
+    assert "other.py" not in r.stderr
+
+
+def test_resolve_of_an_uncited_row_is_silent(repo):
+    run(repo, "spillover", "add", "--source", "s", "--desc", "d", "--id", "sp1", "--severity", "medium")
+    _declare_inert(repo, "q-system/.q-system/scripts/other.py", "sp9")
+    r = run(repo, "spillover", "resolve", "sp1", "--void", "not real")
+    assert r.returncode == 0 and "declared_inert" not in r.stderr, r.stderr
+
+
 def test_resolve_requires_a_target(repo):
     run(repo, "spillover", "add", "--source", "s", "--desc", "x", "--id", "sp1")
     bad = run(repo, "spillover", "resolve", "sp1")  # neither --resolution-ref nor --void

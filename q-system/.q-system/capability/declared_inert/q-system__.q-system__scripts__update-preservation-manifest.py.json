@@ -1,5 +1,5 @@
 {
  "path": "q-system/.q-system/scripts/update-preservation-manifest.py",
- "reason": "built for prd-fail-closed-fleet-updater and never wired; the updater carries its own inline preservation path",
- "spillover_id": "sp-0f773063"
+ "reason": "built for prd-fail-closed-fleet-updater and never wired; the updater carries its own inline preservation path [repointed from sp-0f773063, voided 2026-09-12, to the open wire-or-retire item sp-6eab75c6 / ASK-2028 (ASK-1960)]",
+ "spillover_id": "sp-6eab75c6"
 }

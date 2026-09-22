@@ -1,5 +1,5 @@
 {
  "path": "q-system/.q-system/scripts/verify-containment-export.py",
- "reason": "built for prd-skeleton-data-containment's export/quarantine flow and never wired",
- "spillover_id": "sp-0f773063"
+ "reason": "built for prd-skeleton-data-containment's export/quarantine flow and never wired [repointed from sp-0f773063, voided 2026-09-12, to the open wire-or-retire item sp-6eab75c6 / ASK-2028 (ASK-1960)]",
+ "spillover_id": "sp-6eab75c6"
 }

@@ -1,5 +1,5 @@
 {
  "path": "q-system/.q-system/scripts/linear-collapse-jobmigration.py",
- "reason": "one-shot family collapse: it absorbed the 32-member job-migration family into ASK-151 on 2026-07-28 and has no second family to run on. ASK-226 generalises it; retire this one when that lands",
- "spillover_id": "sp-fb332466"
+ "reason": "one-shot family collapse: it absorbed the 32-member job-migration family into ASK-151 on 2026-07-28 and has no second family to run on. ASK-226 generalises it; retire this one when that lands [repointed from sp-fb332466, voided 2026-09-12, to the open wire-or-retire item sp-6eab75c6 / ASK-2028 (ASK-1960)]",
+ "spillover_id": "sp-6eab75c6"
 }

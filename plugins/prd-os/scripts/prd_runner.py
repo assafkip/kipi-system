@@ -1401,6 +1401,34 @@ def _spillover_path(cfg: Config):
     return _ledger_root(cfg.repo_root) / ".prd-os" / "spillover.jsonl"
 
 
+# Where capability-gate.py's manifest keeps one JSON fragment per declared_inert
+# entry. Read by path, not imported: this plugin runs in repos with no q-system.
+_DECLARED_INERT_DIR = Path("q-system") / ".q-system" / "capability" / "declared_inert"
+
+
+def _declared_inert_citing(cfg: Config, sid: str) -> list:
+    """Scripts whose declared_inert entry cites `sid`, from this checkout AND the
+    ledger's checkout (a worktree resolves into the main checkout's ledger).
+
+    WHY (ASK-1960): capability-gate reds any declared_inert entry whose spillover
+    row is resolved. The 2026-09-12 bulk void of stale minors closed 7 such rows
+    and turned the gate RED on 12 scripts, and nothing said so at resolve time.
+    """
+    hits = set()
+    for root in {Path(cfg.repo_root), _ledger_root(cfg.repo_root)}:
+        d = Path(root) / _DECLARED_INERT_DIR
+        if not d.is_dir():
+            continue
+        for frag in sorted(d.glob("*.json")):
+            try:
+                entry = json.loads(frag.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue  # the gate itself reports a malformed fragment
+            if isinstance(entry, dict) and entry.get("spillover_id") == sid:
+                hits.add(entry.get("path") or frag.name)
+    return sorted(hits)
+
+
 def _read_spillover(cfg: Config) -> dict:
     """Append-only ledger read with last-write-wins per id (the crash-safe
     pattern: state changes append a new record, reads collapse to the latest)."""
@@ -2763,6 +2791,16 @@ def cmd_spillover(cfg: Config, args) -> int:
                     # verified resolution, not a substitute for verifying one.
                     new["resolution_evidence"] = args.evidence
             _spillover_append(cfg, new)
+            citing = _declared_inert_citing(cfg, args.id)
+            if citing:
+                # Warn, never refuse: closing the item is still correct. What must
+                # not happen is the gate going RED later with nobody told why.
+                sys.stderr.write(
+                    f"WARNING: {args.id} is cited by {len(citing)} declared_inert "
+                    f"entr{'y' if len(citing) == 1 else 'ies'} in the capability "
+                    "manifest. capability-gate.py now reds each one until it is "
+                    "repointed at an open item or its script is decided:\n"
+                    + "".join(f"  {p}\n" for p in citing))
             print(json.dumps({"id": args.id, "status": "resolved"}))
             return 0
         sys.stderr.write(f"unknown spillover subcommand: {sub}\n")

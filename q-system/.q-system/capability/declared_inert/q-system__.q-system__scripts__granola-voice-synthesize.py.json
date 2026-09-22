@@ -1,5 +1,5 @@
 {
  "path": "q-system/.q-system/scripts/granola-voice-synthesize.py",
- "reason": "ad-hoc founder tool, no wiring surface references; wire-or-delete is a founder decision",
- "spillover_id": "sp-cc33bdb0"
+ "reason": "ad-hoc founder tool, no wiring surface references; wire-or-delete is a founder decision [repointed from sp-cc33bdb0, voided 2026-09-12, to the open wire-or-retire item sp-6eab75c6 / ASK-2028 (ASK-1960)]",
+ "spillover_id": "sp-6eab75c6"
 }
