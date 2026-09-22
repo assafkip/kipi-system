@@ -68,6 +68,9 @@ SOURCES = (
 )
 DISPOSITIONS = ("pending", "accepted", "rejected", "deferred")
 REQUIRES_RATIONALE = ("rejected", "deferred")
+REFUSED_DEFER_SEVERITIES = ("minor", "low", "nit")
+MINOR_REFUSAL = ("a minor is fixed in this change or rejected with a reason; "
+                 "it is never queued (founder 2026-09-12)")
 ID_RE = re.compile(r"^finding-([0-9]+)$")
 RECORD_FIELDS = (
     "id",
@@ -360,10 +363,55 @@ def _sync_spillover(repo_root, issue_id: str, finding: dict) -> None:
     else:
         return
 
+    _append_ledger(ledger, record)
+    if record.get("status") == "open":
+        _link_spillover(repo_root, ledger, record)
+
+
+def _append_ledger(ledger: Path, record: dict) -> None:
+    """This plugin's one ledger write path (append-only, last-write-wins)."""
     ledger.parent.mkdir(parents=True, exist_ok=True)
     with ledger.open("a") as fh:
         fh.write(json.dumps(record) + "\n")
-        fh.flush()
+
+
+def _link_spillover(repo_root, ledger: Path, record: dict) -> None:
+    """File the new deferred row to Linear and append its link (ASK-1552).
+
+    why (founder, 2026-09-12): "Backlog where? In linear or is it going to
+    disappear". The row is already written; this only adds the link, so a
+    filer failure records `failed` + the exit code for the daily check
+    (spillover-linear-check.py) to retry and never loses the row. The filer is
+    the repo's q-system/.q-system/scripts/spillover-linear-check.py, loaded by
+    path so this plugin stays independent of prd-os at import time. Never raises.
+    """
+    import importlib.util
+    path = Path(repo_root) / "q-system" / ".q-system" / "scripts" / "spillover-linear-check.py"
+    if not path.is_file():
+        return  # no filer in this repo yet; the daily check files it later
+    try:
+        spec = importlib.util.spec_from_file_location("spillover_linear_check", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        link = mod.file_record(record, Path(repo_root))
+        # Re-read the CURRENT row so the linked copy never resurrects a state
+        # change made while the filer ran.
+        current = record
+        for raw in ledger.read_text().splitlines():
+            try:
+                rec = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rec, dict) and rec.get("id") == record["id"]:
+                current = rec
+        if current.get("status") != "open":
+            return
+        out = dict(current)
+        out["linear"] = link
+        _append_ledger(ledger, out)
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"WARNING: spillover Linear filing failed ({exc!r}); the row "
+                         "is recorded and spillover-linear-check.py retries it\n")
 
 
 def cmd_set_disposition(args: argparse.Namespace) -> int:
@@ -384,6 +432,15 @@ def cmd_set_disposition(args: argparse.Namespace) -> int:
     target = None
     for rec in records:
         if rec.get("id") == args.finding_id:
+            # Founder 2026-09-12: "New minor findings: fix or reject, never
+            # queue." Refused before the findings file changes. Same tuple and
+            # message as prd_runner.py (this plugin does not import prd-os).
+            if (args.disposition == "deferred"
+                    and str(rec.get("severity") or "minor").strip().lower()
+                    in REFUSED_DEFER_SEVERITIES):
+                sys.stderr.write(f"refused: {MINOR_REFUSAL}. Accept and fix it, or "
+                                 "reject it with --rationale.\n")
+                return 2
             target = rec
             found = True
             old = rec.get("disposition")

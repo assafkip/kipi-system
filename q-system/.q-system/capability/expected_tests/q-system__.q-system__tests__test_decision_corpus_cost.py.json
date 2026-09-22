@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_decision_corpus_cost.py",
+ "runner": "python3",
+ "timeout_s": 120
+}

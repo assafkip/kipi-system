@@ -34,22 +34,44 @@
 # either stamp `codex-adversarial` (a false record) or skip the stamp and never
 # approve. In a repo whose thesis is receipts, the honest token had to exist first.
 #
-# TWO ENGINES, ONE SCRIPT -- CODEX IS THE ONE THAT GATES (ASK-221)
-# ----------------------------------------------------------------
-# Sana (the PR author) is Claude. A Claude reviewer is a different process with no
-# shared memory, genuinely useful -- but the same lab and the same model family, so
-# the blind spots stay CORRELATED. Fresh context is not an independent mind.
+# TWO ENGINES, ONE SCRIPT -- CLAUDE IS THE ONE THAT GATES (founder-directed 2026-09-06)
+# ---------------------------------------------------------------------------------
+# THIS REVERSES the 2026-07-29 directive recorded below. Founder, 2026-09-06, said
+# twice: "forget codex use claude for fallback" / "forget codex go with the claude
+# fallback". So claude is now THE reviewer: it owns `kipi/reviewer-approved` and
+# writes the ONE verdict record converge.sh and linear-worker.sh gate on. codex keeps
+# the same script but posts an ADVISORY `kipi/codex-approved` out of the gate's way.
 #
-# So codex is THE reviewer, not a second opinion appended to a Claude one:
-# founder directive 2026-07-29, "codex with gpt-5.6 as a sr. staff swe at Meta is
-# the agent that checks sana's work". It owns `kipi/reviewer-approved` and writes
-# the ONE verdict record converge.sh and linear-worker.sh gate on. Claude keeps
-# the same script but posts an ADVISORY `kipi/claude-approved` and writes its
-# record out of the gate's way.
+# THE COST IS REAL AND IS ACCEPTED, not overlooked. Sana (the PR author) is Claude, so
+# a Claude reviewer shares her lab and model family and re-derives her blind spots;
+# fresh context is not an independent mind. That was the whole argument for the
+# 2026-07-29 directive, "codex with gpt-5.6 as a sr. staff swe at Meta is the agent
+# that checks sana's work", and it is still true. What changed is availability, not
+# the argument. Restoring independence is `KIPI_REVIEW_ENGINE=codex
+# KIPI_REVIEW_PRIMARY_ENGINE=codex`, both together, or flipping the two defaults back.
 #
-# The Opus fallback below is what makes this safe: when codex is down, Claude
-# fills the PRIMARY slot and the status says DEGRADED out loud, so an outage
-# degrades the gate's independence instead of wedging every open PR.
+# WHY IT CHANGED, measured 2026-09-06 as three stacked failures each masking the next:
+# ~/.codex/config.toml asked for `gpt-6-astra` when the fleet is on Sol; codex-cli
+# 0.147.0 was too old for that model and returned HTTP 400; and underneath both, the
+# workspace is OUT OF CREDITS, which `gpt-5.6-sol` returns too. `codex exec` exits 0
+# on all three, so two sessions reviewed for a full evening on the Opus fallback and
+# nothing said so. An engine that fails silently cannot hold a required gate.
+#
+# BOTH DEFAULTS MOVE TOGETHER OR THE GATE WEDGES. The branch below posts
+# `kipi/reviewer-approved` only when ENGINE equals PRIMARY_ENGINE. Setting
+# KIPI_REVIEW_ENGINE=claude alone leaves PRIMARY_ENGINE=codex, so every review lands
+# on the advisory context and every open PR waits forever on a status nobody posts.
+#
+# THERE IS NO FALLBACK IN THE NEW DIRECTION, and saying so plainly is the point.
+# The Opus fallback and the whole DEGRADED apparatus hang off the codex branch:
+# codex down -> claude fills the slot -> the status says DEGRADED. With claude
+# PRIMARY that branch is only reachable on an advisory `--engine codex` hand-run,
+# so a claude outage has nothing behind it. That is the SAFE direction and not an
+# oversight: the primary path exits non-zero and posts NO status, and absent is
+# not approved, so a claude outage holds PRs instead of greening them. It is not
+# a second lab either way -- codex is out of credits, so a codex fallback would
+# fail at exit 0, which is the outage this flip exists to end. Restoring a real
+# fallback means restoring codex, which is the same act as restoring independence.
 #
 # It is a FLAG, not a second script, on purpose: sha capture (ASK-216), verdict
 # derivation from labelled severities, the commit-status post (ASK-217) and
@@ -133,7 +155,7 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # CODEX BY DEFAULT. Env-overridable so a codex outage long enough to matter is a
 # config change (`KIPI_REVIEW_ENGINE=claude`), not an edit to the script that
 # gates every PR in the repo.
-PR=""; ISSUE=""; POST=0; ENGINE="${KIPI_REVIEW_ENGINE:-codex}"; TARGET_REPO_ARG=""
+PR=""; ISSUE=""; POST=0; ENGINE="${KIPI_REVIEW_ENGINE:-claude}"; TARGET_REPO_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --issue)  shift; ISSUE="${1:-}" ;;
@@ -206,7 +228,9 @@ STATUS_REPO_PATH="{owner}/{repo}"
 # what made codex non-gating before the founder directive, and naively swapping
 # the pair would have introduced a fresh defect in the other direction:
 #
-#   ENGINE_DIR (reviews + ROUND COUNTER). review_round() globs `pr-<N>-*.md`, so
+#   ENGINE_DIR (reviews + ROUND COUNTER). review_round() globs this repo's own
+#   `<owner>_<repo>__pr-<N>-*.md` (ASK-1957; it globbed the legacy `pr-<N>-*.md`
+#   and therefore counted nothing at all until then), so
 #   an engine reading another engine's review files counts their rounds as its own
 #   and arms the anti-re-litigation rule early. Each engine therefore KEEPS its
 #   historical directory across this change -- claude's rounds stay in $OUT_DIR,
@@ -214,10 +238,21 @@ STATUS_REPO_PATH="{owner}/{repo}"
 #
 #   VERDICT_DIR (the ONE record the loop gates on). converge.sh:36 and
 #   linear-worker.sh:76 both read `$STATE_DIR/pr-reviews/pr-<N>.verdict.json` --
-#   the ROOT, not a subdir. So "codex is the gate" means codex writes THAT path,
-#   and claude's record moves down into $OUT_DIR/claude to get out of its way.
+#   the ROOT, not a subdir. So "claude is the gate" means claude writes THAT path,
+#   and codex's record moves down into $OUT_DIR/codex to get out of its way.
 #   Exactly one engine writes the gating record: single writer, preserved.
-PRIMARY_ENGINE="${KIPI_REVIEW_PRIMARY_ENGINE:-codex}"
+#
+#   THIS SENTENCE READ THE OTHER WAY ROUND UNTIL 2026-09-06 and is the map people
+#   read to understand the contract, so it flips with the defaults rather than
+#   being left as an artifact of the previous direction. Note the asymmetry it
+#   creates: for the PRIMARY engine ENGINE_DIR and VERDICT_DIR are now the SAME
+#   directory ($OUT_DIR). That is safe because the round counter matches
+#   `<key>-*.md` and the record is `<key>.verdict.json` -- the `-` after the key
+#   is required, so the record's name can never satisfy the counter's pattern.
+#   (Before ASK-1957 the counter's pattern was the legacy `pr-<N>-*.md`, which
+#   could not match either, for the different and much worse reason that it
+#   matched none of the repo-keyed files the writer has produced since ASK-738.)
+PRIMARY_ENGINE="${KIPI_REVIEW_PRIMARY_ENGINE:-claude}"
 
 # WHO ASKED FOR THIS REVIEW (sp-53aad86f). The verdict record proved that A CODEX
 # REVIEW RAN; it could not prove THE DISPATCHER RAN ONE UNATTENDED, which is the
@@ -268,7 +303,10 @@ REVIEW_UNUSABLE=0
 
 mkdir -p "$ENGINE_DIR" "$VERDICT_DIR"
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-REVIEW="$ENGINE_DIR/$(artifact_key "$REVIEW_SLUG" "$PR")-$(date +%Y%m%d-%H%M%S).md"
+# Through the shared convention (repo-slug-lib.sh), never assembled here: the
+# round counter reads these files back with review_md_name_glob, and the last
+# time this line spelled the shape itself the two drifted for good (ASK-1957).
+REVIEW="$(review_md_path "$ENGINE_DIR" "$REVIEW_SLUG" "$PR" "$(date +%Y%m%d-%H%M%S)")"
 
 # Same bash wall clock as the worker: macOS ships no `timeout` without coreutils,
 # and a review that never returns is worse than one that fails.
@@ -364,7 +402,16 @@ echo "  head sha under review: ${HEAD_SHA:-unknown}"
 # database, so the answer is discoverable: ask each worktree. Refusal is kept for
 # the case where NO tree holds the commit -- that is the sp-a72a9567 shape, and it
 # still must never be reviewed.
-REVIEW_ROOT="$SKEL"
+# THE DEFAULT IS THE REPO UNDER REVIEW, NOT THE SCRIPT'S OWN (PR #265 major).
+#
+# This defaulted to $SKEL, the tree this script lives in. For an EXTERNAL target
+# (--target / KIPI_TARGET_REPO) that is a different repository entirely, and the
+# WARN-and-proceed branch below leaves the default in place -- so the reviewer
+# read files out of the skeleton and stamped the verdict with another repo's PR
+# sha. Findings about a repository nobody asked about, with provenance saying
+# otherwise. When no target is given REVIEW_REPO already IS $SKEL, so this
+# changes nothing for the common case and fixes the case that was wrong.
+REVIEW_ROOT="$REVIEW_REPO"
 
 # REVIEW IN A DEDICATED DETACHED WORKTREE, NEVER IN A CHECKOUT SOMEONE IS USING
 # (sp-8f95bba0). The search below correctly finds A tree holding the PR head --
@@ -388,25 +435,200 @@ REVIEW_ROOT="$SKEL"
 # One tree per PR, reused across rounds by re-detaching rather than removing --
 # removal is a destructive op on a path this script does not own, and re-checkout
 # reaches the same state.
+# EVERY bail out of review_worktree clears the ref, not just the last one.
+#
+# CODEX MAJOR ON PR #265, round 2 -- this change reviewing itself, twice. The
+# first cut deleted the ref only on the update-ref failure at the bottom. The
+# four EARLIER bails (mkdir, checkout, worktree add, sha mismatch) returned
+# without touching it, so a round that failed to materialise its tree left
+# whatever the PREVIOUS round wrote. assert_pr_ref_not_stale then found a ref
+# pointing at an old sha and `exit 1`s -- with no self-heal, on every subsequent
+# round, until a human runs update-ref -d by hand. A guard whose only recovery
+# is a human is an outage with a good error message.
+#
+# CLEARS BOTH TREES, and that is not belt-and-braces. refs/remotes/* lives in the
+# common ref store for a real `git worktree`, so one clear would be enough THERE
+# -- but the review tree is not always that. The suite's fixture builds it as an
+# independent checkout with its OWN ref store, and clearing only through
+# $REVIEW_REPO left the stale ref exactly where it was. Two cases went red
+# immediately. That is the whole reason to run the test instead of trusting the
+# reasoning about how git stores refs.
+#
+# $wt may not exist yet on the earliest bail; `git -C` on a missing directory
+# just fails, and the redirect absorbs it, so passing it unconditionally is safe.
+#
+# Clearing is the safe direction, for the reason the bottom of this function
+# already records: absent fails CLOSED (`git show pr/<N>:<file>` errors, which is
+# answerable), stale fails OPEN (the same command silently returns old content).
+_wt_bail() {  # _wt_bail <worktree-path>
+  local wt="${1:-}"
+  [ -n "$wt" ] && git -C "$wt" update-ref -d "refs/remotes/pr/$PR" >/dev/null 2>&1
+  # AND THROUGH $REVIEW_REPO (PR #265 codex major, round 2). The earliest bail
+  # is mkdir, and when THAT fails there is no review tree to clear through, so
+  # clearing only $wt left the previous round's ref exactly where it was and
+  # assert_pr_ref_not_stale wedged every later unattended review. For a real
+  # `git worktree` the two share one ref store and the second clear is a no-op;
+  # where they do not, it is the only one that runs.
+  git -C "$REVIEW_REPO" update-ref -d "refs/remotes/pr/$PR" >/dev/null 2>&1
+  return 1
+}
+
+# ONE RUN PER REVIEW TREE (PR #265 major). review_worktree re-detaches a SHARED
+# path (review-trees/<slug>__pr-<N>) rather than making a fresh one, so two
+# concurrent reviews of the same repo and PR point at one mutable checkout: run A
+# is reading files while run B re-checkouts it to a different sha. Neither run
+# can tell, and both stamp their verdicts with the sha they THINK they read.
+#
+# Same primitive as mutation-sweep's sweep lock (ASK-1147) and for the same
+# reason: O_CREAT|O_EXCL is atomic everywhere and needs no daemon. A stale lock
+# whose holder is gone is reclaimed, because an operator who must clear locks by
+# hand eventually clears one while a run is live.
+_wt_lock_path=""
+# Exit codes are THREE-VALUED on purpose (PR #265 major, round 2). The caller
+# has to tell "nobody has a tree, so clear the stale ref" apart from "somebody
+# else owns this tree RIGHT NOW", because the cleanup that is correct for the
+# first is destructive for the second: the ref belongs to the live holder, and
+# this run never wrote it.
+#   0 = held by us   1 = could not lock (our problem)   2 = busy (their tree)
+acquire_wt_lock() {  # acquire_wt_lock <worktree-path>
+  local wt="$1" lock="$1.lock" holder
+  mkdir -p "$(dirname "$wt")" 2>/dev/null || return 1
+  if ( set -o noclobber; printf '%s' "$$" > "$lock" ) 2>/dev/null; then
+    _wt_lock_path="$lock"; return 0
+  fi
+  holder="$(cat "$lock" 2>/dev/null || true)"
+  # RE-ENTRANT for this run. review_worktree is called more than once per review,
+  # and the lock exists to keep OTHER processes out, not this one. Without this
+  # the second call in a single run refuses on a lock it placed itself -- caught
+  # immediately by the existing suites, which went 5 and 2 red.
+  if [ "$holder" = "$$" ]; then
+    _wt_lock_path="$lock"; return 0
+  fi
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+    return 2
+  fi
+  # Stale: reclaim once.
+  command rm -f "$lock" 2>/dev/null || true
+  if ( set -o noclobber; printf '%s' "$$" > "$lock" ) 2>/dev/null; then
+    _wt_lock_path="$lock"; return 0
+  fi
+  return 1
+}
+release_wt_lock() {
+  [ -n "$_wt_lock_path" ] || return 0
+  if [ "$(cat "$_wt_lock_path" 2>/dev/null || true)" = "$$" ]; then
+    command rm -f "$_wt_lock_path" 2>/dev/null || true
+  fi
+  _wt_lock_path=""
+}
+trap 'release_wt_lock' EXIT
+
 review_worktree() {  # review_worktree <sha> -> prints path, or nothing
   # KEYED BY REPO AND PR (ASK-738). One shared review-trees/pr-<N> path meant
   # two repos' PR #42 shared a single detached worktree, re-checked out to
   # whichever repo asked last -- a review reading the wrong repository's files.
   local sha="$1" wt; wt="$(review_tree_path "$HOME/.config/kipi" "$REVIEW_SLUG" "$PR")"
-  mkdir -p "$(dirname "$wt")" 2>/dev/null || return 1
+  # Refuse rather than share. A second run returning empty here degrades to the
+  # fallback search, which now demands a tree AT the sha and refuses if none --
+  # so a concurrent review says so instead of silently reading a moving tree.
+  # A failure to materialise clears the stale ref -- EXCEPT when the reason is
+  # that another run owns the tree.
+  #
+  # The first cut cleared on every failure, and codex caught the consequence: a
+  # concurrent reviewer that LOST the lock deleted refs/remotes/pr/<N> out from
+  # under the reviewer that WON it, invalidating a live review's evidence. My own
+  # two fixes colliding -- the ref cleanup is right when nobody has a tree and
+  # destructive when somebody does.
+  acquire_wt_lock "$wt"
+  case "$?" in
+    0) : ;;
+    2) echo "  WARN: another review holds $wt; leaving its ref alone and falling back." >&2
+       return 1 ;;
+    *) echo "  WARN: could not lock $wt; not reusing a tree a live run can re-checkout under us." >&2
+       _wt_bail "$wt"
+       return 1 ;;
+  esac
+  mkdir -p "$(dirname "$wt")" 2>/dev/null || _wt_bail "$wt" || return 1
   if [ -d "$wt/.git" ] || [ -f "$wt/.git" ]; then
-    git -C "$wt" checkout --detach --force "$sha" >/dev/null 2>&1 || return 1
+    git -C "$wt" checkout --detach --force "$sha" >/dev/null 2>&1 || _wt_bail "$wt" || return 1
   else
-    git -C "$REVIEW_REPO" worktree add --detach "$wt" "$sha" >/dev/null 2>&1 || return 1
+    git -C "$REVIEW_REPO" worktree add --detach "$wt" "$sha" >/dev/null 2>&1 || _wt_bail "$wt" || return 1
   fi
   # Prove it landed where we asked. A worktree silently sitting at the wrong sha
   # is the same false-provenance bug in a new costume.
-  [ "$(git -C "$wt" rev-parse HEAD 2>/dev/null)" = "$sha" ] || return 1
+  [ "$(git -C "$wt" rev-parse HEAD 2>/dev/null)" = "$sha" ] || _wt_bail "$wt" || return 1
+
+  # REFRESH refs/remotes/pr/<N> TOO. Re-detaching moved HEAD but left this ref
+  # wherever the FIRST round put it, and the reviewer's reproducers read the PR
+  # through it (`git show pr/<N>:<file>`). So from round 2 onward the tree was
+  # correct and the ref was stale, and the reviewer re-raised findings against
+  # code the author had already fixed.
+  #
+  # Measured 2026-08-29: pr/253 sat at the pre-fix sha while the PR head had
+  # moved, and that round's verdict was issued without the fix in view. On
+  # ASK-353 it cost two whole rounds of re-raised findings before anyone looked
+  # at the ref rather than at the code.
+  #
+  # This is a gate reading the wrong input, which is worse than a gate that
+  # fails: it produces a confident verdict about a file that is not there.
+  # Anchored here because this is the single place that pins tree-to-sha, so the
+  # ref cannot drift from HEAD without this line drifting too.
+  #
+  # AND IF IT CANNOT BE MADE CORRECT, DELETE IT (Codex major on PR #265, which is
+  # this change reviewing itself). The first cut just returned 1 here. But the
+  # caller wraps this in `|| true` and degrades to reviewing the live tree, so a
+  # swallowed failure left the tree re-detached, the ref stale, and the review
+  # running anyway -- the exact state this function exists to prevent, reached
+  # through its own error path.
+  #
+  # Deleting fails CLOSED: `git show pr/<N>:<file>` then errors on a missing ref,
+  # which is answerable. Leaving it fails OPEN: the same command silently returns
+  # round-1 content and the reviewer never knows it read the wrong file. No answer
+  # beats a confident wrong one.
+  if ! git -C "$wt" update-ref "refs/remotes/pr/$PR" "$sha" >/dev/null 2>&1 ||
+     [ "$(git -C "$wt" rev-parse "refs/remotes/pr/$PR" 2>/dev/null)" != "$sha" ]; then
+    git -C "$wt" update-ref -d "refs/remotes/pr/$PR" >/dev/null 2>&1 || true
+    git -C "$REVIEW_REPO" update-ref -d "refs/remotes/pr/$PR" >/dev/null 2>&1 || true
+    return 1
+  fi
   printf '%s' "$wt"
+}
+
+# NO REVIEW MAY START WHILE A STALE pr/<N> REF EXISTS. Checked HERE, at the
+# caller, because nothing review_worktree returns can enforce it: it is invoked
+# inside `$( )`, so it runs in a SUBSHELL -- `return 1` is swallowed by the
+# `|| true` below, and even `exit` would only leave the subshell. A guard whose
+# every failure signal is discarded by its own call site is not a guard.
+#
+# So the invariant is asserted independently of the function's result: after the
+# call, the ref is either absent or equal to the sha under review. Anything else
+# and the reproducers would read another commit's files while reporting this sha
+# (sp-690ba60b / ASK-1120), which is a confident wrong answer rather than a
+# failure, so this refuses instead of degrading.
+#
+# Codex found this twice on PR #265, both times correctly. Round 1: returning 1
+# left the ref stale because the caller degrades. Round 2: the cleanup's own
+# `|| true` meant a failed DELETE was swallowed too. Both are the same shape --
+# an error path that lands in the exact state the guard exists to prevent.
+assert_pr_ref_not_stale() {  # assert_pr_ref_not_stale <dir> <sha>
+  local dir="$1" sha="$2" now
+  # --verify --quiet IS LOAD-BEARING. Bare `rev-parse <missing-ref>` prints the
+  # REF NAME on stdout and exits non-zero, so `now` came back as the literal
+  # string "refs/remotes/pr/<N>" -- non-empty, not equal to the sha, and the
+  # assertion refused every FIRST-round review, where absent is the normal state.
+  # Caught by the absent-ref case below, which is why that case exists.
+  now="$(git -C "$dir" rev-parse --verify --quiet "refs/remotes/pr/$PR" 2>/dev/null || true)"
+  [ -z "$now" ] && return 0          # absent is safe: a reproducer errors loudly
+  [ "$now" = "$sha" ] && return 0
+  echo "FATAL: refs/remotes/pr/$PR is stale (${now:0:8}, reviewing ${sha:0:8}) and could not be corrected or removed." >&2
+  echo "       Refusing to review: the reproducers read the PR through that ref and would report on the wrong commit." >&2
+  echo "       Clear it by hand:  git -C $dir update-ref -d refs/remotes/pr/$PR" >&2
+  exit 1
 }
 
 if [ -n "$HEAD_SHA" ] && git -C "$REVIEW_REPO" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
   ISOLATED="$(review_worktree "$HEAD_SHA" || true)"
+  assert_pr_ref_not_stale "${ISOLATED:-$REVIEW_REPO}" "$HEAD_SHA"
   if [ -n "$ISOLATED" ]; then
     REVIEW_ROOT="$ISOLATED"
     echo "  tree: $REVIEW_ROOT (detached at ${HEAD_SHA:0:8}; isolated from any checkout in use)"
@@ -434,15 +656,45 @@ fi
 if [ "$HEAD_SHA_ISOLATED" != "1" ] && [ -n "$HEAD_SHA" ]; then
   if ! git -C "$REVIEW_REPO" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
     echo "  WARN: $REVIEW_REPO does not have commit $HEAD_SHA, so the tree/PR match cannot be proven (stale or partial clone?). Proceeding; a review of the wrong tree would report findings absent from this diff." >&2
-  elif ! git -C "$REVIEW_REPO" merge-base --is-ancestor "$HEAD_SHA" HEAD 2>/dev/null; then
-    # SKEL does not contain the PR. Find a worktree that does. `worktree list
-    # --porcelain` emits a `worktree <path>` line per tree, SKEL included; testing
-    # SKEL again is harmless and keeps the loop free of a special case.
+  elif [ "$(git -C "$REVIEW_REPO" rev-parse HEAD 2>/dev/null)" != "$HEAD_SHA" ]; then
+    # THE TRIGGER HAD THE SAME BUG AS THE SELECTION, and my own reproducer for
+    # the selection is what found it. This asked whether $REVIEW_REPO CONTAINS
+    # the PR head, and short-circuited to reviewing $REVIEW_REPO when it did --
+    # so a checkout ten commits past the PR was used directly, with no check at
+    # all. Fixing only the loop below would have left the commoner path open.
+    #
+    # Now: $REVIEW_REPO qualifies only when it is checked out AT the sha.
+    # Anything else falls into the search, which also demands exact equality and
+    # refuses if nothing matches.
+    #
+    # Blast radius is small by construction: the PRIMARY path is an isolated
+    # worktree materialised AT the sha, and this whole branch runs only when that
+    # materialisation failed. Tightening a degraded path costs refusals that name
+    # the commit; leaving it costs confident reviews of code the PR does not have.
+    #
+    # SKEL does not hold the PR at its head. Find a worktree that does.
+    # `worktree list --porcelain` emits a `worktree <path>` line per tree, SKEL
+    # included; testing SKEL again is harmless and keeps the loop free of a
+    # special case.
+    # EXACTLY AT THE SHA, not merely containing it (PR #265 codex major).
+    #
+    # This asked `--is-ancestor "$HEAD_SHA" HEAD`, which is true for every
+    # DESCENDANT. A worktree ten commits past the PR head satisfied it, so the
+    # reviewer read FILES from newer code and the verdict was stamped with the
+    # captured older sha -- findings cited lines the PR does not contain, and the
+    # provenance said otherwise. That is the same false-provenance defect the
+    # isolated-worktree path above exists to prevent, reached through its
+    # fallback.
+    #
+    # Tightening this means MORE refusals, and that is the correct direction: the
+    # refusal below names the commit and how to get it, while a descendant tree
+    # produces a confident review of the wrong code with nothing saying so. No
+    # answer beats a wrong one, and this is the degraded path, not the normal one.
     FOUND_ROOT=""
     while IFS= read -r wt; do
       [ -n "$wt" ] || continue
       [ -d "$wt" ] || continue
-      if git -C "$wt" merge-base --is-ancestor "$HEAD_SHA" HEAD 2>/dev/null; then
+      if [ "$(git -C "$wt" rev-parse HEAD 2>/dev/null)" = "$HEAD_SHA" ]; then
         FOUND_ROOT="$wt"; break
       fi
     done < <(git -C "$REVIEW_REPO" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10)}')
@@ -451,7 +703,7 @@ if [ "$HEAD_SHA_ISOLATED" != "1" ] && [ -n "$HEAD_SHA" ]; then
       REVIEW_ROOT="$FOUND_ROOT"
       echo "  tree: $REVIEW_ROOT (holds PR #$PR at ${HEAD_SHA:0:8}; the script itself lives in $SKEL, the code under review in $REVIEW_REPO)"
     else
-      echo "REFUSING: PR #$PR is at $HEAD_SHA, which is not in the history of $REVIEW_REPO (HEAD $(git -C "$REVIEW_REPO" rev-parse --short HEAD 2>/dev/null)) or of any worktree it lists." >&2
+      echo "REFUSING: PR #$PR is at $HEAD_SHA, and no worktree of $REVIEW_REPO (HEAD $(git -C "$REVIEW_REPO" rev-parse --short HEAD 2>/dev/null)) is checked out AT that commit. A tree that merely CONTAINS it holds newer files, which would be reviewed and then stamped with this sha." >&2
       echo "  The reviewer reads FILES from a tree and the DIFF from the PR. With no tree holding this commit, every finding would cite code that is not in this PR, stamped with this PR's sha." >&2
       echo "  Fetch the PR's head, or run it from a tree that has it. No review was dispatched and NO status was posted -- absent is not approved." >&2
       exit 1
@@ -462,7 +714,11 @@ fi
 # $REVIEW is only a variable at this point -- the file is not created until the
 # reviewer's stdout redirect at the bottom -- so review_round's "existing + 1" is
 # exactly this run's round number. (Counting after the redirect would double it.)
-ROUND="$(review_round "$ENGINE_DIR" "$PR")"
+# The SLUG is passed because the counter keys on it exactly as this script's
+# writer does. Without it the counter globs the legacy `pr-<N>-*.md`, matches
+# none of the repo-keyed files written since ASK-738, and reports round 1 on
+# every run -- which is how ROUND_RULE below sat unarmed (ASK-1957).
+ROUND="$(review_round "$ENGINE_DIR" "$PR" "$REVIEW_SLUG")"
 echo "  round: $ROUND (engine: $ENGINE)"
 
 # A repeat review must not re-litigate. Fresh eyes on the CODE is the point;
@@ -716,7 +972,30 @@ note_degraded_transition() {   # note_degraded_transition <0|1> [reason]
 echo "$(TS) running the $ENGINE reviewer (bounded at ${TIMEOUT_SECONDS}s)..."
 if [ "$ENGINE" != "codex" ]; then
   if run_engine claude "$REVIEW"; then
-    echo "$(TS) review written: $REVIEW"
+    # THE CLAUDE PATH GETS THE SAME PARSEABILITY BAR AS THE OTHER TWO, and this
+    # line is the whole reason it is here (review of PR #319). Until the
+    # 2026-09-06 flip this branch was ADVISORY ONLY, so an unread review landed
+    # on kipi/claude-approved and gated nothing; the bar lived on the codex path
+    # and, after codex found the same hole in it on 2026-07-29, on the Opus
+    # fallback. The flip moved the REQUIRED kipi/reviewer-approved onto the one
+    # path in this script that never asked the question.
+    #
+    # REPRODUCED, not reasoned about, before this line existed: the suite's own
+    # CODEX_TRUNCATED fixture (harness noise, prose "VERDICT: APPROVE", a
+    # FINDINGS: block that is never closed, exit 0) posted
+    #   state=success -f context=kipi/reviewer-approved -f description=APPROVE
+    # on the default path, while the verdict record it wrote beside it said
+    # "usable": false. The identical stream through the codex path correctly
+    # posted state=failure. Nothing paged. An unclosed FINDINGS block parses as
+    # an EMPTY findings list and an empty list derives APPROVE, so exiting 0 is
+    # not evidence the reviewer said anything -- and a green required gate over
+    # a review nobody read is the worst outcome available in this script.
+    if review_is_usable "$REVIEW"; then
+      echo "$(TS) review written: $REVIEW"
+    else
+      REVIEW_UNUSABLE=1
+      echo "$(TS) the $ENGINE reviewer answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
+    fi
   else
     rc=$?
     echo "$(TS) reviewer failed or timed out (rc=$rc). Partial output: $REVIEW" >&2
@@ -833,11 +1112,14 @@ echo "  verdict: ${VERDICT:-unstated}$DRY_NOTE"
 # Both post `state: failure`, and a selector that sees only `failure` sends a
 # never-reviewed PR to REWORK with no findings to work from.
 #
-# ASKED HERE, NOT REUSED FROM $REVIEW_UNUSABLE. That flag is set on the codex and
-# fallback paths only -- the `ENGINE != codex` primary path never evaluates
-# usability at all -- so reading it would record `usable: true` for a path that
-# never checked, which is the fabricated-evidence direction. One call, the same
-# predicate on the same file the verdict came from, covering all three paths.
+# ASKED HERE, NOT REUSED FROM $REVIEW_UNUSABLE. All three dispatch paths now set
+# that flag (the `ENGINE != codex` path joined them in the review of PR #319; it
+# previously never evaluated usability at all, which is what let a truncated
+# claude stream green the required gate once claude became primary). It is still
+# asked again here rather than reused, because $REVIEW_UNUSABLE is the flag the
+# VERDICT was computed from and this key is a claim about the FILE -- deriving one
+# from the other would make the record unable to disagree with the gate, and that
+# disagreement is exactly the signal this key exists to preserve.
 #
 # RECORD-ONLY, DELIBERATELY. This changes no gate. $VERDICT is computed above and
 # is not touched here, so no PR's outcome moves on this commit; the consumer that

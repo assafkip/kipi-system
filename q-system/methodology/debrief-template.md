@@ -274,6 +274,10 @@ After completing the template and implications analysis, route insights to canon
   {"s":"Person Name","p":"resonated_with","o":"nervous system metaphor","t":"2026-03-12"}
   {"s":"Connector Name","p":"introduced","o":"Person Name","t":"2026-03-12"}
   ```
+- Two optional fields the reader (`knowledge-inject`, the UserPromptSubmit hook that supplies these facts back) uses when present:
+  - `"src"`: where the fact came from, as `path:line` or a transcript id. Example: `{"s":"Person Name","p":"cares_about","o":"cross-silo coordination","t":"2026-03-12","src":"output/debrief-2026-03-12-person.md:41"}`
+  - an alias row, so a short form resolves to the full name: `{"s":"PN","p":"alias_of","o":"Person Name","t":"2026-03-12"}`. An alias under 4 characters matches only as an uppercase whole word.
+- Never delete a triple. A changed state gets a new row with a later `t`; the reader marks the older row STALE for state predicates (status, works_at, role) and keeps every row of an accumulative one (owns, confirmed, discovered).
 
 ### 7. Positioning changes → `my-project/current-state.md`
 - If the conversation revealed that a claim is invalid, update "claimed but unproven"

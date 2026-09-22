@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "slug": "instrument-discipline-directive-count",
+  "reason": "enforced-claim-lint C12: the section carries 9 directives as the lint counts them; the entry declared 1. Re-read: the disposition (ENFORCED for the null-claim label check only, the rest advisory) is unchanged, only the count was wrong. One replace.",
+  "requires": {
+    "files_present": [
+      ".claude/rules/instrument-discipline.md"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/rules/instrument-discipline.md",
+      "op": "replace",
+      "anchor": "\"directives\": 1",
+      "insert": "\"directives\": 9",
+      "reason": "Match the declared count to the section as it stands."
+    }
+  ]
+}
