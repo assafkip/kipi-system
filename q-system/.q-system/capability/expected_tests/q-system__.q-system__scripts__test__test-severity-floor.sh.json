@@ -1,5 +1,13 @@
 {
  "path": "q-system/.q-system/scripts/test/test-severity-floor.sh",
  "runner": "bash",
- "timeout_s": 600
+ "timeout_s": 600,
+ "covers": [
+  "q-system/.q-system/scripts/pr-verdict-lib.sh",
+  "q-system/.q-system/scripts/pr-review-agent.sh",
+  "q-system/.q-system/scripts/linear-worker.sh",
+  "q-system/.q-system/scripts/linear-claim.py",
+  "q-system/.q-system/scripts/repo-slug-lib.sh",
+  "q-system/.q-system/scripts/converge.sh"
+ ]
 }
