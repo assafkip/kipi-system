@@ -157,9 +157,17 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
                     "opencode", ok=True, bot=os.environ.get("CHIEF_BOT") or "voiceloop",
                     job=os.environ.get("CHIEF_JOB") or caller, model=active_model))
                 return "".join(parts).strip() or None
-        except (subprocess.SubprocessError, OSError):
+        except (subprocess.SubprocessError, OSError) as exc:
+            usage_ledger.append(usage_ledger.failure_row(
+                f"opencode:{type(exc).__name__}", stderr=str(exc),
+                bot=os.environ.get("CHIEF_BOT") or "voiceloop",
+                job=os.environ.get("CHIEF_JOB") or caller, model=active_model))
             return None
     if not os.path.exists(binary):
+        usage_ledger.append(usage_ledger.failure_row(
+            "no-binary", stderr=f"claude_bin not found: {binary}",
+            bot=os.environ.get("CHIEF_BOT") or "voiceloop",
+            job=os.environ.get("CHIEF_JOB") or caller, model=model))
         return None
     # ASK-2008: the call is metered. Every path below leaves one row, the failures
     # included: a limit refusal, a timeout that burned tokens before the kill, a
@@ -200,6 +208,13 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
             f"exit {result.returncode}", stdout=result.stdout, stderr=result.stderr, **who))
         return None
     # `finish` hands back the same bytes a plain call printed (result + newline).
-    text, row = usage_ledger.finish(result.stdout, **who)
-    usage_ledger.append(row)
+    try:
+        text, row = usage_ledger.finish(result.stdout, **who)
+        usage_ledger.append(row)
+    except Exception as exc:  # noqa: BLE001
+        # THE METER CAN NEVER FAIL THE CALL. A malformed document (a non-dict
+        # modelUsage, say) is the ledger's problem, not the caller's: the plain
+        # text is handed back exactly as an unmetered call would have (round 5).
+        usage_ledger.append(usage_ledger.failure_row("meter:" + type(exc).__name__, stderr=str(exc), **who))
+        return usage_ledger.plain_text(result.stdout)
     return text  # None when the CLI answered with an error document

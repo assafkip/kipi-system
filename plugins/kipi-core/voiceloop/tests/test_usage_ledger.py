@@ -303,3 +303,37 @@ def test_the_reviser_never_takes_the_opencode_branch(captured, tmp_path, monkeyp
     fake_bin = tmp_path / "claude"; fake_bin.write_text("")
     revise._run_prompt("p", claude_bin=str(fake_bin), model="writer-tier")
     assert seen["argv"][0] == str(fake_bin) and "writer-tier" in seen["argv"]
+
+
+# ---- PR #410 round 5 --------------------------------------------------------------
+
+def test_a_malformed_document_never_fails_the_call(captured, tmp_path, monkeypatch):
+    import subprocess
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("OPENCODE", raising=False)
+    monkeypatch.setenv(usage_ledger.LEDGER_ENV, str(tmp_path / "l.jsonl"))
+    doc = dict(captured["json_stdout"], modelUsage="not a dict")
+
+    class Done:
+        returncode, stderr = 0, ""
+        stdout = json.dumps(doc)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Done())
+    fake_bin = tmp_path / "claude"; fake_bin.write_text("")
+    assert prompt_render.run_model("p", claude_bin=str(fake_bin), caller="c") == captured["plain_stdout"]
+    rows = usage_ledger.read()
+    assert rows and rows[-1]["kind"] == "run" and rows[-1]["tokens_in"] is None
+
+
+def test_a_missing_binary_leaves_a_row(tmp_path, monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("OPENCODE", raising=False)
+    monkeypatch.setenv(usage_ledger.LEDGER_ENV, str(tmp_path / "l.jsonl"))
+    assert prompt_render.run_model("p", claude_bin=str(tmp_path / "absent"), caller="c") is None
+    assert usage_ledger.read()[-1]["subtype"] == "failed:no-binary"
+
+
+def test_a_bare_relative_ledger_path_still_writes(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(usage_ledger.LEDGER_ENV, "ledger.jsonl")
+    assert usage_ledger.append({"a": 1}) is True
+    assert usage_ledger.read() == [{"a": 1}]

@@ -96,7 +96,8 @@ def row_from(doc: dict, *, bot: str, job: str | None = None, model: str | None =
     subagents is charged in full to the bot that started it.
     """
     per_model: dict[str, dict] = {}
-    for name, m in (doc.get("modelUsage") or {}).items():
+    usage = doc.get("modelUsage")
+    for name, m in (usage.items() if isinstance(usage, dict) else ()):
         if isinstance(m, dict):
             per_model[name] = {k: m.get(k, 0) for k in _PER_MODEL_KEYS}
     # Empty modelUsage means the CLI reported nothing, not that nothing was spent:
@@ -194,7 +195,22 @@ def _result_document(stdout: str | None) -> dict | None:
     return None
 
 
-def finish(stdout: str, *, bot: str, job: str | None = None, model: str | None = None) -> tuple[str, dict]:
+def plain_text(stdout: str | None) -> str | None:
+    """Best-effort prose from a json-format stdout when metering itself failed."""
+    try:
+        doc = _result_document(stdout)
+        if doc is None:
+            return stdout
+        if _failed(doc):
+            return None
+        text = doc.get("result")
+        return (text if isinstance(text, str) else "") + "\n"
+    except Exception:  # noqa: BLE001
+        return stdout
+
+
+def finish(stdout: str, *, bot: str, job: str | None = None,
+           model: str | None = None) -> tuple[str | None, dict]:
     """(text_for_the_caller, ledger_row) from the raw stdout of a json-format call.
 
     `text_for_the_caller` is byte-identical to what a plain `-p` call prints for
@@ -227,7 +243,9 @@ def append(row: dict, path: str | None = None) -> bool:
     """Append one row. True if written. Never raises: the run is not the ledger's to fail."""
     target = path or ledger_path()
     try:
-        os.makedirs(os.path.dirname(target), exist_ok=True)
+        parent = os.path.dirname(target)
+        if parent:  # a bare filename lives in the cwd; makedirs("") raises
+            os.makedirs(parent, exist_ok=True)
         with open(target, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, sort_keys=True) + "\n")
         return True

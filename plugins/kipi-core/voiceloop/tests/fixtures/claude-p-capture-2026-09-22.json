@@ -8,7 +8,8 @@
   },
   "captured_at": "2026-09-22T17:41:19Z",
   "redaction": "none",
-  "note": "Written by capture_payload.py from a real connector response. Do not hand-edit: a typed field name here is the defect this fixture exists to catch."
+  "note": "Written by capture_payload.py from a real connector response. Do not hand-edit: a typed field name here is the defect this fixture exists to catch.",
+  "regenerate": "Run each argv in payload (argv_json, argv_plain) with the same prompt against the installed claude CLI and store the raw stdouts as json_stdout (parsed) and plain_stdout. The envelope writer is the deployment's capture_payload.py, outside this plugin; the tests accept any file whose _provenance block carries connector, call and captured_at."
  },
  "payload": {
   "json_stdout": {
