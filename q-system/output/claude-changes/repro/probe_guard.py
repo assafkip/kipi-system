@@ -130,6 +130,21 @@ CASES = [
     # idx 0, and a sink downstream of a pipe.
     ("ATTACK", "python3 -c \"open('.claude/rules/x','w')\"", REPO, BLOCK),
     ("ATTACK", "echo .claude/settings.json | xargs -I{} cp /tmp/evil {}", REPO, BLOCK),
+    # A PIPELINE READ OF A PLUGIN MANIFEST (ASK-733). `.claude-plugin/` is a
+    # different directory; a raw ".claude" substring test at the pipeline branch
+    # refused this while protected_position() called the path safe (measured
+    # 2026-08-13, cost a detour in ASK-728). Both directions are pinned: the
+    # manifest read passes, the same pipe over a real `.claude/` file does not.
+    ("BENIGN",
+     "git show HEAD:plugins/prd-os/.claude-plugin/plugin.json | python3 -m json.tool",
+     REPO, ALLOW),
+    ("BENIGN",
+     "git show HEAD:plugins/prd-os/.claude-plugin/plugin.json "
+     "| python3 -c 'import json,sys; print(json.load(sys.stdin)[\"version\"])'",
+     REPO, ALLOW),
+    ("ATTACK",
+     "git show HEAD:.claude/settings.json | python3 -c 'import sys; sys.stdin.read()'",
+     REPO, BLOCK),
     ("BENIGN",
      "bash q-system/.q-system/scripts/apply-claude-changes.sh "
      "q-system/output/claude-changes/arm-claude-write-path-guards.json",
