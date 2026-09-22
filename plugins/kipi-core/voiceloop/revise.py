@@ -46,7 +46,6 @@ words with a model's, which is the exact thing the voice system exists to preven
 from __future__ import annotations
 
 import os
-import subprocess
 
 from . import prompt_render
 
@@ -301,21 +300,19 @@ def _run_prompt(prompt, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
         raise ValueError(
             "revise needs an explicit model; the engine has no default tier because "
             "the writer's tier is the operator's choice, not the package's")
-    binary = claude_bin
-    if not os.path.exists(binary):
-        return None
-    try:
-        # THE REVISER WRITES, so it gets the writer's tier (2026-08-13). It edits a post
-        # that is already in his voice and must not flatten it; that is the same
-        # cross-source judgment the writer needs, not the cheap comparison a critic does.
-        result = subprocess.run([binary, "--model", model, "-p", prompt],
-                                capture_output=True,
-                                text=True, timeout=timeout)
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if result.returncode != 0:
-        return None
-    return result.stdout
+    # THE REVISER WRITES, so it gets the writer's tier (2026-08-13). It edits a post
+    # that is already in his voice and must not flatten it; that is the same
+    # cross-source judgment the writer needs, not the cheap comparison a critic does.
+    #
+    # Through the one chokepoint, not its own subprocess (PR #410 review, ASK-2008):
+    # this call is the expensive one, up to two per draft at the writer's tier, and
+    # its own `claude -p` wrote no usage row, so a per-bot spend report charged the
+    # repair loop to nobody. run_model meters it and hands back the same bytes.
+    # allow_opencode=False: the reviser REQUIRES an explicit writer tier (the two
+    # ValueErrors above), and the opencode branch would drop it for OPENCODE_MODEL.
+    # Before PR #410 this call never touched opencode; it still does not.
+    return prompt_render.run_model(prompt, claude_bin, timeout=timeout, model=model,
+                                   caller="revise", under_test="none", allow_opencode=False)
 
 
 def revise(text, violations, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
