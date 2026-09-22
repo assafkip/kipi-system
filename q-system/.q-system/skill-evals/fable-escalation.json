@@ -1,4 +1,4 @@
-{"skill":"fable-escalation","fired_marker":"fable-escalate","cases":[
+{"skill":"fable-escalation","fired_marker":"fable-escalate","seed_path":"q-system/.q-system/scripts/skill_eval_seed.py","cases":[
  {"prompt":"I already told you twice to fix the timeout, why do you keep changing the retry count instead","should_trigger":true},
  {"prompt":"that's wrong. no. that is the second time you gave me the same broken diff for this file","should_trigger":true},
  {"prompt":"the hook is wired, I can see the filename in settings.json, so the guard is live right","should_trigger":true},

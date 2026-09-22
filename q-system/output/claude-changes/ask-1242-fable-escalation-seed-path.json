@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "slug": "ask-1242-fable-escalation-seed-path",
+  "reason": "ASK-1242: fable-escalation.md is paths-scoped, so a bare claude -p eval never loaded it and its fixture measured the un-ruled model. skill-trigger-eval.py now refuses such a fixture unless it declares a seed_path, and fable-escalation.json now declares one. The rule's measurement sentence says which, per the issue's acceptance.",
+  "requires": {
+    "files_present": [
+      ".claude/rules/fable-escalation.md",
+      "q-system/.q-system/scripts/skill-trigger-eval.py",
+      "q-system/.q-system/skill-evals/fable-escalation.json"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/rules/fable-escalation.md",
+      "op": "insert_after",
+      "anchor": "`q-system/.q-system/skill-evals/fable-escalation.json`.",
+      "insert": " This rule is paths-scoped,\nso a bare `claude -p` never loads it: the fixture declares a `seed_path` matching\n`**/scripts/**`, and the harness runs it in a temp copy with that file created and\nnamed in every prompt (ASK-1242). The harness refuses a paths-scoped fixture that\nhas neither a seed nor a matching path in each prompt. The seed makes the rule\nloadable, not loaded: whether the model opens the file is still its own call."
+    }
+  ]
+}
