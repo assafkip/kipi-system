@@ -93,6 +93,141 @@ def _route_draft(text):
     return text.split(marker, 1)[1].strip()
 
 
+#: The producer prints this above the reason when a route REFUSED (ASK-1744,
+#: consulting's `pipeline.social.REFUSAL_MARKER`). Same role `=== DRAFT ===` plays for
+#: a draft, and hardcoded for the same reason: these three markers are the wire
+#: protocol between a lane and this gate, not a per-instance setting.
+_REFUSAL_MARKER = "=== WHY THERE IS NO DRAFT ==="
+
+
+def _refusal_text(text):
+    """The reason the producer refused with, or None when the turn carries none."""
+    if _REFUSAL_MARKER not in text:
+        return None
+    body = text.split(_REFUSAL_MARKER, 1)[1]
+    # Stop at the receipt block, which is printed after the reason and is not part of
+    # it. Without this the receipt JSON hashes into the reason and every refusal
+    # mismatches, which reads as a forged reason rather than as a parsing bug.
+    for marker in ("=== ROUTE RECEIPT ===", "=== DRAFT ==="):
+        if marker in body:
+            body = body.split(marker, 1)[0]
+    return body.strip()
+
+
+def _consume_refusal(contract, receipt, identity, assistant_text, result):
+    """Spend a REFUSED receipt for a turn that reports the refusal (ASK-1744).
+
+    A refused row can never authorize a turn that carries a draft, and that is
+    enforced HERE rather than in the store: the producer's refusal is the only text
+    this turn may deliver, so a `=== DRAFT ===` marker or any inline publishable body
+    refuses. Otherwise a lane could mint a refusal and ship a draft under it.
+
+    Why the gate needed this at all: the lane prints the reason and its refusal
+    receipt, but the gate only understood `complete`. So the turn saying "here is why
+    there is no draft" was held for having no receipt, and the session could not report
+    the refusal it had just produced (measured 2026-09-15, three linkedin reply runs in
+    one evening).
+    """
+    # BOTH HELPERS ARE NESTED, and that is a propagation requirement rather than a
+    # style choice. `automation/test_voice_stop_gate_propagation.py` compares the
+    # TOP-LEVEL function sets of the skeleton and instance copies, and a name in only
+    # one of them is the very defect this change exists to clear. Shipping these two
+    # at module level cleared the defect in one direction and re-created it in the
+    # other (caught in PR #375 round 2). The propagation check excludes nested
+    # helpers on purpose: the fan-out cannot delete one independently of its parent,
+    # and these two exist only for this function and travel with it.
+
+    def reason_candidates(region):
+        """The strings that may be the bound reason, WIDEST FIRST.
+
+        The producer's contract is that everything between the marker and the next
+        marker is the reason; that is tried first and is unchanged. But the producer
+        does not write the turn, the model does, and a closing line after the reason
+        joined the hash and held the turn with "does not match the stated reason",
+        which reads as tampering rather than as an extra sentence (round 1 minor).
+        The first paragraph is offered as a fallback. It cannot weaken the binding:
+        every candidate is checked against the receipt's own hash.
+        """
+        region = region.strip()
+        candidates = [region]
+        first = region.split("\n\n", 1)[0].strip()
+        if first and first != region:
+            candidates.append(first)
+        return candidates
+
+    def unbound_text(reason):
+        """The turn with the bound reason and the receipt cut out AS SPANS.
+
+        Everything else, above the refusal marker AND below the receipt, is text no
+        hash covers, so it is the only part that can smuggle a draft.
+
+        Two ways this has already been got wrong, both kept here because the shape
+        that is easy to write is the wrong one:
+
+        - Scanning the WHOLE turn reads the bound reason as its own draft. Refusal
+          reasons say things like "the reply ran long for LinkedIn", and a refusal
+          that quotes the text it rejected is an ordinary shape (round 1 major).
+        - TRUNCATING at the receipt marker drops everything below it, so a fence one
+          line under the receipt was never graded and spent the refusal anyway
+          (round 2 major). Trailing content after a block is what a model writes;
+          it is not a constructed case.
+        """
+        head, _, body = assistant_text.partition(_REFUSAL_MARKER)
+        cut = min((body.index(marker) for marker
+                   in ("=== ROUTE RECEIPT ===", "=== DRAFT ===") if marker in body),
+                  default=None)
+        after = ""
+        if cut is not None:
+            trailing = body[cut:]
+            body = body[:cut]
+            # Step over the receipt's own JSON so the text BELOW it is still graded.
+            # `_receipt_block` already refused a malformed block before this runs.
+            payload = trailing.split("\n", 1)[1] if "\n" in trailing else ""
+            try:
+                _value, end = json.JSONDecoder().raw_decode(payload.lstrip())
+                after = payload.lstrip()[end:]
+            except json.JSONDecodeError:
+                after = payload
+        rest = body.strip()
+        if rest.startswith(reason):
+            rest = rest[len(reason):]
+        return "\n".join((head, rest, after))
+
+    region = _refusal_text(assistant_text)
+    if not region:
+        raise RouteBoundaryError(
+            "a refusal receipt needs the refusal text the producer printed")
+    # The reason is settled FIRST, because it decides which part of the turn the
+    # receipt bound and therefore which part still has to be graded.
+    reason = next(
+        (candidate for candidate in reason_candidates(region)
+         if contract.output_hash(candidate, result.surface,
+                                 result.channel) == receipt["output_hash"]),
+        None)
+    if reason is None:
+        raise RouteBoundaryError("refusal receipt does not match the stated reason")
+    # THE DRAFT TEST IS THE ONE `main()` TRUSTS, not a second weaker one. `main()`
+    # asks `reply_carries_a_draft`, whose draft test is `=== DRAFT ===` or
+    # `extract_setoff_draft`; its third clause is the route receipt, which every
+    # refusal turn carries by construction, so reusing the function whole would hold
+    # every refusal. It deliberately does NOT use `extract_publishable`: that one
+    # falls back to the ENTIRE message once any publish framing appears, and a
+    # refusal reason naming a platform ("the reply ran long for LinkedIn") is framing,
+    # so 4 of 6 real refusal wordings were held as carrying a draft they did not
+    # carry (round 1 major). It runs over the UNBOUND text: everything except the
+    # bound reason and the receipt, ABOVE the refusal marker and BELOW the receipt
+    # alike. The earlier version said "above the refusal block is still caught" and
+    # truncated at the receipt, so a fence one line below it was not caught at all.
+    if "=== DRAFT ===" in assistant_text or extract_setoff_draft(
+            unbound_text(reason)):
+        raise RouteBoundaryError(
+            "a refused route may not deliver a draft; this turn carries one")
+    try:
+        return contract.verify_and_consume_refusal(identity)
+    except Exception as exc:
+        raise RouteBoundaryError(f"refusal receipt was not accepted: {exc}") from exc
+
+
 def _receipt_block(text):
     marker = "=== ROUTE RECEIPT ==="
     if marker not in text:
@@ -163,10 +298,16 @@ def _verify_route_receipt(context, request, assistant_text):
         raise RouteBoundaryError("route receipt does not match the requested surface")
     if contract.request_hash(request, result.surface, result.channel) != receipt["request_hash"]:
         raise RouteBoundaryError("route receipt does not match the user request")
+    identity = {key: receipt[key] for key in required}
+    # A REFUSED row takes the other door (ASK-1744). It is checked before the draft
+    # hash because a refusal turn has no draft by construction, so the hash below
+    # would compare the reason against an empty extraction and hold the turn. A lane
+    # that never mints a refusal never has this key and is unaffected.
+    if receipt.get("status") == "refused":
+        return _consume_refusal(contract, receipt, identity, assistant_text, result)
     draft = _route_draft(assistant_text)
     if contract.output_hash(draft, result.surface, result.channel) != receipt["output_hash"]:
         raise RouteBoundaryError("route receipt does not match the assistant output")
-    identity = {key: receipt[key] for key in required}
     try:
         # R9: the contract recomputes the receipt's loop evidence against THIS
         # draft and the corpus on disk before the row is consumed.

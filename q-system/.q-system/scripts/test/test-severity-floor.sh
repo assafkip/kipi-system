@@ -252,6 +252,61 @@ touch "$RD/pr-9-20260726-120000.md"
 [ "$(review_round "$RD" 9)"  = "2" ] || fail "per-PR counting broken"
 ok "review_round: 0/1/3 priors -> rounds 1/2/4, and PRs do not cross-count"
 
+# --- review_round counts what the REVIEWER ACTUALLY WRITES (ASK-1957) ---------
+# THE DEFECT: ASK-738 re-keyed every review artifact by repo, so the writer emits
+# `<owner>_<repo>__pr-<N>-<stamp>.md` -- while this counter went on globbing the
+# legacy `pr-<N>-*.md`. A slug resolves for EVERY repo (slug_for_repo falls back
+# to the target's own origin url), so the glob matched nothing on every run,
+# review_round returned 1 forever, and ROUND_RULE -- gated on ROUND > 1 -- never
+# armed once. A PR could reach round 5 with the reviewer told each time that it
+# was round 1, which is exactly the re-litigation grind that rule exists to stop.
+#
+# THE FILENAME IS NEVER RETYPED HERE. Both sides go through the one convention in
+# repo-slug-lib.sh: review_md_path builds what the writer writes, review_md_glob
+# builds what the counter globs, and both derive from artifact_key. Restating the
+# shape in the test would create a second source of truth that agrees on the day
+# it is written and silently stops describing the system afterwards.
+SLUGRD="$WORK/rounds-slugged"; mkdir -p "$SLUGRD"
+SL="assafkip/some-client"
+[ "$(review_round "$SLUGRD" 42 "$SL")" = "1" ] \
+  || fail "no prior reviews must be round 1 for a slugged repo"
+touch "$(review_md_path "$SLUGRD" "$SL" 42 20260922-101500)"
+[ "$(review_round "$SLUGRD" 42 "$SL")" = "2" ] \
+  || fail "the second report for a slugged repo must be round 2 -- review_round is not counting the files the reviewer writes"
+touch "$(review_md_path "$SLUGRD" "$SL" 42 20260922-111500)"
+[ "$(review_round "$SLUGRD" 42 "$SL")" = "3" ] \
+  || fail "two priors for a slugged repo must be round 3"
+ok "review_round: a slugged repo's second report is round 2 (ROUND_RULE can arm)"
+
+# Cross-repo counting is the defect ASK-738 closed; keying the counter must not
+# reopen it. Two repos' PR #42 live in one directory and must not see each other.
+touch "$(review_md_path "$SLUGRD" "assafkip/other-client" 42 20260922-121500)"
+[ "$(review_round "$SLUGRD" 42 "$SL")" = "3" ] \
+  || fail "another REPO's review of the same PR number must not count toward this repo"
+[ "$(review_round "$SLUGRD" 42 "assafkip/other-client")" = "2" ] \
+  || fail "per-repo counting broken"
+# The 2-argument form is what the block above exercises and what every legacy
+# caller passes; an empty slug is the legacy `pr-<N>` shape by construction.
+[ "$(review_round "$RD" 11)" = "4" ] \
+  || fail "the 2-argument (no-slug) form must keep counting the legacy shape"
+ok "review_round: repos do not cross-count, and the no-slug form is unchanged"
+
+# THE DIVERGENCE TEST the DoR asks for: the counter's glob must match the path
+# the writer builds. If either function stops deriving from artifact_key, or the
+# `-<stamp>.md` suffix moves on one side only, this case stops matching and the
+# test goes red instead of the round counter silently returning 1 in production.
+case "$(review_md_path "$SLUGRD" "$SL" 42 20260922-101500)" in
+  $(review_md_glob "$SLUGRD" "$SL" 42)) : ;;
+  *) fail "review_md_glob does not match review_md_path: writer and counter have diverged" ;;
+esac
+ok "review_md_glob matches review_md_path (one filename convention, two readers)"
+
+grep -q 'review_md_path' "$REVIEWER" \
+  || fail "reviewer does not build its review path through the shared convention (writer and counter would drift again)"
+grep -q 'review_round .*REVIEW_SLUG\|review_round.*\$REVIEW_SLUG' "$REVIEWER" \
+  || fail "reviewer computes its round without passing the repo slug -- the counter would glob the legacy shape"
+ok "reviewer writes through review_md_path and counts with its own slug"
+
 # --- severity anchors + anti-re-litigation are IN the reviewer prompt ---------
 # Interpretive rules cannot be hook-enforced (the model decides how it grades),
 # so the deterministic slice is: the anchors are present, and the round rule is
