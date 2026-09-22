@@ -445,3 +445,52 @@ def test_a_truncated_json_document_is_never_the_post(captured):
     cut = json.dumps(captured["json_stdout"])[:200]
     text, row = usage_ledger.finish(cut, bot="t")
     assert text is None and row["kind"] == "parse_error"
+
+
+# ---- PR #410 round 9 --------------------------------------------------------------
+
+VERBOSE_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures",
+                               "claude-p-verbose-capture-2026-09-22.json")
+
+
+@pytest.fixture
+def verbose():
+    with open(VERBOSE_FIXTURE) as fh:
+        doc = json.load(fh)
+    prov = doc.get("_provenance") or {}
+    assert prov.get("connector") == "claude-code-cli" and prov.get("captured_at")
+    return doc["payload"]
+
+
+def test_the_verbose_array_form_yields_the_post_and_the_row(verbose, monkeypatch):
+    # The real capture had 68 braces before its result; redaction of the init
+    # event cut that to 30, under the scan cap, so the cap is set to 0 here:
+    # only the whole-text array parse can find the result (round 4 minor).
+    assert verbose["braces_before_result"] > 50  # what the CLI printed
+    monkeypatch.setattr(usage_ledger, "BRACE_SCAN_CAP", 0)
+    stdout = json.dumps(verbose["verbose_stdout"]) + "\n"
+    text, row = usage_ledger.finish(stdout, bot="t")
+    assert text == verbose["plain_stdout"]
+    assert row["kind"] == "run" and row["tokens_out"] > 0 and row["is_error"] is False
+
+
+def test_a_truncated_verbose_array_is_a_dead_json_call_not_prose(verbose):
+    stdout = json.dumps(verbose["verbose_stdout"])[:2000]
+    text, row = usage_ledger.finish(stdout, bot="t")
+    assert text is None and row["kind"] == "parse_error" and row["is_error"] is True
+
+
+def test_read_skips_a_torn_line_and_keeps_the_rest(tmp_path, monkeypatch):
+    path = tmp_path / "usage.jsonl"
+    good = json.dumps({"ts": "2026-09-22T00:00:00Z", "bot": "t", "kind": "call"})
+    path.write_text(good + "\n" + good[:20] + "\n\n" + good + "\n")
+    rows = usage_ledger.read(str(path))
+    assert len(rows) == 2 and all(r["bot"] == "t" for r in rows)
+
+
+def test_prose_opening_with_a_bracket_is_still_prose():
+    # PR #413 round 2: "[Draft] ..." is a post, not a truncated --verbose array
+    text, row = usage_ledger.finish("[Draft] the post starts here\n", bot="t")
+    assert text == "[Draft] the post starts here\n" and row["is_error"] is False
+    text, row = usage_ledger.finish('[{"type":"system","subtype":"init"}', bot="t")
+    assert text is None and row["is_error"] is True
