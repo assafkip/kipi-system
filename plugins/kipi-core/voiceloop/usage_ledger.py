@@ -246,14 +246,16 @@ def finish(stdout: str, *, bot: str, job: str | None = None,
     """
     doc = _result_document(stdout)
     if doc is None:
-        row = failure_row("parse_error", bot=bot, job=job, model=model)
-        row.update({"kind": "parse_error", "subtype": "parse_error", "is_error": False,
-                    "parse_error": "no result document in stdout",
-                    "stdout_bytes": len(stdout or "")})
         # JSON that is not a result document means the CLI ran in json mode and
         # produced no result: a failed call, not prose (round 6). Only stdout that
         # is not JSON at all is handed back as text, the way a plain call prints it.
-        return (None if _is_json(stdout) else stdout), row
+        text = None if _is_json(stdout) else stdout
+        row = failure_row("parse_error", bot=bot, job=job, model=model)
+        # is_error follows what the CALLER got: nothing is an error, prose is not (round 8)
+        row.update({"kind": "parse_error", "subtype": "parse_error", "is_error": text is None,
+                    "parse_error": "no result document in stdout",
+                    "stdout_bytes": len(stdout or "")})
+        return text, row
     row = row_from(doc, bot=bot, job=job, model=model)
     if _failed(doc):
         # The CLI answered with an error document (a usage-limit refusal, most

@@ -255,16 +255,29 @@ def test_a_partial_post_with_no_document_is_never_a_refusal():
     assert row["limit_text"] is None and row["tokens_in"] is None
 
 
-def test_a_large_stdout_is_scanned_without_suffix_copies(captured):
-    import tracemalloc
-    junk = ("{" * 2000 + "\n") * 100  # 200k braces, none a document
-    stdout = junk + json.dumps(captured["json_stdout"])
-    tracemalloc.start()
+def test_a_large_stdout_is_scanned_without_suffix_copies(captured, monkeypatch):
+    # Forty junk lines that each OPEN a brace and never close it, then the document
+    # pretty-printed across lines. The line scan resolves none of it, so only the
+    # brace scan can find the document, which is the path this test pins (round 8:
+    # the earlier input was resolved by the line loop and the quadratic mutant
+    # stayed green). The pin is exact rather than a memory bound: every decode in
+    # the brace scan must be handed the ORIGINAL string plus an index, never a
+    # suffix copy of it. Forty tries stay under the scan's cap of fifty.
+    junk = "".join("{" + "x" * 100_000 + "\n" for _ in range(40))
+    stdout = junk + json.dumps(captured["json_stdout"], indent=2)
+    seen = []
+    real = json.JSONDecoder.raw_decode
+
+    def recording(self, s, idx=0):
+        seen.append((s is stdout, "\n" in s))
+        return real(self, s, idx)
+
+    monkeypatch.setattr(json.JSONDecoder, "raw_decode", recording)
     text, row = usage_ledger.finish(stdout, bot="t")
-    _, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
     assert text == captured["plain_stdout"]
-    assert peak < 8 * len(stdout)  # linear in the input, not quadratic
+    brace_scan = [same for same, multiline in seen if multiline]
+    assert len(brace_scan) >= 41  # the forty junk braces, then the document
+    assert all(brace_scan), "a decode was handed a copy of stdout, not stdout"
 
 
 # ---- PR #410 round 4 --------------------------------------------------------------
@@ -398,9 +411,9 @@ def test_a_none_token_value_on_the_failure_arms_leaves_a_row(captured, tmp_path,
 
 def test_json_mode_output_with_no_result_is_a_failed_call_not_prose():
     text, row = usage_ledger.finish(json.dumps({"type": "system", "subtype": "init"}), bot="t")
-    assert text is None and row["kind"] == "parse_error"
+    assert text is None and row["kind"] == "parse_error" and row["is_error"] is True
     text, row = usage_ledger.finish("plain prose the CLI printed\n", bot="t")
-    assert text == "plain prose the CLI printed\n"
+    assert text == "plain prose the CLI printed\n" and row["is_error"] is False
 
 
 # ---- PR #410 round 7 --------------------------------------------------------------
