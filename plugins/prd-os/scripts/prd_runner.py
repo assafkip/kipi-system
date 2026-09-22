@@ -2817,6 +2817,21 @@ SPILLOVER_SEVERITY_ORDER = ("low", "minor", "medium", "high", "major", "blocker"
 SPILLOVER_SEVERITY_ORDER = ("low", "minor", "medium", "high", "major", "blocker")
 SPILLOVER_KNOWN_SEVERITIES = (
     SPILLOVER_BLOCKING_SEVERITIES + SPILLOVER_NONBLOCKING_SEVERITIES)
+# THE MINOR TIER IS NOT A QUEUE (ASK-1961, RULE-2026-09-12-A applied to the rows
+# written before it). Measured 2026-09-22: 618 open minor/low after last-row-wins, zero
+# inflow since the add door started refusing them, and no drain. `gates run`
+# listed them in its triage report anyway, so a 618-row "queue" nobody could
+# empty printed on every run. It is a closed tier: `gates run` counts it neither
+# in the verdict nor in the report, and states its size on one line so the
+# number never goes quiet. A row still leaves only by resolve or void.
+SPILLOVER_CLOSED_TIER = tuple(
+    s for s in SPILLOVER_REFUSED_SEVERITIES if s in SPILLOVER_KNOWN_SEVERITIES)
+
+
+def _in_closed_tier(record: dict) -> bool:
+    # Absent severity is the documented `minor` default (see _is_blocking_severity).
+    sev = (record.get("severity") or "minor").strip().lower()
+    return sev in SPILLOVER_CLOSED_TIER
 
 
 def _spillover_blocks(record: dict, scope: str | None) -> bool:
@@ -3113,7 +3128,8 @@ def cmd_gates(cfg: Config, args) -> int:
     # record-a-void.
     openv = _spillover_open(cfg)
     blocking = [r for r in openv if _spillover_blocks(r, scope)]
-    reported = [r for r in openv if r not in blocking]
+    closed_tier = [r for r in openv if r not in blocking and _in_closed_tier(r)]
+    reported = [r for r in openv if r not in blocking and r not in closed_tier]
     inherited = [r for r in openv if scope and r.get("source") != scope]
     if blocking:
         names = ", ".join(r["id"] for r in blocking)
@@ -3135,6 +3151,11 @@ def cmd_gates(cfg: Config, args) -> int:
               f"item(s), not blocking: {ids}{more}")
         print("  Triage with `prd_runner.py spillover triage`; raise one with "
               "`spillover add --severity major|blocker`.")
+    if closed_tier:
+        print(f"[closed-tier] spillover: {len(closed_tier)} open "
+              f"{'/'.join(SPILLOVER_CLOSED_TIER)}-or-untriaged row(s) written before "
+              f"2026-09-12: not a queue, not counted (ASK-1961). A row leaves by "
+              f"resolve or void; raise a real one with `spillover reclassify`.")
     # The census prints on EVERY run, red or green, passing or failing. An
     # inherited backlog that stops being PRINTED is functionally deleted for an
     # operator with ADHD, so the number leaving the blocking set must never mean
