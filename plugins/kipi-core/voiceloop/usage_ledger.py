@@ -102,11 +102,22 @@ def row_from(doc: dict, *, bot: str, job: str | None = None, model: str | None =
             per_model[name] = {k: m.get(k, 0) for k in _PER_MODEL_KEYS}
     # Empty modelUsage means the CLI reported nothing, not that nothing was spent:
     # a limit refusal still costs the request. Unknown is None, never 0.
-    tokens_in = sum(m["inputTokens"] + m["cacheReadInputTokens"] + m["cacheCreationInputTokens"]
-                    for m in per_model.values()) if per_model else None
-    tokens_out = sum(m["outputTokens"] for m in per_model.values()) if per_model else None
+    def total(key):
+        vals = [m.get(key) for m in per_model.values()]
+        nums = [v for v in vals if isinstance(v, (int, float))]
+        return sum(nums) if nums else None
+    fresh, cache_read, cache_create = (total("inputTokens"), total("cacheReadInputTokens"),
+                                       total("cacheCreationInputTokens"))
+    # tokens_in is everything the request CARRIED (fresh + cache read + cache
+    # write), which is what a context-size cap reads. Cost weights them very
+    # differently (round 7: 3,991x fresh on the fixture), so the three parts are
+    # stored beside it and total_cost_usd stays the spend number.
+    parts = [v for v in (fresh, cache_read, cache_create) if v is not None]
+    tokens_in = sum(parts) if parts else None
+    tokens_out = total("outputTokens")
     return {
         "schema": SCHEMA, "producer": PRODUCER, "kind": "run",
+        "tokens_fresh_in": fresh, "tokens_cache_read": cache_read, "tokens_cache_create": cache_create,
         "ts": _now_iso(),
         "bot": bot,
         "job": job,
@@ -148,6 +159,7 @@ def failure_row(kind: str, *, bot: str, job: str | None = None, model: str | Non
            "ts": _now_iso(), "bot": bot, "job": job, "model": model,
            "subtype": ("unmetered:" if ok else "failed:") + kind, "is_error": not ok, "num_turns": None,
            "total_cost_usd": None, "duration_ms": None, "tokens_in": None,
+           "tokens_fresh_in": None, "tokens_cache_read": None, "tokens_cache_create": None,
            "tokens_out": None, "model_usage": {}, "limit_text": None, "session_id": None}
     doc = _result_document(stdout)
     if doc is not None:
@@ -165,21 +177,14 @@ def failure_row(kind: str, *, bot: str, job: str | None = None, model: str | Non
 
 
 def _is_json(stdout: str | None) -> bool:
-    """True when the whole stdout is one or more JSON objects (json mode output)."""
-    if not stdout or not stdout.lstrip().startswith("{"):
-        return False
-    decoder = json.JSONDecoder()
-    pos, n = 0, len(stdout)
-    while pos < n:
-        while pos < n and stdout[pos].isspace():
-            pos += 1
-        if pos >= n:
-            return True
-        try:
-            _, pos = decoder.raw_decode(stdout, pos)
-        except ValueError:
-            return False
-    return True
+    """True when stdout is json-mode output, whole or truncated.
+
+    Under --output-format json the CLI prints only JSON objects, so anything
+    that opens with a brace and holds no result document is a failed or cut
+    json-mode call, never prose (round 7: a truncated document with exit 0 was
+    being handed back as the post).
+    """
+    return bool(stdout) and stdout.lstrip().startswith("{")
 
 
 def _result_document(stdout: str | None) -> dict | None:

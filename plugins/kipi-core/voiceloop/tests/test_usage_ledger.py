@@ -42,6 +42,8 @@ def test_row_carries_cost_tokens_and_turns_from_the_real_result(captured):
     assert row["total_cost_usd"] == doc["total_cost_usd"]
     assert row["num_turns"] == doc["num_turns"]
     assert row["tokens_in"] == m["inputTokens"] + m["cacheReadInputTokens"] + m["cacheCreationInputTokens"]
+    assert (row["tokens_fresh_in"], row["tokens_cache_read"], row["tokens_cache_create"]) == \
+        (m["inputTokens"], m["cacheReadInputTokens"], m["cacheCreationInputTokens"])
     assert row["tokens_out"] == m["outputTokens"]
     assert row["is_error"] is False and row["limit_text"] is None
     assert (row["bot"], row["job"], row["model"]) == ("chief", "brief", "claude-haiku-4-5-20251001")
@@ -399,3 +401,34 @@ def test_json_mode_output_with_no_result_is_a_failed_call_not_prose():
     assert text is None and row["kind"] == "parse_error"
     text, row = usage_ledger.finish("plain prose the CLI printed\n", bot="t")
     assert text == "plain prose the CLI printed\n"
+
+
+# ---- PR #410 round 7 --------------------------------------------------------------
+
+def test_a_failed_plain_fallback_is_a_failure_row_not_a_clean_one(tmp_path, monkeypatch):
+    # pins ok=(returncode==0) on the older-CLI fallback; ok=True leaves this red
+    import subprocess
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("OPENCODE", raising=False)
+    monkeypatch.setenv(usage_ledger.LEDGER_ENV, str(tmp_path / "l.jsonl"))
+
+    def fake_run(argv, **kw):
+        class R:
+            pass
+        r = R()
+        if "--output-format" in argv:
+            r.returncode, r.stdout, r.stderr = 1, "", "error: unknown option '--output-format'"
+        else:
+            r.returncode, r.stdout, r.stderr = 2, "", "boom"
+        return r
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    fake_bin = tmp_path / "claude"; fake_bin.write_text("")
+    assert prompt_render.run_model("p", claude_bin=str(fake_bin), caller="c") is None
+    row = usage_ledger.read()[-1]
+    assert row["is_error"] is True and row["kind"] == "failure"
+
+
+def test_a_truncated_json_document_is_never_the_post(captured):
+    cut = json.dumps(captured["json_stdout"])[:200]
+    text, row = usage_ledger.finish(cut, bot="t")
+    assert text is None and row["kind"] == "parse_error"
