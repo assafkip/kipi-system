@@ -121,8 +121,15 @@ def row_from(doc: dict, *, bot: str, job: str | None = None, model: str | None =
     }
 
 
+def _text(v) -> str | None:
+    """subprocess.TimeoutExpired carries bytes even under text=True; a row is text."""
+    if isinstance(v, bytes):
+        return v.decode("utf-8", "replace")
+    return v
+
+
 def failure_row(kind: str, *, bot: str, job: str | None = None, model: str | None = None,
-                stdout: str | None = None, stderr: str | None = None) -> dict:
+                stdout: str | None = None, stderr: str | None = None, ok: bool = False) -> dict:
     """The row for a call that returned nothing to its caller.
 
     A timeout, a non-zero exit and a limit refusal all burn tokens the caller never
@@ -130,9 +137,13 @@ def failure_row(kind: str, *, bot: str, job: str | None = None, model: str | Non
     print a result document before failing, its usage is kept; otherwise tokens are
     None (unknown), never 0 (known to be nothing).
     """
-    row = {"schema": SCHEMA, "producer": PRODUCER, "kind": "failure",
+    stdout, stderr = _text(stdout), _text(stderr)
+    # `ok` marks a call that succeeded for its caller but could not be metered (an
+    # unmetered provider, a plain-call fallback): kind "unmetered", not a failure,
+    # so a failure-rate over this ledger stays honest (PR #410 round 3).
+    row = {"schema": SCHEMA, "producer": PRODUCER, "kind": "unmetered" if ok else "failure",
            "ts": _now_iso(), "bot": bot, "job": job, "model": model,
-           "subtype": f"failed:{kind}", "is_error": True, "num_turns": None,
+           "subtype": ("unmetered:" if ok else "failed:") + kind, "is_error": not ok, "num_turns": None,
            "total_cost_usd": None, "duration_ms": None, "tokens_in": None,
            "tokens_out": None, "model_usage": {}, "limit_text": None, "session_id": None}
     doc = _result_document(stdout)
@@ -144,7 +155,9 @@ def failure_row(kind: str, *, bot: str, job: str | None = None, model: str | Non
         # (PR #410 round 2). Only stderr is read unguarded, and stderr is never prose.
         row["limit_text"] = limit_text(doc) or _limit_in(stderr)
     else:
-        row["limit_text"] = _limit_in(stdout, stderr)
+        # No result document: stdout may be a partial generated post, which is prose
+        # and never a refusal. Only stderr is read (round 3).
+        row["limit_text"] = _limit_in(stderr)
     return row
 
 
@@ -155,15 +168,27 @@ def _result_document(stdout: str | None) -> dict | None:
     # The CLI may print other JSON objects (an init event) or stray lines before the
     # result. Every line is tried on its own, then the whole text from each `{`.
     decoder = json.JSONDecoder()
-    candidates = [ln for ln in stdout.splitlines() if ln.lstrip().startswith("{")]
-    candidates += [stdout[i:] for i, ch in enumerate(stdout) if ch == "{"][:50]
-    for text in candidates:
+    for ln in stdout.splitlines():
+        ln = ln.lstrip()
+        if not ln.startswith("{"):
+            continue
         try:
-            doc, _ = decoder.raw_decode(text.lstrip())
+            doc, _ = decoder.raw_decode(ln)
         except ValueError:
             continue
         if isinstance(doc, dict) and doc.get("type") == "result":
             return doc
+    # A pretty-printed document spans lines: decode from each brace IN PLACE
+    # (raw_decode takes an index; no suffix copies, round 3 measured 548 MB of them).
+    pos, tries = stdout.find("{"), 0
+    while pos >= 0 and tries < 50:
+        try:
+            doc, _ = decoder.raw_decode(stdout, pos)
+        except ValueError:
+            doc = None
+        if isinstance(doc, dict) and doc.get("type") == "result":
+            return doc
+        pos, tries = stdout.find("{", pos + 1), tries + 1
     return None
 
 

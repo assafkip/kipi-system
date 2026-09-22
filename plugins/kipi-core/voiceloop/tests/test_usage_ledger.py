@@ -84,7 +84,8 @@ def test_a_failed_call_still_leaves_a_row(captured, tmp_path, monkeypatch):
     assert prompt_render.run_model("hi", claude_bin=str(fake_bin), caller="c") is None
 
     def timeout(*a, **k):
-        raise subprocess.TimeoutExpired(cmd="claude", timeout=1, output=json.dumps(captured["json_stdout"]))
+        # a REAL TimeoutExpired carries bytes even under text=True (round 3)
+        raise subprocess.TimeoutExpired(cmd="claude", timeout=1, output=json.dumps(captured["json_stdout"]).encode())
     monkeypatch.setattr(subprocess, "run", timeout)
     assert prompt_render.run_model("hi", claude_bin=str(fake_bin), caller="c") is None
 
@@ -212,7 +213,7 @@ def test_the_opencode_branch_leaves_a_row(tmp_path, monkeypatch):
     fake_bin = tmp_path / "claude"; fake_bin.write_text("")
     assert prompt_render.run_model("p", claude_bin=str(fake_bin), caller="c") == "generated"
     rows = usage_ledger.read()
-    assert len(rows) == 1 and rows[0]["subtype"] == "failed:opencode:unmetered"
+    assert len(rows) == 1 and rows[0]["subtype"] == "unmetered:opencode" and rows[0]["kind"] == "unmetered" and rows[0]["is_error"] is False
 
 
 def test_a_cli_that_rejects_the_flag_falls_back_to_a_plain_call(tmp_path, monkeypatch):
@@ -236,4 +237,23 @@ def test_a_cli_that_rejects_the_flag_falls_back_to_a_plain_call(tmp_path, monkey
     fake_bin = tmp_path / "claude"; fake_bin.write_text("")
     assert prompt_render.run_model("p", claude_bin=str(fake_bin), caller="c") == "plain prose\n"
     assert len(calls) == 2 and "--output-format" not in calls[1]
-    assert usage_ledger.read()[-1]["subtype"] == "failed:cli:no-json-flag"
+    assert usage_ledger.read()[-1]["subtype"] == "unmetered:cli:no-json-flag"
+
+
+# ---- PR #410 round 3 --------------------------------------------------------------
+
+def test_a_partial_post_with_no_document_is_never_a_refusal():
+    row = usage_ledger.failure_row("timeout", bot="t", stdout="half a post about a rate limit")
+    assert row["limit_text"] is None and row["tokens_in"] is None
+
+
+def test_a_large_stdout_is_scanned_without_suffix_copies(captured):
+    import tracemalloc
+    junk = ("{" * 2000 + "\n") * 100  # 200k braces, none a document
+    stdout = junk + json.dumps(captured["json_stdout"])
+    tracemalloc.start()
+    text, row = usage_ledger.finish(stdout, bot="t")
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert text == captured["plain_stdout"]
+    assert peak < 8 * len(stdout)  # linear in the input, not quadratic

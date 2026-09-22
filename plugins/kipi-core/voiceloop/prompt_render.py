@@ -154,7 +154,7 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
                 # ASK-2008: this provider reports no usage, so the row says so
                 # (tokens None) rather than leaving the run invisible.
                 usage_ledger.append(usage_ledger.failure_row(
-                    "opencode:unmetered", bot=os.environ.get("CHIEF_BOT") or "voiceloop",
+                    "opencode", ok=True, bot=os.environ.get("CHIEF_BOT") or "voiceloop",
                     job=os.environ.get("CHIEF_JOB") or caller, model=active_model))
                 return "".join(parts).strip() or None
         except (subprocess.SubprocessError, OSError):
@@ -192,8 +192,9 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
         except (subprocess.SubprocessError, OSError) as exc:
             usage_ledger.append(usage_ledger.failure_row(type(exc).__name__, stderr=str(exc), **who))
             return None
-        usage_ledger.append(usage_ledger.failure_row("cli:no-json-flag", stderr="plain call", **who))
-        return result.stdout if result.returncode == 0 else None
+        ok = result.returncode == 0
+        usage_ledger.append(usage_ledger.failure_row("cli:no-json-flag", ok=ok, stderr=result.stderr, **who))
+        return result.stdout if ok else None
     if result.returncode != 0:
         usage_ledger.append(usage_ledger.failure_row(
             f"exit {result.returncode}", stdout=result.stdout, stderr=result.stderr, **who))
