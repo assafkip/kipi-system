@@ -74,6 +74,7 @@ EXPECTED_MODULES = (
     "slop_shapes",
     "source_shape",
     "substance_gate",
+    "usage_ledger",
     "validate",
     "voice_ref",
     "voicefp_rules",

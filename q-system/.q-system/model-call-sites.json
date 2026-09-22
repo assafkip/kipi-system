@@ -4,7 +4,6 @@
     "plugins/kipi-core/voiceloop/prompt_render.py"
   ],
   "shared": {
-    "plugins/kipi-core/voiceloop/revise.py": "routed through run_model by PR #410; this row goes when that lands",
     "plugins/prd-os/scripts/judgment_compiler.py": "builds argv for prd-os judgments; runs under linear-worker, unmetered",
     "q-system/.q-system/scripts/audhd-output-eval.py": "on-demand eval, founder-launched, never scheduled",
     "q-system/.q-system/scripts/design-reader-gate.py": "hook-time reader with --safe-mode, its own argv shape",
