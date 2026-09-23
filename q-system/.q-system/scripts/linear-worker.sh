@@ -151,6 +151,14 @@ ENV_HALT_FILE="${KIPI_STATE_DIR:-$HOME/.config/kipi}/linear-worker-env-halt.$$"
 # real outage into ordinary output and the issue is charged for it. Same defect
 # as the marker, pointed at the ledger instead of the alert.
 RUN_OUT_FILE="${KIPI_STATE_DIR:-$HOME/.config/kipi}/linear-worker-runout.$$"
+# PROOF THIS RUN HEARD THE RUNNER ANSWER, the only thing that may re-arm the
+# once-per-outage page (PR #421 round 5, major). The release after the loop used
+# to be unconditional, so a tick that SKIPPED every ready issue (attempt cap,
+# --issue onto a capped issue, a tree claimed elsewhere) never ran `claude` and
+# still released the claim: the same outage then paged again and wrote a second
+# permanent Linear comment. A file and not a variable because the loop runs in a
+# pipe subshell, the same reason as the two files above.
+RUNNER_OK_FILE="${KIPI_STATE_DIR:-$HOME/.config/kipi}/linear-worker-runner-ok.$$"
 
 MAX_ATTEMPTS=3
 # Conflict rounds are capped SEPARATELY from failed attempts (ASK-212).
@@ -1519,12 +1527,12 @@ DONE=0
 # Now that the path carries `$$` this clears only OUR OWN file, which is what
 # makes it safe to run while another worker is mid-loop. The unsuffixed name is
 # swept too: it is what pre-upgrade runs wrote, and nothing reads it any more.
-rm -f "$ENV_HALT_FILE" "$RUN_OUT_FILE" "$STATE_DIR/linear-worker-env-halt" 2>/dev/null || true
+rm -f "$ENV_HALT_FILE" "$RUN_OUT_FILE" "$RUNNER_OK_FILE" "$STATE_DIR/linear-worker-env-halt" 2>/dev/null || true
 # AND ANY PAIR WHOSE PID IS DEAD (PR #421 round 1, minor). A run killed
 # mid-loop (launchd reap, SIGKILL, reboot) never reaches its own clear, and
 # nothing else ever removed its files. A live worker's pair is left alone:
 # `kill -0` answers for the pid, and a pid cannot be reused while its owner runs.
-for _stale in "$STATE_DIR"/linear-worker-env-halt.* "$STATE_DIR"/linear-worker-runout.*; do
+for _stale in "$STATE_DIR"/linear-worker-env-halt.* "$STATE_DIR"/linear-worker-runout.* "$STATE_DIR"/linear-worker-runner-ok.*; do
   [ -e "$_stale" ] || continue
   _pid="${_stale##*.}"
   case "$_pid" in ''|*[!0-9]*) continue ;; esac
@@ -2141,6 +2149,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
     if is_environmental "$AGENT_OUT"; then
       ENV_FAIL="$(environmental_reason "$AGENT_OUT")"
     else
+      : > "$RUNNER_OK_FILE" 2>/dev/null || true
       say "ok $ISSUE"
       python3 "$SYNC" progress "$ISSUE" "Worker run completed. See the branch/PR for the diff." \
         --agent "$AGENT" >/dev/null 2>&1 || true
@@ -2158,6 +2167,8 @@ Anything real you find and are not fixing: capture it, never just mention it:
       # could not answer.
       ENV_FAIL="$(environmental_reason "$AGENT_OUT")"
     else
+    # The runner answered and the failure is the issue's: the machine is up.
+    : > "$RUNNER_OK_FILE" 2>/dev/null || true
     bump_attempt "$ISSUE" "claude run failed rc=$rc"
     N2="$(attempts_for "$ISSUE")"
     say "fail $ISSUE rc=$rc ($N2/$MAX_ATTEMPTS)"
@@ -2864,7 +2875,13 @@ fi
 # halt, so this run OBSERVED a working runner -- the closest thing to an
 # "outage ended" event that exists, since nothing tells us when the account
 # resets. Releasing here re-arms the edge, so the next outage pages again.
-env_alert_release "$STATE_DIR"
+# ONLY IF THIS RUN ACTUALLY REACHED THE RUNNER (PR #421 round 5): finishing the
+# loop is not the same as observing a working runner when every issue was
+# skipped before dispatch. See $RUNNER_OK_FILE.
+if [ -f "$RUNNER_OK_FILE" ]; then
+  env_alert_release "$STATE_DIR"
+fi
+rm -f "$RUNNER_OK_FILE" 2>/dev/null || true
 say "worker: run complete"
 # The `exit 0` below is the last statement INSIDE the ASK-351 brace, and it has to
 # stay last and stay unconditional: it is what stops bash from ever reading this

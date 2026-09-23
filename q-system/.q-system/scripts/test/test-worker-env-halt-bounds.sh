@@ -17,6 +17,10 @@
 #                   exit-7 "Sana could not open a PR" per issue per tick). Must be 0.
 #   leak            orphan per-pid files left by dead runs, after one healthy run.
 #                   Was 2. Must be 0.
+#   unmute-on-skip  one outage, with a middle tick that skipped every issue and
+#                   never ran the runner. Was 2 pages and 2 comments. Must be 1
+#                   and 1, and a tick where the runner answers must still free
+#                   the claim so the NEXT outage pages (2 pages across 2).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -117,6 +121,25 @@ if ( . "$LIB"; is_environmental 'Stop hook [node "x.mjs"] failed: Hook cancelled
   bad "hook noise alone is not an outage" "a lone teardown line was excused"
 else
   ok "a lone teardown line (a timeout kill) is still the issue's"
+fi
+
+echo "== a tick that never reached the runner does not re-arm the page"
+# PR #421 round 5, major: the release after the loop was unconditional, so a
+# tick that skipped every issue (attempt cap, --issue onto a capped issue)
+# re-armed the page mid-outage.
+OUT="$(run repro-unmute-on-skip)"
+P1="$(printf '%s\n' "$OUT" | sed -n 's/^=== PAGES for ONE continuous outage: \([0-9]*\).*/\1/p')"
+C1="$(printf '%s\n' "$OUT" | sed -n "s/^=== permanent Linear comments carrying 'Not attempted': \([0-9]*\).*/\1/p")"
+P2="$(printf '%s\n' "$OUT" | sed -n 's/^=== PAGES across two outages split by a healthy tick: \([0-9]*\).*/\1/p')"
+if [ "${P1:-x}" = "1" ] && [ "${C1:-x}" = "1" ]; then
+  ok "a skipped tick inside one outage: still 1 page and 1 'Not attempted' comment"
+else
+  bad "a tick that never ran the runner keeps the outage claim" "pages=${P1:-?} comments=${C1:-?}"
+fi
+if [ "${P2:-x}" = "2" ]; then
+  ok "a tick where the runner answers frees the claim: the next outage pages again"
+else
+  bad "the claim is released once the runner answers" "pages across two outages=${P2:-?} (1 = a permanent mute)"
 fi
 
 echo "== a dead run's per-pid files are swept"
