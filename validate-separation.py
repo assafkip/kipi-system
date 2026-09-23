@@ -145,6 +145,62 @@ def grep_count(pattern, path, recursive=False):
         return 0
 
 
+TRIPWIRE_TERMS_FILE = os.path.join(SCRIPT_DIR, "q-system", ".q-system", "scripts", "tripwire-terms.txt")
+# the lists this file carried before the terms moved to tripwire-terms.txt (GitHub issue #2, PR B)
+_DEFAULT_LEAK_SCOPED = {"instance": ["KTLYST", "ktlyst", "q-ktlyst"],
+                        "content": ["re-breach", "re.breach", "CISO", "Assaf"],
+                        "path": ["/Users/assafkip"]}
+
+
+def load_tripwire_scoped():
+    """{scope: terms} from the ONE file the push and promote scripts read. A `# scope: x` comment
+    opens a section (instance, content, path); terms before any header are content and a scope
+    this file does not read (the `shell` section) is skipped. Same parser as
+    kipi_mcp/leak_terms.py, kept inline because this file runs standalone."""
+    out = {"instance": [], "content": [], "path": []}
+    scope = "content"
+    try:
+        with open(TRIPWIRE_TERMS_FILE) as f:
+            for ln in f:
+                m = re.match(r"^\s*#\s*scope:\s*([a-z]+)\s*$", ln)
+                if m:
+                    scope = m.group(1) if m.group(1) in out else None
+                    continue
+                t = ln.strip()
+                if t and not t.startswith("#") and scope is not None:
+                    out[scope].append(t)
+    except OSError:
+        pass
+    return out if any(out.values()) else {k: list(v) for k, v in _DEFAULT_LEAK_SCOPED.items()}
+
+
+def load_tripwire_terms():
+    s = load_tripwire_scoped()
+    return s["instance"] + s["content"] + s["path"]
+
+
+def leak_instance_patterns():
+    """The instance's name: what a skeleton-wide sweep refuses."""
+    return [re.escape(t) for t in load_tripwire_scoped()["instance"]]
+
+
+def leak_name_patterns():
+    """Instance name plus content terms: what a template or the voice framework refuses."""
+    s = load_tripwire_scoped()
+    return [re.escape(t) for t in s["instance"] + s["content"]]
+
+
+def leak_path_patterns():
+    return [re.escape(t) for t in load_tripwire_scoped()["path"]] + [r"q-ktlyst/"]
+
+
+def leak_regex(*scopes):
+    """One alternation of the terms in these scopes (default: instance and path), for file_contains."""
+    s = load_tripwire_scoped()
+    terms = [t for sc in (scopes or ("instance", "path")) for t in s[sc]]
+    return "|".join(re.escape(t) for t in terms)
+
+
 def grep_count_multi(patterns, path):
     """Count files matching any of several patterns recursively."""
     pat = "|".join(patterns)
@@ -726,13 +782,13 @@ def phase_1():
 
     # No KTLYST-specific terms
     ktlyst_hits = grep_count_multi(
-        [r"KTLYST", r"ktlyst", r"q-ktlyst", r"re-breach", r"re\.breach", r"threat.intel.*team", r"CNS.*nervous"],
+        leak_instance_patterns() + [r"threat.intel.*team", r"CNS.*nervous"],
         agents_dir,
     )
     check(f"No KTLYST-specific terms in agent files ({ktlyst_hits} files)", ktlyst_hits == 0)
 
     # No hardcoded paths
-    hardcoded = grep_count_multi([r"/Users/assafkip", r"q-ktlyst/"], agents_dir)
+    hardcoded = grep_count_multi(leak_path_patterns(), agents_dir)
     check(f"No hardcoded paths in agent files ({hardcoded} files)", hardcoded == 0)
 
     # Key config files
@@ -833,7 +889,7 @@ def phase_1():
                 continue
             if f.endswith(".py") or f.endswith(".sh"):
                 filepath = os.path.join(root, f)
-                if file_contains(filepath, r"KTLYST|ktlyst|q-ktlyst"):
+                if file_contains(filepath, leak_regex("instance")):
                     script_hits += 1
     check(f"No KTLYST references in scripts ({script_hits} files)", script_hits == 0)
 
@@ -853,7 +909,7 @@ def phase_1():
     profile_path = os.path.join(my_project, "founder-profile.md")
     check("founder-profile.md contains {{SETUP_NEEDED}}", file_contains(profile_path, r"SETUP_NEEDED"))
 
-    canonical_ktlyst = grep_count_multi([r"KTLYST", r"ktlyst", r"Assaf", r"CISO.*pain", r"re-breach"], canonical)
+    canonical_ktlyst = grep_count_multi(leak_name_patterns() + [r"CISO.*pain"], canonical)
     check(f"No KTLYST content in canonical templates ({canonical_ktlyst} files)", canonical_ktlyst == 0)
 
     # --- GATE 1.3b: Repository-derived semantic containment ---
@@ -906,7 +962,7 @@ def phase_1():
     check("writing-samples.md template exists", file_exists(os.path.join(voice, "references", "writing-samples.md")))
 
     voice_ktlyst = grep_count_multi(
-        [r"Assaf", r"KTLYST", r"threat.intel.*Google", r"threat.intel.*Meta"],
+        leak_name_patterns() + [r"threat.intel.*Google", r"threat.intel.*Meta"],
         voice,
     )
     check(f"No Assaf-specific content in voice framework ({voice_ktlyst} files)", voice_ktlyst == 0)
@@ -926,7 +982,7 @@ def phase_1():
     try:
         with open(q_claude) as f:
             content = f.read()
-        claude_ktlyst = len(re.findall(r"KTLYST|ktlyst|Assaf|re-breach|CISO.*pain", content, re.IGNORECASE))
+        claude_ktlyst = len(re.findall(leak_regex("instance", "content") + r"|CISO.*pain", content, re.IGNORECASE))
     except FileNotFoundError:
         claude_ktlyst = 0
     check(f"No KTLYST references in q-system/CLAUDE.md ({claude_ktlyst} hits)", claude_ktlyst == 0)
@@ -1007,7 +1063,7 @@ def phase_1():
             if any(ex in f for ex in exclude_files):
                 continue
             filepath = os.path.join(root, f)
-            if file_contains(filepath, r"KTLYST|ktlyst|q-ktlyst|/Users/assafkip"):
+            if file_contains(filepath, leak_regex()):
                 full_sweep += 1
     check(f"Full skeleton sweep: zero KTLYST/hardcoded refs ({full_sweep} files)", full_sweep == 0)
 
@@ -1066,7 +1122,9 @@ def phase_1():
 def phase_2():
     phase_header(2, "KTLYST_strategy subtree")
 
-    ktlyst = "/Users/assafkip/Desktop/KTLYST_strategy"
+    # the strategy instance's path comes from the registry, never from this file (issue #2)
+    ktlyst = next((i.get("path", "") for i in (load_registry() or {}).get("instances", [])
+                   if i.get("name") == "KTLYST_strategy"), "")
 
     if os.getenv('CI') == 'true' or not dir_exists(ktlyst):
         print(f"  {YELLOW}SKIP{NC} KTLYST_strategy checks (not available)")
@@ -1144,8 +1202,8 @@ def phase_3():
         print(f"  {YELLOW}SKIP{NC} Plugin elimination checks (CI environment)")
         return
 
-    check("kipi-pipeline-plugin directory removed", not dir_exists("/Users/assafkip/Desktop/kipi-pipeline-plugin"))
-    check("q-founder-os directory removed", not dir_exists("/Users/assafkip/Desktop/q-founder-os"))
+    # (two checks that asserted the ABSENCE of directories on the original author's desktop
+    # were removed here: vacuous on every other machine, and a hardcoded path either way)
 
     # Global config references
     global_plugin = 0

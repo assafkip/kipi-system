@@ -8,12 +8,17 @@ if TYPE_CHECKING:
     from kipi_mcp.paths import KipiPaths
     from kipi_mcp.registry import RegistryManager
 
-KTLYST_PATTERNS = [r"KTLYST", r"ktlyst", r"q-ktlyst", r"re-breach", r"re\.breach"]
-HARDCODED_PATH_PATTERNS = [r"/Users/assafkip", r"q-ktlyst/"]
+from kipi_mcp.leak_terms import load_scoped, term_patterns
+
+# Kept as names for anyone importing them; the live lists come from the tripwire file through
+# _leak_patterns() below (GitHub issue #2, PR B), so a fork edits one file, not this module.
+KTLYST_PATTERNS = term_patterns(load_scoped(None)["instance"])
+HARDCODED_PATH_PATTERNS = term_patterns(load_scoped(None)["path"]) + [r"q-ktlyst/"]
 
 SWEEP_EXCLUDE_FILES = [
     "validate-separation",
     "instance-registry",
+    "tripwire-terms",      # the roster of terms the sweep refuses carries them by design
     "PHASE-0-AUDIT",
     "EXECUTION-PLAN",
 ]
@@ -141,7 +146,7 @@ class Validator:
                     has_reads,
                 )
 
-            ktlyst_hits = self._grep_dir(agents_dir, KTLYST_PATTERNS)
+            ktlyst_hits = self._grep_dir(agents_dir, self._leak_patterns()[0])
             self._check(
                 checks,
                 "No KTLYST-specific terms in agents",
@@ -149,7 +154,7 @@ class Validator:
                 detail=", ".join(ktlyst_hits) if ktlyst_hits else None,
             )
 
-            hardcoded_hits = self._grep_dir(agents_dir, HARDCODED_PATH_PATTERNS)
+            hardcoded_hits = self._grep_dir(agents_dir, self._leak_patterns()[1])
             self._check(
                 checks,
                 "No hardcoded paths in agents",
@@ -243,7 +248,7 @@ class Validator:
                 len(skill_dirs) >= 28,
                 detail=f"found {len(skill_dirs)}",
             )
-            skill_hits = self._grep_dir(skills_dir, KTLYST_PATTERNS)
+            skill_hits = self._grep_dir(skills_dir, self._leak_patterns()[0])
             self._check(
                 checks,
                 "No KTLYST refs in skills/",
@@ -254,7 +259,7 @@ class Validator:
         # Full skeleton sweep
         q_system_dir = self.repo_dir / "q-system"
         if q_system_dir.is_dir():
-            all_patterns = KTLYST_PATTERNS + HARDCODED_PATH_PATTERNS
+            all_patterns = self._leak_patterns()[0] + self._leak_patterns()[1]
             sweep_hits = self._grep_dir(
                 q_system_dir, all_patterns, exclude_files=SWEEP_EXCLUDE_FILES
             )
@@ -362,7 +367,7 @@ class Validator:
         for fname in DOC_FILES:
             fpath = self.repo_dir / fname
             if fpath.exists():
-                hits = self._grep_dir(fpath.parent, KTLYST_PATTERNS)
+                hits = self._grep_dir(fpath.parent, self._leak_patterns()[0])
                 doc_hits = [h for h in hits if Path(h).name == fname]
                 self._check(
                     checks,
@@ -387,6 +392,15 @@ class Validator:
                 "detail": detail,
             }
         )
+
+    def _leak_patterns(self) -> tuple[list[str], list[str]]:
+        """(instance-name patterns, path patterns) from this repo's tripwire file, or the
+        defaults. The sweeps here look for the instance's name and machine paths, the scopes
+        this module always checked; content terms belong to the template gates."""
+        scoped = load_scoped(self.repo_dir)
+        names = term_patterns(scoped["instance"])
+        paths = term_patterns(scoped["path"]) + [r"q-ktlyst/"]
+        return names, paths
 
     def _grep_dir(
         self,
