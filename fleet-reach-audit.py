@@ -191,6 +191,11 @@ def stanza_tracked(repo, skeleton, spec):
     A stanza that cannot be read returns an empty set: the rows then classify
     as before, which is the conservative answer (founder), never a silent pass.
     """
+    # The updater skips the untrack whenever the index holds ANY staged work (its
+    # commit takes no pathspec). Promise only what it will do: with staged work
+    # these paths classify as before (PR #430 review, finding 3).
+    if git(repo, "diff", "--cached", "--name-only").strip():
+        return set()
     writer = pathlib.Path(skeleton) / "kipi-update-gitignore-block.py"
     if not writer.is_file():
         return set()

@@ -28,9 +28,12 @@ build() {
   mkdir -p "$sk/q-system/.q-system/scripts" "$sk/q-system/.q-system/state" \
            "$sk/q-system/hooks" "$sk/.claude/rules"
   for f in kipi-update.sh kipi-update-preserve-scan.py kipi-update-deletion-guard.py \
-           kipi-update-gitignore-block.py validate-separation.py; do
+           kipi-update-gitignore-block.py validate-separation.py fleet-reach-audit.py; do
     cp "$ROOT/$f" "$sk/$f"
   done
+  # fleet-reach-audit.py ARMS the reach preflight. Without it every property here
+  # ran with the preflight disarmed, and the first version of this fix aborted the
+  # whole fleet at that preflight before the untrack could run (PR #430 review).
   # The REAL shipped .gitignore, so the never-commit stanza under test is the one
   # the skeleton actually ships. A hand-written stanza would pass while the real
   # one still lacked the directory.
@@ -156,7 +159,19 @@ kinds = {b["path"]: b["kind"] for b in row["blocked_by"]}
 assert kinds.get(".claude/state/kb-graph-guard.json") == "never-commit", kinds
 assert row["verdict"] == "BLOCKED-FLEET", row["verdict"]
 PY2
-  echo "PASS: the audit classifies tracked never-commit state as fleet exhaust"
+  # With founder work staged the updater skips the untrack, so the audit must not
+  # promise it (PR #430 review, finding 3): it falls back to the ordinary kinds.
+  printf 'founder staged\n' > "$inst/q-system/tracked.md"
+  ( cd "$inst" && G add q-system/tracked.md )
+  json="$(python3 "$sk/fleet-reach-audit.py" --skeleton "$sk" --json 2>&1)" \
+    || fail "the audit crashed: $json"
+  python3 - "$json" <<'PY2' || fail "staged index still reported never-commit: $json"
+import json, sys
+row = [r for r in json.loads(sys.argv[1]) if r["name"] == "testinst"][0]
+kinds = {b["path"]: b["kind"] for b in row["blocked_by"]}
+assert kinds.get(".claude/state/kb-graph-guard.json") != "never-commit", kinds
+PY2
+  echo "PASS: the audit classifies tracked never-commit state as fleet exhaust, and not while work is staged"
 }
 
 # ------------------------------------------------------------------ property 4

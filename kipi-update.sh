@@ -1732,6 +1732,16 @@ only = sys.argv[2]
 if only:
     rows = [r for r in rows if r.get("name") == only]
 fleet = [r for r in rows if r.get("verdict") == "BLOCKED-FLEET"]
+# `never-commit` paths are untracked INSIDE the instance loop (ASK-605), so an
+# instance blocked by nothing else must not abort the run before that loop. The
+# first version of that fix aborted the whole fleet here (PR #430 review). A
+# MIXED instance still aborts: fleet-unblock clears its other paths, and on the
+# next run it is never-commit-only, so this cannot deadlock.
+def _in_loop_only(r):
+    kinds = {b.get("kind") for b in (r.get("blocked_by") or [])}
+    return bool(kinds) and kinds <= {"never-commit"}
+in_loop = [r for r in fleet if _in_loop_only(r)]
+fleet = [r for r in fleet if not _in_loop_only(r)]
 founder = [r for r in rows if r.get("verdict") == "BLOCKED-FOUNDER"]
 ok = [r for r in rows if r.get("verdict") == "WOULD-SYNC"]
 # MISSING and NOT-A-REPO count against the denominator, so they are NAMED.
@@ -1756,6 +1766,10 @@ for r in other:
 for r in founder:
     print(f"  {r['name']}: founder work, correctly refused until committed "
           f"(not a fleet blocker, not counted against this run)")
+    for b in (r.get("blocked_by") or [])[:5]:
+        print(f"      {b.get('status','?')}  {b.get('path')}")
+for r in in_loop:
+    print(f"  {r['name']}: tracked never-commit state, untracked in the loop below")
     for b in (r.get("blocked_by") or [])[:5]:
         print(f"      {b.get('status','?')}  {b.get('path')}")
 for r in fleet:
