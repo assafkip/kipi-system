@@ -79,14 +79,17 @@
 #
 # Leading whitespace is tolerated (up to 3) because the CLI pads some of these;
 # an indented quote inside agent prose does not reach that far left.
-ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]+-hour) limit|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login|api error: 529 overloaded(\. this is a server-side issue, usually temporary.*)?"
+ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]+-hour) limit|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login|api error: 529 overloaded(\. this is a server-side issue, usually temporary[[:space:]]*(—|–|-{1,2})[[:space:]]*try again in a moment\. if it persists, check https://status\.claude\.com\.?)?"
 # The 529 line, added 2026-09-23 (ASK-2009) from the real worker log: on
 # 2026-08-18 three runs printed ONE line that begins
 #   API Error: 529 Overloaded. This is a server-side issue, usually temporary
 # and continues on the same line, after an em dash, with "try again in a
 # moment" and a status-page link (the captured fixture carries it verbatim).
 # Each was charged to its issue. The provider was overloaded; the issue was
-# fine. Only the CLI's own sentence is admitted after the status, never prose.
+# fine. Only the CLI's own sentence is admitted after the status, never prose:
+# the round-8 version ended in `.*`, which let one line of agent prose that
+# QUOTED the 529 read as the machine refusing and halt the dispatcher (PR #421
+# round 11, minor). The sentence is now spelled out to its last character.
 
 # THE CLI'S OWN HOOK NOISE IS NOT AN UTTERANCE (ASK-2009). On 2026-09-19 a run
 # printed the limit line and then two lines the CLI writes when it tears a
@@ -289,16 +292,20 @@ _env_claim_older_than() {  # _env_claim_older_than <claim-dir> <max-age-seconds>
 }
 
 env_alert_claim() {  # env_alert_claim <state-dir> [max-age-seconds] -> 0 when THIS process may page
-  local state="${1:-}" max_age="${2:-}" claim
+  local state="${1:-}" max_age="${2:-}" claim dead
   [ -n "$state" ] || return 0
   mkdir -p "$state" 2>/dev/null || return 0
   claim="$state/$ENV_ALERT_CLAIM_NAME"
   if ! mkdir "$claim" 2>/dev/null; then
     [ -n "$max_age" ] || return 1
     _env_claim_older_than "$claim" "$max_age" || return 1
-    mv "$claim" "$claim.expired.$$" 2>/dev/null || return 1
-    rm -f "$claim.expired.$$/holder" 2>/dev/null || true
-    rmdir "$claim.expired.$$" 2>/dev/null || true
+    # A name nothing holds (PR #421 round 11, nit): mv onto an EXISTING
+    # directory moves the claim inside it, the cleanup below misses, and the
+    # litter stays. mktemp -u picks a free name on BSD and GNU alike.
+    dead="$(mktemp -u "$claim.expired.XXXXXX")" || return 1
+    mv "$claim" "$dead" 2>/dev/null || return 1
+    rm -f "$dead/holder" 2>/dev/null || true
+    rmdir "$dead" 2>/dev/null || true
     mkdir "$claim" 2>/dev/null || return 1
   fi
   # For the human reading $STATE_DIR later. The directory's existence is still

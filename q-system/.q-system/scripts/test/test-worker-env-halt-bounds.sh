@@ -315,6 +315,44 @@ else
   bad "a fresh epochless claim is not taken over" "held=$FH may-page=$FP"
 fi
 
+echo "== round 11: a stale Codex note, a quoted 529, a takeover that nests"
+# Minor: a note from an outage that ended held the issue through a later,
+# unrelated Codex outage.
+OUT="$(run repro-stale-codex-note)"
+N="$(printf '%s\n' "$OUT" | sed -n 's/^=== Sana runs across a healthy tick and a tick during an unrelated Codex outage: \([0-9]*\).*/\1/p')"
+if [ "${N:-x}" = "2" ]; then
+  ok "a note from an ended Codex outage does not hold the issue through the next one"
+else
+  bad "a stale Codex note is dropped" "sana-runs=${N:-?} (1 = held by an old outage's note)"
+fi
+# Minor: the 529 marker ended in `.*`. The real line is from the captured
+# fixture (limit-charges-2026-09-23.json, ASK-353/355); the prose variant keeps
+# its first sentence and replaces the CLI's tail with an agent's.
+R529="$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+o = next(f["agent_output"] for f in d["payload"]["failures"] if "529" in str(f["agent_output"]))
+print(o if isinstance(o, str) else "\n".join(o))' "$HERE/fixtures/worker-env-halt/limit-charges-2026-09-23.json" 2>/dev/null)"
+P529="${R529%% —*}, and I have since fixed the flaky test and pushed."
+if [ -z "$R529" ]; then
+  bad "the real 529 line is read from the fixture" "empty: the checks below would pass vacuously"
+elif ( . "$LIB"; is_environmental "$R529" ) && ! ( . "$LIB"; is_environmental "$P529" ); then
+  ok "the real 529 line is an outage; the same status followed by agent prose is not"
+else
+  bad "the 529 marker admits only the CLI's sentence" "real=$( ( . "$LIB"; is_environmental "$R529" ) && echo outage || echo issue) prose=$( ( . "$LIB"; is_environmental "$P529" ) && echo outage || echo issue)"
+fi
+# Nit: mv onto an existing .expired dir nested the claim inside it.
+NST="$(mktemp -d)"
+mkdir -p "$NST/env-alert.claim"
+printf 'pid=1 claimed_at=x epoch=%s\n' "$(( $(date +%s) - 172800 ))" > "$NST/env-alert.claim/holder"
+mkdir -p "$NST/env-alert.claim.expired.$$"
+if ( . "$LIB"; env_alert_claim "$NST" 86400 ) && [ ! -d "$NST/env-alert.claim.expired.$$/env-alert.claim" ] \
+   && grep -q "epoch=" "$NST/env-alert.claim/holder" 2>/dev/null; then
+  ok "an expired claim is taken over by rename, never nested in a stale directory"
+else
+  bad "the takeover renames rather than nests" "$(find "$NST" | sed "s#$NST##" | tr '\n' ' ')"
+fi
+
 echo "== a dead run's per-pid files are swept"
 OUT="$(run repro-leak)"
 A="$(printf '%s\n' "$OUT" | sed -n 's/^after: *\([0-9]*\) orphan.*/\1/p')"

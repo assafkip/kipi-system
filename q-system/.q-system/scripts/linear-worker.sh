@@ -1606,11 +1606,18 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
   # is released) or the claim passes CODEX_OUTAGE_MAX_AGE. The env_halt mark is
   # what converge.sh reads to charge nothing and page nothing for a run that
   # was never attempted, the same mark the Sana halt leaves.
-  if [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" codex_outage_noted "" 2>/dev/null)" = "True" ] \
-     && env_alert_held "$STATE_DIR/codex-outage" "$CODEX_OUTAGE_MAX_AGE"; then
-    say "skip $ISSUE: held while the second runner (Codex) is unavailable. No Sana run is spent on it until Codex answers or the outage claim is older than a day."
-    python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
-    continue
+  if [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" codex_outage_noted "" 2>/dev/null)" = "True" ]; then
+    if env_alert_held "$STATE_DIR/codex-outage" "$CODEX_OUTAGE_MAX_AGE"; then
+      say "skip $ISSUE: held while the second runner (Codex) is unavailable. No Sana run is spent on it until Codex answers or the outage claim is older than a day."
+      python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
+      continue
+    fi
+    # THE OUTAGE THAT NOTED IT IS OVER (PR #421 round 11, minor). The mark was
+    # cleared only when Codex answered for THIS issue, so an issue Sana later
+    # ran normally kept it, and any unrelated Codex outage afterwards held it
+    # for up to a day. No live claim means the note is stale: drop it here, and
+    # a later outage that reaches this issue notes it afresh.
+    python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" codex_outage_noted >/dev/null 2>&1 || true
   fi
 
   if [ "$APPLY" = "0" ]; then
