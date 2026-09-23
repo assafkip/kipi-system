@@ -81,10 +81,11 @@
 # an indented quote inside agent prose does not reach that far left.
 ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]+-hour) limit|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login|api error: 529 overloaded(\. this is a server-side issue, usually temporary.*)?"
 # The 529 line, added 2026-09-23 (ASK-2009) from the real worker log: on
-# 2026-08-18 three runs printed exactly
-#   API Error: 529 Overloaded. This is a server-side issue, usually temporary --
-#   try again in a moment. If it persists, check https://status.claude.com.
-# and each was charged to its issue. The provider was overloaded; the issue was
+# 2026-08-18 three runs printed ONE line that begins
+#   API Error: 529 Overloaded. This is a server-side issue, usually temporary
+# and continues on the same line, after an em dash, with "try again in a
+# moment" and a status-page link (the captured fixture carries it verbatim).
+# Each was charged to its issue. The provider was overloaded; the issue was
 # fine. Only the CLI's own sentence is admitted after the status, never prose.
 
 # THE CLI'S OWN HOOK NOISE IS NOT AN UTTERANCE (ASK-2009). On 2026-09-19 a run

@@ -2421,6 +2421,12 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         # out per Codex outage under its own claim, released below the first
         # time a Codex run works again.
         DONE=$((DONE+1))
+        # The issue returns to the pool uncharged, so the next tick picks it up
+        # at the same attempt number: mark its pickup note as standing, exactly
+        # as the Sana halt does (PR #421 round 7, major). Without this, Sana's
+        # healthy run cleared the mark every tick and each tick of one Codex
+        # outage posted another "Attempt 1 of 3".
+        python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" halted_pickup_noted >/dev/null 2>&1 || true
         mkdir -p "$STATE_DIR/codex-outage" 2>/dev/null || true
         if env_alert_claim "$STATE_DIR/codex-outage"; then
           CODEX_OUTAGE_NEW=1

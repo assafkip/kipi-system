@@ -24,6 +24,8 @@
 #   pickup-spam     "Picked up ... Attempt 1 of 3" notes over 5 ticks of one
 #                   outage. Was 5 (unbounded once the charge was gone). Must be
 #                   1, and a new attempt after the runner answers must post (2).
+#   codex-pickup-spam  the same note over 3 ticks of one CODEX outage, where Sana
+#                   answers every tick. Was 3. Must be 1.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -160,6 +162,17 @@ if [ "${N2:-x}" = "2" ] && grep -q 'Attempt 2 of 3' <<<"$OUT"; then
   ok "once the runner answers, the next attempt posts its own note (Attempt 2 of 3)"
 else
   bad "the pickup note comes back after the outage" "notes=${N2:-?} (1 = muted for good)"
+fi
+
+echo "== one Codex outage, one pickup note"
+# PR #421 round 7, major: Sana's healthy run cleared the mark every tick and
+# the Codex outage branch never set it, so the note repeated per tick.
+OUT="$(run repro-codex-pickup-spam)"
+N="$(printf '%s\n' "$OUT" | sed -n 's/^--- commentCreate calls carrying "Picked up by the autonomous worker": \([0-9]*\).*/\1/p')"
+if [ "${N:-x}" = "1" ]; then
+  ok "3 ticks of one Codex outage write 1 'Picked up' note"
+else
+  bad "one Codex outage writes one pickup note" "notes=${N:-?}"
 fi
 
 echo "== a dead run's per-pid files are swept"
