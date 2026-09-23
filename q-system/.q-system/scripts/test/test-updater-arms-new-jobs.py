@@ -18,7 +18,24 @@ recording launchctl stub (a real launchctl here would bootstrap live jobs):
   4. From a git worktree, `--missing` REFUSES (exit 2) and the updater arms
      nothing: no plist is written and launchctl is never called.
   5. A scratch tree whose registry does not name it the skeleton arms nothing,
-     which is what keeps ~15 other updater tests from arming real jobs.
+     which is what keeps ~15 other updater tests from arming real jobs, and
+     `--missing` called DIRECTLY there refuses too (the guard lives with the
+     mode, so a second caller cannot lose it).
+  6. A RETIRED job is not resurrected. The fleet retires a job by renaming its
+     plist to `<label>.plist.retired-<date>` and leaving the template committed,
+     so "no plist on disk" does NOT mean "new job". Measured on the founder's
+     machine 2026-09-23: of the 7 committed templates with no installed plist, 4
+     were retired by founder directive on 2026-09-11 (morning-brief,
+     morning-brief-deadman, morning-inbox, linear-daily-digest -- RULE-2026-09-11-A)
+     and `--missing` as first written would have re-armed every one of them.
+  7. A label declared `intent: disabled` in ~/.config/kipi/launchd-intent.json is
+     not armed, even when it is absent from the pause ledger. That manifest did
+     not exist on the founder's machine when this was written, which is exactly
+     why case 6 and not this case is what closes the live hole.
+  8. A job whose launchctl bootstrap FAILS leaves no plist behind, so the next
+     run still counts it missing, retries, and reports the failure again. Without
+     the rollback the failed job reads as "already installed (untouched)" from
+     the second run on and the alarm is one-shot.
 
 NEGATIVE SELF-TEST. `python3 <this> --source-ref origin/main` builds the
 fixture from the pre-change scripts; case 1 goes RED there, which is the proof
@@ -27,6 +44,7 @@ the check can fail.
 Run: python3 q-system/.q-system/scripts/test/test-updater-arms-new-jobs.py
 """
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -38,7 +56,27 @@ FILES = (
     "kipi-update.sh",
     "q-system/.q-system/scripts/install-plist.sh",
     "q-system/.q-system/scripts/launchd-health-check.py",
+    # --missing resolves intent through this module's resolve_intent(), the one
+    # reader that merges the intent manifest with both pause ledgers. Asserted
+    # here so a fixture missing it fails loudly instead of producing a RED that
+    # is about the fixture.
+    "q-system/.q-system/scripts/launchd-intent-verify.py",
 )
+# Every mkdtemp tree this run created, removed in main()'s finally. Two full tree
+# copies plus their tarballs is ~170 MB per pass and ~8 passes under --mutants;
+# a test that leaks that much gets run less often, which is the real cost.
+WORKDIRS = []
+
+
+def workdir(prefix):
+    path = Path(tempfile.mkdtemp(prefix=prefix))
+    WORKDIRS.append(path)
+    return path
+
+
+def clean_workdirs():
+    while WORKDIRS:
+        shutil.rmtree(WORKDIRS.pop(), ignore_errors=True)
 TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -92,7 +130,8 @@ def build_skeleton(work, name_it_skeleton):
         if not (sk / rel).is_file():
             raise SystemExit(f"fixture is missing {rel}")
     scripts = sk / "q-system/.q-system/scripts"
-    for label in ("com.kipi.old", "com.kipi.new", "com.kipi.paused"):
+    for label in ("com.kipi.old", "com.kipi.new", "com.kipi.paused",
+                  "com.kipi.retired", "com.kipi.declined", "com.kipi.willfail"):
         (scripts / f"{label}.plist").write_text(TEMPLATE.format(label=label))
     registry = '{"instances": []}'
     if name_it_skeleton:
@@ -109,15 +148,31 @@ def scratch_home(work):
     agents = home / "Library" / "LaunchAgents"
     agents.mkdir(parents=True)
     (agents / "com.kipi.old.plist").write_text(LIVE_OLD)
+    # A RETIRED job, in the shape the fleet actually retires one: the plist
+    # renamed out of the way, the template left committed. Six of these sit in
+    # the founder's LaunchAgents from two separate retirement events.
+    (agents / "com.kipi.retired.plist.retired-2026-09-11").write_text(
+        TEMPLATE.replace("__KIPI_REPO__", "/the/primary/checkout").format(label="com.kipi.retired"))
     (home / ".config" / "kipi").mkdir(parents=True)
     (home / ".config" / "kipi" / "launchd-paused.txt").write_text("com.kipi.paused  # paused on purpose\n")
+    # Declared disabled in the manifest and ABSENT from the ledger above, so this
+    # row is only seen by a reader that opens the manifest.
+    (home / ".config" / "kipi" / "launchd-intent.json").write_text(
+        '{"jobs": [{"label": "com.kipi.declined", "intent": "disabled", "reason": "fixture"}]}\n')
     return home, agents
 
 
-def env_for(work, home):
+def env_for(work, home, fail_bootstrap_for=""):
+    """A recording launchctl stub. `fail_bootstrap_for` makes bootstrap of ONE
+    label exit 1, which is how case 8 reaches the failed-install branch without a
+    real launchd."""
     log = work / "launchctl.log"
     stub = work / "launchctl-stub"
-    stub.write_text(f'#!/bin/bash\necho "$*" >> "{log}"\nexit 0\n')
+    fail = ""
+    if fail_bootstrap_for:
+        fail = (f'if [ "$1" = "bootstrap" ] && [[ "$*" == *"{fail_bootstrap_for}"* ]]; then\n'
+                f'  echo "Bootstrap failed: 5: Input/output error" >&2\n  exit 1\nfi\n')
+    stub.write_text(f'#!/bin/bash\necho "$*" >> "{log}"\n{fail}exit 0\n')
     stub.chmod(0o755)
     env = dict(os.environ)
     env["HOME"] = str(home)
@@ -135,8 +190,8 @@ def calls(log):
 
 
 def case_updater_arms_only_the_missing_job():
-    print("case 1-3: updater from the registry skeleton")
-    work = Path(tempfile.mkdtemp(prefix="arm-new-jobs-"))
+    print("case 1-3, 6-7: updater from the registry skeleton")
+    work = workdir("arm-new-jobs-")
     sk = build_skeleton(work, name_it_skeleton=True)
     home, agents = scratch_home(work)
     env, log = env_for(work, home)
@@ -155,7 +210,36 @@ def case_updater_arms_only_the_missing_job():
     check("launchctl never hears the installed label", "com.kipi.old" in calls(log), False)
     check("paused job is not armed", (agents / "com.kipi.paused.plist").exists(), False)
     check("per-job report names the new job", "installed com.kipi.new" in proc.stdout, True)
+    # case 6: a retired job stays retired. The plist is the assertion that matters;
+    # the launchctl line is the one that would actually restart the job.
+    check("retired job is not resurrected", (agents / "com.kipi.retired.plist").exists(), False)
+    check("launchctl never hears the retired label", "com.kipi.retired" in calls(log), False)
+    check("the retired skip is reported", "skipped (retired): com.kipi.retired" in proc.stdout, True)
+    # case 7: declared disabled in the manifest, absent from the ledger.
+    check("manifest-disabled job is not armed", (agents / "com.kipi.declined.plist").exists(), False)
+    check("the disabled skip is reported", "skipped (disabled): com.kipi.declined" in proc.stdout, True)
     return sk, work
+
+
+def case_failed_bootstrap_rolls_back(build=None):
+    print("case 8: a job whose bootstrap fails")
+    build = build or build_skeleton
+    work = workdir("arm-new-jobs-failboot-")
+    sk = build(work, True)
+    home, agents = scratch_home(work)
+    env, log = env_for(work, home, fail_bootstrap_for="com.kipi.willfail")
+    first = run_updater(sk, env)
+    check("updater exits 1 when a job cannot be armed", first.returncode, 1)
+    check("the summary names the job", "LAUNCHD JOBS NOT ARMED" in first.stdout
+          and "com.kipi.willfail" in first.stdout, True)
+    check("the failed job leaves no plist behind", (agents / "com.kipi.willfail.plist").exists(), False)
+    check("the healthy job still armed", (agents / "com.kipi.new.plist").is_file(), True)
+    # The point of the rollback: the SECOND run must see it as missing again and
+    # report the failure again, instead of counting it already-installed.
+    second = run_updater(sk, env)
+    check("the second run retries and reports again", "com.kipi.willfail" in second.stdout
+          and "LAUNCHD JOBS NOT ARMED" in second.stdout, True)
+    check("the second run still exits 1", second.returncode, 1)
 
 
 def case_worktree_refuses(sk, work):
@@ -183,13 +267,22 @@ def case_worktree_refuses(sk, work):
 
 def case_unnamed_scratch_tree_arms_nothing():
     print("case 5: scratch tree the registry does not name")
-    work = Path(tempfile.mkdtemp(prefix="arm-new-jobs-unnamed-"))
+    work = workdir("arm-new-jobs-unnamed-")
     sk = build_skeleton(work, name_it_skeleton=False)
     home, agents = scratch_home(work)
     env, log = env_for(work, home)
     run_updater(sk, env)
     check("no job armed from an unnamed tree", (agents / "com.kipi.new.plist").exists(), False)
     check("launchctl never called from an unnamed tree", calls(log), "")
+    # The guard travels WITH the mode, not only with the updater. lessons-daily
+    # calls --missing directly on a nothing-published day, so a second caller must
+    # not be able to lose the skeleton check by not knowing about it.
+    direct = subprocess.run(["bash", str(sk / "q-system/.q-system/scripts/install-plist.sh"), "--missing"],
+                            capture_output=True, text=True, timeout=120, env=env)
+    check("--missing refuses outside the registry skeleton", direct.returncode, 2)
+    check("the refusal names the skeleton", "REFUSED: --missing only runs from the registry skeleton"
+          in direct.stderr, True)
+    check("still nothing armed after the direct call", (agents / "com.kipi.new.plist").exists(), False)
 
 
 # Each guard, broken in the FIXTURE COPY (never the repo file), must turn the
@@ -202,6 +295,18 @@ MUTANTS = (
     ("updater never arms", "kipi-update.sh", "\narm_new_jobs\n", "\ntrue\n"),
     ("skeleton check dropped", "kipi-update.sh",
      'if [ -z "$skeleton" ] || [ "$here" != "$skeleton" ]; then', "if false; then"),
+    ("retired-skip removed", "q-system/.q-system/scripts/install-plist.sh",
+     'if compgen -G "$HOME/Library/LaunchAgents/$_label.plist.retired*" >/dev/null; then',
+     "if false; then"),
+    ("disabled-skip removed", "q-system/.q-system/scripts/install-plist.sh",
+     'if printf \'%s\\n\' "$_disabled" | grep -qxF "$_label"; then',
+     'if printf \'%s\\n\' "$_disabled" | grep -qxF "no-such-label"; then'),
+    ("failed-install rollback removed", "q-system/.q-system/scripts/install-plist.sh",
+     'if [ "$MODE" = "--missing" ]; then rm -f "$HOME/Library/LaunchAgents/$_label.plist"; fi',
+     "true"),
+    ("--missing skeleton refusal removed", "q-system/.q-system/scripts/install-plist.sh",
+     'if [ "$MODE" = "--missing" ] && [ "$(cd "$KIPI_REPO" && pwd -P)" != "$_skeleton" ]; then',
+     "if false; then"),
 )
 
 
@@ -220,9 +325,13 @@ def run_mutants():
         build_skeleton = mutated
         FAILS.clear()
         print(f"== mutant: {name}")
-        sk, work = case_updater_arms_only_the_missing_job()
-        case_worktree_refuses(sk, work)
-        case_unnamed_scratch_tree_arms_nothing()
+        try:
+            sk, work = case_updater_arms_only_the_missing_job()
+            case_worktree_refuses(sk, work)
+            case_unnamed_scratch_tree_arms_nothing()
+            case_failed_bootstrap_rolls_back(mutated)
+        finally:
+            clean_workdirs()
         killed = bool(FAILS)
         print(f"== mutant {name}: {'KILLED' if killed else 'SURVIVED'}")
         if not killed:
@@ -234,11 +343,18 @@ def run_mutants():
 
 def main():
     if "--mutants" in sys.argv:
-        return run_mutants()
+        try:
+            return run_mutants()
+        finally:
+            clean_workdirs()
     print(f"test-updater-arms-new-jobs.py (source: {SOURCE_REF or 'working tree'})")
-    sk, work = case_updater_arms_only_the_missing_job()
-    case_worktree_refuses(sk, work)
-    case_unnamed_scratch_tree_arms_nothing()
+    try:
+        sk, work = case_updater_arms_only_the_missing_job()
+        case_worktree_refuses(sk, work)
+        case_unnamed_scratch_tree_arms_nothing()
+        case_failed_bootstrap_rolls_back()
+    finally:
+        clean_workdirs()
     if FAILS:
         print(f"test-updater-arms-new-jobs.py: FAIL ({len(FAILS)})")
         return 1

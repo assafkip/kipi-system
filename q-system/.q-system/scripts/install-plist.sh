@@ -141,13 +141,39 @@ if [ "$MODE" = "--all" ] || [ "$MODE" = "--missing" ]; then
   if [ -f "$KIPI_REPO/instance-registry.json" ]; then
     _skeleton="$(python3 -c 'import json,sys,os; print(os.path.realpath(json.load(open(sys.argv[1]))["skeleton"]["path"]))' "$KIPI_REPO/instance-registry.json" 2>/dev/null || true)"
   fi
-  # The paused ledger has ONE reader, launchd-health-check.py's, which fleet-health
-  # reuses for the same reason. Fail CLOSED: if it cannot be read, --missing arms
-  # nothing, because arming a job somebody paused is the harm this mode must not do.
-  _paused=""
+  # --missing RUNS ONLY FROM THE REGISTRY SKELETON, and the check lives here rather
+  # than only in kipi-update.sh's arm_new_jobs so that a SECOND caller cannot lose
+  # it by not knowing it existed. lessons-daily.sh is that second caller: it arms
+  # jobs on a nothing-published day, when it never reaches the updater at all. A
+  # guard that only one call site implements is a guard with an expiry date.
+  if [ "$MODE" = "--missing" ] && [ "$(cd "$KIPI_REPO" && pwd -P)" != "$_skeleton" ]; then
+    echo "REFUSED: --missing only runs from the registry skeleton." >&2
+    echo "  resolved KIPI_REPO=$KIPI_REPO" >&2
+    echo "  registry skeleton=${_skeleton:-<none declared>}" >&2
+    echo "  install a single label instead: install-plist.sh <label>" >&2
+    exit 2
+  fi
+  # WHAT COUNTS AS DISABLED. One reader, launchd-intent-verify's `load_intent`,
+  # which is already the only thing that merges ~/.config/kipi/launchd-intent.json
+  # with BOTH pause ledgers and resolves the disagreements. This used to read
+  # launchd-health-check's `load_paused_labels` instead, which sees the two ledger
+  # files and not the manifest, so a label declared `intent: disabled` and absent
+  # from a ledger was armed.
+  # Fail CLOSED: if the set cannot be resolved, --missing arms nothing, because
+  # arming a job somebody stopped is the harm this mode must not do.
+  _disabled=""
   if [ "$MODE" = "--missing" ]; then
-    if ! _paused="$(python3 -c 'import importlib.util,sys; s=importlib.util.spec_from_file_location("wd",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print("\n".join(sorted(m.load_paused_labels())))' "$SCRIPT_DIR/launchd-health-check.py")"; then
-      echo "REFUSED: --missing could not read the paused-label ledger; arming nothing." >&2
+    if ! _disabled="$(python3 - "$SCRIPT_DIR/launchd-intent-verify.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("iv", sys.argv[1])
+iv = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(iv)
+texts = [t for t in (iv.read_text(p) for p in iv.LEGACY_PAUSED_FILES) if t]
+intent, _conflicts = iv.load_intent(iv.read_text(iv.INTENT_MANIFEST), texts)
+print("\n".join(sorted(k for k, v in intent.items() if v == iv.DISABLED)))
+PY
+    )"; then
+      echo "REFUSED: --missing could not resolve the disabled-label set; arming nothing." >&2
       exit 2
     fi
   fi
@@ -171,8 +197,24 @@ if [ "$MODE" = "--all" ] || [ "$MODE" = "--missing" ]; then
         _n_present=$((_n_present + 1))
         continue
       fi
-      if printf '%s\n' "$_paused" | grep -qxF "$_label"; then
-        echo "  skipped (paused): $_label"
+      # A MISSING PLIST IS NOT THE SAME AS A NEW JOB, and reading it that way is
+      # how this mode resurrects work the founder deliberately stopped. The fleet
+      # retires a job by renaming its plist to `<label>.plist.retired-<date>` and
+      # leaving the template committed -- the rollback note for RULE-2026-09-11-A
+      # is literally "rename plist back + bootstrap". Measured on the founder's
+      # machine 2026-09-23 before this skip existed: of the 7 committed templates
+      # with no installed plist, 4 were retired by founder directive on 2026-09-11
+      # (morning-brief, morning-brief-deadman, morning-inbox, linear-daily-digest)
+      # and 2 more carry .retired-2026-08-01 sidecars. An unattended sync would
+      # have re-armed and bootstrapped every one of them, and the founder's only
+      # signal would have been the #general posts he had asked to stop.
+      if compgen -G "$HOME/Library/LaunchAgents/$_label.plist.retired*" >/dev/null; then
+        echo "  skipped (retired): $_label"
+        _n_skipped=$((_n_skipped + 1))
+        continue
+      fi
+      if printf '%s\n' "$_disabled" | grep -qxF "$_label"; then
+        echo "  skipped (disabled): $_label"
         _n_skipped=$((_n_skipped + 1))
         continue
       fi
@@ -184,6 +226,17 @@ if [ "$MODE" = "--all" ] || [ "$MODE" = "--missing" ]; then
       _n_failed=$((_n_failed + 1))
       _failed_labels="$_failed_labels $_label"
       echo "  FAILED: $_label" >&2
+      # ROLL BACK THE HALF-INSTALL so the next run retries and reports again.
+      # install-plist stages and validates before it moves, but the bootstrap is
+      # the LAST step and it can fail on its own (a bad interval, an I/O error)
+      # with the plist already in LaunchAgents. --missing would then count that
+      # label as already-installed-untouched from the second run on: the job never
+      # runs, the alarm fires exactly once, and the fleet looks healthy.
+      # Safe by the mode's own precondition -- every label reaching here had NO
+      # plist before this attempt, so this can never delete a working job's plist.
+      # An `&&` one-liner here would be a failing simple command under `set -e`
+      # on every --all run, so this stays a real if.
+      if [ "$MODE" = "--missing" ]; then rm -f "$HOME/Library/LaunchAgents/$_label.plist"; fi
     fi
   done <<EOF
 $(committed_templates)
