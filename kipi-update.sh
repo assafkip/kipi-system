@@ -2974,8 +2974,19 @@ if [ -n "${UNDECLARED:-}" ]; then
   echo "  UNDECLARED NON-PROPAGATING:$UNDECLARED"
 fi
 
+# REPORTED, NEVER FOLDED INTO THE EXIT CODE (ASK-1130 round 3). This script's exit
+# code is the PROPAGATION verdict and its callers read it as exactly that:
+# lessons-daily.sh:124 turns any non-zero into `propagate FAILED`, which bumps the
+# propagation streak, appends a row to the escalations ledger, alerts, and exits 1.
+# A single job whose launchctl bootstrap fails therefore filed a DAILY false alarm
+# about a fleet sync that had succeeded -- and the rollback in install-plist's
+# --missing branch makes that job retry (correctly) on every run, so the false
+# alarm renews itself forever. Arming is a separate concern with its own reporting:
+# the line below names every job, and lessons-daily's own --missing call logs the
+# failure non-fatally on its own channel. UNDECLARED above is reported the same way
+# for the same reason.
 if [ -n "$JOBS_NOT_ARMED" ]; then
   echo "  LAUNCHD JOBS NOT ARMED:$JOBS_NOT_ARMED"
 fi
 
-[ "$FAIL" -eq 0 ] && [ -z "${GATE_FAIL:-}" ] && [ -z "$JOBS_NOT_ARMED" ] && exit 0 || exit 1
+[ "$FAIL" -eq 0 ] && [ -z "${GATE_FAIL:-}" ] && exit 0 || exit 1

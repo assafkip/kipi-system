@@ -187,6 +187,23 @@ PY
   while IFS= read -r _p; do
     [ -e "$_p" ] || continue
     _label="$(basename "$_p" .plist)"
+    # RETIREMENT DECLARED IN THE TREE, and this is the signal that travels.
+    # The sidecar check further down (`<label>.plist.retired-<date>` in
+    # ~/Library/LaunchAgents) reads UNTRACKED machine-local state: it is real on
+    # the founder's laptop and absent on a second machine, a restored HOME, a
+    # fresh clone and every instance checkout. On any of those the four
+    # RULE-2026-09-11-A posters read as brand-new jobs again and an unattended
+    # sync re-arms and bootstraps the #general posting he asked to stop. So the
+    # committed template carries its own retirement, read the same way the
+    # `kipi-scope:` marker above it is, and both modes honour it: re-arming a
+    # retired job in bulk is the harm, and `--all` is as bulk as `--missing`.
+    # Bringing one back is a deliberate single-label act -- `install-plist.sh
+    # <label>` is unaffected, which is exactly the documented rollback.
+    if grep -q "kipi-retired:" "$_p"; then
+      echo "  skipped (retired, declared): $_label"
+      _n_skipped=$((_n_skipped + 1))
+      continue
+    fi
     if grep -q "kipi-scope: skeleton-only" "$_p" && [ "$(cd "$KIPI_REPO" && pwd -P)" != "$_skeleton" ]; then
       echo "  skipped (skeleton-only): $_label"
       _n_skipped=$((_n_skipped + 1))

@@ -35,7 +35,22 @@ recording launchctl stub (a real launchctl here would bootstrap live jobs):
   8. A job whose launchctl bootstrap FAILS leaves no plist behind, so the next
      run still counts it missing, retries, and reports the failure again. Without
      the rollback the failed job reads as "already installed (untouched)" from
-     the second run on and the alarm is one-shot.
+     the second run on and the alarm is one-shot. The updater still exits 0:
+     an un-armable job is not a propagation failure (case 10).
+  9. A template DECLARED retired in the repo is skipped on a HOME that has never
+     heard of it. Case 6's signal is a sidecar filename in ~/Library/LaunchAgents,
+     which is untracked machine-local state: on a second machine, a restored HOME,
+     or any instance checkout, that directory holds no sidecar and the four
+     RULE-2026-09-11-A posters read as brand-new jobs again. The tracked signal is
+     a `kipi-retired:` line in the committed template, read the same way
+     `kipi-scope: skeleton-only` already is, and it travels with the repo.
+ 10. An un-armable launchd job does NOT change kipi-update.sh's exit code. The
+     exit code is the PROPAGATION verdict and lessons-daily reads it as exactly
+     that (`propagate FAILED` -> streak bump -> escalation ledger row -> alert ->
+     exit 1). Folding arming into it turned one job that cannot bootstrap into a
+     daily false alarm about the fleet sync, which had succeeded. The arming
+     result is reported on its own line and by lessons-daily's own `--missing`
+     call, which logs it non-fatally.
 
 NEGATIVE SELF-TEST. `python3 <this> --source-ref origin/main` builds the
 fixture from the pre-change scripts; case 1 goes RED there, which is the proof
@@ -87,6 +102,21 @@ TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 # What an installed job looks like when it points at the primary checkout. The
 # test proves these bytes survive the update unchanged.
 LIVE_OLD = TEMPLATE.replace("__KIPI_REPO__", "/the/primary/checkout").format(label="com.kipi.old")
+# A template that declares its own retirement, in the committed tree rather than
+# in a HOME. Case 9: this is the only retirement signal that survives a second
+# machine, and it is the marker install-plist.sh reads.
+DECLARED_RETIRED = TEMPLATE.replace(
+    "<plist version",
+    "<!-- kipi-retired: 2026-09-11 RULE-2026-09-11-A (fixture) -->\n<plist version")
+# The labels the founder retired by directive on 2026-09-11. This list has no
+# other machine-readable home in the repo -- the sidecars live in an untracked
+# HOME -- so case 9b asserts each of their committed templates carries the marker.
+RETIRED_BY_DIRECTIVE = (
+    "com.kipi.morning-brief",
+    "com.kipi.morning-brief-deadman",
+    "com.kipi.morning-inbox",
+    "com.kipi.linear-daily-digest",
+)
 
 FAILS = []
 
@@ -133,6 +163,10 @@ def build_skeleton(work, name_it_skeleton):
     for label in ("com.kipi.old", "com.kipi.new", "com.kipi.paused",
                   "com.kipi.retired", "com.kipi.declined", "com.kipi.willfail"):
         (scripts / f"{label}.plist").write_text(TEMPLATE.format(label=label))
+    # case 9: retirement declared IN THE TREE. scratch_home() deliberately writes
+    # no sidecar for this label, so the sidecar check cannot be what skips it.
+    (scripts / "com.kipi.declared-retired.plist").write_text(
+        DECLARED_RETIRED.format(label="com.kipi.declared-retired"))
     registry = '{"instances": []}'
     if name_it_skeleton:
         registry = '{"skeleton": {"path": "%s"}, "instances": []}' % sk.resolve()
@@ -218,7 +252,35 @@ def case_updater_arms_only_the_missing_job():
     # case 7: declared disabled in the manifest, absent from the ledger.
     check("manifest-disabled job is not armed", (agents / "com.kipi.declined.plist").exists(), False)
     check("the disabled skip is reported", "skipped (disabled): com.kipi.declined" in proc.stdout, True)
+    # case 9: retirement declared in the COMMITTED TEMPLATE, with no sidecar in
+    # this HOME. This is the path that protects a second machine, a restored HOME,
+    # and every instance checkout -- none of which carry the founder's sidecars.
+    check("declared-retired job is not armed",
+          (agents / "com.kipi.declared-retired.plist").exists(), False)
+    check("launchctl never hears the declared-retired label",
+          "com.kipi.declared-retired" in calls(log), False)
+    check("the declared-retired skip is reported",
+          "skipped (retired, declared): com.kipi.declared-retired" in proc.stdout, True)
+    # The skip must be the MARKER, not a stray sidecar the fixture wrote by accident.
+    check("no sidecar exists for the declared-retired label",
+          sorted(p.name for p in agents.glob("com.kipi.declared-retired.plist.retired*")), [])
     return sk, work
+
+
+def case_directive_labels_declare_themselves():
+    """case 9b: the four RULE-2026-09-11-A templates carry the marker IN THE REPO.
+
+    Case 9 proves the mechanism against a fixture. This proves the mechanism is
+    pointed at the jobs it exists for. Without it the marker is a feature nothing
+    uses and the founder's four retired posters still re-arm on a fresh HOME.
+    """
+    print("case 9b: the retired-by-directive templates in this repo")
+    for label in RETIRED_BY_DIRECTIVE:
+        matches = [p for p in REPO.rglob(f"{label}.plist") if ".git" not in p.parts]
+        check(f"{label} has exactly one committed template", len(matches), 1)
+        if len(matches) != 1:
+            continue
+        check(f"{label} declares kipi-retired:", "kipi-retired:" in matches[0].read_text(), True)
 
 
 def case_failed_bootstrap_rolls_back(build=None):
@@ -229,7 +291,13 @@ def case_failed_bootstrap_rolls_back(build=None):
     home, agents = scratch_home(work)
     env, log = env_for(work, home, fail_bootstrap_for="com.kipi.willfail")
     first = run_updater(sk, env)
-    check("updater exits 1 when a job cannot be armed", first.returncode, 1)
+    # case 10: the exit code is the PROPAGATION verdict, and this sync propagated
+    # fine. lessons-daily turns a non-zero kipi-update.sh into "propagate FAILED",
+    # bumps the streak, appends an escalation ledger row, alerts and exits 1 --
+    # every day, because the rollback above makes the failed job retry every run.
+    if first.returncode != 0:
+        print(first.stdout[-2000:], first.stderr[-2000:], sep="\n")
+    check("an un-armable job does not fail the propagation", first.returncode, 0)
     check("the summary names the job", "LAUNCHD JOBS NOT ARMED" in first.stdout
           and "com.kipi.willfail" in first.stdout, True)
     check("the failed job leaves no plist behind", (agents / "com.kipi.willfail.plist").exists(), False)
@@ -239,7 +307,7 @@ def case_failed_bootstrap_rolls_back(build=None):
     second = run_updater(sk, env)
     check("the second run retries and reports again", "com.kipi.willfail" in second.stdout
           and "LAUNCHD JOBS NOT ARMED" in second.stdout, True)
-    check("the second run still exits 1", second.returncode, 1)
+    check("the second run also keeps exit 0", second.returncode, 0)
 
 
 def case_worktree_refuses(sk, work):
@@ -287,11 +355,18 @@ def case_unnamed_scratch_tree_arms_nothing():
 
 # Each guard, broken in the FIXTURE COPY (never the repo file), must turn the
 # suite red. A guard no mutant can reach is decoration.
+# One entry per DECISION POINT. Two entries were once aimed at the same line --
+# "paused-skip removed" anchored on `grep -qxF "$_label"`, which after the paused
+# and manifest sets were merged into `$_disabled` is the SAME line
+# "disabled-skip removed" rewrites, to the same value. Eight declared mutants
+# covered seven guards and the count read as coverage it did not have. The
+# uniqueness assertion in run_mutants() is what stops that recurring, because a
+# duplicate found by reading is a duplicate found by luck.
 MUTANTS = (
     ("installed-skip removed", "q-system/.q-system/scripts/install-plist.sh",
      'if [ -e "$HOME/Library/LaunchAgents/$_label.plist" ]; then', "if false; then"),
-    ("paused-skip removed", "q-system/.q-system/scripts/install-plist.sh",
-     'grep -qxF "$_label"', 'grep -qxF "no-such-label"'),
+    ("declared-retired skip removed", "q-system/.q-system/scripts/install-plist.sh",
+     'if grep -q "kipi-retired:" "$_p"; then', "if false; then"),
     ("updater never arms", "kipi-update.sh", "\narm_new_jobs\n", "\ntrue\n"),
     ("skeleton check dropped", "kipi-update.sh",
      'if [ -z "$skeleton" ] || [ "$here" != "$skeleton" ]; then', "if false; then"),
@@ -310,8 +385,26 @@ MUTANTS = (
 )
 
 
+def assert_mutant_anchors_are_distinct():
+    """Each mutant must break a DIFFERENT decision point, and hit it exactly once.
+
+    `text.replace(old, new, 1)` rewrites the first match, so two entries sharing an
+    anchor silently test one guard twice, and an anchor matching two places tests a
+    line the name does not claim. Both are how a mutant count stops meaning coverage.
+    """
+    seen = {}
+    for name, rel, old, _new in MUTANTS:
+        if old in seen:
+            raise SystemExit(f"mutant {name!r} shares its anchor with {seen[old]!r}: {old!r}")
+        seen[old] = name
+        hits = (REPO / rel).read_text().count(old)
+        if hits != 1:
+            raise SystemExit(f"mutant {name!r} anchor occurs {hits} times in {rel}: {old!r}")
+
+
 def run_mutants():
     global build_skeleton
+    assert_mutant_anchors_are_distinct()
     real_build = build_skeleton
     survivors = []
     for name, rel, old, new in MUTANTS:
@@ -348,11 +441,18 @@ def main():
         finally:
             clean_workdirs()
     print(f"test-updater-arms-new-jobs.py (source: {SOURCE_REF or 'working tree'})")
+    # Runs on the plain pass too, not only under --mutants: a duplicated anchor is
+    # a defect in this file, and a check nobody runs by default is not a check.
+    # Skipped against a --source-ref fixture, where the anchors describe THIS
+    # working tree and an older ref legitimately does not carry them.
+    if not SOURCE_REF:
+        assert_mutant_anchors_are_distinct()
     try:
         sk, work = case_updater_arms_only_the_missing_job()
         case_worktree_refuses(sk, work)
         case_unnamed_scratch_tree_arms_nothing()
         case_failed_bootstrap_rolls_back()
+        case_directive_labels_declare_themselves()
     finally:
         clean_workdirs()
     if FAILS:
