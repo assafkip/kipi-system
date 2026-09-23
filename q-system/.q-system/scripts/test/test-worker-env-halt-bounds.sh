@@ -290,6 +290,31 @@ else
   bad "the hold lifts when the claim expires" "sana-runs after a day=${S6:-?} (1 = held for good)"
 fi
 
+echo "== a Codex claim with no epoch still ages out"
+# PR #421 round 10, minor: a holder with no epoch (a failed write, a run killed
+# between the mkdir and the write) never expired, so no Codex outage could page
+# again and every held issue stayed held. Its age now falls back to the claim
+# directory's mtime; a FRESH epochless claim (the racer's view of another run's
+# mkdir) must still dedupe.
+EPO="$(mktemp -d)"
+age_dir() { python3 -c 'import os,sys,time; t=time.time()-int(sys.argv[2]); os.utime(sys.argv[1],(t,t))' "$1" "$2"; }
+mkdir -p "$EPO/old/env-alert.claim" "$EPO/fresh/env-alert.claim"
+age_dir "$EPO/old/env-alert.claim" 172800
+OH=$( ( . "$LIB"; env_alert_held "$EPO/old" 86400 ) && echo yes || echo no)
+OP=$( ( . "$LIB"; env_alert_claim "$EPO/old" 86400 ) && echo yes || echo no)
+FH=$( ( . "$LIB"; env_alert_held "$EPO/fresh" 86400 ) && echo yes || echo no)
+FP=$( ( . "$LIB"; env_alert_claim "$EPO/fresh" 86400 ) && echo yes || echo no)
+if [ "$OH" = no ] && [ "$OP" = yes ]; then
+  ok "an epochless claim two days old is no longer held and may page again"
+else
+  bad "an epochless claim ages out" "held=$OH may-page=$OP (yes/no = held and muted for good)"
+fi
+if [ "$FH" = yes ] && [ "$FP" = no ]; then
+  ok "a fresh epochless claim still holds and still dedupes the page"
+else
+  bad "a fresh epochless claim is not taken over" "held=$FH may-page=$FP"
+fi
+
 echo "== a dead run's per-pid files are swept"
 OUT="$(run repro-leak)"
 A="$(printf '%s\n' "$OUT" | sed -n 's/^after: *\([0-9]*\) orphan.*/\1/p')"

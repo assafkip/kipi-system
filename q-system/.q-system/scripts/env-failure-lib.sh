@@ -267,17 +267,35 @@ ENV_ALERT_CLAIM_NAME="env-alert.claim"
 # capability refusal: a claim from an outage long over stayed held, and the next
 # outage paged nobody. With a max age, a claim older than that is taken over.
 # The takeover is a rename, which exactly one racer can win, then the same mkdir
-# as a fresh claim. A holder with no epoch (written before this) never expires.
+# as a fresh claim. See _env_claim_older_than for a holder with no epoch.
+#
+# HOW OLD IS A CLAIM (PR #421 round 10, minor). The epoch in the holder, and
+# when there is none -- a holder write that failed, or a run killed between the
+# mkdir and the write -- the claim directory's own mtime, which is when it was
+# made. Never "no epoch means forever" (the round-8 version): that failed
+# CLOSED, a claim nobody could take over and a hold nobody could lift, against
+# this file's own rule that a missing page is the worse failure. And never "no
+# epoch means expired" either: a racer that reads the holder in the instant
+# between another run's mkdir and its write would take over a fresh claim and
+# page twice. `find -mmin` is the one age test BSD and GNU find agree on.
+_env_claim_older_than() {  # _env_claim_older_than <claim-dir> <max-age-seconds> -> 0 when older
+  local claim="$1" max_age="$2" held_at
+  held_at="$(sed -n 's/.*epoch=\([0-9][0-9]*\).*/\1/p' "$claim/holder" 2>/dev/null | head -1)"
+  if [ -n "$held_at" ]; then
+    [ $(( $(date +%s) - held_at )) -gt "$max_age" ]
+  else
+    [ -n "$(find "$claim" -maxdepth 0 -mmin +$(( (max_age + 59) / 60 )) 2>/dev/null)" ]
+  fi
+}
+
 env_alert_claim() {  # env_alert_claim <state-dir> [max-age-seconds] -> 0 when THIS process may page
-  local state="${1:-}" max_age="${2:-}" claim held_at now
+  local state="${1:-}" max_age="${2:-}" claim
   [ -n "$state" ] || return 0
   mkdir -p "$state" 2>/dev/null || return 0
   claim="$state/$ENV_ALERT_CLAIM_NAME"
   if ! mkdir "$claim" 2>/dev/null; then
     [ -n "$max_age" ] || return 1
-    held_at="$(sed -n 's/.*epoch=\([0-9][0-9]*\).*/\1/p' "$claim/holder" 2>/dev/null | head -1)"
-    now="$(date +%s)"
-    { [ -n "$held_at" ] && [ $((now - held_at)) -gt "$max_age" ]; } || return 1
+    _env_claim_older_than "$claim" "$max_age" || return 1
     mv "$claim" "$claim.expired.$$" 2>/dev/null || return 1
     rm -f "$claim.expired.$$/holder" 2>/dev/null || true
     rmdir "$claim.expired.$$" 2>/dev/null || true
@@ -313,12 +331,10 @@ env_alert_claim() {  # env_alert_claim <state-dir> [max-age-seconds] -> 0 when T
 # as env_alert_claim: past the max age the claim no longer counts as held, so
 # the issue runs once more and the takeover there pages again.
 env_alert_held() {  # env_alert_held <state-dir> [max-age-seconds] -> 0 while a live claim stands
-  local claim="${1:-}/$ENV_ALERT_CLAIM_NAME" max_age="${2:-}" held_at
+  local claim="${1:-}/$ENV_ALERT_CLAIM_NAME" max_age="${2:-}"
   [ -n "${1:-}" ] && [ -d "$claim" ] || return 1
   [ -n "$max_age" ] || return 0
-  held_at="$(sed -n 's/.*epoch=\([0-9][0-9]*\).*/\1/p' "$claim/holder" 2>/dev/null | head -1)"
-  [ -n "$held_at" ] || return 0
-  [ $(( $(date +%s) - held_at )) -le "$max_age" ]
+  ! _env_claim_older_than "$claim" "$max_age"
 }
 
 env_alert_release() {  # env_alert_release <state-dir>
