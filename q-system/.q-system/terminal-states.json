@@ -299,6 +299,26 @@
       }
     },
     {
+      "id": "codex-outage-hold",
+      "source": "linear-worker",
+      "class": "infra-retry",
+      "marker": "held while the second runner (Codex) is unavailable",
+      "sites": 1,
+      "what": "Sana refused this issue on capability and Codex, the second runner, was out of credits or at its usage limit. The issue is held unlabelled and uncharged while the Codex outage claim is live, so no tick spends a paid Sana run on it only to reach the same dead Codex (PR #421 round 9). It records env_halt so converge charges and pages nothing.",
+      "consumer": "com.kipi.dispatch -- the hold lifts when Codex answers for any issue (the outage claim is released) or the claim is older than CODEX_OUTAGE_MAX_AGE, and the next run dispatches the issue again",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch-lastbeat",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "DISPATCH_ARGV=(./kipi converge --issue",
+        "why": "The issue keeps no label and no attempt charge, so the dispatcher re-selects it every tick; the worker releases the hold on its own once the claim is released or expired."
+      }
+    },
+    {
       "id": "drift-cap",
       "source": "linear-worker",
       "class": "exhausted-counter",
@@ -392,6 +412,16 @@
         "marker": "The 3-attempt cap keys on that file, so it cannot trip while the write fails",
         "why": "The exit exists precisely because the mechanism a retry would rely on is the thing that is broken."
       }
+    },
+    {
+      "id": "converge-env-halt",
+      "source": "converge",
+      "class": "infra-failure",
+      "marker": "was NOT ATTEMPTED: the runner itself was unavailable",
+      "sites": 1,
+      "what": "exit 9. The worker halted because the runner itself refused (a usage, session or weekly limit, 529 Overloaded, an auth failure) and recorded env_halt; converge charges no attempt and files no ticket.",
+      "terminal": true,
+      "rationale": "environmental-trigger (self-healing-retry rule 5), and deliberately silent HERE because the worker already paged this outage once under its shared claim (env_alert_claim) and posted one Linear note on the halted issue. The exit-7 page this replaced filed one 'Sana could not open a PR' ticket per issue per tick for a single dead account (PR #421 round 1). The issue is not parked and nothing is charged, so the next dispatch after the runner recovers re-selects it; the consumer of the page is the worker's own emitter, not this exit."
     },
     {
       "id": "converge-no-pr-opened",
