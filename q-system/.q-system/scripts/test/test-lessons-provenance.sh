@@ -25,7 +25,7 @@ SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="$(cd "$SCRIPTS/../../.." && pwd)"
 
 python3 - "$SCRIPTS/lessons-distill.py" "$REPO" <<'PY'
-import hashlib, json, re, subprocess, sys, tempfile
+import hashlib, importlib.util, json, re, subprocess, sys, tempfile
 from pathlib import Path
 DISTILL, REPO = sys.argv[1], Path(sys.argv[2])
 
@@ -33,9 +33,25 @@ fails = []
 def check(n, c): print(f"  {'PASS' if c else 'FAIL'} {n}"); fails.append(n) if not c else None
 
 
+def lesson_files(lessons_dir):
+    return [f for f in sorted(lessons_dir.glob("*.md")) if f.name.lower() != "readme.md"]
+
+
 def lesson_date(path):
-    m = re.search(r"^date:\s*(\d{4}-\d{2}-\d{2})\s*$", path.read_text(errors="ignore"), re.M)
+    """The lesson's date, from a date line that may carry anything after the date.
+
+    Was anchored with `\\s*$`, so `date: 2026-09-25 (backfilled)` parsed as None and
+    that lesson was exempt from the invariant forever (codex, PR #370 round 3). The
+    exemption is now also visible: undated() below is its own check, green on the
+    175-lesson corpus today and able to go red.
+    """
+    m = re.search(r"^date:\s*(\d{4}-\d{2}-\d{2})", path.read_text(errors="ignore"), re.M)
     return m.group(1) if m else None
+
+
+def undated(lessons_dir):
+    """Lessons carrying no parseable date line: they cannot be placed against the start."""
+    return [f.stem for f in lesson_files(lessons_dir) if lesson_date(f) is None]
 
 
 def untraced(lessons_dir, ledger):
@@ -56,11 +72,13 @@ def untraced(lessons_dir, ledger):
     start = min(r["date"] for r in auto)
     traced = {r["lesson_id"] for r in rows}
     out = []
-    for f in sorted(lessons_dir.glob("*.md")):
-        if f.name.lower() == "readme.md":
-            continue
+    for f in lesson_files(lessons_dir):
         d = lesson_date(f)
-        if d and d > start and f.stem not in traced:
+        # >= not >: a run that dies on the FIRST provenance night writes no row that
+        # night, so the start comes from a later night and its orphans date earlier
+        # than it. Strict > exempted exactly the orphans the crash produces (codex,
+        # PR #370 rounds 1 and 3). A lesson dated on the start day is in scope.
+        if d and d >= start and f.stem not in traced:
             out.append(f.stem)
     return out
 
@@ -96,6 +114,56 @@ written = [p.stem for p in lessons.glob("*.md")]
 check("fixture published exactly one lesson", len(written) == 1)
 check("published ledger row names its lesson_id", ledger.get(h1, {}).get("lesson_id") in written)
 
+# 1b. the row is DURABLE with the lesson it names. The loop writes each lesson file to
+#     disk immediately; if the ledger is only written after the loop, a run that dies
+#     mid-loop leaves published lessons with no row at all -- and the next night
+#     re-distills those un-ledgered sources and ships `-2` duplicates of them
+#     (codex, PR #370 round 3, reproduced with SIGKILL). Death is injected here by
+#     raising out of write_lesson on the second source, which is the same shape: the
+#     first lesson is durable, the run never reaches the post-loop ledger write.
+C = Path(tempfile.mkdtemp())
+cinst = C / "projects" / "acme"; crca = cinst / "q-system" / "output" / "rca"; crca.mkdir(parents=True)
+cdist = {}
+for i in (1, 2):
+    p = crca / f"rca-{i}.md"
+    p.write_text(f"# night rca {i}\n\n## Structural root cause\ngeneric cause {i}.\n")
+    cdist[hashlib.sha1(p.read_text().encode()).hexdigest()[:16]] = {
+        "title": f"Night lesson {i}", "body": "Route every mutation through one writer.", "kind": "pattern"}
+(C / "registry.json").write_text(json.dumps({"instances": [{"name": "acme", "path": str(cinst)}]}))
+(C / "distilled.json").write_text(json.dumps(cdist))
+clessons, cledger_path = C / "lessons", C / "ledger.json"
+
+spec = importlib.util.spec_from_file_location("distill_under_test", DISTILL)
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+_real_write = mod.write_lesson
+_seen = []
+
+
+def _die_after_first(*a, **k):
+    if _seen:
+        raise SystemExit(-9)  # the process is killed; nothing after the loop runs
+    _seen.append(1)
+    return _real_write(*a, **k)
+
+
+mod.write_lesson = _die_after_first
+_argv = sys.argv
+sys.argv = ["lessons-distill.py", "--registry", str(C / "registry.json"), "--lessons-dir", str(clessons),
+            "--held-dir", str(C / "held"), "--ledger", str(cledger_path),
+            "--distilled-file", str(C / "distilled.json"), "--test-verify", "clean"]
+try:
+    mod.main()
+except BaseException:
+    pass
+finally:
+    sys.argv = _argv
+durable = sorted(p.stem for p in clessons.glob("*.md")) if clessons.is_dir() else []
+crashed_ledger = json.loads(cledger_path.read_text()) if cledger_path.is_file() else {}
+ctraced = {r.get("lesson_id") for r in crashed_ledger.values()}
+check("crash fixture left exactly one lesson durable", len(durable) == 1)
+check(f"a killed run leaves no untraced lesson (untraced: {[d for d in durable if d not in ctraced]})",
+      all(d in ctraced for d in durable))
+
 # 2. the real repo: ledger + corpus as committed
 real_ledger_path = REPO / "lesson-candidates" / ".processed.json"
 real_lessons = REPO / "q-system" / "lessons"
@@ -103,6 +171,12 @@ check("ledger is present in the repo", real_ledger_path.is_file())
 real_ledger = json.loads(real_ledger_path.read_text()) if real_ledger_path.is_file() else {}
 check("ledger is non-empty (a parse returning nothing proves nothing)", len(real_ledger) > 0)
 check("corpus is non-empty", any(real_lessons.glob("*.md")))
+# A lesson with no parseable date line cannot be placed against the start, so it is
+# exempt from the invariant. That exemption is a check of its own rather than silence:
+# 0 of the 175 lessons lack one today (measured 2026-09-23), so this is green now and
+# goes red the moment a lesson could buy itself an exemption.
+real_undated = undated(real_lessons)
+check(f"every lesson carries a parseable date line (undated: {real_undated})", real_undated == [])
 missing = untraced(real_lessons, real_ledger)
 if missing is None:
     print("  INFO provenance not started in the committed ledger yet; invariant enforced from the first lesson_id row")
@@ -125,6 +199,23 @@ check("negative: a backdated hand-authored row traces its lesson and does not mo
       untraced(nl, hand) == ["orphan"])
 check("negative: hand rows alone enforce nothing (the distiller defines the start)",
       untraced(nl, {"h": hand["h"]}) is None)
+# An orphan dated ON the start day is the one a crash on the first provenance night
+# produces. Strict > exempted it; >= catches it. Own directory so the assertion above
+# keeps its exact expected set.
+S = Path(tempfile.mkdtemp()); sl = S / "lessons"; sl.mkdir()
+(sl / "traced.md").write_text("---\nid: traced\nkind: pattern\ntitle: t\ndate: 2026-09-20\n---\n")
+(sl / "same-day-orphan.md").write_text("---\nid: same-day-orphan\nkind: pattern\ntitle: s\ndate: 2026-09-19\n---\n")
+check("negative: an orphan dated on the provenance start day is caught",
+      untraced(sl, neg) == ["same-day-orphan"])
+# A date line carrying anything after the date still parses, so it cannot buy an
+# exemption from the invariant.
+D = Path(tempfile.mkdtemp()); dl = D / "lessons"; dl.mkdir()
+(dl / "trailing.md").write_text("---\nid: trailing\nkind: pattern\ntitle: x\ndate: 2026-09-25 (backfilled)\n---\n")
+check("negative: a date line with trailing text parses and stays in scope",
+      lesson_date(dl / "trailing.md") == "2026-09-25" and untraced(dl, neg) == ["trailing"])
+(dl / "no-date.md").write_text("---\nid: no-date\nkind: pattern\ntitle: n\n---\n")
+check("negative: a lesson with no date line is named by undated(), a dated one is not",
+      undated(dl) == ["no-date"])
 
 print("ALL PASS" if not fails else f"SOME FAILED: {fails}")
 sys.exit(1 if fails else 0)
