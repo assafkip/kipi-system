@@ -70,10 +70,12 @@ stdlib only.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import re
 import sys
+import tokenize
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # scripts/ -> .q-system/ -> q-system/ -> repo root
@@ -168,9 +170,99 @@ def extract_paths(command: str) -> list[str]:
     return found
 
 
-def classify_body(text: str) -> str:
+def _looks_python(path: str, text: str) -> bool:
+    if path.endswith(".py"):
+        return True
+    first = text.split("\n", 1)[0]
+    return first.startswith("#!") and "python" in first
+
+
+def _blank(lines: list[str], start: tuple[int, int], end: tuple[int, int]) -> None:
+    """Overwrite one token's source span with spaces, in place.
+
+    Blanking rather than deleting keeps every other row and column where it
+    was, so nothing downstream has to care that the text was rewritten.
+    """
+    (row1, col1), (row2, col2) = start, end
+    for row in range(row1, row2 + 1):
+        idx = row - 1
+        if idx >= len(lines):
+            break
+        line = lines[idx]
+        a = min(col1 if row == row1 else 0, len(line))
+        b = min(col2 if row == row2 else len(line), len(line))
+        lines[idx] = line[:a] + " " * (b - a) + line[b:]
+
+
+def _strip_python(text: str) -> str | None:
+    """Python source minus comments and docstrings, or None if it will not
+    tokenize.
+
+    Only a STRING standing alone as a statement is dropped. A string INSIDE an
+    expression is left alone on purpose: `"permissionDecision": "deny"` is the
+    refusal itself, and removing it is the one error that costs a gate.
+    """
+    try:
+        toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
+        return None
+    lines = text.split("\n")
+    # Start of file counts as start of a statement, so a module docstring is
+    # recognised. NL and COMMENT are transparent: a shebang line must not stop
+    # the docstring below it from being seen as one.
+    starts_statement = True
+    for tok in toks:
+        if tok.type == tokenize.COMMENT:
+            _blank(lines, tok.start, tok.end)
+            continue
+        if tok.type == tokenize.NL:
+            continue
+        if tok.type == tokenize.STRING and starts_statement:
+            _blank(lines, tok.start, tok.end)
+            continue
+        starts_statement = tok.type in (
+            tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT,
+        )
+    return "\n".join(lines)
+
+
+def strip_prose(text: str, path: str = "") -> str:
+    """Source with the prose removed, so a sentence DESCRIBING a hook is never
+    read as the hook's behaviour.
+
+    Scar (codex P2, PR #409): `q-system/hooks/lessons-index.py` documents itself
+    as "any error -> emit nothing, exit 0." and terminates through
+    `sys.exit(0)` on every branch. Scanning raw source, EXIT_SHELL captured the
+    sentence-final `0.`, which is not a benign exit argument, and a pure
+    injector was reported LIVE.
+
+    Conservative in ONE direction, deliberately. A false LIVE overstates how
+    much of a settings file is a gate; a false ADDITIVE retires a working one.
+    So every failure path returns the text with LESS removed rather than more,
+    and the worst case is the old behaviour instead of a swallowed refusal.
+    """
+    if _looks_python(path, text):
+        stripped = _strip_python(text)
+        if stripped is not None:
+            return stripped
+    # Not Python, or it would not tokenize. A line whose first non-space
+    # character is `#` is a whole-line comment in both shell and Python, so
+    # blanking it cannot remove code. Trailing comments are left alone: finding
+    # those in shell needs quote and heredoc tracking this tool does not do, and
+    # leaving them in errs toward LIVE, which is the safe side.
+    return "\n".join(
+        "" if line.lstrip().startswith("#") else line
+        for line in text.split("\n")
+    )
+
+
+def classify_body(text: str, path: str = "") -> str:
     """LIVE or ADDITIVE for a file that exists. Never DEAD -- existence is
     decided by the filesystem, not by reading the file."""
+    # One chokepoint. Every signal below reads the stripped body, so a refusal
+    # quoted in a docstring and an exit code named in a comment are treated the
+    # same way: as documentation, not as behaviour.
+    text = strip_prose(text, path)
     for match in EXIT_CALL.finditer(text):
         if match.group(1).strip().strip("\"'").lower() not in BENIGN_EXIT:
             return LIVE
@@ -228,7 +320,7 @@ def check_site(project_dir: str, rel: str) -> dict:
         site["status"] = UNKNOWN
         site["note"] = f"unreadable: {exc}"
         return site
-    site["status"] = classify_body(text)
+    site["status"] = classify_body(text, resolved)
     return site
 
 

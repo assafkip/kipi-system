@@ -58,6 +58,40 @@ print(json.dumps({"hookSpecificOutput": {
     "additionalContext": "fyi"}}))
 """
 
+# An injector whose only non-benign exit text is PROSE. The docstring is the
+# real shape: q-system/hooks/lessons-index.py documents itself as "any error ->
+# emit nothing, exit 0." and every executable exit in it is sys.exit(0). A
+# scanner reading raw source captures the sentence-final "0." as an exit
+# argument it cannot evaluate and promotes a pure injector to LIVE.
+PROSE_ONLY_EXIT_HOOK = '''#!/usr/bin/env python3
+"""Fail-closed and never-blocks: any error -> emit nothing, exit 0. A caller
+that wants a refusal should exit 2 instead, which this hook never does."""
+import json, sys
+# On a bad payload the older draft used to exit 1; it emits nothing now.
+print(json.dumps({"hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "fyi"}}))
+sys.exit(0)  # never block session start
+'''
+
+# The negative half. Same prose, but this one actually refuses. Stripping
+# comments must not strip the code beside them.
+PROSE_PLUS_REAL_EXIT_HOOK = '''#!/usr/bin/env python3
+"""Fail-closed and never-blocks: any error -> emit nothing, exit 0."""
+import sys
+# On a bad payload the older draft used to exit 1; it refuses now.
+print("nope", file=sys.stderr)
+sys.exit(2)
+'''
+
+# A shell guard carrying the same trap: the only "exit 2" is a comment.
+SHELL_PROSE_ONLY_HOOK = """#!/usr/bin/env bash
+set -euo pipefail
+# Advisory only. A blocking version would exit 2 here; this one never does.
+echo "fyi"
+exit 0
+"""
+
 
 def _settings(commands):
     """A settings.json carrying one PreToolUse group with these commands."""
@@ -311,6 +345,57 @@ def test_unextractable_command_is_unknown_not_dead():
         code, report = _run(tmp, settings)
 
         assert report["sites"][0]["status"] == "UNKNOWN", report
+        assert code == 0, (code, report)
+
+
+def test_prose_exit_is_not_read_as_enforcement():
+    """Comments and docstrings describe a hook; they do not enforce anything.
+
+    `lessons-index.py` says "exit 0." in its module docstring and terminates
+    through `sys.exit(0)` on every branch. Scanning the raw source captures the
+    sentence-final `0.`, which is not in BENIGN_EXIT, so a pure injector was
+    reported LIVE (codex P2, PR #409). Neither bucket is fatal, so this never
+    produced a false block -- it produced a report that overstates how much of
+    the settings file is a gate, which is the one thing this tool exists to
+    state accurately.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        py = os.path.join(tmp, "q-system", "hooks", "injector.py")
+        sh = os.path.join(tmp, "q-system", "hooks", "injector.sh")
+        _write(py, PROSE_ONLY_EXIT_HOOK)
+        _write(sh, SHELL_PROSE_ONLY_HOOK)
+        settings = os.path.join(tmp, ".claude", "settings.json")
+        _write(settings, json.dumps(_settings([
+            'python3 "$CLAUDE_PROJECT_DIR/q-system/hooks/injector.py"',
+            'bash "$CLAUDE_PROJECT_DIR/q-system/hooks/injector.sh"',
+        ])))
+
+        code, report = _run(tmp, settings)
+
+        by = _by_script(report)
+        assert by["injector.py"]["status"] == "ADDITIVE", by["injector.py"]
+        assert by["injector.sh"]["status"] == "ADDITIVE", by["injector.sh"]
+        assert code == 0, (code, report)
+
+
+def test_stripping_prose_does_not_swallow_a_real_refusal():
+    """The negative self-test for the case above, and the one that matters.
+
+    A false ADDITIVE is the failure that retires a working gate, so the fix for
+    a false LIVE is only safe if it is provably conservative: same docstring,
+    same comment, one real `sys.exit(2)` beside them, still LIVE.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        script = os.path.join(tmp, "q-system", "hooks", "guard.py")
+        _write(script, PROSE_PLUS_REAL_EXIT_HOOK)
+        settings = os.path.join(tmp, ".claude", "settings.json")
+        _write(settings, json.dumps(_settings([
+            'python3 "$CLAUDE_PROJECT_DIR/q-system/hooks/guard.py"',
+        ])))
+
+        code, report = _run(tmp, settings)
+
+        assert report["sites"][0]["status"] == "LIVE", report["sites"][0]
         assert code == 0, (code, report)
 
 
