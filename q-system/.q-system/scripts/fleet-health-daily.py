@@ -110,6 +110,21 @@ def _paused_labels() -> set:
     return wd.load_paused_labels()
 
 
+def _declares_retirement(text: str) -> bool:
+    """Reuse launchd-intent-verify's reader so 'retired' has ONE definition.
+
+    Same shape as `_paused_labels` above and for the same reason: a second copy of
+    the marker string here would agree on the day it was written and silently stop
+    agreeing the day the marker changes.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("iv", HERE / "launchd-intent-verify.py")
+    iv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(iv)
+    return iv.declares_retirement(text)
+
+
 def _is_loaded(label: str) -> bool:
     try:
         return subprocess.run(
@@ -1530,6 +1545,17 @@ def never_installed_findings(template_dir=None, launch_agents=None,
     for template in sorted(templates.glob("com.kipi.*.plist")):
         label = template.stem
         if label in paused:
+            continue
+        # A DECLARED-RETIRED TEMPLATE IS NOT AN UNINSTALLED ONE (ASK-1130 round 4).
+        # This detector's remediation line is `install-plist.sh <label>` -- the
+        # SINGLE-label mode, which deliberately skips the retirement guard because
+        # bringing one job back is an explicit act. So for a job the founder
+        # retired (the four RULE-2026-09-11-A posters) the finding was a permanent
+        # issue, reopened by every daily run, whose only instruction was to undo
+        # the directive. The bulk installer already honours the same marker; a
+        # declaration that one consumer reads and the other ignores is how the
+        # retirement gets re-litigated by whoever reads the ticket.
+        if _declares_retirement(template.read_text(errors="replace")):
             continue
         if (agents / f"{label}.plist").is_file():
             continue

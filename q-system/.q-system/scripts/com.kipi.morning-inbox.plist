@@ -34,6 +34,13 @@
      answers "Not logged in - please run /login" because the keychain lookup
      needs them. Measured the same day: identical command, USER set, returned a
      real calendar answer.
+
+  kipi-retired: 2026-09-11 RULE-2026-09-11-A -- founder directive, the four
+  kipi #general posters were stopped (plists renamed to .plist.retired-2026-09-11).
+  install-plist.sh --all/--missing read this line and skip this template, so an
+  unattended sync cannot re-arm the job on a HOME that carries no sidecar (a second
+  machine, a restored HOME, any instance checkout). The template stays committed so
+  the rollback is still one command: install-plist.sh com.kipi.morning-inbox
 -->
 <plist version="1.0">
 <dict>

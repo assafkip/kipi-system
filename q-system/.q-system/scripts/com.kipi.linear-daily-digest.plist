@@ -13,7 +13,14 @@
      nothing in the repo referenced it. A scheduled job that exists on one laptop
      is not a mechanism, it is a habit.
 
-     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.linear-daily-digest -->
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.linear-daily-digest 
+  kipi-retired: 2026-09-11 RULE-2026-09-11-A -- founder directive, the four
+  kipi #general posters were stopped (plists renamed to .plist.retired-2026-09-11).
+  install-plist.sh --all/--missing read this line and skip this template, so an
+  unattended sync cannot re-arm the job on a HOME that carries no sidecar (a second
+  machine, a restored HOME, any instance checkout). The template stays committed so
+  the rollback is still one command: install-plist.sh com.kipi.linear-daily-digest
+-->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.kipi.linear-daily-digest</string>
