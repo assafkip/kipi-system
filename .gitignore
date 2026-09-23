@@ -106,10 +106,7 @@ q-system/output/.update-check-*
 # to let through on 2026-07-25. Machine-local tool config, never repo content.
 .codex/
 
-# Session bookkeeping written by the kipi-dsse stop gate: created while an
-# issue is open, removed when it closes, so tracking it churned git on every
-# DSSE cycle and committed one session's firing counts.
-.claude/state/
+# (.claude/state/ moved INTO the kipi-instance-local-stanza above, ASK-605.)
 
 # Generated capability maps (regenerate with capability-map-gen.py; ~5MB, churns
 # on every run). The committed artifact is the digest the overlap pass emits.
@@ -153,6 +150,14 @@ q-system/.q-system/.claude-integrity-armed
 # into the shipped stanza: instances carry hundreds of them, many already
 # committed by the pre-ASK-498 generic-fallback sweep.
 q-system/output/.update-check-*
+# Hook state (stop-gate firings, kb-graph-guard, ...). Session bookkeeping
+# written by hooks on every session, so tracking it churned git on every cycle.
+# Shipped in this stanza, not only ignored here, because root .gitignore does
+# not sync: measured 2026-09-23, three instances carried it TRACKED (committed
+# before the rule reached them), a hook dirtied it every session, and the
+# dirty-tree guard refused all three on every run (ASK-605). kipi-update.sh
+# untracks whatever this stanza ignores; the managed block keeps it untracked.
+.claude/state/
 # <<< kipi-instance-local-stanza <<<
 
 # PR-review scratch trees. 537 of these files were swept into the repo by an
