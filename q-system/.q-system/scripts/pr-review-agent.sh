@@ -149,6 +149,9 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
 # THE ONE SLUG DERIVATION (ASK-738).
 . "$SCRIPT_DIR/repo-slug-lib.sh"
+# The outage classifier the worker uses (PR #421 round 16): a limit refusal here
+# is the machine's, not an unusable review. See the claude dispatch below.
+. "$SCRIPT_DIR/env-failure-lib.sh"
 
 
 
@@ -992,12 +995,24 @@ if [ "$ENGINE" != "codex" ]; then
     # a review nobody read is the worst outcome available in this script.
     if review_is_usable "$REVIEW"; then
       echo "$(TS) review written: $REVIEW"
+    elif is_environmental "$(cat "$REVIEW" 2>/dev/null)"; then
+      # THE RUNNER REFUSED, NOT THE REVIEW (PR #421 round 16, minor). A limit
+      # line exits 0 and has no FINDINGS block, so it read as an unusable review
+      # and converge paged "review produced no verdict", blaming the review for a
+      # machine outage. Exit 9, the machine's code: no status is posted (absent
+      # is not approved), and the worker marks env_halt for converge.
+      echo "$(TS) the $ENGINE reviewer's runner is unavailable ($(environmental_reason "$(cat "$REVIEW")")); no review, no status. Exit 9." >&2
+      exit 9
     else
       REVIEW_UNUSABLE=1
       echo "$(TS) the $ENGINE reviewer answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
     fi
   else
     rc=$?
+    if is_environmental "$(cat "$REVIEW" 2>/dev/null)"; then
+      echo "$(TS) the $ENGINE reviewer's runner is unavailable ($(environmental_reason "$(cat "$REVIEW")")); no review, no status. Exit 9." >&2
+      exit 9
+    fi
     echo "$(TS) reviewer failed or timed out (rc=$rc). Partial output: $REVIEW" >&2
     exit "$rc"
   fi

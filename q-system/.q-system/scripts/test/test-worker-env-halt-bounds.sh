@@ -414,6 +414,30 @@ else
   bad "a takeover race pages once" "loser=$LOSER holder=${HOLDER:-none} stderr=$(head -c 200 "$RST/.err" 2>/dev/null)"
 fi
 
+echo "== the CLI's trust warning never sinks a real outage"
+# PR #421 round 16, minor. The CLI prints "Ignoring N permissions.allow entries
+# ... this workspace has not been trusted" as its own line (22 times in the
+# worker log; ASK-757's window in limit-charges-2026-09-23.json carries one).
+# Beside a real limit line it made is_environmental false and charged the
+# attempt. Both lines below are real, read from the fixture; their pairing is
+# constructed, since the 64 real outage windows carry the limit line bare.
+TW="$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+for f in d["payload"]["failures"]:
+    o = f["agent_output"]; o = o if isinstance(o, list) else o.split("\n")
+    for l in o:
+        if l.startswith("Ignoring ") and "has not been trusted" in l:
+            print(l); raise SystemExit' "$HERE/fixtures/worker-env-halt/limit-charges-2026-09-23.json" 2>/dev/null)"
+if [ -z "$TW" ]; then
+  bad "the real trust warning is read from the fixture" "empty: the checks below would pass vacuously"
+elif ( . "$LIB"; is_environmental "$(printf '%s\n%s' "$TW" "$LIMIT")" ) \
+     && ! ( . "$LIB"; is_environmental "$TW" ); then
+  ok "a real limit line beside the CLI's trust warning is an outage; the warning alone is not"
+else
+  bad "the trust warning is noise, not speech" "limit+warning=$( ( . "$LIB"; is_environmental "$(printf '%s\n%s' "$TW" "$LIMIT")" ) && echo outage || echo charged) warning-alone=$( ( . "$LIB"; is_environmental "$TW" ) && echo outage || echo issue)"
+fi
+
 echo "== a dead run's per-pid files are swept"
 OUT="$(run repro-leak)"
 A="$(printf '%s\n' "$OUT" | sed -n 's/^after: *\([0-9]*\) orphan.*/\1/p')"
