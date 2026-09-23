@@ -503,3 +503,18 @@ def test_a_refused_document_is_a_failure_row_with_its_usage_kept(captured):
     row = usage_ledger.row_from(doc, bot="t")
     assert row["kind"] == "failure" and row["is_error"] is True and row["tokens_out"] > 0
     assert usage_ledger.row_from(captured["json_stdout"], bot="t")["kind"] == "run"
+
+
+def test_the_live_ledger_is_refused_from_inside_a_test(tmp_path, monkeypatch):
+    # 2026-09-22: a deployment's suite wrote 125 junk rows into the real ledger.
+    monkeypatch.delenv("KIPI_USAGE_LEDGER", raising=False)
+    monkeypatch.setattr(usage_ledger, "DEFAULT_LEDGER", str(tmp_path / "live.jsonl"))
+    assert os.environ.get("PYTEST_CURRENT_TEST")  # the condition the guard reads
+    assert usage_ledger.append({"kind": "run", "bot": "t"}) is False
+    assert not (tmp_path / "live.jsonl").exists()
+    # a test that NAMES its ledger gets its rows, both ways
+    named = tmp_path / "named.jsonl"
+    assert usage_ledger.append({"kind": "run", "bot": "t"}, path=str(named)) is True
+    monkeypatch.setenv("KIPI_USAGE_LEDGER", str(tmp_path / "env.jsonl"))
+    assert usage_ledger.append({"kind": "run", "bot": "t"}) is True
+    assert len(usage_ledger.read(str(named))) == 1 and len(usage_ledger.read(str(tmp_path / "env.jsonl"))) == 1
