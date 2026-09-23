@@ -279,7 +279,9 @@ def group_files(files):
 def report_skipped(unclassified):
     """Say out loud what was left uncommitted, and why.
 
-    TRANSCRIPT ONLY. This hook does NOT alert. Founder-directed 2026-08-10 after
+    TRANSCRIPT ONLY. This function does NOT alert. (The one paging path in this
+    file is page_refusal, ASK-1515: a refused mass deletion is an EVENT that
+    pages once, not a continuously-true condition.) Founder-directed 2026-08-10 after
     reading #general: 51 of 100 messages in one 4.5-hour window were this
     notification, and the four security reverts and one dead job posted into the
     same window were unreadable underneath them.
@@ -422,6 +424,157 @@ def commit_group(commit_type, message, files):
     else:
         # Could be nothing to commit (already staged), not fatal
         print(f"  skipped: {header} - {r.stderr.strip()[:80]}")
+
+
+# --- ASK-1515: an unattended commit may never cement a mass deletion ----------
+#
+# THE SCAR (2026-09-10 14:44:00-02, running consulting checkout). Something wrote an
+# older snapshot of the tree over the working copy without moving HEAD (the HEAD
+# reflog shows no checkout, reset or merge between 14:24 and 14:44; every rolled-back
+# blob matches a commit from 2026-08-18 or earlier). The next turn end ran this hook,
+# and it did its job exactly: eleven commits in two seconds, including
+# `content: update canonical files (9 file(s), +4/-581)` and
+# `content: update project state (13 file(s), +441/-1701)`. The decision log lost 24
+# lines, the CRM working file 494, the ICP working file 177, and four canonical files
+# lost 24-52% of their lines. The stat in the subject (commit 80b82f84's fix) made the
+# damage READABLE; nothing made it REFUSABLE. The same hook, under its old
+# `update project files` fallback, deleted 26 canonical files outright on 2026-04-13.
+#
+# So: before anything is staged, a net line loss on an instance-declared append-only
+# file, or a canonical/ file shrinking past CANONICAL_SHRINK_FRACTION, refuses the
+# WHOLE run. The whole run and not the one file, because a tripwire firing means the
+# tree itself is suspect: in the 09-10 event a per-file refusal would still have
+# committed the three canonical files that lost 10-11% and all of clients.json's -649.
+#
+# Thresholds are measured, not picked. Over consulting's history (184 commits touching
+# canonical/ or the two working logs): net loss on the three append-only logs happened
+# in unattended commits exactly once each, the rollback; every deliberate canonical
+# shrink under 50% was zero, and the only unattended ones at or above 20% are the two
+# events above. Net loss, not any deletion: the ICP log's own START HERE count line is
+# a +1/-1 edit on every append, and any-deletion would refuse 6 ordinary commits.
+APPEND_ONLY_CONFIG = os.path.join(".kipi", "append-only.txt")
+CANONICAL_SHRINK_FRACTION = 0.20
+CANONICAL_SHRINK_MIN_LINES = 10
+
+
+def load_append_only():
+    """The INSTANCE's append-only list, read at call time from its own checkout.
+
+    Instance config and not a skeleton constant: the skeleton is public and ships to
+    every instance, and which logs are append-only is each instance's own fact. The
+    file sits outside q-system/ and plugins/, the two trees the fleet sync rsyncs
+    with --delete, so a `kipi update` cannot erase it. Absent file = empty list, and
+    the canonical shrink check still runs.
+    """
+    try:
+        with open(os.path.join(PROJ_DIR, APPEND_ONLY_CONFIG), encoding="utf-8") as fh:
+            return {ln.strip() for ln in fh
+                    if ln.strip() and not ln.lstrip().startswith("#")}
+    except OSError:
+        return set()
+
+
+def is_canonical(path):
+    """Same reach as classify(): skeleton q-system/canonical/ and <instance>/canonical/."""
+    tail = path.split("/", 1)[1] if "/" in path else ""
+    return path.startswith("canonical/") or tail.startswith("canonical/")
+
+
+def _head_lines(path):
+    r = run(["git", "cat-file", "-p", f"HEAD:{path}"])
+    return r.stdout.count("\n") if r.returncode == 0 else 0
+
+
+def shrink_refusals(paths):
+    """[(path, reason)] for every path this unattended commit must not take.
+
+    Read from the WORKTREE against HEAD, before anything is staged: staging and then
+    refusing would leave the shrunk file in the index, where the next bare commit by
+    any writer sweeps it in. --no-renames so a moved-away file reads as the deletion
+    it is on this path.
+    """
+    if not paths:
+        return []
+    append_only = load_append_only()
+    r = run(["git", "diff", "--numstat", "-z", "--no-renames", "HEAD", "--"]
+            + list(paths))
+    if r.returncode != 0:
+        # Fail CLOSED. An unreadable diff is not evidence the tree is safe.
+        return [("(diff)", "could not read the diff against HEAD: "
+                 + r.stderr.strip()[:120])]
+    refusals = []
+    for record in r.stdout.split("\0"):
+        parts = record.split("\t")
+        if len(parts) != 3 or "-" in (parts[0], parts[1]):
+            continue
+        try:
+            adds, dels = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        path, net = parts[2], int(parts[1]) - int(parts[0])
+        if net <= 0:
+            continue
+        if path in append_only:
+            refusals.append((path, f"append-only log lost {net} line(s) "
+                                   f"(+{adds}/-{dels})"))
+        elif is_canonical(path):
+            before = _head_lines(path)
+            if before and net >= CANONICAL_SHRINK_MIN_LINES \
+                    and net / before >= CANONICAL_SHRINK_FRACTION:
+                refusals.append((path, f"canonical file lost {net} of {before} "
+                                       f"lines ({net / before:.0%}, +{adds}/-{dels})"))
+    return refusals
+
+
+def page_refusal(refusals):
+    """Page Sana's queue ONCE per refused path set. True if a page went out.
+
+    Once, because the condition persists: the shrunk files stay on disk and every
+    turn end re-derives the same refusal. The report_skipped scar (51 of 100 #general
+    messages) is what a per-turn page becomes. The marker is keyed by the checkout
+    and the refused PATHS, not their line counts, so a file that keeps shrinking in
+    the same event does not re-page, and a different file tripping later does.
+    """
+    key = json.dumps([os.path.abspath(PROJ_DIR), sorted(p for p, _ in refusals)])
+    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
+    cache = os.environ.get("KIPI_CACHE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".cache", "kipi")
+    marker = os.path.join(cache, "auto-commit-refusals", digest)
+    if os.path.exists(marker):
+        return False
+    notify = os.environ.get("KIPI_AUTOCOMMIT_NOTIFY") or os.path.join(
+        PROJ_DIR, "q-system", ".q-system", "scripts", "slack-notify.sh")
+    if not os.path.isfile(notify):
+        print(f"auto-commit: no pager at {notify}; this refusal reached the "
+              "transcript only")
+        return False
+    first_path, first_reason = refusals[0]
+    msg = (f"auto-commit REFUSED in {os.path.basename(os.path.abspath(PROJ_DIR))}: "
+           f"{len(refusals)} file(s) would lose lines, e.g. {first_path}: "
+           f"{first_reason}. Nothing committed; check for a rollback before "
+           "committing by hand.")
+    r = subprocess.run(["bash", notify, msg], capture_output=True, text=True,
+                       timeout=60)
+    if r.returncode != 0:
+        print(f"auto-commit: pager failed rc={r.returncode}; will retry next turn")
+        return False
+    os.makedirs(os.path.dirname(marker), exist_ok=True)
+    with open(marker, "w", encoding="utf-8") as fh:
+        fh.write(key + "\n")
+    return True
+
+
+def report_refusal(refusals):
+    """Stdout (the channel the fleet wiring keeps) AND stderr, then page once."""
+    lines = [f"auto-commit: REFUSED, committing nothing. {len(refusals)} file(s) "
+             "would lose lines in an unattended commit (ASK-1515):"]
+    lines += [f"  - {p}: {why}" for p, why in refusals]
+    lines.append("  The files are untouched on disk and NOT staged. If the loss is "
+                 "intended, commit it yourself with a real message.")
+    text = "\n".join(lines)
+    print(text)
+    print(text, file=sys.stderr)
+    page_refusal(refusals)
 
 
 # One instance apply runs minutes, never hours; a marker older than this is a
@@ -610,6 +763,12 @@ def main():
     groups, unclassified = group_files(files)
     if not groups:
         print("auto-commit: no committable changes")
+        report_skipped(unclassified)
+        return
+
+    refusals = shrink_refusals([f for fl in groups.values() for f in fl])
+    if refusals:
+        report_refusal(refusals)
         report_skipped(unclassified)
         return
 
