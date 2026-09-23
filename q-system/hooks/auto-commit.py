@@ -457,6 +457,7 @@ def commit_group(commit_type, message, files):
 # canonical file by 69%. Zero ordinary unattended commits cross it. Net loss, not any deletion: the ICP log's own START HERE count line is
 # a +1/-1 edit on every append, and any-deletion would refuse 6 ordinary commits.
 APPEND_ONLY_CONFIG = os.path.join(".kipi", "append-only.txt")
+ACTIVE_REFUSAL_MARKER = "active"
 DIFF_UNREADABLE = "(diff unreadable)"
 CANONICAL_SHRINK_FRACTION = 0.20
 CANONICAL_SHRINK_MIN_LINES = 10
@@ -473,10 +474,22 @@ def load_append_only():
     """
     try:
         with open(os.path.join(PROJ_DIR, APPEND_ONLY_CONFIG), encoding="utf-8") as fh:
-            return {ln.strip() for ln in fh
-                    if ln.strip() and not ln.lstrip().startswith("#")}
+            raw = [ln.strip() for ln in fh
+                   if ln.strip() and not ln.lstrip().startswith("#")]
     except OSError:
         return set()
+    # Match git's repo-root-relative spelling. A `./` or leading `/` entry used to
+    # compare unequal to every path and protect nothing, silently (PR #426 review).
+    entries = set()
+    for entry in raw:
+        while entry.startswith("./"):
+            entry = entry[2:]
+        entries.add(entry.lstrip("/"))
+    for entry in sorted(entries):
+        if not os.path.exists(os.path.join(PROJ_DIR, entry)):
+            print(f"auto-commit: {APPEND_ONLY_CONFIG} names {entry}, which matches "
+                  "no file here; that log is NOT guarded until the entry is fixed")
+    return entries
 
 
 GUARDED_AREAS = ("canonical/", "my-project/")
@@ -572,14 +585,17 @@ def page_refusal(refusals):
 
     Once, because the condition persists: the shrunk files stay on disk and every
     turn end re-derives the same refusal. The report_skipped scar (51 of 100 #general
-    messages) is what a per-turn page becomes. The marker is keyed by the refused
-    PATHS, not their line counts, so a file that keeps shrinking in the same event
-    does not re-page, a different file tripping later does, and a turn end with no
-    refusal clears it (clear_refusal_markers) so the next event pages again.
+    messages) is what a per-turn page becomes.
+
+    An EVENT runs from the first refused turn to the first turn with no refusal
+    (clear_refusal_markers), so the marker is keyed by the checkout ALONE. Round 2
+    keyed it by the refused path set, and the set shrinks as the operator restores
+    files one at a time: every restore produced a new key and a new Linear ticket,
+    up to 7 for the 09-10 event (PR #426 review round 2). Linear issues cannot be
+    deleted, so over-paging during cleanup is the worse failure.
     """
     key = json.dumps([os.path.abspath(PROJ_DIR), sorted(p for p, _ in refusals)])
-    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
-    marker = os.path.join(_refusal_marker_dir(), digest)
+    marker = os.path.join(_refusal_marker_dir(), ACTIVE_REFUSAL_MARKER)
     if os.path.exists(marker):
         return False
     notify = os.environ.get("KIPI_AUTOCOMMIT_NOTIFY") or os.path.join(

@@ -321,3 +321,47 @@ def test_a_diff_failure_is_not_reported_as_a_loss(tmp_path, capsys, monkeypatch)
     out = capsys.readouterr().out
     assert "could not read the diff" in out
     assert "would lose lines" not in out
+
+
+
+# --- PR #426 review round 2 ------------------------------------------------------
+
+def test_restoring_files_one_at_a_time_pages_once(tmp_path, pager):
+    """MAJOR: the refused set shrinks during cleanup. Three files at 50%, restored
+    one per turn, is ONE event and must be one page, not three tickets."""
+    files = [(f"q-inst/canonical/{n}.md", 100, 0, 50) for n in ("a", "b", "c")]
+    root, run = _repo(tmp_path, append_only=False, files=files)
+    originals = {rel: (root / rel).read_text() for rel, *_ in files}
+    _apply(root, files)
+    _fire(root)
+    for rel, *_ in files[:2]:
+        (root / rel).write_text(originals[rel])
+        assert "REFUSED" in _fire(root).stdout
+    assert len(_pages(pager)) == 1, f"cleanup re-paged: {_pages(pager)}"
+
+
+def test_a_dot_slash_entry_still_guards_the_file(tmp_path, pager):
+    """MINOR: `./path` used to compare unequal to git's `path` and guard nothing."""
+    one = [r for r in REAL_ROLLBACK if r[0].endswith("decisions.md")]
+    root, run = _repo(tmp_path, append_only=False, files=one)
+    cfg = root / ".kipi" / "append-only.txt"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text("./q-inst/canonical/decisions.md\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-q", "-m", "list")
+    head = _head(run)
+    _apply(root, one)
+    _fire(root)
+    assert _head(run) == head, "a ./-prefixed entry protected nothing"
+
+
+def test_an_entry_matching_no_file_is_named(tmp_path, pager):
+    """MINOR: a stale entry is a guard that silently stopped existing. Say so."""
+    one = [("q-inst/canonical/talk-tracks.md", 135, 0, 5)]
+    root, run = _repo(tmp_path, append_only=False, files=one)
+    cfg = root / ".kipi" / "append-only.txt"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text("q-inst/my-project/renamed-away.md\n")
+    _apply(root, one)
+    out = _fire(root).stdout
+    assert "renamed-away.md" in out and "NOT guarded" in out, out
