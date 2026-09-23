@@ -1896,9 +1896,20 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     say "$ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' at $REVIEWED_SHA but the head is $CURRENT_SHA -- dispatching re-review round $DRIFT_ROUND/$MAX_DRIFT_ROUNDS"
   fi
   say "start $ISSUE on $BRANCH in $TREE (attempt $((N+1))/$MAX_ATTEMPTS)"
-  python3 "$SYNC" progress "$ISSUE" \
-    "Picked up by the autonomous worker. Branch \`$BRANCH\`. Attempt $((N+1)) of $MAX_ATTEMPTS." \
-    --agent "$AGENT" >/dev/null 2>&1 || true
+  # ONE PICKUP NOTE PER ATTEMPT THAT RUNS, not one per tick of an outage (PR #421
+  # round 6, major). The note goes out BEFORE the runner is reached, so while the
+  # account is dead every tick picked the same issue up and posted another
+  # identical "Attempt 1 of 3". The attempt charge used to cap that at three;
+  # with the outage no longer charged it was unbounded. A halt marks the issue
+  # (below, at 4a) and the note already on it stays true, because the attempt it
+  # names never ran. The mark is cleared the moment the runner answers.
+  if [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" halted_pickup_noted "" 2>/dev/null)" = "True" ]; then
+    say "$ISSUE: the pickup note from the outage-halted run still stands (attempt $((N+1)) never ran); not posting it again"
+  else
+    python3 "$SYNC" progress "$ISSUE" \
+      "Picked up by the autonomous worker. Branch \`$BRANCH\`. Attempt $((N+1)) of $MAX_ATTEMPTS." \
+      --agent "$AGENT" >/dev/null 2>&1 || true
+  fi
 
   # REWORK: if a PR already exists for this branch, the worker is not starting
   # fresh -- it is answering a review. Without this the prompt would say "do the
@@ -2150,6 +2161,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
       ENV_FAIL="$(environmental_reason "$AGENT_OUT")"
     else
       : > "$RUNNER_OK_FILE" 2>/dev/null || true
+      python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" halted_pickup_noted >/dev/null 2>&1 || true
       say "ok $ISSUE"
       python3 "$SYNC" progress "$ISSUE" "Worker run completed. See the branch/PR for the diff." \
         --agent "$AGENT" >/dev/null 2>&1 || true
@@ -2169,6 +2181,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
     else
     # The runner answered and the failure is the issue's: the machine is up.
     : > "$RUNNER_OK_FILE" 2>/dev/null || true
+    python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" halted_pickup_noted >/dev/null 2>&1 || true
     bump_attempt "$ISSUE" "claude run failed rc=$rc"
     N2="$(attempts_for "$ISSUE")"
     say "fail $ISSUE rc=$rc ($N2/$MAX_ATTEMPTS)"
@@ -2194,6 +2207,9 @@ Anything real you find and are not fixing: capture it, never just mention it:
     # worker -- both leave the counter untouched and no PR -- so without the flag
     # the fix holds inside the worker and leaks straight back in from the driver.
     python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
+    # Its own flag, not env_halt: converge.sh clears env_halt before every run
+    # it drives, so it cannot also mean "this issue's pickup note is posted".
+    python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" halted_pickup_noted >/dev/null 2>&1 || true
     # NO LINEAR COMMENT HERE (PR #421 round 1, major). It used to be posted on
     # every halted run while the page was deduped, so one outage wrote one
     # comment per tick on the same issue: the measured Aug 15-18 outage is ~288

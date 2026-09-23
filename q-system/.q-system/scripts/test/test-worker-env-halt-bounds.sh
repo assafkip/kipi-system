@@ -21,6 +21,9 @@
 #                   never ran the runner. Was 2 pages and 2 comments. Must be 1
 #                   and 1, and a tick where the runner answers must still free
 #                   the claim so the NEXT outage pages (2 pages across 2).
+#   pickup-spam     "Picked up ... Attempt 1 of 3" notes over 5 ticks of one
+#                   outage. Was 5 (unbounded once the charge was gone). Must be
+#                   1, and a new attempt after the runner answers must post (2).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -140,6 +143,23 @@ if [ "${P2:-x}" = "2" ]; then
   ok "a tick where the runner answers frees the claim: the next outage pages again"
 else
   bad "the claim is released once the runner answers" "pages across two outages=${P2:-?} (1 = a permanent mute)"
+fi
+
+echo "== one outage, one pickup note"
+# PR #421 round 6, major: the pickup note is posted before the runner is
+# reached, so every tick of an outage wrote another "Attempt 1 of 3".
+OUT="$(run repro-pickup-spam)"
+N1="$(printf '%s\n' "$OUT" | sed -n "s/^=== 'Picked up' notes across 5 ticks of ONE outage: \([0-9]*\).*/\1/p")"
+N2="$(printf '%s\n' "$OUT" | sed -n "s/^=== 'Picked up' notes after the runner answered twice: \([0-9]*\).*/\1/p")"
+if [ "${N1:-x}" = "1" ]; then
+  ok "5 ticks of one outage write 1 'Picked up' note"
+else
+  bad "one outage writes one pickup note" "notes=${N1:-?}"
+fi
+if [ "${N2:-x}" = "2" ] && grep -q 'Attempt 2 of 3' <<<"$OUT"; then
+  ok "once the runner answers, the next attempt posts its own note (Attempt 2 of 3)"
+else
+  bad "the pickup note comes back after the outage" "notes=${N2:-?} (1 = muted for good)"
 fi
 
 echo "== a dead run's per-pid files are swept"
