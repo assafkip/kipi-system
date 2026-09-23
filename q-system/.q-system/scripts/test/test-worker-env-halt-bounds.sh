@@ -66,6 +66,19 @@ else
   bad "a Codex outage pages once" "pages=${P:-?}: $(printf '%s' "$OUT" | tail -4 | tr '\n' '|')"
 fi
 
+echo "== converge stays quiet on a machine outage when the issue already has a PR"
+# PR #421 round 15, major: converge read env_halt only in its no-PR branch, so
+# a halted rework round on an open PR paged exit 7 ("review produced no
+# verdict") every tick, blaming the review for a machine outage.
+OUT="$(run repro-converge-page-with-pr)"
+RC="$(printf '%s\n' "$OUT" | sed -n 's/^--- converge rc=\([0-9]*\).*/\1/p' | tail -1)"
+P="$(printf '%s\n' "$OUT" | sed -n 's/^--- page count: \([0-9]*\).*/\1/p' | tail -1)"
+if [ "${P:-x}" = "0" ] && [ "${RC:-x}" = "9" ]; then
+  ok "a halted rework round on an open PR exits 9 with no page"
+else
+  bad "converge reads env_halt before the PR logic" "rc=${RC:-?} pages=${P:-?}"
+fi
+
 echo "== a Codex outage does not walk the queue past --limit"
 OUT="$(run repro-codex-limit)"
 if grep -q "ASK-811 the second runner is unavailable" <<<"$OUT" \

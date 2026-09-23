@@ -934,6 +934,28 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   $WORKER_CMD --apply --limit 1 --issue "$ISSUE" >>"$LOG" 2>&1
   WRC=$?
 
+  # AN UNATTEMPTED ISSUE IS NOT A FAILED ONE (ASK-873). The worker halts and
+  # charges nothing when the RUNNER is unavailable -- an exhausted account is
+  # a property of the machine, identical for every issue. Without this read,
+  # the driver charges the attempt the worker deliberately withheld, and the
+  # fix that stopped 11 healthy issues going TERMINAL holds in the worker
+  # while leaking straight back in from here.
+  # READ BEFORE ANYTHING LOOKS AT THE PR (PR #421 round 15, major). It used to
+  # sit inside the no-PR branch only, so a halt on an issue that already had an
+  # open PR (a rework round) went on to the verdict logic and paged exit 7 or 5
+  # every tick, blaming the review or the agent. The mark is this round's alone:
+  # it was cleared just above, before the worker ran.
+  ENV_HALT_MARK="$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" env_halt "" 2>/dev/null || echo "")"
+  if [ -n "$ENV_HALT_MARK" ] && [ "$ENV_HALT_MARK" != "None" ]; then
+    say "$ISSUE was NOT ATTEMPTED: the runner itself was unavailable, which is a condition of the machine and not of this issue. No attempt is charged; it stays retryable and will be picked up once the runner is back."
+    # NO PAGE FOR A MACHINE OUTAGE (PR #421 round 1, major). The worker already
+    # paged once for the outage, under its shared claim; the exit-7 below filed
+    # one "Sana could not open a PR" ticket per issue per tick for the same dead
+    # account, blaming the agent. Exit 9, the worker's own infra code, with no
+    # notify: nothing is charged or ticketed.
+    exit 9
+  fi
+
   PR="$(pr_for_branch)"
   if [ -z "$PR" ]; then
     # CHARGE THE ATTEMPT ONLY IF THE WORKER DID NOT (ASK-833). Comparing the
@@ -952,23 +974,7 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # routing ASK-275 removed, re-entering from the driver instead of the worker.
     # The worker now records the refusal in the shared ledger; this reads it.
     REFUSED_MARK="$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" refused_no_pr "" 2>/dev/null || echo "")"
-    # AN UNATTEMPTED ISSUE IS NOT A FAILED ONE (ASK-873). The worker halts and
-    # charges nothing when the RUNNER is unavailable -- an exhausted account is
-    # a property of the machine, identical for every issue. Without this read,
-    # the driver charges the attempt the worker deliberately withheld, and the
-    # fix that stopped 11 healthy issues going TERMINAL holds in the worker
-    # while leaking straight back in from here.
-    ENV_HALT_MARK="$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" env_halt "" 2>/dev/null || echo "")"
-    if [ -n "$ENV_HALT_MARK" ] && [ "$ENV_HALT_MARK" != "None" ]; then
-      say "$ISSUE was NOT ATTEMPTED: the runner itself was unavailable, which is a condition of the machine and not of this issue. No attempt is charged; it stays retryable and will be picked up once the runner is back."
-      # NO EXIT-7 PAGE FOR A MACHINE OUTAGE (PR #421 round 1, major). The
-      # worker already paged once for the outage, under its shared claim; the
-      # unconditional exit-7 below filed one "Sana could not open a PR" ticket
-      # per issue per tick for the same dead account, blaming the agent. Exit 9,
-      # the worker's own infra code, with no notify: launchd still sees a
-      # failed run, and nothing is charged or ticketed.
-      exit 9
-    elif [ -n "$REFUSED_MARK" ] && [ "$REFUSED_MARK" != "None" ]; then
+    if [ -n "$REFUSED_MARK" ] && [ "$REFUSED_MARK" != "None" ]; then
       say "$ISSUE was REFUSED by the worker and left no PR. A refusal is a correct terminal outcome, so it costs no attempt; the issue is held at its refusal label, not marked stuck."
     elif [ "$ATT_AFTER" = "$ATT_BEFORE" ]; then
       # A FAILED BUMP IS NOT A DETAIL TO SWALLOW (PR #192 review, major).
