@@ -263,12 +263,13 @@ codex_env_reason() {  # codex_env_reason <codex-output> <rc> -> the line; 0 when
 # human cannot detect, and a duplicate page is noise they can.
 ENV_ALERT_CLAIM_NAME="env-alert.claim"
 
-# AN OPTIONAL MAX AGE, for a claim nothing else will ever release (PR #421
-# round 8, major). The main claim is released by the next run that hears the
-# runner answer, which is every healthy tick, so it takes none. The Codex claim can only be
-# released by a run that REACHES Codex, and Codex is reached only on a rare
-# capability refusal: a claim from an outage long over stayed held, and the next
-# outage paged nobody. With a max age, a claim older than that is taken over.
+# AN OPTIONAL MAX AGE, for a claim its release may never reach (PR #421 rounds
+# 8 and 12). The Codex claim is released only by a run that REACHES Codex, which
+# happens only on a rare capability refusal. The main claim is released only by
+# a run that hears the runner answer, and a queue that stays empty after an
+# outage never does. Either way a claim from an outage long over stayed held and
+# the next outage paged nobody. With a max age, a claim older than that is taken
+# over; the worker passes a day for both.
 # The takeover is a rename, which exactly one racer can win, then the same mkdir
 # as a fresh claim. See _env_claim_older_than for a holder with no epoch.
 #
@@ -328,9 +329,11 @@ env_alert_claim() {  # env_alert_claim <state-dir> [max-age-seconds] -> 0 when T
 #
 # A run killed mid-outage leaves the claim held, and that is correct: the outage
 # is still on, so the next run should stay quiet. The claim comes off at the first
-# healthy completion, which during an outage is the first run after recovery. The
-# only cost of a stuck claim is a missed page, and the halted run still exits 9,
-# so fleet-health-daily.py's launchd-failing detector sees the outage either way.
+# run that hears the runner answer after recovery. A claim that outlives its
+# outage (no run reached the runner since) would be silent: nothing else sees a
+# halt, because kipi-dispatch.sh detaches converge and exits 0, so no launchd
+# label ever carries the halt's exit 9 (PR #421 round 12). That is why the worker
+# passes env_alert_claim a max age: past a day the claim is taken over and pages.
 # IS THE CONDITION STILL ANNOUNCED? (PR #421 round 9, major) The Codex branch
 # returns a capability-refused issue to the pool unlabelled during an outage,
 # so every tick re-ran a paid Sana session on it only to reach the same dead

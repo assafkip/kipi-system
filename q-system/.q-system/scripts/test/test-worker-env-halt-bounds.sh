@@ -353,6 +353,19 @@ else
   bad "the takeover renames rather than nests" "$(find "$NST" | sed "s#$NST##" | tr '\n' ' ')"
 fi
 
+echo "== the main outage claim ages out after a day"
+# PR #421 round 12, minor: released only by a run that hears the runner, the
+# main claim outlived an outage whenever the queue stayed empty after it, and
+# the next outage paged nobody (no launchd label carries exit 9 either).
+OUT="$(run repro-main-claim-ages)"
+PA="$(printf '%s\n' "$OUT" | sed -n 's/^=== pages for a new outage under a claim two days old: \([0-9]*\).*/\1/p')"
+PB="$(printf '%s\n' "$OUT" | sed -n 's/^=== pages for the same outage under a claim two minutes old: \([0-9]*\).*/\1/p')"
+if [ "${PA:-x}" = "1" ] && [ "${PB:-x}" = "0" ]; then
+  ok "a main claim two days old pages the new outage; one two minutes old still dedupes"
+else
+  bad "the main claim ages out but still dedupes" "two-days-old=${PA:-?} two-minutes-old=${PB:-?}"
+fi
+
 echo "== a dead run's per-pid files are swept"
 OUT="$(run repro-leak)"
 A="$(printf '%s\n' "$OUT" | sed -n 's/^after: *\([0-9]*\) orphan.*/\1/p')"

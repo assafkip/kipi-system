@@ -112,6 +112,12 @@ CODEX_CMD="${KIPI_CODEX_RUNNER:-codex exec --skip-git-repo-check -s workspace-wr
 # this the claim may be taken over (one page a day at most) and an issue held
 # for the outage runs once more to find out whether Codex is back.
 CODEX_OUTAGE_MAX_AGE=86400
+# And the main outage claim (PR #421 round 12). Since round 5 it is released only
+# by a run that hears the runner answer, and a queue that stays empty after an
+# outage never reaches the runner: the claim outlived its outage and the next
+# outage paged nobody. Past a day it may be taken over, so a continuing outage
+# is re-announced at most once a day.
+ENV_OUTAGE_MAX_AGE=86400
 STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
 ATTEMPTS="$STATE_DIR/linear-worker-attempts.json"
 # THE one writer of that ledger. Six functions here used to each do their own
@@ -2917,7 +2923,7 @@ print(max(0, min(behind, budget)))
   # the exact opposite of $ENV_HALT_FILE and $RUN_OUT_FILE above, because those
   # carry this RUN's state and this carries the machine's. See env-failure-lib.sh
   # for why mkdir and not a flag file, and for how the claim is released.
-  if env_alert_claim "$STATE_DIR"; then
+  if env_alert_claim "$STATE_DIR" "$ENV_OUTAGE_MAX_AGE"; then
     python3 "$SYNC" progress "$HALT_ISSUE" \
       "**Not attempted.** The runner itself was unavailable ($HALT_REASON), which is a condition of the machine and not of this issue. No attempt was charged and the dispatcher halted rather than marching the rest of the queue into the same dead environment. It will be picked up normally once the runner is available. (One note per outage: later halts during the same outage stay silent.)" \
       --agent "$AGENT" >/dev/null 2>&1 || true
