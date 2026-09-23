@@ -1402,7 +1402,7 @@ clear_automerge_pages() { python3 "$LEDGER" "$ATTEMPTS" clear-automerge "$1"; }
 # states are kept apart, never two: armed / unarmed / could not tell.
 AUTOMERGE=""
 arm_automerge() {
-  local pr="$1" dir="$2" probe
+  local pr="$1" dir="$2"
   AUTOMERGE="unknown"
   # `gh pr merge --auto --squash ''` acts on whatever branch the cwd is on, so an
   # empty number is not "arm nothing", it is "arm something else".
@@ -1411,30 +1411,19 @@ arm_automerge() {
   # round AND on every scheduled run for as long as the PR sits approved, so a
   # warning per pass would train the operator to skim the one that matters -- and
   # which exit code `gh pr merge` returns for an already-armed PR varies by
-  # version. Asking makes the no-op a real no-op.
-  if ! probe="$( cd "$dir" && gh pr view "$pr" --json autoMergeRequest \
-                   -q '.autoMergeRequest != null' 2>>"$LOG" )"; then
-    probe="unknown"
-  fi
-  if [ "$probe" = "true" ]; then
-    AUTOMERGE="armed"
-  elif ( cd "$dir" && gh pr merge --auto --squash "$pr" ) >/dev/null 2>&1; then
-    AUTOMERGE="armed"
+  # version. Asking makes the no-op a real no-op. The probe, the arm and the
+  # re-probe live in pr-verdict-lib.sh's automerge_arm (ASK-310) so converge.sh
+  # runs the SAME call instead of paging it to a human.
+  automerge_arm "$pr" "$dir" "$LOG"
+  AUTOMERGE="$AUTOMERGE_ARM_STATE"
+  if [ "$AUTOMERGE_ARM_NEW" = "1" ]; then
     say "$ISSUE: auto-merge armed on PR #$pr (GitHub merges it once every required check is green)"
+  elif [ "$AUTOMERGE" = "armed" ]; then
+    # Already armed, or the refusal WAS the no-op and the re-probe said so.
+    # Silent on purpose: this is the healthy state.
+    :
   else
-    # ASK THE STATE AGAIN BEFORE CRYING WOLF. `gh pr merge --auto` refuses for
-    # reasons that are not "unarmed", and an already-armed PR is one of them.
-    # The refusal alone cannot tell an armed PR from a broken one, so the PR is
-    # asked what it IS. Only ever runs on this path.
-    if ! probe="$( cd "$dir" && gh pr view "$pr" --json autoMergeRequest \
-                     -q '.autoMergeRequest != null' 2>>"$LOG" )"; then
-      probe="unknown"
-    fi
-    if [ "$probe" = "true" ]; then
-      # It was already armed and the refusal WAS the no-op. Silent on purpose:
-      # this is the healthy state, reached through a blip.
-      AUTOMERGE="armed"
-    elif [ "$probe" = "unknown" ]; then
+    if [ "$AUTOMERGE" = "unknown" ]; then
       AUTOMERGE="unknown"
       # STILL AUDIBLE, but claiming only what can be backed. gh refused the arm
       # AND refused the state, so "it will sit green and unmerged" is a sentence

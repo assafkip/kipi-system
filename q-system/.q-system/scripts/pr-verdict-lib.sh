@@ -431,6 +431,52 @@ automerge_from_record() {
   tr -d '[:space:]' < "$1" 2>/dev/null
 }
 
+# automerge_arm <pr> <dir> [errlog]
+# THE ONE ARM CALL (ASK-310), shared by linear-worker.sh's arm_automerge and by
+# converge.sh's approved branch. converge used to know a PR was approved and
+# unarmed and page "Needs a human: gh pr merge --auto --squash N" (live, ASK-143
+# PR #2, 2026-08-15) instead of running that one command. It cannot source the
+# worker, and a second inline copy of this logic is the drifting-semantics defect
+# arm_automerge's own header refuses. So the gh-facing part lives here, once.
+#
+# Runs in the CALLER's shell, never inside $( ), so these three stay visible:
+#   AUTOMERGE_ARM_STATE  armed | unarmed | unknown   ("" when <pr> is empty)
+#   AUTOMERGE_ARM_NEW    1 when THIS call armed it, 0 otherwise
+#   AUTOMERGE_ARM_ERR    gh's own refusal, one line, "" when it armed
+# Three states, never two: an empty probe answer is "could not tell", not
+# "unarmed" (PR #33 review round 1, finding 3). gh's refusal is KEPT, because a
+# page that says "refused" without gh's words sends a human to re-run it to read
+# them (the worker's copy used to throw it away with >/dev/null 2>&1).
+automerge_arm() {
+  local pr="${1:-}" dir="${2:-.}" errlog="${3:-/dev/null}" probe err
+  AUTOMERGE_ARM_STATE="unknown"; AUTOMERGE_ARM_NEW=0; AUTOMERGE_ARM_ERR=""
+  # `gh pr merge --auto --squash ''` acts on whatever branch the cwd is on.
+  [ -n "$pr" ] || { AUTOMERGE_ARM_STATE=""; return 0; }
+  if ! probe="$( cd "$dir" && gh pr view "$pr" --json autoMergeRequest \
+                   -q '.autoMergeRequest != null' 2>>"$errlog" )"; then
+    probe="unknown"
+  fi
+  if [ "$probe" = "true" ]; then
+    AUTOMERGE_ARM_STATE="armed"; return 0
+  fi
+  if err="$( cd "$dir" && gh pr merge --auto --squash "$pr" 2>&1 >/dev/null )"; then
+    AUTOMERGE_ARM_STATE="armed"; AUTOMERGE_ARM_NEW=1; return 0
+  fi
+  AUTOMERGE_ARM_ERR="$(printf '%s' "$err" | tr '\n' ' ' | sed 's/  */ /g; s/ $//' | cut -c1-300)"
+  # ASK THE STATE AGAIN before calling it unarmed: an already-armed PR is one of
+  # the reasons `gh pr merge --auto` refuses.
+  if ! probe="$( cd "$dir" && gh pr view "$pr" --json autoMergeRequest \
+                   -q '.autoMergeRequest != null' 2>>"$errlog" )"; then
+    probe="unknown"
+  fi
+  case "$probe" in
+    true)    AUTOMERGE_ARM_STATE="armed"; AUTOMERGE_ARM_ERR="" ;;
+    unknown) AUTOMERGE_ARM_STATE="unknown" ;;
+    *)       AUTOMERGE_ARM_STATE="unarmed" ;;
+  esac
+  return 0
+}
+
 # _sha_norm <sha>
 # Whitespace-stripped, lower-cased sha for comparison. Hex case and a stray
 # newline are not drift. A PREFIX is deliberately NOT treated as a match: both
