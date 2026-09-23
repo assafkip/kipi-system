@@ -2746,8 +2746,17 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # (sp-53aad86f). This is what makes a dispatcher-driven review distinguishable
     # from a hand run in the verdict record. It is set on the call rather than
     # exported once, so it cannot leak into an unrelated reviewer invocation.
-    KIPI_REVIEW_INVOKER=worker $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post --engine claude >>"$LOG" 2>&1 \
-      || say "WARN: the claude reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
+    KIPI_REVIEW_INVOKER=worker $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post --engine claude >>"$LOG" 2>&1
+    REVIEW_RC=$?
+    if [ "$REVIEW_RC" = "9" ]; then
+      # The reviewer's RUNNER refused (PR #421 round 16, minor): the same account
+      # Sana just used ran out between the two calls. env_halt makes converge exit
+      # 9 with no charge and no "review produced no verdict" page.
+      say "$ISSUE: the reviewer's runner is unavailable -- a condition of the machine; PR #$PR_NUM stands, unreviewed, until it answers"
+      python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
+    elif [ "$REVIEW_RC" != "0" ]; then
+      say "WARN: the claude reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
+    fi
     # Read back the verdict RECORD the reviewer just wrote (never re-grep the
     # review prose) and state what happens next in plain terms. Rework itself
     # fires on the NEXT run, through the severity-floor gate above.

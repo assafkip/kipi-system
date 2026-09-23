@@ -436,7 +436,14 @@ grep -v 'is_environmental' "$HERE/../linear-worker.sh" > "$RQ/worker-without.sh"
 rq_repo "$RQ/without" "$RQ/worker-without.sh"
 KIPI_SKEL="$RQ/with/skel" KIPI_STATE_DIR="$RQ/state" bash "$RQS" --dry ASK-1 > "$RQ/with.out" 2>&1; RQ_WITH=$?
 KIPI_SKEL="$RQ/without/skel" KIPI_STATE_DIR="$RQ/state" bash "$RQS" --dry ASK-1 > "$RQ/without.out" 2>&1; RQ_WITHOUT=$?
-if [ "$(wc -c < "$HERE/../linear-worker.sh")" -gt 65536 ] && [ "$RQ_WITH" = "0" ] && grep -q "halt is present" "$RQ/with.out"; then
+# The premise, checked on its own (PR #423 review, minor): the worker must be
+# past the pipe buffer or the case below cannot tell the fix from the bug.
+if [ "$(wc -c < "$HERE/../linear-worker.sh")" -gt 65536 ]; then
+  ok "the real worker is past the pipe buffer ($(wc -c < "$HERE/../linear-worker.sh" | tr -d ' ') bytes), so this case can see the SIGPIPE"
+else
+  bad "the real worker is past the pipe buffer" "only $(wc -c < "$HERE/../linear-worker.sh" | tr -d ' ') bytes: grow the fixture, the case below proves nothing"
+fi
+if [ "$RQ_WITH" = "0" ] && grep -q "halt is present" "$RQ/with.out"; then
   ok "the real merged worker (past the pipe buffer) reads as having the halt"
 else
   bad "the requeue tool sees the halt in a large merged worker" "rc=$RQ_WITH: $(head -2 "$RQ/with.out" | tr '\n' '|')"
@@ -445,6 +452,30 @@ if [ "$RQ_WITHOUT" = "2" ] && grep -q "^REFUSED" "$RQ/without.out"; then
   ok "a merged worker without the halt is still refused (exit 2)"
 else
   bad "the requeue tool still refuses a worker without the halt" "rc=$RQ_WITHOUT"
+fi
+
+echo "== the CLI's trust warning never sinks a real outage"
+# PR #421 round 16, minor. The CLI prints "Ignoring N permissions.allow entries
+# ... this workspace has not been trusted" as its own line (22 times in the
+# worker log; ASK-757's window in limit-charges-2026-09-23.json carries one).
+# Beside a real limit line it made is_environmental false and charged the
+# attempt. Both lines below are real, read from the fixture; their pairing is
+# constructed, since the 64 real outage windows carry the limit line bare.
+TW="$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+for f in d["payload"]["failures"]:
+    o = f["agent_output"]; o = o if isinstance(o, list) else o.split("\n")
+    for l in o:
+        if l.startswith("Ignoring ") and "has not been trusted" in l:
+            print(l); raise SystemExit' "$HERE/fixtures/worker-env-halt/limit-charges-2026-09-23.json" 2>/dev/null)"
+if [ -z "$TW" ]; then
+  bad "the real trust warning is read from the fixture" "empty: the checks below would pass vacuously"
+elif ( . "$LIB"; is_environmental "$(printf '%s\n%s' "$TW" "$LIMIT")" ) \
+     && ! ( . "$LIB"; is_environmental "$TW" ); then
+  ok "a real limit line beside the CLI's trust warning is an outage; the warning alone is not"
+else
+  bad "the trust warning is noise, not speech" "limit+warning=$( ( . "$LIB"; is_environmental "$(printf '%s\n%s' "$TW" "$LIMIT")" ) && echo outage || echo charged) warning-alone=$( ( . "$LIB"; is_environmental "$TW" ) && echo outage || echo issue)"
 fi
 
 echo "== a dead run's per-pid files are swept"

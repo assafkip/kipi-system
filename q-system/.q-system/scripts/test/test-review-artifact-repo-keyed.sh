@@ -57,6 +57,7 @@ mkrepo "$WORK/skel"  repo-alpha ALPHA_CODE
 mkrepo "$WORK/beta"  repo-beta  BETA_CODE
 cp "$SRC_DIR/pr-review-agent.sh" "$SRC_DIR/pr-verdict-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
 [ -f "$SRC_DIR/repo-slug-lib.sh" ] && cp "$SRC_DIR/repo-slug-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
+cp "$SRC_DIR/env-failure-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
 G -C "$WORK/skel" add -A; G -C "$WORK/skel" commit -q -m "control code"
 git -C "$WORK/skel" push -q origin main
 AGENT="$WORK/skel/q-system/.q-system/scripts/pr-review-agent.sh"

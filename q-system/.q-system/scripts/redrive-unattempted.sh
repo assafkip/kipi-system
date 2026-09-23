@@ -76,7 +76,7 @@ Clearing these counts now returns them to a dispatcher that still charges an
 issue for the machine's outage, so the next weekly limit burns exactly the same
 issues again. Merge the ASK-873 halt first, then re-run this command verbatim.
 
-Checked: git -C $SKEL show origin/main:q-system/.q-system/scripts/linear-worker.sh | grep is_environmental
+Checked: git -C $SKEL show origin/main:q-system/.q-system/scripts/linear-worker.sh, for the word is_environmental
 Nothing was written.
 EOF
   exit 2

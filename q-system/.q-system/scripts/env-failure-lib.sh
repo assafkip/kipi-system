@@ -105,7 +105,10 @@ ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]+-hour) lim
 # sentence an agent writes can pass for it.
 # Up to 3 leading spaces, the same tolerance ENV_LINE_RE gives the marker
 # (PR #421 round 3): an indented teardown line must not sink a real outage.
-ENV_NOISE_RE='^[[:space:]]{0,3}(SessionEnd|SessionStart|Stop|SubagentStop|PreCompact|Notification|UserPromptSubmit|PreToolUse|PostToolUse) hook \[.*\] failed: Hook cancelled[[:space:]]*$'
+# And the CLI's untrusted-workspace preamble (PR #421 round 16, minor): 22 times
+# in the worker log, e.g. ASK-757's window in limit-charges-2026-09-23.json. It
+# is the CLI's own sentence, anchored from its first word, never an agent's.
+ENV_NOISE_RE='^[[:space:]]{0,3}((SessionEnd|SessionStart|Stop|SubagentStop|PreCompact|Notification|UserPromptSubmit|PreToolUse|PostToolUse) hook \[.*\] failed: Hook cancelled|Ignoring [0-9]+ permissions\.allow entries from [^:]+: this workspace has not been trusted\. .*)[[:space:]]*$'
 
 # AND THE SEPARATOR MUST LEAD SOMEWHERE THE MACHINE GOES. Allowing a separator
 # plus ANYTHING was the third attempt and it was wrong for the same reason as the
