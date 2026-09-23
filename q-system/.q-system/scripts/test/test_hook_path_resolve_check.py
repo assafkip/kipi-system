@@ -8,9 +8,12 @@ one is a control somebody did not run before declaring five live hooks dead:
   2. a genuinely missing path is DEAD (exit 2)
   3. a hook that only ever `exit 0` but denies via JSON is NOT dead
 
-Case 1 is the incident: /Users/assafkip is a root-owned symlink to
-/Users/assafkipnis, so a checker that compares the RAW project dir against the
-RAW hook path sees two unrelated strings and reports a live hook as unreachable.
+Case 1 is the incident: the home directory is reachable under two spellings, a
+root-owned symlink pointing at the real account directory, so a checker that
+compares the RAW project dir against the RAW hook path sees two unrelated
+strings and reports a live hook as unreachable. The absolute paths are
+deliberately not written here -- this file ships to every instance and to a
+public repo, and the push tripwire blocks a home path in the skeleton.
 Case 3 is the other half: a guard that blocks by emitting permissionDecision
 deny never exits non-zero, so a checker that equates "never exits 2" with "dead"
 retires a working gate.
@@ -109,8 +112,9 @@ def _by_script(report):
 
 
 def test_symlinked_project_dir_is_live():
-    """Case 1. The project dir is handed in through a symlink, as /Users/assafkip
-    hands the real repo to every process that inherited that spelling.
+    """Case 1. The project dir is handed in through a symlink, the way the
+    short home-directory spelling hands the real repo to every process that
+    inherited it.
 
     A raw-string containment test sees "<tmp>/link/..." against a project dir of
     "<tmp>/real/..." and concludes the hook is outside the repo, hence dead. The

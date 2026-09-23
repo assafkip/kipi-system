@@ -6,11 +6,15 @@ Scar (fleet-sync, 2026-09-20, RCA row T7): five live hooks were declared dead
 and acted on. Two separate mistakes produced that verdict, and this tool exists
 to make both of them impossible to repeat.
 
-  1. RAW PATH COMPARISON. `/Users/assafkip` is a root-owned symlink to
-     `/Users/assafkipnis`. A process that inherited the short spelling hands
-     CLAUDE_PROJECT_DIR=/Users/assafkip/... to every hook, so a checker that
-     compares the project dir against the hook path as STRINGS sees two
-     unrelated prefixes and concludes the hook lives outside the repo. Both
+  1. RAW PATH COMPARISON. The home directory is reachable under two spellings:
+     a root-owned symlink whose name is a prefix of the real account name,
+     pointing at the real one. A process that inherited the short spelling
+     hands a CLAUDE_PROJECT_DIR rooted under that symlink to every hook, so a
+     checker that compares the project dir against the hook path as STRINGS
+     sees two unrelated prefixes and concludes the hook lives outside the
+     repo. The absolute paths are deliberately not written here: this file
+     ships to every instance and to a public repo, and the push tripwire
+     blocks a home path in the skeleton (PR #374 round 6). Both
      sides are realpath'd here before anything is compared or tested, and the
      resolved path is printed in the report so the next reader can see which
      file was actually inspected.
