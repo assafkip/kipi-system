@@ -87,6 +87,11 @@ EXCLUDED_FILES = {"settings.local.json", ".DS_Store"}
 EXTRA_WATCHED = (
     os.path.join("q-system", ".q-system", "scripts", "claude-path-write-guard.py"),
     os.path.join("q-system", ".q-system", "scripts", "claude-integrity-tripwire.py"),
+    # ASK-1180 review, PR #427 round 2 (major): six security gates route through
+    # this helper's run(). Replacing run() with `return 0` never calls the gate,
+    # so every NORMAL refusal went too, with empty stderr. Watched here, an edit
+    # lands as `modified` on the next tool call and --enforce restores it.
+    os.path.join("q-system", ".q-system", "scripts", "hook_fail_closed.py"),
 )
 
 BASELINE_REL = os.path.join("q-system", ".q-system", "claude-integrity-baseline.json")

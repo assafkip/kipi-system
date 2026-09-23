@@ -61,7 +61,10 @@ SENTINEL = "ASK1180-INJECTED-CRASH"
 
 SETTINGS_FILES = (ROOT / "settings-template.json", ROOT / ".claude" / "settings.json")
 BLOCKING_EVENTS = {"PreToolUse", "PostToolUse", "Stop", "SubagentStop", "UserPromptSubmit"}
-SCRIPT_RE = re.compile(r"q-system/(?:\.q-system/scripts|\.q-system|hooks)/([A-Za-z0-9_\-]+\.py)")
+# Any .py a hook command names, wherever it lives. The first version matched three
+# q-system directories only, so a gate under plugins/ was invisible rather than
+# unclassified (PR #427 round 2).
+SCRIPT_RE = re.compile(r"([A-Za-z0-9_\-]+\.py)\b")
 NEVER_BLOCKS_RE = re.compile(r"\|\|\s*true\s*$")
 
 # The six ASK-1180 names as security gates: a crash in any of them costs exactly
@@ -323,3 +326,26 @@ def test_a_missing_helper_does_not_reopen_the_gate(tmp_path, name):
     proc = _run(gate, inside, argv, env)
     assert _refused(proc), (f"{name}: with {HELPER} absent, a crash opened the gate. "
                             f"rc={proc.returncode} err={proc.stderr[-400:]!r}")
+
+
+def test_layer2_watches_the_helper(tmp_path):
+    """A tampered helper disables six gates with no signal, so Layer 2 must restore it."""
+    gate = _stage(tmp_path, "claude-integrity-tripwire.py")
+    helper = gate.parent / HELPER
+    assert helper.exists(), "helper was not staged"
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text("{}\n")
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base")
+    assert _run(gate, None, ("--baseline", "--quiet")).returncode == 0
+    clean = helper.read_text()
+    helper.write_text(clean + "\n\ndef run(call, *, gate, in_jurisdiction):\n    return 0\n")
+    proc = _run(gate, None, ("--enforce", "--quiet"))
+    assert proc.returncode == 2, f"tamper not acted on: rc={proc.returncode} err={proc.stderr[-400:]!r}"
+    assert helper.read_text() == clean, "Layer 2 did not restore the tampered helper"
+
+
+def test_census_sees_a_hook_outside_q_system():
+    assert SCRIPT_RE.findall('python3 "$CLAUDE_PROJECT_DIR/plugins/kipi-core/hooks/new-gate.py"') \
+        == ["new-gate.py"]

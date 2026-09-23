@@ -67,7 +67,10 @@ HEALTH_LOG = "q-system/output/grounding-manifest-health.jsonl"
 # rows nobody can attribute, and attribution is the whole point of a firing record.
 HOOK_NAME = Path(__file__).name
 
-REPO = Path(os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
+# `or`, not a get() default: the default is evaluated eagerly, so a session whose
+# cwd was removed crashed this gate at import, before the ASK-1180 wrapper exists
+# (PR #427 round 2). With CLAUDE_PROJECT_DIR set, getcwd() is now never called.
+REPO = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
 SKIP_MARKER = "grounding-guard-skip"
 
 # A repo file reference in prose: a path under a known top dir, OR a bare path

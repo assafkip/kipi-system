@@ -891,8 +891,11 @@ def _crash_jurisdiction(payload: dict) -> bool:
     """_in_jurisdiction over a raw hook payload, for a crash OUTSIDE classify().
 
     classify() already has its own crash path above. This covers everything else
-    main() does -- payload handling, the verdict print -- so no line of this hook
-    can raise its way to an allow on a merge or a push (ASK-1180).
+    main() does -- payload handling, the verdict print -- so nothing raised
+    inside main() can reach an allow on a merge or a push (ASK-1180).
+    NOT covered: an exception at MODULE import, before the wrapper exists. That
+    still exits 1, which is an allow (PR #427 round 2). Keep module scope free of
+    anything that can raise.
     """
     if payload.get("tool_name") != "Bash":
         return False
