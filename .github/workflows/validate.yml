@@ -85,10 +85,18 @@ jobs:
           # green over tests that never ran. With this set they fail instead.
           DC_REQUIRE_REAL_PRODUCERS: "1"
 
-      # CAPABILITY_GATE_SKIP: the gate just ran as its own step above; running
-      # it again inside validate-separation would execute the suite twice per
-      # CI run (finding-15). The skip is honored only with caller proof
-      # (GITHUB_ACTIONS here).
+      # CAPABILITY_GATE_SKIP: the gate ran as its own step above; running it again
+      # inside validate-separation would execute that same step's tests twice per CI
+      # run (finding-15). The skip is honored only with caller proof (GITHUB_ACTIONS
+      # here).
+      #
+      # WHAT THE STEP ABOVE ACTUALLY RAN DEPENDS ON THE EVENT (claude review of
+      # PR #377, minor 2). On a push to main it is the full declared suite; on a
+      # pull_request it is the SUBSET that diff earns (ASK-1749), so on a PR the full
+      # suite runs nowhere inside this job -- it runs on the push to main after merge.
+      # The skip is still right either way, because the double execution it avoids is
+      # of whatever that step ran. Writing "just ran the full suite" here was the part
+      # that stopped being true, and a wrong why-comment is worse than none.
       - name: Run skeleton validation (Phase 1)
         run: python3 validate-separation.py 1 --verbose
         env:

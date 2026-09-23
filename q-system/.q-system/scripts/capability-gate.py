@@ -90,6 +90,16 @@ WIRING_SURFACE_GLOBS = (
     # verify_select.py, called from verify.sh and from nowhere else, was reported
     # inert. A commit-blocking script is the strongest wiring there is, which is
     # the same argument that put lefthook.yml on the list above.
+    # Two scars, one line. ASK-1170 first named `q-system/.q-system/verify.sh` in
+    # WIRING_SURFACES above, because .github/workflows/verify.yml runs
+    # `bash q-system/.q-system/verify.sh --full` on every push and PR #279 went RED
+    # on `inert-engine: mcp-denylist-namespace-check.py` while CI was running it.
+    # That by-path entry was removed when this glob landed: the glob subsumes it
+    # (measured 2026-09-22, --check-only output byte-identical with and without),
+    # and two declarations of one fact is the restated-value trap -- they agree
+    # until one moves. Only ONE level deep, so a .sh in a subdirectory under
+    # .q-system still wires nothing; that boundary is the negative control in
+    # test_capability_gate.py.
     "q-system/.q-system/*.sh",
     # The MCP server's source tree is where an agent-facing tool gets wired
     # (wiring-check.md: "any new MCP tool is registered in the server"). Without
@@ -712,6 +722,21 @@ def select_for_diff(root, base, notes):
             notes.append(f"change-size vs {base}: tier {verdict['tier']}, FULL suite -- "
                          + "; ".join(verdict["reasons"][:3]))
             return None
+        # AN EMPTY SELECTION IS NOT A DECISION (claude review of PR #377, nit 3).
+        # `select_for_diff` used to hand `set()` back, `run_tests` then skipped every
+        # artifact and the gate exited 0 having executed nothing -- green, with zero
+        # evidence behind it. No producer emits an empty list today, because the
+        # scanner floor guarantees at least 72, which is exactly why this would be
+        # invisible if it ever happened. ASK-1918 shrinks that floor on purpose as
+        # declarations accumulate, so "cannot happen" has an expiry date on it.
+        # None means the full suite, the same answer every other unvouchable case
+        # gets here.
+        if not selected:
+            notes.append(f"change-size vs {base}: tier {verdict['tier']}, selected ZERO of "
+                         f"{verdict['declared_tests']} declared tests -- a selection that "
+                         "runs nothing is not a verdict this gate will report green on, "
+                         "so the FULL suite runs")
+            return None
     except Exception as exc:  # noqa: BLE001 -- any failure here must mean "run everything"
         notes.append(f"change-size vs {base}: could not classify ({type(exc).__name__}: "
                      f"{str(exc)[:160]}), so the FULL suite runs")
@@ -776,6 +801,20 @@ def run_tests(root, manifest, mode, errors, notes, only=None):
     notes.append(f"tests: ran={ran} quarantined={quarantined} "
                  f"skipped-skeleton-only={skipped}"
                  + (f" not-selected-for-this-diff={not_selected}" if only is not None else ""))
+    # ZERO EXECUTED IS NEVER GREEN (claude review of PR #377, nit 3). The selection
+    # guard in select_for_diff stops the empty-list case one layer up; this is the
+    # backstop for every other road to nothing -- a manifest whose entries all vanished
+    # from disk, a selection naming only paths this mode skips, a future caller passing
+    # a set the manifest does not contain. Quarantined and skeleton-only files are
+    # ACCOUNTED FOR, so they are not silence: a run that skipped everything on purpose
+    # says so in the note above and is allowed. A run that ran nothing and cannot say
+    # why is a gate reporting on evidence it never collected.
+    if ran == 0 and quarantined == 0 and skipped == 0:
+        errors.append(
+            "zero tests executed: this gate ran no test artifact at all and would "
+            "otherwise have exited 0. Nothing was quarantined and nothing was skipped, "
+            "so there is no account of where the suite went. Check the manifest and the "
+            "selection (ASK-1921).")
 
 
 def gather_wiring_text(root, exclude_names):

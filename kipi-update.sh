@@ -1691,10 +1691,15 @@ reach_preflight() {
     echo "reach preflight: disarmed (no fleet-reach-audit.py at $SCRIPT_DIR)"
     return 0
   fi
-  out="$(python3 "$audit" --json 2>/dev/null)" && rc=0 || rc=$?
-  if [ -z "$out" ]; then
+  # stderr is NOT redirected (ASK-1965). The audit raises a RuntimeError written
+  # for exactly the case where it cannot build the guard's pathspec; the old
+  # 2>/dev/null deleted it and left an ABORT naming only an exit code.
+  # A non-zero exit aborts even with stdout present: a raising audit is no verdict.
+  out="$(python3 "$audit" --json)" && rc=0 || rc=$?
+  if [ -z "$out" ] || [ "$rc" -ne 0 ]; then
     echo ""
     echo "ABORT: the reach preflight produced no verdict (exit $rc)."
+    echo "The audit's own error, if it wrote one, is printed directly above."
     echo "A preflight that cannot run must not pass. Fix it, or pass"
     echo "--skip-reach-preflight to proceed without it."
     exit 1
@@ -1735,7 +1740,17 @@ ok = [r for r in rows if r.get("verdict") == "WOULD-SYNC"]
 other = [r for r in rows
          if r.get("verdict") not in ("WOULD-SYNC", "BLOCKED-FLEET", "BLOCKED-FOUNDER")]
 scope = f" (scoped to --only {only})" if only else ""
-print(f"reach preflight: {len(ok)} of {len(rows)} would sync now{scope}")
+# The headline says what the audit MEASURED (a dirty tree inside the synced
+# pathspec), never "would sync now": a stale skeleton or a dangling symlink
+# still fails the run after this line prints (PR #396 review, ASK-1965). The
+# unsyncable verdicts are counted IN the headline so the shortfall is explained
+# on the line an operator actually reads.
+counts = {}
+for r in other:
+    counts[r.get("verdict")] = counts.get(r.get("verdict"), 0) + 1
+unsyncable = "".join(f"; {n} {v}" for v, n in sorted(counts.items()))
+print(f"reach preflight: {len(ok)} of {len(rows)} clear of dirty-tree blockers"
+      f"{unsyncable}{scope} (stale skeleton and symlinks are separate gates)")
 for r in other:
     print(f"  {r['name']}: {r.get('verdict')} (counted in the total, not syncable)")
 for r in founder:

@@ -190,6 +190,7 @@
 {"closed_at": "2026-09-02T04:07:24Z", "commit_sha": "a7c824f1f31406d03898005c9808a9ed6be446d3", "finding_id": "finding-6", "findings_triaged_at": "2026-09-02T04:07:15Z", "issue_id": "mbl-board-live-readback", "prd_id": "prd-morning-brief-learns-2026-09-01", "reviewed_at": "2026-09-02T04:06:31Z", "verified_at": "2026-09-02T04:07:15Z"}
 {"commit_sha": "fb92670f2decbc95e7f024c904349b525f3606a6", "issue_id": "ASK-1247", "receipts": {"reviewed": "2026-09-13T17:10:53Z"}, "reviewed_at": "2026-09-13T17:10:53Z"}
 {"commit_sha": "45e0445f5656ce8c022fd12038100b798f492f74", "issue_id": "ASK-539", "receipts": {"reviewed": "2026-09-18T16:48:47Z"}, "reviewed_at": "2026-09-18T16:48:47Z"}
+{"commit_sha": "a5d655ffa64ea83e5a64df47cc43ba1ccdb349e9", "issue_id": "ASK-1170", "receipts": {"reviewed": "2026-09-15T15:18:19Z"}, "reviewed_at": "2026-09-15T15:18:19Z"}
 {"closed_at": "2026-09-18T20:46:35Z", "commit_sha": "0d196ac9d0805aaa7e0a1e31ae8edbad14bb7cee", "finding_id": "finding-2", "findings_triaged_at": "2026-09-18T20:46:21Z", "issue_id": "dc-01-carry-the-real-file-set", "prd_id": "prd-design-chain-seal-reads-verdicts-2026-09-18", "reviewed_at": "2026-09-18T20:46:21Z", "verified_at": "2026-09-18T20:37:37Z"}
 {"closed_at": "2026-09-18T21:29:00Z", "commit_sha": "c6bd0608086e481ffc7c6409bc1de2ad415d71ba", "finding_id": "finding-18", "findings_triaged_at": "2026-09-18T21:28:54Z", "issue_id": "dc-02-seal-runs-the-producers", "prd_id": "prd-design-chain-seal-reads-verdicts-2026-09-18", "reviewed_at": "2026-09-18T21:28:54Z", "verified_at": "2026-09-18T21:28:12Z"}
 {"closed_at": "2026-09-18T22:31:32Z", "commit_sha": "5fd3ecb2de84c5b1ca4fd1c7c502a8e34e7c4d0e", "finding_id": "finding-3", "findings_triaged_at": "2026-09-18T22:31:26Z", "issue_id": "dc-03-seal-owns-the-served-round", "prd_id": "prd-design-chain-seal-reads-verdicts-2026-09-18", "reviewed_at": "2026-09-18T22:31:25Z", "verified_at": "2026-09-18T22:30:36Z"}
@@ -231,8 +232,14 @@
 {"closed_at": "2026-09-19T22:49:05Z", "commit_sha": "e4d1b61c52d410e0d554a3963e2eafc03aa1a815", "finding_id": "finding-10", "findings_triaged_at": "2026-09-19T22:49:04Z", "issue_id": "dc-24-wiring-ships-last", "prd_id": "prd-design-chain-seal-reads-verdicts-2026-09-18", "reviewed_at": "2026-09-19T22:49:04Z", "verified_at": "2026-09-19T22:49:04Z"}
 {"commit_sha": "424f38c49778b24af2962ee6e9f7497c6e5c96c1", "issue_id": "ASK-1924", "receipts": {"reviewed": "2026-09-20T14:52:13Z"}, "reviewed_at": "2026-09-20T14:52:13Z"}
 {"commit_sha": "e9679c45a0d3ebb714ffec57ac79f83fece9c823", "issue_id": "ASK-1924", "receipts": {"reviewed": "2026-09-20T15:19:04Z"}, "reviewed_at": "2026-09-20T15:19:04Z"}
+{"commit_sha": "c374f1f34b29dbf0c493f9d1dd0fd46a3bb569b1", "issue_id": "ASK-1921", "receipts": {"reviewed": "2026-09-20T17:48:38Z"}, "reviewed_at": "2026-09-20T17:48:38Z"}
 {"commit_sha": "39e19132e684005d946a3fd3fda342359c160950", "issue_id": "ASK-1922", "receipts": {"reviewed": "2026-09-20T16:53:14Z"}, "reviewed_at": "2026-09-20T16:53:14Z"}
 {"commit_sha": "b26d56b113b86b6ff296860bcbfd3246ead37d8e", "issue_id": "ASK-1905", "receipts": {"reviewed": "2026-09-20T18:07:32Z"}, "reviewed_at": "2026-09-20T18:07:32Z"}
+{"commit_sha": "62cd95e108fd10f2e25328f05a96f1f327d9f0be", "issue_id": "ASK-1968", "receipts": {"reviewed": "2026-09-22T14:42:14Z"}, "reviewed_at": "2026-09-22T14:42:14Z"}
 {"commit_sha": "f3918bd9e98b106a320a3993205d98759e6317b3", "issue_id": "ASK-1969", "receipts": {"reviewed": "2026-09-21T15:47:36Z"}, "reviewed_at": "2026-09-21T15:47:36Z"}
+{"commit_sha": "fe945cd963161acc253be203cb4f1060b20dce6b", "issue_id": "ASK-1959", "receipts": {"reviewed": "2026-09-22T18:10:28Z"}, "reviewed_at": "2026-09-22T18:10:28Z"}
+{"commit_sha": "44b8fa0a1594fec818a7004e0b842aec2de79481", "issue_id": "ASK-1959", "receipts": {"reviewed": "2026-09-22T18:55:43Z"}, "reviewed_at": "2026-09-22T18:55:43Z"}
 {"commit_sha": "1353f73294421f28c665cd3daaa21719543e235f", "issue_id": "ASK-1958", "receipts": {"reviewed": "2026-09-22T18:26:46Z"}, "reviewed_at": "2026-09-22T18:26:46Z"}
 {"commit_sha": "6ed0bb2182119a348e14e3f4fae82bb68e5e6974", "issue_id": "ASK-1957", "receipts": {"reviewed": "2026-09-22T19:38:41Z"}, "reviewed_at": "2026-09-22T19:38:41Z"}
+{"commit_sha": "ce607b857df396858578ba915a0d36e0e2e43e6d", "issue_id": "ASK-1959", "receipts": {"reviewed": "2026-09-23T04:12:51Z"}, "reviewed_at": "2026-09-23T04:12:51Z"}
+{"commit_sha": "a84c80026b6f34d6855bc50b8837747f9eb792fb", "issue_id": "ASK-1170", "receipts": {"reviewed": "2026-09-23T00:31:04Z"}, "reviewed_at": "2026-09-23T00:31:04Z"}

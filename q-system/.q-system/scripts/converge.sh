@@ -926,8 +926,35 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   # unwritable ledger is caught there with exit 8 rather than twice.
   python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" refused_no_pr >>"$LOG" 2>&1 \
     || say "note: could not clear the stale refusal marker for $ISSUE; see $LOG"
+  # SAME CLEAR FOR THE ENVIRONMENTAL HALT (ASK-873), and for the same reason: a
+  # marker left by an earlier round would suppress a REAL failure's attempt
+  # forever, which is the retry-forever bug this file closes, inverted.
+  python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" env_halt >>"$LOG" 2>&1 \
+    || say "note: could not clear the stale env-halt marker for $ISSUE; see $LOG"
   $WORKER_CMD --apply --limit 1 --issue "$ISSUE" >>"$LOG" 2>&1
   WRC=$?
+
+  # AN UNATTEMPTED ISSUE IS NOT A FAILED ONE (ASK-873). The worker halts and
+  # charges nothing when the RUNNER is unavailable -- an exhausted account is
+  # a property of the machine, identical for every issue. Without this read,
+  # the driver charges the attempt the worker deliberately withheld, and the
+  # fix that stopped 11 healthy issues going TERMINAL holds in the worker
+  # while leaking straight back in from here.
+  # READ BEFORE ANYTHING LOOKS AT THE PR (PR #421 round 15, major). It used to
+  # sit inside the no-PR branch only, so a halt on an issue that already had an
+  # open PR (a rework round) went on to the verdict logic and paged exit 7 or 5
+  # every tick, blaming the review or the agent. The mark is this round's alone:
+  # it was cleared just above, before the worker ran.
+  ENV_HALT_MARK="$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" env_halt "" 2>/dev/null || echo "")"
+  if [ -n "$ENV_HALT_MARK" ] && [ "$ENV_HALT_MARK" != "None" ]; then
+    say "$ISSUE was NOT ATTEMPTED: the runner itself was unavailable, which is a condition of the machine and not of this issue. No attempt is charged; it stays retryable and will be picked up once the runner is back."
+    # NO PAGE FOR A MACHINE OUTAGE (PR #421 round 1, major). The worker already
+    # paged once for the outage, under its shared claim; the exit-7 below filed
+    # one "Sana could not open a PR" ticket per issue per tick for the same dead
+    # account, blaming the agent. Exit 9, the worker's own infra code, with no
+    # notify: nothing is charged or ticketed.
+    exit 9
+  fi
 
   PR="$(pr_for_branch)"
   if [ -z "$PR" ]; then
