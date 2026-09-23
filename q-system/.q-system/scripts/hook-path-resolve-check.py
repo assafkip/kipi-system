@@ -116,18 +116,33 @@ SCRIPT_EXT = (".py", ".sh")
 
 # Terminating non-zero is one way to block. These are the others, all of which
 # ride out on exit 0.
+#
+# `continue` is QUOTED here for the same reason `decision` already is: in a hook
+# envelope it is always a JSON key, and bare it is a loop keyword. Unquoted, a
+# Python `continue` statement with the token `False` anywhere in the next 400
+# characters -- ordinary code, no envelope in sight -- read as a refusal and
+# promoted a pure injector to LIVE (codex, PR #409 round 8).
 BLOCK_SIGNALS = (
     "permissionDecision",
     '"decision"',
     "'decision'",
-    "continue",
+    '"continue"',
+    "'continue'",
     "hookSpecificOutput",
 )
 # `continue` and `hookSpecificOutput` appear in additive emitters too, so they
-# only count alongside an explicit refusal value.
-REFUSAL_VALUES = ("deny", "ask", "block", "false")
+# only count alongside an explicit refusal value. Word-bounded so `false` does
+# not match inside `false_positives` and `block` does not match inside
+# `blocklist`; the VALUE is what has to be there, not a substring of a name.
+REFUSAL_VALUE_RE = re.compile(r"\b(?:deny|ask|block|false)\b")
 
-EXIT_CALL = re.compile(r"(?:sys\.)?exit\(\s*([^)]*?)\s*\)")
+# `SystemExit` is spelled out because the alternation is case-sensitive and the
+# `Exit(` inside it would otherwise be missed. prompt-only-enforcement-guard.py
+# ends on `raise SystemExit(main(sys.argv[1:]))` and returns 2 on a block, so it
+# is a real gate whose only exit this pattern could not see. HEAD called it LIVE
+# by accident -- a bare `continue` happened to sit near the word "block" -- and
+# narrowing that accident away is what exposed the gap (codex, PR #409 round 8).
+EXIT_CALL = re.compile(r"(?:(?:sys\.)?exit|SystemExit)\(\s*([^)]*?)\s*\)")
 EXIT_SHELL = re.compile(r"\bexit\s+([^\s;&|)}]+)")
 
 # An exit argument that provably means success. Everything else -- a literal 2,
@@ -137,16 +152,27 @@ BENIGN_EXIT = {"", "0", "none"}
 
 
 def project_dir_for(settings_path: str) -> str:
-    """The CLAUDE_PROJECT_DIR a hook in this settings file would be handed.
+    """The CLAUDE_PROJECT_DIR a hook wired in THIS settings file would be handed.
+
+    Derived from the file's own location, never from $CLAUDE_PROJECT_DIR. An
+    earlier draft preferred the env var "because that is what the runtime
+    exports", and that preference is wrong in both directions:
+
+      - When the named file IS this session's repo, the env var and the
+        derivation realpath to the same directory, so the env var adds nothing.
+      - When it is not -- the documented CLI form
+        `hook-path-resolve-check.py <other-repo>/.claude/settings.json`, run
+        from inside any Claude session -- the env var points at the SESSION's
+        repo, every hook in the named file resolves under a root it does not
+        live in, and the tool reports live hooks DEAD. That is the exact verdict
+        this file exists to stop somebody acting on (codex, PR #409 rounds 4, 6
+        and 8: the same finding three times, so the fix is structural rather
+        than another special case).
 
     Realpath'd here, once, so nothing downstream ever compares a symlinked
-    spelling against a resolved one. The env var wins when set because that is
-    what the runtime actually exports; derivation from the file's location is
-    the fallback for a CLI run against an arbitrary file.
+    spelling against a resolved one. This is the call that turns the short
+    home-directory spelling into the real one before any path is joined to it.
     """
-    env = os.environ.get("CLAUDE_PROJECT_DIR")
-    if env:
-        return os.path.realpath(env)
     d = os.path.dirname(os.path.abspath(settings_path))
     if os.path.basename(d) == ".claude":
         d = os.path.dirname(d)
@@ -282,7 +308,7 @@ def classify_body(text: str, path: str = "") -> str:
             # its value several lines apart, and a false LIVE is the safe error
             # here while a false ADDITIVE is the one that retires a gate.
             window = lowered[idx: idx + 400]
-            if any(v in window for v in REFUSAL_VALUES):
+            if REFUSAL_VALUE_RE.search(window):
                 return LIVE
             idx += len(needle)
     return ADDITIVE
@@ -353,9 +379,18 @@ def scan(settings_path: str) -> list[dict]:
     return sites
 
 
+# The settings files this tool scans when given no path, repo-relative. A tree
+# carries a SUBSET of these, never necessarily both: kipi-new-instance.sh copies
+# settings-template.json INTO .claude/settings.json and never ships the template,
+# so the skeleton has two and every instance has one. Named here rather than
+# inline in default_targets() so the test derives the set from this constant
+# instead of restating it (codex, PR #409 round 7).
+SETTINGS_CANDIDATES = (os.path.join(".claude", "settings.json"), "settings-template.json")
+
+
 def default_targets() -> list[str]:
     out = []
-    for rel in (os.path.join(".claude", "settings.json"), "settings-template.json"):
+    for rel in SETTINGS_CANDIDATES:
         path = os.path.join(REPO_ROOT, rel)
         if os.path.isfile(path):
             out.append(path)
