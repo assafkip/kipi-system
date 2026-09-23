@@ -186,7 +186,41 @@ def test_an_enumerated_input_reaches_its_test_through_the_scanner_floor(cs):
 SCANNER = "t/test-scans.py"
 SCAN_FORMS = ("for p in d.iterdir(): check(p)", "for root,_,fs in os.walk(d): pass",
               "for n in os.listdir(d): pass", 'for f in "$DIR"/*.sh; do bash "$f"; done',
-              "git ls-files | while read f; do :; done", 'find "$ROOT" -type f')
+              "git ls-files | while read f; do :; done", 'find "$ROOT" -type f',
+              # claude review of PR #377, minor 1: recursive grep is a tree-walker the
+              # detector did not know, so the two declared tests below sat OFF the
+              # always-run floor -- a scanner being skipped silently, which is the one
+              # thing the floor exists to prevent. Both forms come from this repo.
+              # Both forms are COPIED from declared tests in this repo, not invented:
+              # test-zero-safe-count-idiom.sh:69 and test_token_guard_commit_forms.py:207.
+              # Every recursive grep in the declared corpus is the shell spelling, in a
+              # shell file or inside a python string; a subprocess LIST form
+              # (["grep", "-rIl", ...]) occurs nowhere, so it is not a form this
+              # pattern claims to see.
+              'residual="$(grep -rn \'pattern\' "$TESTDIR"/*.sh 2>/dev/null)"',
+              'check_blocks(11, "grep for the words", \'grep -r "git commit" .\')')
+
+
+# The two REAL declared tests this gap hid, named so the case is about the repo and
+# not about a fixture: an invented fixture tests my assumption, the corpus does not.
+REAL_GREP_R_SCANNERS = ("q-system/.q-system/scripts/test/test-zero-safe-count-idiom.sh",
+                        "q-system/.q-system/scripts/test/test-token-guard-hook-behavior.sh")
+
+
+def case_recursive_grep_is_a_tree_walk(cs):
+    repo_root = Path(__file__).resolve().parents[3]
+    for rel in REAL_GREP_R_SCANNERS:
+        text = (repo_root / rel).read_text(errors="ignore")
+        assert cs.scans_the_tree(text), rel
+    # THE BOUNDARY, STATED AS A TEST. `rg` is NOT recognised, on purpose: zero
+    # declared tests invoke it (measured 2026-09-20 over 278 fragments), and the
+    # Not-doing line on ASK-1921 forbids widening a pattern for a shape the corpus
+    # does not carry. When one does, this assertion is the thing to flip.
+    assert not cs.scans_the_tree('out = run(["rg", "-l", "pattern", root])')
+
+
+def test_a_test_that_walks_the_tree_with_recursive_grep_is_on_the_floor(cs):
+    case_recursive_grep_is_a_tree_walk(cs)
 
 
 def case_every_scanner_always_runs(cs):
@@ -498,6 +532,49 @@ def test_an_unreadable_diff_or_a_change_to_the_gate_runs_everything(gate, repo):
     case_gate_falls_back_to_everything(gate, repo)
 
 
+class _EmptySelector:
+    """A classifier that selects nothing. No producer in the repo emits this today --
+    the scanner floor guarantees at least 72 -- which is the whole reason the case
+    needs a stand-in: it is unreachable until ASK-1918's declarations shrink the floor,
+    and it would be invisible on the day it becomes reachable."""
+    @staticmethod
+    def plan_for_repo(root, base):
+        return {"tier": "S", "full_suite": False, "selected_tests": [],
+                "declared_tests": 2, "app_lines": 1, "reasons": []}
+
+
+def case_an_empty_selection_is_not_green(gate, repo, monkeypatch):
+    # claude review of PR #377, nit 3. select_for_diff accepted set() and run_tests
+    # then executed nothing and exited 0 -- a green gate over zero evidence.
+    monkeypatch.setattr(gate.importlib.util, "module_from_spec", lambda spec: _EmptySelector)
+    monkeypatch.setattr(gate.importlib.util, "spec_from_file_location",
+                        lambda *a, **k: type("S", (), {"loader": type("L", (), {
+                            "exec_module": staticmethod(lambda mod: None)})()})())
+    notes = []
+    assert gate.select_for_diff(repo, "base", notes) is None
+    assert "selected ZERO" in notes[-1] and "FULL suite" in notes[-1]
+
+
+def test_a_selection_that_runs_nothing_falls_back_to_everything(gate, repo, monkeypatch):
+    case_an_empty_selection_is_not_green(gate, repo, monkeypatch)
+
+
+def case_zero_executed_is_an_error(gate, repo):
+    # The backstop, one layer below the guard above: whatever road leads to nothing,
+    # a gate that executed no test never reports green in silence.
+    notes, errors = [], []
+    gate.run_tests(repo, manifest_of(repo), "skeleton", errors, notes, set())
+    assert errors and "zero tests executed" in errors[0], (errors, notes)
+    # A run that DID execute is untouched, and so is one that accounts for its silence.
+    notes, errors = [], []
+    gate.run_tests(repo, manifest_of(repo), "skeleton", errors, notes)
+    assert not errors, errors
+
+
+def test_a_run_that_executes_nothing_is_never_silently_green(gate, repo):
+    case_zero_executed_is_an_error(gate, repo)
+
+
 # --------------------------------------------------------------- the mutants
 CS_MUTANTS = [
     ("the machinery escalator", "        if why:\n            escalators.append(why)", "        if False:\n            escalators.append(why)", case_escalator_beats_line_count),
@@ -506,6 +583,7 @@ CS_MUTANTS = [
     ("the callers' tests run", "        for dep in dependents(path, live):", "        for dep in []:", None),
     ("a fixture is matched before it is skipped", "            if is_test_path(path):\n                direct |=", "            if False:\n                direct |=", case_fixture_reaches_its_owner),
     ("every scanner always runs", "    always = {t for t in scanners if t not in declared_covers}", "    always = set()", case_every_scanner_always_runs),
+    ("recursive grep is a tree walk", r'    r"|\bgrep\s+(?:-\w+\s+)*-[A-Za-z]*r"' + "\n", "", case_recursive_grep_is_a_tree_walk),
     ("a declaration takes a scanner off the floor", "    always = {t for t in scanners if t not in declared_covers}", "    always = set(scanners)", case_a_declared_scanner_leaves_the_floor),
     ("covers never selects a non-scanner", "                     if t in scanners and any(covers_matches(p, path) for p in pats)}", "                     if any(covers_matches(p, path) for p in pats)}", case_covers_on_a_non_scanner_grants_nothing),
     ("a malformed covers voids the whole list", " and all(isinstance(p, str) and p for p in pats)", "", case_a_malformed_covers_voids_the_whole_list),
@@ -532,8 +610,20 @@ def test_classifier_mutants_are_killed(label, old, new, case, tmp_path):
 
 GATE_MUTANTS = [
     ("the gate skips what was not selected", "if only is not None and path not in only:", "if False:", case_gate_runs_only_the_selection),
+    ("zero executed is never green", "    if ran == 0 and quarantined == 0 and skipped == 0:", "    if False:", case_zero_executed_is_an_error),
     ("a failed classification means everything", "        return None\n    notes.append(f\"change-size vs {base}: tier", "        return set()\n    notes.append(f\"change-size vs {base}: tier", case_gate_falls_back_to_everything),
 ]
+
+
+def test_the_empty_selection_guard_is_killed_by_its_mutant(tmp_path, repo, monkeypatch):
+    # Its own test because the case needs monkeypatch, which the parametrized harness
+    # below does not pass. Same contract: delete the guard, the case must fail.
+    old = "        if not selected:"
+    assert old in GATE_SRC, "the mutant for 'an empty selection is not green' no longer matches the source"
+    (tmp_path / "change-size.py").write_text(CS_SRC)
+    mutant = load(GATE_SRC.replace(old, "        if False:", 1), "gate_mutant_empty", tmp_path)
+    with pytest.raises(AssertionError):
+        case_an_empty_selection_is_not_green(mutant, repo, monkeypatch)
 
 
 @pytest.mark.parametrize("label,old,new,case", GATE_MUTANTS, ids=[m[0] for m in GATE_MUTANTS])

@@ -1203,24 +1203,54 @@ json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "ts": ts}, open(out, "w"), indent=2)
 PY
 
-# Severity floor, capture half: APPROVE WITH NITS is a TERMINAL state -- the
-# loop stops reworking -- so each minor must land in the spillover ledger or it
-# evaporates (no-orphan-findings.md). On REQUEST CHANGES the minors ride along
-# in the review, which is the spec for the next rework pass; capturing them
-# there too would double-file them.
+# Severity floor, minors half: APPROVE WITH NITS is a TERMINAL state -- the loop
+# stops reworking -- so a minor found here gets no second pass. On REQUEST CHANGES
+# the minors ride along in the review, which is the spec for the next rework pass.
+#
+# THE LEDGER IS NOT THEIR ROUTE, AND THIS BLOCK USED TO PRETEND IT WAS (ASK-1921,
+# claude review of PR #392, finding 1). It called `prd_runner.py spillover add`
+# with no --severity. That call defaults to `minor`, and `minor` sits in
+# SPILLOVER_REFUSED_SEVERITIES: "a minor is fixed in this change or rejected with a
+# reason; it is never queued" (founder 2026-09-12). So it returned 2 on every run,
+# the captured count was 0 BY CONSTRUCTION rather than by outage, and the alarm
+# built on that zero fired on every approved PR carrying a nit. Measured: the exact
+# argument list above, against the real runner, rc=2 with that refusal on stderr.
+#
+# Two consequences, and both are removals.
+#
+# 1. THE CAPTURE CALL IS GONE, not re-severitied. Filing a review minor at `medium`
+#    to clear the door launders the severity the reviewer chose. no-orphan-findings.md
+#    already names the only two legal ends for a NEW minor -- fixed in this change,
+#    or rejected with a reason -- and the ledger is neither of them.
+# 2. THE PAGE IS GONE WITH IT. An alert on a 100-percent policy refusal is the
+#    cry-wolf shape: nothing is down, there is nothing to act on, and it fires on
+#    every approved PR with a nit. founder-notifications.md asks for a state change,
+#    once, never per-event noise. The real loss on this path already has its own page
+#    further down: a review that never REACHED the issue, where the findings are
+#    genuinely unreadable by anyone.
+#
+# WHAT IS LEFT IS THE TRUE STATEMENT. Each minor is NAMED -- claim and location --
+# so the run log carries the findings and not just a tally. They also reach two
+# durable places without this block's help: the review comment on the PR, and the
+# FINDINGS block the reviewer posts onto the Linear issue.
+#
+# WHAT THIS STILL DOES NOT FIX: nobody is ASSIGNED the fix-or-reject decision that
+# no-orphan-findings.md requires. Routing that is a change with real Linear inflow
+# and its own blast radius, so it is captured rather than bundled here: sp-74e671a4,
+# filed as ASK-1940.
 if [ "$VERDICT" = "APPROVE WITH NITS" ] && [ -n "$ISSUE" ]; then
-  CAPTURED=0
   MINOR_COUNT=0
   while IFS='|' read -r _sev claim loc; do
     [ -n "$claim" ] || continue
     MINOR_COUNT=$((MINOR_COUNT+1))
-    python3 "$SKEL/plugins/prd-os/scripts/prd_runner.py" spillover add \
-      --source "$ISSUE" --desc "PR #$PR ${MINOR_TAG}review minor: $claim ($loc)" >/dev/null 2>&1 \
-      && CAPTURED=$((CAPTURED+1))
+    echo "  minor $MINOR_COUNT: $claim ($loc)" >&2
   done <<EOF
 $(extract_minor_findings "$REVIEW")
 EOF
-  echo "  minors captured as spillover: $CAPTURED of $MINOR_COUNT"
+  echo "  ${MINOR_TAG}review minors on a terminal verdict: $MINOR_COUNT"
+  if [ "$MINOR_COUNT" -gt 0 ]; then
+    echo "  UNROUTED: the $MINOR_COUNT minor(s) above got a terminal APPROVE WITH NITS, so the rework loop stops here. The spillover ledger refuses a minor by policy -- it is fixed in this change or rejected with a reason (no-orphan-findings.md) -- so nothing files them. They are on PR #$PR and in the FINDINGS block on $ISSUE. Owner for the fix-or-reject routing: ASK-1940." >&2
+  fi
 fi
 
 # The verdict as a COMMIT STATUS on the sha the reviewer read (ASK-217).
