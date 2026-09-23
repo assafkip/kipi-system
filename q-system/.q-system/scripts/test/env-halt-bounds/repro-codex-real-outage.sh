@@ -110,7 +110,7 @@ scenario() {  # scenario <name> [plant-epoch]
     KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
     KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
     KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
-    KIPI_CODEX_RUNNER="bash $WORK/real-codex.sh" \
+    KIPI_CODEX_RUNNER="bash $WORK/real-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
     KIPI_NOTIFY="$WORK/notify.sh" TEST_NOTIFY_LOG="$WORK/notify-$name.log" \
     bash "$WORKER" --apply --limit 1 > "$WORK/run-$name.out" 2>&1
   local rc=$?

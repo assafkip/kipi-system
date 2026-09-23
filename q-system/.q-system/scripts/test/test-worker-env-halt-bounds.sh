@@ -478,6 +478,28 @@ else
   bad "the trust warning is noise, not speech" "limit+warning=$( ( . "$LIB"; is_environmental "$(printf '%s\n%s' "$TW" "$LIMIT")" ) && echo outage || echo charged) warning-alone=$( ( . "$LIB"; is_environmental "$TW" ) && echo outage || echo issue)"
 fi
 
+echo "== Opus stands in when Codex is down"
+# Founder, 2026-09-23: "you dont need codex credits, you can use opus as a
+# fallback". A real Codex outage transcript (fixture run ASK-1126) through the
+# real worker, with the Opus stand-in stubbed in three modes.
+OUT="$(run repro-opus-fallback)"
+row() { printf '%s\n' "$OUT" | grep "^$1 "; }
+if [ "$(row commit)" = "commit opus-calls=1 continued=1 parked=0 held=0" ]; then
+  ok "Codex down, Opus does the work: the issue is continued, not held or parked"
+else
+  bad "Opus continues the work when Codex is down" "$(row commit)"
+fi
+if [ "$(row refuse)" = "refuse opus-calls=1 continued=0 parked=1 held=0" ]; then
+  ok "Codex down, Opus refuses on capability: parked with both refusals"
+else
+  bad "an Opus capability refusal parks" "$(row refuse)"
+fi
+if [ "$(row limit)" = "limit opus-calls=1 continued=0 parked=0 held=1" ]; then
+  ok "Codex down and Opus out of quota too: only then is the issue held"
+else
+  bad "both runners down is the only hold" "$(row limit)"
+fi
+
 echo "== a dead run's per-pid files are swept"
 OUT="$(run repro-leak)"
 A="$(printf '%s\n' "$OUT" | sed -n 's/^after: *\([0-9]*\) orphan.*/\1/p')"

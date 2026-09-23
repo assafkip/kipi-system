@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# REPRO: a CODEX outage dedupes its PAGE but not its per-issue Linear COMMENT.
-# Same shape as the round-1 Sana finding, on the Codex branch added in round 2.
-# 3 ticks of one Codex outage -> how many "Not parked: the second runner" comments?
+# OPUS STANDS IN WHEN CODEX IS DOWN (founder, 2026-09-23: "you dont need codex
+# credits, you can use opus as a fallback - that has been recorded"). The
+# reviewer already did this; the worker's second runner held the issue instead.
+# Codex prints a REAL outage transcript (fixture run ASK-1126) and exits 1; the
+# Opus stand-in is a stub run in three modes:
+#   commit  -> it does the work: the issue is continued, not held, not parked
+#   refuse  -> it writes the capability sentinel: parked with both refusals
+#   limit   -> Claude is out too: only then is the issue held as an outage
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
 WORKER="$ROOT/q-system/.q-system/scripts/linear-worker.sh"
@@ -62,10 +67,26 @@ printf 'Not equipped for this one; wrote the capability sentinel.\n'
 exit 0
 SH
 chmod +x "$STUB/claude"
-# Codex is the one that is out of quota.
-cat > "$WORK/quota-codex.sh" <<'SH'
+FIX="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/fixtures/worker-env-halt/codex-outages-2026-09-23.json"
+python3 - "$FIX" > "$WORK/codex-transcript.txt" <<'PYX'
+import json, sys
+fx = json.load(open(sys.argv[1]))
+r = next(x for x in fx["runs"] if x["issue"] == "ASK-1126" and x["label"] == "outage")
+print("\n".join(fx["banner"] + ["You are Codex, the SECOND runner on Linear issue ASK-811."] + r["tail"]))
+PYX
+cat > "$WORK/real-codex.sh" <<SH
 #!/usr/bin/env bash
-printf '%s\n' "You've hit your weekly limit · resets Sep 22 at 2pm (America/Los_Angeles)"
+cat "$WORK/codex-transcript.txt"
+exit 1
+SH
+cat > "$WORK/opus.sh" <<'SH'
+#!/usr/bin/env bash
+echo "OPUS-INVOKED" >> "$TEST_OPUS_LOG"
+case "$TEST_OPUS_MODE" in
+  commit) echo "fallback work" > opus-did-this.txt; git add opus-did-this.txt; git -c user.email=t@t -c user.name=t commit -qm "opus stand-in"; echo "Done." ;;
+  refuse) printf '%s' "the harness refused the sensitive path .claude/settings.json" > .codex-blocked-capability; echo "Not equipped either." ;;
+  limit)  echo "You've hit your weekly limit · resets Sep 29 at 2pm (America/Los_Angeles)" ;;
+esac
 exit 0
 SH
 
@@ -76,21 +97,25 @@ mkrepo() { mkdir -p "$1"; git init --quiet --bare "$1/origin.git"; git init --qu
   git -C "$1/kipi-system" remote add origin "$1/origin.git"
   git -C "$1/kipi-system" push --quiet -u origin HEAD:main 2>/dev/null; }
 
-STATE="$WORK/state"; NOTIFY_LOG="$WORK/notify.log"; : > "$NOTIFY_LOG"
-for TICK in 1 2 3; do
-  mkrepo "$WORK/t$TICK"
-  PATH="$STUB:$PATH" KIPI_SKEL="$WORK/t$TICK/kipi-system" KIPI_STATE_DIR="$STATE" \
+scenario() {  # scenario <mode>
+  local mode="$1" st="$WORK/state-$1"; mkdir -p "$st"
+  : > "$WORK/comments.log"; : > "$WORK/opus-$mode.log"
+  mkrepo "$WORK/t-$mode"
+  PATH="$STUB:$PATH" KIPI_SKEL="$WORK/t-$mode/kipi-system" KIPI_STATE_DIR="$st" \
     KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
     KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
     KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
-    KIPI_CODEX_RUNNER="bash $WORK/quota-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
-    KIPI_NOTIFY="$WORK/notify.sh" TEST_NOTIFY_LOG="$NOTIFY_LOG" \
-    bash "$WORKER" --apply --limit 1 > "$WORK/tick$TICK.out" 2>&1
-  echo "=== tick $TICK rc=$? ==="
-  grep -i 'second runner is unavailable' "$WORK/tick$TICK.out" | sed 's/^/  /'
-done
-echo
-printf -- '--- pages fired across 3 ticks of ONE Codex outage (deduped): '
-grep -c '^NOTIFY ' "$NOTIFY_LOG" 2>/dev/null || echo 0
-printf -- "--- commentCreate calls carrying 'Not parked: the second runner was unavailable': "
-grep -c 'Not parked: the second runner was unavailable' "$WORK/comments.log" 2>/dev/null || echo 0
+    KIPI_CODEX_RUNNER="bash $WORK/real-codex.sh" \
+    KIPI_SECOND_RUNNER_FALLBACK="bash $WORK/opus.sh" TEST_OPUS_MODE="$mode" TEST_OPUS_LOG="$WORK/opus-$mode.log" \
+    KIPI_NOTIFY="$WORK/notify.sh" TEST_NOTIFY_LOG="$WORK/notify-$mode.log" \
+    bash "$WORKER" --apply --limit 1 > "$WORK/run-$mode.out" 2>&1
+  cnt() { local n; n="$(grep -c "$1" "$2" 2>/dev/null)"; printf '%s' "${n:-0}"; }
+  printf '%s opus-calls=%s continued=%s parked=%s held=%s\n' "$mode" \
+    "$(cnt OPUS-INVOKED "$WORK/opus-$mode.log")" \
+    "$(cnt 'CONTINUED the work' "$WORK/run-$mode.out")" \
+    "$(cnt 'labelled blocked:capability\|-- parking' "$WORK/run-$mode.out")" \
+    "$(cnt 'second runner is unavailable' "$WORK/run-$mode.out")"
+}
+scenario commit
+scenario refuse
+scenario limit
