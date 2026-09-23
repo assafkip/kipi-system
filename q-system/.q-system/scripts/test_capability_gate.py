@@ -539,15 +539,22 @@ def sec_wiring():
         check("ASK-1170: engine wired ONLY in verify.sh is NOT inert",
               rc == 0 and "ci-only-engine.py" not in out)
     with tempfile.TemporaryDirectory() as tmp:
-        # PRECISION half: the widening is verify.sh by name, not every shell
-        # file beside it. A sibling script nothing runs still wires nothing.
+        # PRECISION half. ASK-1170 originally asserted the opposite of this: it
+        # named verify.sh by path, so a SIBLING .sh beside it wired nothing. That
+        # control went RED when ASK-1795 widened the surface to the whole glob
+        # `q-system/.q-system/*.sh` on purpose (verify.sh IS the repo floor, and
+        # so is every script it sits next to). The boundary that still holds is
+        # the glob's depth: Path.glob's `*` never crosses a separator, so a .sh
+        # one directory deeper than .q-system is not a wiring surface.
         root = make_repo(tmp)
-        engine(root, "q-system/.q-system/scripts/sibling-only.py")
-        (root / "q-system/.q-system/scratch.sh").write_text(
-            '#!/bin/bash\npython3 "$TARGET/q-system/.q-system/scripts/sibling-only.py"\n')
+        engine(root, "q-system/.q-system/scripts/deep-only.py")
+        deep = root / "q-system/.q-system/onboarding/scratch.sh"
+        deep.parent.mkdir(parents=True, exist_ok=True)
+        deep.write_text(
+            '#!/bin/bash\npython3 "$TARGET/q-system/.q-system/scripts/deep-only.py"\n')
         rc, out = run_gate(root, "--check-only")
-        check("ASK-1170: a sibling .sh next to verify.sh is NOT wiring, still RED",
-              rc == 1 and "sibling-only.py" in out)
+        check("ASK-1170/1795: a .sh one level below .q-system is NOT wiring, still RED",
+              rc == 1 and "deep-only.py" in out)
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         main_guard = 'if __name__ == "__main__":\n    pass\n'
