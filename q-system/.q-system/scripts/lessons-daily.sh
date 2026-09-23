@@ -52,6 +52,26 @@ command -v "${KIPI_CLAUDE_BIN:-claude}" >/dev/null 2>&1 || fail "no claude CLI o
 # interactive default (Fable on 2026-08-01) and burns quota unattended.
 export ANTHROPIC_MODEL="claude-opus-5"
 
+# ARM NEWLY COMMITTED LAUNCHD JOBS (ASK-1130), and do it BEFORE the early exits
+# below. This job is the fleet's only unattended caller of kipi-update.sh, and that
+# call sits behind `if [ "$PUB" -gt 0 ]`, so with the arming living only inside the
+# updater a merged plist waited for the next day a lesson happened to publish. The
+# "armed with no human command" claim was therefore true on publish days and false
+# on quiet ones. A quiet week is quiet for lessons, not a reason for a merged job to
+# stay inert.
+#
+# install-plist.sh --missing carries every guard itself -- worktree refusal,
+# registry-skeleton refusal, already-installed, retired sidecar, declared disabled --
+# so this call can arm nothing the updater's own call would not have armed. That is
+# why the skeleton check lives in the mode and not only in arm_new_jobs.
+# Non-fatal on purpose: a launchd problem does not stop lessons work.
+if ARM_OUT="$(bash "$SKEL/q-system/.q-system/scripts/install-plist.sh" --missing 2>&1)"; then
+  echo "$(TS) jobs: $(printf '%s' "$ARM_OUT" | sed -n 's/^install-jobs: //p' | tail -1)" >> "$LOG"
+else
+  echo "$(TS) jobs: arming FAILED (non-fatal)" >> "$LOG"
+  printf '%s\n' "$ARM_OUT" >> "$LOG"
+fi
+
 if [ -n "${KIPI_DISTILL_CMD:-}" ]; then
   SUMMARY="$(bash -c "$KIPI_DISTILL_CMD" 2>>"$LOG")" || fail "lessons-distill.py exited non-zero"
 else
