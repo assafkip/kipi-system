@@ -2332,6 +2332,12 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       CODEX_ENV=""
       if is_environmental "$CODEX_OUT"; then
         CODEX_ENV="$(environmental_reason "$CODEX_OUT")"
+      else
+        # CODEX ANSWERED, whatever it said: the outage (if one was announced)
+        # is over, so the NEXT one pages again. Releasing only on a committing
+        # run (the round-1 version) left the claim held after an honest refusal
+        # and muted every later Codex outage (PR #421 round 2, major).
+        env_alert_release "$STATE_DIR/codex-outage" 2>/dev/null || true
       fi
       if [ -f "$TREE/.codex-blocked-capability" ]; then
         CODEX_WHY="$(head -c 1500 "$TREE/.codex-blocked-capability" 2>/dev/null)"
@@ -2394,7 +2400,6 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         fi
       elif [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; then
         CODEX_CONTINUED="$CODEX_HEAD_AFTER"
-        env_alert_release "$STATE_DIR/codex-outage" 2>/dev/null || true  # Codex answered: the next outage pages again
         say "$ISSUE Codex CONTINUED the work Sana was not equipped for (HEAD $CODEX_HEAD_BEFORE -> $CODEX_HEAD_AFTER) -- not parking it"
         # Clearing the label is the whole point: with it applied the picker never
         # offers the issue again, so a continuation that still parked would be a

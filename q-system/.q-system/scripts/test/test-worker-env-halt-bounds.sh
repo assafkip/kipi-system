@@ -64,6 +64,18 @@ else
   bad "converge stays quiet on an env halt" "page count=${P:-?}"
 fi
 
+echo "== a Codex outage after an honest Codex refusal still pages"
+# PR #421 round 2: the claim was released only on a committing Codex run, so an
+# honest refusal left it held and the NEXT Codex outage paged nobody.
+OUT="$(run repro-codex-mute)"
+P1="$(printf '%s\n' "$OUT" | sed -n 's/^run1-codex-outage .*PAGES SENT=\([0-9]*\).*/\1/p')"
+P3="$(printf '%s\n' "$OUT" | sed -n 's/^run3-codex-outage-again .*PAGES SENT=\([0-9]*\).*/\1/p')"
+if [ "${P1:-x}" = "1" ] && [ "${P3:-x}" = "1" ]; then
+  ok "two Codex outages around an honest refusal page twice, once each"
+else
+  bad "every Codex outage pages once" "run1=${P1:-?} run3=${P3:-?}"
+fi
+
 echo "== a dead run's per-pid files are swept"
 OUT="$(run repro-leak)"
 A="$(printf '%s\n' "$OUT" | sed -n 's/^after: *\([0-9]*\) orphan.*/\1/p')"

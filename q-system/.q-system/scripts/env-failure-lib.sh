@@ -95,7 +95,11 @@ ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]+-hour) lim
 # and ASK-535 was charged. The pattern is that exact shape and nothing looser:
 # the same log also carries an agent sentence that STARTS "SessionStart hook
 # path makes zero network calls", which is prose and must keep counting.
-ENV_NOISE_RE='^SessionEnd hook \[.*\] failed: Hook cancelled[[:space:]]*$'
+# Widened from SessionEnd alone to the CLI's hook EVENTS (PR #421 round 2): a
+# limit line beside a Stop-hook cancellation is the same refusal. Still the
+# exact line shape -- `<Event> hook [<cmd>] failed: Hook cancelled` -- so no
+# sentence an agent writes can pass for it.
+ENV_NOISE_RE='^(SessionEnd|SessionStart|Stop|SubagentStop|PreCompact|Notification|UserPromptSubmit|PreToolUse|PostToolUse) hook \[.*\] failed: Hook cancelled[[:space:]]*$'
 
 # AND THE SEPARATOR MUST LEAD SOMEWHERE THE MACHINE GOES. Allowing a separator
 # plus ANYTHING was the third attempt and it was wrong for the same reason as the
