@@ -301,12 +301,104 @@ def main() -> int:
                                         mode="blocking")
     cases.append(("a clean answer writes no row at all", log_rows(root_clean) == []))
 
+    cases.extend(measured_mode_cases(mod))
+
     failures = 0
     for name, ok in cases:
         print(f"{'PASS' if ok else 'FAIL'}: {name}")
         failures += 0 if ok else 1
     print(f"\n{len(cases) - failures}/{len(cases)} passed")
     return 1 if failures else 0
+
+
+FIXTURE = HERE / "test" / "fixtures" / "blocked-claim-lint-replay-2026-09-23.json"
+REPO = HERE.parents[2]  # scripts -> .q-system -> q-system -> repo root
+
+
+def measured_mode_cases(mod) -> list[tuple[str, bool]]:
+    """ASK-459: which triggers block is a MEASUREMENT, recomputed here from real rows.
+
+    The fixture is a labelled replay of the fleet's advisory logs (provenance block
+    inside it). This test does not trust BLOCKING_TRIGGERS: it recomputes the set
+    from the labels and fails when the table in the lint and the measurement
+    disagree, so the blocking set can only move by re-labelling evidence.
+    """
+    cases: list[tuple[str, bool]] = []
+    data = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    rows = data.get("rows", [])
+    # An empty or provenance-free fixture would make every assertion below vacuous.
+    cases.append(("replay fixture carries provenance and at least 200 rows",
+                  bool(data.get("provenance", {}).get("source")) and len(rows) >= 200))
+
+    for p in mod.PATTERNS:
+        cases.append((f"every trigger of {p.pattern_id} has an id",
+                      len(mod.TRIGGER_IDS.get(p.pattern_id, ())) == len(p.triggers)))
+
+    # Drift: the lint must still route each labelled sentence to the trigger it was
+    # labelled under, or the precision below is about a different regex.
+    drifted = [r["text"][:60] for r in rows
+               if [f.trigger for f in mod.evaluate(r["text"])][:1] != [r["trigger"]]]
+    cases.append((f"every fixture row still fires its labelled trigger "
+                  f"({len(drifted)} drifted: {drifted[:2]})", not drifted))
+
+    tally: dict[str, list[int]] = {}
+    for r in rows:
+        g_n = tally.setdefault(r["trigger"], [0, 0])
+        g_n[0] += bool(r["genuine"])
+        g_n[1] += 1
+    measured = {t for t, (g, n) in tally.items()
+                if n >= mod.MIN_LABELLED and g / n >= mod.PRECISION_BAR}
+    cases.append((f"BLOCKING_TRIGGERS equals the measured set (measured "
+                  f"{sorted(measured)}, table {sorted(mod.BLOCKING_TRIGGERS)})",
+                  measured == set(mod.BLOCKING_TRIGGERS) and bool(measured)))
+
+    # Replay under the mode both settings files set.
+    wrong_pass = [r["text"][:60] for r in rows
+                  if r["genuine"] and r["trigger"] in mod.BLOCKING_TRIGGERS
+                  and not mod.blocking_findings(mod.evaluate(r["text"]), "measured")]
+    cases.append((f"measured: every genuine row on a blocking trigger blocks "
+                  f"({len(wrong_pass)} passed)", not wrong_pass))
+    wrong_block = [r["text"][:60] for r in rows
+                   if r["trigger"] not in mod.BLOCKING_TRIGGERS
+                   and mod.blocking_findings(mod.evaluate(r["text"]), "measured")]
+    cases.append((f"measured: no row on an advisory trigger blocks "
+                  f"({len(wrong_block)} blocked)", not wrong_block))
+    cases.append(("advisory mode blocks nothing on the whole replay",
+                  not any(mod.blocking_findings(mod.evaluate(r["text"]), "advisory")
+                          for r in rows)))
+
+    # The real hook path, with the env the settings files set.
+    real = next(r["text"] for r in rows
+                if r["genuine"] and r["trigger"] == "does-not-exist")
+    rc, err, root = run_hook_in_root(real, mode="measured")
+    fired = [f for row in log_rows(root) for f in row.get("findings", [])]
+    cases.append(("measured hook exits 2 on a real unsettled 'does not exist' claim",
+                  rc == 2 and "lookup-as-runtime-fact" in err))
+    cases.append(("the firing row records the trigger and that it blocked",
+                  any(f.get("trigger") == "does-not-exist" and f.get("blocking")
+                      for f in fired)))
+    noisy = next(r["text"] for r in rows
+                 if r["genuine"] and r["trigger"] == "blocked-word")
+    rc, _, root = run_hook_in_root(noisy, mode="measured")
+    rows_adv = log_rows(root)
+    cases.append(("measured hook exits 0 on a bare-'blocked' claim and logs it advisory",
+                  rc == 0 and [r.get("event") for r in rows_adv] == ["advisory"]))
+
+    # The switch has to SHIP: both settings files carry the mode on the hook command.
+    # Checked only where the template exists, i.e. the skeleton: an instance's own
+    # settings.json is instance-owned, and the template is what the fleet sync ships.
+    if not (REPO / "settings-template.json").exists():
+        return cases
+    for name in (".claude/settings.json", "settings-template.json"):
+        path = REPO / name
+        cmds = [h.get("command", "")
+                for groups in json.loads(path.read_text()).get("hooks", {}).values()
+                for g in groups for h in g.get("hooks", [])
+                if "blocked-claim-evidence-lint.py" in h.get("command", "")]
+        cases.append((f"{name} runs the lint with KIPI_BLOCKED_CLAIM_LINT_MODE=measured",
+                      len(cmds) == 1
+                      and "KIPI_BLOCKED_CLAIM_LINT_MODE=measured" in cmds[0]))
+    return cases
 
 
 def run_hook_loop_guard() -> tuple[int, str]:

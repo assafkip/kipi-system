@@ -494,7 +494,7 @@
           },
           {
             "type": "command",
-            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/blocked-claim-evidence-lint.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/blocked-claim-evidence-lint.py\"; fi",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/blocked-claim-evidence-lint.py\"; then KIPI_BLOCKED_CLAIM_LINT_MODE=measured python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/blocked-claim-evidence-lint.py\"; fi",
             "timeout": 15
           },
           {
