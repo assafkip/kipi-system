@@ -73,10 +73,13 @@ def test_real_call_shapes_are_seen_and_mentions_are_not(tmp_path):
                  '     "cd \'$R\' && claude -p --model \'$M\' \\"\\$1\\" </dev/null > \'$2\' 2>&1" _ "$PROMPT" ;;\nesac\n'),
         # a case arm alone is a pattern, not a call
         "w.sh": '#!/bin/bash\ncase "$E" in\n  claude) echo yes ;;\nesac\n',
+        # PR #418 round 1: a bare & separates; a comment ending in \ hides nothing
+        "x.sh": '#!/bin/bash\nsleep 1 & claude -p "$PROMPT"\n',
+        "y.sh": '#!/bin/bash\n# the call below is real \\\nclaude -p "$PROMPT"\n',
         "tests/t.py": "import subprocess\n" + PY_LINE,
         ".review-scratch/x.sh": "#!/bin/bash\n" + SH_LINE,
     })
-    assert cs.call_sites(root) == {"a.py", "b.sh", "c.py", "f.py", "i.py", "j.py", "k.sh", "m.sh", "n.py", "o.sh", "q.sh", "s.sh", "t.sh", "u.sh", "v.sh"}
+    assert cs.call_sites(root) == {"a.py", "b.sh", "c.py", "f.py", "i.py", "j.py", "k.sh", "m.sh", "n.py", "o.sh", "q.sh", "s.sh", "t.sh", "u.sh", "v.sh", "x.sh", "y.sh"}
 
 
 def test_a_long_flag_line_is_rejected_in_linear_time():
