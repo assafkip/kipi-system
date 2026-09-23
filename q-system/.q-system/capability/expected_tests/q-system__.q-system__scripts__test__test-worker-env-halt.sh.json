@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-worker-env-halt.sh",
+ "runner": "bash",
+ "timeout_s": 300
+}

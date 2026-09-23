@@ -70,7 +70,14 @@ discover_drivers() {
   for f in "$dir"/*.sh; do
     [ -f "$f" ] || continue
     secs="$(sed -n 's/^[A-Z_]*TIMEOUT[A-Z_]*=\([0-9][0-9]*\).*/\1/p' "$f" | sort -rn | head -1)"
-    if grep -q 'claude -p' "$f" || { [ -n "$secs" ] && [ "$secs" -ge "$DISCOVERY_MIN_SECONDS" ]; }; then
+    # Comment lines are not code (ASK-2009): a sourced lib whose header QUOTES the
+    # outage line `claude -p` printed was discovered as a driver, and the rule's
+    # fix (a trailing top-level `exit`) would kill the worker that sources it.
+    # Measured on the scripts dir: ignoring comments drops exactly
+    # env-failure-lib.sh and redrive-unattempted.sh, neither of which calls the
+    # model; linear-worker, open-loops-heartbeat and pr-review-agent stay found.
+    if grep -vE '^[[:space:]]*#' "$f" | grep -q 'claude -p' \
+        || { [ -n "$secs" ] && [ "$secs" -ge "$DISCOVERY_MIN_SECONDS" ]; }; then
       echo "$f"
     fi
   done
