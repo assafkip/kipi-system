@@ -165,10 +165,9 @@ def test_the_engine_scanner_agrees_with_fleet_health_on_every_shared_shell_site(
                 assert shell_c.search(line) or var_wrapper.search(line), \
                     f"{row}: engine counts it, fleet-health does not, and it is neither named exception: {line.strip()[:120]}"
                 excepted += 1
-            checked += 1
-            break
+            checked += 1  # every counted line in every file (PR #418 round 1), not the first
     assert checked >= 3, checked      # linear-worker, open-loops-heartbeat, pr-review-agent at least
-    assert excepted <= 3, excepted    # worker, reviewer, heartbeat; a fourth is a new exception to name
+    assert excepted <= 6, excepted    # the worker, reviewer and heartbeat lines; more is a new exception to name
 
 
 if __name__ == "__main__":

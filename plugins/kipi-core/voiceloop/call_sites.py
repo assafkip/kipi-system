@@ -135,7 +135,10 @@ def _segments(command: str) -> list[str]:
             quote = ch; buf.append(ch)
         elif command.startswith(("||", "&&", "|&"), i):
             out.append("".join(buf)); buf = []; i += 1
-        elif ch in ("|", ";"):
+        elif ch in ("|", ";", "&"):
+            # a bare `&` ends a command too: `cmd & claude -p x` (PR #418 round 1).
+            # Redirections such as `2>&1` never reach here with a leading space,
+            # and `&1` alone is an empty segment either way.
             out.append("".join(buf)); buf = []
         else:
             buf.append(ch)
@@ -257,6 +260,10 @@ def _logical_lines(text: str):
     """Physical lines joined at a trailing backslash (PR #413 round 5)."""
     buf = []
     for line in text.splitlines():
+        # A COMMENT ending in a backslash continues nothing: joining it would
+        # swallow the next line into a comment (PR #418 round 1).
+        if not buf and line.lstrip().startswith("#"):
+            yield line; continue
         if line.rstrip().endswith("\\"):
             buf.append(line.rstrip()[:-1]); continue
         buf.append(line)

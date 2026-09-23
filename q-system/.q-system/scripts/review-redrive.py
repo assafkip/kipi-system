@@ -169,17 +169,28 @@ def _floor_desc():
     """The floor's own status text, read from reviewer-floor.sh, never retyped."""
     try:
         m = re.search(r'^FLOOR_DESC="([^"]+)"', open(FLOOR_SH).read(), re.M)
-        return m.group(1) if m else ""
-    except OSError:
+    except OSError as exc:
+        sys.stderr.write("review-redrive: cannot read %s (%s); an ambiguous floor run "
+                         "will be refused rather than confirmed\n" % (FLOOR_SH, exc))
         return ""
+    if not m:
+        sys.stderr.write("review-redrive: no FLOOR_DESC line in %s; an ambiguous floor run "
+                         "will be refused rather than confirmed\n" % FLOOR_SH)
+        return ""
+    return m.group(1)
 
 
 def _statuses(slug, sha):
     """The commit statuses GitHub holds for `sha`; [] when it cannot be asked."""
     if not slug or not sha:
         return []
-    proc = subprocess.run(["gh", "api", "repos/%s/commits/%s/statuses" % (slug, sha)],
-                          capture_output=True, text=True)
+    try:
+        proc = subprocess.run(["gh", "api", "repos/%s/commits/%s/statuses" % (slug, sha)],
+                              capture_output=True, text=True)
+    except OSError:
+        # no `gh` on PATH is "cannot be asked", the same refusal as a failed
+        # call, not a traceback out of the redrive (PR #418 round 1)
+        return []
     if proc.returncode != 0:
         return []
     try:
@@ -213,9 +224,10 @@ def slug_for_repo(repo_dir):
     if proc.returncode != 0 or not proc.stdout.strip():
         # Loud, not silent (PR #415 round 2): with no slug every read falls back
         # to the legacy name and a real REQUEST CHANGES at head reads as absent.
-        sys.stderr.write("review-redrive: slug_for_repo failed for %s (rc %s: %s); records are "
-                         "read by their LEGACY name only\n"
-                         % (repo_dir, proc.returncode, (proc.stderr or "").strip()[:120]))
+        why = ("rc %s: %s" % (proc.returncode, (proc.stderr or "").strip()[:120])
+               if proc.returncode != 0 else "no slug: the checkout has no github.com remote")
+        sys.stderr.write("review-redrive: slug_for_repo gave nothing for %s (%s); records are "
+                         "read by their LEGACY name only\n" % (repo_dir, why))
         return ""
     return proc.stdout.strip()
 

@@ -494,3 +494,12 @@ def test_prose_opening_with_a_bracket_is_still_prose():
     assert text == "[Draft] the post starts here\n" and row["is_error"] is False
     text, row = usage_ledger.finish('[{"type":"system","subtype":"init"}', bot="t")
     assert text is None and row["is_error"] is True
+
+
+def test_a_refused_document_is_a_failure_row_with_its_usage_kept(captured):
+    # chief PR #34 round 1: one kind per refusal, whichever lane wrote it
+    doc = dict(captured["json_stdout"], subtype="error_during_execution", is_error=True,
+               result="You've hit your usage limit.")
+    row = usage_ledger.row_from(doc, bot="t")
+    assert row["kind"] == "failure" and row["is_error"] is True and row["tokens_out"] > 0
+    assert usage_ledger.row_from(captured["json_stdout"], bot="t")["kind"] == "run"

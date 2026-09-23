@@ -91,6 +91,21 @@ def limit_text(doc: dict) -> str | None:
 def row_from(doc: dict, *, bot: str, job: str | None = None, model: str | None = None) -> dict:
     """One ledger row from a `--output-format json` result document.
 
+    A document the CLI marked failed (is_error, or an error subtype) is a
+    "failure" row, the same kind a timeout or a non-zero exit gets, so a query
+    keyed on kind counts every refusal once (chief PR #34 round 1: the metered
+    lane wrote "run" for the same refusal the own-format lane wrote "failure").
+    Its usage and cost are kept: the tokens were spent.
+    """
+    row = _row_from(doc, bot=bot, job=job, model=model)
+    if _failed(doc):
+        row["kind"] = "failure"
+    return row
+
+
+def _row_from(doc: dict, *, bot: str, job: str | None = None, model: str | None = None) -> dict:
+    """One ledger row from a `--output-format json` result document.
+
     Token totals are summed across `modelUsage`, every model the run reports,
     so a run is charged in full to the bot that started it. Whether that block
     folds subagent tokens in is NOT pinned here (round 9 minor 2): no captured
