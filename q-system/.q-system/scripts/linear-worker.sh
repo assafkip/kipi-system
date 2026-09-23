@@ -2272,7 +2272,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
     # RESET PER ISSUE, like $REFUSED above: this loop reuses every variable across
     # iterations, so a $CODEX_WHY that survived would attach the previous issue's
     # Codex refusal to the next issue's Linear comment.
-    CODEX_WHY=""; CODEX_CONTINUED=""; CODEX_ENV=""
+    CODEX_WHY=""; CODEX_CONTINUED=""; CODEX_ENV=""; CODEX_OUTAGE_NEW=""
     if [ "$REFUSE_KIND" = "capability" ]; then
       # A stale sentinel from a previous run would be read as this run's refusal,
       # which is the same defect the Sana sentinel already has a comment about.
@@ -2396,6 +2396,7 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         DONE=$((DONE+1))
         mkdir -p "$STATE_DIR/codex-outage" 2>/dev/null || true
         if env_alert_claim "$STATE_DIR/codex-outage"; then
+          CODEX_OUTAGE_NEW=1
           bash "$NOTIFY" "kipi worker: the second runner (Codex) is unavailable ($CODEX_ENV). Issues Sana could not do are held, not parked and not charged, until it answers again." 2>/dev/null || true
         fi
       elif [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; then
@@ -2472,7 +2473,13 @@ $SCOPE_WHY
 
 **Next:** linear-dor-drafter.py re-scopes this into a Definition of Ready that is achievable from a non-interactive session, or it is closed. This is engineering work, not a founder decision -- no action is needed from the founder."
     fi
-    python3 "$SYNC" progress "$ISSUE" "$REFUSE_NOTE" --agent "$AGENT" >/dev/null 2>&1 || true
+    # A Codex OUTAGE note goes out once per outage, with its page (PR #421
+    # round 4, major): posted every tick it wrote one "Not parked" comment per
+    # tick on the same issue while the page was deduped to one. Every other
+    # refusal note is a decision about this issue and still posts each time.
+    if [ -z "$CODEX_ENV" ] || [ -n "$CODEX_OUTAGE_NEW" ]; then
+      python3 "$SYNC" progress "$ISSUE" "$REFUSE_NOTE" --agent "$AGENT" >/dev/null 2>&1 || true
+    fi
     # A REFUSAL DOES NOT SKIP THE REVIEW (ASK-275, 2026-08-01).
     #
     # This was `release` + `continue` -- jumping the whole of step 5. The

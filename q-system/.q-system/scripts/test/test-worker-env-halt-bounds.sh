@@ -76,6 +76,49 @@ else
   bad "every Codex outage pages once" "run1=${P1:-?} run3=${P3:-?}"
 fi
 
+echo "== one Codex outage, one 'Not parked' comment"
+# PR #421 round 4: the Codex branch deduped its page but posted its
+# "Not parked: the second runner was unavailable" note on every tick.
+OUT="$(run repro-codex-comment-spam)"
+N="$(printf '%s\n' "$OUT" | sed -n "s/.*commentCreate calls carrying 'Not parked: the second runner was unavailable': \([0-9]*\).*/\1/p" | tail -1)"
+P="$(printf '%s\n' "$OUT" | sed -n 's/.*pages fired across 3 ticks of ONE Codex outage (deduped): \([0-9]*\).*/\1/p' | tail -1)"
+if [ "${N:-x}" = "1" ] && [ "${P:-x}" = "1" ]; then
+  ok "3 ticks of one Codex outage: 1 page and 1 'Not parked' comment"
+else
+  bad "one Codex outage writes one comment" "pages=${P:-?} comments=${N:-?}"
+fi
+
+echo "== the CLI's hook-teardown lines never sink a real outage"
+# Every hook event the noise rule names, at column 0 and indented by 3 (PR #421
+# rounds 3 and 4: the widening had no case of its own, and the rule was
+# column-0 anchored while the marker rule tolerates 3 spaces).
+LIB="$HERE/../env-failure-lib.sh"
+LIMIT="You've hit your weekly limit · resets Sep 22 at 2pm (America/Los_Angeles)"
+MISSED=""
+for ev in SessionEnd SessionStart Stop SubagentStop PreCompact Notification UserPromptSubmit PreToolUse PostToolUse; do
+  for pad in "" "   "; do
+    payload="$(printf '%s\n%s%s hook [node "x.mjs"] failed: Hook cancelled' "$LIMIT" "$pad" "$ev")"
+    ( . "$LIB"; is_environmental "$payload" ) || MISSED="$MISSED ${ev}(pad=${#pad})"
+  done
+done
+if [ -z "$MISSED" ]; then
+  ok "a limit line beside any of 9 hook-teardown lines, at column 0 or indented 3, is an outage"
+else
+  bad "hook teardown noise is ignored for every event" "charged anyway:$MISSED"
+fi
+OUT="$(run repro-indent-noise)"
+if grep -q "^3-space indent *-> OUTAGE" <<<"$OUT"; then
+  ok "the reviewer's indented-teardown reproducer reads as an outage"
+else
+  bad "an indented teardown line does not sink an outage" "$(grep -E 'indent' <<<"$OUT" | tr '\n' '|')"
+fi
+# and the negative: a hook-failure line ALONE is not an outage (a timeout kill)
+if ( . "$LIB"; is_environmental 'Stop hook [node "x.mjs"] failed: Hook cancelled' ); then
+  bad "hook noise alone is not an outage" "a lone teardown line was excused"
+else
+  ok "a lone teardown line (a timeout kill) is still the issue's"
+fi
+
 echo "== a dead run's per-pid files are swept"
 OUT="$(run repro-leak)"
 A="$(printf '%s\n' "$OUT" | sed -n 's/^after: *\([0-9]*\) orphan.*/\1/p')"
