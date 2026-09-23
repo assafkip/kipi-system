@@ -26,6 +26,13 @@
 #                   1, and a new attempt after the runner answers must post (2).
 #   codex-pickup-spam  the same note over 3 ticks of one CODEX outage, where Sana
 #                   answers every tick. Was 3. Must be 1.
+#   codex-fixture   every real worker handoff to Codex (44), replayed through the
+#                   worker's own decision. Was 0 of 17 outages read as one. Must
+#                   be 17 of 17, with 0 of 27 answered runs misread.
+#   codex-real-outage  a real Codex outage transcript through the real worker.
+#                   Was: parked blocked:capability, no page. Must not park, page
+#                   once; a 2-day-old claim must expire and page; a fresh claim
+#                   must still dedupe the page but not the per-issue note.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -173,6 +180,76 @@ if [ "${N:-x}" = "1" ]; then
   ok "3 ticks of one Codex outage write 1 'Picked up' note"
 else
   bad "one Codex outage writes one pickup note" "notes=${N:-?}"
+fi
+
+echo "== every real Codex handoff, replayed"
+# PR #421 round 8, major: `codex exec` prints a transcript, so the every-line
+# rule never matched a real Codex outage and 17 issues were parked for one.
+OUT="$(bash "$B/replay-codex-fixture.sh" 2>&1)"
+O="$(printf '%s\n' "$OUT" | sed -n 's/^=== real Codex outages read as an outage: \([0-9]*\) of \([0-9]*\).*/\1\/\2/p')"
+A="$(printf '%s\n' "$OUT" | sed -n 's/^=== real answered Codex runs read as an outage: \([0-9]*\) of \([0-9]*\).*/\1\/\2/p')"
+if [ "${O:-x}" = "17/17" ] && [ "${A:-x}" = "0/27" ] && grep -q '^decision: codex_env_reason' <<<"$OUT"; then
+  ok "17 of 17 real Codex outages read as outages, 0 of 27 answered runs misread"
+else
+  bad "the worker's Codex decision reads the real fixture" "outages=${O:-?} answered-misread=${A:-?} $(grep -E '^decision|mismatches' <<<"$OUT" | tr '\n' '|' | cut -c1-300)"
+fi
+# Two cases built from REAL lines, for the two halves the fixture alone cannot
+# reach: an outage line ABOVE the end (echoed in the prompt) with the run ending
+# in a real answer, and a real non-outage ERROR line after a real outage line.
+LIB="$HERE/../env-failure-lib.sh"
+FIXC="$HERE/fixtures/worker-env-halt/codex-outages-2026-09-23.json"
+ADV="$(python3 - "$FIXC" <<'PYA'
+import json, sys
+fx = json.load(open(sys.argv[1]))
+out = next(r for r in fx["runs"] if r["issue"] == "ASK-1126")["tail"][-1]
+ans = next(r for r in fx["runs"] if r["label"] == "answered" and r["rc"] == 0)["tail"]
+nf = next(l for r in fx["runs"] for l in r["error_lines"] if l.startswith("ERROR: file or directory not found"))
+print(json.dumps({"echoed": "\n".join(fx["banner"] + [out] + ans), "mixed": "\n".join(fx["banner"] + [out, nf])}))
+PYA
+)"
+ECHOED="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["echoed"])' "$ADV" 2>/dev/null)"
+MIXED="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["mixed"])' "$ADV" 2>/dev/null)"
+# An empty case reads as "not an outage" and would pass the two checks below
+# without testing anything (it did, once, while this was being written).
+if [ -z "$ECHOED" ] || [ -z "$MIXED" ]; then
+  bad "the adversarial Codex cases could be built from the fixture" "a case came back empty; the checks below would pass vacuously"
+fi
+if ( . "$LIB"; codex_env_reason "$ECHOED" 1 >/dev/null ); then
+  bad "an outage line above a real answer is not an outage" "an echoed limit line was read as the machine's"
+else
+  ok "a real outage line above a real answer (the echoed prompt) is not an outage"
+fi
+if ( . "$LIB"; codex_env_reason "$MIXED" 1 >/dev/null ); then
+  bad "a real non-outage ERROR line at the end is the issue's" "a mixed ERROR block was read as an outage"
+else
+  ok "a real outage line followed by a real non-outage ERROR line is not an outage"
+fi
+REAL_OUT="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["mixed"].rsplit(chr(10),1)[0])' "$ADV")"
+if ( . "$LIB"; codex_env_reason "$REAL_OUT" 0 >/dev/null ); then
+  bad "a Codex run that exited 0 is not an outage" "rc=0 was read as an outage"
+else
+  ok "the same outage transcript with rc=0 is not an outage (every real one exited 1)"
+fi
+
+echo "== a real Codex outage through the real worker"
+OUT="$(run repro-codex-real-outage)"
+line() { printf '%s\n' "$OUT" | grep "^$1 "; }
+field() { line "$1" | sed -n "s/.* $2=\([0-9]*\).*/\1/p"; }
+if [ "$(field A-real-transcript parked)" = "0" ] && [ "$(field A-real-transcript unavailable)" = "1" ] \
+   && [ "$(field A-real-transcript pages)" = "1" ] && [ "$(field A-real-transcript not-parked-notes)" = "1" ]; then
+  ok "a real Codex outage transcript: not parked, 1 page, 1 'Not parked' note"
+else
+  bad "a real Codex outage is not parked" "$(line A-real-transcript)"
+fi
+if [ "$(field B-claim-two-days-old pages)" = "1" ]; then
+  ok "a Codex claim two days old expires: the next outage pages"
+else
+  bad "an old Codex claim expires" "$(line B-claim-two-days-old)"
+fi
+if [ "$(field C-claim-fresh pages)" = "0" ] && [ "$(field C-claim-fresh not-parked-notes)" = "1" ]; then
+  ok "a fresh Codex claim still dedupes the page, and the issue still gets its own note"
+else
+  bad "a fresh claim dedupes the page but not the per-issue note" "$(line C-claim-fresh)"
 fi
 
 echo "== a dead run's per-pid files are swept"

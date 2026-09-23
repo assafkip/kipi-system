@@ -158,6 +158,60 @@ environmental_reason() {  # environmental_reason <runner-output> -> one line, <=
 }
 
 # ---------------------------------------------------------------------------
+# CODEX PRINTS A TRANSCRIPT, NOT A REFUSAL (PR #421 round 8, major)
+# ---------------------------------------------------------------------------
+# `codex exec` never prints its outage alone. Every real one in the worker log
+# is a banner, the echoed prompt and hook lines, then `ERROR: <reason>` and
+# exit 1, sometimes followed by its own "tokens used" / "<count>" trailer when
+# the credits ran out mid-run. The every-line rule above can never match that,
+# so the Codex branch parked the issue blocked:capability for a condition of
+# the machine: 17 of the 44 real worker handoffs to Codex (fixture
+# codex-outages-2026-09-23.json), two outage wordings, one of which ("Your
+# workspace is out of credits") no marker covered at all.
+#
+# So Codex gets its own rule, read from the END of the transcript, where only
+# Codex itself writes: the run failed (rc != 0), and after dropping blank lines
+# and the token trailer, the last lines are Codex's own `ERROR:` lines and every
+# one of them names an outage. The echoed prompt and anything the model said sit
+# ABOVE that block, so a quoted limit line there cannot pass; an `ERROR:` line
+# that is not an outage (the real "file or directory not found" in the fixture)
+# fails the every-line half. Anchored at column 0 because that is where Codex
+# prints it.
+CODEX_OUTAGE_MARKERS="$ENV_MARKERS|your workspace is out of credits"
+
+codex_outage_reason() {  # codex_outage_reason <codex-output> <rc> -> the line; 0 when the MACHINE refused
+  local out="${1:-}" rc="${2:-0}"
+  [ "$rc" != "0" ] || return 1
+  printf '%s\n' "$out" | CODEX_RE="^error: ($CODEX_OUTAGE_MARKERS)" awk '
+    { line[NR] = $0 }
+    END {
+      re = ENVIRON["CODEX_RE"]; n = NR
+      while (n > 0 && line[n] ~ /^[[:space:]]*$/) n--
+      if (n > 1 && line[n] ~ /^[0-9][0-9,]*$/ && line[n-1] == "tokens used") n -= 2
+      while (n > 0 && line[n] ~ /^[[:space:]]*$/) n--
+      k = n; seen = 0
+      while (k > 0 && line[k] ~ /^ERROR: /) {
+        if (tolower(line[k]) !~ re) exit 1
+        seen = 1; k--
+      }
+      if (!seen) exit 1
+      print substr(line[n], 1, 120)
+      exit 0
+    }'
+}
+
+# THE ONE DECISION the Codex branch calls, so a replay of the fixture and the
+# worker cannot disagree. A runner that prints a bare limit line (the shape
+# the other runner uses) still reads as an outage through the first half.
+codex_env_reason() {  # codex_env_reason <codex-output> <rc> -> the line; 0 when the MACHINE refused
+  if is_environmental "${1:-}"; then
+    environmental_reason "${1:-}"
+    return 0
+  fi
+  codex_outage_reason "${1:-}" "${2:-0}"
+}
+
+# ---------------------------------------------------------------------------
 # ONE PAGE PER CONDITION, NOT ONE PER PROCESS (Codex round 5 on PR #200, major)
 # ---------------------------------------------------------------------------
 # Everything above answers WHOSE failure it is. This answers HOW MANY TIMES the
@@ -193,16 +247,33 @@ environmental_reason() {  # environmental_reason <runner-output> -> one line, <=
 # human cannot detect, and a duplicate page is noise they can.
 ENV_ALERT_CLAIM_NAME="env-alert.claim"
 
-env_alert_claim() {  # env_alert_claim <state-dir> -> 0 when THIS process may page
-  local state="${1:-}"
+# AN OPTIONAL MAX AGE, for a claim nothing else will ever release (PR #421
+# round 8, major). The main claim is released by the next run that hears the
+# runner answer, which is every healthy tick, so it takes none. The Codex claim can only be
+# released by a run that REACHES Codex, and Codex is reached only on a rare
+# capability refusal: a claim from an outage long over stayed held, and the next
+# outage paged nobody. With a max age, a claim older than that is taken over.
+# The takeover is a rename, which exactly one racer can win, then the same mkdir
+# as a fresh claim. A holder with no epoch (written before this) never expires.
+env_alert_claim() {  # env_alert_claim <state-dir> [max-age-seconds] -> 0 when THIS process may page
+  local state="${1:-}" max_age="${2:-}" claim held_at now
   [ -n "$state" ] || return 0
   mkdir -p "$state" 2>/dev/null || return 0
-  mkdir "$state/$ENV_ALERT_CLAIM_NAME" 2>/dev/null || return 1
-  # Written for the human reading $STATE_DIR later, never read by this code: the
-  # directory's existence is the whole protocol, so a corrupt or missing holder
-  # file cannot change a decision.
-  printf 'pid=%s claimed_at=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" \
-    > "$state/$ENV_ALERT_CLAIM_NAME/holder" 2>/dev/null || true
+  claim="$state/$ENV_ALERT_CLAIM_NAME"
+  if ! mkdir "$claim" 2>/dev/null; then
+    [ -n "$max_age" ] || return 1
+    held_at="$(sed -n 's/.*epoch=\([0-9][0-9]*\).*/\1/p' "$claim/holder" 2>/dev/null | head -1)"
+    now="$(date +%s)"
+    { [ -n "$held_at" ] && [ $((now - held_at)) -gt "$max_age" ]; } || return 1
+    mv "$claim" "$claim.expired.$$" 2>/dev/null || return 1
+    rm -f "$claim.expired.$$/holder" 2>/dev/null || true
+    rmdir "$claim.expired.$$" 2>/dev/null || true
+    mkdir "$claim" 2>/dev/null || return 1
+  fi
+  # For the human reading $STATE_DIR later. The directory's existence is still
+  # the protocol; only a caller that passed a max age reads the epoch back.
+  printf 'pid=%s claimed_at=%s epoch=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$(date +%s)" \
+    > "$claim/holder" 2>/dev/null || true
   return 0
 }
 

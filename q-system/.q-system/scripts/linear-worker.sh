@@ -2357,9 +2357,15 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       fi
       CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
       CODEX_ENV=""
-      if is_environmental "$CODEX_OUT"; then
-        CODEX_ENV="$(environmental_reason "$CODEX_OUT")"
+      # codex_env_reason, not is_environmental: Codex prints a transcript, and
+      # the every-line rule never matched a real Codex outage (PR #421 round 8).
+      if CODEX_ENV="$(codex_env_reason "$CODEX_OUT" "$crc")"; then
+        [ -n "$CODEX_ENV" ] || CODEX_ENV="the second runner refused for a machine reason"
       else
+        CODEX_ENV=""
+        # This issue's outage note, if it had one, is spent: the next outage
+        # that reaches it says so again.
+        python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" codex_outage_noted >/dev/null 2>&1 || true
         # CODEX ANSWERED, whatever it said: the outage (if one was announced)
         # is over, so the NEXT one pages again. Releasing only on a committing
         # run (the round-1 version) left the claim held after an honest refusal
@@ -2428,8 +2434,15 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         # outage posted another "Attempt 1 of 3".
         python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" halted_pickup_noted >/dev/null 2>&1 || true
         mkdir -p "$STATE_DIR/codex-outage" 2>/dev/null || true
-        if env_alert_claim "$STATE_DIR/codex-outage"; then
+        # The note is PER ISSUE and the page is per machine (PR #421 round 8):
+        # tying the note to the machine-wide claim left an issue that a later
+        # outage reached with no note at all while the claim was still held.
+        if python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" codex_outage_noted >/dev/null 2>&1; then
           CODEX_OUTAGE_NEW=1
+        fi
+        # A day: nothing but a capability refusal ever reaches Codex, so nothing
+        # else would release this claim (see env_alert_claim's max age).
+        if env_alert_claim "$STATE_DIR/codex-outage" 86400; then
           bash "$NOTIFY" "kipi worker: the second runner (Codex) is unavailable ($CODEX_ENV). Issues Sana could not do are held, not parked and not charged, until it answers again." 2>/dev/null || true
         fi
       elif [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; then
@@ -2506,10 +2519,11 @@ $SCOPE_WHY
 
 **Next:** linear-dor-drafter.py re-scopes this into a Definition of Ready that is achievable from a non-interactive session, or it is closed. This is engineering work, not a founder decision -- no action is needed from the founder."
     fi
-    # A Codex OUTAGE note goes out once per outage, with its page (PR #421
-    # round 4, major): posted every tick it wrote one "Not parked" comment per
-    # tick on the same issue while the page was deduped to one. Every other
-    # refusal note is a decision about this issue and still posts each time.
+    # A Codex OUTAGE note goes out once per issue per outage (PR #421 round 4,
+    # major; per issue since round 8): posted every tick it wrote one "Not
+    # parked" comment per tick on the same issue. CODEX_OUTAGE_NEW is set by
+    # this issue's own claim above. Every other refusal note is a decision
+    # about this issue and still posts each time.
     if [ -z "$CODEX_ENV" ] || [ -n "$CODEX_OUTAGE_NEW" ]; then
       python3 "$SYNC" progress "$ISSUE" "$REFUSE_NOTE" --agent "$AGENT" >/dev/null 2>&1 || true
     fi
