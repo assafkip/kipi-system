@@ -59,7 +59,16 @@ fi
 # main does not.
 git -C "$SKEL" fetch --quiet origin 2>/dev/null || true
 MERGED_WORKER="$(git -C "$SKEL" show origin/main:q-system/.q-system/scripts/linear-worker.sh 2>/dev/null || true)"
-if ! printf '%s' "$MERGED_WORKER" | grep -q 'is_environmental'; then
+# A PATTERN MATCH, NOT A PIPE (2026-09-23, found live the morning ASK-2009
+# merged). `printf | grep -q` under `set -euo pipefail` returns 141 on any
+# worker past the pipe buffer: grep -q exits at the first match and printf
+# takes SIGPIPE. The real merged worker is that large, so this refused the very
+# main it was written to wait for.
+case "$MERGED_WORKER" in
+  *is_environmental*) HALT_ON_MAIN=1 ;;
+  *) HALT_ON_MAIN=0 ;;
+esac
+if [ "$HALT_ON_MAIN" != "1" ]; then
   cat >&2 <<EOF
 REFUSED: the environmental halt is not on origin/main yet.
 
@@ -67,7 +76,7 @@ Clearing these counts now returns them to a dispatcher that still charges an
 issue for the machine's outage, so the next weekly limit burns exactly the same
 issues again. Merge the ASK-873 halt first, then re-run this command verbatim.
 
-Checked: git -C $SKEL show origin/main:q-system/.q-system/scripts/linear-worker.sh | grep is_environmental
+Checked: git -C $SKEL show origin/main:q-system/.q-system/scripts/linear-worker.sh, for the word is_environmental
 Nothing was written.
 EOF
   exit 2
