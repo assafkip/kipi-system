@@ -134,6 +134,7 @@
 {"commit_sha": "4df16a050d4c08222bde42ab19772bd01046612c", "issue_id": "ASK-860", "receipts": {"reviewed": "2026-08-16T14:38:25Z"}, "reviewed_at": "2026-08-16T14:38:25Z"}
 {"commit_sha": "6686bb2307220279c6a75805363f71a8d03b3872", "issue_id": "ASK-908", "receipts": {"reviewed": "2026-08-19T15:13:50Z"}, "reviewed_at": "2026-08-19T15:13:50Z"}
 {"commit_sha": "267538695b4786577d0ed0b2550cd244848909f0", "issue_id": "ASK-345", "receipts": {"reviewed": "2026-08-19T19:11:06Z"}, "reviewed_at": "2026-08-19T19:11:06Z"}
+{"commit_sha": "e2f211e370a8d748fb809ad0350bf5fadc373601", "issue_id": "ASK-922", "receipts": {"reviewed": "2026-08-20T15:36:21Z"}, "reviewed_at": "2026-08-20T15:36:21Z"}
 {"commit_sha": "b02921fa64640454e584bd93f3e0b121fb796f22", "issue_id": "ASK-923", "receipts": {"reviewed": "2026-08-21T14:44:51Z"}, "reviewed_at": "2026-08-21T14:44:51Z"}
 {"closed_at": "2026-08-21T17:36:26Z", "commit_sha": "7d0eb522a25d1d630d3b0a3f9fa8a0a1fa31fe26", "finding_id": "finding-13", "findings_triaged_at": "2026-08-21T17:36:21Z", "issue_id": "skill-hook-audit-drop-local-settings", "prd_id": "prd-enforced-claim-verification-2026-08-21", "reviewed_at": "2026-08-21T17:36:21Z", "verified_at": "2026-08-21T17:36:22Z"}
 {"closed_at": "2026-08-21T17:44:41Z", "commit_sha": "e0b8911f1ee8d9604838a49e47fb6af856dc555c", "finding_id": "finding-2", "findings_triaged_at": "2026-08-21T17:44:37Z", "issue_id": "enforcement-block-json-grammar", "prd_id": "prd-enforced-claim-verification-2026-08-21", "reviewed_at": "2026-08-21T17:44:37Z", "verified_at": "2026-08-21T17:44:37Z"}
