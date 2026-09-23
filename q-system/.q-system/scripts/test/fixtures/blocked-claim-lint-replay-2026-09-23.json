@@ -575,7 +575,7 @@
    "genuine": true
   },
   {
-   "text": "**Real bonus catch:** one plugin's version record points to a folder under the old ktlyst-hub setup that got dissolved back in July — a path that doesn't exist anymore.",
+   "text": "**Real bonus catch:** one plugin's version record points to a folder under the old <product>-hub setup that got dissolved back in July — a path that doesn't exist anymore.",
    "trigger": "does-not-exist",
    "pattern": "lookup-as-runtime-fact",
    "genuine": true
