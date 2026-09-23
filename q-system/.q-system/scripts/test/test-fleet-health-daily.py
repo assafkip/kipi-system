@@ -567,6 +567,237 @@ check("it declares an action",
 check("its lesson slug is a real file",
       (_LESSONS / f"{_by_id['launchd-never-installed']['lesson']}.md").is_file(), True)
 
+# ---------------------------------------------------------------------------
+# ASK-1173: a default branch stayed red for weeks and nothing noticed.
+#
+# assafkip/ASK_AI_consultant main failed every run: `verify` twice on 2026-08-27,
+# then the `validate` workflow that replaced it 10 for 10 since it was wired on
+# 2026-09-10. GitHub reported each one into a notification inbox; a human
+# reading 389 notifications is what found it. The fixtures below are the REAL
+# `gh api <path> --jq` output recorded 2026-09-14, trimmed to the fields the
+# detector reads -- not a shape invented to make the detector pass.
+# ---------------------------------------------------------------------------
+import copy as _copy
+
+_CONSULT = "assafkip/ASK_AI_consultant"
+_SKEL = "assafkip/kipi-system"
+_RUNS_Q = "runs?branch=main&status=completed&per_page=30"
+_CONSULT_RUNS = [{"conclusion": "failure", "created_at": t, "head_branch": "main"} for t in (
+    "2026-09-13T01:27:45Z", "2026-09-13T00:56:38Z", "2026-09-12T04:41:36Z",
+    "2026-09-12T00:51:55Z", "2026-09-12T00:23:32Z", "2026-09-11T23:58:09Z",
+    "2026-09-11T18:07:25Z", "2026-09-10T21:43:49Z", "2026-09-10T21:29:23Z",
+    "2026-09-10T19:39:47Z")]
+_SKEL_RUNS = [{"conclusion": "success", "created_at": t, "head_branch": "main"} for t in (
+    "2026-09-13T17:30:27Z", "2026-09-13T02:48:35Z", "2026-09-08T11:03:00Z",
+    "2026-09-08T08:53:02Z")]
+_GH_TABLE = {
+    f"repos/{_CONSULT}": {"archived": False, "default_branch": "main", "full_name": _CONSULT},
+    # The DELETED `verify` workflow is absent here, exactly as GitHub returns it.
+    f"repos/{_CONSULT}/actions/workflows": {"workflows": [
+        {"id": 355212679, "name": "validate", "path": ".github/workflows/validate.yml",
+         "state": "active"}]},
+    f"repos/{_CONSULT}/actions/workflows/355212679/{_RUNS_Q}":
+        {"total_count": 10, "workflow_runs": _CONSULT_RUNS},
+    # ...but the repo-wide run list still carries its two failures. A detector that
+    # reads this list instead of the active workflows files a permanent issue
+    # against a workflow that no longer exists.
+    f"repos/{_CONSULT}/actions/{_RUNS_Q}": {"total_count": 12, "workflow_runs": _CONSULT_RUNS + [
+        {"conclusion": "failure", "created_at": "2026-08-27T17:07:07Z", "head_branch": "main",
+         "path": ".github/workflows/verify.yml"},
+        {"conclusion": "failure", "created_at": "2026-08-27T16:47:10Z", "head_branch": "main",
+         "path": ".github/workflows/verify.yml"}]},
+    f"repos/{_SKEL}": {"archived": False, "default_branch": "main", "full_name": _SKEL},
+    f"repos/{_SKEL}/actions/workflows": {"workflows": [
+        {"id": 256379765, "name": "Skeleton Validation", "path": ".github/workflows/validate.yml",
+         "state": "active"},
+        {"id": 343908907, "name": "verify", "path": ".github/workflows/verify.yml",
+         "state": "active"}]},
+    f"repos/{_SKEL}/actions/workflows/256379765/{_RUNS_Q}":
+        {"total_count": 404, "workflow_runs": _SKEL_RUNS},
+    f"repos/{_SKEL}/actions/workflows/343908907/{_RUNS_Q}":
+        {"total_count": 61, "workflow_runs": _SKEL_RUNS},
+}
+
+
+def _fake_gh(table):
+    def read(path):
+        if path not in table:
+            raise fh.GhReadError("HTTP 404")
+        return _copy.deepcopy(table[path])
+    return read
+
+
+def _with_runs(runs, state="active"):
+    table = _copy.deepcopy(_GH_TABLE)
+    table[f"repos/{_CONSULT}/actions/workflows"]["workflows"][0]["state"] = state
+    table[f"repos/{_CONSULT}/actions/workflows/355212679/{_RUNS_Q}"]["workflow_runs"] = runs
+    return table
+
+
+def _ci(table, repos=(_CONSULT, _SKEL)):
+    if not hasattr(fh, "default_branch_ci_findings"):
+        failures.append("fleet-health-daily.py has no default_branch_ci_findings (ASK-1173)")
+        return []
+    return fh.default_branch_ci_findings(list(repos), _fake_gh(table))
+
+
+_red = _ci(_GH_TABLE)
+check("the red repo is reported and the green one is not",
+      [f["subject"] for f in _red], [_CONSULT])
+_body = _red[0]["body"] if _red else ""
+check("the finding names the failing workflow file", "validate.yml" in _body, True)
+check("a deleted workflow's old failures are never reported", "verify.yml" in _body, False)
+check("the finding says since when, not only that it is red", "2026-09-10" in _body, True)
+
+# Another failed push must not rewrite the issue: finding_hash covers the body,
+# and a body that moves on every push is a Linear mutation every morning.
+_one_more = [{"conclusion": "failure", "created_at": "2026-09-14T09:00:00Z",
+              "head_branch": "main"}] + _CONSULT_RUNS
+_again = _ci(_with_runs(_one_more))
+check("one more red push leaves the finding byte-identical",
+      bool(_red) and bool(_again) and fh.finding_hash(_again[0]) == fh.finding_hash(_red[0]), True)
+
+# The latest DECISIVE run decides. A cancelled run is neither red nor green.
+_fixed = [{"conclusion": "cancelled", "created_at": "2026-09-14T09:00:00Z"},
+          {"conclusion": "success", "created_at": "2026-09-13T09:00:00Z"}] + _CONSULT_RUNS
+check("a fixed branch clears the finding even under a later cancelled run",
+      _ci(_with_runs(_fixed)), [])
+_still = [{"conclusion": "cancelled", "created_at": "2026-09-14T09:00:00Z"}] + _CONSULT_RUNS
+check("a cancelled run on top of red is still red",
+      [f["subject"] for f in _ci(_with_runs(_still))], [_CONSULT])
+
+# API order is not trusted (linear-sync.py scar: Linear returned newest-FIRST and
+# a slice assumed oldest-first). Oldest-first input must give the same verdict.
+_ascending = list(reversed([{"conclusion": "success", "created_at": "2026-09-13T09:00:00Z"}]
+                           + _CONSULT_RUNS))
+check("run order from the API does not change the verdict", _ci(_with_runs(_ascending)), [])
+
+check("a disabled workflow is not watched",
+      _ci(_with_runs(_CONSULT_RUNS, state="disabled_manually")), [])
+
+# GitHub-managed workflows live under `dynamic/`, not in the repo. The live
+# calibration run on 2026-09-14 read this exact row red on kipi-investigations
+# (since 2026-06-02). No file in the repo can fix it, and the finding's Action
+# ("fix the build or retire the workflow") would point at nothing.
+_dyn = _copy.deepcopy(_GH_TABLE)
+_dyn[f"repos/{_CONSULT}/actions/workflows"]["workflows"] = [
+    {"id": 288061469, "name": "Dependency Graph", "path": "dynamic/dependabot/update-graph",
+     "state": "active"}]
+_dyn[f"repos/{_CONSULT}/actions/workflows/288061469/{_RUNS_Q}"] = {
+    "total_count": 10, "workflow_runs": _CONSULT_RUNS}
+check("a GitHub-managed dynamic workflow is not the repo's CI", _ci(_dyn), [])
+
+# "I could not look" must never print as "I looked and found nothing".
+_blind = _ci(_GH_TABLE, repos=(_CONSULT, "assafkip/not-a-repo"))
+_blind_by = {f["subject"]: f for f in _blind}
+check("an unreadable repo is a finding, never silence",
+      sorted(_blind_by), sorted([_CONSULT, getattr(fh, "CI_UNREADABLE_SUBJECT", "?")]))
+check("the unreadable finding names the repo it could not read",
+      "assafkip/not-a-repo" in _blind_by.get(getattr(fh, "CI_UNREADABLE_SUBJECT", "?"), {}).get("body", ""),
+      True)
+
+if hasattr(fh, "detect_default_branch_ci"):
+    _no_gh = fh.detect_default_branch_ci(None, repos=[_CONSULT], gh=None)
+    check("no gh binary is a finding, never silence",
+          [f["subject"] for f in _no_gh], [fh.CI_UNREADABLE_SUBJECT])
+
+    # launchd runs this job with PATH=/usr/bin:/bin:/usr/sbin:/sbin, where a bare
+    # `gh` does not resolve. The resolver has to find it anyway.
+    with _tempfile.TemporaryDirectory() as _tmp:
+        _gh_bin = Path(_tmp) / "gh"
+        _gh_bin.write_text("#!/bin/sh\n")
+        _gh_bin.chmod(0o755)
+        check("gh resolves off PATH from a known install location",
+              fh.resolve_gh(which=lambda _n: None, candidates=(str(_gh_bin),)), str(_gh_bin))
+        check("an unresolvable gh is None, not a guess",
+              fh.resolve_gh(which=lambda _n: None, candidates=(str(Path(_tmp) / "nope"),)), None)
+
+    check("https remote parses", fh.github_slug("https://github.com/assafkip/kipi-system.git"),
+          "assafkip/kipi-system")
+    check("ssh remote parses", fh.github_slug("git@github.com:assafkip/ASK_AI_consultant.git"),
+          "assafkip/ASK_AI_consultant")
+    check("a non-GitHub remote has no GitHub CI", fh.github_slug("https://gitlab.com/a/b.git"), None)
+
+    with _tempfile.TemporaryDirectory() as _tmp:
+        _reg = Path(_tmp) / "instance-registry.json"
+        _here, _gone = Path(_tmp) / "here", Path(_tmp) / "gone"
+        _here.mkdir()
+        _reg.write_text(__import__("json").dumps({
+            "skeleton": {"remote": "https://github.com/assafkip/kipi-system.git"},
+            "instances": [
+                {"path": str(_here)},
+                {"path": str(_gone)},
+                {"path": str(_here), "dispatch": {"expected_remote":
+                                                  "https://github.com/assafkip/ktlyst-saas-product.git"}},
+            ]}))
+        _origins = {str(_here): "git@github.com:assafkip/kipi-system.git"}
+        check("the registry yields each GitHub repo once, and skips a path not on disk",
+              fh.registered_github_repos(_reg, origin_of=lambda p: _origins.get(str(p), "")),
+              ["assafkip/kipi-system", "assafkip/ktlyst-saas-product"])
+
+    # PR #355 review, major: this script ships into every instance's q-system/,
+    # and an instance root has no instance-registry.json. The detector raised
+    # FileNotFoundError there, so the live loop above went red in 24 instances.
+    # gh=None proves the absent registry is decided BEFORE the gh check: the
+    # other order files a "gh not installed" rollup from every instance.
+    _saved_registry = fh.REGISTRY
+    try:
+        with _tempfile.TemporaryDirectory() as _tmp:
+            fh.REGISTRY = Path(_tmp) / "instance-registry.json"
+            try:
+                _inst = fh.detect_default_branch_ci(None, gh=None)
+            except Exception as exc:  # noqa: BLE001 - the raise IS the defect
+                _inst = f"raised {type(exc).__name__}"
+            check("an instance with no registry has no fleet to watch", _inst, [])
+    finally:
+        fh.REGISTRY = _saved_registry
+
+    # PR #355 review, minor: a red streak longer than the window has no knowable
+    # start. Dating it by the oldest run IN the window moves the date on every
+    # push (the window slides), and finding_hash covers the body, so the issue
+    # would be rewritten every morning the build stays red.
+    # One run per DAY: the body prints the date only, so runs inside one day
+    # would leave the hash equal even with the saturation branch deleted.
+    from datetime import datetime as _dt, timedelta as _td
+
+    def _red_run(day):
+        return {"conclusion": "failure", "head_branch": "main",
+                "created_at": (_dt(2026, 8, 1) + _td(days=day)).strftime("%Y-%m-%dT09:00:00Z")}
+
+    _full = [_red_run(d) for d in range(40, 40 - fh.CI_WINDOW, -1)]
+    _slid = [_red_run(41)] + _full[:-1]  # one more red push; GitHub drops the oldest
+    _full_f, _slid_f = _ci(_with_runs(_full)), _ci(_with_runs(_slid))
+    check("a streak older than the window says so, and invents no date",
+          bool(_full_f) and f"at least the last {fh.CI_WINDOW}" in _full_f[0]["body"]
+          and "red since" not in _full_f[0]["body"], True)
+    check("a saturated window leaves the finding byte-identical on the next push",
+          bool(_full_f) and bool(_slid_f)
+          and fh.finding_hash(_full_f[0]) == fh.finding_hash(_slid_f[0]), True)
+
+    # PR #355 review, minor: GhReadError.reason lands in a permanent Linear issue
+    # body, so it is a short label and never gh's stderr, which can carry a URL,
+    # a host or a token. A fake gh that writes a token to stderr proves it.
+    with _tempfile.TemporaryDirectory() as _tmp:
+        for _name, _stderr, _want in (
+                ("http", "gh: HTTP 404: Not Found token=ghp_LEAKME0000", "HTTP 404"),
+                ("bare", "error connecting to api.github.com token=ghp_LEAKME0000",
+                 "gh exited 1")):
+            _fake = Path(_tmp) / f"gh-{_name}"
+            _fake.write_text(f"#!/bin/sh\necho '{_stderr}' >&2\nexit 1\n")
+            _fake.chmod(0o755)
+            try:
+                fh._gh_reader(str(_fake))("repos/assafkip/x")
+                _reason = "no raise"
+            except fh.GhReadError as exc:
+                _reason = exc.reason
+            check(f"a failed gh read is labelled, never its stderr ({_name})", _reason, _want)
+
+_ci_det = _by_id.get("default-branch-ci-red", {})
+check("default-branch-ci-red is registered", bool(_ci_det), True)
+check("it files an issue", _ci_det.get("action"), "file_issue")
+check("its lesson slug is a real file",
+      bool(_ci_det.get("lesson")) and (_LESSONS / f"{_ci_det['lesson']}.md").is_file(), True)
+
 if failures:
     print("FAIL:")
     for line in failures:

@@ -61,10 +61,12 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from urllib.parse import quote
 
 HERE = Path(__file__).resolve().parent
 QROOT = HERE.parent.parent
@@ -1626,7 +1628,237 @@ def detect_promoted_audit(_ctx) -> list:
     }]
 
 
+# ---------------------------------------------------------------------------
+# Default-branch CI: the red build nobody was told about (ASK-1173)
+#
+# assafkip/ASK_AI_consultant main failed every run for weeks: `verify` on
+# 2026-08-27, then the `validate` workflow that replaced it, 10 for 10 red from
+# the day it was wired (2026-09-10). GitHub reported every run into a
+# notification inbox, and a human reading 389 notifications is what found it.
+# An output nobody reads is no output, so the result moves onto the board: one
+# standing issue per red repo, rewritten only when the condition changes.
+# ---------------------------------------------------------------------------
+
+REGISTRY = REPO_ROOT / "instance-registry.json"
+CI_RED = frozenset({"failure", "timed_out", "startup_failure"})
+CI_DECISIVE = CI_RED | {"success"}  # cancelled/skipped/neutral decide nothing
+CI_WINDOW = 30
+CI_UNREADABLE_SUBJECT = "default-branch-ci-unreadable"
+# launchd starts this job with PATH=/usr/bin:/bin:/usr/sbin:/sbin and
+# com.kipi.fleet-health.plist sets none, so a bare `gh` that works in every
+# terminal is not found at 08:15. Resolve it to an absolute path instead.
+GH_CANDIDATES = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh")
+_UNSET = object()
+
+
+class GhReadError(RuntimeError):
+    """One `gh api` read failed. `reason` is a short label, never gh's stderr."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+_GITHUB_REMOTE_RE = re.compile(
+    r"github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$")
+
+
+def github_slug(remote: str):
+    """`owner/repo` for a GitHub remote URL (https or ssh), else None."""
+    match = _GITHUB_REMOTE_RE.search((remote or "").strip())
+    return f"{match.group(1)}/{match.group(2)}" if match else None
+
+
+def _origin_url(path) -> str:
+    try:
+        res = subprocess.run(["git", "-C", str(path), "remote", "get-url", "origin"],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def registered_github_repos(registry=None, origin_of=None) -> list:
+    """Every GitHub repo the instance registry names, once each.
+
+    A path not on this machine, a repo with no origin, or a non-GitHub remote has
+    no GitHub CI to watch. The remote-less case belongs to remote-coverage-check.py.
+    """
+    data = json.loads(Path(registry or REGISTRY).read_text())
+    origin_of = origin_of or _origin_url
+    remotes = [(data.get("skeleton") or {}).get("remote", "")]
+    for inst in data.get("instances") or []:
+        expected = (inst.get("dispatch") or {}).get("expected_remote")
+        if expected:
+            remotes.append(expected)
+        elif inst.get("path") and Path(inst["path"]).is_dir():
+            remotes.append(origin_of(inst["path"]))
+    return sorted({slug_ for slug_ in map(github_slug, remotes) if slug_})
+
+
+def resolve_gh(which=shutil.which, candidates=GH_CANDIDATES):
+    """Absolute path to `gh`, or None. Never a bare name (see GH_CANDIDATES)."""
+    found = which("gh")
+    if found:
+        return found
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _gh_reader(gh: str):
+    def read(path: str) -> dict:
+        try:
+            res = subprocess.run([gh, "api", path], capture_output=True, text=True,
+                                 timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GhReadError(type(exc).__name__) from exc
+        if res.returncode != 0:
+            status = re.search(r"HTTP \d{3}", res.stderr or "")
+            raise GhReadError(status.group(0) if status else f"gh exited {res.returncode}")
+        try:
+            return json.loads(res.stdout)
+        except json.JSONDecodeError as exc:
+            raise GhReadError("unparsable JSON") from exc
+    return read
+
+
+def _red_streak(runs: list) -> tuple:
+    """(is_red, created_at of the oldest run in the red streak, or None if unknown).
+
+    Sorted here, never trusted from the API (the linear-sync.py order scar). The
+    streak start is None when every decisive run in a full window is red: the
+    streak began before the window and inventing a date would be a lie.
+    """
+    ordered = sorted(runs, key=lambda r: r.get("created_at") or "", reverse=True)
+    decisive = [r for r in ordered if r.get("conclusion") in CI_DECISIVE]
+    if not decisive or decisive[0]["conclusion"] not in CI_RED:
+        return False, None
+    streak = []
+    for run in decisive:
+        if run["conclusion"] == "success":
+            break
+        streak.append(run)
+    if len(streak) == len(decisive) and len(runs) >= CI_WINDOW:
+        return True, None
+    return True, streak[-1].get("created_at")
+
+
+def _red_workflows(slug_: str, branch: str, gh_json) -> list:
+    """(workflow path, red-since) for each ACTIVE workflow whose branch is red.
+
+    Per active workflow, never the repo-wide run list: that list still carries a
+    deleted workflow's last failures, and ASK_AI_consultant's removed `verify`
+    would read red forever.
+
+    `dynamic/` workflows are GitHub-managed (Dependabot, default CodeQL), not
+    files in the repo, so no build fix exists for them. The first live run read
+    kipi-investigations' `dynamic/dependabot/update-graph` red since 2026-06-02.
+    """
+    red = []
+    for wf in gh_json(f"repos/{slug_}/actions/workflows").get("workflows") or []:
+        if wf.get("state") != "active" or str(wf.get("path", "")).startswith("dynamic/"):
+            continue
+        runs = gh_json(f"repos/{slug_}/actions/workflows/{wf['id']}/runs"
+                       f"?branch={quote(branch, safe='')}&status=completed"
+                       f"&per_page={CI_WINDOW}").get("workflow_runs") or []
+        is_red, since = _red_streak(runs)
+        if is_red:
+            red.append((wf.get("path") or str(wf["id"]), since))
+    return sorted(red, key=lambda item: item[0])
+
+
+def _ci_red_finding(slug_: str, branch: str, red: list) -> dict:
+    """No run count or latest-commit text in the body: both move on every push,
+    and finding_hash covers the body, so each push would rewrite the issue."""
+    lines = [f"- `{path}`: red since {since[:10]}" if since
+             else f"- `{path}`: red for at least the last {CI_WINDOW} completed runs"
+             for path, since in red]
+    return {
+        "subject": slug_,
+        "title": f"default branch CI is red: {slug_} ({branch})",
+        "body": (
+            f"The latest completed run on `{branch}` failed for {len(red)} active "
+            f"workflow(s) in `{slug_}`:\n\n" + "\n".join(lines)
+            + f"\n\nRuns: https://github.com/{slug_}/actions?query=branch%3A"
+              f"{quote(branch, safe='')}\n\n"
+              "GitHub reports these runs into a notification inbox, which is how a "
+              "default branch stayed red for weeks with nobody told (ASK-1173).\n\n"
+              "## Action\nOpen the latest failed run and name the cause, not the "
+              "failure. Then fix the build, or retire the workflow if it no longer "
+              "earns its run."
+        ),
+    }
+
+
+def _ci_unreadable_finding(unreadable: list, headline: str = "") -> dict:
+    lines = "\n".join(f"- `{slug_}`: {reason}" for slug_, reason in unreadable)
+    return {
+        "subject": CI_UNREADABLE_SUBJECT,
+        "title": f"default-branch CI could not be read for {len(unreadable)} repo(s)",
+        "body": (
+            (headline + "\n\n" if headline else "")
+            + f"The default-branch CI watcher could not read:\n\n{lines}\n\n"
+              "Absence of a red-CI finding for these repos is NOT evidence they are "
+              "green.\n\n## Action\nRun `gh auth status` as the user the 08:15 job "
+              "runs as, then `gh api repos/<repo>/actions/workflows` for one repo "
+              "above, and fix what refuses."
+        ),
+    }
+
+
+def default_branch_ci_findings(repos: list, gh_json) -> list:
+    """One finding per repo whose default branch is red, plus one rollup for the
+    repos that could not be read. Pure over `gh_json(path) -> dict`."""
+    out, unreadable = [], []
+    for slug_ in repos:
+        try:
+            repo = gh_json(f"repos/{slug_}")
+            if repo.get("archived"):
+                continue
+            branch = repo.get("default_branch")
+            if not branch:
+                raise GhReadError("no default_branch in the repo response")
+            red = _red_workflows(slug_, branch, gh_json)
+        except GhReadError as exc:
+            unreadable.append((slug_, exc.reason))
+            continue
+        if red:
+            out.append(_ci_red_finding(slug_, branch, red))
+    if unreadable:
+        out.append(_ci_unreadable_finding(unreadable))
+    return out
+
+
+def detect_default_branch_ci(_ctx, repos=None, gh=_UNSET) -> list:
+    """The production caller: registry repos, the real `gh`, read live.
+
+    No registry means this copy is an instance, not the skeleton: this script
+    ships into every instance's q-system/, and only the skeleton root holds the
+    fleet's instance-registry.json. The skeleton is the one watcher; an instance
+    that reported "unreadable" instead would file the same rollup 24 times a day
+    (PR #355 review, major). Decided before the gh check for the same reason.
+    """
+    if repos is None and not REGISTRY.is_file():
+        return []
+    repos = registered_github_repos() if repos is None else repos
+    gh = resolve_gh() if gh is _UNSET else gh
+    if not gh:
+        return [_ci_unreadable_finding(
+            [(slug_, "gh not installed") for slug_ in repos],
+            headline=f"`gh` was not found on PATH or at {', '.join(GH_CANDIDATES)}.")]
+    return default_branch_ci_findings(repos, _gh_reader(gh))
+
+
 DETECTORS = [
+    {
+        "id": "default-branch-ci-red",
+        "description": "a registered repo's default branch is failing CI, or could not be read",
+        "detect": detect_default_branch_ci,
+        "action": "file_issue",
+        "lesson": "an-output-nobody-reads-is-the-same-as-no-output",
+    },
     {
         "id": "promoted-audit",
         "description": "daily re-check of promoted spillover rows against Linear; files only when the whole sweep was blind",
