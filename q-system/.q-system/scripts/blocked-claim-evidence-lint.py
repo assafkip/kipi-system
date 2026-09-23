@@ -26,10 +26,17 @@ THE THREE SUB-SHAPES, each with its own remediation (generic stderr teaches noth
                                Mirror image: references existed, so "the scripts are
                                LIVE" -- neither had ever been executed.
 
-MODE (this ships ADVISORY on purpose). `KIPI_BLOCKED_CLAIM_LINT_MODE`:
-  advisory (default)  exit 0, row tagged `event: advisory`
-  blocking            exit 2, per-sub-shape remediation on stderr,
-                      row tagged `event: blocked`
+MODE. `KIPI_BLOCKED_CLAIM_LINT_MODE`:
+  advisory            exit 0, row tagged `event: advisory`
+  measured (default)  exit 2 ONLY when a finding came from a trigger in
+                      BLOCKING_TRIGGERS (measured precision clears the bar);
+                      every other finding is logged as advisory (ASK-459).
+  blocking            exit 2 on any finding, per-sub-shape remediation on stderr,
+                      row tagged `event: blocked`. Kept for a deliberate
+                      all-triggers run; nothing wires it.
+A caller's exported mode wins over the default. pr-review-agent.sh exports
+`advisory` for its one-shot `claude -p`: that session's final text is the verdict
+the script parses, and a forced continuation would replace it.
 BOTH modes append to output/blocked-claim-lint.jsonl (ASK-1958): a firing that stops
 a turn is the event most worth counting, so it cannot be the one that leaves no
 artifact. A turn with no findings writes nothing at all.
@@ -37,6 +44,21 @@ A Stop hook that fires noisily trains the operator to skim, which costs the real
 later. So the false-positive rate gets measured on real session output from the
 advisory log FIRST, and `blocking` is turned on against that evidence, not against a
 hunch. The promotion is a one-word env change, not a rewrite.
+
+WHY PER-TRIGGER, NOT PER-SUB-SHAPE (ASK-459, measured 2026-09-23). The RCA said this
+hook was "promoted to blocking"; the promotion never reached the skeleton, and the
+fleet's advisory logs grew to 2,173 stop events and 2,692 findings that nobody read.
+Replaying them, no SUB-SHAPE is precise enough to block: each one mixes a precise
+trigger with a noisy one, and the noisy one dominates the volume. Bare `blocked`
+alone fired 1,001 times at about 0.20 precision (issue-tracker prose, "the hook
+blocked me", adjectives). So the blocking decision is made per TRIGGER, from a
+labelled replay of real rows, and the replay test recomputes it from the fixture
+and fails if this table and the measurement disagree.
+
+NOT BUILT HERE, deliberately (Sana ruling on ASK-459): a detector for "over-
+generalized from a file you DID read" (the seam in rca-conclusions-before-evidence).
+That is a judgement about how far a conclusion reaches past its evidence, not a
+regex or a set-membership test, so per skill-hook-pairing it gets no blocking hook.
 
 HONEST BOUNDARY (stated so this is not theater):
   - It checks that a claim DECLARES its evidence, not that the evidence is true. A
@@ -66,7 +88,10 @@ from pathlib import Path
 from typing import NamedTuple
 
 SKIP_MARKER = "blocked-claim-skip"
-MODE = os.environ.get("KIPI_BLOCKED_CLAIM_LINT_MODE", "advisory").strip().lower()
+# measured is the DEFAULT, so the switch travels with the script (ASK-459). The RCA's
+# "promoted to blocking" was an env line in one instance's settings; it never reached
+# the skeleton, and the fleet ran advisory for seven weeks while the log grew unread.
+MODE = os.environ.get("KIPI_BLOCKED_CLAIM_LINT_MODE", "measured").strip().lower()
 CALIBRATION_LOG = "q-system/output/blocked-claim-lint.jsonl"
 
 # How far AFTER a claim its settling fence may start. Two lines is the natural shape
@@ -112,6 +137,7 @@ class Claim(NamedTuple):
     ordinal: int  # sentence index within the line; two claims on a line are two claims
     pattern: Pattern
     text: str
+    trigger: str = ""
 
     @property
     def key(self) -> tuple[int, int]:
@@ -125,6 +151,7 @@ class Finding(NamedTuple):
     text: str
     why: str
     settles: str
+    trigger: str = ""
 
 
 PATTERNS = (
@@ -219,6 +246,55 @@ PATTERNS = (
 )
 
 
+# One id per trigger, in the SAME order as each Pattern's `triggers`. Two regexes may
+# share an id when they are spellings of one phrase ("does not exist" / "doesn't
+# exist"), because they were measured as one population. The test fails when a
+# pattern gains a trigger without an id here.
+TRIGGER_IDS = {
+    "rollup-as-config": (
+        "blocked-word", "blocks-object", "pending-approval", "requires-approval",
+        "waiting-on-review", "merge-state-status", "out-of-credits"),
+    "my-denial-as-object-property": (
+        "denied", "not-permitted", "no-permission", "permission-refused",
+        "cannot-be-run", "tool-layer-availability", "is-unreachable",
+        "tool-layer-refuses"),
+    "lookup-as-runtime-fact": (
+        "does-not-exist", "does-not-exist", "no-such-file", "was-never-written",
+        "no-x-was-written", "never-ran", "is-missing", "is-live",
+        "nothing-was-written"),
+}
+
+# A trigger blocks only when a labelled replay of REAL fleet rows puts its precision
+# at or above PRECISION_BAR on at least MIN_LABELLED distinct findings. Fewer than
+# MIN_LABELLED is not a measurement (n>=3 is the claim floor; ten is the floor for a
+# fleet-wide Stop hook), so a rare trigger stays advisory however clean it looks.
+# Measured 2026-09-23 on scripts/test/fixtures/blocked-claim-lint-replay-2026-09-23.json:
+#   does-not-exist       87/100 genuine  0.87  -> blocks
+#   nothing-was-written  13/13  genuine  1.00  -> blocks
+#   never-ran 0.72, is-missing 0.50, out-of-credits 0.50, is-live 0.37,
+#   is-unreachable 0.24, blocked-word 0.20, blocks-object 0.20, denied 0.20
+#   -> advisory. Every other trigger has fewer than MIN_LABELLED rows -> advisory.
+# Change this set only by re-labelling the fixture; the test recomputes it.
+PRECISION_BAR = 0.8
+MIN_LABELLED = 10
+BLOCKING_TRIGGERS = frozenset({"does-not-exist", "nothing-was-written"})
+
+
+def _trigger_id(pattern: Pattern, index: int) -> str:
+    ids = TRIGGER_IDS.get(pattern.pattern_id, ())
+    return ids[index] if index < len(ids) else f"{pattern.pattern_id}#{index}"
+
+
+def blocking_findings(findings: list, mode: str = None) -> list:
+    """The findings that stop the turn under `mode`. [] means log and pass."""
+    mode = MODE if mode is None else mode
+    if mode == "blocking":
+        return list(findings)
+    if mode == "measured":
+        return [f for f in findings if f.trigger in BLOCKING_TRIGGERS]
+    return []
+
+
 def _has_provenance(line: str) -> bool:
     """A line that labels itself is doing the right thing, not a lesser thing."""
     if _VERIFIED_RE.search(line):
@@ -274,7 +350,7 @@ def _claims(lines: list[str], interior: set[int]) -> list[Claim]:
                 continue  # a question is an open loop, not a claim
             hit = _first_match(sentence)
             if hit is not None:
-                claims.append(Claim(i, ordinal, hit, sentence))
+                claims.append(Claim(i, ordinal, hit[0], sentence, hit[1]))
     return claims
 
 
@@ -312,14 +388,16 @@ def evaluate(final_text: str) -> list[Finding]:
     # Report the SENTENCE, not the whole line: on a two-claim line the operator has
     # to see which half is still unsettled, not re-read the line and guess.
     return [Finding(c.pattern.pattern_id, c.line + 1, c.text,
-                    c.pattern.why, c.pattern.settles)
+                    c.pattern.why, c.pattern.settles, c.trigger)
             for c in claims if c.key not in settled]
 
 
 def _first_match(sentence: str):
+    """(pattern, trigger id) of the first trigger that fires, or None."""
     for pattern in PATTERNS:
-        if any(trigger.search(sentence) for trigger in pattern.triggers):
-            return pattern
+        for index, trigger in enumerate(pattern.triggers):
+            if trigger.search(sentence):
+                return pattern, _trigger_id(pattern, index)
     return None
 
 
@@ -350,7 +428,8 @@ def _load_records(transcript_path: str) -> list[dict]:
     return out
 
 
-def _log_firing(findings: list[Finding], event: str) -> None:
+def _log_firing(findings: list[Finding], event: str,
+                stopping: list[Finding] = ()) -> None:
     """Append one row per firing, in BOTH modes. The single writer of this log.
 
     Advisory rows are the calibration evidence the promotion to blocking has to be
@@ -375,7 +454,10 @@ def _log_firing(findings: list[Finding], event: str) -> None:
         # the finding list, which is what a firing record has to be good for.
         "reason": ", ".join(dict.fromkeys(f.pattern for f in findings)),
         "mode": MODE,
-        "findings": [{"pattern": f.pattern, "line": f.line, "text": f.text[:300]}
+        # `trigger` and `blocking` make the NEXT calibration a group-by instead of
+        # a re-derivation: the 2026-09-23 measurement had to recompute both.
+        "findings": [{"pattern": f.pattern, "trigger": f.trigger,
+                      "blocking": f in stopping, "line": f.line, "text": f.text[:300]}
                      for f in findings],
     }
     try:
@@ -411,7 +493,8 @@ def main() -> int:
     if not findings:
         return 0
 
-    if MODE != "blocking":
+    stopping = blocking_findings(findings)
+    if not stopping:
         _log_firing(findings, "advisory")
         counts = ", ".join(
             f"{p} x{sum(1 for f in findings if f.pattern == p)}"
@@ -420,11 +503,11 @@ def main() -> int:
               f"state claim(s) [{counts}] -> {CALIBRATION_LOG}")
         return 0
 
-    _log_firing(findings, "blocked")
+    _log_firing(findings, "blocked", stopping)
     sys.stderr.write(
         "BLOCKED-CLAIM EVIDENCE (blocked): your answer asserts a blocked, denied, "
         "unavailable, or non-existent state with no command output next to it.\n\n"
-        + _report(findings) + "\n\n"
+        + _report(stopping) + "\n\n"
         "  Attach the command AND its output in a fenced block under the claim, or "
         "label the line as an inference ({{UNVERIFIED}} / provenance: inferred). "
         "Labelling is the correct move, not a lesser one -- the defect is prose that "
