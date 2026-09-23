@@ -2221,6 +2221,68 @@ The file itself is untouched on disk." 2>/dev/null; then
       fi
     done
 
+    # ASK-605: TRACKED files the never-commit stanza ignores (measured 2026-09-23).
+    #
+    # fleet-reach-audit.py that day: REACH 21 of 24. All three refusals were hook
+    # state under .claude/state/, TRACKED and modified -- kb-graph-guard.json in
+    # two instances, stop-gate-firings.json in the third. They were committed
+    # before any ignore rule reached them, and an ignore rule cannot untrack a
+    # file. A hook rewrites them every session, so they are dirty on every run
+    # and the guard below refused every run. Committing them (the carve-out
+    # below) clears ONE run and re-blocks the next; untracking ends it.
+    #
+    # The list is the SHIPPED STANZA, printed by the same script that writes the
+    # managed ignore block, never a third hand list: whatever the block ignores
+    # is exactly what gets untracked, so the two cannot drift. Scoped to the
+    # guard's own pathspec, so nothing outside what the sync may touch moves.
+    # Same three rules as the loop above, for the same reasons: only once the
+    # block is in place (untracked AND unignored is worse than tracked), never
+    # with founder work staged (the commit takes no pathspec -- see THE
+    # PATHSPEC TRAP), and the staged set must equal exactly what we untracked.
+    # `git rm --cached` never touches the worktree: the bytes stay on disk.
+    if [ "$GITIGNORE_BLOCK_OK" = "1" ]; then
+      stanza_file="$(mktemp)"
+      stanza_tracked=()
+      if python3 "$GITIGNORE_BLOCK" --skeleton "$SCRIPT_DIR" --print-stanza \
+          >"$stanza_file" 2>/dev/null; then
+        while IFS= read -r st_path; do
+          [ -n "$st_path" ] && stanza_tracked+=("$st_path")
+        done < <(git ls-files -c -i --exclude-from="$stanza_file" -- \
+                   "$prefix/" .claude/ plugins/ $(pathspec_owned_excludes "$prefix") \
+                   2>/dev/null)
+      else
+        say "  WARNING: could not read the never-commit stanza; tracked exhaust under it is left tracked"
+      fi
+      rm -- "$stanza_file"
+      if [ "${#stanza_tracked[@]}" -gt 0 ]; then
+        if [ -n "$(git diff --cached --name-only 2>/dev/null)" ]; then
+          say "  WARNING: ${#stanza_tracked[@]} never-commit path(s) are tracked, but the index already holds staged work. Leaving them."
+        elif ! wait_for_index_lock "$path" "untrack never-commit paths" ||
+            ! git rm --cached --quiet -- "${stanza_tracked[@]}" 2>/dev/null; then
+          say "  WARNING: could not untrack ${#stanza_tracked[@]} never-commit path(s)"
+        else
+          st_want="$(printf '%s\n' "${stanza_tracked[@]}" | LC_ALL=C sort)"
+          st_got="$(git diff --cached --name-only 2>/dev/null | LC_ALL=C sort)"
+          if [ "$st_got" != "$st_want" ]; then
+            say "  WARNING: untracking never-commit paths produced an unexpected index; backing out"
+            git reset --quiet -q -- "${stanza_tracked[@]}" >/dev/null 2>&1 || true
+          elif wait_for_index_lock "$path" "untrack never-commit commit" &&
+              git commit -q -m "chore: untrack never-commit exhaust [no-issue: fleet updater never-commit untrack]
+
+These paths are listed in the skeleton's never-commit stanza (the managed
+.gitignore block). While tracked, a hook rewrote them every session and the
+dirty-tree guard refused every fleet sync (ASK-605). The files are untouched on
+disk; the managed ignore block keeps them untracked." 2>/dev/null; then
+            say "  untracking ${#stanza_tracked[@]} never-commit path(s) (kept on disk):"
+            for st_path in "${stanza_tracked[@]}"; do say "    $st_path"; done
+          else
+            say "  WARNING: could not commit the never-commit untrack; backing out"
+            git reset --quiet -q -- "${stanza_tracked[@]}" >/dev/null 2>&1 || true
+          fi
+        fi
+      fi
+    fi
+
     # Clear the system's OWN artifacts first, so the guard below judges founder
     # work only. Each path is committed individually and only if it is actually
     # dirty; nothing outside SYSTEM_OWNED_PATHS is ever touched here.
