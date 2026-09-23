@@ -33,6 +33,10 @@
 #                   Was: parked blocked:capability, no page. Must not park, page
 #                   once; a 2-day-old claim must expire and page; a fresh claim
 #                   must still dedupe the page but not the per-issue note.
+#   codex-allcomments  paid Sana runs and "Worker run completed" notes over 5
+#                   ticks of one Codex outage. Was 5 and 5. Must be 1 and 1, the
+#                   held issue must carry the mark converge reads, and a sixth
+#                   tick after the claim is a day old must run it once more.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -204,14 +208,16 @@ fx = json.load(open(sys.argv[1]))
 out = next(r for r in fx["runs"] if r["issue"] == "ASK-1126")["tail"][-1]
 ans = next(r for r in fx["runs"] if r["label"] == "answered" and r["rc"] == 0)["tail"]
 nf = next(l for r in fx["runs"] for l in r["error_lines"] if l.startswith("ERROR: file or directory not found"))
-print(json.dumps({"echoed": "\n".join(fx["banner"] + [out] + ans), "mixed": "\n".join(fx["banner"] + [out, nf])}))
+print(json.dumps({"echoed": "\n".join(fx["banner"] + [out] + ans), "mixed": "\n".join(fx["banner"] + [out, nf]),
+                  "quoted": "\n".join(fx["banner"] + ["You are Codex.", "codex", ans[-1], out, "tokens used", "17,704"])}))
 PYA
 )"
 ECHOED="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["echoed"])' "$ADV" 2>/dev/null)"
 MIXED="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["mixed"])' "$ADV" 2>/dev/null)"
+QUOTED="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["quoted"])' "$ADV" 2>/dev/null)"
 # An empty case reads as "not an outage" and would pass the two checks below
 # without testing anything (it did, once, while this was being written).
-if [ -z "$ECHOED" ] || [ -z "$MIXED" ]; then
+if [ -z "$ECHOED" ] || [ -z "$MIXED" ] || [ -z "$QUOTED" ]; then
   bad "the adversarial Codex cases could be built from the fixture" "a case came back empty; the checks below would pass vacuously"
 fi
 if ( . "$LIB"; codex_env_reason "$ECHOED" 1 >/dev/null ); then
@@ -223,6 +229,13 @@ if ( . "$LIB"; codex_env_reason "$MIXED" 1 >/dev/null ); then
   bad "a real non-outage ERROR line at the end is the issue's" "a mixed ERROR block was read as an outage"
 else
   ok "a real outage line followed by a real non-outage ERROR line is not an outage"
+fi
+# PR #421 round 9, minor: the model's own message ending in a quoted limit line,
+# then Codex's token trailer. Under a "codex" header it is the model talking.
+if ( . "$LIB"; codex_env_reason "$QUOTED" 1 >/dev/null ); then
+  bad "a limit line in the model's own message is not an outage" "a quoted ERROR line under 'codex' was read as the machine's"
+else
+  ok "a real outage line quoted as the model's last message line is not an outage"
 fi
 REAL_OUT="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["mixed"].rsplit(chr(10),1)[0])' "$ADV")"
 if ( . "$LIB"; codex_env_reason "$REAL_OUT" 0 >/dev/null ); then
@@ -250,6 +263,31 @@ if [ "$(field C-claim-fresh pages)" = "0" ] && [ "$(field C-claim-fresh not-park
   ok "a fresh Codex claim still dedupes the page, and the issue still gets its own note"
 else
   bad "a fresh claim dedupes the page but not the per-issue note" "$(line C-claim-fresh)"
+fi
+
+echo "== a Codex outage holds the issue instead of re-running Sana"
+# PR #421 round 9, major: every tick re-ran a paid Sana session on the same
+# unlabelled issue and posted another "Worker run completed".
+OUT="$(run repro-codex-allcomments)"
+num() { printf '%s\n' "$OUT" | sed -n "s/^=== $1: \([0-9A-Za-z]*\).*/\1/p" | head -1; }
+S5="$(num 'Sana runs across 5 ticks of ONE Codex outage')"
+C5="$(num "'Worker run completed' notes across those 5 ticks")"
+MK="$(num 'held issue carries the machine-outage mark converge reads')"
+S6="$(num 'Sana runs after the claim is a day old (tick 6)')"
+if [ "${S5:-x}" = "1" ] && [ "${C5:-x}" = "1" ]; then
+  ok "5 ticks of one Codex outage: 1 paid Sana run and 1 'Worker run completed'"
+else
+  bad "a Codex outage does not re-run Sana every tick" "sana-runs=${S5:-?} completed-notes=${C5:-?}"
+fi
+if [ "${MK:-x}" = "True" ]; then
+  ok "the held issue carries the env_halt mark, so converge charges and pages nothing"
+else
+  bad "a held issue is marked for converge" "env_halt=${MK:-none}"
+fi
+if [ "${S6:-x}" = "2" ]; then
+  ok "once the Codex claim is a day old, the held issue runs once more"
+else
+  bad "the hold lifts when the claim expires" "sana-runs after a day=${S6:-?} (1 = held for good)"
 fi
 
 echo "== a dead run's per-pid files are swept"

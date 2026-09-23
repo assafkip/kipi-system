@@ -107,6 +107,11 @@ REVIEWER_CMD="${KIPI_PR_REVIEWER:-bash $SCRIPT_DIR/pr-review-agent.sh}"
 # case of "what if the second runner is also refused" bills a real model run, so
 # the branch stays untested, which is how the single-runner assumption shipped.
 CODEX_CMD="${KIPI_CODEX_RUNNER:-codex exec --skip-git-repo-check -s workspace-write}"
+# How long one Codex outage announcement stands (PR #421 rounds 8 and 9). Nothing
+# but a capability refusal ever reaches Codex, so nothing else would end it: past
+# this the claim may be taken over (one page a day at most) and an issue held
+# for the outage runs once more to find out whether Codex is back.
+CODEX_OUTAGE_MAX_AGE=86400
 STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
 ATTEMPTS="$STATE_DIR/linear-worker-attempts.json"
 # THE one writer of that ledger. Six functions here used to each do their own
@@ -1592,6 +1597,22 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     continue
   fi
 
+  # HELD, NOT RE-RUN, WHILE CODEX IS DOWN (PR #421 round 9, major). An issue
+  # Sana refused on capability goes back to the pool unlabelled during a Codex
+  # outage, so every tick re-ran a paid Sana session on it only to reach the
+  # same dead Codex and post another "Worker run completed". While this issue's
+  # outage note stands and the outage claim is live, it is held instead: no
+  # run, no comment. It runs again when Codex answers for any issue (the claim
+  # is released) or the claim passes CODEX_OUTAGE_MAX_AGE. The env_halt mark is
+  # what converge.sh reads to charge nothing and page nothing for a run that
+  # was never attempted, the same mark the Sana halt leaves.
+  if [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" codex_outage_noted "" 2>/dev/null)" = "True" ] \
+     && env_alert_held "$STATE_DIR/codex-outage" "$CODEX_OUTAGE_MAX_AGE"; then
+    say "skip $ISSUE: held while the second runner (Codex) is unavailable. No Sana run is spent on it until Codex answers or the outage claim is older than a day."
+    python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
+    continue
+  fi
+
   if [ "$APPLY" = "0" ]; then
     say "[dry] would work $ISSUE (attempt $((N+1))/$MAX_ATTEMPTS)"
     DONE=$((DONE+1)); continue
@@ -2442,7 +2463,7 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         fi
         # A day: nothing but a capability refusal ever reaches Codex, so nothing
         # else would release this claim (see env_alert_claim's max age).
-        if env_alert_claim "$STATE_DIR/codex-outage" 86400; then
+        if env_alert_claim "$STATE_DIR/codex-outage" "$CODEX_OUTAGE_MAX_AGE"; then
           bash "$NOTIFY" "kipi worker: the second runner (Codex) is unavailable ($CODEX_ENV). Issues Sana could not do are held, not parked and not charged, until it answers again." 2>/dev/null || true
         fi
       elif [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; then

@@ -195,6 +195,19 @@ codex_outage_reason() {  # codex_outage_reason <codex-output> <rc> -> the line; 
         seen = 1; k--
       }
       if (!seen) exit 1
+      # WHO WAS SPEAKING above the block (PR #421 round 9, minor). Codex marks
+      # every event with a header line: "user" (the echoed prompt), "codex" (the
+      # model), "thinking", "exec" (a command and its output), "hook: <Event>".
+      # The nearest header above the ERROR block must be the prompt or a hook,
+      # as in every real outage in the fixture. Under "codex" or "exec" the
+      # ERROR lines are the model or a command talking, and a quoted limit line
+      # there is not the machine refusing. No header at all is read as Codex.
+      for (j = k; j > 0; j--) {
+        if (line[j] ~ /^(user|codex|thinking|exec)$/ || line[j] ~ /^hook: [A-Za-z]+( Completed)?$/) {
+          if (line[j] == "codex" || line[j] == "thinking" || line[j] == "exec") exit 1
+          break
+        }
+      }
       print substr(line[n], 1, 120)
       exit 0
     }'
@@ -271,7 +284,8 @@ env_alert_claim() {  # env_alert_claim <state-dir> [max-age-seconds] -> 0 when T
     mkdir "$claim" 2>/dev/null || return 1
   fi
   # For the human reading $STATE_DIR later. The directory's existence is still
-  # the protocol; only a caller that passed a max age reads the epoch back.
+  # the protocol; only a caller that passed a max age reads the epoch back
+  # (env_alert_claim above, env_alert_held below).
   printf 'pid=%s claimed_at=%s epoch=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$(date +%s)" \
     > "$claim/holder" 2>/dev/null || true
   return 0
@@ -292,6 +306,21 @@ env_alert_claim() {  # env_alert_claim <state-dir> [max-age-seconds] -> 0 when T
 # healthy completion, which during an outage is the first run after recovery. The
 # only cost of a stuck claim is a missed page, and the halted run still exits 9,
 # so fleet-health-daily.py's launchd-failing detector sees the outage either way.
+# IS THE CONDITION STILL ANNOUNCED? (PR #421 round 9, major) The Codex branch
+# returns a capability-refused issue to the pool unlabelled during an outage,
+# so every tick re-ran a paid Sana session on it only to reach the same dead
+# Codex. The worker holds such an issue while this answers yes. Same epoch rule
+# as env_alert_claim: past the max age the claim no longer counts as held, so
+# the issue runs once more and the takeover there pages again.
+env_alert_held() {  # env_alert_held <state-dir> [max-age-seconds] -> 0 while a live claim stands
+  local claim="${1:-}/$ENV_ALERT_CLAIM_NAME" max_age="${2:-}" held_at
+  [ -n "${1:-}" ] && [ -d "$claim" ] || return 1
+  [ -n "$max_age" ] || return 0
+  held_at="$(sed -n 's/.*epoch=\([0-9][0-9]*\).*/\1/p' "$claim/holder" 2>/dev/null | head -1)"
+  [ -n "$held_at" ] || return 0
+  [ $(( $(date +%s) - held_at )) -le "$max_age" ]
+}
+
 env_alert_release() {  # env_alert_release <state-dir>
   local state="${1:-}"
   [ -n "$state" ] || return 0
