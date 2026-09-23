@@ -136,6 +136,29 @@ assert_staged_work_blocks_the_untrack() {
   echo "PASS: staged founder work leaves the untrack alone"
 }
 
+# ------------------------------------------------------------------ property 5
+# The audit and the updater answer from ONE list. Before this, the read-only
+# fleet-reach-audit.py called tracked hook state "founder" work, so the reach
+# report said a person had to act on three instances the updater now clears.
+assert_the_audit_calls_it_fleet_exhaust() {
+  local work sk inst json; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"
+  cp "$ROOT/fleet-reach-audit.py" "$sk/fleet-reach-audit.py"
+  json="$(python3 "$sk/fleet-reach-audit.py" --skeleton "$sk" --json 2>&1)" \
+    || fail "the audit crashed: $json"
+  python3 - "$json" <<'PY2' || fail "audit verdict wrong: $json"
+import json, sys
+rows = json.loads(sys.argv[1])
+row = [r for r in rows if r["name"] == "testinst"]
+assert row, "testinst missing from the audit"
+row = row[0]
+kinds = {b["path"]: b["kind"] for b in row["blocked_by"]}
+assert kinds.get(".claude/state/kb-graph-guard.json") == "never-commit", kinds
+assert row["verdict"] == "BLOCKED-FLEET", row["verdict"]
+PY2
+  echo "PASS: the audit classifies tracked never-commit state as fleet exhaust"
+}
+
 # ------------------------------------------------------------------ property 4
 # --dry-run models the untrack and changes nothing real.
 assert_dry_run_models_it_and_touches_nothing() {
@@ -150,6 +173,7 @@ assert_dry_run_models_it_and_touches_nothing() {
   echo "PASS: --dry-run models the untrack and leaves the real instance alone"
 }
 
+assert_the_audit_calls_it_fleet_exhaust
 assert_tracked_state_is_untracked_and_the_sync_proceeds
 assert_founder_source_edit_still_refuses
 assert_staged_work_blocks_the_untrack
