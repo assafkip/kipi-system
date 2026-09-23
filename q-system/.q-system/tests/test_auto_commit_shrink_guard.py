@@ -249,3 +249,75 @@ def test_unrelated_state_is_not_committed_either_while_refused(tmp_path, pager):
     (root / "memory" / "MEMORY.md").write_text("- note\n")
     _fire(root)
     assert _head(run) == head
+
+
+
+# --- PR #426 review round 1 ------------------------------------------------------
+
+def test_a_second_event_after_a_clean_turn_pages_again(tmp_path, pager):
+    """MAJOR: the marker must end with the event. Event 1, a clean turn, event 2 on
+    the SAME file: two pages. The first version sent one, ever."""
+    one = [("q-inst/canonical/objections.md", 123, 0, 54)]
+    root, run = _repo(tmp_path, append_only=False, files=one)
+    target = root / one[0][0]
+    original = target.read_text()
+    _apply(root, one)
+    _fire(root)
+    assert len(_pages(pager)) == 1
+    target.write_text(original)            # the operator restores the file
+    _fire(root)                             # a clean turn end: the event is over
+    _apply(root, one)                       # a second, independent rollback
+    out = _fire(root)
+    assert "REFUSED" in out.stdout
+    assert len(_pages(pager)) == 2, f"the second event paged nobody: {_pages(pager)}"
+
+
+def test_a_my_project_only_rollback_is_refused(tmp_path, pager):
+    """MINOR: half the scar was my-project/. The 2026-08-08 shape: current-state.md
+    cut 40% by an unattended commit, with no canonical file in the same turn."""
+    one = [("q-inst/my-project/current-state.md", 117, 0, 47)]
+    root, run = _repo(tmp_path, append_only=False, files=one)
+    head = _head(run)
+    _apply(root, one)
+    _fire(root)
+    assert _head(run) == head, "a my-project-only mass deletion was committed"
+
+
+def test_an_unborn_branch_is_not_a_loss(tmp_path, pager):
+    """MINOR: no HEAD means nothing committed can be lost. It must commit, and it
+    must not page a read failure as a loss."""
+    d = tmp_path / "repo"
+    d.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=d)
+    subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=d)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=d)
+    (d / "q-inst" / "canonical").mkdir(parents=True)
+    (d / "q-inst" / "canonical" / "decisions.md").write_text(_body(50))
+    out = _fire(d)
+    assert "REFUSED" not in out.stdout, out.stdout
+    assert _pages(pager) == []
+
+
+def test_a_diff_failure_is_not_reported_as_a_loss(tmp_path, capsys, monkeypatch):
+    """A read failure still refuses (fail closed) but must say what happened."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("auto_commit_under_test", HOOK)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    class R:
+        def __init__(self, rc, err=""):
+            self.returncode, self.stdout, self.stderr = rc, "", err
+
+    def fake_run(cmd, **_k):
+        return R(128, "fatal: index file corrupt") if "diff" in cmd else R(0)
+
+    monkeypatch.setattr(mod, "run", fake_run)
+    monkeypatch.setenv("KIPI_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("KIPI_AUTOCOMMIT_NOTIFY", str(tmp_path / "absent.sh"))
+    refusals = mod.shrink_refusals(["q-inst/canonical/x.md"])
+    assert refusals and refusals[0][0] == mod.DIFF_UNREADABLE
+    mod.report_refusal(refusals)
+    out = capsys.readouterr().out
+    assert "could not read the diff" in out
+    assert "would lose lines" not in out
