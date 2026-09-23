@@ -58,7 +58,9 @@ the check can fail.
 
 Run: python3 q-system/.q-system/scripts/test/test-updater-arms-new-jobs.py
 """
+import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -119,6 +121,25 @@ RETIRED_BY_DIRECTIVE = (
 )
 
 FAILS = []
+_MODULES = {}
+
+
+def _load(rel, name):
+    """Import a repo script by path, once per run (they are not importable by name)."""
+    if name not in _MODULES:
+        spec = importlib.util.spec_from_file_location(name, REPO / rel)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _MODULES[name] = mod
+    return _MODULES[name]
+
+
+def fleet_health():
+    return _load("q-system/.q-system/scripts/fleet-health-daily.py", "fh_for_arm_new_jobs")
+
+
+def intent_verify():
+    return _load("q-system/.q-system/scripts/launchd-intent-verify.py", "iv_for_arm_new_jobs")
 
 
 def check(name, got, want):
@@ -283,6 +304,62 @@ def case_directive_labels_declare_themselves():
         check(f"{label} declares kipi-retired:", "kipi-retired:" in matches[0].read_text(), True)
 
 
+def case_never_installed_detector_reads_the_declaration():
+    """case 11: fleet-health's never-installed detector honours `kipi-retired:` too.
+
+    A DECLARATION IS ONLY WORTH ITS CONSUMERS. `never_installed_findings` files a
+    Linear issue for every committed template with no plist in ~/Library/LaunchAgents,
+    and its remediation line is `install-plist.sh <label>` -- the SINGLE-LABEL mode,
+    which skips the retirement guard on purpose because bringing one job back is a
+    deliberate act. So for the four RULE-2026-09-11-A posters the detector filed a
+    permanent issue (the daily run reopens it forever) whose one instruction was to
+    undo the founder's directive. Cases 9/9b stop the bulk installer; this stops the
+    watchdog that asks a human to run the installer by hand.
+
+    Both sides read the marker from one owner (`launchd_intent_verify.RETIRED_MARKER`),
+    so the string cannot drift between the detector and install-plist.sh; the
+    divergence check is `case_retirement_marker_has_one_owner` below.
+    """
+    print("case 11: never_installed_findings vs a declared-retired template")
+    work = workdir("arm-new-jobs-neverinstalled-")
+    templates = work / "templates"
+    templates.mkdir(parents=True)
+    agents = work / "agents"
+    agents.mkdir(parents=True)
+    (templates / "com.kipi.new.plist").write_text(TEMPLATE.format(label="com.kipi.new"))
+    (templates / "com.kipi.declared-retired.plist").write_text(
+        DECLARED_RETIRED.format(label="com.kipi.declared-retired"))
+    found = sorted(f["subject"] for f in fleet_health().never_installed_findings(
+        template_dir=templates, launch_agents=agents, paused_labels=set()))
+    check("a declared-retired template files no never-installed finding",
+          found, ["com.kipi.new"])
+    # And against the real templates, on a HOME that has installed nothing: the
+    # fixture proves the mechanism, this proves it is pointed at the four jobs.
+    real = sorted(f["subject"] for f in fleet_health().never_installed_findings(
+        launch_agents=agents, paused_labels=set()))
+    check("none of the directive-retired labels is filed",
+          sorted(set(real) & set(RETIRED_BY_DIRECTIVE)), [])
+
+
+def case_retirement_marker_has_one_owner():
+    """case 11b: install-plist.sh greps the marker the Python reader defines.
+
+    install-plist.sh is bash and cannot import the constant, so the second-best
+    guard applies: a divergence check that goes RED when the two stop matching,
+    rather than two copies that agree on the day they are written and quietly
+    disagree later. The floor matters -- an empty parse would make this a no-op
+    that reads as green -- so the extracted literal is asserted non-empty first.
+    """
+    print("case 11b: one owner for the kipi-retired: marker")
+    marker = intent_verify().RETIRED_MARKER
+    check("the marker constant is non-empty", bool(marker), True)
+    installer = (REPO / "q-system/.q-system/scripts/install-plist.sh").read_text()
+    literals = re.findall(r'grep -q "([^"]*retired[^"]*)" "\$_p"', installer)
+    check("install-plist.sh greps exactly one retirement literal", len(literals), 1)
+    if literals:
+        check("install-plist.sh's literal is the owner's marker", literals[0], marker)
+
+
 def case_failed_bootstrap_rolls_back(build=None):
     print("case 8: a job whose bootstrap fails")
     build = build or build_skeleton
@@ -382,6 +459,13 @@ MUTANTS = (
     ("--missing skeleton refusal removed", "q-system/.q-system/scripts/install-plist.sh",
      'if [ "$MODE" = "--missing" ] && [ "$(cd "$KIPI_REPO" && pwd -P)" != "$_skeleton" ]; then',
      "if false; then"),
+    # The exit expression is a DECISION POINT of its own: round 3 removed arming
+    # from it (an un-armable job is not a propagation failure) and the removal
+    # shipped with nothing that would notice it coming back. Folding JOBS_NOT_ARMED
+    # back in is exactly the regression, and case 8/10 is what kills it.
+    ("arming folded back into the exit code", "kipi-update.sh",
+     '[ "$FAIL" -eq 0 ] && [ -z "${GATE_FAIL:-}" ] && exit 0 || exit 1',
+     '[ "$FAIL" -eq 0 ] && [ -z "${GATE_FAIL:-}" ] && [ -z "${JOBS_NOT_ARMED:-}" ] && exit 0 || exit 1'),
 )
 
 
@@ -453,6 +537,8 @@ def main():
         case_unnamed_scratch_tree_arms_nothing()
         case_failed_bootstrap_rolls_back()
         case_directive_labels_declare_themselves()
+        case_never_installed_detector_reads_the_declaration()
+        case_retirement_marker_has_one_owner()
     finally:
         clean_workdirs()
     if FAILS:
